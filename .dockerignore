@@ -1,0 +1,57 @@
+# Git
+.git/
+.gitignore
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment & secrets
+.env*
+settings*.env
+
+# Local data
+data/
+*.db
+*.sqlite
+
+# Documentation
+*.md
+!CHANGELOG.md
+docs/
+
+# Build artifacts
+dist/
+build/
+*.whl
+
+# Docker (keep main Dockerfile only)
+docker-compose*.yml
+Dockerfile.dev
+.dockerignore
+
+# Misc
+*.log
+*.bak
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Config
+setup.conf
+*.conf
+!app/**/*.conf

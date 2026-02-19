@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light" class="login-page">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Login – WireBuddy</title>
+    <link rel="icon" type="image/svg+xml" href="/static/img/favicon.svg">
+    <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/css/style.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <script>
+        // Theme initialization
+        (function () {
+            const stored = localStorage.getItem('theme');
+            const theme = stored || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+            document.documentElement.setAttribute('data-bs-theme', theme);
+        })();
+    </script>
+</head>
+
+<body>
+    <div class="card login-card">
+        <div class="card-body p-4 p-sm-5">
+            <div class="text-center mb-4">
+                <div class="logo-icon mb-3 d-flex justify-content-center">
+                    <img src="/static/img/wirebuddy_1c.svg" alt="WireBuddy"
+                        style="width: 260px; height: auto; display: block;" class="logo-themed">
+                </div>
+                <p class="login-tagline small mb-2">Use WireGuard with ease!</p>
+            </div>
+
+            <div class="alert alert-danger" id="error-alert" role="alert" aria-live="assertive"></div>
+
+            <form id="login-form">
+                <div class="mb-3">
+                    <label for="username" class="form-label">Username</label>
+                    <input type="text" class="form-control form-control-lg" id="username" name="username"
+                        autocomplete="username" autocapitalize="off" autocorrect="off" required autofocus>
+                </div>
+
+                <div class="mb-4">
+                    <label for="password" class="form-label">Password</label>
+                    <input type="password" class="form-control form-control-lg" id="password" name="password"
+                        autocomplete="current-password" required>
+                </div>
+
+                <button type="submit" class="btn btn-primary btn-lg w-100" id="submit-btn">
+                    Sign In
+                </button>
+            </form>
+
+            <div class="text-center mt-4">
+                <button type="button" id="toggle-theme" class="btn btn-sm btn-outline-secondary"
+                    aria-label="Toggle theme" style="border-radius: 50%; width: 40px; height: 40px; padding: 0;">
+                    <span class="material-icons" id="theme-icon-login"
+                        style="font-size: 20px; vertical-align: middle;">dark_mode</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function updateThemeIcon() {
+            const theme = document.documentElement.getAttribute('data-bs-theme');
+            const icon = document.getElementById('theme-icon-login');
+            if (icon) {
+                icon.textContent = theme === 'dark' ? 'light_mode' : 'dark_mode';
+            }
+        }
+
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-bs-theme');
+            const next = current === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-bs-theme', next);
+            localStorage.setItem('theme', next);
+            updateThemeIcon();
+        }
+
+        // Initialize icon
+        updateThemeIcon();
+
+        // Attach theme toggle event listener
+        document.getElementById('toggle-theme')?.addEventListener('click', function (e) {
+            e.preventDefault();
+            toggleTheme();
+        });
+
+        document.getElementById('login-form').addEventListener('submit', async function (e) {
+            e.preventDefault();
+
+            const errorAlert = document.getElementById('error-alert');
+            const submitBtn = document.getElementById('submit-btn');
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            errorAlert.style.display = 'none';
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Signing in...';
+            submitBtn.setAttribute('aria-busy', 'true');
+
+            try {
+                const response = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': '{{ csrf_token }}',
+                    },
+                    body: JSON.stringify({ username, password }),
+                });
+
+                let data = {};
+                try {
+                    data = await response.json();
+                } catch (jsonError) {
+                    throw new Error('Invalid response from server');
+                }
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Login failed');
+                }
+
+                const payload = (data && data.status === 'ok' && data.data) ? data.data : data;
+
+                // Store token
+                if (!payload?.token) {
+                    throw new Error('Missing authentication token');
+                }
+                localStorage.setItem('auth_token', payload.token);
+
+                // Redirect to dashboard
+                window.location.href = '/ui/dashboard';
+
+            } catch (error) {
+                errorAlert.textContent = error.message;
+                errorAlert.style.display = 'block';
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Sign In';
+                submitBtn.removeAttribute('aria-busy');
+            }
+        });
+    </script>
+</body>
+
+</html>

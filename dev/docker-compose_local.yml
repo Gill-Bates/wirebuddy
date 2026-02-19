@@ -1,0 +1,32 @@
+services:
+  wirebuddy:
+    build: .
+    container_name: wirebuddy-dev
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv4.conf.all.forwarding=1
+      - net.ipv6.conf.all.forwarding=1
+    dns:
+      - 1.1.1.1
+      - 9.9.9.9
+    environment:
+      LOG_LEVEL: DEBUG
+      WIREBUDDY_SECRET_KEY: "l+QGUq6BH9dLZkAQpG2jivXZeLLwYNMCmzUsfcD2wPM="
+      WIREBUDDY_DATA_DIR: /data
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./data_local:/data
+    ports:
+      - "8000:8000"
+      - "51820:51820/udp"

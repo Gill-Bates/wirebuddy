@@ -1,0 +1,1878 @@
+{% extends "base.html" %}
+
+{% block title %}Settings – WireBuddy{% endblock %}
+
+{% block extra_css %}
+<style>
+    .dns-retention-scale {
+        --dns-thumb-size: 1rem;
+    }
+
+    .dns-retention-slider {
+        margin-bottom: 0;
+    }
+
+    .dns-retention-ticks,
+    .dns-retention-labels {
+        position: relative;
+        width: calc(100% - var(--dns-thumb-size));
+        margin-left: calc(var(--dns-thumb-size) / 2);
+    }
+
+    .dns-retention-ticks {
+        height: 13px;
+        margin-top: 0.1rem;
+        margin-bottom: 0.25rem;
+    }
+
+    .dns-retention-tick,
+    .dns-retention-label {
+        position: absolute;
+        left: var(--x);
+        transform: translateX(-50%);
+    }
+
+    .dns-retention-tick {
+        width: 1px;
+        height: 11px;
+        background-color: var(--bs-border-color);
+        opacity: 0.85;
+    }
+
+    .dns-retention-label {
+        font-size: 0.75rem;
+        color: var(--bs-secondary-color);
+        line-height: 1.2;
+        white-space: nowrap;
+    }
+
+    .dns-retention-tick.pos-0,
+    .dns-retention-label.pos-0 {
+        transform: translateX(0);
+    }
+
+    .dns-retention-tick.pos-5,
+    .dns-retention-label.pos-5 {
+        transform: translateX(-100%);
+    }
+
+    .dns-upstream-section {
+        margin-top: 2.25rem;
+    }
+
+    .dns-loadbalance-help {
+        background-color: rgba(108, 117, 125, 0.08);
+        border: 1px solid var(--bs-border-color);
+    }
+
+    .dns-loadbalance-help .table {
+        --bs-table-bg: transparent;
+    }
+
+    [data-bs-theme="dark"] .dns-loadbalance-help {
+        background-color: rgba(31, 41, 55, 0.55);
+        border-color: rgba(148, 163, 184, 0.22);
+    }
+
+    #settingsTabs .nav-link {
+        color: var(--bs-secondary-color);
+    }
+
+    #settingsTabs .nav-link:hover,
+    #settingsTabs .nav-link:focus {
+        color: var(--wb-primary);
+    }
+
+    #settingsTabs .nav-link.active {
+        color: var(--wb-primary);
+        font-weight: 600;
+    }
+
+    [data-bs-theme="dark"] #settingsTabs .nav-link {
+        color: #b7c2d0;
+    }
+
+    [data-bs-theme="dark"] #settingsTabs .nav-link:hover,
+    [data-bs-theme="dark"] #settingsTabs .nav-link:focus,
+    [data-bs-theme="dark"] #settingsTabs .nav-link.active {
+        color: #f2b1b3;
+    }
+
+    .blocklist-hero-grid {
+        display: grid;
+        gap: 0.5rem;
+    }
+
+    .blocklist-hero-grid>* {
+        min-width: 0;
+    }
+
+    @media (min-width: 768px) {
+        .blocklist-hero-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    .blocklist-hero-card {
+        border: 1px solid var(--bs-border-color);
+        border-radius: 0.55rem;
+        padding: 0.5rem 0.55rem;
+        min-width: 0;
+        max-width: 100%;
+        overflow: hidden;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.65) 0%, rgba(248, 249, 250, 0.65) 100%);
+        box-shadow: 0 4px 10px rgba(15, 23, 42, 0.1);
+        transition: box-shadow 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
+    }
+
+    .blocklist-hero-card:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 14px rgba(15, 23, 42, 0.14);
+    }
+
+    .blocklist-hero-card.enabled {
+        border-color: var(--bs-border-color);
+        box-shadow: 0 6px 14px rgba(15, 23, 42, 0.14);
+    }
+
+    .blocklist-hero-title {
+        font-weight: 700;
+        font-size: 0.92rem;
+        line-height: 1.15;
+        margin: 0;
+    }
+
+    .blocklist-hero-desc {
+        color: var(--bs-secondary-color);
+        font-size: 0.74rem;
+        line-height: 1.25;
+        margin: 0;
+    }
+
+    .blocklist-hero-meta {
+        margin-top: 0.45rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.28rem;
+    }
+
+    .blocklist-hero-meta .badge {
+        font-size: 0.64rem;
+        font-weight: 600;
+        padding: 0.2rem 0.36rem;
+    }
+
+    .blocklist-hero-url {
+        margin-top: 0.35rem;
+        font-size: 0.8rem;
+        color: var(--bs-secondary-color);
+        overflow-wrap: anywhere;
+    }
+
+    .blocklist-hero-url code {
+        display: block;
+        white-space: normal;
+        word-break: break-all;
+        overflow-wrap: anywhere;
+        max-width: 100%;
+    }
+
+    .blocklist-header-meta {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.9rem;
+        min-width: 0;
+    }
+
+    .blocklist-footer-meta {
+        display: flex;
+        justify-content: flex-end;
+        width: 100%;
+        padding-top: 0.5rem;
+        border-top: 1px solid var(--bs-border-color);
+    }
+
+    .blocklist-refresh-btn {
+        margin-left: 0.2rem;
+        min-width: 2.6rem;
+        min-height: 2.6rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .blocklist-refresh-btn .material-icons {
+        font-size: 1.35rem;
+        line-height: 1;
+    }
+
+    #blocklist-last-update {
+        display: inline-flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 0.2rem 0.35rem;
+        white-space: normal;
+        overflow-wrap: normal;
+        line-height: 1.2;
+        text-align: right;
+        max-width: 11.5rem;
+    }
+
+    #blocklist-last-update .blocklist-last-label {
+        white-space: nowrap;
+    }
+
+    #blocklist-last-update .blocklist-last-value {
+        word-break: normal;
+        overflow-wrap: normal;
+    }
+
+    .blocklist-hero-card .flex-grow-1 {
+        min-width: 0;
+    }
+
+    .blocklist-hero-title,
+    .blocklist-hero-desc {
+        overflow-wrap: anywhere;
+    }
+
+    [data-bs-theme="dark"] .blocklist-hero-card {
+        background: linear-gradient(180deg, rgba(33, 45, 62, 0.95) 0%, rgba(24, 35, 49, 0.95) 100%);
+        border-color: rgba(148, 163, 184, 0.22);
+        box-shadow: 0 5px 12px rgba(0, 0, 0, 0.28);
+    }
+
+    [data-bs-theme="dark"] .blocklist-hero-card.enabled {
+        box-shadow: 0 6px 14px rgba(0, 0, 0, 0.32);
+    }
+
+    @media (max-width: 767.98px) {
+        #settingsTabs {
+            display: flex;
+            flex-wrap: nowrap;
+            overflow-x: auto;
+            overflow-y: hidden;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: thin;
+            padding-bottom: 0.1rem;
+        }
+
+        #settingsTabs .nav-item {
+            flex: 0 0 auto;
+        }
+
+        #settingsTabs .nav-link {
+            white-space: nowrap;
+        }
+    }
+
+    @media (min-width: 992px) {
+        .settings-general-equal-row {
+            align-items: stretch;
+        }
+
+        .settings-general-col {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .settings-general-col>.card {
+            margin-bottom: 1rem !important;
+        }
+
+        .settings-general-col>.card:last-child {
+            margin-bottom: 0 !important;
+        }
+
+        /* Left side: Profile card stretches to full column height */
+        .settings-general-col-left>.card {
+            flex: 1 1 auto;
+        }
+
+        /* Right side: Metrics card consumes remaining space below Appearance */
+        .settings-general-col-right>.card:last-child {
+            flex: 1 1 auto;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="h3 mb-0"><span class="material-icons me-2">settings</span>Settings</h1>
+</div>
+
+<!-- Settings Tab Navigation -->
+<ul class="nav nav-tabs mb-4" id="settingsTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="general-tab" data-bs-toggle="tab" data-bs-target="#general-pane"
+            type="button" role="tab" aria-controls="general-pane" aria-selected="true">General</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="wireguard-tab" data-bs-toggle="tab" data-bs-target="#wireguard-pane" type="button"
+            role="tab" aria-controls="wireguard-pane" aria-selected="false">WireGuard</button>
+    </li>
+    {% if user['is_admin'] %}
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="dns-tab" data-bs-toggle="tab" data-bs-target="#dns-pane" type="button" role="tab"
+            aria-controls="dns-pane" aria-selected="false">DNS</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="letsencrypt-tab" data-bs-toggle="tab" data-bs-target="#letsencrypt-pane"
+            type="button" role="tab" aria-controls="letsencrypt-pane" aria-selected="false">Let's Encrypt</button>
+    </li>
+    {% endif %}
+</ul>
+
+<!-- Tab Content -->
+<div class="tab-content" id="settingsTabContent">
+    <!-- General Tab -->
+    <div class="tab-pane fade show active" id="general-pane" role="tabpanel" aria-labelledby="general-tab">
+        <div class="row settings-general-equal-row">
+            <div class="col-lg-6 settings-general-col settings-general-col-left">
+                <!-- Profile Settings -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">Profile</h5>
+                    </div>
+                    <div class="card-body">
+                        <form id="profile-form">
+                            <div class="mb-3">
+                                <label class="form-label">Username</label>
+                                <input type="text" class="form-control" value="{{ user['username'] }}" disabled
+                                    autocomplete="username">
+                            </div>
+                            <div class="mb-3">
+                                <label for="current-password" class="form-label">Current Password</label>
+                                <input type="password" class="form-control" id="current-password" required
+                                    autocomplete="current-password">
+                            </div>
+                            <div class="mb-3">
+                                <label for="new-password" class="form-label">New Password</label>
+                                <input type="password" class="form-control" id="new-password" required minlength="8"
+                                    autocomplete="new-password">
+                                <small class="text-muted">Minimum 8 characters</small>
+                            </div>
+                            <div class="mb-3">
+                                <label for="confirm-password" class="form-label">Confirm New Password</label>
+                                <input type="password" class="form-control" id="confirm-password" required
+                                    autocomplete="new-password">
+                            </div>
+                            <button type="submit" class="btn btn-primary">Change Password</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-6 settings-general-col settings-general-col-right">
+                <!-- Appearance -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">Appearance</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label class="form-label">Theme</label>
+                            <div class="btn-group w-100" role="group">
+                                <input type="radio" class="btn-check" name="theme" id="theme-light" value="light">
+                                <label class="btn btn-outline-secondary" for="theme-light">Light</label>
+
+                                <input type="radio" class="btn-check" name="theme" id="theme-dark" value="dark">
+                                <label class="btn btn-outline-secondary" for="theme-dark">Dark</label>
+
+                                <input type="radio" class="btn-check" name="theme" id="theme-auto" value="auto">
+                                <label class="btn btn-outline-secondary" for="theme-auto">Auto</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Metrics Database (TSDB) -->
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Metrics Database</h5>
+                        {% if user['is_admin'] %}
+                        <div>
+                            <button class="btn btn-sm btn-outline-danger" id="btn-reset-tsdb" onclick="resetTsdb()">
+                                <span class="material-icons" style="font-size: 18px;">delete</span>
+                            </button>
+                        </div>
+                        {% endif %}
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-borderless mb-0">
+                            <tbody>
+                                <tr>
+                                    <td class="text-muted">Storage Size</td>
+                                    <td class="text-end font-monospace" id="tsdb-size">–</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Peers Tracked</td>
+                                    <td class="text-end font-monospace" id="tsdb-peers">–</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Data Files</td>
+                                    <td class="text-end font-monospace" id="tsdb-files">–</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Compressed Archives</td>
+                                    <td class="text-end font-monospace" id="tsdb-archives">–</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Created</td>
+                                    <td class="text-end font-monospace" id="tsdb-created">–</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- WireGuard Tab -->
+    <div class="tab-pane fade" id="wireguard-pane" role="tabpanel" aria-labelledby="wireguard-tab">
+        <div class="row">
+            <div class="col-lg-6">
+                <!-- WireGuard Global Settings -->
+                {% if user['is_admin'] %}
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">Global Settings</h5>
+                    </div>
+                    <div class="card-body">
+                        <form id="wg-settings-form">
+                            <div class="mb-3">
+                                <label for="wg-fqdn" class="form-label">Server FQDN / IP</label>
+                                <div class="input-group">
+                                    <input type="text" class="form-control" id="wg-fqdn" placeholder="vpn.example.com">
+                                    <button class="btn btn-outline-secondary" type="button" id="btn-fqdn-detect"
+                                        title="Auto-detect from current hostname">
+                                        <span class="material-icons" style="font-size: 18px;">auto_fix_high</span>
+                                    </button>
+                                </div>
+                                <small class="text-muted">Public hostname or IP (without port) clients connect
+                                    to</small>
+                            </div>
+                            <div class="mb-3">
+                                <label for="wg-port" class="form-label">WireGuard Port</label>
+                                <input type="number" class="form-control" id="wg-port" min="1" max="65535"
+                                    placeholder="51820">
+                                <small class="text-muted">UDP port WireGuard listens on</small>
+                            </div>
+                            <div class="mb-3">
+                                <label for="gui-port" class="form-label">HTTP Port (GUI)</label>
+                                <input type="number" class="form-control" id="gui-port" min="1" max="65535"
+                                    placeholder="8000">
+                                <small class="text-muted">TCP port for the web interface</small>
+                            </div>
+                            <div class="mb-3">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="gui-localhost-only">
+                                    <label class="form-check-label" for="gui-localhost-only">Only listen on
+                                        Localhost</label>
+                                </div>
+                                <small class="text-muted">When enabled, GUI only accessible from 127.0.0.1 (requires
+                                    restart)</small>
+                            </div>
+                            <hr>
+                            <div class="mb-3">
+                                <label for="wg-mtu" class="form-label">MTU</label>
+                                <input type="number" class="form-control" id="wg-mtu" min="1280" max="9000"
+                                    placeholder="1420">
+                                <small class="text-muted">Default: 1420. Typical range: 1280–1500</small>
+                            </div>
+                            <div class="mb-3">
+                                <label for="wg-keepalive" class="form-label">Persistent Keepalive (seconds)</label>
+                                <input type="number" class="form-control" id="wg-keepalive" min="0" max="600"
+                                    placeholder="25">
+                                <small class="text-muted">0 = disabled. Recommended: 25 for NAT traversal</small>
+                            </div>
+                            <hr>
+                            <div class="mb-3">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="wg-use-psk">
+                                    <label class="form-check-label" for="wg-use-psk">Use PresharedKey</label>
+                                </div>
+                                <small class="text-muted">Add a PresharedKey to new peers for post-quantum
+                                    resistance</small>
+                            </div>
+                            <div class="mb-3 d-none" id="psk-details">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <label class="form-label mb-0">Global PresharedKey</label>
+                                    <button type="button" class="btn btn-sm btn-warning" id="psk-generate-btn">
+                                        <span class="material-icons" style="font-size: 16px;">refresh</span>
+                                        Regenerate PSK
+                                    </button>
+                                </div>
+                                <div class="input-group">
+                                    <input type="password" class="form-control font-monospace" id="wg-psk-display"
+                                        readonly value="" placeholder="No key generated yet" autocomplete="off">
+                                    <button class="btn btn-outline-secondary" type="button" id="psk-toggle-visibility"
+                                        title="Show / Hide">
+                                        <span class="material-icons" style="font-size: 18px;">visibility</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+            <div class="col-lg-6">
+                <!-- WireGuard Interfaces -->
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Interfaces</h5>
+                        <div>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="refreshInterfaces()">
+                                <span class="material-icons" style="font-size: 18px;">refresh</span>
+                            </button>
+                            {% if user['is_admin'] %}
+                            <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#ifaceModal"
+                                onclick="prepareCreateInterfaceModal()">
+                                <span class="material-icons" style="font-size: 18px;">add_circle</span>
+                            </button>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div id="interfaces-list">
+                            <p class="text-muted mb-0">Loading interfaces...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% if user['is_admin'] %}
+    <!-- DNS Tab -->
+    <div class="tab-pane fade" id="dns-pane" role="tabpanel" aria-labelledby="dns-tab">
+        <div class="row">
+            <div class="col-lg-6">
+                <!-- DNS Blocklists -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">DNS Ad Blocking</h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-3">Select which blocklists to use for DNS ad-blocking</p>
+                        <div id="blocklist-sources" class="blocklist-hero-grid">
+                            <div class="text-center py-3">
+                                <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="blocklist-header-meta blocklist-footer-meta mt-3">
+                            <small class="text-muted" id="blocklist-last-update">
+                                <span class="blocklist-last-label">Last Update:</span>
+                                <span class="blocklist-last-value">–</span>
+                            </small>
+                            <button class="btn btn-sm btn-outline-danger blocklist-refresh-btn"
+                                onclick="updateBlocklist()">
+                                <span class="material-icons">cached</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">DNS Resolver</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-4 dns-retention-scale">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label for="dns-retention-slider" class="form-label mb-0">DNS Log Retention</label>
+                                <span class="badge text-bg-secondary" id="dns-retention-value">30 Days</span>
+                            </div>
+                            <input type="range" class="form-range dns-retention-slider" id="dns-retention-slider"
+                                min="0" max="5" step="1" value="2">
+                            <div class="dns-retention-ticks" aria-hidden="true">
+                                <span class="dns-retention-tick pos-0" style="--x:0%;"></span>
+                                <span class="dns-retention-tick pos-1" style="--x:20%;"></span>
+                                <span class="dns-retention-tick pos-2" style="--x:40%;"></span>
+                                <span class="dns-retention-tick pos-3" style="--x:60%;"></span>
+                                <span class="dns-retention-tick pos-4" style="--x:80%;"></span>
+                                <span class="dns-retention-tick pos-5" style="--x:100%;"></span>
+                            </div>
+                            <div class="dns-retention-labels" aria-hidden="true">
+                                <span class="dns-retention-label pos-0" style="--x:0%;">No Logs</span>
+                                <span class="dns-retention-label pos-1" style="--x:20%;">7d</span>
+                                <span class="dns-retention-label pos-2" style="--x:40%;">30d</span>
+                                <span class="dns-retention-label pos-3" style="--x:60%;">90d</span>
+                                <span class="dns-retention-label pos-4" style="--x:80%;">180d</span>
+                                <span class="dns-retention-label pos-5" style="--x:100%;">1y</span>
+                            </div>
+                        </div>
+
+                        <div class="mb-3 dns-upstream-section">
+                            <label for="dns-upstream-servers" class="form-label">Custom Upstream DNS Servers
+                                (DoT)</label>
+                            <textarea id="dns-upstream-servers" class="form-control font-monospace" rows="4"
+                                placeholder="1.1.1.1@853#cloudflare-dns.com&#10;9.9.9.9@853#dns.quad9.net&#10;91.239.100.100@853#unicast.censurfridns.dk&#10;45.90.28.0@853#dns.nextdns.io&#10;194.242.2.2@853#dns.mullvad.net"></textarea>
+                            <details class="mt-2 small">
+                                <summary class="text-muted" style="cursor: pointer;">
+                                    <span class="material-icons align-middle me-1" style="font-size: 14px;">info</span>
+                                    How load balancing works
+                                </summary>
+                                <div class="dns-loadbalance-help rounded p-2 mt-1">
+                                    <table class="table table-sm table-borderless mb-0 small">
+                                        <tbody>
+                                            <tr>
+                                                <td class="text-muted" style="width: 140px;">Load Balancing</td>
+                                                <td>Round-robin based on RTT (response time)</td>
+                                            </tr>
+                                            <tr>
+                                                <td class="text-muted">Failover</td>
+                                                <td>Automatic fallback to next server on timeout</td>
+                                            </tr>
+                                            <tr>
+                                                <td class="text-muted">Timeout Penalty</td>
+                                                <td>Failed servers skipped for 2 minutes</td>
+                                            </tr>
+                                            <tr>
+                                                <td class="text-muted">Format</td>
+                                                <td><code>IP@PORT#HOSTNAME</code> (one per line)</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </details>
+                        </div>
+
+                        <div class="form-check form-switch mb-2">
+                            <input class="form-check-input" type="checkbox" id="dnssec-enabled">
+                            <label class="form-check-label" for="dnssec-enabled">Enable DNSSEC</label>
+                        </div>
+                        <div class="text-muted small mb-3" id="dnssec-status">Loading DNSSEC status...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Let's Encrypt Tab -->
+    <div class="tab-pane fade" id="letsencrypt-pane" role="tabpanel" aria-labelledby="letsencrypt-tab">
+        <div class="row">
+            <div class="col-lg-8">
+                <!-- SSL/TLS Certificates -->
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">SSL/TLS Certificates</h5>
+                        <div>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="refreshCertificates()"
+                                title="Refresh">
+                                <span class="material-icons" style="font-size: 18px;">refresh</span>
+                            </button>
+                            <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#certModal">
+                                <span class="material-icons" style="font-size: 18px;">add_circle</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div id="certificates-list">
+                            <p class="text-muted mb-0">Loading certificates...</p>
+                        </div>
+                        <small class="text-muted d-block mt-2">
+                            <span class="material-icons" style="font-size: 16px; vertical-align: middle;">info</span>
+                            Certificates are stored in <code>/data/certs/</code>
+                        </small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+<!-- Certificate Request Modal -->
+<div class="modal fade" id="certModal" tabindex="-1" aria-labelledby="certModalTitle" aria-modal="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="certModalTitle">Request SSL Certificate</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="cert-form">
+                    <div class="mb-3">
+                        <label for="cert-domain" class="form-label">Domain</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="cert-domain" placeholder="vpn.example.com"
+                                required>
+                            <button class="btn btn-outline-secondary" type="button" id="btn-cert-domain-detect"
+                                title="Auto-detect from current hostname">
+                                <span class="material-icons" style="font-size: 18px;">auto_fix_high</span>
+                            </button>
+                        </div>
+                        <small class="text-muted">The domain must point to this server</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="cert-email" class="form-label">Email</label>
+                        <input type="email" class="form-control" id="cert-email" placeholder="admin@example.com"
+                            required>
+                        <small class="text-muted">Used for expiry notifications</small>
+                    </div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="cert-staging">
+                        <label class="form-check-label" for="cert-staging">
+                            Use staging environment (testing)
+                        </label>
+                    </div>
+                    <div class="alert alert-info small mb-0">
+                        <strong>Requirements:</strong>
+                        <ul class="mb-0 ps-3">
+                            <li>Domain must resolve to this server's IP</li>
+                            <li>Port 80 must be accessible for HTTP-01 challenge</li>
+                            <li>Reverse proxy must forward <code>/.well-known/acme-challenge/</code></li>
+                        </ul>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="requestCertificate()">
+                    <span id="cert-spinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+                    Request Certificate
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Interface Creation Modal -->
+{% if user['is_admin'] %}
+<div class="modal fade" id="ifaceModal" tabindex="-1" aria-labelledby="ifaceModalTitle" aria-modal="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="ifaceModalTitle">Create WireGuard Interface</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="iface-form">
+                    <div class="mb-3">
+                        <label for="iface-name" class="form-label">Interface Name</label>
+                        <input type="text" class="form-control" id="iface-name" placeholder="wg0" value="wg0" required
+                            maxlength="15">
+                        <small class="text-muted">e.g., wg0, wg1, vpn0</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="iface-address" class="form-label">IPv4 Address (CIDR)</label>
+                        <input type="text" class="form-control" id="iface-address" value="10.13.13.1/24" required>
+                        <small class="text-muted">Server VPN address – peers get IPs from this subnet
+                            automatically</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="iface-address6" class="form-label">IPv6 Address (optional)</label>
+                        <input type="text" class="form-control" id="iface-address6" value="fd13:13:13::1/64">
+                        <small class="text-muted">ULA prefix for dual-stack – leave empty to disable IPv6</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="iface-port" class="form-label">Listen Port</label>
+                        <input type="number" class="form-control" id="iface-port" value="51820" min="1" max="65535">
+                    </div>
+                    <div class="mb-3">
+                        <label for="iface-dns" class="form-label">DNS (optional)</label>
+                        <input type="text" class="form-control" id="iface-dns" placeholder="1.1.1.1, 8.8.8.8">
+                        <small class="text-muted">DNS servers for connected clients (leave empty to use peer
+                            defaults)</small>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="iface-submit-btn" onclick="submitInterfaceForm()">
+                    <span id="iface-spinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+                    <span id="iface-submit-label">Create Interface</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    const isAdmin = {{ 'true' if user['is_admin'] else 'false' }};
+    const USER_ID = {{ user['id'] | tojson }};
+
+    // XSS protection helper
+    function esc(str) {
+        const d = document.createElement('div');
+        d.textContent = str ?? '';
+        return d.innerHTML;
+    }
+
+    // FQDN/Domain detection helper (DRY)
+    function detectHostname() {
+        const hostname = window.location.hostname;
+        if (!hostname) return null;
+        // Strip brackets from IPv6 [::1] → ::1
+        return hostname.replace(/^\[|\]$/g, '');
+    }
+
+    // Tab state tracking for lazy loading
+    const tabLoaded = {
+        general: true,  // Always loaded on page load
+        wireguard: false,
+        letsencrypt: false,
+        dns: false
+    };
+
+    // Initialize tabs with URL hash support
+    function initTabs() {
+        const hash = window.location.hash.replace('#', '');
+        const validTabs = ['general', 'wireguard', 'letsencrypt', 'dns'];
+
+        if (hash && validTabs.includes(hash)) {
+            const tabBtn = document.getElementById(`${hash}-tab`);
+            if (tabBtn) {
+                const tab = new bootstrap.Tab(tabBtn);
+                tab.show();
+            }
+        }
+
+        // Listen for tab changes (use replaceState to avoid history pollution)
+        document.querySelectorAll('#settingsTabs button[data-bs-toggle="tab"]').forEach(tabBtn => {
+            tabBtn.addEventListener('shown.bs.tab', function (e) {
+                const tabId = e.target.id.replace('-tab', '');
+                history.replaceState(null, '', `#${tabId}`);
+                loadTabData(tabId);
+            });
+        });
+
+        // Load initial tab data
+        const activeTab = document.querySelector('#settingsTabs .nav-link.active');
+        if (activeTab) {
+            loadTabData(activeTab.id.replace('-tab', ''));
+        }
+    }
+
+    // Lazy load tab data
+    function loadTabData(tabId) {
+        if (tabLoaded[tabId]) return;
+
+        switch (tabId) {
+            case 'wireguard':
+                loadWgSettings();
+                refreshInterfaces();
+                tabLoaded.wireguard = true;
+                break;
+            case 'letsencrypt':
+                if (document.getElementById('certificates-list')) {
+                    refreshCertificates();
+                }
+                tabLoaded.letsencrypt = true;
+                break;
+            case 'dns':
+                if (document.getElementById('blocklist-sources')) {
+                    loadBlocklistSources();
+                }
+                bindDnsConfigListeners();
+                if (document.getElementById('dns-upstream-servers')) {
+                    loadDnsConfig();
+                }
+                tabLoaded.dns = true;
+                break;
+        }
+    }
+
+    // Initialize theme radio buttons
+    const currentTheme = localStorage.getItem('theme') || 'auto';
+    document.getElementById(`theme-${currentTheme}`)?.click();
+
+    // Theme change handler
+    document.querySelectorAll('input[name="theme"]').forEach(radio => {
+        radio.addEventListener('change', function () {
+            const theme = this.value === 'auto'
+                ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+                : this.value;
+            setTheme(theme);
+            localStorage.setItem('theme', this.value);
+        });
+    });
+
+    // WireGuard global settings
+    async function loadWgSettings() {
+        try {
+            const settings = await api('GET', '/api/wireguard/settings');
+            if (settings.wg_fqdn) document.getElementById('wg-fqdn').value = settings.wg_fqdn;
+            if (settings.wg_port) document.getElementById('wg-port').value = settings.wg_port;
+            if (settings.gui_port) document.getElementById('gui-port').value = settings.gui_port;
+            if (settings.wg_mtu) document.getElementById('wg-mtu').value = settings.wg_mtu;
+            if (settings.wg_persistent_keepalive) document.getElementById('wg-keepalive').value = settings.wg_persistent_keepalive;
+
+            // Localhost toggle
+            const localhostToggle = document.getElementById('gui-localhost-only');
+            if (localhostToggle) {
+                localhostToggle.checked = settings.gui_localhost_only === '1' || settings.gui_localhost_only === 'true';
+            }
+
+            // PSK toggle
+            const pskToggle = document.getElementById('wg-use-psk');
+            if (pskToggle) {
+                pskToggle.checked = settings.wg_use_psk === '1';
+                togglePskDetails(pskToggle.checked);
+                if (pskToggle.checked) await loadPsk();
+            }
+        } catch (error) {
+            console.warn('Failed to load WG settings:', error.message);
+        }
+    }
+
+    function togglePskDetails(show) {
+        const el = document.getElementById('psk-details');
+        if (el) el.classList.toggle('d-none', !show);
+    }
+
+    async function loadPsk() {
+        try {
+            const res = await api('GET', '/api/wireguard/settings/psk');
+            const display = document.getElementById('wg-psk-display');
+            if (display) {
+                const maskedValue = res.masked || res.data?.masked || '';
+                display.value = maskedValue;
+                display.type = 'password';
+            }
+        } catch (error) {
+            console.warn('Failed to load PSK:', error.message);
+        }
+    }
+
+    // WG settings auto-save with debouncing
+    let wgSettingsSaveTimeout = null;
+
+    async function saveWgSettings() {
+        const payload = {};
+        const fqdn = document.getElementById('wg-fqdn').value.trim();
+        const wgPort = document.getElementById('wg-port').value;
+        const guiPort = document.getElementById('gui-port').value;
+        const mtu = document.getElementById('wg-mtu').value;
+        const keepalive = document.getElementById('wg-keepalive').value;
+
+        if (fqdn) payload.wg_fqdn = fqdn;
+        if (wgPort) payload.wg_port = parseInt(wgPort);
+        if (guiPort) payload.gui_port = parseInt(guiPort);
+        if (mtu) payload.wg_mtu = parseInt(mtu);
+        if (keepalive) payload.wg_persistent_keepalive = parseInt(keepalive);
+
+        // Include localhost toggle state
+        const localhostToggle = document.getElementById('gui-localhost-only');
+        if (localhostToggle) payload.gui_localhost_only = localhostToggle.checked ? '1' : '0';
+
+        // Include PSK toggle state
+        const pskToggle = document.getElementById('wg-use-psk');
+        if (pskToggle) payload.wg_use_psk = pskToggle.checked ? '1' : '0';
+
+        // Guard against empty payload
+        if (Object.keys(payload).length === 0) {
+            return;
+        }
+
+        try {
+            await api('PUT', '/api/wireguard/settings', payload);
+            wbToast('Settings saved', 'success');
+        } catch (error) {
+            wbAlert('Failed to save settings: ' + error.message, 'danger');
+        }
+    }
+
+    // FQDN Auto-Detect
+    document.getElementById('btn-fqdn-detect')?.addEventListener('click', () => {
+        const detected = detectHostname();
+        if (!detected) {
+            wbToast('Could not detect hostname', 'warning');
+            return;
+        }
+        const input = document.getElementById('wg-fqdn');
+        input.value = detected;
+        input.dispatchEvent(new Event('input'));
+        wbToast(`Detected: ${detected}`, 'success');
+    });
+
+    // Certificate Domain Auto-Detect
+    document.getElementById('btn-cert-domain-detect')?.addEventListener('click', () => {
+        const detected = detectHostname();
+        if (!detected) {
+            wbToast('Could not detect hostname', 'warning');
+            return;
+        }
+        document.getElementById('cert-domain').value = detected;
+        wbToast(`Detected: ${detected}`, 'success');
+    });
+
+    function saveWgSettingsDebounced() {
+        clearTimeout(wgSettingsSaveTimeout);
+        wgSettingsSaveTimeout = setTimeout(saveWgSettings, 800);
+    }
+
+    // PSK toggle handler (with race condition protection)
+    const pskToggle = document.getElementById('wg-use-psk');
+    if (pskToggle) {
+        pskToggle.addEventListener('change', async function () {
+            this.disabled = true;
+            try {
+                togglePskDetails(this.checked);
+                if (this.checked) {
+                    const display = document.getElementById('wg-psk-display');
+                    if (!display.value) {
+                        try {
+                            const res = await api('POST', '/api/wireguard/settings/generate-psk');
+                            display.value = res.masked || res.data?.masked || '';
+                            display.type = 'password';
+                            wbToast('PresharedKey generated', 'success');
+                        } catch (err) {
+                            wbAlert('Failed to generate PSK: ' + err.message, 'danger');
+                            this.checked = false;
+                            togglePskDetails(false);
+                            return;
+                        }
+                    } else {
+                        await loadPsk();
+                    }
+                }
+                await saveWgSettings();
+            } finally {
+                this.disabled = false;
+            }
+        });
+    }
+
+    // PSK visibility toggle (loads actual key on reveal)
+    const pskVisBtn = document.getElementById('psk-toggle-visibility');
+    if (pskVisBtn) {
+        pskVisBtn.addEventListener('click', async function () {
+            const display = document.getElementById('wg-psk-display');
+            const icon = this.querySelector('.material-icons');
+            if (display.type === 'password') {
+                try {
+                    const res = await api('GET', '/api/wireguard/settings/psk?reveal=true');
+                    display.value = res.key || res.data?.key || display.value;
+                    display.type = 'text';
+                    icon.textContent = 'visibility_off';
+                } catch (e) {
+                    wbToast('Cannot reveal key', 'warning');
+                }
+            } else {
+                const res = await api('GET', '/api/wireguard/settings/psk');
+                display.value = res.masked || res.data?.masked || '';
+                display.type = 'password';
+                icon.textContent = 'visibility';
+            }
+        });
+    }
+
+    // PSK generate button
+    const pskGenBtn = document.getElementById('psk-generate-btn');
+    if (pskGenBtn) {
+        pskGenBtn.addEventListener('click', async function () {
+            if (!await wbConfirm(
+                'Generate a new PresharedKey? Existing client configurations will need to be re-downloaded.',
+                'warning'
+            )) return;
+
+            try {
+                const res = await api('POST', '/api/wireguard/settings/generate-psk');
+                const display = document.getElementById('wg-psk-display');
+                // API returns {status: "ok", data: {masked: "..."}, masked: "..."}
+                // After processing by api(), we get {masked: "...", status: "ok"}
+                const maskedValue = res.masked || res.data?.masked || '';
+                display.value = maskedValue;
+                display.type = 'password';
+                wbToast('New PresharedKey generated', 'success');
+            } catch (err) {
+                wbAlert('Failed to generate PSK: ' + err.message, 'danger');
+            }
+        });
+    }
+
+    // Add auto-save listeners to WG settings inputs
+    const wgFqdn = document.getElementById('wg-fqdn');
+    const wgPort = document.getElementById('wg-port');
+    const guiPort = document.getElementById('gui-port');
+    const guiLocalhostOnly = document.getElementById('gui-localhost-only');
+    const wgMtu = document.getElementById('wg-mtu');
+    const wgKeepalive = document.getElementById('wg-keepalive');
+
+    if (wgFqdn) wgFqdn.addEventListener('input', saveWgSettingsDebounced);
+    if (wgPort) wgPort.addEventListener('change', saveWgSettingsDebounced);
+    if (guiPort) guiPort.addEventListener('change', saveWgSettingsDebounced);
+    if (guiLocalhostOnly) guiLocalhostOnly.addEventListener('change', saveWgSettings);
+    if (wgMtu) wgMtu.addEventListener('change', saveWgSettingsDebounced);
+    if (wgKeepalive) wgKeepalive.addEventListener('change', saveWgSettingsDebounced);
+
+    // WireGuard interface management
+    let editingInterfaceName = null;
+    const interfaceDefaults = {
+        name: 'wg0',
+        address: '10.13.13.1/24',
+        address6: 'fd13:13:13::1/64',
+        listen_port: 51820,
+        dns: '',
+    };
+
+    function setInterfaceSubmitBusy(isBusy) {
+        const spinner = document.getElementById('iface-spinner');
+        const submitBtn = document.getElementById('iface-submit-btn');
+        if (spinner) spinner.classList.toggle('d-none', !isBusy);
+        if (submitBtn) submitBtn.disabled = isBusy;
+    }
+
+    function prepareCreateInterfaceModal() {
+        editingInterfaceName = null;
+
+        const title = document.getElementById('ifaceModalTitle');
+        const submitLabel = document.getElementById('iface-submit-label');
+        const nameInput = document.getElementById('iface-name');
+        const addressInput = document.getElementById('iface-address');
+        const address6Input = document.getElementById('iface-address6');
+        const portInput = document.getElementById('iface-port');
+        const dnsInput = document.getElementById('iface-dns');
+        const wbDnsToggle = document.getElementById('iface-use-wb-dns');
+        const form = document.getElementById('iface-form');
+
+        if (title) title.textContent = 'Create WireGuard Interface';
+        if (submitLabel) submitLabel.textContent = 'Create Interface';
+        if (form) form.reset();
+
+        if (nameInput) {
+            nameInput.value = interfaceDefaults.name;
+            nameInput.readOnly = false;
+        }
+        if (addressInput) addressInput.value = interfaceDefaults.address;
+        if (address6Input) address6Input.value = interfaceDefaults.address6;
+        if (portInput) portInput.value = String(interfaceDefaults.listen_port);
+        if (dnsInput) {
+            dnsInput.value = interfaceDefaults.dns;
+            dnsInput.readOnly = false;
+        }
+        if (wbDnsToggle) wbDnsToggle.checked = false;
+    }
+
+    async function refreshInterfaces() {
+        try {
+            const res = await api('GET', '/api/wireguard/interfaces');
+            let html = '';
+            for (const iface of res.interfaces) {
+                const safeName = esc(iface.name);
+                const dataName = esc(iface.name).replace(/"/g, '&quot;');
+                const statusBadge = iface.is_active
+                    ? '<span class="badge bg-success">Active</span>'
+                    : '<span class="badge bg-secondary">Inactive</span>';
+                const actionBtn = iface.is_active
+                    ? `<button class="btn btn-sm btn-outline-danger iface-action-btn" data-iface="${dataName}" data-action="down" title="Stop"><span class="material-icons" style="font-size: 18px;">stop</span></button>`
+                    : `<button class="btn btn-sm btn-outline-success iface-action-btn" data-iface="${dataName}" data-action="up" title="Start"><span class="material-icons" style="font-size: 18px;">play_arrow</span></button>`;
+                const editBtn = (isAdmin && iface.is_configured)
+                    ? `<button class="btn btn-sm btn-outline-primary iface-edit-btn" data-iface="${dataName}" title="Edit"><span class="material-icons" style="font-size: 18px;">edit</span></button>`
+                    : '';
+                const deleteBtn = (isAdmin && !iface.is_active)
+                    ? `<button class="btn btn-sm btn-outline-danger iface-delete-btn" data-iface="${dataName}" title="Delete"><span class="material-icons" style="font-size: 18px;">delete</span></button>`
+                    : '';
+
+                html += `
+                    <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+                        <div>
+                            <strong>${safeName}</strong>
+                            ${statusBadge}
+                        </div>
+                        <div class="d-flex gap-2">${actionBtn}${editBtn}${deleteBtn}</div>
+                    </div>`;
+            }
+            if (!html) {
+                html = isAdmin
+                    ? '<p class="text-muted mb-0">No WireGuard interfaces. Click <strong>+</strong> to create one.</p>'
+                    : '<p class="text-muted mb-0">No WireGuard interfaces configured.</p>';
+            }
+            const listEl = document.getElementById('interfaces-list');
+            listEl.innerHTML = html;
+
+            // Event delegation for interface buttons
+            listEl.removeEventListener('click', handleInterfaceClick);
+            listEl.addEventListener('click', handleInterfaceClick);
+        } catch (error) {
+            document.getElementById('interfaces-list').innerHTML = `<p class="text-danger mb-0">Failed to load interfaces: ${esc(error.message)}</p>`;
+        }
+    }
+
+    async function handleInterfaceClick(e) {
+        const actionBtn = e.target.closest('.iface-action-btn');
+        const editBtn = e.target.closest('.iface-edit-btn');
+        const deleteBtn = e.target.closest('.iface-delete-btn');
+
+        if (actionBtn) {
+            const name = actionBtn.dataset.iface;
+            const action = actionBtn.dataset.action;
+            await toggleInterface(name, action);
+        } else if (editBtn) {
+            const name = editBtn.dataset.iface;
+            await editInterface(name);
+        } else if (deleteBtn) {
+            const name = deleteBtn.dataset.iface;
+            await deleteInterface(name);
+        }
+    }
+
+    async function toggleInterface(name, action) {
+        try {
+            await api('POST', `/api/wireguard/interfaces/${encodeURIComponent(name)}/${action}`);
+            await refreshInterfaces();
+        } catch (e) {
+            wbAlert(`Failed to ${action} interface: ` + e.message, 'danger');
+        }
+    }
+
+    async function createInterface() {
+        const name = document.getElementById('iface-name').value.trim();
+        const address = document.getElementById('iface-address').value.trim();
+        const address6 = document.getElementById('iface-address6').value.trim() || null;
+        const port = document.getElementById('iface-port').value || 51820;
+        const dns = document.getElementById('iface-dns').value.trim() || null;
+
+        if (!name || !address) {
+            wbAlert('Please fill in name and address', 'warning');
+            return;
+        }
+
+        // Validate interface name (1-15 alphanumeric chars, _, -)
+        if (!/^[a-zA-Z0-9_-]{1,15}$/.test(name)) {
+            wbAlert('Interface name must be 1–15 alphanumeric characters (a-z, 0-9, _, -)', 'warning');
+            return;
+        }
+
+        // Validate CIDR notation
+        if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(address)) {
+            wbAlert('IPv4 address must be in CIDR format (e.g. 10.13.13.1/24)', 'warning');
+            return;
+        }
+
+        setInterfaceSubmitBusy(true);
+        try {
+            await api('POST', '/api/wireguard/interfaces', {
+                name: name,
+                address: address,
+                address6: address6,
+                listen_port: parseInt(port),
+                dns: dns
+            });
+
+            bootstrap.Modal.getInstance(document.getElementById('ifaceModal')).hide();
+            prepareCreateInterfaceModal();
+
+            wbToast(`Interface '${name}' created successfully!`, 'success');
+            await refreshInterfaces();
+        } catch (error) {
+            wbAlert('Failed to create interface: ' + error.message, 'danger');
+        } finally {
+            setInterfaceSubmitBusy(false);
+        }
+    }
+
+    async function editInterface(name) {
+        try {
+            const res = await api('GET', `/api/wireguard/interfaces/${encodeURIComponent(name)}/config`);
+            const iface = res?.data || res;
+            editingInterfaceName = iface.name || name;
+
+            document.getElementById('ifaceModalTitle').textContent = `Edit Interface ${editingInterfaceName}`;
+            document.getElementById('iface-submit-label').textContent = 'Save Changes';
+
+            const nameInput = document.getElementById('iface-name');
+            nameInput.value = editingInterfaceName;
+            nameInput.readOnly = true;
+
+            document.getElementById('iface-address').value = iface.address || '';
+            document.getElementById('iface-address6').value = iface.address6 || '';
+            document.getElementById('iface-port').value = String(iface.listen_port || 51820);
+            document.getElementById('iface-dns').value = iface.dns || '';
+
+            // Optional WireBuddy DNS toggle (may not exist in all versions)
+            const serverIp = (iface.address || '').split('/')[0];
+            const wbDnsToggle = document.getElementById('iface-use-wb-dns');
+            const dnsInput = document.getElementById('iface-dns');
+            const isWireBuddyDns = Boolean(iface.dns) && iface.dns === serverIp;
+            if (wbDnsToggle) wbDnsToggle.checked = isWireBuddyDns;
+            if (dnsInput) dnsInput.readOnly = isWireBuddyDns;
+
+            const modalEl = document.getElementById('ifaceModal');
+            const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+            modal.show();
+        } catch (error) {
+            wbAlert('Failed to load interface config: ' + error.message, 'danger');
+        }
+    }
+
+    async function updateInterface() {
+        if (!editingInterfaceName) return;
+
+        const address = document.getElementById('iface-address').value.trim();
+        const address6 = document.getElementById('iface-address6').value.trim() || null;
+        const port = document.getElementById('iface-port').value || 51820;
+        const dns = document.getElementById('iface-dns').value.trim() || null;
+
+        if (!address) {
+            wbAlert('Please fill in an IPv4 address', 'warning');
+            return;
+        }
+
+        setInterfaceSubmitBusy(true);
+        try {
+            const res = await api('PUT', `/api/wireguard/interfaces/${encodeURIComponent(editingInterfaceName)}`, {
+                address: address,
+                address6: address6,
+                listen_port: parseInt(port),
+                dns: dns
+            });
+            const payload = res?.data || res;
+
+            bootstrap.Modal.getInstance(document.getElementById('ifaceModal')).hide();
+            prepareCreateInterfaceModal();
+
+            wbToast(`Interface '${editingInterfaceName}' updated`, 'success');
+            if (payload?.restart_required) {
+                wbToast(`Interface '${editingInterfaceName}' is active. Restart to fully apply changes.`, 'warning');
+            }
+            await refreshInterfaces();
+        } catch (error) {
+            wbAlert('Failed to update interface: ' + error.message, 'danger');
+        } finally {
+            setInterfaceSubmitBusy(false);
+        }
+    }
+
+    async function submitInterfaceForm() {
+        if (editingInterfaceName) {
+            await updateInterface();
+            return;
+        }
+        await createInterface();
+    }
+
+    async function deleteInterface(name) {
+        if (!await wbConfirm(`Delete interface '${name}'? This will remove the configuration file.`, 'danger')) return;
+
+        try {
+            await api('DELETE', `/api/wireguard/interfaces/${encodeURIComponent(name)}`);
+            wbToast(`Interface '${name}' deleted`, 'success');
+            await refreshInterfaces();
+        } catch (error) {
+            wbAlert('Failed to delete interface: ' + error.message, 'danger');
+        }
+    }
+
+    document.getElementById('ifaceModal')?.addEventListener('hidden.bs.modal', function () {
+        setInterfaceSubmitBusy(false);
+        prepareCreateInterfaceModal();
+    });
+
+    // Interfaces are loaded by tab system (initTabs)
+
+    // SSL/TLS Certificate management
+    async function refreshCertificates() {
+        try {
+            const certs = await api('GET', '/api/acme/certificates');
+            let html = '';
+
+            for (const cert of certs) {
+                const safeDomain = esc(cert.domain);
+                const dataDomain = esc(cert.domain).replace(/"/g, '&quot;');
+                const staging = !!cert.is_staging;
+                const stagingBadge = staging ? '<span class="badge bg-warning text-dark ms-1">Staging</span>' : '';
+                const isExpired = cert.days_until_expiry !== null && cert.days_until_expiry < 0;
+                const needsRenewal = cert.needs_renewal && !isExpired;
+
+                let statusBadge = '<span class="badge bg-success">Valid</span>';
+                if (isExpired) {
+                    statusBadge = '<span class="badge bg-danger">Expired</span>';
+                } else if (needsRenewal) {
+                    statusBadge = '<span class="badge bg-warning text-dark">Renew</span>';
+                }
+
+                const expiresDate = cert.expires_at ? new Date(cert.expires_at) : null;
+                const expiresStr = expiresDate ? expiresDate.toLocaleDateString() : 'Unknown';
+                const daysStr = cert.days_until_expiry !== null ? ` (${cert.days_until_expiry}d)` : '';
+
+                html += `
+                    <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+                        <div>
+                            <strong>${safeDomain}</strong>
+                            ${statusBadge}${stagingBadge}
+                            <br><small class="text-muted">Expires: ${expiresStr}${daysStr} • Issuer: ${esc(cert.issuer || 'Unknown')}</small>
+                        </div>
+                        <div class="d-flex gap-1">
+                            ${needsRenewal ? `<button class="btn btn-sm btn-outline-warning cert-renew-btn" data-domain="${dataDomain}" data-staging="${staging}" title="Renew"><span class="material-icons" style="font-size: 18px;">refresh</span></button>` : ''}
+                            <button class="btn btn-sm btn-outline-danger cert-delete-btn" data-domain="${dataDomain}" data-staging="${staging}" title="Delete">
+                                <span class="material-icons" style="font-size: 18px;">delete</span>
+                            </button>
+                        </div>
+                    </div>`;
+            }
+
+            if (!html) {
+                html = '<p class="text-muted mb-0">No certificates found. Click + to request one.</p>';
+            }
+
+            const listEl = document.getElementById('certificates-list');
+            listEl.innerHTML = html;
+
+            // Event delegation for certificate buttons
+            listEl.removeEventListener('click', handleCertificateClick);
+            listEl.addEventListener('click', handleCertificateClick);
+        } catch (error) {
+            document.getElementById('certificates-list').innerHTML = `<p class="text-danger mb-0">Failed to load certificates: ${esc(error.message)}</p>`;
+        }
+    }
+
+    async function handleCertificateClick(e) {
+        const renewBtn = e.target.closest('.cert-renew-btn');
+        const deleteBtn = e.target.closest('.cert-delete-btn');
+
+        if (renewBtn) {
+            const domain = renewBtn.dataset.domain;
+            const staging = renewBtn.dataset.staging === 'true';
+            await renewCertificate(domain, staging);
+        } else if (deleteBtn) {
+            const domain = deleteBtn.dataset.domain;
+            const staging = deleteBtn.dataset.staging === 'true';
+            await deleteCertificate(domain, staging);
+        }
+    }
+
+    async function requestCertificate() {
+        const domain = document.getElementById('cert-domain').value.trim();
+        const email = document.getElementById('cert-email').value.trim();
+        const staging = document.getElementById('cert-staging').checked;
+
+        if (!domain || !email) {
+            wbAlert('Please fill in all fields', 'warning');
+            return;
+        }
+
+        const spinner = document.getElementById('cert-spinner');
+        spinner.classList.remove('d-none');
+
+        try {
+            await api('POST', '/api/acme/certificates/request', {
+                domain: domain,
+                email: email,
+                staging: staging
+            });
+
+            bootstrap.Modal.getInstance(document.getElementById('certModal')).hide();
+            document.getElementById('cert-form').reset();
+            wbToast('Certificate issued successfully!', 'success');
+            await refreshCertificates();
+        } catch (error) {
+            wbAlert('Failed to request certificate: ' + error.message, 'danger');
+        } finally {
+            spinner.classList.add('d-none');
+        }
+    }
+
+    async function deleteCertificate(domain, isStaging) {
+        if (!await wbConfirm(`Delete certificate for ${domain}?`, 'danger')) return;
+
+        try {
+            await api('DELETE', `/api/acme/certificates/${encodeURIComponent(domain)}?staging=${isStaging}`);
+            wbToast('Certificate deleted', 'success');
+            await refreshCertificates();
+        } catch (error) {
+            wbAlert('Failed to delete certificate: ' + error.message, 'danger');
+        }
+    }
+
+    async function renewCertificate(domain, isStaging) {
+        const email = await wbPrompt(`Enter email for renewal of ${domain}:`, 'admin@example.com');
+        if (!email) return;
+
+        try {
+            wbToast('Requesting certificate renewal...', 'info');
+            await api('POST', '/api/acme/certificates/request', {
+                domain: domain,
+                email: email,
+                staging: isStaging
+            });
+            wbToast('Certificate renewed successfully!', 'success');
+            await refreshCertificates();
+        } catch (error) {
+            wbAlert('Failed to renew certificate: ' + error.message, 'danger');
+        }
+    }
+
+    // DNS Blocklist management
+    let blocklistSaveTimeout = null;
+    let dnsConfigLoaded = false;
+    let dnsConfigLastRetention = 30;
+    let dnsConfigHydrating = false;
+    let dnsConfigSaveTimeout = null;
+    let dnsConfigListenersBound = false;
+    const DNS_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
+
+    async function loadBlocklistSources() {
+        try {
+            const [res, status] = await Promise.all([
+                api('GET', '/api/dns/blocklist/sources'),
+                api('GET', '/api/dns/status'),
+            ]);
+            let html = '';
+            for (const source of res.sources) {
+                const checked = source.enabled ? 'checked' : '';
+                const enabledClass = source.enabled ? ' enabled' : '';
+                const domainsValue = source.domains;
+                const domains = Number.isFinite(Number(domainsValue))
+                    ? Number(domainsValue).toLocaleString()
+                    : (String(domainsValue ?? '').trim() || '—');
+                const size = source.size || '—';
+                const updated = source.last_updated || '—';
+                const sourceId = `blocklist-${btoa(source.url).replace(/=+$/g, '')}`;
+                const dataUrl = esc(source.url).replace(/"/g, '&quot;');
+                html += `
+                    <article class="blocklist-hero-card${enabledClass}">
+                        <div class="d-flex justify-content-between align-items-start gap-3">
+                            <div class="flex-grow-1">
+                                <label class="blocklist-hero-title" for="${sourceId}" style="cursor: pointer;">${esc(source.name)}</label>
+                                <p class="blocklist-hero-desc mt-1">${esc(source.description)}</p>
+                            </div>
+                            <div class="form-check form-switch m-0">
+                                <input class="form-check-input" type="checkbox" id="${sourceId}"
+                                    data-url="${dataUrl}" ${checked}
+                                    onchange="toggleBlocklistCardState(this); saveBlocklistsDebounced()">
+                            </div>
+                        </div>
+                        <div class="blocklist-hero-meta">
+                            <span class="badge text-bg-secondary">Domains ${domains}</span>
+                            <span class="badge text-bg-secondary">Size ${size}</span>
+                            <span class="badge text-bg-secondary">Updated ${updated}</span>
+                        </div>
+                        <div class="blocklist-hero-url"><code>${esc(source.url)}</code></div>
+                    </article>`;
+            }
+            document.getElementById('blocklist-sources').innerHTML =
+                html || '<div class="text-muted text-center py-3">No blocklist sources available</div>';
+            const updEl = document.getElementById('blocklist-last-update');
+            const updValueEl = updEl?.querySelector('.blocklist-last-value');
+            if (updEl) {
+                if (status?.blocklist_updated_at) {
+                    const d = new Date(status.blocklist_updated_at);
+                    if (updValueEl) updValueEl.textContent = d.toLocaleString();
+                } else {
+                    if (updValueEl) updValueEl.textContent = '–';
+                }
+            }
+        } catch (error) {
+            document.getElementById('blocklist-sources').innerHTML =
+                `<div class="text-danger py-2">Failed to load blocklists: ${error.message}</div>`;
+            const updEl = document.getElementById('blocklist-last-update');
+            const updValueEl = updEl?.querySelector('.blocklist-last-value');
+            if (updValueEl) updValueEl.textContent = '–';
+        }
+    }
+
+    function toggleBlocklistCardState(checkboxEl) {
+        const card = checkboxEl?.closest('.blocklist-hero-card');
+        if (!card) return;
+        card.classList.toggle('enabled', !!checkboxEl.checked);
+    }
+
+    function saveBlocklistsDebounced() {
+        // Debounce to avoid spamming when clicking multiple checkboxes quickly
+        clearTimeout(blocklistSaveTimeout);
+        blocklistSaveTimeout = setTimeout(saveBlocklists, 500);
+    }
+
+    async function saveBlocklists() {
+        const checkboxes = document.querySelectorAll('#blocklist-sources input[type="checkbox"]');
+        const enabledUrls = Array.from(checkboxes)
+            .filter(cb => cb.checked)
+            .map(cb => cb.dataset.url);
+
+        try {
+            const res = await api('POST', '/api/dns/blocklist/sources', {
+                urls: enabledUrls,
+            });
+            const count = res?.domains_blocked;
+            const msg = count !== undefined
+                ? `Blocklist updated (${count.toLocaleString()} domains)`
+                : 'Blocklist selection saved';
+            wbToast(msg, 'success');
+            // Refresh to show updated domain count
+            loadBlocklistSources();
+        } catch (error) {
+            wbAlert('Failed to save blocklists: ' + error.message, 'danger');
+        }
+    }
+
+    async function updateBlocklist() {
+        if (!await wbConfirm('Download and update blocklists? This may take a moment.')) return;
+        try {
+            const res = await api('POST', '/api/dns/blocklist/update');
+            wbToast(res?.message || 'Blocklists updated', 'success');
+            loadBlocklistSources();
+        } catch (e) {
+            wbAlert('Update failed: ' + e.message, 'danger');
+        }
+    }
+
+    function dnsRetentionLabel(days) {
+        const n = Number(days);
+        if (n === 0) return 'No Logs';
+        if (n === 365) return '1 Year';
+        return `${n} Days`;
+    }
+
+    function dnsRetentionIndexForDays(days) {
+        const idx = DNS_RETENTION_VALUES.indexOf(Number(days));
+        return idx >= 0 ? idx : 2; // default: 30 days
+    }
+
+    function dnsRetentionDaysFromSlider(rawValue) {
+        const parsed = Number.parseInt(String(rawValue), 10);
+        const idx = Number.isFinite(parsed)
+            ? Math.max(0, Math.min(DNS_RETENTION_VALUES.length - 1, parsed))
+            : 2;
+        return DNS_RETENTION_VALUES[idx];
+    }
+
+    function updateDnsRetentionPreview(rawValue) {
+        const days = dnsRetentionDaysFromSlider(rawValue);
+        const labelEl = document.getElementById('dns-retention-value');
+        if (labelEl) labelEl.textContent = dnsRetentionLabel(days);
+        return days;
+    }
+
+    function getSelectedDnsRetention() {
+        const slider = document.getElementById('dns-retention-slider');
+        return dnsRetentionDaysFromSlider(slider?.value ?? 2);
+    }
+
+    function parseDnsUpstreamInput(raw) {
+        return (raw || '')
+            .split(/[,\n]+/)
+            .map(v => v.trim())
+            .filter(Boolean);
+    }
+
+    function setDnssecStatusText(data) {
+        const dnssecStatus = document.getElementById('dnssec-status');
+        if (!dnssecStatus) return;
+        if (data?.dnssec_available) {
+            dnssecStatus.textContent = data?.dnssec_active
+                ? 'DNSSEC active (root key available)'
+                : 'DNSSEC disabled (root key available)';
+        } else {
+            dnssecStatus.textContent = data?.dnssec_enabled
+                ? 'DNSSEC configured but unavailable (root key missing on system)'
+                : 'DNSSEC unavailable (root key missing on system)';
+        }
+    }
+
+    function bindDnsConfigListeners() {
+        if (dnsConfigListenersBound) return;
+        const slider = document.getElementById('dns-retention-slider');
+        const upstreamInput = document.getElementById('dns-upstream-servers');
+        const dnssecToggle = document.getElementById('dnssec-enabled');
+        if (!slider || !upstreamInput || !dnssecToggle) return;
+
+        slider.addEventListener('input', function () {
+            updateDnsRetentionPreview(this.value);
+        });
+        slider.addEventListener('change', async function () {
+            if (dnsConfigHydrating) return;
+            await saveDnsConfig();
+        });
+        upstreamInput.addEventListener('change', function () {
+            if (dnsConfigHydrating) return;
+            saveDnsConfigDebounced();
+        });
+        dnssecToggle.addEventListener('change', async function () {
+            if (dnsConfigHydrating) return;
+            await saveDnsConfig();
+        });
+        dnsConfigListenersBound = true;
+    }
+
+    function saveDnsConfigDebounced() {
+        clearTimeout(dnsConfigSaveTimeout);
+        dnsConfigSaveTimeout = setTimeout(() => {
+            saveDnsConfig();
+        }, 500);
+    }
+
+    async function loadDnsConfig() {
+        try {
+            dnsConfigHydrating = true;
+            const res = await api('GET', '/api/dns/config');
+            const upstream = Array.isArray(res.upstream_dns) ? res.upstream_dns : [];
+            const upstreamInput = document.getElementById('dns-upstream-servers');
+            if (upstreamInput) upstreamInput.value = upstream.join('\n');
+
+            const retention = Number.isFinite(Number(res.log_retention_days))
+                ? Number(res.log_retention_days)
+                : 30;
+            dnsConfigLastRetention = retention;
+            const retentionSlider = document.getElementById('dns-retention-slider');
+            if (retentionSlider) {
+                retentionSlider.value = String(dnsRetentionIndexForDays(retention));
+                updateDnsRetentionPreview(retentionSlider.value);
+            }
+
+            const dnssecToggle = document.getElementById('dnssec-enabled');
+            if (dnssecToggle) {
+                dnssecToggle.checked = !!res.dnssec_active;
+                dnssecToggle.disabled = !res.dnssec_available;
+            }
+            setDnssecStatusText(res);
+
+            dnsConfigLoaded = true;
+        } catch (error) {
+            const dnssecStatus = document.getElementById('dnssec-status');
+            if (dnssecStatus) dnssecStatus.textContent = 'Failed to load DNS settings';
+        } finally {
+            dnsConfigHydrating = false;
+        }
+    }
+
+    async function saveDnsConfig() {
+        if (dnsConfigHydrating) return;
+        if (!dnsConfigLoaded) {
+            await loadDnsConfig();
+            if (!dnsConfigLoaded) return;
+        }
+
+        const retention = getSelectedDnsRetention();
+        if (retention === 0 && dnsConfigLastRetention !== 0) {
+            const ok = await wbConfirm(
+                '"No Logs" disables DNS logging and deletes existing DNS TSDB data. Continue?',
+                'warning'
+            );
+            if (!ok) {
+                dnsConfigHydrating = true;
+                const retentionSlider = document.getElementById('dns-retention-slider');
+                if (retentionSlider) {
+                    retentionSlider.value = String(dnsRetentionIndexForDays(dnsConfigLastRetention));
+                    updateDnsRetentionPreview(retentionSlider.value);
+                }
+                dnsConfigHydrating = false;
+                return;
+            }
+        }
+
+        const upstreamInput = document.getElementById('dns-upstream-servers');
+        const dnssecToggle = document.getElementById('dnssec-enabled');
+        const payload = {
+            upstream_dns: parseDnsUpstreamInput(upstreamInput?.value || ''),
+            dnssec_enabled: !!dnssecToggle?.checked,
+            log_retention_days: retention,
+        };
+
+        try {
+            const res = await api('POST', '/api/dns/config', payload);
+            dnsConfigLastRetention = Number(res?.log_retention_days || retention);
+
+            // Use existing dnssecToggle reference (no shadowing)
+            if (dnssecToggle) {
+                dnssecToggle.checked = !!res?.dnssec_active;
+                dnssecToggle.disabled = !res?.dnssec_available;
+            }
+            setDnssecStatusText(res);
+
+            const retentionSlider = document.getElementById('dns-retention-slider');
+            if (retentionSlider) {
+                retentionSlider.value = String(dnsRetentionIndexForDays(dnsConfigLastRetention));
+                updateDnsRetentionPreview(retentionSlider.value);
+            }
+
+            const deleted = Number(res?.retention?.deleted_files || 0);
+            if (deleted > 0) {
+                wbToast(`DNS settings saved (${deleted} TSDB files deleted)`, 'success');
+            } else {
+                wbToast('DNS settings saved', 'success');
+            }
+        } catch (error) {
+            wbAlert('Failed to save DNS settings: ' + error.message, 'danger');
+        }
+    }
+
+    // Load blocklists (called by tab system)
+    // Removed automatic loading - now handled by initTabs()
+
+    // Password change form
+    document.getElementById('profile-form').addEventListener('submit', async function (e) {
+        e.preventDefault();
+
+        const currentPassword = document.getElementById('current-password').value;
+        const newPassword = document.getElementById('new-password').value;
+        const confirmPassword = document.getElementById('confirm-password').value;
+
+        if (newPassword !== confirmPassword) {
+            wbAlert('Passwords do not match', 'warning');
+            return;
+        }
+
+        try {
+            await api('POST', `/api/users/${encodeURIComponent(USER_ID)}/change-password`, {
+                current_password: currentPassword,
+                new_password: newPassword,
+            });
+
+            await wbAlert('Password changed successfully. Please log in again.', 'success');
+            logout();
+        } catch (error) {
+            wbAlert('Failed to change password: ' + error.message, 'danger');
+        }
+    });
+
+    /* ── TSDB Stats ────────────────────────────────────────── */
+    function formatBytes(size) {
+        const n = Number(size) || 0;
+        if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(2) + ' MB';
+        if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+        return n + ' B';
+    }
+
+    async function loadTsdbStats() {
+        try {
+            const stats = await api('GET', '/api/wireguard/stats/tsdb');
+
+            const size = stats.size_bytes || 0;
+            const compressedSize = stats.compressed_size_bytes || 0;
+            const archiveCount = stats.archive_count || 0;
+
+            document.getElementById('tsdb-size').textContent = formatBytes(size);
+            document.getElementById('tsdb-peers').textContent = stats.peer_count || 0;
+            document.getElementById('tsdb-files').textContent = stats.file_count || 0;
+            document.getElementById('tsdb-archives').textContent =
+                `${archiveCount} (${formatBytes(compressedSize)})`;
+
+            // Format created date
+            if (stats.created_at) {
+                const d = new Date(stats.created_at);
+                document.getElementById('tsdb-created').textContent = d.toLocaleDateString();
+            } else {
+                document.getElementById('tsdb-created').textContent = '–';
+            }
+        } catch (e) {
+            console.error('Failed to load TSDB stats:', e);
+        }
+    }
+
+    async function resetTsdb() {
+        if (!await wbConfirm('Delete all traffic metrics data? This cannot be undone.', 'danger')) return;
+
+        try {
+            const res = await api('DELETE', '/api/wireguard/stats/tsdb');
+            wbToast(res.message || 'Metrics reset', 'success');
+            loadTsdbStats();
+        } catch (e) {
+            wbAlert('Failed to reset metrics: ' + e.message, 'danger');
+        }
+    }
+
+    // Initialize tabs on page load
+    initTabs();
+    loadTsdbStats();
+</script>
+{% endblock %}

@@ -1,0 +1,178 @@
+name: Docker Multi-Arch Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:  # Manual trigger (won't tag as :latest)
+
+# Minimal permissions - only what's needed
+permissions:
+  contents: write  # Required for creating releases
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60  # Realistic timeout; raise if arm64 consistently exceeds
+
+    steps:
+      # SHA-pinned actions for supply chain security
+      - name: Checkout repository
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Generate BUILD_INFO
+        run: git rev-parse HEAD > BUILD_INFO
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Validate and set build metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          
+          # Validate VERSION file exists
+          if [ ! -f VERSION ]; then
+            echo "ERROR: VERSION file not found"
+            exit 1
+          fi
+          
+          VERSION="$(cat VERSION | tr -d '[:space:]')"
+          
+          # Validate version format (semver with optional suffix)
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "ERROR: Invalid version format: '$VERSION' (expected: X.Y.Z or X.Y.Z-suffix)"
+            exit 1
+          fi
+          
+          BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          TAG="v${VERSION}"
+          
+          echo "build_date=${BUILD_DATE}" >> "$GITHUB_OUTPUT"
+          echo "app_version=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build for local smoke test (amd64 only)
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --target runtime \
+            --load \
+            --build-arg "APP_VERSION=${{ steps.meta.outputs.app_version }}" \
+            --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
+            --build-arg "VCS_REF=${{ github.sha }}" \
+            -t wirebuddy:test \
+            .
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          
+          # Start container in background (no --rm so we can inspect logs on failure)
+          docker run -d --name wirebuddy-test \
+            -p 8000:8000 \
+            -e WIREBUDDY_SECRET_KEY="ci-smoke-test-key-not-for-production" \
+            wirebuddy:test
+          
+          # Wait for startup and check if container is still running
+          echo "Waiting for container to start..."
+          sleep 15
+          
+          # Check if container is still running
+          if ! docker ps -q -f name=wirebuddy-test | grep -q .; then
+            echo "✗ Container exited during startup"
+            echo "=== Container logs ==="
+            docker logs wirebuddy-test 2>&1 || echo "Could not retrieve logs"
+            docker rm -f wirebuddy-test 2>/dev/null || true
+            exit 1
+          fi
+          
+          # Health check (matches Dockerfile HEALTHCHECK endpoint)
+          if curl -fsS --retry 3 --retry-delay 2 http://localhost:8000/api/docs; then
+            echo "✓ Health check passed"
+            docker stop wirebuddy-test
+            docker rm wirebuddy-test
+          else
+            echo "✗ Health check failed"
+            echo "=== Container logs ==="
+            docker logs wirebuddy-test 2>&1 || echo "Could not retrieve logs"
+            echo "=== Container status ==="
+            docker ps -a -f name=wirebuddy-test
+            docker stop wirebuddy-test 2>/dev/null || true
+            docker rm -f wirebuddy-test 2>/dev/null || true
+            exit 1
+          fi
+
+      - name: Build & push multi-arch image (amd64 + arm64)
+        run: |
+          set -euo pipefail
+          
+          # Base tag (always applied)
+          TAGS="-t ${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy:${{ steps.meta.outputs.tag }}"
+          
+          # Only tag :latest on actual tag pushes (not workflow_dispatch)
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAGS="${TAGS} -t ${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy:latest"
+            echo "Building release: tagging as :latest"
+          else
+            echo "Manual build: NOT tagging as :latest"
+          fi
+          
+          # Build and push
+          # Note: --network=host removed for security (build doesn't need host network access)
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --target runtime \
+            --cache-from type=gha \
+            --cache-from type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy:buildcache \
+            --cache-to type=gha,mode=max \
+            --build-arg "APP_VERSION=${{ steps.meta.outputs.app_version }}" \
+            --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
+            --build-arg "VCS_REF=${{ github.sha }}" \
+            ${TAGS} \
+            --push \
+            .
+
+      - name: Generate Release Notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.meta.outputs.version }}"
+          
+          # Escape version for regex (handle dots, plus signs, etc.)
+          VERSION_ESCAPED=$(echo "$VERSION" | sed 's/[.+*?^${}()|[\]\\]/\\&/g')
+          
+          awk -v ver="${VERSION_ESCAPED}" '
+            BEGIN { found=0 }
+            $0 ~ "^## \\[" ver "\\]" { found=1 }
+            found {
+              if ($0 ~ "^## \\[" && $0 !~ "^## \\[" ver "\\]") exit
+              if ($0 ~ "^<details") exit
+              print
+            }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          
+          # Fallback if no changelog entry found
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "Release v${VERSION}" > RELEASE_NOTES.md
+            echo "" >> RELEASE_NOTES.md
+            echo "No changelog entry found for this version." >> RELEASE_NOTES.md
+          fi
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@9d7c94cfd0a1f3ed45544c887983e9fa900f0564 # v2.0.4
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

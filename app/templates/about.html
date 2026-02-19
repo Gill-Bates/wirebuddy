@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+
+{% block title %}About – WireBuddy{% endblock %}
+
+{% block content %}
+<div class="ui-page about-page">
+    <div class="d-flex justify-content-between align-items-center mb-3 flex-shrink-0">
+        <h1 class="h3 mb-0"><span class="material-icons me-2">info</span>About</h1>
+    </div>
+
+    <div class="row g-3 about-cards-row">
+        <!-- Card 1: Application Details -->
+        <div class="col-lg-4 d-flex">
+            <div class="card flex-grow-1 d-flex flex-column card-fill">
+                <div class="card-header d-flex align-items-center">
+                    <span class="material-icons me-2">code</span>
+                    <span class="fw-semibold">Application Details</span>
+                </div>
+                <div class="card-body flex-grow-1 flex-scroll">
+                    <!-- Version & Build -->
+                    <div class="mb-4">
+                        <h6 class="text-muted mb-2">Version Information</h6>
+                        <table class="table table-sm table-borderless mb-0">
+                            <tbody>
+                                <tr>
+                                    <td class="ps-0" style="width: 100px;"><strong>Version</strong></td>
+                                    <td><code>{{ version }}</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="ps-0"><strong>Build</strong></td>
+                                    <td><code>{{ build_info[:7] if build_info != 'dev' else 'dev' }}</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="ps-0"><strong>Python</strong></td>
+                                    <td><code>{{ python_version }}</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="ps-0"><strong>WireGuard</strong></td>
+                                    <td><code>{{ wireguard_version }}</code></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Dependencies -->
+                    <div class="mb-4">
+                        <h6 class="text-muted mb-2">Dependencies</h6>
+                        <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                            <table class="table table-sm table-hover mb-0 dependencies-table">
+                                <thead class="sticky-top">
+                                    <tr>
+                                        <th>Package</th>
+                                        <th>Version</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for pkg, ver in dependencies %}
+                                    <tr>
+                                        <td><code>{{ pkg }}</code></td>
+                                        <td><span class="badge bg-secondary">{{ ver }}</span></td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Author -->
+                    <div>
+                        <h6 class="text-muted mb-2">Author</h6>
+                        <div class="d-flex align-items-center">
+                            <span class="material-icons me-2 text-primary">person</span>
+                            <div>
+                                <strong>Gill-Bates</strong>
+                                <br>
+                                <a href="https://github.com/Gill-Bates/wirebuddy" target="_blank" rel="noopener"
+                                    class="text-decoration-none small">
+                                    https://github.com/Gill-Bates/wirebuddy
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Card 2: Changelog -->
+        <div class="col-lg-4 d-flex">
+            <div class="card flex-grow-1 d-flex flex-column card-fill">
+                <div class="card-header d-flex align-items-center">
+                    <span class="material-icons me-2">history</span>
+                    <span class="fw-semibold">Changelog</span>
+                </div>
+                <div class="card-body changelog-content flex-grow-1 flex-scroll">
+                    {{ changelog_html | safe }}
+                </div>
+            </div>
+        </div>
+
+        <!-- Card 3: License -->
+        <div class="col-lg-4 d-flex">
+            <div class="card flex-grow-1 d-flex flex-column card-fill">
+                <div class="card-header d-flex align-items-center justify-content-between">
+                    <span>
+                        <span class="material-icons me-2">gavel</span>
+                        <span class="fw-semibold">License</span>
+                    </span>
+                    <span class="badge bg-secondary">MIT</span>
+                </div>
+                <div class="card-body p-0 flex-grow-1 d-flex" style="min-height: 0;">
+                    <pre class="m-0 p-3 w-100 license-text"
+                        style="overflow-y: auto; min-height: 0; font-size: 0.75rem; white-space: pre-wrap; word-wrap: break-word;">{{ license_text }}</pre>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .about-page {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .about-cards-row {
+        flex-grow: 1;
+    }
+
+    .license-text {
+        background-color: var(--bs-tertiary-bg);
+        color: var(--bs-body-color);
+        border: none;
+    }
+
+    @media (min-width: 992px) {
+        .about-page {
+            height: calc(100vh - 180px);
+            min-height: 400px;
+            overflow: hidden;
+        }
+
+        .about-cards-row {
+            height: 100%;
+            min-height: 0;
+        }
+
+        .about-cards-row>.col-lg-4 {
+            height: 100%;
+            min-height: 0;
+        }
+    }
+
+    @media (max-width: 991.98px) {
+        .about-cards-row .card-fill {
+            max-height: 400px;
+        }
+    }
+
+    .flex-scroll {
+        min-height: 0;
+        overflow-y: auto;
+    }
+
+    .card-fill {
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    /* Changelog markdown styling */
+    .changelog-content h2 {
+        font-size: 1rem;
+        font-weight: 600;
+        color: var(--wb-primary) !important;
+        border-bottom: 1px solid var(--bs-border-color);
+        padding-bottom: 0.5rem;
+        margin-top: 1rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .changelog-content h2:first-child {
+        margin-top: 0;
+    }
+
+    .changelog-content ul {
+        padding-left: 1.25rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .changelog-content li {
+        font-size: 0.875rem;
+        margin-bottom: 0.25rem;
+    }
+
+    .changelog-content code {
+        font-size: 0.8rem;
+        background: var(--bs-tertiary-bg);
+        padding: 0.1rem 0.3rem;
+        border-radius: 3px;
+    }
+
+    .changelog-content details {
+        margin-top: 1rem;
+        border-top: 1px solid var(--bs-border-color);
+        padding-top: 0.75rem;
+    }
+
+    .changelog-content summary {
+        cursor: pointer;
+        font-weight: 500;
+        color: var(--bs-secondary);
+        font-size: 0.875rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .changelog-content summary:hover {
+        color: var(--wb-primary);
+    }
+
+    .changelog-content details[open] summary {
+        margin-bottom: 1rem;
+    }
+
+    .dependencies-table thead th {
+        background-color: var(--bs-tertiary-bg);
+        color: var(--bs-body-color);
+        border-bottom: 1px solid var(--bs-border-color);
+    }
+
+    [data-bs-theme="dark"] .dependencies-table thead th {
+        background-color: var(--bs-body-bg);
+        color: var(--bs-body-color);
+    }
+</style>
+{% endblock %}

@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+
+{% block title %}Users – WireBuddy{% endblock %}
+
+{% block extra_css %}
+<style>
+    .table td {
+        vertical-align: middle;
+    }
+
+    .users-add-btn {
+        display: inline-flex;
+        align-items: center;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+
+    .users-table .badge {
+        background-color: #4b5563 !important;
+        color: #f3f4f6 !important;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .users-table td.user-actions-cell {
+        white-space: nowrap;
+    }
+
+    @media (max-width: 768px) {
+        .users-table thead {
+            display: none;
+        }
+
+        .users-table,
+        .users-table tbody,
+        .users-table tr,
+        .users-table td {
+            display: block;
+            width: 100%;
+        }
+
+        .users-table tr {
+            border: 1px solid var(--bs-border-color);
+            border-radius: 0.75rem;
+            padding: 0.55rem 0.65rem;
+            margin-bottom: 0.65rem;
+            background: transparent;
+        }
+
+        .users-table td {
+            border: 0;
+            padding: 0.22rem 0;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 0.7rem;
+        }
+
+        .users-table td::before {
+            content: attr(data-label);
+            font-weight: 600;
+            color: var(--bs-secondary-color);
+            flex: 0 0 5.5rem;
+            max-width: 5.5rem;
+        }
+
+        .users-table td>* {
+            margin-left: auto;
+            text-align: right;
+            max-width: 66%;
+            min-width: 0;
+        }
+
+        .users-table td.user-actions-cell {
+            margin-top: 0.25rem;
+            padding-top: 0.45rem;
+            border-top: 1px solid var(--bs-border-color);
+        }
+
+        .users-table td.user-actions-cell::before {
+            content: none;
+        }
+
+        .users-table td.user-actions-cell .btn-group {
+            display: inline-flex;
+            gap: 0.35rem;
+        }
+
+        .users-table td.user-actions-cell .btn {
+            padding: 0.2rem 0.35rem;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="h3 mb-0"><span class="material-icons me-2">people</span>User Management</h1>
+    <button class="btn btn-primary users-add-btn" data-bs-toggle="modal" data-bs-target="#addUserModal">
+        <span class="material-icons align-middle me-1">person_add</span>
+        Add&nbsp;User
+    </button>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 users-table">
+                <thead>
+                    <tr>
+                        <th>Username</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th>Last Login</th>
+                        <th>Created</th>
+                        <th class="user-actions-head" aria-hidden="true"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in users %}
+                    <tr>
+                        <td data-label="Username">
+                            <strong>{{ u['username'] }}</strong>
+                            {% if u['id'] == user['id'] %}
+                            <span class="badge bg-info ms-1">You</span>
+                            {% endif %}
+                        </td>
+                        <td data-label="Role">
+                            {% if u['is_admin'] %}
+                            <span class="badge bg-primary">Admin</span>
+                            {% else %}
+                            <span class="badge bg-secondary">User</span>
+                            {% endif %}
+                        </td>
+                        <td data-label="Status">
+                            {% if u['is_active'] %}
+                            <span class="badge bg-success">Active</span>
+                            {% else %}
+                            <span class="badge bg-danger">Disabled</span>
+                            {% endif %}
+                        </td>
+                        <td data-label="Last Login">
+                            {% if u['last_login_at'] %}
+                            {{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }}
+                            {% else %}
+                            <span class="text-muted">Never</span>
+                            {% endif %}
+                        </td>
+                        <td data-label="Created">{{ u['created_at'].strftime('%Y-%m-%d') }}</td>
+                        <td data-label="" class="user-actions-cell">
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-outline-primary" onclick="editUser({{ u['id'] }})" title="Edit">
+                                    <span class="material-icons" style="font-size: 18px;">edit</span>
+                                </button>
+                                {% if u['id'] != user['id'] %}
+                                <button class="btn btn-outline-danger"
+                                    onclick="deleteUser({{ u['id'] }}, '{{ u['username'] }}')" title="Delete">
+                                    <span class="material-icons" style="font-size: 18px;">delete</span>
+                                </button>
+                                {% endif %}
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Add User Modal -->
+<div class="modal fade" id="addUserModal" tabindex="-1" aria-labelledby="addUserModalTitle" aria-modal="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="addUserModalTitle">Add New User</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="add-user-form">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="new-username" class="form-label">Username</label>
+                        <input type="text" class="form-control" id="new-username" required pattern="[a-zA-Z0-9_-]+"
+                            minlength="3" maxlength="64" autocomplete="username">
+                        <small class="text-muted">Letters, numbers, underscore, and dash only</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="new-password" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="new-password" required minlength="8"
+                            autocomplete="new-password">
+                        <small class="text-muted">Minimum 8 characters</small>
+                    </div>
+                    <div class="form-check">
+                        <input type="checkbox" class="form-check-input" id="new-is-admin">
+                        <label class="form-check-label" for="new-is-admin">Administrator privileges</label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Create User</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    document.getElementById('add-user-form').addEventListener('submit', async function (e) {
+        e.preventDefault();
+
+        const data = {
+            username: document.getElementById('new-username').value,
+            password: document.getElementById('new-password').value,
+            is_admin: document.getElementById('new-is-admin').checked,
+        };
+
+        try {
+            await api('POST', '/api/users', data);
+            window.location.reload();
+        } catch (error) {
+            wbAlert('Failed to create user: ' + error.message, 'danger');
+        }
+    });
+
+    async function editUser(userId) {
+        const newPassword = await wbPrompt('Enter new password (leave empty to keep current):', { placeholder: 'New password' });
+        if (newPassword === null) return;
+
+        if (newPassword && newPassword.length < 8) {
+            wbAlert('Password must be at least 8 characters', 'warning');
+            return;
+        }
+
+        try {
+            const data = {};
+            if (newPassword) data.password = newPassword;
+
+            await api('PATCH', `/api/users/${userId}`, data);
+            wbToast('User updated successfully', 'success');
+        } catch (error) {
+            wbAlert('Failed to update user: ' + error.message, 'danger');
+        }
+    }
+
+    async function deleteUser(userId, username) {
+        if (!await wbConfirm(`Are you sure you want to delete user "${username}"?`, 'danger')) return;
+
+        try {
+            await api('DELETE', `/api/users/${userId}`);
+            window.location.reload();
+        } catch (error) {
+            wbAlert('Failed to delete user: ' + error.message, 'danger');
+        }
+    }
+</script>
+{% endblock %}

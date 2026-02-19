@@ -1,0 +1,1321 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard – WireBuddy{% endblock %}
+
+{% block extra_css %}
+<link href="/static/vendor/leaflet.css" rel="stylesheet">
+<style>
+    .dashboard-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.75rem;
+    }
+
+    .dashboard-stat-icon {
+        font-size: 2.5rem;
+        color: var(--bs-body-color) !important;
+        opacity: 0.95;
+    }
+
+    [data-bs-theme="dark"] .dashboard-stat-icon {
+        color: #e5e7eb !important;
+        opacity: 1;
+    }
+
+    .traffic-controls {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+    }
+
+    .traffic-chart-canvas-wrap {
+        position: relative;
+        height: 180px;
+    }
+
+    #peer-map {
+        height: min(60vh, 620px);
+        border-radius: 0.5rem;
+        position: relative;
+        z-index: 0;
+        isolation: isolate;
+    }
+
+    .dashboard-side-split {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+    }
+
+    .dashboard-side-split>.card {
+        flex: 1 1 0;
+        min-height: 0;
+        max-height: calc((100% - 1.5rem) / 2);
+        overflow: hidden;
+    }
+
+    .connections-chart-wrap {
+        position: relative;
+        width: 100%;
+        flex: 1 1 auto;
+        min-height: 140px;
+    }
+
+    .recent-peer-subline {
+        display: block;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    @media (max-width: 991.98px) {
+        #peer-map {
+            height: 360px;
+        }
+
+        .dashboard-side-split {
+            display: block;
+            height: auto;
+        }
+
+        .dashboard-side-split>.card {
+            flex: none;
+            min-height: 220px;
+            max-height: none;
+            margin-bottom: 1.5rem;
+        }
+
+        .dashboard-side-split>.card:last-child {
+            margin-bottom: 0;
+        }
+
+        .connections-chart-wrap {
+            min-height: 220px;
+            flex: none;
+        }
+    }
+
+    @media (max-width: 767.98px) {
+        #peer-map {
+            height: 240px;
+        }
+
+        .dashboard-side-split>.card {
+            min-height: 180px;
+        }
+
+        .connections-chart-wrap {
+            min-height: 160px;
+        }
+
+        .leaflet-control-zoom a {
+            width: 44px;
+            height: 44px;
+            line-height: 44px;
+            font-size: 1.1rem;
+        }
+    }
+
+    @media (max-width: 575.98px) {
+        .dashboard-header {
+            align-items: stretch;
+        }
+
+        .dashboard-page-title {
+            font-size: 1.1rem;
+        }
+
+        .dashboard-refresh-label {
+            display: none;
+        }
+
+        .traffic-controls {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.5rem;
+            width: 100%;
+        }
+
+        .traffic-controls>* {
+            width: 100%;
+            min-width: 0 !important;
+        }
+
+        .traffic-controls .btn-group {
+            width: 100%;
+            display: flex;
+        }
+
+        .traffic-controls .btn-group .btn {
+            flex: 1 1 auto;
+            min-height: 44px;
+        }
+
+        .traffic-chart-canvas-wrap {
+            height: 120px;
+        }
+    }
+
+    .leaflet-container {
+        background: var(--bs-body-bg) !important;
+    }
+
+    /* Pulsating marker animation */
+    @keyframes pulse {
+        0% {
+            transform: scale(1);
+            opacity: 1;
+        }
+
+        50% {
+            transform: scale(1.8);
+            opacity: 0.4;
+        }
+
+        100% {
+            transform: scale(1);
+            opacity: 1;
+        }
+    }
+
+    .pulse-marker {
+        width: 12px;
+        height: 12px;
+        background: #6c757d;
+        border-radius: 50%;
+        box-shadow: 0 0 0 3px rgba(108, 117, 125, 0.3);
+        animation: pulse 2s ease-in-out infinite;
+    }
+
+    .pulse-marker.connected {
+        background: #0d6efd;
+        box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.3);
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="dashboard-header mb-4">
+    <h1 class="dashboard-page-title h3 mb-0"><span class="material-icons me-2">dashboard</span>Dashboard</h1>
+    <button id="dashboard-refresh-btn" class="btn btn-primary">
+        <span id="dashboard-refresh-icon" class="material-icons align-middle me-1">refresh</span>
+        <span id="dashboard-refresh-spinner" class="spinner-border spinner-border-sm me-1 d-none" role="status"
+            aria-hidden="true"></span>
+        <span class="dashboard-refresh-label">Refresh</span>
+    </button>
+</div>
+
+<!-- Stats Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-6 col-xl-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-shrink-0">
+                        <span class="material-icons dashboard-stat-icon text-primary">router</span>
+                    </div>
+                    <div class="flex-grow-1 ms-3">
+                        <h6 class="text-muted mb-1" id="label-interfaces">Interfaces</h6>
+                        <h3 class="mb-0" id="interfaces-count" aria-labelledby="label-interfaces" aria-live="polite">-
+                        </h3>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-6 col-xl-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-shrink-0">
+                        <span class="material-icons dashboard-stat-icon text-success">devices</span>
+                    </div>
+                    <div class="flex-grow-1 ms-3">
+                        <h6 class="text-muted mb-1" id="label-peers">Active Peers</h6>
+                        <h3 class="mb-0" id="peers-count" aria-labelledby="label-peers" aria-live="polite">-</h3>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-6 col-xl-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-shrink-0">
+                        <span class="material-icons dashboard-stat-icon text-info">download</span>
+                    </div>
+                    <div class="flex-grow-1 ms-3">
+                        <h6 class="text-muted mb-1" id="label-total-rx">Total RX</h6>
+                        <h3 class="mb-0" id="total-rx" aria-labelledby="label-total-rx" aria-live="polite">-</h3>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-6 col-xl-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-shrink-0">
+                        <span class="material-icons dashboard-stat-icon text-warning">upload</span>
+                    </div>
+                    <div class="flex-grow-1 ms-3">
+                        <h6 class="text-muted mb-1" id="label-total-tx">Total TX</h6>
+                        <h3 class="mb-0" id="total-tx" aria-labelledby="label-total-tx" aria-live="polite">-</h3>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Map and Recent Peers Row -->
+<div class="row g-4 mb-4">
+    <div class="col-12 col-lg-9">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <span class="material-icons align-middle me-1">public</span>
+                    Peer Locations
+                </h5>
+                <span id="peer-map-status" class="badge bg-secondary" aria-live="polite">Loading…</span>
+            </div>
+            <div class="card-body p-0">
+                <div id="peer-map"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-12 col-lg-3">
+        <div class="dashboard-side-split">
+            <div class="card d-flex flex-column recent-peers-card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <span class="material-icons align-middle me-1">history</span>
+                        Recent Peer Activity
+                    </h5>
+                    <a href="/ui/peers" class="btn btn-sm btn-outline-primary">View All</a>
+                </div>
+                <div class="card-body flex-grow-1 overflow-auto">
+                    <div id="recent-peers">
+                        <div class="text-center py-4">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card d-flex flex-column connections-card">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <span class="material-icons align-middle me-1">cell_wifi</span>
+                        Connections
+                    </h5>
+                </div>
+                <div
+                    class="card-body d-flex flex-column align-items-center justify-content-center flex-grow-1 overflow-hidden">
+                    <div class="connections-chart-wrap">
+                        <canvas id="connectionsChart"></canvas>
+                        <div class="visually-hidden" id="connections-chart-a11y" aria-live="polite" role="status">
+                            Loading connection chart</div>
+                    </div>
+                    <div id="connections-summary" class="text-center mt-3">
+                        <span class="text-muted">Loading…</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Traffic Row -->
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <div class="card h-100">
+            <div class="card-header">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <h5 class="mb-0">
+                        <span class="material-icons align-middle me-1">show_chart</span>
+                        Traffic Usage
+                    </h5>
+                    <div class="traffic-controls">
+                        <select id="traffic-peer-filter" class="form-select form-select-sm" style="min-width: 120px;">
+                            <option value="" selected>All Peers</option>
+                        </select>
+                        <div class="btn-group btn-group-sm" role="group" aria-label="Traffic direction">
+                            <input type="checkbox" class="btn-check" id="traffic-toggle-rx" checked>
+                            <label class="btn btn-outline-primary" for="traffic-toggle-rx">RX</label>
+                            <input type="checkbox" class="btn-check" id="traffic-toggle-tx" checked>
+                            <label class="btn btn-outline-primary" for="traffic-toggle-tx">TX</label>
+                        </div>
+                        <select id="traffic-range" class="form-select form-select-sm" style="min-width: 80px;">
+                            <option value="6h">6 h</option>
+                            <option value="24h" selected>24 h</option>
+                            <option value="3d">3 d</option>
+                            <option value="7d">7 d</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="traffic-peer-charts" class="d-flex flex-column gap-3"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/vendor/chart.umd.min.js"></script>
+<script>
+    const DEBUG = false;
+    const CONNECTED_THRESHOLD_SEC = 180;
+    const AUTO_REFRESH_MS = 30000;
+    const API_TIMEOUT_MS = 25000;
+    const MAX_BACKOFF_MS = 300000;
+    const MAX_VISIBLE_TRAFFIC_CHARTS = 5;
+
+    let trafficPeerCharts = [];
+    let peerMap = null;
+    let markerLayer = null;
+    let tileLayer = null;
+    let leafletReady = false;
+    let autoRefreshTimer = null;
+    let isRefreshing = false;
+    let activeRefreshController = null;
+    let pendingRefresh = false;
+    let consecutiveFailures = 0;
+    let currentRefreshInterval = AUTO_REFRESH_MS;
+    let mapResizeBound = false;
+    let themeObserver = null;
+    let activeTileSources = [];
+    let activeTileIndex = 0;
+    let tileErrorCount = 0;
+    let tileFallbackSwitching = false;
+    let tileWatchdogTimer = null;
+    let tileLoadedSinceSwitch = false;
+
+    const trafficChartsHost = document.getElementById('traffic-peer-charts');
+    const refreshButton = document.getElementById('dashboard-refresh-btn');
+    const refreshIcon = document.getElementById('dashboard-refresh-icon');
+    const refreshSpinner = document.getElementById('dashboard-refresh-spinner');
+    if (refreshButton) refreshButton.setAttribute('aria-busy', 'false');
+
+    function dbg(...args) {
+        if (DEBUG) console.log('[Dashboard]', ...args);
+    }
+
+    function clearElement(el) {
+        if (el) el.replaceChildren();
+    }
+
+    function formatBytes(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
+        const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k)));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    function shortLabel(isoStr, hours) {
+        const d = new Date(isoStr);
+        if (Number(hours) > 24) {
+            return d.toLocaleString([], { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        }
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function unwrapInterfaces(payload) {
+        if (Array.isArray(payload?.interfaces)) return payload.interfaces;
+        if (Array.isArray(payload?.data?.interfaces)) return payload.data.interfaces;
+        return [];
+    }
+
+    function unwrapPeers(payload) {
+        if (Array.isArray(payload?.peers)) return payload.peers;
+        if (Array.isArray(payload?.data?.peers)) return payload.data.peers;
+        return [];
+    }
+
+    function unwrapLocations(payload) {
+        if (Array.isArray(payload?.locations)) return payload.locations;
+        if (Array.isArray(payload?.data?.locations)) return payload.data.locations;
+        return [];
+    }
+
+    function getChartColors() {
+        const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+        return {
+            gridColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+            textColor: isDark ? '#9ca3af' : '#6b7280',
+        };
+    }
+
+    function isAbortError(err) {
+        return err?.code === 'ABORTED' || err?.name === 'AbortError' || err?.message === 'Request cancelled';
+    }
+
+    function setRefreshButtonBusy(isBusy) {
+        if (!refreshButton || !refreshIcon || !refreshSpinner) return;
+        refreshButton.disabled = isBusy;
+        refreshButton.setAttribute('aria-busy', String(isBusy));
+        refreshIcon.classList.toggle('d-none', isBusy);
+        refreshSpinner.classList.toggle('d-none', !isBusy);
+    }
+
+    function getRelativeTimeInfo(epochSeconds) {
+        const sec = Number(epochSeconds || 0);
+        if (!Number.isFinite(sec) || sec <= 0) {
+            return { className: 'badge bg-secondary', text: 'Unknown' };
+        }
+        const diffSec = Math.max(0, Math.floor(Date.now() / 1000) - sec);
+        if (diffSec < CONNECTED_THRESHOLD_SEC) {
+            return { className: 'badge bg-success', text: 'Online' };
+        }
+        if (diffSec < 3600) {
+            return { className: 'badge bg-warning text-dark', text: `${Math.floor(diffSec / 60)}m ago` };
+        }
+        if (diffSec < 86400) {
+            return { className: 'badge bg-secondary', text: `${Math.floor(diffSec / 3600)}h ago` };
+        }
+        return { className: 'badge bg-secondary', text: `${Math.floor(diffSec / 86400)}d ago` };
+    }
+
+    function formatPeerIpProvider(peer) {
+        const ip = String(peer?.endpoint_ip || '').trim();
+        const provider = String(peer?.as_org || '').trim();
+        const asn = Number(peer?.asn || 0);
+        if (!ip) return 'No client IP yet';
+        if (provider) return `${ip} · ${provider}`;
+        if (asn > 0) return `${ip} · AS${asn}`;
+        return `${ip} · Unknown provider`;
+    }
+
+    function setMapBadgeState(badge, text, isWarning = false) {
+        if (!badge) return;
+        badge.textContent = text;
+        badge.classList.remove('bg-secondary', 'bg-success', 'bg-warning', 'text-dark');
+        badge.classList.add(isWarning ? 'bg-warning' : 'bg-secondary');
+        if (isWarning) badge.classList.add('text-dark');
+    }
+
+    function updateChartTheme() {
+        const colors = getChartColors();
+        trafficPeerCharts.forEach(c => {
+            if (c?.options?.plugins?.legend?.labels) {
+                c.options.plugins.legend.labels.color = colors.textColor;
+            }
+            if (c?.options?.scales?.x?.ticks) c.options.scales.x.ticks.color = colors.textColor;
+            if (c?.options?.scales?.x?.title) c.options.scales.x.title.color = colors.textColor;
+            if (c?.options?.scales?.x?.grid) c.options.scales.x.grid.color = colors.gridColor;
+            if (c?.options?.scales?.y?.ticks) c.options.scales.y.ticks.color = colors.textColor;
+            if (c?.options?.scales?.y?.title) c.options.scales.y.title.color = colors.textColor;
+            if (c?.options?.scales?.y?.grid) c.options.scales.y.grid.color = colors.gridColor;
+            c.update();
+        });
+        if (connectionsChart?.options?.plugins?.legend?.labels) {
+            connectionsChart.options.plugins.legend.labels.color = colors.textColor;
+            connectionsChart.update();
+        }
+    }
+
+    const peerColors = [
+        { rx: 'rgba(13, 110, 253, 0.8)', tx: 'rgba(13, 110, 253, 0.4)' },
+        { rx: 'rgba(25, 135, 84, 0.8)', tx: 'rgba(25, 135, 84, 0.4)' },
+        { rx: 'rgba(253, 126, 20, 0.8)', tx: 'rgba(253, 126, 20, 0.4)' },
+        { rx: 'rgba(220, 53, 69, 0.8)', tx: 'rgba(220, 53, 69, 0.4)' },
+        { rx: 'rgba(111, 66, 193, 0.8)', tx: 'rgba(111, 66, 193, 0.4)' },
+        { rx: 'rgba(214, 51, 132, 0.8)', tx: 'rgba(214, 51, 132, 0.4)' },
+        { rx: 'rgba(32, 201, 151, 0.8)', tx: 'rgba(32, 201, 151, 0.4)' },
+        { rx: 'rgba(102, 16, 242, 0.8)', tx: 'rgba(102, 16, 242, 0.4)' },
+    ];
+
+    function destroyTrafficCharts() {
+        trafficPeerCharts.forEach(c => c.destroy());
+        trafficPeerCharts = [];
+    }
+
+    const connCanvas = document.getElementById('connectionsChart');
+    const connCtx = connCanvas ? connCanvas.getContext('2d') : null;
+    let connectionsChart = null;
+    const connectionStats = { online: 0, offline: 0, total: 0 };
+    if (connCtx) {
+        const colors = getChartColors();
+        connectionsChart = new Chart(connCtx, {
+            type: 'doughnut',
+            data: {
+                labels: ['Connected', 'Offline'],
+                datasets: [{
+                    // Use a gray placeholder slice until real data arrives.
+                    data: [0, 1],
+                    backgroundColor: ['#198754', '#6c757d'],
+                    borderWidth: 0,
+                    hoverOffset: 6,
+                }],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                cutout: '70%',
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: { color: colors.textColor },
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function (context) {
+                                if (context.label === 'Connected') {
+                                    return `Connected: ${connectionStats.online}`;
+                                }
+                                return `Offline: ${connectionStats.offline}`;
+                            },
+                        },
+                    },
+                },
+            },
+        });
+    }
+
+    // Track known peers to avoid rebuilding dropdown on every refresh
+    let knownTrafficPeers = [];
+
+    function updateTrafficPeerFilter(peers) {
+        const select = document.getElementById('traffic-peer-filter');
+        if (!select) return;
+        const currentValue = select.value;
+
+        // Build list of peer keys/names
+        const peerOptions = peers.map(p => ({
+            value: p.key || p.name,
+            label: p.name || p.key || 'Unknown',
+        }));
+
+        // Check if peers changed
+        const newKeys = peerOptions.map(p => p.value).sort().join(',');
+        const oldKeys = knownTrafficPeers.map(p => p.value).sort().join(',');
+        if (newKeys === oldKeys) return;
+
+        knownTrafficPeers = peerOptions;
+
+        // Rebuild options
+        select.innerHTML = '<option value="">All Peers</option>';
+        peerOptions.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.value;
+            opt.textContent = p.label;
+            if (p.value === currentValue) opt.selected = true;
+            select.appendChild(opt);
+        });
+    }
+
+    async function refreshTrafficCharts(signal) {
+        try {
+            const range = document.getElementById('traffic-range')?.value || '24h';
+            const traffic = await api(
+                'GET',
+                `/api/wireguard/stats/traffic?range_key=${encodeURIComponent(range)}`,
+                null,
+                { signal, timeoutMs: API_TIMEOUT_MS },
+            );
+            const showRx = Boolean(document.getElementById('traffic-toggle-rx')?.checked);
+            const showTx = Boolean(document.getElementById('traffic-toggle-tx')?.checked);
+            const peerFilter = document.getElementById('traffic-peer-filter')?.value || '';
+            const hours = Number(traffic?.hours || 24);
+            const labels = (traffic?.labels || []).map(ts => shortLabel(ts, hours));
+            const unit = traffic?.display_unit || 'MB';
+            let peers = Array.isArray(traffic?.peers_display) && traffic.peers_display.length
+                ? traffic.peers_display
+                : (Array.isArray(traffic?.peers) ? traffic.peers : []);
+
+            updateTrafficPeerFilter(peers);
+            if (peerFilter) {
+                peers = peers.filter(p => p.key === peerFilter || p.name === peerFilter);
+            }
+
+            // Remove canvases before destroy to avoid detached-frame races.
+            clearElement(trafficChartsHost);
+            destroyTrafficCharts();
+
+            if (!peerFilter && peers.length > MAX_VISIBLE_TRAFFIC_CHARTS) {
+                const byTraffic = (p) => {
+                    const rx = Array.isArray(p.rx) ? p.rx : [];
+                    const tx = Array.isArray(p.tx) ? p.tx : [];
+                    return rx.reduce((a, v) => a + Number(v || 0), 0) + tx.reduce((a, v) => a + Number(v || 0), 0);
+                };
+                peers = [...peers].sort((a, b) => byTraffic(b) - byTraffic(a)).slice(0, MAX_VISIBLE_TRAFFIC_CHARTS);
+                const info = document.createElement('p');
+                info.className = 'text-muted small mb-2';
+                info.textContent = `Showing top ${MAX_VISIBLE_TRAFFIC_CHARTS} peers by traffic. Use filter to inspect others.`;
+                trafficChartsHost.appendChild(info);
+            }
+
+            if (!showRx && !showTx) {
+                const p = document.createElement('p');
+                p.className = 'text-muted mb-0';
+                p.textContent = 'Please activate RX or TX.';
+                trafficChartsHost.appendChild(p);
+                return true;
+            }
+            if (peers.length === 0) {
+                const p = document.createElement('p');
+                p.className = 'text-muted mb-0';
+                p.textContent = 'No traffic data in selected time range.';
+                trafficChartsHost.appendChild(p);
+                return true;
+            }
+
+            peers.forEach((peer, idx) => {
+                const colors = getChartColors();
+                const colorIdx = idx % peerColors.length;
+                const color = peerColors[colorIdx];
+                const rx = Array.isArray(peer.rx) ? peer.rx : [];
+                const tx = Array.isArray(peer.tx) ? peer.tx : [];
+                const datasets = [];
+
+                if (showRx) {
+                    datasets.push({
+                        label: 'RX',
+                        data: rx.map(v => Number(v || 0)),
+                        borderColor: color.rx,
+                        backgroundColor: color.rx.replace('0.8', '0.12'),
+                        fill: false,
+                        tension: 0.35,
+                        pointRadius: 0,
+                        pointHitRadius: 8,
+                        borderWidth: 2,
+                    });
+                }
+                if (showTx) {
+                    datasets.push({
+                        label: 'TX',
+                        data: tx.map(v => Number(v || 0)),
+                        borderColor: color.tx,
+                        backgroundColor: 'transparent',
+                        fill: false,
+                        tension: 0.35,
+                        pointRadius: 0,
+                        pointHitRadius: 8,
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                    });
+                }
+
+                const wrap = document.createElement('div');
+                wrap.className = 'border rounded p-2';
+                const header = document.createElement('div');
+                header.className = 'd-flex justify-content-between align-items-center mb-2';
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'fw-semibold';
+                nameSpan.textContent = peer.name || peer.key || 'Peer';
+                const unitSpan = document.createElement('small');
+                unitSpan.className = 'text-muted';
+                unitSpan.textContent = `Y: ${unit}`;
+                header.appendChild(nameSpan);
+                header.appendChild(unitSpan);
+
+                const canvasWrap = document.createElement('div');
+                canvasWrap.className = 'traffic-chart-canvas-wrap';
+                const canvas = document.createElement('canvas');
+                canvasWrap.appendChild(canvas);
+
+                wrap.appendChild(header);
+                wrap.appendChild(canvasWrap);
+                trafficChartsHost.appendChild(wrap);
+
+                const ctx = canvas.getContext('2d');
+                const chart = new Chart(ctx, {
+                    type: 'line',
+                    data: { labels, datasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        plugins: {
+                            legend: {
+                                position: 'top',
+                                labels: { usePointStyle: true, boxWidth: 8, color: colors.textColor },
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: c => `${c.dataset.label}: ${Number(c.parsed.y || 0).toFixed(2)} ${unit}`,
+                                },
+                            },
+                        },
+                        scales: {
+                            x: {
+                                title: { display: true, text: 'Time', color: colors.textColor },
+                                ticks: { maxTicksLimit: 10, color: colors.textColor },
+                                grid: { color: colors.gridColor },
+                            },
+                            y: {
+                                beginAtZero: true,
+                                title: { display: true, text: `Usage (${unit})`, color: colors.textColor },
+                                grid: { color: colors.gridColor },
+                                ticks: {
+                                    maxTicksLimit: 6,
+                                    color: colors.textColor,
+                                    callback: v => `${Number(v).toFixed(2)} ${unit}`,
+                                },
+                            },
+                        },
+                    },
+                });
+                trafficPeerCharts.push(chart);
+            });
+            return true;
+        } catch (e) {
+            if (isAbortError(e)) return true;
+            console.error('Traffic chart error:', e);
+            wbToast('Failed to load traffic data', 'warning');
+            return false;
+        }
+    }
+
+    async function refreshConnectionsChart(signal) {
+        if (!connectionsChart) return true;
+        try {
+            const conn = await api(
+                'GET',
+                '/api/wireguard/stats/connections',
+                null,
+                { signal, timeoutMs: API_TIMEOUT_MS },
+            );
+            const online = Number(conn?.total_connected || 0);
+            const total = Number(conn?.total_peers || 0);
+            const offline = Math.max(0, total - online);
+            const offlineDisplay = total === 0 ? 1 : offline;
+            connectionStats.online = online;
+            connectionStats.offline = offline;
+            connectionStats.total = total;
+
+            connectionsChart.data.datasets[0].data = [online, offlineDisplay];
+            connectionsChart.update();
+
+            const summary = document.getElementById('connections-summary');
+            clearElement(summary);
+            const strong = document.createElement('strong');
+            strong.className = 'fs-2';
+            strong.textContent = String(online);
+            const span = document.createElement('span');
+            span.className = 'text-muted';
+            span.textContent = ` / ${total} peers online`;
+            summary.appendChild(strong);
+            summary.appendChild(span);
+
+            const a11y = document.getElementById('connections-chart-a11y');
+            if (a11y) {
+                a11y.textContent = `${online} of ${total} peers currently connected`;
+            }
+            return true;
+        } catch (e) {
+            if (isAbortError(e)) return true;
+            console.error('Connections chart error:', e);
+            wbToast('Failed to load connection stats', 'warning');
+            return false;
+        }
+    }
+
+    async function refreshCharts(signal) {
+        const results = await Promise.allSettled([
+            refreshTrafficCharts(signal),
+            refreshConnectionsChart(signal),
+        ]);
+        return results.some(r => r.status === 'fulfilled' && r.value === true);
+    }
+
+    async function refreshStats(signal) {
+        try {
+            const [interfacesRes, enrichedRes] = await Promise.all([
+                api(
+                    'GET',
+                    '/api/wireguard/interfaces',
+                    null,
+                    { signal, timeoutMs: API_TIMEOUT_MS },
+                ),
+                api(
+                    'GET',
+                    '/api/wireguard/stats/peers-enriched',
+                    null,
+                    { signal, timeoutMs: API_TIMEOUT_MS },
+                ),
+            ]);
+            const interfaces = unwrapInterfaces(interfacesRes);
+            const activeCount = interfaces.filter(i => i.is_active).length;
+            document.getElementById('interfaces-count').textContent = `${activeCount}/${interfaces.length}`;
+
+            const allPeers = unwrapPeers(enrichedRes);
+            document.getElementById('peers-count').textContent = String(allPeers.filter(p => p.connected).length);
+
+            let totalRx = 0;
+            let totalTx = 0;
+            for (const peer of allPeers) {
+                if (peer.is_enabled) {
+                    totalRx += Number(peer.transfer_rx || 0);
+                    totalTx += Number(peer.transfer_tx || 0);
+                }
+            }
+
+            const activePeers = allPeers
+                .filter(p => Number(p.latest_handshake) > 0)
+                .sort((a, b) => Number(b.latest_handshake) - Number(a.latest_handshake))
+                .slice(0, 5);
+            const recentPeersEl = document.getElementById('recent-peers');
+            clearElement(recentPeersEl);
+
+            activePeers.forEach((peer) => {
+                const displayName = peer.name || 'Unnamed Peer';
+                const relative = getRelativeTimeInfo(peer.latest_handshake);
+
+                const row = document.createElement('div');
+                row.className = 'py-2 border-bottom';
+
+                const left = document.createElement('div');
+
+                const headerLine = document.createElement('div');
+                headerLine.className = 'd-flex align-items-center gap-2 mb-1';
+
+                const badge = document.createElement('span');
+                badge.className = relative.className;
+                badge.textContent = relative.text;
+                headerLine.appendChild(badge);
+
+                const name = document.createElement('strong');
+                name.textContent = displayName;
+                headerLine.appendChild(name);
+                left.appendChild(headerLine);
+
+                const ips = document.createElement('small');
+                ips.className = 'text-muted recent-peer-subline';
+                const ipProvider = formatPeerIpProvider(peer);
+                ips.textContent = ipProvider;
+                ips.title = ipProvider;
+                left.appendChild(ips);
+
+                row.appendChild(left);
+                recentPeersEl.appendChild(row);
+            });
+
+            if (!activePeers.length) {
+                const p = document.createElement('p');
+                p.className = 'text-muted mb-0';
+                p.textContent = 'No recent peer activity';
+                recentPeersEl.appendChild(p);
+            }
+
+            document.getElementById('total-rx').textContent = formatBytes(totalRx);
+            document.getElementById('total-tx').textContent = formatBytes(totalTx);
+            return true;
+        } catch (error) {
+            if (isAbortError(error)) return true;
+            console.error('Failed to refresh stats:', error);
+            wbToast('Failed to load dashboard data', 'danger');
+            return false;
+        }
+    }
+
+    function getMapTileSources() {
+        const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+        if (dark) {
+            return [
+                'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+            ];
+        }
+        return [
+            'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+        ];
+    }
+
+    function applyCurrentTileSource() {
+        if (!tileLayer || !activeTileSources.length) return;
+        if (tileWatchdogTimer) {
+            clearTimeout(tileWatchdogTimer);
+            tileWatchdogTimer = null;
+        }
+        tileLoadedSinceSwitch = false;
+        const nextUrl = activeTileSources[Math.min(activeTileIndex, activeTileSources.length - 1)];
+        tileLayer.setUrl(nextUrl);
+        tileLayer.redraw();
+        tileWatchdogTimer = setTimeout(() => {
+            // Some environments never emit tileerror (blocked requests/extensions).
+            // If no tile loaded within timeout, advance fallback source.
+            if (tileLoadedSinceSwitch || tileFallbackSwitching) return;
+            if (activeTileIndex >= activeTileSources.length - 1) return;
+            tileFallbackSwitching = true;
+            activeTileIndex += 1;
+            applyCurrentTileSource();
+            setTimeout(() => {
+                tileFallbackSwitching = false;
+            }, 800);
+        }, 3500);
+    }
+
+    function handleTileError() {
+        if (!tileLayer || tileFallbackSwitching) return;
+        tileErrorCount += 1;
+        // Avoid switching source on transient single-tile failures.
+        if (tileErrorCount < 6) return;
+        tileErrorCount = 0;
+        if (activeTileIndex >= activeTileSources.length - 1) return;
+        tileFallbackSwitching = true;
+        activeTileIndex += 1;
+        applyCurrentTileSource();
+        setTimeout(() => {
+            tileFallbackSwitching = false;
+        }, 800);
+    }
+
+    function handleTileLoad() {
+        tileLoadedSinceSwitch = true;
+        if (tileWatchdogTimer) {
+            clearTimeout(tileWatchdogTimer);
+            tileWatchdogTimer = null;
+        }
+    }
+
+    function initMap() {
+        const container = document.getElementById('peer-map');
+        if (!container) {
+            console.error('peer-map container not found');
+            return;
+        }
+        if (peerMap) {
+            dbg('peerMap already initialized');
+            return;
+        }
+        if (typeof L === 'undefined') {
+            console.error('Leaflet library not loaded');
+            return;
+        }
+
+        dbg('Initializing peer map...');
+
+        peerMap = L.map(container, {
+            scrollWheelZoom: true,
+            tap: true,
+            attributionControl: false,
+            zoomSnap: 1,
+            zoomDelta: 1,
+            minZoom: 2,
+            worldCopyJump: true,
+        }).setView([30, 10], 2);
+
+        activeTileSources = getMapTileSources();
+        activeTileIndex = 0;
+        tileErrorCount = 0;
+
+        const tileOpts = {
+            minZoom: 2,
+            maxZoom: 18,
+            tileSize: 256,
+            detectRetina: true,
+        };
+
+        tileLayer = L.tileLayer(activeTileSources[0], tileOpts).addTo(peerMap);
+        tileLayer.on('tileerror', handleTileError);
+        tileLayer.on('tileload', handleTileLoad);
+        tileLayer.on('load', handleTileLoad);
+        applyCurrentTileSource();
+        markerLayer = L.layerGroup().addTo(peerMap);
+        // Defer invalidateSize to ensure map panes are fully initialized
+        setTimeout(() => {
+            if (peerMap && peerMap.getContainer()) peerMap.invalidateSize();
+        }, 100);
+        if (!mapResizeBound) {
+            window.addEventListener('resize', () => {
+                if (peerMap && peerMap.getContainer()) peerMap.invalidateSize();
+            });
+            mapResizeBound = true;
+        }
+
+        dbg('Peer map initialized successfully');
+    }
+
+    function updateMapTiles() {
+        if (!peerMap || !tileLayer) return;
+        activeTileSources = getMapTileSources();
+        activeTileIndex = 0;
+        tileErrorCount = 0;
+        applyCurrentTileSource();
+    }
+
+    function resetMapToWorld() {
+        if (!peerMap) return;
+        peerMap.setView([20, 0], 2, { animate: true, duration: 0.4 });
+    }
+
+    async function refreshPeerLocations(signal) {
+        const badge = document.getElementById('peer-map-status');
+
+        if (!leafletReady) {
+            dbg('refreshPeerLocations: Leaflet not ready yet');
+            return true;
+        }
+        if (!peerMap) {
+            dbg('refreshPeerLocations: peerMap not initialized');
+            return true;
+        }
+        if (!markerLayer) {
+            dbg('refreshPeerLocations: markerLayer not initialized');
+            return true;
+        }
+
+        try {
+            const data = await api(
+                'GET',
+                '/api/wireguard/stats/peer-locations',
+                null,
+                { signal, timeoutMs: API_TIMEOUT_MS },
+            );
+            const locs = unwrapLocations(data);
+            dbg('Peer locations:', locs.length);
+            markerLayer.clearLayers();
+
+            if (!locs.length) {
+                setMapBadgeState(badge, 'No peers located');
+                resetMapToWorld();
+                return true;
+            }
+
+            // Pulsating markers for each peer location
+            locs.forEach((p) => {
+                const isConnected = Boolean(p.connected);
+
+                // Create pulsating dot using divIcon
+                const pulseIcon = L.divIcon({
+                    className: '',
+                    html: `<div class="pulse-marker${isConnected ? ' connected' : ''}"></div>`,
+                    iconSize: [12, 12],
+                    iconAnchor: [6, 6],
+                });
+
+                const marker = L.marker([p.lat, p.lon], { icon: pulseIcon });
+
+                const popup = document.createElement('div');
+                popup.style.minWidth = '160px';
+
+                // Peer name
+                if (p.name) {
+                    const nameEl = document.createElement('strong');
+                    nameEl.textContent = p.name;
+                    popup.appendChild(nameEl);
+                    popup.appendChild(document.createElement('br'));
+                }
+
+                // Location: City, Country
+                const locText = [p.city, p.country].filter(Boolean).join(', ') || '??';
+                const locEl = document.createElement('span');
+                locEl.textContent = locText;
+                popup.appendChild(locEl);
+                popup.appendChild(document.createElement('br'));
+
+                // IP + Interface
+                const meta = document.createElement('small');
+                meta.className = 'text-muted';
+                meta.textContent = `${p.ip || ''} · ${p.interface || ''}`;
+                popup.appendChild(meta);
+                popup.appendChild(document.createElement('br'));
+
+                // ASN
+                if (p.asn) {
+                    const asnEl = document.createElement('small');
+                    asnEl.className = 'text-muted';
+                    asnEl.textContent = `AS${p.asn}${p.as_org ? ` (${p.as_org})` : ''}`;
+                    popup.appendChild(asnEl);
+                    popup.appendChild(document.createElement('br'));
+                }
+
+                // Status + peer count
+                const statusEl = document.createElement('small');
+                const statusBadge = document.createElement('span');
+                statusBadge.className = isConnected ? 'badge bg-success' : 'badge bg-secondary';
+                statusBadge.textContent = isConnected ? 'Online' : 'Offline';
+                statusEl.appendChild(statusBadge);
+                const peerCount = Math.max(1, Number.parseInt(String(p.count ?? 1), 10) || 1);
+                if (peerCount > 1) {
+                    statusEl.appendChild(document.createTextNode(` · ${peerCount} peers`));
+                }
+                popup.appendChild(statusEl);
+
+                marker.bindPopup(popup, {
+                    maxWidth: 200,
+                    closeOnClick: true,
+                    autoPan: true,
+                    autoPanPadding: [20, 20],
+                });
+                markerLayer.addLayer(marker);
+            });
+
+            // Zoom to fit all locations
+            const validLocs = locs.filter(p =>
+                Number.isFinite(Number(p.lat)) &&
+                Number.isFinite(Number(p.lon)) &&
+                Math.abs(Number(p.lat)) <= 90 &&
+                Math.abs(Number(p.lon)) <= 180
+            );
+            const bounds = L.latLngBounds(validLocs.map(p => [Number(p.lat), Number(p.lon)]));
+            if (bounds.isValid()) {
+                peerMap.fitBounds(bounds, {
+                    padding: [30, 30],
+                    maxZoom: locs.length === 1 ? 8 : 10,
+                    animate: true,
+                    duration: 0.5,
+                });
+            } else {
+                resetMapToWorld();
+            }
+
+            const connectedCount = locs.filter(p => p.connected).length;
+            setMapBadgeState(
+                badge,
+                `${locs.length} location${locs.length !== 1 ? 's' : ''}${connectedCount ? ` (${connectedCount} online)` : ''}`,
+            );
+            badge.classList.remove('bg-secondary', 'bg-warning', 'text-dark');
+            badge.classList.add('bg-success');
+            return true;
+        } catch (e) {
+            if (isAbortError(e)) return true;
+            console.error('Peer locations error:', e?.message || e?.toString() || e);
+            setMapBadgeState(badge, 'Unavailable', true);
+            return false;
+        }
+    }
+
+    function loadScript(src) {
+        return new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = src;
+            s.onload = resolve;
+            s.onerror = reject;
+            document.head.appendChild(s);
+        });
+    }
+
+    function startAutoRefresh(intervalMs) {
+        if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+        const ms = intervalMs || currentRefreshInterval;
+        autoRefreshTimer = setInterval(() => {
+            refreshAll(false);
+        }, ms);
+    }
+
+    function stopAutoRefresh() {
+        if (!autoRefreshTimer) return;
+        clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+    }
+
+    async function refreshAll(manual = false) {
+        if (isRefreshing) {
+            pendingRefresh = true;
+            if (activeRefreshController) activeRefreshController.abort();
+            return;
+        }
+        isRefreshing = true;
+        if (manual) setRefreshButtonBusy(true);
+        const controller = new AbortController();
+        activeRefreshController = controller;
+        let allFailed = true;
+        try {
+            const results = await Promise.allSettled([
+                refreshStats(controller.signal),
+                refreshTrafficCharts(controller.signal),
+                refreshConnectionsChart(controller.signal),
+                refreshPeerLocations(controller.signal),
+            ]);
+            const statuses = results.map((r) => (r.status === 'fulfilled' ? r.value : false));
+            allFailed = statuses.every(v => v === false);
+        } finally {
+            if (activeRefreshController === controller) activeRefreshController = null;
+            isRefreshing = false;
+            if (manual) setRefreshButtonBusy(false);
+
+            if (allFailed && !manual) {
+                consecutiveFailures++;
+                // Exponential backoff: 30s → 60s → 120s → 300s max
+                const backoff = Math.min(AUTO_REFRESH_MS * Math.pow(2, consecutiveFailures - 1), MAX_BACKOFF_MS);
+                if (backoff !== currentRefreshInterval) {
+                    currentRefreshInterval = backoff;
+                    dbg(`All API calls failed (${consecutiveFailures}x), next refresh in ${Math.round(backoff / 1000)}s`);
+                    startAutoRefresh(backoff);
+                }
+            } else if (!allFailed) {
+                if (consecutiveFailures > 0) {
+                    consecutiveFailures = 0;
+                    currentRefreshInterval = AUTO_REFRESH_MS;
+                    dbg('API recovered, refresh interval reset to', AUTO_REFRESH_MS / 1000, 's');
+                    startAutoRefresh(AUTO_REFRESH_MS);
+                }
+            }
+            if (pendingRefresh) {
+                pendingRefresh = false;
+                setTimeout(() => refreshAll(false), 50);
+            }
+        }
+    }
+
+    (async function initDashboard() {
+        dbg('Initializing dashboard...');
+        try {
+            if (typeof L === 'undefined') {
+                await loadScript('/static/vendor/leaflet.js');
+            }
+            initMap();
+            leafletReady = true;
+            dbg('Map ready.');
+        } catch (e) {
+            console.error('Failed to load Leaflet:', e);
+            document.getElementById('peer-map-status').textContent = 'Map unavailable';
+        }
+
+        themeObserver = new MutationObserver(() => {
+            updateChartTheme();
+            updateMapTiles();
+        });
+        themeObserver.observe(document.documentElement, {
+            attributes: true,
+            attributeFilter: ['data-bs-theme'],
+        });
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                stopAutoRefresh();
+            } else {
+                refreshAll(false);
+                startAutoRefresh();
+            }
+        });
+
+        window.addEventListener('beforeunload', () => {
+            stopAutoRefresh();
+            if (activeRefreshController) activeRefreshController.abort();
+            destroyTrafficCharts();
+            if (themeObserver) themeObserver.disconnect();
+            try { if (connectionsChart) connectionsChart.destroy(); } catch (_) { }
+            try { if (peerMap) peerMap.remove(); } catch (_) { }
+        });
+
+        refreshButton?.addEventListener('click', () => refreshAll(true));
+        document.getElementById('traffic-peer-filter')?.addEventListener('change', () => refreshTrafficCharts());
+        document.getElementById('traffic-toggle-rx')?.addEventListener('change', () => refreshTrafficCharts());
+        document.getElementById('traffic-toggle-tx')?.addEventListener('change', () => refreshTrafficCharts());
+        document.getElementById('traffic-range')?.addEventListener('change', () => refreshTrafficCharts());
+
+        // Initial data load – start auto-refresh only after first attempt
+        refreshAll(false).then(() => {
+            startAutoRefresh();
+        }).catch(() => {
+            // Start auto-refresh even on failure (backoff will handle retries)
+            startAutoRefresh();
+        });
+    })();
+</script>
+{% endblock %}

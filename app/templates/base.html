@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <title>{% block title %}WireBuddy{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/img/favicon.svg">
+    <script>
+        // Blocking script to prevent theme flash
+        (function () {
+            const stored = localStorage.getItem('theme');
+            const theme = stored || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+            document.documentElement.setAttribute('data-bs-theme', theme);
+        })();
+    </script>
+    <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/vendor/material-icons.css" rel="stylesheet">
+    <link href="/static/css/style.css" rel="stylesheet">
+    <style>
+        body.wb-reconnecting .main-content {
+            opacity: 0.35;
+            filter: saturate(0.8);
+            pointer-events: none;
+            transition: opacity 0.2s ease, filter 0.2s ease;
+        }
+
+        body.wb-reconnecting .modal-backdrop.show {
+            backdrop-filter: blur(22px);
+            -webkit-backdrop-filter: blur(22px);
+            background-color: rgba(15, 23, 42, 0.62);
+        }
+
+        body.wb-onboarding .main-content {
+            filter: blur(8px);
+            transition: filter 0.3s ease;
+        }
+
+        body.wb-onboarding .sidebar {
+            filter: blur(8px);
+            transition: filter 0.3s ease;
+        }
+
+        body.wb-onboarding .modal-backdrop.show {
+            background-color: rgba(15, 23, 42, 0.5) !important;
+        }
+
+        #wbReconnectModal .modal-dialog {
+            max-width: 460px;
+        }
+
+        #wbReconnectModal .modal-content {
+            border: 1px solid rgba(128, 128, 128, 0.25);
+            border-radius: 0.9rem;
+        }
+
+        #wbReconnectModal .spinner-border {
+            width: 2.25rem;
+            height: 2.25rem;
+        }
+
+        @keyframes wbReconnectSoftPulse {
+            0% {
+                transform: scale(1);
+                box-shadow: 0 0 0 rgba(136, 23, 26, 0.0);
+            }
+
+            50% {
+                transform: scale(1.012);
+                box-shadow: 0 0 0.85rem rgba(136, 23, 26, 0.22);
+            }
+
+            100% {
+                transform: scale(1);
+                box-shadow: 0 0 0 rgba(136, 23, 26, 0.0);
+            }
+        }
+
+        body.wb-reconnecting #wbReconnectModal.show .wb-reconnect-pulse {
+            animation: wbReconnectSoftPulse 1.9s ease-in-out infinite;
+            transform-origin: center;
+            will-change: transform, box-shadow;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            body.wb-reconnecting #wbReconnectModal.show .wb-reconnect-pulse {
+                animation: none;
+            }
+        }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-expand-lg navbar-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand d-flex align-items-center" href="/ui/dashboard">
+                <img src="/static/img/wirebuddy_1c.svg" alt="WireBuddy" class="navbar-logo">
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
+                aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <!-- Mobile Navigation Links -->
+                <ul class="navbar-nav d-lg-none" aria-label="Mobile navigation">
+                    <li class="nav-item">
+                        <a class="nav-link text-white {% if request.url.path == '/ui/dashboard' %}active{% endif %}"
+                            href="/ui/dashboard">
+                            <span class="material-icons align-middle me-1">dashboard</span>Dashboard
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link text-white {% if '/ui/peers' in request.url.path %}active{% endif %}"
+                            href="/ui/peers">
+                            <span class="material-icons align-middle me-1">devices</span>Peers
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link text-white {% if '/ui/dns' in request.url.path %}active{% endif %}"
+                            href="/ui/dns">
+                            <span class="material-icons align-middle me-1">dns</span>DNS
+                        </a>
+                    </li>
+                    {% if user and user['is_admin'] %}
+                    <li class="nav-item">
+                        <a class="nav-link text-white {% if '/ui/users' in request.url.path %}active{% endif %}"
+                            href="/ui/users">
+                            <span class="material-icons align-middle me-1">people</span>Users
+                        </a>
+                    </li>
+                    {% endif %}
+                    <li class="nav-item">
+                        <a class="nav-link text-white {% if '/ui/settings' in request.url.path %}active{% endif %}"
+                            href="/ui/settings">
+                            <span class="material-icons align-middle me-1">settings</span>Settings
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link text-white {% if '/ui/about' in request.url.path %}active{% endif %}"
+                            href="/ui/about">
+                            <span class="material-icons align-middle me-1">info</span>About
+                        </a>
+                    </li>
+                    <li>
+                        <hr class="dropdown-divider border-light my-2">
+                    </li>
+                </ul>
+                <!-- Right-side items -->
+                <ul class="navbar-nav ms-auto align-items-center navbar-actions">
+                    {% if user %}
+                    <li class="nav-item">
+                        <span class="text-white navbar-user-label">{{ user['username'] }}</span>
+                    </li>
+                    <li class="nav-item">
+                        <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn"
+                            onclick="toggleTheme()" aria-label="Toggle theme">
+                            <span class="material-icons" id="theme-icon">dark_mode</span>
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="btn btn-sm btn-outline-light d-inline-flex align-items-center navbar-logout-btn"
+                            onclick="logout()" title="Logout" aria-label="Logout">
+                            <span class="material-icons navbar-logout-icon">logout</span>
+                            <span class="navbar-logout-label">Logout</span>
+                        </button>
+                    </li>
+                    {% endif %}
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="d-flex flex-grow-1">
+        <!-- Sidebar -->
+        <aside class="sidebar d-none d-lg-block" style="width: 240px;" aria-label="Main navigation" role="navigation">
+            <nav class="nav flex-column py-3">
+                <a class="nav-link {% if request.url.path == '/ui/dashboard' %}active{% endif %}" href="/ui/dashboard">
+                    <span class="material-icons">dashboard</span>Dashboard
+                </a>
+                <a class="nav-link {% if '/ui/peers' in request.url.path %}active{% endif %}" href="/ui/peers">
+                    <span class="material-icons">devices</span>Peers
+                </a>
+                <a class="nav-link {% if '/ui/dns' in request.url.path %}active{% endif %}" href="/ui/dns">
+                    <span class="material-icons">dns</span>DNS
+                </a>
+                {% if user and user['is_admin'] %}
+                <a class="nav-link {% if '/ui/users' in request.url.path %}active{% endif %}" href="/ui/users">
+                    <span class="material-icons">people</span>Users
+                </a>
+                {% endif %}
+                <a class="nav-link {% if '/ui/settings' in request.url.path %}active{% endif %}" href="/ui/settings">
+                    <span class="material-icons">settings</span>Settings
+                </a>
+                <a class="nav-link {% if '/ui/about' in request.url.path %}active{% endif %}" href="/ui/about">
+                    <span class="material-icons">info</span>About
+                </a>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    <!-- Footer -->
+    <footer class="wb-footer">
+        <span class="wb-footer-content">
+            WireBuddy v{{ VERSION }} (<span class="font-monospace">{{ BUILD_INFO[:7] }}</span>) &middot; &copy; 2026
+            Gill-Bates&nbsp;&middot;&nbsp;<a href="https://github.com/Gill-Bates/wirebuddy" target="_blank"
+                rel="noopener noreferrer" class="text-decoration-none wb-footer-link">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" class="wb-footer-link-icon">
+                    <path fill-rule="evenodd"
+                        d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z">
+                    </path>
+                </svg>
+                GitHub</a>
+        </span>
+    </footer>
+
+    <!-- Reusable Modal (alert / confirm / prompt) -->
+    <div class="modal fade" id="wbModal" tabindex="-1" role="dialog" aria-labelledby="wbModalTitle" aria-modal="true"
+        data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="wbModalTitle">Info</h5>
+                    <button type="button" class="btn-close" id="wbModalClose" data-bs-dismiss="modal"
+                        aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex align-items-start gap-3">
+                        <span class="material-icons fs-3" id="wbModalIcon" style="margin-top:2px;">info</span>
+                        <div class="flex-grow-1">
+                            <p class="mb-0" id="wbModalMessage"></p>
+                            <div class="mt-3 d-none" id="wbModalInputWrap">
+                                <input type="text" class="form-control" id="wbModalInput">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary d-none" id="wbModalCancel"
+                        data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="wbModalOk">OK</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reconnect Modal -->
+    <div class="modal fade" id="wbReconnectModal" tabindex="-1" role="dialog" aria-labelledby="wbReconnectTitle"
+        aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content wb-reconnect-pulse">
+                <div class="modal-body py-5 px-4">
+                    <div class="d-flex flex-column align-items-center text-center gap-3">
+                        <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+                        <div>
+                            <h5 id="wbReconnectTitle" class="mb-2" aria-live="assertive" role="alert">Trying to
+                                reconnect ...</h5>
+                            <small class="text-muted">The server is restarting or temporarily unavailable.</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast container -->
+    <div class="toast-container position-fixed top-0 end-0 p-3" id="wbToastContainer" style="z-index: 1100;"></div>
+
+    <!-- Onboarding Modal -->
+    <div class="modal fade" id="wbOnboardingModal" tabindex="-1" aria-labelledby="wbOnboardingTitle" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content">
+                <div class="modal-header border-0 pb-0">
+                    <h4 class="modal-title" id="wbOnboardingTitle">
+                        <span class="material-icons align-middle text-primary me-2"
+                            style="font-size:28px;">rocket_launch</span>
+                        Welcome to WireBuddy!
+                    </h4>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body pt-2">
+                    <p class="text-muted mb-4">Follow these steps to set up your WireGuard VPN server:</p>
+                    <div class="d-flex flex-column gap-3">
+                        <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
+                            <span
+                                class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center"
+                                style="width:28px;height:28px;flex-shrink:0;">1</span>
+                            <div>
+                                <strong>Change Admin Password</strong>
+                                <p class="text-muted small mb-0">Go to <a href="/users">Users</a> and set a secure
+                                    password for the admin account.</p>
+                            </div>
+                        </div>
+                        <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
+                            <span
+                                class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center"
+                                style="width:28px;height:28px;flex-shrink:0;">2</span>
+                            <div>
+                                <strong>Create an Interface</strong>
+                                <p class="text-muted small mb-0">Under <a href="/settings">Settings</a>, create your
+                                    first WireGuard interface (e.g., wg0).</p>
+                            </div>
+                        </div>
+                        <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
+                            <span
+                                class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center"
+                                style="width:28px;height:28px;flex-shrink:0;">3</span>
+                            <div>
+                                <strong>Set Your Server FQDN</strong>
+                                <p class="text-muted small mb-0">In <a href="/">Wireguard</a> settings, enter your
+                                    server's public hostname or domain.</p>
+                            </div>
+                        </div>
+                        <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
+                            <span
+                                class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center"
+                                style="width:28px;height:28px;flex-shrink:0;">4</span>
+                            <div>
+                                <strong>Enable PresharedKey <span
+                                        class="badge bg-success-subtle text-success small">Recommended</span></strong>
+                                <p class="text-muted small mb-0">Enable PSK for extra post-quantum security when
+                                    creating peers.</p>
+                            </div>
+                        </div>
+                        <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
+                            <span
+                                class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center"
+                                style="width:28px;height:28px;flex-shrink:0;">5</span>
+                            <div>
+                                <strong>Add Your First Peer</strong>
+                                <p class="text-muted small mb-0">Go to <a href="/peers">Peers</a> and create VPN clients
+                                    for your devices.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-0 pt-0 justify-content-between">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="wbOnboardingDismiss">
+                        <label class="form-check-label text-muted small" for="wbOnboardingDismiss">Don't show
+                            again</label>
+                    </div>
+                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Got it!</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/vendor/bootstrap.bundle.min.js"></script>
+    <script>
+        // Theme management
+        function getPreferredTheme() {
+            const stored = localStorage.getItem('theme');
+            if (stored) return stored;
+            return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+
+        function setTheme(theme) {
+            document.documentElement.setAttribute('data-bs-theme', theme);
+            localStorage.setItem('theme', theme);
+            const icon = document.getElementById('theme-icon');
+            if (icon) {
+                icon.textContent = theme === 'dark' ? 'light_mode' : 'dark_mode';
+                // Update button aria-label, not just icon
+                const btn = icon.closest('button');
+                if (btn) {
+                    btn.setAttribute('aria-label', `Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`);
+                }
+            }
+        }
+
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-bs-theme');
+            setTheme(current === 'dark' ? 'light' : 'dark');
+        }
+
+        // Initialize theme
+        setTheme(getPreferredTheme());
+
+        /* ── Onboarding Modal ── */
+        (function () {
+            const ONBOARDING_KEY = 'wb_onboarding_dismissed';
+            const SESSION_KEY = 'wb_onboarding_shown';
+            const MAX_SHOW_ATTEMPTS = 4;
+            let showAttempts = 0;
+            let showTimer = null;
+            let safetyTimer = null;
+
+            // Don't show if permanently dismissed or already shown this session
+            if (localStorage.getItem(ONBOARDING_KEY)) return;
+            if (sessionStorage.getItem(SESSION_KEY)) return;
+
+            const onboardingEl = document.getElementById('wbOnboardingModal');
+            if (!onboardingEl) return;
+
+            const onboardingModal = bootstrap.Modal.getOrCreateInstance(onboardingEl);
+            const dismissCheckbox = document.getElementById('wbOnboardingDismiss');
+
+            onboardingEl.addEventListener('show.bs.modal', function () {
+                document.body.classList.add('wb-onboarding');
+            });
+
+            onboardingEl.addEventListener('shown.bs.modal', function () {
+                // Mark only after it is actually visible
+                sessionStorage.setItem(SESSION_KEY, '1');
+            });
+
+            onboardingEl.addEventListener('hidden.bs.modal', function () {
+                document.body.classList.remove('wb-onboarding');
+                if (dismissCheckbox && dismissCheckbox.checked) {
+                    localStorage.setItem(ONBOARDING_KEY, '1');
+                }
+            });
+
+            function scheduleShow(delayMs) {
+                if (showTimer) {
+                    clearTimeout(showTimer);
+                }
+                showTimer = setTimeout(tryShowOnboarding, delayMs);
+            }
+
+            function tryShowOnboarding() {
+                if (localStorage.getItem(ONBOARDING_KEY)) return;
+                if (sessionStorage.getItem(SESSION_KEY)) return;
+                if (onboardingEl.classList.contains('show')) return;
+                if (showAttempts >= MAX_SHOW_ATTEMPTS) return;
+
+                // Avoid showing onboarding on top of another modal.
+                const otherOpenModal = document.querySelector('.modal.show:not(#wbOnboardingModal)');
+                if (otherOpenModal) {
+                    showAttempts++;
+                    scheduleShow(700);
+                    return;
+                }
+
+                showAttempts++;
+                onboardingModal.show();
+
+                // Mobile safety net: retry if Bootstrap did not display modal.
+                if (safetyTimer) clearTimeout(safetyTimer);
+                safetyTimer = setTimeout(() => {
+                    safetyTimer = null;
+                    if (!localStorage.getItem(ONBOARDING_KEY)
+                        && !sessionStorage.getItem(SESSION_KEY)
+                        && !onboardingEl.classList.contains('show')
+                        && showAttempts < MAX_SHOW_ATTEMPTS) {
+                        scheduleShow(450);
+                    }
+                }, 450);
+            }
+
+            // Show after a short delay to let page render.
+            scheduleShow(500);
+
+            // Retry once tab becomes visible again (mobile browser quirk).
+            document.addEventListener('visibilitychange', function () {
+                if (document.hidden) return;
+                if (localStorage.getItem(ONBOARDING_KEY)) return;
+                if (sessionStorage.getItem(SESSION_KEY)) return;
+                if (onboardingEl.classList.contains('show')) return;
+                if (showAttempts >= MAX_SHOW_ATTEMPTS) return;
+                scheduleShow(200);
+            });
+        })();
+
+        /* ── Modal helpers (replace alert / confirm / prompt) ── */
+        const _wbModalEl = document.getElementById('wbModal');
+        const _wbModal = new bootstrap.Modal(_wbModalEl);
+        const _wbReconnectEl = document.getElementById('wbReconnectModal');
+        const _wbReconnectModal = _wbReconnectEl ? new bootstrap.Modal(_wbReconnectEl) : null;
+        const _wbReconnectState = {
+            active: false,
+            timer: null,
+            delayMs: 2000,
+            pingUrl: '/api/wireguard/settings',
+            startupGraceMs: 8000,  // Don't show modal during first 8 seconds
+            startedAt: Date.now(),
+            failCount: 0,
+            lastFailAt: 0,
+            failThreshold: 3,  // Show modal after 3 separate failure batches
+        };
+
+        function _clearReconnectTimer() {
+            if (_wbReconnectState.timer) {
+                clearTimeout(_wbReconnectState.timer);
+                _wbReconnectState.timer = null;
+            }
+        }
+
+        function _stopReconnectMode() {
+            _clearReconnectTimer();
+            _wbReconnectState.active = false;
+            _wbReconnectState.failCount = 0;  // Reset fail count on recovery
+            document.body.classList.remove('wb-reconnecting');
+            if (_wbReconnectModal) _wbReconnectModal.hide();
+            window.dispatchEvent(new CustomEvent('wb:reconnect:stop'));
+        }
+
+        async function _probeReconnect() {
+            if (!_wbReconnectState.active) return;
+            try {
+                const headers = {
+                    'X-CSRF-Token': getCsrfToken(),
+                    'Cache-Control': 'no-cache',
+                };
+                const token = getAuthToken();
+                if (token) headers['Authorization'] = `Bearer ${token}`;
+
+                const res = await fetch(_wbReconnectState.pingUrl, {
+                    method: 'GET',
+                    headers,
+                    cache: 'no-store',
+                });
+                if (res.status === 401) {
+                    localStorage.removeItem('auth_token');
+                    window.location.href = '/login';
+                    return;
+                }
+                if (res.ok) {
+                    _stopReconnectMode();
+                    return;
+                }
+            } catch (_) {
+                // Keep polling while server is down.
+            }
+
+            _wbReconnectState.timer = setTimeout(_probeReconnect, _wbReconnectState.delayMs);
+        }
+
+        function _startReconnectMode() {
+            if (_wbReconnectState.active) return;
+
+            const now = Date.now();
+
+            // Debounce: parallel failures within 500ms count as one batch
+            if (now - (_wbReconnectState.lastFailAt || 0) > 500) {
+                _wbReconnectState.failCount++;
+            }
+            _wbReconnectState.lastFailAt = now;
+
+            // During startup grace period, require more consecutive failure batches
+            const timeSinceStart = now - _wbReconnectState.startedAt;
+            if (timeSinceStart < _wbReconnectState.startupGraceMs &&
+                _wbReconnectState.failCount < _wbReconnectState.failThreshold) {
+                console.debug('Reconnect: startup grace period, ignoring failure batch', _wbReconnectState.failCount);
+                return;  // Don't activate modal yet
+            }
+
+            _wbReconnectState.active = true;
+            document.body.classList.add('wb-reconnecting');
+            _wbModal.hide();
+            const toastContainer = document.getElementById('wbToastContainer');
+            if (toastContainer) toastContainer.innerHTML = '';
+            if (_wbReconnectModal) _wbReconnectModal.show();
+            window.dispatchEvent(new CustomEvent('wb:reconnect:start'));
+            _probeReconnect();
+        }
+
+        const _wbIcons = {
+            info: { icon: 'info', color: 'var(--wb-primary)' },
+            success: { icon: 'check_circle', color: 'var(--wb-success)' },
+            warning: { icon: 'warning', color: 'var(--wb-warning)' },
+            danger: { icon: 'error', color: 'var(--wb-danger)' },
+            confirm: { icon: 'help', color: 'var(--wb-primary)' },
+            prompt: { icon: 'edit', color: 'var(--wb-primary)' },
+        };
+
+        function _showModal({ title, message, type, showCancel, showInput, inputDefault, inputPlaceholder }) {
+            if (_wbReconnectState.active) {
+                if (showInput) return Promise.resolve(null);
+                if (showCancel) return Promise.resolve(false);
+                return Promise.resolve(true);
+            }
+            return new Promise(resolve => {
+                // Close non-form modals to prevent stacking, but preserve form modals
+                document.querySelectorAll('.modal.show').forEach(modal => {
+                    const bsModal = bootstrap.Modal.getInstance(modal);
+                    if (bsModal && modal.id !== 'wbModal' && !modal.querySelector('form')) {
+                        bsModal.hide();
+                    }
+                });
+
+                const cfg = _wbIcons[type] || _wbIcons.info;
+                document.getElementById('wbModalTitle').textContent = title;
+                document.getElementById('wbModalMessage').textContent = message;
+                const iconEl = document.getElementById('wbModalIcon');
+                iconEl.textContent = cfg.icon;
+                iconEl.style.color = cfg.color;
+
+                const cancelBtn = document.getElementById('wbModalCancel');
+                cancelBtn.classList.toggle('d-none', !showCancel);
+
+                const inputWrap = document.getElementById('wbModalInputWrap');
+                const inputEl = document.getElementById('wbModalInput');
+                inputWrap.classList.toggle('d-none', !showInput);
+                if (showInput) {
+                    inputEl.value = inputDefault || '';
+                    inputEl.placeholder = inputPlaceholder || '';
+                }
+
+                const okBtn = document.getElementById('wbModalOk');
+                okBtn.className = 'btn ' + (type === 'danger' ? 'btn-danger' : 'btn-primary');
+                okBtn.textContent = showCancel || showInput ? 'Confirm' : 'OK';
+
+                let settled = false;
+                function finish(val) {
+                    if (settled) return;
+                    settled = true;
+                    // Wait for modal to be fully hidden before resolving to prevent aria-hidden focus issues
+                    const modalEl = document.getElementById('wbModal');
+
+                    // If modal is already hidden, resolve immediately
+                    if (!modalEl.classList.contains('show')) {
+                        resolve(val);
+                        return;
+                    }
+
+                    // Set up event listener with fallback timeout
+                    const fallback = setTimeout(() => resolve(val), 500);
+                    modalEl.addEventListener('hidden.bs.modal', () => {
+                        clearTimeout(fallback);
+                        resolve(val);
+                    }, { once: true });
+                    _wbModal.hide();
+                }
+
+                okBtn.onclick = () => {
+                    if (showInput) finish(inputEl.value);
+                    else finish(true);
+                };
+
+                cancelBtn.onclick = () => finish(showInput ? null : false);
+                const closeBtn = document.getElementById('wbModalClose');
+                if (closeBtn) closeBtn.onclick = () => finish(showInput ? null : !showCancel);
+
+                // Handle enter key in prompt input
+                if (showInput) {
+                    inputEl.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); okBtn.click(); } };
+                }
+
+                _wbModal.show();
+                if (showInput) setTimeout(() => inputEl.focus(), 300);
+            });
+        }
+
+        /**
+         * Show an alert modal.  type = info | success | warning | danger
+         */
+        function wbAlert(message, type = 'info') {
+            const titles = { info: 'Info', success: 'Success', warning: 'Warning', danger: 'Error' };
+            return _showModal({ title: titles[type] || 'Info', message, type, showCancel: false, showInput: false });
+        }
+
+        /**
+         * Show a confirm modal.  Resolves true / false.
+         */
+        function wbConfirm(message, type = 'confirm') {
+            return _showModal({ title: 'Confirm', message, type, showCancel: true, showInput: false });
+        }
+
+        /**
+         * Show a prompt modal.  Resolves with the string value or null.
+         */
+        function wbPrompt(message, { defaultValue = '', placeholder = '' } = {}) {
+            return _showModal({ title: 'Input', message, type: 'prompt', showCancel: true, showInput: true, inputDefault: defaultValue, inputPlaceholder: placeholder });
+        }
+
+        /**
+         * Show a toast notification.  type = info | success | warning | danger
+         * Auto-dismisses after duration (ms). Returns immediately.
+         */
+        function wbToast(message, type = 'info', duration = 4000) {
+            if (_wbReconnectState.active) return;
+            const icons = { info: 'info', success: 'check_circle', warning: 'warning', danger: 'error' };
+            const colors = { info: 'var(--wb-primary)', success: 'var(--wb-success)', warning: 'var(--wb-warning)', danger: 'var(--wb-danger)' };
+            const bgClasses = { info: 'text-bg-primary', success: 'text-bg-success', warning: 'text-bg-warning', danger: 'text-bg-danger' };
+
+            const toastEl = document.createElement('div');
+            toastEl.className = `toast align-items-center border-0 ${bgClasses[type] || bgClasses.info}`;
+            toastEl.setAttribute('role', 'alert');
+            toastEl.setAttribute('aria-live', 'assertive');
+            toastEl.setAttribute('aria-atomic', 'true');
+
+            // Create elements safely to prevent XSS
+            const toastBody = document.createElement('div');
+            toastBody.className = 'toast-body d-flex align-items-center gap-2';
+
+            const iconSpan = document.createElement('span');
+            iconSpan.className = 'material-icons';
+            iconSpan.textContent = icons[type] || icons.info;
+
+            const messageSpan = document.createElement('span');
+            messageSpan.textContent = message;  // textContent is XSS-safe
+
+            toastBody.appendChild(iconSpan);
+            toastBody.appendChild(messageSpan);
+
+            const closeBtn = document.createElement('button');
+            closeBtn.type = 'button';
+            closeBtn.className = 'btn-close btn-close-white me-2 m-auto';
+            closeBtn.setAttribute('data-bs-dismiss', 'toast');
+            closeBtn.setAttribute('aria-label', 'Close');
+
+            const flexDiv = document.createElement('div');
+            flexDiv.className = 'd-flex';
+            flexDiv.appendChild(toastBody);
+            flexDiv.appendChild(closeBtn);
+
+            toastEl.appendChild(flexDiv);
+
+            document.getElementById('wbToastContainer').appendChild(toastEl);
+            const toast = new bootstrap.Toast(toastEl, { delay: duration });
+            toast.show();
+
+            toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+        }
+
+        // CSRF token helper
+        function getCsrfToken() {
+            return document.querySelector('meta[name="csrf-token"]')?.content || '';
+        }
+
+        // Auth token helper
+        function getAuthToken() {
+            return localStorage.getItem('auth_token');
+        }
+
+        // Logout
+        let _logoutInProgress = false;
+        async function logout() {
+            if (_logoutInProgress) return;
+            _logoutInProgress = true;
+
+            const token = getAuthToken();
+            localStorage.removeItem('auth_token');
+            sessionStorage.clear();  // Clear any sensitive cached data
+
+            try {
+                if (token) {
+                    // Best-effort logout call, don't block redirect on failure
+                    await fetch('/api/logout', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'X-CSRF-Token': getCsrfToken(),
+                        },
+                    }).catch(() => { });
+                }
+            } finally {
+                window.location.href = '/login';
+            }
+        }
+
+        // API helper
+        async function api(method, url, data = null, opts = {}) {
+            const headers = {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': getCsrfToken(),
+            };
+
+            const token = getAuthToken();
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+
+            const timeoutMs = Number.isFinite(Number(opts?.timeoutMs)) ? Number(opts.timeoutMs) : 15000;
+            const externalSignal = opts?.signal || null;
+            const controller = new AbortController();
+            let timeoutAbort = false;
+            let timeoutId = null;
+            let onExternalAbort = null;
+
+            if (externalSignal?.aborted) {
+                const abortedError = new Error('Request cancelled');
+                abortedError.code = 'ABORTED';
+                throw abortedError;
+            }
+            if (externalSignal) {
+                onExternalAbort = () => controller.abort();
+                externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+            }
+            if (timeoutMs > 0) {
+                timeoutId = setTimeout(() => {
+                    timeoutAbort = true;
+                    controller.abort();
+                }, timeoutMs);
+            }
+
+            const options = { method, headers, signal: controller.signal };
+            if (data !== null && data !== undefined) options.body = JSON.stringify(data);
+
+            let res;
+            try {
+                res = await fetch(url, options);
+            } catch (err) {
+                if (err?.name === 'AbortError' && externalSignal?.aborted && !timeoutAbort) {
+                    const abortedError = new Error('Request cancelled');
+                    abortedError.code = 'ABORTED';
+                    throw abortedError;
+                }
+                // Timeout aborts are NOT network failures – don't trigger reconnect
+                if (err?.name === 'AbortError' && timeoutAbort) {
+                    throw new Error('Request timed out');
+                }
+                // Actual network failure (connection refused, DNS, etc.)
+                _startReconnectMode();
+                throw new Error('Trying to reconnect ...');
+            } finally {
+                if (timeoutId) clearTimeout(timeoutId);
+                if (externalSignal && onExternalAbort) {
+                    externalSignal.removeEventListener('abort', onExternalAbort);
+                }
+            }
+
+            if ([502, 503, 504].includes(res.status)) {
+                _startReconnectMode();
+                throw new Error('Trying to reconnect ...');
+            } else if (res.ok) {
+                if (_wbReconnectState.active) {
+                    _stopReconnectMode();
+                }
+                _wbReconnectState.failCount = 0;  // Reset fail count on success
+            }
+
+            // Auto-redirect on 401 Unauthorized
+            if (res.status === 401) {
+                localStorage.removeItem('auth_token');
+                sessionStorage.clear();  // Clear any sensitive cached data
+                window.location.href = '/login';
+                const authError = new Error('Session expired');
+                authError.code = 'AUTH_EXPIRED';
+                throw authError;
+            }
+
+            const isJson = res.headers.get('content-type')?.includes('application/json');
+            const payload = isJson ? await res.json().catch(() => null) : null;
+
+            if (!res.ok) {
+                const msg = payload?.detail || payload?.message || 'Request failed';
+                throw new Error(msg);
+            }
+
+            if (res.status === 204) return null;
+
+            // Normalize API envelope: {status: "ok", data: ...}
+            // Always return the unwrapped data for consistency
+            if (payload && payload.status === 'ok') {
+                return payload.data ?? null;
+            }
+            return payload;
+        }
+
+
+    </script>
+    {% block extra_js %}{% endblock %}
+</body>
+
+</html>

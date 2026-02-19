@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*BUILD_INFO*
+full_codebase_*
+
+# Virtual Environment
+.venv/
+
+# Data
+data/
+data_local/
+*.db
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+BUILD_INFO
+
+# Environment (keep settings.env as template)
+.env

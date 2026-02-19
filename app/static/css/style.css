@@ -1,0 +1,924 @@
+/* =============================================================================
+   WireBuddy - Custom Styles
+   ============================================================================= */
+
+/* -----------------------------------------------------------------------------
+   CSS Variables (aligned with Bootstrap defaults)
+   ----------------------------------------------------------------------------- */
+:root {
+    --wb-primary: #88171a;
+    --wb-primary-hover: #6f1215;
+    --bs-primary: #88171a;
+    --bs-primary-rgb: 136, 23, 26;
+    --wb-success: #198754;
+    --wb-danger: #dc3545;
+    --wb-warning: #ffc107;
+    --wb-info: #0dcaf0;
+    --wb-secondary: #6c757d;
+    --wb-bg-soft: #f8f9fa;
+    --wb-bg-strong: #e9ecef;
+}
+
+[data-bs-theme="dark"] {
+    --wb-bg-soft: #1f2937;
+    --wb-bg-strong: #111827;
+}
+
+/* -----------------------------------------------------------------------------
+   Custom Fonts
+   ----------------------------------------------------------------------------- */
+@font-face {
+    font-family: 'Noto Serif';
+    src: url('/static/vendor/fonts/NotoSerif.woff') format('woff');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
+/* -----------------------------------------------------------------------------
+   Base Styles
+   ----------------------------------------------------------------------------- */
+h1 {
+    font-family: 'Noto Serif', serif;
+}
+
+/* Material Icons - Vertical Alignment */
+.material-icons {
+    vertical-align: middle;
+    color: currentColor;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+.btn .material-icons {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+html,
+body {
+    min-height: 100%;
+    margin: 0;
+}
+
+body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background-color: var(--bs-body-bg);
+}
+
+html:not(.login-page)[data-bs-theme="light"] body {
+    background: linear-gradient(180deg, #f8fbff 0%, #e8eef6 52%, #dde6f0 100%);
+}
+
+html:not(.login-page)[data-bs-theme="dark"] body {
+    background: var(--bs-body-bg);
+}
+
+html:not(.login-page)[data-bs-theme="dark"] .main-content {
+    background-color: var(--bs-body-bg);
+}
+
+/* -----------------------------------------------------------------------------
+   Login Page
+   ----------------------------------------------------------------------------- */
+html.login-page {
+    height: 100%;
+}
+
+html.login-page body {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100vh;
+    height: 100svh;
+    height: 100dvh;
+    min-height: 100vh;
+    min-height: 100svh;
+    min-height: 100dvh;
+    padding-top: calc(1rem + env(safe-area-inset-top));
+    padding-right: calc(1rem + env(safe-area-inset-right));
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+    padding-left: calc(1rem + env(safe-area-inset-left));
+    overflow-y: auto;
+}
+
+/* iOS-specific fixes for login page */
+@supports (-webkit-touch-callout: none) {
+    html.login-page {
+        height: -webkit-fill-available;
+    }
+
+    html.login-page body {
+        height: -webkit-fill-available;
+        min-height: 100vh;
+        min-height: -webkit-fill-available;
+    }
+}
+
+/* Ensure scrollability on mobile when keyboard appears */
+@media (max-width: 767.98px) {
+    html.login-page body {
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+}
+
+html.login-page[data-bs-theme="light"] body {
+    background: linear-gradient(135deg, #88171a 0%, #b73639 100%);
+}
+
+html.login-page[data-bs-theme="dark"] body {
+    background: linear-gradient(135deg, #581012 0%, #88171a 100%);
+}
+
+.login-card {
+    max-width: 400px;
+    width: 100%;
+    margin: 0;
+    /* Ensure card is scrollable within viewport on mobile */
+    max-height: calc(100vh - 2rem);
+    max-height: calc(100svh - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    max-height: calc(100dvh - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    overflow-y: auto;
+}
+
+.logo-icon {
+    font-size: 3rem;
+    color: var(--wb-primary);
+}
+
+/* Logo theming - invert for visibility based on theme */
+.logo-themed {
+    filter: invert(0) drop-shadow(0 2px 4px rgba(0, 0, 0, 0.18));
+}
+
+[data-bs-theme="dark"] .logo-themed {
+    filter: invert(1) drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
+}
+
+.login-tagline {
+    color: var(--bs-secondary-color);
+}
+
+html.login-page[data-bs-theme="dark"] .login-tagline {
+    color: #fff;
+}
+
+/* -----------------------------------------------------------------------------
+   Cards
+   ----------------------------------------------------------------------------- */
+.card {
+    border: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    border-radius: 1rem;
+}
+
+html.login-page .login-card {
+    box-shadow: 0 20px 48px -18px rgba(5, 23, 49, 0.45), 0 8px 18px rgba(5, 23, 49, 0.2);
+}
+
+html:not(.login-page)[data-bs-theme="dark"] .card {
+    background-color: var(--bs-body-bg) !important;
+    border-color: rgba(255, 255, 255, 0.14) !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+[data-bs-theme="dark"] .card {
+    background-color: #1f2937 !important;
+    border-color: #374151 !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+html.login-page[data-bs-theme="dark"] .login-card {
+    box-shadow: 0 22px 52px -20px rgba(0, 0, 0, 0.75), 0 10px 20px rgba(0, 0, 0, 0.45);
+}
+
+html:not(.login-page)[data-bs-theme="dark"] .card-header {
+    background-color: var(--bs-body-bg) !important;
+    border-bottom-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+[data-bs-theme="dark"] .card-header {
+    background-color: #1f2937 !important;
+    border-bottom-color: #374151 !important;
+}
+
+html:not(.login-page)[data-bs-theme="dark"] .card-body {
+    background-color: var(--bs-body-bg) !important;
+}
+
+[data-bs-theme="dark"] .card-body {
+    background-color: #1f2937 !important;
+}
+
+html:not(.login-page)[data-bs-theme="dark"] .card .table {
+    --bs-table-bg: var(--bs-body-bg);
+    --bs-table-striped-bg: rgba(255, 255, 255, 0.02);
+    --bs-table-hover-bg: rgba(255, 255, 255, 0.04);
+    color: var(--bs-body-color);
+}
+
+[data-bs-theme="dark"] .card .table {
+    --bs-table-bg: #1f2937;
+    --bs-table-striped-bg: rgba(255, 255, 255, 0.02);
+    --bs-table-hover-bg: rgba(255, 255, 255, 0.04);
+    color: var(--bs-body-color);
+}
+
+/* Dark mode table-danger (blocked DNS queries) */
+[data-bs-theme="dark"] .table-danger {
+    --bs-table-color: #f3f4f6;
+    --bs-table-bg: rgba(220, 53, 69, 0.15);
+    --bs-table-border-color: rgba(220, 53, 69, 0.3);
+    --bs-table-striped-bg: rgba(220, 53, 69, 0.2);
+    --bs-table-striped-color: #f3f4f6;
+    --bs-table-hover-bg: rgba(220, 53, 69, 0.25);
+    --bs-table-hover-color: #f3f4f6;
+    color: var(--bs-table-color);
+}
+
+[data-bs-theme="dark"] .table-danger td,
+[data-bs-theme="dark"] .table-danger th {
+    color: #f3f4f6 !important;
+}
+
+[data-bs-theme="dark"] .table-danger code,
+[data-bs-theme="dark"] .table-danger .text-muted {
+    color: #d1d5db !important;
+}
+
+/* -----------------------------------------------------------------------------
+   Badges
+   ----------------------------------------------------------------------------- */
+.badge {
+    box-shadow:
+        0 1px 2px rgba(15, 23, 42, 0.18),
+        inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+[data-bs-theme="dark"] .badge {
+    box-shadow:
+        0 1px 2px rgba(0, 0, 0, 0.42),
+        inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+/* -----------------------------------------------------------------------------
+   Forms (Dark Mode)
+   ----------------------------------------------------------------------------- */
+[data-bs-theme="dark"] .form-control {
+    background-color: #374151;
+    border-color: #4b5563;
+    color: #f3f4f6;
+}
+
+[data-bs-theme="dark"] .form-control:focus {
+    background-color: #4b5563;
+    border-color: var(--wb-primary);
+    color: #f3f4f6;
+}
+
+.form-check-input:checked {
+    background-color: var(--wb-primary);
+    border-color: var(--wb-primary);
+}
+
+.form-switch .form-check-input:focus {
+    border-color: rgba(var(--bs-primary-rgb), 0.55);
+    box-shadow: 0 0 0 0.2rem rgba(var(--bs-primary-rgb), 0.22);
+}
+
+/* -----------------------------------------------------------------------------
+   Buttons – Unified Style
+   ----------------------------------------------------------------------------- */
+
+/* Base: every .btn gets transparent bg, grey border, rounded, shadow, spacing */
+.btn {
+    background-color: transparent;
+    border: 1px solid #ced4da;
+    border-radius: 0.5rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    color: var(--bs-body-color);
+    transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s, color 0.15s;
+}
+
+.btn:hover {
+    background-color: rgba(0, 0, 0, 0.04);
+    border-color: #adb5bd;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+    color: var(--bs-body-color);
+}
+
+.btn:focus-visible {
+    outline: 2px solid var(--wb-primary);
+    outline-offset: 2px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.btn:active {
+    background-color: rgba(0, 0, 0, 0.07);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+/* Dark mode base */
+[data-bs-theme="dark"] .btn {
+    border-color: #495057;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    color: #dee2e6;
+}
+
+[data-bs-theme="dark"] .btn:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+    border-color: #6c757d;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+    color: #f8f9fa;
+}
+
+[data-bs-theme="dark"] .btn:active {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* ── Primary action buttons (filled: login, create, save, modal OK) ───────── */
+.btn-primary {
+    background-color: var(--wb-primary) !important;
+    border-color: var(--wb-primary) !important;
+    color: #fff !important;
+    box-shadow: 0 1px 3px rgba(136, 23, 26, 0.2);
+}
+
+.btn-primary:hover {
+    background-color: var(--wb-primary-hover) !important;
+    border-color: var(--wb-primary-hover) !important;
+    color: #fff !important;
+    box-shadow: 0 2px 6px rgba(136, 23, 26, 0.3);
+}
+
+.btn-primary:focus {
+    box-shadow: 0 0 0 0.25rem rgba(136, 23, 26, 0.25);
+}
+
+/* ── Delete / danger buttons ─────────────────────────────────────────────── */
+.btn-danger,
+.btn-outline-danger {
+    background-color: transparent !important;
+    border-color: var(--wb-danger) !important;
+    color: var(--wb-danger) !important;
+    box-shadow: 0 1px 3px rgba(220, 53, 69, 0.1);
+}
+
+.btn-danger:hover,
+.btn-outline-danger:hover {
+    background-color: var(--wb-danger) !important;
+    border-color: var(--wb-danger) !important;
+    color: #fff !important;
+    box-shadow: 0 2px 6px rgba(220, 53, 69, 0.25);
+}
+
+/* ── Secondary / cancel modal buttons ──────────────────────────────────── */
+.btn-secondary {
+    background-color: transparent !important;
+    border-color: #ced4da !important;
+    color: var(--bs-body-color) !important;
+}
+
+.btn-secondary:hover {
+    background-color: rgba(0, 0, 0, 0.04) !important;
+    border-color: #adb5bd !important;
+}
+
+[data-bs-theme="dark"] .btn-secondary {
+    border-color: #495057 !important;
+    color: #dee2e6 !important;
+}
+
+[data-bs-theme="dark"] .btn-secondary:hover {
+    background-color: rgba(255, 255, 255, 0.06) !important;
+    border-color: #6c757d !important;
+}
+
+/* ── Outline variants: all become transparent + grey, icons carry the colour */
+.btn-outline-primary,
+.btn-outline-secondary,
+.btn-outline-info,
+.btn-outline-success,
+.btn-outline-warning {
+    background-color: transparent !important;
+    border-color: #ced4da !important;
+    color: var(--bs-body-color) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.btn-outline-primary:hover,
+.btn-outline-secondary:hover,
+.btn-outline-info:hover,
+.btn-outline-success:hover,
+.btn-outline-warning:hover {
+    background-color: rgba(0, 0, 0, 0.04) !important;
+    border-color: #adb5bd !important;
+    color: var(--bs-body-color) !important;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+}
+
+[data-bs-theme="dark"] .btn-outline-primary,
+[data-bs-theme="dark"] .btn-outline-secondary,
+[data-bs-theme="dark"] .btn-outline-info,
+[data-bs-theme="dark"] .btn-outline-success,
+[data-bs-theme="dark"] .btn-outline-warning {
+    border-color: #495057 !important;
+    color: #dee2e6 !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+[data-bs-theme="dark"] .btn-outline-primary:hover,
+[data-bs-theme="dark"] .btn-outline-secondary:hover,
+[data-bs-theme="dark"] .btn-outline-info:hover,
+[data-bs-theme="dark"] .btn-outline-success:hover,
+[data-bs-theme="dark"] .btn-outline-warning:hover {
+    background-color: rgba(255, 255, 255, 0.06) !important;
+    border-color: #6c757d !important;
+    color: #f8f9fa !important;
+}
+
+/* ── DNS control buttons (play/stop/restart) ─────────────────────────────── */
+.btn-light,
+.dns-ctrl-btn {
+    background-color: transparent !important;
+    border-color: #ced4da !important;
+    color: var(--bs-body-color) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.btn-light:hover,
+.dns-ctrl-btn:hover {
+    background-color: rgba(0, 0, 0, 0.04) !important;
+    border-color: #adb5bd !important;
+}
+
+[data-bs-theme="dark"] .btn-light,
+[data-bs-theme="dark"] .dns-ctrl-btn {
+    background-color: transparent !important;
+    border-color: #495057 !important;
+    color: #dee2e6 !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+[data-bs-theme="dark"] .btn-light:hover,
+[data-bs-theme="dark"] .dns-ctrl-btn:hover {
+    background-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+/* ── PSK generate (warning) ──────────────────────────────────────────────── */
+.btn-warning {
+    background-color: transparent !important;
+    border-color: var(--wb-warning) !important;
+    color: #856404 !important;
+    box-shadow: 0 1px 3px rgba(255, 193, 7, 0.15);
+}
+
+.btn-warning:hover {
+    background-color: var(--wb-warning) !important;
+    border-color: var(--wb-warning) !important;
+    color: #212529 !important;
+}
+
+[data-bs-theme="dark"] .btn-warning {
+    color: #ffc107 !important;
+}
+
+[data-bs-theme="dark"] .btn-warning:hover {
+    color: #212529 !important;
+}
+
+/* ── Navbar logout button (stays white on blue) ──────────────────────────── */
+.navbar .btn-outline-light {
+    background-color: transparent !important;
+    border-color: rgba(255, 255, 255, 0.4) !important;
+    color: #fff !important;
+    box-shadow: none;
+}
+
+.navbar .btn-outline-light:hover {
+    background-color: rgba(255, 255, 255, 0.12) !important;
+    border-color: rgba(255, 255, 255, 0.6) !important;
+    color: #fff !important;
+}
+
+/* ── btn-group / pagination: tighter spacing inside groups ────────────────── */
+.btn-group>.btn {
+    border-radius: 0;
+    box-shadow: none;
+}
+
+.btn-group>.btn:first-child {
+    border-top-left-radius: 0.5rem;
+    border-bottom-left-radius: 0.5rem;
+}
+
+.btn-group>.btn:last-child {
+    border-top-right-radius: 0.5rem;
+    border-bottom-right-radius: 0.5rem;
+}
+
+/* Theme toggle radio buttons (Settings page) */
+.btn-group .btn-check+.btn {
+    box-shadow: none;
+}
+
+.btn-group .btn-check:checked+.btn-outline-secondary {
+    background-color: var(--wb-primary) !important;
+    border-color: var(--wb-primary) !important;
+    color: #fff !important;
+}
+
+/* ── Spacing utility: action buttons in inline rows ──────────────────────── */
+.d-flex.gap-1>.btn,
+.d-flex.gap-2>.btn,
+.btn-group-sm>.btn {
+    margin: 0;
+    /* gap handles spacing */
+}
+
+/* Ensure .gap-2 on button rows */
+td .d-flex.gap-1 {
+    gap: 0.4rem !important;
+}
+
+/* -----------------------------------------------------------------------------
+   Navbar
+   ----------------------------------------------------------------------------- */
+.navbar {
+    background: linear-gradient(135deg, var(--wb-primary) 0%, #b73639 100%);
+    flex-shrink: 0;
+}
+
+.navbar-brand {
+    font-weight: 700;
+    letter-spacing: -0.5px;
+}
+
+.navbar-logo {
+    height: 48px;
+    width: auto;
+    filter: brightness(0) invert(1) drop-shadow(0 1px 0 rgba(0, 0, 0, 0.5)) drop-shadow(0 2px 2px rgba(0, 0, 0, 0.7));
+    transition: transform 0.1s ease-in-out;
+}
+
+.navbar-logo:hover {
+    animation: shake 0.5s ease-in-out;
+}
+
+@keyframes shake {
+
+    0%,
+    100% {
+        transform: translateX(0) rotate(0deg);
+    }
+
+    10%,
+    30%,
+    50%,
+    70%,
+    90% {
+        transform: translateX(-2px) rotate(-1deg);
+    }
+
+    20%,
+    40%,
+    60%,
+    80% {
+        transform: translateX(2px) rotate(1deg);
+    }
+}
+
+.navbar .nav-item {
+    display: flex;
+    align-items: center;
+}
+
+.navbar .nav-link {
+    display: flex;
+    align-items: center;
+}
+
+.navbar .navbar-actions {
+    gap: 0.85rem;
+}
+
+.navbar .navbar-user-label {
+    margin: 0;
+    font-weight: 600;
+    line-height: 1;
+}
+
+.navbar .navbar-theme-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.4rem;
+    min-height: 1.4rem;
+    text-decoration: none;
+}
+
+.navbar .navbar-theme-btn .material-icons {
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.navbar .navbar-logout-btn {
+    gap: 0.35rem;
+    padding: 0.34rem 0.68rem;
+}
+
+.navbar .navbar-logout-icon {
+    font-size: 18px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+}
+
+.navbar .navbar-logout-label {
+    font-weight: 600;
+    line-height: 1;
+}
+
+@media (max-width: 991.98px) {
+    .navbar .container-fluid {
+        padding-left: 1.5rem;
+        padding-right: 1.5rem;
+    }
+}
+
+/* Align top logo with desktop sidebar menu content start */
+@media (min-width: 992px) {
+    .navbar .container-fluid {
+        padding-left: 1.5rem;
+        padding-right: 1.5rem;
+    }
+
+    .navbar .navbar-actions {
+        gap: 0.85rem;
+    }
+
+    .navbar .navbar-user-label {
+        margin: 0;
+    }
+}
+
+/* -----------------------------------------------------------------------------
+   Sidebar
+   ----------------------------------------------------------------------------- */
+.sidebar {
+    background-color: #f8f9fa;
+    border-right: 1px solid #e5e7eb;
+    flex-shrink: 0;
+}
+
+[data-bs-theme="dark"] .sidebar {
+    background-color: var(--bs-body-bg);
+    border-right-color: #374151;
+}
+
+.sidebar .nav-link {
+    color: #4b5563;
+    padding: 0.75rem 1rem;
+    border-radius: 0.5rem;
+    margin: 0.25rem 0.5rem;
+    transition: background-color 0.15s ease-in-out;
+}
+
+.sidebar .nav-link:hover {
+    background-color: #e5e7eb;
+}
+
+[data-bs-theme="dark"] .sidebar .nav-link {
+    color: #9ca3af;
+}
+
+[data-bs-theme="dark"] .sidebar .nav-link:hover {
+    background-color: #374151;
+}
+
+.sidebar .nav-link.active {
+    background-color: var(--wb-primary);
+    color: white;
+}
+
+.sidebar .nav-link:focus-visible {
+    outline: 2px solid var(--wb-primary);
+    outline-offset: -2px;
+}
+
+.sidebar .nav-link .material-icons {
+    font-size: 20px;
+    vertical-align: middle;
+    margin-right: 0.5rem;
+}
+
+/* -----------------------------------------------------------------------------
+   Main Content
+   ----------------------------------------------------------------------------- */
+.main-content {
+    flex: 1;
+    min-width: 0;
+    /* Prevent flex overflow bugs */
+    padding: 1.5rem;
+    overflow-y: auto;
+}
+
+/* -----------------------------------------------------------------------------
+   Status Indicators
+   ----------------------------------------------------------------------------- */
+.status-up {
+    color: var(--wb-success);
+}
+
+.status-down {
+    color: var(--wb-danger);
+}
+
+.status-warning {
+    color: var(--wb-warning);
+}
+
+/* -----------------------------------------------------------------------------
+   Theme Toggle
+   ----------------------------------------------------------------------------- */
+.theme-toggle {
+    cursor: pointer;
+    padding: 0.5rem;
+    border-radius: 0.375rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.15s ease-in-out;
+}
+
+.theme-toggle:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-bs-theme="dark"] .theme-toggle:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+.theme-toggle:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.5);
+    outline-offset: 2px;
+}
+
+/* -----------------------------------------------------------------------------
+   Toasts
+   ----------------------------------------------------------------------------- */
+.toast {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+
+[data-bs-theme="dark"] .toast {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+}
+
+/* -----------------------------------------------------------------------------
+   Footer
+   ----------------------------------------------------------------------------- */
+.wb-footer {
+    padding: 0.75rem 1.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 0.75rem;
+    line-height: 1.25;
+    color: var(--bs-secondary-color);
+    background: var(--bs-body-bg);
+    border-top: 1px solid var(--bs-border-color);
+    flex-shrink: 0;
+    margin-top: auto;
+}
+
+.wb-footer-content {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    row-gap: 0.15rem;
+    column-gap: 0;
+}
+
+.wb-footer-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: inherit;
+    line-height: inherit;
+}
+
+.wb-footer-link:hover,
+.wb-footer-link:focus,
+.wb-footer-link:active,
+.wb-footer-link:visited {
+    color: inherit;
+}
+
+.wb-footer-link-icon {
+    width: 14px;
+    height: 14px;
+    display: block;
+    flex: 0 0 14px;
+}
+
+/* Footer slide-in animation on mobile */
+@media (max-width: 767.98px) {
+    .wb-footer {
+        animation: footerSlideIn 0.35s ease-out;
+    }
+}
+
+@keyframes footerSlideIn {
+    from {
+        transform: translateY(100%);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+/* -----------------------------------------------------------------------------
+   Mobile Touch Improvements
+   ----------------------------------------------------------------------------- */
+@media (max-width: 991.98px) {
+
+    /* Larger touch targets for mobile navigation */
+    .navbar-nav .nav-link {
+        padding: 0.75rem 1rem;
+    }
+
+    /* Better touch target for logout button */
+    .navbar .btn-outline-light {
+        padding: 0.5rem 0.75rem;
+    }
+}
+
+/* -----------------------------------------------------------------------------
+   Alerts
+   ----------------------------------------------------------------------------- */
+html.login-page .alert {
+    display: none;
+}
+
+/* -----------------------------------------------------------------------------
+   Leaflet Map Dark Mode Adjustments
+   ----------------------------------------------------------------------------- */
+[data-bs-theme="dark"] .leaflet-bar {
+    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.8);
+}
+
+[data-bs-theme="dark"] .leaflet-bar a {
+    background-color: #343a40 !important;
+    border-bottom: 1px solid #495057 !important;
+    color: #dee2e6 !important;
+}
+
+[data-bs-theme="dark"] .leaflet-bar a:hover,
+[data-bs-theme="dark"] .leaflet-bar a:focus {
+    background-color: #495057 !important;
+    color: #fff !important;
+}
+
+[data-bs-theme="dark"] .leaflet-bar a.leaflet-disabled {
+    background-color: #2b3035 !important;
+    color: #6c757d !important;
+}
+
+[data-bs-theme="dark"] .leaflet-popup-content-wrapper {
+    background-color: #1f2937;
+    color: #f3f4f6;
+    border: 1px solid #374151;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+[data-bs-theme="dark"] .leaflet-popup-tip {
+    background-color: #1f2937;
+    border: 1px solid #374151;
+}
+
+[data-bs-theme="dark"] .leaflet-popup-content {
+    color: #f3f4f6;
+}
+
+[data-bs-theme="dark"] .leaflet-popup-content strong {
+    color: #ffffff;
+}
+
+[data-bs-theme="dark"] .leaflet-popup-content .text-muted {
+    color: #c7d2e0 !important;
+}

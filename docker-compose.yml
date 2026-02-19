@@ -1,0 +1,37 @@
+services:
+  wirebuddy:
+    image: docker.cirrio.de/wirebuddy:latest
+    container_name: wirebuddy
+    restart: always
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv4.conf.all.forwarding=1
+      - net.ipv6.conf.all.forwarding=1
+    dns:
+      - 1.1.1.1
+      - 9.9.9.9
+    environment:
+      LOG_LEVEL: DEBUG
+      WIREBUDDY_SECRET_KEY: "l+QGUq6BH9dLZkAQpG2jivXZeLLwYNMCmzUsfcD2wPM="
+      WIREBUDDY_DATA_DIR: /data
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./data:/data
+    ports:
+      - "4500:51820/udp"
+    networks:
+      cloudnet:
+        ipv4_address: 10.30.0.18
+networks:
+  cloudnet:
+    external: true

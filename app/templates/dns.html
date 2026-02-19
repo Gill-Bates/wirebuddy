@@ -1,0 +1,1316 @@
+{% extends "base.html" %}
+
+{% block title %}DNS – WireBuddy{% endblock %}
+
+{% block extra_css %}
+<style>
+    .dns-header {
+        row-gap: 0.5rem;
+    }
+
+    .dns-toolbar {
+        width: auto;
+    }
+
+    .dns-stat-hero {
+        height: 100%;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 1rem;
+        padding: 0.85rem 0.9rem;
+        background: var(--bs-tertiary-bg);
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+    }
+
+    .dns-stat-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: var(--bs-secondary-color);
+    }
+
+    .dns-stat-value {
+        font-size: 1.3rem;
+        font-weight: 600;
+        line-height: 1.1;
+    }
+
+    .dns-stat-icon {
+        font-size: 1.05rem;
+        color: currentColor;
+        opacity: 0.85;
+    }
+
+    .dns-card-title {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-weight: 700;
+    }
+
+    .dns-card-title .material-icons {
+        font-size: 1.15rem;
+        color: currentColor;
+        opacity: 0.85;
+    }
+
+    [data-bs-theme="dark"] .dns-stat-hero {
+        background: var(--bs-body-bg);
+        border-color: rgba(148, 163, 184, 0.25);
+        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.32);
+    }
+
+    .log-table {
+        font-size: 0.85rem;
+    }
+
+    .log-table td {
+        vertical-align: middle;
+        padding: 0.4rem 0.65rem;
+    }
+
+    .log-table th.log-col-resolver,
+    .log-table td.log-col-resolver {
+        width: 170px;
+        white-space: nowrap;
+    }
+
+    .log-domain {
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 0.82rem;
+        word-break: break-all;
+    }
+
+    .log-time-stack {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 0.25rem;
+        white-space: nowrap;
+    }
+
+    .log-time-date,
+    .log-time-clock {
+        display: inline;
+    }
+
+    .top-domain-bar {
+        height: 6px;
+        border-radius: 3px;
+        transition: width 0.4s ease;
+    }
+
+    #log-search {
+        max-width: 300px;
+    }
+
+    .top-domain-card-body {
+        height: 210px;
+        display: flex;
+        align-items: stretch;
+        overflow: hidden;
+    }
+
+    .top-domain-content {
+        display: flex;
+        align-items: stretch;
+        gap: 0.85rem;
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+    }
+
+    .top-domain-chart-wrap {
+        flex: 0 0 150px;
+        width: 150px;
+        height: 150px;
+        align-self: center;
+    }
+
+    .top-domain-legend {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        flex: 1 1 auto;
+        min-width: 0;
+        text-align: left;
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+        justify-content: flex-start;
+        max-height: 100%;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-gutter: stable;
+        padding-right: 0.2rem;
+    }
+
+    .top-domain-legend-item {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        min-width: 0;
+    }
+
+    .top-domain-legend-swatch {
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
+        flex: 0 0 auto;
+    }
+
+    .top-domain-legend-label {
+        display: block;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-size: 0.82rem;
+        color: var(--bs-body-color);
+    }
+
+    #log-table-wrap {
+        max-height: 340px;
+        overflow-y: auto;
+    }
+
+    #trend-chart-wrap {
+        position: relative;
+        height: min(260px, 40vh);
+    }
+
+    #dns-log-filters .form-select {
+        min-width: 120px;
+        max-width: 220px;
+    }
+
+    #dns-log-filters #peer-filter {
+        min-width: 140px;
+        max-width: 280px;
+    }
+
+    #dns-log-filters .form-control {
+        min-width: 120px;
+    }
+
+    @media (min-width: 992px) {
+        .log-filters-container {
+            flex-wrap: nowrap !important;
+        }
+
+        .top-domain-card-body {
+            height: 270px;
+        }
+
+        .top-domain-chart-wrap {
+            flex-basis: 170px;
+            width: 170px;
+            height: 170px;
+        }
+
+        #log-table-wrap {
+            max-height: 660px;
+        }
+
+        #dns-log-filters {
+            display: flex !important;
+            height: auto !important;
+            visibility: visible !important;
+        }
+    }
+
+    .dns-ctrl-btn {
+        background: transparent;
+        border: 1px solid #6c757d;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+    }
+
+    .dns-ctrl-btn:hover:not(:disabled) {
+        background: rgba(0, 0, 0, 0.04);
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    }
+
+    .dns-ctrl-btn:disabled {
+        opacity: 0.5;
+    }
+
+    @media (max-width: 991.98px) {
+        .dns-header {
+            flex-direction: column;
+            align-items: stretch !important;
+            row-gap: 0.75rem;
+            margin-bottom: 0.75rem !important;
+        }
+
+        .dns-header h1 {
+            width: 100%;
+            margin-bottom: 0;
+            line-height: 1.2;
+        }
+
+        .dns-toolbar {
+            width: 100%;
+            margin: 0;
+        }
+
+        .dns-toolbar {
+            display: grid !important;
+            grid-template-columns: 2.75rem minmax(0, 1fr);
+            align-items: stretch;
+            gap: 0.5rem !important;
+        }
+
+        .dns-toolbar>button,
+        .dns-toolbar>.dropdown,
+        .dns-toolbar>.btn-group {
+            width: 100%;
+        }
+
+        .dns-toolbar>button {
+            min-width: 2.75rem;
+            max-width: 2.75rem;
+            padding-left: 0;
+            padding-right: 0;
+        }
+
+        .dns-toolbar>.dropdown {
+            min-width: 0;
+        }
+
+        .dns-toolbar .btn {
+            justify-content: center;
+            min-height: 2.5rem;
+            border-radius: 0.6rem;
+        }
+
+        .dns-header + .mb-4 {
+            margin-bottom: 0.75rem !important;
+        }
+
+        .dns-header + .mb-4 .row {
+            --bs-gutter-y: 0.75rem;
+        }
+
+        #dns-log-filters {
+            width: 100%;
+        }
+
+        #dns-log-filters .log-filters-container {
+            width: 100%;
+            display: grid !important;
+            grid-template-columns: 1fr;
+            gap: 0.5rem;
+        }
+
+        #dns-log-filters .btn,
+        #dns-log-filters .form-select,
+        #dns-log-filters .form-control {
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+    }
+
+    @media (max-width: 575.98px) {
+        .dns-header .h3 {
+            font-size: 1.7rem;
+        }
+    }
+
+    @media (max-width: 767.98px) {
+        .top-domain-content {
+            gap: 0.65rem;
+        }
+
+        .top-domain-chart-wrap {
+            flex-basis: 130px;
+            width: 130px;
+            height: 130px;
+        }
+
+        #log-table-wrap {
+            max-height: 460px !important;
+        }
+
+        .log-table {
+            min-width: 100%;
+            width: 100%;
+            font-size: 0.78rem;
+            table-layout: fixed;
+        }
+
+        .log-table thead {
+            display: table-header-group;
+        }
+
+        .log-table tbody {
+            display: table-row-group;
+        }
+
+        .log-table tr {
+            display: table-row;
+            border-bottom: 1px solid var(--bs-border-color);
+        }
+
+        .log-table tr.log-empty-row {
+            display: table-row;
+        }
+
+        .log-table tr.log-empty-row td {
+            width: auto;
+            padding-left: 0.75rem;
+            padding-right: 0.75rem;
+        }
+
+        .log-table th,
+        .log-table td {
+            display: table-cell;
+            border: 0;
+            padding: 0.3rem 0.45rem;
+            vertical-align: top;
+        }
+
+        .log-table th.log-col-time,
+        .log-table td.log-col-time {
+            width: 5.7rem;
+            white-space: normal;
+        }
+
+        .log-table th.log-col-type,
+        .log-table td.log-col-type {
+            width: 3.2rem;
+            white-space: nowrap;
+            text-align: left;
+        }
+
+        .log-table th.log-col-resolver,
+        .log-table td.log-col-resolver {
+            display: none;
+        }
+
+        .log-table td::before {
+            content: none !important;
+        }
+
+        .log-table td>* {
+            margin-left: 0;
+            text-align: left;
+            max-width: 100%;
+        }
+
+        .log-table td .log-domain {
+            display: block;
+            line-height: 1.2;
+            word-break: break-all;
+        }
+
+        .log-table td small {
+            display: block;
+            font-size: 0.72rem;
+            line-height: 1.2;
+        }
+
+        .log-time-stack {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 0;
+            line-height: 1.1;
+            white-space: normal;
+        }
+
+        .log-time-date,
+        .log-time-clock {
+            display: block;
+        }
+
+        .log-table td code {
+            font-size: 0.72rem;
+            white-space: nowrap;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4 dns-header">
+    <h1 class="h3 mb-0"><span class="material-icons me-2">dns</span>DNS Ad-Blocker</h1>
+    <div class="d-flex gap-2 align-items-stretch dns-toolbar">
+        <button class="btn btn-sm btn-outline-primary" onclick="refreshAll()" aria-label="Refresh" title="Refresh">
+            <span class="material-icons align-middle" style="font-size:18px;">refresh</span>
+        </button>
+        <div class="d-none d-lg-flex gap-2" id="dns-controls">
+            <button class="btn btn-sm btn-light dns-ctrl-btn" id="btn-start" onclick="dnsAction('start')" disabled>
+                <span class="material-icons align-middle text-success me-1"
+                    style="font-size:18px;">play_arrow</span>Start
+            </button>
+            <button class="btn btn-sm btn-light dns-ctrl-btn" id="btn-stop" onclick="dnsAction('stop')" disabled>
+                <span class="material-icons align-middle text-danger me-1" style="font-size:18px;">stop</span>Stop
+            </button>
+            <button class="btn btn-sm btn-light dns-ctrl-btn" id="btn-restart" onclick="dnsAction('restart')">
+                <span class="material-icons align-middle text-warning me-1"
+                    style="font-size:18px;">restart_alt</span>Restart
+            </button>
+        </div>
+        <div class="dropdown d-lg-none">
+            <button class="btn btn-sm btn-outline-secondary dropdown-toggle w-100" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false">
+                <span class="material-icons align-middle me-1" style="font-size:18px;">tune</span>DNS Control
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end w-100">
+                <li><button class="dropdown-item" id="btn-start-mobile" onclick="dnsAction('start')" disabled>Start
+                        DNS</button>
+                </li>
+                <li><button class="dropdown-item" id="btn-stop-mobile" onclick="dnsAction('stop')" disabled>Stop
+                        DNS</button></li>
+                <li><button class="dropdown-item" id="btn-restart-mobile" onclick="dnsAction('restart')">Restart
+                        DNS</button></li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<div class="mb-4">
+    <div class="row g-3 align-items-stretch">
+        <div class="col-6 col-lg-2">
+            <div class="dns-stat-hero">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div class="dns-stat-label">Status</div>
+                    <span class="material-icons dns-stat-icon">dns</span>
+                </div>
+                <div class="dns-stat-value" id="stat-status"><span class="spinner-border spinner-border-sm"></span>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg-2">
+            <div class="dns-stat-hero">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div class="dns-stat-label">Queries</div>
+                    <span class="material-icons dns-stat-icon">query_stats</span>
+                </div>
+                <div class="dns-stat-value" id="stat-queries">&ndash;</div>
+            </div>
+        </div>
+        <div class="col-6 col-lg-2">
+            <div class="dns-stat-hero">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div class="dns-stat-label">Blocked</div>
+                    <span class="material-icons dns-stat-icon">block</span>
+                </div>
+                <div class="dns-stat-value text-danger" id="stat-blocked">&ndash;</div>
+            </div>
+        </div>
+        <div class="col-6 col-lg-2">
+            <div class="dns-stat-hero">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div class="dns-stat-label">% Blocked</div>
+                    <span class="material-icons dns-stat-icon">percent</span>
+                </div>
+                <div class="dns-stat-value text-danger" id="stat-percent">&ndash;</div>
+            </div>
+        </div>
+        <div class="col-6 col-lg-2">
+            <div class="dns-stat-hero">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div class="dns-stat-label">Domains</div>
+                    <span class="material-icons dns-stat-icon">public</span>
+                </div>
+                <div class="dns-stat-value" id="stat-domains">&ndash;</div>
+            </div>
+        </div>
+        <div class="col-6 col-lg-2">
+            <div class="dns-stat-hero">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div class="dns-stat-label">Blocklist</div>
+                    <span class="material-icons dns-stat-icon">list_alt</span>
+                </div>
+                <div class="dns-stat-value" id="stat-blocklist">&ndash;</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4 mb-4 align-items-stretch">
+    <div class="col-12 col-lg-6">
+        <div class="row g-4 h-100">
+            <div class="col-12 col-md-6 col-lg-6">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <h5 class="mb-0 dns-card-title">
+                            <span class="material-icons">query_stats</span>
+                            Top Queried Domains
+                        </h5>
+                    </div>
+                    <div class="card-body d-flex align-items-center justify-content-center top-domain-card-body">
+                        <div id="top-queried-content" class="top-domain-content">
+                            <div id="top-queried-chart-wrap"
+                                class="d-flex align-items-center justify-content-center top-domain-chart-wrap">
+                                <canvas id="top-queried-chart"></canvas>
+                            </div>
+                            <ul id="top-queried-legend" class="top-domain-legend"></ul>
+                        </div>
+                        <div id="top-queried-empty" class="text-muted d-none">No data available</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-md-6 col-lg-6">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <h5 class="mb-0 dns-card-title">
+                            <span class="material-icons">gpp_bad</span>
+                            Top Blocked Domains
+                        </h5>
+                    </div>
+                    <div class="card-body d-flex align-items-center justify-content-center top-domain-card-body">
+                        <div id="top-blocked-content" class="top-domain-content">
+                            <div id="top-blocked-chart-wrap"
+                                class="d-flex align-items-center justify-content-center top-domain-chart-wrap">
+                                <canvas id="top-blocked-chart"></canvas>
+                            </div>
+                            <ul id="top-blocked-legend" class="top-domain-legend"></ul>
+                        </div>
+                        <div id="top-blocked-empty" class="text-muted d-none">No data available</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12">
+                <div class="card h-100">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0 dns-card-title">
+                            <span class="material-icons">show_chart</span>
+                            Blockrate Trend (30 Days)
+                        </h5>
+                        <span class="text-muted small" id="trend-meta">Loading…</span>
+                    </div>
+                    <div class="card-body">
+                        <div id="trend-chart-wrap" style="height: 300px;">
+                            <canvas id="dnsTrendChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-lg-6">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <h5 class="mb-0 dns-card-title">
+                    <span class="material-icons">receipt_long</span>
+                    Query Log
+                </h5>
+                <button class="btn btn-sm btn-outline-secondary d-lg-none" data-bs-toggle="collapse"
+                    data-bs-target="#dns-log-filters" aria-expanded="false" aria-controls="dns-log-filters">
+                    <span class="material-icons align-middle me-1" style="font-size:18px;">filter_list</span>Filters
+                </button>
+                <div id="dns-log-filters" class="collapse">
+                    <div class="d-flex gap-2 align-items-center flex-wrap log-filters-container">
+                        <select id="log-filter" class="form-select form-select-sm" onchange="renderLogs()">
+                            <option value="all">All</option>
+                            <option value="blocked">Blocked only</option>
+                            <option value="allowed">Allowed only</option>
+                        </select>
+                        <select id="peer-filter" class="form-select form-select-sm" onchange="renderLogs()">
+                            <option value="all">All Peers</option>
+                        </select>
+                        <input type="search" id="log-search" class="form-control form-control-sm"
+                            placeholder="Filter domain…" oninput="debouncedRenderLogs()">
+                        <button class="btn btn-sm btn-outline-secondary" onclick="loadLogsOnly()">
+                            <span class="material-icons align-middle" style="font-size:18px;">refresh</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive" id="log-table-wrap">
+                    <table class="table table-hover log-table mb-0">
+                        <thead class="sticky-top bg-body">
+                            <tr>
+                                <th class="log-col-time" style="width:140px;">Time</th>
+                                <th class="log-col-domain">Domain</th>
+                                <th class="log-col-resolver">Resolver</th>
+                                <th class="log-col-type" style="width:60px;">Type</th>
+                            </tr>
+                        </thead>
+                        <tbody id="log-body">
+                            <tr>
+                                <td colspan="4" class="text-center py-4">
+                                    <div class="spinner-border spinner-border-sm"></div> Loading…
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/vendor/chart.umd.min.js"></script>
+<script src="/static/vendor/chartjs-plugin-datalabels.min.js"></script>
+<script>
+    const VALID_DNS_ACTIONS = ['start', 'stop', 'restart'];
+
+    let _logData = [];
+    let _peerMap = {};
+    let _trendChart = null;
+    const LOG_BATCH_SIZE = 50;  // Items to render per batch
+    const LOG_FETCH_LIMIT = 1000;  // Max items to fetch from API
+    let _renderedCount = 0;  // How many items currently rendered
+    let _filteredData = [];  // Filtered data for infinite scroll
+    let _isLoadingMore = false;  // Prevent concurrent loads
+    let _pollInterval = null;
+    let _pollCount = 0;
+    let _pollInProgress = false;
+    let _searchTimer = null;  // Debounce timer for search
+    let _scrollRaf = null;  // RAF handle for scroll throttle
+
+    function clearNode(el) {
+        while (el && el.firstChild) el.removeChild(el.firstChild);
+    }
+
+    function getChartThemeColors() {
+        const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+        return {
+            gridColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+            textColor: isDark ? '#9ca3af' : '#6b7280',
+        };
+    }
+
+    function applyTrendTheme() {
+        if (!_trendChart) return;
+        const { gridColor, textColor } = getChartThemeColors();
+        _trendChart.options.scales.y.grid.color = gridColor;
+        _trendChart.options.scales.y.ticks.color = textColor;
+        _trendChart.options.scales.y.title.color = textColor;
+        _trendChart.options.scales.y1.grid.color = gridColor;
+        _trendChart.options.scales.y1.ticks.color = textColor;
+        _trendChart.options.scales.y1.title.color = textColor;
+        _trendChart.options.plugins.legend.labels.color = textColor;
+        _trendChart.update();
+    }
+
+    function _fmtTrendLabel(isoStr) {
+        const d = new Date(isoStr);
+        // Format as day/month for 30-day view
+        return d.toLocaleDateString([], { day: '2-digit', month: 'short' });
+    }
+
+    function fmtNum(n) {
+        if (!Number.isFinite(n) || n <= 0) return '0';
+        if (n >= 999_500) return (n / 1_000_000).toFixed(1) + 'M';
+        if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+        return Math.floor(n).toString();
+    }
+
+    async function loadTrend() {
+        try {
+            // 30 days = 720 hours, bucket by day (1440 minutes)
+            const t = await api('GET', '/api/dns/trend?hours=720&bucket_minutes=1440');
+            const labels = (t.labels || []).map(_fmtTrendLabel);
+            const blocked = t.blocked || [];
+            const total = t.total || [];
+            const rate = t.block_rate || [];
+            const { gridColor, textColor } = getChartThemeColors();
+
+            const ctx = document.getElementById('dnsTrendChart').getContext('2d');
+            if (!_trendChart) {
+                _trendChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [
+                            {
+                                label: 'Blocked',
+                                data: blocked,
+                                borderColor: '#dc3545',
+                                backgroundColor: 'rgba(220, 53, 69, 0.12)',
+                                yAxisID: 'y',
+                                tension: 0.3,
+                                fill: true,
+                                pointRadius: 0,
+                            },
+                            {
+                                label: 'Total',
+                                data: total,
+                                borderColor: '#0d6efd',
+                                backgroundColor: 'transparent',
+                                yAxisID: 'y',
+                                tension: 0.3,
+                                pointRadius: 0,
+                            },
+                            {
+                                label: 'Blockrate %',
+                                data: rate,
+                                borderColor: '#198754',
+                                backgroundColor: 'transparent',
+                                yAxisID: 'y1',
+                                tension: 0.3,
+                                pointRadius: 0,
+                                borderDash: [6, 4],
+                            },
+                        ],
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        plugins: {
+                            legend: {
+                                labels: {
+                                    color: textColor,
+                                    usePointStyle: true,
+                                    pointStyle: 'rect',
+                                },
+                            },
+                        },
+                        scales: {
+                            x: {
+                                ticks: {
+                                    color: textColor,
+                                    maxRotation: 45,
+                                    autoSkip: true,
+                                    maxTicksLimit: 15,
+                                },
+                                grid: { display: false },
+                            },
+                            y: {
+                                beginAtZero: true,
+                                grid: { color: gridColor },
+                                ticks: { color: textColor },
+                                title: { display: true, text: 'Queries', color: textColor },
+                            },
+                            y1: {
+                                beginAtZero: true,
+                                max: 100,
+                                position: 'right',
+                                grid: { drawOnChartArea: false, color: gridColor },
+                                ticks: { callback: v => `${v}%`, color: textColor },
+                                title: { display: true, text: 'Blockrate %', color: textColor },
+                            },
+                        },
+                    },
+                });
+            } else {
+                _trendChart.data.labels = labels;
+                _trendChart.data.datasets[0].data = blocked;
+                _trendChart.data.datasets[1].data = total;
+                _trendChart.data.datasets[2].data = rate;
+                _trendChart.update();
+            }
+
+            const latest = rate.length ? rate[rate.length - 1] : 0;
+            document.getElementById('trend-meta').textContent = `Latest: ${latest}%`;
+        } catch (e) {
+            document.getElementById('trend-meta').textContent = 'Trend unavailable';
+        }
+    }
+
+    async function loadStats() {
+        try {
+            const s = await api('GET', '/api/dns/status');
+
+            document.getElementById('stat-status').innerHTML = s.is_running
+                ? '<span class="text-success">Active</span>'
+                : '<span class="text-danger">Off</span>';
+
+            document.getElementById('stat-queries').textContent = fmtNum(s.total_queries);
+            document.getElementById('stat-blocked').textContent = fmtNum(s.blocked_queries);
+            document.getElementById('stat-percent').textContent = s.block_percentage + '%';
+            document.getElementById('stat-domains').textContent = fmtNum(s.unique_domains);
+            document.getElementById('stat-blocklist').textContent =
+                Number.isFinite(s.blocklist_size) ? s.blocklist_size.toLocaleString() : '0';
+
+            document.getElementById('btn-start').disabled = s.is_running;
+            document.getElementById('btn-stop').disabled = !s.is_running;
+            const btnStartMobile = document.getElementById('btn-start-mobile');
+            const btnStopMobile = document.getElementById('btn-stop-mobile');
+            if (btnStartMobile) btnStartMobile.disabled = s.is_running;
+            if (btnStopMobile) btnStopMobile.disabled = !s.is_running;
+        } catch (e) {
+            document.getElementById('stat-status').innerHTML = '<span class="text-muted">?</span>';
+        }
+    }
+
+    async function loadTopDomains() {
+        try {
+            const data = await api('GET', '/api/dns/top-domains?limit=15');
+            const topQueried = data.top_queried || [];
+            const topBlocked = data.top_blocked || [];
+
+            // Render both as doughnut charts
+            renderQueriedDoughnut(topQueried);
+            renderBlockedDoughnut(topBlocked);
+        } catch (e) {
+            console.error('Top domains error:', e);
+        }
+    }
+
+    // Doughnut chart instances (wrapped for consistency)
+    const _queriedRef = { instance: null };
+    const _blockedRef = { instance: null };
+
+    // Shared color palettes (gray #6c757d reserved for "Other")
+    const GRAY_OTHER = '#6c757d';
+    const queriedColors = [
+        '#0d6efd', '#6f42c1', '#0dcaf0', '#198754', '#20c997',
+        '#ffc107', '#fd7e14', '#dc3545', '#d63384'
+    ];
+    const blockedColors = [
+        '#dc3545', '#fd7e14', '#ffc107', '#198754', '#0dcaf0',
+        '#0d6efd', '#6f42c1', '#d63384', '#20c997'
+    ];
+
+    function getChartColors(labels, palette) {
+        return labels.map((label, i) =>
+            label === 'Other' ? GRAY_OTHER : palette[i % palette.length]
+        );
+    }
+
+    function prepareDoughnutData(items) {
+        if (!items.length) return { labels: [], values: [], total: 0 };
+
+        const total = items.reduce((sum, d) => sum + Number(d.count || 0), 0);
+        const minPercent = 3;  // Items below 3% get grouped into "Other"
+        const maxSlices = 8;   // Maximum number of slices before grouping
+
+        let labels = [];
+        let values = [];
+        let otherCount = 0;
+
+        // Sort by count descending
+        const sorted = [...items].sort((a, b) => (b.count || 0) - (a.count || 0));
+
+        for (let i = 0; i < sorted.length; i++) {
+            const d = sorted[i];
+            const count = Number(d.count || 0);
+            const pct = total > 0 ? (count / total * 100) : 0;
+
+            if (pct < minPercent || labels.length >= maxSlices) {
+                otherCount += count;
+            } else {
+                labels.push(d.domain || 'Unknown');
+                values.push(count);
+            }
+        }
+
+        if (otherCount > 0) {
+            labels.push('Other');
+            values.push(otherCount);
+        }
+
+        return { labels, values, total };
+    }
+
+    function renderDoughnut({ items, chartRef, colors, contentId, chartWrapId, emptyId, legendId, canvasId }) {
+        const contentEl = document.getElementById(contentId);
+        const chartWrap = document.getElementById(chartWrapId);
+        const emptyEl = document.getElementById(emptyId);
+        const canvas = document.getElementById(canvasId);
+
+        if (!items.length) {
+            contentEl.classList.add('d-none');
+            chartWrap.classList.add('d-none');
+            emptyEl.classList.remove('d-none');
+            clearNode(document.getElementById(legendId));
+            if (chartRef.instance) {
+                chartRef.instance.destroy();
+                chartRef.instance = null;
+            }
+            return;
+        }
+
+        contentEl.classList.remove('d-none');
+        chartWrap.classList.remove('d-none');
+        emptyEl.classList.add('d-none');
+
+        const { labels, values, total } = prepareDoughnutData(items);
+        const chartColors = getChartColors(labels, colors);
+        renderDomainLegend(legendId, labels, values, chartColors);
+
+        if (chartRef.instance) {
+            chartRef.instance.destroy();
+        }
+
+        chartRef.instance = new Chart(canvas.getContext('2d'), {
+            type: 'doughnut',
+            data: {
+                labels,
+                datasets: [{
+                    data: values,
+                    backgroundColor: chartColors,
+                    borderWidth: 2,
+                    borderColor: getComputedStyle(document.body).getPropertyValue('--bs-body-bg') || '#fff'
+                }]
+            },
+            plugins: [ChartDataLabels],
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                cutout: '55%',
+                plugins: {
+                    datalabels: {
+                        color: '#fff',
+                        font: { weight: 'bold', size: 11 },
+                        formatter: (value) => fmtNum(value),
+                        display: (dCtx) => {
+                            const pct = dCtx.dataset.data[dCtx.dataIndex] / total * 100;
+                            return pct >= 5;
+                        }
+                    },
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label(context) {
+                                const value = context.raw || 0;
+                                const pct = total > 0 ? (value / total * 100).toFixed(1) : 0;
+                                return `${context.label}: ${fmtNum(value)} (${pct}%)`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    function renderDomainLegend(legendId, labels, values, colors) {
+        const legendEl = document.getElementById(legendId);
+        clearNode(legendEl);
+
+        const entries = labels.map((label, idx) => ({
+            label: label || 'Unknown',
+            value: Number(values?.[idx] || 0),
+            color: colors[idx] || '#6c757d',
+            idx,
+        }));
+
+        // Sort legend by frequency descending (stable for equal values).
+        entries.sort((a, b) => {
+            if (b.value !== a.value) return b.value - a.value;
+            return a.idx - b.idx;
+        });
+
+        entries.forEach((entry) => {
+            const li = document.createElement('li');
+            li.className = 'top-domain-legend-item';
+
+            const swatch = document.createElement('span');
+            swatch.className = 'top-domain-legend-swatch';
+            swatch.style.backgroundColor = entry.color;
+
+            const text = document.createElement('span');
+            text.className = 'top-domain-legend-label';
+            text.textContent = entry.label;
+            text.title = entry.label;
+
+            li.appendChild(swatch);
+            li.appendChild(text);
+            legendEl.appendChild(li);
+        });
+    }
+
+    function renderQueriedDoughnut(topQueried) {
+        renderDoughnut({
+            items: topQueried,
+            chartRef: _queriedRef,
+            colors: queriedColors,
+            contentId: 'top-queried-content',
+            chartWrapId: 'top-queried-chart-wrap',
+            emptyId: 'top-queried-empty',
+            legendId: 'top-queried-legend',
+            canvasId: 'top-queried-chart'
+        });
+    }
+
+    function renderBlockedDoughnut(topBlocked) {
+        renderDoughnut({
+            items: topBlocked,
+            chartRef: _blockedRef,
+            colors: blockedColors,
+            contentId: 'top-blocked-content',
+            chartWrapId: 'top-blocked-chart-wrap',
+            emptyId: 'top-blocked-empty',
+            legendId: 'top-blocked-legend',
+            canvasId: 'top-blocked-chart'
+        });
+    }
+
+    async function loadLogsOnly() {
+        try {
+            const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}`);
+            _logData = data.queries || [];
+            _renderedCount = 0;  // Reset for fresh render
+            renderLogs();
+        } catch (e) {
+            const tbody = document.getElementById('log-body');
+            clearNode(tbody);
+            const tr = document.createElement('tr');
+            tr.className = 'log-empty-row';
+            const td = document.createElement('td');
+            td.colSpan = 4;
+            td.className = 'text-center text-danger';
+            td.textContent = 'Failed to load logs';
+            tr.appendChild(td);
+            tbody.appendChild(tr);
+        }
+    }
+
+    async function loadPeers() {
+        try {
+            const data = await api('GET', '/api/wireguard/stats/peers-enriched');
+            const peers = data.peers || [];
+            const peerFilter = document.getElementById('peer-filter');
+            const previousValue = peerFilter.value || 'all';
+            _peerMap = {};
+
+            const seenNames = new Set();
+            clearNode(peerFilter);
+
+            const allOpt = document.createElement('option');
+            allOpt.value = 'all';
+            allOpt.textContent = 'All Peers';
+            peerFilter.appendChild(allOpt);
+
+            for (const peer of peers) {
+                const name = peer.name || peer.public_key?.substring(0, 8) || 'Unknown';
+                const addrParts = (peer.peer_address || '').split(',');
+                for (const part of addrParts) {
+                    const ip = part.trim().split('/')[0];
+                    if (ip) _peerMap[ip] = name;
+                }
+
+                if (peer.name && !seenNames.has(name)) {
+                    seenNames.add(name);
+                    const opt = document.createElement('option');
+                    opt.value = name;
+                    opt.textContent = name;
+                    peerFilter.appendChild(opt);
+                }
+            }
+
+            const exists = Array.from(peerFilter.options).some(opt => opt.value === previousValue);
+            peerFilter.value = exists ? previousValue : 'all';
+        } catch (e) {
+            console.error('Failed to load peers:', e);
+        }
+    }
+
+    function renderLogs(append = false) {
+        const filter = document.getElementById('log-filter').value;
+        const peerFilter = document.getElementById('peer-filter').value;
+        const search = document.getElementById('log-search').value.toLowerCase();
+        const tbody = document.getElementById('log-body');
+
+        // If not appending, reset and filter fresh
+        if (!append) {
+            _renderedCount = 0;
+            // Always create a copy to avoid reference issues
+            _filteredData = _logData.filter(q => {
+                if (filter === 'blocked' && !q.blocked) return false;
+                if (filter === 'allowed' && q.blocked) return false;
+                if (peerFilter !== 'all' && _peerMap[q.client] !== peerFilter) return false;
+                if (search && !(q.domain || '').toLowerCase().includes(search)) return false;
+                return true;
+            });
+            clearNode(tbody);
+
+            // Show empty message only on initial render
+            if (!_filteredData.length) {
+                const tr = document.createElement('tr');
+                tr.className = 'log-empty-row';
+                const td = document.createElement('td');
+                td.colSpan = 4;
+                td.className = 'text-center text-muted py-4';
+                td.textContent = 'No matching queries';
+                tr.appendChild(td);
+                tbody.appendChild(tr);
+                return;
+            }
+        }
+
+        // Guard for append mode
+        if (_renderedCount >= _filteredData.length) return;
+
+        const startIdx = _renderedCount;
+        const endIdx = Math.min(_renderedCount + LOG_BATCH_SIZE, _filteredData.length);
+        const batch = _filteredData.slice(startIdx, endIdx);
+
+        const frag = document.createDocumentFragment();
+        for (const q of batch) {
+            const tr = document.createElement('tr');
+            if (q.blocked) tr.className = 'table-danger bg-opacity-10';
+
+            const tdTime = document.createElement('td');
+            tdTime.setAttribute('data-label', 'Time');
+            tdTime.className = 'text-muted log-col-time';
+            const timestamp = String(q.timestamp || '');
+            const timeParts = timestamp.split(' ');
+            if (timeParts.length >= 2) {
+                const timeWrap = document.createElement('span');
+                timeWrap.className = 'log-time-stack';
+                const dateSpan = document.createElement('span');
+                dateSpan.className = 'log-time-date';
+                dateSpan.textContent = timeParts[0];
+                const clockSpan = document.createElement('span');
+                clockSpan.className = 'log-time-clock';
+                clockSpan.textContent = timeParts[1];
+                timeWrap.appendChild(dateSpan);
+                timeWrap.appendChild(clockSpan);
+                tdTime.appendChild(timeWrap);
+            } else {
+                tdTime.textContent = timestamp;
+            }
+
+            // Domain with client/peer info below in gray
+            const tdDomain = document.createElement('td');
+            tdDomain.setAttribute('data-label', 'Domain');
+            const domainWrap = document.createElement('div');
+            const domainText = document.createElement('span');
+            domainText.className = 'log-domain';
+            domainText.textContent = q.domain || '';
+            domainWrap.appendChild(domainText);
+
+            // Add client/peer info below domain
+            const peerName = _peerMap[q.client];
+            const clientInfo = document.createElement('small');
+            clientInfo.className = 'text-muted d-block';
+            clientInfo.textContent = peerName ? `${peerName} (${q.client})` : (q.client || '');
+            domainWrap.appendChild(clientInfo);
+            tdDomain.appendChild(domainWrap);
+
+            const tdType = document.createElement('td');
+            tdType.setAttribute('data-label', 'Type');
+            tdType.className = 'log-col-type';
+            const typeCode = document.createElement('code');
+            typeCode.textContent = q.type || '';
+            tdType.appendChild(typeCode);
+
+            const tdResolver = document.createElement('td');
+            tdResolver.setAttribute('data-label', 'Resolver');
+            tdResolver.className = 'log-col-resolver text-muted';
+            if (q.resolver) {
+                const resolverCode = document.createElement('code');
+                resolverCode.textContent = q.resolver;
+                tdResolver.appendChild(resolverCode);
+            } else {
+                tdResolver.textContent = '—';
+            }
+
+            tr.appendChild(tdTime);
+            tr.appendChild(tdDomain);
+            tr.appendChild(tdResolver);
+            tr.appendChild(tdType);
+            frag.appendChild(tr);
+        }
+
+        tbody.appendChild(frag);
+        _renderedCount = endIdx;
+    }
+
+    function debouncedRenderLogs() {
+        clearTimeout(_searchTimer);
+        _searchTimer = setTimeout(renderLogs, 250);
+    }
+
+    function loadMoreLogs() {
+        if (_isLoadingMore) return;
+        if (_renderedCount >= _filteredData.length) return;  // All rendered
+
+        _isLoadingMore = true;
+        renderLogs(true);  // Append mode
+        _isLoadingMore = false;
+    }
+
+    async function dnsAction(action) {
+        if (!VALID_DNS_ACTIONS.includes(action)) {
+            wbAlert('Invalid DNS action', 'danger');
+            return;
+        }
+
+        if (action === 'stop') {
+            if (!await wbConfirm('Stop the DNS resolver? VPN clients may lose DNS resolution.')) return;
+        }
+
+        try {
+            await api('POST', `/api/dns/${encodeURIComponent(action)}`);
+            await loadStats();
+            wbToast(`DNS ${action} successful`, 'success');
+        } catch (e) {
+            wbAlert('DNS action failed: ' + e.message, 'danger');
+        }
+    }
+
+    async function refreshAll() {
+        await loadPeers();
+        await Promise.allSettled([loadStats(), loadTopDomains(), loadTrend(), loadLogsOnly()]);
+    }
+
+    async function pollTick() {
+        if (_pollInProgress) return;
+        _pollInProgress = true;
+        try {
+            _pollCount += 1;
+            await Promise.allSettled([loadStats(), loadLogsOnly()]);
+            if (_pollCount % 4 === 0) {
+                await Promise.allSettled([loadTopDomains(), loadTrend(), loadPeers()]);
+            }
+        } finally {
+            _pollInProgress = false;
+        }
+    }
+
+    function startPolling() {
+        stopPolling();
+        _pollInterval = setInterval(pollTick, 15000);
+    }
+
+    function stopPolling() {
+        if (_pollInterval) {
+            clearInterval(_pollInterval);
+            _pollInterval = null;
+        }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopPolling();
+        } else {
+            refreshAll();
+            startPolling();
+        }
+    });
+
+    new MutationObserver(() => {
+        applyTrendTheme();
+        // Update doughnut charts border color on theme change
+        const newBg = getComputedStyle(document.body).getPropertyValue('--bs-body-bg') || '#fff';
+        [_queriedRef.instance, _blockedRef.instance].forEach(chart => {
+            if (!chart) return;
+            chart.data.datasets[0].borderColor = newBg;
+            chart.update();
+        });
+    }).observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-bs-theme'],
+    });
+
+    // Infinite scroll for Query Log (throttled with RAF)
+    const logContainer = document.getElementById('log-table-wrap');
+    if (logContainer) {
+        logContainer.addEventListener('scroll', function () {
+            if (_scrollRaf) return;
+            _scrollRaf = requestAnimationFrame(() => {
+                const scrollBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight;
+                if (scrollBottom < 100) {  // Near bottom
+                    loadMoreLogs();
+                }
+                _scrollRaf = null;
+            });
+        });
+    }
+
+    refreshAll();
+    startPolling();
+</script>
+{% endblock %}
