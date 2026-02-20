@@ -8,21 +8,25 @@
 
 from __future__ import annotations
 
+from ..db.sqlite_runtime import (
+	close_connection,
+	connect,
+)
+
 from collections.abc import Generator
 from pathlib import Path
 
 from fastapi import Request
 
-from ..db import sqlite as sqlite_db
 
 
 def get_conn(request: Request) -> Generator:
 	"""Yield a per-request SQLite connection."""
-	conn = sqlite_db.connect(request.app.state.db_path)
+	conn = connect(request.app.state.db_path)
 	try:
 		yield conn
 	finally:
-		sqlite_db.close_connection(conn)
+		close_connection(conn)
 
 
 def get_tsdb_dir(request: Request) -> Path:

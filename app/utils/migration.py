@@ -38,7 +38,7 @@ from typing import Callable
 _log = logging.getLogger(__name__)
 
 # Current schema version – increment when adding migrations
-SCHEMA_VERSION = 1  # v1: Add client_isolation field to peers table
+SCHEMA_VERSION = 2  # v2: Add dns_service_enabled setting default
 
 
 def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
@@ -171,6 +171,17 @@ def _migrate_0001_add_client_isolation(conn: sqlite3.Connection) -> None:
 	_log.info("Migration: client_isolation field added and 'isolated' mode renamed to 'split'")
 
 
+def _migrate_0002_add_dns_service_setting(conn: sqlite3.Connection) -> None:
+	"""Initialize persisted DNS service autostart setting."""
+	conn.execute(
+		"""
+		INSERT OR IGNORE INTO settings (key, value, updated_at)
+		VALUES ('dns_service_enabled', '1', CURRENT_TIMESTAMP)
+		"""
+	)
+	_log.info("Migration: dns_service_enabled setting initialized (default=1)")
+
+
 # ---------------------------------------------------------------------------
 # Migration registry
 # ---------------------------------------------------------------------------
@@ -180,6 +191,7 @@ def _migrate_0001_add_client_isolation(conn: sqlite3.Connection) -> None:
 _MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
 	# Post-release migrations:
 	(1, _migrate_0001_add_client_isolation),
+	(2, _migrate_0002_add_dns_service_setting),
 ]
 
 

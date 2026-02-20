@@ -8,6 +8,31 @@
 
 from __future__ import annotations
 
+from .db.sqlite_interfaces import (
+	list_interfaces,
+)
+from .db.sqlite_peers import (
+	get_peer_by_public_key,
+)
+from .db.sqlite_runtime import (
+	checkpoint_wal,
+	close_all_connections,
+	close_connection,
+	connect,
+)
+from .db.sqlite_leader import try_acquire_leader_lock, release_leader_lock
+from .db.sqlite_schema import ensure_default_admin, init_schema
+from .db.sqlite_settings import (
+	DEFAULT_DNS_LOG_RETENTION_DAYS,
+	get_dns_blocklist_enabled,
+	get_dns_log_retention_days,
+	get_dns_query_logging_enabled,
+	get_dns_service_enabled,
+	get_dns_upstream_servers,
+	get_dnssec_enabled,
+	get_enabled_blocklists,
+)
+
 import asyncio
 import logging
 import os
@@ -34,7 +59,6 @@ from .api import users as users_api
 from .api import wireguard as wireguard_api
 from .api import dns as dns_api
 from .api import frontend as frontend_ui
-from .db import sqlite as sqlite_db
 from .db import tsdb
 from .dns import unbound
 from .dns import ingestion as dns_ingestion
@@ -201,15 +225,15 @@ async def _lifespan(app: FastAPI):
 	
 	# ─── BOOTSTRAP ───────────────────────────────────────────
 	# Initialize database
-	conn = sqlite_db.connect(cfg.db_path)
+	conn = connect(cfg.db_path)
 	interfaces_to_start: list[str] = []
 	try:
-		sqlite_db.init_schema(conn)
+		init_schema(conn)
 		migration.run_pending_migrations(conn)
-		sqlite_db.ensure_default_admin(conn)
+		ensure_default_admin(conn)
 		
 		# Acquire leader lock (multi-worker safety)
-		is_leader = sqlite_db.try_acquire_leader_lock(conn)
+		is_leader = try_acquire_leader_lock(conn)
 		if is_leader:
 			_log.info("This worker acquired leader lock (pid=%d)", os.getpid())
 		else:
@@ -219,12 +243,18 @@ async def _lifespan(app: FastAPI):
 			# Regenerate WireGuard configs from database (persistence across container restarts)
 			from .api import wireguard as wg_api
 			config_path = WG_CONFIG_PATH
-			count = wg_api.regenerate_all_configs(config_path, conn, pepper=cfg.secret_key)
-			if count > 0:
-				_log.info("WireGuard configs regenerated: %d interfaces", count)
+			regen_result = wg_api.regenerate_all_configs(config_path, conn, pepper=cfg.secret_key)
+			if regen_result.succeeded:
+				_log.info("WireGuard configs regenerated: %d interfaces", len(regen_result.succeeded))
+			if regen_result.failed:
+				_log.warning(
+					"WireGuard config regeneration failed for %d interfaces: %s",
+					len(regen_result.failed),
+					list(regen_result.failed.keys()),
+				)
 			
 			# Get list of enabled interfaces to auto-start
-			for iface in sqlite_db.list_interfaces(conn):
+			for iface in list_interfaces(conn):
 				if iface["is_enabled"]:
 					name = iface["name"]
 					# Validate interface name before passing to subprocess
@@ -233,7 +263,7 @@ async def _lifespan(app: FastAPI):
 					else:
 						_log.warning("Skipping interface with invalid name: %r", name)
 	finally:
-		sqlite_db.close_connection(conn)
+		close_connection(conn)
 	
 	# Initialize TSDB (idempotent, safe for multi-worker)
 	tsdb.init_tsdb(cfg.tsdb_dir)
@@ -252,34 +282,57 @@ async def _lifespan(app: FastAPI):
 		try:
 			# Always write WireBuddy config (overwrites Debian default)
 			# This ensures 0.0.0.0 binding so WireGuard clients can reach DNS
-			dns_retention_days = sqlite_db.DEFAULT_DNS_LOG_RETENTION_DAYS
-			dns_cfg_conn = sqlite_db.connect(cfg.db_path)
+			dns_retention_days = DEFAULT_DNS_LOG_RETENTION_DAYS
+			dns_service_enabled = True
+			dns_cfg_conn = connect(cfg.db_path)
 			try:
-				dns_retention_days = sqlite_db.get_dns_log_retention_days(dns_cfg_conn)
+				dns_retention_days = get_dns_log_retention_days(dns_cfg_conn)
+				dns_service_enabled = get_dns_service_enabled(dns_cfg_conn)
+				# Collect IPv6 gateway addresses from all interfaces for dual-stack DNS
+				interfaces = list_interfaces(dns_cfg_conn)
+				ipv6_gateways = _unbound.get_interface_ipv6_gateways(interfaces)
 				_unbound.write_config(
-					enable_logging=sqlite_db.get_dns_query_logging_enabled(dns_cfg_conn),
-					enable_blocklist=sqlite_db.get_dns_blocklist_enabled(dns_cfg_conn),
-					upstream_dns=sqlite_db.get_dns_upstream_servers(dns_cfg_conn),
-					enable_dnssec=sqlite_db.get_dnssec_enabled(dns_cfg_conn),
+					enable_logging=get_dns_query_logging_enabled(dns_cfg_conn),
+					enable_blocklist=get_dns_blocklist_enabled(dns_cfg_conn),
+					upstream_dns=get_dns_upstream_servers(dns_cfg_conn),
+					enable_dnssec=get_dnssec_enabled(dns_cfg_conn),
+					listen_addrs_ipv6=ipv6_gateways if ipv6_gateways else None,
 				)
 			finally:
-				sqlite_db.close_connection(dns_cfg_conn)
+				close_connection(dns_cfg_conn)
+
 			await asyncio.to_thread(
 				dns_ingestion.enforce_dns_log_retention,
 				cfg.tsdb_dir,
 				dns_retention_days,
 			)
-			_log.info("DNS config written (interface: 0.0.0.0)")
-			
-			# Start Unbound if not already running
-			if not await _unbound.is_running():
-				ok, msg = await _unbound.start()
-				if ok:
-					_log.info("Unbound DNS started")
-					# Give Unbound a moment to establish upstream TLS connections
-					await asyncio.sleep(2)
+			if ipv6_gateways:
+				_log.info("DNS config written (IPv4: 0.0.0.0, IPv6: %s)", ", ".join(ipv6_gateways))
+			else:
+				_log.info("DNS config written (interface: 0.0.0.0)")
+
+			unbound_running = await _unbound.is_running()
+			if dns_service_enabled:
+				# Respect persisted user choice: start resolver after container restart
+				# unless it was explicitly stopped by the user.
+				if not unbound_running:
+					ok, msg = await _unbound.start()
+					if ok:
+						_log.info("Unbound DNS started")
+						# Give Unbound a moment to establish upstream TLS connections
+						await asyncio.sleep(2)
+					else:
+						_log.warning("Failed to start Unbound: %s", msg)
+			else:
+				# Persisted manual stop: keep resolver down across restarts.
+				if unbound_running:
+					ok, msg = await _unbound.stop()
+					if ok:
+						_log.info("Unbound DNS kept stopped (persisted user preference)")
+					else:
+						_log.warning("Failed to keep Unbound stopped on startup: %s", msg)
 				else:
-					_log.warning("Failed to start Unbound: %s", msg)
+					_log.info("Unbound autostart disabled; resolver remains stopped")
 		except FileNotFoundError as exc:
 			_log.warning("DNS init skipped: unbound tools not found! Use Docker Image for full experience! (%s)", exc)
 		except Exception as exc:
@@ -336,11 +389,11 @@ async def _lifespan(app: FastAPI):
 			"""Scheduled task: download and apply blocklists."""
 			try:
 				# Load enabled blocklists from database
-				conn = sqlite_db.connect(cfg.db_path)
+				conn = connect(cfg.db_path)
 				try:
-					urls = sqlite_db.get_enabled_blocklists(conn)
+					urls = get_enabled_blocklists(conn)
 				finally:
-					sqlite_db.close_connection(conn)
+					close_connection(conn)
 				
 				count, msg = await _unbound.update_blocklists(urls)
 				await _unbound.reload_config()
@@ -352,11 +405,11 @@ async def _lifespan(app: FastAPI):
 			"""Scheduled task: prune/rotate/compress TSDB series."""
 			try:
 				stats = tsdb.run_maintenance(cfg.tsdb_dir)
-				dns_cfg_conn = sqlite_db.connect(cfg.db_path)
+				dns_cfg_conn = connect(cfg.db_path)
 				try:
-					dns_retention_days = sqlite_db.get_dns_log_retention_days(dns_cfg_conn)
+					dns_retention_days = get_dns_log_retention_days(dns_cfg_conn)
 				finally:
-					sqlite_db.close_connection(dns_cfg_conn)
+					close_connection(dns_cfg_conn)
 				dns_retention = await asyncio.to_thread(
 					dns_ingestion.enforce_dns_log_retention,
 					cfg.tsdb_dir,
@@ -456,10 +509,10 @@ async def _lifespan(app: FastAPI):
 
 			# Log connection state changes with peer names
 			if state_changes:
-				conn = sqlite_db.connect(cfg.db_path)
+				conn = connect(cfg.db_path)
 				try:
 					for public_key, is_connected, _ in state_changes:
-						peer_row = sqlite_db.get_peer_by_public_key(conn, public_key)
+						peer_row = get_peer_by_public_key(conn, public_key)
 						if peer_row:
 							peer_name = peer_row["name"]
 							interface = peer_row["interface"]
@@ -476,7 +529,7 @@ async def _lifespan(app: FastAPI):
 							else:
 								_log.info("PEER_DISCONNECTED public_key=%s (not in database)", public_key[:16])
 				finally:
-					sqlite_db.close_connection(conn)
+					close_connection(conn)
 
 		scheduler.add(
 			"blocklist-update",
@@ -484,6 +537,7 @@ async def _lifespan(app: FastAPI):
 			func=_update_blocklists,
 			run_on_start=True,
 			initial_delay=15.0,  # Wait for WireGuard + Unbound + network to be ready
+			jitter_pct=0.1,  # ±10% jitter (±2.4h) to distribute load across instances
 		)
 		scheduler.add(
 			"tsdb-maintenance",
@@ -574,13 +628,13 @@ async def _lifespan(app: FastAPI):
 			await asyncio.sleep(25.0)
 
 			def _current_dns_retention_days() -> int:
-				conn = sqlite_db.connect(cfg.db_path)
+				conn = connect(cfg.db_path)
 				try:
-					return sqlite_db.get_dns_log_retention_days(conn)
+					return get_dns_log_retention_days(conn)
 				except Exception:
-					return sqlite_db.DEFAULT_DNS_LOG_RETENTION_DAYS
+					return DEFAULT_DNS_LOG_RETENTION_DAYS
 				finally:
-					sqlite_db.close_connection(conn)
+					close_connection(conn)
 			
 			try:
 				offset_path = cfg.data_dir / "runtime" / "dns_tail.offset"
@@ -642,11 +696,11 @@ async def _lifespan(app: FastAPI):
 	
 	# Release leader lock
 	if is_leader:
-		conn = sqlite_db.connect(cfg.db_path)
+		conn = connect(cfg.db_path)
 		try:
-			sqlite_db.release_leader_lock(conn)
+			release_leader_lock(conn)
 		finally:
-			sqlite_db.close_connection(conn)
+			close_connection(conn)
 
 	# Final TSDB maintenance + fsync to avoid partial writes on stop/restart.
 	try:
@@ -662,8 +716,8 @@ async def _lifespan(app: FastAPI):
 	except Exception as exc:
 		_log.warning("TSDB_SHUTDOWN failed: %s", exc)
 
-	closed_connections = sqlite_db.close_all_connections()
-	checkpoint = sqlite_db.checkpoint_wal(cfg.db_path, mode="TRUNCATE")
+	closed_connections = close_all_connections()
+	checkpoint = checkpoint_wal(cfg.db_path, mode="TRUNCATE")
 	_log.info(
 		"SQLITE_SHUTDOWN connections_closed=%d checkpoint_mode=%s busy=%s log_frames=%s checkpointed_frames=%s",
 		closed_connections,

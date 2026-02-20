@@ -224,7 +224,7 @@
     });
 
     async function editUser(userId) {
-        const newPassword = await wbPrompt('Enter new password (leave empty to keep current):', { placeholder: 'New password' });
+        const newPassword = await wbPrompt('Enter new password (leave empty to keep current):', { placeholder: 'New password', inputType: 'password' });
         if (newPassword === null) return;
 
         if (newPassword && newPassword.length < 8) {

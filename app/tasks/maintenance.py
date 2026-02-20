@@ -173,12 +173,9 @@ async def tsdb_retention_cleanup() -> None:
 
 
 async def cleanup_stale_sessions() -> None:
-	"""Remove expired sessions/tokens from SQLite.
+	"""Remove expired auth tokens from SQLite.
 	
-	Runs hourly to prevent session table bloat.
-	
-	Note: Assumes expires_at column stores ISO 8601 formatted timestamps
-	(e.g., "2026-02-19T12:00:00+00:00"). Adjust query if using Unix timestamps.
+	Runs hourly to prevent auth_tokens table bloat.
 	"""
 	cfg = get_config()
 	db_path = cfg.db_path
@@ -189,29 +186,18 @@ async def cleanup_stale_sessions() -> None:
 	
 	try:
 		async with aiosqlite.connect(db_path) as db:
-			# Check if sessions table exists
+			# Delete expired auth tokens
 			cursor = await db.execute(
-				"SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'"
-			)
-			table_exists = await cursor.fetchone()
-			
-			if not table_exists:
-				_log.debug("MAINTENANCE sessions table does not exist, skipping cleanup")
-				return
-			
-			# Delete expired sessions (assuming expires_at column exists)
-			# Adjust WHERE clause based on actual schema
-			cursor = await db.execute(
-				"DELETE FROM sessions WHERE expires_at < ?",
+				"DELETE FROM auth_tokens WHERE expires_at < ?",
 				(datetime.now(timezone.utc).isoformat(),),
 			)
 			await db.commit()
 			
 			deleted_count = cursor.rowcount
 			if deleted_count > 0:
-				_log.info("MAINTENANCE cleaned up %d stale sessions", deleted_count)
+				_log.info("MAINTENANCE cleaned up %d expired auth tokens", deleted_count)
 			else:
-				_log.debug("MAINTENANCE no stale sessions to clean up")
+				_log.debug("MAINTENANCE no expired auth tokens to clean up")
 	except Exception:
-		_log.exception("MAINTENANCE session cleanup failed")
+		_log.exception("MAINTENANCE auth token cleanup failed")
 		raise

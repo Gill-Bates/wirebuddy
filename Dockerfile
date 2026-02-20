@@ -86,7 +86,16 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 
 # Configurable worker count (2 for resilience, SQLite/TSDB are multi-process safe)
 ENV UVICORN_WORKERS=2
-ENV FORWARDED_ALLOW_IPS=*
+
+# X-Forwarded-For / X-Real-IP proxy header handling.
+#
+# Default is empty (disabled) to prevent IP spoofing attacks that bypass
+# rate limiting. Only pods/containers behind a KNOWN reverse proxy should
+# enable this by setting FORWARDED_ALLOW_IPS to the proxy IP(s):
+#   FORWARDED_ALLOW_IPS=172.18.0.2,172.18.0.3
+#
+# For direct exposure to the internet (no proxy), leave blank.
+ENV FORWARDED_ALLOW_IPS=""
 
 # Run with proxy headers for reverse proxy support (Caddy/Nginx)
 ENTRYPOINT ["sh", "-c", "exec uvicorn app:create_app --host 0.0.0.0 --port 8000 --factory --workers ${UVICORN_WORKERS} --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS}"]

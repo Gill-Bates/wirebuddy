@@ -8,12 +8,24 @@
 
 from __future__ import annotations
 
+from ..db.sqlite_auth import (
+	delete_user_tokens,
+)
+from ..db.sqlite_users import (
+	count_admins,
+	create_user as db_create_user,
+	delete_user as db_delete_user,
+	get_all_users,
+	get_user_by_id,
+	get_user_by_username,
+	update_user as db_update_user,
+)
+
 import logging
 import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..db import sqlite as sqlite_db
 from ..models.users import PasswordChangeRequest, UserCreate, UserPublic, UserUpdate
 from ..utils.crypto import verify_password
 from ..utils.deps import get_conn
@@ -44,7 +56,7 @@ def list_users(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""List all users (admin only)."""
-	rows = sqlite_db.get_all_users(conn)
+	rows = get_all_users(conn)
 	data = [_row_to_public(row) for row in rows]
 	return ok_response(data=data)
 
@@ -57,18 +69,18 @@ def create_user(
 ):
     """Create a new user (admin only)."""
     # Check if username exists
-    existing = sqlite_db.get_user_by_username(conn, payload.username)
+    existing = get_user_by_username(conn, payload.username)
     if existing:
         raise HTTPException(status_code=409, detail="Username already exists")
     
-    user_id = sqlite_db.create_user(
+    user_id = db_create_user(
         conn,
         username=payload.username,
         password=payload.password,
         is_admin=payload.is_admin,
     )
     
-    user = sqlite_db.get_user_by_id(conn, user_id)
+    user = get_user_by_id(conn, user_id)
     if not user:
         raise HTTPException(status_code=500, detail="User creation failed")
     
@@ -89,7 +101,7 @@ def get_user(
 	if current_user["id"] != user_id and not current_user["is_admin"]:
 		raise HTTPException(status_code=403, detail="Not authorized")
 	
-	user = sqlite_db.get_user_by_id(conn, user_id)
+	user = get_user_by_id(conn, user_id)
 	if not user:
 		raise HTTPException(status_code=404, detail="User not found")
 	
@@ -128,22 +140,22 @@ def update_user(
     if is_self and payload.is_active is False:
         raise HTTPException(status_code=400, detail="Cannot deactivate your own account")
     
-    user = sqlite_db.get_user_by_id(conn, user_id)
+    user = get_user_by_id(conn, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
     # Check username uniqueness
     if payload.username and payload.username != user["username"]:
-        existing = sqlite_db.get_user_by_username(conn, payload.username)
+        existing = get_user_by_username(conn, payload.username)
         if existing:
             raise HTTPException(status_code=409, detail="Username already exists")
     
     # Prevent removing admin rights from the last admin
     if payload.is_admin is False and user["is_admin"]:
-        if sqlite_db.count_admins(conn) <= 1:
+        if count_admins(conn) <= 1:
             raise HTTPException(status_code=400, detail="Cannot remove the last admin")
     
-    sqlite_db.update_user(
+    db_update_user(
         conn,
         user_id,
         username=payload.username,
@@ -151,7 +163,7 @@ def update_user(
         is_active=payload.is_active,
     )
     
-    updated = sqlite_db.get_user_by_id(conn, user_id)
+    updated = get_user_by_id(conn, user_id)
     _log.info("USER_UPDATED user_id=%d by_user=%d", user_id, current_user["id"])
     return ok_response(data=_row_to_public(updated))
 
@@ -166,15 +178,15 @@ def delete_user(
     if current_user["id"] == user_id:
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
     
-    user = sqlite_db.get_user_by_id(conn, user_id)
+    user = get_user_by_id(conn, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
     # Prevent deleting the last admin
-    if user["is_admin"] and sqlite_db.count_admins(conn) <= 1:
+    if user["is_admin"] and count_admins(conn) <= 1:
         raise HTTPException(status_code=400, detail="Cannot delete the last admin")
     
-    sqlite_db.delete_user(conn, user_id)
+    db_delete_user(conn, user_id)
     _log.info("USER_DELETED user_id=%d by_admin=%d", user_id, current_user["id"])
 
 
@@ -196,7 +208,7 @@ def change_password(
     if not is_self and not is_admin:
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    user = sqlite_db.get_user_by_id(conn, user_id)
+    user = get_user_by_id(conn, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -205,10 +217,10 @@ def change_password(
         if not payload.current_password or not verify_password(payload.current_password, user["password_hash"]):
             raise HTTPException(status_code=422, detail="Current password incorrect")
     
-    sqlite_db.update_user(conn, user_id, password=payload.new_password)
+    db_update_user(conn, user_id, password=payload.new_password)
     
     # Invalidate all existing sessions for this user
-    sqlite_db.delete_user_tokens(conn, user_id)
+    delete_user_tokens(conn, user_id)
     
     _log.info("PASSWORD_CHANGED user_id=%d by_user=%d", user_id, current_user["id"])
     return ok_response(message="Password changed successfully")

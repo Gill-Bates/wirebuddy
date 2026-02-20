@@ -21,15 +21,18 @@
     <style>
         body.wb-reconnecting .main-content {
             opacity: 0.35;
-            filter: saturate(0.8);
+            filter: blur(8px) saturate(0.8);
             pointer-events: none;
             transition: opacity 0.2s ease, filter 0.2s ease;
         }
 
+        body.wb-reconnecting .sidebar {
+            filter: blur(8px);
+            transition: filter 0.3s ease;
+        }
+
         body.wb-reconnecting .modal-backdrop.show {
-            backdrop-filter: blur(22px);
-            -webkit-backdrop-filter: blur(22px);
-            background-color: rgba(15, 23, 42, 0.62);
+            background-color: rgba(15, 23, 42, 0.5) !important;
         }
 
         body.wb-onboarding .main-content {
@@ -572,7 +575,7 @@
             prompt: { icon: 'edit', color: 'var(--wb-primary)' },
         };
 
-        function _showModal({ title, message, type, showCancel, showInput, inputDefault, inputPlaceholder }) {
+        function _showModal({ title, message, type, showCancel, showInput, inputDefault, inputPlaceholder, inputType }) {
             if (_wbReconnectState.active) {
                 if (showInput) return Promise.resolve(null);
                 if (showCancel) return Promise.resolve(false);
@@ -603,6 +606,7 @@
                 if (showInput) {
                     inputEl.value = inputDefault || '';
                     inputEl.placeholder = inputPlaceholder || '';
+                    inputEl.type = inputType || 'text';
                 }
 
                 const okBtn = document.getElementById('wbModalOk');
@@ -668,8 +672,20 @@
         /**
          * Show a prompt modal.  Resolves with the string value or null.
          */
-        function wbPrompt(message, { defaultValue = '', placeholder = '' } = {}) {
-            return _showModal({ title: 'Input', message, type: 'prompt', showCancel: true, showInput: true, inputDefault: defaultValue, inputPlaceholder: placeholder });
+        function wbPrompt(message, { defaultValue = '', placeholder = '', inputType = 'text' } = {}) {
+            return _showModal({ title: 'Input', message, type: 'prompt', showCancel: true, showInput: true, inputDefault: defaultValue, inputPlaceholder: placeholder, inputType });
+        }
+
+        /**
+         * Create a uniform "No Data Available" empty-state element for charts.
+         * Returns {HTMLElement} ready to be appended to a container.
+         */
+        function chartEmptyState() {
+            const wrap = document.createElement('div');
+            wrap.className = 'chart-empty-state';
+            wrap.innerHTML = '<span class="material-icons">database</span>'
+                + '<span class="chart-empty-state-text">No Data Available</span>';
+            return wrap;
         }
 
         /**

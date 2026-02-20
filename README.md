@@ -1,16 +1,15 @@
 <p align="center">
-  <img src="app/static/img/wirebuddy_1c.svg" alt="WireBuddy Logo" width="400">
+  <img src=".github/img/wirebuddy_black.svg#gh-light-mode-only" width="400">
+  <img src=".github/img/wirebuddy_white.svg#gh-dark-mode-only" width="400">
 </p>
 
+<h2 align="center">Use Wireguard with ease!</h2>
+<br>
 
-<p align="center">
-  <a href="https://github.com/Gill-Bates/wirebuddy/releases/latest"><img src="https://img.shields.io/github/v/release/Gill-Bates/wirebuddy?style=flat-square&color=blue" alt="Latest Release"></a>
-  <a href="https://github.com/Gill-Bates/wirebuddy/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-green?style=flat-square" alt="License"></a>
-  <a href="https://hub.docker.com/r/gillbates/wirebuddy"><img src="https://img.shields.io/docker/pulls/gillbates/wirebuddy?style=flat-square&color=blue" alt="Docker Pulls"></a>
-  <a href="https://hub.docker.com/r/gillbates/wirebuddy"><img src="https://img.shields.io/docker/image-size/gillbates/wirebuddy/latest?style=flat-square&label=image%20size" alt="Docker Image Size"></a>
-  <img src="https://img.shields.io/badge/python-3.13-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.13">
-  <img src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-lightgrey?style=flat-square" alt="Platforms">
-</p>
+[![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-linux%2Famd64-lightgrey?logo=linux&logoColor=white)](#-quick-start)
+
+Container image: `docker.cirrio.de/wirebuddy`
 
 <p align="center">
   <a href="#-quick-start">Quick Start</a> •
@@ -33,14 +32,16 @@ git clone https://github.com/Gill-Bates/wirebuddy.git
 cd wirebuddy
 
 # Copy and edit settings
-cp settings.env.example settings.env
+cp .env-example settings.env
 # Edit settings.env — set WIREBUDDY_SECRET_KEY!
 
-# Build and run
+# Run
 docker compose up -d
 ```
 
-Open **http://localhost:8000** — done.
+The default compose file expects an external Docker network (`cloudnet`) and
+does not expose port 8000. To access the UI directly, add `8000:8000` under
+`ports` or place the container behind your reverse proxy.
 
 > **Default credentials:** `admin` / `admin`
 > ⚠️ **Change the default password immediately after first login!**
@@ -70,7 +71,7 @@ python main.py
 ### 🌍 DNS & Ad-Blocking (Unbound)
 
 - **Integrated Unbound DNS resolver** — start, stop, restart, reload from the UI
-- **Ad-blocking with blocklists** — StevenBlack/hosts, AdAway, and custom sources; auto-updated every 24 h
+- **Ad-blocking with blocklists** — StevenBlack/hosts, EasyList (hosts format), optional adult list, and custom sources; auto-updated every 24 h
 - **Wildcard subdomain blocking** — optionally block all subdomains of blocked domains
 - **DNS-over-TLS upstream** — configurable upstream servers
 - **Real-time query log** — search, filter, blocked/allowed badges
@@ -174,6 +175,7 @@ wirebuddy/
 ├── data/              # Persistent volume (DB, TSDB, GeoIP, certs)
 ├── docker-compose.yml
 ├── Dockerfile         # Multi-stage (builder → runtime)
+├── .env-example        # Example environment file (copy to settings.env)
 ├── requirements.txt
 └── settings.env
 ```

@@ -9,6 +9,7 @@
 #
 
 import logging
+import os
 
 import uvicorn
 from app.utils.config import load_config
@@ -80,7 +81,7 @@ if __name__ == "__main__":
 		"app:create_app",
 		host=host,
 		port=gui_port,
-		reload=True,
+		reload=os.environ.get("WIREBUDDY_DEV_RELOAD", "").lower() in ("1", "true", "yes"),
 		factory=True,
 		log_config=_UVICORN_LOG_CONFIG,
 	)

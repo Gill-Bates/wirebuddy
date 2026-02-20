@@ -8,6 +8,19 @@
 
 from __future__ import annotations
 
+from ..db.sqlite_auth import (
+	clear_login_attempts,
+	create_auth_token,
+	delete_auth_token,
+	get_user_by_token,
+	is_ip_locked,
+	record_failed_login,
+)
+from ..db.sqlite_users import (
+	get_user_by_username,
+	update_last_login,
+)
+
 import logging
 import sqlite3
 from datetime import datetime, timezone
@@ -16,7 +29,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from ..db import sqlite as sqlite_db
 from ..models.users import LoginRequest
 from ..utils.crypto import new_token, verify_password, generate_token_expiry, DUMMY_PASSWORD_HASH
 from ..utils.deps import get_conn
@@ -49,23 +61,33 @@ def _allow_cookie_auth_for_path(path: str) -> bool:
 def _get_client_ip(request: Request) -> str:
 	"""Extract client IP from request with proxy validation.
 	
-	Only trusts X-Forwarded-For/X-Real-IP if request comes from trusted proxy.
-	This prevents IP spoofing for rate limiting and lockout mechanisms.
-	"""
-	direct_ip = request.client.host if request.client else "unknown"
+	SECURITY: Reads the ORIGINAL socket IP from request.scope["client"] before
+	Uvicorn's proxy middleware processes --forwarded-allow-ips. This prevents
+	IP spoofing attacks where an attacker sends X-Forwarded-For: 127.0.0.1
+	to bypass rate limiting.
 	
-	# Only check proxy headers if request comes from trusted proxy
-	if _TRUSTED_PROXIES and direct_ip in _TRUSTED_PROXIES:
-		# Check X-Forwarded-For for reverse proxy setups
+	Only trusts X-Forwarded-For/X-Real-IP if the ACTUAL socket connection
+	comes from a trusted proxy IP.
+	"""
+	# Get the REAL socket IP before any proxy header processing
+	# This is immune to --forwarded-allow-ips spoofing
+	scope_client = request.scope.get("client")
+	socket_ip = scope_client[0] if scope_client else "unknown"
+	
+	# Only check proxy headers if ACTUAL socket connection is from trusted proxy
+	if _TRUSTED_PROXIES and socket_ip in _TRUSTED_PROXIES:
+		# Trust proxy headers only when socket IP is verified trusted
 		forwarded_for = request.headers.get("X-Forwarded-For")
 		if forwarded_for:
+			# Take first IP in chain (client IP before proxies)
 			return forwarded_for.split(",")[0].strip()
 		
 		x_real_ip = request.headers.get("X-Real-IP")
 		if x_real_ip:
 			return x_real_ip.strip()
 	
-	return direct_ip
+	# Direct connection or untrusted proxy - use socket IP
+	return socket_ip
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +100,7 @@ def _get_user_by_token(
 	check_active: bool = True,
 ) -> Optional[sqlite3.Row]:
 	"""Helper to get user by token with optional is_active check."""
-	user = sqlite_db.get_user_by_token(conn, token)
+	user = get_user_by_token(conn, token)
 	if user and check_active and not user["is_active"]:
 		return None
 	return user
@@ -161,7 +183,7 @@ def login(
 	client_ip = _get_client_ip(request)
 
 	# Check if IP is locked out
-	is_locked, seconds_remaining = sqlite_db.is_ip_locked(conn, client_ip)
+	is_locked, seconds_remaining = is_ip_locked(conn, client_ip)
 	if is_locked:
 		_log.info("LOGIN_LOCKED ip=%s remaining=%ds", client_ip, seconds_remaining)
 		raise HTTPException(
@@ -171,7 +193,7 @@ def login(
 		)
 	
 	# Validate credentials
-	user = sqlite_db.get_user_by_username(conn, payload.username)
+	user = get_user_by_username(conn, payload.username)
 	
 	# Always verify password hash to prevent timing attacks
 	# Use dummy hash if user doesn't exist to maintain constant time
@@ -179,9 +201,9 @@ def login(
 	password_valid = verify_password(payload.password, password_hash)
 	
 	if not user or not password_valid:
-		sqlite_db.record_failed_login(conn, client_ip)
+		record_failed_login(conn, client_ip)
 		# Log with next lockout info for admin visibility
-		is_now_locked, lockout_secs = sqlite_db.is_ip_locked(conn, client_ip)
+		is_now_locked, lockout_secs = is_ip_locked(conn, client_ip)
 		if is_now_locked:
 			_log.warning("LOGIN_FAILED ip=%s username=%s locked_for=%ds", client_ip, payload.username, lockout_secs)
 		else:
@@ -193,13 +215,13 @@ def login(
 		raise HTTPException(status_code=403, detail="Account disabled")
 	
 	# Clear failed attempts and generate token
-	sqlite_db.clear_login_attempts(conn, client_ip)
+	clear_login_attempts(conn, client_ip)
 	
 	token = new_token()
 	expires_at, max_expires_at = generate_token_expiry()
 	
-	sqlite_db.create_auth_token(conn, user["id"], token, expires_at, max_expires_at)
-	sqlite_db.update_last_login(conn, user["id"], client_ip)
+	create_auth_token(conn, user["id"], token, expires_at, max_expires_at)
+	update_last_login(conn, user["id"], client_ip)
 
 	now = datetime.now(timezone.utc)
 	max_age = max(0, int((expires_at - now).total_seconds()))
@@ -238,7 +260,7 @@ def logout(
 		token = request.cookies.get("auth_token")
 	
 	if token:
-		sqlite_db.delete_auth_token(conn, token)
+		delete_auth_token(conn, token)
 
 	response.delete_cookie(key="auth_token", path="/")
 	response.delete_cookie(key="csrf_token", path="/")

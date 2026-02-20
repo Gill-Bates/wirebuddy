@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+#
+# app/api/wireguard_stats.py
+# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+#
+
+"""WireGuard traffic and connection statistics API routes.
+
+SECURITY NOTE: These endpoints require admin privileges as they expose
+traffic metadata (volumes, connection times, patterns) for all peers.
+"""
+
+from __future__ import annotations
+
+from ..db.sqlite_peers import (
+	get_all_peers,
+)
+
+import logging
+import sqlite3
+import time as _time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from starlette.concurrency import run_in_threadpool
+
+from ..db import tsdb
+from ..utils.deps import get_conn, get_tsdb_dir
+from ..utils.time import utcnow
+from .auth import require_admin
+from .response import ok_response
+from .wireguard_utils import bytes_to_unit, run_wg_command, safe_int, select_display_unit
+
+_log = logging.getLogger(__name__)
+
+router = APIRouter(tags=["wireguard"])
+
+__all__ = ["router"]
+
+# Time range presets for traffic queries
+TRAFFIC_RANGE_TO_HOURS = {
+    "6h": 6,
+    "24h": 24,
+    "3d": 72,
+    "7d": 168,
+}
+
+# Reverse mapping for O(1) lookup
+_HOURS_TO_RANGE = {v: k for k, v in TRAFFIC_RANGE_TO_HOURS.items()}
+
+# Resource limits to prevent DoS
+MAX_PEERS_TRAFFIC = 100  # Max peers to include in traffic stats
+MAX_POINTS_PER_PEER = 5000  # Reduced from 10000
+
+# WireGuard 'wg show all dump' format constants
+# Peer line: interface, pubkey, psk, endpoint, allowed-ips, handshake, rx, tx, keepalive
+PEER_FIELDS = 9
+PEER_IDX_IFACE = 0
+PEER_IDX_HANDSHAKE = 5
+PEER_IDX_RX = 6
+PEER_IDX_TX = 7
+
+# Interface header line: interface, privkey, pubkey, listen_port, fwmark
+IFACE_FIELDS_MIN = 4
+IFACE_FIELDS_MAX = 5
+
+# Handshake freshness threshold (seconds) — peers with handshake < 3 min are "connected"
+# NOTE: Uses system clock (time.time()). Clock jumps (NTP adjustments) may cause
+# temporary inaccuracy in connection status reporting.
+HANDSHAKE_THRESHOLD = 180
+HANDSHAKE_THRESHOLD = 180
+
+
+def _bucket_counter_delta(
+    points: list[tsdb.MetricPoint],
+    since: datetime,
+    bucket_seconds: int,
+) -> dict[str, float]:
+    """Aggregate counter deltas into time buckets (consumption per bucket).
+
+    Args:
+        points: Time-series data points (expected to be counter values).
+        since: Only include deltas from points after this time.
+        bucket_seconds: Bucket size in seconds.
+
+    Returns:
+        Dict mapping ISO timestamp labels to summed byte deltas.
+    """
+    buckets: dict[str, float] = {}
+    prev: float | None = None
+
+    for pt in points:
+        if not isinstance(pt.value, (int, float)):
+            continue
+        value = float(pt.value)
+
+        if prev is None:
+            prev = value
+            continue
+
+        delta = value - prev
+        prev = value
+
+        # Counter reset/restart: ignore negative deltas.
+        if delta < 0:
+            continue
+
+        if pt.ts < since:
+            continue
+
+        ts_epoch = pt.ts.timestamp()
+        bucket_ts = int(ts_epoch // bucket_seconds) * bucket_seconds
+        label = datetime.fromtimestamp(bucket_ts, timezone.utc).isoformat()
+        buckets[label] = buckets.get(label, 0) + delta
+
+    return dict(sorted(buckets.items()))
+
+
+def _compute_traffic_stats(
+    conn: sqlite3.Connection,
+    tsdb_dir: Path,
+    hours: int,
+) -> dict:
+    """Compute traffic statistics (blocking operation for threadpool).
+
+    Args:
+        conn: Database connection.
+        tsdb_dir: TSDB directory path.
+        hours: Number of hours of history to include.
+
+    Returns:
+        Dict with traffic data ready for JSON response.
+    """
+    hours = min(max(hours, 1), 168)  # 1h .. 7d
+    since = utcnow() - timedelta(hours=hours)
+    query_since = since - timedelta(hours=1)
+    resolved_range = _HOURS_TO_RANGE.get(hours, f"{hours}h")
+
+    # Determine bucket size (aim for ~60 data points)
+    bucket_seconds = max((hours * 3600) // 60, 60)
+
+    # Fetch all peers (blocking DB query)
+    all_peers = get_all_peers(conn)
+    peer_keys = [peer["public_key"] for peer in all_peers if peer["public_key"]]
+
+    # Apply peer limit to prevent DoS
+    if len(peer_keys) > MAX_PEERS_TRAFFIC:
+        _log.warning(
+            "TRAFFIC_STATS peer count (%d) exceeds limit (%d), truncating",
+            len(peer_keys),
+            MAX_PEERS_TRAFFIC,
+        )
+        peer_keys = peer_keys[:MAX_PEERS_TRAFFIC]
+
+    peer_name_map: dict[str, str] = {
+        peer["public_key"]: (peer["name"] or peer["public_key"][:8])
+        for peer in all_peers
+        if peer["public_key"]
+    }
+
+    # Collect per-peer traffic data (blocking file I/O)
+    peer_data: list[dict] = []
+    all_labels: set[str] = set()
+
+    for key in peer_keys:
+        # Blocking TSDB reads
+        rx_points = tsdb.query(
+            tsdb_dir,
+            peer_key=key,
+            metric="rx_bytes",
+            since=query_since,
+            limit=MAX_POINTS_PER_PEER,
+        )
+        tx_points = tsdb.query(
+            tsdb_dir,
+            peer_key=key,
+            metric="tx_bytes",
+            since=query_since,
+            limit=MAX_POINTS_PER_PEER,
+        )
+
+        rx_buckets = _bucket_counter_delta(rx_points, since, bucket_seconds)
+        tx_buckets = _bucket_counter_delta(tx_points, since, bucket_seconds)
+
+        # Only include peers with actual data
+        if rx_buckets or tx_buckets:
+            peer_name = peer_name_map.get(key, key[:8])
+            peer_data.append({
+                "key": key,  # Full public key
+                "key_short": key[:8],  # Truncated for display
+                "name": peer_name,
+                "rx": rx_buckets,
+                "tx": tx_buckets,
+            })
+            all_labels.update(rx_buckets.keys())
+            all_labels.update(tx_buckets.keys())
+
+    labels = sorted(all_labels)
+
+    # Build datasets for each peer (display-ready values only)
+    max_bytes = 0.0
+    for entry in peer_data:
+        max_bytes = max(
+            max_bytes,
+            max(entry["rx"].values(), default=0),
+            max(entry["tx"].values(), default=0),
+        )
+
+    display_unit = select_display_unit(max_bytes)
+
+    peers_display = [
+        {
+            "key": entry["key"],
+            "key_short": entry["key_short"],
+            "name": entry["name"],
+            "rx": [round(bytes_to_unit(float(entry["rx"].get(label, 0)), display_unit), 4) for label in labels],
+            "tx": [round(bytes_to_unit(float(entry["tx"].get(label, 0)), display_unit), 4) for label in labels],
+        }
+        for entry in peer_data
+    ]
+
+    return {
+        "range": resolved_range,
+        "hours": hours,
+        "labels": labels,
+        "peers": peers_display,
+        "display_unit": display_unit,
+        "bucket_seconds": bucket_seconds,
+    }
+
+
+@router.get("/stats/traffic")
+async def get_traffic_stats(
+    hours: int = 24,
+    range_key: str | None = Query(None, pattern="^(6h|24h|3d|7d)$"),
+    conn: sqlite3.Connection = Depends(get_conn),
+    tsdb_dir: Path = Depends(get_tsdb_dir),
+    _: sqlite3.Row = Depends(require_admin),
+):
+    """Get per-peer RX/TX traffic over time (admin only).
+
+    Returns bucketed data suitable for charting, with each peer as a separate dataset.
+
+    Args:
+        hours: Number of hours of history (1-168).
+        range_key: Preset time range (6h, 24h, 3d, 7d). Overrides hours if provided.
+
+    Returns:
+        Traffic statistics with display-ready values and unit metadata.
+    """
+    if range_key:
+        mapped = TRAFFIC_RANGE_TO_HOURS.get(range_key.lower())
+        if mapped is not None:
+            hours = mapped
+
+    # Offload blocking I/O to threadpool to avoid stalling the event loop
+    data = await run_in_threadpool(_compute_traffic_stats, conn, tsdb_dir, hours)
+
+    return ok_response(data=data)
+
+
+@router.get("/stats/connections")
+async def get_connection_stats(
+    _: sqlite3.Row = Depends(require_admin),
+):
+    """Get current connected peers per interface (admin only).
+
+    A peer is considered "connected" if its latest handshake was within the last 3 minutes.
+
+    Returns:
+        Connection statistics including per-interface and total counts.
+    """
+    try:
+        code, stdout, stderr = await run_wg_command("wg", "show", "all", "dump")
+        if code != 0:
+            _log.warning("WG_SHOW_DUMP failed: code=%d stderr=%s", code, stderr)
+            raise HTTPException(status_code=500, detail="Failed to query WireGuard interfaces")
+
+        now = _time.time()
+
+        interfaces: dict[str, dict] = {}
+        last_iface: str | None = None
+
+        for line in stdout.strip().split("\n"):
+            if not line:
+                continue
+            parts = line.split("\t")
+
+            # Peer line: 9 fields
+            if len(parts) == PEER_FIELDS:
+                iface = parts[PEER_IDX_IFACE] if parts[PEER_IDX_IFACE] else last_iface
+                if not iface:
+                    continue  # Skip if we still don't know the interface
+
+                last_handshake = safe_int(parts[PEER_IDX_HANDSHAKE])
+                connected = (now - last_handshake) < HANDSHAKE_THRESHOLD if last_handshake else False
+                rx = safe_int(parts[PEER_IDX_RX])
+                tx = safe_int(parts[PEER_IDX_TX])
+
+                if iface:
+                    last_iface = iface
+
+                if iface not in interfaces:
+                    interfaces[iface] = {"connected": 0, "total": 0, "rx": 0, "tx": 0}
+                interfaces[iface]["total"] += 1
+                interfaces[iface]["rx"] += rx
+                interfaces[iface]["tx"] += tx
+                if connected:
+                    interfaces[iface]["connected"] += 1
+
+            # Interface header line: 4-5 fields
+            elif IFACE_FIELDS_MIN <= len(parts) <= IFACE_FIELDS_MAX:
+                last_iface = parts[0]
+            else:
+                # Unexpected format — log and skip
+                _log.debug("WG_DUMP unexpected line format (%d fields): %s", len(parts), line[:50])
+
+        # Explicitly clear stdout to avoid leaking interface private keys in memory
+        del stdout
+
+        total_connected = sum(v["connected"] for v in interfaces.values())
+        total_peers = sum(v["total"] for v in interfaces.values())
+
+        data = {
+            "interfaces": interfaces,
+            "total_connected": total_connected,
+            "total_peers": total_peers,
+        }
+        return ok_response(data=data)
+
+    except HTTPException:
+        raise  # Re-raise HTTP errors
+    except Exception as exc:
+        # Log the full exception for debugging, but don't expose internals to client
+        _log.exception("Failed to parse WireGuard connection stats")
+        raise HTTPException(status_code=500, detail="Failed to retrieve connection statistics") from exc

@@ -1,5 +1,4 @@
 aiosqlite==0.22.1
-asyncio==4.0.0
 bleach==6.3.0
 cryptography==46.0.5
 email-validator==2.3.0

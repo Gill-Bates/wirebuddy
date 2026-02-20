@@ -70,6 +70,18 @@
         text-overflow: ellipsis;
     }
 
+    .recent-peers-card .card-body {
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+
+    #recent-peers {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+    }
+
     @media (max-width: 991.98px) {
         #peer-map {
             height: 360px;
@@ -302,7 +314,7 @@
                     </h5>
                     <a href="/ui/peers" class="btn btn-sm btn-outline-primary">View All</a>
                 </div>
-                <div class="card-body flex-grow-1 overflow-auto">
+                <div class="card-body flex-grow-1">
                     <div id="recent-peers">
                         <div class="text-center py-4">
                             <div class="spinner-border text-primary" role="status">
@@ -666,10 +678,7 @@
                 return true;
             }
             if (peers.length === 0) {
-                const p = document.createElement('p');
-                p.className = 'text-muted mb-0';
-                p.textContent = 'No traffic data in selected time range.';
-                trafficChartsHost.appendChild(p);
+                trafficChartsHost.appendChild(chartEmptyState());
                 return true;
             }
 
@@ -792,24 +801,42 @@
             const online = Number(conn?.total_connected || 0);
             const total = Number(conn?.total_peers || 0);
             const offline = Math.max(0, total - online);
-            const offlineDisplay = total === 0 ? 1 : offline;
             connectionStats.online = online;
             connectionStats.offline = offline;
             connectionStats.total = total;
 
-            connectionsChart.data.datasets[0].data = [online, offlineDisplay];
-            connectionsChart.update();
-
+            const chartWrap = document.querySelector('.connections-chart-wrap');
             const summary = document.getElementById('connections-summary');
-            clearElement(summary);
-            const strong = document.createElement('strong');
-            strong.className = 'fs-2';
-            strong.textContent = String(online);
-            const span = document.createElement('span');
-            span.className = 'text-muted';
-            span.textContent = ` / ${total} peers online`;
-            summary.appendChild(strong);
-            summary.appendChild(span);
+            let emptyEl = document.getElementById('connections-empty-state');
+
+            if (total === 0) {
+                // Show empty state
+                if (chartWrap) chartWrap.classList.add('d-none');
+                clearElement(summary);
+                if (!emptyEl) {
+                    emptyEl = chartEmptyState();
+                    emptyEl.id = 'connections-empty-state';
+                    summary.parentNode.insertBefore(emptyEl, summary);
+                }
+                emptyEl.classList.remove('d-none');
+            } else {
+                // Show chart
+                if (chartWrap) chartWrap.classList.remove('d-none');
+                if (emptyEl) emptyEl.classList.add('d-none');
+                const offlineDisplay = offline;
+                connectionsChart.data.datasets[0].data = [online, offlineDisplay];
+                connectionsChart.update();
+
+                clearElement(summary);
+                const strong = document.createElement('strong');
+                strong.className = 'fs-2';
+                strong.textContent = String(online);
+                const span = document.createElement('span');
+                span.className = 'text-muted';
+                span.textContent = ` / ${total} peers online`;
+                summary.appendChild(strong);
+                summary.appendChild(span);
+            }
 
             const a11y = document.getElementById('connections-chart-a11y');
             if (a11y) {
@@ -864,10 +891,15 @@
                 }
             }
 
+            const nowSec = Math.floor(Date.now() / 1000);
             const activePeers = allPeers
                 .filter(p => Number(p.latest_handshake) > 0)
-                .sort((a, b) => Number(b.latest_handshake) - Number(a.latest_handshake))
-                .slice(0, 5);
+                .sort((a, b) => {
+                    const ageA = Math.max(0, nowSec - Number(a.latest_handshake || 0));
+                    const ageB = Math.max(0, nowSec - Number(b.latest_handshake || 0));
+                    if (ageA !== ageB) return ageA - ageB; // Shortest time ago first
+                    return Number(b.latest_handshake || 0) - Number(a.latest_handshake || 0);
+                });
             const recentPeersEl = document.getElementById('recent-peers');
             clearElement(recentPeersEl);
 

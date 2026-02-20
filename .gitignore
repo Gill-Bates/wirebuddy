@@ -7,6 +7,8 @@ dist/
 build/
 *BUILD_INFO*
 full_codebase_*
+.pytest_cache/
+*.backup
 
 # Virtual Environment
 .venv/

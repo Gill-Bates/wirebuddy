@@ -61,6 +61,8 @@
     }
 
     .log-table {
+        width: 100%;
+        table-layout: auto;
         font-size: 0.85rem;
     }
 
@@ -69,11 +71,19 @@
         padding: 0.4rem 0.65rem;
     }
 
-    .log-table th.log-col-resolver,
-    .log-table td.log-col-resolver {
-        width: 170px;
-        white-space: nowrap;
+    .log-table th.log-col-time,
+    .log-table td.log-col-time {
+        width: 140px;
     }
+
+    .log-table th.log-col-type,
+    .log-table td.log-col-type {
+        width: 72px;
+        white-space: nowrap;
+        text-align: left;
+    }
+
+
 
     .log-domain {
         font-family: 'Courier New', Courier, monospace;
@@ -104,10 +114,32 @@
     }
 
     .top-domain-card-body {
-        height: 210px;
+        height: clamp(220px, 26vh, 290px);
         display: flex;
         align-items: stretch;
         overflow: hidden;
+    }
+
+    .dns-empty-state {
+        width: 100%;
+        min-height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.55rem;
+        text-align: center;
+        color: var(--bs-secondary-color);
+    }
+
+    .dns-empty-state .material-icons {
+        font-size: clamp(46px, 5vw, 64px);
+        line-height: 1;
+        opacity: 0.85;
+    }
+
+    .dns-empty-state-text {
+        font-weight: 600;
     }
 
     .top-domain-content {
@@ -121,9 +153,10 @@
     }
 
     .top-domain-chart-wrap {
-        flex: 0 0 150px;
-        width: 150px;
-        height: 150px;
+        --donut-size: clamp(160px, 16vw, 220px);
+        flex: 0 0 var(--donut-size);
+        width: var(--donut-size);
+        height: var(--donut-size);
         align-self: center;
     }
 
@@ -180,6 +213,19 @@
         height: min(260px, 40vh);
     }
 
+    #trend-empty {
+        position: absolute;
+        inset: 0;
+    }
+
+    .log-table td.log-empty-cell {
+        padding: 0.75rem;
+    }
+
+    .log-table td.log-empty-cell .dns-empty-state {
+        min-height: 220px;
+    }
+
     #dns-log-filters .form-select {
         min-width: 120px;
         max-width: 220px;
@@ -199,14 +245,28 @@
             flex-wrap: nowrap !important;
         }
 
+        .log-table th.log-col-time,
+        .log-table td.log-col-time {
+            width: 9.25rem;
+        }
+
+        .log-table th.log-col-type,
+        .log-table td.log-col-type {
+            width: 5rem;
+            padding-right: 1.35rem;
+        }
+
+        .log-table th:last-child,
+        .log-table td:last-child {
+            padding-right: 1.35rem;
+        }
+
         .top-domain-card-body {
-            height: 270px;
+            height: clamp(250px, 31vh, 340px);
         }
 
         .top-domain-chart-wrap {
-            flex-basis: 170px;
-            width: 170px;
-            height: 170px;
+            --donut-size: clamp(185px, 15vw, 260px);
         }
 
         #log-table-wrap {
@@ -263,13 +323,15 @@
 
         .dns-toolbar>button,
         .dns-toolbar>.dropdown,
-        .dns-toolbar>.btn-group {
+        .dns-toolbar>.btn-group,
+        .dns-toolbar>#dns-controls {
             width: 100%;
         }
 
         .dns-toolbar>button {
             min-width: 2.75rem;
             max-width: 2.75rem;
+            align-self: start;
             padding-left: 0;
             padding-right: 0;
         }
@@ -278,17 +340,27 @@
             min-width: 0;
         }
 
+        .dns-toolbar>#dns-controls {
+            display: grid !important;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.5rem !important;
+        }
+
+        .dns-toolbar>#dns-controls .btn:nth-child(3) {
+            grid-column: 1 / -1;
+        }
+
         .dns-toolbar .btn {
             justify-content: center;
             min-height: 2.5rem;
             border-radius: 0.6rem;
         }
 
-        .dns-header + .mb-4 {
+        .dns-header+.mb-4 {
             margin-bottom: 0.75rem !important;
         }
 
-        .dns-header + .mb-4 .row {
+        .dns-header+.mb-4 .row {
             --bs-gutter-y: 0.75rem;
         }
 
@@ -323,20 +395,19 @@
         }
 
         .top-domain-chart-wrap {
-            flex-basis: 130px;
-            width: 130px;
-            height: 130px;
+            --donut-size: clamp(145px, 34vw, 200px);
         }
 
         #log-table-wrap {
             max-height: 460px !important;
+            overflow-x: hidden;
         }
 
         .log-table {
             min-width: 100%;
             width: 100%;
             font-size: 0.78rem;
-            table-layout: fixed;
+            table-layout: auto;
         }
 
         .log-table thead {
@@ -362,6 +433,10 @@
             padding-right: 0.75rem;
         }
 
+        .log-table td.log-empty-cell .dns-empty-state {
+            min-height: 150px;
+        }
+
         .log-table th,
         .log-table td {
             display: table-cell;
@@ -372,21 +447,25 @@
 
         .log-table th.log-col-time,
         .log-table td.log-col-time {
-            width: 5.7rem;
+            width: 5.1rem !important;
+            min-width: 5.1rem;
             white-space: normal;
         }
 
         .log-table th.log-col-type,
         .log-table td.log-col-type {
-            width: 3.2rem;
+            width: 3rem !important;
+            min-width: 3rem;
             white-space: nowrap;
             text-align: left;
         }
 
-        .log-table th.log-col-resolver,
-        .log-table td.log-col-resolver {
-            display: none;
+        .log-table th.log-col-domain,
+        .log-table td[data-label="Domain"] {
+            width: auto !important;
         }
+
+
 
         .log-table td::before {
             content: none !important;
@@ -439,7 +518,7 @@
         <button class="btn btn-sm btn-outline-primary" onclick="refreshAll()" aria-label="Refresh" title="Refresh">
             <span class="material-icons align-middle" style="font-size:18px;">refresh</span>
         </button>
-        <div class="d-none d-lg-flex gap-2" id="dns-controls">
+        <div class="d-flex gap-2" id="dns-controls">
             <button class="btn btn-sm btn-light dns-ctrl-btn" id="btn-start" onclick="dnsAction('start')" disabled>
                 <span class="material-icons align-middle text-success me-1"
                     style="font-size:18px;">play_arrow</span>Start
@@ -451,21 +530,6 @@
                 <span class="material-icons align-middle text-warning me-1"
                     style="font-size:18px;">restart_alt</span>Restart
             </button>
-        </div>
-        <div class="dropdown d-lg-none">
-            <button class="btn btn-sm btn-outline-secondary dropdown-toggle w-100" type="button"
-                data-bs-toggle="dropdown" aria-expanded="false">
-                <span class="material-icons align-middle me-1" style="font-size:18px;">tune</span>DNS Control
-            </button>
-            <ul class="dropdown-menu dropdown-menu-end w-100">
-                <li><button class="dropdown-item" id="btn-start-mobile" onclick="dnsAction('start')" disabled>Start
-                        DNS</button>
-                </li>
-                <li><button class="dropdown-item" id="btn-stop-mobile" onclick="dnsAction('stop')" disabled>Stop
-                        DNS</button></li>
-                <li><button class="dropdown-item" id="btn-restart-mobile" onclick="dnsAction('restart')">Restart
-                        DNS</button></li>
-            </ul>
         </div>
     </div>
 </div>
@@ -549,7 +613,10 @@
                             </div>
                             <ul id="top-queried-legend" class="top-domain-legend"></ul>
                         </div>
-                        <div id="top-queried-empty" class="text-muted d-none">No data available</div>
+                        <div id="top-queried-empty" class="chart-empty-state d-none">
+                            <span class="material-icons">database</span>
+                            <span class="chart-empty-state-text">No Data Available</span>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -569,7 +636,10 @@
                             </div>
                             <ul id="top-blocked-legend" class="top-domain-legend"></ul>
                         </div>
-                        <div id="top-blocked-empty" class="text-muted d-none">No data available</div>
+                        <div id="top-blocked-empty" class="chart-empty-state d-none">
+                            <span class="material-icons">database</span>
+                            <span class="chart-empty-state-text">No Data Available</span>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -578,11 +648,12 @@
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="mb-0 dns-card-title">
                             <span class="material-icons">show_chart</span>
-                            Blockrate Trend (30 Days)
+                            Blockrate Trend
                         </h5>
-                        <span class="text-muted small" id="trend-meta">Loading…</span>
+                        <span class="badge bg-secondary">30 Days</span>
                     </div>
                     <div class="card-body">
+                        <span class="d-none" id="trend-meta" aria-live="polite">Loading…</span>
                         <div id="trend-chart-wrap" style="height: 300px;">
                             <canvas id="dnsTrendChart"></canvas>
                         </div>
@@ -625,15 +696,14 @@
                     <table class="table table-hover log-table mb-0">
                         <thead class="sticky-top bg-body">
                             <tr>
-                                <th class="log-col-time" style="width:140px;">Time</th>
+                                <th class="log-col-time">Time</th>
                                 <th class="log-col-domain">Domain</th>
-                                <th class="log-col-resolver">Resolver</th>
-                                <th class="log-col-type" style="width:60px;">Type</th>
+                                <th class="log-col-type">Type</th>
                             </tr>
                         </thead>
                         <tbody id="log-body">
                             <tr>
-                                <td colspan="4" class="text-center py-4">
+                                <td colspan="3" class="text-center py-4">
                                     <div class="spinner-border spinner-border-sm"></div> Loading…
                                 </td>
                             </tr>
@@ -712,7 +782,24 @@
             const blocked = t.blocked || [];
             const total = t.total || [];
             const rate = t.block_rate || [];
+
+            const trendWrap = document.getElementById('trend-chart-wrap');
+            const hasData = labels.length > 0 && total.some(v => v > 0);
+            if (!hasData) {
+                trendWrap.innerHTML = '';
+                trendWrap.appendChild(chartEmptyState());
+                return;
+            }
+            // Ensure canvas exists (may have been replaced by empty state)
+            if (!trendWrap.querySelector('#dnsTrendChart')) {
+                trendWrap.innerHTML = '<canvas id="dnsTrendChart"></canvas>';
+                _trendChart = null;
+            }
+
             const { gridColor, textColor } = getChartThemeColors();
+            const singlePoint = labels.length <= 1;
+            const pointRadius = singlePoint ? 3 : 0;
+            const pointHoverRadius = singlePoint ? 5 : 3;
 
             const ctx = document.getElementById('dnsTrendChart').getContext('2d');
             if (!_trendChart) {
@@ -729,7 +816,8 @@
                                 yAxisID: 'y',
                                 tension: 0.3,
                                 fill: true,
-                                pointRadius: 0,
+                                pointRadius,
+                                pointHoverRadius,
                             },
                             {
                                 label: 'Total',
@@ -738,17 +826,8 @@
                                 backgroundColor: 'transparent',
                                 yAxisID: 'y',
                                 tension: 0.3,
-                                pointRadius: 0,
-                            },
-                            {
-                                label: 'Blockrate %',
-                                data: rate,
-                                borderColor: '#198754',
-                                backgroundColor: 'transparent',
-                                yAxisID: 'y1',
-                                tension: 0.3,
-                                pointRadius: 0,
-                                borderDash: [6, 4],
+                                pointRadius,
+                                pointHoverRadius,
                             },
                         ],
                     },
@@ -781,14 +860,6 @@
                                 ticks: { color: textColor },
                                 title: { display: true, text: 'Queries', color: textColor },
                             },
-                            y1: {
-                                beginAtZero: true,
-                                max: 100,
-                                position: 'right',
-                                grid: { drawOnChartArea: false, color: gridColor },
-                                ticks: { callback: v => `${v}%`, color: textColor },
-                                title: { display: true, text: 'Blockrate %', color: textColor },
-                            },
                         },
                     },
                 });
@@ -796,12 +867,14 @@
                 _trendChart.data.labels = labels;
                 _trendChart.data.datasets[0].data = blocked;
                 _trendChart.data.datasets[1].data = total;
-                _trendChart.data.datasets[2].data = rate;
+                _trendChart.data.datasets[0].pointRadius = pointRadius;
+                _trendChart.data.datasets[1].pointRadius = pointRadius;
+                _trendChart.data.datasets[0].pointHoverRadius = pointHoverRadius;
+                _trendChart.data.datasets[1].pointHoverRadius = pointHoverRadius;
                 _trendChart.update();
             }
 
-            const latest = rate.length ? rate[rate.length - 1] : 0;
-            document.getElementById('trend-meta').textContent = `Latest: ${latest}%`;
+            document.getElementById('trend-meta').textContent = '';
         } catch (e) {
             document.getElementById('trend-meta').textContent = 'Trend unavailable';
         }
@@ -824,10 +897,6 @@
 
             document.getElementById('btn-start').disabled = s.is_running;
             document.getElementById('btn-stop').disabled = !s.is_running;
-            const btnStartMobile = document.getElementById('btn-start-mobile');
-            const btnStopMobile = document.getElementById('btn-stop-mobile');
-            if (btnStartMobile) btnStartMobile.disabled = s.is_running;
-            if (btnStopMobile) btnStopMobile.disabled = !s.is_running;
         } catch (e) {
             document.getElementById('stat-status').innerHTML = '<span class="text-muted">?</span>';
         }
@@ -839,8 +908,9 @@
             const topQueried = data.top_queried || [];
             const topBlocked = data.top_blocked || [];
 
-            // Render both as doughnut charts
+            // Render charts with RAF to ensure Canvas contexts are independent
             renderQueriedDoughnut(topQueried);
+            await new Promise(resolve => requestAnimationFrame(resolve));
             renderBlockedDoughnut(topBlocked);
         } catch (e) {
             console.error('Top domains error:', e);
@@ -929,11 +999,17 @@
         const chartColors = getChartColors(labels, colors);
         renderDomainLegend(legendId, labels, values, chartColors);
 
+        // Destroy existing chart instance completely before creating new one
         if (chartRef.instance) {
             chartRef.instance.destroy();
+            chartRef.instance = null;
         }
 
-        chartRef.instance = new Chart(canvas.getContext('2d'), {
+        // Get fresh 2D context
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        chartRef.instance = new Chart(ctx, {
             type: 'doughnut',
             data: {
                 labels,
@@ -1048,7 +1124,7 @@
             const tr = document.createElement('tr');
             tr.className = 'log-empty-row';
             const td = document.createElement('td');
-            td.colSpan = 4;
+            td.colSpan = 3;
             td.className = 'text-center text-danger';
             td.textContent = 'Failed to load logs';
             tr.appendChild(td);
@@ -1120,9 +1196,9 @@
                 const tr = document.createElement('tr');
                 tr.className = 'log-empty-row';
                 const td = document.createElement('td');
-                td.colSpan = 4;
-                td.className = 'text-center text-muted py-4';
-                td.textContent = 'No matching queries';
+                td.colSpan = 3;
+                td.className = 'text-center py-4';
+                td.appendChild(chartEmptyState());
                 tr.appendChild(td);
                 tbody.appendChild(tr);
                 return;
@@ -1186,20 +1262,8 @@
             typeCode.textContent = q.type || '';
             tdType.appendChild(typeCode);
 
-            const tdResolver = document.createElement('td');
-            tdResolver.setAttribute('data-label', 'Resolver');
-            tdResolver.className = 'log-col-resolver text-muted';
-            if (q.resolver) {
-                const resolverCode = document.createElement('code');
-                resolverCode.textContent = q.resolver;
-                tdResolver.appendChild(resolverCode);
-            } else {
-                tdResolver.textContent = '—';
-            }
-
             tr.appendChild(tdTime);
             tr.appendChild(tdDomain);
-            tr.appendChild(tdResolver);
             tr.appendChild(tdType);
             frag.appendChild(tr);
         }

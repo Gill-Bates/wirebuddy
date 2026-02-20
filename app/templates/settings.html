@@ -120,19 +120,19 @@
         min-width: 0;
         max-width: 100%;
         overflow: hidden;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.65) 0%, rgba(248, 249, 250, 0.65) 100%);
-        box-shadow: 0 4px 10px rgba(15, 23, 42, 0.1);
-        transition: box-shadow 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
+        background: var(--bs-tertiary-bg);
+        box-shadow: 0 3px 8px rgba(15, 23, 42, 0.08);
+        transition: box-shadow 0.18s ease, transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease;
     }
 
     .blocklist-hero-card:hover {
         transform: translateY(-1px);
-        box-shadow: 0 6px 14px rgba(15, 23, 42, 0.14);
+        box-shadow: 0 5px 12px rgba(15, 23, 42, 0.12);
     }
 
     .blocklist-hero-card.enabled {
         border-color: var(--bs-border-color);
-        box-shadow: 0 6px 14px rgba(15, 23, 42, 0.14);
+        box-shadow: 0 5px 12px rgba(15, 23, 42, 0.12);
     }
 
     .blocklist-hero-title {
@@ -140,6 +140,34 @@
         font-size: 0.92rem;
         line-height: 1.15;
         margin: 0;
+    }
+
+    .blocklist-hero-title-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        min-width: 0;
+    }
+
+    .blocklist-source-info {
+        border: 0;
+        background: transparent;
+        padding: 0;
+        color: var(--bs-secondary-color);
+        line-height: 1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: help;
+    }
+
+    .blocklist-source-info .material-icons {
+        font-size: 0.9rem;
+    }
+
+    .blocklist-source-info:hover,
+    .blocklist-source-info:focus-visible {
+        color: var(--bs-body-color);
     }
 
     .blocklist-hero-desc {
@@ -160,21 +188,6 @@
         font-size: 0.64rem;
         font-weight: 600;
         padding: 0.2rem 0.36rem;
-    }
-
-    .blocklist-hero-url {
-        margin-top: 0.35rem;
-        font-size: 0.8rem;
-        color: var(--bs-secondary-color);
-        overflow-wrap: anywhere;
-    }
-
-    .blocklist-hero-url code {
-        display: block;
-        white-space: normal;
-        word-break: break-all;
-        overflow-wrap: anywhere;
-        max-width: 100%;
     }
 
     .blocklist-header-meta {
@@ -237,13 +250,13 @@
     }
 
     [data-bs-theme="dark"] .blocklist-hero-card {
-        background: linear-gradient(180deg, rgba(33, 45, 62, 0.95) 0%, rgba(24, 35, 49, 0.95) 100%);
-        border-color: rgba(148, 163, 184, 0.22);
-        box-shadow: 0 5px 12px rgba(0, 0, 0, 0.28);
+        background: var(--bs-tertiary-bg);
+        border-color: rgba(148, 163, 184, 0.2);
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.24);
     }
 
     [data-bs-theme="dark"] .blocklist-hero-card.enabled {
-        box-shadow: 0 6px 14px rgba(0, 0, 0, 0.32);
+        box-shadow: 0 5px 12px rgba(0, 0, 0, 0.28);
     }
 
     @media (max-width: 767.98px) {
@@ -330,40 +343,6 @@
     <div class="tab-pane fade show active" id="general-pane" role="tabpanel" aria-labelledby="general-tab">
         <div class="row settings-general-equal-row">
             <div class="col-lg-6 settings-general-col settings-general-col-left">
-                <!-- Profile Settings -->
-                <div class="card mb-4">
-                    <div class="card-header">
-                        <h5 class="mb-0">Profile</h5>
-                    </div>
-                    <div class="card-body">
-                        <form id="profile-form">
-                            <div class="mb-3">
-                                <label class="form-label">Username</label>
-                                <input type="text" class="form-control" value="{{ user['username'] }}" disabled
-                                    autocomplete="username">
-                            </div>
-                            <div class="mb-3">
-                                <label for="current-password" class="form-label">Current Password</label>
-                                <input type="password" class="form-control" id="current-password" required
-                                    autocomplete="current-password">
-                            </div>
-                            <div class="mb-3">
-                                <label for="new-password" class="form-label">New Password</label>
-                                <input type="password" class="form-control" id="new-password" required minlength="8"
-                                    autocomplete="new-password">
-                                <small class="text-muted">Minimum 8 characters</small>
-                            </div>
-                            <div class="mb-3">
-                                <label for="confirm-password" class="form-label">Confirm New Password</label>
-                                <input type="password" class="form-control" id="confirm-password" required
-                                    autocomplete="new-password">
-                            </div>
-                            <button type="submit" class="btn btn-primary">Change Password</button>
-                        </form>
-                    </div>
-                </div>
-            </div>
-            <div class="col-lg-6 settings-general-col settings-general-col-right">
                 <!-- Appearance -->
                 <div class="card mb-4">
                     <div class="card-header">
@@ -613,6 +592,14 @@
                                 (DoT)</label>
                             <textarea id="dns-upstream-servers" class="form-control font-monospace" rows="4"
                                 placeholder="1.1.1.1@853#cloudflare-dns.com&#10;9.9.9.9@853#dns.quad9.net&#10;91.239.100.100@853#unicast.censurfridns.dk&#10;45.90.28.0@853#dns.nextdns.io&#10;194.242.2.2@853#dns.mullvad.net"></textarea>
+                            <div class="mt-2 d-flex gap-2 align-items-center">
+                                <button type="button" class="btn btn-sm btn-outline-secondary" id="validate-dns-btn"
+                                    onclick="validateDnsServers()">
+                                    <span class="material-icons align-middle me-1"
+                                        style="font-size: 16px;">verified</span>Validate DNS Servers
+                                </button>
+                                <span id="dns-validation-status" class="small"></span>
+                            </div>
                             <details class="mt-2 small">
                                 <summary class="text-muted" style="cursor: pointer;">
                                     <span class="material-icons align-middle me-1" style="font-size: 14px;">info</span>
@@ -974,7 +961,7 @@
         }
 
         try {
-            await api('PUT', '/api/wireguard/settings', payload);
+            await api('PATCH', '/api/wireguard/settings', payload);
             wbToast('Settings saved', 'success');
         } catch (error) {
             wbAlert('Failed to save settings: ' + error.message, 'danger');
@@ -1525,15 +1512,22 @@
                 const domains = Number.isFinite(Number(domainsValue))
                     ? Number(domainsValue).toLocaleString()
                     : (String(domainsValue ?? '').trim() || '—');
-                const size = source.size || '—';
                 const updated = source.last_updated || '—';
                 const sourceId = `blocklist-${btoa(source.url).replace(/=+$/g, '')}`;
                 const dataUrl = esc(source.url).replace(/"/g, '&quot;');
+                const sourceTooltip = esc(source.url).replace(/"/g, '&quot;');
                 html += `
                     <article class="blocklist-hero-card${enabledClass}">
                         <div class="d-flex justify-content-between align-items-start gap-3">
                             <div class="flex-grow-1">
-                                <label class="blocklist-hero-title" for="${sourceId}" style="cursor: pointer;">${esc(source.name)}</label>
+                                <div class="blocklist-hero-title-wrap">
+                                    <label class="blocklist-hero-title" for="${sourceId}" style="cursor: pointer;">${esc(source.name)}</label>
+                                    <button type="button" class="blocklist-source-info"
+                                        data-bs-toggle="tooltip" data-bs-title="${sourceTooltip}"
+                                        aria-label="Show source URL">
+                                        <span class="material-icons" aria-hidden="true">info</span>
+                                    </button>
+                                </div>
                                 <p class="blocklist-hero-desc mt-1">${esc(source.description)}</p>
                             </div>
                             <div class="form-check form-switch m-0">
@@ -1544,14 +1538,13 @@
                         </div>
                         <div class="blocklist-hero-meta">
                             <span class="badge text-bg-secondary">Domains ${domains}</span>
-                            <span class="badge text-bg-secondary">Size ${size}</span>
                             <span class="badge text-bg-secondary">Updated ${updated}</span>
                         </div>
-                        <div class="blocklist-hero-url"><code>${esc(source.url)}</code></div>
                     </article>`;
             }
             document.getElementById('blocklist-sources').innerHTML =
                 html || '<div class="text-muted text-center py-3">No blocklist sources available</div>';
+            initBlocklistTooltips();
             const updEl = document.getElementById('blocklist-last-update');
             const updValueEl = updEl?.querySelector('.blocklist-last-value');
             if (updEl) {
@@ -1569,6 +1562,15 @@
             const updValueEl = updEl?.querySelector('.blocklist-last-value');
             if (updValueEl) updValueEl.textContent = '–';
         }
+    }
+
+    function initBlocklistTooltips() {
+        if (!window.bootstrap?.Tooltip) return;
+        document.querySelectorAll('#blocklist-sources [data-bs-toggle="tooltip"]').forEach(el => {
+            const instance = bootstrap.Tooltip.getInstance(el);
+            if (instance) instance.dispose();
+            new bootstrap.Tooltip(el, { trigger: 'hover focus' });
+        });
     }
 
     function toggleBlocklistCardState(checkboxEl) {
@@ -1653,6 +1655,94 @@
             .split(/[,\n]+/)
             .map(v => v.trim())
             .filter(Boolean);
+    }
+
+    // DNS server format regex: IP@port#hostname
+    const DNS_FORMAT_RE = /^([^@#]+)(?:@(\d+))?(?:#(.+))?$/;
+
+    function validateDnsServerSyntax(server) {
+        const match = DNS_FORMAT_RE.exec(server.trim());
+        if (!match) return { valid: false, error: 'Invalid format' };
+
+        const ip = match[1]?.trim();
+        const port = match[2] ? parseInt(match[2], 10) : 853;
+        const hostname = match[3]?.trim();
+
+        // Basic IP validation (IPv4 or IPv6)
+        const ipv4Re = /^(\d{1,3}\.){3}\d{1,3}$/;
+        const ipv6Re = /^[0-9a-fA-F:]+$/;
+        if (!ipv4Re.test(ip) && !ipv6Re.test(ip)) {
+            return { valid: false, error: `Invalid IP: ${ip}` };
+        }
+
+        if (port < 1 || port > 65535) {
+            return { valid: false, error: `Invalid port: ${port}` };
+        }
+
+        if (!hostname) {
+            return { valid: false, error: 'Hostname required for DoT' };
+        }
+
+        return { valid: true };
+    }
+
+    async function validateDnsServers() {
+        const btn = document.getElementById('validate-dns-btn');
+        const statusEl = document.getElementById('dns-validation-status');
+        const upstreamInput = document.getElementById('dns-upstream-servers');
+
+        if (!upstreamInput) return;
+
+        const servers = parseDnsUpstreamInput(upstreamInput.value);
+
+        if (servers.length === 0) {
+            wbAlert('No DNS servers entered', 'warning');
+            return;
+        }
+
+        // First: Client-side syntax validation
+        const syntaxErrors = [];
+        for (const server of servers) {
+            const result = validateDnsServerSyntax(server);
+            if (!result.valid) {
+                syntaxErrors.push(`${server}: ${result.error}`);
+            }
+        }
+
+        if (syntaxErrors.length > 0) {
+            wbAlert('Syntax errors:\n' + syntaxErrors.join('\n'), 'danger');
+            return;
+        }
+
+        // Second: Backend connectivity test
+        btn.disabled = true;
+        statusEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing servers...';
+        statusEl.className = 'small text-muted';
+
+        try {
+            const res = await api('POST', '/api/dns/test-upstream', { servers });
+
+            if (res.all_success) {
+                statusEl.innerHTML = '<span class="material-icons align-middle text-success" style="font-size:16px;">check_circle</span> All servers validated';
+                statusEl.className = 'small text-success';
+                wbToast(`All ${res.results.length} DNS servers are reachable`, 'success');
+            } else {
+                const failedServers = res.results
+                    .filter(r => !r.success)
+                    .map(r => `${r.server}: ${r.error}`)
+                    .join('\n');
+
+                statusEl.innerHTML = `<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> ${res.failed_count} server(s) failed`;
+                statusEl.className = 'small text-danger';
+                wbAlert('DNS server validation failed:\n' + failedServers, 'danger');
+            }
+        } catch (error) {
+            statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Test failed';
+            statusEl.className = 'small text-danger';
+            wbAlert('DNS validation error: ' + error.message, 'danger');
+        } finally {
+            btn.disabled = false;
+        }
     }
 
     function setDnssecStatusText(data) {
@@ -1762,8 +1852,60 @@
 
         const upstreamInput = document.getElementById('dns-upstream-servers');
         const dnssecToggle = document.getElementById('dnssec-enabled');
+        const servers = parseDnsUpstreamInput(upstreamInput?.value || '');
+
+        // Validate DNS servers before saving (if any are specified)
+        if (servers.length > 0) {
+            // Syntax validation
+            const syntaxErrors = [];
+            for (const server of servers) {
+                const result = validateDnsServerSyntax(server);
+                if (!result.valid) {
+                    syntaxErrors.push(`${server}: ${result.error}`);
+                }
+            }
+            if (syntaxErrors.length > 0) {
+                wbAlert('DNS syntax errors:\n' + syntaxErrors.join('\n'), 'danger');
+                return;
+            }
+
+            // Connectivity test
+            const statusEl = document.getElementById('dns-validation-status');
+            if (statusEl) {
+                statusEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Validating...';
+                statusEl.className = 'small text-muted';
+            }
+
+            try {
+                const testRes = await api('POST', '/api/dns/test-upstream', { servers });
+                if (!testRes.all_success) {
+                    const failedServers = testRes.results
+                        .filter(r => !r.success)
+                        .map(r => `${r.server}: ${r.error}`)
+                        .join('\n');
+                    if (statusEl) {
+                        statusEl.innerHTML = `<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> ${testRes.failed_count} failed`;
+                        statusEl.className = 'small text-danger';
+                    }
+                    wbAlert('DNS validation failed - settings not saved:\n' + failedServers, 'danger');
+                    return;
+                }
+                if (statusEl) {
+                    statusEl.innerHTML = '<span class="material-icons align-middle text-success" style="font-size:16px;">check_circle</span> Validated';
+                    statusEl.className = 'small text-success';
+                }
+            } catch (error) {
+                if (statusEl) {
+                    statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Test failed';
+                    statusEl.className = 'small text-danger';
+                }
+                wbAlert('DNS validation error: ' + error.message, 'danger');
+                return;
+            }
+        }
+
         const payload = {
-            upstream_dns: parseDnsUpstreamInput(upstreamInput?.value || ''),
+            upstream_dns: servers,
             dnssec_enabled: !!dnssecToggle?.checked,
             log_retention_days: retention,
         };
@@ -1798,32 +1940,6 @@
 
     // Load blocklists (called by tab system)
     // Removed automatic loading - now handled by initTabs()
-
-    // Password change form
-    document.getElementById('profile-form').addEventListener('submit', async function (e) {
-        e.preventDefault();
-
-        const currentPassword = document.getElementById('current-password').value;
-        const newPassword = document.getElementById('new-password').value;
-        const confirmPassword = document.getElementById('confirm-password').value;
-
-        if (newPassword !== confirmPassword) {
-            wbAlert('Passwords do not match', 'warning');
-            return;
-        }
-
-        try {
-            await api('POST', `/api/users/${encodeURIComponent(USER_ID)}/change-password`, {
-                current_password: currentPassword,
-                new_password: newPassword,
-            });
-
-            await wbAlert('Password changed successfully. Please log in again.', 'success');
-            logout();
-        } catch (error) {
-            wbAlert('Failed to change password: ' + error.message, 'danger');
-        }
-    });
 
     /* ── TSDB Stats ────────────────────────────────────────── */
     function formatBytes(size) {

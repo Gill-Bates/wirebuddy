@@ -8,6 +8,14 @@
 
 from __future__ import annotations
 
+from ..db.sqlite_peers import (
+	count_peers,
+	get_peers_paginated,
+)
+from ..db.sqlite_users import (
+	get_all_users,
+)
+
 import logging
 import math
 import re
@@ -25,7 +33,6 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from ..db import sqlite as sqlite_db
 from ..utils.geoip import lookup_ip
 from ..utils.deps import get_conn
 from .auth import get_current_user_optional
@@ -307,10 +314,10 @@ def peers_page(
 	page = max(1, page)
 	page_size = min(max(10, page_size), 200)
 
-	total_peers = sqlite_db.count_peers(conn)
+	total_peers = count_peers(conn)
 	total_pages = max(1, math.ceil(total_peers / page_size)) if total_peers else 1
 	page = min(page, total_pages)
-	peer_rows = sqlite_db.get_peers_paginated(conn, page=page, page_size=page_size)
+	peer_rows = get_peers_paginated(conn, page=page, page_size=page_size)
 	peers: list[dict] = []
 	for row in peer_rows:
 		peer = dict(row)
@@ -371,7 +378,7 @@ def users_page(
 	if redirect:
 		return redirect
 	
-	users = sqlite_db.get_all_users(conn)
+	users = get_all_users(conn)
 	
 	return templates.TemplateResponse("users.html", {
 		"request": request,

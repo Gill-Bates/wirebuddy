@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, TypedDict
@@ -42,6 +43,7 @@ class _Job:
 	run_on_start: bool = False
 	initial_delay: float = 0.0
 	timeout: float | None = None  # Per-job execution timeout (None = no limit)
+	jitter_pct: float = 0.0  # Random jitter as percentage of interval (0.0 to 0.5)
 	last_success: datetime | None = None
 	last_attempt: datetime | None = None
 	run_count: int = 0
@@ -80,6 +82,7 @@ class Scheduler:
 		run_on_start: bool = False,
 		initial_delay: float = 0.0,
 		timeout: float | None = None,
+		jitter_pct: float = 0.0,
 	) -> None:
 		"""Register a periodic job.
 		
@@ -90,6 +93,7 @@ class Scheduler:
 			run_on_start: Execute once immediately on start (after initial_delay)
 			initial_delay: Seconds to wait before first execution (requires run_on_start=True)
 			timeout: Per-execution timeout in seconds (None = no limit)
+			jitter_pct: Random jitter as percentage of interval (0.0 to 0.5, e.g. 0.1 = ±10%)
 		
 		Raises:
 			RuntimeError: If scheduler is already running
@@ -112,6 +116,9 @@ class Scheduler:
 		if initial_delay > 0 and not run_on_start:
 			raise ValueError("initial_delay requires run_on_start=True")
 		
+		if not 0.0 <= jitter_pct <= 0.5:
+			raise ValueError(f"jitter_pct must be between 0.0 and 0.5, got {jitter_pct}")
+		
 		self._jobs[name] = _Job(
 			name=name,
 			interval_seconds=interval_seconds,
@@ -119,6 +126,7 @@ class Scheduler:
 			run_on_start=run_on_start,
 			initial_delay=initial_delay,
 			timeout=timeout,
+			jitter_pct=jitter_pct,
 		)
 
 	def remove(self, name: str) -> None:
@@ -153,7 +161,7 @@ class Scheduler:
 		
 		for job in self._jobs.values():
 			self._tasks[job.name] = asyncio.create_task(self._run_loop(job))
-			_log.info("SCHEDULER job=%s interval=%ds started", job.name, job.interval_seconds)
+			_log.debug("SCHEDULER job=%s interval=%ds started", job.name, job.interval_seconds)
 
 	def stop(self) -> None:
 		"""Cancel all running jobs immediately (non-graceful).
@@ -221,9 +229,16 @@ class Scheduler:
 		stop_event = self._stop_event  # Local reference to avoid repeated None-checks
 		loop = asyncio.get_running_loop()
 		
+		def _jittered_interval() -> float:
+			"""Return interval with random jitter applied."""
+			if job.jitter_pct <= 0:
+				return job.interval_seconds
+			jitter_range = job.interval_seconds * job.jitter_pct
+			return job.interval_seconds + random.uniform(-jitter_range, jitter_range)
+		
 		consecutive_failures = 0
 		max_backoff = 300  # 5 minutes
-		next_run = loop.time() + job.interval_seconds
+		next_run = loop.time() + _jittered_interval()
 		
 		try:
 			# Initial execution if requested
@@ -247,7 +262,7 @@ class Scheduler:
 				now = loop.time()
 				if success:
 					consecutive_failures = 0
-					next_run = now + job.interval_seconds
+					next_run = now + _jittered_interval()
 				else:
 					consecutive_failures += 1
 					backoff = min(2 ** consecutive_failures, max_backoff)
@@ -284,11 +299,11 @@ class Scheduler:
 					# Skip any missed intervals (prevents burst execution after long jobs)
 					if next_run <= now:
 						skipped = int((now - next_run) / job.interval_seconds)
-						next_run += (skipped + 1) * job.interval_seconds
+						next_run += (skipped + 1) * job.interval_seconds + random.uniform(-job.interval_seconds * job.jitter_pct, job.interval_seconds * job.jitter_pct) if job.jitter_pct > 0 else (skipped + 1) * job.interval_seconds
 						if skipped > 0:
 							_log.warning("SCHEDULER job=%s skipped %d intervals", job.name, skipped)
 					else:
-						next_run += job.interval_seconds
+						next_run += _jittered_interval()
 				else:
 					# Job failed – apply exponential backoff
 					consecutive_failures += 1
@@ -301,7 +316,7 @@ class Scheduler:
 					# Keep original rhythm by computing next regular slot after backoff
 					backoff_until = now + backoff
 					while next_run < backoff_until:
-						next_run += job.interval_seconds
+						next_run += _jittered_interval()
 		
 		except asyncio.CancelledError:
 			_log.debug("SCHEDULER job=%s cancelled", job.name)
@@ -326,7 +341,7 @@ class Scheduler:
 			job.last_success = now
 			job.last_attempt = now
 			job.run_count += 1
-			_log.info("SCHEDULER job=%s completed (run #%d)", job.name, job.run_count)
+			_log.debug("SCHEDULER job=%s completed (run #%d)", job.name, job.run_count)
 			return True
 		except asyncio.TimeoutError:
 			job.last_attempt = datetime.now(timezone.utc)

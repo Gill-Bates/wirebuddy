@@ -8,6 +8,26 @@
 
 from __future__ import annotations
 
+from ..db.sqlite_interfaces import (
+	list_interfaces,
+)
+from ..db.sqlite_settings import (
+	DNS_LOG_RETENTION_OPTIONS,
+	get_dns_blocklist_enabled,
+	get_dns_log_retention_days,
+	get_dns_query_logging_enabled,
+	get_dns_upstream_servers,
+	get_dnssec_enabled,
+	get_enabled_blocklists,
+	set_dns_blocklist_enabled,
+	set_dns_log_retention_days,
+	set_dns_query_logging_enabled,
+	set_dns_service_enabled,
+	set_dns_upstream_servers,
+	set_dnssec_enabled,
+	set_enabled_blocklists,
+)
+
 import asyncio
 import ipaddress
 import logging
@@ -21,12 +41,14 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 
-from ..db import sqlite as sqlite_db
 from ..dns import ingestion as dns_ingestion
 from ..dns import unbound
 from ..utils.deps import get_conn, get_tsdb_dir
 from .auth import get_current_user, require_admin
 from .response import ok_response
+
+
+_log = logging.getLogger(__name__)
 
 
 def _blocklist_mtime() -> str | None:
@@ -40,7 +62,30 @@ def _blocklist_mtime() -> str | None:
 		_log.debug("Could not read blocklist mtime", exc_info=True)
 	return None
 
-_log = logging.getLogger(__name__)
+
+def _parse_tsdb_timestamp(raw: str) -> datetime | None:
+	"""Parse TSDB ISO timestamp to UTC datetime."""
+	value = str(raw or "").strip()
+	if not value:
+		return None
+	try:
+		if value.endswith("Z"):
+			value = value[:-1] + "+00:00"
+		dt = datetime.fromisoformat(value)
+		if dt.tzinfo is None:
+			return dt.replace(tzinfo=timezone.utc)
+		return dt.astimezone(timezone.utc)
+	except ValueError:
+		return None
+
+
+def _format_tsdb_timestamp(raw: str) -> str:
+	"""Format TSDB timestamp for UI table display."""
+	dt = _parse_tsdb_timestamp(raw)
+	if dt is None:
+		return ""
+	return dt.replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
 
 router = APIRouter(tags=["dns"])
 
@@ -151,7 +196,7 @@ class DnsConfigUpdate(BaseModel):
 		"""Validate DNS log retention options."""
 		if v is None:
 			return v
-		if v not in sqlite_db.DNS_LOG_RETENTION_OPTIONS:
+		if v not in DNS_LOG_RETENTION_OPTIONS:
 			raise ValueError(f"Invalid log_retention_days: {v}")
 		return v
 
@@ -186,39 +231,54 @@ class BlocklistSourcesUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/status")
-async def dns_status(_: sqlite3.Row = Depends(get_current_user)):
+async def dns_status(
+	tsdb_dir: Path = Depends(get_tsdb_dir),
+	_: sqlite3.Row = Depends(get_current_user),
+):
 	"""Get DNS resolver status and statistics."""
+	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, tsdb_dir, 50000)
+	all_domains: set[str] = set()
+	all_clients: set[str] = set()
+	blocked_count = 0
+	for q in queries:
+		domain = str(q.get("domain", "")).strip()
+		client = str(q.get("client", "")).strip()
+		if domain:
+			all_domains.add(domain)
+		if client:
+			all_clients.add(client)
+		if bool(q.get("blocked", False)):
+			blocked_count += 1
+
+	unavailable = False
+	reason = ""
+	running = False
 	try:
 		running = await unbound.is_running()
-		stats = await unbound.get_stats()
 	except FileNotFoundError:
-		# Unbound not installed (dev environment)
-		data = {
-			"is_running": False,
-			"total_queries": 0,
-			"blocked_queries": 0,
-			"block_percentage": 0,
-			"unique_domains": 0,
-			"unique_clients": 0,
-			"blocklist_size": 0,
-			"blocklist_updated_at": None,
-			"unavailable": True,
-			"reason": "Unbound not installed (requires Docker)",
-		}
-		return ok_response(data=data, **data)
-	stats.is_running = running
+		unavailable = True
+		reason = "Unbound not installed (requires Docker)"
+	except Exception as exc:
+		_log.debug("DNS status running-check failed: %s", exc)
+
+	try:
+		blocklist_size = await asyncio.to_thread(unbound.get_blocklist_count)
+	except Exception:
+		blocklist_size = 0
 
 	data = {
 		"is_running": running,
-		"total_queries": stats.total_queries,
-		"blocked_queries": stats.blocked_queries,
+		"total_queries": len(queries),
+		"blocked_queries": blocked_count,
 		"block_percentage": round(
-			(stats.blocked_queries / stats.total_queries * 100) if stats.total_queries else 0, 1
+			(blocked_count / len(queries) * 100) if queries else 0, 1
 		),
-		"unique_domains": stats.unique_domains,
-		"unique_clients": stats.unique_clients,
-		"blocklist_size": stats.blocklist_size,
+		"unique_domains": len(all_domains),
+		"unique_clients": len(all_clients),
+		"blocklist_size": blocklist_size,
 		"blocklist_updated_at": _blocklist_mtime(),
+		"unavailable": unavailable,
+		"reason": reason,
 	}
 	return ok_response(data=data, **data)
 
@@ -273,43 +333,59 @@ async def dns_selftest(_: sqlite3.Row = Depends(get_current_user)):
 async def dns_trend(
 	hours: int = 24,
 	bucket_minutes: int = 60,
+	tsdb_dir: Path = Depends(get_tsdb_dir),
 	_: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Return DNS total/blocked trend buckets for charts.
 	
-	Note: Data is limited to the most recent 10,000 log entries.
-	For long time ranges (e.g., 168 hours), results may be incomplete
-	if the log contains more than 10,000 entries in that period.
+	Data source: TSDB DNS query store (persisted across restarts).
 	"""
-	hours = min(max(hours, 1), 168)
-	bucket_minutes = min(max(bucket_minutes, 5), 60)
-	since = datetime.now(timezone.utc) - timedelta(hours=hours)
+	hours = min(max(hours, 1), 720)
+	bucket_minutes = min(max(bucket_minutes, 5), 1440)
+	now = datetime.now(timezone.utc)
+	since = now - timedelta(hours=hours)
 
-	queries = await asyncio.to_thread(unbound.tail_query_log, 10000)
-	buckets: dict[str, dict[str, int]] = {}
+	def _bucket_start(ts: datetime) -> datetime:
+		# Floor to bucket boundary in absolute UTC minutes (works for 5..1440+).
+		ts = ts.astimezone(timezone.utc).replace(second=0, microsecond=0)
+		epoch_minutes = int(ts.timestamp() // 60)
+		bucket_epoch_minutes = (epoch_minutes // bucket_minutes) * bucket_minutes
+		return datetime.fromtimestamp(bucket_epoch_minutes * 60, tz=timezone.utc)
+
+	# Read a large tail window from TSDB so 30-day buckets remain complete.
+	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, tsdb_dir, 100000)
+	buckets: dict[datetime, dict[str, int]] = {}
 
 	for q in queries:
-		if not q.timestamp:
-			continue
-		try:
-			ts = datetime.strptime(q.timestamp, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-		except ValueError:
+		ts = _parse_tsdb_timestamp(str(q.get("ts", "")))
+		if ts is None:
 			continue
 		if ts < since:
 			continue
 
-		bucket_ts = ts.replace(second=0, microsecond=0)
-		bucket_ts = bucket_ts - timedelta(minutes=bucket_ts.minute % bucket_minutes)
-		label = bucket_ts.isoformat()
-		if label not in buckets:
-			buckets[label] = {"total": 0, "blocked": 0}
-		buckets[label]["total"] += 1
-		if q.blocked:
-			buckets[label]["blocked"] += 1
+		bucket_ts = _bucket_start(ts)
+		if bucket_ts not in buckets:
+			buckets[bucket_ts] = {"total": 0, "blocked": 0}
+		buckets[bucket_ts]["total"] += 1
+		if bool(q.get("blocked", False)):
+			buckets[bucket_ts]["blocked"] += 1
 
-	labels = sorted(buckets.keys())
-	total = [buckets[l]["total"] for l in labels]
-	blocked = [buckets[l]["blocked"] for l in labels]
+	# Fill empty buckets so charts have a complete continuous timeline.
+	start_bucket = _bucket_start(since)
+	end_bucket = _bucket_start(now)
+	step = timedelta(minutes=bucket_minutes)
+
+	labels: list[str] = []
+	total: list[int] = []
+	blocked: list[int] = []
+	cursor = start_bucket
+	while cursor <= end_bucket:
+		labels.append(cursor.isoformat())
+		counts = buckets.get(cursor, {"total": 0, "blocked": 0})
+		total.append(counts["total"])
+		blocked.append(counts["blocked"])
+		cursor += step
+
 	block_rate = [
 		round((b / t) * 100, 1) if t else 0.0
 		for b, t in zip(blocked, total)
@@ -331,7 +407,10 @@ async def dns_trend(
 # ---------------------------------------------------------------------------
 
 @router.post("/start")
-async def dns_start(_: sqlite3.Row = Depends(require_admin)):
+async def dns_start(
+	conn: sqlite3.Connection = Depends(get_conn),
+	_: sqlite3.Row = Depends(require_admin),
+):
 	"""Start the DNS resolver."""
 	try:
 		ok, msg = await unbound.start()
@@ -339,11 +418,15 @@ async def dns_start(_: sqlite3.Row = Depends(require_admin)):
 		raise HTTPException(status_code=503, detail="Unbound not installed (requires Docker)")
 	if not ok:
 		raise HTTPException(status_code=500, detail=msg)
+	set_dns_service_enabled(conn, True)
 	return ok_response(message=msg)
 
 
 @router.post("/stop")
-async def dns_stop(_: sqlite3.Row = Depends(require_admin)):
+async def dns_stop(
+	conn: sqlite3.Connection = Depends(get_conn),
+	_: sqlite3.Row = Depends(require_admin),
+):
 	"""Stop the DNS resolver."""
 	try:
 		ok, msg = await unbound.stop()
@@ -351,11 +434,15 @@ async def dns_stop(_: sqlite3.Row = Depends(require_admin)):
 		raise HTTPException(status_code=503, detail="Unbound not installed (requires Docker)")
 	if not ok:
 		raise HTTPException(status_code=500, detail=msg)
+	set_dns_service_enabled(conn, False)
 	return ok_response(message=msg)
 
 
 @router.post("/restart")
-async def dns_restart(_: sqlite3.Row = Depends(require_admin)):
+async def dns_restart(
+	conn: sqlite3.Connection = Depends(get_conn),
+	_: sqlite3.Row = Depends(require_admin),
+):
 	"""Restart the DNS resolver."""
 	try:
 		ok, msg = await unbound.restart()
@@ -363,6 +450,7 @@ async def dns_restart(_: sqlite3.Row = Depends(require_admin)):
 		raise HTTPException(status_code=503, detail="Unbound not installed (requires Docker)")
 	if not ok:
 		raise HTTPException(status_code=500, detail=msg)
+	set_dns_service_enabled(conn, True)
 	return ok_response(message=msg)
 
 
@@ -376,14 +464,14 @@ async def get_dns_config(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Get persisted DNS configuration used by Unbound + DNS ingestion."""
-	dnssec_enabled = sqlite_db.get_dnssec_enabled(conn)
+	dnssec_enabled = get_dnssec_enabled(conn)
 	dnssec_available = unbound.is_dnssec_available()
-	retention_days = sqlite_db.get_dns_log_retention_days(conn)
+	retention_days = get_dns_log_retention_days(conn)
 
 	data = {
-		"enable_logging": sqlite_db.get_dns_query_logging_enabled(conn),
-		"enable_blocklist": sqlite_db.get_dns_blocklist_enabled(conn),
-		"upstream_dns": sqlite_db.get_dns_upstream_servers(conn),
+		"enable_logging": get_dns_query_logging_enabled(conn),
+		"enable_blocklist": get_dns_blocklist_enabled(conn),
+		"upstream_dns": get_dns_upstream_servers(conn),
 		"dnssec_enabled": dnssec_enabled,
 		"dnssec_available": dnssec_available,
 		"dnssec_active": dnssec_enabled and dnssec_available,
@@ -418,43 +506,47 @@ async def update_dns_config(
 	
 	try:
 		# Load current persisted settings first.
-		enable_logging = sqlite_db.get_dns_query_logging_enabled(conn)
-		enable_blocklist = sqlite_db.get_dns_blocklist_enabled(conn)
-		upstream_dns = sqlite_db.get_dns_upstream_servers(conn)
-		dnssec_enabled = sqlite_db.get_dnssec_enabled(conn)
-		retention_days = sqlite_db.get_dns_log_retention_days(conn)
+		enable_logging = get_dns_query_logging_enabled(conn)
+		enable_blocklist = get_dns_blocklist_enabled(conn)
+		upstream_dns = get_dns_upstream_servers(conn)
+		dnssec_enabled = get_dnssec_enabled(conn)
+		retention_days = get_dns_log_retention_days(conn)
 		retention_result = {"deleted_files": 0, "remaining_files": 0}
 
 		# Apply explicit updates and persist.
 		if payload.enable_logging is not None:
 			enable_logging = payload.enable_logging
-			sqlite_db.set_dns_query_logging_enabled(conn, enable_logging)
+			set_dns_query_logging_enabled(conn, enable_logging)
 		if payload.enable_blocklist is not None:
 			enable_blocklist = payload.enable_blocklist
-			sqlite_db.set_dns_blocklist_enabled(conn, enable_blocklist)
+			set_dns_blocklist_enabled(conn, enable_blocklist)
 		if payload.upstream_dns is not None:
 			upstream_dns = payload.upstream_dns
-			sqlite_db.set_dns_upstream_servers(conn, upstream_dns)
+			set_dns_upstream_servers(conn, upstream_dns)
 		if payload.dnssec_enabled is not None:
 			dnssec_enabled = payload.dnssec_enabled
-			sqlite_db.set_dnssec_enabled(conn, dnssec_enabled)
+			set_dnssec_enabled(conn, dnssec_enabled)
 		if payload.log_retention_days is not None:
 			retention_days = payload.log_retention_days
-			sqlite_db.set_dns_log_retention_days(conn, retention_days)
+			set_dns_log_retention_days(conn, retention_days)
 			# "Keine Logs" disables runtime DNS query logging entirely.
 			enable_logging = retention_days > 0
-			sqlite_db.set_dns_query_logging_enabled(conn, enable_logging)
+			set_dns_query_logging_enabled(conn, enable_logging)
 			retention_result = await asyncio.to_thread(
 				dns_ingestion.enforce_dns_log_retention,
 				tsdb_dir,
 				retention_days,
 			)
 
+		# Collect IPv6 gateway addresses from all interfaces for dual-stack DNS
+		interfaces = list_interfaces(conn)
+		ipv6_gateways = unbound.get_interface_ipv6_gateways(interfaces)
 		unbound.write_config(
 			enable_logging=enable_logging,
 			enable_blocklist=enable_blocklist,
 			upstream_dns=upstream_dns,
 			enable_dnssec=dnssec_enabled,
+			listen_addrs_ipv6=ipv6_gateways if ipv6_gateways else None,
 		)
 		ok, msg = await unbound.reload_config()
 		dnssec_available = unbound.is_dnssec_available()
@@ -503,16 +595,16 @@ async def get_blocklist_sources(
 	_: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Get available blocklist sources and which are enabled."""
-	from ..dns.unbound import get_blocklist_file, BLOCKLIST_REGISTRY
+	from ..dns import constants as dns_constants
 	
-	enabled = sqlite_db.get_enabled_blocklists(conn)
+	enabled = get_enabled_blocklists(conn)
 	source_counts = await asyncio.to_thread(unbound.get_blocklist_source_counts)
 	
 	# Get combined blocklist file stats if available
 	# Note: This is the merged blocklist from all enabled sources
 	blocklist_updated = None
-	blocklist_size = None
-	blocklist_path = get_blocklist_file()
+	combined_blocklist_size = None
+	blocklist_path = dns_constants.get_blocklist_file()
 	if blocklist_path.exists():
 		try:
 			stat = blocklist_path.stat()
@@ -520,26 +612,27 @@ async def get_blocklist_sources(
 			# Format size
 			size_bytes = stat.st_size
 			if size_bytes < 1024:
-				blocklist_size = f"{size_bytes} B"
+				combined_blocklist_size = f"{size_bytes} B"
 			elif size_bytes < 1024 * 1024:
-				blocklist_size = f"{size_bytes // 1024} KB"
+				combined_blocklist_size = f"{size_bytes // 1024} KB"
 			else:
-				blocklist_size = f"{size_bytes // (1024 * 1024)} MB"
+				combined_blocklist_size = f"{size_bytes // (1024 * 1024)} MB"
 		except Exception:
 			_log.debug("Could not read blocklist file stats", exc_info=True)
 	
 	# Build sources from registry with enabled status
 	sources = []
-	for bid, meta in BLOCKLIST_REGISTRY.items():
+	for bid, meta in dns_constants.BLOCKLIST_REGISTRY.items():
+		is_enabled = meta["url"] in enabled
+		
 		sources.append({
 			"id": bid,
 			"url": meta["url"],
 			"name": meta["name"],
 			"description": meta["description"],
 			"domains": source_counts.get(bid, 0),
-			"size": blocklist_size or "—",
-			"last_updated": blocklist_updated or "—",
-			"enabled": meta["url"] in enabled,
+			"last_updated": blocklist_updated if is_enabled else "—",
+			"enabled": is_enabled,
 		})
 
 	data = {"sources": sources}
@@ -553,7 +646,13 @@ async def set_blocklist_sources(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Save enabled blocklist sources and regenerate blocklist file."""
-	sqlite_db.set_enabled_blocklists(conn, payload.urls)
+	set_enabled_blocklists(conn, payload.urls)
+	# Global blocklist selection must override peer-specific selections immediately.
+	try:
+		from .wireguard_peers import _regenerate_peer_tags
+		_regenerate_peer_tags(conn)
+	except Exception as exc:
+		_log.warning("Failed to regenerate peer tags after global blocklist change: %s", exc)
 	
 	# Regenerate blocklist file with new selection
 	try:
@@ -575,10 +674,18 @@ async def set_blocklist_sources(
 		)
 	except Exception as exc:
 		_log.warning("Blocklist sources saved but update failed: %s", exc)
+		reloaded = False
+		try:
+			reloaded, reload_msg = await unbound.reload_config()
+			if not reloaded:
+				_log.warning("Blocklist sources saved but reload failed: %s", reload_msg)
+		except Exception as reload_exc:
+			_log.warning("Blocklist sources saved but reload errored: %s", reload_exc)
 		return ok_response(
 			message="Blocklist sources saved (update pending)",
 			enabled_count=len(payload.urls),
-			data={"enabled_count": len(payload.urls)},
+			reloaded=reloaded,
+			data={"enabled_count": len(payload.urls), "reloaded": reloaded},
 		)
 
 
@@ -592,7 +699,7 @@ async def update_blocklists(
 	# Use saved blocklists if no URLs provided
 	urls = payload.urls if payload and payload.urls else None
 	if urls is None:
-		urls = sqlite_db.get_enabled_blocklists(conn)
+		urls = get_enabled_blocklists(conn)
 	
 	try:
 		count, msg = await unbound.update_blocklists(urls)
@@ -642,27 +749,27 @@ async def blocklist_count(_: sqlite3.Row = Depends(get_current_user)):
 @router.get("/logs")
 async def dns_logs(
 	lines: int = 200,
+	tsdb_dir: Path = Depends(get_tsdb_dir),
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Get recent DNS query log entries (admin only).
 
-	Returns the most recent queries with blocked status.
+	Returns the most recent queries with blocked status from TSDB.
 	"""
 	lines = min(max(lines, 10), 5000)
-	queries = await asyncio.to_thread(unbound.tail_query_log, lines)
+	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, tsdb_dir, lines)
 
 	data = {
 		"queries": [
-				{
-					"timestamp": q.timestamp,
-					"client": q.client,
-					"domain": q.domain,
-					"resolver": q.resolver,
-					"type": q.qtype,
-					"blocked": q.blocked,
-				}
-			for q in reversed(queries)  # newest first
-		],
+			{
+				"timestamp": _format_tsdb_timestamp(str(q.get("ts", ""))),
+				"client": str(q.get("client", "")),
+				"domain": str(q.get("domain", "")),
+				"type": str(q.get("qtype", "")),
+				"blocked": bool(q.get("blocked", False)),
+			}
+			for q in queries  # read_recent_queries() already returns newest first
+			],
 		"total": len(queries),
 	}
 	return ok_response(data=data, **data)
@@ -671,17 +778,21 @@ async def dns_logs(
 @router.get("/top-domains")
 async def top_domains(
 	limit: int = 20,
+	tsdb_dir: Path = Depends(get_tsdb_dir),
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Get top queried domains (admin only)."""
-	queries = await asyncio.to_thread(unbound.tail_query_log, 5000)
+	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, tsdb_dir, 50000)
 	domain_counts: dict[str, int] = {}
 	blocked_counts: dict[str, int] = {}
 
 	for q in queries:
-		domain_counts[q.domain] = domain_counts.get(q.domain, 0) + 1
-		if q.blocked:
-			blocked_counts[q.domain] = blocked_counts.get(q.domain, 0) + 1
+		domain = str(q.get("domain", "")).strip()
+		if not domain:
+			continue
+		domain_counts[domain] = domain_counts.get(domain, 0) + 1
+		if bool(q.get("blocked", False)):
+			blocked_counts[domain] = blocked_counts.get(domain, 0) + 1
 
 	sorted_domains = sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
 	sorted_blocked = sorted(blocked_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
@@ -691,3 +802,166 @@ async def top_domains(
 		"top_blocked": [{"domain": d, "count": c} for d, c in sorted_blocked],
 	}
 	return ok_response(data=data, **data)
+
+
+# ---------------------------------------------------------------------------
+# DNS Server Validation
+# ---------------------------------------------------------------------------
+
+class DnsTestRequest(BaseModel):
+	"""Request body for testing upstream DNS servers."""
+	servers: list[str]
+
+
+def _test_dot_server(addr: str, timeout: float = 5.0) -> dict:
+	"""Test a single DoT server for connectivity and valid response.
+	
+	Returns dict with 'server', 'success', 'error', 'latency_ms'.
+	"""
+	import ssl
+	import struct
+	import time
+	
+	result = {"server": addr, "success": False, "error": None, "latency_ms": None}
+	
+	# Parse IP@port#hostname
+	match = _DNS_PATTERN.match(addr.strip())
+	if not match:
+		result["error"] = "Invalid format (expected IP@port#hostname)"
+		return result
+	
+	ip_part = match.group(1).strip()
+	port_part = match.group(2)
+	hostname_part = match.group(3)
+	
+	if not hostname_part:
+		result["error"] = "Hostname required for DoT (IP@port#hostname)"
+		return result
+	
+	try:
+		ipaddress.ip_address(ip_part)
+	except ValueError:
+		result["error"] = f"Invalid IP address: {ip_part}"
+		return result
+	
+	port = int(port_part) if port_part else 853
+	if not 1 <= port <= 65535:
+		result["error"] = f"Invalid port: {port}"
+		return result
+	
+	try:
+		hostname = _normalize_hostname(hostname_part)
+	except ValueError as e:
+		result["error"] = str(e)
+		return result
+	
+	# Build a minimal DNS query for "example.com" A record
+	# Transaction ID (2 bytes) + Flags (2 bytes) + Questions (2 bytes) + 
+	# Answer/Auth/Additional RRs (6 bytes) + Query
+	transaction_id = b'\x12\x34'
+	flags = b'\x01\x00'  # Standard query, recursion desired
+	questions = b'\x00\x01'
+	answer_rrs = b'\x00\x00'
+	authority_rrs = b'\x00\x00'
+	additional_rrs = b'\x00\x00'
+	# example.com query
+	query_name = b'\x07example\x03com\x00'
+	query_type = b'\x00\x01'  # A record
+	query_class = b'\x00\x01'  # IN class
+	
+	dns_query = (
+		transaction_id + flags + questions + answer_rrs + 
+		authority_rrs + additional_rrs + query_name + query_type + query_class
+	)
+	
+	# Prepend 2-byte length for TCP/TLS
+	dns_message = struct.pack('>H', len(dns_query)) + dns_query
+	
+	try:
+		start_time = time.monotonic()
+		
+		# Create SSL context for DoT
+		context = ssl.create_default_context()
+		context.check_hostname = True
+		context.verify_mode = ssl.CERT_REQUIRED
+		
+		with socket.create_connection((ip_part, port), timeout=timeout) as sock:
+			with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+				ssock.sendall(dns_message)
+				
+				# Read response length (2 bytes)
+				length_data = ssock.recv(2)
+				if len(length_data) < 2:
+					result["error"] = "No response from server"
+					return result
+				
+				response_length = struct.unpack('>H', length_data)[0]
+				
+				# Read DNS response
+				response = b''
+				while len(response) < response_length:
+					chunk = ssock.recv(response_length - len(response))
+					if not chunk:
+						break
+					response += chunk
+				
+				end_time = time.monotonic()
+				latency_ms = round((end_time - start_time) * 1000, 1)
+				
+				# Verify we got a valid DNS response (check transaction ID matches)
+				if len(response) >= 12 and response[:2] == transaction_id:
+					result["success"] = True
+					result["latency_ms"] = latency_ms
+				else:
+					result["error"] = "Invalid DNS response"
+					
+	except ssl.SSLCertVerificationError as e:
+		result["error"] = f"TLS certificate error: {e.verify_message}"
+	except ssl.SSLError as e:
+		result["error"] = f"TLS error: {str(e)}"
+	except socket.timeout:
+		result["error"] = "Connection timeout"
+	except ConnectionRefusedError:
+		result["error"] = "Connection refused"
+	except OSError as e:
+		result["error"] = f"Network error: {e.strerror or str(e)}"
+	except Exception as e:
+		result["error"] = f"Error: {str(e)}"
+	
+	return result
+
+
+@router.post("/test-upstream")
+async def test_upstream_dns(
+	payload: DnsTestRequest,
+	_: sqlite3.Row = Depends(require_admin),
+):
+	"""Test upstream DNS servers for connectivity and valid responses.
+	
+	Returns test results for each server including success status,
+	latency, and any error messages.
+	"""
+	if not payload.servers:
+		raise HTTPException(status_code=400, detail="No servers provided")
+	
+	if len(payload.servers) > 20:
+		raise HTTPException(status_code=400, detail="Maximum 20 servers allowed")
+	
+	results = []
+	for server in payload.servers:
+		server = server.strip()
+		if not server:
+			continue
+		# Run blocking socket operations in thread pool
+		test_result = await asyncio.to_thread(_test_dot_server, server)
+		results.append(test_result)
+	
+	all_success = all(r["success"] for r in results) if results else False
+	failed_count = sum(1 for r in results if not r["success"])
+	
+	return ok_response(
+		data={"results": results, "all_success": all_success, "failed_count": failed_count},
+		results=results,
+		all_success=all_success,
+		failed_count=failed_count,
+	)

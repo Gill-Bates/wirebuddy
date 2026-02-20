@@ -47,14 +47,15 @@
         flex-wrap: wrap;
     }
 
+    .peer-client-ip-main code {
+        color: var(--bs-secondary-color);
+    }
+
     .peer-client-ip-meta {
         font-size: .75rem;
         color: var(--bs-secondary-color);
         margin-left: calc(var(--flag-width) + var(--flag-gap));
         white-space: normal;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        max-width: 180px;
     }
 
     .peer-client-ip-meta .peer-meta-city,
@@ -113,7 +114,7 @@
     /* Mobile-optimized peers rows */
     @media (max-width: 768px) {
         .table-responsive {
-            overflow-x: auto;
+            overflow-x: visible;
             overflow-y: visible;
         }
 
@@ -135,7 +136,7 @@
 
         .peers-table {
             table-layout: auto;
-            font-size: 0.88rem;
+            font-size: 0.82rem;
         }
 
         .peers-table thead {
@@ -150,39 +151,69 @@
             width: 100%;
         }
 
+        /* Compact card layout */
         .peers-table tr[data-peer-id] {
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            column-gap: 0.85rem;
-            row-gap: 0.3rem;
+            grid-template-areas:
+                "name      status"
+                "vpn       lastseen"
+                "clientip  clientip"
+                "actions   actions";
+            grid-template-columns: 1fr auto;
+            gap: 0.2rem 0.6rem;
             border: 1px solid var(--bs-border-color);
-            border-radius: 0.75rem;
-            padding: 0.55rem 0.65rem;
-            margin-bottom: 0.65rem;
+            border-radius: 0.5rem;
+            padding: 0.5rem 0.65rem;
+            margin-bottom: 0.45rem;
             background: var(--bs-body-bg);
         }
 
         .peers-table td {
             border: 0;
-            width: auto;
-            padding: 0.12rem 0;
-            display: block;
+            padding: 0;
             min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
 
+        /* Labels removed; visual context is enough */
         .peers-table td::before {
-            content: attr(data-label);
-            display: block;
-            font-weight: 600;
-            color: var(--bs-secondary-color);
-            margin-bottom: 0.12rem;
+            display: none;
         }
 
-        .peers-table td>* {
-            margin-left: 0;
-            text-align: left;
-            max-width: 100%;
-            min-width: 0;
+        /* Grid area assignments */
+        .peers-table td[data-label="Name"] {
+            grid-area: name;
+            align-self: center;
+            font-weight: 500;
+        }
+
+        .peers-table td[data-label="Status"] {
+            grid-area: status;
+            align-self: center;
+            text-align: right;
+        }
+
+        .peers-table td[data-label="VPN Address"] {
+            grid-area: vpn;
+            align-self: center;
+        }
+
+        .peers-table td.peer-last-seen {
+            grid-area: lastseen;
+            align-self: center;
+            text-align: right;
+            font-size: 0.78rem;
+            white-space: nowrap;
+        }
+
+        .peers-table td.peer-client-ip {
+            grid-area: clientip;
+        }
+
+        /* Collapse client-ip row automatically if no stack exists */
+        .peers-table td.peer-client-ip:not(:has(.peer-client-ip-stack)) {
+            display: none;
         }
 
         .peers-table td.peer-routing,
@@ -190,63 +221,36 @@
             display: none;
         }
 
-        .peers-table td[data-label="Name"] {
-            grid-column: 1;
-        }
-
-        .peers-table td[data-label="Status"] {
-            grid-column: 2;
-        }
-
-        .peers-table td[data-label="VPN Address"] {
-            grid-column: 1 / -1;
-        }
-
-        .peers-table td.peer-last-seen {
-            grid-column: 1;
-        }
-
-        .peers-table td.peer-client-ip {
-            grid-column: 2;
-        }
-
+        /* Actions */
         .peers-table td.peer-actions-cell {
-            grid-column: 1 / -1;
-            margin-top: 0.25rem;
-            padding-top: 0.45rem;
+            grid-area: actions;
             border-top: 1px solid var(--bs-border-color);
+            padding-top: 0.35rem;
+            margin-top: 0.1rem;
+            white-space: normal;
         }
 
         .peers-table td.peer-actions-cell::before {
-            content: "";
-            flex: 0 0 0;
-            max-width: 0;
-        }
-
-        .peers-table td.peer-actions-cell>* {
-            margin-left: 0;
-            max-width: 100%;
-            width: 100%;
-            text-align: right;
+            display: none;
         }
 
         .peers-table td.peer-actions-cell .d-flex.gap-1 {
             justify-content: flex-end;
-            gap: 0.5rem !important;
+            gap: 0.4rem !important;
             flex-wrap: nowrap;
         }
 
         .peers-table td.peer-actions-cell .btn {
-            min-width: 44px;
-            min-height: 44px;
-            padding: 0.5rem;
+            min-width: 38px;
+            min-height: 38px;
+            padding: 0.3rem;
             display: inline-flex;
             align-items: center;
             justify-content: center;
         }
 
         .peers-table td.peer-actions-cell .material-icons {
-            font-size: 21px;
+            font-size: 20px;
         }
 
         .peers-table td code {
@@ -255,11 +259,33 @@
         }
 
         .peer-client-ip-meta {
-            white-space: normal;
+            display: block;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            word-break: normal;
             max-width: none;
             margin-left: 0;
         }
 
+        .peer-client-ip-meta .peer-meta-city,
+        .peer-client-ip-meta .peer-meta-provider {
+            display: inline;
+        }
+
+        .peer-client-ip-meta .peer-meta-provider::before {
+            content: " (";
+        }
+
+        .peer-client-ip-meta .peer-meta-provider:only-child::before {
+            content: "(";
+        }
+
+        .peer-client-ip-meta .peer-meta-provider::after {
+            content: ")";
+        }
+
+        /* Empty row (no peer) */
         .peers-table tr:not([data-peer-id]) td::before {
             content: none;
         }
@@ -274,18 +300,34 @@
         }
     }
 
-    @media (max-width: 379.98px) {
+    /* Very narrow screens (< 400px): status under name */
+    @media (max-width: 399.98px) {
         .peers-table tr[data-peer-id] {
+            grid-template-areas:
+                "name     status"
+                "vpn      lastseen"
+                "clientip clientip"
+                "actions  actions";
+            grid-template-columns: minmax(0, 1fr) auto;
+        }
+    }
+
+    /* Tiny screens (< 320px): stack everything */
+    @media (max-width: 319.98px) {
+        .peers-table tr[data-peer-id] {
+            grid-template-areas:
+                "name"
+                "status"
+                "vpn"
+                "lastseen"
+                "clientip"
+                "actions";
             grid-template-columns: 1fr;
         }
 
-        .peers-table td[data-label="Name"],
         .peers-table td[data-label="Status"],
-        .peers-table td[data-label="VPN Address"],
-        .peers-table td.peer-last-seen,
-        .peers-table td.peer-client-ip,
-        .peers-table td.peer-actions-cell {
-            grid-column: 1 / -1;
+        .peers-table td.peer-last-seen {
+            text-align: left;
         }
     }
 </style>
@@ -517,7 +559,7 @@
                         <div id="peer-blocklist-options" class="d-flex flex-wrap gap-2">
                             <!-- Populated dynamically -->
                         </div>
-                        <small class="text-muted">Select which blocklists to apply for this peer</small>
+                        <small class="text-muted">Only globally enabled blocklists can be applied for this peer</small>
                     </div>
                     <div class="mb-3">
                         <div class="form-check form-switch">
@@ -647,7 +689,7 @@
                         <div id="edit-peer-blocklist-options" class="d-flex flex-wrap gap-2">
                             <!-- Populated dynamically -->
                         </div>
-                        <small class="text-muted">Select which blocklists to apply for this peer</small>
+                        <small class="text-muted">Only globally enabled blocklists can be applied for this peer</small>
                     </div>
                     <div class="mb-3">
                         <div class="form-check form-switch">
@@ -928,7 +970,7 @@
     async function loadBlocklistRegistry() {
         try {
             const res = await api('GET', '/api/dns/blocklist/sources');
-            blocklistRegistry = res.sources || [];
+            blocklistRegistry = (res.sources || []).filter(source => source.enabled);
         } catch (e) {
             console.warn('Failed to load blocklist sources:', e);
             blocklistRegistry = [];
@@ -940,6 +982,14 @@
         const container = document.getElementById(containerId);
         if (!container) return;
         container.innerHTML = '';
+
+        if (!blocklistRegistry.length) {
+            const empty = document.createElement('small');
+            empty.className = 'text-muted';
+            empty.textContent = 'No global blocklists enabled in Settings -> DNS.';
+            container.appendChild(empty);
+            return;
+        }
 
         // If selectedIds is null, all are selected (default)
         const allSelected = selectedIds === null;
@@ -973,6 +1023,7 @@
         if (!container) return null;
 
         const checkboxes = container.querySelectorAll('input[type="checkbox"]');
+        if (!checkboxes.length) return [];
         const selected = [];
         let allChecked = true;
 

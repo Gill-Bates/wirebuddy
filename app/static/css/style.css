@@ -59,6 +59,17 @@ h1 {
     line-height: 1;
 }
 
+/* Timestamp Display - Monospace Font */
+.log-time-date,
+.log-time-clock,
+.peer-last-seen,
+td[data-label="Last Login"],
+td[data-label="Created"],
+td[data-label="Last Seen"] {
+    font-family: 'Courier New', Courier, monospace;
+    font-variant-numeric: tabular-nums;
+}
+
 html,
 body {
     min-height: 100%;
@@ -921,4 +932,30 @@ html.login-page .alert {
 
 [data-bs-theme="dark"] .leaflet-popup-content .text-muted {
     color: #c7d2e0 !important;
+}
+
+/* -----------------------------------------------------------------------------
+   Chart Empty State
+   ----------------------------------------------------------------------------- */
+.chart-empty-state {
+    width: 100%;
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    text-align: center;
+    color: var(--bs-secondary-color);
+}
+
+.chart-empty-state .material-icons {
+    font-size: clamp(46px, 5vw, 64px);
+    line-height: 1;
+    opacity: 0.45;
+}
+
+.chart-empty-state-text {
+    font-weight: 400;
+    opacity: 0.4;
 }

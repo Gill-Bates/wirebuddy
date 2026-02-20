@@ -14,10 +14,11 @@ import fcntl
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path as PathLib
 from typing import Optional
 
 import httpx
@@ -25,7 +26,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, EmailStr, Field
 
 from ..api.auth import require_admin
@@ -43,28 +44,45 @@ ACME_DIRECTORY_STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory
 # Challenge TTL in seconds (10 minutes)
 CHALLENGE_TTL = 600
 
+# Domain lock file descriptor storage (prevents GC from closing locked files)
+# SECURITY: Without this, Python's GC can close the file object and release
+#           the fcntl lock prematurely, breaking domain locking guarantees
+_domain_lock_fds: dict[int, object] = {}  # fd_num -> file object
+
 # Domain lock file helpers (worker-safe)
-def _acquire_domain_lock(certs_dir: Path, domain: str) -> Optional[int]:
-	"""Acquire exclusive lock for domain order. Returns file descriptor or None."""
+def _acquire_domain_lock(certs_dir: PathLib, domain: str) -> Optional[int]:
+	"""Acquire exclusive lock for domain order. Returns file descriptor or None.
+	
+	CRITICAL: Must keep file object alive to prevent GC from closing it and
+	releasing the lock. File object is stored in _domain_lock_fds dict.
+	"""
 	lock_dir = certs_dir / ".locks"
 	lock_dir.mkdir(parents=True, exist_ok=True)
 	lock_file = lock_dir / f"{domain}.lock"
 	
 	try:
-		fd = open(lock_file, "w")
-		fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-		fd.write(str(time.time()))
-		fd.flush()
-		return fd.fileno()
+		fd_obj = open(lock_file, "w")
+		fcntl.flock(fd_obj.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+		fd_obj.write(str(time.time()))
+		fd_obj.flush()
+		
+		# Store file object to prevent GC from closing it
+		fd_num = fd_obj.fileno()
+		_domain_lock_fds[fd_num] = fd_obj
+		return fd_num
 	except (IOError, OSError):
 		return None
 
 def _release_domain_lock(fd: int) -> None:
 	"""Release domain lock by file descriptor."""
+	# Retrieve and remove file object from storage
+	fd_obj = _domain_lock_fds.pop(fd, None)
+	if fd_obj is None:
+		return
+	
 	try:
 		fcntl.flock(fd, fcntl.LOCK_UN)
-		import os
-		os.close(fd)
+		fd_obj.close()  # type: ignore
 	except Exception:
 		pass
 
@@ -104,7 +122,7 @@ class ChallengeStatus(BaseModel):
 # Helper Functions
 # ---------------------------------------------------------------------------
 
-def _get_certs_dir(config: Config) -> Path:
+def _get_certs_dir(config: Config) -> PathLib:
 	"""Get the certificates directory."""
 	certs_dir = config.data_dir / "certs"
 	certs_dir.mkdir(parents=True, exist_ok=True)
@@ -114,13 +132,6 @@ def _get_certs_dir(config: Config) -> Path:
 def _b64url(data: bytes) -> str:
 	"""Base64url encode without padding."""
 	return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def _b64url_decode(data: str) -> bytes:
-	"""Base64url decode with padding restoration."""
-	padding = (-len(data)) % 4
-	data += "=" * padding
-	return base64.urlsafe_b64decode(data)
 
 
 def _sha256(data: bytes) -> bytes:
@@ -161,7 +172,7 @@ def _jwk_thumbprint(jwk: dict) -> str:
 class ACMEClient:
 	"""Lightweight ACME v2 client."""
 	
-	def __init__(self, directory_url: str, certs_dir: Path):
+	def __init__(self, directory_url: str, certs_dir: PathLib):
 		self.directory_url = directory_url
 		self.certs_dir = certs_dir
 		self.directory: dict = {}
@@ -487,7 +498,7 @@ class ACMEClient:
 		
 		return cert_pem, key_pem
 	
-	def save_certificate(self, domain: str, cert_pem: bytes, key_pem: bytes, is_staging: bool = False) -> Path:
+	def save_certificate(self, domain: str, cert_pem: bytes, key_pem: bytes, is_staging: bool = False) -> PathLib:
 		"""Save certificate, chain, and key to disk."""
 		# Create domain directory
 		domain_dir = self.certs_dir / domain
@@ -533,12 +544,12 @@ class ACMEClient:
 # Challenge response storage (file-based with TTL)
 # ---------------------------------------------------------------------------
 
-def _get_challenge_file(certs_dir: Path) -> Path:
+def _get_challenge_file(certs_dir: PathLib) -> PathLib:
 	"""Get path to challenge storage file."""
 	return certs_dir / ".challenges.json"
 
 
-def _load_challenges(certs_dir: Path) -> dict[str, dict]:
+def _load_challenges(certs_dir: PathLib) -> dict[str, dict]:
 	"""Load challenges from file, cleaning expired entries."""
 	challenge_file = _get_challenge_file(certs_dir)
 	
@@ -560,7 +571,7 @@ def _load_challenges(certs_dir: Path) -> dict[str, dict]:
 		return {}
 
 
-def _save_challenge(certs_dir: Path, token: str, key_auth: str) -> None:
+def _save_challenge(certs_dir: PathLib, token: str, key_auth: str) -> None:
 	"""Save challenge to file with TTL (thread-safe with file lock)."""
 	challenge_file = _get_challenge_file(certs_dir)
 	
@@ -599,7 +610,7 @@ def _save_challenge(certs_dir: Path, token: str, key_auth: str) -> None:
 			pass
 
 
-def _remove_challenge(certs_dir: Path, token: str) -> None:
+def _remove_challenge(certs_dir: PathLib, token: str) -> None:
 	"""Remove challenge from file (thread-safe with file lock)."""
 	challenge_file = _get_challenge_file(certs_dir)
 	
@@ -627,7 +638,14 @@ def _remove_challenge(certs_dir: Path, token: str) -> None:
 
 
 def get_challenge_response(token: str, certs_dir: Optional[Path] = None) -> Optional[str]:
-	"""Get challenge response for ACME HTTP-01 validation."""
+	"""Get challenge response for ACME HTTP-01 validation.
+	
+	MULTI-WORKER SAFETY: With multiple Uvicorn workers, the in-memory cache
+	is per-process and can miss cross-worker challenges. File-based fallback
+	ensures Let's Encrypt can validate challenges regardless of which worker
+	receives the validation request. The in-memory dict is purely a fast-path
+	optimization for the common case.
+	"""
 	# Try in-memory first (for current process)
 	if token in _pending_challenges:
 		return _pending_challenges[token]
@@ -642,7 +660,10 @@ def get_challenge_response(token: str, certs_dir: Optional[Path] = None) -> Opti
 	return None
 
 
-# In-memory cache for current process (fast path)
+# In-memory cache for current process (fast path only)
+# WARNING: This dict is per-process. With UVICORN_WORKERS > 1, challenges
+# stored in one worker won't be visible in another. File-based storage
+# (_save_challenge) ensures cross-worker compatibility.
 _pending_challenges: dict[str, str] = {}
 
 
@@ -650,14 +671,14 @@ _pending_challenges: dict[str, str] = {}
 # API Routes
 # ---------------------------------------------------------------------------
 
-def _get_certs_dir_dep(config: Config = Depends(get_config)) -> Path:
+def _get_certs_dir_dep(config: Config = Depends(get_config)) -> PathLib:
 	"""Dependency to get certs directory."""
 	return _get_certs_dir(config)
 
 
 @router.get("/certificates")
 async def list_certificates(
-	certs_dir: Path = Depends(_get_certs_dir_dep),
+	certs_dir: PathLib = Depends(_get_certs_dir_dep),
 	_: sqlite3.Row = Depends(require_admin),
 ) -> dict:
 	"""List all certificates."""
@@ -715,7 +736,7 @@ async def list_certificates(
 @router.post("/certificates/request")
 async def request_certificate(
 	req: CertificateRequest,
-	certs_dir: Path = Depends(_get_certs_dir_dep),
+	certs_dir: PathLib = Depends(_get_certs_dir_dep),
 	_: sqlite3.Row = Depends(require_admin),
 ) -> dict:
 	"""
@@ -809,11 +830,15 @@ async def request_certificate(
 		_release_domain_lock(lock_fd)
 
 
+# Domain name validation pattern (RFC 1123 hostname)
+_DOMAIN_PATTERN = r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$"
+
+
 @router.delete("/certificates/{domain}")
 async def delete_certificate(
-	domain: str,
+	domain: str = Path(..., min_length=1, max_length=253, pattern=_DOMAIN_PATTERN),
 	staging: bool = False,
-	certs_dir: Path = Depends(_get_certs_dir_dep),
+	certs_dir: PathLib = Depends(_get_certs_dir_dep),
 	_: sqlite3.Row = Depends(require_admin),
 ) -> dict:
 	"""Delete a certificate."""
@@ -858,7 +883,7 @@ async def delete_certificate(
 @router.get("/certificates/challenge/{token}")
 async def serve_challenge(
 	token: str,
-	certs_dir: Path = Depends(_get_certs_dir_dep),
+	certs_dir: PathLib = Depends(_get_certs_dir_dep),
 ) -> str:
 	"""
 	Serve ACME HTTP-01 challenge response.
@@ -869,7 +894,6 @@ async def serve_challenge(
 	Configure your reverse proxy to forward this path.
 	"""
 	# Validate token format to prevent log spam
-	import re
 	if not re.match(r"^[A-Za-z0-9_\-]+$", token):
 		raise HTTPException(status_code=404, detail="Invalid token format")
 	
@@ -883,7 +907,7 @@ async def serve_challenge(
 
 @router.get("/certificates/renewal-check")
 async def check_renewals(
-	certs_dir: Path = Depends(_get_certs_dir_dep),
+	certs_dir: PathLib = Depends(_get_certs_dir_dep),
 	_: sqlite3.Row = Depends(require_admin),
 ) -> dict:
 	"""
@@ -893,7 +917,10 @@ async def check_renewals(
 	For automatic renewal, call this periodically (e.g., via cron)
 	and issue new certificates for domains where needs_renewal is True.
 	"""
-	certificates = await list_certificates(certs_dir, _)
+	# BUG FIX: list_certificates returns ok_response dict, not list
+	# Must extract "data" key to get actual certificate list
+	response = await list_certificates(certs_dir, _)
+	certificates = response.get("data", [])
 	
 	needs_renewal = [
 		cert for cert in certificates
