@@ -1,0 +1,11 @@
+{
+    // Disable formatting for Jinja2 templates to preserve {{ }} syntax
+    "[html]": {
+        "editor.formatOnSave": true
+    },
+    "files.associations": {
+        "*.html": "jinja-html"
+    },
+    // Exclude templates from default HTML formatter
+    "prettier.ignorePath": ".prettierignore"
+}

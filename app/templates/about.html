@@ -20,26 +20,40 @@
                     <!-- Version & Build -->
                     <div class="mb-4">
                         <h6 class="text-muted mb-2">Version Information</h6>
-                        <table class="table table-sm table-borderless mb-0">
-                            <tbody>
-                                <tr>
-                                    <td class="ps-0" style="width: 100px;"><strong>Version</strong></td>
-                                    <td><code>{{ version }}</code></td>
-                                </tr>
-                                <tr>
-                                    <td class="ps-0"><strong>Build</strong></td>
-                                    <td><code>{{ build_info[:7] if build_info != 'dev' else 'dev' }}</code></td>
-                                </tr>
-                                <tr>
-                                    <td class="ps-0"><strong>Python</strong></td>
-                                    <td><code>{{ python_version }}</code></td>
-                                </tr>
-                                <tr>
-                                    <td class="ps-0"><strong>WireGuard</strong></td>
-                                    <td><code>{{ wireguard_version }}</code></td>
-                                </tr>
-                            </tbody>
-                        </table>
+                        <div class="row version-info-row">
+                            <div class="col-6">
+                                <table class="table table-sm table-borderless mb-0">
+                                    <tbody>
+                                        <tr>
+                                            <td class="ps-0" style="width: 90px;"><strong>Version</strong></td>
+                                            <td><code>{{ version }}</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td class="ps-0"><strong>Build</strong></td>
+                                            <td><code>{{ build_info[:7] if build_info != 'dev' else 'dev' }}</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td class="ps-0"><strong>Python</strong></td>
+                                            <td><code>{{ python_version }}</code></td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div class="col-6">
+                                <table class="table table-sm table-borderless mb-0">
+                                    <tbody>
+                                        <tr>
+                                            <td class="ps-0" style="width: 90px;"><strong>WireGuard</strong></td>
+                                            <td><code>{{ wireguard_version }}</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td class="ps-0"><strong>Unbound</strong></td>
+                                            <td><code>{{ unbound_version }}</code></td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Dependencies -->
@@ -130,6 +144,13 @@
         background-color: var(--bs-tertiary-bg);
         color: var(--bs-body-color);
         border: none;
+    }
+
+    /* Version info two-column on desktop, stack on mobile */
+    @media (max-width: 991.98px) {
+        .version-info-row .col-6 {
+            width: 100%;
+        }
     }
 
     @media (min-width: 992px) {

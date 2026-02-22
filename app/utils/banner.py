@@ -75,20 +75,15 @@ def print_banner_once() -> None:
 	try:
 		fd = os.open(_BANNER_LOCK_FILE, os.O_CREAT | os.O_RDWR)
 		try:
-			# Get exclusive lock (blocking is fine, will be fast)
 			fcntl.flock(fd, fcntl.LOCK_EX)
 			
-			# Read current content
 			content = os.read(fd, 32).decode("utf-8", errors="ignore").strip()
 			
 			if content == ppid:
-				# Same parent already printed banner
 				return
 			
-			# New startup or first worker - print banner
 			print_banner()
 			
-			# Write our parent PID to mark completion
 			os.lseek(fd, 0, os.SEEK_SET)
 			os.ftruncate(fd, 0)
 			os.write(fd, ppid.encode())

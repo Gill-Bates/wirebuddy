@@ -34,7 +34,7 @@ import logging
 import os
 import re
 import sqlite3
-import socket
+
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -287,6 +287,7 @@ async def dns_status(
 async def dns_selftest(_: sqlite3.Row = Depends(get_current_user)):
 	"""Run a lightweight DNS self-test against local Unbound."""
 	def _query_local_unbound(qname: str = "cloudflare.com", timeout: float = 2.0) -> tuple[bool, str]:
+		import socket
 		# Minimal DNS A query packet
 		tid = os.urandom(2)  # Random transaction ID to prevent spoofing
 		flags = b"\x01\x00"  # recursion desired
@@ -529,7 +530,7 @@ async def update_dns_config(
 		if payload.log_retention_days is not None:
 			retention_days = payload.log_retention_days
 			set_dns_log_retention_days(conn, retention_days)
-			# "Keine Logs" disables runtime DNS query logging entirely.
+			# "No logs" (retention=0) disables runtime DNS query logging entirely.
 			enable_logging = retention_days > 0
 			set_dns_query_logging_enabled(conn, enable_logging)
 			retention_result = await asyncio.to_thread(
@@ -657,10 +658,10 @@ async def set_blocklist_sources(
 	# Regenerate blocklist file with new selection
 	try:
 		count, msg = await unbound.update_blocklists(payload.urls)
-		# Reload unbound to pick up changes
-		ok, reload_msg = await unbound.reload_config()
+		# Restart unbound to pick up changes (reload can crash with large blocklists)
+		ok, reload_msg = await unbound.restart()
 		if not ok:
-			_log.warning("Blocklist sources saved but reload failed: %s", reload_msg)
+			_log.warning("Blocklist sources saved but restart failed: %s", reload_msg)
 		return ok_response(
 			message=f"Blocklist sources saved ({count} domains)",
 			enabled_count=len(payload.urls),
@@ -676,11 +677,11 @@ async def set_blocklist_sources(
 		_log.warning("Blocklist sources saved but update failed: %s", exc)
 		reloaded = False
 		try:
-			reloaded, reload_msg = await unbound.reload_config()
+			reloaded, reload_msg = await unbound.restart()
 			if not reloaded:
-				_log.warning("Blocklist sources saved but reload failed: %s", reload_msg)
+				_log.warning("Blocklist sources saved but restart failed: %s", reload_msg)
 		except Exception as reload_exc:
-			_log.warning("Blocklist sources saved but reload errored: %s", reload_exc)
+			_log.warning("Blocklist sources saved but restart errored: %s", reload_exc)
 		return ok_response(
 			message="Blocklist sources saved (update pending)",
 			enabled_count=len(payload.urls),
@@ -703,12 +704,12 @@ async def update_blocklists(
 	
 	try:
 		count, msg = await unbound.update_blocklists(urls)
-		# Reload unbound to pick up new blocklist
-		ok, reload_msg = await unbound.reload_config()
+		# Restart unbound to pick up new blocklist (reload can crash with large blocklists)
+		ok, reload_msg = await unbound.restart()
 		if not ok:
-			_log.warning("Blocklist updated but reload failed: %s", reload_msg)
+			_log.warning("Blocklist updated but restart failed: %s", reload_msg)
 			return ok_response(
-				message=f"{msg} (reload failed)",
+				message=f"{msg} (restart failed)",
 				domains_blocked=count,
 				reloaded=False,
 				data={
@@ -818,6 +819,7 @@ def _test_dot_server(addr: str, timeout: float = 5.0) -> dict:
 	
 	Returns dict with 'server', 'success', 'error', 'latency_ms'.
 	"""
+	import socket
 	import ssl
 	import struct
 	import time

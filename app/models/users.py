@@ -93,12 +93,12 @@ class UserPublic(BaseModel):
 
 class PasswordChangeRequest(BaseModel):
 	"""Password change request payload."""
-	current_password: str = Field(..., min_length=1, max_length=256)
+	current_password: Optional[str] = Field(None, min_length=1, max_length=256)
 	new_password: str = Field(..., min_length=8, max_length=256)
 
 	@model_validator(mode="after")
 	def validate_passwords_differ(self) -> "PasswordChangeRequest":
-		"""Ensure new password is different from current."""
-		if self.current_password == self.new_password:
+		"""Ensure new password is different from current (when current is provided)."""
+		if self.current_password and self.current_password == self.new_password:
 			raise ValueError("New password must be different from current password")
 		return self

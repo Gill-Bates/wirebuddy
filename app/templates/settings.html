@@ -405,6 +405,65 @@
                     </div>
                 </div>
             </div>
+            
+            <div class="col-lg-6 settings-general-col settings-general-col-right">
+                <!-- Check for Updates -->
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Check for Updates</h5>
+                        <button class="btn btn-sm btn-outline-primary" id="btn-check-updates" onclick="checkForUpdates(true)">
+                            <span class="material-icons" style="font-size: 18px;">refresh</span>
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div id="update-check-loading" class="text-center py-3">
+                            <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                <span class="visually-hidden">Checking...</span>
+                            </div>
+                            <span class="ms-2 text-muted">Checking for updates...</span>
+                        </div>
+                        
+                        <div id="update-check-result" class="d-none">
+                            <div id="update-status-badge" class="mb-3"></div>
+                            
+                            <table class="table table-borderless table-sm mb-0">
+                                <tbody>
+                                    <tr>
+                                        <td class="text-muted" style="width: 45%;">Current Version</td>
+                                        <td class="text-end font-monospace" id="update-current-version">–</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="text-muted">Latest Version</td>
+                                        <td class="text-end font-monospace" id="update-latest-version">–</td>
+                                    </tr>
+                                    <tr id="update-published-row" class="d-none">
+                                        <td class="text-muted">Released</td>
+                                        <td class="text-end" id="update-published-at">–</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            
+                            <div id="update-error" class="alert alert-warning mt-3 mb-0 py-2 d-none">
+                                <small id="update-error-text"></small>
+                            </div>
+                        </div>
+                        
+                        <div id="update-available-section" class="d-none mt-3">
+                            <hr>
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="mb-0">Release Notes</h6>
+                                <a id="update-release-link" href="#" target="_blank" class="btn btn-sm btn-primary">
+                                    <span class="material-icons me-1" style="font-size: 16px;">open_in_new</span>
+                                    View on GitHub
+                                </a>
+                            </div>
+                            <div id="update-release-notes" class="border rounded p-2 bg-body-secondary" 
+                                 style="max-height: 300px; overflow-y: auto; font-size: 0.85rem;">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -654,8 +713,9 @@
                                 title="Refresh">
                                 <span class="material-icons" style="font-size: 18px;">refresh</span>
                             </button>
-                            <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#certModal">
-                                <span class="material-icons" style="font-size: 18px;">add_circle</span>
+                            <button class="btn btn-sm btn-primary d-inline-flex align-items-center justify-content-center"
+                                data-bs-toggle="modal" data-bs-target="#certModal">
+                                <span class="material-icons align-middle" style="font-size: 18px;">add_circle</span>
                             </button>
                         </div>
                     </div>
@@ -794,6 +854,134 @@
         return d.innerHTML;
     }
 
+    // -------------------- Update Check --------------------
+    async function checkForUpdates(force = false) {
+        const loadingEl = document.getElementById('update-check-loading');
+        const resultEl = document.getElementById('update-check-result');
+        const statusBadge = document.getElementById('update-status-badge');
+        const currentVersionEl = document.getElementById('update-current-version');
+        const latestVersionEl = document.getElementById('update-latest-version');
+        const publishedRow = document.getElementById('update-published-row');
+        const publishedAtEl = document.getElementById('update-published-at');
+        const errorEl = document.getElementById('update-error');
+        const errorTextEl = document.getElementById('update-error-text');
+        const availableSectionEl = document.getElementById('update-available-section');
+        const releaseLinkEl = document.getElementById('update-release-link');
+        const releaseNotesEl = document.getElementById('update-release-notes');
+        const checkBtn = document.getElementById('btn-check-updates');
+
+        // Show loading state
+        loadingEl.classList.remove('d-none');
+        resultEl.classList.add('d-none');
+        availableSectionEl.classList.add('d-none');
+        if (checkBtn) checkBtn.disabled = true;
+
+        try {
+            const url = force 
+                ? '/api/wireguard/settings/check-updates?force=true'
+                : '/api/wireguard/settings/check-updates';
+            const res = await api('GET', url, null, { timeoutMs: 15000 });
+            
+            // Hide loading, show result
+            loadingEl.classList.add('d-none');
+            resultEl.classList.remove('d-none');
+            
+            // Populate version info
+            currentVersionEl.textContent = res.current_version || '–';
+            latestVersionEl.textContent = res.latest_version || '–';
+            
+            // Show published date if available
+            if (res.published_at) {
+                publishedRow.classList.remove('d-none');
+                const pubDate = new Date(res.published_at);
+                publishedAtEl.textContent = pubDate.toLocaleDateString(undefined, {
+                    year: 'numeric', month: 'short', day: 'numeric'
+                });
+            } else {
+                publishedRow.classList.add('d-none');
+            }
+            
+            // Status badge
+            if (res.update_available) {
+                statusBadge.innerHTML = `
+                    <div class="alert alert-success py-2 mb-0">
+                        <span class="material-icons align-middle me-1" style="font-size: 18px;">new_releases</span>
+                        <strong>Update available!</strong> Version ${esc(res.latest_version)} is ready.
+                    </div>`;
+                
+                // Show release notes
+                availableSectionEl.classList.remove('d-none');
+                if (res.release_url) {
+                    releaseLinkEl.href = res.release_url;
+                }
+                if (res.release_notes) {
+                    releaseNotesEl.innerHTML = formatReleaseNotes(res.release_notes);
+                } else {
+                    releaseNotesEl.innerHTML = '<em class="text-muted">No release notes available.</em>';
+                }
+            } else {
+                statusBadge.innerHTML = `
+                    <div class="alert alert-secondary py-2 mb-0">
+                        <span class="material-icons align-middle me-1" style="font-size: 18px;">check_circle</span>
+                        You're running the latest version.
+                    </div>`;
+                availableSectionEl.classList.add('d-none');
+            }
+            
+            // Show error if any
+            if (res.error) {
+                errorEl.classList.remove('d-none');
+                errorTextEl.textContent = res.error;
+            } else {
+                errorEl.classList.add('d-none');
+            }
+            
+        } catch (error) {
+            loadingEl.classList.add('d-none');
+            resultEl.classList.remove('d-none');
+            statusBadge.innerHTML = '';
+            errorEl.classList.remove('d-none');
+            errorTextEl.textContent = 'Failed to check for updates: ' + (error.message || error);
+        } finally {
+            if (checkBtn) checkBtn.disabled = false;
+        }
+    }
+
+    function formatReleaseNotes(markdown) {
+        // Simple markdown-to-HTML conversion for release notes
+        let html = esc(markdown);
+        
+        // Convert headers
+        html = html.replace(/^### (.+)$/gm, '<h6 class="mt-2 mb-1">$1</h6>');
+        html = html.replace(/^## (.+)$/gm, '<h5 class="mt-3 mb-1">$1</h5>');
+        html = html.replace(/^# (.+)$/gm, '<h4 class="mt-3 mb-2">$1</h4>');
+        
+        // Convert bold and italic
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+        
+        // Convert code blocks
+        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+        
+        // Convert links
+        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+        
+        // Convert bullet points
+        html = html.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
+        html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul class="mb-2 ps-3">$&</ul>');
+        
+        // Convert line breaks (but not inside lists)
+        html = html.replace(/\n\n/g, '</p><p>');
+        html = '<p>' + html + '</p>';
+        
+        // Clean up empty paragraphs
+        html = html.replace(/<p>\s*<\/p>/g, '');
+        html = html.replace(/<p>(<[uh][l456])/g, '$1');
+        html = html.replace(/(<\/[uh][l456]>)<\/p>/g, '$1');
+        
+        return html;
+    }
+
     // FQDN/Domain detection helper (DRY)
     function detectHostname() {
         const hostname = window.location.hostname;
@@ -804,7 +992,7 @@
 
     // Tab state tracking for lazy loading
     const tabLoaded = {
-        general: true,  // Always loaded on page load
+        general: false,
         wireguard: false,
         letsencrypt: false,
         dns: false
@@ -844,6 +1032,10 @@
         if (tabLoaded[tabId]) return;
 
         switch (tabId) {
+            case 'general':
+                checkForUpdates(false);
+                tabLoaded.general = true;
+                break;
             case 'wireguard':
                 loadWgSettings();
                 refreshInterfaces();

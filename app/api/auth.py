@@ -182,7 +182,6 @@ def login(
 	"""Authenticate a user and return a bearer token."""
 	client_ip = _get_client_ip(request)
 
-	# Check if IP is locked out
 	is_locked, seconds_remaining = is_ip_locked(conn, client_ip)
 	if is_locked:
 		_log.info("LOGIN_LOCKED ip=%s remaining=%ds", client_ip, seconds_remaining)
@@ -192,7 +191,6 @@ def login(
 			headers={"Retry-After": str(seconds_remaining)},
 		)
 	
-	# Validate credentials
 	user = get_user_by_username(conn, payload.username)
 	
 	# Always verify password hash to prevent timing attacks
@@ -214,7 +212,6 @@ def login(
 		_log.info("LOGIN_INACTIVE ip=%s username=%s", client_ip, payload.username)
 		raise HTTPException(status_code=403, detail="Account disabled")
 	
-	# Clear failed attempts and generate token
 	clear_login_attempts(conn, client_ip)
 	
 	token = new_token()

@@ -12,12 +12,10 @@ from ..db.sqlite_peers import (
 	get_peer_by_id,
 )
 
-import io
 import logging
 import re
 import sqlite3
 from datetime import datetime, timezone
-from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network, ip_address, ip_network
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -222,6 +220,7 @@ async def get_peer_qrcode(
 		
 		img = qr.make_image(fill_color="black", back_color="white")
 		
+		import io
 		buffer = io.BytesIO()
 		img.save(buffer, format="PNG")
 		buffer.seek(0)

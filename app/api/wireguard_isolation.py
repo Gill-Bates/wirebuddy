@@ -35,6 +35,7 @@ __all__ = [
     "extract_peer_ips",
     "build_client_isolation_post_rules",
     "apply_client_isolation_runtime",
+    "cleanup_client_isolation",
     "IsolationResult",
 ]
 
@@ -299,7 +300,14 @@ async def apply_client_isolation_runtime(
         if code_inner == 0:
             result.rules_ok += 1
         else:
-            if stderr_inner and "No chain/target/match" not in stderr_inner:
+            # These are expected/benign errors - don't count as failures
+            benign = (
+                "No chain/target/match",
+                "Chain already exists",
+                "No such file or directory",
+                "does a matching rule exist",
+            )
+            if stderr_inner and not any(msg in stderr_inner for msg in benign):
                 _log.debug("CLIENT_ISO runtime cmd failed (%s): %s", cmd_name, stderr_inner.strip())
                 result.rules_failed += 1
         return code_inner
@@ -330,9 +338,10 @@ async def apply_client_isolation_runtime(
         await _run_ignore(cmd, "-N", chain)
         await _run_ignore(cmd, "-F", chain)
 
-        # Remove stale FORWARD jump rules (capped to prevent infinite loop)
+        # Remove stale FORWARD jump rules (don't count cleanup toward success/failure)
         for _ in range(MAX_STALE_RULES):
-            if await _run_ignore(cmd, "-D", "FORWARD", "-i", interface_name, "-o", interface_name, "-j", chain) != 0:
+            code_del, _, _ = await run_wg_command(cmd, "-D", "FORWARD", "-i", interface_name, "-o", interface_name, "-j", chain)
+            if code_del != 0:
                 break
         else:
             _log.warning("CLIENT_ISO: hit removal limit (%d) for chain %s", MAX_STALE_RULES, chain)
@@ -357,6 +366,46 @@ async def apply_client_isolation_runtime(
 
     result.applied = True
     return result
+
+
+async def cleanup_client_isolation(
+    interface_name: str,
+    run_wg_command: Callable[..., Awaitable[tuple[int, str, str]]] | None = None,
+) -> None:
+    """Remove client-isolation iptables chains for an interface.
+
+    Called before bringing an interface down to ensure firewall cleanup
+    happens even if the interface state is inconsistent.
+    """
+    # Validate interface name to prevent iptables argument injection
+    if not _IFACE_RE.match(interface_name):
+        _log.error("CLIENT_ISO cleanup: refusing invalid interface name: %r", interface_name)
+        return
+
+    # Import default run_wg_command if not provided
+    if run_wg_command is None:
+        from .wireguard_utils import run_wg_command as _run_wg_command
+
+        run_wg_command = _run_wg_command
+
+    for ipv6 in (False, True):
+        config = _FW_CONFIG["v6" if ipv6 else "v4"]
+        cmd = config["cmd"]
+        chain = client_iso_chain_name(interface_name, ipv6=ipv6)
+
+        # Remove all FORWARD jump rules pointing to our chain
+        for _ in range(MAX_STALE_RULES):
+            code, _, _ = await run_wg_command(
+                cmd, "-D", "FORWARD", "-i", interface_name, "-o", interface_name, "-j", chain
+            )
+            if code != 0:
+                break
+
+        # Flush and delete the chain (ignore errors if chain doesn't exist)
+        await run_wg_command(cmd, "-F", chain)
+        await run_wg_command(cmd, "-X", chain)
+
+    _log.debug("CLIENT_ISO cleanup completed for %s", interface_name)
 
 
 # Backwards-compatible alias for existing imports

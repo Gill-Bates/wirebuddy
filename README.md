@@ -46,6 +46,18 @@ does not expose port 8000. To access the UI directly, add `8000:8000` under
 > **Default credentials:** `admin` / `admin`
 > ⚠️ **Change the default password immediately after first login!**
 
+### Screenshots
+
+<p align="center">
+  <img src=".github/img/screen1.png" alt="Dashboard" width="100%" style="border-radius: 12px; margin-bottom: 16px;">
+</p>
+<p align="center">
+  <img src=".github/img/screen2.png" alt="Peers" width="100%" style="border-radius: 12px; margin-bottom: 16px;">
+</p>
+<p align="center">
+  <img src=".github/img/screen3.png" alt="DNS Ad-Blocker" width="100%" style="border-radius: 12px;">
+</p>
+
 ### Local Development
 
 ```bash

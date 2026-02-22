@@ -42,15 +42,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
 
 from .utils.config import load_config, WG_CONFIG_PATH
 from .utils.rate_limit import limiter
 from .utils.request_id import RequestIDMiddleware
 from .utils.scheduler import Scheduler
-from .middleware.csrf import CSRFMiddleware
 from .utils.banner import print_banner_once
 
 from .api import acme as acme_api
@@ -224,7 +220,6 @@ async def _lifespan(app: FastAPI):
 	started_interfaces: list[str] = []
 	
 	# ─── BOOTSTRAP ───────────────────────────────────────────
-	# Initialize database
 	conn = connect(cfg.db_path)
 	interfaces_to_start: list[str] = []
 	try:
@@ -284,6 +279,7 @@ async def _lifespan(app: FastAPI):
 			# This ensures 0.0.0.0 binding so WireGuard clients can reach DNS
 			dns_retention_days = DEFAULT_DNS_LOG_RETENTION_DAYS
 			dns_service_enabled = True
+			ipv6_gateways: list[str] = []
 			dns_cfg_conn = connect(cfg.db_path)
 			try:
 				dns_retention_days = get_dns_log_retention_days(dns_cfg_conn)
@@ -374,7 +370,7 @@ async def _lifespan(app: FastAPI):
 					_log.info("WireGuard interface %s started", iface_name)
 					started_interfaces.append(iface_name)
 				else:
-					_log.warning("Failed to start interface %s: %s", iface_name, stderr.decode())
+					_log.warning("Failed to start interface %s: %s", iface_name, stderr.decode("utf-8", errors="replace"))
 			except asyncio.TimeoutError:
 				_log.warning("Timeout while starting/checking interface %s", iface_name)
 			except Exception as e:
@@ -396,7 +392,8 @@ async def _lifespan(app: FastAPI):
 					close_connection(conn)
 				
 				count, msg = await _unbound.update_blocklists(urls)
-				await _unbound.reload_config()
+				# Use restart instead of reload - reload crashes with large blocklists
+				await _unbound.restart()
 				_log.info("BLOCKLIST_UPDATE %s", msg)
 			except Exception as exc:
 				_log.error("BLOCKLIST_UPDATE failed: %s", exc)
@@ -617,6 +614,31 @@ async def _lifespan(app: FastAPI):
 			timeout=30.0,
 		)
 		
+		# ─── DNS WATCHDOG ─────────────────────────────────────────────
+		# Periodically check if Unbound is running and restart if crashed
+		async def _dns_watchdog() -> None:
+			"""Scheduled task: restart Unbound if it crashed."""
+			def _should_dns_be_running() -> bool:
+				"""Check if DNS service is enabled in settings."""
+				watchdog_conn = connect(cfg.db_path)
+				try:
+					return get_dns_service_enabled(watchdog_conn)
+				except Exception:
+					return True  # Assume enabled on error
+				finally:
+					close_connection(watchdog_conn)
+			
+			await _unbound.watchdog(_should_dns_be_running)
+		
+		scheduler.add(
+			"dns-watchdog",
+			interval_seconds=30,  # Check every 30 seconds
+			func=_dns_watchdog,
+			run_on_start=True,  # Run first check after initial_delay
+			initial_delay=60.0,  # Wait for initial startup to complete
+			timeout=30.0,
+		)
+		
 		await scheduler.start()
 		
 		# ─── DNS INGESTION DAEMON ─────────────────────────────────────
@@ -638,6 +660,7 @@ async def _lifespan(app: FastAPI):
 			
 			try:
 				offset_path = cfg.data_dir / "runtime" / "dns_tail.offset"
+				offset_path.parent.mkdir(parents=True, exist_ok=True)
 				await dns_ingestion.run_dns_ingestion(
 					log_path=unbound.QUERY_LOG,
 					offset_path=offset_path,
@@ -659,15 +682,19 @@ async def _lifespan(app: FastAPI):
 	
 	_log.info("WireBuddy started successfully (leader=%s, pid=%d)", is_leader, os.getpid())
 	
-	yield
-	
-	# ─── SHUTDOWN ────────────────────────────────────────────
-	# Cancel DNS ingestion daemon first (cleanest shutdown order)
-	dns_task = getattr(app.state, "dns_task", None)
-	if dns_task and not dns_task.done():
-		dns_task.cancel()
-		await asyncio.gather(dns_task, return_exceptions=True)
-		_log.info("DNS_INGESTION stopped")
+	try:
+		yield
+	except asyncio.CancelledError:
+		_log.info("Shutdown requested (SIGINT/SIGTERM)")
+		raise
+	finally:
+		# ─── SHUTDOWN ────────────────────────────────────────────
+		# Cancel DNS ingestion daemon first (cleanest shutdown order)
+		dns_task = getattr(app.state, "dns_task", None)
+		if dns_task and not dns_task.done():
+			dns_task.cancel()
+			await asyncio.gather(dns_task, return_exceptions=True)
+			_log.info("DNS_INGESTION stopped")
 	
 	if scheduler:
 		await scheduler.stop_graceful(timeout=5.0)
@@ -688,7 +715,7 @@ async def _lifespan(app: FastAPI):
 				if proc.returncode == 0:
 					_log.info("WireGuard interface %s stopped", iface_name)
 				else:
-					_log.warning("Failed to stop interface %s: %s", iface_name, stderr.decode())
+					_log.warning("Failed to stop interface %s: %s", iface_name, stderr.decode("utf-8", errors="replace"))
 			except asyncio.TimeoutError:
 				_log.warning("Timeout while stopping interface %s", iface_name)
 			except Exception as e:
@@ -747,20 +774,24 @@ def create_app() -> FastAPI:
 		redoc_url="/api/redoc",
 	)
 	
-	# Store config in app state
 	app.state.cfg = cfg
 	app.state.db_path = cfg.db_path
 	app.state.tsdb_dir = cfg.tsdb_dir
 	
 	# ─── MIDDLEWARE ──────────────────────────────────────────
 	app.add_middleware(RequestIDMiddleware)
+
+	from .middleware.csrf import CSRFMiddleware
 	app.add_middleware(CSRFMiddleware)
-	
-	# Rate limiting
+
 	app.state.limiter = limiter
+
+	from slowapi import _rate_limit_exceeded_handler
+	from slowapi.errors import RateLimitExceeded
 	app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-	
+
 	# ─── STATIC FILES ────────────────────────────────────────
+	from fastapi.staticfiles import StaticFiles
 	static_path = Path(__file__).parent / "static"
 	if static_path.exists():
 		app.mount("/static", StaticFiles(directory=str(static_path)), name="static")

@@ -19,7 +19,6 @@ data_local/
 *.db
 
 # IDE
-.vscode/
 .idea/
 
 # OS

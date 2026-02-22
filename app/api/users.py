@@ -68,7 +68,6 @@ def create_user(
     current_user: sqlite3.Row = Depends(require_admin),
 ):
     """Create a new user (admin only)."""
-    # Check if username exists
     existing = get_user_by_username(conn, payload.username)
     if existing:
         raise HTTPException(status_code=409, detail="Username already exists")
@@ -127,7 +126,6 @@ def update_user(
     if not is_self and not is_admin:
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    # Non-admins cannot change admin/active status
     if not is_admin:
         if payload.is_admin is not None or payload.is_active is not None:
             raise HTTPException(status_code=403, detail="Cannot change admin/active status")
@@ -144,13 +142,13 @@ def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Check username uniqueness
+
     if payload.username and payload.username != user["username"]:
         existing = get_user_by_username(conn, payload.username)
         if existing:
             raise HTTPException(status_code=409, detail="Username already exists")
     
-    # Prevent removing admin rights from the last admin
+
     if payload.is_admin is False and user["is_admin"]:
         if count_admins(conn) <= 1:
             raise HTTPException(status_code=400, detail="Cannot remove the last admin")
@@ -219,7 +217,6 @@ def change_password(
     
     db_update_user(conn, user_id, password=payload.new_password)
     
-    # Invalidate all existing sessions for this user
     delete_user_tokens(conn, user_id)
     
     _log.info("PASSWORD_CHANGED user_id=%d by_user=%d", user_id, current_user["id"])

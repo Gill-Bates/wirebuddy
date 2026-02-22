@@ -19,6 +19,7 @@ import os
 import re
 import sqlite3
 import tempfile
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from fastapi import HTTPException
@@ -45,6 +46,8 @@ __all__ = [
 	"parse_blocklist_ids",
 	"safe_row_get",
 	"is_valid_wg_key",
+	"WgPeerDump",
+	"parse_wg_show_dump",
 ]
 
 # Interface name validation regex.
@@ -130,6 +133,83 @@ def safe_int(value: str, default: int = 0) -> int:
 		return int(value) if value else default
 	except (ValueError, TypeError):
 		return default
+
+
+@dataclass
+class WgPeerDump:
+	"""Structured representation of a peer line from `wg show all dump`."""
+	interface: str | None
+	public_key: str
+	endpoint_raw: str | None
+	client_ip: str | None
+	handshake_ts: int
+	rx: int
+	tx: int
+
+
+def _extract_client_ip(endpoint_raw: str | None) -> str | None:
+	"""Extract client IP from WireGuard endpoint string (handles IPv4/IPv6)."""
+	if not endpoint_raw or endpoint_raw == "(none)":
+		return None
+	if endpoint_raw.startswith("["):
+		# IPv6 format: [addr]:port
+		return endpoint_raw.split("]")[0].lstrip("[")
+	# IPv4 format: addr:port
+	return endpoint_raw.rsplit(":", 1)[0]
+
+
+def parse_wg_show_dump(stdout: str) -> list[WgPeerDump]:
+	"""Parse `wg show all dump` output into structured peer records.
+	
+	Handles both output formats:
+	- Format A (9 cols): iface, pubkey, psk, endpoint, allowed-ips, handshake, rx, tx, keepalive
+	- Format B (8 cols): pubkey, psk, endpoint, allowed-ips, handshake, rx, tx, keepalive
+	
+	Interface header lines (5 cols) are tracked to provide context for format B.
+	"""
+	results: list[WgPeerDump] = []
+	last_iface: str | None = None
+
+	for line in stdout.strip().split("\n"):
+		if not line:
+			continue
+		parts = line.split("\t")
+
+		# Interface header (5 cols): iface, privkey, pubkey, listen_port, fwmark
+		if 5 <= len(parts) < 8:
+			last_iface = parts[0]
+			continue
+
+		# Determine format based on column count
+		if len(parts) >= 9:
+			# Format A: interface column present
+			offset = 1
+			iface = parts[0] or last_iface
+		elif len(parts) >= 8:
+			# Format B: no interface column (use last header)
+			offset = 0
+			iface = last_iface
+		else:
+			continue
+
+		if iface:
+			last_iface = iface
+
+		endpoint_raw = parts[offset + 2]
+		if endpoint_raw == "(none)":
+			endpoint_raw = None
+
+		results.append(WgPeerDump(
+			interface=iface,
+			public_key=parts[offset],
+			endpoint_raw=endpoint_raw,
+			client_ip=_extract_client_ip(endpoint_raw),
+			handshake_ts=safe_int(parts[offset + 4]),
+			rx=safe_int(parts[offset + 5]),
+			tx=safe_int(parts[offset + 6]),
+		))
+
+	return results
 
 
 def get_enabled_blocklist_ids(conn: sqlite3.Connection) -> list[str]:

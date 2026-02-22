@@ -9,11 +9,10 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter
 
-# Import all wireguard sub-routers
+
 from . import wireguard_settings
 from . import wireguard_interfaces
 from . import wireguard_interfaces_crud
@@ -22,17 +21,16 @@ from . import wireguard_peers_config
 from . import wireguard_stats
 from . import wireguard_stats_geo
 
-# Import shared utilities
+
 from . import wireguard_utils
 from . import wireguard_isolation
 from . import wireguard_config
 
 _log = logging.getLogger(__name__)
 
-# Main router that combines all sub-routers
 router = APIRouter(tags=["wireguard"])
 
-# Include all sub-routers
+
 router.include_router(wireguard_settings.router)
 router.include_router(wireguard_interfaces.router)
 router.include_router(wireguard_interfaces_crud.router)

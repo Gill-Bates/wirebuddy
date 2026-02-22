@@ -114,16 +114,14 @@ def write_interface_config(
     Config files are regenerated from the encrypted database on each container
     restart, so persistence on disk is acceptable.
     """
-    # Validate shell hooks before processing
+
     if post_up:
         post_up = _validate_hook(post_up, "PostUp")
     if post_down:
         post_down = _validate_hook(post_down, "PostDown")
 
-    # Decrypt interface private key
     private_key_plain = vault_decrypt(private_key, pepper)
 
-    # Build Address line (IPv4 + optional IPv6)
     addr_parts = [address]
     if address6:
         addr_parts.append(address6)
@@ -135,7 +133,7 @@ def write_interface_config(
         f"ListenPort = {listen_port}",
     ]
 
-    # Explicitly clear decrypted interface key from memory
+
     del private_key_plain
 
     # NOTE: DNS is intentionally omitted from the server-side config.
@@ -253,7 +251,7 @@ def write_interface_config(
             pass
         raise
 
-    # Clear config content from memory (best-effort)
+
     del config_content, config_lines
 
 

@@ -13,7 +13,9 @@ import os
 
 import uvicorn
 from app.utils.config import load_config
-from app.db.sqlite import connect, get_setting, init_schema
+from app.db.sqlite_runtime import connect
+from app.db.sqlite_schema import init_schema
+from app.db.sqlite_settings import get_setting
 
 _LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"

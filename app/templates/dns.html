@@ -73,7 +73,23 @@
 
     .log-table th.log-col-time,
     .log-table td.log-col-time {
-        width: 140px;
+        width: 100px;
+        white-space: nowrap;
+    }
+
+    .log-time-stack {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.3;
+    }
+
+    .log-time-date {
+        font-size: 0.8rem;
+    }
+
+    .log-time-clock {
+        font-size: 0.75rem;
+        opacity: 0.75;
     }
 
     .log-table th.log-col-type,
@@ -91,17 +107,7 @@
         word-break: break-all;
     }
 
-    .log-time-stack {
-        display: inline-flex;
-        align-items: baseline;
-        gap: 0.25rem;
-        white-space: nowrap;
-    }
 
-    .log-time-date,
-    .log-time-clock {
-        display: inline;
-    }
 
     .top-domain-bar {
         height: 6px;
@@ -120,87 +126,74 @@
         overflow: hidden;
     }
 
-    .dns-empty-state {
-        width: 100%;
-        min-height: 100%;
+    .top-domain-content {
         display: flex;
         flex-direction: column;
         align-items: center;
-        justify-content: center;
-        gap: 0.55rem;
-        text-align: center;
-        color: var(--bs-secondary-color);
-    }
-
-    .dns-empty-state .material-icons {
-        font-size: clamp(46px, 5vw, 64px);
-        line-height: 1;
-        opacity: 0.85;
-    }
-
-    .dns-empty-state-text {
-        font-weight: 600;
-    }
-
-    .top-domain-content {
-        display: flex;
-        align-items: stretch;
-        gap: 0.85rem;
+        justify-content: flex-start;
         width: 100%;
         height: 100%;
-        min-width: 0;
-        min-height: 0;
+        overflow: hidden;
     }
 
     .top-domain-chart-wrap {
-        --donut-size: clamp(160px, 16vw, 220px);
-        flex: 0 0 var(--donut-size);
+        --donut-size: clamp(120px, 14vw, 160px);
         width: var(--donut-size);
         height: var(--donut-size);
-        align-self: center;
+        flex-shrink: 0;
     }
 
-    .top-domain-legend {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-        flex: 1 1 auto;
-        min-width: 0;
-        text-align: left;
+    #top-queried-chart-wrap {
+        --donut-size: clamp(110px, 12vw, 140px);
+        width: var(--donut-size);
+        height: var(--donut-size);
+        flex-shrink: 0;
+    }
+
+    #top-blocked-chart-wrap {
+        width: 100%;
+        height: 100%;
+        max-height: 280px;
+    }
+
+    /* Custom chart legend with badges */
+    .custom-chart-legend {
         display: flex;
         flex-direction: column;
-        gap: 0.35rem;
-        justify-content: flex-start;
-        max-height: 100%;
-        min-height: 0;
+        gap: 3px;
+        width: 100%;
+        max-height: 100px;
         overflow-y: auto;
-        overflow-x: hidden;
-        scrollbar-gutter: stable;
-        padding-right: 0.2rem;
+        font-size: 0.72rem;
+        padding: 0 4px;
     }
 
-    .top-domain-legend-item {
+    .custom-chart-legend .legend-item {
         display: flex;
         align-items: center;
-        gap: 0.45rem;
+        gap: 6px;
         min-width: 0;
     }
 
-    .top-domain-legend-swatch {
-        width: 10px;
-        height: 10px;
-        border-radius: 2px;
-        flex: 0 0 auto;
+    .custom-chart-legend .legend-dot {
+        flex-shrink: 0;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
     }
 
-    .top-domain-legend-label {
-        display: block;
+    .custom-chart-legend .legend-label {
+        flex: 1;
         min-width: 0;
-        white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        font-size: 0.82rem;
-        color: var(--bs-body-color);
+        white-space: nowrap;
+    }
+
+    .custom-chart-legend .badge {
+        flex-shrink: 0;
+        font-size: 0.6rem;
+        padding: 1px 4px;
     }
 
     #log-table-wrap {
@@ -218,13 +211,6 @@
         inset: 0;
     }
 
-    .log-table td.log-empty-cell {
-        padding: 0.75rem;
-    }
-
-    .log-table td.log-empty-cell .dns-empty-state {
-        min-height: 220px;
-    }
 
     #dns-log-filters .form-select {
         min-width: 120px;
@@ -247,7 +233,7 @@
 
         .log-table th.log-col-time,
         .log-table td.log-col-time {
-            width: 9.25rem;
+            width: 6rem;
         }
 
         .log-table th.log-col-type,
@@ -266,7 +252,15 @@
         }
 
         .top-domain-chart-wrap {
-            --donut-size: clamp(185px, 15vw, 260px);
+            --donut-size: clamp(140px, 12vw, 180px);
+        }
+
+        #top-queried-chart-wrap {
+            --donut-size: clamp(130px, 11vw, 160px);
+        }
+
+        .custom-chart-legend {
+            max-height: 120px;
         }
 
         #log-table-wrap {
@@ -297,63 +291,51 @@
 
     @media (max-width: 991.98px) {
         .dns-header {
-            flex-direction: column;
-            align-items: stretch !important;
-            row-gap: 0.75rem;
+            flex-direction: row;
+            align-items: center !important;
+            justify-content: space-between;
             margin-bottom: 0.75rem !important;
         }
 
         .dns-header h1 {
-            width: 100%;
             margin-bottom: 0;
             line-height: 1.2;
         }
 
         .dns-toolbar {
-            width: 100%;
+            display: flex !important;
+            gap: 0.35rem !important;
             margin: 0;
-        }
-
-        .dns-toolbar {
-            display: grid !important;
-            grid-template-columns: 2.75rem minmax(0, 1fr);
-            align-items: stretch;
-            gap: 0.5rem !important;
+            margin-left: auto;
+            justify-content: flex-end;
         }
 
         .dns-toolbar>button,
-        .dns-toolbar>.dropdown,
-        .dns-toolbar>.btn-group,
         .dns-toolbar>#dns-controls {
-            width: 100%;
+            width: auto;
         }
 
         .dns-toolbar>button {
-            min-width: 2.75rem;
-            max-width: 2.75rem;
-            align-self: start;
-            padding-left: 0;
-            padding-right: 0;
-        }
-
-        .dns-toolbar>.dropdown {
-            min-width: 0;
+            min-width: 2.25rem;
+            padding: 0.25rem 0.4rem;
         }
 
         .dns-toolbar>#dns-controls {
-            display: grid !important;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 0.5rem !important;
+            display: flex !important;
+            gap: 0.35rem !important;
         }
 
-        .dns-toolbar>#dns-controls .btn:nth-child(3) {
-            grid-column: 1 / -1;
+        .dns-toolbar .dns-ctrl-btn {
+            padding: 0.25rem 0.4rem;
+            min-width: 2.25rem;
         }
 
-        .dns-toolbar .btn {
-            justify-content: center;
-            min-height: 2.5rem;
-            border-radius: 0.6rem;
+        .dns-toolbar .dns-ctrl-btn .btn-label {
+            display: none;
+        }
+
+        .dns-toolbar .dns-ctrl-btn .material-icons {
+            margin: 0 !important;
         }
 
         .dns-header+.mb-4 {
@@ -391,11 +373,20 @@
 
     @media (max-width: 767.98px) {
         .top-domain-content {
-            gap: 0.65rem;
+            gap: 0.5rem;
         }
 
         .top-domain-chart-wrap {
-            --donut-size: clamp(145px, 34vw, 200px);
+            --donut-size: clamp(100px, 28vw, 140px);
+        }
+
+        #top-queried-chart-wrap {
+            --donut-size: clamp(90px, 24vw, 120px);
+        }
+
+        .custom-chart-legend {
+            max-height: 80px;
+            font-size: 0.68rem;
         }
 
         #log-table-wrap {
@@ -433,9 +424,6 @@
             padding-right: 0.75rem;
         }
 
-        .log-table td.log-empty-cell .dns-empty-state {
-            min-height: 150px;
-        }
 
         .log-table th,
         .log-table td {
@@ -447,9 +435,21 @@
 
         .log-table th.log-col-time,
         .log-table td.log-col-time {
-            width: 5.1rem !important;
-            min-width: 5.1rem;
-            white-space: normal;
+            width: 5.5rem !important;
+            min-width: 5.5rem;
+            white-space: nowrap;
+        }
+
+        .log-time-stack {
+            line-height: 1.2;
+        }
+
+        .log-time-date {
+            font-size: 0.75rem;
+        }
+
+        .log-time-clock {
+            font-size: 0.7rem;
         }
 
         .log-table th.log-col-type,
@@ -489,19 +489,7 @@
             line-height: 1.2;
         }
 
-        .log-time-stack {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 0;
-            line-height: 1.1;
-            white-space: normal;
-        }
 
-        .log-time-date,
-        .log-time-clock {
-            display: block;
-        }
 
         .log-table td code {
             font-size: 0.72rem;
@@ -519,16 +507,14 @@
             <span class="material-icons align-middle" style="font-size:18px;">refresh</span>
         </button>
         <div class="d-flex gap-2" id="dns-controls">
-            <button class="btn btn-sm btn-light dns-ctrl-btn" id="btn-start" onclick="dnsAction('start')" disabled>
-                <span class="material-icons align-middle text-success me-1"
-                    style="font-size:18px;">play_arrow</span>Start
+            <button class="btn btn-sm btn-light dns-ctrl-btn" id="btn-start" onclick="dnsAction('start')" disabled title="Start">
+                <span class="material-icons align-middle text-success me-1" style="font-size:18px;">play_arrow</span><span class="btn-label">Start</span>
             </button>
-            <button class="btn btn-sm btn-light dns-ctrl-btn" id="btn-stop" onclick="dnsAction('stop')" disabled>
-                <span class="material-icons align-middle text-danger me-1" style="font-size:18px;">stop</span>Stop
+            <button class="btn btn-sm btn-light dns-ctrl-btn" id="btn-stop" onclick="dnsAction('stop')" disabled title="Stop">
+                <span class="material-icons align-middle text-danger me-1" style="font-size:18px;">stop</span><span class="btn-label">Stop</span>
             </button>
-            <button class="btn btn-sm btn-light dns-ctrl-btn" id="btn-restart" onclick="dnsAction('restart')">
-                <span class="material-icons align-middle text-warning me-1"
-                    style="font-size:18px;">restart_alt</span>Restart
+            <button class="btn btn-sm btn-light dns-ctrl-btn" id="btn-restart" onclick="dnsAction('restart')" title="Restart">
+                <span class="material-icons align-middle text-warning me-1" style="font-size:18px;">restart_alt</span><span class="btn-label">Restart</span>
             </button>
         </div>
     </div>
@@ -605,13 +591,13 @@
                             Top Queried Domains
                         </h5>
                     </div>
-                    <div class="card-body d-flex align-items-center justify-content-center top-domain-card-body">
+                    <div class="card-body d-flex flex-column align-items-center justify-content-center top-domain-card-body">
                         <div id="top-queried-content" class="top-domain-content">
                             <div id="top-queried-chart-wrap"
                                 class="d-flex align-items-center justify-content-center top-domain-chart-wrap">
                                 <canvas id="top-queried-chart"></canvas>
                             </div>
-                            <ul id="top-queried-legend" class="top-domain-legend"></ul>
+                            <div id="top-queried-legend" class="custom-chart-legend mt-2"></div>
                         </div>
                         <div id="top-queried-empty" class="chart-empty-state d-none">
                             <span class="material-icons">database</span>
@@ -629,12 +615,11 @@
                         </h5>
                     </div>
                     <div class="card-body d-flex align-items-center justify-content-center top-domain-card-body">
-                        <div id="top-blocked-content" class="top-domain-content">
+                        <div id="top-blocked-content" class="w-100 h-100">
                             <div id="top-blocked-chart-wrap"
-                                class="d-flex align-items-center justify-content-center top-domain-chart-wrap">
+                                class="d-flex align-items-center justify-content-center">
                                 <canvas id="top-blocked-chart"></canvas>
                             </div>
-                            <ul id="top-blocked-legend" class="top-domain-legend"></ul>
                         </div>
                         <div id="top-blocked-empty" class="chart-empty-state d-none">
                             <span class="material-icons">database</span>
@@ -684,7 +669,7 @@
                             <option value="all">All Peers</option>
                         </select>
                         <input type="search" id="log-search" class="form-control form-control-sm"
-                            placeholder="Filter domain…" oninput="debouncedRenderLogs()">
+                            placeholder="Filter domain…" oninput="debouncedRenderLogs()" onsearch="renderLogs()">
                         <button class="btn btn-sm btn-outline-secondary" onclick="loadLogsOnly()">
                             <span class="material-icons align-middle" style="font-size:18px;">refresh</span>
                         </button>
@@ -908,10 +893,12 @@
             const topQueried = data.top_queried || [];
             const topBlocked = data.top_blocked || [];
 
-            // Render charts with RAF to ensure Canvas contexts are independent
+            console.log('Top domains API response:', { topQueried, topBlocked });
+
+            // Render charts sequentially to avoid any race conditions
             renderQueriedDoughnut(topQueried);
             await new Promise(resolve => requestAnimationFrame(resolve));
-            renderBlockedDoughnut(topBlocked);
+            renderBlockedBarChart(topBlocked);
         } catch (e) {
             console.error('Top domains error:', e);
         }
@@ -973,17 +960,49 @@
         return { labels, values, total };
     }
 
-    function renderDoughnut({ items, chartRef, colors, contentId, chartWrapId, emptyId, legendId, canvasId }) {
+    function prepareBarChartData(items, maxSlices = 9) {
+        if (!items.length) return { labels: [], values: [], total: 0 };
+
+        const total = items.reduce((sum, d) => sum + Number(d.count || 0), 0);
+        const sorted = [...items].sort((a, b) => (b.count || 0) - (a.count || 0));
+
+        let labels = [];
+        let values = [];
+        let otherCount = 0;
+
+        for (let i = 0; i < sorted.length; i++) {
+            const d = sorted[i];
+            const count = Number(d.count || 0);
+
+            if (i < maxSlices) {
+                labels.push(d.domain || 'Unknown');
+                values.push(count);
+            } else {
+                otherCount += count;
+            }
+        }
+
+        if (otherCount > 0) {
+            labels.push('Other');
+            values.push(otherCount);
+        }
+
+        return { labels, values, total };
+    }
+
+    function renderDoughnut({ items, chartRef, colors, contentId, chartWrapId, emptyId, canvasId, legend = {}, legendId = null }) {
+        console.log('renderDoughnut called:', { canvasId, itemsCount: items.length, items: items.slice(0, 3) });
         const contentEl = document.getElementById(contentId);
         const chartWrap = document.getElementById(chartWrapId);
         const emptyEl = document.getElementById(emptyId);
         const canvas = document.getElementById(canvasId);
+        const legendEl = legendId ? document.getElementById(legendId) : null;
 
         if (!items.length) {
             contentEl.classList.add('d-none');
             chartWrap.classList.add('d-none');
             emptyEl.classList.remove('d-none');
-            clearNode(document.getElementById(legendId));
+            if (legendEl) legendEl.innerHTML = '';
             if (chartRef.instance) {
                 chartRef.instance.destroy();
                 chartRef.instance = null;
@@ -997,7 +1016,7 @@
 
         const { labels, values, total } = prepareDoughnutData(items);
         const chartColors = getChartColors(labels, colors);
-        renderDomainLegend(legendId, labels, values, chartColors);
+        const { textColor } = getChartThemeColors();
 
         // Destroy existing chart instance completely before creating new one
         if (chartRef.instance) {
@@ -1008,6 +1027,40 @@
         // Get fresh 2D context
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Render custom HTML legend with badges if legendId provided
+        if (legendEl) {
+            legendEl.innerHTML = '';
+            labels.forEach((label, i) => {
+                const value = values[i];
+                const pct = total > 0 ? (value / total * 100).toFixed(0) : 0;
+                const color = chartColors[i] || '#6c757d';
+                
+                const item = document.createElement('div');
+                item.className = 'legend-item';
+                
+                const dot = document.createElement('span');
+                dot.className = 'legend-dot';
+                dot.style.backgroundColor = color;
+                
+                const text = document.createElement('span');
+                text.className = 'legend-label text-truncate';
+                text.textContent = label;
+                text.title = label;
+                
+                const badge = document.createElement('span');
+                badge.className = 'badge bg-secondary ms-auto';
+                badge.textContent = `${pct}%`;
+                
+                item.appendChild(dot);
+                item.appendChild(text);
+                item.appendChild(badge);
+                legendEl.appendChild(item);
+            });
+        }
+
+        // Use simpler datalabels when custom legend is present
+        const usesCustomLegend = Boolean(legendEl);
 
         chartRef.instance = new Chart(ctx, {
             type: 'doughnut',
@@ -1024,18 +1077,42 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: true,
-                cutout: '55%',
+                cutout: '50%',
+                layout: {
+                    padding: 40
+                },
                 plugins: {
                     datalabels: {
-                        color: '#fff',
-                        font: { weight: 'bold', size: 11 },
-                        formatter: (value) => fmtNum(value),
+                        color: textColor,
+                        font: { size: 10 },
+                        anchor: 'end',
+                        align: 'end',
+                        offset: 8,
+                        formatter: (value, ctx) => {
+                            const label = ctx.chart.data.labels[ctx.dataIndex] || '';
+                            const pct = total > 0 ? (value / total * 100).toFixed(0) : 0;
+                            const maxLen = 14;
+                            const truncated = label.length > maxLen ? label.substring(0, maxLen) + '…' : label;
+                            return `${truncated}: ${fmtNum(value)} (${pct}%)`;
+                        },
                         display: (dCtx) => {
                             const pct = dCtx.dataset.data[dCtx.dataIndex] / total * 100;
-                            return pct >= 5;
+                            return pct >= 3;
                         }
                     },
-                    legend: { display: false },
+                    legend: {
+                        display: legend.display === true && !usesCustomLegend,
+                        position: legend.position || 'bottom',
+                        labels: {
+                            color: textColor,
+                            boxWidth: 10,
+                            boxHeight: 10,
+                            padding: 10,
+                            usePointStyle: true,
+                            pointStyle: 'circle',
+                            font: { size: 10 }
+                        }
+                    },
                     tooltip: {
                         callbacks: {
                             label(context) {
@@ -1050,42 +1127,6 @@
         });
     }
 
-    function renderDomainLegend(legendId, labels, values, colors) {
-        const legendEl = document.getElementById(legendId);
-        clearNode(legendEl);
-
-        const entries = labels.map((label, idx) => ({
-            label: label || 'Unknown',
-            value: Number(values?.[idx] || 0),
-            color: colors[idx] || '#6c757d',
-            idx,
-        }));
-
-        // Sort legend by frequency descending (stable for equal values).
-        entries.sort((a, b) => {
-            if (b.value !== a.value) return b.value - a.value;
-            return a.idx - b.idx;
-        });
-
-        entries.forEach((entry) => {
-            const li = document.createElement('li');
-            li.className = 'top-domain-legend-item';
-
-            const swatch = document.createElement('span');
-            swatch.className = 'top-domain-legend-swatch';
-            swatch.style.backgroundColor = entry.color;
-
-            const text = document.createElement('span');
-            text.className = 'top-domain-legend-label';
-            text.textContent = entry.label;
-            text.title = entry.label;
-
-            li.appendChild(swatch);
-            li.appendChild(text);
-            legendEl.appendChild(li);
-        });
-    }
-
     function renderQueriedDoughnut(topQueried) {
         renderDoughnut({
             items: topQueried,
@@ -1094,21 +1135,109 @@
             contentId: 'top-queried-content',
             chartWrapId: 'top-queried-chart-wrap',
             emptyId: 'top-queried-empty',
-            legendId: 'top-queried-legend',
-            canvasId: 'top-queried-chart'
+            canvasId: 'top-queried-chart',
+            legend: { display: false },
+            legendId: 'top-queried-legend'
         });
     }
 
-    function renderBlockedDoughnut(topBlocked) {
-        renderDoughnut({
-            items: topBlocked,
-            chartRef: _blockedRef,
-            colors: blockedColors,
-            contentId: 'top-blocked-content',
-            chartWrapId: 'top-blocked-chart-wrap',
-            emptyId: 'top-blocked-empty',
-            legendId: 'top-blocked-legend',
-            canvasId: 'top-blocked-chart'
+    function renderBlockedBarChart(topBlocked) {
+        console.log('renderBlockedBarChart called:', { itemsCount: topBlocked.length });
+        const contentEl = document.getElementById('top-blocked-content');
+        const chartWrap = document.getElementById('top-blocked-chart-wrap');
+        const emptyEl = document.getElementById('top-blocked-empty');
+        const canvas = document.getElementById('top-blocked-chart');
+
+        if (!topBlocked.length) {
+            contentEl.classList.add('d-none');
+            chartWrap.classList.add('d-none');
+            emptyEl.classList.remove('d-none');
+            if (_blockedRef.instance) {
+                _blockedRef.instance.destroy();
+                _blockedRef.instance = null;
+            }
+            return;
+        }
+
+        contentEl.classList.remove('d-none');
+        chartWrap.classList.remove('d-none');
+        emptyEl.classList.add('d-none');
+
+        const { labels, values, total } = prepareBarChartData(topBlocked, 9);
+        const chartColors = getChartColors(labels, blockedColors);
+
+        // Destroy existing chart instance
+        if (_blockedRef.instance) {
+            _blockedRef.instance.destroy();
+            _blockedRef.instance = null;
+        }
+
+        // Get fresh 2D context
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        _blockedRef.instance = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [{
+                    data: values,
+                    backgroundColor: chartColors,
+                    borderWidth: 0,
+                    borderRadius: 4,
+                    barThickness: 'flex',
+                    maxBarThickness: 28,
+                    minBarLength: 180
+                }]
+            },
+            plugins: [ChartDataLabels],
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                maintainAspectRatio: false,
+                layout: {
+                    padding: { left: 8, right: 8, top: 8, bottom: 8 }
+                },
+                scales: {
+                    x: {
+                        display: false,
+                        grid: { display: false }
+                    },
+                    y: {
+                        display: false,
+                        grid: { display: false }
+                    }
+                },
+                plugins: {
+                    datalabels: {
+                        color: (ctx) => {
+                            // Use dark text for better contrast on colored bars
+                            return getComputedStyle(document.body).getPropertyValue('--bs-body-color') || '#212529';
+                        },
+                        font: { weight: '600', size: 10 },
+                        anchor: 'start',
+                        align: 'end',
+                        clip: true,
+                        formatter: (value, ctx) => {
+                            const label = ctx.chart.data.labels[ctx.dataIndex] || '';
+                            const maxLen = 28;
+                            const truncated = label.length > maxLen ? label.substring(0, maxLen) + '…' : label;
+                            return `${truncated}  ${fmtNum(value)}`;
+                        },
+                        display: true
+                    },
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label(context) {
+                                const value = context.raw || 0;
+                                const pct = total > 0 ? (value / total * 100).toFixed(1) : 0;
+                                return `${context.label}: ${fmtNum(value)} (${pct}%)`;
+                            }
+                        }
+                    }
+                }
+            }
         });
     }
 
@@ -1197,7 +1326,7 @@
                 tr.className = 'log-empty-row';
                 const td = document.createElement('td');
                 td.colSpan = 3;
-                td.className = 'text-center py-4';
+                td.className = 'log-empty-cell';
                 td.appendChild(chartEmptyState());
                 tr.appendChild(td);
                 tbody.appendChild(tr);
@@ -1221,19 +1350,21 @@
             tdTime.setAttribute('data-label', 'Time');
             tdTime.className = 'text-muted log-col-time';
             const timestamp = String(q.timestamp || '');
-            const timeParts = timestamp.split(' ');
+            const timeParts = timestamp.includes('T')
+                ? timestamp.split('T')
+                : timestamp.split(' ');
             if (timeParts.length >= 2) {
-                const timeWrap = document.createElement('span');
-                timeWrap.className = 'log-time-stack';
+                const timeStack = document.createElement('div');
+                timeStack.className = 'log-time-stack';
                 const dateSpan = document.createElement('span');
                 dateSpan.className = 'log-time-date';
                 dateSpan.textContent = timeParts[0];
                 const clockSpan = document.createElement('span');
                 clockSpan.className = 'log-time-clock';
                 clockSpan.textContent = timeParts[1];
-                timeWrap.appendChild(dateSpan);
-                timeWrap.appendChild(clockSpan);
-                tdTime.appendChild(timeWrap);
+                timeStack.appendChild(dateSpan);
+                timeStack.appendChild(clockSpan);
+                tdTime.appendChild(timeStack);
             } else {
                 tdTime.textContent = timestamp;
             }

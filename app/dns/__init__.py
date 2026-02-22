@@ -25,6 +25,8 @@ class _UnboundNamespace:
 	stop = staticmethod(process.stop)
 	restart = staticmethod(process.restart)
 	reload_config = staticmethod(process.reload_config)
+	watchdog = staticmethod(process.watchdog)
+	reset_watchdog_failures = staticmethod(process.reset_watchdog_failures)
 	
 	# Config generation
 	is_dnssec_available = staticmethod(config.is_dnssec_available)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import signal
 import time
 from dataclasses import dataclass, field
@@ -26,6 +27,28 @@ _log = logging.getLogger(__name__)
 _START_TIMEOUT = 3.0  # seconds
 _START_POLL_INTERVAL = 0.15  # seconds
 _IS_RUNNING_CACHE_TTL = 5.0  # seconds
+
+
+# ---------------------------------------------------------------------------
+# Binary Availability Check
+# ---------------------------------------------------------------------------
+
+# Cached result of unbound installation check (None = not yet checked)
+_unbound_installed: bool | None = None
+
+
+def is_unbound_installed() -> bool:
+	"""Check if unbound binaries are available on the system.
+	
+	Result is cached after first check since binaries don't appear/disappear
+	at runtime. This prevents repeated shutil.which() calls in the watchdog.
+	"""
+	global _unbound_installed
+	if _unbound_installed is None:
+		_unbound_installed = shutil.which("unbound") is not None and shutil.which("unbound-checkconf") is not None
+		if not _unbound_installed:
+			_log.info("DNS_INIT unbound not installed, DNS features disabled")
+	return _unbound_installed
 
 # ---------------------------------------------------------------------------
 # Process State
@@ -69,7 +92,10 @@ def _read_unbound_pid() -> int | None:
 		if not raw.isdigit():
 			return None
 		return int(raw)
-	except Exception:
+	except FileNotFoundError:
+		return None
+	except Exception as exc:
+		_log.debug("DNS_PID failed to read PID file: %s", exc)
 		return None
 
 
@@ -97,8 +123,8 @@ def _remove_stale_pid_file() -> None:
 		return
 	try:
 		UNBOUND_PID_FILE.unlink(missing_ok=True)
-	except Exception:
-		pass
+	except Exception as exc:
+		_log.debug("DNS_PID failed to remove stale PID file: %s", exc)
 
 
 async def _reap_managed_proc() -> None:
@@ -108,8 +134,8 @@ async def _reap_managed_proc() -> None:
 		return
 	try:
 		await _unbound_proc.wait()
-	except Exception:
-		pass
+	except Exception as exc:
+		_log.debug("DNS_REAP exception during wait: %s", exc)
 	_unbound_proc = None
 
 
@@ -134,7 +160,13 @@ async def _kill_pid(pid: int, *, timeout: float = 3.0) -> bool:
 		return True
 	except Exception as exc:
 		_log.debug("DNS_STOP failed to SIGKILL pid=%s: %s", pid, exc)
-	await asyncio.sleep(0.3)
+	
+	# Brief poll after SIGKILL for slow process termination
+	kill_deadline = time.monotonic() + 1.0
+	while time.monotonic() < kill_deadline:
+		if not _pid_is_running(pid):
+			return True
+		await asyncio.sleep(0.15)
 	return not _pid_is_running(pid)
 
 
@@ -204,6 +236,10 @@ async def _start_impl() -> tuple[bool, str]:
 	"""Start unbound (internal implementation without lock)."""
 	from .unbound_config import write_config  # Avoid circular import
 	
+	# Check if unbound is installed
+	if not is_unbound_installed():
+		return False, "Unbound is not installed"
+	
 	global _unbound_proc
 	invalidate_running_cache()
 	
@@ -219,8 +255,8 @@ async def _start_impl() -> tuple[bool, str]:
 	if not UNBOUND_CONF.exists():
 		write_config()
 	
-	# First check config is valid
-	code, _, stderr = await run_exec("unbound-checkconf", str(UNBOUND_CONF))
+	# First check config is valid (30s timeout for large blocklists)
+	code, _, stderr = await run_exec("unbound-checkconf", str(UNBOUND_CONF), timeout=30.0)
 	if code != 0:
 		return False, f"Config check failed: {stderr}"
 	
@@ -261,9 +297,13 @@ async def _start_impl() -> tuple[bool, str]:
 					_log.error("DNS_START stderr: %s", detail)
 					last_line = detail.splitlines()[-1]
 					msg += f": {last_line[:200]}"
+				# Clean up dead process handle
+				await _reap_managed_proc()
 				return False, msg
 			await asyncio.sleep(_START_POLL_INTERVAL)
 
+		# Timeout: clean up process handle before returning
+		await _reap_managed_proc()
 		return False, "Unbound failed to start (timeout)"
 	except Exception as e:
 		return False, f"Failed to start: {e}"
@@ -307,13 +347,32 @@ async def _stop_impl() -> tuple[bool, str]:
 
 
 async def _reload_impl() -> tuple[bool, str]:
-	"""Reload unbound config (internal implementation without lock)."""
+	"""Reload unbound config (internal implementation without lock).
+	
+	Pre-validates config with unbound-checkconf before sending SIGHUP.
+	If validation fails, returns error without reloading (prevents crash).
+	"""
+	# First validate config to prevent crash on reload
+	code, _, stderr = await run_exec("unbound-checkconf", str(UNBOUND_CONF), timeout=30.0)
+	if code != 0:
+		error_msg = stderr.strip().split("\n")[-1] if stderr.strip() else "unknown error"
+		_log.error("DNS_RELOAD config validation failed: %s", error_msg)
+		return False, f"Config validation failed: {error_msg[:200]}"
+	
 	pid = _read_unbound_pid()
 	if pid and _pid_is_running(pid):
 		try:
 			os.kill(pid, signal.SIGHUP)
-			_log.info("DNS_RELOAD config reloaded (pid=%d)", pid)
-			return True, "Configuration reloaded"
+			# Give unbound a moment to process the reload before declaring success
+			await asyncio.sleep(0.5)
+			# Verify it's still running after the reload
+			if _pid_is_running(pid):
+				_log.info("DNS_RELOAD config reloaded (pid=%d)", pid)
+				return True, "Configuration reloaded"
+			else:
+				invalidate_running_cache()
+				_log.error("DNS_RELOAD unbound crashed during reload (pid=%d)", pid)
+				return False, "Unbound crashed during reload - will be auto-restarted by watchdog"
 		except ProcessLookupError:
 			invalidate_running_cache()
 			return False, "Reload failed: unbound is not running"
@@ -335,7 +394,11 @@ async def _reload_impl() -> tuple[bool, str]:
 async def start() -> tuple[bool, str]:
 	"""Start unbound."""
 	async with _proc_lock:
-		return await _start_impl()
+		result = await _start_impl()
+		if result[0]:
+			# Reset watchdog failures on successful start
+			reset_watchdog_failures()
+		return result
 
 
 async def stop() -> tuple[bool, str]:
@@ -348,7 +411,10 @@ async def restart() -> tuple[bool, str]:
 	"""Restart unbound."""
 	async with _proc_lock:
 		await _stop_impl()
-		return await _start_impl()
+		result = await _start_impl()
+		if result[0]:
+			reset_watchdog_failures()
+		return result
 
 
 async def reload_config() -> tuple[bool, str]:
@@ -357,11 +423,92 @@ async def reload_config() -> tuple[bool, str]:
 		return await _reload_impl()
 
 
+# ---------------------------------------------------------------------------
+# Watchdog
+# ---------------------------------------------------------------------------
+
+# Consecutive restart failures before giving up (reset on success)
+_MAX_WATCHDOG_FAILURES = 5
+_watchdog_failures = 0
+
+
+async def watchdog(should_be_running_func) -> None:
+	"""Health check: restart unbound if it crashed unexpectedly.
+	
+	Args:
+		should_be_running_func: Callable that returns True if DNS service
+			is enabled (i.e., unbound should be running).
+			Must be synchronous (not async).
+	
+	This is designed to be called periodically by the scheduler.
+	It will only attempt restart if:
+	1. Unbound binaries are installed
+	2. DNS service is enabled (user hasn't manually disabled it)
+	3. Unbound is not currently running
+	4. We haven't exceeded max consecutive failures
+	"""
+	global _watchdog_failures
+	
+	# Skip if unbound is not installed
+	if not is_unbound_installed():
+		return
+	
+	# Check if DNS service should be running
+	if not should_be_running_func():
+		# User disabled DNS, don't auto-restart
+		_watchdog_failures = 0  # Reset failure counter
+		return
+	
+	# Check if already running
+	if await is_running():
+		_watchdog_failures = 0  # Reset on success
+		return
+	
+	# Unbound is down but should be up
+	if _watchdog_failures >= _MAX_WATCHDOG_FAILURES:
+		# Too many failures, stop trying (prevent log spam)
+		# Will reset if manually started or DNS toggled
+		return
+	
+	_log.warning(
+		"DNS_WATCHDOG unbound not running, attempting restart (attempt %d/%d)",
+		_watchdog_failures + 1,
+		_MAX_WATCHDOG_FAILURES,
+	)
+	
+	ok, msg = await start()
+	if ok:
+		_log.info("DNS_WATCHDOG unbound restarted successfully")
+		_watchdog_failures = 0
+	else:
+		_watchdog_failures += 1
+		_log.error(
+			"DNS_WATCHDOG restart failed (%d/%d): %s",
+			_watchdog_failures,
+			_MAX_WATCHDOG_FAILURES,
+			msg,
+		)
+		if _watchdog_failures >= _MAX_WATCHDOG_FAILURES:
+			_log.critical(
+				"DNS_WATCHDOG max restart attempts reached, giving up. "
+				"Manual intervention required."
+			)
+
+
+def reset_watchdog_failures() -> None:
+	"""Reset the watchdog failure counter (called on manual start)."""
+	global _watchdog_failures
+	_watchdog_failures = 0
+
+
 __all__ = [
 	"invalidate_running_cache",
 	"is_running",
+	"is_unbound_installed",
 	"start",
 	"stop",
 	"restart",
 	"reload_config",
+	"watchdog",
+	"reset_watchdog_failures",
 ]

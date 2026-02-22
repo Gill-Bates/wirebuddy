@@ -12,6 +12,12 @@
         gap: 0.75rem;
     }
 
+    #dashboard-refresh-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
     .dashboard-stat-icon {
         font-size: 2.5rem;
         color: var(--bs-body-color) !important;
@@ -29,17 +35,45 @@
         gap: 0.75rem;
     }
 
+    .traffic-controls .form-select {
+        height: auto;
+        align-self: center;
+    }
+
+    .traffic-controls .btn-group {
+        display: inline-flex;
+        align-items: center;
+    }
+
+    .traffic-controls .btn-group .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
     .traffic-chart-canvas-wrap {
         position: relative;
         height: 180px;
     }
 
     #peer-map {
-        height: min(60vh, 620px);
+        height: min(50vh, 520px);
         border-radius: 0.5rem;
         position: relative;
         z-index: 0;
         isolation: isolate;
+    }
+
+    .map-kpi {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        font-size: 0.85rem;
+        font-weight: 500;
+    }
+
+    .map-kpis .material-icons {
+        vertical-align: middle;
     }
 
     .dashboard-side-split {
@@ -64,8 +98,21 @@
     }
 
     .recent-peer-subline {
-        display: block;
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
         white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .recent-peer-subline .peer-flag {
+        width: 1rem;
+        height: 0.75rem;
+        flex-shrink: 0;
+    }
+
+    .recent-peer-subline .peer-ip-text {
         overflow: hidden;
         text-overflow: ellipsis;
     }
@@ -82,9 +129,15 @@
         min-width: 0;
     }
 
+
     @media (max-width: 991.98px) {
         #peer-map {
-            height: 360px;
+            height: 35vh;
+            min-height: 280px;
+        }
+
+        .map-kpis {
+            font-size: 0.8rem;
         }
 
         .dashboard-side-split {
@@ -197,13 +250,54 @@
         height: 12px;
         background: #6c757d;
         border-radius: 50%;
-        box-shadow: 0 0 0 3px rgba(108, 117, 125, 0.3);
-        animation: pulse 2s ease-in-out infinite;
+        box-shadow: 0 0 0 2px rgba(108, 117, 125, 0.3);
+        opacity: 0.6;
     }
 
     .pulse-marker.connected {
         background: #0d6efd;
         box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.3);
+        opacity: 1;
+        animation: pulse 2s ease-in-out infinite;
+    }
+
+    /* Map popup styles */
+    .map-popup {
+        min-width: 180px;
+        font-size: 0.875rem;
+        line-height: 1.4;
+    }
+    .map-popup-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
+        padding-bottom: 0.4rem;
+        border-bottom: 1px solid var(--bs-border-color);
+    }
+    .map-popup-header strong {
+        font-size: 0.95rem;
+    }
+    .map-popup-header .badge {
+        font-size: 0.7rem;
+        padding: 0.25em 0.5em;
+    }
+    .map-popup-location {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+        margin-bottom: 0.25rem;
+    }
+    .map-popup-location .material-icons {
+        font-size: 1rem;
+        color: var(--bs-primary);
+    }
+    .map-popup-meta,
+    .map-popup-asn,
+    .map-popup-count {
+        font-size: 0.8rem;
+        margin-top: 0.15rem;
     }
 </style>
 {% endblock %}
@@ -291,12 +385,28 @@
 <div class="row g-4 mb-4">
     <div class="col-12 col-lg-9">
         <div class="card h-100">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">
-                    <span class="material-icons align-middle me-1">public</span>
-                    Peer Locations
-                </h5>
-                <span id="peer-map-status" class="badge bg-secondary" aria-live="polite">Loading…</span>
+            <div class="card-header">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <h5 class="mb-0">
+                        <span class="material-icons align-middle me-1">public</span>
+                        Peer Locations
+                    </h5>
+                    <div class="d-flex gap-3 align-items-center map-kpis">
+                        <span class="map-kpi" title="Online Peers">
+                            <span class="material-icons text-success" style="font-size:16px;">fiber_manual_record</span>
+                            <span id="map-kpi-online">0</span>
+                        </span>
+                        <span class="map-kpi" title="Total Locations">
+                            <span class="material-icons text-muted" style="font-size:16px;">place</span>
+                            <span id="map-kpi-total">0</span>
+                        </span>
+                        <span class="map-kpi d-none d-md-inline" title="Countries">
+                            <span class="material-icons text-muted" style="font-size:16px;">flag</span>
+                            <span id="map-kpi-countries">0</span>
+                        </span>
+                        <span id="peer-map-status" class="badge bg-secondary" aria-live="polite">Loading…</span>
+                    </div>
+                </div>
             </div>
             <div class="card-body p-0">
                 <div id="peer-map"></div>
@@ -312,7 +422,7 @@
                         <span class="material-icons align-middle me-1">history</span>
                         Recent Peer Activity
                     </h5>
-                    <a href="/ui/peers" class="btn btn-sm btn-outline-primary">View All</a>
+                    <a href="/ui/peers" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.75rem;">View All</a>
                 </div>
                 <div class="card-body flex-grow-1">
                     <div id="recent-peers">
@@ -328,7 +438,7 @@
             <div class="card d-flex flex-column connections-card">
                 <div class="card-header">
                     <h5 class="mb-0">
-                        <span class="material-icons align-middle me-1">cell_wifi</span>
+                        <span class="material-icons align-middle me-1">cell_tower</span>
                         Connections
                     </h5>
                 </div>
@@ -362,12 +472,6 @@
                         <select id="traffic-peer-filter" class="form-select form-select-sm" style="min-width: 120px;">
                             <option value="" selected>All Peers</option>
                         </select>
-                        <div class="btn-group btn-group-sm" role="group" aria-label="Traffic direction">
-                            <input type="checkbox" class="btn-check" id="traffic-toggle-rx" checked>
-                            <label class="btn btn-outline-primary" for="traffic-toggle-rx">RX</label>
-                            <input type="checkbox" class="btn-check" id="traffic-toggle-tx" checked>
-                            <label class="btn btn-outline-primary" for="traffic-toggle-tx">TX</label>
-                        </div>
                         <select id="traffic-range" class="form-select form-select-sm" style="min-width: 80px;">
                             <option value="6h">6 h</option>
                             <option value="24h" selected>24 h</option>
@@ -378,7 +482,17 @@
                 </div>
             </div>
             <div class="card-body">
-                <div id="traffic-peer-charts" class="d-flex flex-column gap-3"></div>
+                <div class="d-flex flex-column flex-lg-row gap-3">
+                    <div id="traffic-peer-charts" class="d-flex flex-column gap-3 flex-grow-1"></div>
+                    <div id="traffic-direction-toggle" class="d-flex flex-column gap-1 align-self-center">
+                        <div class="btn-group-vertical btn-group-sm" role="group" aria-label="Traffic direction">
+                            <input type="checkbox" class="btn-check" id="traffic-toggle-rx-side" checked>
+                            <label class="btn btn-outline-primary" for="traffic-toggle-rx-side">RX</label>
+                            <input type="checkbox" class="btn-check" id="traffic-toggle-tx-side" checked>
+                            <label class="btn btn-outline-primary" for="traffic-toggle-tx-side">TX</label>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -396,6 +510,7 @@
     const MAX_VISIBLE_TRAFFIC_CHARTS = 5;
 
     let trafficPeerCharts = [];
+    let cachedTrafficData = null;
     let peerMap = null;
     let markerLayer = null;
     let tileLayer = null;
@@ -499,6 +614,20 @@
             return { className: 'badge bg-secondary', text: `${Math.floor(diffSec / 3600)}h ago` };
         }
         return { className: 'badge bg-secondary', text: `${Math.floor(diffSec / 86400)}d ago` };
+    }
+
+    function createCountryFlagElement(countryCode) {
+        const code = String(countryCode || '').trim().toLowerCase();
+        if (!/^[a-z]{2}$/.test(code)) return null;
+
+        const img = document.createElement('img');
+        img.className = 'peer-flag';
+        img.alt = `${code.toUpperCase()} flag`;
+        img.loading = 'eager';
+        img.decoding = 'async';
+        img.src = `/static/vendor/images/flags/${code}.svg`;
+        img.addEventListener('error', () => img.remove());
+        return img;
     }
 
     function formatPeerIpProvider(peer) {
@@ -638,148 +767,8 @@
                 null,
                 { signal, timeoutMs: API_TIMEOUT_MS },
             );
-            const showRx = Boolean(document.getElementById('traffic-toggle-rx')?.checked);
-            const showTx = Boolean(document.getElementById('traffic-toggle-tx')?.checked);
-            const peerFilter = document.getElementById('traffic-peer-filter')?.value || '';
-            const hours = Number(traffic?.hours || 24);
-            const labels = (traffic?.labels || []).map(ts => shortLabel(ts, hours));
-            const unit = traffic?.display_unit || 'MB';
-            let peers = Array.isArray(traffic?.peers_display) && traffic.peers_display.length
-                ? traffic.peers_display
-                : (Array.isArray(traffic?.peers) ? traffic.peers : []);
-
-            updateTrafficPeerFilter(peers);
-            if (peerFilter) {
-                peers = peers.filter(p => p.key === peerFilter || p.name === peerFilter);
-            }
-
-            // Remove canvases before destroy to avoid detached-frame races.
-            clearElement(trafficChartsHost);
-            destroyTrafficCharts();
-
-            if (!peerFilter && peers.length > MAX_VISIBLE_TRAFFIC_CHARTS) {
-                const byTraffic = (p) => {
-                    const rx = Array.isArray(p.rx) ? p.rx : [];
-                    const tx = Array.isArray(p.tx) ? p.tx : [];
-                    return rx.reduce((a, v) => a + Number(v || 0), 0) + tx.reduce((a, v) => a + Number(v || 0), 0);
-                };
-                peers = [...peers].sort((a, b) => byTraffic(b) - byTraffic(a)).slice(0, MAX_VISIBLE_TRAFFIC_CHARTS);
-                const info = document.createElement('p');
-                info.className = 'text-muted small mb-2';
-                info.textContent = `Showing top ${MAX_VISIBLE_TRAFFIC_CHARTS} peers by traffic. Use filter to inspect others.`;
-                trafficChartsHost.appendChild(info);
-            }
-
-            if (!showRx && !showTx) {
-                const p = document.createElement('p');
-                p.className = 'text-muted mb-0';
-                p.textContent = 'Please activate RX or TX.';
-                trafficChartsHost.appendChild(p);
-                return true;
-            }
-            if (peers.length === 0) {
-                trafficChartsHost.appendChild(chartEmptyState());
-                return true;
-            }
-
-            peers.forEach((peer, idx) => {
-                const colors = getChartColors();
-                const colorIdx = idx % peerColors.length;
-                const color = peerColors[colorIdx];
-                const rx = Array.isArray(peer.rx) ? peer.rx : [];
-                const tx = Array.isArray(peer.tx) ? peer.tx : [];
-                const datasets = [];
-
-                if (showRx) {
-                    datasets.push({
-                        label: 'RX',
-                        data: rx.map(v => Number(v || 0)),
-                        borderColor: color.rx,
-                        backgroundColor: color.rx.replace('0.8', '0.12'),
-                        fill: false,
-                        tension: 0.35,
-                        pointRadius: 0,
-                        pointHitRadius: 8,
-                        borderWidth: 2,
-                    });
-                }
-                if (showTx) {
-                    datasets.push({
-                        label: 'TX',
-                        data: tx.map(v => Number(v || 0)),
-                        borderColor: color.tx,
-                        backgroundColor: 'transparent',
-                        fill: false,
-                        tension: 0.35,
-                        pointRadius: 0,
-                        pointHitRadius: 8,
-                        borderWidth: 2,
-                        borderDash: [5, 5],
-                    });
-                }
-
-                const wrap = document.createElement('div');
-                wrap.className = 'border rounded p-2';
-                const header = document.createElement('div');
-                header.className = 'd-flex justify-content-between align-items-center mb-2';
-                const nameSpan = document.createElement('span');
-                nameSpan.className = 'fw-semibold';
-                nameSpan.textContent = peer.name || peer.key || 'Peer';
-                const unitSpan = document.createElement('small');
-                unitSpan.className = 'text-muted';
-                unitSpan.textContent = `Y: ${unit}`;
-                header.appendChild(nameSpan);
-                header.appendChild(unitSpan);
-
-                const canvasWrap = document.createElement('div');
-                canvasWrap.className = 'traffic-chart-canvas-wrap';
-                const canvas = document.createElement('canvas');
-                canvasWrap.appendChild(canvas);
-
-                wrap.appendChild(header);
-                wrap.appendChild(canvasWrap);
-                trafficChartsHost.appendChild(wrap);
-
-                const ctx = canvas.getContext('2d');
-                const chart = new Chart(ctx, {
-                    type: 'line',
-                    data: { labels, datasets },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        interaction: { mode: 'index', intersect: false },
-                        plugins: {
-                            legend: {
-                                position: 'top',
-                                labels: { usePointStyle: true, boxWidth: 8, color: colors.textColor },
-                            },
-                            tooltip: {
-                                callbacks: {
-                                    label: c => `${c.dataset.label}: ${Number(c.parsed.y || 0).toFixed(2)} ${unit}`,
-                                },
-                            },
-                        },
-                        scales: {
-                            x: {
-                                title: { display: true, text: 'Time', color: colors.textColor },
-                                ticks: { maxTicksLimit: 10, color: colors.textColor },
-                                grid: { color: colors.gridColor },
-                            },
-                            y: {
-                                beginAtZero: true,
-                                title: { display: true, text: `Usage (${unit})`, color: colors.textColor },
-                                grid: { color: colors.gridColor },
-                                ticks: {
-                                    maxTicksLimit: 6,
-                                    color: colors.textColor,
-                                    callback: v => `${Number(v).toFixed(2)} ${unit}`,
-                                },
-                            },
-                        },
-                    },
-                });
-                trafficPeerCharts.push(chart);
-            });
+            cachedTrafficData = traffic;
+            renderTrafficCharts();
             return true;
         } catch (e) {
             if (isAbortError(e)) return true;
@@ -787,6 +776,157 @@
             wbToast('Failed to load traffic data', 'warning');
             return false;
         }
+    }
+
+    function renderTrafficCharts() {
+        const traffic = cachedTrafficData;
+        if (!traffic) return;
+
+        const rxSide = document.getElementById('traffic-toggle-rx-side');
+        const txSide = document.getElementById('traffic-toggle-tx-side');
+        const showRx = rxSide?.checked ?? true;
+        const showTx = txSide?.checked ?? true;
+        const peerFilter = document.getElementById('traffic-peer-filter')?.value || '';
+        const hours = Number(traffic?.hours || 24);
+        const labels = (traffic?.labels || []).map(ts => shortLabel(ts, hours));
+        const unit = traffic?.display_unit || 'MB';
+        let peers = Array.isArray(traffic?.peers_display) && traffic.peers_display.length
+            ? traffic.peers_display
+            : (Array.isArray(traffic?.peers) ? traffic.peers : []);
+
+        updateTrafficPeerFilter(peers);
+        if (peerFilter) {
+            peers = peers.filter(p => p.key === peerFilter || p.name === peerFilter);
+        }
+
+        // Remove canvases before destroy to avoid detached-frame races.
+        clearElement(trafficChartsHost);
+        destroyTrafficCharts();
+
+        if (!peerFilter && peers.length > MAX_VISIBLE_TRAFFIC_CHARTS) {
+            const byTraffic = (p) => {
+                const rx = Array.isArray(p.rx) ? p.rx : [];
+                const tx = Array.isArray(p.tx) ? p.tx : [];
+                return rx.reduce((a, v) => a + Number(v || 0), 0) + tx.reduce((a, v) => a + Number(v || 0), 0);
+            };
+            peers = [...peers].sort((a, b) => byTraffic(b) - byTraffic(a)).slice(0, MAX_VISIBLE_TRAFFIC_CHARTS);
+            const info = document.createElement('p');
+            info.className = 'text-muted small mb-2';
+            info.textContent = `Showing top ${MAX_VISIBLE_TRAFFIC_CHARTS} peers by traffic. Use filter to inspect others.`;
+            trafficChartsHost.appendChild(info);
+        }
+
+        if (!showRx && !showTx) {
+            const p = document.createElement('p');
+            p.className = 'text-muted mb-0';
+            p.textContent = 'Please activate RX or TX.';
+            trafficChartsHost.appendChild(p);
+            return;
+        }
+        if (peers.length === 0) {
+            trafficChartsHost.appendChild(chartEmptyState());
+            return;
+        }
+
+        peers.forEach((peer, idx) => {
+            const colors = getChartColors();
+            const colorIdx = idx % peerColors.length;
+            const color = peerColors[colorIdx];
+            const rx = Array.isArray(peer.rx) ? peer.rx : [];
+            const tx = Array.isArray(peer.tx) ? peer.tx : [];
+            const datasets = [];
+
+            if (showRx) {
+                datasets.push({
+                    label: 'RX',
+                    data: rx.map(v => Number(v || 0)),
+                    borderColor: color.rx,
+                    backgroundColor: color.rx.replace('0.8', '0.12'),
+                    fill: false,
+                    tension: 0.35,
+                    pointRadius: 0,
+                    pointHitRadius: 8,
+                    borderWidth: 2,
+                });
+            }
+            if (showTx) {
+                datasets.push({
+                    label: 'TX',
+                    data: tx.map(v => Number(v || 0)),
+                    borderColor: color.tx,
+                    backgroundColor: 'transparent',
+                    fill: false,
+                    tension: 0.35,
+                    pointRadius: 0,
+                    pointHitRadius: 8,
+                    borderWidth: 2,
+                    borderDash: [5, 5],
+                });
+            }
+
+            const wrap = document.createElement('div');
+            wrap.className = 'border rounded p-2';
+            const header = document.createElement('div');
+            header.className = 'd-flex justify-content-between align-items-center mb-2';
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'fw-semibold';
+            nameSpan.textContent = peer.name || peer.key || 'Peer';
+            const unitSpan = document.createElement('small');
+            unitSpan.className = 'text-muted';
+            unitSpan.textContent = `Y: ${unit}`;
+            header.appendChild(nameSpan);
+            header.appendChild(unitSpan);
+
+            const canvasWrap = document.createElement('div');
+            canvasWrap.className = 'traffic-chart-canvas-wrap';
+            const canvas = document.createElement('canvas');
+            canvasWrap.appendChild(canvas);
+
+            wrap.appendChild(header);
+            wrap.appendChild(canvasWrap);
+            trafficChartsHost.appendChild(wrap);
+
+            const ctx = canvas.getContext('2d');
+            const chart = new Chart(ctx, {
+                type: 'line',
+                data: { labels, datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: {
+                            display: false,
+                            position: 'top',
+                            labels: { usePointStyle: true, boxWidth: 8, color: colors.textColor },
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: c => `${c.dataset.label}: ${Number(c.parsed.y || 0).toFixed(2)} ${unit}`,
+                            },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            title: { display: true, text: 'Time', color: colors.textColor },
+                            ticks: { maxTicksLimit: 10, color: colors.textColor },
+                            grid: { color: colors.gridColor },
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: { display: false },
+                            grid: { color: colors.gridColor },
+                            ticks: {
+                                maxTicksLimit: 6,
+                                color: colors.textColor,
+                                callback: v => `${Number(v).toFixed(2)} ${unit}`,
+                            },
+                        },
+                    },
+                },
+            });
+            trafficPeerCharts.push(chart);
+        });
     }
 
     async function refreshConnectionsChart(signal) {
@@ -927,9 +1067,17 @@
 
                 const ips = document.createElement('small');
                 ips.className = 'text-muted recent-peer-subline';
+                
+                const flag = createCountryFlagElement(peer.country);
+                if (flag) ips.appendChild(flag);
+                
+                const ipText = document.createElement('span');
+                ipText.className = 'peer-ip-text';
                 const ipProvider = formatPeerIpProvider(peer);
-                ips.textContent = ipProvider;
-                ips.title = ipProvider;
+                ipText.textContent = ipProvider;
+                ipText.title = ipProvider;
+                ips.appendChild(ipText);
+                
                 left.appendChild(ips);
 
                 row.appendChild(left);
@@ -937,10 +1085,20 @@
             });
 
             if (!activePeers.length) {
-                const p = document.createElement('p');
-                p.className = 'text-muted mb-0';
-                p.textContent = 'No recent peer activity';
-                recentPeersEl.appendChild(p);
+                const emptyState = document.createElement('div');
+                emptyState.className = 'chart-empty-state';
+
+                const icon = document.createElement('span');
+                icon.className = 'material-icons';
+                icon.textContent = 'database';
+
+                const text = document.createElement('span');
+                text.className = 'chart-empty-state-text';
+                text.textContent = 'No Data Available';
+
+                emptyState.appendChild(icon);
+                emptyState.appendChild(text);
+                recentPeersEl.appendChild(emptyState);
             }
 
             document.getElementById('total-rx').textContent = formatBytes(totalRx);
@@ -1131,54 +1289,29 @@
 
                 const marker = L.marker([p.lat, p.lon], { icon: pulseIcon });
 
-                const popup = document.createElement('div');
-                popup.style.minWidth = '160px';
-
-                // Peer name
-                if (p.name) {
-                    const nameEl = document.createElement('strong');
-                    nameEl.textContent = p.name;
-                    popup.appendChild(nameEl);
-                    popup.appendChild(document.createElement('br'));
-                }
-
-                // Location: City, Country
-                const locText = [p.city, p.country].filter(Boolean).join(', ') || '??';
-                const locEl = document.createElement('span');
-                locEl.textContent = locText;
-                popup.appendChild(locEl);
-                popup.appendChild(document.createElement('br'));
-
-                // IP + Interface
-                const meta = document.createElement('small');
-                meta.className = 'text-muted';
-                meta.textContent = `${p.ip || ''} · ${p.interface || ''}`;
-                popup.appendChild(meta);
-                popup.appendChild(document.createElement('br'));
-
-                // ASN
-                if (p.asn) {
-                    const asnEl = document.createElement('small');
-                    asnEl.className = 'text-muted';
-                    asnEl.textContent = `AS${p.asn}${p.as_org ? ` (${p.as_org})` : ''}`;
-                    popup.appendChild(asnEl);
-                    popup.appendChild(document.createElement('br'));
-                }
-
-                // Status + peer count
-                const statusEl = document.createElement('small');
-                const statusBadge = document.createElement('span');
-                statusBadge.className = isConnected ? 'badge bg-success' : 'badge bg-secondary';
-                statusBadge.textContent = isConnected ? 'Online' : 'Offline';
-                statusEl.appendChild(statusBadge);
+                // Build popup with clean visual hierarchy
                 const peerCount = Math.max(1, Number.parseInt(String(p.count ?? 1), 10) || 1);
-                if (peerCount > 1) {
-                    statusEl.appendChild(document.createTextNode(` · ${peerCount} peers`));
-                }
-                popup.appendChild(statusEl);
+                const locText = [p.city, p.country].filter(Boolean).join(', ') || 'Unknown';
+                const asnText = p.asn ? `AS${p.asn}${p.as_org ? ` · ${p.as_org}` : ''}` : '';
 
-                marker.bindPopup(popup, {
-                    maxWidth: 200,
+                const popupHtml = `
+                    <div class="map-popup">
+                        <div class="map-popup-header">
+                            <strong>${p.name || 'Peer'}</strong>
+                            <span class="badge ${isConnected ? 'bg-success' : 'bg-secondary'}">${isConnected ? 'Online' : 'Offline'}</span>
+                        </div>
+                        <div class="map-popup-location">
+                            <span class="material-icons">place</span>
+                            <span>${locText}</span>
+                        </div>
+                        ${p.ip ? `<div class="map-popup-meta"><span class="text-muted">${p.ip}</span> · <span class="text-muted">${p.interface || ''}</span></div>` : ''}
+                        ${asnText ? `<div class="map-popup-asn text-muted">${asnText}</div>` : ''}
+                        ${peerCount > 1 ? `<div class="map-popup-count text-muted">${peerCount} peers at this location</div>` : ''}
+                    </div>
+                `;
+
+                marker.bindPopup(popupHtml, {
+                    maxWidth: 240,
                     closeOnClick: true,
                     autoPan: true,
                     autoPanPadding: [20, 20],
@@ -1206,9 +1339,16 @@
             }
 
             const connectedCount = locs.filter(p => p.connected).length;
+            const uniqueCountries = new Set(locs.map(p => p.country).filter(Boolean)).size;
+
+            // Update KPIs
+            document.getElementById('map-kpi-online').textContent = connectedCount;
+            document.getElementById('map-kpi-total').textContent = locs.length;
+            document.getElementById('map-kpi-countries').textContent = uniqueCountries;
+
             setMapBadgeState(
                 badge,
-                `${locs.length} location${locs.length !== 1 ? 's' : ''}${connectedCount ? ` (${connectedCount} online)` : ''}`,
+                connectedCount > 0 ? 'Live' : 'Idle',
             );
             badge.classList.remove('bg-secondary', 'bg-warning', 'text-dark');
             badge.classList.add('bg-success');
@@ -1336,9 +1476,12 @@
         });
 
         refreshButton?.addEventListener('click', () => refreshAll(true));
-        document.getElementById('traffic-peer-filter')?.addEventListener('change', () => refreshTrafficCharts());
-        document.getElementById('traffic-toggle-rx')?.addEventListener('change', () => refreshTrafficCharts());
-        document.getElementById('traffic-toggle-tx')?.addEventListener('change', () => refreshTrafficCharts());
+        document.getElementById('traffic-peer-filter')?.addEventListener('change', () => renderTrafficCharts());
+        
+        // RX/TX toggle event listeners – pure client-side re-render, no API call
+        document.getElementById('traffic-toggle-rx-side')?.addEventListener('change', () => renderTrafficCharts());
+        document.getElementById('traffic-toggle-tx-side')?.addEventListener('change', () => renderTrafficCharts());
+        
         document.getElementById('traffic-range')?.addEventListener('change', () => refreshTrafficCharts());
 
         // Initial data load – start auto-refresh only after first attempt

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from ..db.sqlite_interfaces import (
 	get_interface as db_get_interface,
+	list_interfaces as db_list_interfaces,
 )
 
 import logging
@@ -22,7 +23,7 @@ from ..utils.deps import get_conn
 from ..utils.config import WG_CONFIG_PATH
 from .auth import get_current_user, require_admin
 from .wireguard_utils import validate_interface_name, run_wg_command
-from .wireguard_isolation import apply_client_isolation_runtime
+from .wireguard_isolation import apply_client_isolation_runtime, cleanup_client_isolation
 
 _log = logging.getLogger(__name__)
 
@@ -33,31 +34,34 @@ __all__ = ["router"]
 
 @router.get("/interfaces")
 async def list_interfaces(
+	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(get_current_user),
 ):
-	"""List all WireGuard interfaces (both configured and active)."""
+	"""List all WireGuard interfaces from database, config files, and active state."""
 	config_path = WG_CONFIG_PATH
 	
-	# Get active interfaces from wg
+	db_interfaces: set[str] = set()
+	for row in db_list_interfaces(conn):
+		db_interfaces.add(row["name"])
+	
 	active_interfaces: set[str] = set()
 	code, stdout, stderr = await run_wg_command("wg", "show", "interfaces")
 	if code == 0 and stdout.strip():
 		active_interfaces = set(stdout.strip().split())
 	
-	# Get configured interfaces from config files
-	configured: set[str] = set()
+	config_files: set[str] = set()
 	if config_path.is_dir():
 		for conf in config_path.glob("*.conf"):
-			configured.add(conf.stem)
+			config_files.add(conf.stem)
 	
-	# Build combined list with status
-	all_interfaces = sorted(configured | active_interfaces)
+	all_interfaces = sorted(db_interfaces | config_files | active_interfaces)
 	result = []
 	for name in all_interfaces:
 		result.append({
 			"name": name,
+			"in_database": name in db_interfaces,
+			"has_config_file": name in config_files,
 			"is_active": name in active_interfaces,
-			"is_configured": name in configured,
 		})
 	
 	return ok_response(data={"interfaces": result}, interfaces=result)
@@ -66,27 +70,57 @@ async def list_interfaces(
 @router.get("/interfaces/{name}")
 async def get_interface(
 	name: str,
+	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Get details of a specific WireGuard interface."""
-	# Validate interface name
 	validate_interface_name(name)
 	
+
+	db_iface = db_get_interface(conn, name)
+	config_file = WG_CONFIG_PATH / f"{name}.conf"
+	has_config = config_file.is_file()
+	
 	code, stdout, stderr = await run_wg_command("wg", "show", name)
-	if code != 0:
-		raise HTTPException(status_code=404, detail=f"Interface not found: {stderr}")
+	is_active = code == 0
 	
-	# Parse wg show output
+	# If interface doesn't exist anywhere, return 404
+	if not is_active and not db_iface and not has_config:
+		raise HTTPException(status_code=404, detail=f"Interface not found: {name}")
+	
+	# Build result from available sources
+	result = {
+		"name": name,
+		"is_active": is_active,
+		"in_database": db_iface is not None,
+		"has_config_file": has_config,
+		"public_key": None,
+		"listen_port": None,
+		"peers": [],
+	}
+	
+	# If not active, populate from stored config
+	if not is_active:
+		if db_iface:
+			result["listen_port"] = db_iface["listen_port"]
+			result["address"] = db_iface["address"]
+			result["address6"] = db_iface["address6"]
+		return ok_response(data=result)
+	
+	# Parse wg show output for active interface
 	lines = stdout.strip().split("\n")
-	result = {"name": name, "public_key": None, "listen_port": None, "peers": []}
-	
 	current_peer = None
 	for line in lines:
 		line = line.strip()
 		if line.startswith("public key:"):
 			result["public_key"] = line.split(":", 1)[1].strip()
 		elif line.startswith("listening port:"):
-			result["listen_port"] = int(line.split(":", 1)[1].strip())
+			port_str = line.split(":", 1)[1].strip()
+			try:
+				result["listen_port"] = int(port_str)
+			except ValueError:
+				_log.warning("Invalid listen port value: %r", port_str)
+				result["listen_port"] = None
 		elif line.startswith("peer:"):
 			if current_peer:
 				result["peers"].append(current_peer)
@@ -122,19 +156,39 @@ async def interface_up(
 		raise HTTPException(status_code=500, detail=f"Failed to bring up interface: {stderr}")
 
 	# Ensure client-isolation firewall rules are applied immediately.
-	await apply_client_isolation_runtime(name, conn)
+	isolation_result = await apply_client_isolation_runtime(name, conn)
 	
 	_log.info("INTERFACE_UP name=%s", name)
+	
+	# Warn if isolation rules failed (security concern)
+	if isolation_result.rules_failed > 0 or isolation_result.errors:
+		_log.warning(
+			"INTERFACE_UP isolation partial failure: name=%s failed=%d errors=%s",
+			name, isolation_result.rules_failed, isolation_result.errors,
+		)
+		return ok_response(
+			message=f"Interface {name} is up",
+			isolation_warnings={
+				"rules_failed": isolation_result.rules_failed,
+				"errors": isolation_result.errors,
+			},
+		)
+	
 	return ok_response(message=f"Interface {name} is up")
 
 
 @router.post("/interfaces/{name}/down")
 async def interface_down(
 	name: str,
+	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Bring down a WireGuard interface."""
 	validate_interface_name(name)
+	
+	# Clean up isolation chains before bringing interface down
+	# (uses database as source of truth, not PostDown scripts)
+	await cleanup_client_isolation(name)
 	
 	code, stdout, stderr = await run_wg_command("wg-quick", "down", name)
 	if code != 0:
@@ -157,14 +211,22 @@ async def get_interface_config(
 	if not iface:
 		raise HTTPException(status_code=404, detail=f"Interface '{name}' not found in database")
 
-	data = {
-		"name": iface["name"],
-		"address": iface["address"],
-		"address6": iface["address6"],
-		"listen_port": iface["listen_port"],
-		"dns": iface["dns"],
-		"post_up": iface["post_up"],
-		"post_down": iface["post_down"],
-		"is_enabled": bool(iface["is_enabled"]),
-	}
-	return ok_response(data=data, **data)
+	# Only expose safe fields at top level (not post_up/post_down shell commands)
+	return ok_response(
+		data={
+			"name": iface["name"],
+			"address": iface["address"],
+			"address6": iface["address6"],
+			"listen_port": iface["listen_port"],
+			"dns": iface["dns"],
+			"post_up": iface["post_up"],
+			"post_down": iface["post_down"],
+			"is_enabled": bool(iface["is_enabled"]),
+		},
+		name=iface["name"],
+		address=iface["address"],
+		address6=iface["address6"],
+		listen_port=iface["listen_port"],
+		dns=iface["dns"],
+		is_enabled=bool(iface["is_enabled"]),
+	)

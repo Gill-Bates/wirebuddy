@@ -52,10 +52,13 @@ class InterfaceConfigError(Exception):
 def _mask_secret(value: str, *, reveal: int = 4) -> str:
 	"""Mask a secret string, revealing only first/last `reveal` characters.
 	
-	Requires at least 20 characters to reveal any part of the secret.
+	Requires at least (reveal * 2 + 4) characters to reveal any part of the secret.
+	This ensures at least 4 characters are always masked in the middle.
 	"""
-	if len(value) >= 20:
-		return value[:reveal] + "*" * (len(value) - reveal * 2) + value[-reveal:]
+	min_length = reveal * 2 + 4  # Ensure at least 4 masked chars
+	if len(value) >= min_length:
+		mask_count = len(value) - reveal * 2
+		return value[:reveal] + "*" * mask_count + value[-reveal:]
 	return "*" * len(value)
 
 
@@ -94,14 +97,18 @@ def get_server_endpoint(conn: sqlite3.Connection) -> str:
 	"""
 	fqdn = get_setting(conn, "wg_fqdn") or "vpn.example.com"
 	port = get_setting(conn, "wg_port") or "51820"
+	
+	# Strip existing brackets if present (users may store bracketed IPv6)
+	fqdn_clean = fqdn.strip("[]")
+	
 	# IPv6 addresses need brackets
 	try:
-		addr = ipaddress.ip_address(fqdn)
+		addr = ipaddress.ip_address(fqdn_clean)
 		if addr.version == 6:
-			return f"[{fqdn}]:{port}"
+			return f"[{fqdn_clean}]:{port}"
 	except ValueError:
-		pass  # It's a hostname
-	return f"{fqdn}:{port}"
+		pass  # It's a hostname, use as-is
+	return f"{fqdn_clean}:{port}"
 
 
 def get_dns_for_peer(
@@ -169,7 +176,8 @@ def get_dns_for_peer(
 		
 		if peer_has_v6:
 			try:
-				ipv6_iface = ipaddress.ip_interface(iface["address6"].strip())
+				# Use the already-validated iface_address6 variable consistently
+				ipv6_iface = ipaddress.ip_interface(iface_address6.strip())
 				dns_servers.append(str(ipv6_iface.ip))
 			except ValueError:
 				pass  # Invalid IPv6 on interface, skip
@@ -198,6 +206,8 @@ async def update_wg_settings(
 	"""Update WireGuard global settings (admin only).
 	
 	Only explicitly provided fields will be updated.
+	Note: Empty strings are stored for None values, which cause get_setting() 
+	to return empty string. Callers use 'or' fallback for defaults.
 	"""
 	updated = []
 	for key in WG_SETTING_KEYS:
@@ -207,7 +217,7 @@ async def update_wg_settings(
 			if value is not None:
 				set_setting(conn, key, str(value))
 			else:
-				# Clear the setting by storing empty string (or could delete)
+				# Clear the setting by storing empty string (allows 'or' fallback)
 				set_setting(conn, key, "")
 			updated.append(key)
 	
@@ -248,3 +258,16 @@ async def generate_global_psk(
 	set_setting(conn, "wg_global_psk", enc_psk)
 	masked = _mask_secret(psk)
 	return ok_response(data={"masked": masked})
+
+
+@router.get("/settings/check-updates")
+async def check_updates(
+	_: sqlite3.Row = Depends(get_current_user),
+	force: bool = False,
+):
+	"""Check for available WireBuddy updates from GitHub."""
+	from starlette.concurrency import run_in_threadpool
+	from ..utils.version import check_for_updates
+	
+	result = await run_in_threadpool(check_for_updates, force)
+	return ok_response(data=result, **result)

@@ -33,6 +33,11 @@
         word-break: break-word;
     }
 
+    /* Make peer names bold */
+    .peers-table td[data-label="Name"] {
+        font-weight: 600;
+    }
+
     /* Client IP stacked layout */
     .peer-client-ip-stack {
         display: flex;
@@ -55,12 +60,22 @@
         font-size: .75rem;
         color: var(--bs-secondary-color);
         margin-left: calc(var(--flag-width) + var(--flag-gap));
+        margin-top: 0.25rem;
         white-space: normal;
     }
 
     .peer-client-ip-meta .peer-meta-city,
     .peer-client-ip-meta .peer-meta-provider {
         display: block;
+    }
+
+    .peer-client-ip-meta .peer-meta-provider {
+        display: inline-block;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: bottom;
     }
 
     .peer-country-flag {
@@ -273,6 +288,15 @@
             display: inline;
         }
 
+        .peer-client-ip-meta .peer-meta-provider {
+            display: inline-block;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            vertical-align: bottom;
+        }
+
         .peer-client-ip-meta .peer-meta-provider::before {
             content: " (";
         }
@@ -393,11 +417,11 @@
                         <td data-label="Name">
                             {{ peer['name'] or 'Unnamed' }}
                             {% if mode == 'full' %}
-                            <span class="badge bg-secondary d-inline d-md-none ms-1">Full Tunnel</span>
+                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">Full Tunnel</span>
                             {% elif mode == 'split' %}
-                            <span class="badge bg-secondary d-inline d-md-none ms-1">Split Tunnel</span>
+                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">Split Tunnel</span>
                             {% else %}
-                            <span class="badge bg-secondary d-inline d-md-none ms-1">Custom</span>
+                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">Custom</span>
                             {% endif %}
                         </td>
                         <td data-label="VPN Address"><code>{{ peer['peer_address'] or '—' }}</code></td>
@@ -868,9 +892,12 @@
         }
 
         const diffMins = Math.floor((Date.now() - date.getTime()) / 60000);
+        // Only "Just now" and within 3 minutes is considered active (green)
         if (diffMins < 1) return { text: 'Just now', cls: 'text-success' };
-        if (diffMins < 60) return { text: `${diffMins}m ago`, cls: 'text-success' };
-        if (diffMins < 1440) return { text: `${Math.floor(diffMins / 60)}h ago`, cls: 'text-warning' };
+        if (diffMins < 3) return { text: `${diffMins}m ago`, cls: 'text-success' };
+        // Everything else is inactive (gray)
+        if (diffMins < 60) return { text: `${diffMins}m ago`, cls: 'text-muted' };
+        if (diffMins < 1440) return { text: `${Math.floor(diffMins / 60)}h ago`, cls: 'text-muted' };
         return { text: `${Math.floor(diffMins / 1440)}d ago`, cls: 'text-muted' };
     }
 

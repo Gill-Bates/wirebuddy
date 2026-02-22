@@ -15,16 +15,18 @@ from ..db.sqlite_peers import (
 
 import logging
 import sqlite3
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends
+from starlette.concurrency import run_in_threadpool
 
 from ..db import tsdb
 from ..utils.deps import get_conn, get_tsdb_dir
 from ..utils.geoip import lookup_ip
 from .auth import get_current_user, require_admin
 from .response import ok_response
-from .wireguard_utils import safe_int, run_wg_command
+from .wireguard_utils import parse_wg_show_dump, run_wg_command, safe_int
 
 _log = logging.getLogger(__name__)
 
@@ -44,95 +46,90 @@ async def get_peer_locations(
 	via GeoLite2-City + GeoLite2-ASN and returns a list suitable for a
 	Leaflet heatmap.  Includes both currently-connected and recently-seen
 	peers (any peer with a non-``(none)`` endpoint and a handshake timestamp).
+	Also includes peers with persisted last_client_ip from DB.
 	"""
-	import time as _time
-
 	try:
-		code, stdout, stderr = await run_wg_command("wg", "show", "all", "dump")
-		if code != 0:
-			return ok_response(data={"locations": []}, locations=[])
-
-		now = _time.time()
+		now = time.time()
 		connected_threshold = 180  # 3 minutes – still "online"
 
-		# Build peer name lookup from DB
-		all_db_peers = get_all_peers(conn)
-		name_by_key: dict[str, str] = {
-			p["public_key"]: (p["name"] or p["public_key"][:8])
-			for p in all_db_peers if p["public_key"]
-		}
+		# Build peer name lookup and last-seen data from DB (async via threadpool)
+		all_db_peers = await run_in_threadpool(get_all_peers, conn)
+		peer_db_info: dict[str, dict] = {}
+		for p in all_db_peers:
+			if p["public_key"]:
+				peer_db_info[p["public_key"]] = {
+					"name": p["name"] or p["public_key"][:8],
+					"last_client_ip": p["last_client_ip"],
+					"last_handshake_at": p["last_handshake_at"] or 0,
+					"interface": p["interface"],
+				}
 
-		seen_ips: dict[str, dict] = {}  # deduplicate by IP
-		last_iface: str | None = None
+		# Track locations by IP with list of peer names for multi-peer IPs
+		seen_ips: dict[str, dict] = {}
 
-		for line in stdout.strip().split("\n"):
-			if not line:
+		# 1. Parse wg show all dump for live stats
+		code, stdout, stderr = await run_wg_command("wg", "show", "all", "dump")
+		if code == 0:
+			peers = parse_wg_show_dump(stdout)
+			for peer in peers:
+				if peer.public_key not in peer_db_info:
+					continue
+
+				# Update DB info with live data
+				if peer.handshake_ts > peer_db_info[peer.public_key].get("last_handshake_at", 0):
+					peer_db_info[peer.public_key]["last_handshake_at"] = peer.handshake_ts
+				if peer.client_ip:
+					peer_db_info[peer.public_key]["last_client_ip"] = peer.client_ip
+				if peer.interface:
+					peer_db_info[peer.public_key]["interface"] = peer.interface
+		else:
+			_log.debug("wg show all dump failed (code=%d): %s", code, stderr.strip() if stderr else "no output")
+
+		# 2. Build location list from all peers with known IPs (live + DB)
+		for pub_key, info in peer_db_info.items():
+			ip_str = info.get("last_client_ip")
+			if not ip_str:
+				_log.debug("PEER_LOC skip %s: no IP", pub_key[:8])
 				continue
-			parts = line.split("\t")
 
-			pub_key: str | None = None
-			endpoint_raw: str | None = None
-			handshake_ts = 0
-			iface: str | None = None
-
-			# Interface header: iface, privkey, pubkey, listen_port, fwmark
-			if len(parts) >= 5 and len(parts) < 8:
-				last_iface = parts[0]
-				continue
-
-			# Peer line format A (9-col): iface, pubkey, psk, endpoint, allowed-ips, hs, rx, tx, keepalive
-			if len(parts) >= 9:
-				iface = parts[0] if parts[0] else last_iface
-				if iface:
-					last_iface = iface
-				pub_key = parts[1]
-				endpoint_raw = parts[3]
-				handshake_ts = safe_int(parts[5])
-			# Peer line format B (8-col): pubkey, psk, endpoint, allowed-ips, hs, rx, tx, keepalive
-			elif len(parts) >= 8:
-				pub_key = parts[0]
-				endpoint_raw = parts[2]
-				handshake_ts = safe_int(parts[4])
-				iface = last_iface
-
-			if not pub_key or not endpoint_raw or endpoint_raw == "(none)":
-				continue
-			# Include any peer that has ever had a handshake (endpoint known)
+			handshake_ts = info.get("last_handshake_at") or 0
 			if handshake_ts == 0:
-				continue
-
-			# Strip port from endpoint (handle IPv6 [addr]:port)
-			if endpoint_raw.startswith("["):
-				ip_str = endpoint_raw.split("]")[0].lstrip("[")
-			else:
-				ip_str = endpoint_raw.rsplit(":", 1)[0]
+				_log.debug("PEER_LOC skip %s: no handshake", pub_key[:8])
+				continue  # No handshake ever
 
 			connected = (now - handshake_ts) < connected_threshold
+			peer_name = info.get("name", pub_key[:8])
 
 			if ip_str in seen_ips:
 				seen_ips[ip_str]["count"] += 1
+				seen_ips[ip_str]["names"].append(peer_name)
 				# Upgrade to connected if any peer from this IP is connected
 				if connected:
 					seen_ips[ip_str]["connected"] = True
 				continue
 
-			info = lookup_ip(ip_str)
-			if info:
-				peer_name = name_by_key.get(pub_key, pub_key[:8] if pub_key else "")
+			# Lookup GeoIP data (async via threadpool for disk I/O)
+			geo_info = await run_in_threadpool(lookup_ip, ip_str)
+			if geo_info:
+				_log.debug("PEER_LOC add %s ip=%s lat=%s lon=%s", pub_key[:8], ip_str, geo_info.get("lat"), geo_info.get("lon"))
 				seen_ips[ip_str] = {
-					"lat": info["lat"],
-					"lon": info["lon"],
-					"city": info["city"],
-					"country": info["country"],
-					"asn": info["asn"],
-					"as_org": info["as_org"],
+					"lat": geo_info.get("lat"),
+					"lon": geo_info.get("lon"),
+					"city": geo_info.get("city"),
+					"country": geo_info.get("country"),
+					"asn": geo_info.get("asn"),
+					"as_org": geo_info.get("as_org"),
 					"ip": ip_str,
-					"name": peer_name,
-					"interface": iface,
+					"name": peer_name,  # Primary peer name
+					"names": [peer_name],  # List of all peer names at this IP
+					"interface": info.get("interface"),
 					"connected": connected,
 					"count": 1,
 				}
+			else:
+				_log.debug("PEER_LOC skip %s ip=%s: no geo data", pub_key[:8], ip_str)
 
+		_log.info("PEER_LOC returning %d location(s)", len(seen_ips))
 		locations = list(seen_ips.values())
 		return ok_response(data={"locations": locations}, locations=locations)
 	except Exception:
@@ -154,10 +151,8 @@ async def get_peers_enriched(
 	they survive container restarts and are always available, even when
 	``wg show`` has no live data for a peer.
 	"""
-	import time as _time
-
-	# 1. Load all peers from DB
-	rows = get_all_peers(conn)
+	# 1. Load all peers from DB (async via threadpool)
+	rows = await run_in_threadpool(get_all_peers, conn)
 	peers_by_key: dict[str, dict] = {}
 	for row in rows:
 		peers_by_key[row["public_key"]] = {
@@ -184,7 +179,7 @@ async def get_peers_enriched(
 		}
 
 	# 2. Parse wg show all dump for live stats
-	now = _time.time()
+	now = time.time()
 	threshold = 180  # 3 min – consider "connected"
 	db_updates: list[tuple[str, int, str]] = []  # (client_ip, handshake_at, pub_key)
 
@@ -192,103 +187,63 @@ async def get_peers_enriched(
 		code, stdout, stderr = await run_wg_command("wg", "show", "all", "dump")
 		if code != 0:
 			_log.debug("wg show all dump failed (code=%d): %s", code, stderr.strip() if stderr else "no output")
-		elif code == 0:
-			last_iface: str | None = None
-			for line in stdout.strip().split("\n"):
-				if not line:
-					continue
-				parts = line.split("\t")
-				pub_key: str | None = None
-				endpoint_raw: str | None = None
-				handshake_ts = 0
-				rx = 0
-				tx = 0
-
-				# Interface header: iface, privkey, pubkey, listen_port, fwmark
-				if len(parts) >= 5 and len(parts) < 8:
-					last_iface = parts[0]
+		else:
+			wg_peers = parse_wg_show_dump(stdout)
+			for wg_peer in wg_peers:
+				if wg_peer.public_key not in peers_by_key:
 					continue
 
-				# Peer line (format A): iface, pubkey, psk, endpoint, …
-				if len(parts) >= 9:
-					iface = parts[0] if parts[0] else last_iface
-					if iface:
-						last_iface = iface
-					pub_key = parts[1]
-					endpoint_raw = parts[3]
-					handshake_ts = safe_int(parts[5])
-					rx = safe_int(parts[6])
-					tx = safe_int(parts[7])
-				# Peer line (format B): pubkey, psk, endpoint, …
-				elif len(parts) >= 8:
-					pub_key = parts[0]
-					endpoint_raw = parts[2]
-					handshake_ts = safe_int(parts[4])
-					rx = safe_int(parts[5])
-					tx = safe_int(parts[6])
-
-				if not pub_key or pub_key not in peers_by_key:
-					continue
-
-				peer = peers_by_key[pub_key]
-				peer["endpoint"] = endpoint_raw if endpoint_raw and endpoint_raw != "(none)" else None
-				peer["transfer_rx"] = rx
-				peer["transfer_tx"] = tx
-
-				# Extract client IP from endpoint (ip:port or [ipv6]:port)
-				client_ip: str | None = None
-				if endpoint_raw and endpoint_raw != "(none)":
-					if endpoint_raw.startswith("["):
-						client_ip = endpoint_raw.split("]")[0].lstrip("[")
-					else:
-						client_ip = endpoint_raw.rsplit(":", 1)[0]
+				peer = peers_by_key[wg_peer.public_key]
+				peer["endpoint"] = wg_peer.endpoint_raw
+				peer["transfer_rx"] = wg_peer.rx
+				peer["transfer_tx"] = wg_peer.tx
 
 				# Keep last-seen/client-ip sticky and update only on newer handshakes.
 				stored_hs = int(peer.get("_db_handshake_at") or 0)
 				stored_ip = str(peer.get("endpoint_ip") or "").strip()
-				if handshake_ts:
+				if wg_peer.handshake_ts:
 					# Never regress to an older timestamp from a transient wg state.
 					current_hs = int(peer.get("latest_handshake") or 0)
-					effective_hs = handshake_ts if handshake_ts >= current_hs else current_hs
+					effective_hs = wg_peer.handshake_ts if wg_peer.handshake_ts >= current_hs else current_hs
 					peer["latest_handshake"] = effective_hs
 					peer["connected"] = (now - effective_hs) < threshold
-					if client_ip:
-						peer["endpoint_ip"] = client_ip
+					if wg_peer.client_ip:
+						peer["endpoint_ip"] = wg_peer.client_ip
 
 					# Persist only when handshake is newer; keep last known IP if endpoint is missing.
-					if handshake_ts > stored_hs:
-						persist_ip = client_ip or stored_ip
+					if wg_peer.handshake_ts > stored_hs:
+						persist_ip = wg_peer.client_ip or stored_ip
 						if persist_ip:
-							db_updates.append((persist_ip, handshake_ts, pub_key))
-							peer["_db_handshake_at"] = handshake_ts
+							db_updates.append((persist_ip, wg_peer.handshake_ts, wg_peer.public_key))
+							peer["_db_handshake_at"] = wg_peer.handshake_ts
 							if not peer.get("endpoint_ip"):
 								peer["endpoint_ip"] = persist_ip
-							_log.debug("PEER_SEEN %s ip=%s handshake=%d (stored=%d)", pub_key[:8], persist_ip, handshake_ts, stored_hs)
-				elif client_ip:
+							_log.debug("PEER_SEEN %s ip=%s handshake=%d (stored=%d)", wg_peer.public_key[:8], persist_ip, wg_peer.handshake_ts, stored_hs)
+				elif wg_peer.client_ip:
 					# Endpoint present but no handshake – still use live IP
-					peer["endpoint_ip"] = client_ip
+					peer["endpoint_ip"] = wg_peer.client_ip
 	except Exception:
 		_log.warning("Failed to parse wg dump for enriched peers", exc_info=True)
 
-	# Batch-persist updated last-seen data to DB
+	# Batch-persist updated last-seen data to DB (async via threadpool)
 	if db_updates:
 		try:
-			update_peers_last_seen_batch(conn, db_updates)
+			await run_in_threadpool(update_peers_last_seen_batch, conn, db_updates)
 			_log.info("PEERS_LAST_SEEN persisted %d peer(s)", len(db_updates))
 		except Exception:
 			_log.warning("Failed to persist last-seen data", exc_info=True)
 
-	# 3. GeoIP + ASN enrichment for peers with known client IPs
+	# 3. GeoIP + ASN enrichment for peers with known client IPs (async via threadpool)
 	for peer in peers_by_key.values():
 		ip_str = peer.get("endpoint_ip")
 		if not ip_str:
 			continue
-		info = lookup_ip(ip_str)
+		info = await run_in_threadpool(lookup_ip, ip_str)
 		if info:
-			peer["country"] = info["country"]
-			peer["city"] = info["city"]
-			peer["asn"] = info["asn"]
-			peer["as_org"] = info["as_org"]
+			peer["country"] = info.get("country")
+			peer["city"] = info.get("city")
+			peer["asn"] = info.get("asn")
+			peer["as_org"] = info.get("as_org")
 
 	# 4. Clean up internal fields before returning
 	for peer in peers_by_key.values():
@@ -313,7 +268,7 @@ async def get_tsdb_stats(
 	_: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Get TSDB storage statistics."""
-	data = tsdb.get_db_stats(tsdb_dir)
+	data = await run_in_threadpool(tsdb.get_db_stats, tsdb_dir)
 	return ok_response(data=data, **data)
 
 
@@ -323,7 +278,7 @@ async def reset_tsdb(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Reset/delete all TSDB data (admin only)."""
-	deleted = tsdb.reset_all(tsdb_dir)
+	deleted = await run_in_threadpool(tsdb.reset_all, tsdb_dir)
 	return ok_response(
 		message=f"TSDB reset: {deleted} peer directories deleted",
 		deleted=deleted,
@@ -337,7 +292,7 @@ async def run_tsdb_maintenance(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Run TSDB retention/rotation/compression maintenance immediately."""
-	stats = tsdb.run_maintenance(tsdb_dir)
+	stats = await run_in_threadpool(tsdb.run_maintenance, tsdb_dir)
 	return ok_response(
 		message="TSDB maintenance completed",
 		data=stats,

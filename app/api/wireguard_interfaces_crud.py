@@ -142,19 +142,10 @@ async def create_interface(
 	config_path = WG_CONFIG_PATH
 	conf_file = config_path / f"{payload.name}.conf"
 	
-	# Check if this will be the first interface (before creating)
-	is_first_interface = False
-	if config_path.is_dir():
-		existing_count = len(list(config_path.glob("*.conf")))
-		is_first_interface = (existing_count == 0)
-	
-	# Check if interface already exists
 	if conf_file.exists():
 		raise HTTPException(status_code=409, detail=f"Interface '{payload.name}' already exists")
 	if get_interface(conn, payload.name):
 		raise HTTPException(status_code=409, detail=f"Interface '{payload.name}' already exists in database")
-	
-	# Validate addresses
 	try:
 		v4 = ipaddress.ip_interface(payload.address)
 	except ValueError:
@@ -167,7 +158,6 @@ async def create_interface(
 		except ValueError:
 			raise HTTPException(status_code=422, detail=f"Invalid IPv6 address: {v6_str}")
 	
-	# Generate server keypair
 	private_key, public_key = await generate_keypair()
 	
 	# Build PostUp/PostDown with IPv4 + IPv6 NAT rules
@@ -229,16 +219,18 @@ async def create_interface(
 	if post_down:
 		_log.info("INTERFACE_SCRIPT_CREATED name=%s type=PostDown script=%s", payload.name, post_down[:100])
 	
-	# Auto-start the interface if it's the first one
-	if is_first_interface:
-		try:
-			code, stdout, stderr = await run_wg_command("wg-quick", "up", payload.name)
-			if code == 0:
-				_log.info("INTERFACE_AUTO_STARTED name=%s (first interface)", payload.name)
-			else:
-				_log.warning("Failed to auto-start first interface %s: %s", payload.name, stderr)
-		except Exception as e:
-			_log.warning("Exception during auto-start of first interface %s: %s", payload.name, e)
+	# Auto-start if this is the first interface (check after successful write)
+	if config_path.is_dir():
+		existing_count = len(list(config_path.glob("*.conf")))
+		if existing_count == 1:  # Just created this one
+			try:
+				code, stdout, stderr = await run_wg_command("wg-quick", "up", payload.name)
+				if code == 0:
+					_log.info("INTERFACE_AUTO_STARTED name=%s (first interface)", payload.name)
+				else:
+					_log.warning("Failed to auto-start first interface %s: %s", payload.name, stderr)
+			except Exception as e:
+				_log.warning("Exception during auto-start of first interface %s: %s", payload.name, e)
 
 	data = {
 		"name": payload.name,
@@ -265,7 +257,7 @@ async def update_interface(
 	if not iface:
 		raise HTTPException(status_code=404, detail=f"Interface '{name}' not found")
 
-	# Validate addresses
+
 	try:
 		ipaddress.ip_interface(payload.address)
 	except ValueError:
@@ -301,8 +293,9 @@ async def update_interface(
 
 	cfg = get_config(request)
 	config_path = WG_CONFIG_PATH
+	conf_file = config_path / f"{name}.conf"
 
-	# Keep rollback snapshot
+
 	old = {
 		"address": iface["address"],
 		"address6": iface["address6"],
@@ -311,6 +304,14 @@ async def update_interface(
 		"post_up": iface["post_up"],
 		"post_down": iface["post_down"],
 	}
+	
+
+	old_config_content = None
+	if conf_file.exists():
+		try:
+			old_config_content = conf_file.read_text()
+		except OSError:
+			pass  # Continue without backup, rollback will be DB-only
 
 	try:
 		db_update_interface(
@@ -338,7 +339,7 @@ async def update_interface(
 			pepper=cfg.secret_key,
 		)
 	except Exception as exc:
-		# Best-effort rollback
+		# Best-effort rollback: restore DB and config file
 		try:
 			db_update_interface(
 				conn,
@@ -350,6 +351,12 @@ async def update_interface(
 				post_up=old["post_up"],
 				post_down=old["post_down"],
 			)
+			# Restore config file if we have a backup
+			if old_config_content and conf_file.exists():
+				try:
+					conf_file.write_text(old_config_content)
+				except OSError:
+					_log.exception("Failed to restore config file during rollback for %s", name)
 		except Exception:
 			_log.exception("Failed to rollback interface update for %s", name)
 		raise HTTPException(status_code=500, detail=f"Failed to update interface config: {exc}")
@@ -382,23 +389,32 @@ async def delete_interface(
 	config_path = WG_CONFIG_PATH
 	conf_file = config_path / f"{name}.conf"
 	
-	# Check DB first
+
 	db_exists = get_interface(conn, name) is not None
 	file_exists = conf_file.exists()
 	
 	if not db_exists and not file_exists:
 		raise HTTPException(status_code=404, detail=f"Interface '{name}' not found")
 	
-	# Bring down interface if active
+
 	code, _, _ = await run_wg_command("wg", "show", name)
 	if code == 0:
 		await run_wg_command("wg-quick", "down", name)
 	
-	# Delete from database
+	# Delete associated peers first (no CASCADE in schema)
+	if db_exists:
+		try:
+			conn.execute("DELETE FROM peers WHERE interface = ?", (name,))
+			conn.commit()
+			_log.info("INTERFACE_PEERS_DELETED name=%s", name)
+		except Exception as e:
+			_log.warning("Failed to delete peers for interface %s: %s", name, e)
+	
+
 	if db_exists:
 		db_delete_interface(conn, name)
 	
-	# Delete config file
+
 	if file_exists:
 		try:
 			conf_file.unlink()

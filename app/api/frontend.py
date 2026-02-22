@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Optional
 
 import bleach
-import markdown
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -79,12 +78,15 @@ def _format_last_seen_label(handshake_epoch: int) -> tuple[str, str]:
 		return "Never", "text-muted"
 
 	diff = max(0, int(time.time()) - handshake_epoch)
+	# Only "Just now" and < 3 minutes are active (green), everything else inactive (gray)
 	if diff < 60:
 		return "Just now", "text-success"
-	if diff < 3600:
+	if diff < 180:  # 3 minutes
 		return f"{diff // 60}m ago", "text-success"
+	if diff < 3600:
+		return f"{diff // 60}m ago", "text-muted"
 	if diff < 86400:
-		return f"{diff // 3600}h ago", "text-warning"
+		return f"{diff // 3600}h ago", "text-muted"
 	return f"{diff // 86400}d ago", "text-muted"
 
 
@@ -167,8 +169,6 @@ def _get_about_data() -> dict:
 	except Exception as e:
 		_log.debug("Failed to get unbound version: %s", e)
 	
-	dependencies.append(("unbound", unbound_version))
-	
 	# Get WireGuard version
 	wireguard_version = "not available"
 	try:
@@ -189,7 +189,6 @@ def _get_about_data() -> dict:
 	except Exception as e:
 		_log.debug("Failed to get WireGuard version: %s", e)
 	
-	dependencies.append(("wireguard", wireguard_version))
 	dependencies.sort(key=lambda x: x[0].lower())
 	
 	# Read LICENSE
@@ -210,8 +209,9 @@ def _get_about_data() -> dict:
 	]:
 		if cp.exists():
 			try:
+				import markdown as _markdown
 				raw = cp.read_text(encoding="utf-8")
-				rendered = markdown.markdown(raw, extensions=["extra", "sane_lists", "md_in_html"])
+				rendered = _markdown.markdown(raw, extensions=["extra", "sane_lists", "md_in_html"])
 				allowed_tags = [
 					"h1", "h2", "h3", "h4", "h5", "h6", "p", "br", "hr",
 					"ul", "ol", "li", "a", "strong", "em", "b", "i",
@@ -240,6 +240,7 @@ def _get_about_data() -> dict:
 		"build_info": BUILD_INFO,
 		"python_version": python_version,
 		"wireguard_version": wireguard_version,
+		"unbound_version": unbound_version,
 		"dependencies": dependencies,
 		"license_text": license_text,
 		"changelog_html": changelog_html,
