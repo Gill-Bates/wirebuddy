@@ -70,6 +70,7 @@ jobs:
             --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
             --build-arg "VCS_REF=${{ github.sha }}" \
             -t wirebuddy:test \
+            -f docker/Dockerfile \
             .
 
       - name: Smoke test
@@ -138,6 +139,7 @@ jobs:
             --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
             --build-arg "VCS_REF=${{ github.sha }}" \
             ${TAGS} \
+            -f docker/Dockerfile \
             --push \
             .
 
