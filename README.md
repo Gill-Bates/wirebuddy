@@ -4,12 +4,15 @@
 </p>
 
 <h2 align="center">Use Wireguard with ease!</h2>
-<br>
 
-[![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-linux%2Famd64-lightgrey?logo=linux&logoColor=white)](#-quick-start)
-
-Container image: `docker.cirrio.de/wirebuddy`
+<p align="center">
+  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/v/giiibates/wirebuddy?label=Docker%20Hub&logo=docker&logoColor=white" alt="Docker Hub"></a>
+  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/pulls/giiibates/wirebuddy?logo=docker&logoColor=white" alt="Docker Pulls"></a>
+  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/image-size/giiibates/wirebuddy/latest?logo=docker&logoColor=white" alt="Docker Image Size"></a>
+  <br>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License"></a>
+  <a href="#-quick-start"><img src="https://img.shields.io/badge/Platform-linux%2Famd64%20|%20linux%2Farm64-lightgrey?logo=linux&logoColor=white" alt="Platform"></a>
+</p>
 
 <p align="center">
   <a href="#-quick-start">Quick Start</a> •
@@ -168,29 +171,6 @@ Full RESTful JSON API with automatic OpenAPI documentation:
 | **Proxy trust** | `X-Forwarded-For` only accepted from configured proxies |
 | **Input validation** | Strict regex for interface names; Pydantic for all payloads |
 | **Container** | `no-new-privileges`, minimal capabilities (`NET_ADMIN`) |
-
----
-
-## 🏗️ Project Structure
-
-```
-wirebuddy/
-├── app/
-│   ├── api/           # REST API routes (wireguard, dns, acme, auth, users)
-│   ├── db/            # SQLite (WAL mode) + JSONL TSDB
-│   ├── dns/           # Unbound integration
-│   ├── middleware/     # CSRF protection
-│   ├── models/        # Pydantic request/response schemas
-│   ├── templates/     # Jinja2 HTML templates
-│   ├── utils/         # Config, crypto, vault, GeoIP, scheduler
-│   └── static/        # CSS, JS, vendor libs, images
-├── data/              # Persistent volume (DB, TSDB, GeoIP, certs)
-├── docker-compose.yml
-├── Dockerfile         # Multi-stage (builder → runtime)
-├── .env-example        # Example environment file (copy to settings.env)
-├── requirements.txt
-└── settings.env
-```
 
 ---
 

@@ -19,6 +19,8 @@ LABEL description="WireBuddy - Lightweight WireGuard Management WebUI"
 LABEL org.opencontainers.image.version="${APP_VERSION}"
 LABEL org.opencontainers.image.created="${BUILD_DATE}"
 LABEL org.opencontainers.image.revision="${VCS_REF}"
+LABEL org.opencontainers.image.licenses="AGPL-3.0"
+LABEL org.opencontainers.image.source="https://github.com/Gill-Bates/wirebuddy"
 
 WORKDIR /app
 

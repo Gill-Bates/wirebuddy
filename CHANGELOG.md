@@ -1,13 +1,16 @@
-## [1.0.2] - 2026-02-xx
+## [1.0.3] - 2026-02-xx
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
+
+## [1.0.2] - 2026-02-22
 
 - ``New`` Update Dependencies (``fastapi``)
 - ``Fix`` Changing the password had no effect
 - ``Fix`` Unbound crashed unexpectedly when the blocklist was updated
 - ``Fix`` Several Design improvements in the GUI
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.0.1] - 2026-02-20
 

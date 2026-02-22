@@ -2,6 +2,7 @@
 #
 # main.py
 # Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# SPDX-License-Identifier: AGPL-3.0
 #
 
 # WireBuddy - WireGuard Management WebUI
