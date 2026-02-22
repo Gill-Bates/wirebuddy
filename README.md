@@ -18,7 +18,6 @@
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-features">Features</a> •
   <a href="#%EF%B8%8F-configuration">Configuration</a> •
-  <a href="#-api">API</a> •
   <a href="#-security">Security</a> •
   <a href="#-license">License</a>
 </p>
@@ -73,62 +72,15 @@ python main.py
 
 ## ✨ Features
 
-### 🔒 WireGuard VPN Management
-
-- **Multi-interface support** — create, start, stop, and delete multiple WireGuard interfaces
-- **Full peer lifecycle** — add, edit, remove peers with automatic IP allocation
-- **Automatic keypair & PSK generation** — including post-quantum preshared keys
-- **Routing presets** — Full Tunnel, Isolated (no LAN), or Custom CIDR ranges
-- **QR codes & config downloads** — one-tap mobile setup
-- **Config persistence** — configs rebuild from database on every container restart
-- **Auto-start & graceful shutdown** — interfaces come up on boot and shut down cleanly
-
-### 🌍 DNS & Ad-Blocking (Unbound)
-
-- **Integrated Unbound DNS resolver** — start, stop, restart, reload from the UI
-- **Ad-blocking with blocklists** — StevenBlack/hosts, EasyList (hosts format), optional adult list, and custom sources; auto-updated every 24 h
-- **Wildcard subdomain blocking** — optionally block all subdomains of blocked domains
-- **DNS-over-TLS upstream** — configurable upstream servers
-- **Real-time query log** — search, filter, blocked/allowed badges
-- **Top domains & trend charts** — DNS analytics at a glance
-- **DNSSEC** — root key initialization out of the box
-
-### 📊 Monitoring & Metrics
-
-- **Built-in TSDB** — JSONL time-series database with gzip rotation and configurable retention (default 365 days)
-- **30-second metric sampling** — RX/TX bytes, handshake timestamps per peer
-- **Traffic charts** — per-peer bandwidth graphs (6 h, 24 h, 3 d, 7 d)
-- **Connection status** — live doughnut chart: connected vs. offline peers
-- **Dashboard** — stats cards, recent activity sidebar, auto-refresh with backoff
-
-### 🗺️ GeoIP & Location Intelligence
-
-- **MaxMind GeoLite2** — automatic IP geolocation for peer endpoints
-- **Interactive map** — Leaflet.js with heatmap layer showing peer locations
-- **Country flags & ASN badges** — visual context at a glance
-- **Auto-updating** — weekly GeoIP database refresh in the background
-
-### 🔐 Let's Encrypt (ACME)
-
-- **Built-in ACME client** — production & staging Let's Encrypt directories
-- **HTTP-01 challenge** — automatic challenge serving
-- **Certificate management UI** — request, list, renew, delete certificates
-- **Worker-safe** — file-based domain locks prevent concurrent orders
-
-### 👥 User Management
-
-- **Multi-user with roles** — admin and standard user roles
-- **Self-service password change** — with current-password verification
-- **Login tracking** — last login timestamp and IP recorded
-- **Token lifecycle** — create, refresh, revoke auth tokens; automatic cleanup
-
-### 🎨 Web UI
-
-- **Responsive Bootstrap 5** — optimized for desktop and mobile
-- **Dark / Light / Auto theme** — system-preference detection, zero-flash
-- **Six pages** — Dashboard, Peers, DNS, Settings (tabbed), Users, About
-- **Auto-refresh & reconnect** — 30 s polling with exponential backoff; overlay on disconnect
-- **Material Icons** — consistent iconography across the UI
+| Category | Highlights |
+|---|---|
+| 🔒 **WireGuard VPN** | Multi-interface management, automatic keypair generation, routing presets (Full Tunnel / Isolated / Custom), QR codes for mobile setup |
+| 🌍 **DNS Ad-Blocking** | Integrated Unbound resolver with blocklists (StevenBlack, EasyList), DNS-over-TLS, real-time query log, DNSSEC |
+| 📊 **Monitoring** | Built-in time-series database, per-peer traffic charts, connection status dashboard, auto-refresh |
+| 🗺️ **GeoIP** | MaxMind GeoLite2 integration, interactive map with heatmap, country flags & ASN badges |
+| 🔐 **Let's Encrypt** | Built-in ACME client with HTTP-01 challenge, certificate management UI |
+| 👥 **User Management** | Multi-user roles (admin/user), login tracking, token lifecycle |
+| 🎨 **Web UI** | Responsive Bootstrap 5, dark/light/auto theme, Material Icons |
 
 ---
 
@@ -141,21 +93,6 @@ Environment variables (via `settings.env` or Docker env):
 | `WIREBUDDY_SECRET_KEY` | *(required)* | Encryption key for secrets & sessions |
 | `WIREBUDDY_DATA_DIR` | `/data` | Persistent data directory |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
-
----
-
-## 📡 API
-
-Full RESTful JSON API with automatic OpenAPI documentation:
-
-| Endpoint | Description |
-|---|---|
-| `GET /api/docs` | Swagger UI |
-| `GET /api/redoc` | ReDoc |
-| `/api/wireguard/*` | Interfaces & peers CRUD |
-| `/api/dns/*` | Unbound control & query logs |
-| `/api/acme/*` | Let's Encrypt certificates |
-| `/api/users/*` | User management |
 
 ---
 
