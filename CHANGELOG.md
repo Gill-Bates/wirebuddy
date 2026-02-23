@@ -1,5 +1,6 @@
-## [1.1.0] - 2026-02-xx
+## [1.1.0] - 2026-02-23
 
+- ``New`` Switching from HTTP authentication to cookie authentication
 - ``New`` You can now add your own allow and block lists to the DNS
 - ``New`` DNS logs can now be deleted
 - ``Fix`` Several design improvements to make the front end more mobile-friendly
