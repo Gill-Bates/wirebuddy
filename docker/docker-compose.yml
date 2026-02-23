@@ -12,7 +12,7 @@ services:
     dns:
       - 127.0.0.1
     environment:
-      LOG_LEVEL: DEBUG
+      LOG_LEVEL: INFO # DEBUG
       WIREBUDDY_SECRET_KEY: "" # Generate with: head -c 32 /dev/urandom | base64
       WIREBUDDY_DATA_DIR: /data
     logging:

@@ -21,7 +21,7 @@ import logging
 import sqlite3
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .response import ok_response
@@ -228,21 +228,24 @@ async def update_wg_settings(
 @router.get("/settings/psk")
 async def get_global_psk(
 	request: Request,
+	reveal: bool = Query(False),
 	_: sqlite3.Row = Depends(require_admin),
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
-	"""Get the current global PresharedKey (masked for security)."""
+	"""Get the current global PresharedKey (masked or full)."""
 	cfg = get_config(request)
 	enc_psk = get_setting(conn, "wg_global_psk")
 	if not enc_psk:
-		return ok_response(data={"masked": None})
+		return ok_response(data={"masked": None, "key": None})
 	try:
 		plain = vault_decrypt(enc_psk, cfg.secret_key)
+		if reveal:
+			return ok_response(data={"key": plain, "masked": _mask_secret(plain)})
 		masked = _mask_secret(plain)
 		return ok_response(data={"masked": masked})
 	except Exception:
 		_log.exception("Failed to decrypt global PSK")
-		return ok_response(data={"masked": None})
+		return ok_response(data={"masked": None, "key": None})
 
 
 @router.post("/settings/generate-psk")

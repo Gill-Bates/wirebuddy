@@ -10,7 +10,7 @@
 
     <div class="row g-3 about-cards-row">
         <!-- Card 1: Application Details -->
-        <div class="col-lg-4 d-flex">
+        <div class="col-lg-6 d-flex">
             <div class="card flex-grow-1 d-flex flex-column card-fill">
                 <div class="card-header d-flex align-items-center">
                     <span class="material-icons me-2">code</span>
@@ -59,24 +59,22 @@
                     <!-- Dependencies -->
                     <div class="mb-4">
                         <h6 class="text-muted mb-2">Dependencies</h6>
-                        <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
-                            <table class="table table-sm table-hover mb-0 dependencies-table">
-                                <thead class="sticky-top">
-                                    <tr>
-                                        <th>Package</th>
-                                        <th>Version</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for pkg, ver in dependencies %}
-                                    <tr>
-                                        <td><code>{{ pkg }}</code></td>
-                                        <td><span class="badge bg-secondary">{{ ver }}</span></td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
+                        <table class="table table-sm table-hover mb-0 dependencies-table">
+                            <thead class="sticky-top">
+                                <tr>
+                                    <th>Package</th>
+                                    <th>Version</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for pkg, ver in dependencies %}
+                                <tr>
+                                    <td><code>{{ pkg }}</code></td>
+                                    <td><span class="badge bg-secondary">{{ ver }}</span></td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
                     </div>
 
                     <!-- Author -->
@@ -99,7 +97,7 @@
         </div>
 
         <!-- Card 2: Changelog -->
-        <div class="col-lg-4 d-flex">
+        <div class="col-lg-6 d-flex">
             <div class="card flex-grow-1 d-flex flex-column card-fill">
                 <div class="card-header d-flex align-items-center">
                     <span class="material-icons me-2">history</span>
@@ -107,23 +105,6 @@
                 </div>
                 <div class="card-body changelog-content flex-grow-1 flex-scroll">
                     {{ changelog_html | safe }}
-                </div>
-            </div>
-        </div>
-
-        <!-- Card 3: License -->
-        <div class="col-lg-4 d-flex">
-            <div class="card flex-grow-1 d-flex flex-column card-fill">
-                <div class="card-header d-flex align-items-center justify-content-between">
-                    <span>
-                        <span class="material-icons me-2">gavel</span>
-                        <span class="fw-semibold">License</span>
-                    </span>
-                    <span class="badge bg-secondary">MIT</span>
-                </div>
-                <div class="card-body p-0 flex-grow-1 d-flex" style="min-height: 0;">
-                    <pre class="m-0 p-3 w-100 license-text"
-                        style="overflow-y: auto; min-height: 0; font-size: 0.75rem; white-space: pre-wrap; word-wrap: break-word;">{{ license_text }}</pre>
                 </div>
             </div>
         </div>
@@ -138,12 +119,6 @@
 
     .about-cards-row {
         flex-grow: 1;
-    }
-
-    .license-text {
-        background-color: var(--bs-tertiary-bg);
-        color: var(--bs-body-color);
-        border: none;
     }
 
     /* Version info two-column on desktop, stack on mobile */

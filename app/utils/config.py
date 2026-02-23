@@ -17,10 +17,6 @@ from pathlib import Path
 _log = logging.getLogger(__name__)
 
 
-class ConfigValidationError(Exception):
-	"""Raised when critical configuration is missing or invalid."""
-
-
 # ---------------------------------------------------------------------------
 # Fixed constants (not configurable - Docker is a closed system)
 # ---------------------------------------------------------------------------
@@ -107,10 +103,12 @@ def load_config() -> Config:
 	try:
 		for d in (data_dir, tsdb_dir, dns_dir):
 			if d.exists() and not d.is_dir():
-				raise ConfigValidationError(f"Path exists but is not a directory: {d}")
+				_log.critical("Path exists but is not a directory: %s", d)
+				raise SystemExit(1)
 			d.mkdir(parents=True, exist_ok=True)
 	except OSError as exc:
-		raise ConfigValidationError(f"Cannot create data directories: {exc}") from exc
+		_log.critical("Cannot create data directories: %s", exc)
+		raise SystemExit(1) from exc
 
 	# Validate log level
 	allowed_levels = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
@@ -123,11 +121,12 @@ def load_config() -> Config:
 	if not secret_key:
 		import sys
 		if "pytest" not in sys.modules and "PYTEST_CURRENT_TEST" not in os.environ:
-			raise ConfigValidationError(
+			_log.critical(
 				"WIREBUDDY_SECRET_KEY is not set. "
 				"Refusing to start without a secret key. "
 				"Generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
 			)
+			raise SystemExit(1)
 		# Allow tests to run with a default
 		secret_key = "test-only-secret-do-not-use-in-production"
 		_log.debug("Using test-only secret key")

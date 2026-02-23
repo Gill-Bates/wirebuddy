@@ -28,18 +28,23 @@
    Custom Fonts
    ----------------------------------------------------------------------------- */
 @font-face {
-    font-family: 'Noto Serif';
-    src: url('/static/vendor/fonts/NotoSerif.woff') format('woff');
-    font-weight: 400;
-    font-style: normal;
+    font-family: 'Roboto Flex';
+    src: url('/static/vendor/fonts/RobotoFlex.woff2') format('woff2-variations');
+    font-weight: 100 1000;
+    font-stretch: 25% 151%;
+    font-style: oblique -10deg 0deg;
     font-display: swap;
 }
 
 /* -----------------------------------------------------------------------------
    Base Styles
    ----------------------------------------------------------------------------- */
+body {
+    font-family: 'Roboto Flex', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
 h1 {
-    font-family: 'Noto Serif', serif;
+    font-weight: 700;
 }
 
 /* Material Icons - Vertical Alignment */
@@ -62,7 +67,7 @@ h1 {
 /* Timestamp Display - Monospace Font */
 .peer-last-seen,
 td[data-label="Last Seen"] {
-    font-family: 'Courier New', Courier, monospace;
+    font-family: 'Roboto Flex', 'Courier New', Courier, monospace;
     font-variant-numeric: tabular-nums;
 }
 
@@ -875,6 +880,43 @@ td .d-flex.gap-1 {
     }
 }
 
+/* Mobile Navigation Grid (2×3) */
+.navbar-mobile-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    width: 100%;
+    padding: 0.25rem 0;
+}
+
+.navbar-mobile-link {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.65rem 1rem;
+    color: rgba(255, 255, 255, 0.85);
+    text-decoration: none;
+    font-size: 0.92rem;
+    border-radius: 0.4rem;
+    transition: background-color 0.15s ease;
+}
+
+.navbar-mobile-link .material-icons {
+    font-size: 20px;
+}
+
+.navbar-mobile-link:hover,
+.navbar-mobile-link:focus {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: #fff;
+}
+
+.navbar-mobile-link.active {
+    color: #fff;
+    font-weight: 600;
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
 /* -----------------------------------------------------------------------------
    Alerts
    ----------------------------------------------------------------------------- */
@@ -960,4 +1002,16 @@ html.login-page .alert {
 
 .log-table td.log-empty-cell {
     padding: 0.75rem;
+}
+
+/* -----------------------------------------------------------------------------
+   Mobile Condensed Tables (Roboto Flex width axis)
+   ----------------------------------------------------------------------------- */
+@media (max-width: 767.98px) {
+
+    table,
+    .table {
+        font-stretch: 75%;
+        font-variation-settings: 'wdth' 75;
+    }
 }

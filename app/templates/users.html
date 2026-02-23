@@ -148,7 +148,7 @@
                         <td data-label="Created">{{ u['created_at'].strftime('%Y-%m-%d') }}</td>
                         <td data-label="" class="user-actions-cell">
                             <div class="btn-group btn-group-sm">
-                                <button class="btn btn-outline-primary" onclick="editUser({{ u['id'] }})" title="Edit">
+                                <button class="btn btn-outline-primary" onclick="editUser({{ u['id'] }}, '{{ u['username'] }}')" title="Edit">
                                     <span class="material-icons" style="font-size: 18px;">edit</span>
                                 </button>
                                 {% if u['id'] != user['id'] %}
@@ -213,6 +213,7 @@
             </div>
             <form id="change-password-form">
                 <div class="modal-body">
+                    <input type="text" class="d-none" id="change-password-username" autocomplete="username" tabindex="-1" aria-hidden="true">
                     <div class="mb-3" id="current-password-field" style="display: none;">
                         <label for="current-password" class="form-label">Current Password</label>
                         <input type="password" class="form-control" id="current-password" autocomplete="current-password">
@@ -261,12 +262,16 @@
     let passwordChangeUserId = null;
     let passwordChangeIsSelf = false;
 
-    function editUser(userId) {
+    function editUser(userId, username) {
         const currentUserId = {{ user['id'] }};
         const isSelf = userId === currentUserId;
         
         passwordChangeUserId = userId;
         passwordChangeIsSelf = isSelf;
+
+        // Set hidden username for accessibility
+        const usernameField = document.getElementById('change-password-username');
+        if (usernameField) usernameField.value = username || '';
         
         // Show/hide current password field
         const currentPwField = document.getElementById('current-password-field');

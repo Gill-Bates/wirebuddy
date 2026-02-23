@@ -40,8 +40,9 @@ _security = HTTPBearer(auto_error=False)
 
 router = APIRouter(tags=["auth"])
 
-# Cookie-based auth allowed only on UI routes (not API endpoints)
-_COOKIE_AUTH_PREFIXES = ("/ui",)
+# Cookie-based auth allowed on UI and API routes.
+# Safe because: HttpOnly + SameSite=Strict cookie + X-CSRF-Token header on mutations.
+_COOKIE_AUTH_PREFIXES = ("/ui", "/api")
 
 # Trusted proxy IPs for X-Forwarded-For validation
 # Only trust proxy headers if request comes from these IPs

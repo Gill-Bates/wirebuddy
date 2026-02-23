@@ -14,12 +14,14 @@ from ..db.sqlite_interfaces import (
 from ..db.sqlite_settings import (
 	DNS_LOG_RETENTION_OPTIONS,
 	get_dns_blocklist_enabled,
+	get_dns_custom_rules,
 	get_dns_log_retention_days,
 	get_dns_query_logging_enabled,
 	get_dns_upstream_servers,
 	get_dnssec_enabled,
 	get_enabled_blocklists,
 	set_dns_blocklist_enabled,
+	set_dns_custom_rules,
 	set_dns_log_retention_days,
 	set_dns_query_logging_enabled,
 	set_dns_service_enabled,
@@ -39,10 +41,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, field_validator
 
 from ..dns import ingestion as dns_ingestion
 from ..dns import unbound
+from ..dns.custom_rules import parse_rules as parse_custom_rules
 from ..utils.deps import get_conn, get_tsdb_dir
 from .auth import get_current_user, require_admin
 from .response import ok_response
@@ -224,6 +228,19 @@ class BlocklistSourcesUpdate(BaseModel):
 	def validate_urls(cls, v: list[str]) -> list[str]:
 		"""Validate blocklist URLs are HTTPS."""
 		return _validate_https_urls(v)
+
+
+class CustomRulesUpdate(BaseModel):
+	"""Request body for updating custom DNS rules."""
+	rules: str
+
+	@field_validator("rules")
+	@classmethod
+	def validate_rules_length(cls, v: str) -> str:
+		"""Limit custom rules text size."""
+		if len(v) > 100_000:
+			raise ValueError("Custom rules text too large (max 100 KB)")
+		return v
 
 
 # ---------------------------------------------------------------------------
@@ -703,7 +720,9 @@ async def update_blocklists(
 		urls = get_enabled_blocklists(conn)
 	
 	try:
-		count, msg = await unbound.update_blocklists(urls)
+		# Fetch custom rules to apply during blocklist build
+		custom_rules_text = get_dns_custom_rules(conn)
+		count, msg = await unbound.update_blocklists(urls, custom_rules_text=custom_rules_text)
 		# Restart unbound to pick up new blocklist (reload can crash with large blocklists)
 		ok, reload_msg = await unbound.restart()
 		if not ok:
@@ -741,6 +760,94 @@ async def blocklist_count(_: sqlite3.Row = Depends(get_current_user)):
 	"""Get the number of domains in the blocklist."""
 	count = await asyncio.to_thread(unbound.get_blocklist_count)
 	return ok_response(data={"count": count}, count=count)
+
+
+# ---------------------------------------------------------------------------
+# Custom DNS Rules
+# ---------------------------------------------------------------------------
+
+@router.get("/custom-rules")
+async def get_custom_rules(
+	conn: sqlite3.Connection = Depends(get_conn),
+	_: sqlite3.Row = Depends(require_admin),
+):
+	"""Get the current custom DNS rules text."""
+	rules_text = get_dns_custom_rules(conn)
+	# Validate / parse for display
+	parsed, errors = parse_custom_rules(rules_text) if rules_text.strip() else ([], [])
+	return ok_response(
+		data={
+			"rules": rules_text,
+			"rule_count": len(parsed),
+			"error_count": len(errors),
+			"errors": [
+				{"line": e.line, "text": e.text, "error": e.error}
+				for e in errors
+			],
+		},
+	)
+
+
+@router.patch("/custom-rules")
+async def update_custom_rules(
+	payload: CustomRulesUpdate,
+	conn: sqlite3.Connection = Depends(get_conn),
+	_: sqlite3.Row = Depends(require_admin),
+):
+	"""Save custom DNS rules and rebuild the blocklist.
+
+	Rules use AdGuard syntax:
+	  ||example.com^         Block domain + subdomains
+	  @@||example.com^       Allow (whitelist override)
+	  ||ads*.example.com^    Wildcard block
+	  /regex/                Regex match
+	  ! comment              Comment line
+	"""
+	rules_text = payload.rules
+
+	# Parse and validate
+	parsed, errors = parse_custom_rules(rules_text) if rules_text.strip() else ([], [])
+
+	# Persist regardless of errors (user may want to save work-in-progress)
+	set_dns_custom_rules(conn, rules_text)
+
+	# Rebuild blocklist with custom rules applied
+	try:
+		urls = get_enabled_blocklists(conn)
+		count, msg = await unbound.update_blocklists(urls, custom_rules_text=rules_text)
+		# Restart Unbound to pick up changes
+		ok, reload_msg = await unbound.restart()
+		return ok_response(
+			message=f"Custom rules saved. {msg}",
+			data={
+				"rules": rules_text,
+				"rule_count": len(parsed),
+				"error_count": len(errors),
+				"errors": [
+					{"line": e.line, "text": e.text, "error": e.error}
+					for e in errors
+				],
+				"domains_blocked": count,
+				"reloaded": ok,
+			},
+		)
+	except Exception as e:
+		_log.exception("Failed to rebuild blocklist after custom rules update")
+		# Rules are saved even if rebuild fails
+		return ok_response(
+			message=f"Custom rules saved but blocklist rebuild failed: {e}",
+			data={
+				"rules": rules_text,
+				"rule_count": len(parsed),
+				"error_count": len(errors),
+				"errors": [
+					{"line": e.line, "text": e.text, "error": e.error}
+					for e in errors
+				],
+				"domains_blocked": 0,
+				"reloaded": False,
+			},
+		)
 
 
 # ---------------------------------------------------------------------------
@@ -966,4 +1073,28 @@ async def test_upstream_dns(
 		results=results,
 		all_success=all_success,
 		failed_count=failed_count,
+	)
+
+
+@router.delete("/logs")
+async def delete_dns_logs(
+	tsdb_dir: Path = Depends(get_tsdb_dir),
+	_: sqlite3.Row = Depends(require_admin),
+):
+	"""Delete all DNS query log data (admin only)."""
+	import shutil
+
+	def _purge() -> int:
+		dns_dir = tsdb_dir / "dns_queries"
+		if not dns_dir.exists():
+			return 0
+		count = sum(1 for f in dns_dir.glob("*.jsonl"))
+		shutil.rmtree(dns_dir)
+		_log.info("DNS_LOGS_PURGE deleted %d log files", count)
+		return count
+
+	deleted = await run_in_threadpool(_purge)
+	return ok_response(
+		message=f"Deleted {deleted} DNS log files",
+		data={"deleted": deleted},
 	)

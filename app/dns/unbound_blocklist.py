@@ -27,6 +27,15 @@ try:
 except ImportError:
 	idna = None  # type: ignore
 
+from .custom_rules import (
+	ParsedRule,
+	apply_custom_rules,
+	get_custom_allow_rules,
+	get_custom_block_rules,
+	is_domain_allowed_by_custom_rules,
+	is_domain_blocked_by_custom_rules,
+	parse_rules,
+)
 from .unbound_constants import (
 	ALLOWED_BLOCKLIST_CONTENT_TYPES,
 	BLOCKLIST_MAX_BYTES,
@@ -64,6 +73,11 @@ class _CapacityExceeded(Exception):
 _BLOCKED_DOMAINS_CACHE: frozenset[str] | None = None
 _BLOCKED_DOMAINS_CACHE_MTIME_NS: int | None = None
 
+# Runtime custom rules cache (for wildcard/regex matching at query time)
+# NOTE: Tuples are immutable, preventing accidental mutation via get_custom_rules_cache().
+_CUSTOM_ALLOW_RULES: tuple[ParsedRule, ...] = ()
+_CUSTOM_BLOCK_RULES: tuple[ParsedRule, ...] = ()
+
 
 def _invalidate_blocked_domains_cache() -> None:
 	"""Invalidate cached blocked-domain set after blocklist changes."""
@@ -73,14 +87,40 @@ def _invalidate_blocked_domains_cache() -> None:
 	_BLOCKED_DOMAINS_CACHE_MTIME_NS = None
 
 
+def set_custom_rules_cache(rules: list[ParsedRule]) -> None:
+	"""Update the runtime custom rules cache after a rules change."""
+	global _CUSTOM_ALLOW_RULES, _CUSTOM_BLOCK_RULES
+	_CUSTOM_ALLOW_RULES = tuple(get_custom_allow_rules(rules))
+	_CUSTOM_BLOCK_RULES = tuple(get_custom_block_rules(rules))
+
+
+def get_custom_rules_cache() -> tuple[tuple[ParsedRule, ...], tuple[ParsedRule, ...]]:
+	"""Return (allow_rules, block_rules) for runtime query-time matching.
+	
+	Returns immutable tuples to prevent accidental mutation of global state.
+	"""
+	return _CUSTOM_ALLOW_RULES, _CUSTOM_BLOCK_RULES
+
+
 # ---------------------------------------------------------------------------
 # Domain Normalization
 # ---------------------------------------------------------------------------
 
+# Localhost-like domains to exclude from blocklists
+_LOCALHOST_DOMAINS = frozenset({
+	"localhost",
+	"localhost.localdomain",
+	"local",
+	"broadcasthost",
+	"ip6-localhost",
+	"ip6-loopback",
+})
+
+
 def _normalize_domain(raw: str) -> str | None:
 	"""Normalize and validate a domain; returns ASCII IDNA domain or None."""
 	domain = raw.strip().strip(".").lower()
-	if not domain or domain == "localhost" or len(domain) > 253:
+	if not domain or domain in _LOCALHOST_DOMAINS or len(domain) > 253:
 		return None
 	try:
 		if idna:
@@ -89,7 +129,11 @@ def _normalize_domain(raw: str) -> str | None:
 		else:
 			# Fallback to IDNA 2003 (built-in)
 			ascii_domain = domain.encode("idna").decode("ascii")
-	except (UnicodeError, Exception):
+	except (UnicodeError, idna.IDNAError if idna else UnicodeError):
+		return None
+	except Exception:
+		# Unexpected error from idna library - log and skip
+		_log.debug("IDNA encoding failed for %r", domain, exc_info=True)
 		return None
 
 	labels = ascii_domain.split(".")
@@ -103,29 +147,44 @@ def _normalize_domain(raw: str) -> str | None:
 	return ascii_domain
 
 
-def _extract_domain_from_hosts_line(line: str) -> str | None:
-	"""Extract a normalized domain from a hosts-format line."""
+def _extract_domains_from_hosts_line(line: str) -> list[str]:
+	"""Extract all normalized domains from a hosts-format line.
+	
+	Hosts files can have multiple domains per line:
+	  0.0.0.0 example.com www.example.com tracking.example.com
+	
+	Returns:
+		List of normalized domain strings (may be empty).
+	"""
 	line = line.strip()
 	if not line or line.startswith("#"):
-		return None
+		return []
 	if "#" in line:
 		line = line.split("#", 1)[0].strip()
 	if not line:
-		return None
+		return []
 
 	parts = line.split()
 	if len(parts) == 1:
-		# Also support simple "domain.tld" list format.
-		return _normalize_domain(parts[0])
+		# Simple "domain.tld" list format (no IP prefix)
+		norm = _normalize_domain(parts[0])
+		return [norm] if norm else []
 	if len(parts) < 2:
-		return None
+		return []
 
+	# First part should be an IP address
 	try:
 		ipaddress.ip_address(parts[0])
 	except ValueError:
-		return None
+		return []
 
-	return _normalize_domain(parts[1])
+	# Parse ALL domains after the IP (parts[1:], not just parts[1])
+	result: list[str] = []
+	for raw_domain in parts[1:]:
+		norm = _normalize_domain(raw_domain)
+		if norm:
+			result.append(norm)
+	return result
 
 
 # ---------------------------------------------------------------------------
@@ -160,12 +219,11 @@ async def _download_hosts_domains(
 			if size_bytes > BLOCKLIST_MAX_BYTES:
 				raise _CapacityExceeded(f"Blocklist size limit exceeded ({BLOCKLIST_MAX_BYTES} bytes)")
 
-			domain = _extract_domain_from_hosts_line(raw_line)
-			if not domain:
-				continue
-			parsed_domains.add(domain)
-			if len(existing_domains) + len(parsed_domains) > BLOCKLIST_MAX_DOMAINS:
-				raise _CapacityExceeded(f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})")
+			domains = _extract_domains_from_hosts_line(raw_line)
+			for domain in domains:
+				parsed_domains.add(domain)
+				if len(existing_domains) + len(parsed_domains) > BLOCKLIST_MAX_DOMAINS:
+					raise _CapacityExceeded(f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})")
 
 	return line_count, parsed_domains
 
@@ -180,11 +238,17 @@ def _url_to_blocklist_id(url: str) -> str | None:
 
 async def update_blocklists(
 	urls: list[str] | None = None,
+	custom_rules_text: str = "",
 ) -> tuple[int, str]:
 	"""Download blocklists and generate tagged local-zone entries.
 
 	Each domain is tagged with its source blocklist ID(s) for per-peer filtering.
 	Domains that appear in multiple lists get multiple tags.
+
+	Custom rules (AdGuard syntax) are applied after downloading:
+	  - Block rules add domains to the blocklist
+	  - Allow rules remove domains from the blocklist
+	  - Wildcard/regex rules are cached for runtime matching
 
 	Returns:
 		(count_of_blocked_domains, status_message)
@@ -261,12 +325,50 @@ async def update_blocklists(
 	if not domain_tags:
 		return 0, "Downloaded blocklists contained no domains; existing blocklist kept"
 
+	# --- Apply custom rules (AdGuard syntax) ---
+	custom_added: set[str] = set()
+	custom_removed: set[str] = set()
+	parsed_custom_rules: list[ParsedRule] = []
+	if custom_rules_text.strip():
+		parsed_custom_rules, parse_errors = parse_rules(custom_rules_text)
+		if parse_errors:
+			for pe in parse_errors:
+				_log.warning("DNS_CUSTOM_RULE parse error line %d: %s – %s", pe.line, pe.text, pe.error)
+
+		if parsed_custom_rules:
+			# Apply rules: exact blocks are added, allows remove domains
+			all_domains = set(domain_tags.keys())
+			custom_added, custom_removed = apply_custom_rules(all_domains, parsed_custom_rules)
+
+			# Add new block domains to the tag map (tagged as "custom")
+			for domain in custom_added:
+				if domain not in domain_tags:
+					domain_tags[domain] = set()
+				domain_tags[domain].add("custom")
+
+			# Remove allowed domains from the tag map
+			for domain in custom_removed:
+				domain_tags.pop(domain, None)
+
+			_log.info(
+				"DNS_CUSTOM_RULES applied %d rules: +%d blocked, -%d allowed",
+				len(parsed_custom_rules), len(custom_added), len(custom_removed),
+			)
+
+	# Update runtime cache for wildcard/regex matching at query time
+	set_custom_rules_cache(parsed_custom_rules)
+
 	# Write unbound local-zone file with tags (atomic replace)
+	# NOTE: Sorting is O(n log n) but provides deterministic output for diffing/debugging.
+	# For 1M+ domains, consider skipping sort in production if performance is critical.
 	blocklist_path = get_blocklist_file()
 	with atomic_write(blocklist_path) as f:
 		f.write(f"# Auto-generated blocklist – {len(domain_tags)} domains\n")
 		f.write(f"# Updated: {datetime.now(timezone.utc).isoformat()}\n")
-		f.write(f"# Tags: {' '.join(BLOCKLIST_REGISTRY.keys())}\n\n")
+		f.write(f"# Tags: {' '.join(BLOCKLIST_REGISTRY.keys())}\n")
+		if custom_added or custom_removed:
+			f.write(f"# Custom rules: +{len(custom_added)} blocked, -{len(custom_removed)} allowed\n")
+		f.write("\n")
 		for domain in sorted(domain_tags.keys()):
 			tags = domain_tags[domain]
 			tag_str = " ".join(sorted(tags))
@@ -403,6 +505,11 @@ def _is_domain_blocked(domain: str, blocked_domains: AbstractSet[str]) -> bool:
 def is_domain_blocked(domain: str) -> bool:
 	"""Check whether *domain* (or any parent) is on the active blocklist.
 	
+	This function also respects runtime custom rules:
+	  - If domain matches a custom ALLOW rule → returns False (whitelist wins)
+	  - If domain matches a custom wildcard/regex BLOCK rule → returns True
+	  - Otherwise checks the static blocklist file
+	
 	Args:
 		domain: Domain name to check (e.g., "example.com" or "sub.example.com")
 		
@@ -415,7 +522,23 @@ def is_domain_blocked(domain: str) -> bool:
 		>>> is_domain_blocked("safe-site.com")
 		False
 	"""
-	return _is_domain_blocked(domain, _load_blocked_domains())
+	norm = _normalize_domain(domain)
+	if not norm:
+		return False
+	
+	# Check runtime custom rules first (allow rules take priority)
+	allow_rules, block_rules = get_custom_rules_cache()
+	
+	# Whitelist wins: if any allow rule matches, domain is NOT blocked
+	if is_domain_allowed_by_custom_rules(norm, allow_rules):
+		return False
+	
+	# Check custom wildcard/regex block rules
+	if is_domain_blocked_by_custom_rules(norm, block_rules):
+		return True
+	
+	# Fall back to static blocklist file
+	return _is_domain_blocked(norm, _load_blocked_domains())
 
 
 __all__ = [

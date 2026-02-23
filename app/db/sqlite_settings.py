@@ -160,3 +160,17 @@ def get_dns_service_enabled(conn: sqlite3.Connection) -> bool:
 def set_dns_service_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
 	"""Persist desired Unbound service state across restarts."""
 	set_setting(conn, "dns_service_enabled", "1" if enabled else "0")
+
+
+# ---------------------------------------------------------------------------
+# Custom DNS Rules
+# ---------------------------------------------------------------------------
+
+def get_dns_custom_rules(conn: sqlite3.Connection) -> str:
+	"""Get the raw custom DNS rules text (AdGuard syntax)."""
+	return get_setting(conn, "dns_custom_rules", "") or ""
+
+
+def set_dns_custom_rules(conn: sqlite3.Connection, rules_text: str) -> None:
+	"""Persist the raw custom DNS rules text."""
+	set_setting(conn, "dns_custom_rules", rules_text)

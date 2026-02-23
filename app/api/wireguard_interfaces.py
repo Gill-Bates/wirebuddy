@@ -198,6 +198,41 @@ async def interface_down(
 	return ok_response(message=f"Interface {name} is down")
 
 
+@router.post("/interfaces/{name}/restart")
+async def interface_restart(
+	name: str,
+	conn: sqlite3.Connection = Depends(get_conn),
+	_: sqlite3.Row = Depends(require_admin),
+):
+	"""Restart a WireGuard interface."""
+	validate_interface_name(name)
+	
+	await cleanup_client_isolation(name)
+	await run_wg_command("wg-quick", "down", name)
+	
+	code, stdout, stderr = await run_wg_command("wg-quick", "up", name)
+	if code != 0:
+		raise HTTPException(status_code=500, detail=f"Failed to restart interface: {stderr}")
+
+	isolation_result = await apply_client_isolation_runtime(name, conn)
+	_log.info("INTERFACE_RESTART name=%s", name)
+	
+	if isolation_result.rules_failed > 0 or isolation_result.errors:
+		_log.warning(
+			"INTERFACE_RESTART isolation partial failure: name=%s failed=%d errors=%s",
+			name, isolation_result.rules_failed, isolation_result.errors,
+		)
+		return ok_response(
+			message=f"Interface {name} restarted",
+			isolation_warnings={
+				"rules_failed": isolation_result.rules_failed,
+				"errors": isolation_result.errors,
+			},
+		)
+	
+	return ok_response(message=f"Interface {name} restarted")
+
+
 @router.get("/interfaces/{name}/config")
 async def get_interface_config(
 	name: str,

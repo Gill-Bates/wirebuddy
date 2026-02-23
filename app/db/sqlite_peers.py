@@ -111,6 +111,44 @@ def update_peers_last_seen_batch(
 		)
 
 
+def get_cumulative_transfer(
+	conn: sqlite3.Connection,
+) -> dict[str, dict[str, int]]:
+	"""Return cumulative transfer data keyed by public_key.
+
+	Returns a dict of ``{public_key: {cumulative_rx, cumulative_tx, last_wg_rx, last_wg_tx}}``.
+	"""
+	cur = conn.execute(
+		"SELECT public_key, cumulative_rx, cumulative_tx, last_wg_rx, last_wg_tx FROM peers"
+	)
+	result = {}
+	for row in cur.fetchall():
+		result[row[0]] = {
+			"cumulative_rx": row[1] or 0,
+			"cumulative_tx": row[2] or 0,
+			"last_wg_rx": row[3] or 0,
+			"last_wg_tx": row[4] or 0,
+		}
+	return result
+
+
+def update_cumulative_transfer_batch(
+	conn: sqlite3.Connection,
+	updates: list[tuple[int, int, int, int, str]],
+) -> None:
+	"""Batch-persist cumulative transfer counters for peers.
+
+	*updates* is a list of ``(cumulative_rx, cumulative_tx, last_wg_rx, last_wg_tx, public_key)`` tuples.
+	"""
+	if not updates:
+		return
+	with transaction(conn):
+		conn.executemany(
+			"UPDATE peers SET cumulative_rx = ?, cumulative_tx = ?, last_wg_rx = ?, last_wg_tx = ? WHERE public_key = ?",
+			updates,
+		)
+
+
 def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> Optional[str]:
 	"""Allocate the next available dual-stack IP address for a peer.
 

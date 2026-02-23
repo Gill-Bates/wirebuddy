@@ -38,7 +38,7 @@ from typing import Callable
 _log = logging.getLogger(__name__)
 
 # Current schema version – increment when adding migrations
-SCHEMA_VERSION = 2  # v2: Add dns_service_enabled setting default
+SCHEMA_VERSION = 3  # v3: Add cumulative transfer tracking columns
 
 
 def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
@@ -182,6 +182,23 @@ def _migrate_0002_add_dns_service_setting(conn: sqlite3.Connection) -> None:
 	_log.info("Migration: dns_service_enabled setting initialized (default=1)")
 
 
+def _migrate_0003_add_cumulative_transfer(conn: sqlite3.Connection) -> None:
+	"""Add columns to track cumulative transfer across WireGuard restarts.
+
+	WireGuard resets transfer counters on interface restart. These columns
+	accumulate historical transfer so the dashboard shows lifetime totals.
+
+	- cumulative_rx / cumulative_tx: sum of all previous sessions
+	- last_wg_rx / last_wg_tx: last observed wg counter (to detect resets)
+	"""
+	cols = _get_columns(conn, "peers")
+	_add_column_if_missing(conn, "peers", "cumulative_rx", "INTEGER NOT NULL DEFAULT 0", cols)
+	_add_column_if_missing(conn, "peers", "cumulative_tx", "INTEGER NOT NULL DEFAULT 0", cols)
+	_add_column_if_missing(conn, "peers", "last_wg_rx", "INTEGER NOT NULL DEFAULT 0", cols)
+	_add_column_if_missing(conn, "peers", "last_wg_tx", "INTEGER NOT NULL DEFAULT 0", cols)
+	_log.info("Migration: cumulative transfer tracking columns added to peers table")
+
+
 # ---------------------------------------------------------------------------
 # Migration registry
 # ---------------------------------------------------------------------------
@@ -192,6 +209,7 @@ _MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
 	# Post-release migrations:
 	(1, _migrate_0001_add_client_isolation),
 	(2, _migrate_0002_add_dns_service_setting),
+	(3, _migrate_0003_add_cumulative_transfer),
 ]
 
 

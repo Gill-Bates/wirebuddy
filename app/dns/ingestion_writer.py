@@ -20,12 +20,17 @@ from pathlib import Path
 from .ingestion_parser import DnsQueryPoint, parse_unbound_line
 from .ingestion_retention import DEFAULT_DNS_LOG_RETENTION_DAYS, normalize_dns_log_retention_days
 from .ingestion_tailer import OffsetTracker
+from .unbound_blocklist import get_custom_rules_cache
 
 _log = logging.getLogger(__name__)
 
+# Constants
 BATCH_SIZE = 500  # Points per flush
 FLUSH_INTERVAL = 1.0  # Seconds between forced flushes
 SETTINGS_REFRESH_INTERVAL = 5.0  # Seconds between dynamic settings refreshes
+MAX_BATCH_SIZE = 10_000  # Memory safety: drop oldest if exceeded
+MAX_FLUSH_RETRIES = 3  # Clear batch after N consecutive failures
+JSONL_SCHEMA_VERSION = 1  # For future schema migrations
 
 __all__ = ["DnsTsdbWriter", "read_recent_queries"]
 
@@ -56,8 +61,11 @@ class DnsTsdbWriter:
 		self.batch: list[DnsQueryPoint] = []
 		self.last_flush: float = time.monotonic()
 		self._blocked_domains: set[str] = set()
+		self._custom_allow_rules: list = []
+		self._custom_block_rules: list = []
 		self._log_retention_days: int = DEFAULT_DNS_LOG_RETENTION_DAYS
 		self._last_settings_refresh: float = 0.0
+		self._consecutive_flush_failures: int = 0
 	
 	async def run(self, q: queue.Queue[str]) -> None:
 		"""Run writer loop until stopped."""
@@ -97,6 +105,10 @@ class DnsTsdbWriter:
 			self._blocked_domains = self.blocked_domains_func()
 		except Exception as e:
 			_log.warning("DNS_WRITER failed to refresh blocklist: %s", e)
+		try:
+			self._custom_allow_rules, self._custom_block_rules = get_custom_rules_cache()
+		except Exception as e:
+			_log.warning("DNS_WRITER failed to refresh custom rules: %s", e)
 		if self.retention_days_func is not None:
 			try:
 				self._log_retention_days = normalize_dns_log_retention_days(self.retention_days_func())
@@ -124,7 +136,12 @@ class DnsTsdbWriter:
 		if self._log_retention_days == 0:
 			return
 		
-		point = parse_unbound_line(line, self._blocked_domains)
+		point = parse_unbound_line(
+			line,
+			self._blocked_domains,
+			allow_rules=self._custom_allow_rules or None,
+			block_rules=self._custom_block_rules or None,
+		)
 		
 		if not point:
 			return
@@ -135,6 +152,12 @@ class DnsTsdbWriter:
 			return
 		
 		self.batch.append(point)
+		
+		# Memory safety: drop oldest entries if batch grows too large
+		if len(self.batch) > MAX_BATCH_SIZE:
+			drop_count = len(self.batch) - MAX_BATCH_SIZE
+			self.batch = self.batch[drop_count:]
+			_log.warning("DNS_WRITER dropped %d oldest entries (batch overflow)", drop_count)
 	
 	def _should_flush(self) -> bool:
 		"""Check if batch should be flushed."""
@@ -165,10 +188,8 @@ class DnsTsdbWriter:
 				# Extract date from ISO timestamp: 2026-02-19T10:15:23Z -> 2026-02-19
 				date_str = point.ts[:10]
 				
-				if date_str not in by_day:
-					by_day[date_str] = []
-				
-				by_day[date_str].append({
+				by_day.setdefault(date_str, []).append({
+					'_v': JSONL_SCHEMA_VERSION,
 					'ts': point.ts,
 					'client': point.client,
 					'domain': point.domain,
@@ -185,10 +206,17 @@ class DnsTsdbWriter:
 			self.tracker.save_if_needed(force=True)
 			
 			elapsed = time.monotonic() - start
-			_log.info("DNS_WRITER flushed %d queries in %.3fs (%d days)", count, elapsed, len(by_day))
+			_log.debug("DNS_WRITER flushed %d queries in %.3fs (%d days)", count, elapsed, len(by_day))
 			self.batch.clear()
+			self._consecutive_flush_failures = 0
 		except Exception:
-			_log.exception("DNS_WRITER flush failed, retaining %d points for retry", count)
+			self._consecutive_flush_failures += 1
+			if self._consecutive_flush_failures >= MAX_FLUSH_RETRIES:
+				_log.error("DNS_WRITER flush failed %d times, dropping %d points", MAX_FLUSH_RETRIES, count)
+				self.batch.clear()
+				self._consecutive_flush_failures = 0
+			else:
+				_log.exception("DNS_WRITER flush failed, retaining %d points for retry (%d/%d)", count, self._consecutive_flush_failures, MAX_FLUSH_RETRIES)
 		finally:
 			self.last_flush = time.monotonic()
 	

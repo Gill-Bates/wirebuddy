@@ -109,6 +109,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				blocklist_ids TEXT,
 				last_client_ip TEXT,
 				last_handshake_at INTEGER,
+				cumulative_rx INTEGER NOT NULL DEFAULT 0,
+				cumulative_tx INTEGER NOT NULL DEFAULT 0,
+				last_wg_rx INTEGER NOT NULL DEFAULT 0,
+				last_wg_tx INTEGER NOT NULL DEFAULT 0,
 				created_at timestamp NOT NULL,
 				updated_at timestamp NOT NULL
 			)

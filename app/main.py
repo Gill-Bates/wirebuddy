@@ -4,6 +4,9 @@
 # Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
 #
 
+# SPDX-License-Identifier: AGPL-3.0
+#
+
 """FastAPI application factory and startup lifecycle wiring."""
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from .db.sqlite_schema import ensure_default_admin, init_schema
 from .db.sqlite_settings import (
 	DEFAULT_DNS_LOG_RETENTION_DAYS,
 	get_dns_blocklist_enabled,
+	get_dns_custom_rules,
 	get_dns_log_retention_days,
 	get_dns_query_logging_enabled,
 	get_dns_service_enabled,
@@ -388,10 +392,11 @@ async def _lifespan(app: FastAPI):
 				conn = connect(cfg.db_path)
 				try:
 					urls = get_enabled_blocklists(conn)
+					custom_rules_text = get_dns_custom_rules(conn)
 				finally:
 					close_connection(conn)
 				
-				count, msg = await _unbound.update_blocklists(urls)
+				count, msg = await _unbound.update_blocklists(urls, custom_rules_text=custom_rules_text)
 				# Use restart instead of reload - reload crashes with large blocklists
 				await _unbound.restart()
 				_log.info("BLOCKLIST_UPDATE %s", msg)

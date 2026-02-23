@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from ..db.sqlite_peers import (
 	get_all_peers,
+	get_cumulative_transfer,
+	update_cumulative_transfer_batch,
 	update_peers_last_seen_batch,
 )
 
@@ -232,6 +234,41 @@ async def get_peers_enriched(
 			_log.info("PEERS_LAST_SEEN persisted %d peer(s)", len(db_updates))
 		except Exception:
 			_log.warning("Failed to persist last-seen data", exc_info=True)
+
+	# 2b. Cumulative transfer tracking (survives WireGuard restarts)
+	try:
+		stored_transfer = await run_in_threadpool(get_cumulative_transfer, conn)
+		transfer_updates: list[tuple[int, int, int, int, str]] = []
+
+		for pub_key, peer in peers_by_key.items():
+			wg_rx = peer["transfer_rx"]
+			wg_tx = peer["transfer_tx"]
+			stored = stored_transfer.get(pub_key, {"cumulative_rx": 0, "cumulative_tx": 0, "last_wg_rx": 0, "last_wg_tx": 0})
+
+			cum_rx = stored["cumulative_rx"]
+			cum_tx = stored["cumulative_tx"]
+			last_rx = stored["last_wg_rx"]
+			last_tx = stored["last_wg_tx"]
+
+			# Detect restart: current wg counter < last observed counter
+			if wg_rx < last_rx:
+				cum_rx += last_rx  # Add the previous session's total
+			if wg_tx < last_tx:
+				cum_tx += last_tx
+
+			# Total = accumulated previous sessions + current session
+			peer["transfer_rx"] = cum_rx + wg_rx
+			peer["transfer_tx"] = cum_tx + wg_tx
+
+			# Persist if counters changed
+			if wg_rx != last_rx or wg_tx != last_tx or cum_rx != stored["cumulative_rx"] or cum_tx != stored["cumulative_tx"]:
+				transfer_updates.append((cum_rx, cum_tx, wg_rx, wg_tx, pub_key))
+
+		if transfer_updates:
+			await run_in_threadpool(update_cumulative_transfer_batch, conn, transfer_updates)
+			_log.debug("CUMULATIVE_TRANSFER persisted %d peer(s)", len(transfer_updates))
+	except Exception:
+		_log.warning("Failed to update cumulative transfer", exc_info=True)
 
 	# 3. GeoIP + ASN enrichment for peers with known client IPs (async via threadpool)
 	for peer in peers_by_key.values():

@@ -87,6 +87,16 @@
         flex: 0 0 auto;
     }
 
+    /* Tablet: hide Routing & Interface columns, show badge in Name instead */
+    @media (max-width: 991.98px) {
+        .peers-table th.peer-col-routing,
+        .peers-table td.peer-routing,
+        .peers-table th.peer-col-interface,
+        .peers-table td.peer-interface {
+            display: none;
+        }
+    }
+
     /* Button icon alignment */
     .btn .material-icons {
         vertical-align: middle;
@@ -396,8 +406,8 @@
                     <tr>
                         <th>Name</th>
                         <th>VPN Address</th>
-                        <th>Routing</th>
-                        <th>Interface</th>
+                        <th class="peer-col-routing">Routing</th>
+                        <th class="peer-col-interface">Interface</th>
                         <th>Last Seen</th>
                         <th>Client&nbsp;IP</th>
                         <th>Status</th>
@@ -417,11 +427,11 @@
                         <td data-label="Name">
                             {{ peer['name'] or 'Unnamed' }}
                             {% if mode == 'full' %}
-                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">Full Tunnel</span>
+                            <span class="badge bg-secondary d-inline-block d-lg-none ms-1">Full Tunnel</span>
                             {% elif mode == 'split' %}
-                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">Split Tunnel</span>
+                            <span class="badge bg-secondary d-inline-block d-lg-none ms-1">Split Tunnel</span>
                             {% else %}
-                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">Custom</span>
+                            <span class="badge bg-secondary d-inline-block d-lg-none ms-1">Custom</span>
                             {% endif %}
                         </td>
                         <td data-label="VPN Address"><code>{{ peer['peer_address'] or '—' }}</code></td>
@@ -810,13 +820,7 @@
         return msg.replace(/[\r\n\t]/g, ' ').trim() || fallback;
     }
 
-    function getAuthTokenSafe() {
-        const token = (typeof getAuthToken === 'function') ? getAuthToken() : '';
-        if (!token) {
-            console.warn('Auth token unavailable');
-        }
-        return token || '';
-    }
+
 
     function refreshPeerRows() {
         peerRows = Array.from(document.querySelectorAll('#peers-table tr[data-peer-id]'));
@@ -1232,9 +1236,7 @@
         try {
             const response = await fetch(`/api/wireguard/peers/${peerId}/qrcode`, {
                 signal: qrAbortController.signal,
-                headers: {
-                    'Authorization': `Bearer ${getAuthTokenSafe()}`,
-                }
+                credentials: 'same-origin',
             });
             clearTimeout(qrTimeoutId);
 
@@ -1273,9 +1275,7 @@
         try {
             const response = await fetch(`/api/wireguard/peers/${peerId}/config`, {
                 signal: controller.signal,
-                headers: {
-                    'Authorization': `Bearer ${getAuthTokenSafe()}`,
-                }
+                credentials: 'same-origin',
             });
             clearTimeout(timeoutId);
 

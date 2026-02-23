@@ -44,6 +44,9 @@ TRAFFIC_RANGE_TO_HOURS = {
     "24h": 24,
     "3d": 72,
     "7d": 168,
+    "30d": 720,
+    "90d": 2160,
+    "1y": 8760,
 }
 
 # Reverse mapping for O(1) lookup
@@ -115,7 +118,7 @@ def _compute_traffic_stats(
     Args:
         conn: Database connection (check_same_thread=False, safe for threadpool).
         tsdb_dir: TSDB directory path.
-        hours: Number of hours of history to include (pre-validated 1-168).
+        hours: Number of hours of history to include (pre-validated 1-8760).
 
     Returns:
         Dict with traffic data ready for JSON response.
@@ -225,8 +228,8 @@ def _compute_traffic_stats(
 
 @router.get("/stats/traffic")
 async def get_traffic_stats(
-    hours: int = Query(24, ge=1, le=168, description="Number of hours of history (1-168)"),
-    range_key: str | None = Query(None, pattern="^(6h|24h|3d|7d)$"),
+    hours: int = Query(24, ge=1, le=8760, description="Number of hours of history (1-8760)"),
+    range_key: str | None = Query(None, pattern="^(6h|24h|3d|7d|30d|90d|1y)$"),
     conn: sqlite3.Connection = Depends(get_conn),
     tsdb_dir: Path = Depends(get_tsdb_dir),
     _: sqlite3.Row = Depends(require_admin),
@@ -236,8 +239,8 @@ async def get_traffic_stats(
     Returns bucketed data suitable for charting, with each peer as a separate dataset.
 
     Args:
-        hours: Number of hours of history (1-168, validated at API boundary).
-        range_key: Preset time range (6h, 24h, 3d, 7d). Overrides hours if provided.
+        hours: Number of hours of history (1-8760, validated at API boundary).
+        range_key: Preset time range (6h, 24h, 3d, 7d, 30d, 90d, 1y). Overrides hours if provided.
 
     Returns:
         Traffic statistics with display-ready values and unit metadata.
