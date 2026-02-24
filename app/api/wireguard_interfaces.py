@@ -57,10 +57,13 @@ async def list_interfaces(
 	all_interfaces = sorted(db_interfaces | config_files | active_interfaces)
 	result = []
 	for name in all_interfaces:
+		in_db = name in db_interfaces
+		has_config = name in config_files
 		result.append({
 			"name": name,
-			"in_database": name in db_interfaces,
-			"has_config_file": name in config_files,
+			"in_database": in_db,
+			"has_config_file": has_config,
+			"is_configured": in_db or has_config,
 			"is_active": name in active_interfaces,
 		})
 	
@@ -253,6 +256,7 @@ async def get_interface_config(
 			"address": iface["address"],
 			"address6": iface["address6"],
 			"listen_port": iface["listen_port"],
+			"client_endpoint_port": iface["client_endpoint_port"],
 			"dns": iface["dns"],
 			"post_up": iface["post_up"],
 			"post_down": iface["post_down"],
@@ -262,6 +266,7 @@ async def get_interface_config(
 		address=iface["address"],
 		address6=iface["address6"],
 		listen_port=iface["listen_port"],
+		client_endpoint_port=iface["client_endpoint_port"],
 		dns=iface["dns"],
 		is_enabled=bool(iface["is_enabled"]),
 	)

@@ -1,0 +1,5 @@
+{% macro nav_item(path, icon, label) %}
+<a class="nav-link {% if request.url.path.startswith(path) %}active{% endif %}" href="{{ path }}">
+    <span class="material-icons">{{ icon }}</span>{{ label }}
+</a>
+{% endmacro %}

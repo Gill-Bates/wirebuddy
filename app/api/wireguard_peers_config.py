@@ -127,7 +127,7 @@ async def _build_peer_config(
 		address=peer_address,
 		dns=dns_servers,
 		server_public_key=server_public_key,
-		server_endpoint=get_server_endpoint(conn),
+		server_endpoint=get_server_endpoint(conn, peer["interface"]),
 		allowed_ips=client_allowed_ips,
 		preshared_key=preshared_key_plain.get_secret_value() if preshared_key_plain else None,
 	)

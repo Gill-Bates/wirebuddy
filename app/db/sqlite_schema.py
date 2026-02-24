@@ -159,6 +159,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				address TEXT NOT NULL,
 				address6 TEXT,
 				listen_port INTEGER NOT NULL DEFAULT 51820,
+				client_endpoint_port INTEGER,
 				dns TEXT,
 				post_up TEXT,
 				post_down TEXT,

@@ -15,6 +15,7 @@ from ..db.sqlite_settings import (
 	get_setting,
 	set_setting,
 )
+from ..db.sqlite_interfaces import get_interface
 
 import ipaddress
 import logging
@@ -89,14 +90,24 @@ WG_SETTING_KEYS = [
 ]
 
 
-def get_server_endpoint(conn: sqlite3.Connection) -> str:
+def get_server_endpoint(conn: sqlite3.Connection, interface_name: str | None = None) -> str:
 	"""Build the WireGuard server endpoint from DB settings.
 
-	Returns ``fqdn:port`` (e.g. ``vpn.example.com:51820``).
-	Falls back to sensible defaults if not configured.
+	Returns ``fqdn:port`` (e.g. ``vpn.example.com:51820``). When an
+	interface name is provided, the client endpoint port override (or
+	listen port) from that interface is used. Falls back to global
+	settings if not configured.
 	"""
 	fqdn = get_setting(conn, "wg_fqdn") or "vpn.example.com"
-	port = get_setting(conn, "wg_port") or "51820"
+	port = None
+
+	if interface_name:
+		iface = get_interface(conn, interface_name)
+		if iface:
+			port = iface["client_endpoint_port"] or iface["listen_port"]
+
+	if not port:
+		port = get_setting(conn, "wg_port") or "51820"
 	
 	# Strip existing brackets if present (users may store bracketed IPv6)
 	fqdn_clean = fqdn.strip("[]")

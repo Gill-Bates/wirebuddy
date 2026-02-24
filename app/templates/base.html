@@ -1,3 +1,4 @@
+{% from 'macros/nav.html' import nav_item with context %}
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="light">
 
@@ -105,12 +106,12 @@
             {% if user %}
             <div class="d-flex align-items-center gap-2 navbar-actions ms-auto me-2 me-lg-0 order-lg-last">
                 <span class="text-white navbar-user-label d-none d-lg-inline">{{ user['username'] }}</span>
-                <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn"
-                    onclick="toggleTheme()" aria-label="Toggle theme">
+                <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn" id="themeToggle"
+                    aria-label="Toggle theme">
                     <span class="material-icons" id="theme-icon">dark_mode</span>
                 </button>
                 <button class="btn btn-sm btn-outline-light d-inline-flex align-items-center navbar-logout-btn"
-                    onclick="logout()" title="Logout" aria-label="Logout">
+                    id="logoutBtn" title="Logout" aria-label="Logout">
                     <span class="material-icons navbar-logout-icon">logout</span>
                     <span class="navbar-logout-label d-none d-lg-inline">Logout</span>
                 </button>
@@ -123,32 +124,14 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <!-- Mobile Navigation Links (2-column grid) -->
                 <div class="d-lg-none navbar-mobile-grid" aria-label="Mobile navigation">
-                    <a class="navbar-mobile-link {% if request.url.path == '/ui/dashboard' %}active{% endif %}"
-                        href="/ui/dashboard">
-                        <span class="material-icons">dashboard</span>Dashboard
-                    </a>
-                    <a class="navbar-mobile-link {% if '/ui/peers' in request.url.path %}active{% endif %}"
-                        href="/ui/peers">
-                        <span class="material-icons">devices</span>Peers
-                    </a>
-                    <a class="navbar-mobile-link {% if '/ui/dns' in request.url.path %}active{% endif %}"
-                        href="/ui/dns">
-                        <span class="material-icons">dns</span>DNS
-                    </a>
+                    {{ nav_item('/ui/dashboard', 'dashboard', 'Dashboard') }}
+                    {{ nav_item('/ui/peers', 'devices', 'Peers') }}
+                    {{ nav_item('/ui/dns', 'dns', 'DNS') }}
                     {% if user and user['is_admin'] %}
-                    <a class="navbar-mobile-link {% if '/ui/users' in request.url.path %}active{% endif %}"
-                        href="/ui/users">
-                        <span class="material-icons">people</span>Users
-                    </a>
+                    {{ nav_item('/ui/users', 'people', 'Users') }}
                     {% endif %}
-                    <a class="navbar-mobile-link {% if '/ui/settings' in request.url.path %}active{% endif %}"
-                        href="/ui/settings">
-                        <span class="material-icons">settings</span>Settings
-                    </a>
-                    <a class="navbar-mobile-link {% if '/ui/about' in request.url.path %}active{% endif %}"
-                        href="/ui/about">
-                        <span class="material-icons">info</span>About
-                    </a>
+                    {{ nav_item('/ui/settings', 'settings', 'Settings') }}
+                    {{ nav_item('/ui/about', 'info', 'About') }}
                 </div>
                 <!-- Desktop right-side items (sidebar handles desktop nav) -->
                 <ul class="navbar-nav ms-auto align-items-center d-none d-lg-flex">
@@ -159,28 +142,16 @@
 
     <div class="d-flex flex-grow-1">
         <!-- Sidebar -->
-        <aside class="sidebar d-none d-lg-block" style="width: 240px;" aria-label="Main navigation" role="navigation">
+        <aside class="sidebar d-none d-lg-block" aria-label="Main navigation" role="navigation">
             <nav class="nav flex-column py-3">
-                <a class="nav-link {% if request.url.path == '/ui/dashboard' %}active{% endif %}" href="/ui/dashboard">
-                    <span class="material-icons">dashboard</span>Dashboard
-                </a>
-                <a class="nav-link {% if '/ui/peers' in request.url.path %}active{% endif %}" href="/ui/peers">
-                    <span class="material-icons">devices</span>Peers
-                </a>
-                <a class="nav-link {% if '/ui/dns' in request.url.path %}active{% endif %}" href="/ui/dns">
-                    <span class="material-icons">dns</span>DNS
-                </a>
+                {{ nav_item('/ui/dashboard', 'dashboard', 'Dashboard') }}
+                {{ nav_item('/ui/peers', 'devices', 'Peers') }}
+                {{ nav_item('/ui/dns', 'dns', 'DNS') }}
                 {% if user and user['is_admin'] %}
-                <a class="nav-link {% if '/ui/users' in request.url.path %}active{% endif %}" href="/ui/users">
-                    <span class="material-icons">people</span>Users
-                </a>
+                {{ nav_item('/ui/users', 'people', 'Users') }}
                 {% endif %}
-                <a class="nav-link {% if '/ui/settings' in request.url.path %}active{% endif %}" href="/ui/settings">
-                    <span class="material-icons">settings</span>Settings
-                </a>
-                <a class="nav-link {% if '/ui/about' in request.url.path %}active{% endif %}" href="/ui/about">
-                    <span class="material-icons">info</span>About
-                </a>
+                {{ nav_item('/ui/settings', 'settings', 'Settings') }}
+                {{ nav_item('/ui/about', 'info', 'About') }}
             </nav>
         </aside>
 
@@ -193,8 +164,8 @@
     <!-- Footer -->
     <footer class="wb-footer">
         <span class="wb-footer-content">
-            WireBuddy v{{ VERSION }} (<span class="font-monospace">{{ BUILD_INFO[:7] }}</span>) &middot; &copy; 2026
-            Gill-Bates&nbsp;&middot;&nbsp;<a href="https://github.com/Gill-Bates/wirebuddy" target="_blank"
+            WireBuddy v{{ VERSION }} (<span class="font-monospace">{{ BUILD_INFO[:7] }}</span>) &middot; &copy;
+            <span id="copyright-year"></span>Gill-Bates&nbsp;&middot;&nbsp;<a href="https://github.com/Gill-Bates/wirebuddy" target="_blank"
                 rel="noopener noreferrer" class="text-decoration-none wb-footer-link">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" class="wb-footer-link-icon">
                     <path fill-rule="evenodd"
@@ -206,8 +177,7 @@
     </footer>
 
     <!-- Reusable Modal (alert / confirm / prompt) -->
-    <div class="modal fade" id="wbModal" tabindex="-1" role="dialog" aria-labelledby="wbModalTitle" aria-modal="true"
-        data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal fade" id="wbModal" tabindex="-1" aria-labelledby="wbModalTitle">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
@@ -236,16 +206,14 @@
     </div>
 
     <!-- Reconnect Modal -->
-    <div class="modal fade" id="wbReconnectModal" tabindex="-1" role="dialog" aria-labelledby="wbReconnectTitle"
-        aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal fade" id="wbReconnectModal" tabindex="-1" aria-labelledby="wbReconnectTitle">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content wb-reconnect-pulse">
                 <div class="modal-body py-5 px-4">
                     <div class="d-flex flex-column align-items-center text-center gap-3">
                         <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
                         <div>
-                            <h5 id="wbReconnectTitle" class="mb-2" aria-live="assertive" role="alert">Trying to
-                                reconnect ...</h5>
+                            <h5 id="wbReconnectTitle" class="mb-2" role="alert">Trying to reconnect ...</h5>
                             <small class="text-muted">The server is restarting or temporarily unavailable.</small>
                         </div>
                     </div>
@@ -344,6 +312,35 @@
     <script src="/static/js/toast.js"></script>
     <script src="/static/js/reconnect.js"></script>
     <script src="/static/js/onboarding.js"></script>
+
+    <!-- Failsafe: Remove wb-reconnecting after 15s if not cleared -->
+    <script>
+        if (document.body.classList.contains('wb-reconnecting')) {
+            setTimeout(() => document.body.classList.remove('wb-reconnecting'), 15000);
+        }
+    </script>
+
+    <!-- Move theme toggle handler to JS -->
+    <script>
+        window.addEventListener('DOMContentLoaded', function() {
+            var yearEl = document.getElementById('copyright-year');
+            if (yearEl) {
+                yearEl.textContent = String(new Date().getFullYear()) + '\u00a0';
+            }
+            var themeToggle = document.getElementById('themeToggle');
+            if (themeToggle) {
+                themeToggle.addEventListener('click', function() {
+                    if (typeof toggleTheme === 'function') toggleTheme();
+                });
+            }
+            var logoutBtn = document.getElementById('logoutBtn');
+            if (logoutBtn) {
+                logoutBtn.addEventListener('click', function() {
+                    if (typeof logout === 'function') logout();
+                });
+            }
+        });
+    </script>
 
     {% block extra_js %}{% endblock %}
 </body>

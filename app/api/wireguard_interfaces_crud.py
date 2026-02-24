@@ -52,6 +52,12 @@ class InterfaceCreate(BaseModel):
 		description="IPv6 interface address with prefix (e.g., fd13:13:13::1/64). Set to empty string to disable.",
 	)
 	listen_port: int = Field(default=51820, ge=1, le=65535)
+	client_endpoint_port: Optional[int] = Field(
+		default=None,
+		ge=1,
+		le=65535,
+		description="Optional port override for client Endpoint in generated configs",
+	)
 	dns: Optional[str] = Field(default=None, description="DNS servers for clients")
 	post_up: Optional[str] = Field(default=None, description="PostUp script")
 	post_down: Optional[str] = Field(default=None, description="PostDown script")
@@ -69,6 +75,12 @@ class InterfaceUpdate(BaseModel):
 		description="IPv6 interface address with prefix (optional)",
 	)
 	listen_port: int = Field(default=51820, ge=1, le=65535)
+	client_endpoint_port: Optional[int] = Field(
+		default=None,
+		ge=1,
+		le=65535,
+		description="Optional port override for client Endpoint in generated configs",
+	)
 	dns: Optional[str] = Field(default=None, description="DNS servers for clients")
 	post_up: Optional[str] = Field(default=None, description="PostUp script")
 	post_down: Optional[str] = Field(default=None, description="PostDown script")
@@ -184,6 +196,7 @@ async def create_interface(
 			address=payload.address,
 			address6=v6_str,
 			listen_port=payload.listen_port,
+			client_endpoint_port=payload.client_endpoint_port,
 			dns=payload.dns,
 			post_up=post_up,
 			post_down=post_down,
@@ -238,6 +251,7 @@ async def create_interface(
 		"address": payload.address,
 		"address6": v6_str,
 		"listen_port": payload.listen_port,
+		"client_endpoint_port": payload.client_endpoint_port,
 	}
 	return ok_response(data=data, **data)
 
@@ -274,6 +288,11 @@ async def update_interface(
 	new_dns = payload.dns if "dns" in fields_set else iface["dns"]
 	new_post_up = payload.post_up if "post_up" in fields_set else iface["post_up"]
 	new_post_down = payload.post_down if "post_down" in fields_set else iface["post_down"]
+	new_client_endpoint_port = (
+		payload.client_endpoint_port
+		if "client_endpoint_port" in fields_set
+		else iface["client_endpoint_port"]
+	)
 
 	# AUDIT: Log PostUp/PostDown script changes (executed as root)
 	if "post_up" in fields_set and new_post_up != iface["post_up"]:
@@ -300,6 +319,7 @@ async def update_interface(
 		"address": iface["address"],
 		"address6": iface["address6"],
 		"listen_port": iface["listen_port"],
+		"client_endpoint_port": iface["client_endpoint_port"],
 		"dns": iface["dns"],
 		"post_up": iface["post_up"],
 		"post_down": iface["post_down"],
@@ -320,6 +340,7 @@ async def update_interface(
 			address=payload.address,
 			address6=v6_str,
 			listen_port=payload.listen_port,
+				client_endpoint_port=new_client_endpoint_port,
 			dns=new_dns,
 			post_up=new_post_up,
 			post_down=new_post_down,
@@ -347,6 +368,7 @@ async def update_interface(
 				address=old["address"],
 				address6=old["address6"],
 				listen_port=old["listen_port"],
+					client_endpoint_port=old["client_endpoint_port"],
 				dns=old["dns"],
 				post_up=old["post_up"],
 				post_down=old["post_down"],
@@ -370,6 +392,7 @@ async def update_interface(
 		"address": payload.address,
 		"address6": v6_str,
 		"listen_port": payload.listen_port,
+		"client_endpoint_port": new_client_endpoint_port,
 		"dns": new_dns,
 		"restart_required": restart_required,
 	}

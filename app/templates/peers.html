@@ -1086,6 +1086,16 @@
         select.disabled = false;
         select.innerHTML = '<option value="" disabled selected>Loading...</option>';
 
+        // Reset submit button state
+        const submitBtn = document.getElementById('add-peer-submit-btn');
+        const submitText = submitBtn?.querySelector('.submit-text');
+        const submitSpinner = submitBtn?.querySelector('.spinner-border');
+        if (submitBtn && submitText && submitSpinner) {
+            submitBtn.disabled = false;
+            submitText.classList.remove('d-none');
+            submitSpinner.classList.add('d-none');
+        }
+
         // Render blocklist options (all selected by default for new peers)
         renderBlocklistOptions('peer-blocklist-options', null);
         toggleBlocklistSection('peer-use-adblocker', 'peer-blocklist-section');
