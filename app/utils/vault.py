@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/utils/vault.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """
@@ -62,16 +62,14 @@ def encrypt(plaintext: str, pepper: str) -> str:
 
 def decrypt(stored: str, pepper: str) -> str:
 	"""Decrypt a vault-formatted string back to plaintext.
-
-	If the value is not vault-formatted (legacy plaintext), it is
-	returned as-is so that the migration can happen gradually.
 	"""
 	if not pepper:
 		raise ValueError("WIREBUDDY_SECRET_KEY is not set")
 	
-	if not stored or not stored.startswith(_VAULT_PREFIX):
-		# Legacy plaintext — return unchanged
-		return stored
+	if not stored:
+		raise ValueError("Cannot decrypt empty secret")
+	if not stored.startswith(_VAULT_PREFIX):
+		raise ValueError("Secret is not vault-encrypted")
 
 	try:
 		rest = stored[len(_VAULT_PREFIX):]

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/api/wireguard_config.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """WireGuard configuration file generation.
@@ -329,11 +329,3 @@ def sync_interface_config(
         _log.warning("CONFIG_SYNC_FAILED interface=%s error=%s", interface_name, e)
         raise ConfigWriteError(f"Failed to write config for {interface_name}") from e
 
-
-# Backwards-compatible alias for legacy imports
-_sync_interface_config = sync_interface_config
-
-
-# Re-export shared utility from network module for backwards compatibility
-# (This avoids breaking existing imports of wireguard_config.allowed_ips_with_dns_routes)
-__all__.append("allowed_ips_with_dns_routes")

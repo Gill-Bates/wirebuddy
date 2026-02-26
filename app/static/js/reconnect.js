@@ -1,3 +1,8 @@
+//
+// app/static/js/reconnect.js
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
 const _wbReconnectEl = document.getElementById('wbReconnectModal');
 const _wbReconnectModal = _wbReconnectEl ? new bootstrap.Modal(_wbReconnectEl) : null;
 
@@ -25,7 +30,10 @@ function _stopReconnectMode() {
     _wbReconnectState.active = false;
     _wbReconnectState.failCount = 0;
     document.body.classList.remove('wb-reconnecting');
-    if (_wbReconnectModal) _wbReconnectModal.hide();
+    if (_wbReconnectModal) {
+        document.activeElement?.blur();
+        _wbReconnectModal.hide();
+    }
     window.dispatchEvent(new CustomEvent('wb:reconnect:stop'));
 }
 
@@ -75,7 +83,10 @@ function _startReconnectMode() {
 
     _wbReconnectState.active = true;
     document.body.classList.add('wb-reconnecting');
-    if (window._wbModal) window._wbModal.hide();
+    if (window._wbModal) {
+        document.activeElement?.blur();
+        window._wbModal.hide();
+    }
 
     const toastContainer = document.getElementById('wbToastContainer');
     if (toastContainer) toastContainer.innerHTML = '';

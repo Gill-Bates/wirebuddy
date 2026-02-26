@@ -498,6 +498,8 @@
     const AUTO_REFRESH_MS = 30000;
     const API_TIMEOUT_MS = 25000;
     const MAX_BACKOFF_MS = 300000;
+    const PEER_MAP_FLYTO_DURATION_SEC = 1.2;
+    const PEER_MAP_POPUP_DELAY_MS = 1250;
     let trafficCombinedChart = null;
     let cachedTrafficData = null;
     let cachedPeerLocations = [];
@@ -1095,13 +1097,13 @@
                     const marker = peerMarkerMap[markerKey];
 
                     // Use flyTo for smoother, more reliable navigation
-                    peerMap.flyTo([lat, lon], 14, { animate: true, duration: 0.6 });
+                    peerMap.flyTo([lat, lon], 14, { animate: true, duration: PEER_MAP_FLYTO_DURATION_SEC });
 
                     // Open marker popup after animation completes
                     if (marker) {
                         setTimeout(() => {
                             if (peerMap) marker.openPopup();
-                        }, 650);
+                        }, PEER_MAP_POPUP_DELAY_MS);
                     }
                 };
                 row.addEventListener('click', zoomToPeer);

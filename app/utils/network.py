@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/utils/network.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """Network utility functions."""
@@ -12,8 +12,30 @@ import ipaddress
 from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
 
 __all__ = [
+    "parse_ip",
+    "parse_ip_str",
     "allowed_ips_with_dns_routes",
 ]
+
+
+def parse_ip(value: str | None) -> IPv4Address | IPv6Address | None:
+    """Parse and normalize IPv4/IPv6 string (including IPv4-mapped IPv6)."""
+    if not value:
+        return None
+    try:
+        # Keep str() for runtime robustness in case non-str values leak through.
+        parsed = ipaddress.ip_address(str(value).strip())
+    except ValueError:
+        return None
+    if isinstance(parsed, IPv6Address) and parsed.ipv4_mapped:
+        return parsed.ipv4_mapped
+    return parsed
+
+
+def parse_ip_str(value: str | None) -> str | None:
+    """Parse an IP and return its normalized string representation."""
+    parsed = parse_ip(value)
+    return str(parsed) if parsed is not None else None
 
 
 def allowed_ips_with_dns_routes(
@@ -53,16 +75,12 @@ def allowed_ips_with_dns_routes(
 
     def _covered(ip_obj: IPv4Address | IPv6Address) -> bool:
         candidates = existing_networks_v4 if ip_obj.version == 4 else existing_networks_v6
-        for net in candidates:
-            if ip_obj in net:
-                return True
-        return False
+        return any(ip_obj in net for net in candidates)
 
     dns_items = [x.strip() for x in (dns_servers or "").split(",") if x.strip()]
     for dns in dns_items:
-        try:
-            ip_obj = ipaddress.ip_address(dns)
-        except ValueError:
+        ip_obj = parse_ip(dns)
+        if ip_obj is None:
             continue
         if _covered(ip_obj):
             continue
@@ -75,11 +93,18 @@ def allowed_ips_with_dns_routes(
             existing_networks_v6.append(ipaddress.ip_network(host_route, strict=False))
 
     # De-duplicate while preserving order.
+    def _normalize_entry(entry: str) -> str:
+        try:
+            return str(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            return entry
+
     seen: set[str] = set()
     result: list[str] = []
     for entry in items:
-        if entry in seen:
+        normalized = _normalize_entry(entry)
+        if normalized in seen:
             continue
-        seen.add(entry)
-        result.append(entry)
+        seen.add(normalized)
+        result.append(normalized)
     return ", ".join(result)

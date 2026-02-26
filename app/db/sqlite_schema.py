@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/db/sqlite_schema.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """SQLite schema initialization and bootstrap routines."""
@@ -38,6 +38,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				password_hash TEXT NOT NULL,
 				is_admin INTEGER NOT NULL DEFAULT 0,
 				is_active INTEGER NOT NULL DEFAULT 1,
+				otp_secret TEXT,
+				otp_enabled INTEGER NOT NULL DEFAULT 0,
+				otp_recovery_codes TEXT,
 				last_login_at timestamp,
 				last_login_ip TEXT,
 				created_at timestamp NOT NULL

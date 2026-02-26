@@ -25,6 +25,18 @@
         white-space: nowrap;
     }
 
+    /* Button icon alignment */
+    .btn .material-icons {
+        vertical-align: middle;
+        line-height: 1;
+        display: inline-flex;
+        align-items: center;
+    }
+
+    .btn-sm .material-icons {
+        font-size: 18px;
+    }
+
     @media (max-width: 768px) {
         .users-table thead {
             display: none;
@@ -80,7 +92,7 @@
             content: none;
         }
 
-        .users-table td.user-actions-cell .btn-group {
+        .users-table td.user-actions-cell .d-flex {
             display: inline-flex;
             gap: 0.35rem;
         }
@@ -117,12 +129,19 @@
                 </thead>
                 <tbody>
                     {% for u in users %}
-                    <tr>
+                    <tr id="user-row-{{ u['id'] }}">
                         <td data-label="Username">
                             <strong>{{ u['username'] }}</strong>
                             {% if u['id'] == user['id'] %}
                             <span class="badge bg-info ms-1">You</span>
                             {% endif %}
+                            <span id="otp-indicator-{{ u['id'] }}">
+                                {% if u['otp_enabled'] %}
+                                <span class="material-icons text-success ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP enabled">verified_user</span>
+                                {% elif u['otp_secret'] %}
+                                <span class="material-icons text-warning ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP setup pending">schedule</span>
+                                {% endif %}
+                            </span>
                         </td>
                         <td data-label="Role">
                             {% if u['is_admin'] %}
@@ -147,14 +166,23 @@
                         </td>
                         <td data-label="Created">{{ u['created_at'].strftime('%Y-%m-%d') }}</td>
                         <td data-label="" class="user-actions-cell">
-                            <div class="btn-group btn-group-sm">
-                                <button class="btn btn-outline-primary" onclick="editUser({{ u['id'] }}, '{{ u['username'] }}')" title="Edit">
-                                    <span class="material-icons" style="font-size: 18px;">edit</span>
+                            <div class="d-flex gap-1 justify-content-end">
+                                <button type="button" class="btn btn-sm btn-outline-primary"
+                                    onclick="editUser({{ u['id'] }}, '{{ u['username'] }}')"
+                                    data-bs-toggle="tooltip" data-bs-title="Edit User">
+                                    <span class="material-icons" aria-hidden="true">edit</span>
+                                </button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary"
+                                    id="otp-settings-btn-{{ u['id'] }}"
+                                    onclick="openOtpSettings({{ u['id'] }}, '{{ u['username'] }}', {{ 'true' if u['otp_enabled'] else 'false' }}, {{ 'true' if u['otp_secret'] else 'false' }})"
+                                    data-bs-toggle="tooltip" data-bs-title="OTP Settings">
+                                    <span class="material-icons" aria-hidden="true">security</span>
                                 </button>
                                 {% if u['id'] != user['id'] %}
-                                <button class="btn btn-outline-danger"
-                                    onclick="deleteUser({{ u['id'] }}, '{{ u['username'] }}')" title="Delete">
-                                    <span class="material-icons" style="font-size: 18px;">delete</span>
+                                <button type="button" class="btn btn-sm btn-outline-danger"
+                                    onclick="deleteUser({{ u['id'] }}, '{{ u['username'] }}')"
+                                    data-bs-toggle="tooltip" data-bs-title="Delete User">
+                                    <span class="material-icons" aria-hidden="true">delete</span>
                                 </button>
                                 {% endif %}
                             </div>
@@ -235,6 +263,44 @@
                     <button type="submit" class="btn btn-primary">Change Password</button>
                 </div>
             </form>
+        </div>
+    </div>
+</div>
+
+<!-- OTP Settings Modal -->
+<div class="modal fade" id="otpSettingsModal" tabindex="-1" aria-labelledby="otpSettingsModalTitle" aria-modal="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="otpSettingsModalTitle">
+                    <span class="material-icons align-middle me-2">security</span>
+                    OTP Settings
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <!-- Status display -->
+                <div id="otp-status-display" class="mb-4">
+                    <div class="d-flex align-items-center justify-content-between">
+                        <div>
+                            <strong id="otp-modal-username"></strong>
+                            <div id="otp-status-text" class="small text-muted"></div>
+                        </div>
+                        <div id="otp-status-badge"></div>
+                    </div>
+                </div>
+
+                <div id="otp-action-section">
+                    <p class="text-muted" id="otp-action-help">Enable or disable two-factor authentication for this user.</p>
+                    <button type="button" class="btn w-100" id="otp-toggle-btn">
+                        <span class="material-icons align-middle me-1" id="otp-toggle-icon">security</span>
+                        <span id="otp-toggle-label">Toggle OTP</span>
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
         </div>
     </div>
 </div>
@@ -346,5 +412,99 @@
             wbAlert('Failed to delete user: ' + error.message, 'danger');
         }
     }
+
+    // OTP Settings
+    let otpUserId = null;
+    let otpUsername = '';
+    const otpStateByUserId = new Map();
+
+    function setUserOtpState(userId, isEnabled, hasSecret) {
+        otpStateByUserId.set(userId, { isEnabled: !!isEnabled, hasSecret: !!hasSecret });
+
+        const indicator = document.getElementById(`otp-indicator-${userId}`);
+        if (!indicator) return;
+
+        if (isEnabled) {
+            indicator.innerHTML = '<span class="material-icons text-success ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP enabled">verified_user</span>';
+            return;
+        }
+
+        if (hasSecret) {
+            indicator.innerHTML = '<span class="material-icons text-warning ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP setup pending">schedule</span>';
+            return;
+        }
+
+        indicator.innerHTML = '';
+    }
+
+    function openOtpSettings(userId, username, isEnabled, hasSecret) {
+        const knownState = otpStateByUserId.get(userId);
+        if (knownState) {
+            isEnabled = knownState.isEnabled;
+            hasSecret = knownState.hasSecret;
+        }
+
+        otpUserId = userId;
+        otpUsername = username;
+
+        document.getElementById('otp-modal-username').textContent = username;
+        const toggleBtn = document.getElementById('otp-toggle-btn');
+        const toggleIcon = document.getElementById('otp-toggle-icon');
+        const toggleLabel = document.getElementById('otp-toggle-label');
+        const actionHelp = document.getElementById('otp-action-help');
+
+        if (isEnabled) {
+            document.getElementById('otp-status-text').textContent = 'Two-factor authentication is active';
+            document.getElementById('otp-status-badge').innerHTML = '<span class="badge bg-success">Enabled</span>';
+            actionHelp.textContent = 'Disable two-factor authentication for this user.';
+            toggleBtn.className = 'btn btn-outline-danger w-100';
+            toggleIcon.textContent = 'remove_moderator';
+            toggleLabel.textContent = 'Disable OTP';
+        } else if (hasSecret) {
+            document.getElementById('otp-status-text').textContent = '';
+            document.getElementById('otp-status-badge').innerHTML = '<span class="badge bg-warning text-dark">Pending</span>';
+            actionHelp.textContent = 'OTP is pending. User onboarding starts at next login. You can disable OTP here.';
+            toggleBtn.className = 'btn btn-outline-danger w-100';
+            toggleIcon.textContent = 'remove_moderator';
+            toggleLabel.textContent = 'Disable OTP';
+        } else {
+            document.getElementById('otp-status-text').textContent = 'Two-factor authentication is not enabled';
+            document.getElementById('otp-status-badge').innerHTML = '<span class="badge bg-secondary">Disabled</span>';
+            actionHelp.textContent = 'Enable two-factor authentication. User onboarding starts at next login.';
+            toggleBtn.className = 'btn btn-primary w-100';
+            toggleIcon.textContent = 'add_moderator';
+            toggleLabel.textContent = 'Enable OTP';
+        }
+
+        const modal = new bootstrap.Modal(document.getElementById('otpSettingsModal'));
+        modal.show();
+    }
+
+    document.getElementById('otp-toggle-btn').addEventListener('click', async () => {
+        const current = otpStateByUserId.get(otpUserId) || { isEnabled: false, hasSecret: false };
+        const shouldDisable = current.isEnabled || current.hasSecret;
+
+        if (shouldDisable) {
+            if (!await wbConfirm(`Disable two-factor authentication for "${otpUsername}"?`, 'warning')) return;
+            try {
+                await api('POST', `/api/users/${otpUserId}/otp/disable`);
+                setUserOtpState(otpUserId, false, false);
+                openOtpSettings(otpUserId, otpUsername, false, false);
+                wbToast('OTP disabled', 'success');
+            } catch (error) {
+                wbAlert('Failed to disable OTP: ' + error.message, 'danger');
+            }
+            return;
+        }
+
+        try {
+            await api('POST', `/api/users/${otpUserId}/otp/enable`);
+            setUserOtpState(otpUserId, false, true);
+            openOtpSettings(otpUserId, otpUsername, false, true);
+            wbToast('OTP enabled. User onboarding starts at next login.', 'success');
+        } catch (error) {
+            wbAlert('Failed to enable OTP: ' + error.message, 'danger');
+        }
+    });
 </script>
 {% endblock %}

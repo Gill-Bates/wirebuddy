@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/utils/migration.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """
@@ -37,8 +37,10 @@ from typing import Callable
 
 _log = logging.getLogger(__name__)
 
-# Current schema version – increment when adding migrations
-SCHEMA_VERSION = 4  # v4: Add client endpoint port override for interfaces
+# Current schema version – reflects the baseline absorbed into init_schema().
+# Increment this AND add a new _migrate_NNNN_* function when a future
+# schema change is needed.
+SCHEMA_VERSION = 5  # baseline: all v1–v5 columns are in init_schema()
 
 
 def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
@@ -117,107 +119,31 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 # ---------------------------------------------------------------------------
 # Migration functions
 # ---------------------------------------------------------------------------
-# Each migration function takes a Connection and is idempotent.
+# Each migration function takes a Connection and must be idempotent.
 # Version numbers must be unique and monotonically increasing.
 #
-# Example migration (for reference):
+# Template for future migrations:
 #
-# def _migrate_0001_add_peer_tags(conn: sqlite3.Connection) -> None:
-#     """Add tags column to peers table."""
-#     _add_column_if_missing(conn, "peers", "tags", "TEXT")
+#   def _migrate_0006_description(conn: sqlite3.Connection) -> None:
+#       """Short description of what changes."""
+#       _add_column_if_missing(conn, "table", "column", "TYPE DEFAULT x")
 #
-# Then add to _MIGRATIONS:
-# (1, _migrate_0001_add_peer_tags),
-
-
-def _migrate_0001_add_client_isolation(conn: sqlite3.Connection) -> None:
-	"""Add client_isolation field to peers table.
-	
-	This migration separates two concepts that were previously conflated:
-	- allowed_ips_mode: determines client-side routing (full, split, custom)
-	- client_isolation: server-side firewall to block peer-to-peer traffic
-	
-	Previously, 'isolated' mode did both split routing AND client isolation.
-	After this migration:
-	- 'split' mode only affects client routing (0.0.0.0/1, 128.0.0.0/1)
-	- client_isolation flag controls server-side iptables rules
-	
-	Existing 'isolated' peers are migrated to 'split' + client_isolation=1.
-	"""
-	# Add the new column
-	_add_column_if_missing(
-		conn, "peers", "client_isolation", "INTEGER NOT NULL DEFAULT 0"
-	)
-	
-	# Migrate existing 'isolated' peers:
-	# Set client_isolation=1 for peers that had isolation enabled
-	conn.execute(
-		"""
-		UPDATE peers 
-		SET client_isolation = 1 
-		WHERE allowed_ips_mode = 'isolated'
-		"""
-	)
-	
-	# Rename 'isolated' to 'split' for clarity
-	conn.execute(
-		"""
-		UPDATE peers 
-		SET allowed_ips_mode = 'split' 
-		WHERE allowed_ips_mode = 'isolated'
-		"""
-	)
-	
-	_log.info("Migration: client_isolation field added and 'isolated' mode renamed to 'split'")
-
-
-def _migrate_0002_add_dns_service_setting(conn: sqlite3.Connection) -> None:
-	"""Initialize persisted DNS service autostart setting."""
-	conn.execute(
-		"""
-		INSERT OR IGNORE INTO settings (key, value, updated_at)
-		VALUES ('dns_service_enabled', '1', CURRENT_TIMESTAMP)
-		"""
-	)
-	_log.info("Migration: dns_service_enabled setting initialized (default=1)")
-
-
-def _migrate_0003_add_cumulative_transfer(conn: sqlite3.Connection) -> None:
-	"""Add columns to track cumulative transfer across WireGuard restarts.
-
-	WireGuard resets transfer counters on interface restart. These columns
-	accumulate historical transfer so the dashboard shows lifetime totals.
-
-	- cumulative_rx / cumulative_tx: sum of all previous sessions
-	- last_wg_rx / last_wg_tx: last observed wg counter (to detect resets)
-	"""
-	cols = _get_columns(conn, "peers")
-	_add_column_if_missing(conn, "peers", "cumulative_rx", "INTEGER NOT NULL DEFAULT 0", cols)
-	_add_column_if_missing(conn, "peers", "cumulative_tx", "INTEGER NOT NULL DEFAULT 0", cols)
-	_add_column_if_missing(conn, "peers", "last_wg_rx", "INTEGER NOT NULL DEFAULT 0", cols)
-	_add_column_if_missing(conn, "peers", "last_wg_tx", "INTEGER NOT NULL DEFAULT 0", cols)
-	_log.info("Migration: cumulative transfer tracking columns added to peers table")
-
-
-def _migrate_0004_add_interface_client_endpoint_port(conn: sqlite3.Connection) -> None:
-	"""Add client endpoint port override to interfaces table."""
-	cols = _get_columns(conn, "interfaces")
-	_add_column_if_missing(conn, "interfaces", "client_endpoint_port", "INTEGER", cols)
-	_log.info("Migration: interfaces.client_endpoint_port column added")
+# Then register it below:
+#   (6, _migrate_0006_description),
+#
+# All migrations up to and including v5 have been absorbed into init_schema()
+# and are no longer needed here.
 
 
 # ---------------------------------------------------------------------------
 # Migration registry
 # ---------------------------------------------------------------------------
 
-# List of (version: int, function: Callable) tuples
-# Migrations are executed in version order for versions > current_version
+# List of (version: int, function: Callable) tuples.
+# Migrations are applied in version order for versions > the DB's current version.
 _MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
-	# Post-release migrations:
-	(1, _migrate_0001_add_client_isolation),
-	(2, _migrate_0002_add_dns_service_setting),
-	(3, _migrate_0003_add_cumulative_transfer),
-	(4, _migrate_0004_add_interface_client_endpoint_port),
+	# Future migrations go here, e.g.:
+	# (6, _migrate_0006_description),
 ]
 
 

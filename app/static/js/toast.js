@@ -1,3 +1,8 @@
+//
+// app/static/js/toast.js
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
 function wbToast(message, type = 'info', duration = 4000) {
     if (window._wbReconnectState && window._wbReconnectState.active) return;
     const icons = { info: 'info', success: 'check_circle', warning: 'warning', danger: 'error' };

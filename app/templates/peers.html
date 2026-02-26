@@ -95,6 +95,10 @@
         .peers-table td.peer-interface {
             display: none;
         }
+
+        .peers-table {
+            table-layout: auto;
+        }
     }
 
     /* Button icon alignment */
@@ -137,7 +141,7 @@
     }
 
     /* Mobile-optimized peers rows */
-    @media (max-width: 768px) {
+    @media (max-width: 767.98px) {
         .table-responsive {
             overflow-x: visible;
             overflow-y: visible;
@@ -1092,6 +1096,7 @@
         const submitSpinner = submitBtn?.querySelector('.spinner-border');
         if (submitBtn && submitText && submitSpinner) {
             submitBtn.disabled = false;
+            submitText.textContent = 'Create Peer';
             submitText.classList.remove('d-none');
             submitSpinner.classList.add('d-none');
         }
@@ -1198,11 +1203,12 @@
 
         // Show loading state
         submitBtn.disabled = true;
-        submitText.classList.add('d-none');
+        submitText.textContent = 'Creating...';
         submitSpinner.classList.remove('d-none');
 
         try {
             await api('POST', '/api/wireguard/peers', data);
+            document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('addPeerModal')).hide();
             wbToast('Peer created successfully', 'success');
             reloadSoon(4200);
@@ -1211,6 +1217,7 @@
         } finally {
             // Reset button state
             submitBtn.disabled = false;
+            submitText.textContent = 'Create Peer';
             submitText.classList.remove('d-none');
             submitSpinner.classList.add('d-none');
         }
@@ -1415,6 +1422,7 @@
 
         try {
             await api('PATCH', `/api/wireguard/peers/${peerId}`, data);
+            document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('editPeerModal')).hide();
             wbToast('Peer updated successfully', 'success');
             reloadSoon(4200);

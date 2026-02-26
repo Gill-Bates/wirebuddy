@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/api/dns.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """DNS management API routes."""
@@ -36,6 +36,7 @@ import logging
 import os
 import re
 import sqlite3
+from typing import Literal
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -46,7 +47,11 @@ from pydantic import BaseModel, field_validator
 
 from ..dns import ingestion as dns_ingestion
 from ..dns import unbound
-from ..dns.custom_rules import parse_rules as parse_custom_rules
+from ..dns.custom_rules import (
+	RuleAction,
+	canonical_rule_text,
+	parse_rules as parse_custom_rules,
+)
 from ..utils.deps import get_conn, get_tsdb_dir
 from .auth import get_current_user, require_admin
 from .response import ok_response
@@ -243,6 +248,61 @@ class CustomRulesUpdate(BaseModel):
 		return v
 
 
+class CustomRuleActionRequest(BaseModel):
+	"""Request body for adding a custom DNS rule from query-log actions."""
+	action: Literal["block", "unblock"]
+	scope: Literal["global", "client"]
+	domain: str
+	client: str | None = None
+	client_name: str | None = None
+
+	@field_validator("domain")
+	@classmethod
+	def validate_domain(cls, v: str) -> str:
+		domain = str(v or "").strip().lower().rstrip(".")
+		if not domain:
+			raise ValueError("Domain is required")
+		if len(domain) > 253:
+			raise ValueError("Domain too long")
+		if "." not in domain:
+			raise ValueError("Domain must include a TLD")
+		for label in domain.split("."):
+			if not label or len(label) > 63:
+				raise ValueError("Invalid domain label")
+			if not re.fullmatch(r"[a-z0-9_-]+", label):
+				raise ValueError("Invalid domain label")
+			if label.startswith("-") or label.endswith("-"):
+				raise ValueError("Invalid domain label")
+		return domain
+
+	@field_validator("client")
+	@classmethod
+	def validate_client(cls, v: str | None) -> str | None:
+		if v is None:
+			return v
+		text = v.strip()
+		if not text:
+			return None
+		if "/" in text:
+			return str(ipaddress.ip_network(text, strict=False))
+		ip_obj = ipaddress.ip_address(text)
+		if ip_obj.version == 4:
+			return f"{ip_obj}/32"
+		return f"{ip_obj}/128"
+
+	@field_validator("client_name")
+	@classmethod
+	def validate_client_name(cls, v: str | None) -> str | None:
+		if v is None:
+			return None
+		name = " ".join(str(v).replace("\r", " ").replace("\n", " ").split()).strip()
+		if not name:
+			return None
+		if len(name) > 120:
+			name = name[:120].rstrip()
+		return name
+
+
 # ---------------------------------------------------------------------------
 # Status & Stats
 # ---------------------------------------------------------------------------
@@ -297,7 +357,7 @@ async def dns_status(
 		"unavailable": unavailable,
 		"reason": reason,
 	}
-	return ok_response(data=data, **data)
+	return ok_response(data=data)
 
 
 @router.get("/selftest")
@@ -330,21 +390,21 @@ async def dns_selftest(_: sqlite3.Row = Depends(get_current_user)):
 		running = await unbound.is_running()
 		if not running:
 			data = {"running": False, "reachable": False, "detail": "unbound not running"}
-			return ok_response(data=data, **data)
+			return ok_response(data=data)
 
 		# Offload blocking socket I/O to a thread to avoid blocking the event loop
 		ok, detail = await asyncio.to_thread(_query_local_unbound)
 		data = {"running": True, "reachable": ok, "detail": detail}
-		return ok_response(data=data, **data)
+		return ok_response(data=data)
 	except FileNotFoundError:
 		raise HTTPException(status_code=503, detail="Unbound not installed (requires Docker)")
 	except socket.timeout:
 		data = {"running": True, "reachable": False, "detail": "query timeout"}
-		return ok_response(data=data, **data)
+		return ok_response(data=data)
 	except Exception as exc:
 		_log.exception("DNS selftest failed")
 		data = {"running": False, "reachable": False, "detail": f"selftest failed: {exc}"}
-		return ok_response(data=data, **data)
+		return ok_response(data=data)
 
 
 @router.get("/trend")
@@ -417,7 +477,7 @@ async def dns_trend(
 		"blocked": blocked,
 		"block_rate": block_rate,
 	}
-	return ok_response(data=data, **data)
+	return ok_response(data=data)
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +555,7 @@ async def get_dns_config(
 		"dnssec_active": dnssec_enabled and dnssec_available,
 		"log_retention_days": retention_days,
 	}
-	return ok_response(data=data, **data)
+	return ok_response(data=data)
 
 
 @router.post("/config")
@@ -654,7 +714,7 @@ async def get_blocklist_sources(
 		})
 
 	data = {"sources": sources}
-	return ok_response(data=data, **data)
+	return ok_response(data=data)
 
 
 @router.post("/blocklist/sources")
@@ -663,7 +723,7 @@ async def set_blocklist_sources(
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
 ):
-	"""Save enabled blocklist sources and regenerate blocklist file."""
+	"""Save enabled blocklist sources and trigger background update."""
 	set_enabled_blocklists(conn, payload.urls)
 	# Global blocklist selection must override peer-specific selections immediately.
 	try:
@@ -672,39 +732,29 @@ async def set_blocklist_sources(
 	except Exception as exc:
 		_log.warning("Failed to regenerate peer tags after global blocklist change: %s", exc)
 	
-	# Regenerate blocklist file with new selection
-	try:
-		count, msg = await unbound.update_blocklists(payload.urls)
-		# Restart unbound to pick up changes (reload can crash with large blocklists)
-		ok, reload_msg = await unbound.restart()
-		if not ok:
-			_log.warning("Blocklist sources saved but restart failed: %s", reload_msg)
-		return ok_response(
-			message=f"Blocklist sources saved ({count} domains)",
-			enabled_count=len(payload.urls),
-			domains_blocked=count,
-			reloaded=ok,
-			data={
-				"enabled_count": len(payload.urls),
-				"domains_blocked": count,
-				"reloaded": ok,
-			},
-		)
-	except Exception as exc:
-		_log.warning("Blocklist sources saved but update failed: %s", exc)
-		reloaded = False
+	# Get custom rules before starting background task (conn may be closed later)
+	custom_rules_text = get_dns_custom_rules(conn)
+	urls_copy = list(payload.urls)
+	
+	# Fire-and-forget background task for blocklist download
+	async def _background_update() -> None:
 		try:
-			reloaded, reload_msg = await unbound.restart()
-			if not reloaded:
-				_log.warning("Blocklist sources saved but restart failed: %s", reload_msg)
-		except Exception as reload_exc:
-			_log.warning("Blocklist sources saved but restart errored: %s", reload_exc)
-		return ok_response(
-			message="Blocklist sources saved (update pending)",
-			enabled_count=len(payload.urls),
-			reloaded=reloaded,
-			data={"enabled_count": len(payload.urls), "reloaded": reloaded},
-		)
+			count, msg = await unbound.update_blocklists(urls_copy, custom_rules_text=custom_rules_text)
+			ok, reload_msg = await unbound.restart()
+			if ok:
+				_log.info("BLOCKLIST_UPDATE_BG success: %s", msg)
+			else:
+				_log.warning("BLOCKLIST_UPDATE_BG %s but restart failed: %s", msg, reload_msg)
+		except Exception as exc:
+			_log.error("BLOCKLIST_UPDATE_BG failed: %s", exc)
+	
+	asyncio.create_task(_background_update())
+	
+	return ok_response(
+		message="Blocklist update started",
+		enabled_count=len(payload.urls),
+		data={"enabled_count": len(payload.urls), "started": True},
+	)
 
 
 @router.post("/blocklist/update")
@@ -713,46 +763,36 @@ async def update_blocklists(
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
 ):
-	"""Download and update ad-blocking lists."""
+	"""Trigger background download and update of ad-blocking lists."""
 	# Use saved blocklists if no URLs provided
 	urls = payload.urls if payload and payload.urls else None
 	if urls is None:
 		urls = get_enabled_blocklists(conn)
 	
-	try:
-		# Fetch custom rules to apply during blocklist build
-		custom_rules_text = get_dns_custom_rules(conn)
-		count, msg = await unbound.update_blocklists(urls, custom_rules_text=custom_rules_text)
-		# Restart unbound to pick up new blocklist (reload can crash with large blocklists)
-		ok, reload_msg = await unbound.restart()
-		if not ok:
-			_log.warning("Blocklist updated but restart failed: %s", reload_msg)
-			return ok_response(
-				message=f"{msg} (restart failed)",
-				domains_blocked=count,
-				reloaded=False,
-				data={
-					"domains_blocked": count,
-					"reloaded": False,
-				},
-			)
-		return ok_response(
-			message=msg,
-			domains_blocked=count,
-			reloaded=True,
-			data={
-				"domains_blocked": count,
-				"reloaded": True,
-			},
-		)
-	except FileNotFoundError:
-		raise HTTPException(status_code=503, detail="Unbound not installed (requires Docker)")
-	except Exception as e:
-		_log.exception("Blocklist update failed")
-		raise HTTPException(
-			status_code=500,
-			detail=f"Blocklist update failed: {type(e).__name__}"
-		)
+	# Get custom rules before starting background task
+	custom_rules_text = get_dns_custom_rules(conn)
+	urls_copy = list(urls) if urls else []
+	
+	# Fire-and-forget background task
+	async def _background_update() -> None:
+		try:
+			count, msg = await unbound.update_blocklists(urls_copy, custom_rules_text=custom_rules_text)
+			ok, reload_msg = await unbound.restart()
+			if ok:
+				_log.info("BLOCKLIST_UPDATE_BG success: %s", msg)
+			else:
+				_log.warning("BLOCKLIST_UPDATE_BG %s but restart failed: %s", msg, reload_msg)
+		except FileNotFoundError:
+			_log.error("BLOCKLIST_UPDATE_BG failed: Unbound not installed")
+		except Exception as exc:
+			_log.error("BLOCKLIST_UPDATE_BG failed: %s", exc)
+	
+	asyncio.create_task(_background_update())
+	
+	return ok_response(
+		message="Blocklist update started",
+		data={"started": True},
+	)
 
 
 @router.get("/blocklist/count")
@@ -765,6 +805,57 @@ async def blocklist_count(_: sqlite3.Row = Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 # Custom DNS Rules
 # ---------------------------------------------------------------------------
+
+def _append_action_rule(
+	rules_text: str,
+	*,
+	action: Literal["block", "unblock"],
+	scope: Literal["global", "client"],
+	domain: str,
+	client: str | None,
+	client_name: str | None = None,
+) -> tuple[str, str, bool, bool]:
+	"""Append one canonical exact-domain rule.
+
+	Returns:
+		(updated_text, canonical_rule, created, duplicate)
+	"""
+	rule_action = RuleAction.BLOCK if action == "block" else RuleAction.ALLOW
+	client_scope = client if scope == "client" else None
+	canonical = canonical_rule_text(rule_action, domain, client_scope)
+	opposite = canonical_rule_text(
+		RuleAction.ALLOW if rule_action == RuleAction.BLOCK else RuleAction.BLOCK,
+		domain,
+		client_scope,
+	)
+
+	lines = rules_text.splitlines()
+	seen = {line.strip().lower() for line in lines if line.strip()}
+	if canonical.lower() in seen:
+		return rules_text, canonical, False, True
+
+	# Remove exact opposite canonical rule so user intent is deterministic.
+	filtered_lines: list[str] = []
+	for line in lines:
+		if line.strip().lower() == opposite.lower():
+			continue
+		filtered_lines.append(line)
+
+	if scope == "client" and client_scope and client_name:
+		filtered_lines.append(f"! client: {client_name} ({client_scope})")
+
+	# Keep file tidy: ensure exactly one trailing newline when non-empty.
+	filtered_lines.append(canonical)
+	updated_text = "\n".join(filtered_lines).strip("\n") + "\n"
+	return updated_text, canonical, True, False
+
+
+async def _rebuild_dns_from_rules(conn: sqlite3.Connection, rules_text: str) -> tuple[bool, int, str]:
+	"""Regenerate blocklist + client overrides and restart Unbound."""
+	urls = get_enabled_blocklists(conn)
+	count, msg = await unbound.update_blocklists(urls, custom_rules_text=rules_text)
+	reloaded, _ = await unbound.restart()
+	return reloaded, count, msg
 
 @router.get("/custom-rules")
 async def get_custom_rules(
@@ -813,10 +904,7 @@ async def update_custom_rules(
 
 	# Rebuild blocklist with custom rules applied
 	try:
-		urls = get_enabled_blocklists(conn)
-		count, msg = await unbound.update_blocklists(urls, custom_rules_text=rules_text)
-		# Restart Unbound to pick up changes
-		ok, reload_msg = await unbound.restart()
+		ok, count, msg = await _rebuild_dns_from_rules(conn, rules_text)
 		return ok_response(
 			message=f"Custom rules saved. {msg}",
 			data={
@@ -845,6 +933,78 @@ async def update_custom_rules(
 					for e in errors
 				],
 				"domains_blocked": 0,
+				"reloaded": False,
+			},
+		)
+
+
+@router.post("/custom-rules/actions")
+async def add_custom_rule_action(
+	payload: CustomRuleActionRequest,
+	conn: sqlite3.Connection = Depends(get_conn),
+	_: sqlite3.Row = Depends(require_admin),
+):
+	"""Add one exact-domain custom rule from Query Log actions.
+
+	The endpoint enforces canonical form and prevents duplicate creation.
+	"""
+	if payload.scope == "client" and not payload.client:
+		raise HTTPException(status_code=400, detail="Client scope requires a client address")
+
+	rules_text = get_dns_custom_rules(conn)
+	updated_rules, canonical, created, duplicate = _append_action_rule(
+		rules_text,
+		action=payload.action,
+		scope=payload.scope,
+		domain=payload.domain,
+		client=payload.client,
+		client_name=payload.client_name,
+	)
+
+	if duplicate:
+		return ok_response(
+			message="Rule already exists",
+			created=False,
+			duplicate=True,
+			rule=canonical,
+			data={
+				"created": False,
+				"duplicate": True,
+				"rule": canonical,
+			},
+		)
+
+	set_dns_custom_rules(conn, updated_rules)
+
+	try:
+		reloaded, domains_blocked, msg = await _rebuild_dns_from_rules(conn, updated_rules)
+		return ok_response(
+			message=f"Rule applied. {msg}",
+			created=created,
+			duplicate=False,
+			rule=canonical,
+			reloaded=reloaded,
+			domains_blocked=domains_blocked,
+			data={
+				"created": created,
+				"duplicate": False,
+				"rule": canonical,
+				"reloaded": reloaded,
+				"domains_blocked": domains_blocked,
+			},
+		)
+	except Exception as exc:
+		_log.exception("Failed to rebuild DNS artifacts after custom rule action")
+		return ok_response(
+			message=f"Rule saved but DNS rebuild failed: {exc}",
+			created=created,
+			duplicate=False,
+			rule=canonical,
+			reloaded=False,
+			data={
+				"created": created,
+				"duplicate": False,
+				"rule": canonical,
 				"reloaded": False,
 			},
 		)
@@ -880,7 +1040,7 @@ async def dns_logs(
 			],
 		"total": len(queries),
 	}
-	return ok_response(data=data, **data)
+	return ok_response(data=data)
 
 
 @router.get("/top-domains")
@@ -909,7 +1069,7 @@ async def top_domains(
 		"top_queried": [{"domain": d, "count": c} for d, c in sorted_domains],
 		"top_blocked": [{"domain": d, "count": c} for d, c in sorted_blocked],
 	}
-	return ok_response(data=data, **data)
+	return ok_response(data=data)
 
 
 # ---------------------------------------------------------------------------

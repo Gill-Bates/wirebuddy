@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/dns/__init__.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """DNS ad-blocking module powered by Unbound."""
@@ -33,6 +33,8 @@ class _UnboundNamespace:
 	generate_config = staticmethod(config.generate_config)
 	get_interface_ipv6_gateways = staticmethod(config.get_interface_ipv6_gateways)
 	write_config = staticmethod(config.write_config)
+	write_custom_client_rules = staticmethod(config.write_custom_client_rules)
+	write_local_data_overrides = staticmethod(config.write_local_data_overrides)
 	write_peer_tags = staticmethod(config.write_peer_tags)
 	
 	# Blocklist management

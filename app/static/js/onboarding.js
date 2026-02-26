@@ -1,3 +1,8 @@
+//
+// app/static/js/onboarding.js
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
 /* ── Onboarding Modal ── */
 (function () {
     const ONBOARDING_KEY = 'wb_onboarding_dismissed';

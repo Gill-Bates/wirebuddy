@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/api/wireguard_stats_geo.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """WireGuard geolocation and TSDB management API routes."""
@@ -133,10 +133,10 @@ async def get_peer_locations(
 
 		_log.info("PEER_LOC returning %d location(s)", len(seen_ips))
 		locations = list(seen_ips.values())
-		return ok_response(data={"locations": locations}, locations=locations)
+		return ok_response(data={"locations": locations})
 	except Exception:
 		_log.exception("Failed to get peer locations")
-		return ok_response(data={"locations": []}, locations=[])
+		return ok_response(data={"locations": []})
 
 
 @router.get("/stats/peers-enriched")
@@ -292,7 +292,7 @@ async def get_peers_enriched(
 		key=lambda p: (not p["connected"], -(p["latest_handshake"] or 0)),
 	)
 
-	return ok_response(data={"peers": result}, peers=result)
+	return ok_response(data={"peers": result})
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +306,7 @@ async def get_tsdb_stats(
 ):
 	"""Get TSDB storage statistics."""
 	data = await run_in_threadpool(tsdb.get_db_stats, tsdb_dir)
-	return ok_response(data=data, **data)
+	return ok_response(data=data)
 
 
 @router.delete("/stats/tsdb")

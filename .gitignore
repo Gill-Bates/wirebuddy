@@ -17,6 +17,7 @@ full_codebase_*
 data/
 data_local/
 *.db
+*.mmdb
 
 # IDE
 .idea/

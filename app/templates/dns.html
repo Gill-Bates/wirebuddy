@@ -706,6 +706,7 @@
                         </tbody>
                     </table>
                 </div>
+                <div id="log-action-menu" class="dropdown-menu" style="position: fixed; z-index: 1200;"></div>
             </div>
         </div>
     </div>
@@ -731,9 +732,94 @@
     let _pollInProgress = false;
     let _searchTimer = null;  // Debounce timer for search
     let _scrollRaf = null;  // RAF handle for scroll throttle
+    let _logActionState = null; // Active row action context
 
     function clearNode(el) {
         while (el && el.firstChild) el.removeChild(el.firstChild);
+    }
+
+    function closeLogActionMenu() {
+        const menu = document.getElementById('log-action-menu');
+        if (!menu) return;
+        menu.classList.remove('show');
+        _logActionState = null;
+    }
+
+    function openLogActionMenu(q, clickEvent) {
+        const menu = document.getElementById('log-action-menu');
+        if (!menu) return;
+
+        const blocked = !!q.blocked;
+        const actions = blocked
+            ? [
+                { label: 'Unblock for this Client', action: 'unblock', scope: 'client' },
+                { label: 'Unblock', action: 'unblock', scope: 'global' },
+            ]
+            : [
+                { label: 'Block for this Client', action: 'block', scope: 'client' },
+                { label: 'Block', action: 'block', scope: 'global' },
+            ];
+
+        clearNode(menu);
+        for (const item of actions) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'dropdown-item';
+            btn.textContent = item.label;
+            btn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                applyLogRuleAction(item.action, item.scope);
+            });
+            menu.appendChild(btn);
+        }
+
+        _logActionState = {
+            domain: q.domain || '',
+            client: q.client || '',
+            clientName: _peerMap[q.client] || '',
+            blocked,
+        };
+
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+        const x = clickEvent.clientX;
+        const y = clickEvent.clientY;
+
+        menu.style.left = `${Math.min(x, viewportWidth - 240)}px`;
+        menu.style.top = `${Math.min(y, viewportHeight - 120)}px`;
+        menu.classList.add('show');
+    }
+
+    function applyLogRuleAction(action, scope) {
+        const state = _logActionState;
+        closeLogActionMenu();
+        if (!state || !state.domain) return;
+
+        const payload = {
+            action,
+            scope,
+            domain: state.domain,
+        };
+        if (scope === 'client') {
+            payload.client = state.client;
+            if (state.clientName) payload.client_name = state.clientName;
+        }
+
+        wbToast('Applying rule…', 'success');
+
+        void api('POST', '/api/dns/custom-rules/actions', payload)
+            .then((res) => {
+                if (res?.duplicate) {
+                    wbToast('Rule already exists', 'info');
+                } else {
+                    wbToast(res?.message || 'Rule applied', 'success');
+                }
+                void loadLogsOnly();
+            })
+            .catch((e) => {
+                wbToast('Failed to apply DNS rule: ' + e.message, 'danger');
+            });
     }
 
     function getChartThemeColors() {
@@ -1424,6 +1510,14 @@
         for (const q of batch) {
             const tr = document.createElement('tr');
             if (q.blocked) tr.className = 'table-danger bg-opacity-10';
+            tr.classList.add('log-row-actionable');
+            tr.style.cursor = 'pointer';
+            tr.title = 'Click for rule actions';
+            tr.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                openLogActionMenu(q, ev);
+            });
 
             const tdTime = document.createElement('td');
             tdTime.setAttribute('data-label', 'Time');
@@ -1499,7 +1593,7 @@
 
     async function dnsAction(action) {
         if (!VALID_DNS_ACTIONS.includes(action)) {
-            wbAlert('Invalid DNS action', 'danger');
+            wbToast('Invalid DNS action', 'danger');
             return;
         }
 
@@ -1512,7 +1606,7 @@
             await loadStats();
             wbToast(`DNS ${action} successful`, 'success');
         } catch (e) {
-            wbAlert('DNS action failed: ' + e.message, 'danger');
+            wbToast('DNS action failed: ' + e.message, 'danger');
         }
     }
 
@@ -1550,9 +1644,18 @@
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
             stopPolling();
+            closeLogActionMenu();
         } else {
             refreshAll();
             startPolling();
+        }
+    });
+
+    document.addEventListener('click', (ev) => {
+        const menu = document.getElementById('log-action-menu');
+        if (!menu) return;
+        if (!menu.contains(ev.target)) {
+            closeLogActionMenu();
         }
     });
 

@@ -127,14 +127,14 @@
 
     .blocklist-hero-card {
         border: 1px solid var(--bs-border-color);
-        border-radius: 0.55rem;
+        border-radius: 0.5rem;
         padding: 0.5rem 0.55rem;
         min-width: 0;
         max-width: 100%;
         overflow: hidden;
         background: var(--bs-tertiary-bg);
-        box-shadow: 0 3px 8px rgba(15, 23, 42, 0.08);
-        transition: box-shadow 0.18s ease, transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease;
+        box-shadow: none;
+        transition: border-color 0.15s ease;
     }
 
     .blocklist-hero-card:hover {
@@ -144,7 +144,6 @@
 
     .blocklist-hero-card.enabled {
         border-color: var(--bs-border-color);
-        box-shadow: 0 5px 12px rgba(15, 23, 42, 0.12);
     }
 
     .blocklist-hero-title {
@@ -278,6 +277,14 @@
         gap: 0.75rem;
     }
 
+    .blocklist-loading-spinner {
+        grid-column: 1 / -1;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 2rem 0;
+    }
+
     @media (min-width: 576px) {
         .blocklist-clean-grid {
             grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -288,17 +295,6 @@
         .blocklist-clean-grid {
             grid-template-columns: repeat(3, minmax(0, 1fr));
         }
-    }
-
-    /* Simplified Blocklist Cards */
-    .blocklist-hero-card {
-        box-shadow: none !important;
-        border-radius: 0.5rem;
-        transition: border-color 0.15s ease;
-    }
-
-    .blocklist-hero-card.enabled {
-        border-color: var(--wb-primary);
     }
 
     /* Less badge overload */
@@ -408,7 +404,8 @@
                         <h5 class="mb-0">Metrics Database</h5>
                         {% if user['is_admin'] %}
                         <div>
-                            <button class="btn btn-sm btn-outline-danger" id="btn-reset-tsdb" onclick="WBSettings.resetTsdb()">
+                            <button class="btn btn-sm btn-outline-danger" id="btn-reset-tsdb">
+                                Delete all Metrics
                                 <span class="material-icons" style="font-size: 16px;">delete</span>
                             </button>
                         </div>
@@ -448,7 +445,7 @@
                 <div class="card mb-4">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="mb-0">Check for Updates</h5>
-                        <button class="btn btn-sm btn-outline-primary" id="btn-check-updates" onclick="WBSettings.checkForUpdates(true)">
+                        <button class="btn btn-sm btn-outline-primary" id="btn-check-updates">
                             <span class="material-icons" style="font-size: 18px;">refresh</span>
                         </button>
                     </div>
@@ -500,6 +497,28 @@
                         </div>
                     </div>
                 </div>
+
+                {% if user['is_admin'] %}
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">Public Status Page</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-check form-switch mb-2">
+                            <input class="form-check-input" type="checkbox" id="enable-status-page">
+                            <label class="form-check-label" for="enable-status-page">Enable Status Page</label>
+                        </div>
+                        <small class="text-muted">Publishes <span class="font-monospace">/status</span> for WireGuard-internal clients only.</small>
+                        <div class="mt-2 small text-muted d-flex align-items-center gap-2">
+                            <span id="status-page-url" class="font-monospace">/status</span>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
+                                id="btn-copy-status-page-url" aria-label="Copy status page URL" title="Copy URL">
+                                <span class="material-icons" style="font-size: 16px;">content_copy</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -515,11 +534,12 @@
                         <h5 class="mb-0">Global Settings</h5>
                     </div>
                     <div class="card-body">
-                        <form id="wg-settings-form">
+                        <form id="wg-settings-form" autocomplete="off">
                             <div class="mb-3">
                                 <label for="wg-fqdn" class="form-label">Server FQDN / IP</label>
                                 <div class="input-group">
-                                    <input type="text" class="form-control" id="wg-fqdn" placeholder="vpn.example.com">
+                                    <input type="text" class="form-control" id="wg-fqdn" placeholder="vpn.example.com"
+                                        autocomplete="url" autocapitalize="off" autocorrect="off" spellcheck="false">
                                     <button class="btn btn-outline-secondary" type="button" id="btn-fqdn-detect"
                                         title="Auto-detect from current hostname">
                                         <span class="material-icons" style="font-size: 18px;">auto_fix_high</span>
@@ -575,7 +595,9 @@
                                 </div>
                                 <div class="input-group">
                                     <input type="password" class="form-control font-monospace" id="wg-psk-display"
-                                        readonly value="" placeholder="No key generated yet" autocomplete="off">
+                                        name="wireguard_psk_manual" value="" placeholder="No key generated yet"
+                                        autocomplete="new-password" spellcheck="false" autocapitalize="off"
+                                        autocorrect="off" data-lpignore="true" data-1p-ignore="true">
                                     <button class="btn btn-outline-secondary" type="button" id="psk-copy-btn"
                                         title="Copy to Clipboard">
                                         <span class="material-icons" style="font-size: 18px;">content_copy</span>
@@ -585,6 +607,7 @@
                                         <span class="material-icons" style="font-size: 18px;">visibility</span>
                                     </button>
                                 </div>
+                                <div id="wg-psk-feedback" class="invalid-feedback d-none">Invalid PSK format (must be 44-char WireGuard key)</div>
                             </div>
                         </form>
                     </div>
@@ -597,12 +620,11 @@
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="mb-0">Interfaces</h5>
                         <div>
-                            <button class="btn btn-sm btn-outline-secondary" onclick="WBSettings.refreshInterfaces()">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-refresh-interfaces">
                                 <span class="material-icons" style="font-size: 18px;">refresh</span>
                             </button>
                             {% if user['is_admin'] %}
-                            <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#ifaceModal"
-                                onclick="WBSettings.prepareCreateInterfaceModal()">
+                            <button class="btn btn-sm btn-primary" id="btn-open-create-interface-modal" data-bs-toggle="modal" data-bs-target="#ifaceModal">
                                 <span class="material-icons" style="font-size: 18px;">add_circle</span>
                             </button>
                             {% endif %}
@@ -632,16 +654,15 @@
                 <h6 class="text-muted mb-3">Blocklists</h6>
 
                 <div id="blocklist-sources" class="blocklist-clean-grid">
-                    <div class="text-center py-3">
-                        <div class="spinner-border spinner-border-sm text-primary" role="status">
+                    <div class="blocklist-loading-spinner">
+                        <div class="spinner-border text-primary" role="status" style="width: 2.5rem; height: 2.5rem;">
                             <span class="visually-hidden">Loading...</span>
                         </div>
                     </div>
                 </div>
 
                 <div class="d-flex justify-content-end align-items-center mt-3 pt-3 border-top">
-                    <button class="btn btn-sm btn-outline-danger"
-                            onclick="WBSettings.updateBlocklist()">
+                        <button class="btn btn-sm btn-outline-danger" id="btn-update-blocklist">
                         <span class="material-icons align-middle" style="font-size:18px;">cached</span>
                     </button>
                 </div>
@@ -666,8 +687,7 @@
                     <span class="small text-muted" id="custom-rules-count">0 rules</span>
                     <div class="d-flex align-items-center gap-2">
                         <span id="custom-rules-status" class="small text-muted"></span>
-                        <button class="btn btn-sm btn-primary" id="save-custom-rules-btn"
-                            onclick="WBSettings.saveCustomRules()">
+                        <button class="btn btn-sm btn-primary" id="save-custom-rules-btn">
                             <span class="material-icons align-middle me-1" style="font-size: 16px;">save</span>Save Rules
                         </button>
                     </div>
@@ -718,8 +738,7 @@
                           placeholder="1.1.1.1@853#cloudflare-dns.com&#10;9.9.9.9@853#dns.quad9.net&#10;91.239.100.100@853#unicast.censurfridns.dk&#10;45.90.28.0@853#dns.nextdns.io&#10;194.242.2.2@853#dns.mullvad.net"></textarea>
 
                 <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
-                        <button class="btn btn-sm btn-outline-secondary" id="validate-dns-btn"
-                            onclick="WBSettings.validateDnsServers()">
+                        <button class="btn btn-sm btn-outline-secondary" id="validate-dns-btn">
                         <span class="material-icons align-middle me-1" style="font-size: 16px;">verified</span>Validate
                     </button>
                     <span id="dns-validation-status"
@@ -784,8 +803,7 @@ Format: IP@PORT#HOSTNAME
                             </div>
                         </div>
 
-                        <button class="btn btn-sm btn-outline-danger"
-                            onclick="WBSettings.purgeDnsLogs()">
+                        <button class="btn btn-sm btn-outline-danger" id="btn-purge-dns-logs">
                             <span class="material-icons align-middle me-1" style="font-size: 16px;">delete_forever</span>Purge Logs
                         </button>
                     </div>
@@ -804,7 +822,7 @@ Format: IP@PORT#HOSTNAME
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="mb-0">SSL/TLS Certificates</h5>
                         <div>
-                            <button class="btn btn-sm btn-outline-secondary" onclick="WBSettings.refreshCertificates()"
+                            <button class="btn btn-sm btn-outline-secondary" id="btn-refresh-certificates"
                                 title="Refresh">
                                 <span class="material-icons" style="font-size: 18px;">refresh</span>
                             </button>
@@ -875,7 +893,7 @@ Format: IP@PORT#HOSTNAME
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" onclick="WBSettings.requestCertificate()">
+                <button type="button" class="btn btn-primary" id="btn-request-certificate">
                     <span id="cert-spinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
                     Request Certificate
                 </button>
@@ -938,7 +956,7 @@ Format: IP@PORT#HOSTNAME
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" id="iface-submit-btn" onclick="WBSettings.submitInterfaceForm()">
+                <button type="button" class="btn btn-primary" id="iface-submit-btn">
                     <span id="iface-spinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
                     <span id="iface-submit-label">Create Interface</span>
                 </button>
@@ -951,7 +969,7 @@ Format: IP@PORT#HOSTNAME
 
 {% block extra_js %}
 <script>
-(function () {
+(async function () {
     const isAdmin = {{ 'true' if user['is_admin'] else 'false' }};
     const USER_ID = {{ user['id'] | tojson }};
 
@@ -1231,7 +1249,7 @@ Format: IP@PORT#HOSTNAME
     };
 
     // Initialize tabs with URL hash support
-    function initTabs() {
+    async function initTabs() {
         const hash = window.location.hash.replace('#', '');
         const validTabs = ['general', 'wireguard', 'letsencrypt', 'dns'];
 
@@ -1245,32 +1263,33 @@ Format: IP@PORT#HOSTNAME
 
         // Listen for tab changes (use replaceState to avoid history pollution)
         document.querySelectorAll('#settingsTabs button[data-bs-toggle="tab"]').forEach(tabBtn => {
-            tabBtn.addEventListener('shown.bs.tab', function (e) {
+            tabBtn.addEventListener('shown.bs.tab', async function (e) {
                 const tabId = e.target.id.replace('-tab', '');
                 history.replaceState(null, '', `#${tabId}`);
-                loadTabData(tabId);
+                await loadTabData(tabId);
             });
         });
 
-        // Load initial tab data
+        // Load initial tab data and wait for it to complete
         const activeTab = document.querySelector('#settingsTabs .nav-link.active');
         if (activeTab) {
-            loadTabData(activeTab.id.replace('-tab', ''));
+            await loadTabData(activeTab.id.replace('-tab', ''));
         }
     }
 
     // Lazy load tab data
-    function loadTabData(tabId) {
+    async function loadTabData(tabId) {
         if (tabLoaded[tabId]) return;
 
         switch (tabId) {
             case 'general':
+                await loadWgSettings();  // Status Page toggle is on General tab
                 checkForUpdates(false);
                 loadTsdbStats();
                 tabLoaded.general = true;
                 break;
             case 'wireguard':
-                loadWgSettings();
+                await loadWgSettings();  // Must await to ensure wgSettingsLoaded is true before user interaction
                 refreshInterfaces();
                 tabLoaded.wireguard = true;
                 break;
@@ -1295,9 +1314,16 @@ Format: IP@PORT#HOSTNAME
     }
 
     // WireGuard global settings
+    // Type-safe boolean conversion for settings values (handles '1', 1, true, 'true', etc.)
+    function toBool(v) {
+        return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
+    }
+
     async function loadWgSettings() {
         try {
             const settings = await api('GET', '/api/wireguard/settings');
+            console.debug('[WG Settings] Loaded:', settings);  // Debug log for troubleshooting
+            
             if (settings.wg_fqdn) document.getElementById('wg-fqdn').value = settings.wg_fqdn;
             if (settings.gui_port) document.getElementById('gui-port').value = settings.gui_port;
             if (settings.wg_mtu) document.getElementById('wg-mtu').value = settings.wg_mtu;
@@ -1306,18 +1332,79 @@ Format: IP@PORT#HOSTNAME
             // Localhost toggle
             const localhostToggle = document.getElementById('gui-localhost-only');
             if (localhostToggle) {
-                localhostToggle.checked = settings.gui_localhost_only === '1' || settings.gui_localhost_only === 'true';
+                localhostToggle.checked = toBool(settings.gui_localhost_only);
             }
 
             // PSK toggle
             const pskToggle = document.getElementById('wg-use-psk');
             if (pskToggle) {
-                pskToggle.checked = settings.wg_use_psk === '1';
+                pskToggle.checked = toBool(settings.wg_use_psk);
                 togglePskDetails(pskToggle.checked);
                 if (pskToggle.checked) await loadPsk();
             }
+
+            const statusToggle = document.getElementById('enable-status-page');
+            if (statusToggle) {
+                // Disable transition during initial load to prevent animation
+                statusToggle.style.transition = 'none';
+                statusToggle.checked = toBool(settings.enable_status_page);
+                // Force reflow, then restore transition
+                statusToggle.offsetHeight;
+                statusToggle.style.transition = '';
+            }
+
+            updateStatusPageUrlPreview();
+            wgSettingsLoaded = true;  // Allow saves now that settings are loaded
         } catch (error) {
             console.warn('Failed to load WG settings:', error.message);
+            wgSettingsLoaded = true;  // Allow saves even on error to not block UI
+        }
+    }
+
+    function updateStatusPageUrlPreview() {
+        const target = document.getElementById('status-page-url');
+        if (!target) return;
+
+        const fqdnInput = document.getElementById('wg-fqdn');
+        const guiPortInput = document.getElementById('gui-port');
+        const rawHost = (fqdnInput?.value || '').trim().replace(/^\[|\]$/g, '');
+        const host = rawHost || window.location.hostname;
+        const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+        const urlHost = host.includes(':') ? `[${host}]` : host;
+        const parsedPort = Number.parseInt(guiPortInput?.value || '', 10);
+        const defaultPort = protocol === 'https:' ? 443 : 80;
+        const portPart = Number.isFinite(parsedPort) && parsedPort >= 1 && parsedPort <= 65535 && parsedPort !== defaultPort
+            ? `:${parsedPort}`
+            : '';
+
+        target.textContent = `${protocol}//${urlHost}${portPart}/status`;
+    }
+
+    async function copyStatusPageUrl() {
+        const target = document.getElementById('status-page-url');
+        const value = (target?.textContent || '').trim();
+        if (!value) {
+            wbToast('Status URL is empty', 'warning');
+            return;
+        }
+
+        try {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(value);
+            } else {
+                const el = document.createElement('textarea');
+                el.value = value;
+                el.setAttribute('readonly', '');
+                el.style.position = 'absolute';
+                el.style.left = '-9999px';
+                document.body.appendChild(el);
+                el.select();
+                document.execCommand('copy');
+                document.body.removeChild(el);
+            }
+            wbToast('Status URL copied', 'success');
+        } catch (error) {
+            wbToast('Failed to copy status URL', 'danger');
         }
     }
 
@@ -1326,15 +1413,82 @@ Format: IP@PORT#HOSTNAME
         if (el) el.classList.toggle('d-none', !show);
     }
 
-    async function loadPsk() {
+    function isValidWgPsk(value) {
+        const trimmed = (value || '').trim();
+        if (!/^[A-Za-z0-9+/]{43}=$/.test(trimmed)) return false;
         try {
-            const res = await api('GET', '/api/wireguard/settings/psk');
+            return atob(trimmed).length === 32;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isMaskedPskValue(value) {
+        const trimmed = (value || '').trim();
+        return trimmed.includes('*');
+    }
+
+    function setPskValidationState(invalid, message = 'Invalid PSK format (must be 44-char WireGuard key)') {
+        const input = document.getElementById('wg-psk-display');
+        const feedback = document.getElementById('wg-psk-feedback');
+        if (!input || !feedback) return;
+
+        input.classList.toggle('is-invalid', invalid);
+        feedback.classList.toggle('d-none', !invalid);
+        feedback.textContent = message;
+    }
+
+    let lastSavedCustomPsk = null;
+    let cachedMaskedPsk = '';
+    let cachedRevealedPsk = '';
+
+    async function saveCustomPsk(rawValue, options = {}) {
+        const { silentSuccess = false, silentInvalid = false } = options;
+        const psk = (rawValue || '').trim();
+        if (!isValidWgPsk(psk)) {
+            setPskValidationState(true);
+            if (!silentInvalid) {
+                wbToast('Invalid PSK format (must be 44-char WireGuard key)', 'warning');
+            }
+            return false;
+        }
+        if (lastSavedCustomPsk && psk === lastSavedCustomPsk) {
+            setPskValidationState(false);
+            return true;
+        }
+        try {
+            const res = await api('PUT', '/api/wireguard/settings/psk', { psk });
             const display = document.getElementById('wg-psk-display');
+            const maskedValue = res.masked || res.data?.masked || '';
             if (display) {
-                const maskedValue = res.masked || res.data?.masked || '';
                 display.value = maskedValue;
                 display.type = 'password';
             }
+            lastSavedCustomPsk = psk;
+            cachedMaskedPsk = maskedValue;
+            cachedRevealedPsk = psk;
+            setPskValidationState(false);
+            if (!silentSuccess) {
+                wbToast('PresharedKey saved', 'success');
+            }
+            return true;
+        } catch (error) {
+            wbToast('Failed to save PSK: ' + error.message, 'danger');
+            return false;
+        }
+    }
+
+    async function loadPsk() {
+        try {
+            const res = await api('GET', '/api/wireguard/settings/psk');
+            const maskedValue = res.masked || res.data?.masked || '';
+            const display = document.getElementById('wg-psk-display');
+            if (display) {
+                display.value = maskedValue;
+                display.type = 'password';
+            }
+            cachedMaskedPsk = maskedValue;
+            setPskValidationState(false);
         } catch (error) {
             console.warn('Failed to load PSK:', error.message);
         }
@@ -1342,6 +1496,7 @@ Format: IP@PORT#HOSTNAME
 
     // WG settings auto-save with debouncing
     let wgSettingsSaveTimeout = null;
+    let wgSettingsLoaded = false;  // Prevent saves before initial load completes
 
     // Strict IPv4 CIDR validator: checks octet range (0-255) and prefix (0-32)
     function isValidIPv4Cidr(value) {
@@ -1388,7 +1543,13 @@ Format: IP@PORT#HOSTNAME
         return { value: parsed, valid: true };
     }
 
-    async function saveWgSettings() {
+    async function saveWgSettings(options = {}) {
+        // Prevent saving before settings are loaded (race condition protection)
+        if (!wgSettingsLoaded) {
+            console.warn('[WG Settings] Save blocked - settings not yet loaded');
+            return;
+        }
+        const { silentSuccess = false } = options;
         const payload = {};
         const fqdn = document.getElementById('wg-fqdn').value.trim();
         const guiPort = document.getElementById('gui-port').value;
@@ -1399,21 +1560,21 @@ Format: IP@PORT#HOSTNAME
 
         const guiPortResult = parseOptionalInt(guiPort, 1, 65535, 'HTTP Port (GUI)');
         if (!guiPortResult.valid) {
-            wbAlert(guiPortResult.message, 'warning');
+            wbToast(guiPortResult.message, 'warning');
             return;
         }
         payload.gui_port = guiPortResult.value;
 
         const mtuResult = parseOptionalInt(mtu, 1280, 9000, 'MTU');
         if (!mtuResult.valid) {
-            wbAlert(mtuResult.message, 'warning');
+            wbToast(mtuResult.message, 'warning');
             return;
         }
         payload.wg_mtu = mtuResult.value;
 
         const keepaliveResult = parseOptionalInt(keepalive, 0, 600, 'Persistent Keepalive');
         if (!keepaliveResult.valid) {
-            wbAlert(keepaliveResult.message, 'warning');
+            wbToast(keepaliveResult.message, 'warning');
             return;
         }
         payload.wg_persistent_keepalive = keepaliveResult.value;
@@ -1426,6 +1587,9 @@ Format: IP@PORT#HOSTNAME
         const pskToggle = document.getElementById('wg-use-psk');
         if (pskToggle) payload.wg_use_psk = pskToggle.checked ? '1' : '0';
 
+        const statusToggle = document.getElementById('enable-status-page');
+        if (statusToggle) payload.enable_status_page = statusToggle.checked ? '1' : '0';
+
         // Guard against empty payload
         if (Object.keys(payload).length === 0) {
             return;
@@ -1433,24 +1597,31 @@ Format: IP@PORT#HOSTNAME
 
         try {
             await api('PATCH', '/api/wireguard/settings', payload);
-            wbToast('Settings saved', 'success');
+            if (!silentSuccess) {
+                wbToast('Settings saved', 'success');
+            }
         } catch (error) {
-            wbAlert('Failed to save settings: ' + error.message, 'danger');
+            wbToast('Failed to save settings: ' + error.message, 'danger');
         }
     }
 
     // FQDN Auto-Detect
-    document.getElementById('btn-fqdn-detect')?.addEventListener('click', () => {
-        const detected = detectHostname();
-        if (!detected) {
-            wbToast('Could not detect hostname', 'warning');
-            return;
-        }
-        const input = document.getElementById('wg-fqdn');
-        input.value = detected;
-        input.dispatchEvent(new Event('input'));
-        wbToast(`Detected: ${detected}`, 'success');
-    });
+    const fqdnDetectBtn = document.getElementById('btn-fqdn-detect');
+    if (fqdnDetectBtn && fqdnDetectBtn.dataset.bound !== '1') {
+        fqdnDetectBtn.dataset.bound = '1';
+        fqdnDetectBtn.addEventListener('click', async () => {
+            const detected = detectHostname();
+            if (!detected) {
+                wbToast('Could not detect hostname', 'warning');
+                return;
+            }
+            const input = document.getElementById('wg-fqdn');
+            input.value = detected;
+            updateStatusPageUrlPreview();
+            await saveWgSettings({ silentSuccess: true });
+            wbToast(`Detected: ${detected}`, 'success');
+        });
+    }
 
     // Certificate Domain Auto-Detect
     document.getElementById('btn-cert-domain-detect')?.addEventListener('click', () => {
@@ -1468,6 +1639,9 @@ Format: IP@PORT#HOSTNAME
         wgSettingsSaveTimeout = setTimeout(saveWgSettings, 800);
     }
 
+    // Cancel pending debounced saves on page unload to prevent stale writes
+    window.addEventListener('pagehide', () => clearTimeout(wgSettingsSaveTimeout));
+
     // PSK toggle handler (with race condition protection)
     const pskToggle = document.getElementById('wg-use-psk');
     if (pskToggle) {
@@ -1477,23 +1651,36 @@ Format: IP@PORT#HOSTNAME
                 togglePskDetails(this.checked);
                 if (this.checked) {
                     const display = document.getElementById('wg-psk-display');
-                    if (!display.value) {
+                    try {
+                        let existingMasked = '';
                         try {
-                            const res = await api('POST', '/api/wireguard/settings/generate-psk');
-                            display.value = res.masked || res.data?.masked || '';
-                            display.type = 'password';
-                            wbToast('PresharedKey generated', 'success');
-                        } catch (err) {
-                            wbAlert('Failed to generate PSK: ' + err.message, 'danger');
-                            this.checked = false;
-                            togglePskDetails(false);
-                            return;
+                            const current = await api('GET', '/api/wireguard/settings/psk');
+                            existingMasked = current.masked || current.data?.masked || '';
+                        } catch (loadErr) {
+                            console.warn('Failed to load existing PSK, attempting to generate a new one:', loadErr.message);
                         }
-                    } else {
-                        await loadPsk();
+
+                        if (existingMasked) {
+                            display.value = existingMasked;
+                            display.type = 'password';
+                            cachedMaskedPsk = existingMasked;
+                        } else {
+                            const res = await api('POST', '/api/wireguard/settings/generate-psk');
+                            const maskedValue = res.masked || res.data?.masked || '';
+                            display.value = maskedValue;
+                            display.type = 'password';
+                            cachedMaskedPsk = maskedValue;
+                            cachedRevealedPsk = '';
+                            wbToast('PresharedKey generated', 'success');
+                        }
+                    } catch (err) {
+                        wbToast('Failed to initialize PSK: ' + err.message, 'danger');
+                        this.checked = false;
+                        togglePskDetails(false);
+                        return;
                     }
                 }
-                await saveWgSettings();
+                await saveWgSettings({ silentSuccess: true });
             } finally {
                 this.disabled = false;
             }
@@ -1508,17 +1695,25 @@ Format: IP@PORT#HOSTNAME
             const icon = this.querySelector('.material-icons');
             if (display.type === 'password') {
                 try {
-                    const res = await api('GET', '/api/wireguard/settings/psk?reveal=true');
-                    display.value = res.key || res.data?.key || display.value;
+                    if (!cachedRevealedPsk) {
+                        const res = await api('GET', '/api/wireguard/settings/psk?reveal=true');
+                        cachedRevealedPsk = res.key || res.data?.key || '';
+                    }
+                    display.value = cachedRevealedPsk || display.value;
                     display.type = 'text';
+                    setPskValidationState(false);
                     icon.textContent = 'visibility_off';
                 } catch (e) {
                     wbToast('Cannot reveal key', 'warning');
                 }
             } else {
-                const res = await api('GET', '/api/wireguard/settings/psk');
-                display.value = res.masked || res.data?.masked || '';
+                if (!cachedMaskedPsk) {
+                    const res = await api('GET', '/api/wireguard/settings/psk');
+                    cachedMaskedPsk = res.masked || res.data?.masked || '';
+                }
+                display.value = cachedMaskedPsk;
                 display.type = 'password';
+                setPskValidationState(false);
                 icon.textContent = 'visibility';
             }
         });
@@ -1573,10 +1768,50 @@ Format: IP@PORT#HOSTNAME
                 const maskedValue = res.masked || res.data?.masked || '';
                 display.value = maskedValue;
                 display.type = 'password';
+                cachedMaskedPsk = maskedValue;
+                cachedRevealedPsk = '';
+                setPskValidationState(false);
                 wbToast('New PresharedKey generated', 'success');
             } catch (err) {
-                wbAlert('Failed to generate PSK: ' + err.message, 'danger');
+                wbToast('Failed to generate PSK: ' + err.message, 'danger');
             }
+        });
+    }
+
+    // PSK autosave for custom input (validated)
+    let pskSaveTimeout = null;
+    const pskDisplayInput = document.getElementById('wg-psk-display');
+    if (pskDisplayInput) {
+        pskDisplayInput.addEventListener('input', function () {
+            const pskToggleInput = document.getElementById('wg-use-psk');
+            if (!pskToggleInput?.checked) return;
+
+            const candidate = this.value.trim();
+            if (!candidate || isMaskedPskValue(candidate)) {
+                setPskValidationState(false);
+                return;
+            }
+
+            setPskValidationState(!isValidWgPsk(candidate));
+
+            clearTimeout(pskSaveTimeout);
+            pskSaveTimeout = setTimeout(async () => {
+                await saveCustomPsk(candidate, { silentSuccess: false, silentInvalid: true });
+            }, 800);
+        });
+
+        pskDisplayInput.addEventListener('blur', async function () {
+            const pskToggleInput = document.getElementById('wg-use-psk');
+            if (!pskToggleInput?.checked) return;
+
+            const candidate = this.value.trim();
+            if (!candidate || isMaskedPskValue(candidate)) {
+                setPskValidationState(false);
+                return;
+            }
+
+            clearTimeout(pskSaveTimeout);
+            await saveCustomPsk(candidate, { silentSuccess: false, silentInvalid: true });
         });
     }
 
@@ -1586,12 +1821,101 @@ Format: IP@PORT#HOSTNAME
     const guiLocalhostOnly = document.getElementById('gui-localhost-only');
     const wgMtu = document.getElementById('wg-mtu');
     const wgKeepalive = document.getElementById('wg-keepalive');
+    const enableStatusPage = document.getElementById('enable-status-page');
 
-    if (wgFqdn) wgFqdn.addEventListener('input', saveWgSettingsDebounced);
-    if (guiPort) guiPort.addEventListener('change', saveWgSettingsDebounced);
+    if (wgFqdn) {
+        wgFqdn.addEventListener('input', () => {
+            updateStatusPageUrlPreview();
+            saveWgSettingsDebounced();
+        });
+    }
+    if (guiPort) {
+        guiPort.addEventListener('change', () => {
+            updateStatusPageUrlPreview();
+            saveWgSettingsDebounced();
+        });
+    }
     if (guiLocalhostOnly) guiLocalhostOnly.addEventListener('change', saveWgSettings);
     if (wgMtu) wgMtu.addEventListener('change', saveWgSettingsDebounced);
     if (wgKeepalive) wgKeepalive.addEventListener('change', saveWgSettingsDebounced);
+    if (enableStatusPage) enableStatusPage.addEventListener('change', saveWgSettings);
+
+    const copyStatusPageUrlBtn = document.getElementById('btn-copy-status-page-url');
+    if (copyStatusPageUrlBtn) {
+        copyStatusPageUrlBtn.addEventListener('click', () => {
+            void copyStatusPageUrl();
+        });
+    }
+
+    const resetTsdbBtn = document.getElementById('btn-reset-tsdb');
+    if (resetTsdbBtn) {
+        resetTsdbBtn.addEventListener('click', () => {
+            void resetTsdb();
+        });
+    }
+
+    const checkUpdatesBtn = document.getElementById('btn-check-updates');
+    if (checkUpdatesBtn) {
+        checkUpdatesBtn.addEventListener('click', () => {
+            void checkForUpdates(true);
+        });
+    }
+
+    const openCreateInterfaceModalBtn = document.getElementById('btn-open-create-interface-modal');
+    if (openCreateInterfaceModalBtn) {
+        openCreateInterfaceModalBtn.addEventListener('click', () => {
+            prepareCreateInterfaceModal();
+        });
+    }
+
+    const updateBlocklistBtn = document.getElementById('btn-update-blocklist');
+    if (updateBlocklistBtn) {
+        updateBlocklistBtn.addEventListener('click', () => {
+            void updateBlocklist();
+        });
+    }
+
+    const saveCustomRulesBtn = document.getElementById('save-custom-rules-btn');
+    if (saveCustomRulesBtn) {
+        saveCustomRulesBtn.addEventListener('click', () => {
+            void saveCustomRules();
+        });
+    }
+
+    const validateDnsBtn = document.getElementById('validate-dns-btn');
+    if (validateDnsBtn) {
+        validateDnsBtn.addEventListener('click', () => {
+            void validateDnsServers();
+        });
+    }
+
+    const purgeDnsLogsBtn = document.getElementById('btn-purge-dns-logs');
+    if (purgeDnsLogsBtn) {
+        purgeDnsLogsBtn.addEventListener('click', () => {
+            void purgeDnsLogs();
+        });
+    }
+
+    const refreshCertificatesBtn = document.getElementById('btn-refresh-certificates');
+    if (refreshCertificatesBtn) {
+        refreshCertificatesBtn.addEventListener('click', () => {
+            void refreshCertificates();
+        });
+    }
+
+    const requestCertificateBtn = document.getElementById('btn-request-certificate');
+    if (requestCertificateBtn) {
+        requestCertificateBtn.addEventListener('click', () => {
+            void requestCertificate();
+        });
+    }
+
+    const ifaceSubmitBtn = document.getElementById('iface-submit-btn');
+    if (ifaceSubmitBtn) {
+        ifaceSubmitBtn.addEventListener('click', () => {
+            void submitInterfaceForm();
+        });
+    }
 
     // WireGuard interface management
     let editingInterfaceName = null;
@@ -1738,7 +2062,7 @@ Format: IP@PORT#HOSTNAME
             const actionText = action === 'up' ? 'started' : (action === 'down' ? 'stopped' : 'restarted');
             wbToast(`Interface '${name}' successfully ${actionText}`, 'success');
         } catch (e) {
-            wbAlert(`Failed to ${action} interface: ` + e.message, 'danger');
+            wbToast(`Failed to ${action} interface: ` + e.message, 'danger');
         }
     }
 
@@ -1755,29 +2079,29 @@ Format: IP@PORT#HOSTNAME
         const frontendPort = frontendEnabled ? Number.parseInt(frontendPortRaw, 10) : null;
 
         if (!name || !address) {
-            wbAlert('Please fill in name and address', 'warning');
+            wbToast('Please fill in name and address', 'warning');
             return;
         }
 
         // Validate interface name (1-15 alphanumeric chars, _, -)
         if (!/^[a-zA-Z0-9_-]{1,15}$/.test(name)) {
-            wbAlert('Interface name must be 1–15 alphanumeric characters (a-z, 0-9, _, -)', 'warning');
+            wbToast('Interface name must be 1–15 alphanumeric characters (a-z, 0-9, _, -)', 'warning');
             return;
         }
 
         // Validate CIDR notation (octet range 0-255, mask 0-32)
         if (!isValidIPv4Cidr(address)) {
-            wbAlert('IPv4 address must be in CIDR format with valid octets and prefix (e.g. 10.13.13.1/24)', 'warning');
+            wbToast('IPv4 address must be in CIDR format with valid octets and prefix (e.g. 10.13.13.1/24)', 'warning');
             return;
         }
 
         if (address6 && !isValidIPv6Cidr(address6)) {
-            wbAlert('IPv6 address must be valid CIDR notation (e.g. fd13:13:13::1/64)', 'warning');
+            wbToast('IPv6 address must be valid CIDR notation (e.g. fd13:13:13::1/64)', 'warning');
             return;
         }
 
         if (frontendEnabled && (!Number.isFinite(frontendPort) || frontendPort < 1 || frontendPort > 65535)) {
-            wbAlert('Docker Frontend Port must be a number between 1 and 65535', 'warning');
+            wbToast('Docker Frontend Port must be a number between 1 and 65535', 'warning');
             return;
         }
 
@@ -1792,13 +2116,14 @@ Format: IP@PORT#HOSTNAME
                 dns: dns
             });
 
+            document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('ifaceModal')).hide();
             prepareCreateInterfaceModal();
 
             wbToast(`Interface '${name}' created successfully!`, 'success');
             await refreshInterfaces();
         } catch (error) {
-            wbAlert('Failed to create interface: ' + error.message, 'danger');
+            wbToast('Failed to create interface: ' + error.message, 'danger');
         } finally {
             setInterfaceSubmitBusy(false);
         }
@@ -1840,7 +2165,7 @@ Format: IP@PORT#HOSTNAME
             const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
             modal.show();
         } catch (error) {
-            wbAlert('Failed to load interface config: ' + error.message, 'danger');
+            wbToast('Failed to load interface config: ' + error.message, 'danger');
         }
     }
 
@@ -1858,17 +2183,17 @@ Format: IP@PORT#HOSTNAME
         const frontendPort = frontendEnabled ? Number.parseInt(frontendPortRaw, 10) : null;
 
         if (!address) {
-            wbAlert('Please fill in an IPv4 address', 'warning');
+            wbToast('Please fill in an IPv4 address', 'warning');
             return;
         }
 
         if (address6 && !isValidIPv6Cidr(address6)) {
-            wbAlert('IPv6 address must be valid CIDR notation (e.g. fd13:13:13::1/64)', 'warning');
+            wbToast('IPv6 address must be valid CIDR notation (e.g. fd13:13:13::1/64)', 'warning');
             return;
         }
 
         if (frontendEnabled && (!Number.isFinite(frontendPort) || frontendPort < 1 || frontendPort > 65535)) {
-            wbAlert('Docker Frontend Port must be a number between 1 and 65535', 'warning');
+            wbToast('Docker Frontend Port must be a number between 1 and 65535', 'warning');
             return;
         }
 
@@ -1885,6 +2210,7 @@ Format: IP@PORT#HOSTNAME
 
             const updatedName = editingInterfaceName;
 
+            document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('ifaceModal')).hide();
             prepareCreateInterfaceModal();
 
@@ -1894,7 +2220,7 @@ Format: IP@PORT#HOSTNAME
             }
             await refreshInterfaces();
         } catch (error) {
-            wbAlert('Failed to update interface: ' + error.message, 'danger');
+            wbToast('Failed to update interface: ' + error.message, 'danger');
         } finally {
             setInterfaceSubmitBusy(false);
         }
@@ -1916,7 +2242,7 @@ Format: IP@PORT#HOSTNAME
             wbToast(`Interface '${name}' deleted`, 'success');
             await refreshInterfaces();
         } catch (error) {
-            wbAlert('Failed to delete interface: ' + (error?.message || String(error)), 'danger');
+            wbToast('Failed to delete interface: ' + (error?.message || String(error)), 'danger');
         }
     }
 
@@ -2008,7 +2334,7 @@ Format: IP@PORT#HOSTNAME
         const staging = document.getElementById('cert-staging').checked;
 
         if (!domain || !email) {
-            wbAlert('Please fill in all fields', 'warning');
+            wbToast('Please fill in all fields', 'warning');
             return;
         }
 
@@ -2022,12 +2348,13 @@ Format: IP@PORT#HOSTNAME
                 staging: staging
             });
 
+            document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('certModal')).hide();
             document.getElementById('cert-form').reset();
             wbToast('Certificate issued successfully!', 'success');
             await refreshCertificates();
         } catch (error) {
-            wbAlert('Failed to request certificate: ' + error.message, 'danger');
+            wbToast('Failed to request certificate: ' + error.message, 'danger');
         } finally {
             spinner.classList.add('d-none');
         }
@@ -2041,7 +2368,7 @@ Format: IP@PORT#HOSTNAME
             wbToast('Certificate deleted', 'success');
             await refreshCertificates();
         } catch (error) {
-            wbAlert('Failed to delete certificate: ' + error.message, 'danger');
+            wbToast('Failed to delete certificate: ' + error.message, 'danger');
         }
     }
 
@@ -2059,7 +2386,7 @@ Format: IP@PORT#HOSTNAME
             wbToast('Certificate renewed successfully!', 'success');
             await refreshCertificates();
         } catch (error) {
-            wbAlert('Failed to renew certificate: ' + error.message, 'danger');
+            wbToast('Failed to renew certificate: ' + error.message, 'danger');
         }
     }
 
@@ -2109,8 +2436,7 @@ Format: IP@PORT#HOSTNAME
                             </div>
                             <div class="form-check form-switch m-0">
                                 <input class="form-check-input" type="checkbox" id="${sourceId}"
-                                    data-url="${dataUrl}" ${checked}
-                                    onchange="toggleBlocklistCardState(this); saveBlocklistsDebounced()">
+                                    data-url="${dataUrl}" ${checked}>
                             </div>
                         </div>
                         <div class="blocklist-hero-meta">
@@ -2121,6 +2447,7 @@ Format: IP@PORT#HOSTNAME
             }
             document.getElementById('blocklist-sources').innerHTML =
                 html || '<div class="text-muted text-center py-3">No blocklist sources available</div>';
+            bindBlocklistSourceListeners();
             initBlocklistTooltips();
             const updEl = document.getElementById('blocklist-last-update');
             const updValueEl = updEl?.querySelector('.blocklist-last-value');
@@ -2161,6 +2488,15 @@ Format: IP@PORT#HOSTNAME
         });
     }
 
+    function bindBlocklistSourceListeners() {
+        document.querySelectorAll('#blocklist-sources input[type="checkbox"][data-url]').forEach(cb => {
+            cb.addEventListener('change', () => {
+                toggleBlocklistCardState(cb);
+                saveBlocklistsDebounced();
+            });
+        });
+    }
+
     function toggleBlocklistCardState(checkboxEl) {
         const card = checkboxEl?.closest('.blocklist-hero-card');
         if (!card) return;
@@ -2183,25 +2519,22 @@ Format: IP@PORT#HOSTNAME
             const res = await api('POST', '/api/dns/blocklist/sources', {
                 urls: enabledUrls,
             });
-            const count = res?.domains_blocked;
-            const msg = count !== undefined
-                ? `Blocklist updated (${count.toLocaleString()} domains)`
-                : 'Blocklist selection saved';
-            wbToast(msg, 'success');
-            // Refresh to show updated domain count
-            loadBlocklistSources();
+            wbToast(res?.message || 'Blocklist update started', 'success');
+            // Refresh after a short delay to show updated state
+            setTimeout(() => loadBlocklistSources(), 2000);
         } catch (error) {
-            wbAlert('Failed to save blocklists: ' + error.message, 'danger');
+            wbToast('Failed to save blocklists: ' + error.message, 'danger');
         }
     }
 
     async function updateBlocklist() {
         try {
             const res = await api('POST', '/api/dns/blocklist/update');
-            wbToast(res?.message || 'Blocklists updated', 'success');
-            await loadBlocklistSources();
+            wbToast(res?.message || 'Blocklist update started', 'success');
+            // Refresh after a short delay to show updated state
+            setTimeout(() => loadBlocklistSources(), 2000);
         } catch (e) {
-            wbAlert('Update failed: ' + e.message, 'danger');
+            wbToast('Update failed: ' + e.message, 'danger');
         }
     }
 
@@ -2289,7 +2622,7 @@ Format: IP@PORT#HOSTNAME
         const servers = parseDnsUpstreamInput(upstreamInput.value);
 
         if (servers.length === 0) {
-            wbAlert('No DNS servers entered', 'warning');
+            wbToast('No DNS servers entered', 'warning');
             return;
         }
 
@@ -2303,7 +2636,7 @@ Format: IP@PORT#HOSTNAME
         }
 
         if (syntaxErrors.length > 0) {
-            wbAlert('Syntax errors:\n' + syntaxErrors.join('\n'), 'danger');
+            wbToast('Syntax errors:\n' + syntaxErrors.join('\n'), 'danger');
             return;
         }
 
@@ -2327,12 +2660,12 @@ Format: IP@PORT#HOSTNAME
 
                 statusEl.innerHTML = `<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> ${res.failed_count} server(s) failed`;
                 statusEl.className = 'small text-danger';
-                wbAlert('DNS server validation failed:\n' + failedServers, 'danger');
+                wbToast('DNS server validation failed:\n' + failedServers, 'danger');
             }
         } catch (error) {
             statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Test failed';
             statusEl.className = 'small text-danger';
-            wbAlert('DNS validation error: ' + error.message, 'danger');
+            wbToast('DNS validation error: ' + error.message, 'danger');
         } finally {
             btn.disabled = false;
         }
@@ -2469,7 +2802,7 @@ Format: IP@PORT#HOSTNAME
                 }
             }
             if (syntaxErrors.length > 0) {
-                wbAlert('DNS syntax errors:\n' + syntaxErrors.join('\n'), 'danger');
+                wbToast('DNS syntax errors:\n' + syntaxErrors.join('\n'), 'danger');
                 return;
             }
 
@@ -2491,7 +2824,7 @@ Format: IP@PORT#HOSTNAME
                         statusEl.innerHTML = `<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> ${testRes.failed_count} failed`;
                         statusEl.className = 'small text-danger';
                     }
-                    wbAlert('DNS validation failed - settings not saved:\n' + failedServers, 'danger');
+                    wbToast('DNS validation failed - settings not saved:\n' + failedServers, 'danger');
                     return;
                 }
                 if (statusEl) {
@@ -2503,7 +2836,7 @@ Format: IP@PORT#HOSTNAME
                     statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Test failed';
                     statusEl.className = 'small text-danger';
                 }
-                wbAlert('DNS validation error: ' + error.message, 'danger');
+                wbToast('DNS validation error: ' + error.message, 'danger');
                 return;
             }
         }
@@ -2539,7 +2872,7 @@ Format: IP@PORT#HOSTNAME
                 wbToast('DNS settings saved', 'success');
             }
         } catch (error) {
-            wbAlert('Failed to save DNS settings: ' + error.message, 'danger');
+            wbToast('Failed to save DNS settings: ' + error.message, 'danger');
         } finally {
             dnsConfigSaving = false;
             if (dnsConfigSavePending) {
@@ -2594,7 +2927,7 @@ Format: IP@PORT#HOSTNAME
             wbToast(res.message || 'Metrics reset', 'success');
             loadTsdbStats();
         } catch (e) {
-            wbAlert('Failed to reset metrics: ' + e.message, 'danger');
+            wbToast('Failed to reset metrics: ' + e.message, 'danger');
         }
     }
 
@@ -2605,7 +2938,7 @@ Format: IP@PORT#HOSTNAME
             const res = await api('DELETE', '/api/dns/logs');
             wbToast(res.message || 'DNS logs deleted', 'success');
         } catch (e) {
-            wbAlert('Failed to delete DNS logs: ' + e.message, 'danger');
+            wbToast('Failed to delete DNS logs: ' + e.message, 'danger');
         }
     }
 
@@ -2616,7 +2949,10 @@ Format: IP@PORT#HOSTNAME
             const res = await api('GET', '/api/dns/custom-rules');
             const data = res.data || res;
             const input = document.getElementById('custom-rules-input');
-            if (input) input.value = data.rules || '';
+            if (input) {
+                const rulesText = typeof data.rules === 'string' ? data.rules : '';
+                input.value = rulesText.trim() ? rulesText : '';
+            }
             updateCustomRulesCount(data.rule_count || 0);
             showCustomRulesErrors(data.errors || []);
         } catch (e) {
@@ -2634,15 +2970,32 @@ Format: IP@PORT#HOSTNAME
         if (!container) return;
         if (!errors || errors.length === 0) {
             container.style.display = 'none';
-            container.innerHTML = '';
+            container.replaceChildren();
             return;
         }
         container.style.display = 'block';
-        const items = errors.slice(0, 5).map(e =>
-            `<div class="text-danger small"><span class="material-icons align-middle me-1" style="font-size: 14px;">error</span>Line ${e.line}: ${e.error}</div>`
-        ).join('');
-        const extra = errors.length > 5 ? `<div class="text-muted small">… and ${errors.length - 5} more errors</div>` : '';
-        container.innerHTML = items + extra;
+        container.replaceChildren();
+
+        errors.slice(0, 5).forEach(e => {
+            const div = document.createElement('div');
+            div.className = 'text-danger small';
+
+            const icon = document.createElement('span');
+            icon.className = 'material-icons align-middle me-1';
+            icon.style.fontSize = '14px';
+            icon.textContent = 'error';
+
+            div.appendChild(icon);
+            div.appendChild(document.createTextNode(`Line ${e?.line ?? '–'}: ${e?.error ?? 'Unknown error'}`));
+            container.appendChild(div);
+        });
+
+        if (errors.length > 5) {
+            const extra = document.createElement('div');
+            extra.className = 'text-muted small';
+            extra.textContent = `… and ${errors.length - 5} more errors`;
+            container.appendChild(extra);
+        }
     }
 
     async function saveCustomRules() {
@@ -2679,7 +3032,7 @@ Format: IP@PORT#HOSTNAME
                 }
             }
         } catch (e) {
-            wbAlert('Failed to save custom rules: ' + e.message, 'danger');
+            wbToast('Failed to save custom rules: ' + e.message, 'danger');
             if (statusEl) {
                 statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Failed';
                 statusEl.className = 'small text-danger';
@@ -2703,6 +3056,13 @@ Format: IP@PORT#HOSTNAME
         submitInterfaceForm,
     };
 
+    const refreshInterfacesBtn = document.getElementById('btn-refresh-interfaces');
+    if (refreshInterfacesBtn) {
+        refreshInterfacesBtn.addEventListener('click', () => {
+            void refreshInterfaces();
+        });
+    }
+
     // Cleanup debounced timers on navigation
     window.addEventListener('pagehide', () => {
         clearTimeout(wgSettingsSaveTimeout);
@@ -2710,8 +3070,8 @@ Format: IP@PORT#HOSTNAME
         clearTimeout(dnsConfigSaveTimeout);
     });
 
-    // Initialize tabs on page load
-    initTabs();
+    // Initialize tabs on page load (await to ensure settings are loaded before user interaction)
+    await initTabs();
 })();
 </script>
 {% endblock %}

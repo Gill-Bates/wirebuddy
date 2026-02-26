@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WireBuddy Status</title>
+    <script src="/static/js/theme.js"></script>
+    <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/vendor/material-icons.css" rel="stylesheet">
+    <link href="/static/css/style.css" rel="stylesheet">
+    <style>
+        .status-navbar-actions {
+            gap: 0.45rem;
+        }
+
+        .status-navbar-actions .status-icon-btn {
+            width: 2.25rem;
+            height: 2.25rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 0.375rem;
+        }
+
+        .status-navbar-actions .status-icon-btn .material-icons {
+            font-size: 1.2rem;
+            line-height: 1;
+        }
+
+        @media (max-width: 575.98px) {
+            .status-navbar-actions {
+                gap: 0.25rem;
+            }
+
+            .status-navbar-actions .status-icon-btn {
+                width: 2.5rem;
+                height: 2.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand d-flex align-items-center" href="/status">
+                <img src="/static/img/wirebuddy_1c.svg" alt="WireBuddy" class="navbar-logo">
+            </a>
+            <div class="d-flex align-items-center status-navbar-actions">
+                <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn status-icon-btn"
+                    onclick="toggleTheme()" aria-label="Toggle theme">
+                    <span class="material-icons" id="theme-icon">dark_mode</span>
+                </button>
+                <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn status-icon-btn"
+                    onclick="window.location.reload()" aria-label="Reload status checks" title="Reload status checks">
+                    <span class="material-icons">refresh</span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container py-4 py-md-5" style="max-width: 860px;">
+
+        <div class="card mb-3">
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-12 col-md-6">
+                        <div class="small text-muted">Inbound IP</div>
+                        <div class="font-monospace">{{ client_ip }}</div>
+                    </div>
+                    <div class="col-12 col-md-6">
+                        <div class="small text-muted">Public Client IP</div>
+                        <div class="font-monospace">{{ public_client_ip }}</div>
+                        {% if public_client_country_code or public_client_city or public_client_as_org %}
+                        <div class="small text-muted d-flex align-items-center gap-2 mt-1">
+                            {% if public_client_country_code %}
+                            <img alt="{{ public_client_country_code|upper }} flag"
+                                 src="/static/vendor/images/flags/{{ public_client_country_code }}.svg"
+                                 style="width: 16px; height: 12px; object-fit: cover; border-radius: 2px;">
+                            {% endif %}
+                            <span>
+                                {% if public_client_city %}{{ public_client_city }}{% endif %}
+                                {% if public_client_city and public_client_as_org %} · {% endif %}
+                                {% if public_client_as_org %}{{ public_client_as_org }}{% endif %}
+                            </span>
+                        </div>
+                        {% endif %}
+                    </div>
+                    <div class="col-12 col-md-6">
+                        <div class="small text-muted">Outbound IP</div>
+                        <div class="font-monospace">{{ outbound_ip }}</div>
+                    </div>
+                    <div class="col-12">
+                        <div class="small text-muted">WireGuard Interface</div>
+                        <div class="font-monospace">{{ interface_name }}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <section class="d-grid gap-3">
+            {% for check in checks %}
+            <article class="card">
+                <div class="card-body d-flex justify-content-between align-items-start gap-3">
+                    <div>
+                        <h2 class="h6 mb-1">{{ check.title }}</h2>
+                        <p class="mb-0 text-muted small">{{ check.detail }}</p>
+                    </div>
+                    {% if check.state == 'ok' %}
+                    <span class="badge text-bg-success">{{ check.label }}</span>
+                    {% elif check.state == 'error' %}
+                    <span class="badge text-bg-danger">{{ check.label }}</span>
+                    {% else %}
+                    <span class="badge text-bg-warning text-dark">{{ check.label }}</span>
+                    {% endif %}
+                </div>
+            </article>
+            {% endfor %}
+        </section>
+    </main>
+</body>
+</html>

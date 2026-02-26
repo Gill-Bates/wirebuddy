@@ -65,7 +65,7 @@ does not expose port 8000. To access the UI directly, add `8000:8000` under
 ```bash
 python3.13 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python main.py
+python run.py
 ```
 
 ---
@@ -75,11 +75,11 @@ python main.py
 | Category | Highlights |
 |---|---|
 | 🔒 **WireGuard VPN** | Multi-interface management, automatic keypair generation, routing presets (Full Tunnel / Isolated / Custom), QR codes for mobile setup |
-| 🌍 **DNS Ad-Blocking** | Integrated Unbound resolver with blocklists (StevenBlack, EasyList), DNS-over-TLS, real-time query log, DNSSEC |
+| 🌍 **DNS Ad-Blocking** | Integrated Unbound resolver with blocklists (StevenBlack, HaGeZi Pro), DNS-over-TLS, real-time query log, DNSSEC, Query-Log row actions (Block/Unblock global or per-client), client-scoped custom rules (`$client=`) |
 | 📊 **Monitoring** | Built-in time-series database, per-peer traffic charts, connection status dashboard, auto-refresh |
 | 🗺️ **GeoIP** | MaxMind GeoLite2 integration, interactive map with heatmap, country flags & ASN badges |
 | 🔐 **Let's Encrypt** | Built-in ACME client with HTTP-01 challenge, certificate management UI |
-| 👥 **User Management** | Multi-user roles (admin/user), login tracking, token lifecycle |
+| 👥 **User Management** | Multi-user roles (admin/user), MFA (TOTP) for additional account protection, login tracking, token lifecycle |
 | 🎨 **Web UI** | Responsive Bootstrap 5, dark/light/auto theme, Material Icons |
 
 ---
@@ -94,6 +94,13 @@ Environment variables (via `settings.env` or Docker env):
 | `WIREBUDDY_DATA_DIR` | `/data` | Persistent data directory |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 
+### Internal Status Page (`/status`)
+
+- Enable it in **Settings → General → Enable Status Page** (admin only).
+- The endpoint is available at `/status` without login.
+- Access is restricted to WireGuard-internal client IPs; requests from outside return `403 Forbidden`.
+- If disabled, `/status` returns a defined disabled response (`404` with a lightweight page).
+
 ---
 
 ## 🛡️ Security
@@ -105,7 +112,7 @@ Environment variables (via `settings.env` or Docker env):
 | **Auth tokens** | SHA-256 hashed before storage, expiry enforced |
 | **CSRF** | Double-submit cookie + Origin header validation |
 | **Brute-force** | Rate limiting + progressive IP lockout with backoff |
-| **Proxy trust** | `X-Forwarded-For` only accepted from configured proxies |
+| **Proxy trust** | `X-Forwarded-For` automatically trusted from private/loopback addresses (e.g. local reverse proxy); no manual configuration required |
 | **Input validation** | Strict regex for interface names; Pydantic for all payloads |
 | **Container** | `no-new-privileges`, minimal capabilities (`NET_ADMIN`) |
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/api/wireguard_interfaces.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """WireGuard interface management endpoints (list/get/up/down)."""
@@ -67,7 +67,7 @@ async def list_interfaces(
 			"is_active": name in active_interfaces,
 		})
 	
-	return ok_response(data={"interfaces": result}, interfaces=result)
+	return ok_response(data={"interfaces": result})
 
 
 @router.get("/interfaces/{name}")

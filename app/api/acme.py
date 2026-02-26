@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/api/acme.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """Lightweight ACME client for Let's Encrypt certificates."""
@@ -127,6 +127,11 @@ def _get_certs_dir(config: Config) -> PathLib:
 	certs_dir = config.data_dir / "certs"
 	certs_dir.mkdir(parents=True, exist_ok=True)
 	return certs_dir
+
+
+def get_certs_dir(config: Config) -> PathLib:
+	"""Public wrapper for certificate directory resolution."""
+	return _get_certs_dir(config)
 
 
 def _b64url(data: bytes) -> str:
@@ -354,11 +359,8 @@ class ACMEClient:
 					_log.info("Using existing ACME account: %s", self.account_url)
 					return self.account_url
 			else:
-				# Legacy: no thumbprint file, assume valid but save thumbprint
-				self.account_thumbprint_path.write_text(current_thumbprint)
-				self.account_url = self.account_url_path.read_text().strip()
-				_log.info("Using existing ACME account: %s", self.account_url)
-				return self.account_url
+				_log.warning("ACME account metadata incomplete, re-registering account")
+				self.account_url_path.unlink()
 		
 		# Register new account
 		payload = {
@@ -939,4 +941,4 @@ async def check_renewals(
 			for cert in needs_renewal
 		],
 	}
-	return ok_response(data=data, **data)
+	return ok_response(data=data)

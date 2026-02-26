@@ -1,3 +1,8 @@
+//
+// app/static/js/modal.js
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
 const _wbModalEl = document.getElementById('wbModal');
 window._wbModal = _wbModalEl ? new bootstrap.Modal(_wbModalEl) : null;
 
@@ -21,6 +26,7 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
         document.querySelectorAll('.modal.show').forEach(modal => {
             const bsModal = bootstrap.Modal.getInstance(modal);
             if (bsModal && modal.id !== 'wbModal' && !modal.querySelector('form')) {
+                document.activeElement?.blur();
                 bsModal.hide();
             }
         });
@@ -64,6 +70,7 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
                 clearTimeout(fallback);
                 resolve(val);
             }, { once: true });
+            document.activeElement?.blur();
             window._wbModal.hide();
         }
 

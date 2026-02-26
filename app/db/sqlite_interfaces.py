@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/db/sqlite_interfaces.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """WireGuard interface CRUD operations."""
@@ -104,3 +104,10 @@ def delete_interface(conn: sqlite3.Connection, name: str) -> bool:
 	with transaction(conn):
 		cur = conn.execute("DELETE FROM interfaces WHERE name = ?", (name,))
 		return cur.rowcount > 0
+
+
+def delete_peers_by_interface(conn: sqlite3.Connection, interface: str) -> int:
+	"""Delete all peers belonging to an interface. Returns number of deleted rows."""
+	with transaction(conn):
+		cur = conn.execute("DELETE FROM peers WHERE interface = ?", (interface,))
+		return cur.rowcount

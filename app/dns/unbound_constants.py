@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/dns/unbound_constants.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """Unbound DNS constants and shared utilities."""
@@ -15,6 +15,7 @@ import os
 import re
 import tempfile
 from collections.abc import Generator
+from functools import lru_cache
 from pathlib import Path
 from typing import IO, TypedDict
 
@@ -54,18 +55,21 @@ BLOCKLIST_REGISTRY: dict[str, BlocklistMeta] = {
 		"description": "StevenBlack porn-only hosts",
 		"url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",
 	},
-	"easylist": {
-		"name": "EasyList",
-		"description": "EasyList ad domains (hosts format)",
-		"url": "https://justdomains.github.io/blocklists/lists/easylist-justdomains.txt",
+	"hagezi": {
+		"name": "HaGeZi Pro",
+		"description": "HaGeZi's Pro DNS Blocklist (ads, trackers, malware)",
+		"url": "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/hosts/pro-compressed.txt",
 	},
 }
 
 # Default blocklists for new installations
 # Adult content list ("porn") is available, but disabled by default.
-DEFAULT_BLOCKLIST_IDS = ["ads", "easylist"]
+DEFAULT_BLOCKLIST_IDS = ["ads", "hagezi"]
 
 # Computed once at import; BLOCKLIST_REGISTRY must not change at runtime.
+for _bid in DEFAULT_BLOCKLIST_IDS:
+	if _bid not in BLOCKLIST_REGISTRY:
+		raise ValueError(f"DEFAULT_BLOCKLIST_IDS references unknown ID: {_bid!r}")
 DEFAULT_BLOCKLISTS = [BLOCKLIST_REGISTRY[bid]["url"] for bid in DEFAULT_BLOCKLIST_IDS]
 
 BLOCKLIST_MAX_BYTES = 25 * 1024 * 1024
@@ -74,24 +78,36 @@ BLOCKLIST_MAX_DOMAINS = 1_000_000
 
 # Allowed content types for blocklist downloads
 ALLOWED_BLOCKLIST_CONTENT_TYPES: frozenset[str] = frozenset({
-	"",  # Servers that omit Content-Type (e.g. raw.githubusercontent.com)
 	"text/plain",
 	"text/x-hosts",  # Vendor-prefixed hosts file MIME type
 	"application/octet-stream",
 })
 
 # Regex patterns
-DOMAIN_LABEL_RE = re.compile(r"^[a-z0-9_-]{1,63}$")  # Allow underscores (_dmarc, _acme-challenge)
-HOST_LABEL_RE = re.compile(r"^[a-z0-9-]{1,63}$")
-UPSTREAM_ADDR_RE = re.compile(r"^([^@#]+)(?:@(\d{1,5}))?#(.+)$")
+DOMAIN_LABEL_RE = re.compile(r"^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$")  # Allow underscores (_dmarc, _acme-challenge)
+HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+UPSTREAM_ADDR_RE = re.compile(r"^([^@#\s]+)(?:@(\d{1,5}))?#([^\s#]+)$")
 
 # Exec timeout for subprocess calls (prevents event loop blocking)
 EXEC_TIMEOUT = 5  # seconds
 
 
+@lru_cache(maxsize=1)
 def get_blocklist_file() -> Path:
 	"""Return the path to the blocklist file in data/dns directory."""
 	return get_config().dns_dir / "blocklist.conf"
+
+
+@lru_cache(maxsize=1)
+def get_custom_client_rules_file() -> Path:
+	"""Return the path to generated client-specific custom DNS overrides."""
+	return get_config().dns_dir / "custom-client-rules.conf"
+
+
+@lru_cache(maxsize=1)
+def get_local_data_file() -> Path:
+	"""Return the path to local-data overrides (split-DNS for WG interfaces)."""
+	return get_config().dns_dir / "local-data.conf"
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +121,7 @@ async def run_exec(*cmd: str, timeout: float = EXEC_TIMEOUT) -> tuple[int, str, 
 	FastAPI event loop – which was the root cause of UI freezes.
 	"""
 	proc: asyncio.subprocess.Process | None = None
+	timed_out = False
 	try:
 		proc = await asyncio.create_subprocess_exec(
 			*cmd,
@@ -116,6 +133,7 @@ async def run_exec(*cmd: str, timeout: float = EXEC_TIMEOUT) -> tuple[int, str, 
 		assert code is not None, "returncode should be set after communicate()"
 		return code, stdout.decode(), stderr.decode()
 	except asyncio.TimeoutError:
+		timed_out = True
 		_log.warning("DNS_EXEC_TIMEOUT command timed out after %.1fs: %s", timeout, cmd)
 		return -1, "", f"Command timed out after {timeout}s"
 	except Exception as exc:
@@ -126,6 +144,10 @@ async def run_exec(*cmd: str, timeout: float = EXEC_TIMEOUT) -> tuple[int, str, 
 		if proc is not None and proc.returncode is None:
 			with contextlib.suppress(Exception):
 				proc.kill()
+			if timed_out:
+				with contextlib.suppress(Exception):
+					await asyncio.wait_for(proc.communicate(), timeout=2.0)
+			with contextlib.suppress(Exception):
 				await proc.wait()
 
 
@@ -147,18 +169,28 @@ def atomic_write(path: Path, encoding: str = "utf-8") -> Generator[IO[str], None
 		prefix=f".{path.name}.",
 		suffix=".tmp",
 	)
+	fd_owned_by_fileobj = False
 	try:
 		with os.fdopen(fd, "w", encoding=encoding) as f:
+			fd_owned_by_fileobj = True
 			yield f
 			f.flush()
 			os.fsync(f.fileno())
 		os.replace(tmp_path, path)
 		# Sync parent directory to ensure the rename is durable
-		dir_fd = os.open(str(path.parent), os.O_RDONLY)
 		try:
-			os.fsync(dir_fd)
-		finally:
-			os.close(dir_fd)
+			dir_fd = os.open(str(path.parent), os.O_RDONLY)
+			try:
+				os.fsync(dir_fd)
+			finally:
+				os.close(dir_fd)
+		except OSError:
+			_log.debug("Could not fsync parent directory %s", path.parent)
+	except BaseException:
+		if not fd_owned_by_fileobj:
+			with contextlib.suppress(OSError):
+				os.close(fd)
+		raise
 	finally:
 		with contextlib.suppress(OSError):
 			if os.path.exists(tmp_path):
@@ -190,6 +222,8 @@ __all__ = [
 	"UPSTREAM_ADDR_RE",
 	"EXEC_TIMEOUT",
 	"get_blocklist_file",
+	"get_custom_client_rules_file",
+	"get_local_data_file",
 	"run_exec",
 	"atomic_write",
 	"atomic_write_text",

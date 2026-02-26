@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/dns/custom_rules.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """Custom DNS rules with AdGuard-compatible syntax.
@@ -27,6 +27,7 @@ Priority:
 from __future__ import annotations
 
 import fnmatch
+import ipaddress
 import logging
 import re
 from dataclasses import dataclass, field
@@ -42,10 +43,17 @@ __all__ = [
 	"RuleAction",
 	"ParsedRule",
 	"ParseError",
+	"normalize_client_scope",
+	"rule_applies_to_client",
+	"canonical_rule_text",
+	"canonical_rule_key",
 	"parse_rules",
 	"apply_custom_rules",
+	"get_custom_block_rules",
+	"get_custom_allow_rules",
 	"evaluate_domain",
 	"is_domain_allowed_by_custom_rules",
+	"is_domain_blocked_by_custom_rules",
 ]
 
 
@@ -71,6 +79,8 @@ class ParsedRule:
 	"""A single parsed custom DNS rule."""
 	action: RuleAction
 	raw: str  # Original rule text
+	# Optional client scope in canonical CIDR format (e.g. 10.0.0.2/32)
+	client_scope: str | None = None
 	# Exact domain match (normalized, no trailing dot)
 	domain: str | None = None
 	# Wildcard pattern (fnmatch-style, lowercase)
@@ -109,6 +119,77 @@ class ParsedRule:
 		return False
 
 
+def normalize_client_scope(value: str) -> str:
+	"""Normalize client scope to canonical CIDR.
+
+	Examples:
+	  10.0.0.5     -> 10.0.0.5/32
+	  fd13::2      -> fd13::2/128
+	  10.0.0.0/24  -> 10.0.0.0/24
+	"""
+	text = str(value or "").strip()
+	if not text:
+		raise ValueError("client scope must not be empty")
+	if "/" in text:
+		net = ipaddress.ip_network(text, strict=False)
+		return str(net)
+	ip = ipaddress.ip_address(text)
+	if ip.version == 4:
+		return f"{ip}/32"
+	return f"{ip}/128"
+
+
+def rule_applies_to_client(rule: ParsedRule, client_ip: str) -> bool:
+	"""Return True when rule scope matches the query client IP.
+
+	- Global rules (no client_scope) apply to all clients.
+	- Client-scoped rules apply only if client IP is inside the scoped CIDR.
+	"""
+	if rule.client_scope is None:
+		return True
+	if not client_ip:
+		return False
+	try:
+		ip_obj = ipaddress.ip_address(client_ip.strip())
+		net = ipaddress.ip_network(rule.client_scope, strict=False)
+		return ip_obj in net
+	except ValueError:
+		return False
+
+
+def canonical_rule_key(rule: ParsedRule) -> tuple[str, str, str | None]:
+	"""Canonical key used for duplicate detection and conflict checks."""
+	if rule.domain is not None:
+		target = f"domain:{rule.domain}"
+	elif rule.wildcard is not None:
+		target = f"wildcard:{rule.wildcard}"
+	elif rule.regex is not None:
+		target = f"regex:{rule.regex.pattern}"
+	else:
+		target = "unknown:"
+	return (rule.action.value, target, rule.client_scope)
+
+
+def _canonical_target(rule: ParsedRule) -> str:
+	"""Return canonical target without action for conflict detection."""
+	if rule.domain is not None:
+		return f"domain:{rule.domain}"
+	if rule.wildcard is not None:
+		return f"wildcard:{rule.wildcard}"
+	if rule.regex is not None:
+		return f"regex:{rule.regex.pattern}"
+	return "unknown:"
+
+
+def canonical_rule_text(action: RuleAction, domain: str, client_scope: str | None = None) -> str:
+	"""Build canonical text form for exact-domain rules."""
+	prefix = "@@" if action == RuleAction.ALLOW else ""
+	base = f"{prefix}||{domain.lower().rstrip('.')}^"
+	if client_scope:
+		return f"{base}$client={normalize_client_scope(client_scope)}"
+	return base
+
+
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
@@ -123,6 +204,64 @@ _ADGUARD_DOMAIN_RE = re.compile(
 
 # Valid DNS label (RFC 1123): alphanumeric, hyphens allowed in middle
 _VALID_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$|^[a-z0-9]$")
+
+# Heuristic guard against catastrophic backtracking patterns like /(a+)+b/
+_NESTED_REGEX_QUANTIFIER_RE = re.compile(r"\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)[+*]")
+
+
+def _parse_rule_options(options_raw: str, *, lineno: int, text: str) -> tuple[str | None, ParseError | None]:
+	"""Parse optional rule suffix options (currently only client=...)."""
+	client_scope: str | None = None
+	for option in options_raw.split(","):
+		option = option.strip()
+		if not option:
+			continue
+		if not option.startswith("client="):
+			return None, ParseError(
+				line=lineno,
+				text=text,
+				error=f"Unsupported rule option: {option}",
+			)
+		client_raw = option.split("=", 1)[1].strip()
+		try:
+			client_scope = normalize_client_scope(client_raw)
+		except ValueError as exc:
+			return None, ParseError(line=lineno, text=text, error=f"Invalid client scope: {exc}")
+	return client_scope, None
+
+
+def _split_regex_body_and_options(body: str) -> tuple[str, str | None] | None:
+	"""Split '/regex/' and optional '$options' without breaking '$' inside regex.
+
+	Returns (regex_literal, options_raw_or_none), or None when body is not a
+	proper regex-literal rule.
+	"""
+	if not body.startswith("/"):
+		return None
+
+	escaped = False
+	closing_index = -1
+	for idx, ch in enumerate(body[1:], start=1):
+		if escaped:
+			escaped = False
+			continue
+		if ch == "\\":
+			escaped = True
+			continue
+		if ch == "/":
+			closing_index = idx
+			break
+
+	if closing_index <= 0:
+		return None
+
+	regex_literal = body[:closing_index + 1]
+	suffix = body[closing_index + 1:]
+	if not suffix:
+		return regex_literal, None
+	if not suffix.startswith("$"):
+		return None
+	return regex_literal, suffix[1:]
 
 
 def _validate_domain_pattern(pattern: str, is_wildcard: bool) -> str | None:
@@ -172,9 +311,23 @@ def _parse_single_rule(text: str, lineno: int) -> ParsedRule | ParseError:
 		action = RuleAction.BLOCK
 		body = text
 
-	# --- Regex rule: /pattern/ ---
-	if body.startswith("/") and body.endswith("/") and len(body) >= 3:
-		pattern = body[1:-1]
+	# --- Regex rule: /pattern/[$options] ---
+	regex_split = _split_regex_body_and_options(body)
+	if regex_split is not None:
+		regex_literal, regex_options = regex_split
+		client_scope: str | None = None
+		if regex_options is not None:
+			client_scope, opt_err = _parse_rule_options(regex_options, lineno=lineno, text=text)
+			if opt_err is not None:
+				return opt_err
+
+		if client_scope is not None:
+			return ParseError(
+				line=lineno,
+				text=text,
+				error="Client-scoped regex rules are not supported",
+			)
+		pattern = regex_literal[1:-1]
 		
 		# Safety: limit pattern length to prevent ReDoS
 		if len(pattern) > MAX_REGEX_PATTERN_LENGTH:
@@ -182,6 +335,12 @@ def _parse_single_rule(text: str, lineno: int) -> ParsedRule | ParseError:
 				line=lineno,
 				text=text,
 				error=f"Regex pattern too long (max {MAX_REGEX_PATTERN_LENGTH} chars)",
+			)
+		if _NESTED_REGEX_QUANTIFIER_RE.search(pattern):
+			return ParseError(
+				line=lineno,
+				text=text,
+				error="Potentially unsafe regex (nested quantifiers)",
 			)
 		
 		try:
@@ -192,8 +351,17 @@ def _parse_single_rule(text: str, lineno: int) -> ParsedRule | ParseError:
 		return ParsedRule(
 			action=action,
 			raw=text,
+			client_scope=client_scope,
 			regex=compiled,
 		)
+
+	# Optional scope options for non-regex rules
+	client_scope: str | None = None
+	if "$" in body:
+		body, options_raw = body.split("$", 1)
+		client_scope, opt_err = _parse_rule_options(options_raw, lineno=lineno, text=text)
+		if opt_err is not None:
+			return opt_err
 
 	# --- AdGuard domain rule: ||domain^ ---
 	m = _ADGUARD_DOMAIN_RE.match(body)
@@ -213,15 +381,23 @@ def _parse_single_rule(text: str, lineno: int) -> ParsedRule | ParseError:
 		return ParseError(line=lineno, text=text, error=validation_error)
 
 	if is_wildcard:
+		if client_scope is not None:
+			return ParseError(
+				line=lineno,
+				text=text,
+				error="Client-scoped wildcard rules are not supported",
+			)
 		return ParsedRule(
 			action=action,
 			raw=text,
+			client_scope=client_scope,
 			wildcard=domain_pattern,
 		)
 
 	return ParsedRule(
 		action=action,
 		raw=text,
+		client_scope=client_scope,
 		domain=domain_pattern,
 	)
 
@@ -234,6 +410,8 @@ def parse_rules(text: str) -> tuple[list[ParsedRule], list[ParseError]]:
 	"""
 	rules: list[ParsedRule] = []
 	errors: list[ParseError] = []
+	seen_keys: dict[tuple[str, str, str | None], int] = {}
+	seen_target_scope: dict[tuple[str, str | None], tuple[RuleAction, int]] = {}
 
 	for lineno, raw_line in enumerate(text.splitlines(), start=1):
 		line = raw_line.strip()
@@ -247,6 +425,30 @@ def parse_rules(text: str) -> tuple[list[ParsedRule], list[ParseError]]:
 			errors.append(result)
 			_log.debug("DNS_CUSTOM_RULE parse error line %d: %s", lineno, result.error)
 		else:
+			key = canonical_rule_key(result)
+			first_seen = seen_keys.get(key)
+			if first_seen is not None:
+				_log.warning(
+					"DNS_CUSTOM_RULE duplicate line %d (first line %d): %s",
+					lineno,
+					first_seen,
+					result.raw,
+				)
+			else:
+				seen_keys[key] = lineno
+
+			target_scope = (_canonical_target(result), result.client_scope)
+			prev = seen_target_scope.get(target_scope)
+			if prev is not None and prev[0] != result.action:
+				_log.warning(
+					"DNS_CUSTOM_RULE conflicting action line %d (first line %d): %s",
+					lineno,
+					prev[1],
+					result.raw,
+				)
+			else:
+				seen_target_scope[target_scope] = (result.action, lineno)
+
 			rules.append(result)
 
 	if rules:
@@ -289,6 +491,8 @@ def apply_custom_rules(
 	allow_pattern: list[ParsedRule] = []  # Wildcard + regex
 
 	for rule in rules:
+		if rule.client_scope is not None:
+			continue
 		if rule.action == RuleAction.BLOCK:
 			if rule.domain is not None:
 				block_exact.add(rule.domain)
@@ -305,10 +509,16 @@ def apply_custom_rules(
 			blocked_domains.add(domain)
 			added.add(domain)
 
-	# Phase 2: Remove exact allow domains (O(1) set operations)
-	exact_removed = blocked_domains & allow_exact
-	blocked_domains -= exact_removed
-	removed.update(exact_removed)
+	# Phase 2: Remove exact allow domains and all their subdomains.
+	for allow_domain in allow_exact:
+		to_remove = {
+			domain
+			for domain in blocked_domains
+			if domain == allow_domain or domain.endswith("." + allow_domain)
+		}
+		if to_remove:
+			blocked_domains -= to_remove
+			removed.update(to_remove)
 
 	# Phase 3: Remove wildcard/regex allow matches (only if we have patterns)
 	if allow_pattern:
@@ -331,7 +541,13 @@ def get_custom_block_rules(rules: list[ParsedRule]) -> list[ParsedRule]:
 	"""
 	return [
 		r for r in rules
-		if r.action == RuleAction.BLOCK and (r.wildcard is not None or r.regex is not None)
+		if r.action == RuleAction.BLOCK
+		and (
+			# Runtime-only global patterns
+			(r.client_scope is None and (r.wildcard is not None or r.regex is not None))
+			# Client-scoped exact domain rules (can't be represented in blocked_domains set)
+			or (r.client_scope is not None and r.domain is not None)
+		)
 	]
 
 
@@ -373,6 +589,8 @@ def evaluate_domain(
 	if d in blocked_domains:
 		return True
 	labels = d.split(".")
+	# Start at 1 (skip self), stop before bare TLD (len-1),
+	# so e.g. "malware.io" does not attempt matching only "io".
 	for i in range(1, len(labels) - 1):
 		parent = ".".join(labels[i:])
 		if parent in blocked_domains:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/dns/unbound_config.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """Unbound DNS configuration generation and management."""
@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from typing import TYPE_CHECKING
+
 from .unbound_constants import (
 	BLOCKLIST_REGISTRY,
 	DNSSEC_ROOT_KEY,
@@ -28,7 +30,12 @@ from .unbound_constants import (
 	UPSTREAM_ADDR_RE,
 	atomic_write_text,
 	get_blocklist_file,
+	get_custom_client_rules_file,
+	get_local_data_file,
 )
+
+if TYPE_CHECKING:
+	from .custom_rules import ParsedRule, RuleAction
 
 _log = logging.getLogger(__name__)
 
@@ -298,6 +305,14 @@ server:
     include: {get_blocklist_file()}
 """
 
+	conf += f"""
+	# Client-specific custom DNS overrides
+	include: {get_custom_client_rules_file()}
+
+	# Split-DNS local-data overrides (auto-generated from WG interfaces)
+	include: {get_local_data_file()}
+"""
+
 	conf += """
 # Upstream DNS (round-robin with automatic failover)
 # Queries distributed across servers based on RTT; timeout servers avoided for infra-lame-ttl
@@ -314,7 +329,7 @@ forward-zone:
 def get_interface_ipv6_gateways(interfaces: Sequence[Any]) -> list[str]:
 	"""Extract IPv6 gateway addresses from interface rows.
 	
-	Accepts dicts, dataclass instances, or SQLAlchemy Row objects.
+	Accepts dicts, dataclass instances, sqlite3.Row, or SQLAlchemy Row objects.
 	
 	Args:
 		interfaces: Sequence of interface objects with 'address6' field.
@@ -322,20 +337,25 @@ def get_interface_ipv6_gateways(interfaces: Sequence[Any]) -> list[str]:
 	Returns:
 		List of valid IPv6 gateway addresses (e.g., ['fd13:13:13::1']).
 	"""
+	def _get_field(obj: Any, key: str, default: Any = None) -> Any:
+		"""Safely get a field from dict, sqlite3.Row, or object."""
+		try:
+			return obj[key]
+		except (KeyError, TypeError, IndexError):
+			pass
+		try:
+			return obj.get(key, default)
+		except AttributeError:
+			pass
+		return getattr(obj, key, default)
+
 	ipv6_addrs: list[str] = []
 	for iface in interfaces:
-		try:
-			addr6 = (
-				iface.get("address6")
-				if isinstance(iface, dict)
-				else getattr(iface, "address6", None)
-			)
-		except Exception:
-			continue
+		addr6 = _get_field(iface, "address6")
 		if not addr6:
 			continue
 		try:
-			v6_iface = ipaddress.ip_interface(addr6.strip())
+			v6_iface = ipaddress.ip_interface(str(addr6).strip())
 			ipv6_addrs.append(str(v6_iface.ip))
 		except ValueError:
 			_log.debug("Invalid IPv6 interface address: %r", addr6)
@@ -360,15 +380,69 @@ def write_config(**kwargs) -> None:
 	blocklist_path = get_blocklist_file()
 	if not blocklist_path.exists():
 		atomic_write_text(blocklist_path, "# Empty blocklist - will be populated on update\n")
+
+	# Ensure custom client rule override file exists (even if empty)
+	custom_client_rules_path = get_custom_client_rules_file()
+	if not custom_client_rules_path.exists():
+		atomic_write_text(custom_client_rules_path, "# Client-specific custom DNS overrides - auto-generated\n")
 	
 	# Ensure peer-tags.conf exists (even if empty)
 	peer_tags_path = UNBOUND_CONF_DIR / "peer-tags.conf"
 	if not peer_tags_path.exists():
 		atomic_write_text(peer_tags_path, "# Per-peer blocklist tags - auto-generated\n")
 
+	# Ensure local-data.conf exists (even if empty)
+	local_data_path = get_local_data_file()
+	if not local_data_path.exists():
+		atomic_write_text(local_data_path, "# Split-DNS local-data overrides - auto-generated\n")
+
 	content = generate_config(**kwargs)
 	atomic_write_text(UNBOUND_CONF, content)
 	_log.info("DNS_CONFIG written to %s", UNBOUND_CONF)
+
+
+def write_custom_client_rules(rules: list["ParsedRule"]) -> None:
+	"""Generate client-specific local-zone overrides from custom rules.
+
+	Rules with ``client_scope`` are emitted into a dedicated include file.
+	Supported scoped targets: exact domain rules only.
+	"""
+	UNBOUND_CONF_DIR.mkdir(parents=True, exist_ok=True)
+	path = get_custom_client_rules_file()
+
+	# (client_cidr, domain) -> effective action, ALLOW wins over BLOCK
+	effective: dict[tuple[str, str], str] = {}
+	for rule in rules:
+		if rule.client_scope is None or rule.domain is None:
+			continue
+		key = (rule.client_scope, rule.domain)
+		if rule.action.value == "allow":
+			effective[key] = "allow"
+		elif key not in effective:
+			effective[key] = "block"
+
+	# Domains that require a baseline transparent local-zone for block overrides
+	block_domains = sorted({domain for (_, domain), action in effective.items() if action == "block"})
+
+	lines = [
+		"# Client-specific custom DNS overrides",
+		f"# Auto-generated – {datetime.now(timezone.utc).isoformat()}",
+		"# Do not edit manually",
+		"",
+	]
+
+	for domain in block_domains:
+		lines.append(f'    local-zone: "{domain}." transparent')
+
+	for (client_cidr, domain), action in sorted(effective.items()):
+		override_action = "always_nxdomain" if action == "block" else "transparent"
+		lines.append(f'    local-zone-override: "{domain}." {client_cidr} {override_action}')
+
+	if len(lines) == 4:
+		lines.append("# (none)")
+
+	atomic_write_text(path, "\n".join(lines) + "\n")
+	_log.info("DNS_CUSTOM_CLIENT_RULES wrote %d overrides to %s", len(effective), path)
 
 
 def write_peer_tags(peers: list[dict]) -> None:
@@ -425,10 +499,111 @@ def write_peer_tags(peers: list[dict]) -> None:
 	_log.info("DNS_PEER_TAGS written %d entries to %s", len([l for l in lines if l.startswith("    access")]), peer_tags_path)
 
 
+def write_local_data_overrides(interfaces: Sequence[Any], fqdn: str | None) -> int:
+	"""Generate local-data overrides for split-DNS (VPN endpoint → internal IP).
+
+	When a WireGuard client resolves the VPN endpoint (e.g., vpn.example.com),
+	this override returns the internal WireGuard gateway address instead of
+	the public IP, enabling access to /status and other internal services
+	through the tunnel.
+
+	Args:
+		interfaces: Sequence of interface objects with 'address' and 'address6' fields.
+		fqdn: The public FQDN of the WireGuard server (e.g., "vpn.example.com").
+
+	Returns:
+		Number of local-data records written.
+	"""
+	UNBOUND_CONF_DIR.mkdir(parents=True, exist_ok=True)
+	path = get_local_data_file()
+
+	lines = [
+		"# Split-DNS local-data overrides",
+		f"# Auto-generated – {datetime.now(timezone.utc).isoformat()}",
+		"# Maps public FQDN to internal WireGuard addresses for VPN clients",
+		"",
+	]
+
+	record_count = 0
+	fqdn_clean = (fqdn or "").strip().rstrip(".")
+
+	if not fqdn_clean:
+		lines.append("# No wg_fqdn configured - no overrides generated")
+		atomic_write_text(path, "\n".join(lines) + "\n")
+		_log.info("DNS_LOCAL_DATA no fqdn configured, wrote empty file to %s", path)
+		return 0
+
+	# Validate FQDN format (basic check)
+	if not all(HOST_LABEL_RE.match(label) for label in fqdn_clean.split(".")):
+		lines.append(f"# Invalid FQDN format: {fqdn_clean!r}")
+		atomic_write_text(path, "\n".join(lines) + "\n")
+		_log.warning("DNS_LOCAL_DATA invalid fqdn %r, wrote empty file", fqdn_clean)
+		return 0
+
+	# Collect gateway IPs from all enabled interfaces
+	ipv4_gateways: list[str] = []
+	ipv6_gateways: list[str] = []
+
+	def _get_field(obj: Any, key: str, default: Any = None) -> Any:
+		"""Safely get a field from dict, sqlite3.Row, or object."""
+		# sqlite3.Row supports __getitem__ but not .get() or getattr()
+		try:
+			return obj[key]
+		except (KeyError, TypeError, IndexError):
+			pass
+		try:
+			return obj.get(key, default)
+		except AttributeError:
+			pass
+		return getattr(obj, key, default)
+
+	for iface in interfaces:
+		# Skip disabled interfaces
+		is_enabled = _get_field(iface, "is_enabled", True)
+		if not is_enabled:
+			continue
+
+		# Extract IPv4 gateway
+		addr4 = _get_field(iface, "address")
+		if addr4:
+			try:
+				v4_iface = ipaddress.ip_interface(str(addr4).strip())
+				ipv4_gateways.append(str(v4_iface.ip))
+			except ValueError:
+				pass
+
+		# Extract IPv6 gateway
+		addr6 = _get_field(iface, "address6")
+		if addr6:
+			try:
+				v6_iface = ipaddress.ip_interface(str(addr6).strip())
+				ipv6_gateways.append(str(v6_iface.ip))
+			except ValueError:
+				pass
+
+	# Generate local-data entries (use first gateway of each type)
+	if ipv4_gateways:
+		lines.append(f'    local-data: "{fqdn_clean}. A {ipv4_gateways[0]}"')
+		record_count += 1
+
+	if ipv6_gateways:
+		lines.append(f'    local-data: "{fqdn_clean}. AAAA {ipv6_gateways[0]}"')
+		record_count += 1
+
+	if record_count == 0:
+		lines.append("# No interface addresses found - no overrides generated")
+
+	atomic_write_text(path, "\n".join(lines) + "\n")
+	_log.debug("DNS_LOCAL_DATA wrote %d records for %s to %s", record_count, fqdn_clean, path)
+	return record_count
+
+
 __all__ = [
 	"is_dnssec_available",
 	"generate_config",
 	"get_interface_ipv6_gateways",
 	"write_config",
+	"write_custom_client_rules",
+	"write_local_data_overrides",
 	"write_peer_tags",
 ]

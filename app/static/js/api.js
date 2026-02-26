@@ -1,3 +1,8 @@
+//
+// app/static/js/api.js
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
 class ApiError extends Error {
     constructor(message, code) {
         super(message);

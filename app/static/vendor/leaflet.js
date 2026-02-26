@@ -1,6 +1,6 @@
 //
 // app/static/vendor/leaflet.js
-// Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
 /* @preserve

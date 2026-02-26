@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/dns/ingestion_parser.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """DNS query log parser for Unbound log format."""
@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .custom_rules import ParsedRule
+from .custom_rules import ParsedRule, rule_applies_to_client
 
 _log = logging.getLogger(__name__)
 
@@ -109,6 +109,8 @@ def parse_unbound_line(
 		# Priority 1: Allow rules (absolute whitelist override)
 		if allow_rules:
 			for rule in allow_rules:
+				if not rule_applies_to_client(rule, client):
+					continue
 				if rule.matches(domain):
 					# Whitelisted - not blocked, skip all other checks
 					return DnsQueryPoint(
@@ -126,6 +128,8 @@ def parse_unbound_line(
 		# Priority 3: Check wildcard/regex block rules
 		if not blocked and block_rules:
 			for rule in block_rules:
+				if not rule_applies_to_client(rule, client):
+					continue
 				if rule.matches(domain):
 					blocked = True
 					break

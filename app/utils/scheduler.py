@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/utils/scheduler.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """Lightweight async background scheduler for periodic tasks."""

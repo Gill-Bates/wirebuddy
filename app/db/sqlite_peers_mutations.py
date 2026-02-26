@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/db/sqlite_peers_mutations.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """Peer mutation (create/update/delete) helpers."""

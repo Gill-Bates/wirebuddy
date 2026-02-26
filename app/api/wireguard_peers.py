@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/api/wireguard_peers.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """WireGuard peer management API routes."""
@@ -24,6 +24,7 @@ from ..db.sqlite_runtime import (
 )
 
 import logging
+import ipaddress
 import sqlite3
 from pathlib import Path
 from typing import Optional
@@ -32,10 +33,20 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 from ..db import tsdb
+from ..db.sqlite_settings import (
+	get_dns_custom_rules,
+	set_dns_custom_rules,
+	get_enabled_blocklists,
+	get_setting,
+)
 from ..models.peers import PeerCreate, PeerPublic, PeerUpdate
 from ..utils.config import WG_CONFIG_PATH
 from ..utils.deps import get_conn, get_tsdb_dir, get_config
-from ..utils.vault import encrypt as vault_encrypt
+from ..utils.vault import encrypt as vault_encrypt, decrypt as vault_decrypt
+from ..dns.custom_rules import (
+	parse_rules as parse_custom_rules,
+	normalize_client_scope,
+)
 from .auth import get_current_user, require_admin
 from .response import ok_response
 from .wireguard_config import sync_interface_config
@@ -114,6 +125,84 @@ def _row_to_public(row: sqlite3.Row, enabled_blocklist_ids: list[str]) -> PeerPu
 	)
 
 
+def _extract_peer_client_scopes(peer_address: str | None) -> set[str]:
+	"""Extract canonical client scopes from a peer address field."""
+	if not peer_address:
+		return set()
+
+	scopes: set[str] = set()
+	for part in str(peer_address).split(","):
+		candidate = part.strip()
+		if not candidate:
+			continue
+		try:
+			scopes.add(normalize_client_scope(candidate))
+		except ValueError:
+			pass
+		try:
+			iface = ipaddress.ip_interface(candidate)
+			scopes.add(normalize_client_scope(str(iface.ip)))
+		except ValueError:
+			pass
+
+	return scopes
+
+
+async def _cleanup_peer_custom_dns_rules(conn: sqlite3.Connection, peer_address: str | None) -> int:
+	"""Remove client-scoped custom DNS rules belonging to a peer.
+
+	Returns:
+		Number of removed rule lines.
+	"""
+	client_scopes = _extract_peer_client_scopes(peer_address)
+	if not client_scopes:
+		return 0
+
+	rules_text = get_dns_custom_rules(conn)
+	if not rules_text.strip():
+		return 0
+
+	parsed_rules, _ = parse_custom_rules(rules_text)
+	removable_raw = {
+		rule.raw.strip().lower()
+		for rule in parsed_rules
+		if rule.client_scope is not None and rule.client_scope in client_scopes
+	}
+	if not removable_raw:
+		return 0
+
+	removed = 0
+	filtered_lines: list[str] = []
+	for line in rules_text.splitlines():
+		stripped = line.strip()
+		if stripped and stripped.lower() in removable_raw:
+			removed += 1
+			continue
+		filtered_lines.append(line)
+
+	updated_rules = "\n".join(filtered_lines)
+	if updated_rules and not updated_rules.endswith("\n"):
+		updated_rules += "\n"
+
+	set_dns_custom_rules(conn, updated_rules)
+
+	try:
+		from ..dns import unbound as _unbound
+		urls = get_enabled_blocklists(conn)
+		count, _ = await _unbound.update_blocklists(urls, custom_rules_text=updated_rules)
+		reloaded, _ = await _unbound.restart()
+		_log.info(
+			"PEER_DELETE cleaned %d client-scoped custom DNS rules (reloaded=%s, domains=%d)",
+			removed,
+			reloaded,
+			count,
+		)
+	except Exception:
+		_log.exception("PEER_DELETE removed custom DNS rules but failed to rebuild DNS artifacts")
+
+	return removed
+
+
 @router.get("/peers")
 def list_peers(
 	interface: Optional[str] = None,
@@ -167,10 +256,25 @@ async def create_peer(
 		# Generate keypair
 		private_key, public_key = await generate_keypair()
 	
-	# 3. Generate preshared key if not provided
+	# 3. Determine preshared key:
+	#    - Use payload.preshared_key if provided
+	#    - Else use global PSK if wg_use_psk is enabled
+	#    - Else no PSK (None)
 	preshared_key = payload.preshared_key
 	if not preshared_key:
-		preshared_key = await generate_preshared_key()
+		use_psk_setting = get_setting(conn, "wg_use_psk", "false")
+		if use_psk_setting and use_psk_setting.lower() in ("true", "1", "yes"):
+			global_psk_encrypted = get_setting(conn, "wg_global_psk")
+			if global_psk_encrypted:
+				try:
+					preshared_key = vault_decrypt(global_psk_encrypted, cfg.secret_key)
+					_log.debug("PEER_CREATE using global PSK from settings")
+				except Exception as e:
+					_log.warning("PEER_CREATE failed to decrypt global PSK: %s", e)
+					preshared_key = None
+			else:
+				_log.debug("PEER_CREATE wg_use_psk enabled but no global PSK configured")
+				preshared_key = None
 	
 	# 4. Check if peer already exists in DB
 	existing = await run_in_threadpool(get_peer_by_public_key, conn, public_key)
@@ -180,7 +284,7 @@ async def create_peer(
 	# 5. Store peer in WireGuard + DB (with retry on concurrent IP allocation conflict)
 	# Encrypt private_key and preshared_key before storage
 	private_key_encrypted = vault_encrypt(private_key, cfg.secret_key)
-	preshared_key_encrypted = vault_encrypt(preshared_key, cfg.secret_key)
+	preshared_key_encrypted = vault_encrypt(preshared_key, cfg.secret_key) if preshared_key else None
 	
 	# allowed_ips = client-side routing (what client routes through VPN)
 	# peer_address = peer's VPN IP (used in server config and QR code)
@@ -196,12 +300,20 @@ async def create_peer(
 					detail=f"No available IP addresses in interface '{payload.interface}' subnet",
 				)
 
-			code, _, stderr = await wg_set_peer_with_psk(
-				payload.interface,
-				public_key,
-				peer_address,
-				preshared_key,
-			)
+			# Add peer to WireGuard - with or without PSK
+			if preshared_key:
+				code, _, stderr = await wg_set_peer_with_psk(
+					payload.interface,
+					public_key,
+					peer_address,
+					preshared_key,
+				)
+			else:
+				code, _, stderr = await run_wg_command(
+					"wg", "set", payload.interface,
+					"peer", public_key,
+					"allowed-ips", peer_address,
+				)
 			if code != 0:
 				err = stderr.strip()
 				_log.error("WG_SET_FAILED interface=%s code=%d stderr=%s", payload.interface, code, err)
@@ -357,7 +469,7 @@ async def update_peer(
 			# Re-add peer to runtime with current settings
 			peer_address = peer["peer_address"]
 			if peer_address:
-				preshared_key = peer.get("preshared_key")
+				preshared_key = peer["preshared_key"] if "preshared_key" in peer.keys() else None
 				if preshared_key:
 					from ..utils.vault import decrypt as vault_decrypt
 					psk_plain = vault_decrypt(preshared_key, cfg.secret_key)
@@ -445,6 +557,12 @@ async def delete_peer(
 	
 	# Delete from database
 	await run_in_threadpool(db_delete_peer, conn, peer_id)
+
+	# Remove peer-scoped custom DNS rules to prevent stale "dead" entries.
+	try:
+		await _cleanup_peer_custom_dns_rules(conn, peer["peer_address"])
+	except Exception:
+		_log.exception("Failed to cleanup peer-scoped custom DNS rules")
 	
 	# Sync config file
 	await run_in_threadpool(

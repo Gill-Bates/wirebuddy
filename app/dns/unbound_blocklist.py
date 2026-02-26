@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/dns/unbound_blocklist.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """Unbound DNS blocklist management and domain filtering."""
@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import os
 import random
 import re
 import urllib.parse
@@ -36,6 +37,7 @@ from .custom_rules import (
 	is_domain_blocked_by_custom_rules,
 	parse_rules,
 )
+from . import unbound_config
 from .unbound_constants import (
 	ALLOWED_BLOCKLIST_CONTENT_TYPES,
 	BLOCKLIST_MAX_BYTES,
@@ -70,8 +72,7 @@ class _CapacityExceeded(Exception):
 
 # NOTE: Thread safety relies on CPython's GIL for atomic assignments.
 # If moving to free-threaded Python (3.13t+), add a threading.Lock.
-_BLOCKED_DOMAINS_CACHE: frozenset[str] | None = None
-_BLOCKED_DOMAINS_CACHE_MTIME_NS: int | None = None
+_BLOCKED_DOMAINS_CACHE_ENTRY: tuple[frozenset[str], int | None] | None = None
 
 # Runtime custom rules cache (for wildcard/regex matching at query time)
 # NOTE: Tuples are immutable, preventing accidental mutation via get_custom_rules_cache().
@@ -81,10 +82,8 @@ _CUSTOM_BLOCK_RULES: tuple[ParsedRule, ...] = ()
 
 def _invalidate_blocked_domains_cache() -> None:
 	"""Invalidate cached blocked-domain set after blocklist changes."""
-	global _BLOCKED_DOMAINS_CACHE
-	global _BLOCKED_DOMAINS_CACHE_MTIME_NS
-	_BLOCKED_DOMAINS_CACHE = None
-	_BLOCKED_DOMAINS_CACHE_MTIME_NS = None
+	global _BLOCKED_DOMAINS_CACHE_ENTRY
+	_BLOCKED_DOMAINS_CACHE_ENTRY = None
 
 
 def set_custom_rules_cache(rules: list[ParsedRule]) -> None:
@@ -339,6 +338,8 @@ async def update_blocklists(
 			# Apply rules: exact blocks are added, allows remove domains
 			all_domains = set(domain_tags.keys())
 			custom_added, custom_removed = apply_custom_rules(all_domains, parsed_custom_rules)
+			# Keep only domains that remain blocked after allow-rule removal.
+			custom_added = {domain for domain in custom_added if domain in all_domains}
 
 			# Add new block domains to the tag map (tagged as "custom")
 			for domain in custom_added:
@@ -357,6 +358,12 @@ async def update_blocklists(
 
 	# Update runtime cache for wildcard/regex matching at query time
 	set_custom_rules_cache(parsed_custom_rules)
+
+	# Write client-specific custom rule overrides (server include file)
+	try:
+		unbound_config.write_custom_client_rules(parsed_custom_rules)
+	except Exception:
+		_log.exception("DNS_CUSTOM_CLIENT_RULES failed to write override file")
 
 	# Write unbound local-zone file with tags (atomic replace)
 	# NOTE: Sorting is O(n log n) but provides deterministic output for diffing/debugging.
@@ -398,10 +405,12 @@ def get_blocklist_count() -> int:
 			match = re.search(r"(\d+)\s+domains", first)
 			if match:
 				return int(match.group(1))
-			# Fallback: stream file and count local-zone entries
-			count = sum(1 for line in f if line.startswith("local-zone:"))
+			# Fallback: stream file and count local-zone entries (including first line)
+			count = 1 if first.startswith("local-zone:") else 0
+			count += sum(1 for line in f if line.startswith("local-zone:"))
 			return count
 	except Exception:
+		_log.debug("Failed to read blocklist count", exc_info=True)
 		return 0
 
 
@@ -436,25 +445,21 @@ def get_blocklist_source_counts() -> dict[str, int]:
 
 def _load_blocked_domains() -> frozenset[str]:
 	"""Load the set of blocked domains for fast lookup."""
-	global _BLOCKED_DOMAINS_CACHE
-	global _BLOCKED_DOMAINS_CACHE_MTIME_NS
+	global _BLOCKED_DOMAINS_CACHE_ENTRY
 
 	blocklist_path = get_blocklist_file()
 	blocked: set[str] = set()
 	if not blocklist_path.exists():
-		_BLOCKED_DOMAINS_CACHE = frozenset()
-		_BLOCKED_DOMAINS_CACHE_MTIME_NS = None
-		return _BLOCKED_DOMAINS_CACHE
+		empty = frozenset()
+		_BLOCKED_DOMAINS_CACHE_ENTRY = (empty, None)
+		return empty
 	try:
 		mtime_ns = blocklist_path.stat().st_mtime_ns
 	except OSError:
 		return frozenset()
 
-	if (
-		_BLOCKED_DOMAINS_CACHE is not None
-		and _BLOCKED_DOMAINS_CACHE_MTIME_NS == mtime_ns
-	):
-		return _BLOCKED_DOMAINS_CACHE
+	if _BLOCKED_DOMAINS_CACHE_ENTRY is not None and _BLOCKED_DOMAINS_CACHE_ENTRY[1] == mtime_ns:
+		return _BLOCKED_DOMAINS_CACHE_ENTRY[0]
 
 	try:
 		with blocklist_path.open("r", encoding="utf-8") as f:
@@ -467,11 +472,14 @@ def _load_blocked_domains() -> frozenset[str]:
 					domain = _normalize_domain(parts[1])
 					if domain:
 						blocked.add(domain)
+			# Cache against the file we actually read (avoids stat/open replacement race)
+			read_mtime_ns = os.fstat(f.fileno()).st_mtime_ns
 	except Exception:
+		_log.debug("Failed to load blocked domains from blocklist", exc_info=True)
 		return frozenset()
-	_BLOCKED_DOMAINS_CACHE = frozenset(blocked)
-	_BLOCKED_DOMAINS_CACHE_MTIME_NS = mtime_ns
-	return _BLOCKED_DOMAINS_CACHE
+	cached = frozenset(blocked)
+	_BLOCKED_DOMAINS_CACHE_ENTRY = (cached, read_mtime_ns)
+	return cached
 
 
 def get_blocked_domains() -> frozenset[str]:
@@ -486,11 +494,8 @@ def get_blocked_domains() -> frozenset[str]:
 	return _load_blocked_domains()
 
 
-def _is_domain_blocked(domain: str, blocked_domains: AbstractSet[str]) -> bool:
-	"""Check exact and parent-domain matches for block status."""
-	norm = _normalize_domain(domain)
-	if not norm:
-		return False
+def _is_normalized_domain_blocked(norm: str, blocked_domains: AbstractSet[str]) -> bool:
+	"""Check exact and parent-domain matches for an already-normalized domain."""
 	if norm in blocked_domains:
 		return True
 
@@ -538,7 +543,68 @@ def is_domain_blocked(domain: str) -> bool:
 		return True
 	
 	# Fall back to static blocklist file
-	return _is_domain_blocked(norm, _load_blocked_domains())
+	return _is_normalized_domain_blocked(norm, _load_blocked_domains())
+
+
+def check_and_reset_stale_blocklist() -> bool:
+	"""Check if blocklist.conf contains unknown tags and reset if needed.
+	
+	This handles the case where the blocklist registry changes between versions
+	(e.g., 'easylist' was removed and replaced with 'hagezi'). Unbound will
+	fail to start if blocklist.conf references tags not defined in unbound.conf.
+	
+	Returns:
+		True if blocklist was reset and needs re-download, False if OK.
+	"""
+	blocklist_path = get_blocklist_file()
+	if not blocklist_path.exists():
+		return False
+	
+	known_tags = set(BLOCKLIST_REGISTRY.keys())
+	known_tags.add("custom")  # Custom rules also add this tag
+	
+	unknown_tags: set[str] = set()
+	tag_re = re.compile(r'^local-zone-tag:\s+"[^"]+"\s+"([^"]+)"')
+	
+	try:
+		with blocklist_path.open("r", encoding="utf-8", errors="replace") as f:
+			for line in f:
+				if not line.startswith("local-zone-tag:"):
+					continue
+				match = tag_re.match(line.strip())
+				if not match:
+					continue
+				for tag in match.group(1).split():
+					if tag not in known_tags:
+						unknown_tags.add(tag)
+						if len(unknown_tags) >= 5:
+							# Early exit - we've seen enough
+							break
+				if len(unknown_tags) >= 5:
+					break
+	except Exception:
+		_log.debug("Could not check blocklist tags", exc_info=True)
+		return False
+	
+	if not unknown_tags:
+		return False
+	
+	_log.warning(
+		"BLOCKLIST_MIGRATION found unknown tags %s in %s - resetting for re-download",
+		unknown_tags,
+		blocklist_path,
+	)
+	
+	# Reset the blocklist file to empty
+	try:
+		with atomic_write(blocklist_path) as f:
+			f.write("# Blocklist reset due to tag migration\n")
+			f.write("# Will be re-downloaded on next scheduled update\n")
+		_invalidate_blocked_domains_cache()
+		return True
+	except Exception:
+		_log.exception("Failed to reset blocklist file")
+		return False
 
 
 __all__ = [
@@ -547,4 +613,7 @@ __all__ = [
 	"get_blocklist_source_counts",
 	"get_blocked_domains",
 	"is_domain_blocked",
+	"set_custom_rules_cache",
+	"get_custom_rules_cache",
+	"check_and_reset_stale_blocklist",
 ]

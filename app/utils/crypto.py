@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/utils/crypto.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """Cryptographic helpers for password hashing and token generation."""
@@ -96,17 +96,22 @@ def token_expired(expires_at: datetime) -> bool:
 	return now >= expires_at
 
 
-def generate_token_expiry(hours: int = 1, max_hours: int = 24) -> tuple[datetime, datetime]:
+def generate_token_expiry(
+	hours: int = 1,
+	max_hours: int = 24,
+	now: datetime | None = None,
+) -> tuple[datetime, datetime]:
 	"""Generate token expiry timestamps.
 	
 	Args:
 		hours: Initial validity period in hours (default: 1)
 		max_hours: Maximum validity period in hours (default: 24)
+		now: Optional anchor time (UTC). Uses current UTC time when omitted.
 	
 	Returns:
 		Tuple of (expires_at, max_expires_at) datetimes
 	"""
-	now = datetime.now(timezone.utc)
+	now = now or datetime.now(timezone.utc)
 	expires_at = now + timedelta(hours=hours)
 	max_expires_at = now + timedelta(hours=max_hours)
 	return expires_at, max_expires_at

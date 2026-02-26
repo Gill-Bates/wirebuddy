@@ -1,21 +1,12 @@
 #!/usr/bin/env python3
 #
 # app/api/wireguard_settings.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """WireGuard global settings endpoints."""
 
 from __future__ import annotations
-
-from ..db.sqlite_interfaces import (
-	get_interface,
-)
-from ..db.sqlite_settings import (
-	get_setting,
-	set_setting,
-)
-from ..db.sqlite_interfaces import get_interface
 
 import ipaddress
 import logging
@@ -23,13 +14,19 @@ import sqlite3
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from starlette.concurrency import run_in_threadpool
 
-from .response import ok_response
+from ..db.sqlite_interfaces import get_interface, list_interfaces
+from ..db.sqlite_settings import get_setting, set_setting
+from ..dns.unbound_config import write_local_data_overrides
+from ..dns import unbound_process as unbound
 from ..utils.deps import get_conn, get_config
-from .auth import get_current_user, require_admin
 from ..utils.vault import decrypt as vault_decrypt, encrypt as vault_encrypt
-from .wireguard_utils import generate_preshared_key
+from ..utils.version import check_for_updates
+from .auth import get_current_user, require_admin
+from .response import ok_response
+from .wireguard_utils import generate_preshared_key, is_valid_wg_key
 
 _log = logging.getLogger(__name__)
 
@@ -51,12 +48,24 @@ class InterfaceConfigError(Exception):
 
 
 def _mask_secret(value: str, *, reveal: int = 4) -> str:
-	"""Mask a secret string, revealing only first/last `reveal` characters.
-	
-	Requires at least (reveal * 2 + 4) characters to reveal any part of the secret.
-	This ensures at least 4 characters are always masked in the middle.
+	"""Mask a secret string, revealing only first/last ``reveal`` characters.
+
+	Requires at least (reveal * 2 + 4) characters to reveal any part;
+	short values are fully masked.
+
+	Example::
+
+		>>> _mask_secret("ABCDEFGHIJKLMNOP")
+		'ABCD********MNOP'
+		>>> _mask_secret("short")
+		'*****'
 	"""
-	min_length = reveal * 2 + 4  # Ensure at least 4 masked chars
+	if not isinstance(value, str):
+		raise TypeError(f"Expected str, got {type(value).__name__!r}")
+	if not value:
+		return ""
+	reveal = max(0, int(reveal))
+	min_length = reveal * 2 + 4  # Ensure at least 4 chars are masked
 	if len(value) >= min_length:
 		mask_count = len(value) - reveal * 2
 		return value[:reveal] + "*" * mask_count + value[-reveal:]
@@ -68,26 +77,101 @@ class WgSettingsPayload(BaseModel):
 	wg_fqdn: Optional[str] = Field(
 		None,
 		max_length=256,
-		pattern=r"^[a-zA-Z0-9.\-:\[\]]+$",
+		pattern=r"^[a-zA-Z0-9.\-:]+$",
 		description="Server FQDN or IP address",
 	)
 	wg_port: Optional[int] = Field(None, ge=1, le=65535, description="WireGuard listen port")
 	wg_mtu: Optional[int] = Field(None, ge=1280, le=9000, description="Global MTU value (1280-9000)")
 	wg_persistent_keepalive: Optional[int] = Field(None, ge=0, le=600, description="Persistent keepalive in seconds")
-	wg_use_psk: Optional[str] = Field(None, pattern=r"^[01]$", description="Enable PresharedKey (0/1)")
+	# Issue #7: real booleans instead of '0'/'1' strings — get_db_value() handles
+	# the conversion to the '0'/'1' format required by SQLite.
+	wg_use_psk: Optional[bool] = Field(None, description="Enable PresharedKey")
 	gui_port: Optional[int] = Field(None, ge=1, le=65535, description="HTTP port for the web UI")
-	gui_localhost_only: Optional[str] = Field(None, pattern=r"^[01]$", description="Only listen on localhost (0/1)")
+	gui_localhost_only: Optional[bool] = Field(None, description="Only listen on localhost")
+	enable_status_page: Optional[bool] = Field(None, description="Enable public internal status page")
+
+	def get_db_value(self, field: str) -> str | None:
+		"""Return the DB-storable string for ``field`` (converts bool → '0'/'1')."""
+		value = getattr(self, field)
+		if value is None:
+			return None
+		if isinstance(value, bool):
+			return "1" if value else "0"
+		return str(value)
+
+	@field_validator("wg_fqdn")
+	@classmethod
+	def validate_fqdn(cls, v: Optional[str]) -> Optional[str]:
+		"""Reject obviously malformed FQDNs (double dots, leading/trailing dots)."""
+		if v is None:
+			return v
+		v = v.strip()
+		# Allow bare IP addresses
+		try:
+			ipaddress.ip_address(v.strip("[]"))
+			return v
+		except ValueError:
+			pass
+		if not v or ".." in v or v.startswith(".") or v.endswith("."):
+			raise ValueError("Invalid FQDN format")
+		return v
 
 
-WG_SETTING_KEYS = [
-	"wg_fqdn",
-	"wg_port",
-	"wg_mtu",
-	"wg_persistent_keepalive",
-	"wg_use_psk",
-	"gui_port",
-	"gui_localhost_only",
-]
+class GlobalPskPayload(BaseModel):
+	"""Payload to set global WireGuard PresharedKey."""
+	psk: str = Field(..., min_length=1, max_length=256, description="WireGuard PSK (44-char base64)")
+
+
+# Issue #8: derive from model_fields so this list never drifts out-of-sync
+# with WgSettingsPayload.
+WG_SETTING_KEYS: list[str] = list(WgSettingsPayload.model_fields.keys())
+
+
+def _build_endpoint(fqdn_clean: str, port: str) -> str:
+	"""Build an ``fqdn:port`` string, wrapping IPv6 addresses in brackets."""
+	if not fqdn_clean:
+		raise ValueError("Empty FQDN after cleaning")
+	try:
+		addr = ipaddress.ip_address(fqdn_clean)
+		if addr.version == 6:
+			return f"[{fqdn_clean}]:{port}"
+	except ValueError:
+		pass  # hostname — use as-is
+	return f"{fqdn_clean}:{port}"
+
+
+def _peer_has_ipv6(peer_address: str) -> bool:
+	"""Return True if ``peer_address`` contains at least one IPv6 address."""
+	for part in peer_address.split(","):
+		item = part.strip()
+		if not item:
+			continue
+		try:
+			if ipaddress.ip_interface(item).ip.version == 6:
+				return True
+		except ValueError:
+			continue
+	return False
+
+
+async def _regenerate_split_dns(conn: sqlite3.Connection) -> None:
+	"""Regenerate split-DNS local-data after an FQDN or interface change.
+
+	Logs but does not propagate exceptions so a DNS hiccup never rolls back
+	an otherwise-successful settings update.
+	"""
+	try:
+		interfaces = list_interfaces(conn)
+		fqdn = get_setting(conn, "wg_fqdn")
+		count = write_local_data_overrides(interfaces, fqdn)
+		if count > 0:
+			ok, msg = await unbound.reload_config()
+			if ok:
+				_log.info("SPLIT_DNS_UPDATED records=%d fqdn=%s", count, fqdn)
+			else:
+				_log.warning("SPLIT_DNS_RELOAD_FAILED records=%d msg=%s", count, msg)
+	except Exception:
+		_log.exception("SPLIT_DNS_REGENERATE_FAILED")
 
 
 def get_server_endpoint(conn: sqlite3.Connection, interface_name: str | None = None) -> str:
@@ -97,29 +181,28 @@ def get_server_endpoint(conn: sqlite3.Connection, interface_name: str | None = N
 	interface name is provided, the client endpoint port override (or
 	listen port) from that interface is used. Falls back to global
 	settings if not configured.
-	"""
-	fqdn = get_setting(conn, "wg_fqdn") or "vpn.example.com"
-	port = None
 
+	Note: This is a synchronous function. Call it from a thread pool
+	(e.g. ``run_in_threadpool``) when used from async request handlers.
+	"""
+	fqdn_setting = get_setting(conn, "wg_fqdn")
+	if not fqdn_setting:
+		_log.warning("WG settings: 'wg_fqdn' is not configured, falling back to placeholder")
+	fqdn = fqdn_setting or "vpn.example.com"
+
+	port: str | None = None
 	if interface_name:
 		iface = get_interface(conn, interface_name)
 		if iface:
-			port = iface["client_endpoint_port"] or iface["listen_port"]
+			port = str(iface["client_endpoint_port"] or iface["listen_port"] or "") or None
 
 	if not port:
-		port = get_setting(conn, "wg_port") or "51820"
-	
-	# Strip existing brackets if present (users may store bracketed IPv6)
-	fqdn_clean = fqdn.strip("[]")
-	
-	# IPv6 addresses need brackets
-	try:
-		addr = ipaddress.ip_address(fqdn_clean)
-		if addr.version == 6:
-			return f"[{fqdn_clean}]:{port}"
-	except ValueError:
-		pass  # It's a hostname, use as-is
-	return f"{fqdn_clean}:{port}"
+		wg_port_setting = get_setting(conn, "wg_port")
+		if not wg_port_setting:
+			_log.warning("WG settings: 'wg_port' is not configured, falling back to default 51820")
+		port = str(wg_port_setting or "51820")
+
+	return _build_endpoint(fqdn.strip("[]"), port)
 
 
 def get_dns_for_peer(
@@ -150,48 +233,38 @@ def get_dns_for_peer(
 	# Get interface to extract gateway IP
 	iface = get_interface(conn, interface_name)
 	if not iface:
-		raise InterfaceConfigError(
-			f"Interface '{interface_name}' not found while resolving peer DNS"
-		)
+		msg = f"Interface '{interface_name}' not found while resolving peer DNS"
+		_log.error(msg)
+		raise InterfaceConfigError(msg)
 	if not iface["address"]:
-		raise InterfaceConfigError(
-			f"Interface '{interface_name}' has no IPv4 address for WireBuddy DNS"
-		)
+		msg = f"Interface '{interface_name}' has no IPv4 address for WireBuddy DNS"
+		_log.error(msg)
+		raise InterfaceConfigError(msg)
 
-	# Extract gateway IP from interface address (e.g., "10.13.13.1/24" -> "10.13.13.1")
+	# Extract gateway IP from interface address (e.g. "10.13.13.1/24" → "10.13.13.1")
 	try:
 		ipv4_iface = ipaddress.ip_interface(iface["address"].strip())
 	except ValueError as exc:
-		raise InterfaceConfigError(
-			f"Invalid interface IPv4 address for '{interface_name}': {iface['address']!r}"
-		) from exc
+		msg = f"Invalid interface IPv4 address for '{interface_name}': {iface['address']!r}"
+		_log.error(msg)
+		raise InterfaceConfigError(msg) from exc
 
 	dns_servers = [str(ipv4_iface.ip)]
 
-	# Check if peer has IPv6 and interface has IPv6 → add IPv6 DNS server
-	iface_address6 = iface["address6"] if "address6" in iface.keys() else None
+	# Issue #4: sqlite3.Row raises IndexError on missing keys, not KeyError.
+	# Use direct access guarded by a keys() check.
+	iface_address6: str | None = iface["address6"] if "address6" in iface.keys() else None
 	if peer_address and iface_address6:
-		# Check if peer has an IPv6 address
-		peer_has_v6 = False
-		for part in str(peer_address).split(","):
-			item = part.strip()
-			if not item:
-				continue
+		if _peer_has_ipv6(peer_address):
 			try:
-				addr = ipaddress.ip_interface(item)
-				if addr.ip.version == 6:
-					peer_has_v6 = True
-					break
-			except ValueError:
-				continue
-		
-		if peer_has_v6:
-			try:
-				# Use the already-validated iface_address6 variable consistently
 				ipv6_iface = ipaddress.ip_interface(iface_address6.strip())
 				dns_servers.append(str(ipv6_iface.ip))
 			except ValueError:
-				pass  # Invalid IPv6 on interface, skip
+				_log.warning(
+					"Invalid interface IPv6 address for '%s': %r (skipping IPv6 DNS)",
+					interface_name,
+					iface_address6,
+				)
 
 	return ", ".join(dns_servers)
 
@@ -215,23 +288,32 @@ async def update_wg_settings(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Update WireGuard global settings (admin only).
-	
-	Only explicitly provided fields will be updated.
-	Note: Empty strings are stored for None values, which cause get_setting() 
-	to return empty string. Callers use 'or' fallback for defaults.
+
+	Only explicitly provided fields are updated. ``None`` values are skipped
+	to prevent accidental data loss when the frontend sends partially-filled
+	payloads. All updates are applied atomically (issue #5).
 	"""
-	updated = []
-	for key in WG_SETTING_KEYS:
-		# Only update fields that were explicitly set in the request
-		if key in payload.model_fields_set:
-			value = getattr(payload, key)
-			if value is not None:
-				set_setting(conn, key, str(value))
-			else:
-				# Clear the setting by storing empty string (allows 'or' fallback)
-				set_setting(conn, key, "")
-			updated.append(key)
-	
+	updates: list[tuple[str, str]] = [
+		(key, payload.get_db_value(key))
+		for key in WG_SETTING_KEYS
+		if key in payload.model_fields_set and payload.get_db_value(key) is not None
+	]
+
+	try:
+		conn.execute("BEGIN IMMEDIATE")
+		for key, value in updates:
+			set_setting(conn, key, value)
+		conn.commit()
+	except Exception:
+		conn.rollback()
+		_log.exception("SETTINGS_UPDATE_FAILED")
+		raise HTTPException(status_code=500, detail="Failed to persist settings")
+
+	updated = [key for key, _ in updates]
+
+	if "wg_fqdn" in updated:
+		await _regenerate_split_dns(conn)
+
 	settings = {k: get_setting(conn, k) for k in WG_SETTING_KEYS}
 	return ok_response(data={"updated": updated, "settings": settings})
 
@@ -240,7 +322,7 @@ async def update_wg_settings(
 async def get_global_psk(
 	request: Request,
 	reveal: bool = Query(False),
-	_: sqlite3.Row = Depends(require_admin),
+	current_user: sqlite3.Row = Depends(require_admin),  # named for audit log
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Get the current global PresharedKey (masked or full)."""
@@ -250,13 +332,23 @@ async def get_global_psk(
 		return ok_response(data={"masked": None, "key": None})
 	try:
 		plain = vault_decrypt(enc_psk, cfg.secret_key)
-		if reveal:
-			return ok_response(data={"key": plain, "masked": _mask_secret(plain)})
-		masked = _mask_secret(plain)
-		return ok_response(data={"masked": masked})
+	except ValueError as exc:
+		# Issue #2: corrupted data or key mismatch — distinguish from unexpected errors
+		_log.error("PSK_DECRYPT_INVALID_DATA: %s", exc)
+		raise HTTPException(status_code=500, detail="PSK data is corrupted or key mismatch")
 	except Exception:
-		_log.exception("Failed to decrypt global PSK")
-		return ok_response(data={"masked": None, "key": None})
+		_log.exception("PSK_DECRYPT_UNEXPECTED_FAILURE")
+		raise HTTPException(status_code=500, detail="Failed to decrypt global PSK")
+
+	if reveal:
+		# Issue #1: audit log whenever the PSK is revealed in plaintext
+		_log.warning(
+			"PSK_REVEALED user=%s ip=%s",
+			current_user["username"],
+			request.client.host if request.client else "unknown",
+		)
+		return ok_response(data={"key": plain, "masked": _mask_secret(plain)})
+	return ok_response(data={"masked": _mask_secret(plain)})
 
 
 @router.post("/settings/generate-psk")
@@ -274,14 +366,31 @@ async def generate_global_psk(
 	return ok_response(data={"masked": masked})
 
 
+@router.put("/settings/psk")
+async def set_global_psk(
+	request: Request,
+	payload: GlobalPskPayload,
+	_: sqlite3.Row = Depends(require_admin),
+	conn: sqlite3.Connection = Depends(get_conn),
+):
+	"""Set a custom global PresharedKey (admin only)."""
+	cfg = get_config(request)
+	psk = payload.psk.strip()
+	if not is_valid_wg_key(psk):
+		raise HTTPException(
+			status_code=422,
+			detail="Invalid WireGuard PSK format (must be 44-char base64 for 32 bytes)",
+		)
+	enc_psk = vault_encrypt(psk, cfg.secret_key)
+	set_setting(conn, "wg_global_psk", enc_psk)
+	return ok_response(data={"masked": _mask_secret(psk)})
+
+
 @router.get("/settings/check-updates")
 async def check_updates(
 	_: sqlite3.Row = Depends(get_current_user),
-	force: bool = False,
+	force: bool = Query(False, description="Bypass cache and check immediately"),
 ):
 	"""Check for available WireBuddy updates from GitHub."""
-	from starlette.concurrency import run_in_threadpool
-	from ..utils.version import check_for_updates
-	
 	result = await run_in_threadpool(check_for_updates, force)
-	return ok_response(data=result, **result)
+	return ok_response(data=result)

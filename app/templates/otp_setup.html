@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light" class="login-page">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Cache-Control" content="no-store">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self';">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <title>Set Up Two-Factor Authentication – WireBuddy</title>
+    <link rel="icon" type="image/svg+xml" href="/static/img/wirebuddy_1c.svg">
+    <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/css/style.css" rel="stylesheet">
+    <link href="/static/vendor/material-icons.css" rel="stylesheet">
+    <script src="/static/js/theme.js"></script>
+    <style>
+        .otp-digit {
+            width: 48px;
+            height: 56px;
+            font-size: 1.5rem;
+        }
+    </style>
+</head>
+
+<body data-username="{{ user['username'] }}">
+    <main>
+        <div class="card login-card" style="max-width: 480px; min-height: 640px;">
+            <div class="card-body p-4 p-sm-5">
+                <div class="text-center mb-4">
+                    <span class="material-icons" style="font-size: 56px; color: var(--bs-primary);">verified_user</span>
+                    <h4 class="mt-3 mb-1">Set Up Two-Factor Authentication</h4>
+                    <p class="text-muted small mb-0">Your administrator enabled 2FA for your account. Complete the setup to continue.</p>
+                </div>
+
+                <div class="alert alert-danger" id="error-alert" role="alert" aria-live="assertive" style="display: none;"></div>
+
+                <!-- Step 1: QR Code and Secret -->
+                <div id="step-qr">
+                    <div class="mb-3">
+                        <p class="small text-muted mb-2"><strong>Step 1:</strong> Scan this QR code with your authenticator app (e.g., Google Authenticator, Authy)</p>
+                    </div>
+                    
+                    <div class="text-center mb-3">
+                        <img id="otp-qr-image" src="" alt="OTP QR Code" class="img-fluid rounded mx-auto" style="max-width: 200px; background: #fff; padding: 8px;">
+                        <div class="spinner-border text-primary mt-2" id="qr-loading" role="status" aria-live="polite">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small" for="otp-secret">Or enter this secret manually:</label>
+                        <div class="input-group input-group-sm">
+                            <input type="text" class="form-control font-monospace" id="otp-secret" readonly aria-label="OTP secret key">
+                            <button class="btn btn-outline-secondary" type="button" id="copy-secret-btn" title="Copy secret" aria-label="Copy secret to clipboard">
+                                <span class="material-icons" style="font-size: 18px;">content_copy</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <hr class="my-4">
+
+                    <div class="mb-3">
+                        <p class="small text-muted mb-2" id="otp-input-label"><strong>Step 2:</strong> Enter the 6-digit code from your authenticator app</p>
+                    </div>
+
+                    <div class="d-flex justify-content-center gap-2 mb-3" id="otp-digits" role="group" aria-labelledby="otp-input-label">
+                        <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="0" aria-label="Digit 1 of 6">
+                        <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="1" aria-label="Digit 2 of 6">
+                        <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="2" aria-label="Digit 3 of 6">
+                        <span class="align-self-center text-muted" aria-hidden="true">–</span>
+                        <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="3" aria-label="Digit 4 of 6">
+                        <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="4" aria-label="Digit 5 of 6">
+                        <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="5" aria-label="Digit 6 of 6">
+                    </div>
+
+                    <button type="button" class="btn btn-success btn-lg w-100" id="confirm-btn" disabled>
+                        <span class="material-icons align-middle me-1">check_circle</span>
+                        Verify & Activate
+                    </button>
+                </div>
+
+                <!-- Step 2: Recovery Codes -->
+                <div id="step-recovery" style="display: none;" aria-live="polite">
+                    <div class="alert alert-warning">
+                        <span class="material-icons align-middle me-2">warning</span>
+                        <strong>Save these recovery codes!</strong><br>
+                        <small>Store them in a safe place. Each code can only be used once if you lose access to your authenticator.</small>
+                    </div>
+
+                    <div class="bg-dark text-light p-3 rounded font-monospace mb-3 text-center" id="recovery-codes" style="font-size: 0.95rem; line-height: 1.8; white-space: pre-line;" role="region" aria-label="Recovery codes" aria-live="polite"></div>
+
+                    <button type="button" class="btn btn-outline-secondary w-100 mb-3" id="download-codes-btn">
+                        <span class="material-icons align-middle me-1" style="font-size: 18px;">download</span>
+                        Download Recovery Codes (ZIP)
+                    </button>
+
+                    <button type="button" class="btn btn-primary btn-lg w-100" id="continue-btn" disabled>
+                        <span class="material-icons align-middle me-1">arrow_forward</span>
+                        Continue to Dashboard
+                    </button>
+                    <small class="text-muted d-block text-center mt-2" id="continue-hint">
+                        Download the recovery codes ZIP to enable this button.
+                    </small>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+    (() => {
+        const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+        const username = document.body.dataset.username || '';
+        const OTP_LENGTH = 6;
+        let recoveryCodes = [];
+        let recoveryDownloadToken = '';
+        let submitting = false;
+        let recoveryZipDownloaded = false;
+
+        async function api(method, url, body = null) {
+            const opts = {
+                method,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': csrfToken,
+                },
+                credentials: 'same-origin',
+            };
+            if (body) opts.body = JSON.stringify(body);
+            const resp = await fetch(url, opts);
+            let json;
+            try {
+                json = await resp.json();
+            } catch {
+                throw new Error(`Server error (HTTP ${resp.status})`);
+            }
+            if (!resp.ok) throw new Error(json.detail || 'Request failed');
+            return json.data;
+        }
+
+        function showError(msg) {
+            const el = document.getElementById('error-alert');
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+
+        function hideError() {
+            document.getElementById('error-alert').style.display = 'none';
+        }
+
+        function clearSensitiveData() {
+            document.getElementById('otp-secret').value = '';
+            document.getElementById('otp-qr-image').src = '';
+            document.querySelectorAll('.otp-digit').forEach(d => d.value = '');
+        }
+
+        function clearAllSensitiveData() {
+            recoveryCodes = [];
+            recoveryDownloadToken = '';
+            document.getElementById('recovery-codes').textContent = '';
+            clearSensitiveData();
+        }
+
+        async function loadSetup() {
+            try {
+                const data = await api('GET', '/api/me/otp/setup');
+                document.getElementById('otp-qr-image').src = data.qr_code_data_url;
+                document.getElementById('otp-secret').value = data.secret;
+                document.getElementById('qr-loading').style.display = 'none';
+                document.getElementById('otp-qr-image').style.display = 'block';
+                document.querySelector('.otp-digit[data-index="0"]').focus();
+            } catch (error) {
+                showError('Failed to load OTP setup: ' + error.message);
+                document.getElementById('qr-loading').style.display = 'none';
+            }
+        }
+
+        function initOtpDigits() {
+            const digits = document.querySelectorAll('.otp-digit');
+            const confirmBtn = document.getElementById('confirm-btn');
+
+            function getCode() {
+                return Array.from(digits).map(d => d.value).join('');
+            }
+
+            function updateButton() {
+                const code = getCode();
+                confirmBtn.disabled = submitting || code.length !== OTP_LENGTH || !new RegExp(`^\\d{${OTP_LENGTH}}$`).test(code);
+            }
+
+            digits.forEach((input, idx) => {
+                input.addEventListener('input', (e) => {
+                    const val = e.target.value.replace(/\D/g, '');
+                    e.target.value = val.slice(-1);
+
+                    if (val && idx < OTP_LENGTH - 1) {
+                        digits[idx + 1].focus();
+                    }
+
+                    updateButton();
+
+                    const code = getCode();
+                    if (code.length === OTP_LENGTH && new RegExp(`^\\d{${OTP_LENGTH}}$`).test(code)) {
+                        submitCode(code);
+                    }
+                });
+
+                input.addEventListener('keydown', (e) => {
+                    if (e.key === 'Backspace' && !e.target.value && idx > 0) {
+                        digits[idx - 1].focus();
+                    }
+                });
+
+                input.addEventListener('paste', (e) => {
+                    e.preventDefault();
+                    const paste = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, OTP_LENGTH);
+                    paste.split('').forEach((char, i) => {
+                        if (digits[i]) digits[i].value = char;
+                    });
+                    updateButton();
+                    // Do not auto-submit on paste; allow user to verify before submit.
+                });
+            });
+
+            confirmBtn.addEventListener('click', () => submitCode(getCode()));
+        }
+
+        async function submitCode(code) {
+            if (submitting) return;
+            submitting = true;
+
+            hideError();
+            const confirmBtn = document.getElementById('confirm-btn');
+            confirmBtn.disabled = true;
+            confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Verifying...';
+
+            try {
+                const data = await api('POST', '/api/me/otp/confirm', { code });
+                recoveryCodes = data.recovery_codes;
+                recoveryDownloadToken = String(data.recovery_download_token || '').trim();
+                
+                // Clear sensitive QR/secret data before showing recovery codes
+                clearSensitiveData();
+                
+                document.getElementById('step-qr').style.display = 'none';
+                document.getElementById('step-recovery').style.display = 'block';
+                document.getElementById('recovery-codes').textContent = recoveryCodes.join('\n');
+                recoveryZipDownloaded = false;
+                document.getElementById('continue-btn').disabled = true;
+                document.getElementById('download-codes-btn').disabled = false;
+                document.getElementById('download-codes-btn').innerHTML = '<span class="material-icons align-middle me-1" style="font-size: 18px;">download</span>Download Recovery Codes (ZIP)';
+            } catch (error) {
+                showError(error.message);
+                confirmBtn.disabled = false;
+                confirmBtn.innerHTML = '<span class="material-icons align-middle me-1">check_circle</span>Verify & Activate';
+                document.querySelectorAll('.otp-digit').forEach(d => d.value = '');
+                document.querySelector('.otp-digit[data-index="0"]').focus();
+            } finally {
+                submitting = false;
+            }
+        }
+
+        document.getElementById('copy-secret-btn').addEventListener('click', () => {
+            const secret = document.getElementById('otp-secret').value;
+            const btn = document.getElementById('copy-secret-btn');
+            const original = btn.innerHTML;
+            navigator.clipboard.writeText(secret).then(() => {
+                btn.innerHTML = '<span class="material-icons" style="font-size: 18px;">check</span>';
+                setTimeout(() => {
+                    btn.innerHTML = original;
+                }, 1500);
+            }).catch(() => {
+                showError('Copy failed — please select and copy manually.');
+            });
+        });
+
+        document.getElementById('download-codes-btn').addEventListener('click', async () => {
+            const btn = document.getElementById('download-codes-btn');
+            if (!recoveryDownloadToken) {
+                showError('Recovery download token missing. Please verify OTP again.');
+                return;
+            }
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Preparing ZIP...';
+
+            try {
+                const response = await fetch('/api/me/otp/recovery-codes/zip', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': csrfToken,
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ token: recoveryDownloadToken }),
+                });
+
+                if (!response.ok) {
+                    let message = 'Download failed';
+                    try {
+                        const err = await response.json();
+                        message = err.detail || message;
+                    } catch (_) {
+                        // Keep default message when response is not JSON
+                    }
+                    throw new Error(message);
+                }
+
+                const blob = await response.blob();
+                const disposition = response.headers.get('Content-Disposition') || '';
+                const match = disposition.match(/filename="([^"]+)"/i);
+                const safeUsername = (username || 'user').replace(/[^a-zA-Z0-9_-]/g, '_');
+                const fallback = `wirebuddy-recovery-codes-${safeUsername}.zip`;
+                const filename = match && match[1] ? match[1] : fallback;
+
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(url);
+
+                recoveryZipDownloaded = true;
+                document.getElementById('continue-btn').disabled = false;
+                recoveryDownloadToken = '';
+                btn.innerHTML = '<span class="material-icons align-middle me-1" style="font-size: 18px;">check</span>ZIP Downloaded';
+            } catch (error) {
+                showError(error.message || 'Download failed');
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-icons align-middle me-1" style="font-size: 18px;">download</span>Download Recovery Codes (ZIP)';
+            }
+        });
+
+        document.getElementById('continue-btn').addEventListener('click', () => {
+            if (!recoveryZipDownloaded) {
+                showError('Please download the recovery codes ZIP before continuing.');
+                return;
+            }
+            // Clear sensitive data before navigation
+            recoveryCodes = [];
+            recoveryDownloadToken = '';
+            document.getElementById('recovery-codes').textContent = '';
+            window.location.href = '/ui/dashboard';
+        });
+
+        // Hide QR image until loaded
+        document.getElementById('otp-qr-image').style.display = 'none';
+        window.addEventListener('beforeunload', clearAllSensitiveData);
+
+        // Initialize
+        initOtpDigits();
+        loadSetup();
+    })();
+    </script>
+</body>
+
+</html>

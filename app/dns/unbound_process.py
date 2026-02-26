@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/dns/unbound_process.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """Unbound DNS process management (start, stop, restart, reload)."""
@@ -14,7 +14,7 @@ import os
 import shutil
 import signal
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .unbound_constants import UNBOUND_CONF, UNBOUND_PID_FILE, run_exec
 
@@ -75,10 +75,13 @@ class _RunningState:
 
 # Process handle for unbound daemon (to prevent zombie processes)
 _unbound_proc: asyncio.subprocess.Process | None = None
+_supervisor_task: asyncio.Task | None = None
 _running_state = _RunningState()
 
 # Lock for all state-changing operations to prevent race conditions
 _proc_lock = asyncio.Lock()
+# Lock for status checks to avoid parallel pgrep storms when cache expires
+_is_running_lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +97,7 @@ def _read_unbound_pid() -> int | None:
 		return int(raw)
 	except FileNotFoundError:
 		return None
-	except Exception as exc:
+	except OSError as exc:
 		_log.debug("DNS_PID failed to read PID file: %s", exc)
 		return None
 
@@ -129,7 +132,7 @@ def _remove_stale_pid_file() -> None:
 
 async def _reap_managed_proc() -> None:
 	"""Wait for managed unbound proc and clear the handle."""
-	global _unbound_proc
+	global _unbound_proc, _supervisor_task
 	if _unbound_proc is None:
 		return
 	try:
@@ -137,6 +140,10 @@ async def _reap_managed_proc() -> None:
 	except Exception as exc:
 		_log.debug("DNS_REAP exception during wait: %s", exc)
 	_unbound_proc = None
+	if _supervisor_task is not None:
+		if not _supervisor_task.done():
+			_supervisor_task.cancel()
+		_supervisor_task = None
 
 
 async def _kill_pid(pid: int, *, timeout: float = 3.0) -> bool:
@@ -191,18 +198,22 @@ async def is_running() -> bool:
 	if not _running_state.is_stale():
 		return _running_state.last_result
 
-	# Fast path: PID file check (pure syscall, no subprocess)
-	pid = _read_unbound_pid()
-	if pid and _pid_is_running(pid):
-		_running_state.update(True)
-		return True
+	async with _is_running_lock:
+		if not _running_state.is_stale():
+			return _running_state.last_result
 
-	# Slow path: pgrep fallback (only when PID file is absent/stale)
-	_remove_stale_pid_file()
-	code, _, _ = await run_exec("pgrep", "-x", "unbound")
-	result = code == 0
-	_running_state.update(result)
-	return result
+		# Fast path: PID file check (pure syscall, no subprocess)
+		pid = _read_unbound_pid()
+		if pid and _pid_is_running(pid):
+			_running_state.update(True)
+			return True
+
+		# Slow path: pgrep fallback (only when PID file is absent/stale)
+		_remove_stale_pid_file()
+		code, _, _ = await run_exec("pgrep", "-x", "unbound")
+		result = code == 0
+		_running_state.update(result)
+		return result
 
 
 # ---------------------------------------------------------------------------
@@ -211,9 +222,10 @@ async def is_running() -> bool:
 
 async def _supervise_unbound() -> None:
 	"""Background task: reap managed unbound process on unexpected exit."""
-	global _unbound_proc
+	global _unbound_proc, _supervisor_task
 	proc = _unbound_proc
 	if proc is None:
+		_supervisor_task = None
 		return
 	try:
 		await proc.wait()
@@ -227,6 +239,19 @@ async def _supervise_unbound() -> None:
 			"DNS_SUPERVISOR unbound exited unexpectedly (code=%s)",
 			proc.returncode,
 		)
+	if _supervisor_task is asyncio.current_task():
+		_supervisor_task = None
+
+
+def _ensure_supervisor_task() -> None:
+	"""Start (or restart) supervisor task for current managed process."""
+	global _supervisor_task
+	if _supervisor_task is not None and not _supervisor_task.done():
+		return
+	_supervisor_task = asyncio.create_task(
+		_supervise_unbound(),
+		name="unbound-supervisor",
+	)
 
 # ---------------------------------------------------------------------------
 # Process Control (Internal Implementations)
@@ -275,10 +300,7 @@ async def _start_impl() -> tuple[bool, str]:
 			if await is_running():
 				_log.info("DNS_START unbound started")
 				# Start supervisor task to reap process on unexpected exit
-				asyncio.create_task(
-					_supervise_unbound(),
-					name="unbound-supervisor",
-				)
+				_ensure_supervisor_task()
 				return True, "Unbound started"
 			if _unbound_proc.returncode is not None:
 				# Process exited — capture stderr for diagnostics
@@ -306,6 +328,7 @@ async def _start_impl() -> tuple[bool, str]:
 		await _reap_managed_proc()
 		return False, "Unbound failed to start (timeout)"
 	except Exception as e:
+		_log.exception("DNS_START unexpected error")
 		return False, f"Failed to start: {e}"
 
 
@@ -342,6 +365,10 @@ async def _stop_impl() -> tuple[bool, str]:
 		if not await is_running():
 			_log.info("DNS_STOP unbound stopped (pgrep fallback)")
 			return True, "Unbound stopped"
+
+	invalidate_running_cache()
+	if not await is_running():
+		return True, "Unbound is not running"
 
 	return False, "Failed to stop unbound"
 
@@ -383,8 +410,13 @@ async def _reload_impl() -> tuple[bool, str]:
 	invalidate_running_cache()
 	code, _, stderr = await run_exec("pkill", "-HUP", "-x", "unbound")
 	if code == 0:
-		_log.info("DNS_RELOAD config reloaded")
-		return True, "Configuration reloaded"
+		await asyncio.sleep(0.5)
+		invalidate_running_cache()
+		if await is_running():
+			_log.info("DNS_RELOAD config reloaded (pkill fallback)")
+			return True, "Configuration reloaded"
+		_log.error("DNS_RELOAD unbound not running after pkill fallback reload")
+		return False, "Reload failed: unbound stopped after SIGHUP"
 	return False, "Reload failed: unbound not running"
 
 # ---------------------------------------------------------------------------
@@ -459,40 +491,41 @@ async def watchdog(should_be_running_func) -> None:
 		_watchdog_failures = 0  # Reset failure counter
 		return
 	
-	# Check if already running
-	if await is_running():
-		_watchdog_failures = 0  # Reset on success
-		return
-	
-	# Unbound is down but should be up
-	if _watchdog_failures >= _MAX_WATCHDOG_FAILURES:
-		# Too many failures, stop trying (prevent log spam)
-		# Will reset if manually started or DNS toggled
-		return
-	
-	_log.warning(
-		"DNS_WATCHDOG unbound not running, attempting restart (attempt %d/%d)",
-		_watchdog_failures + 1,
-		_MAX_WATCHDOG_FAILURES,
-	)
-	
-	ok, msg = await start()
-	if ok:
-		_log.info("DNS_WATCHDOG unbound restarted successfully")
-		_watchdog_failures = 0
-	else:
-		_watchdog_failures += 1
-		_log.error(
-			"DNS_WATCHDOG restart failed (%d/%d): %s",
-			_watchdog_failures,
-			_MAX_WATCHDOG_FAILURES,
-			msg,
-		)
+	async with _proc_lock:
+		# Check if already running (under lock to avoid TOCTOU with start/stop)
+		if await is_running():
+			_watchdog_failures = 0  # Reset on success
+			return
+
+		# Unbound is down but should be up
 		if _watchdog_failures >= _MAX_WATCHDOG_FAILURES:
-			_log.critical(
-				"DNS_WATCHDOG max restart attempts reached, giving up. "
-				"Manual intervention required."
+			# Too many failures, stop trying (prevent log spam)
+			# Will reset if manually started or DNS toggled
+			return
+
+		_log.warning(
+			"DNS_WATCHDOG unbound not running, attempting restart (attempt %d/%d)",
+			_watchdog_failures + 1,
+			_MAX_WATCHDOG_FAILURES,
+		)
+
+		ok, msg = await _start_impl()
+		if ok:
+			_log.info("DNS_WATCHDOG unbound restarted successfully")
+			_watchdog_failures = 0
+		else:
+			_watchdog_failures += 1
+			_log.error(
+				"DNS_WATCHDOG restart failed (%d/%d): %s",
+				_watchdog_failures,
+				_MAX_WATCHDOG_FAILURES,
+				msg,
 			)
+			if _watchdog_failures >= _MAX_WATCHDOG_FAILURES:
+				_log.critical(
+					"DNS_WATCHDOG max restart attempts reached, giving up. "
+					"Manual intervention required."
+				)
 
 
 def reset_watchdog_failures() -> None:

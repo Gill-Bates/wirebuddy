@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/main.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 # SPDX-License-Identifier: AGPL-3.0
@@ -35,13 +35,17 @@ from .db.sqlite_settings import (
 	get_dns_upstream_servers,
 	get_dnssec_enabled,
 	get_enabled_blocklists,
+	get_setting,
+	recover_missing_global_settings,
 )
 
 import asyncio
+import collections
 import logging
 import os
 import re
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -84,39 +88,48 @@ _WG_DOWN_TIMEOUT_SECONDS = 15.0
 _TSDB_SAMPLE_INTERVAL_SECONDS = 30.0
 _PEER_CONNECTION_THRESHOLD = 180  # seconds - peer is "connected" if handshake < 3 min ago
 
-# Track peer connection state for logging connect/disconnect events
-_peer_connection_state: dict[str, bool] = {}  # public_key -> is_connected
-_PEER_STATE_MAX_SIZE = 100_000  # Prevent unbounded memory growth
+# Track peer connection state for logging connect/disconnect events.
+# OrderedDict preserves insertion order for LRU-style eviction (issue #3).
+_peer_connection_state: collections.OrderedDict[str, bool] = collections.OrderedDict()
+_PEER_STATE_MAX_SIZE = 100_000  # Evict oldest 10 % when full
 
 
 class _ColoredFormatter(logging.Formatter):
 	"""Custom formatter that adds color to log levels in TTY."""
-	
-	def format(self, record):
-		orig_levelname = record.levelname
-		levelname = orig_levelname
-		if levelname in _LOG_COLORS:
-			record.levelname = f"{_LOG_COLORS[levelname]}{orig_levelname:<8}{_RESET}"
+
+	def format(self, record: logging.LogRecord) -> str:
+		# Work on a shallow copy so concurrent handlers see the unmodified record
+		# (issue #16: modifying the shared LogRecord object is not thread-safe).
+		record = logging.makeLogRecord(record.__dict__)
+		if record.levelname in _LOG_COLORS:
+			record.levelname = f"{_LOG_COLORS[record.levelname]}{record.levelname:<8}{_RESET}"
 		else:
-			record.levelname = f"{orig_levelname:<8}"
-		try:
-			return super().format(record)
-		finally:
-			record.levelname = orig_levelname
+			record.levelname = f"{record.levelname:<8}"
+		return super().format(record)
 
 
 async def _communicate_with_timeout(
 	proc: asyncio.subprocess.Process,
 	*,
 	timeout_seconds: float,
+	grace_seconds: float = 3.0,
 ) -> tuple[bytes | None, bytes | None]:
-	"""Wait for subprocess with timeout; kill on timeout and re-raise."""
+	"""Wait for subprocess with timeout.
+
+	On timeout, send SIGTERM first and wait ``grace_seconds`` for a clean
+	exit (so wg-quick can run its PostDown iptables cleanup), then escalate
+	to SIGKILL (issue #6).
+	"""
 	try:
 		return await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
 	except asyncio.TimeoutError:
 		if proc.returncode is None:
-			proc.kill()
-			await proc.communicate()
+			proc.terminate()  # SIGTERM – give the process a chance to clean up
+			try:
+				await asyncio.wait_for(proc.communicate(), timeout=grace_seconds)
+			except asyncio.TimeoutError:
+				proc.kill()  # SIGKILL – last resort
+				await proc.communicate()
 		raise
 
 
@@ -152,7 +165,9 @@ def _parse_wg_dump_counters(stdout: str) -> dict[str, tuple[int, int, int]]:
 		rx = 0
 		tx = 0
 
-		# Peer line format A: iface, pubkey, psk, endpoint, allowed-ips, hs, rx, tx, keepalive
+		# `wg show all dump` always emits 9-column peer lines:
+		# iface, pubkey, psk, endpoint, allowed-ips, hs, rx, tx, keepalive
+		# (issue #5: the old 8-column branch read wrong columns for rx/tx).
 		if len(parts) >= 9:
 			iface = parts[0] if parts[0] else last_iface
 			if iface:
@@ -161,12 +176,6 @@ def _parse_wg_dump_counters(stdout: str) -> dict[str, tuple[int, int, int]]:
 			latest_handshake = _safe_int(parts[5])
 			rx = _safe_int(parts[6])
 			tx = _safe_int(parts[7])
-		# Peer line format B: pubkey, psk, endpoint, allowed-ips, hs, rx, tx, keepalive
-		elif len(parts) >= 8:
-			public_key = parts[0]
-			latest_handshake = _safe_int(parts[4])
-			rx = _safe_int(parts[5])
-			tx = _safe_int(parts[6])
 
 		if not public_key:
 			continue
@@ -228,21 +237,36 @@ async def _lifespan(app: FastAPI):
 	interfaces_to_start: list[str] = []
 	try:
 		init_schema(conn)
-		migration.run_pending_migrations(conn)
-		ensure_default_admin(conn)
-		
-		# Acquire leader lock (multi-worker safety)
+
+		# Acquire leader lock first so one worker performs migration checks/logging.
 		is_leader = try_acquire_leader_lock(conn)
 		if is_leader:
 			_log.info("This worker acquired leader lock (pid=%d)", os.getpid())
+			migration.run_pending_migrations(conn)
 		else:
 			_log.info("Another worker is leader, skipping init tasks (pid=%d)", os.getpid())
+
+		ensure_default_admin(conn)
+
+		recovered = recover_missing_global_settings(
+			conn,
+			candidate_db_paths=[
+				cfg.base_dir / "data" / "wirebuddy.db",
+				Path("/data/wirebuddy.db"),
+				Path("/opt/wirebuddy/data/wirebuddy.db"),
+			],
+		)
+		if recovered > 0:
+			_log.warning(
+				"Recovered %d missing global setting(s) from alternate database path",
+				recovered,
+			)
 		
 		if is_leader:
 			# Regenerate WireGuard configs from database (persistence across container restarts)
-			from .api import wireguard as wg_api
+			from .api.wireguard_config import regenerate_all_configs
 			config_path = WG_CONFIG_PATH
-			regen_result = wg_api.regenerate_all_configs(config_path, conn, pepper=cfg.secret_key)
+			regen_result = regenerate_all_configs(config_path, conn, pepper=cfg.secret_key)
 			if regen_result.succeeded:
 				_log.info("WireGuard configs regenerated: %d interfaces", len(regen_result.succeeded))
 			if regen_result.failed:
@@ -298,6 +322,9 @@ async def _lifespan(app: FastAPI):
 					enable_dnssec=get_dnssec_enabled(dns_cfg_conn),
 					listen_addrs_ipv6=ipv6_gateways if ipv6_gateways else None,
 				)
+				# Generate split-DNS local-data (wg_fqdn -> interface IPs)
+				wg_fqdn = get_setting(dns_cfg_conn, "wg_fqdn")
+				_unbound.write_local_data_overrides(interfaces, wg_fqdn)
 			finally:
 				close_connection(dns_cfg_conn)
 
@@ -310,6 +337,23 @@ async def _lifespan(app: FastAPI):
 				_log.info("DNS config written (IPv4: 0.0.0.0, IPv6: %s)", ", ".join(ipv6_gateways))
 			else:
 				_log.info("DNS config written (interface: 0.0.0.0)")
+
+			# Check for stale blocklist tags (e.g., after registry changes like easylist→hagezi)
+			# This must run BEFORE Unbound starts to avoid config errors
+			from .dns.unbound_blocklist import check_and_reset_stale_blocklist
+			if check_and_reset_stale_blocklist():
+				_log.info("Blocklist reset due to tag migration - triggering immediate update")
+				try:
+					bl_conn = connect(cfg.db_path)
+					try:
+						bl_urls = get_enabled_blocklists(bl_conn)
+						bl_custom_rules = get_dns_custom_rules(bl_conn)
+					finally:
+						close_connection(bl_conn)
+					count, msg = await _unbound.update_blocklists(bl_urls, custom_rules_text=bl_custom_rules)
+					_log.info("BLOCKLIST_MIGRATION %s", msg)
+				except Exception as exc:
+					_log.warning("BLOCKLIST_MIGRATION update failed: %s", exc)
 
 			unbound_running = await _unbound.is_running()
 			if dns_service_enabled:
@@ -336,7 +380,9 @@ async def _lifespan(app: FastAPI):
 		except FileNotFoundError as exc:
 			_log.warning("DNS init skipped: unbound tools not found! Use Docker Image for full experience! (%s)", exc)
 		except Exception as exc:
-			_log.warning("DNS init skipped: %s", exc)
+			# Issue #10: use exception() so stack trace is always captured for
+			# non-obvious errors (corrupted DB, key mismatch, permission failures).
+			_log.exception("DNS init failed: %s", exc)
 	
 	# Auto-start WireGuard interfaces (leader only)
 	# Runs AFTER Unbound because wg-quick rewrites /etc/resolv.conf to use
@@ -357,9 +403,9 @@ async def _lifespan(app: FastAPI):
 				
 				if check_proc.returncode == 0:
 					_log.info("WireGuard interface %s already running", iface_name)
-					started_interfaces.append(iface_name)
-					continue
-				
+				# Issue #17: do NOT append to started_interfaces here.
+				# We only track interfaces that *we* started so that shutdown
+				# only brings down what we brought up.
 				# Start the interface
 				proc = await asyncio.create_subprocess_exec(
 					"wg-quick", "up", iface_name,
@@ -467,8 +513,7 @@ async def _lifespan(app: FastAPI):
 				return
 
 			# Track connection state changes for logging
-			import time as _time
-			now = _time.time()
+			now = time.time()
 			state_changes: list[tuple[str, bool, str]] = []  # (public_key, is_now_connected, peer_name)
 
 			points = 0
@@ -499,12 +544,25 @@ async def _lifespan(app: FastAPI):
 					is_connected = (now - latest_handshake) < _PEER_CONNECTION_THRESHOLD
 					was_connected = _peer_connection_state.get(public_key, False)
 
+					# Log every active handshake at DEBUG level for visibility
+					if is_connected:
+						handshake_age = int(now - latest_handshake)
+						_log.debug(
+							"PEER_HANDSHAKE public_key=%s handshake_age=%ds rx=%d tx=%d",
+							public_key[:16], handshake_age, rx, tx,
+						)
+
 					if is_connected != was_connected:
-						# Prevent unbounded memory growth
+						# LRU eviction: drop oldest 10 % when near capacity (issue #3).
+						# A full clear would cause every peer to appear as freshly
+						# connected on the next sample, generating spurious log events.
 						if len(_peer_connection_state) >= _PEER_STATE_MAX_SIZE:
-							_log.warning("PEER_STATE clearing %d stale entries", len(_peer_connection_state))
-							_peer_connection_state.clear()
+							evict = _PEER_STATE_MAX_SIZE // 10
+							for _ in range(evict):
+								_peer_connection_state.popitem(last=False)
+							_log.warning("PEER_STATE evicted %d oldest entries", evict)
 						_peer_connection_state[public_key] = is_connected
+						_peer_connection_state.move_to_end(public_key)
 						state_changes.append((public_key, is_connected, ""))
 
 			_log.debug("TSDB_SAMPLE peers=%d points=%d", len(peer_counters), points)
@@ -533,13 +591,35 @@ async def _lifespan(app: FastAPI):
 				finally:
 					close_connection(conn)
 
+		# Reuse existing blocklist after container restart.
+		# Only do an immediate startup download if there is no local blocklist yet.
+		blocklist_interval_seconds = 86400.0
+		blocklist_jitter_pct = 0.1
+		blocklist_run_on_start = False
+		try:
+			blocklist_run_on_start = _unbound.get_blocklist_count() <= 0
+		except Exception:
+			_log.warning("BLOCKLIST_STARTUP could not inspect local blocklist; scheduling startup update")
+			blocklist_run_on_start = True
+		if blocklist_run_on_start:
+			_log.info("BLOCKLIST_STARTUP no cached blocklist found - scheduling immediate update")
+		else:
+			min_delay_h = (blocklist_interval_seconds * (1.0 - blocklist_jitter_pct)) / 3600.0
+			max_delay_h = (blocklist_interval_seconds * (1.0 + blocklist_jitter_pct)) / 3600.0
+			_log.info(
+				"BLOCKLIST_STARTUP cached blocklist found - deferring first update to %.1f-%.1f hours (interval=24h, jitter=±10%%)",
+				min_delay_h,
+				max_delay_h,
+			)
+		blocklist_initial_delay = 15.0 if blocklist_run_on_start else 0.0
+
 		scheduler.add(
 			"blocklist-update",
-			interval_seconds=86400,  # 24 h
+			interval_seconds=blocklist_interval_seconds,
 			func=_update_blocklists,
-			run_on_start=True,
-			initial_delay=15.0,  # Wait for WireGuard + Unbound + network to be ready
-			jitter_pct=0.1,  # ±10% jitter (±2.4h) to distribute load across instances
+			run_on_start=blocklist_run_on_start,
+			initial_delay=blocklist_initial_delay,  # Delay only applies when run_on_start=True
+			jitter_pct=blocklist_jitter_pct,  # ±10% jitter (±2.4h) to distribute load across instances
 		)
 		scheduler.add(
 			"tsdb-maintenance",
@@ -629,12 +709,14 @@ async def _lifespan(app: FastAPI):
 				try:
 					return get_dns_service_enabled(watchdog_conn)
 				except Exception:
-					return True  # Assume enabled on error
+					# Issue #8: default to "no action" on error to avoid a
+					# tight restart loop when the DB is locked or corrupted.
+					return False
 				finally:
 					close_connection(watchdog_conn)
-			
+
 			await _unbound.watchdog(_should_dns_be_running)
-		
+
 		scheduler.add(
 			"dns-watchdog",
 			interval_seconds=30,  # Check every 30 seconds
@@ -651,8 +733,16 @@ async def _lifespan(app: FastAPI):
 		# Runs forever, managed separately from scheduler.
 		async def _run_dns_ingestion() -> None:
 			"""Daemon task: ingest DNS queries from Unbound log to TSDB."""
-			# Wait for Unbound to be fully ready
-			await asyncio.sleep(25.0)
+			# Wait for Unbound to be ready using a readiness probe instead of a
+			# fixed sleep (issue #9: 25 s was fragile on slow/fast systems).
+			for attempt in range(15):
+				if await _unbound.is_running():
+					break
+				delay = min(2.0 ** attempt, 30.0)  # exponential back-off, cap 30 s
+				_log.debug("DNS_INGESTION waiting for Unbound (attempt %d, retry in %.0fs)", attempt + 1, delay)
+				await asyncio.sleep(delay)
+			else:
+				_log.warning("DNS_INGESTION Unbound not ready after probes; starting ingestion anyway")
 
 			def _current_dns_retention_days() -> int:
 				conn = connect(cfg.db_path)
@@ -684,81 +774,87 @@ async def _lifespan(app: FastAPI):
 	app.state.scheduler = scheduler
 	app.state.is_leader = is_leader
 	app.state.started_interfaces = started_interfaces
-	
+
 	_log.info("WireBuddy started successfully (leader=%s, pid=%d)", is_leader, os.getpid())
-	
+
+	# ─── YIELD (app serving) + SHUTDOWN ──────────────────────────────────────
+	# Issues #1 & #2: ALL cleanup is inside finally so it runs on:
+	#   - normal shutdown
+	#   - SIGTERM / SIGINT (CancelledError)
+	#   - any unhandled exception during startup (after leader lock acquisition)
 	try:
 		yield
-	except asyncio.CancelledError:
-		_log.info("Shutdown requested (SIGINT/SIGTERM)")
-		raise
 	finally:
-		# ─── SHUTDOWN ────────────────────────────────────────────
-		# Cancel DNS ingestion daemon first (cleanest shutdown order)
+		# 1. Cancel DNS ingestion daemon (fastest to stop)
 		dns_task = getattr(app.state, "dns_task", None)
 		if dns_task and not dns_task.done():
 			dns_task.cancel()
 			await asyncio.gather(dns_task, return_exceptions=True)
 			_log.info("DNS_INGESTION stopped")
-	
-	if scheduler:
-		await scheduler.stop_graceful(timeout=5.0)
-	
-	# Shutdown WireGuard interfaces we started (leader only)
-	if is_leader and started_interfaces:
-		for iface_name in started_interfaces:
+
+		# 2. Scheduler
+		if scheduler:
+			await scheduler.stop_graceful(timeout=5.0)
+
+		# 3. Bring down WireGuard interfaces we started
+		if is_leader and started_interfaces:
+			for iface_name in started_interfaces:
+				try:
+					proc = await asyncio.create_subprocess_exec(
+						"wg-quick", "down", iface_name,
+						stdout=asyncio.subprocess.PIPE,
+						stderr=asyncio.subprocess.PIPE,
+					)
+					_, stderr = await _communicate_with_timeout(
+						proc,
+						timeout_seconds=_WG_DOWN_TIMEOUT_SECONDS,
+					)
+					if proc.returncode == 0:
+						_log.info("WireGuard interface %s stopped", iface_name)
+					else:
+						_log.warning("Failed to stop interface %s: %s", iface_name, stderr.decode("utf-8", errors="replace"))
+				except asyncio.TimeoutError:
+					_log.warning("Timeout while stopping interface %s", iface_name)
+				except Exception as e:
+					_log.warning("Failed to stop interface %s: %s", iface_name, e)
+
+		# 4. Release leader lock (issue #2: always runs, even on startup crash)
+		if is_leader:
 			try:
-				proc = await asyncio.create_subprocess_exec(
-					"wg-quick", "down", iface_name,
-					stdout=asyncio.subprocess.PIPE,
-					stderr=asyncio.subprocess.PIPE,
-				)
-				_, stderr = await _communicate_with_timeout(
-					proc,
-					timeout_seconds=_WG_DOWN_TIMEOUT_SECONDS,
-				)
-				if proc.returncode == 0:
-					_log.info("WireGuard interface %s stopped", iface_name)
-				else:
-					_log.warning("Failed to stop interface %s: %s", iface_name, stderr.decode("utf-8", errors="replace"))
-			except asyncio.TimeoutError:
-				_log.warning("Timeout while stopping interface %s", iface_name)
-			except Exception as e:
-				_log.warning("Failed to stop interface %s: %s", iface_name, e)
-	
-	# Release leader lock
-	if is_leader:
-		conn = connect(cfg.db_path)
+				lock_conn = connect(cfg.db_path)
+				try:
+					release_leader_lock(lock_conn)
+				finally:
+					close_connection(lock_conn)
+			except Exception:
+				_log.exception("Failed to release leader lock")
+
+		# 5. TSDB fsync
 		try:
-			release_leader_lock(conn)
-		finally:
-			close_connection(conn)
+			tsdb_stats = tsdb.finalize_shutdown(cfg.tsdb_dir)
+			_log.info(
+				"TSDB_SHUTDOWN series=%d rotated=%d pruned=%d synced_files=%d synced_dirs=%d",
+				tsdb_stats.get("series", 0),
+				tsdb_stats.get("rotated", 0),
+				tsdb_stats.get("pruned", 0),
+				tsdb_stats.get("synced_files", 0),
+				tsdb_stats.get("synced_dirs", 0),
+			)
+		except Exception as exc:
+			_log.warning("TSDB_SHUTDOWN failed: %s", exc)
 
-	# Final TSDB maintenance + fsync to avoid partial writes on stop/restart.
-	try:
-		tsdb_stats = tsdb.finalize_shutdown(cfg.tsdb_dir)
+		# 6. SQLite WAL checkpoint + close all connections
+		closed_connections = close_all_connections()
+		checkpoint = checkpoint_wal(cfg.db_path, mode="TRUNCATE")
 		_log.info(
-			"TSDB_SHUTDOWN series=%d rotated=%d pruned=%d synced_files=%d synced_dirs=%d",
-			tsdb_stats.get("series", 0),
-			tsdb_stats.get("rotated", 0),
-			tsdb_stats.get("pruned", 0),
-			tsdb_stats.get("synced_files", 0),
-			tsdb_stats.get("synced_dirs", 0),
+			"SQLITE_SHUTDOWN connections_closed=%d checkpoint_mode=%s busy=%s log_frames=%s checkpointed_frames=%s",
+			closed_connections,
+			checkpoint.get("mode"),
+			checkpoint.get("busy"),
+			checkpoint.get("log_frames"),
+			checkpoint.get("checkpointed_frames"),
 		)
-	except Exception as exc:
-		_log.warning("TSDB_SHUTDOWN failed: %s", exc)
-
-	closed_connections = close_all_connections()
-	checkpoint = checkpoint_wal(cfg.db_path, mode="TRUNCATE")
-	_log.info(
-		"SQLITE_SHUTDOWN connections_closed=%d checkpoint_mode=%s busy=%s log_frames=%s checkpointed_frames=%s",
-		closed_connections,
-		checkpoint.get("mode"),
-		checkpoint.get("busy"),
-		checkpoint.get("log_frames"),
-		checkpoint.get("checkpointed_frames"),
-	)
-	_log.info("WireBuddy shutdown complete")
+		_log.info("WireBuddy shutdown complete")
 
 
 def create_app() -> FastAPI:
@@ -794,6 +890,7 @@ def create_app() -> FastAPI:
 	from slowapi import _rate_limit_exceeded_handler
 	from slowapi.errors import RateLimitExceeded
 	app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+	app.add_exception_handler(frontend_ui.RedirectTo, frontend_ui.redirect_to_handler)
 
 	# ─── STATIC FILES ────────────────────────────────────────
 	from fastapi.staticfiles import StaticFiles

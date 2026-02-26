@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
-# main.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# run.py
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 # SPDX-License-Identifier: AGPL-3.0
@@ -68,15 +68,15 @@ if __name__ == "__main__":
 	conn = connect(cfg.db_path)
 	try:
 		init_schema(conn)
-		
+
 		gui_port_str = get_setting(conn, "gui_port", "8000")
 		gui_localhost_only_str = get_setting(conn, "gui_localhost_only", "false")
-		
+
 		try:
 			gui_port = int(gui_port_str)
 		except (ValueError, TypeError):
 			gui_port = 8000
-		
+
 		gui_localhost_only = gui_localhost_only_str.lower() in ("true", "1", "yes")
 		host = "127.0.0.1" if gui_localhost_only else "0.0.0.0"
 	finally:

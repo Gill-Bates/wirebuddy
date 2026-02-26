@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/db/sqlite_runtime.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """SQLite runtime helpers: adapters, connections, and transactions."""

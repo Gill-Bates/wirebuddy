@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/db/tsdb.py
-# Copyright (C) 2025-2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """JSONL-based time-series storage for WireGuard metrics.
