@@ -81,6 +81,7 @@ jobs:
           docker run -d --name wirebuddy-test \
             -p 8000:8000 \
             -e WIREBUDDY_SECRET_KEY="ci-smoke-test-key-not-for-production" \
+            -e WIREBUDDY_SKIP_NETWORK_CHECK="1" \
             wirebuddy:test
           
           # Wait for startup and check if container is still running

@@ -133,6 +133,7 @@ Environment variables (via `settings.env` or Docker env):
 |---|---|---|
 | `WIREBUDDY_SECRET_KEY` | *(required)* | Encryption key for secrets & sessions |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
+| `WIREBUDDY_SKIP_NETWORK_CHECK` | *(unset)* | Set to `1` to bypass host network mode verification (for CI/CD testing only) |
 
 > **Note:** Data is stored in the `data/` directory relative to the application root. In Docker, mount your volume to `/app/data`.
 
