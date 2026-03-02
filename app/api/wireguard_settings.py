@@ -11,6 +11,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import sqlite3
+from enum import Enum
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -18,9 +19,11 @@ from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from ..db.sqlite_interfaces import get_interface, list_interfaces
-from ..db.sqlite_settings import get_setting, set_setting
+from ..db.sqlite_runtime import transaction
+from ..db.sqlite_settings import delete_setting, get_setting, set_setting
 from ..dns.unbound_config import write_local_data_overrides
 from ..dns import unbound_process as unbound
+from ..utils.conntrack import init_conntrack_accounting
 from ..utils.deps import get_conn, get_config
 from ..utils.vault import decrypt as vault_decrypt, encrypt as vault_encrypt
 from ..utils.version import check_for_updates
@@ -45,6 +48,16 @@ __all__ = [
 class InterfaceConfigError(Exception):
 	"""Raised when interface configuration is invalid or missing."""
 	pass
+
+
+class _FieldAction(Enum):
+	"""Internal signal for how a settings field should be handled."""
+	SKIP = "skip"
+	CLEAR = "clear"
+	UPDATE = "update"
+
+
+_REQUIRED_SETTINGS: frozenset[str] = frozenset({"wg_fqdn", "wg_port"})
 
 
 def _mask_secret(value: str, *, reveal: int = 4) -> str:
@@ -89,6 +102,7 @@ class WgSettingsPayload(BaseModel):
 	gui_port: Optional[int] = Field(None, ge=1, le=65535, description="HTTP port for the web UI")
 	gui_localhost_only: Optional[bool] = Field(None, description="Only listen on localhost")
 	enable_status_page: Optional[bool] = Field(None, description="Enable public internal status page")
+	traffic_analysis_enabled: Optional[bool] = Field(None, description="Enable traffic country analysis")
 
 	def get_db_value(self, field: str) -> str | None:
 		"""Return the DB-storable string for ``field`` (converts bool → '0'/'1')."""
@@ -98,6 +112,14 @@ class WgSettingsPayload(BaseModel):
 		if isinstance(value, bool):
 			return "1" if value else "0"
 		return str(value)
+
+	def field_action(self, field: str) -> _FieldAction:
+		"""Determine whether field is skipped, cleared (null), or updated."""
+		if field not in self.model_fields_set:
+			return _FieldAction.SKIP
+		if getattr(self, field) is None:
+			return _FieldAction.CLEAR
+		return _FieldAction.UPDATE
 
 	@field_validator("wg_fqdn")
 	@classmethod
@@ -119,7 +141,7 @@ class WgSettingsPayload(BaseModel):
 
 class GlobalPskPayload(BaseModel):
 	"""Payload to set global WireGuard PresharedKey."""
-	psk: str = Field(..., min_length=1, max_length=256, description="WireGuard PSK (44-char base64)")
+	psk: str = Field(..., min_length=44, max_length=44, description="WireGuard PSK (44-char base64)")
 
 
 # Issue #8: derive from model_fields so this list never drifts out-of-sync
@@ -154,7 +176,7 @@ def _peer_has_ipv6(peer_address: str) -> bool:
 	return False
 
 
-async def _regenerate_split_dns(conn: sqlite3.Connection) -> None:
+async def _regenerate_split_dns(conn: sqlite3.Connection) -> bool:
 	"""Regenerate split-DNS local-data after an FQDN or interface change.
 
 	Logs but does not propagate exceptions so a DNS hiccup never rolls back
@@ -168,19 +190,22 @@ async def _regenerate_split_dns(conn: sqlite3.Connection) -> None:
 			ok, msg = await unbound.reload_config()
 			if ok:
 				_log.info("SPLIT_DNS_UPDATED records=%d fqdn=%s", count, fqdn)
+				return True
 			else:
 				_log.warning("SPLIT_DNS_RELOAD_FAILED records=%d msg=%s", count, msg)
+				return False
+		return True
 	except Exception:
 		_log.exception("SPLIT_DNS_REGENERATE_FAILED")
+		return False
 
 
 def get_server_endpoint(conn: sqlite3.Connection, interface_name: str | None = None) -> str:
 	"""Build the WireGuard server endpoint from DB settings.
 
 	Returns ``fqdn:port`` (e.g. ``vpn.example.com:51820``). When an
-	interface name is provided, the client endpoint port override (or
-	listen port) from that interface is used. Falls back to global
-	settings if not configured.
+	interface name is provided, the listen port from that interface is
+	used. Falls back to global settings if not configured.
 
 	Note: This is a synchronous function. Call it from a thread pool
 	(e.g. ``run_in_threadpool``) when used from async request handlers.
@@ -194,7 +219,7 @@ def get_server_endpoint(conn: sqlite3.Connection, interface_name: str | None = N
 	if interface_name:
 		iface = get_interface(conn, interface_name)
 		if iface:
-			port = str(iface["client_endpoint_port"] or iface["listen_port"] or "") or None
+			port = str(iface["listen_port"] or "") or None
 
 	if not port:
 		wg_port_setting = get_setting(conn, "wg_port")
@@ -289,33 +314,45 @@ async def update_wg_settings(
 ):
 	"""Update WireGuard global settings (admin only).
 
-	Only explicitly provided fields are updated. ``None`` values are skipped
-	to prevent accidental data loss when the frontend sends partially-filled
-	payloads. All updates are applied atomically (issue #5).
+	- Absent fields are skipped.
+	- Fields explicitly set to null are cleared (deleted).
+	- Fields with concrete values are updated.
+
+	Required settings (wg_fqdn, wg_port) cannot be cleared.
 	"""
-	updates: list[tuple[str, str]] = [
-		(key, payload.get_db_value(key))
-		for key in WG_SETTING_KEYS
-		if key in payload.model_fields_set and payload.get_db_value(key) is not None
-	]
+	updates: list[tuple[str, _FieldAction, str | None]] = []
+	for key in WG_SETTING_KEYS:
+		action = payload.field_action(key)
+		if action is _FieldAction.SKIP:
+			continue
+		if action is _FieldAction.CLEAR and key in _REQUIRED_SETTINGS:
+			raise HTTPException(status_code=422, detail=f"Setting '{key}' is required and cannot be cleared")
+		updates.append((key, action, payload.get_db_value(key)))
 
 	try:
-		conn.execute("BEGIN IMMEDIATE")
-		for key, value in updates:
-			set_setting(conn, key, value)
-		conn.commit()
+		with conn:
+			for key, action, value in updates:
+				if action is _FieldAction.CLEAR:
+					delete_setting(conn, key)
+					_log.info("SETTING_CLEARED key=%s", key)
+				else:
+					set_setting(conn, key, str(value))
 	except Exception:
-		conn.rollback()
 		_log.exception("SETTINGS_UPDATE_FAILED")
 		raise HTTPException(status_code=500, detail="Failed to persist settings")
 
-	updated = [key for key, _ in updates]
+	updated = [key for key, _, _ in updates]
+	warnings: list[str] = []
 
 	if "wg_fqdn" in updated:
-		await _regenerate_split_dns(conn)
+		if not await _regenerate_split_dns(conn):
+			warnings.append("Settings saved but split-DNS regeneration failed")
 
 	settings = {k: get_setting(conn, k) for k in WG_SETTING_KEYS}
-	return ok_response(data={"updated": updated, "settings": settings})
+	data: dict[str, object] = {"updated": updated, "settings": settings}
+	if warnings:
+		data["warnings"] = warnings
+	return ok_response(data=data)
 
 
 @router.get("/settings/psk")
@@ -333,9 +370,14 @@ async def get_global_psk(
 	try:
 		plain = vault_decrypt(enc_psk, cfg.secret_key)
 	except ValueError as exc:
-		# Issue #2: corrupted data or key mismatch — distinguish from unexpected errors
-		_log.error("PSK_DECRYPT_INVALID_DATA: %s", exc)
-		raise HTTPException(status_code=500, detail="PSK data is corrupted or key mismatch")
+		# Key mismatch/corrupted payload should not break the settings page UX.
+		_log.warning("PSK_DECRYPT_INVALID_DATA: %s", exc)
+		return ok_response(data={
+			"masked": None,
+			"key": None,
+			"invalid": True,
+			"message": "Stored PSK cannot be decrypted with current WIREBUDDY_SECRET_KEY",
+		})
 	except Exception:
 		_log.exception("PSK_DECRYPT_UNEXPECTED_FAILURE")
 		raise HTTPException(status_code=500, detail="Failed to decrypt global PSK")
@@ -361,7 +403,12 @@ async def generate_global_psk(
 	cfg = get_config(request)
 	psk = await generate_preshared_key()
 	enc_psk = vault_encrypt(psk, cfg.secret_key)
-	set_setting(conn, "wg_global_psk", enc_psk)
+	try:
+		with transaction(conn, immediate=True):
+			set_setting(conn, "wg_global_psk", enc_psk)
+	except Exception:
+		_log.exception("PSK_PERSIST_FAILED")
+		raise HTTPException(status_code=500, detail="Failed to persist global PSK")
 	masked = _mask_secret(psk)
 	return ok_response(data={"masked": masked})
 
@@ -382,15 +429,39 @@ async def set_global_psk(
 			detail="Invalid WireGuard PSK format (must be 44-char base64 for 32 bytes)",
 		)
 	enc_psk = vault_encrypt(psk, cfg.secret_key)
-	set_setting(conn, "wg_global_psk", enc_psk)
+	try:
+		with transaction(conn, immediate=True):
+			set_setting(conn, "wg_global_psk", enc_psk)
+	except Exception:
+		_log.exception("PSK_PERSIST_FAILED")
+		raise HTTPException(status_code=500, detail="Failed to persist global PSK")
 	return ok_response(data={"masked": _mask_secret(psk)})
 
 
 @router.get("/settings/check-updates")
 async def check_updates(
-	_: sqlite3.Row = Depends(get_current_user),
+	current_user: sqlite3.Row = Depends(get_current_user),
 	force: bool = Query(False, description="Bypass cache and check immediately"),
 ):
 	"""Check for available WireBuddy updates from GitHub."""
+	if force and not bool(current_user["is_admin"]):
+		raise HTTPException(status_code=403, detail="Only admins can force update checks")
 	result = await run_in_threadpool(check_for_updates, force)
 	return ok_response(data=result)
+
+
+@router.get("/settings/traffic")
+async def get_traffic_status(
+	_: sqlite3.Row = Depends(get_current_user),
+	conn: sqlite3.Connection = Depends(get_conn),
+):
+	"""Get traffic analysis status and host requirements."""
+	# Check if conntrack accounting is available
+	requirements_met = await run_in_threadpool(init_conntrack_accounting)
+	# Get enabled setting (factory default: disabled)
+	enabled_str = get_setting(conn, "traffic_analysis_enabled")
+	enabled = enabled_str == "1"
+	return ok_response(data={
+		"enabled": enabled,
+		"requirements_met": requirements_met,
+	})

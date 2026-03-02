@@ -8,77 +8,43 @@
         <h1 class="h3 mb-0"><span class="material-icons me-2">info</span>About</h1>
     </div>
 
-    <div class="row g-3 about-cards-row">
+    <!-- Top Row: Three Cards -->
+    <div class="row g-3 mb-3">
         <!-- Card 1: Application Details -->
-        <div class="col-lg-6 d-flex">
-            <div class="card flex-grow-1 d-flex flex-column card-fill">
+        <div class="col-lg-4 d-flex">
+            <div class="card flex-grow-1 d-flex flex-column">
                 <div class="card-header d-flex align-items-center">
                     <span class="material-icons me-2">code</span>
                     <span class="fw-semibold">Application Details</span>
                 </div>
-                <div class="card-body flex-grow-1 flex-scroll">
-                    <!-- Version & Build -->
-                    <div class="mb-4">
-                        <h6 class="text-muted mb-2">Version Information</h6>
-                        <div class="row version-info-row">
-                            <div class="col-6">
-                                <table class="table table-sm table-borderless mb-0">
-                                    <tbody>
-                                        <tr>
-                                            <td class="ps-0" style="width: 90px;"><strong>Version</strong></td>
-                                            <td><code>{{ version }}</code></td>
-                                        </tr>
-                                        <tr>
-                                            <td class="ps-0"><strong>Build</strong></td>
-                                            <td><code>{{ build_info[:7] if build_info != 'dev' else 'dev' }}</code></td>
-                                        </tr>
-                                        <tr>
-                                            <td class="ps-0"><strong>Python</strong></td>
-                                            <td><code>{{ python_version }}</code></td>
-                                        </tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                            <div class="col-6">
-                                <table class="table table-sm table-borderless mb-0">
-                                    <tbody>
-                                        <tr>
-                                            <td class="ps-0" style="width: 90px;"><strong>WireGuard</strong></td>
-                                            <td><code>{{ wireguard_version }}</code></td>
-                                        </tr>
-                                        <tr>
-                                            <td class="ps-0"><strong>Unbound</strong></td>
-                                            <td><code>{{ unbound_version }}</code></td>
-                                        </tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Dependencies -->
-                    <div class="mb-4">
-                        <h6 class="text-muted mb-2">Dependencies</h6>
-                        <table class="table table-sm table-hover mb-0 dependencies-table">
-                            <thead class="sticky-top">
-                                <tr>
-                                    <th>Package</th>
-                                    <th>Version</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for pkg, ver in dependencies %}
-                                <tr>
-                                    <td><code>{{ pkg }}</code></td>
-                                    <td><span class="badge bg-secondary">{{ ver }}</span></td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
+                <div class="card-body">
+                    <table class="table table-sm table-borderless mb-3">
+                        <tbody>
+                            <tr>
+                                <td class="ps-0" style="width: 90px;"><strong>Version</strong></td>
+                                <td><code>{{ version }}</code></td>
+                            </tr>
+                            <tr>
+                                <td class="ps-0"><strong>Build</strong></td>
+                                <td><code>{{ build_info[:7] if build_info != 'dev' else 'dev' }}</code></td>
+                            </tr>
+                            <tr>
+                                <td class="ps-0"><strong>Python</strong></td>
+                                <td><code>{{ python_version }}</code></td>
+                            </tr>
+                            <tr>
+                                <td class="ps-0"><strong>WireGuard</strong></td>
+                                <td><code>{{ wireguard_version }}</code></td>
+                            </tr>
+                            <tr>
+                                <td class="ps-0"><strong>Unbound</strong></td>
+                                <td><code>{{ unbound_version }}</code></td>
+                            </tr>
+                        </tbody>
+                    </table>
 
                     <!-- Author -->
-                    <div>
+                    <div class="pt-3 border-top">
                         <h6 class="text-muted mb-2">Author</h6>
                         <div class="d-flex align-items-center">
                             <span class="material-icons me-2 text-primary">person</span>
@@ -96,8 +62,95 @@
             </div>
         </div>
 
-        <!-- Card 2: Changelog -->
-        <div class="col-lg-6 d-flex">
+        <!-- Card 2: Check for Updates -->
+        <div class="col-lg-4 d-flex">
+            <div class="card flex-grow-1 d-flex flex-column">
+                <div class="card-header d-flex align-items-center justify-content-between">
+                    <div>
+                        <span class="material-icons me-2">system_update</span>
+                        <span class="fw-semibold">Check for Updates</span>
+                    </div>
+                    <button class="btn btn-sm btn-outline-primary py-0 px-1" id="btn-check-updates" title="Check now">
+                        <span class="material-icons" style="font-size: 16px;">refresh</span>
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div id="update-check-loading" class="text-center py-2">
+                        <div class="spinner-border spinner-border-sm text-primary" role="status">
+                            <span class="visually-hidden">Checking...</span>
+                        </div>
+                        <span class="ms-2 text-muted small">Checking for updates...</span>
+                    </div>
+                    
+                    <div id="update-check-result" class="d-none">
+                        <div id="update-status-badge" class="mb-2"></div>
+                        
+                        <table class="table table-borderless table-sm mb-0">
+                            <tbody>
+                                <tr>
+                                    <td class="ps-0" style="width: 50%;">Current</td>
+                                    <td class="text-end font-monospace" id="update-current-version">–</td>
+                                </tr>
+                                <tr>
+                                    <td class="ps-0">Latest</td>
+                                    <td class="text-end font-monospace" id="update-latest-version">–</td>
+                                </tr>
+                                <tr id="update-published-row" class="d-none">
+                                    <td class="ps-0">Released</td>
+                                    <td class="text-end" id="update-published-at">–</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        
+                        <div id="update-error" class="alert alert-warning mt-2 mb-0 py-1 d-none">
+                            <small id="update-error-text"></small>
+                        </div>
+                        
+                        <div id="update-available-section" class="d-none mt-2">
+                            <a id="update-release-link" href="#" target="_blank" class="btn btn-sm btn-primary w-100">
+                                <span class="material-icons me-1" style="font-size: 14px;">open_in_new</span>
+                                View Release on GitHub
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Card 3: Dependencies -->
+        <div class="col-lg-4 d-flex">
+            <div class="card flex-grow-1 d-flex flex-column">
+                <div class="card-header d-flex align-items-center">
+                    <span class="material-icons me-2">inventory_2</span>
+                    <span class="fw-semibold">Dependencies</span>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                        <table class="table table-sm table-hover mb-0 dependencies-table">
+                            <thead class="sticky-top">
+                                <tr>
+                                    <th>Package</th>
+                                    <th class="text-end">Version</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for pkg, ver in dependencies %}
+                                <tr>
+                                    <td><code>{{ pkg }}</code></td>
+                                    <td class="text-end"><span class="badge bg-secondary">{{ ver }}</span></td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Row: Changelog -->
+    <div class="row g-3 about-cards-row">
+        <div class="col-12 d-flex">
             <div class="card flex-grow-1 d-flex flex-column card-fill">
                 <div class="card-header d-flex align-items-center">
                     <span class="material-icons me-2">history</span>
@@ -121,13 +174,6 @@
         flex-grow: 1;
     }
 
-    /* Version info two-column on desktop, stack on mobile */
-    @media (max-width: 991.98px) {
-        .version-info-row .col-6 {
-            width: 100%;
-        }
-    }
-
     @media (min-width: 992px) {
         .about-page {
             height: calc(100vh - 180px);
@@ -136,11 +182,11 @@
         }
 
         .about-cards-row {
-            height: 100%;
-            min-height: 0;
+            height: calc(100% - 340px);
+            min-height: 250px;
         }
 
-        .about-cards-row>.col-lg-4 {
+        .about-cards-row>.col-12 {
             height: 100%;
             min-height: 0;
         }
@@ -220,11 +266,147 @@
         background-color: var(--bs-tertiary-bg);
         color: var(--bs-body-color);
         border-bottom: 1px solid var(--bs-border-color);
+        position: sticky;
+        top: 0;
+        z-index: 1;
     }
 
     [data-bs-theme="dark"] .dependencies-table thead th {
         background-color: var(--bs-body-bg);
         color: var(--bs-body-color);
     }
+
+    .dependencies-table td {
+        padding: 0.5rem;
+    }
+
+    .dependencies-table tbody tr:first-child td {
+        border-top: none;
+    }
 </style>
 {% endblock %}
+
+{% block extra_js %}
+<script>
+(function() {
+    // -------------------- Update Check --------------------
+    async function checkForUpdates(force = false) {
+        const loadingEl = document.getElementById('update-check-loading');
+        const resultEl = document.getElementById('update-check-result');
+        const statusBadge = document.getElementById('update-status-badge');
+        const currentVersionEl = document.getElementById('update-current-version');
+        const latestVersionEl = document.getElementById('update-latest-version');
+        const publishedRow = document.getElementById('update-published-row');
+        const publishedAtEl = document.getElementById('update-published-at');
+        const errorEl = document.getElementById('update-error');
+        const errorTextEl = document.getElementById('update-error-text');
+        const availableSectionEl = document.getElementById('update-available-section');
+        const releaseLinkEl = document.getElementById('update-release-link');
+        const checkBtn = document.getElementById('btn-check-updates');
+
+        // Show loading state
+        loadingEl.classList.remove('d-none');
+        resultEl.classList.add('d-none');
+        if (checkBtn) checkBtn.disabled = true;
+
+        try {
+            const url = force 
+                ? '/api/wireguard/settings/check-updates?force=true'
+                : '/api/wireguard/settings/check-updates';
+            const res = await api('GET', url, null, { timeoutMs: 15000 });
+            
+            // Hide loading, show result
+            loadingEl.classList.add('d-none');
+            resultEl.classList.remove('d-none');
+            
+            // Populate version info
+            currentVersionEl.textContent = res.current_version || '–';
+            latestVersionEl.textContent = res.latest_version || '–';
+            
+            // Show published date if available
+            if (res.published_at) {
+                publishedRow.classList.remove('d-none');
+                const pubDate = new Date(res.published_at);
+                publishedAtEl.textContent = pubDate.toLocaleDateString(undefined, {
+                    year: 'numeric', month: 'short', day: 'numeric'
+                });
+            } else {
+                publishedRow.classList.add('d-none');
+            }
+            
+            // Status badge
+            if (res.update_available) {
+                setUpdateStatusBadge(
+                    statusBadge,
+                    'success',
+                    'new_releases',
+                    'Update available!',
+                    `Version ${res.latest_version || '–'} is ready.`
+                );
+                // Show release link
+                availableSectionEl.classList.remove('d-none');
+                if (res.release_url) {
+                    releaseLinkEl.href = res.release_url;
+                }
+            } else {
+                setUpdateStatusBadge(
+                    statusBadge,
+                    'secondary',
+                    'check_circle',
+                    null,
+                    "You're running the latest version."
+                );
+                availableSectionEl.classList.add('d-none');
+            }
+            
+            // Show error if any
+            if (res.error) {
+                errorEl.classList.remove('d-none');
+                errorTextEl.textContent = res.error;
+            } else {
+                errorEl.classList.add('d-none');
+            }
+            
+        } catch (error) {
+            loadingEl.classList.add('d-none');
+            resultEl.classList.remove('d-none');
+            statusBadge.replaceChildren();
+            errorEl.classList.remove('d-none');
+            errorTextEl.textContent = 'Failed to check for updates: ' + (error.message || error);
+        } finally {
+            if (checkBtn) checkBtn.disabled = false;
+        }
+    }
+
+    function setUpdateStatusBadge(container, type, icon, leadText, tailText) {
+        if (!container) return;
+        container.replaceChildren();
+        const alert = document.createElement('div');
+        alert.className = `alert alert-${type} py-1 mb-0 small`;
+
+        const iconEl = document.createElement('span');
+        iconEl.className = 'material-icons align-middle me-1';
+        iconEl.style.fontSize = '16px';
+        iconEl.textContent = icon;
+        alert.appendChild(iconEl);
+
+        if (leadText) {
+            const strong = document.createElement('strong');
+            strong.textContent = leadText;
+            alert.appendChild(strong);
+            if (tailText) alert.appendChild(document.createTextNode(` ${tailText}`));
+        } else if (tailText) {
+            alert.appendChild(document.createTextNode(tailText));
+        }
+
+        container.appendChild(alert);
+    }
+
+    // Initialize
+    document.getElementById('btn-check-updates')?.addEventListener('click', () => checkForUpdates(true));
+    
+    // Auto-check on page load
+    checkForUpdates(false);
+})();
+</script>
+{% endblock extra_js %}

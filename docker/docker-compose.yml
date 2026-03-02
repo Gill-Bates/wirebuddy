@@ -3,18 +3,12 @@ services:
     image: docker.cirrio.de/wirebuddy:latest
     container_name: wirebuddy
     restart: always
+    network_mode: host
     cap_add:
       - NET_ADMIN
-    sysctls:
-      - net.ipv6.conf.all.disable_ipv6=0
-      - net.ipv4.conf.all.forwarding=1
-      - net.ipv6.conf.all.forwarding=1
-    dns:
-      - 127.0.0.1
     environment:
       LOG_LEVEL: INFO # DEBUG
       WIREBUDDY_SECRET_KEY: "" # Generate with: head -c 32 /dev/urandom | base64
-      WIREBUDDY_DATA_DIR: /data
     logging:
       driver: json-file
       options:
@@ -25,12 +19,4 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     volumes:
-      - ./data:/data
-    ports:
-      - "4500:51820/udp"
-    networks:
-      cloudnet:
-        ipv4_address: 10.30.0.18
-networks:
-  cloudnet:
-    external: true
+      - ./data:/app/data

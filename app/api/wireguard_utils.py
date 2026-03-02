@@ -8,22 +8,23 @@
 
 from __future__ import annotations
 
-from ..db.sqlite_settings import (
-	get_enabled_blocklists,
-)
-
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
 import sqlite3
 import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import HTTPException
 
+from ..db.sqlite_settings import (
+	get_enabled_blocklists,
+)
 from ..models.peers import PeerPublic
 
 __all__ = [
@@ -59,6 +60,12 @@ _IFACE_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,14}$")
 # WireGuard keys are always 44 base64 chars with '=' padding.
 _WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
 
+_KB = 1024
+_MB = _KB ** 2
+_GB = _KB ** 3
+
+_log = logging.getLogger(__name__)
+
 # Timeout for wg commands (seconds)
 WG_COMMAND_TIMEOUT = 30
 
@@ -84,8 +91,13 @@ def _resolve_command_args(*args: str) -> tuple[str, ...]:
 
 	# Explicit executable passed by caller (common in this codebase).
 	explicit_bins = frozenset({"wg", "wg-quick", "iptables", "ip6tables", "ip", "nft"})
-	if first in explicit_bins or "/" in first:
+	if first in explicit_bins:
 		return tuple(args)
+	if "/" in first:
+		candidate = Path(first)
+		if candidate.name in explicit_bins and candidate.is_absolute():
+			return tuple(args)
+		raise ValueError(f"Unsupported command path: {first!r}")
 
 	# Backward-compatible shorthand: assume WireGuard subcommand.
 	return ("wg", *args)
@@ -107,11 +119,11 @@ def validate_interface_name(name: str) -> str:
 
 def select_display_unit(max_bytes: float) -> str:
 	"""Choose a readable byte unit for chart payloads."""
-	if max_bytes >= 1024 ** 3:
+	if max_bytes >= _GB:
 		return "GB"
-	if max_bytes >= 1024 ** 2:
+	if max_bytes >= _MB:
 		return "MB"
-	if max_bytes >= 1024:
+	if max_bytes >= _KB:
 		return "KB"
 	return "B"
 
@@ -119,11 +131,11 @@ def select_display_unit(max_bytes: float) -> str:
 def bytes_to_unit(value: float, unit: str) -> float:
 	"""Convert bytes to selected display unit."""
 	if unit == "GB":
-		return value / (1024 ** 3)
+		return value / _GB
 	if unit == "MB":
-		return value / (1024 ** 2)
+		return value / _MB
 	if unit == "KB":
-		return value / 1024
+		return value / _KB
 	return value
 
 
@@ -195,13 +207,18 @@ def parse_wg_show_dump(stdout: str) -> list[WgPeerDump]:
 		if iface:
 			last_iface = iface
 
+		pubkey = parts[offset]
+		if not _WG_KEY_RE.fullmatch(pubkey):
+			_log.warning("WG_DUMP_UNEXPECTED_FORMAT invalid pubkey in line: %r", line)
+			continue
+
 		endpoint_raw = parts[offset + 2]
 		if endpoint_raw == "(none)":
 			endpoint_raw = None
 
 		results.append(WgPeerDump(
 			interface=iface,
-			public_key=parts[offset],
+			public_key=pubkey,
 			endpoint_raw=endpoint_raw,
 			client_ip=_extract_client_ip(endpoint_raw),
 			handshake_ts=safe_int(parts[offset + 4]),
@@ -214,6 +231,7 @@ def parse_wg_show_dump(stdout: str) -> list[WgPeerDump]:
 
 def get_enabled_blocklist_ids(conn: sqlite3.Connection) -> list[str]:
 	"""Return globally enabled blocklist IDs in registry order."""
+	# Lazy import avoids module-level import cycle with DNS constants in some startup paths.
 	from ..dns import constants as _dns_constants
 	enabled_urls = {u for u in get_enabled_blocklists(conn) if u}
 	return [
@@ -266,7 +284,7 @@ def validate_post_script(value: str | None, field: str) -> str | None:
 	"""
 	if not value:
 		return None
-	if len(value) > 2048:
+	if len(value.encode("ascii", errors="ignore")) > 2048:
 		raise HTTPException(status_code=400, detail=f"{field} script too long (max 2048 bytes)")
 	if not all(32 <= ord(c) <= 126 or c in "\n\t" for c in value):
 		raise HTTPException(status_code=400, detail=f"{field} script must be printable ASCII")
@@ -276,9 +294,10 @@ def validate_post_script(value: str | None, field: str) -> str | None:
 def row_to_public(row: sqlite3.Row, enabled_blocklist_ids: Optional[list[str]] = None) -> PeerPublic:
 	"""Convert DB row to PeerPublic model."""
 	blocklist_ids = None
-	if row["blocklist_ids"]:
+	raw_blocklist_ids = safe_row_get(row, "blocklist_ids")
+	if raw_blocklist_ids:
 		try:
-			blocklist_ids = json.loads(row["blocklist_ids"])
+			blocklist_ids = json.loads(raw_blocklist_ids)
 		except (json.JSONDecodeError, TypeError):
 			blocklist_ids = None
 	
@@ -286,66 +305,38 @@ def row_to_public(row: sqlite3.Row, enabled_blocklist_ids: Optional[list[str]] =
 		blocklist_ids = filter_peer_blocklist_ids(blocklist_ids, enabled_blocklist_ids)
 	
 	return PeerPublic(
-		id=row["id"],
-		name=row["name"],
-		interface_name=row["interface_name"],
-		public_key=row["public_key"],
-		peer_address=row["peer_address"],
-		allowed_ips=row["allowed_ips"],
-		persistent_keepalive=row["persistent_keepalive"] if row["persistent_keepalive"] else None,
-		use_adblocker=bool(row["use_adblocker"]),
+		id=safe_row_get(row, "id"),
+		name=safe_row_get(row, "name", ""),
+		interface_name=safe_row_get(row, "interface_name", ""),
+		public_key=safe_row_get(row, "public_key", ""),
+		peer_address=safe_row_get(row, "peer_address"),
+		allowed_ips=safe_row_get(row, "allowed_ips", ""),
+		persistent_keepalive=safe_row_get(row, "persistent_keepalive") or None,
+		use_adblocker=bool(safe_row_get(row, "use_adblocker", 0)),
 		blocklist_ids=blocklist_ids,
-		client_isolation=bool(row["client_isolation"]),
-		created_at=row["created_at"],
-		updated_at=row["updated_at"],
+		client_isolation=bool(safe_row_get(row, "client_isolation", 0)),
+		created_at=safe_row_get(row, "created_at"),
+		updated_at=safe_row_get(row, "updated_at"),
 	)
 
 
-async def run_wg_command(*args: str, timeout: int = WG_COMMAND_TIMEOUT) -> tuple[int, str, str]:
-	"""Run command with timeout (WireGuard shorthand supported)."""
+async def _run_subprocess(
+	cmd: tuple[str, ...],
+	*,
+	stdin_data: bytes | None = None,
+	timeout: int = WG_COMMAND_TIMEOUT,
+) -> tuple[int, str, str]:
+	"""Shared subprocess runner with timeout and cleanup."""
 	try:
-		cmd = _resolve_command_args(*args)
 		proc = await asyncio.create_subprocess_exec(
 			*cmd,
-			stdout=asyncio.subprocess.PIPE,
-			stderr=asyncio.subprocess.PIPE,
-		)
-		try:
-			stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-			# returncode is always set after communicate() completes
-			return (
-				proc.returncode if proc.returncode is not None else 1,
-				stdout_bytes.decode("utf-8", errors="replace"),
-				stderr_bytes.decode("utf-8", errors="replace"),
-			)
-		except asyncio.TimeoutError:
-			proc.kill()
-			# Wait with secondary timeout to avoid zombie processes
-			try:
-				await asyncio.wait_for(proc.wait(), timeout=_KILL_WAIT_TIMEOUT)
-			except asyncio.TimeoutError:
-				pass  # Process stuck; will become zombie but we can't do more
-			return 1, "", f"Command timed out after {timeout}s"
-	except Exception as e:
-		return 1, "", str(e)
-
-
-async def run_wg_command_stdin(stdin_data: str, *args: str, timeout: int = WG_COMMAND_TIMEOUT) -> tuple[int, str, str]:
-	"""Run command with stdin data (WireGuard shorthand supported).
-
-	Uses communicate() with input parameter for reliable stdin handling.
-	"""
-	try:
-		cmd = _resolve_command_args(*args)
-		proc = await asyncio.create_subprocess_exec(
-			*cmd,
-			stdin=asyncio.subprocess.PIPE,
+			stdin=asyncio.subprocess.PIPE if stdin_data is not None else None,
 			stdout=asyncio.subprocess.PIPE,
 			stderr=asyncio.subprocess.PIPE,
 		)
 		try:
 			stdout_bytes, stderr_bytes = await asyncio.wait_for(
-				proc.communicate(input=stdin_data.encode("utf-8")),
+				proc.communicate(input=stdin_data),
 				timeout=timeout,
 			)
 			return (
@@ -360,8 +351,31 @@ async def run_wg_command_stdin(stdin_data: str, *args: str, timeout: int = WG_CO
 			except asyncio.TimeoutError:
 				pass
 			return 1, "", f"Command timed out after {timeout}s"
-	except Exception as e:
-		return 1, "", str(e)
+	except FileNotFoundError:
+		_log.error("WG_BINARY_NOT_FOUND cmd=%s", cmd[0])
+		return 1, "", f"Command not found: {cmd[0]}"
+	except OSError as exc:
+		_log.exception("WG_COMMAND_OS_ERROR cmd=%s", cmd)
+		return 1, "", str(exc)
+
+
+async def run_wg_command(*args: str, timeout: int = WG_COMMAND_TIMEOUT) -> tuple[int, str, str]:
+	"""Run command with timeout (WireGuard shorthand supported)."""
+	cmd = _resolve_command_args(*args)
+	return await _run_subprocess(cmd, timeout=timeout)
+
+
+async def run_wg_command_stdin(stdin_data: str, *args: str, timeout: int = WG_COMMAND_TIMEOUT) -> tuple[int, str, str]:
+	"""Run command with stdin data (WireGuard shorthand supported).
+
+	Uses communicate() with input parameter for reliable stdin handling.
+	"""
+	cmd = _resolve_command_args(*args)
+	return await _run_subprocess(
+		cmd,
+		stdin_data=stdin_data.encode("utf-8"),
+		timeout=timeout,
+	)
 
 
 async def wg_set_peer_with_psk(
@@ -412,12 +426,14 @@ async def generate_keypair() -> tuple[str, str]:
 	"""Generate WireGuard private/public key pair."""
 	exit_code, privkey, stderr = await run_wg_command("genkey")
 	if exit_code != 0 or not privkey:
-		raise HTTPException(status_code=500, detail=f"Failed to generate private key: {stderr}")
+		_log.error("WG_GENKEY_FAILED stderr=%s", stderr.strip())
+		raise HTTPException(status_code=500, detail="Failed to generate private key")
 	
 	privkey = privkey.strip()
 	exit_code, pubkey, stderr = await run_wg_command_stdin(privkey, "pubkey")
 	if exit_code != 0 or not pubkey:
-		raise HTTPException(status_code=500, detail=f"Failed to derive public key: {stderr}")
+		_log.error("WG_PUBKEY_FAILED stderr=%s", stderr.strip())
+		raise HTTPException(status_code=500, detail="Failed to derive public key")
 	
 	return privkey, pubkey.strip()
 
@@ -426,7 +442,8 @@ async def generate_preshared_key() -> str:
 	"""Generate WireGuard preshared key."""
 	exit_code, psk, stderr = await run_wg_command("genpsk")
 	if exit_code != 0 or not psk:
-		raise HTTPException(status_code=500, detail=f"Failed to generate PSK: {stderr}")
+		_log.error("WG_GENPSK_FAILED stderr=%s", stderr.strip())
+		raise HTTPException(status_code=500, detail="Failed to generate PSK")
 	return psk.strip()
 
 
@@ -438,11 +455,12 @@ async def derive_public_key(private_key: str) -> str:
 	"""
 	exit_code, pubkey, stderr = await run_wg_command_stdin(private_key.strip(), "pubkey")
 	if exit_code != 0 or not pubkey:
-		raise HTTPException(status_code=500, detail=f"Failed to derive public key: {stderr}")
+		_log.error("WG_DERIVE_PUBKEY_FAILED stderr=%s", stderr.strip())
+		raise HTTPException(status_code=500, detail="Failed to derive public key")
 	return pubkey.strip()
 
 
-def _is_valid_wg_key(key: str) -> bool:
+def is_valid_wg_key(key: str) -> bool:
 	"""Validate WireGuard key format: base64-encoded 32-byte key.
 
 	WireGuard keys must be exactly 32 bytes, which encodes to 44 base64 chars
@@ -459,8 +477,8 @@ def _is_valid_wg_key(key: str) -> bool:
 		return False
 
 
-# Public alias for external use
-is_valid_wg_key = _is_valid_wg_key
+# Backward-compatible private alias for internal callers.
+_is_valid_wg_key = is_valid_wg_key
 
 
 async def validate_keypair(private_key: str, public_key: str) -> None:

@@ -656,7 +656,7 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
 @media (max-width: 991.98px) {
     .navbar .container-fluid {
         padding-left: 1.5rem;
-        padding-right: 1.5rem;
+        padding-right: 0;
     }
 }
 
@@ -1045,10 +1045,6 @@ html.login-page .alert {
 .chart-empty-state-text {
     font-weight: 400;
     opacity: 0.6;
-}
-
-.log-table td.log-empty-cell {
-    padding: 0.75rem;
 }
 
 /* -----------------------------------------------------------------------------

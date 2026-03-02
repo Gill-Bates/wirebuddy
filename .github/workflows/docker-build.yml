@@ -143,6 +143,56 @@ jobs:
             --push \
             .
 
+      - name: Delete old Docker Hub tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+
+          CURRENT_TAG="${{ steps.meta.outputs.tag }}"
+          HUB_USER="${{ secrets.DOCKERHUB_USERNAME }}"
+
+          # Authenticate against Docker Hub API (PAT works as password here)
+          TOKEN=$(curl -fsSL -X POST "https://hub.docker.com/v2/users/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"username\": \"${HUB_USER}\", \"password\": \"${{ secrets.DOCKERHUB_TOKEN }}\"}" \
+            | jq -r '.token')
+
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "ERROR: Failed to obtain Docker Hub API token"
+            exit 1
+          fi
+
+          echo "Current tag to keep: ${CURRENT_TAG}"
+
+          # Walk paginated tag list and delete anything that isn't :latest or the current version
+          PAGE=1
+          while true; do
+            RESPONSE=$(curl -fsSL \
+              -H "Authorization: Bearer ${TOKEN}" \
+              "https://hub.docker.com/v2/repositories/${HUB_USER}/wirebuddy/tags/?page=${PAGE}&page_size=100")
+
+            mapfile -t TAGS < <(echo "$RESPONSE" | jq -r '.results[].name')
+            NEXT=$(echo "$RESPONSE" | jq -r '.next')
+
+            for TAG in "${TAGS[@]}"; do
+              if [ "$TAG" = "latest" ] || [ "$TAG" = "$CURRENT_TAG" ]; then
+                echo "  keeping : ${TAG}"
+                continue
+              fi
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer ${TOKEN}" \
+                "https://hub.docker.com/v2/repositories/${HUB_USER}/wirebuddy/tags/${TAG}/")
+              if [ "$HTTP_CODE" = "204" ]; then
+                echo "  deleted : ${TAG}"
+              else
+                echo "  warning : could not delete ${TAG} (HTTP ${HTTP_CODE})"
+              fi
+            done
+
+            [ "$NEXT" = "null" ] || [ -z "$NEXT" ] && break
+            PAGE=$((PAGE + 1))
+          done
+
       - name: Generate Release Notes
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

@@ -35,7 +35,7 @@ from .unbound_constants import (
 )
 
 if TYPE_CHECKING:
-	from .custom_rules import ParsedRule, RuleAction
+	from .custom_rules import ParsedRule
 
 _log = logging.getLogger(__name__)
 
@@ -60,10 +60,31 @@ def _read_total_memory_mb() -> int | None:
 				if line.startswith("MemTotal:"):
 					parts = line.split()
 					if len(parts) >= 3 and parts[1].isdigit() and parts[2].lower() == "kb":
-						return int(parts[1]) // 1024
+						total_mb = int(parts[1]) // 1024
+						return total_mb if total_mb > 0 else None
 	except Exception:
 		return None
 	return None
+
+
+def _get_field(obj: Any, key: str, default: Any = None) -> Any:
+	"""Safely get a field from dict, sqlite3.Row, or object."""
+	try:
+		return obj[key]
+	except (KeyError, TypeError, IndexError):
+		pass
+	try:
+		return obj.get(key, default)
+	except AttributeError:
+		pass
+	return getattr(obj, key, default)
+
+
+def _safe_unbound_value(value: str) -> str:
+	"""Reject values that could break Unbound config syntax."""
+	if any(c in value for c in ('"', "\n", "\r", "\x00")):
+		raise ValueError(f"Unsafe value for Unbound config: {value!r}")
+	return value
 
 
 def _auto_num_threads() -> int:
@@ -156,12 +177,12 @@ def _resolve_upstream(upstream_dns: list[str] | None) -> list[str]:
 	if not valid:
 		# All user-provided entries invalid; fall back to defaults
 		_log.warning("DNS_CONFIG all upstream entries invalid, using defaults")
-		valid = _DEFAULT_UPSTREAM_DOT[:]
+		valid = [_validate_upstream_dot(addr) for addr in _DEFAULT_UPSTREAM_DOT]
 	return valid
 
 
 def generate_config(
-	listen_addr: str = "0.0.0.0",
+	listen_addr: str = "127.0.0.1",
 	listen_port: int = 53,
 	enable_logging: bool = True,
 	upstream_dns: list[str] | None = None,
@@ -169,19 +190,45 @@ def generate_config(
 	enable_dnssec: bool = True,
 	cache_min_ttl: int = 60,
 	listen_addrs_ipv6: list[str] | None = None,
+	listen_addrs_ipv4: list[str] | None = None,
 ) -> str:
 	"""Generate unbound.conf content.
 	
 	Args:
+		listen_addr: Single IPv4 address (legacy, use listen_addrs_ipv4 instead).
+		listen_addrs_ipv4: List of IPv4 addresses to listen on.
+		                   If provided, overrides listen_addr.
+		                   Example: ["127.0.0.1", "10.20.0.1"] for WireGuard-only binding.
 		cache_min_ttl: Minimum TTL for cached entries. Some CDNs use low TTLs
 		              for fast failover; override with care.
 		listen_addrs_ipv6: Optional list of IPv6 addresses to listen on
 		                   (e.g., interface gateway addresses for dual-stack peers).
 	"""
-	try:
-		ipaddress.ip_address(listen_addr)
-	except ValueError as exc:
-		raise ValueError(f"Invalid listen address: {listen_addr!r}") from exc
+	# Use explicit list if provided, otherwise fall back to single address
+	ipv4_addrs: list[str] = []
+	if listen_addrs_ipv4:
+		for addr in listen_addrs_ipv4:
+			try:
+				parsed = ipaddress.ip_address(addr.strip())
+				if parsed.version == 4:
+					ipv4_addrs.append(str(parsed))
+			except ValueError:
+				_log.warning("DNS_CONFIG invalid IPv4 listen address %r, skipping", addr)
+	if not ipv4_addrs:
+		# No explicit WireGuard IPs provided - check legacy single address
+		# Host-mode safety: never use 0.0.0.0, and avoid 127.0.0.1 which may conflict
+		# with host-side DNS resolver (systemd-resolved, dnsmasq, etc.)
+		if listen_addr not in ("0.0.0.0", "127.0.0.1"):
+			try:
+				ipaddress.ip_address(listen_addr)
+				ipv4_addrs = [listen_addr]
+			except ValueError as exc:
+				raise ValueError(f"Invalid listen address: {listen_addr!r}") from exc
+		else:
+			# Use link-local address that won't conflict with host services
+			# This ensures Unbound doesn't bind to 0.0.0.0 or system DNS ports
+			ipv4_addrs = ["169.254.53.53"]
+			_log.debug("DNS_CONFIG no WireGuard interface IPs found, binding to %s", ipv4_addrs[0])
 	if not isinstance(listen_port, int):
 		raise TypeError(f"listen_port must be int, got {type(listen_port).__name__}")
 	if not 1 <= listen_port <= 65535:
@@ -201,7 +248,9 @@ def generate_config(
 	msg_cache_size, rrset_cache_size = _auto_cache_sizes()
 
 	# Build interface lines (IPv4 + optional IPv6 addresses)
-	interface_lines = [f"    interface: {listen_addr}"]
+	# NOTE: Do NOT bind to 127.0.0.1 to avoid conflicts with host DNS
+	# in Docker host network mode. Container DNS is configured via resolv.conf.
+	interface_lines = [f"    interface: {addr}" for addr in ipv4_addrs]
 	validated_v6: list[str] = []
 	if listen_addrs_ipv6:
 		for v6_raw in listen_addrs_ipv6:
@@ -306,11 +355,11 @@ server:
 """
 
 	conf += f"""
-	# Client-specific custom DNS overrides
-	include: {get_custom_client_rules_file()}
+    # Client-specific custom DNS overrides
+    include: {get_custom_client_rules_file()}
 
-	# Split-DNS local-data overrides (auto-generated from WG interfaces)
-	include: {get_local_data_file()}
+    # Split-DNS local-data overrides (auto-generated from WG interfaces)
+    include: {get_local_data_file()}
 """
 
 	conf += """
@@ -337,18 +386,6 @@ def get_interface_ipv6_gateways(interfaces: Sequence[Any]) -> list[str]:
 	Returns:
 		List of valid IPv6 gateway addresses (e.g., ['fd13:13:13::1']).
 	"""
-	def _get_field(obj: Any, key: str, default: Any = None) -> Any:
-		"""Safely get a field from dict, sqlite3.Row, or object."""
-		try:
-			return obj[key]
-		except (KeyError, TypeError, IndexError):
-			pass
-		try:
-			return obj.get(key, default)
-		except AttributeError:
-			pass
-		return getattr(obj, key, default)
-
 	ipv6_addrs: list[str] = []
 	for iface in interfaces:
 		addr6 = _get_field(iface, "address6")
@@ -364,6 +401,8 @@ def get_interface_ipv6_gateways(interfaces: Sequence[Any]) -> list[str]:
 
 def write_config(**kwargs) -> None:
 	"""Write unbound.conf to disk."""
+	content = generate_config(**kwargs)
+
 	UNBOUND_CONF_DIR.mkdir(parents=True, exist_ok=True)
 	QUERY_LOG.parent.mkdir(parents=True, exist_ok=True)
 	UNBOUND_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -396,7 +435,6 @@ def write_config(**kwargs) -> None:
 	if not local_data_path.exists():
 		atomic_write_text(local_data_path, "# Split-DNS local-data overrides - auto-generated\n")
 
-	content = generate_config(**kwargs)
 	atomic_write_text(UNBOUND_CONF, content)
 	_log.info("DNS_CONFIG written to %s", UNBOUND_CONF)
 
@@ -415,7 +453,13 @@ def write_custom_client_rules(rules: list["ParsedRule"]) -> None:
 	for rule in rules:
 		if rule.client_scope is None or rule.domain is None:
 			continue
-		key = (rule.client_scope, rule.domain)
+		try:
+			client_scope = _safe_unbound_value(str(rule.client_scope).strip())
+			domain = _safe_unbound_value(_normalize_hostname(str(rule.domain)))
+		except ValueError as exc:
+			_log.warning("DNS_CUSTOM_CLIENT_RULES dropped unsafe rule: %s", exc)
+			continue
+		key = (client_scope, domain)
 		if rule.action.value == "allow":
 			effective[key] = "allow"
 		elif key not in effective:
@@ -530,32 +574,27 @@ def write_local_data_overrides(interfaces: Sequence[Any], fqdn: str | None) -> i
 	if not fqdn_clean:
 		lines.append("# No wg_fqdn configured - no overrides generated")
 		atomic_write_text(path, "\n".join(lines) + "\n")
-		_log.info("DNS_LOCAL_DATA no fqdn configured, wrote empty file to %s", path)
+		_log.debug("DNS_LOCAL_DATA no fqdn configured, wrote empty file to %s", path)
 		return 0
 
 	# Validate FQDN format (basic check)
-	if not all(HOST_LABEL_RE.match(label) for label in fqdn_clean.split(".")):
+	if not all(HOST_LABEL_RE.fullmatch(label) for label in fqdn_clean.split(".")):
 		lines.append(f"# Invalid FQDN format: {fqdn_clean!r}")
 		atomic_write_text(path, "\n".join(lines) + "\n")
 		_log.warning("DNS_LOCAL_DATA invalid fqdn %r, wrote empty file", fqdn_clean)
 		return 0
 
+	try:
+		fqdn_clean = _safe_unbound_value(_normalize_hostname(fqdn_clean))
+	except ValueError:
+		lines.append(f"# Unsafe or invalid FQDN format: {fqdn_clean!r}")
+		atomic_write_text(path, "\n".join(lines) + "\n")
+		_log.warning("DNS_LOCAL_DATA unsafe fqdn %r, wrote empty file", fqdn_clean)
+		return 0
+
 	# Collect gateway IPs from all enabled interfaces
 	ipv4_gateways: list[str] = []
 	ipv6_gateways: list[str] = []
-
-	def _get_field(obj: Any, key: str, default: Any = None) -> Any:
-		"""Safely get a field from dict, sqlite3.Row, or object."""
-		# sqlite3.Row supports __getitem__ but not .get() or getattr()
-		try:
-			return obj[key]
-		except (KeyError, TypeError, IndexError):
-			pass
-		try:
-			return obj.get(key, default)
-		except AttributeError:
-			pass
-		return getattr(obj, key, default)
 
 	for iface in interfaces:
 		# Skip disabled interfaces

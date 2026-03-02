@@ -34,6 +34,11 @@ def get_tsdb_dir(request: Request) -> Path:
 	return request.app.state.tsdb_dir
 
 
+def get_dns_dir(request: Request) -> Path:
+	"""Central helper to get DNS directory from app state."""
+	return request.app.state.dns_dir
+
+
 def get_config(request: Request):
 	"""Get the application configuration from app state."""
 	return request.app.state.cfg

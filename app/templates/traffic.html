@@ -1,0 +1,868 @@
+{% extends "base.html" %}
+
+{% block title %}Traffic – WireBuddy{% endblock %}
+
+{% block extra_css %}
+<style>
+    .traffic-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+    }
+
+    .traffic-controls {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+    }
+
+    .traffic-controls .form-select {
+        height: auto;
+        align-self: center;
+    }
+
+    .traffic-peer-filter-select {
+        min-width: 120px;
+    }
+
+    .traffic-range-select {
+        min-width: 80px;
+    }
+
+    .traffic-chart-canvas-wrap {
+        position: relative;
+        height: 400px;
+        transition: opacity 0.2s ease;
+    }
+    .traffic-chart-fading {
+        opacity: 0;
+    }
+
+    /* ── Country traffic styles ───────────────────────── */
+    .country-doughnut-wrap {
+        position: relative;
+        height: 280px;
+        max-width: 280px;
+        margin: 0 auto;
+    }
+    .country-table-wrap {
+        max-height: 440px;
+        overflow-y: auto;
+    }
+    .country-flag {
+        width: 24px;
+        height: 18px;
+        border-radius: 2px;
+        object-fit: cover;
+        vertical-align: middle;
+        box-shadow: 0 0 0 1px rgba(0,0,0,.08);
+    }
+    .country-bar {
+        height: 6px;
+        border-radius: 3px;
+        min-width: 2px;
+    }
+    .country-bar-rx { background: var(--bs-primary, #0d6efd); }
+    .country-bar-tx { background: var(--bs-danger, #dc3545); }
+    .country-traffic-row td { vertical-align: middle; }
+    
+    /* Theme-aware table header styling to prevent flash in dark mode */
+    .country-table-wrap thead {
+        background-color: var(--bs-tertiary-bg);
+        color: var(--bs-body-color);
+    }
+    .country-table-wrap thead th {
+        border-bottom: 2px solid var(--bs-border-color);
+        font-weight: 600;
+        font-size: 0.875rem;
+    }
+
+    @media (max-width: 575.98px) {
+        .traffic-header {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.5rem;
+        }
+
+        .traffic-page-title {
+            font-size: 1.1rem;
+        }
+
+        .traffic-controls {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.5rem;
+            width: 100%;
+        }
+
+        .traffic-controls > * {
+            width: 100%;
+            min-width: 0;
+        }
+
+        .traffic-chart-canvas-wrap {
+            height: 260px;
+        }
+
+        .country-doughnut-wrap {
+            height: 200px;
+            max-width: 200px;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <!-- Header -->
+    <div class="traffic-header mb-4">
+        <h2 class="mb-0 traffic-page-title">
+            <span class="material-icons align-middle me-1">show_chart</span>
+            Traffic
+        </h2>
+    </div>
+
+    <!-- Traffic Chart Card -->
+    <div class="row g-4">
+        <div class="col-12">
+            <div class="card h-100">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                        <h5 class="mb-0">Per-Peer</h5>
+                        <div class="traffic-controls">
+                            <label for="traffic-peer-filter" class="visually-hidden">Filter by peer</label>
+                            <select id="traffic-peer-filter" class="form-select form-select-sm traffic-peer-filter-select" aria-label="Filter by peer">
+                                <option value="" selected>All Peers</option>
+                            </select>
+                            <label for="traffic-range" class="visually-hidden">Select time range</label>
+                            <select id="traffic-range" class="form-select form-select-sm traffic-range-select" aria-label="Select time range">
+                                <option value="6h">6 h</option>
+                                <option value="24h" selected>24 h</option>
+                                <option value="3d">3 d</option>
+                                <option value="7d">7 d</option>
+                                <option value="30d">30 d</option>
+                                <option value="90d">90 d</option>
+                                <option value="1y">1 y</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div id="traffic-combined-chart-wrap" class="traffic-chart-canvas-wrap">
+                        <canvas id="trafficCombinedChart"></canvas>
+                    </div>
+                    <div id="traffic-empty-state" class="d-none"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- By Country Card -->
+    <div class="row g-4 mt-0">
+        <div class="col-12">
+            <div class="card h-100">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                        <h5 class="mb-0">
+                            <span class="material-icons align-middle me-1" aria-hidden="true">public</span>
+                            By Country
+                        </h5>
+                        <small class="text-muted" id="country-traffic-summary"></small>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div id="country-traffic-content" class="row g-4">
+                        <!-- Doughnut chart -->
+                        <div class="col-lg-4 col-md-5">
+                            <div class="country-doughnut-wrap">
+                                <canvas id="countryDoughnutChart"></canvas>
+                            </div>
+                            <div class="text-center mt-2">
+                                <small class="text-muted" id="country-doughnut-legend"></small>
+                            </div>
+                        </div>
+                        <!-- Country table -->
+                        <div class="col-lg-8 col-md-7">
+                            <div class="country-table-wrap">
+                                <table class="table table-sm table-hover mb-0" id="country-traffic-table">
+                                    <thead>
+                                        <tr>
+                                            <th style="width:40px"></th>
+                                            <th>Country</th>
+                                            <th class="text-end" style="min-width:80px">RX</th>
+                                            <th class="text-end" style="min-width:80px">TX</th>
+                                            <th class="text-end" style="min-width:80px">Total</th>
+                                            <th class="text-end" style="min-width:50px">Peers</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="country-traffic-tbody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="country-traffic-empty" class="d-none"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/vendor/chart.umd.min.js"></script>
+<script>
+    const DEBUG = false;
+    const AUTO_REFRESH_MS = 30000;
+    const API_TIMEOUT_MS = 25000;
+    const MAX_BACKOFF_MS = 300000;
+
+    // Responsive data point settings
+    const MIN_POINTS = 20;
+    const MAX_POINTS = 120;
+    // Pixels per data point (higher = fewer points)
+    const PIXELS_PER_POINT = 8;
+
+    let trafficCombinedChart = null;
+    let cachedTrafficData = null;
+    let countryDoughnutChart = null;
+    let cachedCountryData = null;
+    let autoRefreshTimer = null;
+    let isRefreshing = false;
+    let activeRefreshController = null;
+    let pendingRefresh = false;
+    let consecutiveFailures = 0;
+    let currentRefreshInterval = AUTO_REFRESH_MS;
+    let trafficRangeDebounce = null;
+    let trafficRangeController = null;
+    let lastVisibleRefresh = 0;
+    let lastMaxPoints = 0;
+    let resizeDebounce = null;
+
+    const trafficCombinedCanvas = document.getElementById('trafficCombinedChart');
+    const trafficCombinedWrap = document.getElementById('traffic-combined-chart-wrap');
+    const trafficEmptyState = document.getElementById('traffic-empty-state');
+    const trafficPeerFilter = document.getElementById('traffic-peer-filter');
+    const trafficRange = document.getElementById('traffic-range');
+
+    function dbg(...args) {
+        if (DEBUG) console.log('[Traffic]', ...args);
+    }
+
+    function clearElement(el) {
+        if (el) el.replaceChildren();
+    }
+
+    function chartEmptyState(text = 'No data available.') {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'chart-empty-state';
+        const icon = document.createElement('span');
+        icon.className = 'material-icons';
+        icon.textContent = 'show_chart';
+        icon.setAttribute('aria-hidden', 'true');
+        const msg = document.createElement('span');
+        msg.className = 'chart-empty-state-text';
+        msg.textContent = text;
+        wrapper.append(icon, msg);
+        return wrapper;
+    }
+
+    function formatTrafficMetric(value, unit) {
+        const n = Number(value || 0);
+        const decimals = (unit === 'MB' || unit === 'GB') ? 1 : 2;
+        return `${Number(n.toFixed(decimals))} ${unit}`;
+    }
+
+    function shortLabel(isoStr, hours) {
+        const d = new Date(isoStr);
+        const h = Number(hours);
+        if (h > 168) {
+            return d.toLocaleDateString([], { month: 'short', day: '2-digit' });
+        }
+        if (h > 24) {
+            return d.toLocaleString([], { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        }
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function getChartColors() {
+        const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+        const style = getComputedStyle(document.documentElement);
+        return {
+            gridColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+            textColor: isDark ? '#9ca3af' : '#6b7280',
+            primary: style.getPropertyValue('--bs-primary').trim() || '#0d6efd',
+            danger: style.getPropertyValue('--bs-danger').trim() || '#dc3545',
+        };
+    }
+
+    function isAbortError(err) {
+        return err?.code === 'ABORTED' || err?.name === 'AbortError' || err?.message === 'Request cancelled';
+    }
+
+    /**
+     * Calculate optimal number of data points based on chart container width.
+     * Returns fewer points for smaller screens to improve readability.
+     */
+    function getOptimalMaxPoints() {
+        // Use the chart wrap element width, fallback to viewport width
+        let chartWidth = trafficCombinedWrap?.clientWidth || window.innerWidth;
+        // Account for card padding on mobile
+        if (window.innerWidth < 576) {
+            chartWidth = Math.max(chartWidth - 32, 200);
+        }
+        // Calculate points: wider screen = more points
+        const calculated = Math.floor(chartWidth / PIXELS_PER_POINT);
+        return Math.max(MIN_POINTS, Math.min(calculated, MAX_POINTS));
+    }
+
+    function updateChartTheme() {
+        const colors = getChartColors();
+        if (trafficCombinedChart) {
+            if (trafficCombinedChart.options?.plugins?.legend?.labels) {
+                trafficCombinedChart.options.plugins.legend.labels.color = colors.textColor;
+            }
+            if (trafficCombinedChart.options?.scales?.x?.ticks) trafficCombinedChart.options.scales.x.ticks.color = colors.textColor;
+            if (trafficCombinedChart.options?.scales?.x?.title) trafficCombinedChart.options.scales.x.title.color = colors.textColor;
+            if (trafficCombinedChart.options?.scales?.x?.grid) trafficCombinedChart.options.scales.x.grid.color = colors.gridColor;
+            if (trafficCombinedChart.options?.scales?.y?.ticks) trafficCombinedChart.options.scales.y.ticks.color = colors.textColor;
+            if (trafficCombinedChart.options?.scales?.y?.title) trafficCombinedChart.options.scales.y.title.color = colors.textColor;
+            if (trafficCombinedChart.options?.scales?.y?.grid) trafficCombinedChart.options.scales.y.grid.color = colors.gridColor;
+            trafficCombinedChart.update();
+        }
+        if (countryDoughnutChart) {
+            const borderColor = colors.gridColor;
+            if (countryDoughnutChart.data?.datasets?.[0]) {
+                countryDoughnutChart.data.datasets[0].borderColor = borderColor;
+            }
+            countryDoughnutChart.update();
+        }
+    }
+
+    function destroyTrafficCharts() {
+        if (trafficCombinedChart) {
+            trafficCombinedChart.destroy();
+            trafficCombinedChart = null;
+        }
+        if (countryDoughnutChart) {
+            countryDoughnutChart.destroy();
+            countryDoughnutChart = null;
+        }
+    }
+
+    /* ── Country Traffic ───────────────────────────────── */
+    const COUNTRY_COLORS = [
+        '#0d6efd', '#198754', '#6f42c1', '#0dcaf0', '#fd7e14',
+        '#d63384', '#20c997', '#ffc107', '#6610f2', '#e83e8c',
+        '#17a2b8', '#28a745', '#dc3545', '#007bff', '#6c757d',
+    ];
+
+    const countryContent    = document.getElementById('country-traffic-content');
+    const countryEmpty      = document.getElementById('country-traffic-empty');
+    const countrySummary    = document.getElementById('country-traffic-summary');
+    const countryTbody      = document.getElementById('country-traffic-tbody');
+    const countryCanvas     = document.getElementById('countryDoughnutChart');
+
+    async function refreshCountryTraffic(signal) {
+        try {
+            const range = trafficRange?.value || '24h';
+            const result = await api(
+                'GET',
+                `/api/wireguard/stats/traffic-by-country?range_key=${encodeURIComponent(range)}`,
+                null,
+                { signal, timeoutMs: API_TIMEOUT_MS },
+            );
+            cachedCountryData = result;
+            renderCountryTraffic();
+            return true;
+        } catch (e) {
+            if (isAbortError(e)) return true;
+            console.error('Country traffic error:', e);
+            return false;
+        }
+    }
+
+    function renderCountryTraffic() {
+        const data = cachedCountryData?.data || cachedCountryData;
+        if (!data) return;
+
+        const countries = Array.isArray(data.countries) ? data.countries : [];
+        const unit = data.display_unit || 'MB';
+
+        if (countries.length === 0) {
+            if (countryContent) countryContent.classList.add('d-none');
+            if (countryEmpty) {
+                countryEmpty.classList.remove('d-none');
+                countryEmpty.replaceChildren();
+                countryEmpty.appendChild(chartEmptyState('No country traffic data available.'));
+            }
+            if (countrySummary) countrySummary.textContent = '';
+            return;
+        }
+
+        if (countryContent) countryContent.classList.remove('d-none');
+        if (countryEmpty) countryEmpty.classList.add('d-none');
+
+        // Summary text
+        const totalTraffic = countries.reduce((s, c) => s + c.total, 0);
+        if (countrySummary) {
+            countrySummary.textContent = `${countries.length} ${countries.length === 1 ? 'country' : 'countries'} · ${formatTrafficMetric(totalTraffic, unit)} total`;
+        }
+
+        // ── Doughnut chart ──
+        const topN = countries.slice(0, 10);
+        const otherTotal = countries.slice(10).reduce((s, c) => s + c.total, 0);
+        const labels = topN.map(c => c.name);
+        const values = topN.map(c => c.total);
+        const bgColors = topN.map((_, i) => COUNTRY_COLORS[i % COUNTRY_COLORS.length]);
+
+        if (otherTotal > 0) {
+            labels.push('Other');
+            values.push(Math.round(otherTotal * 100) / 100);
+            bgColors.push('#adb5bd');
+        }
+
+        const colors = getChartColors();
+
+        if (countryDoughnutChart) {
+            countryDoughnutChart.data.labels = labels;
+            countryDoughnutChart.data.datasets[0].data = values;
+            countryDoughnutChart.data.datasets[0].backgroundColor = bgColors;
+            countryDoughnutChart.options.plugins.tooltip.callbacks.label =
+                ctx => `${ctx.label}: ${formatTrafficMetric(ctx.parsed, unit)}`;
+            countryDoughnutChart.update('none');
+        } else {
+            const ctx = countryCanvas?.getContext('2d');
+            if (ctx) {
+                countryDoughnutChart = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels,
+                        datasets: [{
+                            data: values,
+                            backgroundColor: bgColors,
+                            borderWidth: 1,
+                            borderColor: colors.gridColor,
+                        }],
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        cutout: '60%',
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: ctx => `${ctx.label}: ${formatTrafficMetric(ctx.parsed, unit)}`,
+                                },
+                            },
+                        },
+                    },
+                });
+            }
+        }
+
+        // ── Country table ──
+        if (!countryTbody) return;
+        const maxTotal = countries[0]?.total || 1;
+        const rows = [];
+        countries.forEach(c => {
+            const pct = maxTotal > 0 ? (c.total / maxTotal) * 100 : 0;
+            const rxPct = c.total > 0 ? (c.rx / c.total) * 100 : 50;
+            const flagImg = c.flag
+                ? `<img src="${c.flag}" alt="${c.code}" class="country-flag" loading="lazy" onerror="this.style.display='none'">`
+                : '<span class="material-icons" style="font-size:18px;color:#adb5bd" aria-hidden="true">public</span>';
+            rows.push(`<tr class="country-traffic-row">
+                <td class="text-center">${flagImg}</td>
+                <td>
+                    <div class="fw-medium">${_esc(c.name)}</div>
+                    <div class="d-flex gap-1 mt-1" style="width:${Math.max(pct, 3)}%">
+                        <div class="country-bar country-bar-rx" style="width:${rxPct}%" title="RX ${formatTrafficMetric(c.rx, unit)}"></div>
+                        <div class="country-bar country-bar-tx" style="width:${100 - rxPct}%" title="TX ${formatTrafficMetric(c.tx, unit)}"></div>
+                    </div>
+                </td>
+                <td class="text-end text-nowrap"><small>${formatTrafficMetric(c.rx, unit)}</small></td>
+                <td class="text-end text-nowrap"><small>${formatTrafficMetric(c.tx, unit)}</small></td>
+                <td class="text-end text-nowrap fw-medium">${formatTrafficMetric(c.total, unit)}</td>
+                <td class="text-end">
+                    <span class="badge bg-secondary bg-opacity-10 text-body" title="${_esc(c.peer_names?.join(', ') || '')}">${c.peers}</span>
+                </td>
+            </tr>`);
+        });
+        countryTbody.innerHTML = rows.join('');
+    }
+
+    function _esc(s) {
+        const d = document.createElement('div');
+        d.textContent = s || '';
+        return d.innerHTML;
+    }
+
+    let knownTrafficPeers = [];
+
+    function updateTrafficPeerFilter(peers) {
+        if (!trafficPeerFilter) return;
+        const currentValue = trafficPeerFilter.value;
+
+        const peerOptions = peers.map(p => ({
+            value: p.key || p.name,
+            label: p.name || p.key || 'Unknown',
+        }));
+
+        const newKeys = peerOptions.map(p => p.value).sort().join(',');
+        const oldKeys = knownTrafficPeers.map(p => p.value).sort().join(',');
+        if (newKeys === oldKeys) return;
+
+        knownTrafficPeers = peerOptions;
+
+        trafficPeerFilter.innerHTML = '<option value="" selected>All Peers</option>';
+        peerOptions.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.value;
+            opt.textContent = p.label;
+            if (p.value === currentValue) opt.selected = true;
+            trafficPeerFilter.appendChild(opt);
+        });
+    }
+
+    async function refreshTrafficCharts(signal) {
+        try {
+            const range = trafficRange?.value || '24h';
+            const maxPoints = getOptimalMaxPoints();
+            lastMaxPoints = maxPoints;
+            dbg(`Fetching traffic data: range=${range}, max_points=${maxPoints}, viewport=${window.innerWidth}px`);
+            const traffic = await api(
+                'GET',
+                `/api/wireguard/stats/traffic?range_key=${encodeURIComponent(range)}&max_points=${maxPoints}`,
+                null,
+                { signal, timeoutMs: API_TIMEOUT_MS },
+            );
+            cachedTrafficData = traffic;
+            renderTrafficCharts();
+            return true;
+        } catch (e) {
+            if (isAbortError(e)) return true;
+            console.error('Traffic chart error:', e);
+            return false;
+        }
+    }
+
+    function renderTrafficCharts() {
+        const traffic = cachedTrafficData;
+        if (!traffic) return;
+
+        const showRx = true;
+        const showTx = true;
+        const peerFilter = trafficPeerFilter?.value || '';
+        const hours = Number(traffic?.hours || 24);
+        const labels = (traffic?.labels || []).map(ts => shortLabel(ts, hours));
+        const unit = traffic?.display_unit || 'MB';
+        let peers = Array.isArray(traffic?.peers_display) && traffic.peers_display.length
+            ? traffic.peers_display
+            : (Array.isArray(traffic?.peers) ? traffic.peers : []);
+
+        updateTrafficPeerFilter(peers);
+        if (peerFilter) {
+            peers = peers.filter(p => p.key === peerFilter || p.name === peerFilter);
+        }
+
+        // Show empty state if no peers available
+        if (peers.length === 0) {
+            destroyTrafficCharts();
+            trafficCombinedWrap.classList.add('d-none');
+            trafficEmptyState.classList.remove('d-none');
+            clearElement(trafficEmptyState);
+            trafficEmptyState.appendChild(chartEmptyState('No traffic data available.'));
+            return;
+        }
+
+        trafficCombinedWrap.classList.remove('d-none');
+        trafficEmptyState.classList.add('d-none');
+
+        // Build datasets — theme-aware colors
+        const colors = getChartColors();
+        const datasets = [];
+        const isAllPeersView = !peerFilter && peers.length > 1;
+
+        // Color palette for multiple peers
+        const peerColors = [
+            colors.primary,
+            '#198754',   // green
+            '#6f42c1',   // purple
+            '#0dcaf0',   // cyan
+            '#fd7e14',   // orange
+            '#d63384',   // pink
+            '#20c997',   // teal
+            '#ffc107',   // yellow
+        ];
+
+        if (isAllPeersView) {
+            // All Peers: one cumulative (RX+TX) line per peer
+            peers.forEach((peer, idx) => {
+                const rx = Array.isArray(peer.rx) ? peer.rx : [];
+                const tx = Array.isArray(peer.tx) ? peer.tx : [];
+                const peerName = peer.name || peer.key || `Peer ${idx + 1}`;
+                const color = peerColors[idx % peerColors.length];
+                // Sum RX + TX per bucket
+                const total = rx.map((r, i) => Number(r || 0) + Number(tx[i] || 0));
+                datasets.push({
+                    label: peerName,
+                    data: total,
+                    borderColor: color,
+                    backgroundColor: 'transparent',
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    pointHitRadius: 8,
+                    borderWidth: 2,
+                });
+            });
+        } else {
+            // Single peer: separate RX and TX lines
+            const peer = peers[0];
+            const rx = Array.isArray(peer.rx) ? peer.rx : [];
+            const tx = Array.isArray(peer.tx) ? peer.tx : [];
+            if (showRx) {
+                datasets.push({
+                    label: 'RX',
+                    data: rx.map(v => Number(v || 0)),
+                    borderColor: colors.danger,
+                    backgroundColor: `${colors.danger}1f`,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    pointHitRadius: 8,
+                    borderWidth: 2,
+                });
+            }
+            if (showTx) {
+                datasets.push({
+                    label: 'TX',
+                    data: tx.map(v => Number(v || 0)),
+                    borderColor: colors.primary,
+                    backgroundColor: 'transparent',
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    pointHitRadius: 8,
+                    borderWidth: 2,
+                });
+            }
+        }
+
+        if (trafficCombinedChart) {
+            trafficCombinedChart.data.labels = labels;
+            trafficCombinedChart.data.datasets = datasets;
+            if (trafficCombinedChart.options?.scales?.y?.title) {
+                trafficCombinedChart.options.scales.y.title.text = unit;
+            }
+            if (trafficCombinedChart.options?.plugins?.tooltip?.callbacks) {
+                trafficCombinedChart.options.plugins.tooltip.callbacks.label =
+                    c => `${c.dataset.label}: ${formatTrafficMetric(c.parsed.y || 0, unit)}`;
+            }
+            if (trafficCombinedChart.options?.scales?.y?.ticks) {
+                trafficCombinedChart.options.scales.y.ticks.callback =
+                    v => formatTrafficMetric(v, unit);
+            }
+            trafficCombinedChart.update('none');
+            return;
+        }
+
+        const ctx = trafficCombinedCanvas?.getContext('2d');
+        if (!ctx) {
+            console.error('Traffic chart canvas context unavailable');
+            return;
+        }
+        trafficCombinedChart = new Chart(ctx, {
+            type: 'line',
+            data: { labels, datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom',
+                        labels: {
+                            usePointStyle: true,
+                            pointStyle: 'rect',
+                            boxWidth: 10,
+                            color: colors.textColor,
+                            padding: 12,
+                            font: { size: 11 },
+                        },
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: c => `${c.dataset.label}: ${formatTrafficMetric(c.parsed.y || 0, unit)}`,
+                        },
+                    },
+                },
+                scales: {
+                    x: {
+                        title: { display: true, text: 'Time', color: colors.textColor },
+                        ticks: { maxTicksLimit: 10, color: colors.textColor },
+                        grid: { color: colors.gridColor },
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: { display: true, text: unit, color: colors.textColor },
+                        grid: { color: colors.gridColor },
+                        ticks: {
+                            maxTicksLimit: 6,
+                            color: colors.textColor,
+                            callback: v => formatTrafficMetric(v, unit),
+                        },
+                    },
+                },
+            },
+        });
+    }
+
+    function startAutoRefresh(intervalMs) {
+        if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+        const ms = intervalMs || currentRefreshInterval;
+        autoRefreshTimer = setInterval(() => {
+            refreshAll();
+        }, ms);
+    }
+
+    function stopAutoRefresh() {
+        if (!autoRefreshTimer) return;
+        clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+    }
+
+    async function refreshAll() {
+        if (isRefreshing) {
+            pendingRefresh = true;
+            if (activeRefreshController) activeRefreshController.abort();
+            return;
+        }
+        isRefreshing = true;
+        const controller = new AbortController();
+        activeRefreshController = controller;
+        let allFailed = true;
+        try {
+            const results = await Promise.allSettled([
+                refreshTrafficCharts(controller.signal),
+                refreshCountryTraffic(controller.signal),
+            ]);
+            const statuses = results.map(r => (r.status === 'fulfilled' ? r.value : false));
+            allFailed = statuses.every(v => v === false);
+        } finally {
+            if (activeRefreshController === controller) activeRefreshController = null;
+            isRefreshing = false;
+
+            if (allFailed) {
+                consecutiveFailures++;
+                const backoff = Math.min(AUTO_REFRESH_MS * Math.pow(2, consecutiveFailures - 1), MAX_BACKOFF_MS);
+                if (backoff !== currentRefreshInterval) {
+                    currentRefreshInterval = backoff;
+                    dbg(`All API calls failed (${consecutiveFailures}x), next refresh in ${Math.round(backoff / 1000)}s`);
+                    startAutoRefresh(backoff);
+                }
+            } else if (!allFailed) {
+                if (consecutiveFailures > 0) {
+                    consecutiveFailures = 0;
+                    currentRefreshInterval = AUTO_REFRESH_MS;
+                    dbg('API recovered, refresh interval reset to', AUTO_REFRESH_MS / 1000, 's');
+                    startAutoRefresh(AUTO_REFRESH_MS);
+                }
+            }
+            if (pendingRefresh) {
+                pendingRefresh = false;
+                setTimeout(() => refreshAll(), 50);
+            }
+        }
+    }
+
+    (function initTraffic() {
+        dbg('Initializing traffic page...');
+        if (typeof api !== 'function' || typeof wbToast !== 'function') {
+            console.error('Traffic page requires api() and wbToast() from base.html');
+            return;
+        }
+
+        const themeObserver = new MutationObserver(() => updateChartTheme());
+        themeObserver.observe(document.documentElement, {
+            attributes: true,
+            attributeFilter: ['data-bs-theme'],
+        });
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                stopAutoRefresh();
+            } else {
+                const now = Date.now();
+                if (now - lastVisibleRefresh > 5000) {
+                    lastVisibleRefresh = now;
+                    refreshAll();
+                }
+                startAutoRefresh();
+            }
+        });
+
+        window.addEventListener('beforeunload', () => {
+            stopAutoRefresh();
+            if (activeRefreshController) activeRefreshController.abort();
+            destroyTrafficCharts();
+            if (themeObserver) themeObserver.disconnect();
+            if (trafficRangeDebounce) {
+                clearTimeout(trafficRangeDebounce);
+                trafficRangeDebounce = null;
+            }
+            if (trafficRangeController) {
+                trafficRangeController.abort();
+                trafficRangeController = null;
+            }
+        });
+
+        trafficPeerFilter?.addEventListener('change', () => {
+            if (trafficCombinedWrap) trafficCombinedWrap.classList.add('traffic-chart-fading');
+            setTimeout(() => {
+                renderTrafficCharts();
+                requestAnimationFrame(() => {
+                    if (trafficCombinedWrap) trafficCombinedWrap.classList.remove('traffic-chart-fading');
+                });
+            }, 180);
+        });
+
+        trafficRange?.addEventListener('change', () => {
+            clearTimeout(trafficRangeDebounce);
+            if (trafficRangeController) trafficRangeController.abort();
+            trafficRangeDebounce = setTimeout(() => {
+                trafficRangeController = new AbortController();
+                refreshTrafficCharts(trafficRangeController.signal);
+                refreshCountryTraffic(trafficRangeController.signal);
+            }, 200);
+        });
+
+        // Responsive resize handler: reload data when display size changes significantly
+        // This ensures mobile users get appropriately fewer data points
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeDebounce);
+            resizeDebounce = setTimeout(() => {
+                const newMaxPoints = getOptimalMaxPoints();
+                // Only refresh if the difference is significant (>20% change)
+                if (lastMaxPoints > 0 && Math.abs(newMaxPoints - lastMaxPoints) / lastMaxPoints > 0.2) {
+                    dbg(`Resize detected: ${lastMaxPoints} -> ${newMaxPoints} points, refreshing...`);
+                    refreshTrafficCharts(new AbortController().signal);
+                }
+            }, 500);
+        });
+
+        // Initial data load
+        refreshAll().then(() => {
+            startAutoRefresh();
+        }).catch(() => {
+            startAutoRefresh();
+        });
+    })();
+</script>
+{% endblock %}

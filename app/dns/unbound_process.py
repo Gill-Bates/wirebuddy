@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/dns/unbound_process.py
-# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2025 Gill-Bates http://github.com/Gill-Bates
 #
 
 """Unbound DNS process management (start, stop, restart, reload)."""
@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 
 from .unbound_constants import UNBOUND_CONF, UNBOUND_PID_FILE, run_exec
+from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ _log = logging.getLogger(__name__)
 _START_TIMEOUT = 3.0  # seconds
 _START_POLL_INTERVAL = 0.15  # seconds
 _IS_RUNNING_CACHE_TTL = 5.0  # seconds
+_RESOLV_CONF = Path("/etc/resolv.conf")
 
 
 # ---------------------------------------------------------------------------
@@ -47,8 +49,69 @@ def is_unbound_installed() -> bool:
 	if _unbound_installed is None:
 		_unbound_installed = shutil.which("unbound") is not None and shutil.which("unbound-checkconf") is not None
 		if not _unbound_installed:
-			_log.info("DNS_INIT unbound not installed, DNS features disabled")
+			_log.warning("DNS_INIT unbound not installed, DNS features disabled")
 	return _unbound_installed
+
+
+def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
+	"""Configure /etc/resolv.conf to use local Unbound resolver.
+	
+	This ensures the container itself (not just VPN clients) can resolve DNS
+	via the local Unbound instance. Required for update checks, blocklist
+	downloads, and other outbound connections.
+	
+	Args:
+		wg_dns_ip: WireGuard interface IP where Unbound is listening.
+		           If None, reads from unbound.conf to find the first interface IP.
+	"""
+	# Determine which IP to use for DNS resolution
+	dns_ip = wg_dns_ip
+	if not dns_ip:
+		# Try to read from unbound.conf to find the first interface IP
+		try:
+			if UNBOUND_CONF.exists():
+				for line in UNBOUND_CONF.read_text(encoding="utf-8").splitlines():
+					line = line.strip()
+					if line.startswith("interface:"):
+						ip = line.split(":", 1)[1].strip()
+						# Skip localhost (would conflict with host DNS)
+						if ip and ip not in ("127.0.0.1", "::1"):
+							dns_ip = ip
+							break
+		except Exception as exc:
+			_log.debug("DNS_RESOLV failed to read unbound.conf: %s", exc)
+	
+	if not dns_ip:
+		_log.debug("DNS_RESOLV no WireGuard DNS IP available, skipping resolv.conf config")
+		return
+	
+	try:
+		# Read current content to check if already configured
+		current = ""
+		if _RESOLV_CONF.exists():
+			current = _RESOLV_CONF.read_text(encoding="utf-8", errors="replace")
+		
+		# Only update if not already pointing to our DNS IP
+		if f"nameserver {dns_ip}" in current:
+			_log.debug("DNS_RESOLV /etc/resolv.conf already configured for %s", dns_ip)
+			return
+		
+		# Write new resolv.conf with WireGuard DNS
+		# Preserve search domains if present
+		lines = [f"# Configured by WireBuddy for local Unbound DNS", f"nameserver {dns_ip}"]
+		for line in current.splitlines():
+			if line.strip().startswith("search ") or line.strip().startswith("domain "):
+				lines.append(line.strip())
+		
+		# Atomic write using temporary file + rename to reduce TOCTOU window
+		tmp_path = _RESOLV_CONF.with_suffix(".tmp")
+		tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+		tmp_path.replace(_RESOLV_CONF)
+		_log.info("DNS_RESOLV configured /etc/resolv.conf to use %s", dns_ip)
+	except PermissionError:
+		_log.debug("DNS_RESOLV cannot write /etc/resolv.conf (read-only filesystem)")
+	except Exception as exc:
+		_log.warning("DNS_RESOLV failed to configure /etc/resolv.conf: %s", exc)
 
 # ---------------------------------------------------------------------------
 # Process State
@@ -182,7 +245,13 @@ async def _kill_pid(pid: int, *, timeout: float = 3.0) -> bool:
 # ---------------------------------------------------------------------------
 
 def invalidate_running_cache() -> None:
-	"""Force the next is_running() call to re-check (after start/stop)."""
+	"""Force the next is_running() call to re-check (after start/stop).
+	
+	NOTE: Not concurrency-safe in general, but safe in single-threaded asyncio
+	because the mutation (setting a float) happens atomically between await points.
+	External callers should prefer using start()/stop() which handle cache
+	invalidation automatically under _proc_lock.
+	"""
 	_running_state.invalidate()
 
 
@@ -231,14 +300,16 @@ async def _supervise_unbound() -> None:
 		await proc.wait()
 	except Exception:
 		pass
-	# Only clear handle if it's still the same process we're supervising
-	if _unbound_proc is proc:
-		_unbound_proc = None
-		invalidate_running_cache()
-		_log.warning(
-			"DNS_SUPERVISOR unbound exited unexpectedly (code=%s)",
-			proc.returncode,
-		)
+	# Acquire lock to safely clear the handle
+	async with _proc_lock:
+		# Only clear handle if it's still the same process we're supervising
+		if _unbound_proc is proc:
+			_unbound_proc = None
+			invalidate_running_cache()
+			_log.warning(
+				"DNS_SUPERVISOR unbound exited unexpectedly (code=%s)",
+				proc.returncode,
+			)
 	if _supervisor_task is asyncio.current_task():
 		_supervisor_task = None
 
@@ -276,21 +347,24 @@ async def _start_impl() -> tuple[bool, str]:
 		return True, "Unbound is already running"
 	_remove_stale_pid_file()
 	
-	# Ensure config exists
+	# Ensure config exists (write minimal config without localhost binding
+	# to avoid conflicts with host DNS in Docker host network mode)
 	if not UNBOUND_CONF.exists():
-		write_config()
+		write_config(listen_addrs_ipv4=[])
 	
 	# First check config is valid (30s timeout for large blocklists)
 	code, _, stderr = await run_exec("unbound-checkconf", str(UNBOUND_CONF), timeout=30.0)
 	if code != 0:
 		return False, f"Config check failed: {stderr}"
 	
-	# Start unbound in foreground mode with stderr captured for diagnostics
+	# Start unbound in foreground mode
+	# NOTE: stderr=DEVNULL to prevent pipe deadlock (Unbound logs continuously
+	# and fills the pipe buffer if not drained; it already logs to its own file)
 	try:
 		_unbound_proc = await asyncio.create_subprocess_exec(
 			"unbound", "-d", "-c", str(UNBOUND_CONF),
 			stdout=asyncio.subprocess.DEVNULL,
-			stderr=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.DEVNULL,
 			start_new_session=True,
 		)
 
@@ -299,32 +373,23 @@ async def _start_impl() -> tuple[bool, str]:
 			invalidate_running_cache()
 			if await is_running():
 				_log.info("DNS_START unbound started")
+				# Configure /etc/resolv.conf so container can use local DNS
+				_configure_resolv_conf()
 				# Start supervisor task to reap process on unexpected exit
 				_ensure_supervisor_task()
 				return True, "Unbound started"
 			if _unbound_proc.returncode is not None:
-				# Process exited — capture stderr for diagnostics
-				stderr_bytes = b""
-				if _unbound_proc.stderr:
-					try:
-						stderr_bytes = await asyncio.wait_for(
-							_unbound_proc.stderr.read(), timeout=1.0,
-						)
-					except Exception:
-						pass
-				detail = stderr_bytes.decode(errors="replace").strip()
+				# Process exited during startup
 				msg = f"Failed to start (exit code {_unbound_proc.returncode})"
-				if detail:
-					# Log full output, return last line to user
-					_log.error("DNS_START stderr: %s", detail)
-					last_line = detail.splitlines()[-1]
-					msg += f": {last_line[:200]}"
+				_log.error("DNS_START %s", msg)
 				# Clean up dead process handle
 				await _reap_managed_proc()
 				return False, msg
 			await asyncio.sleep(_START_POLL_INTERVAL)
 
-		# Timeout: clean up process handle before returning
+		# Timeout: kill process before reaping to prevent deadlock
+		if _unbound_proc is not None and _unbound_proc.returncode is None:
+			await _kill_pid(_unbound_proc.pid)
 		await _reap_managed_proc()
 		return False, "Unbound failed to start (timeout)"
 	except Exception as e:
@@ -386,7 +451,11 @@ async def _reload_impl() -> tuple[bool, str]:
 		_log.error("DNS_RELOAD config validation failed: %s", error_msg)
 		return False, f"Config validation failed: {error_msg[:200]}"
 	
+	# Check PID file first, then fall back to managed process handle
 	pid = _read_unbound_pid()
+	if pid is None and _unbound_proc is not None and _unbound_proc.returncode is None:
+		pid = _unbound_proc.pid
+	
 	if pid and _pid_is_running(pid):
 		try:
 			os.kill(pid, signal.SIGHUP)
@@ -488,7 +557,8 @@ async def watchdog(should_be_running_func) -> None:
 	# Check if DNS service should be running
 	if not should_be_running_func():
 		# User disabled DNS, don't auto-restart
-		_watchdog_failures = 0  # Reset failure counter
+		async with _proc_lock:
+			_watchdog_failures = 0  # Reset failure counter
 		return
 	
 	async with _proc_lock:

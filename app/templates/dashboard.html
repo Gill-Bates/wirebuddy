@@ -15,13 +15,8 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
+        flex-wrap: wrap;
         gap: 0.75rem;
-    }
-
-    #dashboard-refresh-btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
     }
 
     .dashboard-stat-icon {
@@ -35,35 +30,12 @@
         opacity: 1;
     }
 
-    .traffic-controls {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-    }
-
-    .traffic-controls .form-select {
-        height: auto;
-        align-self: center;
-    }
-
-    .traffic-controls .btn-group {
-        display: inline-flex;
-        align-items: center;
-    }
-
-    .traffic-controls .btn-group .btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    .traffic-chart-canvas-wrap {
-        position: relative;
-        height: 340px;
+    .map-kpis {
+        flex-wrap: wrap;
     }
 
     #peer-map {
-        height: min(50vh, 520px);
+        height: min(56vh, 600px);
         border-radius: 0.5rem;
         position: relative;
         z-index: 0;
@@ -139,8 +111,8 @@
 
     @media (max-width: 991.98px) {
         #peer-map {
-            height: 35vh;
-            min-height: 280px;
+            height: 40vh;
+            min-height: 320px;
         }
 
         .map-kpis {
@@ -161,7 +133,7 @@
 
     @media (max-width: 767.98px) {
         #peer-map {
-            height: 240px;
+            height: 280px;
         }
 
         .dashboard-side-split>.card {
@@ -178,42 +150,20 @@
 
     @media (max-width: 575.98px) {
         .dashboard-header {
+            flex-direction: column;
             align-items: stretch;
+            gap: 0.5rem;
         }
 
         .dashboard-page-title {
             font-size: 1.1rem;
         }
 
-        .dashboard-refresh-label {
-            display: none;
+        #recent-peers .peer-row-clickable {
+            padding-top: 0.75rem;
+            padding-bottom: 0.75rem;
         }
 
-        .traffic-controls {
-            flex-direction: column;
-            align-items: stretch;
-            gap: 0.5rem;
-            width: 100%;
-        }
-
-        .traffic-controls>* {
-            width: 100%;
-            min-width: 0 !important;
-        }
-
-        .traffic-controls .btn-group {
-            width: 100%;
-            display: flex;
-        }
-
-        .traffic-controls .btn-group .btn {
-            flex: 1 1 auto;
-            min-height: 44px;
-        }
-
-        .traffic-chart-canvas-wrap {
-            height: 240px;
-        }
     }
 
     .leaflet-container {
@@ -316,12 +266,6 @@
 {% block content %}
 <div class="dashboard-header mb-4">
     <h1 class="dashboard-page-title h3 mb-0"><span class="material-icons me-2" aria-hidden="true">dashboard</span>Dashboard</h1>
-    <button id="dashboard-refresh-btn" class="btn btn-primary">
-        <span id="dashboard-refresh-icon" class="material-icons align-middle me-1" aria-hidden="true">refresh</span>
-        <span id="dashboard-refresh-spinner" class="spinner-border spinner-border-sm me-1 d-none" role="status"
-            aria-hidden="true"></span>
-        <span class="dashboard-refresh-label">Refresh</span>
-    </button>
 </div>
 
 <!-- Stats Cards -->
@@ -405,7 +349,7 @@
                     </h5>
                     <div class="d-flex gap-3 align-items-center map-kpis">
                         <span class="map-kpi" title="Online Peers">
-                            <span class="material-icons text-success" style="font-size:16px;" aria-hidden="true">fiber_manual_record</span>
+                            <span class="material-icons text-primary" style="font-size:16px;" aria-hidden="true">fiber_manual_record</span>
                             <span id="map-kpi-online">0</span>
                         </span>
                         <span class="map-kpi" title="Total Locations">
@@ -451,47 +395,9 @@
     </div>
 </div>
 
-<!-- Traffic Row -->
-<div class="row g-4 mb-4">
-    <div class="col-12">
-        <div class="card h-100">
-            <div class="card-header">
-                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-                    <h5 class="mb-0">
-                        <span class="material-icons align-middle me-1" aria-hidden="true">show_chart</span>
-                        Traffic Usage
-                    </h5>
-                    <div class="traffic-controls">
-                        <label for="traffic-peer-filter" class="visually-hidden">Filter by peer</label>
-                        <select id="traffic-peer-filter" class="form-select form-select-sm" style="min-width: 120px;" aria-label="Filter by peer">
-                            <option value="" selected>Select ...</option>
-                        </select>
-                        <label for="traffic-range" class="visually-hidden">Select time range</label>
-                        <select id="traffic-range" class="form-select form-select-sm" style="min-width: 80px;" aria-label="Select time range">
-                            <option value="6h">6 h</option>
-                            <option value="24h" selected>24 h</option>
-                            <option value="3d">3 d</option>
-                            <option value="7d">7 d</option>
-                            <option value="30d">30 d</option>
-                            <option value="90d">90 d</option>
-                            <option value="1y">1 y</option>
-                        </select>
-                    </div>
-                </div>
-            </div>
-            <div class="card-body">
-                <div id="traffic-combined-chart-wrap" class="traffic-chart-canvas-wrap">
-                    <canvas id="trafficCombinedChart"></canvas>
-                </div>
-                <div id="traffic-empty-state" class="d-none"></div>
-            </div>
-        </div>
-    </div>
-</div>
 {% endblock %}
 
 {% block extra_js %}
-<script src="/static/vendor/chart.umd.min.js"></script>
 <script>
     const DEBUG = false;
     const CONNECTED_THRESHOLD_SEC = 180;
@@ -500,8 +406,6 @@
     const MAX_BACKOFF_MS = 300000;
     const PEER_MAP_FLYTO_DURATION_SEC = 1.2;
     const PEER_MAP_POPUP_DELAY_MS = 1250;
-    let trafficCombinedChart = null;
-    let cachedTrafficData = null;
     let cachedPeerLocations = [];
     let peerMarkerMap = {};
     let userZoomedToPeer = false;
@@ -524,18 +428,8 @@
     let tileFallbackSwitching = false;
     let tileWatchdogTimer = null;
     let tileLoadedSinceSwitch = false;
-    let trafficRangeDebounce = null;
-    let trafficRangeController = null;
     let lastVisibleRefresh = 0;
 
-    const trafficCombinedCanvas = document.getElementById('trafficCombinedChart');
-    const trafficCombinedWrap = document.getElementById('traffic-combined-chart-wrap');
-    const trafficEmptyState = document.getElementById('traffic-empty-state');
-    const trafficPeerFilter = document.getElementById('traffic-peer-filter');
-    const trafficRange = document.getElementById('traffic-range');
-    const refreshButton = document.getElementById('dashboard-refresh-btn');
-    const refreshIcon = document.getElementById('dashboard-refresh-icon');
-    const refreshSpinner = document.getElementById('dashboard-refresh-spinner');
     const interfacesCountEl = document.getElementById('interfaces-count');
     const peersCountEl = document.getElementById('peers-count');
     const peersCountLabelEl = document.getElementById('peers-count-label');
@@ -546,30 +440,12 @@
     const mapKpiTotal = document.getElementById('map-kpi-total');
     const mapKpiCountries = document.getElementById('map-kpi-countries');
     const peerMapStatus = document.getElementById('peer-map-status');
-    if (refreshButton) refreshButton.setAttribute('aria-busy', 'false');
-
     function dbg(...args) {
         if (DEBUG) console.log('[Dashboard]', ...args);
     }
 
     function clearElement(el) {
         if (el) el.replaceChildren();
-    }
-
-    // Create a reusable chart empty state element
-    function chartEmptyState(text = 'No data available.') {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'd-flex flex-column align-items-center justify-content-center h-100 pt-4 pb-4';
-        const icon = document.createElement('span');
-        icon.className = 'material-icons mb-2 text-muted';
-        icon.style.fontSize = '2rem';
-        icon.textContent = 'bar_chart';
-        icon.setAttribute('aria-hidden', 'true');
-        const msg = document.createElement('p');
-        msg.className = 'text-muted mb-0';
-        msg.textContent = text;
-        wrapper.append(icon, msg);
-        return wrapper;
     }
 
     function formatBytes(bytes) {
@@ -580,24 +456,6 @@
         const unit = sizes[i];
         const decimals = (unit === 'MB' || unit === 'GB') ? 1 : 2;
         return Number((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + unit;
-    }
-
-    function formatTrafficMetric(value, unit) {
-        const n = Number(value || 0);
-        const decimals = (unit === 'MB' || unit === 'GB') ? 1 : 2;
-        return `${Number(n.toFixed(decimals))} ${unit}`;
-    }
-
-    function shortLabel(isoStr, hours) {
-        const d = new Date(isoStr);
-        const h = Number(hours);
-        if (h > 168) {
-            return d.toLocaleDateString([], { month: 'short', day: '2-digit' });
-        }
-        if (h > 24) {
-            return d.toLocaleString([], { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-        }
-        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 
     function unwrapInterfaces(payload) {
@@ -618,24 +476,8 @@
         return [];
     }
 
-    function getChartColors() {
-        const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
-        return {
-            gridColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-            textColor: isDark ? '#9ca3af' : '#6b7280',
-        };
-    }
-
     function isAbortError(err) {
         return err?.code === 'ABORTED' || err?.name === 'AbortError' || err?.message === 'Request cancelled';
-    }
-
-    function setRefreshButtonBusy(isBusy) {
-        if (!refreshButton || !refreshIcon || !refreshSpinner) return;
-        refreshButton.disabled = isBusy;
-        refreshButton.setAttribute('aria-busy', String(isBusy));
-        refreshIcon.classList.toggle('d-none', isBusy);
-        refreshSpinner.classList.toggle('d-none', !isBusy);
     }
 
     function getRelativeTimeInfo(epochSeconds) {
@@ -677,7 +519,7 @@
     function setMapBadgeState(badge, text, isWarning = false) {
         if (!badge) return;
         badge.textContent = text;
-        badge.classList.remove('bg-secondary', 'bg-success', 'bg-warning', 'text-dark');
+        badge.classList.remove('bg-secondary', 'bg-success', 'bg-primary', 'bg-warning', 'text-dark');
         const variant = isWarning ? 'warning' : 'secondary';
         badge.classList.add(`bg-${variant}`);
         if (variant === 'warning') badge.classList.add('text-dark');
@@ -686,48 +528,13 @@
     function setMapBadgeVariant(badge, text, variant) {
         if (!badge) return;
         badge.textContent = text;
-        badge.classList.remove('bg-secondary', 'bg-success', 'bg-warning', 'text-dark');
+        badge.classList.remove('bg-secondary', 'bg-success', 'bg-primary', 'bg-warning', 'text-dark');
         badge.classList.add(`bg-${variant}`);
         if (variant === 'warning') badge.classList.add('text-dark');
     }
 
     function makeMarkerKey(lat, lon) {
         return `${Number(lat).toFixed(6)}_${Number(lon).toFixed(6)}`;
-    }
-
-    function updateChartTheme() {
-        const colors = getChartColors();
-        if (trafficCombinedChart) {
-            if (trafficCombinedChart.options?.plugins?.legend?.labels) {
-                trafficCombinedChart.options.plugins.legend.labels.color = colors.textColor;
-            }
-            if (trafficCombinedChart.options?.scales?.x?.ticks) trafficCombinedChart.options.scales.x.ticks.color = colors.textColor;
-            if (trafficCombinedChart.options?.scales?.x?.title) trafficCombinedChart.options.scales.x.title.color = colors.textColor;
-            if (trafficCombinedChart.options?.scales?.x?.grid) trafficCombinedChart.options.scales.x.grid.color = colors.gridColor;
-            if (trafficCombinedChart.options?.scales?.y?.ticks) trafficCombinedChart.options.scales.y.ticks.color = colors.textColor;
-            if (trafficCombinedChart.options?.scales?.y?.title) trafficCombinedChart.options.scales.y.title.color = colors.textColor;
-            if (trafficCombinedChart.options?.scales?.y?.grid) trafficCombinedChart.options.scales.y.grid.color = colors.gridColor;
-            trafficCombinedChart.update();
-        }
-
-    }
-
-    const peerColors = [
-        { rx: 'rgba(13, 110, 253, 0.8)', rxBg: 'rgba(13, 110, 253, 0.12)', tx: 'rgba(13, 110, 253, 0.4)' },
-        { rx: 'rgba(25, 135, 84, 0.8)', rxBg: 'rgba(25, 135, 84, 0.12)', tx: 'rgba(25, 135, 84, 0.4)' },
-        { rx: 'rgba(253, 126, 20, 0.8)', rxBg: 'rgba(253, 126, 20, 0.12)', tx: 'rgba(253, 126, 20, 0.4)' },
-        { rx: 'rgba(220, 53, 69, 0.8)', rxBg: 'rgba(220, 53, 69, 0.12)', tx: 'rgba(220, 53, 69, 0.4)' },
-        { rx: 'rgba(111, 66, 193, 0.8)', rxBg: 'rgba(111, 66, 193, 0.12)', tx: 'rgba(111, 66, 193, 0.4)' },
-        { rx: 'rgba(214, 51, 132, 0.8)', rxBg: 'rgba(214, 51, 132, 0.12)', tx: 'rgba(214, 51, 132, 0.4)' },
-        { rx: 'rgba(32, 201, 151, 0.8)', rxBg: 'rgba(32, 201, 151, 0.12)', tx: 'rgba(32, 201, 151, 0.4)' },
-        { rx: 'rgba(102, 16, 242, 0.8)', rxBg: 'rgba(102, 16, 242, 0.12)', tx: 'rgba(102, 16, 242, 0.4)' },
-    ];
-
-    function destroyTrafficCharts() {
-        if (trafficCombinedChart) {
-            trafficCombinedChart.destroy();
-            trafficCombinedChart = null;
-        }
     }
 
     function buildMapPopupContent(p, isConnected, peerTitle, locText, asnText, peerCount) {
@@ -743,7 +550,7 @@
         strong.title = namesTitle;
 
         const badge = document.createElement('span');
-        badge.className = `badge ${isConnected ? 'bg-success' : 'bg-secondary'}`;
+        badge.className = `badge ${isConnected ? 'bg-primary' : 'bg-secondary'}`;
         badge.textContent = isConnected ? 'Online' : 'Offline';
 
         header.append(strong, badge);
@@ -794,212 +601,6 @@
         }
 
         return container;
-    }
-
-
-
-    // Track known peers to avoid rebuilding dropdown on every refresh
-    let knownTrafficPeers = [];
-
-    function updateTrafficPeerFilter(peers) {
-        if (!trafficPeerFilter) return;
-        const currentValue = trafficPeerFilter.value;
-
-        // Build list of peer keys/names
-        const peerOptions = peers.map(p => ({
-            value: p.key || p.name,
-            label: p.name || p.key || 'Unknown',
-        }));
-
-        // Check if peers changed
-        const newKeys = peerOptions.map(p => p.value).sort().join(',');
-        const oldKeys = knownTrafficPeers.map(p => p.value).sort().join(',');
-        if (newKeys === oldKeys) return;
-
-        knownTrafficPeers = peerOptions;
-
-        // Rebuild options
-        trafficPeerFilter.innerHTML = '<option value="">Select ...</option>';
-        peerOptions.forEach(p => {
-            const opt = document.createElement('option');
-            opt.value = p.value;
-            opt.textContent = p.label;
-            if (p.value === currentValue) opt.selected = true;
-            trafficPeerFilter.appendChild(opt);
-        });
-    }
-
-    async function refreshTrafficCharts(signal) {
-        try {
-            const range = trafficRange?.value || '24h';
-            const traffic = await api(
-                'GET',
-                `/api/wireguard/stats/traffic?range_key=${encodeURIComponent(range)}`,
-                null,
-                { signal, timeoutMs: API_TIMEOUT_MS },
-            );
-            cachedTrafficData = traffic;
-            renderTrafficCharts();
-            return true;
-        } catch (e) {
-            if (isAbortError(e)) return true;
-            console.error('Traffic chart error:', e);
-            wbToast('Failed to load traffic data', 'warning');
-            return false;
-        }
-    }
-
-    function renderTrafficCharts() {
-        const traffic = cachedTrafficData;
-        if (!traffic) return;
-
-        const showRx = true;
-        const showTx = true;
-        const peerFilter = trafficPeerFilter?.value || '';
-        const hours = Number(traffic?.hours || 24);
-        const labels = (traffic?.labels || []).map(ts => shortLabel(ts, hours));
-        const unit = traffic?.display_unit || 'MB';
-        let peers = Array.isArray(traffic?.peers_display) && traffic.peers_display.length
-            ? traffic.peers_display
-            : (Array.isArray(traffic?.peers) ? traffic.peers : []);
-
-        updateTrafficPeerFilter(peers);
-        if (peerFilter) {
-            peers = peers.filter(p => p.key === peerFilter || p.name === peerFilter);
-        }
-
-        // Show empty state if no peer is selected
-        if (!peerFilter) {
-            destroyTrafficCharts();
-            trafficCombinedWrap.classList.add('d-none');
-            trafficEmptyState.classList.remove('d-none');
-            clearElement(trafficEmptyState);
-            trafficEmptyState.appendChild(chartEmptyState('Please select a peer to view traffic'));
-            return;
-        }
-        if (peers.length === 0) {
-            destroyTrafficCharts();
-            trafficCombinedWrap.classList.add('d-none');
-            trafficEmptyState.classList.remove('d-none');
-            clearElement(trafficEmptyState);
-            trafficEmptyState.appendChild(chartEmptyState('No traffic data available for this peer.'));
-            return;
-        }
-
-        trafficCombinedWrap.classList.remove('d-none');
-        trafficEmptyState.classList.add('d-none');
-
-        // Build combined datasets: one RX + one TX line per peer, each in a unique color
-        const datasets = [];
-        peers.forEach((peer, idx) => {
-            const colorIdx = idx % peerColors.length;
-            const color = peerColors[colorIdx];
-            const peerName = peer.name || peer.key || `Peer ${idx + 1}`;
-            const rx = Array.isArray(peer.rx) ? peer.rx : [];
-            const tx = Array.isArray(peer.tx) ? peer.tx : [];
-
-            if (showRx) {
-                datasets.push({
-                    label: `${peerName} RX`,
-                    data: rx.map(v => Number(v || 0)),
-                    borderColor: color.rx,
-                    backgroundColor: color.rxBg,
-                    fill: false,
-                    tension: 0.35,
-                    pointRadius: 0,
-                    pointHitRadius: 8,
-                    borderWidth: 2,
-                });
-            }
-            if (showTx) {
-                datasets.push({
-                    label: `${peerName} TX`,
-                    data: tx.map(v => Number(v || 0)),
-                    borderColor: color.tx,
-                    backgroundColor: 'transparent',
-                    fill: false,
-                    tension: 0.35,
-                    pointRadius: 0,
-                    pointHitRadius: 8,
-                    borderWidth: 2,
-                    borderDash: [5, 5],
-                });
-            }
-        });
-
-        const colors = getChartColors();
-        if (trafficCombinedChart) {
-            trafficCombinedChart.data.labels = labels;
-            trafficCombinedChart.data.datasets = datasets;
-            if (trafficCombinedChart.options?.scales?.y?.title) {
-                trafficCombinedChart.options.scales.y.title.text = unit;
-            }
-            if (trafficCombinedChart.options?.plugins?.tooltip?.callbacks) {
-                trafficCombinedChart.options.plugins.tooltip.callbacks.label =
-                    c => `${c.dataset.label}: ${formatTrafficMetric(c.parsed.y || 0, unit)}`;
-            }
-            if (trafficCombinedChart.options?.scales?.y?.ticks) {
-                trafficCombinedChart.options.scales.y.ticks.callback =
-                    v => formatTrafficMetric(v, unit);
-            }
-            trafficCombinedChart.update('none');
-            return;
-        }
-
-        const ctx = trafficCombinedCanvas.getContext('2d');
-        trafficCombinedChart = new Chart(ctx, {
-            type: 'line',
-            data: { labels, datasets },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                interaction: { mode: 'index', intersect: false },
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'bottom',
-                        labels: {
-                            usePointStyle: true,
-                            boxWidth: 10,
-                            color: colors.textColor,
-                            padding: 12,
-                            font: { size: 11 },
-                        },
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: c => `${c.dataset.label}: ${formatTrafficMetric(c.parsed.y || 0, unit)}`,
-                        },
-                    },
-                },
-                scales: {
-                    x: {
-                        title: { display: true, text: 'Time', color: colors.textColor },
-                        ticks: { maxTicksLimit: 10, color: colors.textColor },
-                        grid: { color: colors.gridColor },
-                    },
-                    y: {
-                        beginAtZero: true,
-                        title: { display: true, text: unit, color: colors.textColor },
-                        grid: { color: colors.gridColor },
-                        ticks: {
-                            maxTicksLimit: 6,
-                            color: colors.textColor,
-                            callback: v => formatTrafficMetric(v, unit),
-                        },
-                    },
-                },
-            },
-        });
-    }
-
-
-
-    async function refreshCharts(signal) {
-        const results = await Promise.allSettled([
-            refreshTrafficCharts(signal),
-        ]);
-        return results.some(r => r.status === 'fulfilled' && r.value === true);
     }
 
     async function refreshStats(signal) {
@@ -1152,7 +753,7 @@
 
                 const icon = document.createElement('span');
                 icon.className = 'material-icons';
-                icon.textContent = 'database';
+                icon.textContent = 'show_chart';
 
                 const text = document.createElement('span');
                 text.className = 'chart-empty-state-text';
@@ -1423,7 +1024,7 @@
             setMapBadgeVariant(
                 badge,
                 connectedCount > 0 ? 'Live' : 'Idle',
-                connectedCount > 0 ? 'success' : 'secondary',
+                connectedCount > 0 ? 'primary' : 'secondary',
             );
             return true;
         } catch (e) {
@@ -1448,7 +1049,7 @@
         if (autoRefreshTimer) clearInterval(autoRefreshTimer);
         const ms = intervalMs || currentRefreshInterval;
         autoRefreshTimer = setInterval(() => {
-            refreshAll(false);
+            refreshAll();
         }, ms);
     }
 
@@ -1458,21 +1059,19 @@
         autoRefreshTimer = null;
     }
 
-    async function refreshAll(manual = false) {
+    async function refreshAll() {
         if (isRefreshing) {
             pendingRefresh = true;
             if (activeRefreshController) activeRefreshController.abort();
             return;
         }
         isRefreshing = true;
-        if (manual) setRefreshButtonBusy(true);
         const controller = new AbortController();
         activeRefreshController = controller;
         let allFailed = true;
         try {
             const results = await Promise.allSettled([
                 refreshStats(controller.signal),
-                refreshTrafficCharts(controller.signal),
                 refreshPeerLocations(controller.signal),
             ]);
             const statuses = results.map((r) => (r.status === 'fulfilled' ? r.value : false));
@@ -1480,9 +1079,8 @@
         } finally {
             if (activeRefreshController === controller) activeRefreshController = null;
             isRefreshing = false;
-            if (manual) setRefreshButtonBusy(false);
 
-            if (allFailed && !manual) {
+            if (allFailed) {
                 consecutiveFailures++;
                 // Exponential backoff: 30s → 60s → 120s → 300s max
                 const backoff = Math.min(AUTO_REFRESH_MS * Math.pow(2, consecutiveFailures - 1), MAX_BACKOFF_MS);
@@ -1501,7 +1099,7 @@
             }
             if (pendingRefresh) {
                 pendingRefresh = false;
-                setTimeout(() => refreshAll(false), 50);
+                setTimeout(() => refreshAll(), 50);
             }
         }
     }
@@ -1527,7 +1125,6 @@
         }
 
         themeObserver = new MutationObserver(() => {
-            updateChartTheme();
             updateMapTiles();
         });
         themeObserver.observe(document.documentElement, {
@@ -1542,7 +1139,7 @@
                 const now = Date.now();
                 if (now - lastVisibleRefresh > 5000) {
                     lastVisibleRefresh = now;
-                    refreshAll(false);
+                    refreshAll();
                 }
                 startAutoRefresh();
             }
@@ -1551,7 +1148,6 @@
         window.addEventListener('beforeunload', () => {
             stopAutoRefresh();
             if (activeRefreshController) activeRefreshController.abort();
-            destroyTrafficCharts();
             if (themeObserver) themeObserver.disconnect();
             // Clear all timers/intervals to prevent leaks
             if (userZoomResetTimer) {
@@ -1566,31 +1162,11 @@
                 clearTimeout(window._dashboardResizeTimer);
                 window._dashboardResizeTimer = null;
             }
-            if (trafficRangeDebounce) {
-                clearTimeout(trafficRangeDebounce);
-                trafficRangeDebounce = null;
-            }
-            if (trafficRangeController) {
-                trafficRangeController.abort();
-                trafficRangeController = null;
-            }
             try { if (peerMap) peerMap.remove(); } catch (_) { }
         });
 
-        refreshButton?.addEventListener('click', () => refreshAll(true));
-        trafficPeerFilter?.addEventListener('change', () => renderTrafficCharts());
-        
-        trafficRange?.addEventListener('change', () => {
-            clearTimeout(trafficRangeDebounce);
-            if (trafficRangeController) trafficRangeController.abort();
-            trafficRangeDebounce = setTimeout(() => {
-                trafficRangeController = new AbortController();
-                refreshTrafficCharts(trafficRangeController.signal);
-            }, 200);
-        });
-
         // Initial data load – start auto-refresh only after first attempt
-        refreshAll(false).then(() => {
+        refreshAll().then(() => {
             startAutoRefresh();
         }).catch(() => {
             // Start auto-refresh even on failure (backoff will handle retries)

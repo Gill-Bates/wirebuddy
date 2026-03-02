@@ -30,12 +30,14 @@ RUN apt-get update && \
         wireguard-tools \
         iptables \
         iproute2 \
+        conntrack \
         unbound \
         dns-root-data \
         openresolv \
         procps \
         curl \
         ca-certificates \
+        sqlite3 \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -100,4 +102,6 @@ ENV UVICORN_WORKERS=2
 ENV FORWARDED_ALLOW_IPS=""
 
 # Run with proxy headers for reverse proxy support (Caddy/Nginx)
-ENTRYPOINT ["sh", "-c", "exec uvicorn app:create_app --host 0.0.0.0 --port 8000 --factory --workers ${UVICORN_WORKERS} --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS}"]
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]

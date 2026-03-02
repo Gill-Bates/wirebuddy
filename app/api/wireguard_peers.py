@@ -232,6 +232,14 @@ async def create_peer(
 	cfg = get_config(request)
 	enabled_blocklist_ids = await run_in_threadpool(get_enabled_blocklist_ids, conn)
 	
+	# 0. Verify WireGuard server FQDN is configured (required for peer config generation)
+	wg_fqdn = get_setting(conn, "wg_fqdn")
+	if not wg_fqdn or wg_fqdn.strip() in ("", "vpn.example.com"):
+		raise HTTPException(
+			status_code=400,
+			detail="Server FQDN/IP not configured. Please set 'Server FQDN / IP' in Settings → WireGuard before creating peers.",
+		)
+	
 	# 1. Verify interface exists and is active
 	code, _, stderr = await run_wg_command("wg", "show", payload.interface)
 	if code != 0:
@@ -472,7 +480,14 @@ async def update_peer(
 				preshared_key = peer["preshared_key"] if "preshared_key" in peer.keys() else None
 				if preshared_key:
 					from ..utils.vault import decrypt as vault_decrypt
-					psk_plain = vault_decrypt(preshared_key, cfg.secret_key)
+					try:
+						psk_plain = vault_decrypt(preshared_key, cfg.secret_key)
+					except ValueError as e:
+						_log.error("KEY_MISMATCH: Cannot decrypt PSK for peer %s: %s", public_key[:8], e)
+						raise HTTPException(
+							status_code=503,
+							detail="Cannot decrypt peer configuration. WIREBUDDY_SECRET_KEY does not match the database encryption key.",
+						)
 					code, _, stderr = await wg_set_peer_with_psk(
 						interface_name,
 						public_key,

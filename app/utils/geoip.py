@@ -24,7 +24,7 @@ import tempfile
 import time
 from collections import OrderedDict
 from datetime import datetime, timezone
-from email.utils import formatdate, parsedate_to_datetime
+from email.utils import formatdate
 from pathlib import Path
 from threading import Lock
 from typing import Any, Optional, TypedDict
@@ -56,6 +56,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Database path resolution & download constants
 # ---------------------------------------------------------------------------
+_GEOIP_SUBDIR = "GeoLite2"
 _GEOIP_CITY_DB = "GeoLite2-City.mmdb"
 _GEOIP_ASN_DB = "GeoLite2-ASN.mmdb"
 
@@ -76,6 +77,11 @@ _MIN_ASN_SIZE = 1_000_000     # 1 MB
 # Hard floor for test environments (never accept files smaller than this)
 _ABSOLUTE_MIN_SIZE = 100_000  # 100 KB
 
+# Minimum interval between update checks (GitHub raw doesn't support conditional requests)
+_MIN_UPDATE_INTERVAL_HOURS = 12
+_LAST_CHECK_FILE = ".geoip_last_check"
+_MAX_DOWNLOAD_SIZE = 200_000_000  # 200 MB hard safety cap
+
 
 def _get_data_dir() -> Path:
 	"""Return the data directory for GeoIP databases."""
@@ -84,12 +90,19 @@ def _get_data_dir() -> Path:
 	return get_config().data_dir
 
 
+def _get_geoip_dir() -> Path:
+	"""Return the GeoLite2 subdirectory for MMDB files."""
+	geoip_dir = _get_data_dir() / _GEOIP_SUBDIR
+	geoip_dir.mkdir(parents=True, exist_ok=True)
+	return geoip_dir
+
+
 def _get_geoip_path() -> Path:
 	"""Return the path to the MaxMind GeoLite2-City database."""
 	explicit = os.getenv("WIREBUDDY_GEOIP_DB_PATH")
 	if explicit:
 		return Path(explicit)
-	return _get_data_dir() / _GEOIP_CITY_DB
+	return _get_geoip_dir() / _GEOIP_CITY_DB
 
 
 def _get_asn_path() -> Path:
@@ -97,7 +110,7 @@ def _get_asn_path() -> Path:
 	explicit = os.getenv("WIREBUDDY_ASN_DB_PATH")
 	if explicit:
 		return Path(explicit)
-	return _get_data_dir() / _GEOIP_ASN_DB
+	return _get_geoip_dir() / _GEOIP_ASN_DB
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +123,61 @@ def _http_date_from_path(file_path: Path) -> str:
 		return ""
 	mtime = file_path.stat().st_mtime
 	return formatdate(mtime, usegmt=True)
+
+
+def _http_date_from_mmdb(file_path: Path) -> str:
+	"""Extract build_epoch from MMDB and convert to HTTP date for If-Modified-Since.
+	
+	Falls back to file mtime if MMDB metadata cannot be read.
+	"""
+	if not file_path.exists():
+		return ""
+	if _HAS_GEOIP:
+		try:
+			with geoip2.database.Reader(str(file_path)) as reader:
+				build_epoch = reader.metadata().build_epoch
+				return formatdate(build_epoch, usegmt=True)
+		except Exception:
+			pass
+	# Fallback to mtime
+	return _http_date_from_path(file_path)
+
+
+def _get_last_check_time(data_dir: Path) -> float:
+	"""Return timestamp of last successful GeoIP update check, or 0."""
+	check_file = data_dir / _LAST_CHECK_FILE
+	try:
+		if check_file.exists():
+			return float(check_file.read_text().strip())
+	except (ValueError, OSError):
+		pass
+	return 0.0
+
+
+def _set_last_check_time(data_dir: Path) -> None:
+	"""Record current time as last successful GeoIP update check."""
+	check_file = data_dir / _LAST_CHECK_FILE
+	try:
+		check_file.write_text(str(time.time()))
+	except OSError as exc:
+		_log.debug("Failed to write GeoIP check timestamp: %s", exc)
+
+
+def _should_skip_update_check(data_dir: Path) -> bool:
+	"""Return True if last check was recent enough to skip re-checking.
+	
+	GitHub raw files don't support conditional requests (If-Modified-Since),
+	so we avoid redundant 60+ MB downloads by rate-limiting checks.
+	"""
+	last_check = _get_last_check_time(data_dir)
+	if last_check == 0:
+		return False
+	hours_since = (time.time() - last_check) / 3600
+	if hours_since < _MIN_UPDATE_INTERVAL_HOURS:
+		_log.debug("GeoIP update check skipped (last check %.1fh ago, min interval %dh)",
+				   hours_since, _MIN_UPDATE_INTERVAL_HOURS)
+		return True
+	return False
 
 
 def get_geoip_build_info(data_dir: Path | None = None) -> tuple[str, int] | None:
@@ -140,7 +208,7 @@ def _verify_mmdb(file_path: Path, *, expected_type: str = "City", min_size: int 
 	file_size = file_path.stat().st_size
 
 	# Allow smaller files only in explicit test environments (with hard floor)
-	if os.getenv("WIREBUDDY_TEST_MODE") == "1" or os.getenv("PYTEST_CURRENT_TEST") is not None:
+	if os.getenv("WIREBUDDY_TEST_MODE") == "1":
 		min_size = max(
 			_ABSOLUTE_MIN_SIZE,
 			int(os.getenv("WIREBUDDY_MIN_GEOIP_SIZE", str(min_size)))
@@ -185,13 +253,14 @@ def _check_remote_modified(url: str, local_path: Path) -> tuple[bool, int | None
 	"""Check if remote resource is newer than local file.
 
 	Returns ``(is_modified, content_length, network_error)``.  Uses ``If-Modified-Since``
-	header if local file exists; a ``304 Not Modified`` indicates no change.
+	header based on the MMDB build_epoch if local file exists; a ``304 Not Modified``
+	indicates no change.
 	If network check fails but local file exists, returns ``(False, None, True)``
 	to signal "keep using local copy".
 	"""
 	headers = {"User-Agent": "WireBuddy/1.0"}
 	if local_path.exists():
-		headers["If-Modified-Since"] = _http_date_from_path(local_path)
+		headers["If-Modified-Since"] = _http_date_from_mmdb(local_path)
 
 	try:
 		req = Request(url, method="HEAD", headers=headers)
@@ -224,10 +293,12 @@ def _download_geoip_db(
 	expected_type: str = "City",
 	min_size: int = _MIN_CITY_SIZE,
 	force: bool = False,
-) -> Path | None:
+) -> tuple[Path | None, bool]:
 	"""Download a GeoLite2 MMDB if missing, invalid, or outdated.
 
-	Returns the path on success, ``None`` on failure.
+	Returns ``(path, was_updated)``.
+	- ``path`` is ``None`` on failure.
+	- ``was_updated`` is ``True`` only when target file was replaced.
 	Uses HTTP If-Modified-Since headers for efficient update detection.
 	Enforces a 5-minute wall-clock download timeout.
 	"""
@@ -242,7 +313,7 @@ def _download_geoip_db(
 					_log.debug("GeoIP %s: using local copy (remote unreachable)", target_path.name)
 				else:
 					_log.debug("GeoIP %s up-to-date (HTTP 304 Not Modified)", target_path.name)
-				return target_path
+				return target_path, False
 			_log.info("GeoIP %s has remote update, downloading…", target_path.name)
 		else:
 			_log.info("GeoIP %s force-update requested", target_path.name)
@@ -288,6 +359,8 @@ def _download_geoip_db(
 					f.write(chunk)
 					hasher.update(chunk)
 					downloaded += len(chunk)
+					if downloaded > _MAX_DOWNLOAD_SIZE:
+						raise ValueError(f"GeoIP download exceeded safety limit ({_MAX_DOWNLOAD_SIZE} bytes)")
 
 			_log.info("Downloaded %d bytes (SHA256=%s)", downloaded, hasher.hexdigest()[:16])
 
@@ -295,38 +368,55 @@ def _download_geoip_db(
 			if total_size and downloaded != total_size:
 				_log.error("Size mismatch for %s: expected %d, got %d", 
 						   target_path.name, total_size, downloaded)
-				return None
+				return None, False
 
 		if not _verify_mmdb(temp_path, expected_type=expected_type, min_size=min_size):
 			_log.error("Downloaded GeoIP %s failed verification – possibly corrupted", target_path.name)
-			return None
+			return None, False
 
 		# Extract metadata before installing
 		db_info = ""
+		new_build_epoch = 0
 		if _HAS_GEOIP:
 			try:
 				with geoip2.database.Reader(str(temp_path)) as reader:
 					meta = reader.metadata()
+					new_build_epoch = meta.build_epoch
 					build_date = datetime.fromtimestamp(meta.build_epoch, tz=timezone.utc).strftime('%Y-%m-%d')
 					db_info = f" [{meta.database_type}, build {build_date}]"
 			except Exception:
 				pass
 
+		# Compare build epoch with existing file to avoid unnecessary replacement
+		if local_exists and _HAS_GEOIP and new_build_epoch:
+			try:
+				with geoip2.database.Reader(str(target_path)) as reader:
+					old_build_epoch = reader.metadata().build_epoch
+					if old_build_epoch >= new_build_epoch:
+						_log.info("GeoIP %s already up-to-date (build %d), download was redundant (remote server does not support conditional requests)",
+								   target_path.name, old_build_epoch)
+						return target_path, False
+			except Exception:
+				pass  # If we can't read old file, proceed with replacement
+
 		# Atomic rename (same filesystem)
 		temp_path.rename(target_path)
 		temp_path = None
 		_log.info("GeoIP database installed: %s%s", target_path, db_info)
-		return target_path
+		return target_path, True
 
 	except TimeoutError as exc:
 		_log.error("GeoIP download timeout for %s: %s", target_path.name, exc)
-		return None
+		return None, False
 	except URLError as exc:
 		_log.warning("Failed to download GeoIP %s: %s", target_path.name, exc)
-		return None
+		return None, False
+	except ValueError as exc:
+		_log.error("GeoIP download aborted for %s: %s", target_path.name, exc)
+		return None, False
 	except Exception as exc:
 		_log.error("GeoIP download error for %s: %s", target_path.name, exc)
-		return None
+		return None, False
 	finally:
 		if temp_fd is not None:
 			try:
@@ -345,25 +435,45 @@ def ensure_geoip_databases(data_dir: Path | None = None, *, force: bool = False)
 
 	Called during application startup.  Returns a dict indicating success
 	for each database: ``{"city": True/False, "asn": True/False}``.
+	
+	To avoid redundant downloads (GitHub raw doesn't support conditional
+	requests), update checks are rate-limited to once per 12 hours unless
+	``force=True``.
 	"""
 	if data_dir is None:
 		data_dir = _get_data_dir()
 
-	city_path = data_dir / _GEOIP_CITY_DB
-	asn_path = data_dir / _GEOIP_ASN_DB
+	city_path = _get_geoip_dir() / _GEOIP_CITY_DB
+	asn_path = _get_geoip_dir() / _GEOIP_ASN_DB
 
-	city_ok = _download_geoip_db(
+	# Skip remote check if we checked recently (unless force or DBs missing)
+	if not force and city_path.exists() and asn_path.exists():
+		if _should_skip_update_check(data_dir):
+			# Verify local DBs are still valid
+			city_ok = _verify_mmdb(city_path, expected_type="City", min_size=_MIN_CITY_SIZE)
+			asn_ok = _verify_mmdb(asn_path, expected_type="ASN", min_size=_MIN_ASN_SIZE)
+			if city_ok and asn_ok:
+				return {"city": True, "asn": True}
+			# Local DBs invalid → fall through to re-download
+
+	city_result, city_updated = _download_geoip_db(
 		city_path, GEOIP_CITY_DOWNLOAD_URL,
 		expected_type="City", min_size=_MIN_CITY_SIZE, force=force,
-	) is not None
+	)
+	city_ok = city_result is not None
 
-	asn_ok = _download_geoip_db(
+	asn_result, asn_updated = _download_geoip_db(
 		asn_path, GEOIP_ASN_DOWNLOAD_URL,
 		expected_type="ASN", min_size=_MIN_ASN_SIZE, force=force,
-	) is not None
+	)
+	asn_ok = asn_result is not None
+
+	# Record successful check to avoid redundant downloads next time
+	if city_ok and asn_ok:
+		_set_last_check_time(data_dir)
 
 	# If new databases were downloaded, reset the readers so they pick up fresh files
-	if city_ok or asn_ok:
+	if city_updated or asn_updated:
 		_reset_readers_if_stale(city_path, asn_path)
 
 	return {"city": city_ok, "asn": asn_ok}
@@ -396,6 +506,8 @@ def _reset_readers_if_stale(city_path: Path, asn_path: Path) -> None:
 	# Also clear lookup cache since results may differ after DB update
 	with _geo_cache_lock:
 		_geo_cache.clear()
+	with _asn_cache_lock:
+		_asn_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +630,10 @@ _geo_cache: OrderedDict[str, Optional[GeoLocation]] = OrderedDict()
 _geo_cache_lock = Lock()
 _GEO_CACHE_MAX = 512
 
+_asn_cache: OrderedDict[str, tuple[Optional[int], Optional[str]]] = OrderedDict()
+_asn_cache_lock = Lock()
+_ASN_CACHE_MAX = 512
+
 
 def _cache_put(ip: str, result: Optional[GeoLocation]) -> None:
 	"""Add or update cache entry with LRU eviction."""
@@ -531,6 +647,18 @@ def _cache_put(ip: str, result: Optional[GeoLocation]) -> None:
 			if len(_geo_cache) >= _GEO_CACHE_MAX:
 				_geo_cache.popitem(last=False)
 			_geo_cache[ip] = result
+
+
+def _asn_cache_put(ip: str, result: tuple[Optional[int], Optional[str]]) -> None:
+	"""Add or update ASN cache entry with LRU eviction."""
+	with _asn_cache_lock:
+		if ip in _asn_cache:
+			_asn_cache.move_to_end(ip)
+			_asn_cache[ip] = result
+		else:
+			if len(_asn_cache) >= _ASN_CACHE_MAX:
+				_asn_cache.popitem(last=False)
+			_asn_cache[ip] = result
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +707,11 @@ def close_readers() -> None:
 				_log.warning("Error closing GeoIP ASN reader: %s", exc)
 			finally:
 				_asn_reader = None
+
+	with _geo_cache_lock:
+		_geo_cache.clear()
+	with _asn_cache_lock:
+		_asn_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -640,7 +773,6 @@ def geolocate_ip(ip: str) -> Optional[GeoLocation]:
 		country_iso = r.country.iso_code if r.country else None
 	except Exception as exc:
 		_log.debug("GeoIP lookup failed for %s: %s", ip, exc)
-		_cache_put(ip, None)
 		return None
 
 	# 4. Validate (outside lock)
@@ -676,13 +808,20 @@ def lookup_asn(ip: str) -> tuple[Optional[int], Optional[str]]:
 	"""
 	ip = ip.strip()
 
+	with _asn_cache_lock:
+		if ip in _asn_cache:
+			_asn_cache.move_to_end(ip)
+			return _asn_cache[ip]
+
 	reader = _get_asn_reader()
 	if not reader:
 		return None, None
 
 	try:
 		r = reader.asn(ip)
-		return r.autonomous_system_number, r.autonomous_system_organization
+		result = (r.autonomous_system_number, r.autonomous_system_organization)
+		_asn_cache_put(ip, result)
+		return result
 	except Exception:
 		return None, None
 

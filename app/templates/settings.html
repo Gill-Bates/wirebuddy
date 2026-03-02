@@ -248,6 +248,11 @@
 
     #blocklist-last-update .blocklist-last-value {
         word-break: normal;
+    }
+
+    /* Disable transitions on initial blocklist load to prevent toggle animation */
+    .no-transitions .form-check-input {
+        transition: none !important;
         overflow-wrap: normal;
     }
 
@@ -441,63 +446,6 @@
             </div>
             
             <div class="col-lg-6 settings-general-col settings-general-col-right">
-                <!-- Check for Updates -->
-                <div class="card mb-4">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Check for Updates</h5>
-                        <button class="btn btn-sm btn-outline-primary" id="btn-check-updates">
-                            <span class="material-icons" style="font-size: 18px;">refresh</span>
-                        </button>
-                    </div>
-                    <div class="card-body">
-                        <div id="update-check-loading" class="text-center py-3">
-                            <div class="spinner-border spinner-border-sm text-primary" role="status">
-                                <span class="visually-hidden">Checking...</span>
-                            </div>
-                            <span class="ms-2 text-muted">Checking for updates...</span>
-                        </div>
-                        
-                        <div id="update-check-result" class="d-none">
-                            <div id="update-status-badge" class="mb-3"></div>
-                            
-                            <table class="table table-borderless table-sm mb-0">
-                                <tbody>
-                                    <tr>
-                                        <td class="text-muted" style="width: 45%;">Current Version</td>
-                                        <td class="text-end font-monospace" id="update-current-version">–</td>
-                                    </tr>
-                                    <tr>
-                                        <td class="text-muted">Latest Version</td>
-                                        <td class="text-end font-monospace" id="update-latest-version">–</td>
-                                    </tr>
-                                    <tr id="update-published-row" class="d-none">
-                                        <td class="text-muted">Released</td>
-                                        <td class="text-end" id="update-published-at">–</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                            
-                            <div id="update-error" class="alert alert-warning mt-3 mb-0 py-2 d-none">
-                                <small id="update-error-text"></small>
-                            </div>
-                        </div>
-                        
-                        <div id="update-available-section" class="d-none mt-3">
-                            <hr>
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <h6 class="mb-0">Release Notes</h6>
-                                <a id="update-release-link" href="#" target="_blank" class="btn btn-sm btn-primary">
-                                    <span class="material-icons me-1" style="font-size: 16px;">open_in_new</span>
-                                    View on GitHub
-                                </a>
-                            </div>
-                            <div id="update-release-notes" class="border rounded p-2 bg-body-secondary" 
-                                 style="max-height: 300px; overflow-y: auto; font-size: 0.85rem;">
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 {% if user['is_admin'] %}
                 <div class="card mb-4">
                     <div class="card-header">
@@ -508,7 +456,7 @@
                             <input class="form-check-input" type="checkbox" id="enable-status-page">
                             <label class="form-check-label" for="enable-status-page">Enable Status Page</label>
                         </div>
-                        <small class="text-muted">Publishes <span class="font-monospace">/status</span> for WireGuard-internal clients only.</small>
+                        <small class="text-muted">Publishes <span class="font-monospace">/status</span> for WireGuard-<strong>internal</strong> clients only.</small>
                         <div class="mt-2 small text-muted d-flex align-items-center gap-2">
                             <span id="status-page-url" class="font-monospace">/status</span>
                             <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
@@ -620,12 +568,9 @@
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="mb-0">Interfaces</h5>
                         <div>
-                            <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-refresh-interfaces">
-                                <span class="material-icons" style="font-size: 18px;">refresh</span>
-                            </button>
                             {% if user['is_admin'] %}
                             <button class="btn btn-sm btn-primary" id="btn-open-create-interface-modal" data-bs-toggle="modal" data-bs-target="#ifaceModal">
-                                <span class="material-icons" style="font-size: 18px;">add_circle</span>
+                                <span class="material-icons align-middle me-1" style="font-size: 18px;">add_circle</span>Add Interface
                             </button>
                             {% endif %}
                         </div>
@@ -636,6 +581,28 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Traffic Analysis -->
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Traffic Analysis</h5>
+                        <span id="traffic-requirements-badge" class="badge bg-secondary" style="display: none;">
+                            <span class="material-icons align-middle me-1" style="font-size: 14px;">info</span>
+                            <span class="badge-text">Checking...</span>
+                        </span>
+                    </div>
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <p class="mb-1">Country Traffic Analysis</p>
+                                <small class="text-muted">Analyze VPN traffic by destination country using conntrack</small>
+                            </div>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" id="traffic-analysis-toggle">
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -643,6 +610,28 @@
     {% if user['is_admin'] %}
     <!-- DNS Tab -->
     <div class="tab-pane fade" id="dns-pane" role="tabpanel" aria-labelledby="dns-tab">
+        <!-- DNS Service Control -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">DNS Service</h5>
+                <span class="badge" id="dns-service-status-badge">Loading...</span>
+            </div>
+            <div class="card-body">
+                <p class="text-muted mb-3">Control the Unbound DNS resolver service.</p>
+                <div class="d-flex gap-2 flex-wrap" id="dns-service-controls">
+                    <button class="btn btn-sm btn-outline-success" id="btn-dns-start" disabled>
+                        <span class="material-icons align-middle me-1" style="font-size:18px;">play_arrow</span>Start
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" id="btn-dns-stop" disabled>
+                        <span class="material-icons align-middle me-1" style="font-size:18px;">stop</span>Stop
+                    </button>
+                    <button class="btn btn-sm btn-outline-warning" id="btn-dns-restart" disabled>
+                        <span class="material-icons align-middle me-1" style="font-size:18px;">restart_alt</span>Restart
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- DNS Filtering -->
         <div class="card mb-4">
             <div class="card-header">
@@ -663,7 +652,7 @@
 
                 <div class="d-flex justify-content-end align-items-center mt-3 pt-3 border-top">
                         <button class="btn btn-sm btn-outline-danger" id="btn-update-blocklist">
-                        <span class="material-icons align-middle" style="font-size:18px;">cached</span>
+                        <span class="material-icons align-middle me-1" style="font-size:18px;">cached</span>Update Blocklists
                     </button>
                 </div>
 
@@ -811,6 +800,7 @@ Format: IP@PORT#HOSTNAME
 
             </div>
         </div>
+
     </div>
 
     <!-- Let's Encrypt Tab -->
@@ -822,24 +812,24 @@ Format: IP@PORT#HOSTNAME
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="mb-0">SSL/TLS Certificates</h5>
                         <div>
-                            <button class="btn btn-sm btn-outline-secondary" id="btn-refresh-certificates"
-                                title="Refresh">
-                                <span class="material-icons" style="font-size: 18px;">refresh</span>
-                            </button>
                             <button class="btn btn-sm btn-primary d-inline-flex align-items-center justify-content-center"
                                 data-bs-toggle="modal" data-bs-target="#certModal">
-                                <span class="material-icons align-middle" style="font-size: 18px;">add_circle</span>
+                                <span class="material-icons align-middle me-1" style="font-size: 18px;">add_circle</span>Request Certificate
                             </button>
                         </div>
                     </div>
                     <div class="card-body">
-                        <div id="certificates-list">
-                            <p class="text-muted mb-0">Loading certificates...</p>
-                        </div>
-                        <small class="text-muted d-block mt-2">
+                        <small class="text-muted d-block">
                             <span class="material-icons" style="font-size: 16px; vertical-align: middle;">info</span>
                             Certificates are stored in <code>/data/certs/</code>
                         </small>
+                        <hr class="my-3">
+                        <div id="letsencrypt-guidance" class="alert alert-secondary py-2 mb-3"><span class="material-icons align-middle me-1" style="font-size: 18px;">check_circle</span>This setting is usually only necessary if you want to expose wirebuddy directly to the internet and do not want to use a reverse proxy.
+
+A configuration template for Caddy can be found in the repository.</div>
+                        <div id="certificates-list">
+                            <p class="text-muted mb-0">Loading certificates...</p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -848,7 +838,7 @@ Format: IP@PORT#HOSTNAME
     {% endif %}
 </div>
 <!-- Certificate Request Modal -->
-<div class="modal fade" id="certModal" tabindex="-1" aria-labelledby="certModalTitle" aria-modal="true">
+<div class="modal fade" id="certModal" aria-labelledby="certModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -894,7 +884,7 @@ Format: IP@PORT#HOSTNAME
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-primary" id="btn-request-certificate">
-                    <span id="cert-spinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+                    <span id="cert-spinner" class="spinner-border spinner-border-sm text-light d-none" role="status"></span>
                     Request Certificate
                 </button>
             </div>
@@ -904,7 +894,7 @@ Format: IP@PORT#HOSTNAME
 
 <!-- Interface Creation Modal -->
 {% if user['is_admin'] %}
-<div class="modal fade" id="ifaceModal" tabindex="-1" aria-labelledby="ifaceModalTitle" aria-modal="true">
+<div class="modal fade" id="ifaceModal" aria-labelledby="ifaceModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -935,18 +925,6 @@ Format: IP@PORT#HOSTNAME
                         <input type="number" class="form-control" id="iface-port" value="51820" min="1" max="65535">
                     </div>
                     <div class="mb-3">
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" id="iface-use-frontend-port">
-                            <label class="form-check-label" for="iface-use-frontend-port">Use different Docker Frontend Port</label>
-                        </div>
-                        <small class="text-muted">Only affects client config generation (Endpoint port)</small>
-                    </div>
-                    <div class="mb-3 d-none" id="iface-frontend-port-wrap">
-                        <label for="iface-frontend-port" class="form-label">Docker Frontend Port</label>
-                        <input type="number" class="form-control" id="iface-frontend-port" min="1" max="65535"
-                            placeholder="51820">
-                    </div>
-                    <div class="mb-3">
                         <label for="iface-dns" class="form-label">DNS (optional)</label>
                         <input type="text" class="form-control" id="iface-dns" placeholder="1.1.1.1, 8.8.8.8">
                         <small class="text-muted">DNS servers for connected clients (leave empty to use peer
@@ -957,7 +935,7 @@ Format: IP@PORT#HOSTNAME
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-primary" id="iface-submit-btn">
-                    <span id="iface-spinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+                    <span id="iface-spinner" class="spinner-border spinner-border-sm text-light d-none" role="status"></span>
                     <span id="iface-submit-label">Create Interface</span>
                 </button>
             </div>
@@ -980,256 +958,18 @@ Format: IP@PORT#HOSTNAME
         return d.innerHTML;
     }
 
-    // -------------------- Update Check --------------------
-    async function checkForUpdates(force = false) {
-        const loadingEl = document.getElementById('update-check-loading');
-        const resultEl = document.getElementById('update-check-result');
-        const statusBadge = document.getElementById('update-status-badge');
-        const currentVersionEl = document.getElementById('update-current-version');
-        const latestVersionEl = document.getElementById('update-latest-version');
-        const publishedRow = document.getElementById('update-published-row');
-        const publishedAtEl = document.getElementById('update-published-at');
-        const errorEl = document.getElementById('update-error');
-        const errorTextEl = document.getElementById('update-error-text');
-        const availableSectionEl = document.getElementById('update-available-section');
-        const releaseLinkEl = document.getElementById('update-release-link');
-        const releaseNotesEl = document.getElementById('update-release-notes');
-        const checkBtn = document.getElementById('btn-check-updates');
-
-        // Show loading state
-        loadingEl.classList.remove('d-none');
-        resultEl.classList.add('d-none');
-        availableSectionEl.classList.add('d-none');
-        if (checkBtn) checkBtn.disabled = true;
-
-        try {
-            const url = force 
-                ? '/api/wireguard/settings/check-updates?force=true'
-                : '/api/wireguard/settings/check-updates';
-            const res = await api('GET', url, null, { timeoutMs: 15000 });
-            
-            // Hide loading, show result
-            loadingEl.classList.add('d-none');
-            resultEl.classList.remove('d-none');
-            
-            // Populate version info
-            currentVersionEl.textContent = res.current_version || '–';
-            latestVersionEl.textContent = res.latest_version || '–';
-            
-            // Show published date if available
-            if (res.published_at) {
-                publishedRow.classList.remove('d-none');
-                const pubDate = new Date(res.published_at);
-                publishedAtEl.textContent = pubDate.toLocaleDateString(undefined, {
-                    year: 'numeric', month: 'short', day: 'numeric'
-                });
-            } else {
-                publishedRow.classList.add('d-none');
-            }
-            
-            // Status badge
-            if (res.update_available) {
-                setUpdateStatusBadge(
-                    statusBadge,
-                    'success',
-                    'new_releases',
-                    'Update available!',
-                    `Version ${res.latest_version || '–'} is ready.`
-                );
-
-                // Show release notes
-                availableSectionEl.classList.remove('d-none');
-                if (res.release_url) {
-                    releaseLinkEl.href = res.release_url;
-                }
-                if (res.release_notes) {
-                    releaseNotesEl.classList.remove('text-muted');
-                    renderReleaseNotes(releaseNotesEl, res.release_notes);
-                } else {
-                    releaseNotesEl.replaceChildren();
-                    const empty = document.createElement('em');
-                    empty.className = 'text-muted';
-                    empty.textContent = 'No release notes available.';
-                    releaseNotesEl.appendChild(empty);
-                }
-            } else {
-                setUpdateStatusBadge(
-                    statusBadge,
-                    'secondary',
-                    'check_circle',
-                    null,
-                    "You're running the latest version."
-                );
-                availableSectionEl.classList.add('d-none');
-            }
-            
-            // Show error if any
-            if (res.error) {
-                errorEl.classList.remove('d-none');
-                errorTextEl.textContent = res.error;
-            } else {
-                errorEl.classList.add('d-none');
-            }
-            
-        } catch (error) {
-            loadingEl.classList.add('d-none');
-            resultEl.classList.remove('d-none');
-            statusBadge.replaceChildren();
-            errorEl.classList.remove('d-none');
-            errorTextEl.textContent = 'Failed to check for updates: ' + (error.message || error);
-        } finally {
-            if (checkBtn) checkBtn.disabled = false;
+    // Simple string hash for generating stable DOM IDs
+    // Returns a short alphanumeric string based on input
+    function simpleHash(str) {
+        if (!str) return 'empty';
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+            const char = str.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32bit integer
         }
-    }
-
-    // Whitelist-only URL validator for markdown links (prevent javascript:/data: XSS)
-    function safeUrl(url) {
-        try {
-            const u = new URL(url, window.location.origin);
-            if (['http:', 'https:'].includes(u.protocol)) return u.href;
-        } catch {}
-        return '#';
-    }
-
-    function setUpdateStatusBadge(container, type, icon, leadText, tailText) {
-        if (!container) return;
-        container.replaceChildren();
-        const alert = document.createElement('div');
-        alert.className = `alert alert-${type} py-2 mb-0`;
-
-        const iconEl = document.createElement('span');
-        iconEl.className = 'material-icons align-middle me-1';
-        iconEl.style.fontSize = '18px';
-        iconEl.textContent = icon;
-        alert.appendChild(iconEl);
-
-        if (leadText) {
-            const strong = document.createElement('strong');
-            strong.textContent = leadText;
-            alert.appendChild(strong);
-            if (tailText) alert.appendChild(document.createTextNode(` ${tailText}`));
-        } else if (tailText) {
-            alert.appendChild(document.createTextNode(tailText));
-        }
-
-        container.appendChild(alert);
-    }
-
-    function appendInline(parent, text) {
-        const tokenRe = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/;
-        let remaining = text;
-
-        while (remaining) {
-            const match = tokenRe.exec(remaining);
-            if (!match) {
-                parent.appendChild(document.createTextNode(remaining));
-                return;
-            }
-            const idx = match.index;
-            if (idx > 0) {
-                parent.appendChild(document.createTextNode(remaining.slice(0, idx)));
-            }
-
-            const token = match[0];
-            let el = null;
-
-            if (token.startsWith('**')) {
-                el = document.createElement('strong');
-                el.textContent = token.slice(2, -2);
-            } else if (token.startsWith('*')) {
-                el = document.createElement('em');
-                el.textContent = token.slice(1, -1);
-            } else if (token.startsWith('`')) {
-                el = document.createElement('code');
-                el.textContent = token.slice(1, -1);
-            } else if (token.startsWith('[')) {
-                const linkMatch = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
-                if (linkMatch) {
-                    const label = linkMatch[1];
-                    const url = linkMatch[2];
-                    el = document.createElement('a');
-                    el.href = safeUrl(url);
-                    el.target = '_blank';
-                    el.rel = 'noopener noreferrer';
-                    el.textContent = label;
-                }
-            }
-
-            if (el) {
-                parent.appendChild(el);
-            } else {
-                parent.appendChild(document.createTextNode(token));
-            }
-
-            remaining = remaining.slice(idx + token.length);
-        }
-    }
-
-    function renderReleaseNotes(container, markdown) {
-        if (!container) return;
-        container.replaceChildren();
-
-        const lines = String(markdown || '').split(/\r?\n/);
-        let listEl = null;
-        let paraEl = null;
-
-        const flushParagraph = () => {
-            if (paraEl) {
-                container.appendChild(paraEl);
-                paraEl = null;
-            }
-        };
-
-        const flushList = () => {
-            if (listEl) {
-                container.appendChild(listEl);
-                listEl = null;
-            }
-        };
-
-        for (const rawLine of lines) {
-            const line = rawLine.trimEnd();
-            if (!line.trim()) {
-                flushParagraph();
-                flushList();
-                continue;
-            }
-
-            const headerMatch = /^(#{1,3})\s+(.+)$/.exec(line);
-            if (headerMatch) {
-                flushParagraph();
-                flushList();
-                const level = headerMatch[1].length;
-                const text = headerMatch[2];
-                const tag = level === 1 ? 'h4' : (level === 2 ? 'h5' : 'h6');
-                const heading = document.createElement(tag);
-                heading.className = level === 1 ? 'mt-3 mb-2' : 'mt-2 mb-1';
-                appendInline(heading, text);
-                container.appendChild(heading);
-                continue;
-            }
-
-            const listMatch = /^[-*]\s+(.+)$/.exec(line);
-            if (listMatch) {
-                flushParagraph();
-                if (!listEl) listEl = document.createElement('ul');
-                listEl.className = 'mb-2 ps-3';
-                const item = document.createElement('li');
-                appendInline(item, listMatch[1]);
-                listEl.appendChild(item);
-                continue;
-            }
-
-            flushList();
-            if (!paraEl) paraEl = document.createElement('p');
-            if (paraEl.childNodes.length > 0) {
-                paraEl.appendChild(document.createElement('br'));
-            }
-            appendInline(paraEl, line);
-        }
-
-        flushParagraph();
-        flushList();
+        // Convert to positive base-36 string (0-9, a-z)
+        return Math.abs(hash).toString(36);
     }
 
     // FQDN/Domain detection helper (DRY)
@@ -1284,13 +1024,13 @@ Format: IP@PORT#HOSTNAME
         switch (tabId) {
             case 'general':
                 await loadWgSettings();  // Status Page toggle is on General tab
-                checkForUpdates(false);
                 loadTsdbStats();
                 tabLoaded.general = true;
                 break;
             case 'wireguard':
                 await loadWgSettings();  // Must await to ensure wgSettingsLoaded is true before user interaction
                 refreshInterfaces();
+                loadTrafficStatus();
                 tabLoaded.wireguard = true;
                 break;
             case 'letsencrypt':
@@ -1308,6 +1048,7 @@ Format: IP@PORT#HOSTNAME
                     loadDnsConfig();
                 }
                 loadCustomRules();
+                loadDnsServiceStatus();
                 tabLoaded.dns = true;
                 break;
         }
@@ -1319,15 +1060,21 @@ Format: IP@PORT#HOSTNAME
         return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
     }
 
+    let _wgSettings = {};
+
     async function loadWgSettings() {
         try {
             const settings = await api('GET', '/api/wireguard/settings');
-            console.debug('[WG Settings] Loaded:', settings);  // Debug log for troubleshooting
+            _wgSettings = settings || {};
             
             if (settings.wg_fqdn) document.getElementById('wg-fqdn').value = settings.wg_fqdn;
             if (settings.gui_port) document.getElementById('gui-port').value = settings.gui_port;
-            if (settings.wg_mtu) document.getElementById('wg-mtu').value = settings.wg_mtu;
-            if (settings.wg_persistent_keepalive) document.getElementById('wg-keepalive').value = settings.wg_persistent_keepalive;
+            if (settings.wg_mtu !== null && settings.wg_mtu !== undefined && settings.wg_mtu !== '') {
+                document.getElementById('wg-mtu').value = settings.wg_mtu;
+            }
+            if (settings.wg_persistent_keepalive !== null && settings.wg_persistent_keepalive !== undefined && settings.wg_persistent_keepalive !== '') {
+                document.getElementById('wg-keepalive').value = settings.wg_persistent_keepalive;
+            }
 
             // Localhost toggle
             const localhostToggle = document.getElementById('gui-localhost-only');
@@ -1356,8 +1103,9 @@ Format: IP@PORT#HOSTNAME
             updateStatusPageUrlPreview();
             wgSettingsLoaded = true;  // Allow saves now that settings are loaded
         } catch (error) {
-            console.warn('Failed to load WG settings:', error.message);
-            wgSettingsLoaded = true;  // Allow saves even on error to not block UI
+            console.error('Failed to load WG settings:', error.message);
+            wbToast('Failed to load WireGuard settings. Please refresh the page.', 'danger');
+            // Do NOT set wgSettingsLoaded = true on error to prevent blind overwrites
         }
     }
 
@@ -1369,15 +1117,21 @@ Format: IP@PORT#HOSTNAME
         const guiPortInput = document.getElementById('gui-port');
         const rawHost = (fqdnInput?.value || '').trim().replace(/^\[|\]$/g, '');
         const host = rawHost || window.location.hostname;
-        const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+        const protocol = 'http:';
         const urlHost = host.includes(':') ? `[${host}]` : host;
-        const parsedPort = Number.parseInt(guiPortInput?.value || '', 10);
-        const defaultPort = protocol === 'https:' ? 443 : 80;
-        const portPart = Number.isFinite(parsedPort) && parsedPort >= 1 && parsedPort <= 65535 && parsedPort !== defaultPort
-            ? `:${parsedPort}`
-            : '';
 
-        target.textContent = `${protocol}//${urlHost}${portPart}/status`;
+        // Priority: input field → DB setting → default 8000
+        // Always show port for internal VPN clients (they access directly, not via reverse proxy)
+        const DEFAULT_GUI_PORT = 8000;
+        const parsedInputPort = Number.parseInt(guiPortInput?.value || '', 10);
+        const parsedDbPort = Number.parseInt(String(_wgSettings?.gui_port || ''), 10);
+        const port = Number.isFinite(parsedInputPort) && parsedInputPort >= 1 && parsedInputPort <= 65535
+            ? parsedInputPort
+            : (Number.isFinite(parsedDbPort) && parsedDbPort >= 1 && parsedDbPort <= 65535
+                ? parsedDbPort
+                : DEFAULT_GUI_PORT);
+
+        target.textContent = `${protocol}//${urlHost}:${port}/status`;
     }
 
     async function copyStatusPageUrl() {
@@ -1854,17 +1608,10 @@ Format: IP@PORT#HOSTNAME
         });
     }
 
-    const checkUpdatesBtn = document.getElementById('btn-check-updates');
-    if (checkUpdatesBtn) {
-        checkUpdatesBtn.addEventListener('click', () => {
-            void checkForUpdates(true);
-        });
-    }
-
     const openCreateInterfaceModalBtn = document.getElementById('btn-open-create-interface-modal');
     if (openCreateInterfaceModalBtn) {
         openCreateInterfaceModalBtn.addEventListener('click', () => {
-            prepareCreateInterfaceModal();
+            void prepareCreateInterfaceModal();
         });
     }
 
@@ -1896,11 +1643,135 @@ Format: IP@PORT#HOSTNAME
         });
     }
 
-    const refreshCertificatesBtn = document.getElementById('btn-refresh-certificates');
-    if (refreshCertificatesBtn) {
-        refreshCertificatesBtn.addEventListener('click', () => {
-            void refreshCertificates();
-        });
+    // Traffic Analysis Control
+    async function loadTrafficStatus() {
+        const toggle = document.getElementById('traffic-analysis-toggle');
+        const badge = document.getElementById('traffic-requirements-badge');
+        const badgeText = badge?.querySelector('.badge-text');
+        const badgeIcon = badge?.querySelector('.material-icons');
+
+        try {
+            const status = await api('GET', '/api/wireguard/settings/traffic');
+            const enabled = status.enabled === true;
+            const requirementsMet = status.requirements_met === true;
+
+            if (toggle) {
+                toggle.checked = enabled;
+                toggle.disabled = !requirementsMet;
+            }
+
+            if (badge && badgeText && badgeIcon) {
+                badge.style.display = '';
+                if (requirementsMet) {
+                    badge.className = 'badge bg-success';
+                    badgeText.textContent = 'Available';
+                    badgeIcon.textContent = 'check_circle';
+                } else {
+                    badge.className = 'badge bg-warning text-dark';
+                    badgeText.textContent = 'conntrack not available';
+                    badgeIcon.textContent = 'warning';
+                }
+            }
+        } catch (e) {
+            if (badge && badgeText) {
+                badge.style.display = '';
+                badge.className = 'badge bg-secondary';
+                badgeText.textContent = 'Unknown';
+            }
+            if (toggle) toggle.disabled = true;
+        }
+    }
+
+    async function toggleTrafficAnalysis() {
+        const toggle = document.getElementById('traffic-analysis-toggle');
+        if (!toggle) return;
+
+        try {
+            await api('PATCH', '/api/wireguard/settings', {
+                traffic_analysis_enabled: toggle.checked
+            });
+            wbToast(`Traffic analysis ${toggle.checked ? 'enabled' : 'disabled'}`, 'success');
+        } catch (e) {
+            toggle.checked = !toggle.checked;
+            wbToast('Failed to update traffic analysis setting: ' + (e.message || e), 'danger');
+        }
+    }
+
+    // Attach traffic analysis toggle event listener
+    document.getElementById('traffic-analysis-toggle')?.addEventListener('change', toggleTrafficAnalysis);
+
+    // DNS Service Control
+    async function loadDnsServiceStatus() {
+        const badge = document.getElementById('dns-service-status-badge');
+        const startBtn = document.getElementById('btn-dns-start');
+        const stopBtn = document.getElementById('btn-dns-stop');
+        const restartBtn = document.getElementById('btn-dns-restart');
+
+        try {
+            // Check if any WireGuard interfaces exist (DNS needs interface IPs to bind)
+            let hasInterfaces = false;
+            try {
+                const ifaceRes = await api('GET', '/api/wireguard/interfaces');
+                hasInterfaces = ifaceRes?.interfaces?.length > 0;
+            } catch (e) {
+                console.warn('Could not check WireGuard interfaces:', e);
+            }
+
+            const status = await api('GET', '/api/dns/status');
+            const isRunning = status.is_running === true;
+
+            if (badge) {
+                if (!hasInterfaces) {
+                    badge.textContent = 'No Interfaces';
+                    badge.className = 'badge bg-secondary';
+                } else {
+                    badge.textContent = isRunning ? 'Running' : 'Stopped';
+                    badge.className = `badge ${isRunning ? 'bg-success' : 'bg-danger'}`;
+                }
+            }
+            // Start only available if not running AND interfaces exist
+            if (startBtn) startBtn.disabled = isRunning || !hasInterfaces;
+            if (stopBtn) stopBtn.disabled = !isRunning;
+            if (restartBtn) restartBtn.disabled = !isRunning;
+        } catch (e) {
+            if (badge) {
+                badge.textContent = 'Unknown';
+                badge.className = 'badge bg-secondary';
+            }
+        }
+    }
+
+    async function dnsServiceAction(action) {
+        const validActions = ['start', 'stop', 'restart'];
+        if (!validActions.includes(action)) {
+            wbToast('Invalid DNS action', 'danger');
+            return;
+        }
+
+        if (action === 'stop') {
+            if (!await wbConfirm('Stop the DNS resolver? VPN clients may lose DNS resolution.')) return;
+        }
+
+        try {
+            await api('POST', `/api/dns/${encodeURIComponent(action)}`);
+            await loadDnsServiceStatus();
+            wbToast(`DNS ${action} successful`, 'success');
+        } catch (e) {
+            wbToast('DNS action failed: ' + (e.message || e), 'danger');
+        }
+    }
+
+    const dnsStartBtn = document.getElementById('btn-dns-start');
+    if (dnsStartBtn) {
+        dnsStartBtn.addEventListener('click', () => dnsServiceAction('start'));
+    }
+    const dnsStopBtn = document.getElementById('btn-dns-stop');
+    if (dnsStopBtn) {
+        dnsStopBtn.addEventListener('click', () => dnsServiceAction('stop'));
+    }
+    const dnsRestartBtn = document.getElementById('btn-dns-restart');
+    if (dnsRestartBtn) {
+        dnsRestartBtn.addEventListener('click', () => dnsServiceAction('restart'));
     }
 
     const requestCertificateBtn = document.getElementById('btn-request-certificate');
@@ -1924,22 +1795,8 @@ Format: IP@PORT#HOSTNAME
         address: '10.13.13.1/24',
         address6: 'fd13:13:13::1/64',
         listen_port: 51820,
-        client_endpoint_port: null,
         dns: '',
     };
-
-    function toggleFrontendPortField(enabled, value) {
-        const wrap = document.getElementById('iface-frontend-port-wrap');
-        const input = document.getElementById('iface-frontend-port');
-        if (!wrap || !input) return;
-        wrap.classList.toggle('d-none', !enabled);
-        input.disabled = !enabled;
-        if (enabled && value !== undefined && value !== null) {
-            input.value = String(value);
-        } else if (!enabled) {
-            input.value = '';
-        }
-    }
 
     function setInterfaceSubmitBusy(isBusy) {
         const spinner = document.getElementById('iface-spinner');
@@ -1948,7 +1805,7 @@ Format: IP@PORT#HOSTNAME
         if (submitBtn) submitBtn.disabled = isBusy;
     }
 
-    function prepareCreateInterfaceModal() {
+    async function prepareCreateInterfaceModal() {
         editingInterfaceName = null;
 
         const title = document.getElementById('ifaceModalTitle');
@@ -1958,8 +1815,6 @@ Format: IP@PORT#HOSTNAME
         const address6Input = document.getElementById('iface-address6');
         const portInput = document.getElementById('iface-port');
         const dnsInput = document.getElementById('iface-dns');
-        const frontendToggle = document.getElementById('iface-use-frontend-port');
-        const frontendInput = document.getElementById('iface-frontend-port');
         const wbDnsToggle = document.getElementById('iface-use-wb-dns');
         const form = document.getElementById('iface-form');
 
@@ -1967,16 +1822,28 @@ Format: IP@PORT#HOSTNAME
         if (submitLabel) submitLabel.textContent = 'Create Interface';
         if (form) form.reset();
 
+        // Fetch next available subnet from API
+        let nextSubnet = {
+            address: interfaceDefaults.address,
+            address6: interfaceDefaults.address6,
+            listen_port: interfaceDefaults.listen_port
+        };
+        try {
+            const res = await api('GET', '/api/wireguard/interfaces/_next-subnet');
+            if (res.address) nextSubnet.address = res.address;
+            if (res.address6) nextSubnet.address6 = res.address6;
+            if (res.listen_port) nextSubnet.listen_port = res.listen_port;
+        } catch (err) {
+            console.warn('Could not fetch next subnet, using defaults:', err);
+        }
+
         if (nameInput) {
             nameInput.value = interfaceDefaults.name;
             nameInput.readOnly = false;
         }
-        if (addressInput) addressInput.value = interfaceDefaults.address;
-        if (address6Input) address6Input.value = interfaceDefaults.address6;
-        if (portInput) portInput.value = String(interfaceDefaults.listen_port);
-        if (frontendToggle) frontendToggle.checked = false;
-        if (frontendInput) frontendInput.value = '';
-        toggleFrontendPortField(false);
+        if (addressInput) addressInput.value = nextSubnet.address;
+        if (address6Input) address6Input.value = nextSubnet.address6;
+        if (portInput) portInput.value = String(nextSubnet.listen_port);
         if (dnsInput) {
             dnsInput.value = interfaceDefaults.dns;
             dnsInput.readOnly = false;
@@ -2072,11 +1939,6 @@ Format: IP@PORT#HOSTNAME
         const address6 = document.getElementById('iface-address6').value.trim() || null;
         const port = document.getElementById('iface-port').value || 51820;
         const dns = document.getElementById('iface-dns').value.trim() || null;
-        const frontendToggle = document.getElementById('iface-use-frontend-port');
-        const frontendInput = document.getElementById('iface-frontend-port');
-        const frontendEnabled = !!frontendToggle?.checked;
-        const frontendPortRaw = frontendInput?.value || '';
-        const frontendPort = frontendEnabled ? Number.parseInt(frontendPortRaw, 10) : null;
 
         if (!name || !address) {
             wbToast('Please fill in name and address', 'warning');
@@ -2100,11 +1962,6 @@ Format: IP@PORT#HOSTNAME
             return;
         }
 
-        if (frontendEnabled && (!Number.isFinite(frontendPort) || frontendPort < 1 || frontendPort > 65535)) {
-            wbToast('Docker Frontend Port must be a number between 1 and 65535', 'warning');
-            return;
-        }
-
         setInterfaceSubmitBusy(true);
         try {
             await api('POST', '/api/wireguard/interfaces', {
@@ -2112,16 +1969,17 @@ Format: IP@PORT#HOSTNAME
                 address: address,
                 address6: address6,
                 listen_port: parseInt(port),
-                client_endpoint_port: frontendPort,
                 dns: dns
             });
 
             document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('ifaceModal')).hide();
-            prepareCreateInterfaceModal();
+            void prepareCreateInterfaceModal();
 
             wbToast(`Interface '${name}' created successfully!`, 'success');
             await refreshInterfaces();
+            // Refresh DNS status (Unbound may have auto-started)
+            await loadDnsServiceStatus();
         } catch (error) {
             wbToast('Failed to create interface: ' + error.message, 'danger');
         } finally {
@@ -2146,12 +2004,6 @@ Format: IP@PORT#HOSTNAME
             document.getElementById('iface-address6').value = iface.address6 || '';
             document.getElementById('iface-port').value = String(iface.listen_port || 51820);
             document.getElementById('iface-dns').value = iface.dns || '';
-            const frontendToggle = document.getElementById('iface-use-frontend-port');
-            const frontendInput = document.getElementById('iface-frontend-port');
-            const frontendPort = iface.client_endpoint_port || null;
-            if (frontendToggle) frontendToggle.checked = !!frontendPort;
-            if (frontendInput) frontendInput.value = frontendPort ? String(frontendPort) : '';
-            toggleFrontendPortField(!!frontendPort, frontendPort);
 
             // Optional WireBuddy DNS toggle (may not exist in all versions)
             const serverIp = (iface.address || '').split('/')[0];
@@ -2176,24 +2028,20 @@ Format: IP@PORT#HOSTNAME
         const address6 = document.getElementById('iface-address6').value.trim() || null;
         const port = document.getElementById('iface-port').value || 51820;
         const dns = document.getElementById('iface-dns').value.trim() || null;
-        const frontendToggle = document.getElementById('iface-use-frontend-port');
-        const frontendInput = document.getElementById('iface-frontend-port');
-        const frontendEnabled = !!frontendToggle?.checked;
-        const frontendPortRaw = frontendInput?.value || '';
-        const frontendPort = frontendEnabled ? Number.parseInt(frontendPortRaw, 10) : null;
 
         if (!address) {
             wbToast('Please fill in an IPv4 address', 'warning');
             return;
         }
 
-        if (address6 && !isValidIPv6Cidr(address6)) {
-            wbToast('IPv6 address must be valid CIDR notation (e.g. fd13:13:13::1/64)', 'warning');
+        // Validate CIDR notation (octet range 0-255, mask 0-32)
+        if (!isValidIPv4Cidr(address)) {
+            wbToast('IPv4 address must be in CIDR format with valid octets and prefix (e.g. 10.13.13.1/24)', 'warning');
             return;
         }
 
-        if (frontendEnabled && (!Number.isFinite(frontendPort) || frontendPort < 1 || frontendPort > 65535)) {
-            wbToast('Docker Frontend Port must be a number between 1 and 65535', 'warning');
+        if (address6 && !isValidIPv6Cidr(address6)) {
+            wbToast('IPv6 address must be valid CIDR notation (e.g. fd13:13:13::1/64)', 'warning');
             return;
         }
 
@@ -2203,7 +2051,6 @@ Format: IP@PORT#HOSTNAME
                 address: address,
                 address6: address6,
                 listen_port: parseInt(port),
-                client_endpoint_port: frontendPort,
                 dns: dns
             });
             const payload = res?.data || res;
@@ -2212,7 +2059,7 @@ Format: IP@PORT#HOSTNAME
 
             document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('ifaceModal')).hide();
-            prepareCreateInterfaceModal();
+            void prepareCreateInterfaceModal();
 
             wbToast(`Interface '${updatedName}' updated`, 'success');
             if (payload?.restart_required) {
@@ -2241,6 +2088,8 @@ Format: IP@PORT#HOSTNAME
             await api('DELETE', `/api/wireguard/interfaces/${encodeURIComponent(name)}`);
             wbToast(`Interface '${name}' deleted`, 'success');
             await refreshInterfaces();
+            // Refresh DNS status (Unbound may have auto-stopped)
+            await loadDnsServiceStatus();
         } catch (error) {
             wbToast('Failed to delete interface: ' + (error?.message || String(error)), 'danger');
         }
@@ -2248,7 +2097,7 @@ Format: IP@PORT#HOSTNAME
 
     document.getElementById('ifaceModal')?.addEventListener('hidden.bs.modal', function () {
         setInterfaceSubmitBusy(false);
-        prepareCreateInterfaceModal();
+        void prepareCreateInterfaceModal();
     });
 
     document.getElementById('iface-use-frontend-port')?.addEventListener('change', function () {
@@ -2261,6 +2110,7 @@ Format: IP@PORT#HOSTNAME
     async function refreshCertificates() {
         try {
             const certs = await api('GET', '/api/acme/certificates');
+            const guidanceEl = document.getElementById('letsencrypt-guidance');
             let html = '';
 
             for (const cert of certs) {
@@ -2302,6 +2152,10 @@ Format: IP@PORT#HOSTNAME
                 html = '<p class="text-muted mb-0">No certificates found. Click + to request one.</p>';
             }
 
+            if (guidanceEl) {
+                guidanceEl.classList.toggle('d-none', certs.length > 0);
+            }
+
             const listEl = document.getElementById('certificates-list');
             listEl.innerHTML = html;
 
@@ -2309,6 +2163,10 @@ Format: IP@PORT#HOSTNAME
             listEl.removeEventListener('click', handleCertificateClick);
             listEl.addEventListener('click', handleCertificateClick);
         } catch (error) {
+            const guidanceEl = document.getElementById('letsencrypt-guidance');
+            if (guidanceEl) {
+                guidanceEl.classList.remove('d-none');
+            }
             document.getElementById('certificates-list').innerHTML = `<p class="text-danger mb-0">Failed to load certificates: ${esc(error.message)}</p>`;
         }
     }
@@ -2408,8 +2266,22 @@ Format: IP@PORT#HOSTNAME
                 api('GET', '/api/dns/blocklist/sources'),
                 api('GET', '/api/dns/status'),
             ]);
+            const sortedSources = [...(res.sources || [])].sort((a, b) => {
+                const aEnabled = !!a?.enabled;
+                const bEnabled = !!b?.enabled;
+                if (aEnabled !== bEnabled) return aEnabled ? -1 : 1;
+
+                const aName = String(a?.name || '').trim();
+                const bName = String(b?.name || '').trim();
+                const byName = aName.localeCompare(bName, undefined, { sensitivity: 'base' });
+                if (byName !== 0) return byName;
+
+                const aUrl = String(a?.url || '').trim();
+                const bUrl = String(b?.url || '').trim();
+                return aUrl.localeCompare(bUrl, undefined, { sensitivity: 'base' });
+            });
             let html = '';
-            for (const source of res.sources) {
+            for (const source of sortedSources) {
                 const checked = source.enabled ? 'checked' : '';
                 const enabledClass = source.enabled ? ' enabled' : '';
                 const domainsValue = source.domains;
@@ -2417,7 +2289,8 @@ Format: IP@PORT#HOSTNAME
                     ? Number(domainsValue).toLocaleString()
                     : (String(domainsValue ?? '').trim() || '—');
                 const updated = source.last_updated || '—';
-                const sourceId = `blocklist-${btoa(source.url).replace(/=+$/g, '')}`;
+                // Use simple string hash instead of btoa() to avoid issues with non-ASCII URLs
+                const sourceId = `blocklist-${simpleHash(source.url)}`;
                 const dataUrl = esc(source.url).replace(/"/g, '&quot;');
                 const sourceTooltip = esc(source.url).replace(/"/g, '&quot;');
                 html += `
@@ -2445,10 +2318,17 @@ Format: IP@PORT#HOSTNAME
                         </div>
                     </article>`;
             }
-            document.getElementById('blocklist-sources').innerHTML =
+            const container = document.getElementById('blocklist-sources');
+            // Disable transitions during initial render to prevent toggle animation
+            container.classList.add('no-transitions');
+            container.innerHTML =
                 html || '<div class="text-muted text-center py-3">No blocklist sources available</div>';
             bindBlocklistSourceListeners();
             initBlocklistTooltips();
+            // Re-enable transitions after render completes
+            requestAnimationFrame(() => {
+                container.classList.remove('no-transitions');
+            });
             const updEl = document.getElementById('blocklist-last-update');
             const updValueEl = updEl?.querySelector('.blocklist-last-value');
             if (updEl) {
@@ -3044,7 +2924,6 @@ Format: IP@PORT#HOSTNAME
 
     window.WBSettings = {
         resetTsdb,
-        checkForUpdates,
         refreshInterfaces,
         prepareCreateInterfaceModal,
         updateBlocklist,
@@ -3055,13 +2934,6 @@ Format: IP@PORT#HOSTNAME
         requestCertificate,
         submitInterfaceForm,
     };
-
-    const refreshInterfacesBtn = document.getElementById('btn-refresh-interfaces');
-    if (refreshInterfacesBtn) {
-        refreshInterfacesBtn.addEventListener('click', () => {
-            void refreshInterfaces();
-        });
-    }
 
     // Cleanup debounced timers on navigation
     window.addEventListener('pagehide', () => {

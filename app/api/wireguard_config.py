@@ -64,6 +64,7 @@ class RegenResult:
 
     succeeded: list[str] = field(default_factory=list)
     failed: dict[str, str] = field(default_factory=dict)  # interface_name → error
+    key_mismatch: bool = False  # True if any failure was due to wrong SECRET_KEY
 
 
 def _validate_hook(value: str, label: str) -> str:
@@ -291,6 +292,9 @@ def regenerate_all_configs(
             error_msg = str(e)
             result.failed[iface["name"]] = error_msg
             _log.error("CONFIG_REGENERATE_FAILED interface=%s error=%s", iface["name"], error_msg)
+            # Detect key mismatch from vault decrypt errors
+            if "wrong WIREBUDDY_SECRET_KEY" in error_msg:
+                result.key_mismatch = True
 
     return result
 

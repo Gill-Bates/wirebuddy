@@ -121,7 +121,17 @@ async function api(method, url, data = null, opts = {}) {
     const payload = isJson ? await res.json().catch(() => null) : null;
 
     if (!res.ok) {
-        const msg = payload?.detail || payload?.message || 'Request failed';
+        let msg = 'Request failed';
+        if (payload?.detail) {
+            // FastAPI validation errors return detail as array of objects
+            if (Array.isArray(payload.detail)) {
+                msg = payload.detail.map(e => e.msg || e.message || JSON.stringify(e)).join('; ');
+            } else {
+                msg = payload.detail;
+            }
+        } else if (payload?.message) {
+            msg = payload.message;
+        }
         throw new ApiError(msg, `HTTP_${res.status}`);
     }
 

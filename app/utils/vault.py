@@ -80,8 +80,14 @@ def decrypt(stored: str, pepper: str) -> str:
 		key = _derive_key(pepper, salt)
 		f = Fernet(key)
 		return f.decrypt(fernet_token.encode("ascii")).decode("utf-8")
-	except (InvalidToken, ValueError) as exc:
-		_log.exception("vault decrypt failed")
+	except InvalidToken as exc:
+		_log.warning("vault decrypt failed: invalid token")
+		raise ValueError("Cannot decrypt secret — wrong WIREBUDDY_SECRET_KEY?") from exc
+	except ValueError as exc:
+		_log.warning("vault decrypt failed: invalid vault payload")
+		raise ValueError("Cannot decrypt secret — wrong WIREBUDDY_SECRET_KEY?") from exc
+	except Exception as exc:
+		_log.exception("vault decrypt failed: unexpected error")
 		raise ValueError("Cannot decrypt secret — wrong WIREBUDDY_SECRET_KEY?") from exc
 
 

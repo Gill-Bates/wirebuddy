@@ -8,13 +8,7 @@
 
 from __future__ import annotations
 
-from ..db.sqlite_peers import (
-	get_all_peers,
-	get_cumulative_transfer,
-	update_cumulative_transfer_batch,
-	update_peers_last_seen_batch,
-)
-
+import asyncio
 import logging
 import sqlite3
 import time
@@ -24,17 +18,26 @@ from fastapi import APIRouter, Depends
 from starlette.concurrency import run_in_threadpool
 
 from ..db import tsdb
+from ..db.sqlite_peers import (
+	get_all_peers,
+	get_cumulative_transfer,
+	update_cumulative_transfer_batch,
+	update_peers_last_seen_batch,
+)
 from ..utils.deps import get_conn, get_tsdb_dir
 from ..utils.geoip import lookup_ip
 from .auth import get_current_user, require_admin
 from .response import ok_response
-from .wireguard_utils import parse_wg_show_dump, run_wg_command, safe_int
+from .wireguard_utils import parse_wg_show_dump, run_wg_command
 
 _log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["wireguard"])
 
 __all__ = ["router"]
+
+# Seconds since last handshake below which a peer is considered "connected"
+_CONNECTED_THRESHOLD_S = 180
 
 
 @router.get("/stats/peer-locations")
@@ -50,93 +53,99 @@ async def get_peer_locations(
 	peers (any peer with a non-``(none)`` endpoint and a handshake timestamp).
 	Also includes peers with persisted last_client_ip from DB.
 	"""
-	try:
-		now = time.time()
-		connected_threshold = 180  # 3 minutes – still "online"
+	now = time.time()
 
-		# Build peer name lookup and last-seen data from DB (async via threadpool)
-		all_db_peers = await run_in_threadpool(get_all_peers, conn)
-		peer_db_info: dict[str, dict] = {}
-		for p in all_db_peers:
-			if p["public_key"]:
-				peer_db_info[p["public_key"]] = {
-					"name": p["name"] or p["public_key"][:8],
-					"last_client_ip": p["last_client_ip"],
-					"last_handshake_at": p["last_handshake_at"] or 0,
-					"interface": p["interface"],
-				}
+	# Build peer name lookup and last-seen data from DB (async via threadpool)
+	all_db_peers = await run_in_threadpool(get_all_peers, conn)
+	peer_db_info: dict[str, dict] = {}
+	for p in all_db_peers:
+		if p["public_key"]:
+			peer_db_info[p["public_key"]] = {
+				"name": p["name"] or p["public_key"][:8],
+				"last_client_ip": p["last_client_ip"],
+				"last_handshake_at": p["last_handshake_at"] or 0,
+				"interface": p["interface"],
+			}
 
-		# Track locations by IP with list of peer names for multi-peer IPs
-		seen_ips: dict[str, dict] = {}
-
-		# 1. Parse wg show all dump for live stats
-		code, stdout, stderr = await run_wg_command("wg", "show", "all", "dump")
-		if code == 0:
-			peers = parse_wg_show_dump(stdout)
-			for peer in peers:
-				if peer.public_key not in peer_db_info:
-					continue
-
-				# Update DB info with live data
-				if peer.handshake_ts > peer_db_info[peer.public_key].get("last_handshake_at", 0):
-					peer_db_info[peer.public_key]["last_handshake_at"] = peer.handshake_ts
-				if peer.client_ip:
-					peer_db_info[peer.public_key]["last_client_ip"] = peer.client_ip
-				if peer.interface:
-					peer_db_info[peer.public_key]["interface"] = peer.interface
-		else:
-			_log.debug("wg show all dump failed (code=%d): %s", code, stderr.strip() if stderr else "no output")
-
-		# 2. Build location list from all peers with known IPs (live + DB)
-		for pub_key, info in peer_db_info.items():
-			ip_str = info.get("last_client_ip")
-			if not ip_str:
-				_log.debug("PEER_LOC skip %s: no IP", pub_key[:8])
+	# 1. Parse wg show all dump for live stats
+	code, stdout, stderr = await run_wg_command("wg", "show", "all", "dump")
+	if code == 0:
+		peers = parse_wg_show_dump(stdout)
+		for peer in peers:
+			if peer.public_key not in peer_db_info:
 				continue
+			# Update DB info with live data
+			if peer.handshake_ts > peer_db_info[peer.public_key].get("last_handshake_at", 0):
+				peer_db_info[peer.public_key]["last_handshake_at"] = peer.handshake_ts
+			if peer.client_ip:
+				peer_db_info[peer.public_key]["last_client_ip"] = peer.client_ip
+			if peer.interface:
+				peer_db_info[peer.public_key]["interface"] = peer.interface
+	else:
+		_log.debug(
+			"wg show all dump failed (code=%d): %s",
+			code,
+			stderr.strip() if stderr else "no output",
+		)
 
+	# 2. Collect unique IPs that need resolution (skip peers with no IP / handshake)
+	ip_to_peers: dict[str, list[tuple[str, dict]]] = {}
+	for pub_key, info in peer_db_info.items():
+		ip_str = info.get("last_client_ip")
+		if not ip_str:
+			_log.debug("PEER_LOC skip %s: no IP", pub_key[:8])
+			continue
+		if not (info.get("last_handshake_at") or 0):
+			_log.debug("PEER_LOC skip %s: no handshake", pub_key[:8])
+			continue
+		ip_to_peers.setdefault(ip_str, []).append((pub_key, info))
+
+	# 3. Resolve all unique IPs concurrently (one threadpool call per unique IP)
+	async def _lookup(ip: str) -> tuple[str, dict | None]:
+		return ip, await run_in_threadpool(lookup_ip, ip)
+
+	geo_results: dict[str, dict | None] = dict(
+		await asyncio.gather(*[_lookup(ip) for ip in ip_to_peers])
+	)
+
+	# 4. Build location entries — one entry per unique IP, aggregating all peers at that IP
+	locations: list[dict] = []
+	for ip_str, peers_at_ip in ip_to_peers.items():
+		geo_info = geo_results.get(ip_str)
+		if not geo_info:
+			_log.debug("PEER_LOC skip ip=%s: no geo data", ip_str)
+			continue
+
+		connected = False
+		names: list[str] = []
+		for pub_key, info in peers_at_ip:
 			handshake_ts = info.get("last_handshake_at") or 0
-			if handshake_ts == 0:
-				_log.debug("PEER_LOC skip %s: no handshake", pub_key[:8])
-				continue  # No handshake ever
+			if (now - handshake_ts) < _CONNECTED_THRESHOLD_S:
+				connected = True
+			names.append(info.get("name", pub_key[:8]))
 
-			connected = (now - handshake_ts) < connected_threshold
-			peer_name = info.get("name", pub_key[:8])
+		first_info = peers_at_ip[0][1]
+		_log.debug(
+			"PEER_LOC add ip=%s lat=%s lon=%s peers=%d",
+			ip_str, geo_info.get("lat"), geo_info.get("lon"), len(names),
+		)
+		locations.append({
+			"lat": geo_info.get("lat"),
+			"lon": geo_info.get("lon"),
+			"city": geo_info.get("city"),
+			"country": geo_info.get("country"),
+			"asn": geo_info.get("asn"),
+			"as_org": geo_info.get("as_org"),
+			"ip": ip_str,
+			"name": names[0],
+			"names": names,
+			"interface": first_info.get("interface"),
+			"connected": connected,
+			"count": len(names),
+		})
 
-			if ip_str in seen_ips:
-				seen_ips[ip_str]["count"] += 1
-				seen_ips[ip_str]["names"].append(peer_name)
-				# Upgrade to connected if any peer from this IP is connected
-				if connected:
-					seen_ips[ip_str]["connected"] = True
-				continue
-
-			# Lookup GeoIP data (async via threadpool for disk I/O)
-			geo_info = await run_in_threadpool(lookup_ip, ip_str)
-			if geo_info:
-				_log.debug("PEER_LOC add %s ip=%s lat=%s lon=%s", pub_key[:8], ip_str, geo_info.get("lat"), geo_info.get("lon"))
-				seen_ips[ip_str] = {
-					"lat": geo_info.get("lat"),
-					"lon": geo_info.get("lon"),
-					"city": geo_info.get("city"),
-					"country": geo_info.get("country"),
-					"asn": geo_info.get("asn"),
-					"as_org": geo_info.get("as_org"),
-					"ip": ip_str,
-					"name": peer_name,  # Primary peer name
-					"names": [peer_name],  # List of all peer names at this IP
-					"interface": info.get("interface"),
-					"connected": connected,
-					"count": 1,
-				}
-			else:
-				_log.debug("PEER_LOC skip %s ip=%s: no geo data", pub_key[:8], ip_str)
-
-		_log.info("PEER_LOC returning %d location(s)", len(seen_ips))
-		locations = list(seen_ips.values())
-		return ok_response(data={"locations": locations})
-	except Exception:
-		_log.exception("Failed to get peer locations")
-		return ok_response(data={"locations": []})
+	_log.info("PEER_LOC returning %d location(s)", len(locations))
+	return ok_response(data={"locations": locations})
 
 
 @router.get("/stats/peers-enriched")
@@ -169,7 +178,7 @@ async def get_peers_enriched(
 			"endpoint_ip": row["last_client_ip"],
 			"endpoint": None,
 			"latest_handshake": row["last_handshake_at"],
-			"_db_handshake_at": row["last_handshake_at"] or 0,  # For comparison in update check
+			"_db_handshake_at": int(row["last_handshake_at"] or 0),  # For comparison in update check
 			"connected": False,
 			"transfer_rx": 0,
 			"transfer_tx": 0,
@@ -182,7 +191,7 @@ async def get_peers_enriched(
 
 	# 2. Parse wg show all dump for live stats
 	now = time.time()
-	threshold = 180  # 3 min – consider "connected"
+	threshold = _CONNECTED_THRESHOLD_S
 	db_updates: list[tuple[str, int, str]] = []  # (client_ip, handshake_at, pub_key)
 
 	try:
@@ -220,7 +229,11 @@ async def get_peers_enriched(
 							peer["_db_handshake_at"] = wg_peer.handshake_ts
 							if not peer.get("endpoint_ip"):
 								peer["endpoint_ip"] = persist_ip
-							_log.debug("PEER_SEEN %s ip=%s handshake=%d (stored=%d)", wg_peer.public_key[:8], persist_ip, wg_peer.handshake_ts, stored_hs)
+						_log.debug(
+							"PEER_SEEN %s ip=%s handshake=%d (stored=%d)",
+							wg_peer.public_key[:8], persist_ip,
+							wg_peer.handshake_ts, stored_hs,
+						)
 				elif wg_peer.client_ip:
 					# Endpoint present but no handshake – still use live IP
 					peer["endpoint_ip"] = wg_peer.client_ip
@@ -250,7 +263,13 @@ async def get_peers_enriched(
 			last_rx = stored["last_wg_rx"]
 			last_tx = stored["last_wg_tx"]
 
-			# Detect restart: current wg counter < last observed counter
+			# Detect WireGuard restart: if the current counter is lower than the
+			# last observed value, WG reset its counters to 0 and we add the
+			# previous session's total to the accumulator.
+			# NOTE: if both WG *and* the app restart simultaneously, last_rx/
+			# last_tx are also 0, so that session's traffic is silently lost.
+			# This is an inherent limitation of counter-based accumulation
+			# without persistent session markers.
 			if wg_rx < last_rx:
 				cum_rx += last_rx  # Add the previous session's total
 			if wg_tx < last_tx:
@@ -270,12 +289,16 @@ async def get_peers_enriched(
 	except Exception:
 		_log.warning("Failed to update cumulative transfer", exc_info=True)
 
-	# 3. GeoIP + ASN enrichment for peers with known client IPs (async via threadpool)
+	# 3. GeoIP + ASN enrichment — resolve all unique IPs concurrently
+	async def _lookup_ip(ip: str) -> tuple[str, dict | None]:
+		return ip, await run_in_threadpool(lookup_ip, ip)
+
+	unique_ips = {p["endpoint_ip"] for p in peers_by_key.values() if p.get("endpoint_ip")}
+	geo_map: dict[str, dict | None] = dict(
+		await asyncio.gather(*[_lookup_ip(ip) for ip in unique_ips])
+	)
 	for peer in peers_by_key.values():
-		ip_str = peer.get("endpoint_ip")
-		if not ip_str:
-			continue
-		info = await run_in_threadpool(lookup_ip, ip_str)
+		info = geo_map.get(peer.get("endpoint_ip"))  # type: ignore[arg-type]
 		if info:
 			peer["country"] = info.get("country")
 			peer["city"] = info.get("city")
@@ -318,7 +341,6 @@ async def reset_tsdb(
 	deleted = await run_in_threadpool(tsdb.reset_all, tsdb_dir)
 	return ok_response(
 		message=f"TSDB reset: {deleted} peer directories deleted",
-		deleted=deleted,
 		data={"deleted": deleted},
 	)
 
@@ -333,7 +355,4 @@ async def run_tsdb_maintenance(
 	return ok_response(
 		message="TSDB maintenance completed",
 		data=stats,
-		series=stats.get("series", 0),
-		rotated=stats.get("rotated", 0),
-		pruned=stats.get("pruned", 0),
 	)

@@ -28,7 +28,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
 	This defines the complete schema for fresh installs.
 	"""
-	with transaction(conn):
+	with transaction(conn, immediate=True):
 		# Users table
 		conn.execute(
 			"""
@@ -76,6 +76,21 @@ def init_schema(conn: sqlite3.Connection) -> None:
 			"""
 		)
 
+		# Factory defaults (insert once; preserve user overrides)
+		now = utcnow()
+		conn.executemany(
+			"""
+			INSERT OR IGNORE INTO settings (key, value, updated_at)
+			VALUES (?, ?, ?)
+			""",
+			[
+				("gui_port", "8000", now),
+				("wg_mtu", "1420", now),
+				("wg_persistent_keepalive", "25", now),
+				("traffic_analysis_enabled", "0", now),
+			],
+		)
+
 		# Login attempts (for brute-force protection)
 		conn.execute(
 			"""
@@ -108,7 +123,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				endpoint TEXT,
 				interface TEXT NOT NULL DEFAULT 'wg0',
 				is_enabled INTEGER NOT NULL DEFAULT 1,
-				use_adblocker INTEGER NOT NULL DEFAULT 1,
+					use_adblocker INTEGER NOT NULL DEFAULT 1,
 				blocklist_ids TEXT,
 				last_client_ip TEXT,
 				last_handshake_at INTEGER,
@@ -186,25 +201,22 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
 
 def ensure_default_admin(conn: sqlite3.Connection) -> None:
-	"""Create a default admin user if no users exist."""
-	now = utcnow()
-	default_password = "admin"  # Should be changed on first login
+	"""Create a default admin user if no users exist.
+
+	Uses ``transaction(immediate=True)`` to safely serialise against
+	concurrent workers without standalone BEGIN/commit/rollback calls.
+	"""
 	try:
-		conn.execute("BEGIN IMMEDIATE")
-		cur = conn.execute("SELECT COUNT(*) FROM users")
-		count = cur.fetchone()[0]
-		if count == 0:
-			conn.execute(
-				"""
-				INSERT INTO users (username, password_hash, is_admin, is_active, created_at)
-				VALUES (?, ?, 1, 1, ?)
-				""",
-				("admin", hash_password(default_password), now),
-			)
-			_log.warning("Created default admin user (username: admin, password: admin) - CHANGE THIS!")
-		conn.commit()
+		with transaction(conn, immediate=True):
+			count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+			if count == 0:
+				conn.execute(
+					"""
+					INSERT INTO users (username, password_hash, is_admin, is_active, created_at)
+					VALUES (?, ?, 1, 1, ?)
+					""",
+					("admin", hash_password("admin"), utcnow()),
+				)
+				_log.warning("Created default admin user (username: admin, password: admin) - CHANGE THIS!")
 	except sqlite3.IntegrityError:
-		conn.rollback()  # another worker beat us
-	except Exception:
-		conn.rollback()
-		raise
+		pass  # another worker beat us — row already exists

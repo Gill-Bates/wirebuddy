@@ -93,8 +93,8 @@ def load_config() -> Config:
 	project_root = Path(__file__).resolve().parents[2]
 	base_dir = project_root
 	
-	# Data path
-	data_dir = Path(os.getenv("WIREBUDDY_DATA_DIR", str(project_root / "data"))).resolve()
+	# Data path (always relative to project root)
+	data_dir = (project_root / "data").resolve()
 	db_path = (data_dir / "wirebuddy.db").resolve()
 	tsdb_dir = (data_dir / "tsdb").resolve()
 	dns_dir = (data_dir / "dns").resolve()

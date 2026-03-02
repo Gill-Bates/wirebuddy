@@ -266,7 +266,9 @@ def change_password(
         try:
             parsed = PasswordChangeRequest.model_validate(payload)
         except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.errors()) from exc
+            # Extract just the message strings to avoid non-serializable ValueError objects
+            messages = [e.get("msg", str(e)) for e in exc.errors()]
+            raise HTTPException(status_code=422, detail="; ".join(messages)) from exc
 
         if not verify_password(parsed.current_password, user["password_hash"]):
             raise HTTPException(status_code=422, detail="Current password incorrect")
@@ -275,7 +277,9 @@ def change_password(
         try:
             parsed = AdminPasswordResetRequest.model_validate(payload)
         except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.errors()) from exc
+            # Extract just the message strings to avoid non-serializable ValueError objects
+            messages = [e.get("msg", str(e)) for e in exc.errors()]
+            raise HTTPException(status_code=422, detail="; ".join(messages)) from exc
         new_password = parsed.new_password
     
     result = db_update_user(conn, user_id, password=new_password)

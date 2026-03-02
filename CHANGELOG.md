@@ -1,3 +1,23 @@
+## [1.2.1] - 2026-03-02
+
+- ``New`` Passwords for users now require a minimum level of complexity
+- ``New`` The DNS ad blocker can now be enabled and disabled globally
+- ``New`` A new "Traffic" section now bundles all network activities in an overview
+- ``New`` Completely revised migration framework for the database
+- ``Fix`` The /status page now reliably detects an existing Wireguard connection
+- ``Fix`` Various stability improvements in the backend engine
+- ``Fix`` Disabling OTP for a user had no effect
+- ``Fix`` Due to a regex validation error, no new user could be created
+- ``Fix`` The block lists did not update automatically every 24 hour
+- ``Fix`` Creating another Wireguard interface used the same IP range
+- ``Fix`` When a peer is deleted, the time series data is now also deleted
+- ``Fix`` Application made more resilient when started with an incorrect encryption key
+- ``Fix`` And as always: Several design improvements to make the front end more mobile-friendly
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.2.0] - 2026-02-26
 
 - ``New`` Introducing MFA to provide an additional layer of access restriction
@@ -6,31 +26,28 @@
 - ``New`` A new status page now allows you to check the configuration on the client side
 - ``New`` You can now define your own filter rules for each client
 - ``Fix`` The ``bleach`` package has been replaced by ``nh3``
-- ``Fix`` And as always: Several design improvements to make the front end more mobile-friendly
 - ``Fix`` The creation of new peers also automatically created a new PSK
 - ``Fix`` The blocklists are no longer downloaded again each time the container is restarted
-
-<details markdown="1">
-<summary>Previous versions...</summary>
+- ``Fix`` And as always: Several design improvements to make the front end more mobile-friendly
 
 ## [1.1.1] - 2026-02-24
 
 - ``New`` When Wirebuddy is running in bridge mode, an alternative port can be defined for the Wireguard configuration
-- ``Fix`` Several design improvements to make the front end more mobile-friendly
+- ``Fix`` And as always: Several design improvements to make the front end more mobile-friendly
 
 ## [1.1.0] - 2026-02-23
 
 - ``New`` Switching from HTTP authentication to cookie authentication
 - ``New`` You can now add your own allow and block lists to the DNS
 - ``New`` DNS logs can now be deleted
-- ``Fix`` Several design improvements to make the front end more mobile-friendly
+- ``Fix`` And as always: Several design improvements to make the front end more mobile-friendly
 
 ## [1.0.2] - 2026-02-22
 
 - ``New`` Update Dependencies (``fastapi``)
 - ``Fix`` Changing the password had no effect
 - ``Fix`` Unbound crashed unexpectedly when the blocklist was updated
-- ``Fix`` Several Design improvements in the GUI
+- ``Fix`` And as always: Several design improvements to make the front end more mobile-friendly
 
 ## [1.0.1] - 2026-02-20
 
@@ -39,7 +56,7 @@
 - ``Fix`` The pie charts under DNS displayed incorrect values due to a race condition
 - ``Fix`` In the front end, each block list was displayed with the same size (7 MB)
 - ``Fix`` Various security hardening measures (e.g. brute force, IP spoofing)
-- ``Fix`` Several Design issues in the GUI
+- ``Fix`` And as always: Several design improvements to make the front end more mobile-friendly
 
 ## [1.0.0] - 2026-02-19
 - Project initialization

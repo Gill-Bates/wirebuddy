@@ -108,10 +108,17 @@ def _bucket_counter_delta(
     return dict(sorted(buckets.items()))
 
 
+# Default target data points for different display sizes
+DEFAULT_MAX_POINTS = 60  # Desktop
+MIN_MAX_POINTS = 20  # Minimum allowed
+MAX_MAX_POINTS = 200  # Maximum allowed (prevents DoS)
+
+
 def _compute_traffic_stats(
     conn: sqlite3.Connection,
     tsdb_dir: Path,
     hours: int,
+    max_points: int = DEFAULT_MAX_POINTS,
 ) -> dict:
     """Compute traffic statistics (blocking operation for threadpool).
 
@@ -119,6 +126,7 @@ def _compute_traffic_stats(
         conn: Database connection (check_same_thread=False, safe for threadpool).
         tsdb_dir: TSDB directory path.
         hours: Number of hours of history to include (pre-validated 1-8760).
+        max_points: Target number of data points (buckets) to return.
 
     Returns:
         Dict with traffic data ready for JSON response.
@@ -127,8 +135,10 @@ def _compute_traffic_stats(
     query_since = since - timedelta(hours=1)
     resolved_range = _HOURS_TO_RANGE.get(hours, f"{hours}h")
 
-    # Determine bucket size (aim for ~60 data points)
-    bucket_seconds = max((hours * 3600) // 60, 60)
+    # Determine bucket size based on max_points (responsive design support)
+    # Clamp max_points to valid range
+    target_points = max(MIN_MAX_POINTS, min(max_points, MAX_MAX_POINTS))
+    bucket_seconds = max((hours * 3600) // target_points, 60)
 
     # Fetch all peers (blocking DB query)
     all_peers = list(get_all_peers(conn))
@@ -230,6 +240,7 @@ def _compute_traffic_stats(
 async def get_traffic_stats(
     hours: int = Query(24, ge=1, le=8760, description="Number of hours of history (1-8760)"),
     range_key: str | None = Query(None, pattern="^(6h|24h|3d|7d|30d|90d|1y)$"),
+    max_points: int = Query(DEFAULT_MAX_POINTS, ge=MIN_MAX_POINTS, le=MAX_MAX_POINTS, description="Target number of data points (20-200)"),
     conn: sqlite3.Connection = Depends(get_conn),
     tsdb_dir: Path = Depends(get_tsdb_dir),
     _: sqlite3.Row = Depends(require_admin),
@@ -241,6 +252,7 @@ async def get_traffic_stats(
     Args:
         hours: Number of hours of history (1-8760, validated at API boundary).
         range_key: Preset time range (6h, 24h, 3d, 7d, 30d, 90d, 1y). Overrides hours if provided.
+        max_points: Target number of data points/buckets (20-200). Lower values for mobile displays.
 
     Returns:
         Traffic statistics with display-ready values and unit metadata.
@@ -250,7 +262,7 @@ async def get_traffic_stats(
         hours = TRAFFIC_RANGE_TO_HOURS[range_key]
 
     # Offload blocking I/O to threadpool (conn uses check_same_thread=False)
-    data = await run_in_threadpool(_compute_traffic_stats, conn, tsdb_dir, hours)
+    data = await run_in_threadpool(_compute_traffic_stats, conn, tsdb_dir, hours, max_points)
 
     return ok_response(data=data)
 

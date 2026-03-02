@@ -174,16 +174,16 @@ def check_for_updates(force: bool = False) -> UpdateInfo:
 		_log.warning("Update check failed: %s", e)
 	except httpx.TimeoutException:
 		result["error"] = "Connection timeout"
-		_log.warning("Update check timed out after %.1fs", _TIMEOUT)
+		_log.debug("Update check timed out after %.1fs", _TIMEOUT)
 	except httpx.RequestError as e:
 		result["error"] = f"Network error: {e}"
-		_log.warning("Update check failed: %s", e)
+		_log.debug("Update check failed (network error): %s", e)
 	except json.JSONDecodeError as e:
 		result["error"] = f"Invalid response: {e}"
 		_log.warning("Update check failed: %s", e)
 	except Exception as e:
 		result["error"] = str(e)
-		_log.warning("Update check failed: %s", e)
+		_log.debug("Update check failed: %s", e)
 	
 	_UPDATE_CHECK_CACHE = result
 	_UPDATE_CHECK_TIME = time.time()

@@ -24,7 +24,7 @@ __all__ = ["run_dns_ingestion"]
 async def run_dns_ingestion(
 	log_path: Path,
 	offset_path: Path,
-	tsdb_dir: Path,
+	dns_dir: Path,
 	blocked_domains_func: Callable[[], set[str]],
 	retention_days_func: Callable[[], int] | None = None,
 ) -> None:
@@ -33,7 +33,7 @@ async def run_dns_ingestion(
 	Args:
 		log_path: Unbound queries.log path
 		offset_path: Persistent offset file
-		tsdb_dir: TSDB base directory
+		dns_dir: DNS base directory
 		blocked_domains_func: Callable that returns set of blocked domains
 		retention_days_func: Callable that returns DNS log retention days
 	"""
@@ -42,7 +42,7 @@ async def run_dns_ingestion(
 	stop_event = asyncio.Event()
 	
 	tailer = UnboundLogTailer(log_path, offset_tracker, stop_event)
-	writer = DnsTsdbWriter(tsdb_dir, blocked_domains_func, retention_days_func, offset_tracker, stop_event)
+	writer = DnsTsdbWriter(dns_dir, blocked_domains_func, retention_days_func, offset_tracker, stop_event)
 
 	tailer_task = asyncio.create_task(tailer.start(q), name="dns-ingest-tailer")
 	writer_task = asyncio.create_task(writer.run(q), name="dns-ingest-writer")

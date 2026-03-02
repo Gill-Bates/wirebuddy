@@ -11,6 +11,9 @@ from __future__ import annotations
 from ..db.sqlite_interfaces import (
 	list_interfaces,
 )
+from ..db.sqlite_peers import (
+	get_all_peers,
+)
 from ..db.sqlite_settings import (
 	DNS_LOG_RETENTION_OPTIONS,
 	get_dns_blocklist_enabled,
@@ -52,9 +55,14 @@ from ..dns.custom_rules import (
 	canonical_rule_text,
 	parse_rules as parse_custom_rules,
 )
-from ..utils.deps import get_conn, get_tsdb_dir
+from ..utils.deps import get_conn, get_dns_dir
 from .auth import get_current_user, require_admin
 from .response import ok_response
+from .wireguard_utils import (
+	get_enabled_blocklist_ids,
+	filter_peer_blocklist_ids,
+	parse_blocklist_ids,
+)
 
 
 _log = logging.getLogger(__name__)
@@ -94,6 +102,35 @@ def _format_tsdb_timestamp(raw: str) -> str:
 	if dt is None:
 		return ""
 	return dt.replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _regenerate_peer_tags_for_blocklist(conn: sqlite3.Connection) -> None:
+	"""Regenerate Unbound peer-tags.conf after blocklist enable/disable change.
+	
+	This ensures that blocking takes effect immediately when the global
+	blocklist toggle is changed, rather than requiring a peer edit.
+	"""
+	enabled_blocklist_ids = get_enabled_blocklist_ids(conn)
+	peers = get_all_peers(conn)
+	peer_list = []
+	
+	for row in peers:
+		blocklist_ids = parse_blocklist_ids(row["blocklist_ids"])
+		# Resolve effective blocklists
+		if blocklist_ids is None:
+			effective_ids = list(enabled_blocklist_ids)
+		else:
+			filtered = filter_peer_blocklist_ids(blocklist_ids, enabled_blocklist_ids)
+			effective_ids = filtered or []
+		
+		peer_list.append({
+			"peer_address": row["peer_address"],
+			"use_adblocker": bool(row["use_adblocker"]),
+			"blocklist_ids": effective_ids,
+		})
+	
+	unbound.write_peer_tags(peer_list)
+	_log.debug("DNS peer tags regenerated for %d peers", len(peer_list))
 
 
 router = APIRouter(tags=["dns"])
@@ -309,11 +346,11 @@ class CustomRuleActionRequest(BaseModel):
 
 @router.get("/status")
 async def dns_status(
-	tsdb_dir: Path = Depends(get_tsdb_dir),
+	dns_dir: Path = Depends(get_dns_dir),
 	_: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Get DNS resolver status and statistics."""
-	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, tsdb_dir, 50000)
+	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, dns_dir, 50000)
 	all_domains: set[str] = set()
 	all_clients: set[str] = set()
 	blocked_count = 0
@@ -411,7 +448,7 @@ async def dns_selftest(_: sqlite3.Row = Depends(get_current_user)):
 async def dns_trend(
 	hours: int = 24,
 	bucket_minutes: int = 60,
-	tsdb_dir: Path = Depends(get_tsdb_dir),
+	dns_dir: Path = Depends(get_dns_dir),
 	_: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Return DNS total/blocked trend buckets for charts.
@@ -431,7 +468,7 @@ async def dns_trend(
 		return datetime.fromtimestamp(bucket_epoch_minutes * 60, tz=timezone.utc)
 
 	# Read a large tail window from TSDB so 30-day buckets remain complete.
-	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, tsdb_dir, 100000)
+	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, dns_dir, 100000)
 	buckets: dict[datetime, dict[str, int]] = {}
 
 	for q in queries:
@@ -490,6 +527,13 @@ async def dns_start(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Start the DNS resolver."""
+	# Check if any WireGuard interfaces exist (Unbound needs interface IPs to bind)
+	interfaces = list_interfaces(conn)
+	if not interfaces:
+		raise HTTPException(
+			status_code=400,
+			detail="Cannot start DNS: no WireGuard interfaces configured. Create an interface first."
+		)
 	try:
 		ok, msg = await unbound.start()
 	except FileNotFoundError:
@@ -562,7 +606,7 @@ async def get_dns_config(
 async def update_dns_config(
 	payload: DnsConfigUpdate,
 	conn: sqlite3.Connection = Depends(get_conn),
-	tsdb_dir: Path = Depends(get_tsdb_dir),
+	dns_dir: Path = Depends(get_dns_dir),
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Update DNS resolver configuration and reload.
@@ -598,6 +642,8 @@ async def update_dns_config(
 		if payload.enable_blocklist is not None:
 			enable_blocklist = payload.enable_blocklist
 			set_dns_blocklist_enabled(conn, enable_blocklist)
+			# Regenerate peer tags so blocking takes effect immediately
+			_regenerate_peer_tags_for_blocklist(conn)
 		if payload.upstream_dns is not None:
 			upstream_dns = payload.upstream_dns
 			set_dns_upstream_servers(conn, upstream_dns)
@@ -612,18 +658,31 @@ async def update_dns_config(
 			set_dns_query_logging_enabled(conn, enable_logging)
 			retention_result = await asyncio.to_thread(
 				dns_ingestion.enforce_dns_log_retention,
-				tsdb_dir,
+				dns_dir,
 				retention_days,
 			)
 
 		# Collect IPv6 gateway addresses from all interfaces for dual-stack DNS
+		# Bind ONLY to WireGuard interface IPs to avoid conflicts with host DNS
+		# when running in Docker host network mode.
 		interfaces = list_interfaces(conn)
+		ipv4_gateways: list[str] = []
+		for iface in interfaces:
+			try:
+				addr4 = iface["address"]
+			except (KeyError, TypeError, IndexError):
+				addr4 = getattr(iface, "address", None)
+			if addr4:
+				ip4 = str(addr4).split("/")[0]
+				if ip4 not in ipv4_gateways:
+					ipv4_gateways.append(ip4)
 		ipv6_gateways = unbound.get_interface_ipv6_gateways(interfaces)
 		unbound.write_config(
 			enable_logging=enable_logging,
 			enable_blocklist=enable_blocklist,
 			upstream_dns=upstream_dns,
 			enable_dnssec=dnssec_enabled,
+			listen_addrs_ipv4=ipv4_gateways,
 			listen_addrs_ipv6=ipv6_gateways if ipv6_gateways else None,
 		)
 		ok, msg = await unbound.reload_config()
@@ -1017,7 +1076,7 @@ async def add_custom_rule_action(
 @router.get("/logs")
 async def dns_logs(
 	lines: int = 200,
-	tsdb_dir: Path = Depends(get_tsdb_dir),
+	dns_dir: Path = Depends(get_dns_dir),
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Get recent DNS query log entries (admin only).
@@ -1025,7 +1084,7 @@ async def dns_logs(
 	Returns the most recent queries with blocked status from TSDB.
 	"""
 	lines = min(max(lines, 10), 5000)
-	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, tsdb_dir, lines)
+	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, dns_dir, lines)
 
 	data = {
 		"queries": [
@@ -1046,11 +1105,11 @@ async def dns_logs(
 @router.get("/top-domains")
 async def top_domains(
 	limit: int = 20,
-	tsdb_dir: Path = Depends(get_tsdb_dir),
+	dns_dir: Path = Depends(get_dns_dir),
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Get top queried domains (admin only)."""
-	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, tsdb_dir, 50000)
+	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, dns_dir, 50000)
 	domain_counts: dict[str, int] = {}
 	blocked_counts: dict[str, int] = {}
 
@@ -1238,18 +1297,18 @@ async def test_upstream_dns(
 
 @router.delete("/logs")
 async def delete_dns_logs(
-	tsdb_dir: Path = Depends(get_tsdb_dir),
+	dns_dir: Path = Depends(get_dns_dir),
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Delete all DNS query log data (admin only)."""
 	import shutil
 
 	def _purge() -> int:
-		dns_dir = tsdb_dir / "dns_queries"
-		if not dns_dir.exists():
+		queries_dir = dns_dir / "queries"
+		if not queries_dir.exists():
 			return 0
-		count = sum(1 for f in dns_dir.glob("*.jsonl"))
-		shutil.rmtree(dns_dir)
+		count = sum(1 for f in queries_dir.glob("*.jsonl"))
+		shutil.rmtree(queries_dir)
 		_log.info("DNS_LOGS_PURGE deleted %d log files", count)
 		return count
 

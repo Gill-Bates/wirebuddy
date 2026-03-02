@@ -41,12 +41,53 @@ cp .env-example settings.env
 docker compose up -d
 ```
 
-The default compose file expects an external Docker network (`cloudnet`) and
-does not expose port 8000. To access the UI directly, add `8000:8000` under
-`ports` or place the container behind your reverse proxy.
+WireBuddy requires `network_mode: host` to access the host's network stack
+for WireGuard interface management and conntrack statistics. The web UI
+listens on port **8000**. Place the container behind a reverse proxy (Caddy,
+nginx, Traefik) or access it directly.
+
+**Caddy example:**
+```caddyfile
+vpn.example.com {
+    reverse_proxy localhost:8000
+}
+```
 
 > **Default credentials:** `admin` / `admin`
 > ⚠️ **Change the default password immediately after first login!**
+
+#### Host Prerequisites
+
+**IP Forwarding** must be enabled on the Docker host (required for WireGuard routing):
+
+```bash
+sudo sysctl -w net.ipv4.conf.all.forwarding=1
+sudo sysctl -w net.ipv6.conf.all.forwarding=1
+
+# Make persistent
+cat <<EOF | sudo tee /etc/sysctl.d/99-wireguard.conf
+net.ipv4.conf.all.forwarding = 1
+net.ipv6.conf.all.forwarding = 1
+EOF
+```
+
+**Traffic by Country** requires conntrack byte accounting:
+
+```bash
+# Enable byte accounting — takes effect immediately
+sudo sysctl -w net.netfilter.nf_conntrack_acct=1
+
+# Make persistent
+echo "net.netfilter.nf_conntrack_acct = 1" | sudo tee -a /etc/sysctl.d/99-wireguard.conf
+```
+
+**Verify:**
+```bash
+cat /proc/sys/net/netfilter/nf_conntrack_acct
+# → 1
+```
+
+Without this, the country traffic chart will show no data. WireBuddy logs a warning once when accounting is disabled, and automatically resumes sampling as soon as the value is set — no container restart needed.
 
 ### Screenshots
 
@@ -91,8 +132,9 @@ Environment variables (via `settings.env` or Docker env):
 | Variable | Default | Description |
 |---|---|---|
 | `WIREBUDDY_SECRET_KEY` | *(required)* | Encryption key for secrets & sessions |
-| `WIREBUDDY_DATA_DIR` | `/data` | Persistent data directory |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
+
+> **Note:** Data is stored in the `data/` directory relative to the application root. In Docker, mount your volume to `/app/data`.
 
 ### Internal Status Page (`/status`)
 

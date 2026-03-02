@@ -41,11 +41,11 @@ def _extract_day_prefix(name: str) -> date | None:
 		return None
 
 
-def enforce_dns_log_retention(tsdb_dir: Path, retention_days: int) -> dict[str, int]:
-	"""Apply DNS query retention by deleting stale day files from TSDB."""
-	dns_dir = tsdb_dir / "dns_queries"
+def enforce_dns_log_retention(dns_dir: Path, retention_days: int) -> dict[str, int]:
+	"""Apply DNS query retention by deleting stale day files from DNS logs."""
+	queries_dir = dns_dir / "queries"
 	retention_days = normalize_dns_log_retention_days(retention_days)
-	if not dns_dir.exists():
+	if not queries_dir.exists():
 		return {"deleted_files": 0, "remaining_files": 0}
 
 	cutoff_day = None
@@ -54,7 +54,7 @@ def enforce_dns_log_retention(tsdb_dir: Path, retention_days: int) -> dict[str, 
 
 	deleted = 0
 	remaining = 0
-	for path in sorted(dns_dir.iterdir()):
+	for path in sorted(queries_dir.iterdir()):
 		if not path.is_file():
 			continue
 		if path.suffix != ".jsonl":

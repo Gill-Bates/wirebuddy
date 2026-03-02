@@ -109,6 +109,8 @@
                     <span class="badge text-bg-success">{{ check.label }}</span>
                     {% elif check.state == 'error' %}
                     <span class="badge text-bg-danger">{{ check.label }}</span>
+                    {% elif check.state == 'info' %}
+                    <span class="badge text-bg-secondary">{{ check.label }}</span>
                     {% else %}
                     <span class="badge text-bg-warning text-dark">{{ check.label }}</span>
                     {% endif %}

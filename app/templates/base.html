@@ -8,6 +8,8 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <title>{% block title %}WireBuddy{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="/static/img/wirebuddy_1c.svg">
+    <!-- Preload critical font for faster icon rendering -->
+    <link rel="preload" href="/static/vendor/fonts/MaterialIcons.ttf" as="font" type="font/ttf" crossorigin>
     <!-- Theme Script in <head> prevents FOUC -->
     <script src="/static/js/theme.js"></script>
     <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
@@ -16,13 +18,13 @@
     <style>
         body.wb-reconnecting .main-content {
             opacity: 0.35;
-            filter: blur(8px) saturate(0.8);
+            filter: blur(4px) saturate(0.9);
             pointer-events: none;
             transition: opacity 0.2s ease, filter 0.2s ease;
         }
 
         body.wb-reconnecting .sidebar {
-            filter: blur(8px);
+            filter: blur(4px);
             transition: filter 0.3s ease;
         }
 
@@ -31,17 +33,26 @@
         }
 
         body.wb-onboarding .main-content {
-            filter: blur(8px);
-            transition: filter 0.3s ease;
+            opacity: 0.4;
+            filter: blur(3px);
+            transition: opacity 0.3s ease, filter 0.3s ease;
         }
 
         body.wb-onboarding .sidebar {
-            filter: blur(8px);
-            transition: filter 0.3s ease;
+            opacity: 0.4;
+            filter: blur(3px);
+            transition: opacity 0.3s ease, filter 0.3s ease;
         }
 
         body.wb-onboarding .modal-backdrop.show {
             background-color: rgba(15, 23, 42, 0.5) !important;
+        }
+
+        /* Blur background when any modal is open via backdrop-filter */
+        .modal-backdrop.show {
+            background-color: rgba(15, 23, 42, 0.5) !important;
+            -webkit-backdrop-filter: blur(4px) saturate(0.9);
+            backdrop-filter: blur(4px) saturate(0.9);
         }
 
         /* Global spinner styling */
@@ -96,6 +107,15 @@
 </head>
 
 <body>
+    <!-- Key Mismatch Warning Banner -->
+    <div id="keyMismatchBanner" class="alert alert-danger mb-0 rounded-0 py-2 d-none" role="alert" style="position: sticky; top: 0; z-index: 9999; border-left: 0; border-right: 0; border-top: 0;">
+        <div class="container-fluid d-flex align-items-center justify-content-center gap-2">
+            <span class="material-icons text-danger">error</span>
+            <strong>Critical:</strong> WIREBUDDY_SECRET_KEY does not match the database encryption key. 
+            WireGuard configurations cannot be decrypted. Please restart with the correct key.
+        </div>
+    </div>
+
     <!-- Navbar -->
     <nav class="navbar navbar-expand-lg navbar-dark">
         <div class="container-fluid">
@@ -103,30 +123,33 @@
                 <img src="/static/img/wirebuddy_1c.svg" alt="WireBuddy" class="navbar-logo">
             </a>
             <!-- Always-visible right-side actions (outside collapse) -->
-            {% if user %}
-            <div class="d-flex align-items-center gap-2 navbar-actions ms-auto me-2 me-lg-0 order-lg-last">
-                <span class="text-white navbar-user-label d-none d-lg-inline">{{ user['username'] }}</span>
-                <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn" id="themeToggle"
-                    aria-label="Toggle theme">
-                    <span class="material-icons" id="theme-icon">dark_mode</span>
-                </button>
-                <button class="btn btn-sm btn-outline-light d-inline-flex align-items-center navbar-logout-btn"
-                    id="logoutBtn" title="Logout" aria-label="Logout">
-                    <span class="material-icons navbar-logout-icon">logout</span>
-                    <span class="navbar-logout-label d-none d-lg-inline">Logout</span>
+            <div class="d-flex align-items-center gap-2 ms-auto order-1 order-lg-last navbar-controls">
+                {% if user %}
+                <div class="d-flex align-items-center gap-2 navbar-actions" aria-label="User actions">
+                    <span class="text-white navbar-user-label d-none d-lg-inline">{{ user['username'] }}</span>
+                    <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn" id="themeToggle"
+                        aria-label="Toggle theme">
+                        <span class="material-icons" id="theme-icon">dark_mode</span>
+                    </button>
+                    <button class="btn btn-sm btn-outline-light d-inline-flex align-items-center navbar-logout-btn"
+                        id="logoutBtn" title="Logout" aria-label="Logout">
+                        <span class="material-icons navbar-logout-icon">logout</span>
+                        <span class="navbar-logout-label d-none d-lg-inline">Logout</span>
+                    </button>
+                </div>
+                {% endif %}
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
+                    aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
                 </button>
             </div>
-            {% endif %}
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
-                aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-                <span class="navbar-toggler-icon"></span>
-            </button>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <!-- Mobile Navigation Links (2-column grid) -->
                 <div class="d-lg-none navbar-mobile-grid" aria-label="Mobile navigation">
                     {{ nav_item('/ui/dashboard', 'dashboard', 'Dashboard') }}
                     {{ nav_item('/ui/peers', 'devices', 'Peers') }}
                     {{ nav_item('/ui/dns', 'dns', 'DNS') }}
+                    {{ nav_item('/ui/traffic', 'show_chart', 'Traffic') }}
                     {% if user and user['is_admin'] %}
                     {{ nav_item('/ui/users', 'people', 'Users') }}
                     {% endif %}
@@ -142,18 +165,17 @@
 
     <div class="d-flex flex-grow-1">
         <!-- Sidebar -->
-        <aside class="sidebar d-none d-lg-block" aria-label="Main navigation" role="navigation">
-            <nav class="nav flex-column py-3">
-                {{ nav_item('/ui/dashboard', 'dashboard', 'Dashboard') }}
-                {{ nav_item('/ui/peers', 'devices', 'Peers') }}
-                {{ nav_item('/ui/dns', 'dns', 'DNS') }}
-                {% if user and user['is_admin'] %}
-                {{ nav_item('/ui/users', 'people', 'Users') }}
-                {% endif %}
-                {{ nav_item('/ui/settings', 'settings', 'Settings') }}
-                {{ nav_item('/ui/about', 'info', 'About') }}
-            </nav>
-        </aside>
+        <nav class="sidebar nav flex-column py-3 d-none d-lg-block" aria-label="Main navigation">
+            {{ nav_item('/ui/dashboard', 'dashboard', 'Dashboard') }}
+            {{ nav_item('/ui/peers', 'devices', 'Peers') }}
+            {{ nav_item('/ui/dns', 'dns', 'DNS') }}
+            {{ nav_item('/ui/traffic', 'show_chart', 'Traffic') }}
+            {% if user and user['is_admin'] %}
+            {{ nav_item('/ui/users', 'people', 'Users') }}
+            {% endif %}
+            {{ nav_item('/ui/settings', 'settings', 'Settings') }}
+            {{ nav_item('/ui/about', 'info', 'About') }}
+        </nav>
 
         <!-- Main Content -->
         <main class="main-content">
@@ -163,21 +185,11 @@
 
     <!-- Footer -->
     <footer class="wb-footer">
-        <span class="wb-footer-content">
-            WireBuddy v{{ VERSION }} (<span class="font-monospace">{{ BUILD_INFO[:7] }}</span>) &middot; &copy;
-            <span id="copyright-year"></span>Gill-Bates&nbsp;&middot;&nbsp;<a href="https://github.com/Gill-Bates/wirebuddy" target="_blank"
-                rel="noopener noreferrer" class="text-decoration-none wb-footer-link">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" class="wb-footer-link-icon">
-                    <path fill-rule="evenodd"
-                        d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z">
-                    </path>
-                </svg>
-                GitHub</a>
-        </span>
+        <span class="wb-footer-content">WireBuddy v{{ VERSION }} (<span class="font-monospace">{{ BUILD_INFO[:7] }}</span>) &middot; &copy;&nbsp;<span id="copyright-year"></span>Gill-Bates&nbsp;&middot;&nbsp;<a href="https://github.com/Gill-Bates/wirebuddy" target="_blank" rel="noopener noreferrer" class="text-decoration-none wb-footer-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" class="wb-footer-link-icon"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>GitHub</a></span>
     </footer>
 
     <!-- Reusable Modal (alert / confirm / prompt) -->
-    <div class="modal fade" id="wbModal" tabindex="-1" aria-labelledby="wbModalTitle">
+    <div class="modal fade" id="wbModal" aria-labelledby="wbModalTitle">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
@@ -206,7 +218,7 @@
     </div>
 
     <!-- Reconnect Modal -->
-    <div class="modal fade" id="wbReconnectModal" tabindex="-1" aria-labelledby="wbReconnectTitle">
+    <div class="modal fade" id="wbReconnectModal" aria-labelledby="wbReconnectTitle">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content wb-reconnect-pulse">
                 <div class="modal-body py-5 px-4">
@@ -226,7 +238,7 @@
     <div class="toast-container position-fixed top-0 end-0 p-3" id="wbToastContainer" style="z-index: 1100;"></div>
 
     <!-- Onboarding Modal -->
-    <div class="modal fade" id="wbOnboardingModal" tabindex="-1" aria-labelledby="wbOnboardingTitle" aria-hidden="true">
+    <div class="modal fade" id="wbOnboardingModal" aria-labelledby="wbOnboardingTitle">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content">
                 <div class="modal-header border-0 pb-0">
@@ -246,7 +258,7 @@
                                 style="width:28px;height:28px;flex-shrink:0;">1</span>
                             <div>
                                 <strong>Change Admin Password</strong>
-                                <p class="text-muted small mb-0">Go to <a href="/users">Users</a> and set a secure
+                                <p class="text-muted small mb-0">Go to <a href="/ui/users">Users</a> and set a secure
                                     password for the admin account.</p>
                             </div>
                         </div>
@@ -256,7 +268,7 @@
                                 style="width:28px;height:28px;flex-shrink:0;">2</span>
                             <div>
                                 <strong>Create an Interface</strong>
-                                <p class="text-muted small mb-0">Under <a href="/settings">Settings</a>, create your
+                                <p class="text-muted small mb-0">Under <a href="/ui/settings">Settings</a>, create your
                                     first WireGuard interface (e.g., wg0).</p>
                             </div>
                         </div>
@@ -266,7 +278,7 @@
                                 style="width:28px;height:28px;flex-shrink:0;">3</span>
                             <div>
                                 <strong>Set Your Server FQDN</strong>
-                                <p class="text-muted small mb-0">In <a href="/">Wireguard</a> settings, enter your
+                                <p class="text-muted small mb-0">In <a href="/ui/settings">Wireguard</a> settings, enter your
                                     server's public hostname or domain.</p>
                             </div>
                         </div>
@@ -287,7 +299,7 @@
                                 style="width:28px;height:28px;flex-shrink:0;">5</span>
                             <div>
                                 <strong>Add Your First Peer</strong>
-                                <p class="text-muted small mb-0">Go to <a href="/peers">Peers</a> and create VPN clients
+                                <p class="text-muted small mb-0">Go to <a href="/ui/peers">Peers</a> and create VPN clients
                                     for your devices.</p>
                             </div>
                         </div>
@@ -318,6 +330,24 @@
         if (document.body.classList.contains('wb-reconnecting')) {
             setTimeout(() => document.body.classList.remove('wb-reconnecting'), 15000);
         }
+    </script>
+
+    <!-- Key Mismatch Banner Check -->
+    <script>
+        (async function checkKeyMismatch() {
+            try {
+                const res = await fetch('/api/system/status');
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.key_mismatch) {
+                        const banner = document.getElementById('keyMismatchBanner');
+                        if (banner) banner.classList.remove('d-none');
+                    }
+                }
+            } catch (e) {
+                // Silently fail - banner won't show if API unreachable
+            }
+        })();
     </script>
 
     <!-- Move theme toggle handler to JS -->

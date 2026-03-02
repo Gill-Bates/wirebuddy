@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-"""TSDB batch writer for DNS query ingestion."""
+"""Batch writer for DNS query ingestion."""
 
 from __future__ import annotations
 
@@ -47,13 +47,13 @@ class DnsTsdbWriter:
 	
 	def __init__(
 		self,
-		tsdb_dir: Path,
+		dns_dir: Path,
 		blocked_domains_func: Callable[[], set[str]],
 		retention_days_func: Callable[[], int] | None,
 		offset_tracker: OffsetTracker,
 		stop_event: asyncio.Event,
 	):
-		self.tsdb_dir = tsdb_dir
+		self.dns_dir = dns_dir
 		self.blocked_domains_func = blocked_domains_func
 		self.retention_days_func = retention_days_func
 		self.tracker = offset_tracker
@@ -225,7 +225,7 @@ class DnsTsdbWriter:
 		
 		Note: O(n) in number of points per batch, but append-only (no rewrite).
 		"""
-		day_dir = self.tsdb_dir / 'dns_queries'
+		day_dir = self.dns_dir / 'queries'
 		day_dir.mkdir(parents=True, exist_ok=True)
 		
 		day_file = day_dir / f'{date_str}.jsonl'
@@ -280,26 +280,26 @@ def _read_tail_lines(path: Path, max_lines: int) -> list[str]:
 	return decoded
 
 
-def read_recent_queries(tsdb_dir: Path, max_queries: int = 5000) -> list[dict]:
-	"""Read recent DNS queries from TSDB, newest first.
+def read_recent_queries(dns_dir: Path, max_queries: int = 5000) -> list[dict]:
+	"""Read recent DNS queries from DNS logs, newest first.
 	
 	Args:
-		tsdb_dir: TSDB base directory
+		dns_dir: DNS base directory
 		max_queries: Maximum number of queries to return
 	
 	Returns:
 		List of query dicts with keys: ts, client, domain, qtype, rcode, blocked.
 		Order is timestamp-descending (newest first).
 	"""
-	dns_dir = tsdb_dir / 'dns_queries'
-	if not dns_dir.exists():
+	queries_dir = dns_dir / 'queries'
+	if not queries_dir.exists():
 		return []
 	
 	queries: list[dict] = []
 	remaining = max_queries
 	
 	# Get all day files sorted by date (newest first)
-	day_files = sorted(dns_dir.glob('*.jsonl'), reverse=True)
+	day_files = sorted(queries_dir.glob('*.jsonl'), reverse=True)
 	
 	for day_file in day_files:
 		if remaining <= 0:

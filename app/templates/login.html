@@ -46,20 +46,79 @@
             </form>
 
             <div id="mfa-form" style="display: none;">
-                <div class="text-center mb-3">
+                <div class="text-center mb-3" id="mfa-header">
                     <span class="material-icons" style="font-size: 48px; color: var(--bs-primary);">security</span>
                     <h5 class="mt-2 mb-1">Two-Factor Authentication</h5>
                     <p class="text-muted small mb-0">Enter the 6-digit code from your authenticator app</p>
                 </div>
 
-                <div class="d-flex justify-content-center gap-2 mb-3" id="otp-digits">
-                    <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="0" style="width: 48px; height: 56px; font-size: 1.5rem;">
-                    <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="1" style="width: 48px; height: 56px; font-size: 1.5rem;">
-                    <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="2" style="width: 48px; height: 56px; font-size: 1.5rem;">
-                    <span class="align-self-center text-muted">–</span>
-                    <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="3" style="width: 48px; height: 56px; font-size: 1.5rem;">
-                    <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="4" style="width: 48px; height: 56px; font-size: 1.5rem;">
-                    <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="5" style="width: 48px; height: 56px; font-size: 1.5rem;">
+                <style>
+                    .otp-digits-container {
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        gap: 0.375rem;
+                        flex-wrap: nowrap;
+                        width: 100%;
+                        max-width: 100%;
+                    }
+                    .otp-digits-container.d-none {
+                        display: none !important;
+                    }
+                    .otp-digit {
+                        flex: 0 0 auto;
+                        width: 44px;
+                        height: 52px;
+                        font-size: 1.25rem;
+                        line-height: 52px;
+                        padding: 0;
+                        min-height: 0;
+                        text-align: center;
+                        border-radius: 0.375rem;
+                        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+                        font-variant-numeric: tabular-nums;
+                        font-feature-settings: "tnum";
+                        font-weight: 600;
+                        text-rendering: geometricPrecision;
+                        -webkit-font-smoothing: antialiased;
+                    }
+                    .otp-separator {
+                        flex: 0 0 auto;
+                        padding: 0 2px;
+                        color: var(--bs-secondary);
+                    }
+                    @media (max-width: 400px) {
+                        .otp-digits-container {
+                            gap: 0.25rem;
+                        }
+                        .otp-digit {
+                            width: 38px;
+                            height: 46px;
+                            font-size: 1.1rem;
+                            line-height: 46px;
+                        }
+                        .otp-separator {
+                            padding: 0;
+                        }
+                    }
+                    @media (max-width: 340px) {
+                        .otp-digit {
+                            width: 34px;
+                            height: 42px;
+                            font-size: 1rem;
+                            line-height: 42px;
+                        }
+                    }
+                </style>
+
+                <div class="otp-digits-container mb-3" id="otp-digits">
+                    <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="0">
+                    <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="1">
+                    <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="2">
+                    <span class="otp-separator">–</span>
+                    <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="3">
+                    <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="4">
+                    <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="5">
                 </div>
 
                 <button type="button" class="btn btn-primary btn-lg w-100" id="mfa-submit-btn" disabled>
@@ -293,7 +352,8 @@
 
         // Recovery code flow
         document.getElementById('use-recovery-btn').addEventListener('click', () => {
-            document.getElementById('otp-digits').style.display = 'none';
+            document.getElementById('mfa-header').style.display = 'none';
+            document.getElementById('otp-digits').classList.add('d-none');
             document.getElementById('mfa-submit-btn').style.display = 'none';
             document.getElementById('use-recovery-btn').style.display = 'none';
             document.getElementById('recovery-form').style.display = 'block';

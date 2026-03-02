@@ -83,10 +83,24 @@ async def _build_peer_config(
 	cfg = get_config(request)
 	
 	# Decrypt stored keys - wrap in SecretStr for memory safety
-	private_key_plain = SecretStr(vault_decrypt(private_key, cfg.secret_key))
+	try:
+		private_key_plain = SecretStr(vault_decrypt(private_key, cfg.secret_key))
+	except ValueError as e:
+		_log.error("KEY_MISMATCH: Cannot decrypt peer private key for peer_id=%d: %s", peer_id, e)
+		raise HTTPException(
+			status_code=503,
+			detail="Cannot decrypt peer configuration. WIREBUDDY_SECRET_KEY does not match the database encryption key.",
+		)
 	preshared_key_plain = None
 	if peer["preshared_key"]:
-		preshared_key_plain = SecretStr(vault_decrypt(peer["preshared_key"], cfg.secret_key))
+		try:
+			preshared_key_plain = SecretStr(vault_decrypt(peer["preshared_key"], cfg.secret_key))
+		except ValueError as e:
+			_log.error("KEY_MISMATCH: Cannot decrypt peer PSK for peer_id=%d: %s", peer_id, e)
+			raise HTTPException(
+				status_code=503,
+				detail="Cannot decrypt peer configuration. WIREBUDDY_SECRET_KEY does not match the database encryption key.",
+			)
 	
 	# Get server public key
 	code, stdout, stderr = await run_wg_command("wg", "show", peer["interface"], "public-key")

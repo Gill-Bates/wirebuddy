@@ -189,13 +189,35 @@ async def interface_down(
 	"""Bring down a WireGuard interface."""
 	validate_interface_name(name)
 	
+	# Check if interface exists at all (active or configured)
+	config_file = WG_CONFIG_PATH / f"{name}.conf"
+	has_config = config_file.is_file()
+	
+	code, _, _ = await run_wg_command("wg", "show", name)
+	is_active = code == 0
+	
+	if not is_active:
+		raise HTTPException(status_code=400, detail=f"Interface {name} is not active")
+	
 	# Clean up isolation chains before bringing interface down
 	# (uses database as source of truth, not PostDown scripts)
 	await cleanup_client_isolation(name)
 	
-	code, stdout, stderr = await run_wg_command("wg-quick", "down", name)
-	if code != 0:
-		raise HTTPException(status_code=500, detail=f"Failed to bring down interface: {stderr}")
+	if has_config:
+		# Normal case: config file exists, use wg-quick
+		code, stdout, stderr = await run_wg_command("wg-quick", "down", name)
+		if code != 0:
+			raise HTTPException(status_code=500, detail=f"Failed to bring down interface: {stderr}")
+	else:
+		# Orphaned interface: config file missing (e.g. data dir was deleted)
+		# Use ip link commands directly since wg-quick needs the config
+		_log.warning("INTERFACE_DOWN_ORPHANED name=%s (no config file, using ip link)", name)
+		code, _, stderr = await run_wg_command("ip", "link", "set", name, "down")
+		if code != 0:
+			raise HTTPException(status_code=500, detail=f"Failed to set interface down: {stderr}")
+		code, _, stderr = await run_wg_command("ip", "link", "delete", name)
+		if code != 0:
+			raise HTTPException(status_code=500, detail=f"Failed to delete interface: {stderr}")
 	
 	_log.info("INTERFACE_DOWN name=%s", name)
 	return ok_response(message=f"Interface {name} is down")
@@ -256,7 +278,6 @@ async def get_interface_config(
 			"address": iface["address"],
 			"address6": iface["address6"],
 			"listen_port": iface["listen_port"],
-			"client_endpoint_port": iface["client_endpoint_port"],
 			"dns": iface["dns"],
 			"post_up": iface["post_up"],
 			"post_down": iface["post_down"],
@@ -266,7 +287,6 @@ async def get_interface_config(
 		address=iface["address"],
 		address6=iface["address6"],
 		listen_port=iface["listen_port"],
-		client_endpoint_port=iface["client_endpoint_port"],
 		dns=iface["dns"],
 		is_enabled=bool(iface["is_enabled"]),
 	)

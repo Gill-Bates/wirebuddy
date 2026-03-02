@@ -20,6 +20,50 @@ from .sqlite_runtime import transaction
 
 _log = logging.getLogger(__name__)
 
+# Constant for key validation
+_KEY_VALIDATION_TOKEN_KEY = "_key_validation_token"
+_KEY_VALIDATION_PLAINTEXT = "WIREBUDDY_KEY_VALID_v1"
+
+
+# ---------------------------------------------------------------------------
+# Key Validation
+# ---------------------------------------------------------------------------
+
+def validate_secret_key(conn: sqlite3.Connection, pepper: str) -> bool:
+	"""Validate that the secret key matches the one used to encrypt the database.
+	
+	On first run (no token exists), creates and stores a validation token.
+	On subsequent runs, attempts to decrypt the stored token.
+	
+	Returns:
+		True if key is valid, False if there's a mismatch.
+	"""
+	from ..utils.vault import encrypt as vault_encrypt, decrypt as vault_decrypt
+	
+	stored_token = get_setting(conn, _KEY_VALIDATION_TOKEN_KEY)
+	
+	if stored_token is None:
+		# First run - create and store validation token
+		encrypted_token = vault_encrypt(_KEY_VALIDATION_PLAINTEXT, pepper)
+		set_setting(conn, _KEY_VALIDATION_TOKEN_KEY, encrypted_token)
+		_log.debug("KEY_VALIDATION: Created new validation token")
+		return True
+	
+	# Token exists - try to decrypt and validate
+	try:
+		decrypted = vault_decrypt(stored_token, pepper)
+		if decrypted == _KEY_VALIDATION_PLAINTEXT:
+			return True
+		else:
+			_log.error("KEY_VALIDATION: Decrypted token does not match expected value")
+			return False
+	except ValueError as e:
+		_log.error("KEY_VALIDATION: Failed to decrypt validation token: %s", e)
+		return False
+	except Exception:
+		_log.exception("KEY_VALIDATION: Unexpected error during token validation")
+		return False
+
 
 # ---------------------------------------------------------------------------
 # Settings operations
@@ -43,6 +87,13 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
 			""",
 			(key, value, now),
 		)
+
+
+def delete_setting(conn: sqlite3.Connection, key: str) -> bool:
+	"""Delete a setting value by key. Returns True if a row was removed."""
+	with transaction(conn):
+		cur = conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+		return cur.rowcount > 0
 
 
 _GLOBAL_SETTINGS_RECOVERY_KEYS = [
@@ -233,7 +284,7 @@ def set_dns_query_logging_enabled(conn: sqlite3.Connection, enabled: bool) -> No
 
 def get_dns_blocklist_enabled(conn: sqlite3.Connection) -> bool:
 	"""Get whether DNS blocklist include is enabled in Unbound config."""
-	return _setting_is_truthy(get_setting(conn, "dns_enable_blocklist", "1"), default=True)
+	return _setting_is_truthy(get_setting(conn, "dns_enable_blocklist", "0"), default=False)
 
 
 def set_dns_blocklist_enabled(conn: sqlite3.Connection, enabled: bool) -> None:

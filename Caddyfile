@@ -1,6 +1,6 @@
 vpn.example.com {
 
-    reverse_proxy 10.30.0.18:8000 {
+    reverse_proxy localhost:8000 {
         header_up X-Forwarded-Proto https
         header_up X-Forwarded-Port 443
         header_up X-Forwarded-Host {host}

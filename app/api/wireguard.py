@@ -19,6 +19,7 @@ from . import wireguard_interfaces_crud
 from . import wireguard_peers
 from . import wireguard_peers_config
 from . import wireguard_stats
+from . import wireguard_stats_country
 from . import wireguard_stats_geo
 
 
@@ -28,11 +29,12 @@ router = APIRouter(tags=["wireguard"])
 
 
 router.include_router(wireguard_settings.router)
+router.include_router(wireguard_interfaces_crud.router)  # Must be before wireguard_interfaces for route priority
 router.include_router(wireguard_interfaces.router)
-router.include_router(wireguard_interfaces_crud.router)
 router.include_router(wireguard_peers.router)
 router.include_router(wireguard_peers_config.router)
 router.include_router(wireguard_stats.router)
+router.include_router(wireguard_stats_country.router)
 router.include_router(wireguard_stats_geo.router)
 
 __all__ = ["router"]

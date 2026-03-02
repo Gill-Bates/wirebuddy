@@ -238,7 +238,8 @@ class Scheduler:
 		
 		consecutive_failures = 0
 		max_backoff = 300  # 5 minutes
-		next_run = loop.time() + _jittered_interval()
+		initial_interval = _jittered_interval()
+		next_run = loop.time() + initial_interval
 		
 		try:
 			# Initial execution if requested
@@ -271,6 +272,12 @@ class Scheduler:
 						job.name, consecutive_failures, backoff,
 					)
 					next_run = max(next_run, now + backoff)
+			else:
+				# No run_on_start: log when first execution is scheduled
+				_log.info(
+					"SCHEDULER job=%s first run scheduled in %.0fs (%.1fh)",
+					job.name, initial_interval, initial_interval / 3600,
+				)
 
 			while self._started and not stop_event.is_set():
 				now = loop.time()
@@ -296,14 +303,12 @@ class Scheduler:
 				
 				if success:
 					consecutive_failures = 0
-					# Skip any missed intervals (prevents burst execution after long jobs)
-					if next_run <= now:
-						skipped = int((now - next_run) / job.interval_seconds)
-						next_run += (skipped + 1) * job.interval_seconds + random.uniform(-job.interval_seconds * job.jitter_pct, job.interval_seconds * job.jitter_pct) if job.jitter_pct > 0 else (skipped + 1) * job.interval_seconds
-						if skipped > 0:
-							_log.warning("SCHEDULER job=%s skipped %d intervals", job.name, skipped)
-					else:
-						next_run += _jittered_interval()
+					# Schedule next run from NOW (prevents drift)
+					next_run = now + _jittered_interval()
+					_log.debug(
+						"SCHEDULER job=%s completed, next run in %.0fs",
+						job.name, next_run - now,
+					)
 				else:
 					# Job failed – apply exponential backoff
 					consecutive_failures += 1

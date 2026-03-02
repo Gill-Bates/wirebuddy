@@ -15,8 +15,28 @@
     <link href="/static/vendor/material-icons.css" rel="stylesheet">
     <script src="/static/js/theme.js"></script>
     <style>
+        .otp-setup-card {
+            max-width: 480px;
+            min-height: 640px;
+        }
+
+        .otp-hero-icon {
+            font-size: 56px;
+            color: var(--bs-primary);
+        }
+
+        .otp-qr-img {
+            max-width: 200px;
+            background: #fff;
+            padding: 8px;
+        }
+
+        .otp-icon-sm {
+            font-size: 18px;
+        }
+
         .otp-digit {
-            width: 48px;
+            width: clamp(40px, 10vw, 48px);
             height: 56px;
             font-size: 1.5rem;
         }
@@ -25,10 +45,10 @@
 
 <body data-username="{{ user['username'] }}">
     <main>
-        <div class="card login-card" style="max-width: 480px; min-height: 640px;">
+        <div class="card login-card otp-setup-card">
             <div class="card-body p-4 p-sm-5">
                 <div class="text-center mb-4">
-                    <span class="material-icons" style="font-size: 56px; color: var(--bs-primary);">verified_user</span>
+                    <span class="material-icons otp-hero-icon">verified_user</span>
                     <h4 class="mt-3 mb-1">Set Up Two-Factor Authentication</h4>
                     <p class="text-muted small mb-0">Your administrator enabled 2FA for your account. Complete the setup to continue.</p>
                 </div>
@@ -42,7 +62,7 @@
                     </div>
                     
                     <div class="text-center mb-3">
-                        <img id="otp-qr-image" src="" alt="OTP QR Code" class="img-fluid rounded mx-auto" style="max-width: 200px; background: #fff; padding: 8px;">
+                        <img id="otp-qr-image" src="" alt="OTP QR Code" class="img-fluid rounded mx-auto otp-qr-img">
                         <div class="spinner-border text-primary mt-2" id="qr-loading" role="status" aria-live="polite">
                             <span class="visually-hidden">Loading...</span>
                         </div>
@@ -53,7 +73,7 @@
                         <div class="input-group input-group-sm">
                             <input type="text" class="form-control font-monospace" id="otp-secret" readonly aria-label="OTP secret key">
                             <button class="btn btn-outline-secondary" type="button" id="copy-secret-btn" title="Copy secret" aria-label="Copy secret to clipboard">
-                                <span class="material-icons" style="font-size: 18px;">content_copy</span>
+                                <span class="material-icons otp-icon-sm">content_copy</span>
                             </button>
                         </div>
                     </div>
@@ -91,7 +111,7 @@
                     <div class="bg-dark text-light p-3 rounded font-monospace mb-3 text-center" id="recovery-codes" style="font-size: 0.95rem; line-height: 1.8; white-space: pre-line;" role="region" aria-label="Recovery codes" aria-live="polite"></div>
 
                     <button type="button" class="btn btn-outline-secondary w-100 mb-3" id="download-codes-btn">
-                        <span class="material-icons align-middle me-1" style="font-size: 18px;">download</span>
+                        <span class="material-icons align-middle me-1 otp-icon-sm">download</span>
                         Download Recovery Codes (ZIP)
                     </button>
 
@@ -248,7 +268,7 @@
                 recoveryZipDownloaded = false;
                 document.getElementById('continue-btn').disabled = true;
                 document.getElementById('download-codes-btn').disabled = false;
-                document.getElementById('download-codes-btn').innerHTML = '<span class="material-icons align-middle me-1" style="font-size: 18px;">download</span>Download Recovery Codes (ZIP)';
+                document.getElementById('download-codes-btn').innerHTML = '<span class="material-icons align-middle me-1 otp-icon-sm">download</span>Download Recovery Codes (ZIP)';
             } catch (error) {
                 showError(error.message);
                 confirmBtn.disabled = false;
@@ -324,11 +344,11 @@
                 recoveryZipDownloaded = true;
                 document.getElementById('continue-btn').disabled = false;
                 recoveryDownloadToken = '';
-                btn.innerHTML = '<span class="material-icons align-middle me-1" style="font-size: 18px;">check</span>ZIP Downloaded';
+                btn.innerHTML = '<span class="material-icons align-middle me-1 otp-icon-sm">check</span>ZIP Downloaded';
             } catch (error) {
                 showError(error.message || 'Download failed');
                 btn.disabled = false;
-                btn.innerHTML = '<span class="material-icons align-middle me-1" style="font-size: 18px;">download</span>Download Recovery Codes (ZIP)';
+                btn.innerHTML = '<span class="material-icons align-middle me-1 otp-icon-sm">download</span>Download Recovery Codes (ZIP)';
             }
         });
 

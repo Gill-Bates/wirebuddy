@@ -529,7 +529,7 @@
 </div>
 
 <!-- Add Peer Modal -->
-<div class="modal fade" id="addPeerModal" tabindex="-1" aria-labelledby="addPeerModalTitle"
+<div class="modal fade" id="addPeerModal" aria-labelledby="addPeerModalTitle"
     aria-describedby="addPeerModalDesc">
     <div class="modal-dialog modal-fullscreen-sm-down">
         <div class="modal-content">
@@ -541,6 +541,14 @@
                 <div class="modal-body">
                     <p class="visually-hidden" id="addPeerModalDesc">Create a peer and configure routing, DNS and
                         blocklists.</p>
+                    
+                    <!-- Warning: Server FQDN not configured -->
+                    <div id="peer-fqdn-warning" class="alert alert-warning d-none" role="alert">
+                        <strong>⚠ Server FQDN / IP not configured</strong><br>
+                        Please set the <strong>Server FQDN / IP</strong> in Settings → WireGuard before creating peers.
+                        Otherwise, the peer configuration will contain a placeholder address.
+                    </div>
+                    
                     <div class="mb-3">
                         <label for="peer-name" class="form-label">Name</label>
                         <input type="text" class="form-control" id="peer-name" placeholder="e.g., John's iPhone">
@@ -641,7 +649,7 @@
 </div>
 
 <!-- QR Code Modal -->
-<div class="modal fade" id="qrModal" tabindex="-1" aria-labelledby="qrModalTitle" aria-describedby="qrModalDesc">
+<div class="modal fade" id="qrModal" aria-labelledby="qrModalTitle" aria-describedby="qrModalDesc">
     <div class="modal-dialog modal-dialog-centered modal-fullscreen-sm-down">
         <div class="modal-content">
             <div class="modal-header">
@@ -656,7 +664,7 @@
                         <span class="visually-hidden">Loading...</span>
                     </div>
                 </div>
-                <img id="qr-image" src="" alt="QR Code" class="img-fluid d-block mx-auto" style="display: none;">
+                <img id="qr-image" src="" alt="QR Code" class="img-fluid d-block mx-auto d-none">
                 <p class="text-muted mt-3 mb-0">Scan this QR code with the WireGuard app</p>
             </div>
         </div>
@@ -664,7 +672,7 @@
 </div>
 
 <!-- Edit Peer Modal -->
-<div class="modal fade" id="editPeerModal" tabindex="-1" aria-labelledby="editPeerModalTitle"
+<div class="modal fade" id="editPeerModal" aria-labelledby="editPeerModalTitle"
     aria-describedby="editPeerModalDesc">
     <div class="modal-dialog modal-fullscreen-sm-down">
         <div class="modal-content">
@@ -822,6 +830,20 @@
         if (!error) return fallback;
         const msg = (typeof error?.message === 'string' && error.message) ? error.message : String(error);
         return msg.replace(/[\r\n\t]/g, ' ').trim() || fallback;
+    }
+
+    // Shared: validate allowed IPs for both Add and Edit modals
+    function validateAndGetAllowedIps(prefix = '') {
+        const ips = getAllowedIps(prefix);
+        if (!ips) {
+            wbAlert('Please enter allowed IPs', 'warning');
+            return null;
+        }
+        if (!validateAllowedIpsList(ips)) {
+            wbAlert('Invalid Allowed IPs format. Use CIDR entries like 10.0.0.0/24, 2001:db8::/64', 'warning');
+            return null;
+        }
+        return ips;
     }
 
 
@@ -1101,6 +1123,22 @@
             submitSpinner.classList.add('d-none');
         }
 
+        // Check if Server FQDN is configured
+        const fqdnWarning = document.getElementById('peer-fqdn-warning');
+        try {
+            const settings = await api('GET', '/api/wireguard/settings');
+            const wgFqdn = settings?.wg_fqdn;
+            
+            if (!wgFqdn || wgFqdn.trim() === '' || wgFqdn === 'vpn.example.com') {
+                fqdnWarning?.classList.remove('d-none');
+                if (submitBtn) submitBtn.disabled = true;
+            } else {
+                fqdnWarning?.classList.add('d-none');
+            }
+        } catch (e) {
+            console.warn('Could not check WireGuard settings:', e);
+        }
+
         // Render blocklist options (all selected by default for new peers)
         renderBlocklistOptions('peer-blocklist-options', null);
         toggleBlocklistSection('peer-use-adblocker', 'peer-blocklist-section');
@@ -1175,15 +1213,8 @@
         const submitSpinner = submitBtn.querySelector('.spinner-border');
 
         const allowedIpsMode = document.getElementById('peer-allowed-ips-mode').value;
-        const allowedIps = getAllowedIps();
-        if (!allowedIps) {
-            wbAlert('Please enter allowed IPs', 'warning');
-            return;
-        }
-        if (!validateAllowedIpsList(allowedIps)) {
-            wbAlert('Invalid Allowed IPs format. Use CIDR entries like 10.0.0.0/24, 2001:db8::/64', 'warning');
-            return;
-        }
+        const allowedIps = validateAndGetAllowedIps();
+        if (!allowedIps) return;
 
         const data = {
             name: document.getElementById('peer-name').value.trim() || null,
@@ -1391,18 +1422,11 @@
         const name = document.getElementById('edit-peer-name').value.trim();
         const description = document.getElementById('edit-peer-description').value.trim();
         const allowedIpsMode = document.getElementById('edit-peer-allowed-ips-mode').value;
-        const allowedIps = getAllowedIps('edit-');
+        const allowedIps = validateAndGetAllowedIps('edit-');
         const isEnabled = document.getElementById('edit-peer-enabled').checked;
         const useAdblocker = document.getElementById('edit-peer-use-adblocker').checked;
 
-        if (!allowedIps) {
-            wbAlert('Please enter allowed IPs', 'warning');
-            return;
-        }
-        if (!validateAllowedIpsList(allowedIps)) {
-            wbAlert('Invalid Allowed IPs format. Use CIDR entries like 10.0.0.0/24, 2001:db8::/64', 'warning');
-            return;
-        }
+        if (!allowedIps) return;
 
         const data = {
             name: name || null,

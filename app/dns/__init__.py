@@ -21,6 +21,7 @@ class _UnboundNamespace:
 	# Process management
 	invalidate_running_cache = staticmethod(process.invalidate_running_cache)
 	is_running = staticmethod(process.is_running)
+	is_unbound_installed = staticmethod(process.is_unbound_installed)
 	start = staticmethod(process.start)
 	stop = staticmethod(process.stop)
 	restart = staticmethod(process.restart)

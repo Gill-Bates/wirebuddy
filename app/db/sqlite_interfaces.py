@@ -26,7 +26,6 @@ def create_interface(
 	public_key: str,
 	address: str,
 	listen_port: int = 51820,
-	client_endpoint_port: int | None = None,
 	dns: str | None = None,
 	post_up: str | None = None,
 	post_down: str | None = None,
@@ -41,7 +40,7 @@ def create_interface(
 				name, private_key, public_key, address, address6, listen_port,
 				client_endpoint_port, dns, post_up, post_down, is_enabled, created_at, updated_at
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?, ?)
 			""",
 			(
 				name,
@@ -50,7 +49,6 @@ def create_interface(
 				address,
 				address6,
 				listen_port,
-				client_endpoint_port,
 				dns,
 				post_up,
 				post_down,
@@ -73,7 +71,6 @@ def update_interface(
 	address: str,
 	address6: str | None,
 	listen_port: int,
-	client_endpoint_port: int | None,
 	dns: str | None,
 	post_up: str | None,
 	post_down: str | None,
@@ -84,11 +81,11 @@ def update_interface(
 		cur = conn.execute(
 			"""
 			UPDATE interfaces
-			SET address = ?, address6 = ?, listen_port = ?, client_endpoint_port = ?,
+			SET address = ?, address6 = ?, listen_port = ?,
 				dns = ?, post_up = ?, post_down = ?, updated_at = ?
 			WHERE name = ?
 			""",
-			(address, address6, listen_port, client_endpoint_port, dns, post_up, post_down, now, name),
+			(address, address6, listen_port, dns, post_up, post_down, now, name),
 		)
 		return cur.rowcount > 0
 

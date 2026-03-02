@@ -15,7 +15,7 @@
         flex-shrink: 0;
     }
 
-    .users-table .badge {
+    .users-table .badge.bg-secondary {
         background-color: #4b5563 !important;
         color: #f3f4f6 !important;
         border: 1px solid rgba(255, 255, 255, 0.12);
@@ -23,6 +23,14 @@
 
     .users-table td.user-actions-cell {
         white-space: nowrap;
+    }
+
+    .users-table .user-identity {
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.25rem;
+        flex-wrap: wrap;
     }
 
     /* Button icon alignment */
@@ -71,15 +79,18 @@
             content: attr(data-label);
             font-weight: 600;
             color: var(--bs-secondary-color);
-            flex: 0 0 5.5rem;
-            max-width: 5.5rem;
+            flex: 0 0 6.5rem;
+            max-width: 6.5rem;
         }
 
         .users-table td>* {
             margin-left: auto;
-            text-align: right;
             max-width: 66%;
-            min-width: 0;
+            min-width: 0;            overflow: hidden;
+            text-overflow: ellipsis;        }
+
+        .users-table .user-identity {
+            justify-content: flex-start;
         }
 
         .users-table td.user-actions-cell {
@@ -100,6 +111,45 @@
         .users-table td.user-actions-cell .btn {
             padding: 0.2rem 0.35rem;
         }
+    }
+
+    /* Password strength indicator */
+    .password-requirements {
+        font-size: 0.8rem;
+        margin-top: 0.5rem;
+    }
+    .password-requirements .req {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.15rem 0;
+        color: var(--bs-secondary-color);
+    }
+    .password-requirements .req .material-icons {
+        font-size: 16px;
+    }
+    .password-requirements .req.valid {
+        color: var(--bs-success);
+    }
+    .password-requirements .req.valid .material-icons {
+        color: var(--bs-success);
+    }
+    .password-requirements .req.invalid {
+        color: var(--bs-danger);
+    }
+    .password-requirements .req.invalid .material-icons {
+        color: var(--bs-danger);
+    }
+    .password-strength-bar {
+        height: 4px;
+        border-radius: 2px;
+        background: var(--bs-secondary-bg);
+        margin-top: 0.5rem;
+        overflow: hidden;
+    }
+    .password-strength-bar .fill {
+        height: 100%;
+        transition: width 0.2s, background-color 0.2s;
     }
 </style>
 {% endblock %}
@@ -131,16 +181,18 @@
                     {% for u in users %}
                     <tr id="user-row-{{ u['id'] }}">
                         <td data-label="Username">
-                            <strong>{{ u['username'] }}</strong>
-                            {% if u['id'] == user['id'] %}
-                            <span class="badge bg-info ms-1">You</span>
-                            {% endif %}
-                            <span id="otp-indicator-{{ u['id'] }}">
-                                {% if u['otp_enabled'] %}
-                                <span class="material-icons text-success ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP enabled">verified_user</span>
-                                {% elif u['otp_secret'] %}
-                                <span class="material-icons text-warning ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP setup pending">schedule</span>
+                            <span class="user-identity">
+                                <strong>{{ u['username'] }}</strong>
+                                {% if u['id'] == user['id'] %}
+                                <span class="badge bg-secondary ms-1">You</span>
                                 {% endif %}
+                                <span id="otp-indicator-{{ u['id'] }}">
+                                    {% if u['otp_enabled'] %}
+                                    <span class="material-icons text-success ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP enabled">verified_user</span>
+                                    {% elif u['otp_secret'] %}
+                                    <span class="material-icons text-warning ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP setup pending">schedule</span>
+                                    {% endif %}
+                                </span>
                             </span>
                         </td>
                         <td data-label="Role">
@@ -165,22 +217,27 @@
                             {% endif %}
                         </td>
                         <td data-label="Created">{{ u['created_at'].strftime('%Y-%m-%d') }}</td>
-                        <td data-label="" class="user-actions-cell">
+                        <td data-label="Actions" class="user-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
-                                <button type="button" class="btn btn-sm btn-outline-primary"
-                                    onclick="editUser({{ u['id'] }}, '{{ u['username'] }}')"
+                                <button type="button" class="btn btn-sm btn-outline-primary btn-edit-user"
+                                    data-user-id="{{ u['id'] }}"
+                                    data-username="{{ u['username'] }}"
                                     data-bs-toggle="tooltip" data-bs-title="Edit User">
                                     <span class="material-icons" aria-hidden="true">edit</span>
                                 </button>
-                                <button type="button" class="btn btn-sm btn-outline-secondary"
+                                <button type="button" class="btn btn-sm btn-outline-secondary btn-otp-settings"
                                     id="otp-settings-btn-{{ u['id'] }}"
-                                    onclick="openOtpSettings({{ u['id'] }}, '{{ u['username'] }}', {{ 'true' if u['otp_enabled'] else 'false' }}, {{ 'true' if u['otp_secret'] else 'false' }})"
+                                    data-user-id="{{ u['id'] }}"
+                                    data-username="{{ u['username'] }}"
+                                    data-otp-enabled="{{ 'true' if u['otp_enabled'] else 'false' }}"
+                                    data-otp-secret="{{ 'true' if u['otp_secret'] else 'false' }}"
                                     data-bs-toggle="tooltip" data-bs-title="OTP Settings">
                                     <span class="material-icons" aria-hidden="true">security</span>
                                 </button>
                                 {% if u['id'] != user['id'] %}
-                                <button type="button" class="btn btn-sm btn-outline-danger"
-                                    onclick="deleteUser({{ u['id'] }}, '{{ u['username'] }}')"
+                                <button type="button" class="btn btn-sm btn-outline-danger btn-delete-user"
+                                    data-user-id="{{ u['id'] }}"
+                                    data-username="{{ u['username'] }}"
                                     data-bs-toggle="tooltip" data-bs-title="Delete User">
                                     <span class="material-icons" aria-hidden="true">delete</span>
                                 </button>
@@ -196,7 +253,7 @@
 </div>
 
 <!-- Add User Modal -->
-<div class="modal fade" id="addUserModal" tabindex="-1" aria-labelledby="addUserModalTitle" aria-modal="true">
+<div class="modal fade" id="addUserModal" aria-labelledby="addUserModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -207,7 +264,7 @@
                 <div class="modal-body">
                     <div class="mb-3">
                         <label for="new-username" class="form-label">Username</label>
-                        <input type="text" class="form-control" id="new-username" required pattern="[a-zA-Z0-9_-]+"
+                        <input type="text" class="form-control" id="new-username" required pattern="[a-zA-Z0-9_\-]+"
                             minlength="3" maxlength="64" autocomplete="username">
                         <small class="text-muted">Letters, numbers, underscore, and dash only</small>
                     </div>
@@ -215,7 +272,15 @@
                         <label for="new-password" class="form-label">Password</label>
                         <input type="password" class="form-control" id="new-password" required minlength="8"
                             autocomplete="new-password">
-                        <small class="text-muted">Minimum 8 characters</small>
+                        <div class="password-strength-bar"><div class="fill" id="new-password-strength"></div></div>
+                        <div class="password-requirements" id="new-password-req" aria-live="polite" aria-relevant="text">
+                            <div class="req" data-req="length"><span class="material-icons">radio_button_unchecked</span> Minimum 8 characters</div>
+                            <div class="req" data-req="upper"><span class="material-icons">radio_button_unchecked</span> Uppercase letter</div>
+                            <div class="req" data-req="lower"><span class="material-icons">radio_button_unchecked</span> Lowercase letter</div>
+                            <div class="req" data-req="digit"><span class="material-icons">radio_button_unchecked</span> Number</div>
+                            <div class="req" data-req="special"><span class="material-icons">radio_button_unchecked</span> Special character</div>
+                            <div class="req" data-req="strength"><span class="material-icons">radio_button_unchecked</span> At least 3 of the above categories</div>
+                        </div>
                     </div>
                     <div class="form-check">
                         <input type="checkbox" class="form-check-input" id="new-is-admin">
@@ -232,7 +297,7 @@
 </div>
 
 <!-- Change Password Modal -->
-<div class="modal fade" id="changePasswordModal" tabindex="-1" aria-labelledby="changePasswordModalTitle" aria-modal="true">
+<div class="modal fade" id="changePasswordModal" aria-labelledby="changePasswordModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -250,7 +315,15 @@
                     <div class="mb-3">
                         <label for="new-password-change" class="form-label">New Password</label>
                         <input type="password" class="form-control" id="new-password-change" required minlength="8" autocomplete="new-password">
-                        <small class="text-muted">Minimum 8 characters</small>
+                        <div class="password-strength-bar"><div class="fill" id="change-password-strength"></div></div>
+                        <div class="password-requirements" id="change-password-req" aria-live="polite" aria-relevant="text">
+                            <div class="req" data-req="length"><span class="material-icons">radio_button_unchecked</span> Minimum 8 characters</div>
+                            <div class="req" data-req="upper"><span class="material-icons">radio_button_unchecked</span> Uppercase letter</div>
+                            <div class="req" data-req="lower"><span class="material-icons">radio_button_unchecked</span> Lowercase letter</div>
+                            <div class="req" data-req="digit"><span class="material-icons">radio_button_unchecked</span> Number</div>
+                            <div class="req" data-req="special"><span class="material-icons">radio_button_unchecked</span> Special character</div>
+                            <div class="req" data-req="strength"><span class="material-icons">radio_button_unchecked</span> At least 3 of the above categories</div>
+                        </div>
                     </div>
                     <div class="mb-3">
                         <label for="verify-password" class="form-label">Verify New Password</label>
@@ -268,7 +341,7 @@
 </div>
 
 <!-- OTP Settings Modal -->
-<div class="modal fade" id="otpSettingsModal" tabindex="-1" aria-labelledby="otpSettingsModalTitle" aria-modal="true">
+<div class="modal fade" id="otpSettingsModal" aria-labelledby="otpSettingsModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -308,32 +381,137 @@
 
 {% block extra_js %}
 <script>
+(function() {
+    'use strict';
+    
+    // Password strength validation
+    function validatePassword(password) {
+        const checks = {
+            length: password.length >= 8,
+            upper: /[A-Z]/.test(password),
+            lower: /[a-z]/.test(password),
+            digit: /[0-9]/.test(password),
+            special: /[^A-Za-z0-9]/.test(password),
+        };
+        const categoryCount = [checks.upper, checks.lower, checks.digit, checks.special].filter(Boolean).length;
+        checks.strength = categoryCount >= 3;
+        return checks;
+    }
+
+    function updatePasswordIndicator(inputId, reqContainerId, strengthBarId) {
+        const input = document.getElementById(inputId);
+        const reqContainer = document.getElementById(reqContainerId);
+        const strengthBar = document.getElementById(strengthBarId);
+        if (!input || !reqContainer) return;
+
+        input.addEventListener('input', function() {
+            const password = this.value;
+            const checks = validatePassword(password);
+            
+            // Update requirement indicators
+            reqContainer.querySelectorAll('.req').forEach(el => {
+                const req = el.dataset.req;
+                const icon = el.querySelector('.material-icons');
+                if (checks[req]) {
+                    el.classList.add('valid');
+                    el.classList.remove('invalid');
+                    icon.textContent = 'check_circle';
+                } else if (password.length > 0) {
+                    el.classList.remove('valid');
+                    el.classList.add('invalid');
+                    icon.textContent = 'cancel';
+                } else {
+                    el.classList.remove('valid', 'invalid');
+                    icon.textContent = 'radio_button_unchecked';
+                }
+            });
+
+            // Update strength bar
+            if (strengthBar) {
+                const validCount = Object.values(checks).filter(Boolean).length;
+                const pct = Math.min(100, (validCount / 6) * 100);
+                strengthBar.style.width = pct + '%';
+                if (validCount <= 2) {
+                    strengthBar.style.backgroundColor = 'var(--bs-danger)';
+                } else if (validCount <= 4) {
+                    strengthBar.style.backgroundColor = 'var(--bs-warning)';
+                } else {
+                    strengthBar.style.backgroundColor = 'var(--bs-success)';
+                }
+            }
+        });
+    }
+
+    // Initialize password validators
+    updatePasswordIndicator('new-password', 'new-password-req', 'new-password-strength');
+    updatePasswordIndicator('new-password-change', 'change-password-req', 'change-password-strength');
+
+    function resetPasswordIndicator(reqContainerId, strengthBarId) {
+        const reqContainer = document.getElementById(reqContainerId);
+        const strengthBar = document.getElementById(strengthBarId);
+        if (reqContainer) {
+            reqContainer.querySelectorAll('.req').forEach(el => {
+                el.classList.remove('valid', 'invalid');
+                el.querySelector('.material-icons').textContent = 'radio_button_unchecked';
+            });
+        }
+        if (strengthBar) {
+            strengthBar.style.width = '0%';
+        }
+    }
+
+    // Reset add user modal when opened
+    document.getElementById('addUserModal').addEventListener('show.bs.modal', function() {
+        document.getElementById('add-user-form').reset();
+        resetPasswordIndicator('new-password-req', 'new-password-strength');
+    });
+
+    // Add user form submission
     document.getElementById('add-user-form').addEventListener('submit', async function (e) {
         e.preventDefault();
 
+        const submitBtn = this.querySelector('[type="submit"]');
+        if (submitBtn.disabled) return;
+
+        const password = document.getElementById('new-password').value;
+        const checks = validatePassword(password);
+        if (!checks.length || !checks.strength) {
+            wbAlert('Password does not meet requirements', 'warning');
+            return;
+        }
+
         const data = {
             username: document.getElementById('new-username').value,
-            password: document.getElementById('new-password').value,
+            password: password,
             is_admin: document.getElementById('new-is-admin').checked,
         };
 
+        submitBtn.disabled = true;
         try {
             await api('POST', '/api/users', data);
-            window.location.reload();
+            // Use generic success message instead of echoing user input
+            window.location.href = window.location.pathname + '?action=created';
         } catch (error) {
             wbAlert('Failed to create user: ' + error.message, 'danger');
+        } finally {
+            submitBtn.disabled = false;
         }
     });
 
-    let passwordChangeUserId = null;
-    let passwordChangeIsSelf = false;
-
+    // Edit user (change password)
     function editUser(userId, username) {
         const currentUserId = {{ user['id'] }};
         const isSelf = userId === currentUserId;
         
-        passwordChangeUserId = userId;
-        passwordChangeIsSelf = isSelf;
+        // Reset form first
+        const form = document.getElementById('change-password-form');
+        form.reset();
+        resetPasswordIndicator('change-password-req', 'change-password-strength');
+        
+        // Set modal data attributes for state
+        const modalEl = document.getElementById('changePasswordModal');
+        modalEl.dataset.userId = userId;
+        modalEl.dataset.isSelf = isSelf;
 
         // Set hidden username for accessibility
         const usernameField = document.getElementById('change-password-username');
@@ -350,20 +528,32 @@
             currentPwInput.required = false;
         }
         
-        // Reset form
-        document.getElementById('change-password-form').reset();
-        
-        // Show modal
-        const modal = new bootstrap.Modal(document.getElementById('changePasswordModal'));
+        // Show modal (reuse existing instance)
+        const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
         modal.show();
     }
 
+    // Change password form submission
     document.getElementById('change-password-form').addEventListener('submit', async function (e) {
         e.preventDefault();
         
+        const submitBtn = this.querySelector('[type="submit"]');
+        if (submitBtn.disabled) return;
+
+        const modalEl = document.getElementById('changePasswordModal');
+        const userId = parseInt(modalEl.dataset.userId, 10);
+        const isSelf = modalEl.dataset.isSelf === 'true';
+
         const newPassword = document.getElementById('new-password-change').value;
         const verifyPassword = document.getElementById('verify-password').value;
         const currentPassword = document.getElementById('current-password').value;
+        
+        // Validate password strength
+        const checks = validatePassword(newPassword);
+        if (!checks.length || !checks.strength) {
+            wbAlert('Password does not meet requirements', 'warning');
+            return;
+        }
         
         // Validate passwords match
         if (newPassword !== verifyPassword) {
@@ -372,50 +562,71 @@
         }
         
         // Validate current password if changing own password
-        if (passwordChangeIsSelf && !currentPassword) {
+        if (isSelf && !currentPassword) {
             wbAlert('Current password is required', 'warning');
             return;
         }
         
+        submitBtn.disabled = true;
         try {
             const data = { new_password: newPassword };
-            if (passwordChangeIsSelf) {
+            if (isSelf) {
                 data.current_password = currentPassword;
             }
             
-            await api('POST', `/api/users/${passwordChangeUserId}/change-password`, data);
+            await api('POST', `/api/users/${userId}/change-password`, data);
             
             // Close modal
-            const modal = bootstrap.Modal.getInstance(document.getElementById('changePasswordModal'));
-            modal.hide();
+            const modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
             
-            wbToast('Password changed successfully', 'success');
-            
-            if (passwordChangeIsSelf) {
-                // Session invalidated, redirect to login
+            if (isSelf) {
+                // Session invalidated - show overlay and redirect immediately
+                const overlay = document.createElement('div');
+                overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:9999;display:flex;align-items:center;justify-content:center;color:white;font-size:1.2rem;';
+                overlay.innerHTML = '<div style="text-align:center;"><div class="spinner-border mb-3"></div><div>Password changed. Redirecting to login...</div></div>';
+                document.body.appendChild(overlay);
                 setTimeout(() => {
                     window.location.href = '/login';
-                }, 1000);
+                }, 1500);
+            } else {
+                wbToast('Password changed successfully', 'success');
             }
         } catch (error) {
             wbAlert('Failed to change password: ' + error.message, 'danger');
+        } finally {
+            if (!isSelf) submitBtn.disabled = false;
         }
     });
 
+    // Delete user
     async function deleteUser(userId, username) {
         if (!await wbConfirm(`Are you sure you want to delete user "${username}"?`, 'danger')) return;
 
         try {
             await api('DELETE', `/api/users/${userId}`);
-            window.location.reload();
+            // Use generic success message instead of echoing user input
+            window.location.href = window.location.pathname + '?action=deleted';
         } catch (error) {
             wbAlert('Failed to delete user: ' + error.message, 'danger');
         }
     }
 
+    // Check for success messages from URL parameters (safe - no reflected content)
+    (function() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const action = urlParams.get('action');
+        
+        if (action === 'deleted') {
+            wbToast('User deleted successfully', 'success');
+            window.history.replaceState({}, '', window.location.pathname);
+        } else if (action === 'created') {
+            wbToast('User created successfully', 'success');
+            window.history.replaceState({}, '', window.location.pathname);
+        }
+    })();
+
     // OTP Settings
-    let otpUserId = null;
-    let otpUsername = '';
     const otpStateByUserId = new Map();
 
     function setUserOtpState(userId, isEnabled, hasSecret) {
@@ -442,10 +653,15 @@
         if (knownState) {
             isEnabled = knownState.isEnabled;
             hasSecret = knownState.hasSecret;
+        } else {
+            // Initialize state if not already tracked (first modal open)
+            otpStateByUserId.set(userId, { isEnabled: !!isEnabled, hasSecret: !!hasSecret });
         }
 
-        otpUserId = userId;
-        otpUsername = username;
+        // Store state in modal data attributes
+        const modalEl = document.getElementById('otpSettingsModal');
+        modalEl.dataset.userId = userId;
+        modalEl.dataset.username = username;
 
         document.getElementById('otp-modal-username').textContent = username;
         const toggleBtn = document.getElementById('otp-toggle-btn');
@@ -458,6 +674,7 @@
             document.getElementById('otp-status-badge').innerHTML = '<span class="badge bg-success">Enabled</span>';
             actionHelp.textContent = 'Disable two-factor authentication for this user.';
             toggleBtn.className = 'btn btn-outline-danger w-100';
+            toggleBtn.setAttribute('aria-pressed', 'true');
             toggleIcon.textContent = 'remove_moderator';
             toggleLabel.textContent = 'Disable OTP';
         } else if (hasSecret) {
@@ -465,6 +682,7 @@
             document.getElementById('otp-status-badge').innerHTML = '<span class="badge bg-warning text-dark">Pending</span>';
             actionHelp.textContent = 'OTP is pending. User onboarding starts at next login. You can disable OTP here.';
             toggleBtn.className = 'btn btn-outline-danger w-100';
+            toggleBtn.setAttribute('aria-pressed', 'false');
             toggleIcon.textContent = 'remove_moderator';
             toggleLabel.textContent = 'Disable OTP';
         } else {
@@ -472,39 +690,92 @@
             document.getElementById('otp-status-badge').innerHTML = '<span class="badge bg-secondary">Disabled</span>';
             actionHelp.textContent = 'Enable two-factor authentication. User onboarding starts at next login.';
             toggleBtn.className = 'btn btn-primary w-100';
+            toggleBtn.setAttribute('aria-pressed', 'false');
             toggleIcon.textContent = 'add_moderator';
             toggleLabel.textContent = 'Enable OTP';
         }
 
-        const modal = new bootstrap.Modal(document.getElementById('otpSettingsModal'));
+        const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
         modal.show();
     }
 
-    document.getElementById('otp-toggle-btn').addEventListener('click', async () => {
-        const current = otpStateByUserId.get(otpUserId) || { isEnabled: false, hasSecret: false };
+    document.getElementById('otp-toggle-btn').addEventListener('click', async function() {
+        if (this.disabled) return;
+
+        const modalEl = document.getElementById('otpSettingsModal');
+        const userId = parseInt(modalEl.dataset.userId, 10);
+        const username = modalEl.dataset.username;
+
+        const current = otpStateByUserId.get(userId) || { isEnabled: false, hasSecret: false };
         const shouldDisable = current.isEnabled || current.hasSecret;
 
         if (shouldDisable) {
-            if (!await wbConfirm(`Disable two-factor authentication for "${otpUsername}"?`, 'warning')) return;
+            if (!await wbConfirm(`Disable two-factor authentication for "${username}"?`, 'warning')) return;
+            
+            this.disabled = true;
             try {
-                await api('POST', `/api/users/${otpUserId}/otp/disable`);
-                setUserOtpState(otpUserId, false, false);
-                openOtpSettings(otpUserId, otpUsername, false, false);
+                await api('POST', `/api/users/${userId}/otp/disable`);
+                setUserOtpState(userId, false, false);
+                openOtpSettings(userId, username, false, false);
                 wbToast('OTP disabled', 'success');
             } catch (error) {
                 wbAlert('Failed to disable OTP: ' + error.message, 'danger');
+            } finally {
+                this.disabled = false;
             }
             return;
         }
 
+        this.disabled = true;
         try {
-            await api('POST', `/api/users/${otpUserId}/otp/enable`);
-            setUserOtpState(otpUserId, false, true);
-            openOtpSettings(otpUserId, otpUsername, false, true);
+            await api('POST', `/api/users/${userId}/otp/enable`);
+            setUserOtpState(userId, false, true);
+            openOtpSettings(userId, username, false, true);
             wbToast('OTP enabled. User onboarding starts at next login.', 'success');
         } catch (error) {
             wbAlert('Failed to enable OTP: ' + error.message, 'danger');
+        } finally {
+            this.disabled = false;
         }
     });
+
+    // Event delegation for user action buttons
+    const usersTable = document.querySelector('.users-table');
+    if (usersTable) {
+        usersTable.addEventListener('click', (e) => {
+            const editBtn = e.target.closest('.btn-edit-user');
+            if (editBtn) {
+                e.preventDefault();
+                editUser(
+                    parseInt(editBtn.dataset.userId, 10),
+                    editBtn.dataset.username
+                );
+                return;
+            }
+
+            const otpBtn = e.target.closest('.btn-otp-settings');
+            if (otpBtn) {
+                e.preventDefault();
+                openOtpSettings(
+                    parseInt(otpBtn.dataset.userId, 10),
+                    otpBtn.dataset.username,
+                    otpBtn.dataset.otpEnabled === 'true',
+                    otpBtn.dataset.otpSecret === 'true'
+                );
+                return;
+            }
+
+            const deleteBtn = e.target.closest('.btn-delete-user');
+            if (deleteBtn) {
+                e.preventDefault();
+                deleteUser(
+                    parseInt(deleteBtn.dataset.userId, 10),
+                    deleteBtn.dataset.username
+                );
+                return;
+            }
+        });
+    }
+})();
 </script>
 {% endblock %}

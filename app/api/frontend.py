@@ -31,7 +31,7 @@ from fastapi.templating import Jinja2Templates
 
 from ..db.sqlite_interfaces import list_interfaces
 from ..db.sqlite_peers import count_peers, get_peers_paginated
-from ..db.sqlite_settings import get_setting
+from ..db.sqlite_settings import get_dns_blocklist_enabled, get_setting
 from ..db.sqlite_users import get_all_users
 from ..dns import ingestion as dns_ingestion
 from ..dns import unbound
@@ -441,10 +441,17 @@ async def _detect_outbound_ip_cached() -> tuple[str | None, str]:
 
 def _dns_config_indicator(
 	iface: sqlite3.Row | None,
-) -> tuple[bool, str]:
-	"""Return a configuration-based DNS leak heuristic (not a runtime leak test)."""
+) -> tuple[bool | None, str]:
+	"""Return a configuration-based DNS leak heuristic (not a runtime leak test).
+
+	Returns:
+		Tuple of (status, detail) where status is:
+		- True: DNS is correctly configured
+		- False: DNS configuration issue detected
+		- None: Not applicable (not connected via WireGuard)
+	"""
 	if iface is None:
-		return False, "No matching WireGuard interface found for request IP"
+		return None, "Not connected via WireGuard – DNS leak check not applicable"
 
 	dns_raw = str(iface["dns"] or "").strip()
 	if not dns_raw:
@@ -499,8 +506,11 @@ async def _dns_leak_indicator(
 	- OK only when configuration is correct and recent DNS traffic from this client
 	  is observed in WireBuddy's own DNS logs.
 	- WARN for misconfiguration or when runtime verification is currently unknown.
+	- INFO when not connected via WireGuard (check not applicable).
 	"""
 	config_ok, config_detail = _dns_config_indicator(iface)
+	if config_ok is None:
+		return "info", config_detail
 	if not config_ok:
 		return "warn", config_detail
 
@@ -705,6 +715,23 @@ def _get_about_data() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# System Status API
+# ---------------------------------------------------------------------------
+
+@router.get("/api/system/status")
+def get_system_status(request: Request):
+	"""Get system status including key mismatch warning.
+	
+	This endpoint is intentionally unauthenticated to allow the banner
+	to show on the login page as well.
+	"""
+	key_mismatch = getattr(request.app.state, "key_mismatch", False)
+	return {
+		"key_mismatch": key_mismatch,
+	}
+
+
+# ---------------------------------------------------------------------------
 # Frontend Routes
 # ---------------------------------------------------------------------------
 
@@ -865,11 +892,28 @@ def users_page(
 @router.get("/ui/dns", response_class=HTMLResponse)
 def dns_page(
 	request: Request,
+	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_user_or_redirect),
 ):
 	"""DNS ad-blocking page."""
+	enable_blocklist = get_dns_blocklist_enabled(conn)
 	
 	return templates.TemplateResponse("dns.html", {
+		"request": request,
+		"user": user,
+		"enable_blocklist": enable_blocklist,
+		"csrf_token": _get_csrf_token(request),
+	})
+
+
+@router.get("/ui/traffic", response_class=HTMLResponse)
+def traffic_page(
+	request: Request,
+	user: sqlite3.Row = Depends(require_user_or_redirect),
+):
+	"""Traffic usage page."""
+
+	return templates.TemplateResponse("traffic.html", {
 		"request": request,
 		"user": user,
 		"csrf_token": _get_csrf_token(request),
@@ -1022,7 +1066,10 @@ async def _run_status_health_checks(
 	)
 
 	dns_probe_ok, dns_probe_detail = dns_probe_result
-	if dns_running and dns_probe_ok:
+	# If not connected via WireGuard, skip DNS checks entirely
+	if matched_iface is None:
+		dns_health = {"state": "info", "label": "N/A", "detail": "Not connected via WireGuard – DNS check not applicable"}
+	elif dns_running and dns_probe_ok:
 		dns_health = {"state": "ok", "label": "OK", "detail": dns_probe_detail}
 	elif dns_probe_ok:
 		dns_health = {"state": "warn", "label": "WARN", "detail": "Resolver probe passed, Unbound process not detected"}
@@ -1030,7 +1077,12 @@ async def _run_status_health_checks(
 		dns_health = {"state": "error", "label": "ERROR", "detail": dns_probe_detail}
 
 	leak_state, leak_detail = leak_result
-	leak_label = "OK" if leak_state == "ok" else "WARN"
+	if leak_state == "ok":
+		leak_label = "OK"
+	elif leak_state == "info":
+		leak_label = "N/A"
+	else:
+		leak_label = "WARN"
 	leak_health = {"state": leak_state, "label": leak_label, "detail": leak_detail}
 
 	outbound_ip, outbound_detail = outbound_result
