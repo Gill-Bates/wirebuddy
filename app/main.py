@@ -122,9 +122,16 @@ async def _verify_host_network_mode() -> None:
 	Detection: In bridge mode, the default route goes through Docker's
 	internal gateway (172.17.0.1, etc.). In host mode, the container
 	shares the host's routing table with real gateway IPs.
+	
+	Can be bypassed with WIREBUDDY_SKIP_NETWORK_CHECK=1 for testing purposes.
 	"""
 	# Not in Docker container - OK (local development / bare-metal)
 	if not _DOCKER_ENV_FILE.exists():
+		return
+
+	# Allow bypassing for CI/CD smoke tests
+	if os.getenv("WIREBUDDY_SKIP_NETWORK_CHECK", "").lower() in ("1", "true", "yes"):
+		_log.warning("Network mode check skipped (WIREBUDDY_SKIP_NETWORK_CHECK is set)")
 		return
 
 	try:
