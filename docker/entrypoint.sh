@@ -1,4 +1,9 @@
-#!/bin/sh
+#!/usr/bin/env bash
+#
+# docker/entrypoint.sh
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+#
+
 # WireBuddy Docker Entrypoint
 # Reads GUI settings from database before starting uvicorn
 
@@ -36,4 +41,4 @@ exec uvicorn app:create_app \
     --factory \
     --workers "${UVICORN_WORKERS:-2}" \
     --proxy-headers \
-    --forwarded-allow-ips="${FORWARDED_ALLOW_IPS:-}"
+    --forwarded-allow-ips="${FORWARDED_ALLOW_IPS:-127.0.0.1}"

@@ -10,6 +10,7 @@
     <link rel="icon" type="image/svg+xml" href="/static/img/wirebuddy_1c.svg">
     <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
     <link href="/static/css/style.css" rel="stylesheet">
+    <link href="/static/css/wb-ui-system.css" rel="stylesheet">
     <link href="/static/vendor/material-icons.css" rel="stylesheet">
     <script src="/static/js/theme.js"></script>
 </head>
@@ -78,9 +79,15 @@
                         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
                         font-variant-numeric: tabular-nums;
                         font-feature-settings: "tnum";
-                        font-weight: 600;
+                        font-weight: 500;
                         text-rendering: geometricPrecision;
                         -webkit-font-smoothing: antialiased;
+                    }
+                    .otp-digit:invalid {
+                        box-shadow: none;
+                        outline: none;
+                        color: inherit;
+                        border-color: var(--bs-border-color);
                     }
                     .otp-separator {
                         flex: 0 0 auto;
@@ -108,6 +115,17 @@
                             font-size: 1rem;
                             line-height: 42px;
                         }
+                    }
+                    /* OTP error shake animation */
+                    @keyframes otp-shake {
+                        0%, 100% { transform: translateX(0); }
+                        10%, 50%, 90% { transform: translateX(-4px); }
+                        30%, 70% { transform: translateX(4px); }
+                    }
+                    .otp-digit.otp-error {
+                        border-color: var(--wb-danger) !important;
+                        color: var(--wb-danger) !important;
+                        animation: otp-shake 0.5s ease-in-out;
                     }
                 </style>
 
@@ -339,8 +357,17 @@
 
                 window.location.href = '/ui/dashboard';
             } catch (error) {
-                showError(error.message);
-                clearOtpDigits();
+                // Shake + red flash, then clear for re-entry
+                const allDigits = document.querySelectorAll('.otp-digit');
+                allDigits.forEach(d => d.classList.add('otp-error'));
+                setTimeout(() => {
+                    allDigits.forEach(d => {
+                        d.classList.remove('otp-error');
+                        d.value = '';
+                    });
+                    document.querySelector('.otp-digit[data-index="0"]')?.focus();
+                    document.getElementById('mfa-submit-btn').disabled = true;
+                }, 600);
             } finally {
                 clearBusy(mfaSubmitBtn, 'Verify');
             }

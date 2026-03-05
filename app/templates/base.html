@@ -1,11 +1,11 @@
 {% from 'macros/nav.html' import nav_item with context %}
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="light">
+<html lang="en" data-bs-theme="{{ theme | default('light') | e }}">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="csrf-token" content="{{ csrf_token }}">
+    <meta name="csrf-token" content="{{ csrf_token | e }}">
     <title>{% block title %}WireBuddy{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="/static/img/wirebuddy_1c.svg">
     <!-- Preload critical font for faster icon rendering -->
@@ -15,44 +15,25 @@
     <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
     <link href="/static/vendor/material-icons.css" rel="stylesheet">
     <link href="/static/css/style.css" rel="stylesheet">
+    <link href="/static/css/wb-ui-system.css" rel="stylesheet">
     <style>
-        body.wb-reconnecting .main-content {
-            opacity: 0.35;
-            filter: blur(4px) saturate(0.9);
-            pointer-events: none;
-            transition: opacity 0.2s ease, filter 0.2s ease;
-        }
-
-        body.wb-reconnecting .sidebar {
-            filter: blur(4px);
-            transition: filter 0.3s ease;
-        }
-
-        body.wb-reconnecting .modal-backdrop.show {
-            background-color: rgba(15, 23, 42, 0.5) !important;
-        }
-
-        body.wb-onboarding .main-content {
-            opacity: 0.4;
-            filter: blur(3px);
-            transition: opacity 0.3s ease, filter 0.3s ease;
-        }
-
-        body.wb-onboarding .sidebar {
-            opacity: 0.4;
-            filter: blur(3px);
-            transition: opacity 0.3s ease, filter 0.3s ease;
-        }
-
-        body.wb-onboarding .modal-backdrop.show {
-            background-color: rgba(15, 23, 42, 0.5) !important;
+        :root {
+            --wb-z-banner: 1080;
+            --wb-z-toast: 1090;
         }
 
         /* Blur background when any modal is open via backdrop-filter */
         .modal-backdrop.show {
-            background-color: rgba(15, 23, 42, 0.5) !important;
-            -webkit-backdrop-filter: blur(4px) saturate(0.9);
-            backdrop-filter: blur(4px) saturate(0.9);
+            background-color: rgba(15, 23, 42, 0.6);
+            -webkit-backdrop-filter: blur(16px) saturate(0.85);
+            backdrop-filter: blur(16px) saturate(0.85);
+        }
+
+        /* Center modals vertically (except scrollable modals) */
+        .modal:not(.modal-dialog-scrollable) .modal-dialog {
+            display: flex;
+            align-items: center;
+            min-height: calc(100% - var(--bs-modal-margin) * 2);
         }
 
         /* Global spinner styling */
@@ -66,7 +47,7 @@
 
         #wbReconnectModal .modal-content {
             border: 1px solid rgba(128, 128, 128, 0.25);
-            border-radius: 0.9rem;
+            border-radius: var(--wb-radius-lg);
         }
 
         #wbReconnectModal .spinner-border {
@@ -94,7 +75,6 @@
         body.wb-reconnecting #wbReconnectModal.show .wb-reconnect-pulse {
             animation: wbReconnectSoftPulse 1.9s ease-in-out infinite;
             transform-origin: center;
-            will-change: transform, box-shadow;
         }
 
         @media (prefers-reduced-motion: reduce) {
@@ -108,7 +88,7 @@
 
 <body>
     <!-- Key Mismatch Warning Banner -->
-    <div id="keyMismatchBanner" class="alert alert-danger mb-0 rounded-0 py-2 d-none" role="alert" style="position: sticky; top: 0; z-index: 9999; border-left: 0; border-right: 0; border-top: 0;">
+    <div id="keyMismatchBanner" class="alert alert-danger mb-0 rounded-0 py-2 d-none" role="alert">
         <div class="container-fluid d-flex align-items-center justify-content-center gap-2">
             <span class="material-icons text-danger">error</span>
             <strong>Critical:</strong> WIREBUDDY_SECRET_KEY does not match the database encryption key. 
@@ -117,16 +97,16 @@
     </div>
 
     <!-- Navbar -->
-    <nav class="navbar navbar-expand-lg navbar-dark">
+    <nav class="navbar navbar-expand-lg navbar-dark" aria-label="Top navigation bar">
         <div class="container-fluid">
             <a class="navbar-brand d-flex align-items-center" href="/ui/dashboard">
                 <img src="/static/img/wirebuddy_1c.svg" alt="WireBuddy" class="navbar-logo">
             </a>
             <!-- Always-visible right-side actions (outside collapse) -->
-            <div class="d-flex align-items-center gap-2 ms-auto order-1 order-lg-last navbar-controls">
+            <div class="d-flex align-items-center gap-2 ms-auto order-lg-last navbar-controls">
                 {% if user %}
                 <div class="d-flex align-items-center gap-2 navbar-actions" aria-label="User actions">
-                    <span class="text-white navbar-user-label d-none d-lg-inline">{{ user['username'] }}</span>
+                    <span class="text-white navbar-user-label d-none d-lg-inline">{{ user['username'] | e }}</span>
                     <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn" id="themeToggle"
                         aria-label="Toggle theme">
                         <span class="material-icons" id="theme-icon">dark_mode</span>
@@ -156,9 +136,8 @@
                     {{ nav_item('/ui/settings', 'settings', 'Settings') }}
                     {{ nav_item('/ui/about', 'info', 'About') }}
                 </div>
-                <!-- Desktop right-side items (sidebar handles desktop nav) -->
-                <ul class="navbar-nav ms-auto align-items-center d-none d-lg-flex">
-                </ul>
+                <!-- Reserved for future desktop nav items -->
+                <!-- <ul class="navbar-nav ms-auto align-items-center d-none d-lg-flex"></ul> -->
             </div>
         </div>
     </nav>
@@ -185,11 +164,26 @@
 
     <!-- Footer -->
     <footer class="wb-footer">
-        <span class="wb-footer-content">WireBuddy v{{ VERSION }} (<span class="font-monospace">{{ BUILD_INFO[:7] }}</span>) &middot; &copy;&nbsp;<span id="copyright-year"></span>Gill-Bates&nbsp;&middot;&nbsp;<a href="https://github.com/Gill-Bates/wirebuddy" target="_blank" rel="noopener noreferrer" class="text-decoration-none wb-footer-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" class="wb-footer-link-icon"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>GitHub</a></span>
+        <span class="wb-footer-content">
+            WireBuddy v{{ VERSION | e }}
+            (<span class="font-monospace">{{ (BUILD_INFO or '')[:7] | e }}</span>)
+            &middot; &copy;&nbsp;<span id="copyright-year"></span>Gill-Bates
+            &middot;&nbsp;
+            <a href="https://github.com/Gill-Bates/wirebuddy"
+               target="_blank" rel="noopener noreferrer"
+               class="text-decoration-none wb-footer-link">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"
+                     class="wb-footer-link-icon" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                </svg>
+                GitHub
+                <span class="visually-hidden">(opens in new tab)</span>
+            </a>
+        </span>
     </footer>
 
     <!-- Reusable Modal (alert / confirm / prompt) -->
-    <div class="modal fade" id="wbModal" aria-labelledby="wbModalTitle">
+    <div class="modal fade" id="wbModal" tabindex="-1" aria-labelledby="wbModalTitle">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
@@ -218,7 +212,7 @@
     </div>
 
     <!-- Reconnect Modal -->
-    <div class="modal fade" id="wbReconnectModal" aria-labelledby="wbReconnectTitle">
+    <div class="modal fade" id="wbReconnectModal" tabindex="-1" aria-labelledby="wbReconnectTitle">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content wb-reconnect-pulse">
                 <div class="modal-body py-5 px-4">
@@ -227,6 +221,9 @@
                         <div>
                             <h5 id="wbReconnectTitle" class="mb-2" role="alert">Trying to reconnect ...</h5>
                             <small class="text-muted">The server is restarting or temporarily unavailable.</small>
+                            <div class="mt-3 d-none" id="wbReconnectFailsafeWrap">
+                                <button class="btn btn-sm btn-outline-secondary" id="wbReconnectReload">Reload Page</button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -235,10 +232,10 @@
     </div>
 
     <!-- Toast container -->
-    <div class="toast-container position-fixed top-0 end-0 p-3" id="wbToastContainer" style="z-index: 1100;"></div>
+    <div class="toast-container position-fixed top-0 end-0 p-3" id="wbToastContainer"></div>
 
     <!-- Onboarding Modal -->
-    <div class="modal fade" id="wbOnboardingModal" aria-labelledby="wbOnboardingTitle">
+    <div class="modal fade" id="wbOnboardingModal" tabindex="-1" aria-labelledby="wbOnboardingTitle">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content">
                 <div class="modal-header border-0 pb-0">
@@ -325,45 +322,53 @@
     <script src="/static/js/reconnect.js"></script>
     <script src="/static/js/onboarding.js"></script>
 
-    <!-- Failsafe: Remove wb-reconnecting after 15s if not cleared -->
+    <!-- Consolidated Inline Scripts -->
     <script>
-        if (document.body.classList.contains('wb-reconnecting')) {
-            setTimeout(() => document.body.classList.remove('wb-reconnecting'), 15000);
-        }
-    </script>
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Reconnect Failsafe
+            if (document.body.classList.contains('wb-reconnecting')) {
+                setTimeout(() => {
+                    document.body.classList.remove('wb-reconnecting');
+                    const failsafeWrap = document.getElementById('wbReconnectFailsafeWrap');
+                    if (failsafeWrap) failsafeWrap.classList.remove('d-none');
+                }, 15000);
+            }
 
-    <!-- Key Mismatch Banner Check -->
-    <script>
-        (async function checkKeyMismatch() {
+            // Reload button in reconnect modal
+            const reloadBtn = document.getElementById('wbReconnectReload');
+            if (reloadBtn) {
+                reloadBtn.addEventListener('click', () => window.location.reload());
+            }
+
+            // Key Mismatch Banner Check
             try {
-                const res = await fetch('/api/system/status');
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data.key_mismatch) {
+                if (typeof api === 'function') {
+                    const data = await api('GET', '/api/system/status');
+                    if (data && data.key_mismatch) {
                         const banner = document.getElementById('keyMismatchBanner');
                         if (banner) banner.classList.remove('d-none');
                     }
                 }
             } catch (e) {
-                // Silently fail - banner won't show if API unreachable
+                console.warn('[WB] System status check failed:', e?.message || e);
             }
-        })();
-    </script>
 
-    <!-- Move theme toggle handler to JS -->
-    <script>
-        window.addEventListener('DOMContentLoaded', function() {
-            var yearEl = document.getElementById('copyright-year');
+            // Copyright year
+            const yearEl = document.getElementById('copyright-year');
             if (yearEl) {
                 yearEl.textContent = String(new Date().getFullYear()) + '\u00a0';
             }
-            var themeToggle = document.getElementById('themeToggle');
+
+            // Theme toggle
+            const themeToggle = document.getElementById('themeToggle');
             if (themeToggle) {
                 themeToggle.addEventListener('click', function() {
                     if (typeof toggleTheme === 'function') toggleTheme();
                 });
             }
-            var logoutBtn = document.getElementById('logoutBtn');
+
+            // Logout
+            const logoutBtn = document.getElementById('logoutBtn');
             if (logoutBtn) {
                 logoutBtn.addEventListener('click', function() {
                     if (typeof logout === 'function') logout();

@@ -14,8 +14,11 @@ import fcntl
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
+import tempfile
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path as PathLib
@@ -27,9 +30,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, EmailStr, Field
 
-from ..api.auth import require_admin
+from ..api.auth import get_current_user, require_admin
 from .response import ok_response
 from ..utils.config import Config, get_config
 
@@ -48,6 +52,7 @@ CHALLENGE_TTL = 600
 # SECURITY: Without this, Python's GC can close the file object and release
 #           the fcntl lock prematurely, breaking domain locking guarantees
 _domain_lock_fds: dict[int, object] = {}  # fd_num -> file object
+_domain_lock_fds_lock = threading.Lock()
 
 # Domain lock file helpers (worker-safe)
 def _acquire_domain_lock(certs_dir: PathLib, domain: str) -> Optional[int]:
@@ -68,7 +73,8 @@ def _acquire_domain_lock(certs_dir: PathLib, domain: str) -> Optional[int]:
 		
 		# Store file object to prevent GC from closing it
 		fd_num = fd_obj.fileno()
-		_domain_lock_fds[fd_num] = fd_obj
+		with _domain_lock_fds_lock:
+			_domain_lock_fds[fd_num] = fd_obj
 		return fd_num
 	except (IOError, OSError):
 		return None
@@ -76,12 +82,13 @@ def _acquire_domain_lock(certs_dir: PathLib, domain: str) -> Optional[int]:
 def _release_domain_lock(fd: int) -> None:
 	"""Release domain lock by file descriptor."""
 	# Retrieve and remove file object from storage
-	fd_obj = _domain_lock_fds.pop(fd, None)
+	with _domain_lock_fds_lock:
+		fd_obj = _domain_lock_fds.pop(fd, None)
 	if fd_obj is None:
 		return
 	
 	try:
-		fcntl.flock(fd, fcntl.LOCK_UN)
+		fcntl.flock(fd_obj.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
 		fd_obj.close()  # type: ignore
 	except Exception:
 		pass
@@ -172,6 +179,29 @@ def _jwk_thumbprint(jwk: dict) -> str:
 	
 	canonical_json = json.dumps(canonical, separators=(",", ":"), sort_keys=True)
 	return _b64url(_sha256(canonical_json.encode("utf-8")))
+
+
+def _atomic_write_bytes(path: PathLib, data: bytes, mode: int) -> None:
+	"""Write bytes atomically and apply mode."""
+	path.parent.mkdir(parents=True, exist_ok=True)
+	fd, tmp_name = tempfile.mkstemp(
+		prefix=f".{path.name}.",
+		suffix=".tmp",
+		dir=str(path.parent),
+	)
+	try:
+		with os.fdopen(fd, "wb") as tmp:
+			tmp.write(data)
+			tmp.flush()
+			os.fsync(tmp.fileno())
+		os.replace(tmp_name, path)
+		path.chmod(mode)
+	finally:
+		try:
+			if os.path.exists(tmp_name):
+				os.unlink(tmp_name)
+		except OSError:
+			pass
 
 
 class ACMEClient:
@@ -451,7 +481,7 @@ class ACMEClient:
 		
 		raise HTTPException(status_code=408, detail="Timeout waiting for order to be ready")
 	
-	async def finalize_order(self, finalize_url: str, domain: str) -> tuple[bytes, bytes]:
+	async def finalize_order(self, finalize_url: str, order_url: str, domain: str) -> tuple[bytes, bytes]:
 		"""Finalize order with CSR and get certificate."""
 		# Generate domain key
 		domain_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -479,7 +509,7 @@ class ACMEClient:
 		
 		# Wait for certificate
 		if order.get("status") != "valid":
-			order = await self.poll_order(resp.headers.get("Location", finalize_url))
+			order = await self.poll_order(order_url)
 		
 		# Download certificate
 		cert_url = order.get("certificate")
@@ -523,19 +553,17 @@ class ACMEClient:
 		key_path = domain_dir / f"privkey{suffix}.pem"
 		
 		# Always save fullchain (all certs)
-		fullchain_path.write_bytes(cert_pem)
-		fullchain_path.chmod(0o644)
-		key_path.write_bytes(key_pem)
-		key_path.chmod(0o600)
+		_atomic_write_bytes(fullchain_path, cert_pem, 0o644)
+		_atomic_write_bytes(key_path, key_pem, 0o600)
 		
 		# Split cert.pem (leaf) and chain.pem (intermediates)
 		if len(certs) >= 1:
 			cert_path = domain_dir / f"cert{suffix}.pem"
-			cert_path.write_bytes(certs[0] + b"\n")
+			_atomic_write_bytes(cert_path, certs[0] + b"\n", 0o644)
 		
 		if len(certs) >= 2:
 			chain_path = domain_dir / f"chain{suffix}.pem"
-			chain_path.write_bytes(b"\n".join(certs[1:]) + b"\n")
+			_atomic_write_bytes(chain_path, b"\n".join(certs[1:]) + b"\n", 0o644)
 		
 		_log.info("Saved certificate for %s to %s", domain, domain_dir)
 		
@@ -559,7 +587,10 @@ def _load_challenges(certs_dir: PathLib) -> dict[str, dict]:
 		return {}
 	
 	try:
-		data = json.loads(challenge_file.read_text())
+		with open(challenge_file, "r") as f:
+			fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+			content = f.read()
+			data = json.loads(content) if content else {}
 		now = time.time()
 		
 		# Filter out expired challenges
@@ -584,32 +615,28 @@ def _save_challenge(certs_dir: PathLib, token: str, key_auth: str) -> None:
 		# Acquire exclusive lock
 		fcntl.flock(f.fileno(), fcntl.LOCK_EX)
 		
-		try:
-			# Load existing and clean expired
-			f.seek(0)
-			content = f.read()
-			challenges = json.loads(content) if content else {}
-			
-			now = time.time()
-			valid = {}
-			for t, entry in challenges.items():
-				if isinstance(entry, dict) and entry.get("expires", 0) > now:
-					valid[t] = entry
-			
-			# Add new challenge
-			valid[token] = {
-				"key_auth": key_auth,
-				"expires": now + CHALLENGE_TTL,
-			}
-			
-			# Write atomically
-			f.seek(0)
-			f.truncate()
-			f.write(json.dumps(valid))
-			f.flush()
-		finally:
-			# Lock is automatically released when file is closed
-			pass
+		# Load existing and clean expired
+		f.seek(0)
+		content = f.read()
+		challenges = json.loads(content) if content else {}
+		
+		now = time.time()
+		valid = {}
+		for t, entry in challenges.items():
+			if isinstance(entry, dict) and entry.get("expires", 0) > now:
+				valid[t] = entry
+		
+		# Add new challenge
+		valid[token] = {
+			"key_auth": key_auth,
+			"expires": now + CHALLENGE_TTL,
+		}
+		
+		# Write atomically
+		f.seek(0)
+		f.truncate()
+		f.write(json.dumps(valid))
+		f.flush()
 
 
 def _remove_challenge(certs_dir: PathLib, token: str) -> None:
@@ -623,23 +650,20 @@ def _remove_challenge(certs_dir: PathLib, token: str) -> None:
 		# Acquire exclusive lock
 		fcntl.flock(f.fileno(), fcntl.LOCK_EX)
 		
-		try:
-			f.seek(0)
-			content = f.read()
-			challenges = json.loads(content) if content else {}
-			challenges.pop(token, None)
-			
-			f.seek(0)
-			f.truncate()
-			
-			if challenges:
-				f.write(json.dumps(challenges))
-				f.flush()
-		finally:
-			pass
+		f.seek(0)
+		content = f.read()
+		challenges = json.loads(content) if content else {}
+		challenges.pop(token, None)
+		
+		f.seek(0)
+		f.truncate()
+		
+		if challenges:
+			f.write(json.dumps(challenges))
+			f.flush()
 
 
-def get_challenge_response(token: str, certs_dir: Optional[Path] = None) -> Optional[str]:
+def get_challenge_response(token: str, certs_dir: Optional[PathLib] = None) -> Optional[str]:
 	"""Get challenge response for ACME HTTP-01 validation.
 	
 	MULTI-WORKER SAFETY: With multiple Uvicorn workers, the in-memory cache
@@ -681,13 +705,19 @@ def _get_certs_dir_dep(config: Config = Depends(get_config)) -> PathLib:
 @router.get("/certificates")
 async def list_certificates(
 	certs_dir: PathLib = Depends(_get_certs_dir_dep),
-	_: sqlite3.Row = Depends(require_admin),
+	_: sqlite3.Row = Depends(get_current_user),
 ) -> dict:
 	"""List all certificates."""
+	certificates = _list_certificates_internal(certs_dir)
+	return ok_response(data=certificates)
+
+
+def _list_certificates_internal(certs_dir: PathLib) -> list[CertificateInfo]:
+	"""Internal certificate listing logic used by multiple routes."""
 	certificates = []
 	
 	if not certs_dir.exists():
-		return ok_response(data=certificates)
+		return certificates
 	
 	now = datetime.now(timezone.utc)
 	renewal_threshold = timedelta(days=30)
@@ -732,7 +762,7 @@ async def list_certificates(
 					is_staging=is_staging,
 				))
 	
-	return ok_response(data=certificates)
+	return certificates
 
 
 @router.post("/certificates/request")
@@ -803,7 +833,7 @@ async def request_certificate(
 				order = await client.poll_order(order_url)
 				
 				# Finalize order
-				cert_pem, key_pem = await client.finalize_order(order["finalize"], req.domain)
+				cert_pem, key_pem = await client.finalize_order(order["finalize"], order_url, req.domain)
 				
 				# Save certificate
 				cert_dir = client.save_certificate(req.domain, cert_pem, key_pem, is_staging=req.staging)
@@ -850,18 +880,17 @@ async def delete_certificate(
 		raise HTTPException(status_code=404, detail="Certificate not found")
 	
 	suffix = "_staging" if staging else ""
-	cert_path = domain_dir / f"fullchain{suffix}.pem"
-	key_path = domain_dir / f"privkey{suffix}.pem"
-	
 	deleted = False
-	
-	if cert_path.exists():
-		cert_path.unlink()
-		deleted = True
-	
-	if key_path.exists():
-		key_path.unlink()
-		deleted = True
+	for filename in (
+		f"fullchain{suffix}.pem",
+		f"privkey{suffix}.pem",
+		f"cert{suffix}.pem",
+		f"chain{suffix}.pem",
+	):
+		file_path = domain_dir / filename
+		if file_path.exists():
+			file_path.unlink()
+			deleted = True
 	
 	# Remove directory if empty
 	try:
@@ -882,11 +911,11 @@ async def delete_certificate(
 	)
 
 
-@router.get("/certificates/challenge/{token}")
+@router.get("/certificates/challenge/{token}", response_class=PlainTextResponse)
 async def serve_challenge(
 	token: str,
 	certs_dir: PathLib = Depends(_get_certs_dir_dep),
-) -> str:
+) -> PlainTextResponse:
 	"""
 	Serve ACME HTTP-01 challenge response.
 	
@@ -904,7 +933,7 @@ async def serve_challenge(
 	if not key_auth:
 		raise HTTPException(status_code=404, detail="Challenge not found")
 	
-	return key_auth
+	return PlainTextResponse(content=key_auth, media_type="text/plain")
 
 
 @router.get("/certificates/renewal-check")
@@ -919,10 +948,7 @@ async def check_renewals(
 	For automatic renewal, call this periodically (e.g., via cron)
 	and issue new certificates for domains where needs_renewal is True.
 	"""
-	# BUG FIX: list_certificates returns ok_response dict, not list
-	# Must extract "data" key to get actual certificate list
-	response = await list_certificates(certs_dir, _)
-	certificates = response.get("data", [])
+	certificates = _list_certificates_internal(certs_dir)
 	
 	needs_renewal = [
 		cert for cert in certificates

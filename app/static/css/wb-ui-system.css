@@ -1,0 +1,450 @@
+/* =========================================
+   WireBuddy UI System
+   Zentrale Design-Definition für konsistentes UI
+   ========================================= */
+
+/* ---------- 1. Design Tokens ---------- */
+
+:root {
+    /* Typography */
+    --wb-font-base: 0.875rem;
+    /* 14px */
+    --wb-font-sm: 0.75rem;
+    /* 12px */
+    --wb-font-md: 0.875rem;
+    /* 14px */
+    --wb-font-lg: 1rem;
+    /* 16px */
+    --wb-font-xl: 1.25rem;
+    /* 20px */
+
+    --wb-heading-page: 1.4rem;
+    --wb-heading-card: 0.95rem;
+
+    /* Radius */
+    --wb-radius-sm: 6px;
+    --wb-radius-md: 10px;
+    --wb-radius-lg: 12px;
+
+    /* Shadows */
+    --wb-shadow-1: 0 2px 8px rgba(0, 0, 0, 0.04);
+    --wb-shadow-2: 0 4px 16px rgba(0, 0, 0, 0.06);
+
+    /* Muted backgrounds */
+    --wb-muted-bg: rgba(0, 0, 0, 0.035);
+    --wb-hover-bg: rgba(0, 0, 0, 0.025);
+
+    /* Transition */
+    --wb-transition: all 0.2s ease;
+}
+
+[data-bs-theme="dark"] {
+    --wb-shadow-1: 0 2px 8px rgba(0, 0, 0, 0.55);
+    --wb-shadow-2: 0 4px 18px rgba(0, 0, 0, 0.65);
+    --wb-muted-bg: rgba(255, 255, 255, 0.06);
+    --wb-hover-bg: rgba(255, 255, 255, 0.04);
+}
+
+
+/* ---------- 2. Base Typography ---------- */
+
+body {
+    font-size: var(--wb-font-base);
+    font-weight: 400;
+}
+
+.page-title {
+    font-size: var(--wb-heading-page);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+.card-title {
+    font-size: var(--wb-heading-card);
+    font-weight: 600;
+}
+
+.small,
+small {
+    font-size: var(--wb-font-sm);
+}
+
+
+/* ---------- 3. Cards ---------- */
+
+.card {
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    border-radius: var(--wb-radius-lg);
+    box-shadow: var(--wb-shadow-1);
+    transition: var(--wb-transition);
+}
+
+.card:hover {
+    box-shadow: var(--wb-shadow-2);
+}
+
+[data-bs-theme="dark"] .card {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.card-header {
+    padding: 0.6rem 1rem;
+}
+
+.card-body {
+    padding: 1rem;
+}
+
+
+/* ---------- 4. Buttons ---------- */
+
+.btn {
+    font-size: 0.8rem;
+    font-weight: 500;
+    padding: 0.4rem 0.8rem;
+    border-radius: var(--wb-radius-md);
+    transition: var(--wb-transition);
+}
+
+.btn-sm {
+    padding: 0.3rem 0.65rem;
+}
+
+.btn .material-icons {
+    font-size: 1rem;
+    vertical-align: middle;
+    line-height: 1;
+}
+
+/* Buttons with text + icon: add right margin to icon */
+.btn .material-icons:not(:only-child) {
+    margin-right: 0.35rem;
+}
+
+/* Icon-only buttons: center the icon */
+.btn .material-icons:only-child {
+    display: inline-flex;
+    margin: 0;
+}
+
+/* Icon-only buttons */
+.btn-icon {
+    padding: 0.3rem 0.5rem;
+}
+
+.btn-icon .material-icons {
+    margin-right: 0;
+}
+
+
+/* ---------- 5. Tables ---------- */
+
+.table {
+    font-size: 0.8rem;
+    margin-bottom: 0;
+}
+
+.table thead th {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    border-bottom-width: 1px;
+}
+
+.table tbody tr {
+    transition: var(--wb-transition);
+}
+
+.table tbody tr:hover {
+    background-color: var(--wb-hover-bg);
+}
+
+
+/* ---------- 6. Badges ---------- */
+
+.badge {
+    font-weight: 500;
+    font-size: 0.7rem;
+    padding: 0.35em 0.6em;
+    border-radius: var(--wb-radius-sm);
+}
+
+
+/* ---------- 7. Form Controls ---------- */
+
+.form-control,
+.form-select {
+    font-size: 0.85rem;
+    border-radius: var(--wb-radius-md);
+    transition: var(--wb-transition);
+}
+
+
+/* ---------- 8. Section Spacing ---------- */
+
+.wb-section {
+    margin-bottom: 1.75rem;
+}
+
+.wb-page {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+}
+
+
+/* ---------- 9. Subtle Panels ---------- */
+
+.wb-muted-panel {
+    background: var(--wb-muted-bg);
+    border-radius: var(--wb-radius-md);
+    padding: 0.75rem 1rem;
+}
+
+
+/* ---------- 10. Page Header ---------- */
+
+.wb-page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+}
+
+.wb-page-header .page-title {
+    margin-bottom: 0;
+}
+
+
+/* ---------- 11. Stat Cards ---------- */
+
+.wb-stat-card {
+    text-align: center;
+}
+
+.wb-stat-card .stat-value {
+    font-size: 1.5rem;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.wb-stat-card .stat-label {
+    font-size: var(--wb-font-sm);
+    color: var(--bs-secondary-color);
+}
+
+
+/* ---------- 12. Icon Consistency ---------- */
+
+.material-icons.icon-sm {
+    font-size: 1rem;
+}
+
+.material-icons.icon-md {
+    font-size: 1.25rem;
+}
+
+.material-icons.icon-lg {
+    font-size: 1.5rem;
+}
+
+/* Standard icon spacing in text */
+.material-icons+span,
+span+.material-icons {
+    margin-left: 0.35rem;
+}
+
+
+/* ---------- 13. List Groups ---------- */
+
+.list-group-item {
+    font-size: var(--wb-font-base);
+    padding: 0.6rem 1rem;
+    transition: var(--wb-transition);
+}
+
+
+/* ---------- 14. Alerts ---------- */
+
+.alert {
+    font-size: var(--wb-font-base);
+    border-radius: var(--wb-radius-md);
+    padding: 0.75rem 1rem;
+}
+
+
+/* ---------- 15. Dropdowns ---------- */
+
+.dropdown-menu {
+    font-size: var(--wb-font-base);
+    border-radius: var(--wb-radius-md);
+    box-shadow: var(--wb-shadow-2);
+}
+
+.dropdown-item {
+    padding: 0.4rem 1rem;
+    transition: var(--wb-transition);
+}
+
+
+/* ---------- 16. Modal Consistency ---------- */
+
+.modal-content {
+    border-radius: var(--wb-radius-lg);
+    box-shadow: var(--wb-shadow-2);
+}
+
+.modal-header {
+    padding: 1rem 1.25rem;
+}
+
+.modal-body {
+    padding: 1.25rem;
+}
+
+.modal-footer {
+    padding: 0.75rem 1.25rem;
+}
+
+
+/* ---------- 17. Nav Tabs ---------- */
+
+.nav-tabs .nav-link {
+    font-size: var(--wb-font-base);
+    padding: 0.5rem 1rem;
+    border-radius: var(--wb-radius-md) var(--wb-radius-md) 0 0;
+    transition: var(--wb-transition);
+}
+
+
+/* ---------- 18. Progress Bars ---------- */
+
+.progress {
+    height: 0.5rem;
+    border-radius: var(--wb-radius-sm);
+}
+
+
+/* ---------- 19. Tooltips ---------- */
+
+.tooltip-inner {
+    font-size: var(--wb-font-sm);
+    border-radius: var(--wb-radius-sm);
+    padding: 0.35rem 0.6rem;
+}
+
+
+/* ---------- 20. Utility Classes ---------- */
+
+.text-muted-light {
+    color: var(--bs-secondary-color) !important;
+}
+
+.bg-muted-light {
+    background-color: var(--wb-muted-bg) !important;
+}
+
+.rounded-wb {
+    border-radius: var(--wb-radius-md) !important;
+}
+
+.rounded-wb-lg {
+    border-radius: var(--wb-radius-lg) !important;
+}
+
+
+/* ---------- 21. Mobile Optimizations ---------- */
+
+/* Reduzierte Seitenabstände für bessere Viewport-Nutzung auf mobilen Geräten */
+@media (max-width: 767.98px) {
+
+    /* Main content area - reduziertes Padding */
+    .main-content {
+        padding: 0.75rem;
+    }
+
+    /* Container - minimales Padding für mehr Platz */
+    .container-fluid {
+        padding-left: 0.5rem;
+        padding-right: 0.5rem;
+    }
+
+    /* Navbar container - Logo bündig mit Kacheln, Buttons mit Abstand vom Rand */
+    .navbar .container-fluid {
+        padding-left: 0.5rem !important;
+        padding-right: 1rem !important;
+    }
+
+    /* Navbar controls - zusätzlicher Abstand vom rechten Rand */
+    .navbar .navbar-controls {
+        margin-right: 0.5rem;
+    }
+
+    /* Navbar brand - Logo mit leichtem Einzug vom linken Viewport-Rand */
+    .navbar .navbar-brand {
+        margin-left: 0.8rem;
+    }
+
+    /* Page wrapper - angepasstes vertikales Padding */
+    .wb-page {
+        padding-top: 1rem;
+        padding-bottom: 1rem;
+    }
+
+    /* Page header - kompakteres Layout */
+    .wb-page-header {
+        margin-bottom: 1rem;
+        gap: 0.5rem;
+    }
+
+    /* Sections - reduzierter Abstand */
+    .wb-section {
+        margin-bottom: 1rem;
+    }
+
+    /* Cards - kompakteres Padding */
+    .card-header {
+        padding: 0.5rem 0.75rem;
+    }
+
+    .card-body {
+        padding: 0.75rem;
+    }
+}
+
+/* Tablet-Optimierungen für mittlere Bildschirmgrößen */
+@media (min-width: 768px) and (max-width: 991.98px) {
+
+    /* Main content - leicht reduziertes Padding */
+    .main-content {
+        padding: 1rem;
+    }
+
+    /* Container - moderates Padding */
+    .container-fluid {
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+    }
+
+    /* Navbar container */
+    .navbar .container-fluid {
+        padding-left: 0.75rem !important;
+        padding-right: 1.25rem !important;
+    }
+
+    /* Navbar controls - moderater Abstand */
+    .navbar .navbar-controls {
+        margin-right: 0.5rem;
+    }
+
+    /* Navbar brand - Logo Alignment */
+    .navbar .navbar-brand {
+        margin-left: 0.25rem;
+    }
+
+    /* Page wrapper */
+    .wb-page {
+        padding-top: 1.5rem;
+        padding-bottom: 1.5rem;
+    }
+}

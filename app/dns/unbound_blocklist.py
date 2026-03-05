@@ -507,7 +507,7 @@ def _is_normalized_domain_blocked(norm: str, blocked_domains: AbstractSet[str]) 
 	return False
 
 
-def is_domain_blocked(domain: str) -> bool:
+def is_domain_blocked(domain: str, *, client_ip: str | None = None) -> bool:
 	"""Check whether *domain* (or any parent) is on the active blocklist.
 	
 	This function also respects runtime custom rules:
@@ -517,6 +517,7 @@ def is_domain_blocked(domain: str) -> bool:
 	
 	Args:
 		domain: Domain name to check (e.g., "example.com" or "sub.example.com")
+		client_ip: Optional client IP used for client-scoped custom rules.
 		
 	Returns:
 		True if the domain or any parent domain is blocked, False otherwise.
@@ -535,11 +536,11 @@ def is_domain_blocked(domain: str) -> bool:
 	allow_rules, block_rules = get_custom_rules_cache()
 	
 	# Whitelist wins: if any allow rule matches, domain is NOT blocked
-	if is_domain_allowed_by_custom_rules(norm, allow_rules):
+	if is_domain_allowed_by_custom_rules(norm, allow_rules, client_ip=client_ip):
 		return False
-	
+
 	# Check custom wildcard/regex block rules
-	if is_domain_blocked_by_custom_rules(norm, block_rules):
+	if is_domain_blocked_by_custom_rules(norm, block_rules, client_ip=client_ip):
 		return True
 	
 	# Fall back to static blocklist file

@@ -24,6 +24,19 @@
 
 ---
 
+## Screenshots
+
+<p align="center">
+  <img src=".github/img/screen1.png" alt="Dashboard" width="100%" style="border-radius: 12px; margin-bottom: 16px;">
+</p>
+<p align="center">
+  <img src=".github/img/screen2.png" alt="Peers" width="100%" style="border-radius: 12px; margin-bottom: 16px;">
+</p>
+<p align="center">
+  <img src=".github/img/screen3.png" alt="DNS Ad-Blocker" width="100%" style="border-radius: 12px;">
+</p>
+
+
 ## 🚀 Quick Start
 
 ### Docker (Recommended)
@@ -46,12 +59,7 @@ for WireGuard interface management and conntrack statistics. The web UI
 listens on port **8000**. Place the container behind a reverse proxy (Caddy,
 nginx, Traefik) or access it directly.
 
-**Caddy example:**
-```caddyfile
-vpn.example.com {
-    reverse_proxy localhost:8000
-}
-```
+For your convenience, an example ``Caddyfile`` is included in this repository.
 
 > **Default credentials:** `admin` / `admin`
 > ⚠️ **Change the default password immediately after first login!**
@@ -71,7 +79,7 @@ net.ipv6.conf.all.forwarding = 1
 EOF
 ```
 
-**Traffic by Country** requires conntrack byte accounting:
+**Traffic by Country & ASN** requires conntrack byte accounting:
 
 ```bash
 # Enable byte accounting — takes effect immediately
@@ -87,19 +95,7 @@ cat /proc/sys/net/netfilter/nf_conntrack_acct
 # → 1
 ```
 
-Without this, the country traffic chart will show no data. WireBuddy logs a warning once when accounting is disabled, and automatically resumes sampling as soon as the value is set — no container restart needed.
-
-### Screenshots
-
-<p align="center">
-  <img src=".github/img/screen1.png" alt="Dashboard" width="100%" style="border-radius: 12px; margin-bottom: 16px;">
-</p>
-<p align="center">
-  <img src=".github/img/screen2.png" alt="Peers" width="100%" style="border-radius: 12px; margin-bottom: 16px;">
-</p>
-<p align="center">
-  <img src=".github/img/screen3.png" alt="DNS Ad-Blocker" width="100%" style="border-radius: 12px;">
-</p>
+Without this, the country and ASN traffic charts will show no data. WireBuddy logs a warning once when accounting is disabled, and automatically resumes sampling as soon as the value is set — no container restart needed.
 
 ### Local Development
 
@@ -117,7 +113,7 @@ python run.py
 |---|---|
 | 🔒 **WireGuard VPN** | Multi-interface management, automatic keypair generation, routing presets (Full Tunnel / Isolated / Custom), QR codes for mobile setup |
 | 🌍 **DNS Ad-Blocking** | Integrated Unbound resolver with blocklists (StevenBlack, HaGeZi Pro), DNS-over-TLS, real-time query log, DNSSEC, Query-Log row actions (Block/Unblock global or per-client), client-scoped custom rules (`$client=`) |
-| 📊 **Monitoring** | Built-in time-series database, per-peer traffic charts, connection status dashboard, auto-refresh |
+| 📊 **Monitoring** | Built-in time-series database, per-peer traffic charts, connection status dashboard, traffic analysis by destination country & ASN, auto-refresh |
 | 🗺️ **GeoIP** | MaxMind GeoLite2 integration, interactive map with heatmap, country flags & ASN badges |
 | 🔐 **Let's Encrypt** | Built-in ACME client with HTTP-01 challenge, certificate management UI |
 | 👥 **User Management** | Multi-user roles (admin/user), MFA (TOTP) for additional account protection, login tracking, token lifecycle |

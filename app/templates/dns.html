@@ -12,15 +12,52 @@
         width: auto;
     }
 
-    #adblocker-label {
-        display: inline-block;
-        min-width: 125px;
+    /* Ad-Blocker dropdown button styles */
+    .adblocker-dropdown .btn {
+        min-width: 180px;
+        font-weight: 500;
+        transition: background-color 0.2s, border-color 0.2s;
+    }
+    .adblocker-dropdown .btn.btn-adblocker-enabled {
+        background-color: var(--bs-success);
+        border-color: var(--bs-success);
+        color: #fff;
+    }
+    .adblocker-dropdown .btn.btn-adblocker-enabled:hover,
+    .adblocker-dropdown .btn.btn-adblocker-enabled:focus {
+        background-color: var(--bs-success);
+        border-color: var(--bs-success);
+        filter: brightness(0.9);
+    }
+    .adblocker-dropdown .btn.btn-adblocker-disabled {
+        background-color: var(--bs-danger);
+        border-color: var(--bs-danger);
+        color: #fff;
+    }
+    .adblocker-dropdown .btn.btn-adblocker-disabled:hover,
+    .adblocker-dropdown .btn.btn-adblocker-disabled:focus {
+        background-color: var(--bs-danger);
+        border-color: var(--bs-danger);
+        filter: brightness(0.9);
+    }
+    .adblocker-dropdown .dropdown-item.active {
+        background-color: var(--bs-primary);
+        color: #fff;
+    }
+    .adblocker-countdown {
+        font-size: 0.85em;
+        opacity: 0.9;
+    }
+    /* Dropdown icon styles - moved from inline for CSP compliance */
+    .adblocker-dropdown .dropdown-item .material-icons {
+        font-size: 1rem;
+        vertical-align: middle;
     }
 
-    /* Disable toggle transition on initial page load */
-    .form-check-input.no-transition,
-    .form-check-input.no-transition::before {
-        transition: none !important;
+    /* Context menu positioning - moved from inline for CSP compliance */
+    #log-action-menu {
+        position: fixed;
+        z-index: 1200;
     }
 
     .dns-stat-label {
@@ -120,7 +157,6 @@
     .log-domain {
         font-family: 'Roboto Flex', sans-serif;
         font-stretch: 75%;
-        font-variation-settings: 'wdth' 75;
         font-size: 0.8rem;
         overflow-wrap: anywhere;
     }
@@ -521,6 +557,11 @@
             font-size: 0.72rem;
             white-space: nowrap;
         }
+
+        /* Add extra bottom padding in mobile view to prevent footer overlap */
+        .wb-page {
+            padding-bottom: 2rem;
+        }
     }
 
     @media (max-width: 575.98px) {
@@ -540,13 +581,22 @@
 {% endblock %}
 
 {% block content %}
-<div class="container-fluid py-4">
-<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4 dns-header">
-    <h1 class="h3 mb-0"><span class="material-icons me-2">dns</span>DNS Ad-Blocker</h1>
+<div class="container-fluid wb-page">
+<div class="wb-page-header flex-wrap gap-2 dns-header">
+    <h2 class="page-title"><span class="material-icons me-2">dns</span>DNS Ad-Blocker</h2>
     <div class="d-flex gap-2 align-items-center dns-toolbar">
-        <div class="form-check form-switch mb-0" id="adblocker-toggle-wrap">
-            <input class="form-check-input no-transition" type="checkbox" role="switch" id="adblocker-toggle"{% if enable_blocklist %} checked{% endif %}>
-            <label class="form-check-label small" for="adblocker-toggle" id="adblocker-label">{{ 'Disable Ad-Blocker' if enable_blocklist else 'Enable Ad-Blocker' }}</label>
+        <div class="dropdown adblocker-dropdown" id="adblocker-dropdown-wrap">
+            <button class="btn btn-sm dropdown-toggle {{ 'btn-adblocker-enabled' if enable_blocklist else 'btn-adblocker-disabled' }}" type="button" id="adblocker-btn" data-bs-toggle="dropdown" aria-expanded="false"{% if not user['is_admin'] %} disabled{% endif %}>
+                <span id="adblocker-btn-text">{{ 'Ad-Blocker: Enabled' if enable_blocklist else 'Ad-Blocker: Disabled' }}</span>
+                <span id="adblocker-countdown" class="adblocker-countdown ms-1" style="display: none;"></span>
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="adblocker-btn">
+                <li><a class="dropdown-item" href="#" data-adblocker-mode="enable"><span class="material-icons me-2">check_circle</span>Enable</a></li>
+                <li><a class="dropdown-item" href="#" data-adblocker-mode="disable"><span class="material-icons me-2">cancel</span>Disable</a></li>
+                <li><hr class="dropdown-divider"></li>
+                <li><a class="dropdown-item" href="#" data-adblocker-mode="disable_1h"><span class="material-icons me-2">timer</span>Disable for 1h</a></li>
+                <li><a class="dropdown-item" href="#" data-adblocker-mode="disable_today"><span class="material-icons me-2">nights_stay</span>Disable for Today</a></li>
+            </ul>
         </div>
     </div>
 </div>
@@ -626,7 +676,7 @@
     </div>
 </div>
 
-<div class="row g-4 mb-4 align-items-stretch">
+<div class="row g-4 mt-0 align-items-stretch">
     <div class="col-12 col-lg-6">
         <div class="row g-4 h-100">
             <div class="col-12 col-md-6 col-lg-6">
@@ -707,7 +757,7 @@
         </div>
     </div>
     <div class="col-12 col-lg-6">
-        <div class="card h-100">
+        <div class="card h-100 d-flex flex-column">
             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <h5 class="mb-0 dns-card-title">
                     <span class="material-icons">receipt_long</span>
@@ -719,24 +769,24 @@
                 </button>
                 <div id="dns-log-filters" class="collapse">
                     <div class="d-flex gap-2 align-items-center flex-wrap log-filters-container">
-                        <select id="log-filter" class="form-select form-select-sm" onchange="renderLogs()">
+                        <select id="log-filter" class="form-select form-select-sm">
                             <option value="all">All</option>
                             <option value="blocked">Blocked only</option>
                             <option value="allowed">Allowed only</option>
                         </select>
-                        <select id="peer-filter" class="form-select form-select-sm" onchange="renderLogs()">
+                        <select id="peer-filter" class="form-select form-select-sm">
                             <option value="all">All Peers</option>
                         </select>
                         <input type="search" id="log-search" class="form-control form-control-sm"
-                            placeholder="Filter domain…" oninput="debouncedRenderLogs()">
-                        <button class="btn btn-sm btn-outline-secondary" onclick="loadLogsOnly()">
+                            placeholder="Filter domain…">
+                        <button id="log-refresh-btn" class="btn btn-sm btn-outline-secondary">
                             <span class="material-icons align-middle" style="font-size:18px;">refresh</span>
                         </button>
                     </div>
                 </div>
             </div>
-            <div class="card-body p-0">
-                <div class="table-responsive" id="log-table-wrap">
+            <div class="card-body p-0 flex-grow-1 d-flex flex-column" style="min-height: 0;">
+                <div class="table-responsive flex-grow-1" id="log-table-wrap">
                     <table class="table table-hover log-table mb-0">
                         <thead class="sticky-top bg-body">
                             <tr>
@@ -758,7 +808,7 @@
                         </tbody>
                     </table>
                 </div>
-                <div id="log-action-menu" class="dropdown-menu" style="position: fixed; z-index: 1200;"></div>
+                <div id="log-action-menu" class="dropdown-menu"></div>
             </div>
         </div>
     </div>
@@ -769,6 +819,9 @@
 {% block extra_js %}
 <script src="/static/vendor/chart.umd.min.js"></script>
 <script>
+    // User permission check
+    const isAdmin = {{ 'true' if user['is_admin'] else 'false' }};
+
     function chartEmptyState(text = 'No Data Available') {
         const wrapper = document.createElement('div');
         wrapper.className = 'chart-empty-state';
@@ -810,6 +863,7 @@
     }
 
     function openLogActionMenu(q, clickEvent) {
+        if (!isAdmin) return;
         const menu = document.getElementById('log-action-menu');
         if (!menu) return;
 
@@ -825,10 +879,16 @@
             ];
 
         clearNode(menu);
+        
+        // Set ARIA attributes for accessibility
+        menu.setAttribute('role', 'menu');
+        menu.setAttribute('aria-label', `Actions for ${q.domain}`);
+        
         for (const item of actions) {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'dropdown-item';
+            btn.setAttribute('role', 'menuitem');
             btn.textContent = item.label;
             btn.addEventListener('click', (ev) => {
                 ev.preventDefault();
@@ -845,14 +905,36 @@
             blocked,
         };
 
+        // Position the menu - handle both mouse and keyboard events
         const viewportWidth = window.innerWidth;
         const viewportHeight = window.innerHeight;
-        const x = clickEvent.clientX;
-        const y = clickEvent.clientY;
+        let x, y;
 
-        menu.style.left = `${Math.min(x, viewportWidth - 240)}px`;
-        menu.style.top = `${Math.min(y, viewportHeight - 120)}px`;
+        if (clickEvent.clientX != null && clickEvent.clientX !== 0) {
+            // Mouse event: position near click
+            x = clickEvent.clientX;
+            y = clickEvent.clientY;
+        } else {
+            // Keyboard event: position near the focused row
+            const row = clickEvent.target.closest('tr');
+            if (row) {
+                const rect = row.getBoundingClientRect();
+                x = rect.left + rect.width / 2;
+                y = rect.bottom;
+            } else {
+                // Fallback to center of viewport
+                x = viewportWidth / 2;
+                y = viewportHeight / 2;
+            }
+        }
+
+        // Show menu first so we can measure its actual dimensions
         menu.classList.add('show');
+        const menuRect = menu.getBoundingClientRect();
+
+        // Position with viewport boundary checking using actual menu dimensions
+        menu.style.left = `${Math.min(x, viewportWidth - menuRect.width - 8)}px`;
+        menu.style.top = `${Math.min(y, viewportHeight - menuRect.height - 8)}px`;
     }
 
     function applyLogRuleAction(action, scope) {
@@ -920,10 +1002,25 @@
         return Math.floor(n).toString();
     }
 
+    /**
+     * Calculate optimal bucket size for DNS trend chart based on viewport width.
+     * Returns bucket_minutes: smaller screens get larger buckets (fewer points).
+     */
+    function getTrendBucketMinutes() {
+        const width = window.innerWidth;
+        // Mobile (<576px): 2-day buckets = ~15 points
+        if (width < 576) return 2880;
+        // Tablet (<992px): 1.5-day buckets = ~20 points
+        if (width < 992) return 2160;
+        // Desktop: 1-day buckets = ~30 points
+        return 1440;
+    }
+
     async function loadTrend() {
         try {
-            // 30 days = 720 hours, bucket by day (1440 minutes)
-            const t = await api('GET', '/api/dns/trend?hours=720&bucket_minutes=1440');
+            // 30 days = 720 hours, bucket size adapts to viewport
+            const bucketMinutes = getTrendBucketMinutes();
+            const t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}`);
             const labels = (t.labels || []).map(_fmtTrendLabel);
             const blocked = t.blocked || [];
             const total = t.total || [];
@@ -959,8 +1056,10 @@
             }
 
             const { gridColor, textColor } = getChartThemeColors();
-            const pointRadius = 3;
-            const pointHoverRadius = 5;
+            // Smaller points on mobile for better readability
+            const isMobile = window.innerWidth < 576;
+            const pointRadius = isMobile ? 2 : 3;
+            const pointHoverRadius = isMobile ? 4 : 5;
 
             const ctx = document.getElementById('dnsTrendChart').getContext('2d');
             if (!_trendChart) {
@@ -1075,9 +1174,12 @@
                 api('GET', '/api/dns/config'),
             ]);
 
-            document.getElementById('stat-status').innerHTML = s.is_running
-                ? '<span class="text-success">Active</span>'
-                : '<span class="text-danger">Off</span>';
+            // Update status using DOM APIs (safe from XSS)
+            const statusEl = document.getElementById('stat-status');
+            if (statusEl) {
+                statusEl.textContent = s.is_running ? 'Active' : 'Off';
+                statusEl.className = `dns-stat-value ${s.is_running ? 'text-success' : 'text-danger'}`;
+            }
 
             document.getElementById('stat-queries').textContent = fmtNum(s.total_queries);
             document.getElementById('stat-blocked').textContent = fmtNum(s.blocked_queries);
@@ -1086,20 +1188,19 @@
             document.getElementById('stat-blocklist').textContent =
                 Number.isFinite(s.blocklist_size) ? s.blocklist_size.toLocaleString() : '0';
 
-            // Update adblocker toggle state
-            const toggle = document.getElementById('adblocker-toggle');
-            const label = document.getElementById('adblocker-label');
-            if (toggle) {
-                toggle.checked = config.enable_blocklist === true;
-                toggle.disabled = false;
-                // Enable transitions after first load
-                toggle.classList.remove('no-transition');
-            }
-            if (label) {
-                label.textContent = config.enable_blocklist ? 'Disable Ad-Blocker' : 'Enable Ad-Blocker';
+            // Update adblocker button state (status is loaded separately for timer info)
+            // Only update the enabled state from config; status endpoint handles timer
+            const btn = document.getElementById('adblocker-btn');
+            if (btn && isAdmin) {
+                btn.disabled = false;
             }
         } catch (e) {
-            document.getElementById('stat-status').innerHTML = '<span class="text-muted">?</span>';
+            // Update status for error state using DOM APIs
+            const statusEl = document.getElementById('stat-status');
+            if (statusEl) {
+                statusEl.textContent = '?';
+                statusEl.className = 'dns-stat-value text-muted';
+            }
             document.getElementById('stat-queries').textContent = '–';
             document.getElementById('stat-blocked').textContent = '–';
             document.getElementById('stat-percent').textContent = '–';
@@ -1296,6 +1397,8 @@
     }
 
     async function loadLogsOnly(showLoading = true) {
+        const wrap = document.getElementById('log-table-wrap');
+        const scrollTop = wrap ? wrap.scrollTop : 0;
         if (showLoading) {
             showLogsLoadingState();
         }
@@ -1304,9 +1407,12 @@
             _logData = data.queries || [];
             _renderedCount = 0;  // Reset for fresh render
             renderLogs();
+            // Restore scroll position after render
+            if (wrap) wrap.scrollTop = scrollTop;
         } catch (e) {
             if (showLoading) {
                 const tbody = document.getElementById('log-body');
+                if (!tbody) return;
                 clearNode(tbody);
                 const tr = document.createElement('tr');
                 tr.className = 'log-empty-row';
@@ -1321,10 +1427,26 @@
     }
 
     async function loadPeers() {
+        if (!isAdmin) {
+            _peerMap = {};
+            const peerFilter = document.getElementById('peer-filter');
+            if (peerFilter) {
+                clearNode(peerFilter);
+                const allOpt = document.createElement('option');
+                allOpt.value = 'all';
+                allOpt.textContent = 'All Peers';
+                peerFilter.appendChild(allOpt);
+                peerFilter.value = 'all';
+                peerFilter.disabled = true;
+            }
+            return;
+        }
         try {
             const data = await api('GET', '/api/wireguard/stats/peers-enriched');
             const peers = data.peers || [];
             const peerFilter = document.getElementById('peer-filter');
+            if (!peerFilter) return; // Guard against null
+            
             const previousValue = peerFilter.value || 'all';
             _peerMap = {};
 
@@ -1361,10 +1483,16 @@
     }
 
     function renderLogs(append = false) {
-        const filter = document.getElementById('log-filter').value;
-        const peerFilter = document.getElementById('peer-filter').value;
-        const search = document.getElementById('log-search').value.toLowerCase();
+        const filterEl = document.getElementById('log-filter');
+        const peerFilterEl = document.getElementById('peer-filter');
+        const searchEl = document.getElementById('log-search');
         const tbody = document.getElementById('log-body');
+        
+        if (!filterEl || !peerFilterEl || !searchEl || !tbody) return;
+        
+        const filter = filterEl.value;
+        const peerFilter = peerFilterEl.value;
+        const search = searchEl.value.toLowerCase();
 
         // If not appending, reset and filter fresh
         if (!append) {
@@ -1405,11 +1533,13 @@
             const q = batch[i];
             const tr = document.createElement('tr');
             if (q.blocked) tr.className = 'table-danger bg-opacity-10';
-            tr.classList.add('log-row-actionable');
-            tr.style.cursor = 'pointer';
-            tr.title = 'Click for rule actions';
-            tr.setAttribute('tabindex', '0');
-            tr.setAttribute('role', 'button');
+            if (isAdmin) {
+                tr.classList.add('log-row-actionable');
+                tr.style.cursor = 'pointer';
+                tr.title = 'Click for rule actions';
+                tr.setAttribute('tabindex', '0');
+                tr.setAttribute('role', 'button');
+            }
             tr.dataset.logIndex = startIdx + i;
 
             const tdTime = document.createElement('td');
@@ -1449,7 +1579,11 @@
             const peerName = _peerMap[q.client];
             const clientInfo = document.createElement('span');
             clientInfo.className = 'text-muted log-domain-client';
-            clientInfo.textContent = peerName ? `${peerName} (${q.client})` : (q.client || '');
+            if (!isAdmin) {
+                clientInfo.textContent = `***** (*****)`;
+            } else {
+                clientInfo.textContent = peerName ? `${peerName} (${q.client})` : (q.client || '');
+            }
             domainWrap.appendChild(clientInfo);
             tdDomain.appendChild(domainWrap);
 
@@ -1484,28 +1618,116 @@
         _isLoadingMore = false;
     }
 
-    async function toggleAdblocker(enabled) {
-        const toggle = document.getElementById('adblocker-toggle');
-        const label = document.getElementById('adblocker-label');
-        if (toggle) toggle.disabled = true;
+    // Ad-Blocker dropdown state
+    let _adblockerCountdownInterval = null;
+    let _adblockerDisabledUntil = 0;
 
-        try {
-            await api('POST', '/api/dns/config', { enable_blocklist: enabled });
-            if (label) label.textContent = enabled ? 'Disable Ad-Blocker' : 'Enable Ad-Blocker';
-            wbToast(enabled ? 'Ad-Blocker enabled' : 'Ad-Blocker disabled', 'success');
-            await loadStats();
-        } catch (e) {
-            // Revert toggle on error
-            if (toggle) toggle.checked = !enabled;
-            wbToast('Failed to update Ad-Blocker: ' + e.message, 'danger');
-        } finally {
-            if (toggle) toggle.disabled = false;
+    function updateAdblockerButton(enabled, disabledUntil = 0) {
+        const btn = document.getElementById('adblocker-btn');
+        const btnText = document.getElementById('adblocker-btn-text');
+        const countdown = document.getElementById('adblocker-countdown');
+        if (!btn || !btnText || !countdown) return;
+
+        _adblockerDisabledUntil = disabledUntil;
+
+        // Update button color
+        btn.classList.remove('btn-adblocker-enabled', 'btn-adblocker-disabled');
+        btn.classList.add(enabled ? 'btn-adblocker-enabled' : 'btn-adblocker-disabled');
+
+        // Update button text
+        btnText.textContent = enabled ? 'Ad-Blocker: Enabled' : 'Ad-Blocker: Disabled';
+
+        // Handle countdown
+        if (_adblockerCountdownInterval) {
+            clearInterval(_adblockerCountdownInterval);
+            _adblockerCountdownInterval = null;
+        }
+
+        const now = Math.floor(Date.now() / 1000);
+        if (!enabled && disabledUntil > now) {
+            countdown.style.display = 'inline';
+            updateCountdownDisplay();
+            _adblockerCountdownInterval = setInterval(updateCountdownDisplay, 1000);
+        } else {
+            countdown.style.display = 'none';
+            countdown.textContent = '';
         }
     }
 
-    // Adblocker toggle event listener
-    document.getElementById('adblocker-toggle')?.addEventListener('change', function() {
-        toggleAdblocker(this.checked);
+    function updateCountdownDisplay() {
+        const countdown = document.getElementById('adblocker-countdown');
+        if (!countdown) return;
+
+        const now = Math.floor(Date.now() / 1000);
+        const remaining = _adblockerDisabledUntil - now;
+
+        if (remaining <= 0) {
+            countdown.style.display = 'none';
+            countdown.textContent = '';
+            if (_adblockerCountdownInterval) {
+                clearInterval(_adblockerCountdownInterval);
+                _adblockerCountdownInterval = null;
+            }
+            // Timer expired - reload status from server
+            loadAdblockerStatus();
+            return;
+        }
+
+        const hours = Math.floor(remaining / 3600);
+        const minutes = Math.floor((remaining % 3600) / 60);
+        const seconds = remaining % 60;
+
+        if (hours > 0) {
+            countdown.textContent = `(${hours}h ${minutes}m ${seconds}s)`;
+        } else if (minutes > 0) {
+            countdown.textContent = `(${minutes}m ${seconds}s)`;
+        } else {
+            countdown.textContent = `(${seconds}s)`;
+        }
+    }
+
+    async function loadAdblockerStatus() {
+        try {
+            const data = await api('GET', '/api/dns/adblocker/status');
+            updateAdblockerButton(data.enabled, data.disabled_until || 0);
+        } catch (e) {
+            console.error('Failed to load adblocker status:', e);
+        }
+    }
+
+    async function setAdblockerMode(mode) {
+        if (!isAdmin) {
+            wbToast('Only admins can change Ad-Blocker settings', 'danger');
+            return;
+        }
+
+        const btn = document.getElementById('adblocker-btn');
+        if (btn) btn.disabled = true;
+
+        try {
+            const data = await api('POST', '/api/dns/adblocker/mode', { mode: mode });
+            updateAdblockerButton(data.enabled, data.disabled_until || 0);
+            wbToast(data.enabled ? 'Ad-Blocker enabled' : 'Ad-Blocker disabled', 'success');
+            await loadStats();
+            
+            // Close dropdown after selection
+            const dropdown = bootstrap.Dropdown.getInstance(btn);
+            if (dropdown) dropdown.hide();
+        } catch (e) {
+            wbToast('Failed to update Ad-Blocker: ' + e.message, 'danger');
+        } finally {
+            if (btn && isAdmin) btn.disabled = false;
+        }
+    }
+
+    // Adblocker dropdown event listeners
+    document.querySelectorAll('[data-adblocker-mode]').forEach(item => {
+        item.addEventListener('click', function(e) {
+            e.preventDefault();
+            if (!isAdmin) return;
+            const mode = this.getAttribute('data-adblocker-mode');
+            setAdblockerMode(mode);
+        });
     });
 
     async function pollTick() {
@@ -1540,7 +1762,7 @@
             closeLogActionMenu();
         } else {
             await loadPeers();
-            await Promise.allSettled([loadStats(), loadTopDomains(), loadTrend(), loadLogsOnly()]);
+            await Promise.allSettled([loadStats(), loadTopDomains(), loadTrend(), loadLogsOnly(), loadAdblockerStatus()]);
             startPolling();
         }
     });
@@ -1603,11 +1825,32 @@
         });
     }
 
-    // Initial load
+    // Attach event listeners to filter controls (moved from inline handlers for CSP compliance)
+    const logFilterSelect = document.getElementById('log-filter');
+    if (logFilterSelect) {
+        logFilterSelect.addEventListener('change', renderLogs);
+    }
+
+    const peerFilterSelect = document.getElementById('peer-filter');
+    if (peerFilterSelect) {
+        peerFilterSelect.addEventListener('change', renderLogs);
+    }
+
+    const logSearchInput = document.getElementById('log-search');
+    if (logSearchInput) {
+        logSearchInput.addEventListener('input', debouncedRenderLogs);
+    }
+
+    const logRefreshBtn = document.getElementById('log-refresh-btn');
+    if (logRefreshBtn) {
+        logRefreshBtn.addEventListener('click', () => loadLogsOnly());
+    }
+
+    // Initial load - wait for completion before starting polling to avoid race conditions
     (async () => {
         await loadPeers();
-        await Promise.allSettled([loadStats(), loadTopDomains(), loadTrend(), loadLogsOnly()]);
+        await Promise.allSettled([loadStats(), loadTopDomains(), loadTrend(), loadLogsOnly(), loadAdblockerStatus()]);
+        startPolling(); // Only start polling after initial load completes
     })();
-    startPolling();
 </script>
 {% endblock %}

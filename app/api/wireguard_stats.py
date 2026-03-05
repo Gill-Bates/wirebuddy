@@ -15,6 +15,9 @@ from __future__ import annotations
 from ..db.sqlite_peers import (
 	get_all_peers,
 )
+from ..db.sqlite_settings import (
+	get_tsdb_retention_days,
+)
 
 import logging
 import sqlite3
@@ -261,8 +264,24 @@ async def get_traffic_stats(
     if range_key:
         hours = TRAFFIC_RANGE_TO_HOURS[range_key]
 
+    # Check if logging is disabled (retention_days = 0)
+    retention_days = get_tsdb_retention_days(conn)
+    if retention_days == 0:
+        return ok_response(data={
+            "retention_days": 0,
+            "logging_disabled": True,
+            "range": range_key or "24h",
+            "hours": hours,
+            "labels": [],
+            "peers": [],
+            "display_unit": "B",
+            "bucket_seconds": 3600,
+        })
+
     # Offload blocking I/O to threadpool (conn uses check_same_thread=False)
     data = await run_in_threadpool(_compute_traffic_stats, conn, tsdb_dir, hours, max_points)
+    data["retention_days"] = retention_days
+    data["logging_disabled"] = False
 
     return ok_response(data=data)
 

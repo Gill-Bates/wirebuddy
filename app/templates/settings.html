@@ -9,55 +9,81 @@
         letter-spacing: 0.05em;
     }
 
-    .dns-retention-scale {
-        --dns-thumb-size: 1rem;
+    .dns-retention-scale, .retention-scale {
+        --thumb-size: 1rem;
+        padding-inline: calc(var(--thumb-size) / 2);
+        overflow: hidden;
     }
 
-    .dns-retention-slider {
+    .dns-retention-slider, .retention-slider {
         margin-bottom: 0;
+        min-height: 2rem;
     }
 
-    .dns-retention-ticks,
-    .dns-retention-labels {
+    @media (pointer: coarse) {
+        .dns-retention-slider::-webkit-slider-thumb,
+        .retention-slider::-webkit-slider-thumb {
+            width: 1.2rem;
+            height: 1.2rem;
+        }
+
+        .dns-retention-slider::-moz-range-thumb,
+        .retention-slider::-moz-range-thumb {
+            width: 1.2rem;
+            height: 1.2rem;
+        }
+    }
+
+    .dns-retention-ticks, .retention-ticks,
+    .dns-retention-labels, .retention-labels {
         position: relative;
-        width: calc(100% - var(--dns-thumb-size));
-        margin-left: calc(var(--dns-thumb-size) / 2);
+        width: 100%;
+        margin-left: 0;
     }
 
-    .dns-retention-ticks {
+    .dns-retention-ticks, .retention-ticks {
         height: 13px;
         margin-top: 0.1rem;
         margin-bottom: 0.25rem;
+        transform: translateZ(0);
     }
 
-    .dns-retention-tick,
-    .dns-retention-label {
+    .dns-retention-tick, .retention-tick,
+    .dns-retention-label, .retention-label {
         position: absolute;
         left: var(--x);
         transform: translateX(-50%);
     }
 
-    .dns-retention-tick {
+    .dns-retention-tick, .retention-tick {
         width: 1px;
         height: 11px;
         background-color: var(--bs-border-color);
         opacity: 0.85;
     }
 
-    .dns-retention-label {
+    .dns-retention-label, .retention-label {
         font-size: 0.75rem;
         color: var(--bs-secondary-color);
         line-height: 1.2;
         white-space: nowrap;
     }
 
-    .dns-retention-tick.pos-0,
-    .dns-retention-label.pos-0 {
+    .dns-retention-labels, .retention-labels {
+        margin-bottom: 1rem;
+    }
+
+    .dns-retention-tick.pos-0, .retention-tick.pos-0,
+    .dns-retention-label.pos-0, .retention-label.pos-0 {
         transform: translateX(0);
     }
 
-    .dns-retention-tick.pos-5,
-    .dns-retention-label.pos-5 {
+    .dns-retention-tick.pos-5, .retention-tick.pos-5,
+    .dns-retention-label.pos-5, .retention-label.pos-5 {
+        transform: translateX(-100%);
+    }
+
+    .retention-tick.pos-4, .retention-label.pos-4 {
         transform: translateX(-100%);
     }
 
@@ -137,9 +163,11 @@
         transition: border-color 0.15s ease;
     }
 
-    .blocklist-hero-card:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 5px 12px rgba(15, 23, 42, 0.12);
+    @media (hover: hover) {
+        .blocklist-hero-card:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 5px 12px rgba(15, 23, 42, 0.12);
+        }
     }
 
     .blocklist-hero-card.enabled {
@@ -339,6 +367,21 @@
         }
     }
 
+    @media (max-width: 480px) {
+        #dns-service-controls {
+            width: 100%;
+            justify-content: flex-start;
+            gap: 0.5rem;
+        }
+    }
+
+    @media (max-width: 360px) {
+        #dns-pane .card-body table td,
+        #dns-pane .card-body table th {
+            font-size: 0.8rem;
+        }
+    }
+
     @media (min-width: 992px) {
         .settings-general-equal-row {
             align-items: stretch;
@@ -371,8 +414,9 @@
 {% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h1 class="h3 mb-0"><span class="material-icons me-2">settings</span>Settings</h1>
+<div class="container-fluid wb-page">
+<div class="wb-page-header">
+    <h2 class="page-title"><span class="material-icons me-2">settings</span>Settings</h2>
 </div>
 
 <!-- Settings Tab Navigation -->
@@ -385,7 +429,6 @@
         <button class="nav-link" id="wireguard-tab" data-bs-toggle="tab" data-bs-target="#wireguard-pane" type="button"
             role="tab" aria-controls="wireguard-pane" aria-selected="false">WireGuard</button>
     </li>
-    {% if user['is_admin'] %}
     <li class="nav-item" role="presentation">
         <button class="nav-link" id="dns-tab" data-bs-toggle="tab" data-bs-target="#dns-pane" type="button" role="tab"
             aria-controls="dns-pane" aria-selected="false">DNS</button>
@@ -394,7 +437,10 @@
         <button class="nav-link" id="letsencrypt-tab" data-bs-toggle="tab" data-bs-target="#letsencrypt-pane"
             type="button" role="tab" aria-controls="letsencrypt-pane" aria-selected="false">Let's Encrypt</button>
     </li>
-    {% endif %}
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs-pane"
+            type="button" role="tab" aria-controls="logs-pane" aria-selected="false">Logs</button>
+    </li>
 </ul>
 
 <!-- Tab Content -->
@@ -403,49 +449,6 @@
     <div class="tab-pane fade show active" id="general-pane" role="tabpanel" aria-labelledby="general-tab">
         <div class="row settings-general-equal-row">
             <div class="col-lg-6 settings-general-col settings-general-col-left">
-                <!-- Metrics Database (TSDB) -->
-                <div class="card mb-4">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Metrics Database</h5>
-                        {% if user['is_admin'] %}
-                        <div>
-                            <button class="btn btn-sm btn-outline-danger" id="btn-reset-tsdb">
-                                Delete all Metrics
-                                <span class="material-icons" style="font-size: 16px;">delete</span>
-                            </button>
-                        </div>
-                        {% endif %}
-                    </div>
-                    <div class="card-body">
-                        <table class="table table-borderless mb-0">
-                            <tbody>
-                                <tr>
-                                    <td class="text-muted">Storage Size</td>
-                                    <td class="text-end font-monospace" id="tsdb-size">–</td>
-                                </tr>
-                                <tr>
-                                    <td class="text-muted">Peers Tracked</td>
-                                    <td class="text-end font-monospace" id="tsdb-peers">–</td>
-                                </tr>
-                                <tr>
-                                    <td class="text-muted">Data Files</td>
-                                    <td class="text-end font-monospace" id="tsdb-files">–</td>
-                                </tr>
-                                <tr>
-                                    <td class="text-muted">Compressed Archives</td>
-                                    <td class="text-end font-monospace" id="tsdb-archives">–</td>
-                                </tr>
-                                <tr>
-                                    <td class="text-muted">Created</td>
-                                    <td class="text-end font-monospace" id="tsdb-created">–</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="col-lg-6 settings-general-col settings-general-col-right">
                 {% if user['is_admin'] %}
                 <div class="card mb-4">
                     <div class="card-header">
@@ -468,6 +471,45 @@
                 </div>
                 {% endif %}
             </div>
+            
+            <div class="col-lg-6 settings-general-col settings-general-col-right">
+                {% if user['is_admin'] %}
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">Server Settings</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="wg-fqdn" class="form-label">Server FQDN / IP</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="wg-fqdn" placeholder="vpn.example.com"
+                                    autocomplete="url" autocapitalize="off" autocorrect="off" spellcheck="false">
+                                <button class="btn btn-outline-secondary" type="button" id="btn-fqdn-detect"
+                                    title="Auto-detect from current hostname">
+                                    <span class="material-icons" style="font-size: 18px;">auto_fix_high</span>
+                                </button>
+                            </div>
+                            <small class="text-muted">Public hostname or IP (without port) clients connect to</small>
+                        </div>
+                        <div class="mb-3">
+                            <label for="gui-port" class="form-label">HTTP Port (GUI)</label>
+                            <input type="number" class="form-control" id="gui-port" min="1" max="65535"
+                                placeholder="8000">
+                            <small class="text-muted">TCP port for the web interface</small>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="gui-localhost-only">
+                                <label class="form-check-label" for="gui-localhost-only">Only listen on
+                                    Localhost</label>
+                            </div>
+                            <small class="text-muted">When enabled, GUI only accessible from 127.0.0.1 (requires
+                                restart)</small>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
         </div>
     </div>
 
@@ -483,35 +525,16 @@
                     </div>
                     <div class="card-body">
                         <form id="wg-settings-form" autocomplete="off">
-                            <div class="mb-3">
-                                <label for="wg-fqdn" class="form-label">Server FQDN / IP</label>
-                                <div class="input-group">
-                                    <input type="text" class="form-control" id="wg-fqdn" placeholder="vpn.example.com"
-                                        autocomplete="url" autocapitalize="off" autocorrect="off" spellcheck="false">
-                                    <button class="btn btn-outline-secondary" type="button" id="btn-fqdn-detect"
-                                        title="Auto-detect from current hostname">
-                                        <span class="material-icons" style="font-size: 18px;">auto_fix_high</span>
-                                    </button>
-                                </div>
-                                <small class="text-muted">Public hostname or IP (without port) clients connect
-                                    to</small>
-                            </div>
-                            <div class="mb-3">
-                                <label for="gui-port" class="form-label">HTTP Port (GUI)</label>
-                                <input type="number" class="form-control" id="gui-port" min="1" max="65535"
-                                    placeholder="8000">
-                                <small class="text-muted">TCP port for the web interface</small>
-                            </div>
-                            <div class="mb-3">
-                                <div class="form-check form-switch">
-                                    <input class="form-check-input" type="checkbox" id="gui-localhost-only">
-                                    <label class="form-check-label" for="gui-localhost-only">Only listen on
-                                        Localhost</label>
-                                </div>
-                                <small class="text-muted">When enabled, GUI only accessible from 127.0.0.1 (requires
-                                    restart)</small>
-                            </div>
-                            <hr>
+                            <!-- Hidden username helps password managers classify this form correctly -->
+                            <input
+                                type="text"
+                                name="username"
+                                autocomplete="username"
+                                value="{{ user['username'] | e }}"
+                                tabindex="-1"
+                                aria-hidden="true"
+                                style="position:absolute;left:-10000px;width:1px;height:1px;opacity:0;pointer-events:none;"
+                            >
                             <div class="mb-3">
                                 <label for="wg-mtu" class="form-label">MTU</label>
                                 <input type="number" class="form-control" id="wg-mtu" min="1280" max="9000"
@@ -607,18 +630,14 @@
         </div>
     </div>
 
-    {% if user['is_admin'] %}
     <!-- DNS Tab -->
     <div class="tab-pane fade" id="dns-pane" role="tabpanel" aria-labelledby="dns-tab">
+
         <!-- DNS Service Control -->
         <div class="card mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">DNS Service</h5>
-                <span class="badge" id="dns-service-status-badge">Loading...</span>
-            </div>
-            <div class="card-body">
-                <p class="text-muted mb-3">Control the Unbound DNS resolver service.</p>
-                <div class="d-flex gap-2 flex-wrap" id="dns-service-controls">
+                <div class="d-flex gap-2 flex-wrap align-items-center" id="dns-service-controls">
                     <button class="btn btn-sm btn-outline-success" id="btn-dns-start" disabled>
                         <span class="material-icons align-middle me-1" style="font-size:18px;">play_arrow</span>Start
                     </button>
@@ -628,6 +647,7 @@
                     <button class="btn btn-sm btn-outline-warning" id="btn-dns-restart" disabled>
                         <span class="material-icons align-middle me-1" style="font-size:18px;">restart_alt</span>Restart
                     </button>
+                    <span class="badge" id="dns-service-status-badge">Loading...</span>
                 </div>
             </div>
         </div>
@@ -651,9 +671,11 @@
                 </div>
 
                 <div class="d-flex justify-content-end align-items-center mt-3 pt-3 border-top">
-                        <button class="btn btn-sm btn-outline-danger" id="btn-update-blocklist">
+                    {% if user['is_admin'] %}
+                    <button class="btn btn-sm btn-outline-danger" id="btn-update-blocklist">
                         <span class="material-icons align-middle me-1" style="font-size:18px;">cached</span>Update Blocklists
                     </button>
+                    {% endif %}
                 </div>
 
                 <hr class="my-4">
@@ -668,18 +690,21 @@
                           spellcheck="false"
                           autocomplete="off"
                           autocorrect="off"
-                          autocapitalize="off"></textarea>
+                          autocapitalize="off"
+                          {% if not user['is_admin'] %}readonly{% endif %}></textarea>
 
                 <div id="custom-rules-errors" class="mt-2" style="display: none;"></div>
 
                 <div class="d-flex justify-content-between align-items-center mt-2">
                     <span class="small text-muted" id="custom-rules-count">0 rules</span>
+                    {% if user['is_admin'] %}
                     <div class="d-flex align-items-center gap-2">
                         <span id="custom-rules-status" class="small text-muted"></span>
                         <button class="btn btn-sm btn-primary" id="save-custom-rules-btn">
                             <span class="material-icons align-middle me-1" style="font-size: 16px;">save</span>Save Rules
                         </button>
                     </div>
+                    {% endif %}
                 </div>
 
                 <details class="mt-3 small text-muted">
@@ -707,7 +732,8 @@
                 <div class="form-check form-switch mb-2">
                     <input class="form-check-input"
                            type="checkbox"
-                           id="dnssec-enabled">
+                           id="dnssec-enabled"
+                           {% if not user['is_admin'] %}disabled{% endif %}>
                     <label class="form-check-label" for="dnssec-enabled">
                         Enable DNSSEC
                     </label>
@@ -724,8 +750,10 @@
                 <textarea id="dns-upstream-servers"
                           class="form-control font-monospace"
                           rows="4"
-                          placeholder="1.1.1.1@853#cloudflare-dns.com&#10;9.9.9.9@853#dns.quad9.net&#10;91.239.100.100@853#unicast.censurfridns.dk&#10;45.90.28.0@853#dns.nextdns.io&#10;194.242.2.2@853#dns.mullvad.net"></textarea>
+                          placeholder="1.1.1.1@853#cloudflare-dns.com&#10;9.9.9.9@853#dns.quad9.net&#10;91.239.100.100@853#unicast.censurfridns.dk&#10;45.90.28.0@853#dns.nextdns.io&#10;194.242.2.2@853#dns.mullvad.net"
+                          {% if not user['is_admin'] %}readonly{% endif %}></textarea>
 
+                {% if user['is_admin'] %}
                 <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
                         <button class="btn btn-sm btn-outline-secondary" id="validate-dns-btn">
                         <span class="material-icons align-middle me-1" style="font-size: 16px;">verified</span>Validate
@@ -733,6 +761,7 @@
                     <span id="dns-validation-status"
                           class="small text-muted"></span>
                 </div>
+                {% endif %}
 
                 <details class="mt-3 small text-muted">
                     <summary style="cursor:pointer;">How load balancing works</summary>
@@ -747,76 +776,36 @@ Format: IP@PORT#HOSTNAME
             </div>
         </div>
 
-        <!-- DNS Logging -->
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="mb-0">DNS Logging</h5>
-            </div>
-            <div class="card-body">
-
-                <h6 class="text-muted mb-3">Retention</h6>
-
-                <div class="mb-4 dns-retention-scale">
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <label for="dns-retention-slider" class="form-label mb-0">Retention Period</label>
-                        <span class="badge text-bg-secondary" id="dns-retention-value">30 Days</span>
-                    </div>
-                    <input type="range" class="form-range dns-retention-slider" id="dns-retention-slider"
-                        min="0" max="5" step="1" value="2">
-                    <div class="dns-retention-ticks" aria-hidden="true">
-                        <span class="dns-retention-tick pos-0" style="--x:0%;"></span>
-                        <span class="dns-retention-tick pos-1" style="--x:20%;"></span>
-                        <span class="dns-retention-tick pos-2" style="--x:40%;"></span>
-                        <span class="dns-retention-tick pos-3" style="--x:60%;"></span>
-                        <span class="dns-retention-tick pos-4" style="--x:80%;"></span>
-                        <span class="dns-retention-tick pos-5" style="--x:100%;"></span>
-                    </div>
-                    <div class="dns-retention-labels" aria-hidden="true">
-                        <span class="dns-retention-label pos-0" style="--x:0%;">No Logs</span>
-                        <span class="dns-retention-label pos-1" style="--x:20%;">7d</span>
-                        <span class="dns-retention-label pos-2" style="--x:40%;">30d</span>
-                        <span class="dns-retention-label pos-3" style="--x:60%;">90d</span>
-                        <span class="dns-retention-label pos-4" style="--x:80%;">180d</span>
-                        <span class="dns-retention-label pos-5" style="--x:100%;">1y</span>
-                    </div>
-                </div>
-
-                <div class="dns-danger-zone">
-                    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
-                        <div>
-                            <div class="fw-semibold text-danger">
-                                Delete all DNS Logs
-                            </div>
-                            <div class="small text-muted">
-                                Permanently removes all stored DNS query log data.
-                            </div>
-                        </div>
-
-                        <button class="btn btn-sm btn-outline-danger" id="btn-purge-dns-logs">
-                            <span class="material-icons align-middle me-1" style="font-size: 16px;">delete_forever</span>Purge Logs
-                        </button>
-                    </div>
-                </div>
-
-            </div>
-        </div>
-
     </div>
 
     <!-- Let's Encrypt Tab -->
     <div class="tab-pane fade" id="letsencrypt-pane" role="tabpanel" aria-labelledby="letsencrypt-tab">
+
+        <!-- Guidance Banner -->
+        <div class="row mb-3">
+            <div class="col-lg-6">
+                <div id="letsencrypt-guidance" class="alert alert-secondary py-2 mb-0">
+                    <span class="material-icons align-middle me-1" style="font-size: 18px;">check_circle</span>This setting is usually only necessary if you want to expose wirebuddy directly to the internet and do not want to use a reverse proxy.
+
+A configuration template for Caddy can be found in the repository.
+                </div>
+            </div>
+        </div>
+
+        <!-- SSL/TLS Certificates Card -->
         <div class="row">
-            <div class="col-lg-8">
-                <!-- SSL/TLS Certificates -->
+            <div class="col-lg-6">
                 <div class="card mb-4">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="mb-0">SSL/TLS Certificates</h5>
+                        {% if user['is_admin'] %}
                         <div>
                             <button class="btn btn-sm btn-primary d-inline-flex align-items-center justify-content-center"
                                 data-bs-toggle="modal" data-bs-target="#certModal">
                                 <span class="material-icons align-middle me-1" style="font-size: 18px;">add_circle</span>Request Certificate
                             </button>
                         </div>
+                        {% endif %}
                     </div>
                     <div class="card-body">
                         <small class="text-muted d-block">
@@ -824,9 +813,6 @@ Format: IP@PORT#HOSTNAME
                             Certificates are stored in <code>/data/certs/</code>
                         </small>
                         <hr class="my-3">
-                        <div id="letsencrypt-guidance" class="alert alert-secondary py-2 mb-3"><span class="material-icons align-middle me-1" style="font-size: 18px;">check_circle</span>This setting is usually only necessary if you want to expose wirebuddy directly to the internet and do not want to use a reverse proxy.
-
-A configuration template for Caddy can be found in the repository.</div>
                         <div id="certificates-list">
                             <p class="text-muted mb-0">Loading certificates...</p>
                         </div>
@@ -835,9 +821,214 @@ A configuration template for Caddy can be found in the repository.</div>
             </div>
         </div>
     </div>
-    {% endif %}
+
+    <!-- Logs Tab -->
+    <div class="tab-pane fade" id="logs-pane" role="tabpanel" aria-labelledby="logs-tab">
+        <div class="row">
+
+            <!-- ── Traffic Metrics (TSDB) ── -->
+            <div class="col-lg-4">
+                <div class="card h-100 mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <span class="material-icons align-middle me-1" style="font-size: 20px;">show_chart</span>Traffic Metrics
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-borderless mb-0">
+                            <tbody>
+                                <tr>
+                                    <td class="text-muted">Storage Path</td>
+                                    <td class="text-end font-monospace small" id="tsdb-path">&ndash;</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Storage Size</td>
+                                    <td class="text-end font-monospace" id="tsdb-size">&ndash;</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Peers Tracked</td>
+                                    <td class="text-end font-monospace" id="tsdb-peers">&ndash;</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Data Files</td>
+                                    <td class="text-end font-monospace" id="tsdb-files">&ndash;</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Compressed Archives</td>
+                                    <td class="text-end font-monospace" id="tsdb-archives">&ndash;</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Created</td>
+                                    <td class="text-end font-monospace" id="tsdb-created">&ndash;</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        {% if user['is_admin'] %}
+                        <hr class="my-3">
+                        <h6 class="text-muted mb-3">Retention</h6>
+                        <div class="mb-3 retention-scale">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label for="tsdb-retention-slider" class="form-label mb-0">Retention Period</label>
+                                <span class="badge text-bg-secondary" id="tsdb-retention-value">365 Days</span>
+                            </div>
+                            <input type="range" class="form-range retention-slider" id="tsdb-retention-slider"
+                                min="0" max="5" step="1" value="5">
+                            <div class="retention-ticks" aria-hidden="true">
+                                <span class="retention-tick pos-0" style="--x:0%;"></span>
+                                <span class="retention-tick" style="--x:20%;"></span>
+                                <span class="retention-tick" style="--x:40%;"></span>
+                                <span class="retention-tick" style="--x:60%;"></span>
+                                <span class="retention-tick" style="--x:80%;"></span>
+                                <span class="retention-tick pos-5" style="--x:100%;"></span>
+                            </div>
+                            <div class="retention-labels" aria-hidden="true">
+                                <span class="retention-label pos-0" style="--x:0%;">No Logs</span>
+                                <span class="retention-label" style="--x:20%;">7d</span>
+                                <span class="retention-label" style="--x:40%;">30d</span>
+                                <span class="retention-label" style="--x:60%;">90d</span>
+                                <span class="retention-label" style="--x:80%;">180d</span>
+                                <span class="retention-label pos-5" style="--x:100%;">1y</span>
+                            </div>
+                        </div>
+
+                        <hr class="my-3">
+                        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2">
+                            <div>
+                                <div class="fw-semibold text-danger">Delete all Traffic Metrics</div>
+                                <div class="small text-muted">Permanently removes all stored traffic metric data (TSDB).</div>
+                            </div>
+                            <button class="btn btn-sm btn-outline-danger flex-shrink-0" id="btn-purge-traffic-logs">
+                                <span class="material-icons align-middle me-1" style="font-size: 16px;">delete_forever</span>Purge
+                            </button>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── DNS Metrics ── -->
+            <div class="col-lg-4">
+                <div class="card h-100 mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <span class="material-icons align-middle me-1" style="font-size: 20px;">dns</span>DNS Metrics
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-borderless mb-0">
+                            <tbody>
+                                <tr>
+                                    <td class="text-muted">Storage Path</td>
+                                    <td class="text-end font-monospace small" id="dns-metrics-path">&ndash;</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Storage Size</td>
+                                    <td class="text-end font-monospace" id="dns-metrics-size">&ndash;</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Log Files</td>
+                                    <td class="text-end font-monospace" id="dns-metrics-files">&ndash;</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        {% if user['is_admin'] %}
+                        <hr class="my-3">
+                        <h6 class="text-muted mb-3">Retention</h6>
+                        <div class="mb-3 retention-scale">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label for="dns-metrics-retention-slider" class="form-label mb-0">Retention Period</label>
+                                <span class="badge text-bg-secondary" id="dns-metrics-retention-value">30 Days</span>
+                            </div>
+                            <input type="range" class="form-range retention-slider" id="dns-metrics-retention-slider"
+                                min="0" max="5" step="1" value="2">
+                            <div class="retention-ticks" aria-hidden="true">
+                                <span class="retention-tick pos-0" style="--x:0%;"></span>
+                                <span class="retention-tick" style="--x:20%;"></span>
+                                <span class="retention-tick" style="--x:40%;"></span>
+                                <span class="retention-tick" style="--x:60%;"></span>
+                                <span class="retention-tick" style="--x:80%;"></span>
+                                <span class="retention-tick pos-5" style="--x:100%;"></span>
+                            </div>
+                            <div class="retention-labels" aria-hidden="true">
+                                <span class="retention-label pos-0" style="--x:0%;">No Logs</span>
+                                <span class="retention-label" style="--x:20%;">7d</span>
+                                <span class="retention-label" style="--x:40%;">30d</span>
+                                <span class="retention-label" style="--x:60%;">90d</span>
+                                <span class="retention-label" style="--x:80%;">180d</span>
+                                <span class="retention-label pos-5" style="--x:100%;">1y</span>
+                            </div>
+                        </div>
+
+                        <hr class="my-3">
+                        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2">
+                            <div>
+                                <div class="fw-semibold text-danger">Delete all DNS Metrics</div>
+                                <div class="small text-muted">Permanently removes all stored DNS query data.</div>
+                            </div>
+                            <button class="btn btn-sm btn-outline-danger flex-shrink-0" id="btn-purge-dns-logs">
+                                <span class="material-icons align-middle me-1" style="font-size: 16px;">delete_forever</span>Purge
+                            </button>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Peer Metrics ── -->
+            <div class="col-lg-4">
+                <div class="card h-100 mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <span class="material-icons align-middle me-1" style="font-size: 20px;">people</span>Peer Metrics
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-borderless mb-0">
+                            <tbody>
+                                <tr>
+                                    <td class="text-muted">Database Path</td>
+                                    <td class="text-end font-monospace small" id="peer-metrics-path">&ndash;</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Total Peers</td>
+                                    <td class="text-end font-monospace" id="peer-metrics-total">&ndash;</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Peers with Handshake</td>
+                                    <td class="text-end font-monospace" id="peer-metrics-handshake">&ndash;</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Total Transfer</td>
+                                    <td class="text-end font-monospace" id="peer-metrics-transfer">&ndash;</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        {% if user['is_admin'] %}
+                        <hr class="my-3">
+                        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2">
+                            <div>
+                                <div class="fw-semibold text-danger">Reset all Peer Metrics</div>
+                                <div class="small text-muted">Resets all peer connection tracking (last seen, handshake, transfer counters).</div>
+                            </div>
+                            <button class="btn btn-sm btn-outline-danger flex-shrink-0" id="btn-purge-peer-logs">
+                                <span class="material-icons align-middle me-1" style="font-size: 16px;">delete_forever</span>Reset
+                            </button>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
 </div>
+</div><!-- /.wb-page -->
+
 <!-- Certificate Request Modal -->
+{% if user['is_admin'] %}
 <div class="modal fade" id="certModal" aria-labelledby="certModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -891,6 +1082,7 @@ A configuration template for Caddy can be found in the repository.</div>
         </div>
     </div>
 </div>
+{% endif %}
 
 <!-- Interface Creation Modal -->
 {% if user['is_admin'] %}
@@ -985,13 +1177,14 @@ A configuration template for Caddy can be found in the repository.</div>
         general: false,
         wireguard: false,
         letsencrypt: false,
-        dns: false
+        dns: false,
+        logs: false
     };
 
     // Initialize tabs with URL hash support
     async function initTabs() {
         const hash = window.location.hash.replace('#', '');
-        const validTabs = ['general', 'wireguard', 'letsencrypt', 'dns'];
+        const validTabs = ['general', 'wireguard', 'letsencrypt', 'dns', 'logs'];
 
         if (hash && validTabs.includes(hash)) {
             const tabBtn = document.getElementById(`${hash}-tab`);
@@ -1024,7 +1217,6 @@ A configuration template for Caddy can be found in the repository.</div>
         switch (tabId) {
             case 'general':
                 await loadWgSettings();  // Status Page toggle is on General tab
-                loadTsdbStats();
                 tabLoaded.general = true;
                 break;
             case 'wireguard':
@@ -1051,6 +1243,12 @@ A configuration template for Caddy can be found in the repository.</div>
                 loadDnsServiceStatus();
                 tabLoaded.dns = true;
                 break;
+            case 'logs':
+                loadTsdbStats();
+                loadDnsMetricsStats();
+                loadPeerMetricsStats();
+                tabLoaded.logs = true;
+                break;
         }
     }
 
@@ -1067,13 +1265,24 @@ A configuration template for Caddy can be found in the repository.</div>
             const settings = await api('GET', '/api/wireguard/settings');
             _wgSettings = settings || {};
             
-            if (settings.wg_fqdn) document.getElementById('wg-fqdn').value = settings.wg_fqdn;
-            if (settings.gui_port) document.getElementById('gui-port').value = settings.gui_port;
-            if (settings.wg_mtu !== null && settings.wg_mtu !== undefined && settings.wg_mtu !== '') {
-                document.getElementById('wg-mtu').value = settings.wg_mtu;
+            const fqdnInput = document.getElementById('wg-fqdn');
+            if (fqdnInput && settings.wg_fqdn) {
+                fqdnInput.value = settings.wg_fqdn;
             }
-            if (settings.wg_persistent_keepalive !== null && settings.wg_persistent_keepalive !== undefined && settings.wg_persistent_keepalive !== '') {
-                document.getElementById('wg-keepalive').value = settings.wg_persistent_keepalive;
+            
+            const guiPortInput = document.getElementById('gui-port');
+            if (guiPortInput && settings.gui_port) {
+                guiPortInput.value = settings.gui_port;
+            }
+            
+            const mtuInput = document.getElementById('wg-mtu');
+            if (mtuInput && settings.wg_mtu !== null && settings.wg_mtu !== undefined && settings.wg_mtu !== '') {
+                mtuInput.value = settings.wg_mtu;
+            }
+            
+            const keepaliveInput = document.getElementById('wg-keepalive');
+            if (keepaliveInput && settings.wg_persistent_keepalive !== null && settings.wg_persistent_keepalive !== undefined && settings.wg_persistent_keepalive !== '') {
+                keepaliveInput.value = settings.wg_persistent_keepalive;
             }
 
             // Localhost toggle
@@ -1305,33 +1514,43 @@ A configuration template for Caddy can be found in the repository.</div>
         }
         const { silentSuccess = false } = options;
         const payload = {};
-        const fqdn = document.getElementById('wg-fqdn').value.trim();
-        const guiPort = document.getElementById('gui-port').value;
-        const mtu = document.getElementById('wg-mtu').value;
-        const keepalive = document.getElementById('wg-keepalive').value;
-
-        payload.wg_fqdn = fqdn || null;
-
-        const guiPortResult = parseOptionalInt(guiPort, 1, 65535, 'HTTP Port (GUI)');
-        if (!guiPortResult.valid) {
-            wbToast(guiPortResult.message, 'warning');
-            return;
+        
+        const fqdnInput = document.getElementById('wg-fqdn');
+        const guiPortInput = document.getElementById('gui-port');
+        const mtuInput = document.getElementById('wg-mtu');
+        const keepaliveInput = document.getElementById('wg-keepalive');
+        
+        if (fqdnInput) {
+            const fqdn = fqdnInput.value.trim();
+            payload.wg_fqdn = fqdn || null;
         }
-        payload.gui_port = guiPortResult.value;
 
-        const mtuResult = parseOptionalInt(mtu, 1280, 9000, 'MTU');
-        if (!mtuResult.valid) {
-            wbToast(mtuResult.message, 'warning');
-            return;
+        if (guiPortInput) {
+            const guiPortResult = parseOptionalInt(guiPortInput.value, 1, 65535, 'HTTP Port (GUI)');
+            if (!guiPortResult.valid) {
+                wbToast(guiPortResult.message, 'warning');
+                return;
+            }
+            payload.gui_port = guiPortResult.value;
         }
-        payload.wg_mtu = mtuResult.value;
 
-        const keepaliveResult = parseOptionalInt(keepalive, 0, 600, 'Persistent Keepalive');
-        if (!keepaliveResult.valid) {
-            wbToast(keepaliveResult.message, 'warning');
-            return;
+        if (mtuInput) {
+            const mtuResult = parseOptionalInt(mtuInput.value, 1280, 9000, 'MTU');
+            if (!mtuResult.valid) {
+                wbToast(mtuResult.message, 'warning');
+                return;
+            }
+            payload.wg_mtu = mtuResult.value;
         }
-        payload.wg_persistent_keepalive = keepaliveResult.value;
+
+        if (keepaliveInput) {
+            const keepaliveResult = parseOptionalInt(keepaliveInput.value, 0, 600, 'Persistent Keepalive');
+            if (!keepaliveResult.valid) {
+                wbToast(keepaliveResult.message, 'warning');
+                return;
+            }
+            payload.wg_persistent_keepalive = keepaliveResult.value;
+        }
 
         // Include localhost toggle state
         const localhostToggle = document.getElementById('gui-localhost-only');
@@ -1370,6 +1589,7 @@ A configuration template for Caddy can be found in the repository.</div>
                 return;
             }
             const input = document.getElementById('wg-fqdn');
+            if (!input) return;
             input.value = detected;
             updateStatusPageUrlPreview();
             await saveWgSettings({ silentSuccess: true });
@@ -1601,10 +1821,17 @@ A configuration template for Caddy can be found in the repository.</div>
         });
     }
 
-    const resetTsdbBtn = document.getElementById('btn-reset-tsdb');
-    if (resetTsdbBtn) {
-        resetTsdbBtn.addEventListener('click', () => {
-            void resetTsdb();
+    const purgeTrafficBtn = document.getElementById('btn-purge-traffic-logs');
+    if (purgeTrafficBtn) {
+        purgeTrafficBtn.addEventListener('click', () => {
+            void purgeTrafficLogs();
+        });
+    }
+
+    const purgePeerBtn = document.getElementById('btn-purge-peer-logs');
+    if (purgePeerBtn) {
+        purgePeerBtn.addEventListener('click', () => {
+            void purgePeerLogs();
         });
     }
 
@@ -1657,7 +1884,7 @@ A configuration template for Caddy can be found in the repository.</div>
 
             if (toggle) {
                 toggle.checked = enabled;
-                toggle.disabled = !requirementsMet;
+                toggle.disabled = !isAdmin || !requirementsMet;
             }
 
             if (badge && badgeText && badgeIcon) {
@@ -1719,9 +1946,15 @@ A configuration template for Caddy can be found in the repository.</div>
 
             const status = await api('GET', '/api/dns/status');
             const isRunning = status.is_running === true;
+            const isUnavailable = status.unavailable === true;
+            const unavailableReason = status.reason || '';
 
             if (badge) {
-                if (!hasInterfaces) {
+                if (isUnavailable) {
+                    badge.textContent = 'Unavailable';
+                    badge.className = 'badge bg-secondary';
+                    badge.title = unavailableReason;
+                } else if (!hasInterfaces) {
                     badge.textContent = 'No Interfaces';
                     badge.className = 'badge bg-secondary';
                 } else {
@@ -1729,15 +1962,28 @@ A configuration template for Caddy can be found in the repository.</div>
                     badge.className = `badge ${isRunning ? 'bg-success' : 'bg-danger'}`;
                 }
             }
-            // Start only available if not running AND interfaces exist
-            if (startBtn) startBtn.disabled = isRunning || !hasInterfaces;
-            if (stopBtn) stopBtn.disabled = !isRunning;
-            if (restartBtn) restartBtn.disabled = !isRunning;
+            // Start only available if not running AND interfaces exist AND user is admin AND Unbound is available
+            if (startBtn) {
+                startBtn.disabled = !isAdmin || isRunning || !hasInterfaces || isUnavailable;
+                if (isUnavailable && unavailableReason) {
+                    startBtn.title = unavailableReason;
+                } else {
+                    startBtn.title = '';
+                }
+            }
+            if (stopBtn) stopBtn.disabled = !isAdmin || !isRunning || isUnavailable;
+            if (restartBtn) restartBtn.disabled = !isAdmin || !isRunning || isUnavailable;
         } catch (e) {
             if (badge) {
                 badge.textContent = 'Unknown';
                 badge.className = 'badge bg-secondary';
             }
+            if (startBtn) {
+                startBtn.disabled = true;
+                startBtn.title = 'DNS status unavailable';
+            }
+            if (stopBtn) stopBtn.disabled = true;
+            if (restartBtn) restartBtn.disabled = true;
         }
     }
 
@@ -2251,7 +2497,6 @@ A configuration template for Caddy can be found in the repository.</div>
     // DNS Blocklist management
     let blocklistSaveTimeout = null;
     let dnsConfigLoaded = false;
-    let dnsConfigLastRetention = 30;
     let dnsConfigLastUpstream = [];
     let dnsConfigHydrating = false;
     let dnsConfigSaveTimeout = null;
@@ -2309,7 +2554,7 @@ A configuration template for Caddy can be found in the repository.</div>
                             </div>
                             <div class="form-check form-switch m-0">
                                 <input class="form-check-input" type="checkbox" id="${sourceId}"
-                                    data-url="${dataUrl}" ${checked}>
+                                    data-url="${dataUrl}" ${checked}${isAdmin ? '' : ' disabled'}>
                             </div>
                         </div>
                         <div class="blocklist-hero-meta">
@@ -2567,18 +2812,10 @@ A configuration template for Caddy can be found in the repository.</div>
 
     function bindDnsConfigListeners() {
         if (dnsConfigListenersBound) return;
-        const slider = document.getElementById('dns-retention-slider');
         const upstreamInput = document.getElementById('dns-upstream-servers');
         const dnssecToggle = document.getElementById('dnssec-enabled');
-        if (!slider || !upstreamInput || !dnssecToggle) return;
+        if (!upstreamInput || !dnssecToggle) return;
 
-        slider.addEventListener('input', function () {
-            updateDnsRetentionPreview(this.value);
-        });
-        slider.addEventListener('change', async function () {
-            if (dnsConfigHydrating) return;
-            await saveDnsConfig();
-        });
         upstreamInput.addEventListener('change', function () {
             if (dnsConfigHydrating) return;
             saveDnsConfigDebounced();
@@ -2605,21 +2842,12 @@ A configuration template for Caddy can be found in the repository.</div>
             const upstreamInput = document.getElementById('dns-upstream-servers');
             if (upstreamInput) upstreamInput.value = upstream.join('\n');
 
-            const retention = Number.isFinite(Number(res.log_retention_days))
-                ? Number(res.log_retention_days)
-                : 30;
-            dnsConfigLastRetention = retention;
             dnsConfigLastUpstream = upstream.slice();
-            const retentionSlider = document.getElementById('dns-retention-slider');
-            if (retentionSlider) {
-                retentionSlider.value = String(dnsRetentionIndexForDays(retention));
-                updateDnsRetentionPreview(retentionSlider.value);
-            }
 
             const dnssecToggle = document.getElementById('dnssec-enabled');
             if (dnssecToggle) {
                 dnssecToggle.checked = !!res.dnssec_active;
-                dnssecToggle.disabled = !res.dnssec_available;
+                dnssecToggle.disabled = !isAdmin || !res.dnssec_available;
             }
             setDnssecStatusText(res);
 
@@ -2644,25 +2872,6 @@ A configuration template for Caddy can be found in the repository.</div>
         }
 
         dnsConfigSaving = true;
-
-        const retention = getSelectedDnsRetention();
-        if (retention === 0 && dnsConfigLastRetention !== 0) {
-            const ok = await wbConfirm(
-                '"No Logs" disables DNS logging and deletes existing DNS TSDB data. Continue?',
-                'warning'
-            );
-            if (!ok) {
-                dnsConfigHydrating = true;
-                const retentionSlider = document.getElementById('dns-retention-slider');
-                if (retentionSlider) {
-                    retentionSlider.value = String(dnsRetentionIndexForDays(dnsConfigLastRetention));
-                    updateDnsRetentionPreview(retentionSlider.value);
-                }
-                dnsConfigHydrating = false;
-                dnsConfigSaving = false;
-                return;
-            }
-        }
 
         const upstreamInput = document.getElementById('dns-upstream-servers');
         const dnssecToggle = document.getElementById('dnssec-enabled');
@@ -2724,12 +2933,10 @@ A configuration template for Caddy can be found in the repository.</div>
         const payload = {
             upstream_dns: servers,
             dnssec_enabled: !!dnssecToggle?.checked,
-            log_retention_days: retention,
         };
 
         try {
             const res = await api('POST', '/api/dns/config', payload);
-            dnsConfigLastRetention = Number(res?.log_retention_days || retention);
             dnsConfigLastUpstream = servers.slice();
 
             // Use existing dnssecToggle reference (no shadowing)
@@ -2739,18 +2946,7 @@ A configuration template for Caddy can be found in the repository.</div>
             }
             setDnssecStatusText(res);
 
-            const retentionSlider = document.getElementById('dns-retention-slider');
-            if (retentionSlider) {
-                retentionSlider.value = String(dnsRetentionIndexForDays(dnsConfigLastRetention));
-                updateDnsRetentionPreview(retentionSlider.value);
-            }
-
-            const deleted = Number(res?.retention?.deleted_files || 0);
-            if (deleted > 0) {
-                wbToast(`DNS settings saved (${deleted} TSDB files deleted)`, 'success');
-            } else {
-                wbToast('DNS settings saved', 'success');
-            }
+            wbToast('DNS settings saved', 'success');
         } catch (error) {
             wbToast('Failed to save DNS settings: ' + error.message, 'danger');
         } finally {
@@ -2765,13 +2961,88 @@ A configuration template for Caddy can be found in the repository.</div>
     // Load blocklists (called by tab system)
     // Removed automatic loading - now handled by initTabs()
 
-    /* ── TSDB Stats ────────────────────────────────────────── */
+    /* ── Metrics Stats & Retention ─────────────────────────── */
     function formatBytes(size) {
         const n = Number(size) || 0;
+        if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
         if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(2) + ' MB';
         if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
         return n + ' B';
     }
+
+    // TSDB retention slider values (includes 0 for "No Logs")
+    const TSDB_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
+
+    function tsdbRetentionLabel(days) {
+        const n = Number(days);
+        if (n === 0) return 'No Logs';
+        if (n === 365) return '1 Year';
+        return `${n} Days`;
+    }
+
+    function tsdbRetentionIndexForDays(days) {
+        const idx = TSDB_RETENTION_VALUES.indexOf(Number(days));
+        return idx >= 0 ? idx : 5; // default: 365 days
+    }
+
+    function tsdbRetentionDaysFromSlider(rawValue) {
+        const parsed = Number.parseInt(String(rawValue), 10);
+        const idx = Number.isFinite(parsed)
+            ? Math.max(0, Math.min(TSDB_RETENTION_VALUES.length - 1, parsed))
+            : 5;
+        return TSDB_RETENTION_VALUES[idx];
+    }
+
+    function updateTsdbRetentionPreview(rawValue) {
+        const days = tsdbRetentionDaysFromSlider(rawValue);
+        const labelEl = document.getElementById('tsdb-retention-value');
+        if (labelEl) {
+            labelEl.textContent = tsdbRetentionLabel(days);
+            // Visual warning when logging is disabled
+            labelEl.className = days === 0
+                ? 'badge text-bg-danger'
+                : 'badge text-bg-secondary';
+        }
+        return days;
+    }
+
+    // DNS metrics retention slider (mirrors DNS_RETENTION_VALUES)
+    const DNS_METRICS_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
+
+    function dnsMetricsRetentionLabel(days) {
+        const n = Number(days);
+        if (n === 0) return 'No Logs';
+        if (n === 365) return '1 Year';
+        return `${n} Days`;
+    }
+
+    function dnsMetricsRetentionIndexForDays(days) {
+        const idx = DNS_METRICS_RETENTION_VALUES.indexOf(Number(days));
+        return idx >= 0 ? idx : 2; // default: 30 days
+    }
+
+    function dnsMetricsRetentionDaysFromSlider(rawValue) {
+        const parsed = Number.parseInt(String(rawValue), 10);
+        const idx = Number.isFinite(parsed)
+            ? Math.max(0, Math.min(DNS_METRICS_RETENTION_VALUES.length - 1, parsed))
+            : 2;
+        return DNS_METRICS_RETENTION_VALUES[idx];
+    }
+
+    function updateDnsMetricsRetentionPreview(rawValue) {
+        const days = dnsMetricsRetentionDaysFromSlider(rawValue);
+        const labelEl = document.getElementById('dns-metrics-retention-value');
+        if (labelEl) {
+            labelEl.textContent = dnsMetricsRetentionLabel(days);
+            labelEl.className = days === 0
+                ? 'badge text-bg-danger'
+                : 'badge text-bg-secondary';
+        }
+        return days;
+    }
+
+    let _tsdbRetentionSaving = false;
+    let _dnsMetricsRetentionSaving = false;
 
     async function loadTsdbStats() {
         try {
@@ -2781,44 +3052,191 @@ A configuration template for Caddy can be found in the repository.</div>
             const compressedSize = stats.compressed_size_bytes || 0;
             const archiveCount = stats.archive_count || 0;
 
+            const pathEl = document.getElementById('tsdb-path');
+            if (pathEl) pathEl.textContent = stats.path || '–';
+
             document.getElementById('tsdb-size').textContent = formatBytes(size);
             document.getElementById('tsdb-peers').textContent = stats.peer_count || 0;
             document.getElementById('tsdb-files').textContent = stats.file_count || 0;
             document.getElementById('tsdb-archives').textContent =
                 `${archiveCount} (${formatBytes(compressedSize)})`;
 
-            // Format created date
             if (stats.created_at) {
                 const d = new Date(stats.created_at);
                 document.getElementById('tsdb-created').textContent = d.toLocaleDateString();
             } else {
                 document.getElementById('tsdb-created').textContent = '–';
             }
+
+            // Set retention slider
+            const slider = document.getElementById('tsdb-retention-slider');
+            if (slider && stats.retention_days != null) {
+                slider.value = String(tsdbRetentionIndexForDays(stats.retention_days));
+                updateTsdbRetentionPreview(slider.value);
+            }
         } catch (e) {
             console.error('Failed to load TSDB stats:', e);
         }
     }
 
-    async function resetTsdb() {
-        if (!await wbConfirm('Delete all traffic metrics data? This cannot be undone.', 'danger')) return;
+    async function loadDnsMetricsStats() {
+        try {
+            const stats = await api('GET', '/api/dns/storage');
+
+            const pathEl = document.getElementById('dns-metrics-path');
+            if (pathEl) pathEl.textContent = stats.path || '–';
+
+            const sizeEl = document.getElementById('dns-metrics-size');
+            if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
+
+            const filesEl = document.getElementById('dns-metrics-files');
+            if (filesEl) filesEl.textContent = stats.file_count || 0;
+
+            // Set retention slider
+            const slider = document.getElementById('dns-metrics-retention-slider');
+            if (slider && stats.retention_days != null) {
+                slider.value = String(dnsMetricsRetentionIndexForDays(stats.retention_days));
+                updateDnsMetricsRetentionPreview(slider.value);
+            }
+        } catch (e) {
+            console.error('Failed to load DNS metrics stats:', e);
+        }
+    }
+
+    async function loadPeerMetricsStats() {
+        try {
+            const stats = await api('GET', '/api/wireguard/stats/peer-metrics');
+
+            const pathEl = document.getElementById('peer-metrics-path');
+            if (pathEl) pathEl.textContent = stats.path || '–';
+
+            const totalEl = document.getElementById('peer-metrics-total');
+            if (totalEl) totalEl.textContent = stats.total_peers || 0;
+
+            const hsEl = document.getElementById('peer-metrics-handshake');
+            if (hsEl) hsEl.textContent = stats.peers_with_handshake || 0;
+
+            const transferEl = document.getElementById('peer-metrics-transfer');
+            if (transferEl) transferEl.textContent = formatBytes(stats.total_transfer_bytes || 0);
+        } catch (e) {
+            console.error('Failed to load peer metrics stats:', e);
+        }
+    }
+
+    async function saveTsdbRetention() {
+        if (_tsdbRetentionSaving) return;
+        _tsdbRetentionSaving = true;
+        const slider = document.getElementById('tsdb-retention-slider');
+        const days = tsdbRetentionDaysFromSlider(slider?.value ?? 5);
+
+        if (days === 0) {
+            const ok = await wbConfirm(
+                '"No Logs" disables traffic logging and deletes existing data. Dashboard charts will show "Logging disabled". Continue?',
+                'warning'
+            );
+            if (!ok) {
+                // Revert slider
+                loadTsdbStats();
+                _tsdbRetentionSaving = false;
+                return;
+            }
+        }
+
+        try {
+            await api('PATCH', '/api/wireguard/stats/tsdb/retention', { retention_days: days });
+            wbToast(`Traffic retention set to ${tsdbRetentionLabel(days)}`, 'success');
+        } catch (e) {
+            wbToast('Failed to update traffic retention: ' + e.message, 'danger');
+        } finally {
+            _tsdbRetentionSaving = false;
+        }
+    }
+
+    async function saveDnsMetricsRetention() {
+        if (_dnsMetricsRetentionSaving) return;
+        _dnsMetricsRetentionSaving = true;
+        const slider = document.getElementById('dns-metrics-retention-slider');
+        const days = dnsMetricsRetentionDaysFromSlider(slider?.value ?? 2);
+
+        if (days === 0) {
+            const ok = await wbConfirm(
+                '"No Logs" disables DNS logging and deletes existing DNS data. Continue?',
+                'warning'
+            );
+            if (!ok) {
+                // Revert slider
+                loadDnsMetricsStats();
+                _dnsMetricsRetentionSaving = false;
+                return;
+            }
+        }
+
+        try {
+            await api('POST', '/api/dns/config', { log_retention_days: days });
+            wbToast(`DNS retention set to ${dnsMetricsRetentionLabel(days)}`, 'success');
+        } catch (e) {
+            wbToast('Failed to update DNS retention: ' + e.message, 'danger');
+        } finally {
+            _dnsMetricsRetentionSaving = false;
+        }
+    }
+
+    // Bind retention slider listeners
+    (function bindMetricsRetentionListeners() {
+        const tsdbSlider = document.getElementById('tsdb-retention-slider');
+        if (tsdbSlider) {
+            tsdbSlider.addEventListener('input', function () {
+                updateTsdbRetentionPreview(this.value);
+            });
+            tsdbSlider.addEventListener('change', function () {
+                saveTsdbRetention();
+            });
+        }
+
+        const dnsSlider = document.getElementById('dns-metrics-retention-slider');
+        if (dnsSlider) {
+            dnsSlider.addEventListener('input', function () {
+                updateDnsMetricsRetentionPreview(this.value);
+            });
+            dnsSlider.addEventListener('change', function () {
+                saveDnsMetricsRetention();
+            });
+        }
+    })();
+
+    async function purgeTrafficLogs() {
+        if (!await wbConfirm('Delete all traffic metric data? This cannot be undone.', 'danger')) return;
 
         try {
             const res = await api('DELETE', '/api/wireguard/stats/tsdb');
-            wbToast(res.message || 'Metrics reset', 'success');
+            wbToast(res.message || 'Traffic metrics deleted', 'success');
             loadTsdbStats();
         } catch (e) {
-            wbToast('Failed to reset metrics: ' + e.message, 'danger');
+            wbToast('Failed to delete traffic metrics: ' + e.message, 'danger');
         }
     }
 
     async function purgeDnsLogs() {
-        if (!await wbConfirm('Delete all DNS query logs? This cannot be undone.', 'danger')) return;
+        if (!await wbConfirm('Delete all DNS query data? This cannot be undone.', 'danger')) return;
 
         try {
             const res = await api('DELETE', '/api/dns/logs');
-            wbToast(res.message || 'DNS logs deleted', 'success');
+            wbToast(res.message || 'DNS metrics deleted', 'success');
+            loadDnsMetricsStats();
         } catch (e) {
-            wbToast('Failed to delete DNS logs: ' + e.message, 'danger');
+            wbToast('Failed to delete DNS metrics: ' + e.message, 'danger');
+        }
+    }
+
+    async function purgePeerLogs() {
+        if (!await wbConfirm('Reset all peer connection tracking data? This cannot be undone.', 'danger')) return;
+
+        try {
+            const res = await api('DELETE', '/api/wireguard/stats/peer-logs');
+            wbToast(res.message || 'Peer metrics reset', 'success');
+            loadPeerMetricsStats();
+        } catch (e) {
+            wbToast('Failed to reset peer metrics: ' + e.message, 'danger');
         }
     }
 
@@ -2923,13 +3341,14 @@ A configuration template for Caddy can be found in the repository.</div>
     }
 
     window.WBSettings = {
-        resetTsdb,
+        purgeTrafficLogs,
+        purgeDnsLogs,
+        purgePeerLogs,
         refreshInterfaces,
         prepareCreateInterfaceModal,
         updateBlocklist,
         saveCustomRules,
         validateDnsServers,
-        purgeDnsLogs,
         refreshCertificates,
         requestCertificate,
         submitInterfaceForm,

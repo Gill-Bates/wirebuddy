@@ -21,11 +21,23 @@
     --wb-radius-sm: 0.375rem;
     --wb-radius-md: 0.5rem;
     --wb-radius-lg: 1rem;
+    /* Z-index layering */
+    --wb-z-banner: 1080;
+    --wb-z-toast: 1090;
 }
 
 [data-bs-theme="dark"] {
     --wb-bg-soft: #1f2937;
     --wb-bg-strong: #111827;
+    /* Dark mode surfaces and borders */
+    --wb-bg-surface: #1f2937;
+    --wb-bg-elevated: #4b5563;
+    --wb-border-subtle: #374151;
+    --wb-border-strong: #4b5563;
+    --wb-text-primary: #f3f4f6;
+    --wb-text-secondary: #dee2e6;
+    --wb-text-tertiary: #d1d5db;
+    --wb-text-muted: #9ca3af;
 }
 
 /* -----------------------------------------------------------------------------
@@ -45,6 +57,11 @@
    ----------------------------------------------------------------------------- */
 body {
     font-family: 'Roboto Flex', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background-color: var(--bs-body-bg);
+    overflow-x: hidden;
 }
 
 h1 {
@@ -55,16 +72,6 @@ h1 {
 .material-icons {
     vertical-align: middle;
     color: currentColor;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    line-height: 1;
-}
-
-.btn .material-icons {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
     line-height: 1;
 }
 
@@ -75,18 +82,21 @@ td[data-label="Last Seen"] {
     font-variant-numeric: tabular-nums;
 }
 
+/* Code Tag - Override Bootstrap red color with neutral dark */
+code {
+    color: #495057;
+    background-color: rgba(0, 0, 0, 0.05);
+}
+
+[data-bs-theme="dark"] code {
+    color: #adb5bd;
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
 html,
 body {
     min-height: 100%;
     margin: 0;
-}
-
-body {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    background-color: var(--bs-body-bg);
-    overflow-x: hidden;
 }
 
 html:not(.login-page)[data-bs-theme="light"] body {
@@ -125,24 +135,10 @@ html.login-page body {
     overflow-y: auto;
 }
 
-/* iOS-specific fixes for login page */
-@supports (-webkit-touch-callout: none) {
-    html.login-page {
-        height: -webkit-fill-available;
-    }
-
-    html.login-page body {
-        height: -webkit-fill-available;
-        min-height: 100vh;
-        min-height: -webkit-fill-available;
-    }
-}
-
 /* Ensure scrollability on mobile when keyboard appears */
 @media (max-width: 767.98px) {
     html.login-page body {
         overflow-y: auto;
-        -webkit-overflow-scrolling: touch;
     }
 }
 
@@ -160,7 +156,6 @@ html.login-page[data-bs-theme="dark"] body {
     margin: 0 auto;
     /* Ensure card is scrollable within viewport on mobile */
     max-height: calc(100vh - 2rem);
-    max-height: calc(100svh - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
     max-height: calc(100dvh - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
     overflow-y: auto;
 }
@@ -201,8 +196,8 @@ html.login-page .login-card {
 }
 
 [data-bs-theme="dark"] .card {
-    background-color: #1f2937;
-    border-color: #374151;
+    background-color: var(--wb-bg-surface);
+    border-color: var(--wb-border-subtle);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
 
@@ -210,24 +205,29 @@ html.login-page[data-bs-theme="dark"] .login-card {
     box-shadow: 0 22px 52px -20px rgba(0, 0, 0, 0.75), 0 10px 20px rgba(0, 0, 0, 0.45);
 }
 
+/* Dark mode card headers - app pages use body-bg, login uses surface */
 html:not(.login-page)[data-bs-theme="dark"] .card-header {
-    background-color: var(--bs-body-bg) !important;
-    border-bottom-color: rgba(255, 255, 255, 0.14) !important;
+    background-color: var(--bs-body-bg);
+    border-bottom-color: rgba(255, 255, 255, 0.14);
 }
 
-[data-bs-theme="dark"] .card-header {
-    background-color: #1f2937 !important;
-    border-bottom-color: #374151 !important;
+html.login-page[data-bs-theme="dark"] .card-header,
+[data-bs-theme="dark"] .login-card .card-header {
+    background-color: var(--wb-bg-surface);
+    border-bottom-color: var(--wb-border-subtle);
 }
 
+/* Dark mode card bodies - app pages use body-bg, login uses surface */
 html:not(.login-page)[data-bs-theme="dark"] .card-body {
-    background-color: var(--bs-body-bg) !important;
+    background-color: var(--bs-body-bg);
 }
 
-[data-bs-theme="dark"] .card-body {
-    background-color: #1f2937 !important;
+html.login-page[data-bs-theme="dark"] .card-body,
+[data-bs-theme="dark"] .login-card .card-body {
+    background-color: var(--wb-bg-surface);
 }
 
+/* Dark mode tables within cards */
 html:not(.login-page)[data-bs-theme="dark"] .card .table {
     --bs-table-bg: var(--bs-body-bg);
     --bs-table-striped-bg: rgba(255, 255, 255, 0.02);
@@ -235,8 +235,9 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
     color: var(--bs-body-color);
 }
 
-[data-bs-theme="dark"] .card .table {
-    --bs-table-bg: #1f2937;
+html.login-page[data-bs-theme="dark"] .card .table,
+[data-bs-theme="dark"] .login-card .table {
+    --bs-table-bg: var(--wb-bg-surface);
     --bs-table-striped-bg: rgba(255, 255, 255, 0.02);
     --bs-table-hover-bg: rgba(255, 255, 255, 0.04);
     color: var(--bs-body-color);
@@ -244,24 +245,23 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
 
 /* Dark mode table-danger (blocked DNS queries) */
 [data-bs-theme="dark"] .table-danger {
-    --bs-table-color: #f3f4f6;
+    --bs-table-color: var(--wb-text-primary);
     --bs-table-bg: rgba(220, 53, 69, 0.15);
     --bs-table-border-color: rgba(220, 53, 69, 0.3);
     --bs-table-striped-bg: rgba(220, 53, 69, 0.2);
-    --bs-table-striped-color: #f3f4f6;
+    --bs-table-striped-color: var(--wb-text-primary);
     --bs-table-hover-bg: rgba(220, 53, 69, 0.25);
-    --bs-table-hover-color: #f3f4f6;
+    --bs-table-hover-color: var(--wb-text-primary);
     color: var(--bs-table-color);
 }
 
 [data-bs-theme="dark"] .table-danger td,
 [data-bs-theme="dark"] .table-danger th {
-    color: #f3f4f6 !important;
+    color: var(--wb-text-primary);
 }
 
-[data-bs-theme="dark"] .table-danger code,
 [data-bs-theme="dark"] .table-danger .text-muted {
-    color: #d1d5db !important;
+    color: var(--wb-text-tertiary);
 }
 
 /* -----------------------------------------------------------------------------
@@ -283,15 +283,15 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
    Forms (Dark Mode)
    ----------------------------------------------------------------------------- */
 [data-bs-theme="dark"] .form-control {
-    background-color: #374151;
-    border-color: #4b5563;
-    color: #f3f4f6;
+    background-color: var(--wb-border-subtle);
+    border-color: var(--wb-border-strong);
+    color: var(--wb-text-primary);
 }
 
 [data-bs-theme="dark"] .form-control:focus {
-    background-color: #4b5563;
+    background-color: var(--wb-bg-elevated);
     border-color: var(--wb-primary);
-    color: #f3f4f6;
+    color: var(--wb-text-primary);
 }
 
 .form-check-input:checked {
@@ -338,7 +338,7 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
 [data-bs-theme="dark"] .wb-btn {
     border-color: #495057;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
-    color: #dee2e6;
+    color: var(--wb-text-secondary);
 }
 
 [data-bs-theme="dark"] .wb-btn:hover {
@@ -387,8 +387,36 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
     box-shadow: 0 2px 6px rgba(136, 23, 26, 0.3);
 }
 
-/* ── Danger / delete buttons ─────────────────────────────────────────────────── */
-.btn.btn-danger,
+.btn.btn-primary:focus-visible {
+    outline: 2px solid var(--wb-primary);
+    outline-offset: 2px;
+}
+
+/* ── Danger buttons (filled) ───────────────────────────────────────────────── */
+.btn.btn-danger {
+    --bs-btn-bg: var(--wb-danger);
+    --bs-btn-border-color: var(--wb-danger);
+    --bs-btn-color: #fff;
+    --bs-btn-hover-bg: #bb2d3b;
+    --bs-btn-hover-border-color: #bb2d3b;
+    --bs-btn-hover-color: #fff;
+    --bs-btn-active-bg: #b02a37;
+    --bs-btn-active-border-color: #b02a37;
+    --bs-btn-active-color: #fff;
+    --bs-btn-focus-shadow-rgb: 220, 53, 69;
+    box-shadow: 0 1px 3px rgba(220, 53, 69, 0.2);
+}
+
+.btn.btn-danger:hover {
+    box-shadow: 0 2px 6px rgba(220, 53, 69, 0.3);
+}
+
+.btn.btn-danger:focus-visible {
+    outline: 2px solid var(--wb-danger);
+    outline-offset: 2px;
+}
+
+/* ── Outline danger buttons ────────────────────────────────────────────────── */
 .btn.btn-outline-danger {
     --bs-btn-bg: transparent;
     --bs-btn-border-color: var(--wb-danger);
@@ -403,9 +431,13 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
     box-shadow: 0 1px 3px rgba(220, 53, 69, 0.1);
 }
 
-.btn.btn-danger:hover,
 .btn.btn-outline-danger:hover {
     box-shadow: 0 2px 6px rgba(220, 53, 69, 0.25);
+}
+
+.btn.btn-outline-danger:focus-visible {
+    outline: 2px solid var(--wb-danger);
+    outline-offset: 2px;
 }
 
 /* ── Secondary / cancel modal buttons ──────────────────────────────────────── */
@@ -422,9 +454,15 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
     --bs-btn-focus-shadow-rgb: 108, 117, 125;
 }
 
+.btn.btn-secondary:focus-visible {
+    outline: 2px solid #6c757d;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 3px rgba(108, 117, 125, 0.25);
+}
+
 [data-bs-theme="dark"] .btn.btn-secondary {
     --bs-btn-border-color: #495057;
-    --bs-btn-color: #dee2e6;
+    --bs-btn-color: var(--wb-text-secondary);
     --bs-btn-hover-bg: rgba(255, 255, 255, 0.08);
     --bs-btn-hover-border-color: #6c757d;
     --bs-btn-hover-color: #f8f9fa;
@@ -433,12 +471,31 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
     --bs-btn-active-color: #f8f9fa;
 }
 
-/* ── Outline buttons (ghost style) ───────────────────────────────────────────── */
-.btn.btn-outline-primary,
-.btn.btn-outline-secondary,
-.btn.btn-outline-info,
-.btn.btn-outline-success,
-.btn.btn-outline-warning {
+/* ── Outline buttons (ghost style with semantic colors) ───────────────────── */
+.btn.btn-outline-primary {
+    --bs-btn-bg: transparent;
+    --bs-btn-border-color: var(--wb-primary);
+    --bs-btn-color: var(--wb-primary);
+    --bs-btn-hover-bg: rgba(var(--bs-primary-rgb), 0.08);
+    --bs-btn-hover-border-color: var(--wb-primary-hover);
+    --bs-btn-hover-color: var(--wb-primary-hover);
+    --bs-btn-active-bg: rgba(var(--bs-primary-rgb), 0.12);
+    --bs-btn-active-border-color: var(--wb-primary-hover);
+    --bs-btn-active-color: var(--wb-primary-hover);
+    box-shadow: 0 1px 3px rgba(136, 23, 26, 0.1);
+}
+
+.btn.btn-outline-primary:hover {
+    box-shadow: 0 2px 6px rgba(136, 23, 26, 0.15);
+}
+
+.btn.btn-outline-primary:focus-visible {
+    outline: 2px solid var(--wb-primary);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 3px rgba(var(--bs-primary-rgb), 0.25);
+}
+
+.btn.btn-outline-secondary {
     --bs-btn-bg: transparent;
     --bs-btn-border-color: #ced4da;
     --bs-btn-color: var(--bs-body-color);
@@ -451,31 +508,122 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
-.btn.btn-outline-primary:hover,
-.btn.btn-outline-secondary:hover,
-.btn.btn-outline-info:hover,
-.btn.btn-outline-success:hover,
-.btn.btn-outline-warning:hover {
+.btn.btn-outline-secondary:hover {
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
 }
 
-[data-bs-theme="dark"] .btn.btn-outline-primary,
-[data-bs-theme="dark"] .btn.btn-outline-secondary,
-[data-bs-theme="dark"] .btn.btn-outline-info,
-[data-bs-theme="dark"] .btn.btn-outline-success,
-[data-bs-theme="dark"] .btn.btn-outline-warning {
+.btn.btn-outline-secondary:focus-visible {
+    outline: 2px solid #6c757d;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 3px rgba(108, 117, 125, 0.25);
+}
+
+.btn.btn-outline-info {
+    --bs-btn-bg: transparent;
+    --bs-btn-border-color: var(--wb-info);
+    --bs-btn-color: var(--wb-info);
+    --bs-btn-hover-bg: rgba(13, 202, 240, 0.08);
+    --bs-btn-hover-border-color: #0dcaf0;
+    --bs-btn-hover-color: #0aa2c0;
+    --bs-btn-active-bg: rgba(13, 202, 240, 0.12);
+    --bs-btn-active-border-color: #0aa2c0;
+    --bs-btn-active-color: #0aa2c0;
+    box-shadow: 0 1px 3px rgba(13, 202, 240, 0.1);
+}
+
+.btn.btn-outline-info:hover {
+    box-shadow: 0 2px 6px rgba(13, 202, 240, 0.15);
+}
+
+.btn.btn-outline-info:focus-visible {
+    outline: 2px solid var(--wb-info);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 3px rgba(13, 202, 240, 0.25);
+}
+
+.btn.btn-outline-success {
+    --bs-btn-bg: transparent;
+    --bs-btn-border-color: var(--wb-success);
+    --bs-btn-color: var(--wb-success);
+    --bs-btn-hover-bg: rgba(25, 135, 84, 0.08);
+    --bs-btn-hover-border-color: #157347;
+    --bs-btn-hover-color: #157347;
+    --bs-btn-active-bg: rgba(25, 135, 84, 0.12);
+    --bs-btn-active-border-color: #146c43;
+    --bs-btn-active-color: #146c43;
+    box-shadow: 0 1px 3px rgba(25, 135, 84, 0.1);
+}
+
+.btn.btn-outline-success:hover {
+    box-shadow: 0 2px 6px rgba(25, 135, 84, 0.15);
+}
+
+.btn.btn-outline-success:focus-visible {
+    outline: 2px solid var(--wb-success);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 3px rgba(25, 135, 84, 0.25);
+}
+
+.btn.btn-outline-warning {
+    --bs-btn-bg: transparent;
+    --bs-btn-border-color: var(--wb-warning);
+    --bs-btn-color: #856404;
+    --bs-btn-hover-bg: rgba(255, 193, 7, 0.08);
+    --bs-btn-hover-border-color: #e0a800;
+    --bs-btn-hover-color: #664d03;
+    --bs-btn-active-bg: rgba(255, 193, 7, 0.12);
+    --bs-btn-active-border-color: #d39e00;
+    --bs-btn-active-color: #664d03;
+    box-shadow: 0 1px 3px rgba(255, 193, 7, 0.1);
+}
+
+.btn.btn-outline-warning:hover {
+    box-shadow: 0 2px 6px rgba(255, 193, 7, 0.15);
+}
+
+.btn.btn-outline-warning:focus-visible {
+    outline: 2px solid var(--wb-warning);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 3px rgba(255, 193, 7, 0.25);
+}
+
+/* Dark mode adjustments for outline buttons */
+[data-bs-theme="dark"] .btn.btn-outline-primary {
+    --bs-btn-color: #ff9496;
+    --bs-btn-hover-bg: rgba(var(--bs-primary-rgb), 0.15);
+    --bs-btn-hover-color: #ffb4b6;
+}
+
+[data-bs-theme="dark"] .btn.btn-outline-secondary {
     --bs-btn-border-color: #495057;
-    --bs-btn-color: #dee2e6;
+    --bs-btn-color: var(--wb-text-secondary);
     --bs-btn-hover-bg: rgba(255, 255, 255, 0.08);
     --bs-btn-hover-border-color: #6c757d;
     --bs-btn-hover-color: #f8f9fa;
     --bs-btn-active-bg: rgba(255, 255, 255, 0.12);
     --bs-btn-active-border-color: #6c757d;
-    --bs-btn-active-color: #f8f9fa;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
-[data-bs-theme="dark"] .btn.btn-outline-primary:hover,
+[data-bs-theme="dark"] .btn.btn-outline-info {
+    --bs-btn-color: #6edff6;
+    --bs-btn-hover-bg: rgba(13, 202, 240, 0.15);
+    --bs-btn-hover-color: #9be7fb;
+}
+
+[data-bs-theme="dark"] .btn.btn-outline-success {
+    --bs-btn-color: #75b798;
+    --bs-btn-hover-bg: rgba(25, 135, 84, 0.15);
+    --bs-btn-hover-color: #9dd3bb;
+}
+
+[data-bs-theme="dark"] .btn.btn-outline-warning {
+    --bs-btn-border-color: #ffcd39;
+    --bs-btn-color: #ffcd39;
+    --bs-btn-hover-bg: rgba(255, 193, 7, 0.15);
+    --bs-btn-hover-color: #ffe69c;
+}
+
 [data-bs-theme="dark"] .btn.btn-outline-secondary:hover,
 [data-bs-theme="dark"] .btn.btn-outline-info:hover,
 [data-bs-theme="dark"] .btn.btn-outline-success:hover,
@@ -498,6 +646,12 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
     box-shadow: 0 1px 3px rgba(255, 193, 7, 0.15);
 }
 
+.btn.btn-warning:focus-visible {
+    outline: 2px solid var(--wb-warning);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 3px rgba(255, 193, 7, 0.25);
+}
+
 [data-bs-theme="dark"] .btn.btn-warning {
     --bs-btn-border-color: #ffcd39;
     --bs-btn-color: #ffcd39;
@@ -513,22 +667,28 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
 /* ── Fix: btn-light in Dark Mode (used for interface action buttons) ─────── */
 [data-bs-theme="dark"] .btn.btn-light {
     --bs-btn-bg: #273244;
-    --bs-btn-border-color: #374151;
+    --bs-btn-border-color: var(--wb-border-subtle);
     --bs-btn-color: #e5e7eb;
 
     --bs-btn-hover-bg: #334155;
-    --bs-btn-hover-border-color: #4b5563;
+    --bs-btn-hover-border-color: var(--wb-border-strong);
     --bs-btn-hover-color: #ffffff;
 
-    --bs-btn-active-bg: #1f2937;
-    --bs-btn-active-border-color: #4b5563;
+    --bs-btn-active-bg: var(--wb-bg-surface);
+    --bs-btn-active-border-color: var(--wb-border-strong);
     --bs-btn-active-color: #ffffff;
 
-    --bs-btn-disabled-bg: #1f2937;
-    --bs-btn-disabled-border-color: #374151;
+    --bs-btn-disabled-bg: var(--wb-bg-surface);
+    --bs-btn-disabled-border-color: var(--wb-border-subtle);
     --bs-btn-disabled-color: #6b7280;
 
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+[data-bs-theme="dark"] .btn.btn-light:focus-visible {
+    outline: 2px solid var(--wb-border-strong);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 3px rgba(75, 85, 99, 0.25);
 }
 
 /* ── Optional: subtle action accent on hover (interfaces) ─────────────────── */
@@ -547,6 +707,22 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
 /* Improve disabled clarity */
 [data-bs-theme="dark"] .btn.btn-light:disabled {
     opacity: 0.45;
+}
+
+/* -----------------------------------------------------------------------------
+   Banners & Toast Container
+   ----------------------------------------------------------------------------- */
+#keyMismatchBanner {
+    position: sticky;
+    top: 0;
+    z-index: var(--wb-z-banner);
+    border-left: 0;
+    border-right: 0;
+    border-top: 0;
+}
+
+#wbToastContainer {
+    z-index: var(--wb-z-toast);
 }
 
 /* -----------------------------------------------------------------------------
@@ -667,6 +843,10 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
         padding-right: 1.5rem;
     }
 
+    .navbar .navbar-brand {
+        margin-left: 0.5rem;
+    }
+
     .navbar .navbar-actions {
         gap: 0.85rem;
     }
@@ -688,11 +868,11 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
 
 [data-bs-theme="dark"] .sidebar {
     background-color: var(--bs-body-bg);
-    border-right-color: #374151;
+    border-right-color: var(--wb-border-subtle);
 }
 
 .sidebar .nav-link {
-    color: #4b5563;
+    color: var(--wb-bg-elevated);
     padding: 0.75rem 1rem;
     border-radius: var(--wb-radius-md);
     margin: 0.25rem 0.5rem;
@@ -708,7 +888,7 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
 }
 
 [data-bs-theme="dark"] .sidebar .nav-link:hover {
-    background-color: #374151;
+    background-color: var(--wb-border-subtle);
 }
 
 .sidebar .nav-link.active {
@@ -754,32 +934,6 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
 }
 
 /* -----------------------------------------------------------------------------
-   Theme Toggle
-   ----------------------------------------------------------------------------- */
-.theme-toggle {
-    cursor: pointer;
-    padding: 0.5rem;
-    border-radius: var(--wb-radius-sm);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background-color 0.15s ease-in-out;
-}
-
-.theme-toggle:hover {
-    background-color: rgba(255, 255, 255, 0.1);
-}
-
-[data-bs-theme="dark"] .theme-toggle:hover {
-    background-color: rgba(255, 255, 255, 0.15);
-}
-
-.theme-toggle:focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.5);
-    outline-offset: 2px;
-}
-
-/* -----------------------------------------------------------------------------
    Toasts
    ----------------------------------------------------------------------------- */
 .toast {
@@ -794,6 +948,10 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
    Footer
    ----------------------------------------------------------------------------- */
 .wb-footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
     padding: 0.75rem 1.5rem;
     display: flex;
     align-items: center;
@@ -804,8 +962,12 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
     color: var(--bs-secondary-color);
     background: var(--bs-body-bg);
     border-top: 1px solid var(--bs-border-color);
-    flex-shrink: 0;
-    margin-top: auto;
+    z-index: 1000;
+}
+
+/* Add padding to main content to prevent footer overlap */
+.main-content {
+    padding-bottom: 3.5rem;
 }
 
 .wb-footer-content {
@@ -881,8 +1043,7 @@ html:not(.login-page)[data-bs-theme="dark"] .card .table {
 /* Touch-safe minimum sizes for coarse pointers */
 @media (pointer: coarse) {
 
-    .navbar .navbar-theme-btn,
-    .theme-toggle {
+    .navbar .navbar-theme-btn {
         min-width: 44px;
         min-height: 44px;
     }
@@ -978,37 +1139,37 @@ html.login-page .alert {
     box-shadow: 0 1px 5px rgba(0, 0, 0, 0.8);
 }
 
-[data-bs-theme="dark"] .leaflet-bar a {
-    background-color: #343a40 !important;
-    border-bottom: 1px solid #495057 !important;
-    color: #dee2e6 !important;
+[data-bs-theme="dark"] .leaflet-bar>a {
+    background-color: #343a40;
+    border-bottom: 1px solid #495057;
+    color: var(--wb-text-secondary);
 }
 
-[data-bs-theme="dark"] .leaflet-bar a:hover,
-[data-bs-theme="dark"] .leaflet-bar a:focus {
-    background-color: #495057 !important;
-    color: #fff !important;
+[data-bs-theme="dark"] .leaflet-bar>a:hover,
+[data-bs-theme="dark"] .leaflet-bar>a:focus {
+    background-color: #495057;
+    color: #fff;
 }
 
-[data-bs-theme="dark"] .leaflet-bar a.leaflet-disabled {
-    background-color: #2b3035 !important;
-    color: #6c757d !important;
+[data-bs-theme="dark"] .leaflet-bar>a.leaflet-disabled {
+    background-color: #2b3035;
+    color: #6c757d;
 }
 
 [data-bs-theme="dark"] .leaflet-popup-content-wrapper {
-    background-color: #1f2937;
-    color: #f3f4f6;
-    border: 1px solid #374151;
+    background-color: var(--wb-bg-surface);
+    color: var(--wb-text-primary);
+    border: 1px solid var(--wb-border-subtle);
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
 }
 
 [data-bs-theme="dark"] .leaflet-popup-tip {
-    background-color: #1f2937;
-    border: 1px solid #374151;
+    background-color: var(--wb-bg-surface);
+    border: 1px solid var(--wb-border-subtle);
 }
 
 [data-bs-theme="dark"] .leaflet-popup-content {
-    color: #f3f4f6;
+    color: var(--wb-text-primary);
 }
 
 [data-bs-theme="dark"] .leaflet-popup-content strong {
@@ -1016,7 +1177,7 @@ html.login-page .alert {
 }
 
 [data-bs-theme="dark"] .leaflet-popup-content .text-muted {
-    color: #c7d2e0 !important;
+    color: #c7d2e0;
 }
 
 /* -----------------------------------------------------------------------------
@@ -1049,14 +1210,13 @@ html.login-page .alert {
 
 /* -----------------------------------------------------------------------------
    Mobile Condensed Tables (Roboto Flex width axis)
+   Scope to specific class if needed for condensed display
    ----------------------------------------------------------------------------- */
-@media (max-width: 767.98px) {
-
-    table,
-    .table {
+/* @media (max-width: 767.98px) {
+    .wb-table-condensed {
         font-stretch: 87.5%;
     }
-}
+} */
 
 /* Reconnect / onboarding states */
 body.wb-reconnecting .main-content {
@@ -1072,7 +1232,7 @@ body.wb-reconnecting .sidebar {
 }
 
 body.wb-reconnecting .modal-backdrop.show {
-    background-color: rgba(15, 23, 42, 0.5);
+    background-color: rgba(15, 23, 42, 0.6);
 }
 
 body.wb-onboarding .main-content,
@@ -1082,7 +1242,7 @@ body.wb-onboarding .sidebar {
 }
 
 body.wb-onboarding .modal-backdrop.show {
-    background-color: rgba(15, 23, 42, 0.5);
+    background-color: rgba(15, 23, 42, 0.6);
 }
 
 .spinner-border {
@@ -1123,7 +1283,6 @@ body.wb-onboarding .modal-backdrop.show {
 body.wb-reconnecting #wbReconnectModal.show .wb-reconnect-pulse {
     animation: wbReconnectSoftPulse 1.9s ease-in-out infinite;
     transform-origin: center;
-    will-change: transform, box-shadow;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -41,7 +41,7 @@ from starlette.concurrency import run_in_threadpool
 from ..db import tsdb
 from ..utils.deps import get_tsdb_dir
 from ..utils.time import utcnow
-from .auth import require_admin
+from .auth import get_current_user
 from .response import ok_response
 from .wireguard_stats import TRAFFIC_RANGE_TO_HOURS
 from .wireguard_utils import bytes_to_unit, select_display_unit
@@ -235,6 +235,9 @@ def _compute_country_traffic(
 		rx_display = round(bytes_to_unit(info["rx"], display_unit), 2)
 		tx_display = round(bytes_to_unit(info["tx"], display_unit), 2)
 		total_display = round(bytes_to_unit(info["rx"] + info["tx"], display_unit), 2)
+		# Skip entries with negligible traffic (< 0.01 in display unit) (#17)
+		if total_display < 0.01:
+			continue
 		countries.append(CountryEntry(
 			code=cc,
 			name=_country_name(cc),
@@ -265,7 +268,7 @@ async def get_traffic_by_country(
 	hours: int = Query(24, ge=1, le=8760, description="Hours of history (1-8760)"),
 	range_key: str | None = Query(None, pattern="^(6h|24h|3d|7d|30d|90d|1y)$"),
 	tsdb_dir: Path = Depends(get_tsdb_dir),
-	_: sqlite3.Row = Depends(require_admin),
+	_: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Traffic aggregated by **destination** country (admin only).
 
@@ -284,4 +287,167 @@ async def get_traffic_by_country(
 		hours = TRAFFIC_RANGE_TO_HOURS.get(range_key, hours)
 
 	data: CountryTrafficData = await run_in_threadpool(_compute_country_traffic, tsdb_dir, hours)
+	return ok_response(data=data.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# ASN Traffic
+# ---------------------------------------------------------------------------
+
+ASN_TRAFFIC_KEY = "__asn_traffic__"
+ASN_TRAFFIC_METRIC = "snapshot"
+
+
+class ASNEntry(BaseModel):
+	asn: str
+	name: str
+	rx: float
+	tx: float
+	total: float
+	peers: int
+	peer_names: list[str]
+	peer_names_truncated: bool
+
+
+class ASNTrafficData(BaseModel):
+	asns: list[ASNEntry]
+	display_unit: str
+	hours: int
+	total_asns: int
+
+
+def _compute_asn_traffic(
+	tsdb_dir: Path,
+	hours: int,
+) -> ASNTrafficData:
+	"""Sum TSDB ASN snapshots for the requested time window (blocking).
+
+	Each TSDB point contains a JSON dict of per-ASN deltas::
+
+	    {"13335": {"rx": 1234, "tx": 5678, "name": "Cloudflare", "peers": ["Alice"]}, ...}
+
+	This function sums all such snapshots within ``[now - hours, now]``.
+	"""
+	since = utcnow() - timedelta(hours=hours)
+
+	points = tsdb.query(
+		tsdb_dir,
+		peer_key=ASN_TRAFFIC_KEY,
+		metric=ASN_TRAFFIC_METRIC,
+		since=since,
+		limit=_MAX_POINTS,
+	)
+
+	if len(points) >= _MAX_POINTS:
+		_log.warning(
+			"ASN_TRAFFIC query hit %d-point cap for %dh window; results may be truncated",
+			_MAX_POINTS, hours,
+		)
+
+	# Aggregate across all snapshot points.
+	# {asn_key: {"rx": int, "tx": int, "name": str, "peers": set[str], "peers_seen": int}}
+	asn_agg: dict[str, dict[str, Any]] = {}
+
+	for pt in points:
+		snapshot = pt.value
+		if not isinstance(snapshot, dict):
+			continue
+		for asn_key, info in snapshot.items():
+			if not isinstance(info, dict):
+				continue
+			rx = int(info.get("rx", 0))
+			tx = int(info.get("tx", 0))
+			if rx == 0 and tx == 0:
+				continue
+
+			if asn_key not in asn_agg:
+				asn_agg[asn_key] = {
+					"rx": 0,
+					"tx": 0,
+					"name": info.get("name", "Unknown"),
+					"peers": set(),
+					"peers_seen": 0,
+				}
+
+			asn_agg[asn_key]["rx"] += rx
+			asn_agg[asn_key]["tx"] += tx
+
+			# Collect peer names (capped at _MAX_PEER_NAMES)
+			for name in info.get("peers", []):
+				asn_agg[asn_key]["peers_seen"] += 1
+				if len(asn_agg[asn_key]["peers"]) < _MAX_PEER_NAMES:
+					asn_agg[asn_key]["peers"].add(name)
+
+	# Freeze sets into sorted lists
+	for agg in asn_agg.values():
+		agg["peers"] = sorted(agg["peers"])
+
+	# Determine display unit from the max value
+	max_bytes: int = 0
+	for info in asn_agg.values():
+		max_bytes = max(max_bytes, info["rx"], info["tx"])
+
+	display_unit = select_display_unit(max_bytes)
+
+	# Build Pydantic models
+	asns: list[ASNEntry] = []
+	for asn_key, info in sorted(
+		asn_agg.items(),
+		key=lambda kv: kv[1]["rx"] + kv[1]["tx"],
+		reverse=True,
+	):
+		rx_display = round(bytes_to_unit(info["rx"], display_unit), 2)
+		tx_display = round(bytes_to_unit(info["tx"], display_unit), 2)
+		total_display = round(bytes_to_unit(info["rx"] + info["tx"], display_unit), 2)
+		# Skip entries with negligible traffic (< 0.01 in display unit) (#17)
+		if total_display < 0.01:
+			continue
+		asns.append(ASNEntry(
+			asn=asn_key,
+			name=info["name"],
+			rx=rx_display,
+			tx=tx_display,
+			total=total_display,
+			peers=len(info["peers"]),
+			peer_names=info["peers"],
+			peer_names_truncated=info["peers_seen"] > _MAX_PEER_NAMES,
+		))
+
+	_log.debug(
+		"ASN_TRAFFIC hours=%d points=%d asns=%d display_unit=%s",
+		hours, len(points), len(asns), display_unit,
+	)
+
+	return ASNTrafficData(
+		asns=asns,
+		display_unit=display_unit,
+		hours=hours,
+		total_asns=len(asns),
+	)
+
+
+@router.get("/stats/traffic-by-asn", response_model=None)
+async def get_traffic_by_asn(
+	hours: int = Query(24, ge=1, le=8760, description="Hours of history (1-8760)"),
+	range_key: str | None = Query(None, pattern="^(6h|24h|3d|7d|30d|90d|1y)$"),
+	tsdb_dir: Path = Depends(get_tsdb_dir),
+	_: sqlite3.Row = Depends(get_current_user),
+):
+	"""Traffic aggregated by **destination** ASN (admin only).
+
+	Analyses where WireGuard clients' internet traffic goes by summing
+	per-ASN byte deltas from conntrack snapshots stored in TSDB.
+
+	Query params:
+		hours:     Number of hours (1-8760).
+		range_key: Preset (6h|24h|3d|7d|30d|90d|1y), overrides *hours*.
+
+	Returns:
+		``{asns: [{asn, name, rx, tx, total, peers, peer_names}, ...],
+		  display_unit, hours, total_asns}``
+	"""
+	if range_key:
+		hours = TRAFFIC_RANGE_TO_HOURS.get(range_key, hours)
+
+	data: ASNTrafficData = await run_in_threadpool(_compute_asn_traffic, tsdb_dir, hours)
 	return ok_response(data=data.model_dump())

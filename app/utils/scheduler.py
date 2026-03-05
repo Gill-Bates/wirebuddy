@@ -98,7 +98,13 @@ class Scheduler:
 		Raises:
 			RuntimeError: If scheduler is already running
 			ValueError: If name is duplicate, interval is invalid, or initial_delay without run_on_start
+			TypeError: If func is not an async callable
 		"""
+		if not callable(func):
+			raise TypeError(f"func must be callable, got {type(func).__name__}")
+		if not asyncio.iscoroutinefunction(func):
+			raise TypeError(f"func must be an async function, got {type(func).__name__}")
+		
 		if self._started:
 			raise RuntimeError(f"Cannot add job {name!r} while scheduler is running")
 		
@@ -186,6 +192,7 @@ class Scheduler:
 				_log.info("SCHEDULER job=%s stopped", name)
 		
 		self._tasks.clear()
+		self._stop_event = None
 
 	async def stop_graceful(self, timeout: float = 5.0) -> None:
 		"""Gracefully stop all jobs, waiting up to timeout for clean exit.
@@ -220,6 +227,7 @@ class Scheduler:
 				await asyncio.gather(*not_done, return_exceptions=True)
 		
 		self._tasks.clear()
+		self._stop_event = None
 		_log.info("SCHEDULER stopped")
 
 	async def _run_loop(self, job: _Job) -> None:
@@ -232,9 +240,9 @@ class Scheduler:
 		def _jittered_interval() -> float:
 			"""Return interval with random jitter applied."""
 			if job.jitter_pct <= 0:
-				return job.interval_seconds
+				return max(_MIN_INTERVAL, job.interval_seconds)
 			jitter_range = job.interval_seconds * job.jitter_pct
-			return job.interval_seconds + random.uniform(-jitter_range, jitter_range)
+			return max(_MIN_INTERVAL, job.interval_seconds + random.uniform(-jitter_range, jitter_range))
 		
 		consecutive_failures = 0
 		max_backoff = 300  # 5 minutes
@@ -321,7 +329,12 @@ class Scheduler:
 					# Keep original rhythm by computing next regular slot after backoff
 					backoff_until = now + backoff
 					while next_run < backoff_until:
-						next_run += _jittered_interval()
+						next_run += job.interval_seconds
+					
+					if job.jitter_pct > 0:
+						jitter_range = job.interval_seconds * job.jitter_pct
+						next_run += random.uniform(-jitter_range, jitter_range)
+					next_run = max(now + _MIN_INTERVAL, next_run)
 		
 		except asyncio.CancelledError:
 			_log.debug("SCHEDULER job=%s cancelled", job.name)
@@ -351,7 +364,8 @@ class Scheduler:
 		except asyncio.TimeoutError:
 			job.last_attempt = datetime.now(timezone.utc)
 			job.fail_count += 1
-			_log.error("SCHEDULER job=%s timed out after %.1fs (fail #%d)", job.name, job.timeout, job.fail_count)
+			limit = job.timeout if job.timeout is not None else 0.0
+			_log.error("SCHEDULER job=%s timed out after %.1fs (fail #%d)", job.name, limit, job.fail_count)
 			return False
 		except Exception:
 			job.last_attempt = datetime.now(timezone.utc)
@@ -362,7 +376,7 @@ class Scheduler:
 	def get_status(self) -> list[JobStatus]:
 		"""Return status of all jobs (for monitoring/API).
 		
-		Safe to call from any context. Does not access async task state.
+		Safe to call from any context.
 		"""
 		return [
 			{

@@ -54,6 +54,10 @@
         vertical-align: middle;
     }
 
+    .dashboard-traffic-metric .dashboard-metric-unit {
+        margin-left: 0.35rem;
+    }
+
     .dashboard-side-split {
         height: 100%;
         display: flex;
@@ -134,6 +138,14 @@
     @media (max-width: 767.98px) {
         #peer-map {
             height: 280px;
+        }
+
+        .dashboard-traffic-metric .dashboard-metric-unit {
+            display: inline;
+            margin-left: 0;
+            font-size: 0.875rem;
+            color: var(--bs-secondary-color);
+            white-space: nowrap;
         }
 
         .dashboard-side-split>.card {
@@ -264,8 +276,9 @@
 {% endblock %}
 
 {% block content %}
-<div class="dashboard-header mb-4">
-    <h1 class="dashboard-page-title h3 mb-0"><span class="material-icons me-2" aria-hidden="true">dashboard</span>Dashboard</h1>
+<div class="container-fluid wb-page">
+<div class="wb-page-header">
+    <h2 class="page-title"><span class="material-icons me-2" aria-hidden="true">dashboard</span>Dashboard</h2>
 </div>
 
 <!-- Stats Cards -->
@@ -279,8 +292,8 @@
                     </div>
                     <div class="flex-grow-1 ms-3">
                         <h6 class="text-muted mb-1" id="label-interfaces">Interfaces</h6>
-                        <h3 class="mb-0" id="interfaces-count" aria-labelledby="label-interfaces" aria-live="polite">-
-                        </h3>
+                        <p class="h3 mb-0" id="interfaces-count" aria-labelledby="label-interfaces" aria-live="polite">-
+                        </p>
                     </div>
                 </div>
             </div>
@@ -296,7 +309,7 @@
                     </div>
                     <div class="flex-grow-1 ms-3">
                         <h6 class="text-muted mb-1" id="label-peers">Connections</h6>
-                        <h3 class="mb-0" id="peers-count" aria-labelledby="label-peers" aria-live="polite">-</h3>
+                        <p class="h3 mb-0" id="peers-count" aria-labelledby="label-peers" aria-live="polite">-</p>
                         <small class="text-muted" id="peers-count-label">Peers Online</small>
                     </div>
                 </div>
@@ -312,8 +325,9 @@
                         <span class="material-icons dashboard-stat-icon text-info" aria-hidden="true">download</span>
                     </div>
                     <div class="flex-grow-1 ms-3">
-                        <h6 class="text-muted mb-1" id="label-total-rx">Total RX</h6>
-                        <h3 class="mb-0" id="total-rx" aria-labelledby="label-total-rx" aria-live="polite">-</h3>
+                        <h6 class="text-muted mb-1" id="label-total-rx">RX</h6>
+                        <p class="h3 mb-0 dashboard-traffic-metric" id="total-rx" aria-labelledby="label-total-rx" aria-live="polite">-</p>
+                        <small class="text-muted" style="font-size: 0.7rem;">since restart</small>
                     </div>
                 </div>
             </div>
@@ -328,8 +342,9 @@
                         <span class="material-icons dashboard-stat-icon text-warning" aria-hidden="true">upload</span>
                     </div>
                     <div class="flex-grow-1 ms-3">
-                        <h6 class="text-muted mb-1" id="label-total-tx">Total TX</h6>
-                        <h3 class="mb-0" id="total-tx" aria-labelledby="label-total-tx" aria-live="polite">-</h3>
+                        <h6 class="text-muted mb-1" id="label-total-tx">TX</h6>
+                        <p class="h3 mb-0 dashboard-traffic-metric" id="total-tx" aria-labelledby="label-total-tx" aria-live="polite">-</p>
+                        <small class="text-muted" style="font-size: 0.7rem;">since restart</small>
                     </div>
                 </div>
             </div>
@@ -360,12 +375,12 @@
                             <span class="material-icons text-muted" style="font-size:16px;" aria-hidden="true">flag</span>
                             <span id="map-kpi-countries">0</span>
                         </span>
-                        <span id="peer-map-status" class="badge bg-secondary" aria-live="polite">Loading…</span>
+                        <span id="peer-map-status" class="badge bg-secondary d-none d-md-inline" aria-live="polite">Loading…</span>
                     </div>
                 </div>
             </div>
             <div class="card-body p-0">
-                <div id="peer-map"></div>
+                <div id="peer-map" role="application" aria-label="Interactive map showing peer locations"></div>
             </div>
         </div>
     </div>
@@ -394,16 +409,20 @@
         </div>
     </div>
 </div>
+</div>
 
 {% endblock %}
 
 {% block extra_js %}
+<script src="/static/js/dashboard_traffic_shared.js"></script>
 <script>
     const DEBUG = false;
     const CONNECTED_THRESHOLD_SEC = 180;
     const AUTO_REFRESH_MS = 30000;
     const API_TIMEOUT_MS = 25000;
     const MAX_BACKOFF_MS = 300000;
+    const USER_ZOOM_RESET_MS = 45000;
+    const MAX_RECENT_PEERS = 25;
     const PEER_MAP_FLYTO_DURATION_SEC = 1.2;
     const PEER_MAP_POPUP_DELAY_MS = 1250;
     let cachedPeerLocations = [];
@@ -414,12 +433,7 @@
     let markerLayer = null;
     let tileLayer = null;
     let leafletReady = false;
-    let autoRefreshTimer = null;
-    let isRefreshing = false;
-    let activeRefreshController = null;
-    let pendingRefresh = false;
-    let consecutiveFailures = 0;
-    let currentRefreshInterval = AUTO_REFRESH_MS;
+    let refreshScheduler = null;
     let mapResizeBound = false;
     let themeObserver = null;
     let activeTileSources = [];
@@ -440,15 +454,12 @@
     const mapKpiTotal = document.getElementById('map-kpi-total');
     const mapKpiCountries = document.getElementById('map-kpi-countries');
     const peerMapStatus = document.getElementById('peer-map-status');
-    function dbg(...args) {
-        if (DEBUG) console.log('[Dashboard]', ...args);
-    }
-
-    function clearElement(el) {
-        if (el) el.replaceChildren();
-    }
-
-    function formatBytes(bytes) {
+    const dbg = window.WBShared?.createDebugLogger
+        ? window.WBShared.createDebugLogger('Dashboard', DEBUG)
+        : (...args) => { if (DEBUG) console.log('[Dashboard]', ...args); };
+    const clearElement = window.WBShared?.clearElement || ((el) => { if (el) el.replaceChildren(); });
+    const isAbortError = window.WBShared?.isAbortError || ((err) => err?.code === 'ABORTED' || err?.name === 'AbortError' || err?.message === 'Request cancelled');
+    const formatBytes = window.WBShared?.formatBytes || ((bytes) => {
         if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
         const k = 1024;
         const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
@@ -456,6 +467,23 @@
         const unit = sizes[i];
         const decimals = (unit === 'MB' || unit === 'GB') ? 1 : 2;
         return Number((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + unit;
+    });
+
+    function setTrafficMetric(el, bytes) {
+        if (!el) return;
+        const formatted = String(formatBytes(bytes) || '').trim();
+        const match = formatted.match(/^(.+?)\s+([A-Za-z]+)$/);
+        if (!match) {
+            el.textContent = formatted || '-';
+            return;
+        }
+        const valueSpan = document.createElement('span');
+        valueSpan.className = 'dashboard-metric-value';
+        valueSpan.textContent = match[1];
+        const unitSpan = document.createElement('span');
+        unitSpan.className = 'dashboard-metric-unit';
+        unitSpan.textContent = match[2];
+        el.replaceChildren(valueSpan, unitSpan);
     }
 
     function unwrapInterfaces(payload) {
@@ -474,10 +502,6 @@
         if (Array.isArray(payload?.locations)) return payload.locations;
         if (Array.isArray(payload?.data?.locations)) return payload.data.locations;
         return [];
-    }
-
-    function isAbortError(err) {
-        return err?.code === 'ABORTED' || err?.name === 'AbortError' || err?.message === 'Request cancelled';
     }
 
     function getRelativeTimeInfo(epochSeconds) {
@@ -648,9 +672,9 @@
                 .sort((a, b) => {
                     const ageA = Math.max(0, nowSec - Number(a.latest_handshake || 0));
                     const ageB = Math.max(0, nowSec - Number(b.latest_handshake || 0));
-                    if (ageA !== ageB) return ageA - ageB; // Shortest time ago first
-                    return Number(b.latest_handshake || 0) - Number(a.latest_handshake || 0);
-                });
+                    return ageA - ageB; // Shortest time ago first
+                })
+                .slice(0, MAX_RECENT_PEERS);
             clearElement(recentPeersEl);
             const frag = document.createDocumentFragment();
 
@@ -663,6 +687,7 @@
                 row.title = 'Click to locate on map';
                 row.setAttribute('role', 'button');
                 row.setAttribute('tabindex', '0');
+                row.setAttribute('aria-label', `Locate ${displayName} on map`);
 
                 // Click handler: zoom map to this peer's location
                 const peerEndpointIp = peer.endpoint_ip || '';
@@ -691,7 +716,7 @@
                     // Prevent auto-refresh from overriding this zoom
                     userZoomedToPeer = true;
                     if (userZoomResetTimer) clearTimeout(userZoomResetTimer);
-                    userZoomResetTimer = setTimeout(() => { userZoomedToPeer = false; }, 120000);
+                    userZoomResetTimer = setTimeout(() => { userZoomedToPeer = false; }, USER_ZOOM_RESET_MS);
 
                     // Use marker key consistent with marker generation
                     const markerKey = makeMarkerKey(lat, lon);
@@ -764,8 +789,8 @@
                 recentPeersEl.appendChild(emptyState);
             }
 
-            if (totalRxEl) totalRxEl.textContent = formatBytes(totalRx);
-            if (totalTxEl) totalTxEl.textContent = formatBytes(totalTx);
+            setTrafficMetric(totalRxEl, totalRx);
+            setTrafficMetric(totalTxEl, totalTx);
             return true;
         } catch (error) {
             if (isAbortError(error)) return true;
@@ -777,6 +802,8 @@
 
     function getMapTileSources() {
         const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+        // SECURITY: Tile URLs are hardcoded. If these ever become user-configurable,
+        // validate against a strict allowlist before passing to L.tileLayer().
         if (dark) {
             // Dark matter variant has stronger contrast
             return [
@@ -862,7 +889,7 @@
             minZoom: 2,
             worldCopyJump: true,
             gestureHandling: true, // Requires Leaflet.GestureHandling plugin
-        }).setView([30, 10], 2);
+        }).setView([50, 10], 4);
 
         activeTileSources = getMapTileSources();
         activeTileIndex = 0;
@@ -873,6 +900,7 @@
             maxZoom: 18,
             tileSize: 256,
             detectRetina: true,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
         };
 
         tileLayer = L.tileLayer(activeTileSources[0], tileOpts).addTo(peerMap);
@@ -886,10 +914,9 @@
             if (peerMap && peerMap.getContainer()) peerMap.invalidateSize();
         }, 100);
         if (!mapResizeBound) {
-            let resizeTimer;
             window.addEventListener('resize', () => {
-                clearTimeout(resizeTimer);
-                window._dashboardResizeTimer = resizeTimer = setTimeout(() => {
+                clearTimeout(window._dashboardResizeTimer);
+                window._dashboardResizeTimer = setTimeout(() => {
                     if (peerMap && peerMap.getContainer()) peerMap.invalidateSize();
                 }, 150);
             });
@@ -909,7 +936,7 @@
 
     function resetMapToWorld() {
         if (!peerMap) return;
-        peerMap.setView([20, 0], 2, { animate: true, duration: 0.4 });
+        peerMap.setView([50, 10], 4, { animate: true, duration: 0.4 });
     }
 
     async function refreshPeerLocations(signal) {
@@ -937,18 +964,38 @@
             );
             const locs = unwrapLocations(data);
             dbg('Peer locations:', locs.length);
-            markerLayer.clearLayers();
-            peerMarkerMap = {};
             cachedPeerLocations = locs;
 
             if (!locs.length) {
+                for (const marker of Object.values(peerMarkerMap)) {
+                    markerLayer.removeLayer(marker);
+                }
+                peerMarkerMap = {};
                 setMapBadgeState(badge, 'No peers located');
                 resetMapToWorld();
                 return true;
             }
 
-            // Pulsating markers for each peer location
+            const nextPeerMarkerMap = {};
+            const validLocs = [];
+
+            // Create/update pulsating markers for each peer location
             locs.forEach((p) => {
+                const lat = Number(p.lat);
+                const lon = Number(p.lon);
+                if (
+                    !Number.isFinite(lat) ||
+                    !Number.isFinite(lon) ||
+                    Math.abs(lat) > 90 ||
+                    Math.abs(lon) > 180
+                ) {
+                    return;
+                }
+                validLocs.push(p);
+
+                const markerKey = makeMarkerKey(lat, lon);
+                if (nextPeerMarkerMap[markerKey]) return;
+
                 const isConnected = Boolean(p.connected);
 
                 // Create pulsating dot using divIcon
@@ -958,8 +1005,6 @@
                     iconSize: [24, 24],
                     iconAnchor: [12, 12],
                 });
-
-                const marker = L.marker([p.lat, p.lon], { icon: pulseIcon });
 
                 // Build popup with clean visual hierarchy
                 const peerCount = Math.max(1, Number(p.count) || 1);
@@ -980,36 +1025,58 @@
                     peerCount,
                 );
 
-                marker.bindPopup(popupContent, {
-                    maxWidth: 240,
-                    closeOnClick: true,
-                    autoPan: true,
-                    autoPanPadding: [20, 20],
-                });
-                markerLayer.addLayer(marker);
-                // Store marker reference for peer click zoom
-                const markerKey = makeMarkerKey(p.lat, p.lon);
-                peerMarkerMap[markerKey] = marker;
+                let marker = peerMarkerMap[markerKey];
+                if (marker) {
+                    marker.setIcon(pulseIcon);
+                    if (marker.getPopup()) {
+                        marker.setPopupContent(popupContent);
+                    } else {
+                        marker.bindPopup(popupContent, {
+                            maxWidth: 240,
+                            closeOnClick: true,
+                            autoPan: true,
+                            autoPanPadding: [20, 20],
+                        });
+                    }
+                } else {
+                    marker = L.marker([lat, lon], { icon: pulseIcon });
+                    marker.bindPopup(popupContent, {
+                        maxWidth: 240,
+                        closeOnClick: true,
+                        autoPan: true,
+                        autoPanPadding: [20, 20],
+                    });
+                    markerLayer.addLayer(marker);
+                }
+                nextPeerMarkerMap[markerKey] = marker;
             });
+
+            for (const [markerKey, marker] of Object.entries(peerMarkerMap)) {
+                if (!nextPeerMarkerMap[markerKey]) {
+                    markerLayer.removeLayer(marker);
+                }
+            }
+            peerMarkerMap = nextPeerMarkerMap;
 
             // Zoom to fit all locations (skip if user has actively zoomed to a peer)
             if (!userZoomedToPeer) {
-                const validLocs = locs.filter(p =>
-                    Number.isFinite(Number(p.lat)) &&
-                    Number.isFinite(Number(p.lon)) &&
-                    Math.abs(Number(p.lat)) <= 90 &&
-                    Math.abs(Number(p.lon)) <= 180
-                );
-                const bounds = L.latLngBounds(validLocs.map(p => [Number(p.lat), Number(p.lon)]));
-                if (bounds.isValid()) {
-                    peerMap.fitBounds(bounds, {
-                        padding: [30, 30],
-                        maxZoom: locs.length === 1 ? 8 : 10,
+                if (validLocs.length === 1) {
+                    peerMap.setView([Number(validLocs[0].lat), Number(validLocs[0].lon)], 8, {
                         animate: true,
                         duration: 0.5,
                     });
                 } else {
-                    resetMapToWorld();
+                    const bounds = L.latLngBounds(validLocs.map(p => [Number(p.lat), Number(p.lon)]));
+                    if (bounds.isValid()) {
+                        peerMap.fitBounds(bounds, {
+                            padding: [30, 30],
+                            maxZoom: 10,
+                            animate: true,
+                            duration: 0.5,
+                        });
+                    } else {
+                        resetMapToWorld();
+                    }
                 }
             }
 
@@ -1045,63 +1112,19 @@
         });
     }
 
+    async function refreshAll() {
+        if (!refreshScheduler) return;
+        await refreshScheduler.refresh();
+    }
+
     function startAutoRefresh(intervalMs) {
-        if (autoRefreshTimer) clearInterval(autoRefreshTimer);
-        const ms = intervalMs || currentRefreshInterval;
-        autoRefreshTimer = setInterval(() => {
-            refreshAll();
-        }, ms);
+        if (!refreshScheduler) return;
+        refreshScheduler.start(intervalMs);
     }
 
     function stopAutoRefresh() {
-        if (!autoRefreshTimer) return;
-        clearInterval(autoRefreshTimer);
-        autoRefreshTimer = null;
-    }
-
-    async function refreshAll() {
-        if (isRefreshing) {
-            pendingRefresh = true;
-            if (activeRefreshController) activeRefreshController.abort();
-            return;
-        }
-        isRefreshing = true;
-        const controller = new AbortController();
-        activeRefreshController = controller;
-        let allFailed = true;
-        try {
-            const results = await Promise.allSettled([
-                refreshStats(controller.signal),
-                refreshPeerLocations(controller.signal),
-            ]);
-            const statuses = results.map((r) => (r.status === 'fulfilled' ? r.value : false));
-            allFailed = statuses.every(v => v === false);
-        } finally {
-            if (activeRefreshController === controller) activeRefreshController = null;
-            isRefreshing = false;
-
-            if (allFailed) {
-                consecutiveFailures++;
-                // Exponential backoff: 30s → 60s → 120s → 300s max
-                const backoff = Math.min(AUTO_REFRESH_MS * Math.pow(2, consecutiveFailures - 1), MAX_BACKOFF_MS);
-                if (backoff !== currentRefreshInterval) {
-                    currentRefreshInterval = backoff;
-                    dbg(`All API calls failed (${consecutiveFailures}x), next refresh in ${Math.round(backoff / 1000)}s`);
-                    startAutoRefresh(backoff);
-                }
-            } else if (!allFailed) {
-                if (consecutiveFailures > 0) {
-                    consecutiveFailures = 0;
-                    currentRefreshInterval = AUTO_REFRESH_MS;
-                    dbg('API recovered, refresh interval reset to', AUTO_REFRESH_MS / 1000, 's');
-                    startAutoRefresh(AUTO_REFRESH_MS);
-                }
-            }
-            if (pendingRefresh) {
-                pendingRefresh = false;
-                setTimeout(() => refreshAll(), 50);
-            }
-        }
+        if (!refreshScheduler) return;
+        refreshScheduler.stop();
     }
 
     (async function initDashboard() {
@@ -1111,9 +1134,37 @@
             if (peerMapStatus) peerMapStatus.textContent = 'Initialization error';
             return;
         }
+        if (!window.WBShared?.RefreshScheduler) {
+            console.error('Dashboard requires WBShared.RefreshScheduler');
+            if (peerMapStatus) peerMapStatus.textContent = 'Initialization error';
+            return;
+        }
+
+        refreshScheduler = new window.WBShared.RefreshScheduler({
+            autoRefreshMs: AUTO_REFRESH_MS,
+            maxBackoffMs: MAX_BACKOFF_MS,
+            log: dbg,
+            onAllFailed: ({ consecutiveFailures, backoffMs }) => {
+                dbg(`All API calls failed (${consecutiveFailures}x), next refresh in ${Math.round(backoffMs / 1000)}s`);
+            },
+            onRecovered: () => {
+                dbg('API recovered, refresh interval reset to', AUTO_REFRESH_MS / 1000, 's');
+            },
+            refreshFn: async (signal) => {
+                const results = await Promise.allSettled([
+                    refreshStats(signal),
+                    refreshPeerLocations(signal),
+                ]);
+                const statuses = results.map((r) => (r.status === 'fulfilled' ? r.value : false));
+                return statuses.some(v => v === true);
+            },
+        });
         try {
             if (typeof L === 'undefined') {
                 await loadScript('/static/vendor/leaflet.js');
+                if (typeof L === 'undefined') {
+                    throw new Error('Leaflet failed to initialize');
+                }
                 await loadScript('/static/vendor/leaflet-gesture-handling.min.js');
             }
             initMap();
@@ -1147,7 +1198,7 @@
 
         window.addEventListener('beforeunload', () => {
             stopAutoRefresh();
-            if (activeRefreshController) activeRefreshController.abort();
+            if (refreshScheduler) refreshScheduler.abortActive();
             if (themeObserver) themeObserver.disconnect();
             // Clear all timers/intervals to prevent leaks
             if (userZoomResetTimer) {
@@ -1161,6 +1212,10 @@
             if (window._dashboardResizeTimer) {
                 clearTimeout(window._dashboardResizeTimer);
                 window._dashboardResizeTimer = null;
+            }
+            if (refreshScheduler) {
+                refreshScheduler.destroy();
+                refreshScheduler = null;
             }
             try { if (peerMap) peerMap.remove(); } catch (_) { }
         });

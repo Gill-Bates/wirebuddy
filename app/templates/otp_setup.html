@@ -36,9 +36,55 @@
         }
 
         .otp-digit {
-            width: clamp(40px, 10vw, 48px);
+            flex: 0 0 auto;
+            width: 48px;
             height: 56px;
             font-size: 1.5rem;
+            line-height: 56px;
+            padding: 0;
+            min-height: 0;
+            text-align: center;
+            border-radius: 0.375rem;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-variant-numeric: tabular-nums;
+            font-feature-settings: "tnum";
+            font-weight: 500;
+            text-rendering: geometricPrecision;
+            -webkit-font-smoothing: antialiased;
+        }
+        /* Prevent red browser validation styling on empty/invalid inputs */
+        .otp-digit:invalid {
+            box-shadow: none;
+            outline: none;
+            color: inherit;
+            border-color: var(--bs-border-color);
+        }
+        @media (max-width: 400px) {
+            .otp-digit {
+                width: 38px;
+                height: 46px;
+                font-size: 1.1rem;
+                line-height: 46px;
+            }
+        }
+        @media (max-width: 340px) {
+            .otp-digit {
+                width: 34px;
+                height: 42px;
+                font-size: 1rem;
+                line-height: 42px;
+            }
+        }
+        /* OTP error shake animation */
+        @keyframes otp-shake {
+            0%, 100% { transform: translateX(0); }
+            10%, 50%, 90% { transform: translateX(-4px); }
+            30%, 70% { transform: translateX(4px); }
+        }
+        .otp-digit.otp-error {
+            border-color: var(--wb-danger) !important;
+            color: var(--wb-danger) !important;
+            animation: otp-shake 0.5s ease-in-out;
         }
     </style>
 </head>
@@ -58,7 +104,7 @@
                 <!-- Step 1: QR Code and Secret -->
                 <div id="step-qr">
                     <div class="mb-3">
-                        <p class="small text-muted mb-2"><strong>Step 1:</strong> Scan this QR code with your authenticator app (e.g., Google Authenticator, Authy)</p>
+                        <p class="small text-muted mb-2"><strong>Step 1:</strong> Scan this QR code with your authenticator app</p>
                     </div>
                     
                     <div class="text-center mb-3">
@@ -270,11 +316,18 @@
                 document.getElementById('download-codes-btn').disabled = false;
                 document.getElementById('download-codes-btn').innerHTML = '<span class="material-icons align-middle me-1 otp-icon-sm">download</span>Download Recovery Codes (ZIP)';
             } catch (error) {
-                showError(error.message);
                 confirmBtn.disabled = false;
                 confirmBtn.innerHTML = '<span class="material-icons align-middle me-1">check_circle</span>Verify & Activate';
-                document.querySelectorAll('.otp-digit').forEach(d => d.value = '');
-                document.querySelector('.otp-digit[data-index="0"]').focus();
+                // Shake + red flash, then clear for re-entry
+                const allDigits = document.querySelectorAll('.otp-digit');
+                allDigits.forEach(d => d.classList.add('otp-error'));
+                setTimeout(() => {
+                    allDigits.forEach(d => {
+                        d.classList.remove('otp-error');
+                        d.value = '';
+                    });
+                    document.querySelector('.otp-digit[data-index="0"]')?.focus();
+                }, 600);
             } finally {
                 submitting = false;
             }

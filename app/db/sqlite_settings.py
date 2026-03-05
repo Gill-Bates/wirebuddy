@@ -8,21 +8,66 @@
 
 from __future__ import annotations
 
+import ipaddress
 from contextlib import closing
 import json
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from ..utils.time import utcnow
 from .sqlite_runtime import transaction
 
 _log = logging.getLogger(__name__)
 
+__all__ = [
+	"get_setting",
+	"set_setting",
+	"delete_setting",
+	"validate_secret_key",
+	"recover_missing_global_settings",
+	"get_enabled_blocklists",
+	"set_enabled_blocklists",
+	"get_dns_upstream_servers",
+	"set_dns_upstream_servers",
+	"get_dns_log_retention_days",
+	"set_dns_log_retention_days",
+	"get_tsdb_retention_days",
+	"set_tsdb_retention_days",
+	"get_dnssec_enabled",
+	"set_dnssec_enabled",
+	"get_dns_query_logging_enabled",
+	"set_dns_query_logging_enabled",
+	"get_dns_blocklist_enabled",
+	"set_dns_blocklist_enabled",
+	"get_blocklist_disabled_until",
+	"set_blocklist_disabled_until",
+	"clear_blocklist_disabled_until",
+	"get_dns_service_enabled",
+	"set_dns_service_enabled",
+	"get_dns_custom_rules",
+	"set_dns_custom_rules",
+	"DNS_LOG_RETENTION_OPTIONS",
+	"DEFAULT_DNS_LOG_RETENTION_DAYS",
+	"TSDB_RETENTION_OPTIONS",
+	"DEFAULT_TSDB_RETENTION_DAYS",
+	"MAX_CUSTOM_RULES_LENGTH",
+	"DEFAULT_DNS_UPSTREAM_SERVERS",
+	"DEFAULT_DNS_CUSTOM_RULES",
+]
+
 # Constant for key validation
 _KEY_VALIDATION_TOKEN_KEY = "_key_validation_token"
 _KEY_VALIDATION_PLAINTEXT = "WIREBUDDY_KEY_VALID_v1"
+_ALLOWED_RECOVERY_FILENAMES = {"wirebuddy.db"}
+_RECOVERY_ALLOWED_BASES = (Path("/app/data"), Path("/opt/wirebuddy/data"))
+_MAX_RECOVERY_VALUE_LEN = 1024
+_DNS_UPSTREAM_SERVER_RE = re.compile(
+	r"^(?P<ip>\[[0-9A-Fa-f:.]+\]|[0-9A-Fa-f:.]+)@(?P<port>\d{1,5})#(?P<host>[A-Za-z0-9.-]{1,253})$"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -43,10 +88,23 @@ def validate_secret_key(conn: sqlite3.Connection, pepper: str) -> bool:
 	stored_token = get_setting(conn, _KEY_VALIDATION_TOKEN_KEY)
 	
 	if stored_token is None:
+		# Only initialize token on genuinely fresh DBs.
+		row = conn.execute(
+			"SELECT COUNT(*) FROM settings WHERE key != ?",
+			(_KEY_VALIDATION_TOKEN_KEY,),
+		).fetchone()
+		other_settings = int(row[0] or 0) if row else 0
+		if other_settings > 0:
+			_log.error(
+				"KEY_VALIDATION: validation token missing while %d settings exist; refusing auto-reinit",
+				other_settings,
+			)
+			return False
+
 		# First run - create and store validation token
 		encrypted_token = vault_encrypt(_KEY_VALIDATION_PLAINTEXT, pepper)
 		set_setting(conn, _KEY_VALIDATION_TOKEN_KEY, encrypted_token)
-		_log.debug("KEY_VALIDATION: Created new validation token")
+		_log.debug("KEY_VALIDATION: Created new validation token (fresh DB)")
 		return True
 	
 	# Token exists - try to decrypt and validate
@@ -71,8 +129,8 @@ def validate_secret_key(conn: sqlite3.Connection, pepper: str) -> bool:
 
 def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
 	"""Get a setting value by key."""
-	cur = conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
-	row = cur.fetchone()
+	with closing(conn.execute("SELECT value FROM settings WHERE key = ?", (key,))) as cur:
+		row = cur.fetchone()
 	return row["value"] if row else default
 
 
@@ -105,8 +163,82 @@ _GLOBAL_SETTINGS_RECOVERY_KEYS = [
 	"gui_port",
 	"gui_localhost_only",
 	"enable_status_page",
-	"wg_global_psk",
 ]
+
+
+def _normalize_recovery_value(key: str, value: str) -> str | None:
+	"""Validate and normalize recovered global settings values."""
+	text = str(value or "").strip()
+	if not text or len(text) > _MAX_RECOVERY_VALUE_LEN:
+		return None
+
+	def _normalize_bool(raw: str) -> str | None:
+		lowered = raw.strip().lower()
+		if lowered in {"1", "true", "yes", "on"}:
+			return "1"
+		if lowered in {"0", "false", "no", "off"}:
+			return "0"
+		return None
+
+	if key in {"wg_port", "gui_port"}:
+		if not text.isdigit():
+			return None
+		port = int(text)
+		return str(port) if 1 <= port <= 65535 else None
+
+	if key == "wg_mtu":
+		if not text.isdigit():
+			return None
+		mtu = int(text)
+		return str(mtu) if 1280 <= mtu <= 9000 else None
+
+	if key == "wg_persistent_keepalive":
+		if not text.isdigit():
+			return None
+		keepalive = int(text)
+		return str(keepalive) if 0 <= keepalive <= 3600 else None
+
+	if key in {"wg_use_psk", "gui_localhost_only", "enable_status_page"}:
+		return _normalize_bool(text)
+
+	if key == "wg_fqdn":
+		# Allow hostnames and literal IPs; reject whitespace/control characters.
+		if any(ch.isspace() for ch in text):
+			return None
+		if re.fullmatch(r"[A-Za-z0-9.:\-\[\]]{1,253}", text) is None:
+			return None
+		return text
+
+	return text
+
+
+def _is_recovery_candidate_allowed(
+	original: Path,
+	resolved: Path,
+	current_db_dir: Path | None,
+) -> bool:
+	"""Validate recovery candidate path and base-directory constraints."""
+	if resolved.name not in _ALLOWED_RECOVERY_FILENAMES:
+		_log.debug("Skipping recovery candidate with disallowed filename: %s", resolved)
+		return False
+
+	if original.is_symlink():
+		_log.warning("Skipping symlink recovery candidate: %s", original)
+		return False
+
+	allowed_bases = [base.resolve() for base in _RECOVERY_ALLOWED_BASES]
+	if current_db_dir is not None:
+		allowed_bases.append(current_db_dir.resolve())
+
+	for base in allowed_bases:
+		try:
+			resolved.relative_to(base)
+			return True
+		except ValueError:
+			continue
+
+	_log.warning("Skipping recovery candidate outside allowed base: %s", resolved)
+	return False
 
 
 def recover_missing_global_settings(
@@ -120,51 +252,55 @@ def recover_missing_global_settings(
 	"""
 	try:
 		raw_current = str(conn.execute("PRAGMA database_list").fetchone()[2] or "").strip()
-		current_db_path = str(Path(raw_current).resolve()) if raw_current else ""
+		current_db_file = Path(raw_current).resolve() if raw_current else None
 	except Exception:
 		_log.debug("Failed to resolve current DB path for settings recovery", exc_info=True)
-		current_db_path = ""
+		current_db_file = None
+	current_db_dir = current_db_file.parent if current_db_file is not None else None
 
-	missing_keys = [
+	missing_keys = {
 		key
 		for key in _GLOBAL_SETTINGS_RECOVERY_KEYS
 		if not str(get_setting(conn, key, "") or "").strip()
-	]
+	}
 	if not missing_keys:
 		return 0
 
 	updated = 0
-	seen_paths: set[str] = set()
-	allowed_names = {"wirebuddy.db"}
+	seen_paths: set[Path] = set()
 	for candidate in candidate_db_paths:
-		path = str(Path(candidate).resolve())
-		if not path or path in seen_paths:
+		candidate_path = Path(candidate)
+		resolved = candidate_path.resolve()
+		if resolved in seen_paths:
 			continue
-		seen_paths.add(path)
-		if current_db_path and path == current_db_path:
+		seen_paths.add(resolved)
+		if current_db_file is not None and resolved == current_db_file:
 			continue
-		candidate_file = Path(path)
-		if candidate_file.name not in allowed_names:
-			_log.debug("Skipping recovery candidate with disallowed filename: %s", candidate_file)
+		if not _is_recovery_candidate_allowed(candidate_path, resolved, current_db_dir):
 			continue
-		if not candidate_file.exists() or not candidate_file.is_file():
+		if not resolved.exists() or not resolved.is_file():
 			continue
 
 		try:
-			with closing(sqlite3.connect(path)) as src:
+			recovered_keys: set[str] = set()
+			with closing(sqlite3.connect(str(resolved))) as src:
 				src.row_factory = sqlite3.Row
-				for key in list(missing_keys):
+				for key in tuple(missing_keys):
 					row = src.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
 					if not row:
 						continue
 					value = str(row["value"] or "").strip()
-					if not value:
+					normalized = _normalize_recovery_value(key, value)
+					if normalized is None:
+						_log.warning("Skipping invalid recovered value for %s from %s", key, resolved)
 						continue
-					set_setting(conn, key, value)
-					missing_keys.remove(key)
-					updated += 1
+					set_setting(conn, key, normalized)
+					recovered_keys.add(key)
+			if recovered_keys:
+				missing_keys -= recovered_keys
+				updated += len(recovered_keys)
 		except Exception:
-			_log.debug("Failed reading recovery DB candidate: %s", path, exc_info=True)
+			_log.debug("Failed reading recovery DB candidate: %s", resolved, exc_info=True)
 			continue
 
 		if not missing_keys:
@@ -175,6 +311,10 @@ def recover_missing_global_settings(
 
 DNS_LOG_RETENTION_OPTIONS = (0, 7, 30, 90, 180, 365)
 DEFAULT_DNS_LOG_RETENTION_DAYS = 30
+
+TSDB_RETENTION_OPTIONS = (0, 7, 30, 90, 180, 365)
+DEFAULT_TSDB_RETENTION_DAYS = 365
+
 MAX_CUSTOM_RULES_LENGTH = 256_000
 DEFAULT_DNS_UPSTREAM_SERVERS = [
 	"1.1.1.1@853#cloudflare-dns.com",
@@ -199,7 +339,7 @@ def get_enabled_blocklists(conn: sqlite3.Connection) -> list[str]:
 		try:
 			parsed = json.loads(value)
 			if isinstance(parsed, list):
-				return [str(item) for item in parsed if str(item).strip()]
+				return [str(item).strip() for item in parsed if str(item).strip()]
 		except Exception:
 			_log.debug("Failed to parse dns_blocklists setting", exc_info=True)
 	# Return default blocklists if not set
@@ -210,9 +350,20 @@ def get_enabled_blocklists(conn: sqlite3.Connection) -> list[str]:
 
 def set_enabled_blocklists(conn: sqlite3.Connection, urls: list[str]) -> None:
 	"""Save list of enabled blocklist URLs to settings."""
-	if not isinstance(urls, list) or not all(isinstance(url, str) and url.strip() for url in urls):
-		raise TypeError("urls must be a list of non-empty strings")
-	set_setting(conn, "dns_blocklists", json.dumps(urls))
+	if not isinstance(urls, list):
+		raise TypeError("urls must be a list")
+	normalized: list[str] = []
+	for idx, url in enumerate(urls):
+		if not isinstance(url, str):
+			raise TypeError(f"urls[{idx}] must be a string, got {type(url).__name__}")
+		value = url.strip()
+		if not value:
+			raise ValueError(f"urls[{idx}] must be non-empty")
+		parsed = urlparse(value)
+		if parsed.scheme != "https" or not parsed.hostname:
+			raise ValueError(f"urls[{idx}] must be a valid HTTPS URL")
+		normalized.append(value)
+	set_setting(conn, "dns_blocklists", json.dumps(normalized))
 
 
 def get_dns_upstream_servers(conn: sqlite3.Connection) -> list[str]:
@@ -231,9 +382,43 @@ def get_dns_upstream_servers(conn: sqlite3.Connection) -> list[str]:
 
 def set_dns_upstream_servers(conn: sqlite3.Connection, servers: list[str]) -> None:
 	"""Save list of custom upstream DNS servers to settings."""
-	if not isinstance(servers, list) or not all(isinstance(server, str) and server.strip() for server in servers):
-		raise TypeError("servers must be a list of non-empty strings")
-	set_setting(conn, "dns_upstream_servers", json.dumps(servers))
+	if not isinstance(servers, list):
+		raise TypeError("servers must be a list")
+
+	normalized: list[str] = []
+	for idx, server in enumerate(servers):
+		if not isinstance(server, str):
+			raise TypeError(f"servers[{idx}] must be a string, got {type(server).__name__}")
+		value = server.strip()
+		if not value:
+			raise ValueError(f"servers[{idx}] must be non-empty")
+
+		match = _DNS_UPSTREAM_SERVER_RE.fullmatch(value)
+		if not match:
+			raise ValueError(f"Invalid DNS server format: {value}")
+
+		ip_part = match.group("ip")
+		if ip_part.startswith("[") and ip_part.endswith("]"):
+			ip_part = ip_part[1:-1]
+		try:
+			ipaddress.ip_address(ip_part)
+		except ValueError as exc:
+			raise ValueError(f"Invalid upstream IP literal: {value}") from exc
+
+		port = int(match.group("port"))
+		if not 1 <= port <= 65535:
+			raise ValueError(f"Invalid upstream port: {value}")
+
+		host = match.group("host").strip(".").lower()
+		if not host:
+			raise ValueError(f"Invalid upstream hostname: {value}")
+		labels = host.split(".")
+		if any((not label) or len(label) > 63 or label.startswith("-") or label.endswith("-") for label in labels):
+			raise ValueError(f"Invalid upstream hostname: {value}")
+
+		normalized.append(f"{ip_part}@{port}#{host}")
+
+	set_setting(conn, "dns_upstream_servers", json.dumps(normalized))
 
 
 def get_dns_log_retention_days(conn: sqlite3.Connection) -> int:
@@ -260,6 +445,26 @@ def set_dns_log_retention_days(conn: sqlite3.Connection, days: int) -> None:
 	if days not in DNS_LOG_RETENTION_OPTIONS:
 		raise ValueError(f"Invalid DNS log retention days: {days}")
 	set_setting(conn, "dns_log_retention_days", str(days))
+
+
+def get_tsdb_retention_days(conn: sqlite3.Connection) -> int:
+	"""Return TSDB (traffic metrics) retention period in days.
+
+	Allowed values: 7, 30, 90, 180, 365
+	"""
+	raw = get_setting(conn, "tsdb_retention_days", str(DEFAULT_TSDB_RETENTION_DAYS))
+	try:
+		parsed = int(str(raw).strip())
+	except (TypeError, ValueError):
+		return DEFAULT_TSDB_RETENTION_DAYS
+	return parsed if parsed in TSDB_RETENTION_OPTIONS else DEFAULT_TSDB_RETENTION_DAYS
+
+
+def set_tsdb_retention_days(conn: sqlite3.Connection, days: int) -> None:
+	"""Persist TSDB (traffic metrics) retention period in days."""
+	if days not in TSDB_RETENTION_OPTIONS:
+		raise ValueError(f"Invalid TSDB retention days: {days}")
+	set_setting(conn, "tsdb_retention_days", str(days))
 
 
 def get_dnssec_enabled(conn: sqlite3.Connection) -> bool:
@@ -290,6 +495,28 @@ def get_dns_blocklist_enabled(conn: sqlite3.Connection) -> bool:
 def set_dns_blocklist_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
 	"""Persist DNS blocklist enabled setting."""
 	set_setting(conn, "dns_enable_blocklist", "1" if enabled else "0")
+
+
+def get_blocklist_disabled_until(conn: sqlite3.Connection) -> int:
+	"""Return epoch timestamp until which the blocklist is temporarily disabled.
+
+	Returns 0 if no timer is active.
+	"""
+	raw = get_setting(conn, "blocklist_disabled_until", "0")
+	try:
+		return max(0, int(str(raw).strip()))
+	except (TypeError, ValueError):
+		return 0
+
+
+def set_blocklist_disabled_until(conn: sqlite3.Connection, until_epoch: int) -> None:
+	"""Set the epoch timestamp until which the blocklist should be disabled."""
+	set_setting(conn, "blocklist_disabled_until", str(max(0, int(until_epoch))))
+
+
+def clear_blocklist_disabled_until(conn: sqlite3.Connection) -> None:
+	"""Remove the blocklist disable timer."""
+	delete_setting(conn, "blocklist_disabled_until")
 
 
 def get_dns_service_enabled(conn: sqlite3.Connection) -> bool:

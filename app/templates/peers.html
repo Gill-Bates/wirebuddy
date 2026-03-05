@@ -87,6 +87,34 @@
         flex: 0 0 auto;
     }
 
+    /* Peer active status pulse indicator */
+    @keyframes peer-pulse-active {
+        0% {
+            transform: scale(1);
+            opacity: 1;
+        }
+        50% {
+            transform: scale(1.4);
+            opacity: 0.5;
+        }
+        100% {
+            transform: scale(1);
+            opacity: 1;
+        }
+    }
+
+    .peer-status-indicator {
+        background-color: var(--wb-primary, #88171a) !important;
+        color: #fff !important;
+    }
+
+    /* Support for reduced motion preferences */
+    @media (prefers-reduced-motion: reduce) {
+        * {
+            animation: none !important;
+        }
+    }
+
     /* Tablet: hide Routing & Interface columns, show badge in Name instead */
     @media (max-width: 991.98px) {
         .peers-table th.peer-col-routing,
@@ -105,8 +133,6 @@
     .btn .material-icons {
         vertical-align: middle;
         line-height: 1;
-        display: inline-flex;
-        align-items: center;
     }
 
     .btn-sm .material-icons {
@@ -143,7 +169,7 @@
     /* Mobile-optimized peers rows */
     @media (max-width: 767.98px) {
         .table-responsive {
-            overflow-x: visible;
+            overflow-x: hidden;
             overflow-y: visible;
         }
 
@@ -244,6 +270,11 @@
         .peers-table td.peer-client-ip:not(:has(.peer-client-ip-stack)) {
             display: none;
         }
+        
+        /* Fallback for browsers without :has() support */
+        .peers-table td.peer-client-ip.peer-client-ip--empty {
+            display: none;
+        }
 
         .peers-table td.peer-routing,
         .peers-table td.peer-interface {
@@ -265,21 +296,21 @@
 
         .peers-table td.peer-actions-cell .d-flex.gap-1 {
             justify-content: flex-end;
-            gap: 0.4rem !important;
+            gap: 0.35rem !important;
             flex-wrap: nowrap;
         }
 
         .peers-table td.peer-actions-cell .btn {
-            min-width: 38px;
-            min-height: 38px;
-            padding: 0.3rem;
+            min-width: 0;
+            min-height: 0;
+            padding: 0.2rem 0.35rem;
             display: inline-flex;
             align-items: center;
             justify-content: center;
         }
 
         .peers-table td.peer-actions-cell .material-icons {
-            font-size: 20px;
+            font-size: 18px;
         }
 
         .peers-table td code {
@@ -372,11 +403,12 @@
 {% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h1 class="h3 mb-0"><span class="material-icons me-2">devices</span>Peers</h1>
+<div class="container-fluid wb-page">
+<div class="wb-page-header">
+    <h2 class="page-title"><span class="material-icons me-2">devices</span>Peers</h2>
     {% if user['is_admin'] %}
     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addPeerModal">
-        <span class="material-icons align-middle me-1">add_circle</span>
+        <span class="material-icons me-2">add_circle</span>
         Add Peer
     </button>
     {% endif %}
@@ -418,7 +450,7 @@
                         <th></th>
                     </tr>
                 </thead>
-                <tbody id="peers-table">
+                <tbody id="peers-table" aria-live="polite" aria-relevant="text">
                     {% for peer in peers %}
                     {% set mode = peer['allowed_ips_mode'] or 'full' %}
                     <tr data-peer-id="{{ peer['id'] }}"
@@ -450,7 +482,11 @@
                         </td>
                         <td data-label="Interface" class="peer-interface">{{ peer['interface'] }}</td>
                         <td data-label="Last Seen" class="peer-last-seen">
+                            {% if peer['last_seen_active'] %}
+                            <span class="badge peer-status-indicator">Online</span>
+                            {% else %}
                             <span class="{{ peer['last_seen_class'] }}">{{ peer['last_seen_text'] }}</span>
+                            {% endif %}
                         </td>
                         <td data-label="Client IP" class="peer-client-ip">
                             {% if peer['last_client_ip_display'] %}
@@ -458,7 +494,7 @@
                                 <div class="peer-client-ip-main">
                                     {% if peer['last_client_country_code'] %}
                                     <img class="peer-country-flag" alt="{{ peer['last_client_country_code']|upper }} flag"
-                                        loading="eager" decoding="async"
+                                        loading="lazy" decoding="async"
                                         src="/static/vendor/images/flags/{{ peer['last_client_country_code'] }}.svg">
                                     {% endif %}
                                     <code>{{ peer['last_client_ip_display'] }}</code>
@@ -488,20 +524,40 @@
                         </td>
                         <td data-label="Actions" class="peer-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
-                                <button type="button" class="btn btn-sm btn-outline-primary" data-action="show-qr"
+                                {% if user['is_admin'] %}
+                                <button type="button" class="btn btn-sm btn-outline-secondary" data-action="show-qr"
                                     data-peer-id="{{ peer['id'] }}"
                                     aria-label="Show QR code for {{ peer['name'] or 'peer' }}" data-bs-toggle="tooltip"
                                     data-bs-title="Show QR Code">
                                     <span class="material-icons" aria-hidden="true">qr_code</span>
                                 </button>
+                                {% else %}
+                                <span class="d-inline-block" data-bs-toggle="tooltip"
+                                      data-bs-title="Admin privileges required">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" disabled
+                                            style="pointer-events: none;">
+                                        <span class="material-icons" aria-hidden="true">qr_code</span>
+                                    </button>
+                                </span>
+                                {% endif %}
+                                {% if user['is_admin'] %}
                                 <button type="button" class="btn btn-sm btn-outline-secondary"
                                     data-action="download-config" data-peer-id="{{ peer['id'] }}"
                                     aria-label="Download config for {{ peer['name'] or 'peer' }}"
                                     data-bs-toggle="tooltip" data-bs-title="Download Config">
                                     <span class="material-icons" aria-hidden="true">download</span>
                                 </button>
+                                {% else %}
+                                <span class="d-inline-block" data-bs-toggle="tooltip"
+                                      data-bs-title="Admin privileges required">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" disabled
+                                            style="pointer-events: none;">
+                                        <span class="material-icons" aria-hidden="true">download</span>
+                                    </button>
+                                </span>
+                                {% endif %}
                                 {% if user['is_admin'] %}
-                                <button type="button" class="btn btn-sm btn-outline-info" data-action="edit-peer"
+                                <button type="button" class="btn btn-sm btn-outline-secondary" data-action="edit-peer"
                                     data-peer-id="{{ peer['id'] }}" aria-label="Edit {{ peer['name'] or 'peer' }}"
                                     data-bs-toggle="tooltip" data-bs-title="Edit Peer">
                                     <span class="material-icons" aria-hidden="true">edit</span>
@@ -527,17 +583,19 @@
         </div>
     </div>
 </div>
+</div><!-- /.wb-page -->
 
+{% if user['is_admin'] %}
 <!-- Add Peer Modal -->
-<div class="modal fade" id="addPeerModal" aria-labelledby="addPeerModalTitle"
+<div class="modal fade" id="addPeerModal" tabindex="-1" aria-labelledby="addPeerModalTitle"
     aria-describedby="addPeerModalDesc">
-    <div class="modal-dialog modal-fullscreen-sm-down">
+    <div class="modal-dialog modal-dialog-centered modal-fullscreen-sm-down">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="addPeerModalTitle">Add New Peer</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <form id="add-peer-form">
+            <form id="add-peer-form" novalidate>
                 <div class="modal-body">
                     <p class="visually-hidden" id="addPeerModalDesc">Create a peer and configure routing, DNS and
                         blocklists.</p>
@@ -551,7 +609,7 @@
                     
                     <div class="mb-3">
                         <label for="peer-name" class="form-label">Name</label>
-                        <input type="text" class="form-control" id="peer-name" placeholder="e.g., John's iPhone">
+                        <input type="text" class="form-control" id="peer-name" maxlength="64" placeholder="e.g., John's iPhone">
                     </div>
                     <div class="mb-3">
                         <label for="peer-allowed-ips-mode" class="form-label">
@@ -633,7 +691,7 @@
                     </div>
                     <div class="mb-3">
                         <label for="peer-description" class="form-label">Description (optional)</label>
-                        <textarea class="form-control" id="peer-description" rows="2"></textarea>
+                        <textarea class="form-control" id="peer-description" rows="2" maxlength="256"></textarea>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -649,7 +707,7 @@
 </div>
 
 <!-- QR Code Modal -->
-<div class="modal fade" id="qrModal" aria-labelledby="qrModalTitle" aria-describedby="qrModalDesc">
+<div class="modal fade" id="qrModal" tabindex="-1" aria-labelledby="qrModalTitle" aria-describedby="qrModalDesc">
     <div class="modal-dialog modal-dialog-centered modal-fullscreen-sm-down">
         <div class="modal-content">
             <div class="modal-header">
@@ -672,22 +730,22 @@
 </div>
 
 <!-- Edit Peer Modal -->
-<div class="modal fade" id="editPeerModal" aria-labelledby="editPeerModalTitle"
+<div class="modal fade" id="editPeerModal" tabindex="-1" aria-labelledby="editPeerModalTitle"
     aria-describedby="editPeerModalDesc">
-    <div class="modal-dialog modal-fullscreen-sm-down">
+    <div class="modal-dialog modal-dialog-centered modal-fullscreen-sm-down">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="editPeerModalTitle">Edit Peer</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <form id="edit-peer-form">
+            <form id="edit-peer-form" novalidate>
                 <input type="hidden" id="edit-peer-id">
                 <div class="modal-body">
                     <p class="visually-hidden" id="editPeerModalDesc">Update peer settings, routing and DNS behavior.
                     </p>
                     <div class="mb-3">
                         <label for="edit-peer-name" class="form-label">Name</label>
-                        <input type="text" class="form-control" id="edit-peer-name" placeholder="e.g., John's iPhone">
+                        <input type="text" class="form-control" id="edit-peer-name" maxlength="64" placeholder="e.g., John's iPhone">
                     </div>
                     <div class="mb-3">
                         <label for="edit-peer-allowed-ips-mode" class="form-label">
@@ -769,7 +827,7 @@
                     </div>
                     <div class="mb-3">
                         <label for="edit-peer-description" class="form-label">Description (optional)</label>
-                        <textarea class="form-control" id="edit-peer-description" rows="2"></textarea>
+                        <textarea class="form-control" id="edit-peer-description" rows="2" maxlength="256"></textarea>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -783,11 +841,15 @@
         </div>
     </div>
 </div>
+{% endif %}
 {% endblock %}
 
 {% block extra_js %}
 <script>
     'use strict';
+
+    // User permission check
+    const isAdmin = {{ 'true' if user['is_admin'] else 'false' }};
 
     // Allowed IPs presets
     const ALLOWED_IPS_PRESETS = {
@@ -819,7 +881,7 @@
     let peerRows = [];
 
     const qrModalEl = document.getElementById('qrModal');
-    const qrModal = new bootstrap.Modal(qrModalEl);
+    const qrModal = qrModalEl ? new bootstrap.Modal(qrModalEl) : null;
     let qrRequestSeq = 0;
     let qrAbortController = null;
     let qrBlobUrl = null;
@@ -863,6 +925,16 @@
         }
     }
 
+    function setSelectPlaceholder(select, text, disabled = true) {
+        select.replaceChildren();
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.disabled = disabled;
+        opt.selected = true;
+        opt.textContent = text;
+        select.appendChild(opt);
+    }
+
     function isValidIpv4(ip) {
         const parts = ip.split('.');
         if (parts.length !== 4) return false;
@@ -875,7 +947,11 @@
 
     function isValidIpv6(ip) {
         // Simple structural check for UI validation; server remains source of truth.
-        return /^[0-9a-fA-F:]+$/.test(ip) && ip.includes(':') && ip.length <= 39;
+        if (!ip.includes(':') || ip.length > 39) return false;
+        const groups = ip.split(':');
+        // IPv6 has 2-8 groups (with :: compression)
+        if (groups.length < 2 || groups.length > 8) return false;
+        return /^[0-9a-fA-F:]+$/.test(ip);
     }
 
     function isValidCidrEntry(entry) {
@@ -913,22 +989,25 @@
         return trimmed;
     }
 
+    // Threshold in seconds to consider a peer "online" (must match dashboard CONNECTED_THRESHOLD_SEC)
+    const CONNECTED_THRESHOLD_SEC = 180;
+
     function formatRelativeTime(epochSeconds) {
         const date = typeof epochSeconds === 'number'
             ? new Date(epochSeconds * 1000)
             : new Date(epochSeconds);
         if (Number.isNaN(date.getTime())) {
-            return { text: 'Never', cls: 'text-muted' };
+            return { text: 'Never', cls: 'text-muted', active: false };
         }
 
-        const diffMins = Math.floor((Date.now() - date.getTime()) / 60000);
-        // Only "Just now" and within 3 minutes is considered active (green)
-        if (diffMins < 1) return { text: 'Just now', cls: 'text-success' };
-        if (diffMins < 3) return { text: `${diffMins}m ago`, cls: 'text-success' };
-        // Everything else is inactive (gray)
-        if (diffMins < 60) return { text: `${diffMins}m ago`, cls: 'text-muted' };
-        if (diffMins < 1440) return { text: `${Math.floor(diffMins / 60)}h ago`, cls: 'text-muted' };
-        return { text: `${Math.floor(diffMins / 1440)}d ago`, cls: 'text-muted' };
+        const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
+        const diffMins = Math.floor(diffSec / 60);
+        // Active connection (< CONNECTED_THRESHOLD_SEC): show pulsating indicator
+        if (diffSec < CONNECTED_THRESHOLD_SEC) return { text: '', cls: '', active: true };
+        // Everything else is inactive: show time
+        if (diffMins < 60) return { text: `${diffMins}m ago`, cls: 'text-muted', active: false };
+        if (diffMins < 1440) return { text: `${Math.floor(diffMins / 60)}h ago`, cls: 'text-muted', active: false };
+        return { text: `${Math.floor(diffMins / 1440)}d ago`, cls: 'text-muted', active: false };
     }
 
     function toEpochSeconds(value) {
@@ -1003,7 +1082,7 @@
         const img = document.createElement('img');
         img.className = 'peer-country-flag';
         img.alt = `${code.toUpperCase()} flag`;
-        img.loading = 'eager';
+        img.loading = 'lazy';
         img.decoding = 'async';
         img.src = `/static/vendor/images/flags/${code}.svg`;
         img.addEventListener('error', () => img.remove());
@@ -1027,7 +1106,17 @@
     async function loadBlocklistRegistry() {
         try {
             const res = await api('GET', '/api/dns/blocklist/sources');
-            blocklistRegistry = (res.sources || []).filter(source => source.enabled);
+            const sources = Array.isArray(res?.sources)
+                ? res.sources
+                : (Array.isArray(res?.data?.sources) ? res.data.sources : []);
+
+            const enabledSources = sources.filter(source => {
+                const enabled = source?.enabled;
+                return enabled === true || enabled === 1 || String(enabled).toLowerCase() === 'true';
+            });
+
+            // Fallback: if API shape drifts and enabled flags are missing, still show available sources.
+            blocklistRegistry = enabledSources.length ? enabledSources : sources;
         } catch (e) {
             console.warn('Failed to load blocklist sources:', e);
             blocklistRegistry = [];
@@ -1106,67 +1195,6 @@
         }
     }
 
-    // Load interfaces into dropdown when modal opens
-    document.getElementById('addPeerModal').addEventListener('show.bs.modal', async function () {
-        const select = document.getElementById('peer-interface');
-        select.disabled = false;
-        select.innerHTML = '<option value="" disabled selected>Loading...</option>';
-
-        // Reset submit button state
-        const submitBtn = document.getElementById('add-peer-submit-btn');
-        const submitText = submitBtn?.querySelector('.submit-text');
-        const submitSpinner = submitBtn?.querySelector('.spinner-border');
-        if (submitBtn && submitText && submitSpinner) {
-            submitBtn.disabled = false;
-            submitText.textContent = 'Create Peer';
-            submitText.classList.remove('d-none');
-            submitSpinner.classList.add('d-none');
-        }
-
-        // Check if Server FQDN is configured
-        const fqdnWarning = document.getElementById('peer-fqdn-warning');
-        try {
-            const settings = await api('GET', '/api/wireguard/settings');
-            const wgFqdn = settings?.wg_fqdn;
-            
-            if (!wgFqdn || wgFqdn.trim() === '' || wgFqdn === 'vpn.example.com') {
-                fqdnWarning?.classList.remove('d-none');
-                if (submitBtn) submitBtn.disabled = true;
-            } else {
-                fqdnWarning?.classList.add('d-none');
-            }
-        } catch (e) {
-            console.warn('Could not check WireGuard settings:', e);
-        }
-
-        // Render blocklist options (all selected by default for new peers)
-        renderBlocklistOptions('peer-blocklist-options', null);
-        toggleBlocklistSection('peer-use-adblocker', 'peer-blocklist-section');
-
-        try {
-            const res = await api('GET', '/api/wireguard/interfaces');
-            select.innerHTML = '';
-
-            const activeInterfaces = res.interfaces.filter(i => i.is_active);
-            if (activeInterfaces.length === 0) {
-                select.disabled = true;
-                select.innerHTML = '<option value="" selected>No active interfaces</option>';
-                return;
-            }
-
-            activeInterfaces.forEach((iface, idx) => {
-                const opt = document.createElement('option');
-                opt.value = iface.name;
-                opt.textContent = iface.name;
-                if (idx === 0) opt.selected = true;
-                select.appendChild(opt);
-            });
-        } catch (e) {
-            select.disabled = true;
-            select.innerHTML = '<option value="" selected>Failed to load interfaces</option>';
-        }
-    });
-
     function toggleAllowedIpsCustom(prefix = '') {
         const modeEl = document.getElementById(`${prefix}peer-allowed-ips-mode`);
         const customWrapper = document.getElementById(`${prefix}peer-allowed-ips-custom-wrapper`);
@@ -1196,16 +1224,106 @@
     // Detect which mode matches the current allowed_ips string
     function detectAllowedIpsMode(allowedIps) {
         if (!allowedIps) return 'full';
-        const normalized = allowedIps.replace(/\s/g, '');
+        const normalize = (s) => s.replace(/\s/g, '').split(',').sort().join(',');
+        const normalized = normalize(allowedIps);
         for (const [mode, preset] of Object.entries(ALLOWED_IPS_PRESETS)) {
-            if (preset.replace(/\s/g, '') === normalized) {
-                return mode;
-            }
+            if (normalize(preset) === normalized) return mode;
         }
         return 'custom';
     }
 
-    document.getElementById('add-peer-form').addEventListener('submit', async function (e) {
+    // Load interfaces into dropdown when modal opens (Admin only)
+    if (isAdmin) {
+    let addPeerModalAbort = null;
+    const addPeerModalEl = document.getElementById('addPeerModal');
+    if (addPeerModalEl) {
+    addPeerModalEl.addEventListener('show.bs.modal', async function () {
+        if (addPeerModalAbort) addPeerModalAbort.abort();
+        addPeerModalAbort = new AbortController();
+        const signal = addPeerModalAbort.signal;
+
+        const select = document.getElementById('peer-interface');
+        select.disabled = false;
+        setSelectPlaceholder(select, 'Loading...');
+
+        // Reset submit button state
+        const submitBtn = document.getElementById('add-peer-submit-btn');
+        const submitText = submitBtn?.querySelector('.submit-text');
+        const submitSpinner = submitBtn?.querySelector('.spinner-border');
+        if (submitBtn && submitText && submitSpinner) {
+            submitBtn.disabled = false;
+            submitText.textContent = 'Create Peer';
+            submitText.classList.remove('d-none');
+            submitSpinner.classList.add('d-none');
+        }
+
+        // Check if Server FQDN is configured
+        const fqdnWarning = document.getElementById('peer-fqdn-warning');
+        try {
+            const settings = await api('GET', '/api/wireguard/settings', null, { signal });
+            if (signal.aborted) return;
+            const wgFqdn = settings?.wg_fqdn;
+            
+            if (!wgFqdn || wgFqdn.trim() === '' || wgFqdn === 'vpn.example.com') {
+                fqdnWarning?.classList.remove('d-none');
+                if (submitBtn) submitBtn.disabled = true;
+            } else {
+                fqdnWarning?.classList.add('d-none');
+            }
+        } catch (e) {
+            if (e?.name === 'AbortError') return;
+            console.warn('Could not check WireGuard settings:', e);
+        }
+
+        // Ensure latest blocklist registry is loaded before rendering options
+        try {
+            await loadBlocklistRegistry();
+            if (signal.aborted) return;
+        } catch (e) {
+            if (e?.name === 'AbortError') return;
+        }
+
+        // Render blocklist options (all selected by default for new peers)
+        renderBlocklistOptions('peer-blocklist-options', null);
+        toggleBlocklistSection('peer-use-adblocker', 'peer-blocklist-section');
+
+        try {
+            const res = await api('GET', '/api/wireguard/interfaces', null, { signal });
+            if (signal.aborted) return;
+            select.replaceChildren();
+
+            const activeInterfaces = res.interfaces.filter(i => i.is_active);
+            if (activeInterfaces.length === 0) {
+                select.disabled = true;
+                setSelectPlaceholder(select, 'No active interfaces', false);
+                return;
+            }
+
+            activeInterfaces.forEach((iface, idx) => {
+                const opt = document.createElement('option');
+                opt.value = iface.name;
+                opt.textContent = iface.name;
+                if (idx === 0) opt.selected = true;
+                select.appendChild(opt);
+            });
+        } catch (e) {
+            if (e?.name === 'AbortError') return;
+            select.disabled = true;
+            setSelectPlaceholder(select, 'Failed to load interfaces', false);
+        }
+    });
+
+    addPeerModalEl.addEventListener('hidden.bs.modal', () => {
+        if (addPeerModalAbort) {
+            addPeerModalAbort.abort();
+            addPeerModalAbort = null;
+        }
+    });
+    } // end if (addPeerModalEl)
+
+    const addPeerFormEl = document.getElementById('add-peer-form');
+    if (addPeerFormEl) {
+    addPeerFormEl.addEventListener('submit', async function (e) {
         e.preventDefault();
 
         const submitBtn = document.getElementById('add-peer-submit-btn');
@@ -1253,8 +1371,68 @@
             submitSpinner.classList.add('d-none');
         }
     });
+    } // end if (addPeerFormEl)
 
-    qrModalEl.addEventListener('hidden.bs.modal', () => {
+    const editPeerFormEl = document.getElementById('edit-peer-form');
+    if (editPeerFormEl) {
+    editPeerFormEl.addEventListener('submit', async function (e) {
+        e.preventDefault();
+
+        const submitBtn = document.getElementById('edit-peer-submit-btn');
+        const submitText = submitBtn.querySelector('.submit-text');
+        const submitSpinner = submitBtn.querySelector('.spinner-border');
+
+        const peerId = Number(document.getElementById('edit-peer-id').value);
+        if (!Number.isFinite(peerId) || peerId <= 0) {
+            wbAlert('Invalid peer ID', 'danger');
+            return;
+        }
+
+        const name = document.getElementById('edit-peer-name').value.trim();
+        const description = document.getElementById('edit-peer-description').value.trim();
+        const allowedIpsMode = document.getElementById('edit-peer-allowed-ips-mode').value;
+        const allowedIps = validateAndGetAllowedIps('edit-');
+        const isEnabled = document.getElementById('edit-peer-enabled').checked;
+        const useAdblocker = document.getElementById('edit-peer-use-adblocker').checked;
+
+        if (!allowedIps) return;
+
+        const data = {
+            name: name || null,
+            description: description || null,
+            allowed_ips: allowedIps,
+            allowed_ips_mode: allowedIpsMode,
+            is_enabled: isEnabled,
+            use_adblocker: useAdblocker,
+            blocklist_ids: getSelectedBlocklistIds('edit-peer-blocklist-options'),
+            client_isolation: document.getElementById('edit-peer-client-isolation').checked,
+        };
+
+        // Show loading state
+        submitBtn.disabled = true;
+        submitText.classList.add('d-none');
+        submitSpinner.classList.remove('d-none');
+
+        try {
+            await api('PATCH', `/api/wireguard/peers/${peerId}`, data);
+            document.activeElement?.blur();
+            bootstrap.Modal.getInstance(document.getElementById('editPeerModal')).hide();
+            wbToast('Peer updated successfully', 'success');
+            reloadSoon(4200);
+        } catch (error) {
+            wbAlert('Failed to update peer: ' + safeErrorMessage(error), 'danger');
+        } finally {
+            // Reset button state
+            submitBtn.disabled = false;
+            submitText.classList.remove('d-none');
+            submitSpinner.classList.add('d-none');
+        }
+    });
+    } // end if (editPeerFormEl)
+    } // end if (isAdmin)
+
+    // QR Modal cleanup handler
+    qrModalEl?.addEventListener('hidden.bs.modal', () => {
         if (qrAbortController) {
             qrAbortController.abort();
             qrAbortController = null;
@@ -1266,7 +1444,9 @@
         document.getElementById('qr-loading').classList.remove('d-none');
     });
 
+    // Peer management functions (available to all users, with permission checks inside)
     async function showQR(peerId) {
+        if (!qrModal) return;
         const loading = document.getElementById('qr-loading');
         const image = document.getElementById('qr-image');
 
@@ -1360,6 +1540,10 @@
     }
 
     async function deletePeer(peerId) {
+        if (!isAdmin) {
+            wbAlert('Only administrators can delete peers', 'warning');
+            return;
+        }
         if (!await wbConfirm('Are you sure you want to delete this peer?', 'danger')) return;
 
         try {
@@ -1372,6 +1556,10 @@
     }
 
     async function editPeer(peerId) {
+        if (!isAdmin) {
+            wbAlert('Only administrators can edit peers', 'warning');
+            return;
+        }
         const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('editPeerModal'));
 
         // Load current peer data
@@ -1396,6 +1584,9 @@
             document.getElementById('edit-peer-enabled').checked = peer.is_enabled;
             document.getElementById('edit-peer-client-isolation').checked = peer.client_isolation === true;
 
+            // Ensure latest blocklist registry is loaded before rendering options
+            await loadBlocklistRegistry();
+
             // Populate blocklist options with peer's current selection
             renderBlocklistOptions('edit-peer-blocklist-options', peer.blocklist_ids);
             toggleBlocklistSection('edit-peer-use-adblocker', 'edit-peer-blocklist-section');
@@ -1405,60 +1596,6 @@
             wbAlert('Failed to load peer details: ' + safeErrorMessage(error), 'danger');
         }
     }
-
-    document.getElementById('edit-peer-form').addEventListener('submit', async function (e) {
-        e.preventDefault();
-
-        const submitBtn = document.getElementById('edit-peer-submit-btn');
-        const submitText = submitBtn.querySelector('.submit-text');
-        const submitSpinner = submitBtn.querySelector('.spinner-border');
-
-        const peerId = Number(document.getElementById('edit-peer-id').value);
-        if (!Number.isFinite(peerId) || peerId <= 0) {
-            wbAlert('Invalid peer ID', 'danger');
-            return;
-        }
-
-        const name = document.getElementById('edit-peer-name').value.trim();
-        const description = document.getElementById('edit-peer-description').value.trim();
-        const allowedIpsMode = document.getElementById('edit-peer-allowed-ips-mode').value;
-        const allowedIps = validateAndGetAllowedIps('edit-');
-        const isEnabled = document.getElementById('edit-peer-enabled').checked;
-        const useAdblocker = document.getElementById('edit-peer-use-adblocker').checked;
-
-        if (!allowedIps) return;
-
-        const data = {
-            name: name || null,
-            description: description || null,
-            allowed_ips: allowedIps,
-            allowed_ips_mode: allowedIpsMode,
-            is_enabled: isEnabled,
-            use_adblocker: useAdblocker,
-            blocklist_ids: getSelectedBlocklistIds('edit-peer-blocklist-options'),
-            client_isolation: document.getElementById('edit-peer-client-isolation').checked,
-        };
-
-        // Show loading state
-        submitBtn.disabled = true;
-        submitText.classList.add('d-none');
-        submitSpinner.classList.remove('d-none');
-
-        try {
-            await api('PATCH', `/api/wireguard/peers/${peerId}`, data);
-            document.activeElement?.blur();
-            bootstrap.Modal.getInstance(document.getElementById('editPeerModal')).hide();
-            wbToast('Peer updated successfully', 'success');
-            reloadSoon(4200);
-        } catch (error) {
-            wbAlert('Failed to update peer: ' + safeErrorMessage(error), 'danger');
-        } finally {
-            // Reset button state
-            submitBtn.disabled = false;
-            submitText.classList.remove('d-none');
-            submitSpinner.classList.add('d-none');
-        }
-    });
 
     // Fetch and display live stats for all peers (single batch request, cancelable)
     async function loadPeerStats() {
@@ -1506,12 +1643,21 @@
             const persistedCity = String(row.dataset.lastClientCity || '').trim() || null;
             const persistedAsOrg = String(row.dataset.lastClientAsOrg || '').trim() || null;
 
-            const setLastSeen = (text, cls) => {
+            const setLastSeen = (text, cls, active = false) => {
                 lastSeenCell.textContent = '';
-                const span = document.createElement('span');
-                span.className = cls;
-                span.textContent = text;
-                lastSeenCell.appendChild(span);
+                if (active) {
+                    // Show Online badge for active connections (matches Dashboard style)
+                    const badge = document.createElement('span');
+                    badge.className = 'badge peer-status-indicator';
+                    badge.textContent = 'Online';
+                    lastSeenCell.appendChild(badge);
+                } else {
+                    // Show time text for inactive connections
+                    const span = document.createElement('span');
+                    span.className = cls;
+                    span.textContent = text;
+                    lastSeenCell.appendChild(span);
+                }
             };
 
             const liveHandshake = toEpochSeconds(stats.latest_handshake);
@@ -1524,9 +1670,9 @@
 
             if (cachedHandshake) {
                 const rel = formatRelativeTime(cachedHandshake);
-                setLastSeen(rel.text, rel.cls);
+                setLastSeen(rel.text, rel.cls, rel.active);
             } else {
-                setLastSeen('Never', 'text-muted');
+                setLastSeen('Never', 'text-muted', false);
             }
 
             const liveEndpointIp = String(stats.endpoint_ip || parseEndpointIp(stats.endpoint || '') || '').trim();
@@ -1563,6 +1709,7 @@
 
             if (endpointIp) {
                 clientIpCell.textContent = '';
+                clientIpCell.classList.remove('peer-client-ip--empty');
 
                 const stack = document.createElement('div');
                 stack.className = 'peer-client-ip-stack';
@@ -1602,6 +1749,7 @@
                 clientIpCell.appendChild(stack);
             } else {
                 clientIpCell.textContent = '';
+                clientIpCell.classList.add('peer-client-ip--empty');
                 const span = document.createElement('span');
                 span.className = 'text-muted';
                 span.textContent = '—';
@@ -1637,12 +1785,16 @@
         tooltipInstances.length = 0;
     }
 
+    let visibilityTimeout = null;
     document.addEventListener('visibilitychange', () => {
+        clearTimeout(visibilityTimeout);
         if (document.hidden) {
             stopPeerStatsPolling();
         } else {
-            loadPeerStats();
-            startPeerStatsPolling();
+            visibilityTimeout = setTimeout(() => {
+                loadPeerStats();
+                startPeerStatsPolling();
+            }, 300);
         }
     });
 
@@ -1695,7 +1847,7 @@
     toggleAllowedIpsCustom('');
     toggleAllowedIpsCustom('edit-');
     initTooltips();
-    loadBlocklistRegistry();  // Load blocklist sources for per-peer selection
+    // loadBlocklistRegistry is loaded on-demand in modal handlers
     loadPeerStats();
     startPeerStatsPolling();
 

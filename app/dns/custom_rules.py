@@ -85,8 +85,14 @@ class ParsedRule:
 	domain: str | None = None
 	# Wildcard pattern (fnmatch-style, lowercase)
 	wildcard: str | None = None
+	# Precompiled wildcard regex for hot-path matching
+	_wildcard_re: re.Pattern[str] | None = field(default=None, init=False, repr=False)
 	# Compiled regex pattern
 	regex: re.Pattern[str] | None = field(default=None, repr=False)
+
+	def __post_init__(self) -> None:
+		if self.wildcard is not None:
+			self._wildcard_re = re.compile(fnmatch.translate(self.wildcard))
 
 	def matches(self, domain: str) -> bool:
 		"""Check if this rule matches the given domain.
@@ -108,9 +114,12 @@ class ParsedRule:
 			# Match against full domain and all parent segments
 			# e.g., ||ads*.com^ should match "ads1.com" and "sub.ads1.com"
 			parts = d.split(".")
+			matcher = self._wildcard_re
 			for i in range(len(parts)):
 				candidate = ".".join(parts[i:])
-				if fnmatch.fnmatch(candidate, self.wildcard):
+				if matcher is not None and matcher.match(candidate):
+					return True
+				if matcher is None and fnmatch.fnmatch(candidate, self.wildcard):
 					return True
 			return False
 		if self.regex is not None:
@@ -159,15 +168,7 @@ def rule_applies_to_client(rule: ParsedRule, client_ip: str) -> bool:
 
 def canonical_rule_key(rule: ParsedRule) -> tuple[str, str, str | None]:
 	"""Canonical key used for duplicate detection and conflict checks."""
-	if rule.domain is not None:
-		target = f"domain:{rule.domain}"
-	elif rule.wildcard is not None:
-		target = f"wildcard:{rule.wildcard}"
-	elif rule.regex is not None:
-		target = f"regex:{rule.regex.pattern}"
-	else:
-		target = "unknown:"
-	return (rule.action.value, target, rule.client_scope)
+	return (rule.action.value, _canonical_target(rule), rule.client_scope)
 
 
 def _canonical_target(rule: ParsedRule) -> str:
@@ -182,7 +183,7 @@ def _canonical_target(rule: ParsedRule) -> str:
 
 
 def canonical_rule_text(action: RuleAction, domain: str, client_scope: str | None = None) -> str:
-	"""Build canonical text form for exact-domain rules."""
+	"""Build canonical text form for exact-domain rules only."""
 	prefix = "@@" if action == RuleAction.ALLOW else ""
 	base = f"{prefix}||{domain.lower().rstrip('.')}^"
 	if client_scope:
@@ -202,7 +203,8 @@ _ADGUARD_DOMAIN_RE = re.compile(
 	re.IGNORECASE,
 )
 
-# Valid DNS label (RFC 1123): alphanumeric, hyphens allowed in middle
+# Valid DNS label for custom-rule parsing.
+# Note: underscores are accepted pragmatically for labels like "_dmarc".
 _VALID_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$|^[a-z0-9]$")
 
 # Heuristic guard against catastrophic backtracking patterns like /(a+)+b/
@@ -302,6 +304,7 @@ def _validate_domain_pattern(pattern: str, is_wildcard: bool) -> str | None:
 def _parse_single_rule(text: str, lineno: int) -> ParsedRule | ParseError:
 	"""Parse one rule line. Returns ParsedRule on success, ParseError on failure."""
 	text = text.strip()
+	client_scope = None
 
 	# Determine action (allow vs block)
 	if text.startswith("@@"):
@@ -315,7 +318,6 @@ def _parse_single_rule(text: str, lineno: int) -> ParsedRule | ParseError:
 	regex_split = _split_regex_body_and_options(body)
 	if regex_split is not None:
 		regex_literal, regex_options = regex_split
-		client_scope: str | None = None
 		if regex_options is not None:
 			client_scope, opt_err = _parse_rule_options(regex_options, lineno=lineno, text=text)
 			if opt_err is not None:
@@ -356,7 +358,6 @@ def _parse_single_rule(text: str, lineno: int) -> ParsedRule | ParseError:
 		)
 
 	# Optional scope options for non-regex rules
-	client_scope: str | None = None
 	if "$" in body:
 		body, options_raw = body.split("$", 1)
 		client_scope, opt_err = _parse_rule_options(options_raw, lineno=lineno, text=text)
@@ -434,6 +435,7 @@ def parse_rules(text: str) -> tuple[list[ParsedRule], list[ParseError]]:
 					first_seen,
 					result.raw,
 				)
+				continue
 			else:
 				seen_keys[key] = lineno
 
@@ -509,13 +511,18 @@ def apply_custom_rules(
 			blocked_domains.add(domain)
 			added.add(domain)
 
-	# Phase 2: Remove exact allow domains and all their subdomains.
-	for allow_domain in allow_exact:
-		to_remove = {
-			domain
-			for domain in blocked_domains
-			if domain == allow_domain or domain.endswith("." + allow_domain)
-		}
+	# Phase 2: Single-pass removal of exact allow domains and their subdomains.
+	if allow_exact:
+		to_remove: set[str] = set()
+		for domain in blocked_domains:
+			if domain in allow_exact:
+				to_remove.add(domain)
+				continue
+			labels = domain.split(".")
+			for i in range(1, len(labels) - 1):
+				if ".".join(labels[i:]) in allow_exact:
+					to_remove.add(domain)
+					break
 		if to_remove:
 			blocked_domains -= to_remove
 			removed.update(to_remove)
@@ -561,6 +568,8 @@ def evaluate_domain(
 	blocked_domains: set[str],
 	allow_rules: list[ParsedRule],
 	block_rules: list[ParsedRule],
+	*,
+	client_ip: str | None = None,
 ) -> bool:
 	"""Evaluate if a domain should be blocked, applying all rule types.
 
@@ -574,6 +583,7 @@ def evaluate_domain(
 		blocked_domains: Set of blocked domain names from blocklist
 		allow_rules: Custom allow rules for whitelist override
 		block_rules: Custom wildcard/regex block rules
+		client_ip: Optional query client IP for client-scoped rules
 
 	Returns:
 		True if domain should be blocked, False if allowed.
@@ -582,6 +592,8 @@ def evaluate_domain(
 
 	# Priority 1: Allow rules override everything
 	for rule in allow_rules:
+		if not rule_applies_to_client(rule, client_ip or ""):
+			continue
 		if rule.matches(d):
 			return False
 
@@ -598,6 +610,8 @@ def evaluate_domain(
 
 	# Priority 3: Check wildcard/regex block rules
 	for rule in block_rules:
+		if not rule_applies_to_client(rule, client_ip or ""):
+			continue
 		if rule.matches(d):
 			return True
 
@@ -607,9 +621,13 @@ def evaluate_domain(
 def is_domain_allowed_by_custom_rules(
 	domain: str,
 	allow_rules: list[ParsedRule],
+	*,
+	client_ip: str | None = None,
 ) -> bool:
-	"""Check if a domain is explicitly allowed (whitelisted) by custom rules."""
+	"""Check if a domain is explicitly allowed by custom rules for a client."""
 	for rule in allow_rules:
+		if not rule_applies_to_client(rule, client_ip or ""):
+			continue
 		if rule.matches(domain):
 			return True
 	return False
@@ -618,6 +636,8 @@ def is_domain_allowed_by_custom_rules(
 def is_domain_blocked_by_custom_rules(
 	domain: str,
 	block_rules: list[ParsedRule],
+	*,
+	client_ip: str | None = None,
 ) -> bool:
 	"""Check if a domain matches a wildcard/regex custom block rule.
 
@@ -625,6 +645,8 @@ def is_domain_blocked_by_custom_rules(
 	as Unbound local-zone entries (wildcards, regex).
 	"""
 	for rule in block_rules:
+		if not rule_applies_to_client(rule, client_ip or ""):
+			continue
 		if rule.matches(domain):
 			return True
 	return False

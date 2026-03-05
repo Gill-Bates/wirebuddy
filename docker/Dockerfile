@@ -86,7 +86,7 @@ EXPOSE 53/tcp
 
 # Health check using curl (faster than Python)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/api/docs || exit 1
+    CMD curl -f http://localhost:8000/api/system/status || exit 1
 
 # Configurable worker count (2 for resilience, SQLite/TSDB are multi-process safe)
 ENV UVICORN_WORKERS=2

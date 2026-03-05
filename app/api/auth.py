@@ -76,7 +76,7 @@ _recovery_download_cache_lock = threading.Lock()
 
 # Cookie-based auth allowed on UI and API routes.
 # CSRF validation for UI mutations is enforced by CSRFMiddleware.
-_COOKIE_AUTH_PREFIXES = ("/ui", "/api", "/status")
+_COOKIE_AUTH_PREFIXES = ("/ui", "/api", "/status", "/swagger")
 _COOKIE_AUTH_PREFIXES_NORMALIZED = tuple(prefix.rstrip("/") for prefix in _COOKIE_AUTH_PREFIXES)
 
 

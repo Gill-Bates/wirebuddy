@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from pathlib import Path
 from typing import Optional
 
 from .sqlite_interfaces import get_interface
@@ -147,6 +148,50 @@ def update_cumulative_transfer_batch(
 			"UPDATE peers SET cumulative_rx = ?, cumulative_tx = ?, last_wg_rx = ?, last_wg_tx = ? WHERE public_key = ?",
 			updates,
 		)
+
+
+def reset_peer_logs(conn: sqlite3.Connection) -> int:
+	"""Reset all peer connection-tracking data.
+
+	Clears last_client_ip, last_handshake_at, and cumulative transfer counters
+	for every peer.  Returns the number of peers affected.
+	"""
+	with transaction(conn):
+		cur = conn.execute(
+			"UPDATE peers SET "
+			"last_client_ip = NULL, "
+			"last_handshake_at = 0, "
+			"cumulative_rx = 0, "
+			"cumulative_tx = 0, "
+			"last_wg_rx = 0, "
+			"last_wg_tx = 0"
+		)
+	count = cur.rowcount
+	_log.info("PEER_LOGS_RESET affected %d peer(s)", count)
+	return count
+
+
+def get_peer_metrics_stats(conn: sqlite3.Connection) -> dict[str, int | str]:
+	"""Return aggregate peer metrics for the stats API."""
+	row = conn.execute(
+		"SELECT COUNT(*) AS total, "
+		"SUM(CASE WHEN last_handshake_at > 0 THEN 1 ELSE 0 END) AS with_handshake, "
+		"SUM(cumulative_rx + cumulative_tx) AS total_transfer "
+		"FROM peers"
+	).fetchone()
+	db_row = conn.execute("PRAGMA database_list").fetchone()
+	db_path = ""
+	if db_row and len(db_row) >= 3 and db_row[2]:
+		db_path = str(db_row[2])
+
+	return {
+		"total_peers": int(row[0] or 0),
+		"peers_with_handshake": int(row[1] or 0),
+		"total_transfer_bytes": int(row[2] or 0),
+		"storage_type": "sqlite",
+		# Return basename only to avoid leaking absolute filesystem layout.
+		"path": Path(db_path).name if db_path else "peers.db",
+	}
 
 
 def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> Optional[str]:

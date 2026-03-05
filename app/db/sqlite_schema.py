@@ -27,6 +27,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 	"""Create the required database schema (factory default).
 
 	This defines the complete schema for fresh installs.
+	All historical migrations up to the current baseline are absorbed here.
 	"""
 	with transaction(conn, immediate=True):
 		# Users table

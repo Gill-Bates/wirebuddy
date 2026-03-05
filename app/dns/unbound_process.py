@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/dns/unbound_process.py
-# Copyright (C) 2025 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
 """Unbound DNS process management (start, stop, restart, reload)."""
@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 import shutil
@@ -110,6 +111,12 @@ def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 		_log.info("DNS_RESOLV configured /etc/resolv.conf to use %s", dns_ip)
 	except PermissionError:
 		_log.debug("DNS_RESOLV cannot write /etc/resolv.conf (read-only filesystem)")
+	except OSError as exc:
+		# EBUSY is expected in Docker host networking when resolv.conf is a mount
+		if exc.errno == errno.EBUSY:
+			_log.debug("DNS_RESOLV /etc/resolv.conf is mounted (host networking), skipping")
+		else:
+			_log.warning("DNS_RESOLV failed to configure /etc/resolv.conf: %s", exc)
 	except Exception as exc:
 		_log.warning("DNS_RESOLV failed to configure /etc/resolv.conf: %s", exc)
 

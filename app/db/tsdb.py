@@ -35,7 +35,7 @@ _log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-MIN_RETENTION_DAYS = 1
+MIN_RETENTION_DAYS = 0
 DEFAULT_RETENTION_DAYS = 365
 PRUNE_INTERVAL_SECONDS = 300  # Only prune a series every 5 minutes max
 MAX_SERIES_FILE_BYTES = 8 * 1024 * 1024  # 8 MiB per active JSONL file
@@ -555,17 +555,27 @@ def get_peer_stats(tsdb_dir: Path, peer_key: str) -> dict[str, Any]:
 def get_all_peer_hashes(tsdb_dir: Path) -> list[str]:
 	"""Get all peer directory hashes that have TSDB data.
 	
+	Excludes synthetic traffic aggregation keys (geo/ASN traffic).
+	
 	Note: Returns SHA-256 hashes of peer keys, not the original keys themselves.
 	These hashes are used for directory naming and cannot be reversed.
 	"""
 	if not tsdb_dir.exists():
 		return []
 	
+	# Compute hashes for synthetic keys to exclude them from peer count
+	synthetic_keys = ["__geo_traffic__", "__asn_traffic__"]
+	synthetic_hashes = {
+		base64.urlsafe_b64encode(hashlib.sha256(k.encode()).digest()).decode().rstrip("=")
+		for k in synthetic_keys
+	}
+	
 	hashes = []
 	for d in tsdb_dir.iterdir():
 		if d.is_dir() and d.name.startswith("peer_"):
 			key_hash = d.name[5:]  # Remove "peer_" prefix
-			hashes.append(key_hash)
+			if key_hash not in synthetic_hashes:
+				hashes.append(key_hash)
 	return hashes
 
 

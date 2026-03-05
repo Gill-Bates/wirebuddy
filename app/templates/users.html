@@ -37,8 +37,6 @@
     .btn .material-icons {
         vertical-align: middle;
         line-height: 1;
-        display: inline-flex;
-        align-items: center;
     }
 
     .btn-sm .material-icons {
@@ -86,8 +84,35 @@
         .users-table td>* {
             margin-left: auto;
             max-width: 66%;
-            min-width: 0;            overflow: hidden;
-            text-overflow: ellipsis;        }
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Hide Created column in mobile view */
+        .users-table td[data-label="Created"] {
+            display: none;
+        }
+
+        /* Allow Last Login to wrap to two rows */
+        .users-table td[data-label="Last Login"] {
+            flex-wrap: wrap;
+        }
+
+        .users-table td[data-label="Last Login"] > div {
+            flex: 0 0 calc(100% - 7.2rem);
+            margin-left: auto;
+            max-width: calc(100% - 7.2rem);
+            overflow: visible;
+            text-overflow: initial;
+            white-space: normal;
+        }
+
+        .users-table td[data-label="Last Login"] > div.text-truncate {
+            overflow: visible !important;
+            text-overflow: initial !important;
+            white-space: normal !important;
+        }
 
         .users-table .user-identity {
             justify-content: flex-start;
@@ -155,11 +180,12 @@
 {% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h1 class="h3 mb-0"><span class="material-icons me-2">people</span>User Management</h1>
+<div class="container-fluid wb-page">
+<div class="wb-page-header">
+    <h2 class="page-title"><span class="material-icons me-2">people</span>User Management</h2>
     <button class="btn btn-primary users-add-btn" data-bs-toggle="modal" data-bs-target="#addUserModal">
-        <span class="material-icons align-middle me-1">person_add</span>
-        Add&nbsp;User
+        <span class="material-icons me-2">person_add</span>
+        Add User
     </button>
 </div>
 
@@ -211,7 +237,12 @@
                         </td>
                         <td data-label="Last Login">
                             {% if u['last_login_at'] %}
-                            {{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }}
+                            <div>{{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }}</div>
+                            {% if u['last_login_ip'] %}
+                            <div class="small text-muted text-truncate" style="max-width: 180px;" title="{{ u['last_login_ip'] }}">
+                                <code>{{ u['last_login_ip'] }}</code>
+                            </div>
+                            {% endif %}
                             {% else %}
                             <span class="text-muted">Never</span>
                             {% endif %}
@@ -219,7 +250,7 @@
                         <td data-label="Created">{{ u['created_at'].strftime('%Y-%m-%d') }}</td>
                         <td data-label="Actions" class="user-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
-                                <button type="button" class="btn btn-sm btn-outline-primary btn-edit-user"
+                                <button type="button" class="btn btn-sm btn-outline-secondary btn-edit-user"
                                     data-user-id="{{ u['id'] }}"
                                     data-username="{{ u['username'] }}"
                                     data-bs-toggle="tooltip" data-bs-title="Edit User">
@@ -251,6 +282,7 @@
         </div>
     </div>
 </div>
+</div><!-- /.wb-page -->
 
 <!-- Add User Modal -->
 <div class="modal fade" id="addUserModal" aria-labelledby="addUserModalTitle" aria-modal="true">
@@ -716,7 +748,9 @@
             try {
                 await api('POST', `/api/users/${userId}/otp/disable`);
                 setUserOtpState(userId, false, false);
-                openOtpSettings(userId, username, false, false);
+                // Close modal and return to user overview
+                const modal = bootstrap.Modal.getInstance(modalEl);
+                if (modal) modal.hide();
                 wbToast('OTP disabled', 'success');
             } catch (error) {
                 wbAlert('Failed to disable OTP: ' + error.message, 'danger');

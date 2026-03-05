@@ -33,7 +33,7 @@ from ..db.sqlite_users import (
 import logging
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 import qrcode
 from pydantic import ValidationError
 
@@ -54,6 +54,7 @@ from ..utils.otp import (
     serialize_recovery_codes,
     verify_otp,
 )
+from ..utils.rate_limit import RATE_LIMIT_AUTH, limiter
 from .auth import get_current_user, require_admin
 from .response import ok_response
 
@@ -320,7 +321,9 @@ def enable_user_otp(
 
 
 @router.post("/{user_id}/otp/confirm")
+@limiter.limit(RATE_LIMIT_AUTH)
 def confirm_user_otp_setup(
+    request: Request,
     user_id: int,
     payload: OTPConfirmRequest,
     conn: sqlite3.Connection = Depends(get_conn),

@@ -1,3 +1,19 @@
+
+## [1.2.2] - 2026-03-05
+
+- ``New`` The ad blocker can now be temporarily disabled on a time-based basis
+- ``New`` Added a ``/swagger`` endpoint
+- ``New`` Metrics can now be saved and deleted in a more differentiated manner
+- ``New`` Traffic statistics are now also grouped by ASN
+- ``New`` Users without admin rights can log in with read-only rights
+- ``Fix`` The logs now show the real IP addresses and not those from the reverse proxy
+- ``Fix`` Various stability improvements in the backend and GUI
+- ``Fix`` And as always: Several design improvements to make the front end more mobile-friendly
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.2.1] - 2026-03-02
 
 - ``New`` Passwords for users now require a minimum level of complexity
@@ -13,10 +29,6 @@
 - ``Fix`` When a peer is deleted, the time series data is now also deleted
 - ``Fix`` Application made more resilient when started with an incorrect encryption key
 - ``Fix`` And as always: Several design improvements to make the front end more mobile-friendly
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.2.0] - 2026-02-26
 

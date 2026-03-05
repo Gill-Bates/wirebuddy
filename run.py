@@ -89,4 +89,6 @@ if __name__ == "__main__":
 		reload=os.environ.get("WIREBUDDY_DEV_RELOAD", "").lower() in ("1", "true", "yes"),
 		factory=True,
 		log_config=_UVICORN_LOG_CONFIG,
+		proxy_headers=True,
+		forwarded_allow_ips="*",  # Allow all IPs in dev mode; production uses entrypoint.sh
 	)

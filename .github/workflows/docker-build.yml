@@ -98,7 +98,7 @@ jobs:
           fi
           
           # Health check (matches Dockerfile HEALTHCHECK endpoint)
-          if curl -fsS --retry 3 --retry-delay 2 http://localhost:8000/api/docs; then
+          if curl -fsS --retry 3 --retry-delay 2 http://localhost:8000/api/system/status; then
             echo "✓ Health check passed"
             docker stop wirebuddy-test
             docker rm wirebuddy-test

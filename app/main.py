@@ -37,6 +37,7 @@ from .db.sqlite_settings import (
 	get_dnssec_enabled,
 	get_enabled_blocklists,
 	get_setting,
+	get_tsdb_retention_days,
 	recover_missing_global_settings,
 	validate_secret_key,
 )
@@ -65,7 +66,7 @@ from .api import auth as auth_api
 from .api import users as users_api
 from .api import wireguard as wireguard_api
 from .api import dns as dns_api
-from .api import frontend as frontend_ui
+from .api import frontend_shared as frontend_ui
 from .db import tsdb
 from .dns import unbound
 from .dns import ingestion as dns_ingestion
@@ -99,6 +100,7 @@ _SQLITE_INTEGRITY_INTERVAL_SECONDS = 604800
 _TSDB_RETENTION_INTERVAL_SECONDS = 86400
 _SESSION_CLEANUP_INTERVAL_SECONDS = 3600
 _DNS_WATCHDOG_INTERVAL_SECONDS = 30
+_ADBLOCKER_TIMER_CHECK_INTERVAL_SECONDS = 15
 _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS = 2.0
 _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS = 300.0
 
@@ -516,6 +518,15 @@ def _read_dns_retention_days_sync(db_path: Path) -> int:
 		close_connection(conn)
 
 
+def _read_tsdb_retention_days_sync(db_path: Path) -> int:
+	"""Read TSDB retention days synchronously."""
+	conn = connect(db_path)
+	try:
+		return get_tsdb_retention_days(conn)
+	finally:
+		close_connection(conn)
+
+
 def _read_dns_service_enabled_sync(db_path: Path) -> bool:
 	"""Read whether DNS service should be running synchronously."""
 	conn = connect(db_path)
@@ -870,7 +881,8 @@ async def _lifespan(app: FastAPI):
 		async def _maintain_tsdb() -> None:
 			"""Scheduled task: prune/rotate/compress TSDB series."""
 			try:
-				stats = await asyncio.to_thread(tsdb.run_maintenance, cfg.tsdb_dir)
+				tsdb_retention_days = await asyncio.to_thread(_read_tsdb_retention_days_sync, cfg.db_path)
+				stats = await asyncio.to_thread(tsdb.run_maintenance, cfg.tsdb_dir, tsdb_retention_days)
 				dns_retention_days = await asyncio.to_thread(_read_dns_retention_days_sync, cfg.db_path)
 				dns_retention = await asyncio.to_thread(
 					dns_ingestion.enforce_dns_log_retention,
@@ -1057,6 +1069,7 @@ async def _lifespan(app: FastAPI):
 
 		# ─── COUNTRY TRAFFIC (CONNTRACK) ──────────────────────────────
 		from .utils.conntrack import init_conntrack_accounting, sample_country_traffic
+		from .utils.conntrack import ASN_TRAFFIC_KEY, ASN_TRAFFIC_METRIC
 		from .api.wireguard_stats_country import GEO_TRAFFIC_KEY, GEO_TRAFFIC_METRIC
 
 		# Enable byte accounting in the kernel conntrack table.
@@ -1067,7 +1080,7 @@ async def _lifespan(app: FastAPI):
 			_log.warning("COUNTRY_TRAFFIC could not enable conntrack accounting: %s", exc)
 
 		async def _sample_country_traffic() -> None:
-			"""Scheduled task: sample conntrack → country traffic → TSDB."""
+			"""Scheduled task: sample conntrack → country + ASN traffic → TSDB."""
 			try:
 				enabled, peer_ip_map = await asyncio.to_thread(
 					_read_country_traffic_inputs_sync,
@@ -1076,7 +1089,7 @@ async def _lifespan(app: FastAPI):
 				if not enabled:
 					return
 
-				country_deltas = await asyncio.to_thread(
+				country_deltas, asn_deltas = await asyncio.to_thread(
 					sample_country_traffic, peer_ip_map
 				)
 
@@ -1092,6 +1105,18 @@ async def _lifespan(app: FastAPI):
 					_log.debug(
 						"COUNTRY_TRAFFIC countries=%d rx=%.0f tx=%.0f",
 						len(country_deltas), total_rx, total_tx,
+					)
+
+				if asn_deltas:
+					tsdb.append_point(
+						cfg.tsdb_dir,
+						peer_key=ASN_TRAFFIC_KEY,
+						metric=ASN_TRAFFIC_METRIC,
+						value=asn_deltas,
+					)
+					_log.debug(
+						"ASN_TRAFFIC asns=%d",
+						len(asn_deltas),
 					)
 			except Exception as exc:
 				_log.warning("COUNTRY_TRAFFIC sample failed: %s", exc)
@@ -1182,6 +1207,86 @@ async def _lifespan(app: FastAPI):
 			func=_dns_watchdog,
 			run_on_start=True,  # Run first check after initial_delay
 			initial_delay=60.0,  # Wait for initial startup to complete
+			timeout=30.0,
+		)
+
+		# ─── ADBLOCKER TIMER CHECK ────────────────────────────────────
+		# Periodically check if timed disable has expired and re-enable adblocker
+		async def _check_adblocker_timer() -> None:
+			"""Scheduled task: re-enable ad-blocker when timed disable expires."""
+			import time as _time
+			from .db.sqlite_settings import (
+				get_blocklist_disabled_until,
+				clear_blocklist_disabled_until,
+				get_dns_blocklist_enabled,
+				set_dns_blocklist_enabled,
+			)
+			conn = connect(cfg.db_path)
+			try:
+				disabled_until = get_blocklist_disabled_until(conn)
+				enabled = get_dns_blocklist_enabled(conn)
+				now = int(_time.time())
+
+				# If timer has expired and blocker is still disabled, re-enable it
+				if disabled_until > 0 and disabled_until <= now and not enabled:
+					set_dns_blocklist_enabled(conn, True)
+					clear_blocklist_disabled_until(conn)
+					_log.info("ADBLOCKER_TIMER timer expired, re-enabling ad-blocker")
+
+					# Regenerate peer tags and reload Unbound
+					from .api.wireguard_peers import regenerate_all_peer_tags
+					await asyncio.to_thread(regenerate_all_peer_tags, conn)
+					await _reload_unbound_for_adblocker(conn)
+			except Exception as exc:
+				_log.warning("ADBLOCKER_TIMER check failed: %s", exc)
+			finally:
+				close_connection(conn)
+
+		async def _reload_unbound_for_adblocker(conn) -> None:
+			"""Reload Unbound config after adblocker state change."""
+			try:
+				from .db.sqlite_settings import (
+					get_dns_query_logging_enabled,
+					get_dns_blocklist_enabled,
+					get_dns_upstream_servers,
+					get_dnssec_enabled,
+				)
+				from .db.sqlite_interfaces import list_interfaces
+
+				enable_logging = get_dns_query_logging_enabled(conn)
+				enable_blocklist = get_dns_blocklist_enabled(conn)
+				upstream_dns = get_dns_upstream_servers(conn)
+				dnssec_enabled = get_dnssec_enabled(conn)
+
+				interfaces = list_interfaces(conn)
+				ipv4_gateways = []
+				for iface in interfaces:
+					try:
+						addr4 = iface["address"]
+					except (KeyError, TypeError):
+						addr4 = getattr(iface, "address", None)
+					if addr4:
+						ip4 = str(addr4).split("/")[0]
+						if ip4 not in ipv4_gateways:
+							ipv4_gateways.append(ip4)
+				ipv6_gateways = _unbound.get_interface_ipv6_gateways(interfaces)
+				_unbound.write_config(
+					enable_logging=enable_logging,
+					enable_blocklist=enable_blocklist,
+					upstream_dns=upstream_dns,
+					enable_dnssec=dnssec_enabled,
+					listen_addrs_ipv4=ipv4_gateways,
+					listen_addrs_ipv6=ipv6_gateways if ipv6_gateways else None,
+				)
+				await _unbound.reload_config()
+			except Exception:
+				_log.warning("ADBLOCKER_TIMER failed to reload Unbound", exc_info=True)
+
+		scheduler.add(
+			"adblocker-timer-check",
+			interval_seconds=_ADBLOCKER_TIMER_CHECK_INTERVAL_SECONDS,  # Check every 15 seconds
+			func=_check_adblocker_timer,
+			run_on_start=False,  # No need to run immediately on start
 			timeout=30.0,
 		)
 		
@@ -1368,8 +1473,8 @@ def create_app() -> FastAPI:
 		description="Lightweight WireGuard Management WebUI",
 		version="0.1.0",
 		lifespan=_lifespan,
-		docs_url="/api/docs",
-		redoc_url="/api/redoc",
+		docs_url=None,
+		redoc_url=None,
 	)
 	
 	app.state.cfg = cfg
@@ -1409,5 +1514,58 @@ def create_app() -> FastAPI:
 	
 	# ─── FRONTEND ROUTES ─────────────────────────────────────
 	app.include_router(frontend_ui.router)
-	
+
+	# ─── SWAGGER (admin-only) ────────────────────────────────
+	_register_swagger_routes(app)
+
 	return app
+
+
+def _register_swagger_routes(app: FastAPI) -> None:
+	"""Register admin-protected Swagger UI at /swagger."""
+	from fastapi import Depends
+	from fastapi.responses import HTMLResponse, JSONResponse
+	from .api.auth import require_admin
+
+	@app.get("/swagger/openapi.json", include_in_schema=False)
+	async def swagger_openapi_json(_=Depends(require_admin)):
+		"""Serve OpenAPI schema (admin only)."""
+		return JSONResponse(content=app.openapi())
+
+	@app.get("/swagger", include_in_schema=False)
+	async def swagger_ui(_=Depends(require_admin)):
+		"""Serve Swagger UI (admin only)."""
+		return HTMLResponse(_SWAGGER_HTML)
+
+
+_SWAGGER_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WireBuddy – API Docs</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    html { box-sizing: border-box; overflow-y: scroll; }
+    body { margin: 0; background: #fafafa; }
+    .swagger-ui .topbar { display: none; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    SwaggerUIBundle({
+      url: "/swagger/openapi.json",
+      dom_id: "#swagger-ui",
+      presets: [
+        SwaggerUIBundle.presets.apis,
+        SwaggerUIBundle.SwaggerUIStandalonePreset,
+      ],
+      layout: "BaseLayout",
+      deepLinking: true,
+    });
+  </script>
+</body>
+</html>
+"""
