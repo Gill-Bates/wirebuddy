@@ -19,8 +19,28 @@
 
     /* Allow code elements to wrap */
     .table code {
+        overflow-wrap: break-word;
+        word-break: normal;
+    }
+
+    /* IPv6/IP address wrapping at smart breakpoints */
+    .ipv6 {
+        word-break: normal;
         overflow-wrap: anywhere;
-        word-break: break-word;
+    }
+
+    /* VPN address column - monospace font for better readability */
+    .peers-table td[data-label="VPN Address"] {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, 'Courier New', monospace;
+    }
+    
+    /* VPN address: two-line layout for IPv4 and IPv6 */
+    .peer-vpn-address {
+        line-height: 1.4;
+    }
+    
+    .peer-vpn-address code {
+        display: inline-block;
     }
 
     /* Keep action buttons on one line */
@@ -127,6 +147,19 @@
         .peers-table {
             table-layout: auto;
         }
+
+        /* Stabilize VPN address on iPad */
+        .peers-table td[data-label="VPN Address"] code {
+            white-space: nowrap;
+        }
+
+        /* Stack Status and Routing mode badges vertically on tablet */
+        .peers-table td[data-label="Status"] {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            align-items: flex-end;
+        }
     }
 
     /* Button icon alignment */
@@ -154,6 +187,38 @@
         align-items: center;
         justify-content: center;
         gap: 0.75rem;
+    }
+
+    @media (max-width: 575.98px) {
+        #qrModal .modal-dialog {
+            max-width: 90vw;
+            margin: 1rem auto;
+        }
+
+        #qrModal .modal-body {
+            padding: 1rem;
+        }
+
+        #qr-image {
+            max-width: min(100%, 240px);
+        }
+
+        #addPeerModal .modal-dialog,
+        #editPeerModal .modal-dialog {
+            max-width: 95vw;
+            margin: 0.5rem auto;
+            max-height: calc(100vh - 1rem);
+        }
+
+        #addPeerModal .modal-content,
+        #editPeerModal .modal-content {
+            max-height: calc(100vh - 1rem);
+        }
+
+        #addPeerModal .modal-body,
+        #editPeerModal .modal-body {
+            padding: 0.75rem;
+        }
     }
 
     .peers-pagination .btn[disabled] {
@@ -399,6 +464,7 @@
             text-align: left;
         }
     }
+
 </style>
 {% endblock %}
 
@@ -463,14 +529,27 @@
                         <td data-label="Name">
                             {{ peer['name'] or 'Unnamed' }}
                             {% if mode == 'full' %}
-                            <span class="badge bg-secondary d-inline-block d-lg-none ms-1">Full Tunnel</span>
+                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">Full Tunnel</span>
                             {% elif mode == 'split' %}
-                            <span class="badge bg-secondary d-inline-block d-lg-none ms-1">Split Tunnel</span>
+                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">Split Tunnel</span>
                             {% else %}
-                            <span class="badge bg-secondary d-inline-block d-lg-none ms-1">Custom</span>
+                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">Custom</span>
                             {% endif %}
                         </td>
-                        <td data-label="VPN Address"><code>{{ peer['peer_address'] or '—' }}</code></td>
+                        <td data-label="VPN Address" class="peer-vpn-address">
+                            {% if peer['peer_ipv4'] %}
+                            <code class="ipv6">{{ peer['peer_ipv4'] }}</code>
+                            {% endif %}
+                            {% if peer['peer_ipv4'] and peer['peer_ipv6'] %}
+                            <br>
+                            {% endif %}
+                            {% if peer['peer_ipv6'] %}
+                            <code class="ipv6">{{ peer['peer_ipv6'].replace(':', ':\u200b') }}</code>
+                            {% endif %}
+                            {% if not peer['peer_ipv4'] and not peer['peer_ipv6'] %}
+                            <code class="ipv6">—</code>
+                            {% endif %}
+                        </td>
                         <td data-label="Routing" class="peer-routing">
                             {% if mode == 'full' %}
                             <span class="badge bg-secondary">Full Tunnel</span>
@@ -494,10 +573,10 @@
                                 <div class="peer-client-ip-main">
                                     {% if peer['last_client_country_code'] %}
                                     <img class="peer-country-flag" alt="{{ peer['last_client_country_code']|upper }} flag"
-                                        loading="lazy" decoding="async"
+                                        decoding="async"
                                         src="/static/vendor/images/flags/{{ peer['last_client_country_code'] }}.svg">
                                     {% endif %}
-                                    <code>{{ peer['last_client_ip_display'] }}</code>
+                                    <code class="ipv6">{{ (peer['last_client_ip_display'] or '').replace(':', ':\u200b').replace('/', '/\u200b') }}</code>
                                 </div>
                                 {% if peer['last_client_city'] or peer['last_client_as_org'] %}
                                 <div class="peer-client-ip-meta">
@@ -520,6 +599,13 @@
                             <span class="badge bg-success" role="status">Enabled</span>
                             {% else %}
                             <span class="badge bg-secondary" role="status">Disabled</span>
+                            {% endif %}
+                            {% if mode == 'full' %}
+                            <span class="badge bg-secondary d-none d-md-inline-block d-lg-none">Full Tunnel</span>
+                            {% elif mode == 'split' %}
+                            <span class="badge bg-secondary d-none d-md-inline-block d-lg-none">Split Tunnel</span>
+                            {% else %}
+                            <span class="badge bg-secondary d-none d-md-inline-block d-lg-none">Custom</span>
                             {% endif %}
                         </td>
                         <td data-label="Actions" class="peer-actions-cell">
@@ -589,11 +675,11 @@
 <!-- Add Peer Modal -->
 <div class="modal fade" id="addPeerModal" tabindex="-1" aria-labelledby="addPeerModalTitle"
     aria-describedby="addPeerModalDesc">
-    <div class="modal-dialog modal-dialog-centered modal-fullscreen-sm-down">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="addPeerModalTitle">Add New Peer</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <form id="add-peer-form" novalidate>
                 <div class="modal-body">
@@ -708,11 +794,11 @@
 
 <!-- QR Code Modal -->
 <div class="modal fade" id="qrModal" tabindex="-1" aria-labelledby="qrModalTitle" aria-describedby="qrModalDesc">
-    <div class="modal-dialog modal-dialog-centered modal-fullscreen-sm-down">
+    <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="qrModalTitle">Peer QR Code</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body text-center">
                 <p id="qrModalDesc" class="visually-hidden">Scan this QR code with a WireGuard client to import the peer
@@ -732,11 +818,11 @@
 <!-- Edit Peer Modal -->
 <div class="modal fade" id="editPeerModal" tabindex="-1" aria-labelledby="editPeerModalTitle"
     aria-describedby="editPeerModalDesc">
-    <div class="modal-dialog modal-dialog-centered modal-fullscreen-sm-down">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="editPeerModalTitle">Edit Peer</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <form id="edit-peer-form" novalidate>
                 <input type="hidden" id="edit-peer-id">
@@ -1082,7 +1168,6 @@
         const img = document.createElement('img');
         img.className = 'peer-country-flag';
         img.alt = `${code.toUpperCase()} flag`;
-        img.loading = 'lazy';
         img.decoding = 'async';
         img.src = `/static/vendor/images/flags/${code}.svg`;
         img.addEventListener('error', () => img.remove());

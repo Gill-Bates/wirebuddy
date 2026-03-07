@@ -369,10 +369,32 @@
 
     @media (max-width: 480px) {
         #dns-service-controls {
-            width: 100%;
-            justify-content: flex-start;
+            width: auto;
+            justify-content: flex-end;
             gap: 0.5rem;
+            flex-wrap: nowrap;
+            overflow-x: auto;
         }
+
+        .letsencrypt-request-btn {
+            white-space: nowrap;
+        }
+    }
+
+    #dns-service-controls .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        white-space: nowrap;
+    }
+
+    #dns-service-controls {
+        margin-left: auto;
+        justify-content: flex-end;
+    }
+
+    #dns-service-controls .btn .material-icons {
+        margin-right: 0 !important;
     }
 
     @media (max-width: 360px) {
@@ -464,6 +486,26 @@
                             <span id="status-page-url" class="font-monospace">/status</span>
                             <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
                                 id="btn-copy-status-page-url" aria-label="Copy status page URL" title="Copy URL">
+                                <span class="material-icons" style="font-size: 16px;">content_copy</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">API Documentation</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-check form-switch mb-2">
+                            <input class="form-check-input" type="checkbox" id="enable-swagger">
+                            <label class="form-check-label" for="enable-swagger">Enable Swagger UI</label>
+                        </div>
+                        <small class="text-muted">Exposes <span class="font-monospace">/swagger</span> for <strong>admin</strong> users only.</small>
+                        <div class="mt-2 small text-muted d-flex align-items-center gap-2">
+                            <span id="swagger-url" class="font-monospace">/swagger</span>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
+                                id="btn-copy-swagger-url" aria-label="Copy Swagger URL" title="Copy URL">
                                 <span class="material-icons" style="font-size: 16px;">content_copy</span>
                             </button>
                         </div>
@@ -638,16 +680,15 @@
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">DNS Service</h5>
                 <div class="d-flex gap-2 flex-wrap align-items-center" id="dns-service-controls">
-                    <button class="btn btn-sm btn-outline-success" id="btn-dns-start" disabled>
-                        <span class="material-icons align-middle me-1" style="font-size:18px;">play_arrow</span>Start
+                    <button class="btn btn-sm btn-outline-success" id="btn-dns-start" disabled title="Start DNS" aria-label="Start DNS">
+                        <span class="material-icons align-middle" style="font-size:18px;">play_arrow</span>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" id="btn-dns-stop" disabled>
-                        <span class="material-icons align-middle me-1" style="font-size:18px;">stop</span>Stop
+                    <button class="btn btn-sm btn-outline-danger" id="btn-dns-stop" disabled title="Stop DNS" aria-label="Stop DNS">
+                        <span class="material-icons align-middle" style="font-size:18px;">stop</span>
                     </button>
-                    <button class="btn btn-sm btn-outline-warning" id="btn-dns-restart" disabled>
-                        <span class="material-icons align-middle me-1" style="font-size:18px;">restart_alt</span>Restart
+                    <button class="btn btn-sm btn-outline-warning" id="btn-dns-restart" disabled title="Restart DNS" aria-label="Restart DNS">
+                        <span class="material-icons align-middle" style="font-size:18px;">restart_alt</span>
                     </button>
-                    <span class="badge" id="dns-service-status-badge">Loading...</span>
                 </div>
             </div>
         </div>
@@ -781,17 +822,6 @@ Format: IP@PORT#HOSTNAME
     <!-- Let's Encrypt Tab -->
     <div class="tab-pane fade" id="letsencrypt-pane" role="tabpanel" aria-labelledby="letsencrypt-tab">
 
-        <!-- Guidance Banner -->
-        <div class="row mb-3">
-            <div class="col-lg-6">
-                <div id="letsencrypt-guidance" class="alert alert-secondary py-2 mb-0">
-                    <span class="material-icons align-middle me-1" style="font-size: 18px;">check_circle</span>This setting is usually only necessary if you want to expose wirebuddy directly to the internet and do not want to use a reverse proxy.
-
-A configuration template for Caddy can be found in the repository.
-                </div>
-            </div>
-        </div>
-
         <!-- SSL/TLS Certificates Card -->
         <div class="row">
             <div class="col-lg-6">
@@ -800,7 +830,7 @@ A configuration template for Caddy can be found in the repository.
                         <h5 class="mb-0">SSL/TLS Certificates</h5>
                         {% if user['is_admin'] %}
                         <div>
-                            <button class="btn btn-sm btn-primary d-inline-flex align-items-center justify-content-center"
+                            <button class="btn btn-sm btn-primary d-inline-flex align-items-center justify-content-center letsencrypt-request-btn"
                                 data-bs-toggle="modal" data-bs-target="#certModal">
                                 <span class="material-icons align-middle me-1" style="font-size: 18px;">add_circle</span>Request Certificate
                             </button>
@@ -992,16 +1022,16 @@ A configuration template for Caddy can be found in the repository.
                                     <td class="text-end font-monospace small" id="peer-metrics-path">&ndash;</td>
                                 </tr>
                                 <tr>
+                                    <td class="text-muted">Storage Size</td>
+                                    <td class="text-end font-monospace" id="peer-metrics-size">&ndash;</td>
+                                </tr>
+                                <tr>
                                     <td class="text-muted">Total Peers</td>
                                     <td class="text-end font-monospace" id="peer-metrics-total">&ndash;</td>
                                 </tr>
                                 <tr>
                                     <td class="text-muted">Peers with Handshake</td>
                                     <td class="text-end font-monospace" id="peer-metrics-handshake">&ndash;</td>
-                                </tr>
-                                <tr>
-                                    <td class="text-muted">Total Transfer</td>
-                                    <td class="text-end font-monospace" id="peer-metrics-transfer">&ndash;</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1029,12 +1059,12 @@ A configuration template for Caddy can be found in the repository.
 
 <!-- Certificate Request Modal -->
 {% if user['is_admin'] %}
-<div class="modal fade" id="certModal" aria-labelledby="certModalTitle" aria-modal="true">
+<div class="modal fade" id="certModal" tabindex="-1" aria-labelledby="certModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="certModalTitle">Request SSL Certificate</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <form id="cert-form">
@@ -1086,12 +1116,12 @@ A configuration template for Caddy can be found in the repository.
 
 <!-- Interface Creation Modal -->
 {% if user['is_admin'] %}
-<div class="modal fade" id="ifaceModal" aria-labelledby="ifaceModalTitle" aria-modal="true">
+<div class="modal fade" id="ifaceModal" tabindex="-1" aria-labelledby="ifaceModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="ifaceModalTitle">Create WireGuard Interface</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <form id="iface-form">
@@ -1309,12 +1339,23 @@ A configuration template for Caddy can be found in the repository.
                 statusToggle.style.transition = '';
             }
 
+            const swaggerToggle = document.getElementById('enable-swagger');
+            if (swaggerToggle) {
+                swaggerToggle.style.transition = 'none';
+                swaggerToggle.checked = toBool(settings.enable_swagger);
+                swaggerToggle.offsetHeight;
+                swaggerToggle.style.transition = '';
+            }
+
             updateStatusPageUrlPreview();
-            wgSettingsLoaded = true;  // Allow saves now that settings are loaded
+            updateSwaggerUrlPreview();
         } catch (error) {
             console.error('Failed to load WG settings:', error.message);
             wbToast('Failed to load WireGuard settings. Please refresh the page.', 'danger');
-            // Do NOT set wgSettingsLoaded = true on error to prevent blind overwrites
+        } finally {
+            // Always allow saves after load attempt to prevent permanent blocking
+            // If load failed, user can still manually enter values
+            wgSettingsLoaded = true;
         }
     }
 
@@ -1368,6 +1409,57 @@ A configuration template for Caddy can be found in the repository.
             wbToast('Status URL copied', 'success');
         } catch (error) {
             wbToast('Failed to copy status URL', 'danger');
+        }
+    }
+
+    function updateSwaggerUrlPreview() {
+        const target = document.getElementById('swagger-url');
+        if (!target) return;
+
+        const fqdnInput = document.getElementById('wg-fqdn');
+        const guiPortInput = document.getElementById('gui-port');
+        const rawHost = (fqdnInput?.value || '').trim().replace(/^\[|\]$/g, '');
+        const host = rawHost || window.location.hostname;
+        const protocol = 'http:';
+        const urlHost = host.includes(':') ? `[${host}]` : host;
+
+        const DEFAULT_GUI_PORT = 8000;
+        const parsedInputPort = Number.parseInt(guiPortInput?.value || '', 10);
+        const parsedDbPort = Number.parseInt(String(_wgSettings?.gui_port || ''), 10);
+        const port = Number.isFinite(parsedInputPort) && parsedInputPort >= 1 && parsedInputPort <= 65535
+            ? parsedInputPort
+            : (Number.isFinite(parsedDbPort) && parsedDbPort >= 1 && parsedDbPort <= 65535
+                ? parsedDbPort
+                : DEFAULT_GUI_PORT);
+
+        target.textContent = `${protocol}//${urlHost}:${port}/swagger`;
+    }
+
+    async function copySwaggerUrl() {
+        const target = document.getElementById('swagger-url');
+        const value = (target?.textContent || '').trim();
+        if (!value) {
+            wbToast('Swagger URL is empty', 'warning');
+            return;
+        }
+
+        try {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(value);
+            } else {
+                const el = document.createElement('textarea');
+                el.value = value;
+                el.setAttribute('readonly', '');
+                el.style.position = 'absolute';
+                el.style.left = '-9999px';
+                document.body.appendChild(el);
+                el.select();
+                document.execCommand('copy');
+                document.body.removeChild(el);
+            }
+            wbToast('Swagger URL copied', 'success');
+        } catch (error) {
+            wbToast('Failed to copy Swagger URL', 'danger');
         }
     }
 
@@ -1563,9 +1655,18 @@ A configuration template for Caddy can be found in the repository.
         const statusToggle = document.getElementById('enable-status-page');
         if (statusToggle) payload.enable_status_page = statusToggle.checked ? '1' : '0';
 
+        const swaggerToggle = document.getElementById('enable-swagger');
+        if (swaggerToggle) payload.enable_swagger = swaggerToggle.checked ? '1' : '0';
+
         // Guard against empty payload
         if (Object.keys(payload).length === 0) {
             return;
+        }
+
+        // Show immediate feedback for Swagger toggle (prevents multiple clicks)
+        const isSwaggerToggle = 'enable_swagger' in payload;
+        if (isSwaggerToggle && !silentSuccess) {
+            wbToast('Saving...', 'success');
         }
 
         try {
@@ -1800,12 +1901,14 @@ A configuration template for Caddy can be found in the repository.
     if (wgFqdn) {
         wgFqdn.addEventListener('input', () => {
             updateStatusPageUrlPreview();
+            updateSwaggerUrlPreview();
             saveWgSettingsDebounced();
         });
     }
     if (guiPort) {
         guiPort.addEventListener('change', () => {
             updateStatusPageUrlPreview();
+            updateSwaggerUrlPreview();
             saveWgSettingsDebounced();
         });
     }
@@ -1814,10 +1917,20 @@ A configuration template for Caddy can be found in the repository.
     if (wgKeepalive) wgKeepalive.addEventListener('change', saveWgSettingsDebounced);
     if (enableStatusPage) enableStatusPage.addEventListener('change', saveWgSettings);
 
+    const enableSwagger = document.getElementById('enable-swagger');
+    if (enableSwagger) enableSwagger.addEventListener('change', saveWgSettings);
+
     const copyStatusPageUrlBtn = document.getElementById('btn-copy-status-page-url');
     if (copyStatusPageUrlBtn) {
         copyStatusPageUrlBtn.addEventListener('click', () => {
             void copyStatusPageUrl();
+        });
+    }
+
+    const copySwaggerUrlBtn = document.getElementById('btn-copy-swagger-url');
+    if (copySwaggerUrlBtn) {
+        copySwaggerUrlBtn.addEventListener('click', () => {
+            void copySwaggerUrl();
         });
     }
 
@@ -1929,7 +2042,6 @@ A configuration template for Caddy can be found in the repository.
 
     // DNS Service Control
     async function loadDnsServiceStatus() {
-        const badge = document.getElementById('dns-service-status-badge');
         const startBtn = document.getElementById('btn-dns-start');
         const stopBtn = document.getElementById('btn-dns-stop');
         const restartBtn = document.getElementById('btn-dns-restart');
@@ -1946,38 +2058,13 @@ A configuration template for Caddy can be found in the repository.
 
             const status = await api('GET', '/api/dns/status');
             const isRunning = status.is_running === true;
-            const isUnavailable = status.unavailable === true;
-            const unavailableReason = status.reason || '';
-
-            if (badge) {
-                if (isUnavailable) {
-                    badge.textContent = 'Unavailable';
-                    badge.className = 'badge bg-secondary';
-                    badge.title = unavailableReason;
-                } else if (!hasInterfaces) {
-                    badge.textContent = 'No Interfaces';
-                    badge.className = 'badge bg-secondary';
-                } else {
-                    badge.textContent = isRunning ? 'Running' : 'Stopped';
-                    badge.className = `badge ${isRunning ? 'bg-success' : 'bg-danger'}`;
-                }
-            }
-            // Start only available if not running AND interfaces exist AND user is admin AND Unbound is available
+            // Start only available if not running and interfaces exist.
             if (startBtn) {
-                startBtn.disabled = !isAdmin || isRunning || !hasInterfaces || isUnavailable;
-                if (isUnavailable && unavailableReason) {
-                    startBtn.title = unavailableReason;
-                } else {
-                    startBtn.title = '';
-                }
+                startBtn.disabled = !isAdmin || isRunning || !hasInterfaces;
             }
-            if (stopBtn) stopBtn.disabled = !isAdmin || !isRunning || isUnavailable;
-            if (restartBtn) restartBtn.disabled = !isAdmin || !isRunning || isUnavailable;
+            if (stopBtn) stopBtn.disabled = !isAdmin || !isRunning;
+            if (restartBtn) restartBtn.disabled = !isAdmin || !isRunning;
         } catch (e) {
-            if (badge) {
-                badge.textContent = 'Unknown';
-                badge.className = 'badge bg-secondary';
-            }
             if (startBtn) {
                 startBtn.disabled = true;
                 startBtn.title = 'DNS status unavailable';
@@ -2129,7 +2216,7 @@ A configuration template for Caddy can be found in the repository.
                     <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
                         <div>
                             <strong>${safeName}</strong>
-                            ${statusBadge}
+                            <span class="ms-2">${statusBadge}</span>
                         </div>
                         <div class="d-flex gap-2">${startBtn}${stopBtn}${restartBtn}${editBtn}${deleteBtn}</div>
                     </div>`;
@@ -2505,6 +2592,18 @@ A configuration template for Caddy can be found in the repository.
     let dnsConfigListenersBound = false;
     const DNS_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
 
+    // Cache frequently accessed DOM elements for better performance
+    const domCache = {
+        dnsUpstream: null,
+        dnssecToggle: null,
+        dnssecStatus: null,
+        init() {
+            this.dnsUpstream = document.getElementById('dns-upstream-servers');
+            this.dnssecToggle = document.getElementById('dnssec-enabled');
+            this.dnssecStatus = document.getElementById('dnssec-status');
+        }
+    };
+
     async function loadBlocklistSources() {
         try {
             const [res, status] = await Promise.all([
@@ -2526,7 +2625,8 @@ A configuration template for Caddy can be found in the repository.
                 return aUrl.localeCompare(bUrl, undefined, { sensitivity: 'base' });
             });
             let html = '';
-            for (const source of sortedSources) {
+            for (let i = 0; i < sortedSources.length; i++) {
+                const source = sortedSources[i];
                 const checked = source.enabled ? 'checked' : '';
                 const enabledClass = source.enabled ? ' enabled' : '';
                 const domainsValue = source.domains;
@@ -2534,8 +2634,8 @@ A configuration template for Caddy can be found in the repository.
                     ? Number(domainsValue).toLocaleString()
                     : (String(domainsValue ?? '').trim() || '—');
                 const updated = source.last_updated || '—';
-                // Use simple string hash instead of btoa() to avoid issues with non-ASCII URLs
-                const sourceId = `blocklist-${simpleHash(source.url)}`;
+                // Use hash + index to prevent ID collisions
+                const sourceId = `blocklist-${simpleHash(source.url)}-${i}`;
                 const dataUrl = esc(source.url).replace(/"/g, '&quot;');
                 const sourceTooltip = esc(source.url).replace(/"/g, '&quot;');
                 html += `
@@ -2719,11 +2819,23 @@ A configuration template for Caddy can be found in the repository.
         const port = match[2] ? parseInt(match[2], 10) : 853;
         const hostname = match[3]?.trim();
 
-        // Basic IP validation (IPv4 or IPv6)
-        const ipv4Re = /^(\d{1,3}\.){3}\d{1,3}$/;
-        const ipv6Re = /^[0-9a-fA-F:]+$/;
-        if (!ipv4Re.test(ip) && !ipv6Re.test(ip)) {
-            return { valid: false, error: `Invalid IP: ${ip}` };
+        // IPv4 validation with range checks
+        const ipv4Re = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+        const ipv4Match = ipv4Re.exec(ip);
+        if (ipv4Match) {
+            // Check each octet is 0-255
+            for (let i = 1; i <= 4; i++) {
+                const octet = parseInt(ipv4Match[i], 10);
+                if (octet < 0 || octet > 255) {
+                    return { valid: false, error: `Invalid IPv4 octet: ${octet}` };
+                }
+            }
+        } else {
+            // IPv6 validation (stricter - must have at least one colon and valid hex groups)
+            const ipv6Re = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$/;
+            if (!ipv6Re.test(ip)) {
+                return { valid: false, error: `Invalid IP address: ${ip}` };
+            }
         }
 
         if (port < 1 || port > 65535) {
@@ -2797,7 +2909,7 @@ A configuration template for Caddy can be found in the repository.
     }
 
     function setDnssecStatusText(data) {
-        const dnssecStatus = document.getElementById('dnssec-status');
+        const dnssecStatus = domCache.dnssecStatus || document.getElementById('dnssec-status');
         if (!dnssecStatus) return;
         if (data?.dnssec_available) {
             dnssecStatus.textContent = data?.dnssec_active
@@ -2812,8 +2924,10 @@ A configuration template for Caddy can be found in the repository.
 
     function bindDnsConfigListeners() {
         if (dnsConfigListenersBound) return;
-        const upstreamInput = document.getElementById('dns-upstream-servers');
-        const dnssecToggle = document.getElementById('dnssec-enabled');
+        // Initialize DOM cache when binding listeners
+        if (!domCache.dnsUpstream) domCache.init();
+        const upstreamInput = domCache.dnsUpstream;
+        const dnssecToggle = domCache.dnssecToggle;
         if (!upstreamInput || !dnssecToggle) return;
 
         upstreamInput.addEventListener('change', function () {
@@ -2953,7 +3067,8 @@ A configuration template for Caddy can be found in the repository.
             dnsConfigSaving = false;
             if (dnsConfigSavePending) {
                 dnsConfigSavePending = false;
-                await saveDnsConfig();
+                // Use setTimeout to avoid recursive call stack buildup
+                setTimeout(() => saveDnsConfig(), 0);
             }
         }
     }
@@ -3108,16 +3223,16 @@ A configuration template for Caddy can be found in the repository.
             const stats = await api('GET', '/api/wireguard/stats/peer-metrics');
 
             const pathEl = document.getElementById('peer-metrics-path');
-            if (pathEl) pathEl.textContent = stats.path || '–';
+            if (pathEl) pathEl.textContent = stats.full_path || stats.path || '–';
+
+            const sizeEl = document.getElementById('peer-metrics-size');
+            if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
 
             const totalEl = document.getElementById('peer-metrics-total');
             if (totalEl) totalEl.textContent = stats.total_peers || 0;
 
             const hsEl = document.getElementById('peer-metrics-handshake');
             if (hsEl) hsEl.textContent = stats.peers_with_handshake || 0;
-
-            const transferEl = document.getElementById('peer-metrics-transfer');
-            if (transferEl) transferEl.textContent = formatBytes(stats.total_transfer_bytes || 0);
         } catch (e) {
             console.error('Failed to load peer metrics stats:', e);
         }

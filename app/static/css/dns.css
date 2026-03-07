@@ -1,0 +1,683 @@
+.dns-header {
+    row-gap: 0.5rem;
+}
+
+.dns-toolbar {
+    width: auto;
+    flex: 1;
+    justify-content: flex-end;
+}
+
+/* Global filter styles */
+.dns-global-filters {
+    margin-left: auto;
+    max-width: 100%;
+}
+
+.dns-global-filters #log-filter {
+    min-width: 140px;
+    width: max-content;
+    max-width: 200px;
+}
+
+.dns-global-filters #peer-filter {
+    min-width: 140px;
+    width: max-content;
+    max-width: 200px;
+}
+
+.dns-global-filters #log-search {
+    min-width: 180px;
+    width: max-content;
+    max-width: 280px;
+}
+
+/* Ad-Blocker dropdown button styles */
+.adblocker-dropdown .btn {
+    min-width: 180px;
+    font-weight: 500;
+    transition: background-color 0.2s, border-color 0.2s;
+}
+
+.adblocker-dropdown .btn.btn-adblocker-enabled {
+    background-color: var(--bs-success);
+    border-color: var(--bs-success);
+    color: #fff;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+}
+
+.adblocker-dropdown .btn.btn-adblocker-enabled:hover,
+.adblocker-dropdown .btn.btn-adblocker-enabled:focus {
+    background-color: var(--bs-success);
+    border-color: var(--bs-success);
+    filter: brightness(0.9);
+}
+
+.adblocker-dropdown .btn.btn-adblocker-disabled {
+    background-color: var(--bs-danger);
+    border-color: var(--bs-danger);
+    color: #fff;
+}
+
+.adblocker-dropdown .btn.btn-adblocker-disabled:hover,
+.adblocker-dropdown .btn.btn-adblocker-disabled:focus {
+    background-color: var(--bs-danger);
+    border-color: var(--bs-danger);
+    filter: brightness(0.9);
+}
+
+.adblocker-dropdown .dropdown-item.active {
+    background-color: var(--bs-primary);
+    color: #fff;
+}
+
+.adblocker-countdown {
+    font-size: 0.85em;
+    opacity: 0.9;
+}
+
+/* Dropdown icon styles - moved from inline for CSP compliance */
+.adblocker-dropdown .dropdown-item .material-icons {
+    font-size: 1rem;
+    vertical-align: middle;
+}
+
+/* Context menu positioning - moved from inline for CSP compliance */
+#log-action-menu {
+    position: fixed;
+    z-index: 1200;
+}
+
+.dns-stat-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--bs-secondary-color);
+}
+
+.dns-stat-value {
+    font-size: 1.3rem;
+    font-weight: 600;
+    line-height: 1.1;
+}
+
+.dns-stat-icon {
+    font-size: 1.05rem;
+    color: currentColor;
+    opacity: 0.85;
+}
+
+.dns-card-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 700;
+}
+
+.dns-card-title .material-icons {
+    font-size: 1.15rem;
+    color: currentColor;
+    opacity: 0.85;
+}
+
+.log-table {
+    width: 100%;
+    table-layout: auto;
+    font-size: 0.85rem;
+}
+
+.log-table td {
+    vertical-align: top;
+    padding: 0.4rem 0.65rem;
+}
+
+.log-table tr.log-empty-row {
+    border-bottom: none;
+}
+
+.log-table tr.log-empty-row>td {
+    border: none;
+    padding: 0;
+    height: calc(340px - 2.5rem);
+    /* log-table-wrap max-height minus thead */
+}
+
+.log-table tr.log-empty-row .log-empty-cell .chart-empty-state {
+    min-height: calc(340px - 2.5rem);
+}
+
+.log-table th.log-col-time,
+.log-table td.log-col-time {
+    width: 100px;
+    white-space: nowrap;
+}
+
+.log-time-stack {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.3;
+}
+
+.log-time-date {
+    font-size: 0.8rem;
+}
+
+.log-time-clock {
+    font-size: 0.75rem;
+    opacity: 0.75;
+}
+
+.log-table th.log-col-type,
+.log-table td.log-col-type {
+    width: 72px;
+    white-space: nowrap;
+    text-align: left;
+}
+
+
+
+.log-domain-stack {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.3;
+}
+
+.log-domain {
+    font-family: 'Roboto Flex', sans-serif;
+    font-stretch: 75%;
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
+}
+
+.log-domain-client {
+    font-size: 0.75rem;
+    opacity: 0.75;
+}
+
+
+
+.top-domain-bar {
+    height: 6px;
+    border-radius: 3px;
+    transition: width 0.4s ease;
+}
+
+.top-domain-bar-track {
+    border-radius: 3px;
+    height: 6px;
+    overflow: hidden;
+}
+
+.top-domain-name {
+    font-size: 0.85rem;
+    max-width: 60%;
+}
+
+.top-domain-stats {
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.top-domain-percent {
+    font-size: 0.65rem;
+}
+
+.log-row-actionable {
+    cursor: pointer;
+}
+
+
+.material-icons-18 {
+    font-size: 18px !important;
+}
+
+.log-card-body {
+    min-height: 0;
+    position: relative;
+}
+
+#log-search {
+    max-width: 300px;
+}
+
+.top-domain-card-body {
+    height: clamp(220px, 26vh, 290px);
+    display: flex;
+    align-items: stretch;
+    overflow: hidden;
+}
+
+.top-domain-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+.top-domain-chart-wrap {
+    --donut-size: clamp(120px, 14vw, 160px);
+    width: var(--donut-size);
+    height: var(--donut-size);
+    flex-shrink: 0;
+}
+
+#top-queried-chart-wrap {
+    width: 100%;
+    height: 100%;
+    max-height: 280px;
+}
+
+#top-blocked-chart-wrap {
+    width: 100%;
+    height: 100%;
+    max-height: 280px;
+}
+
+/* Custom chart legend with badges */
+.custom-chart-legend {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    max-height: 100px;
+    overflow-y: auto;
+    font-size: 0.72rem;
+    padding: 0 4px;
+}
+
+.custom-chart-legend .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.custom-chart-legend .legend-dot {
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.custom-chart-legend .legend-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.custom-chart-legend .badge {
+    flex-shrink: 0;
+    font-size: 0.6rem;
+    padding: 1px 4px;
+}
+
+#log-table-wrap {
+    max-height: 340px;
+    overflow-y: auto;
+}
+
+#trend-chart-wrap {
+    position: relative;
+    height: 300px;
+}
+
+.trend-chart-height {
+    height: 300px;
+}
+
+@media (min-width: 992px) {
+    .dns-global-filters {
+        flex-wrap: nowrap !important;
+    }
+
+    .log-filters-container {
+        flex-wrap: nowrap !important;
+    }
+
+    .log-table th.log-col-time,
+    .log-table td.log-col-time {
+        width: 6rem;
+    }
+
+    .log-table th.log-col-type,
+    .log-table td.log-col-type {
+        width: 5rem;
+        padding-right: 1.35rem;
+    }
+
+    .log-table th:last-child,
+    .log-table td:last-child {
+        padding-right: 1.35rem;
+    }
+
+    .top-domain-card-body {
+        height: clamp(250px, 31vh, 340px);
+    }
+
+    .top-domain-chart-wrap {
+        --donut-size: clamp(140px, 12vw, 180px);
+    }
+
+    #top-queried-chart-wrap {
+        max-height: 300px;
+    }
+
+    .custom-chart-legend {
+        max-height: 120px;
+    }
+
+    #log-table-wrap {
+        max-height: 660px;
+    }
+}
+
+.dns-ctrl-btn {
+    background: transparent;
+    border: 1px solid #6c757d;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.dns-ctrl-btn:hover:not(:disabled) {
+    background: rgba(0, 0, 0, 0.04);
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+}
+
+.dns-ctrl-btn:disabled {
+    opacity: 0.5;
+}
+
+@media (max-width: 991.98px) {
+    .dns-header {
+        flex-direction: row;
+        align-items: center !important;
+        justify-content: space-between;
+        margin-bottom: 0.75rem !important;
+    }
+
+    .dns-header h1 {
+        margin-bottom: 0;
+        line-height: 1.2;
+    }
+
+    .dns-toolbar {
+        display: flex !important;
+        gap: 0.35rem !important;
+        margin: 0;
+        margin-left: auto;
+        justify-content: flex-end;
+    }
+
+    .dns-toolbar>button,
+    .dns-toolbar>#dns-controls {
+        width: auto;
+    }
+
+    .dns-toolbar>button {
+        min-width: 2.25rem;
+        padding: 0.25rem 0.4rem;
+    }
+
+    .dns-toolbar>#dns-controls {
+        display: flex !important;
+        gap: 0.35rem !important;
+    }
+
+    .dns-toolbar .dns-ctrl-btn {
+        padding: 0.25rem 0.4rem;
+        min-width: 2.25rem;
+    }
+
+    .dns-toolbar .dns-ctrl-btn .btn-label {
+        display: none;
+    }
+
+    .dns-toolbar .dns-ctrl-btn .material-icons {
+        margin: 0 !important;
+    }
+
+    .dns-header+.mb-4 {
+        margin-bottom: 0.75rem !important;
+    }
+
+    .dns-header+.mb-4 .row {
+        --bs-gutter-y: 0.75rem;
+    }
+}
+
+@media (max-width: 767.98px) {
+    .top-domain-content {
+        gap: 0.5rem;
+    }
+
+    .top-domain-chart-wrap {
+        --donut-size: clamp(100px, 28vw, 140px);
+    }
+
+    #top-queried-chart-wrap {
+        max-height: 240px;
+    }
+
+    .custom-chart-legend {
+        max-height: 80px;
+        font-size: 0.68rem;
+    }
+
+    #log-table-wrap {
+        max-height: 460px;
+        overflow-x: hidden;
+    }
+
+    .log-table {
+        min-width: 100%;
+        width: 100%;
+        font-size: 0.78rem;
+        table-layout: auto;
+    }
+
+    .log-table thead {
+        display: table-header-group;
+    }
+
+    .log-table tbody {
+        display: table-row-group;
+    }
+
+    .log-table tr {
+        display: table-row;
+        border-bottom: 1px solid var(--bs-border-color);
+    }
+
+    .log-table tr.log-empty-row {
+        display: table-row;
+    }
+
+    .log-table tr.log-empty-row td {
+        width: auto;
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+    }
+
+
+    .log-table th,
+    .log-table td {
+        display: table-cell;
+        border: 0;
+        padding: 0.3rem 0.45rem;
+        vertical-align: top;
+    }
+
+    .log-table th.log-col-time,
+    .log-table td.log-col-time {
+        width: 5.5rem;
+        min-width: 5.5rem;
+        white-space: nowrap;
+    }
+
+    .log-time-stack {
+        line-height: 1.2;
+    }
+
+    .log-time-date {
+        font-size: 0.75rem;
+    }
+
+    .log-time-clock {
+        font-size: 0.7rem;
+    }
+
+    .log-table th.log-col-type,
+    .log-table td.log-col-type {
+        width: 3rem;
+        min-width: 3rem;
+        white-space: nowrap;
+        text-align: left;
+    }
+
+    .log-table th.log-col-domain,
+    .log-table td[data-label="Domain"] {
+        width: auto;
+    }
+
+
+
+    .log-table td::before {
+        content: none;
+    }
+
+    .log-table td>* {
+        margin-left: 0;
+        text-align: left;
+        max-width: 100%;
+    }
+
+    .log-table td .log-domain {
+        display: block;
+        line-height: 1.2;
+        font-size: 0.75rem;
+        overflow-wrap: anywhere;
+    }
+
+    .log-domain-stack {
+        line-height: 1.2;
+    }
+
+    .log-domain-client {
+        display: block;
+        font-size: 0.72rem;
+        line-height: 1.2;
+    }
+
+
+
+    .log-table td code {
+        font-size: 0.72rem;
+        white-space: nowrap;
+    }
+
+}
+
+/* Pull-to-refresh indicator for mobile */
+.pull-to-refresh-indicator {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bs-tertiary-bg);
+    transition: height 0.2s ease;
+    z-index: 10;
+}
+
+.pull-to-refresh-indicator.pulling {
+    height: 50px;
+}
+
+.pull-to-refresh-indicator.refreshing {
+    height: 50px;
+}
+
+.pull-to-refresh-indicator .spinner-border {
+    width: 1.25rem;
+    height: 1.25rem;
+}
+
+.pull-to-refresh-indicator .pull-arrow {
+    transition: transform 0.2s ease;
+}
+
+.pull-to-refresh-indicator.ready .pull-arrow {
+    transform: rotate(180deg);
+}
+
+@media (max-width: 575.98px) {
+
+    /* Stack filters vertically on mobile for better usability */
+    .dns-header {
+        flex-direction: column;
+        align-items: stretch !important;
+    }
+
+    .dns-toolbar {
+        width: 100%;
+        flex-direction: column;
+        gap: 0.5rem !important;
+    }
+
+    .dns-global-filters {
+        width: 100%;
+        margin-left: 0;
+        flex-direction: column;
+        gap: 0.5rem !important;
+    }
+
+    /* Make all filter elements full width on mobile */
+    .dns-global-filters #log-filter,
+    .dns-global-filters #peer-filter,
+    .dns-global-filters #log-search {
+        width: 100% !important;
+        min-width: 0;
+        max-width: none;
+    }
+
+    /* Full width Ad-Blocker button on mobile */
+    .adblocker-dropdown {
+        width: 100%;
+    }
+
+    .adblocker-dropdown .btn {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .log-table {
+        font-size: 0.82rem;
+    }
+
+    .log-table td .log-domain {
+        font-size: 0.78rem;
+    }
+
+    .log-domain-client {
+        font-size: 0.74rem;
+    }
+}
+
+/* Fade animations for top domains (peer filter change) */
+.top-domain-card-body {
+    transition: opacity 0.2s ease;
+}
+
+.top-domain-card-fading {
+    opacity: 0;
+}

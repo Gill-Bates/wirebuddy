@@ -1,3 +1,17 @@
+## [1.3.0] - 2026-03-07
+
+- ``New`` Introducing Passkey for Users to Signin
+- ``New`` A global quick filter for peers has been introduced under DNS
+- ``New`` The Swagger endpoint can now be disabled in the settings
+- ``Fix`` Security hardening of settings endpoints
+- ``Fix`` The adaptive calculation of measurement points optimizes
+- ``Fix`` Fixed display issues on tablets
+- ``Fix`` The retention policy for DNS logs did not apply correctly
+- ``Fix`` Fixed a bug that caused Unbound to crash on startup
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
 
 ## [1.2.2] - 2026-03-05
 
@@ -9,10 +23,6 @@
 - ``Fix`` The logs now show the real IP addresses and not those from the reverse proxy
 - ``Fix`` Various stability improvements in the backend and GUI
 - ``Fix`` And as always: Several design improvements to make the front end more mobile-friendly
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.2.1] - 2026-03-02
 

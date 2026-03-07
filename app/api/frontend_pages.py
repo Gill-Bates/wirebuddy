@@ -25,11 +25,12 @@ from fastapi import Depends, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from ..db.sqlite_peers import count_peers, get_peers_paginated
+from ..db.sqlite_runtime import connect, close_connection
 from ..db.sqlite_settings import get_dns_blocklist_enabled
 from ..db.sqlite_users import get_all_users
 from ..utils.config import get_config
 from ..utils.deps import get_conn
-from ..utils.rate_limit import RATE_LIMIT_DEFAULT, limiter
+from ..utils.rate_limit import RATE_LIMIT_DEFAULT, RATE_LIMIT_HEAVY, limiter
 from ..utils.version import BUILD_INFO, VERSION
 from .acme import get_certs_dir, get_challenge_response
 from .auth import get_current_user_optional
@@ -43,11 +44,15 @@ from .frontend_shared import (
 	router,
 	templates,
 )
+from .wireguard_isolation import extract_peer_ips
 
 _log = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _APP_ROOT = Path("/app")
 _ACME_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+# Semaphore to limit concurrent geo-IP lookups (prevents thread pool exhaustion)
+_GEO_LOOKUP_SEMAPHORE = asyncio.Semaphore(20)
 
 
 @lru_cache(maxsize=1)
@@ -191,9 +196,9 @@ def _get_about_data() -> dict:
 	}
 
 
-@router.get("/api/system/status")
+@router.get("/api/system/status", response_model=dict)
 @limiter.limit(RATE_LIMIT_DEFAULT)
-def get_system_status(request: Request):
+def get_system_status(request: Request) -> dict:
 	"""Get system status including key mismatch warning."""
 	key_mismatch = getattr(request.app.state, "key_mismatch", False)
 	return {
@@ -201,11 +206,11 @@ def get_system_status(request: Request):
 	}
 
 
-@router.get("/")
+@router.get("/", response_class=RedirectResponse)
 def index(
 	request: Request,
 	user: Optional[sqlite3.Row] = Depends(get_current_user_optional),
-):
+) -> RedirectResponse:
 	"""Root redirect to dashboard or login."""
 	if user:
 		return RedirectResponse(url="/ui/dashboard", status_code=303)
@@ -229,12 +234,20 @@ def login_page(
 
 
 @router.get("/ui/otp-setup", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_DEFAULT)
 def otp_setup_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
 ):
-	"""OTP onboarding page for first-time setup after admin enabled OTP."""
-	if not user["otp_secret"] or bool(user["otp_enabled"]):
+	"""OTP onboarding page for first-time setup after admin enabled OTP.
+	
+	Redirects to dashboard if:
+	- User has no OTP secret (setup not initiated by admin), OR
+	- User has already confirmed OTP (otp_enabled=True)
+	"""
+	has_secret = bool(user["otp_secret"])
+	already_enabled = bool(user["otp_enabled"])
+	if not has_secret or already_enabled:
 		return RedirectResponse(url="/ui/dashboard", status_code=303)
 
 	return templates.TemplateResponse("otp_setup.html", {
@@ -244,7 +257,32 @@ def otp_setup_page(
 	})
 
 
+@router.get("/ui/passkey-setup", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_DEFAULT)
+def passkey_setup_page(
+	request: Request,
+	user: sqlite3.Row = Depends(require_user_or_redirect),
+):
+	"""Passkey onboarding page for first-time setup after admin enabled passkeys.
+	
+	Redirects to dashboard if:
+	- User has no passkey_pending flag (setup not initiated by admin), OR
+	- User has already registered a passkey (passkey_enabled=True)
+	"""
+	passkey_pending = bool(user["passkey_pending"])
+	already_enabled = bool(user["passkey_enabled"])
+	if not passkey_pending or already_enabled:
+		return RedirectResponse(url="/ui/dashboard", status_code=303)
+
+	return templates.TemplateResponse("passkey_setup.html", {
+		"request": request,
+		"user": user,
+		"csrf_token": _get_csrf_token(request),
+	})
+
+
 @router.get("/ui/dashboard", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_DEFAULT)
 def dashboard(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -258,12 +296,16 @@ def dashboard(
 
 
 @router.get("/ui/peers", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_HEAVY)  # Expensive: paginated DB + geo-IP lookups
 async def peers_page(
 	request: Request,
-	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_user_or_redirect),
 ):
-	"""Peers management page."""
+	"""Peers management page with paginated data and geo-IP lookups.
+	
+	Note: Database connection is created inside the thread pool to avoid
+	SQLite threading issues (connections are not thread-safe).
+	"""
 	try:
 		page = int(request.query_params.get("page", "1"))
 	except ValueError:
@@ -273,14 +315,22 @@ async def peers_page(
 	except ValueError:
 		page_size = 50
 	page = max(1, page)
+	# Clamp page_size to valid range (10-200)
 	page_size = min(max(10, page_size), 200)
 
+	db_path = request.app.state.db_path
+
 	def _load_page_data() -> tuple[int, int, int, list[sqlite3.Row]]:
-		total = count_peers(conn)
-		pages = max(1, math.ceil(total / page_size)) if total else 1
-		current_page = min(page, pages)
-		rows = get_peers_paginated(conn, page=current_page, page_size=page_size)
-		return total, pages, current_page, rows
+		"""Load peer data in thread pool with dedicated connection."""
+		thread_conn = connect(db_path)
+		try:
+			total = count_peers(thread_conn)
+			pages = max(1, math.ceil(total / page_size)) if total else 1
+			current_page = min(page, pages)
+			rows = get_peers_paginated(thread_conn, page=current_page, page_size=page_size)
+			return total, pages, current_page, rows
+		finally:
+			close_connection(thread_conn)
 
 	total_peers, total_pages, page, peer_rows = await asyncio.to_thread(_load_page_data)
 	peers: list[dict] = []
@@ -292,8 +342,13 @@ async def peers_page(
 	})
 	geoip_cache: dict[str, dict | None] = {}
 	if unique_client_ips:
+		# Use semaphore to limit concurrent geo-IP lookups (prevents thread pool exhaustion)
+		async def _bounded_lookup(ip: str) -> dict | None:
+			async with _GEO_LOOKUP_SEMAPHORE:
+				return await asyncio.to_thread(_lookup_ip_cached, ip)
+		
 		results = await asyncio.gather(*[
-			asyncio.to_thread(_lookup_ip_cached, client_ip)
+			_bounded_lookup(client_ip)
 			for client_ip in unique_client_ips
 		])
 		geoip_cache = dict(zip(unique_client_ips, results, strict=True))
@@ -309,6 +364,11 @@ async def peers_page(
 		peer["last_client_country_code"] = None
 		peer["last_client_city"] = None
 		peer["last_client_as_org"] = None
+		
+		# Extract IPv4 and IPv6 from peer_address for separate display
+		ipv4, ipv6 = extract_peer_ips(peer.get("peer_address"))
+		peer["peer_ipv4"] = ipv4
+		peer["peer_ipv6"] = ipv6
 
 		if peer["last_client_ip_display"]:
 			client_ip = peer["last_client_ip_display"]
@@ -339,12 +399,17 @@ async def peers_page(
 
 
 @router.get("/ui/users", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_DEFAULT)
 def users_page(
 	request: Request,
 	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_admin_or_redirect),
 ):
-	"""Users management page (admin only)."""
+	"""Users management page (admin only).
+	
+	Note: This is a sync handler, so FastAPI runs it in a threadpool worker.
+	The conn dependency is created and used in the same thread — safe.
+	"""
 	users = get_all_users(conn)
 	return templates.TemplateResponse("users.html", {
 		"request": request,
@@ -355,12 +420,17 @@ def users_page(
 
 
 @router.get("/ui/dns", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_DEFAULT)
 def dns_page(
 	request: Request,
 	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_user_or_redirect),
 ):
-	"""DNS ad-blocking page."""
+	"""DNS ad-blocking page.
+	
+	Note: This is a sync handler, so FastAPI runs it in a threadpool worker.
+	The conn dependency is created and used in the same thread — safe.
+	"""
 	enable_blocklist = get_dns_blocklist_enabled(conn)
 	return templates.TemplateResponse("dns.html", {
 		"request": request,
@@ -371,6 +441,7 @@ def dns_page(
 
 
 @router.get("/ui/traffic", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_DEFAULT)
 def traffic_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -384,11 +455,17 @@ def traffic_page(
 
 
 @router.get("/ui/about", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_DEFAULT)
 def about_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
 ):
-	"""About page with version, dependencies, changelog, and license (cached)."""
+	"""About page with version, dependencies, changelog, and license.
+	
+	Note: Data is cached via @lru_cache for performance. Cache persists until
+	server restart — runtime changes to requirements.txt, LICENSE, or CHANGELOG.md
+	won't be reflected without restart.
+	"""
 	about_data = _get_about_data()
 	return templates.TemplateResponse("about.html", {
 		"request": request,
@@ -399,6 +476,7 @@ def about_page(
 
 
 @router.get("/ui/settings", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_DEFAULT)
 def settings_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -416,6 +494,7 @@ def settings_page(
 async def acme_challenge(request: Request, token: str):
 	"""Serve ACME HTTP-01 challenge response for Let's Encrypt."""
 	if not _ACME_TOKEN_RE.match(token):
+		_log.warning("ACME challenge: invalid token format (length=%d)", len(token))
 		return PlainTextResponse("Invalid token", status_code=400)
 
 	config = get_config()
@@ -423,6 +502,7 @@ async def acme_challenge(request: Request, token: str):
 
 	key_auth = get_challenge_response(token, certs_dir)
 	if not key_auth:
+		_log.info("ACME challenge: token not found: %s", token[:20])
 		return PlainTextResponse("Challenge not found", status_code=404)
 
 	return PlainTextResponse(key_auth)

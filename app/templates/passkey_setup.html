@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light" class="login-page">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Cache-Control" content="no-store">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <title>Set Up Passkey – WireBuddy</title>
+    <link rel="icon" type="image/svg+xml" href="/static/img/wirebuddy_1c.svg">
+    <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/css/style.css" rel="stylesheet">
+    <link href="/static/css/wb-ui-system.css" rel="stylesheet">
+    <link href="/static/css/passkey-setup.css" rel="stylesheet">
+    <link href="/static/vendor/material-icons.css" rel="stylesheet">
+    <script src="/static/js/theme.js"></script>
+</head>
+
+<body>
+    <main>
+        <div class="card login-card passkey-setup-card">
+            <div class="card-body p-4 p-sm-5">
+                <div class="text-center mb-4">
+                    <span class="material-icons passkey-hero-icon">fingerprint</span>
+                    <h4 class="mt-3 mb-1">Set Up Passkey</h4>
+                    <p class="text-muted small mb-0">Your administrator enabled passkey authentication for your account.</p>
+                </div>
+
+                <div class="alert alert-danger" id="error-alert" role="alert" aria-live="assertive" style="display: none;"></div>
+
+                <!-- Setup Instructions -->
+                <div id="step-setup">
+                    <div class="mb-4">
+                        <p class="small text-muted mb-3">Passkeys are more secure and convenient than passwords:</p>
+                        <ul class="passkey-feature-list small">
+                            <li>
+                                <span class="material-icons" aria-hidden="true">check_circle</span>
+                                <span>Phishing-resistant authentication</span>
+                            </li>
+                            <li>
+                                <span class="material-icons" aria-hidden="true">check_circle</span>
+                                <span>Works with fingerprint, Face ID, or security key</span>
+                            </li>
+                            <li>
+                                <span class="material-icons" aria-hidden="true">check_circle</span>
+                                <span>No password to remember or type</span>
+                            </li>
+                        </ul>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="device-name" class="form-label small">Device name (optional)</label>
+                        <input type="text" class="form-control" id="device-name" 
+                               placeholder="e.g., MacBook Pro, iPhone 15" 
+                               maxlength="100"
+                               pattern="[^\x00-\x1F\x7F-\x9F]*"
+                               aria-describedby="device-name-help">
+                        <div id="device-name-help" class="form-text">
+                            A friendly name to identify this passkey later.
+                        </div>
+                    </div>
+
+                    <button type="button" class="btn btn-primary btn-lg w-100" id="register-btn">
+                        <span class="material-icons align-middle me-1">fingerprint</span>
+                        <span id="register-btn-text">Register Passkey</span>
+                    </button>
+
+                    <div class="text-center mt-3">
+                        <small class="text-muted">
+                            Your browser will prompt you to verify your identity.
+                        </small>
+                    </div>
+                </div>
+
+                <!-- Success State -->
+                <div id="step-success" style="display: none;" aria-live="polite">
+                    <div class="text-center mb-4">
+                        <span class="material-icons text-success" style="font-size: 64px;">check_circle</span>
+                        <h5 class="mt-3">Passkey Registered!</h5>
+                        <p class="text-muted small">Your passkey has been set up successfully. You can now sign in using your passkey.</p>
+                    </div>
+
+                    <button type="button" class="btn btn-success btn-lg w-100" id="continue-btn">
+                        <span class="material-icons align-middle me-1">arrow_forward</span>
+                        Continue to Dashboard
+                    </button>
+                </div>
+
+                <!-- Browser Not Supported -->
+                <div id="step-unsupported" style="display: none;" aria-live="polite">
+                    <div class="alert alert-warning">
+                        <span class="material-icons align-middle me-2">warning</span>
+                        <strong>Passkeys not supported</strong><br>
+                        <small>Your browser doesn't support passkeys. Please use a modern browser like Chrome, Safari, Firefox, or Edge.</small>
+                    </div>
+                    <button type="button" class="btn btn-outline-secondary btn-lg w-100" id="skip-btn">
+                        Continue without Passkey
+                    </button>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script src="/static/js/passkey-setup.js" defer></script>
+</body>
+</html>

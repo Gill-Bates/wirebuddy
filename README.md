@@ -112,12 +112,13 @@ python run.py
 | Category | Highlights |
 |---|---|
 | 🔒 **WireGuard VPN** | Multi-interface management, automatic keypair generation, routing presets (Full Tunnel / Isolated / Custom), QR codes for mobile setup |
-| 🌍 **DNS Ad-Blocking** | Integrated Unbound resolver with blocklists (StevenBlack, HaGeZi Pro), DNS-over-TLS, real-time query log, DNSSEC, Query-Log row actions (Block/Unblock global or per-client), client-scoped custom rules (`$client=`) |
+| 🌍 **DNS Ad-Blocking** | Integrated Unbound resolver with blocklists (StevenBlack, HaGeZi Pro), DNS-over-TLS, real-time query log, DNSSEC, Query-Log row actions (Block/Unblock global or per-client), client-scoped custom rules (`$client=`), global peer filter for DNS logs, temporary disable (1h / today) |
 | 📊 **Monitoring** | Built-in time-series database, per-peer traffic charts, connection status dashboard, traffic analysis by destination country & ASN, auto-refresh |
 | 🗺️ **GeoIP** | MaxMind GeoLite2 integration, interactive map with heatmap, country flags & ASN badges |
 | 🔐 **Let's Encrypt** | Built-in ACME client with HTTP-01 challenge, certificate management UI |
-| 👥 **User Management** | Multi-user roles (admin/user), MFA (TOTP) for additional account protection, login tracking, token lifecycle |
+| 👥 **User Management** | Multi-user roles (admin/user), Passkeys (WebAuthn) & MFA (TOTP) for enhanced account security, read-only access for non-admin users, login tracking, token lifecycle |
 | 🎨 **Web UI** | Responsive Bootstrap 5, dark/light/auto theme, Material Icons |
+| 🔧 **Developer Tools** | Optional Swagger/OpenAPI endpoint (can be disabled in settings) |
 
 ---
 
@@ -146,7 +147,8 @@ Environment variables (via `settings.env` or Docker env):
 
 | Layer | Implementation |
 |---|---|
-| **Passwords** | PBKDF2-SHA256, 600 000 iterations, random salt |
+| **Passwords** | PBKDF2-SHA256, 600 000 iterations, random salt, enforced complexity requirements |
+| **Passkeys** | WebAuthn (FIDO2) support for passwordless authentication |
 | **Secrets at rest** | Fernet encryption (PBKDF2 + per-row salt + app pepper) |
 | **Auth tokens** | SHA-256 hashed before storage, expiry enforced |
 | **CSRF** | Double-submit cookie + Origin header validation |

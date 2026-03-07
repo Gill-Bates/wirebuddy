@@ -8,24 +8,37 @@
 
 Designed for single-node deployments with proper file locking.
 Based on the proven justUp TSDB implementation.
+
+Platform: Unix-like systems only (requires fcntl module for file locking).
 """
 
 from __future__ import annotations
 
 import base64
-import fcntl
 import gzip
 import hashlib
 import json
 import logging
 import os
 import shutil
+import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+from weakref import WeakValueDictionary
+
+# Platform check for fcntl (Unix-only)
+try:
+    import fcntl
+except ImportError:
+    raise ImportError(
+        "fcntl module is required but not available. "
+        "This TSDB implementation only supports Unix-like systems."
+    ) from None
 
 from ..utils.time import ensure_utc, parse_utc, utcnow
 
@@ -35,11 +48,16 @@ _log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-MIN_RETENTION_DAYS = 0
-DEFAULT_RETENTION_DAYS = 365
+MIN_RETENTION_DAYS = 1  # Prevent immediate pruning of just-written data
+DEFAULT_RETENTION_DAYS = 7
 PRUNE_INTERVAL_SECONDS = 300  # Only prune a series every 5 minutes max
 MAX_SERIES_FILE_BYTES = 8 * 1024 * 1024  # 8 MiB per active JSONL file
 MAX_ROTATED_ARCHIVES = 6  # Keep latest N compressed rotations per series
+FSYNC_BATCH_SIZE = 10  # Fsync every N appends (durability vs performance tradeoff)
+FSYNC_BATCH_INTERVAL = 5.0  # Or fsync after N seconds, whichever comes first
+
+# Synthetic peer keys used for aggregated traffic statistics
+SYNTHETIC_KEYS = frozenset(["__geo_traffic__", "__asn_traffic__"])
 
 # ---------------------------------------------------------------------------
 # Data Structures
@@ -64,12 +82,16 @@ def _prune_marker_path(series_path: Path) -> Path:
 
 def _series_path(tsdb_dir: Path, peer_key: str, metric: str) -> Path:
 	"""Build the path to a series JSONL file."""
+	if not metric or not metric.strip():
+		raise ValueError("Metric name cannot be empty")
 	# Use full SHA-256 hash to ensure zero collision risk
 	# WireGuard keys are base64, but we want predictable, collision-resistant names
 	key_hash = base64.urlsafe_b64encode(
 		hashlib.sha256(peer_key.encode()).digest()
 	).decode().rstrip("=")  # Remove padding for cleaner filenames
 	safe_metric = "".join(c for c in metric if c.isalnum() or c in ("_", "-"))
+	if not safe_metric:
+		raise ValueError(f"Metric name '{metric}' contains no valid characters")
 	return tsdb_dir / f"peer_{key_hash}" / f"{safe_metric}.jsonl"
 
 
@@ -78,11 +100,54 @@ def _lock_path(series_path: Path) -> Path:
 	return series_path.with_suffix(".lock")
 
 
+class _ReadWriteLock:
+	"""Simple read-write lock for thread-level concurrency control."""
+	
+	def __init__(self):
+		self._readers = 0
+		self._writers = 0
+		self._lock = threading.Lock()
+		self._read_ready = threading.Condition(self._lock)
+		self._write_ready = threading.Condition(self._lock)
+	
+	def acquire_read(self):
+		"""Acquire a shared read lock."""
+		self._read_ready.acquire()
+		while self._writers > 0:
+			self._read_ready.wait()
+		self._readers += 1
+		self._read_ready.release()
+	
+	def release_read(self):
+		"""Release a shared read lock."""
+		self._lock.acquire()
+		self._readers -= 1
+		if self._readers == 0:
+			self._write_ready.notify()
+		self._lock.release()
+	
+	def acquire_write(self):
+		"""Acquire an exclusive write lock."""
+		self._write_ready.acquire()
+		while self._readers > 0 or self._writers > 0:
+			self._write_ready.wait()
+		self._writers = 1
+		self._write_ready.release()
+	
+	def release_write(self):
+		"""Release an exclusive write lock."""
+		self._lock.acquire()
+		self._writers = 0
+		self._write_ready.notify()
+		self._read_ready.notify_all()
+		self._lock.release()
+
+
 class _FileLock:
 	"""Context manager for file locking (both inter-process and inter-thread)."""
 
-	# Class-level dict for thread locks (per series path)
-	_thread_locks: dict[str, threading.Lock] = {}
+	# Class-level dict for thread locks (per series path) - uses weak references to prevent memory leak
+	_thread_locks: WeakValueDictionary[str, _ReadWriteLock] = WeakValueDictionary()
 	_meta_lock: threading.Lock = threading.Lock()
 
 	def __init__(self, series_path: Path, *, read_only: bool = False):
@@ -96,10 +161,20 @@ class _FileLock:
 		# First acquire thread-level lock to ensure thread-safety within same process
 		key = str(self._series_path)
 		with self._meta_lock:
-			if key not in self._thread_locks:
-				self._thread_locks[key] = threading.Lock()
-			self._thread_lock = self._thread_locks[key]
-		self._thread_lock.acquire()
+			# Use .get() to safely handle WeakValueDictionary race conditions
+			# (value can be GC'd between checking existence and retrieving)
+			thread_lock = self._thread_locks.get(key)
+			if thread_lock is None:
+				thread_lock = _ReadWriteLock()
+				self._thread_locks[key] = thread_lock
+			# Store strong reference to prevent GC while we hold the lock
+			self._thread_lock = thread_lock
+		
+		# Acquire appropriate thread lock (read or write)
+		if self._read_only:
+			self._thread_lock.acquire_read()
+		else:
+			self._thread_lock.acquire_write()
 
 		# Then acquire file-level lock for inter-process safety
 		self._lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -123,7 +198,10 @@ class _FileLock:
 			os.close(self._fd)
 			self._fd = None
 		if self._thread_lock is not None:
-			self._thread_lock.release()
+			if self._read_only:
+				self._thread_lock.release_read()
+			else:
+				self._thread_lock.release_write()
 			self._thread_lock = None
 
 
@@ -215,7 +293,8 @@ def _rotate_series_locked(series_path: Path) -> None:
 	if size <= MAX_SERIES_FILE_BYTES:
 		return
 
-	stamp = utcnow().strftime("%Y%m%dT%H%M%SZ")
+	# Use microsecond precision to prevent timestamp collisions on rapid rotations
+	stamp = utcnow().strftime("%Y%m%dT%H%M%S%fZ")
 	rotated = series_path.parent / f"{series_path.name}.{stamp}"
 	try:
 		os.replace(series_path, rotated)
@@ -241,15 +320,19 @@ def _prune_archives_locked(series_path: Path, cutoff: datetime) -> None:
 	"""
 	for arc in _rotated_archives(series_path):
 		try:
-			# Parse timestamp from filename: metric.jsonl.20260219T120000Z.gz
+			# Parse timestamp from filename: metric.jsonl.20260219T120000123456Z.gz (with microseconds)
 			# Extract the timestamp part (before .gz)
-			parts = arc.stem.split(".")  # Remove .gz, get ['metric', 'jsonl', '20260219T120000Z']
+			parts = arc.stem.split(".")  # Remove .gz, get ['metric', 'jsonl', '20260219T120000123456Z']
 			if len(parts) < 3:
 				_log.warning("Archive filename does not contain timestamp: %s", arc.name)
 				continue
-			timestamp_str = parts[-1]  # Get '20260219T120000Z'
-			# Parse ISO 8601 basic format timestamp
-			arc_time = datetime.strptime(timestamp_str, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+			timestamp_str = parts[-1]  # Get '20260219T120000123456Z'
+			# Parse ISO 8601 basic format timestamp (try with microseconds first, fall back to seconds)
+			try:
+				arc_time = datetime.strptime(timestamp_str, "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)
+			except ValueError:
+				# Fall back to old format without microseconds for backward compatibility
+				arc_time = datetime.strptime(timestamp_str, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
 		except (ValueError, IndexError) as e:
 			_log.debug("Failed to parse archive timestamp from %s: %s", arc.name, e)
 			continue
@@ -265,10 +348,16 @@ def _prune_archives_locked(series_path: Path, cutoff: datetime) -> None:
 
 
 def _iter_json_lines(path: Path):
-	"""Yield JSONL lines from plain or gzip files."""
+	"""Yield JSONL lines from plain or gzip files.
+	
+	Handles corrupted gzip archives gracefully by logging and skipping.
+	"""
 	if path.suffix == ".gz":
-		with gzip.open(path, "rt", encoding="utf-8") as f:
-			yield from f
+		try:
+			with gzip.open(path, "rt", encoding="utf-8") as f:
+				yield from f
+		except (gzip.BadGzipFile, OSError, EOFError) as e:
+			_log.warning("Corrupted or truncated gzip archive %s: %s (skipping)", path.name, e)
 		return
 	with path.open("r", encoding="utf-8") as f:
 		yield from f
@@ -306,9 +395,16 @@ def init_tsdb(tsdb_dir: Path) -> None:
 
 
 def purge_tsdb(tsdb_dir: Path) -> None:
-	"""Completely remove all TSDB data."""
+	"""Completely remove all TSDB data.
+	
+	Note: This does not acquire locks. For safe deletion, ensure no concurrent
+	write operations are running.
+	"""
 	if not tsdb_dir.exists():
 		return
+	
+	_log.warning("TSDB purge: deleting all data in %s (no locks acquired)", tsdb_dir)
+	
 	try:
 		shutil.rmtree(tsdb_dir)
 	except OSError:
@@ -327,7 +423,11 @@ def purge_tsdb(tsdb_dir: Path) -> None:
 
 
 def delete_peer_data(tsdb_dir: Path, peer_key: str) -> None:
-	"""Delete all time-series data for a specific peer."""
+	"""Delete all time-series data for a specific peer.
+	
+	Note: This does not acquire locks. For safe deletion, ensure no concurrent
+	operations are active for this peer.
+	"""
 	# Use same hash as _series_path to find the correct directory
 	key_hash = base64.urlsafe_b64encode(
 		hashlib.sha256(peer_key.encode()).digest()
@@ -335,6 +435,9 @@ def delete_peer_data(tsdb_dir: Path, peer_key: str) -> None:
 	tdir = tsdb_dir / f"peer_{key_hash}"
 	if not tdir.exists():
 		return
+	
+	_log.info("Deleting peer data for key_hash=%s (no locks acquired)", key_hash)
+	
 	try:
 		shutil.rmtree(tdir)
 	except OSError:
@@ -350,6 +453,37 @@ def delete_peer_data(tsdb_dir: Path, peer_key: str) -> None:
 			pass
 
 
+# Batched fsync state (per series path)
+_fsync_batch_state: dict[str, dict[str, Any]] = {}
+_fsync_batch_lock = threading.Lock()
+
+
+def _should_fsync_batch(series_path: Path) -> bool:
+	"""Check if batched writes should be fsynced now.
+	
+	Returns True if either:
+	- Batch size limit reached
+	- Time interval exceeded since last fsync
+	"""
+	key = str(series_path)
+	with _fsync_batch_lock:
+		if key not in _fsync_batch_state:
+			_fsync_batch_state[key] = {"count": 0, "last_fsync": time.time()}
+		
+		state = _fsync_batch_state[key]
+		state["count"] += 1
+		now = time.time()
+		
+		# Check if we should fsync
+		if state["count"] >= FSYNC_BATCH_SIZE or (now - state["last_fsync"]) >= FSYNC_BATCH_INTERVAL:
+			# Reset state
+			state["count"] = 0
+			state["last_fsync"] = now
+			return True
+		
+		return False
+
+
 def append_point(
 	tsdb_dir: Path,
 	*,
@@ -358,6 +492,7 @@ def append_point(
 	value: Any,
 	retention_days: int = DEFAULT_RETENTION_DAYS,
 	at: Optional[datetime] = None,
+	sync: bool = False,
 ) -> None:
 	"""Append a data point to a time series.
 
@@ -368,6 +503,7 @@ def append_point(
 		value: The metric value to store.
 		retention_days: How many days to retain data.
 		at: Optional timestamp; defaults to now (UTC).
+		sync: If True, force immediate fsync (default: batched for performance).
 	"""
 	retention_days = _validate_retention(retention_days)
 	
@@ -385,9 +521,11 @@ def append_point(
 		with p.open("a", encoding="utf-8") as f:
 			line = json.dumps({"ts": at.isoformat(), "value": value}, ensure_ascii=False)
 			f.write(line + "\n")
-			# Ensure data is fsynced to disk for durability
-			f.flush()
-			os.fsync(f.fileno())
+			# Batched fsync for performance - only sync when batch size/interval reached
+			# or when explicitly requested
+			if sync or _should_fsync_batch(p):
+				f.flush()
+				os.fsync(f.fileno())
 		_rotate_series_locked(p)
 
 		# Rate-limited pruning: check timing without random gate
@@ -397,13 +535,19 @@ def append_point(
 
 
 def _prune_series_locked(series_path: Path, retention_days: int) -> None:
-	"""Prune old data points from a series file. MUST be called with lock held."""
+	"""Prune old data points from a series file. MUST be called with lock held.
+	
+	Critical fixes:
+	1. Always prune archives regardless of active file existence
+	2. Atomic replace with fsync to ensure durability
+	"""
 	retention_days = _validate_retention(retention_days)
 	cutoff = utcnow() - timedelta(days=retention_days)
 	
+	# CRITICAL FIX #2: Always prune compressed archives, not just when active file is missing
+	_prune_archives_locked(series_path, cutoff)
+	
 	if not series_path.exists():
-		# Still prune archive set if active file has already rotated away.
-		_prune_archives_locked(series_path, cutoff)
 		return
 
 	kept: list[str] = []
@@ -428,10 +572,17 @@ def _prune_series_locked(series_path: Path, retention_days: int) -> None:
 		series_path.unlink(missing_ok=True)
 		return
 
+	# CRITICAL FIX #1: Atomic replace with fsync for durability
 	tmp = series_path.with_suffix(series_path.suffix + ".tmp")
 	with tmp.open("w", encoding="utf-8") as f:
 		for line in kept:
 			f.write(line + "\n")
+		# Ensure data is written to disk before rename
+		f.flush()
+		os.fsync(f.fileno())
+	
+	# Atomic replace - only after successful fsync
+	os.replace(tmp, series_path)
 
 
 def query(
@@ -469,9 +620,15 @@ def query(
 	with _FileLock(p, read_only=True):
 		# Memory-efficient collection for latest queries
 		if latest:
-			from collections import deque
+			# CRITICAL FIX #5: Iterate files in REVERSE order for latest queries
+			# This allows early termination instead of reading entire history
 			buffer: deque[MetricPoint] = deque(maxlen=limit)
-			for src in _iter_series_files(p):
+			collected = 0
+			
+			# Read files from newest to oldest
+			for src in reversed(_iter_series_files(p)):
+				lines_from_file: list[tuple[datetime, Any]] = []
+				
 				for line in _iter_json_lines(src):
 					line = line.strip()
 					if not line:
@@ -490,8 +647,19 @@ def query(
 						continue
 					if until_u and ts > until_u:
 						continue
-
-					buffer.append(MetricPoint(ts=ts, value=val))
+					
+					lines_from_file.append((ts, val))
+				
+				# Add points from this file in reverse order (latest first)
+				for ts, val in reversed(lines_from_file):
+					buffer.appendleft(MetricPoint(ts=ts, value=val))
+					collected += 1
+					if collected >= limit:
+						break
+				
+				if collected >= limit:
+					break
+			
 			return list(buffer)
 		else:
 			# For non-latest queries, collect up to limit
@@ -519,8 +687,12 @@ def query(
 					all_matching.append(MetricPoint(ts=ts, value=val))
 
 					if len(all_matching) >= limit:
+						# MEDIUM FIX #6: Ensure chronological sort
+						all_matching.sort(key=lambda pt: pt.ts)
 						return all_matching[:limit]
 
+			# MEDIUM FIX #6: Ensure chronological sort
+			all_matching.sort(key=lambda pt: pt.ts)
 			return all_matching[:limit]
 
 
@@ -563,11 +735,10 @@ def get_all_peer_hashes(tsdb_dir: Path) -> list[str]:
 	if not tsdb_dir.exists():
 		return []
 	
-	# Compute hashes for synthetic keys to exclude them from peer count
-	synthetic_keys = ["__geo_traffic__", "__asn_traffic__"]
+	# LOW FIX #12: Use constant for synthetic keys
 	synthetic_hashes = {
 		base64.urlsafe_b64encode(hashlib.sha256(k.encode()).digest()).decode().rstrip("=")
-		for k in synthetic_keys
+		for k in SYNTHETIC_KEYS
 	}
 	
 	hashes = []

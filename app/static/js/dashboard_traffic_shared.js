@@ -9,6 +9,10 @@
 (function (window) {
     'use strict';
 
+    if (window.WBShared !== undefined) {
+        console.warn('WBShared already defined — overwriting');
+    }
+
     /**
      * Build a scoped debug logger.
      * @param {string} scope
@@ -36,7 +40,16 @@
      * @returns {boolean}
      */
     function isAbortError(err) {
-        return err?.code === 'ABORTED' || err?.name === 'AbortError' || err?.message === 'Request cancelled';
+        if (err?.name === 'AbortError') return true;
+        if (err instanceof DOMException && err.code === DOMException.ABORT_ERR) return true;
+        if (err?.code === 'ABORTED') return true; // App-specific api() abort code
+        return false;
+    }
+
+    function getDecimals(unit) {
+        if (unit === 'B') return 0;
+        if (unit === 'KB') return 1;
+        return 1; // MB, GB, TB, PB, EB
     }
 
     /**
@@ -45,27 +58,68 @@
      * @returns {string}
      */
     function formatBytes(bytes) {
-        if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
-        if (bytes === 0) return '0 B';
+        if (bytes < 0) {
+            console.warn('formatBytes: negative value', bytes);
+            return '0 B';
+        }
+        if (!Number.isFinite(bytes) || bytes === 0) return '0 B';
         const k = 1024;
         const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
         const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k)));
         const unit = sizes[i];
-        const decimals = (unit === 'MB' || unit === 'GB') ? 1 : 2;
+        const decimals = getDecimals(unit);
         return Number((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + unit;
     }
 
     /**
-     * Format traffic metrics in API display units.
+     * Format traffic metrics in API display units with automatic unit scaling.
      * @param {number | string | null | undefined} value
      * @param {string} unit
      * @returns {string}
      */
     function formatTrafficMetric(value, unit) {
         const parsed = Number(value);
-        const n = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-        const decimals = (unit === 'MB' || unit === 'GB') ? 1 : 2;
-        return `${Number(n.toFixed(decimals))} ${unit}`;
+        let n;
+        if (!Number.isFinite(parsed)) {
+            n = 0;
+        } else if (parsed < 0) {
+            console.warn('formatTrafficMetric: negative value', parsed);
+            n = 0;
+        } else {
+            n = parsed;
+        }
+
+        if (n === 0) return '0 B';
+
+        let displayUnit = unit;
+
+        // Auto-scale to larger units if needed
+        if (displayUnit === 'B' && n >= 1024) {
+            n = n / 1024;
+            displayUnit = 'KB';
+        }
+        if (displayUnit === 'KB' && n >= 1024) {
+            n = n / 1024;
+            displayUnit = 'MB';
+        }
+        if (displayUnit === 'MB' && n >= 1024) {
+            n = n / 1024;
+            displayUnit = 'GB';
+        }
+        if (displayUnit === 'GB' && n >= 1024) {
+            n = n / 1024;
+            displayUnit = 'TB';
+        }
+
+        if (n > 0 && n < 0.01) {
+            if (displayUnit === 'TB') { n *= 1024; displayUnit = 'GB'; }
+            if (displayUnit === 'GB' && n < 0.01) { n *= 1024; displayUnit = 'MB'; }
+            if (displayUnit === 'MB' && n < 0.01) { n *= 1024; displayUnit = 'KB'; }
+            if (displayUnit === 'KB' && n < 0.01) { n *= 1024; displayUnit = 'B'; }
+        }
+
+        const decimals = getDecimals(displayUnit);
+        return `${Number(n.toFixed(decimals))} ${displayUnit}`;
     }
 
     /**
@@ -95,7 +149,7 @@
             this.autoRefreshMs = Number(opts?.autoRefreshMs) > 0 ? Number(opts.autoRefreshMs) : 30000;
             this.maxBackoffMs = Number(opts?.maxBackoffMs) > 0 ? Number(opts.maxBackoffMs) : 300000;
             this.refreshFn = refreshFn;
-            this.log = typeof opts?.log === 'function' ? opts.log : function () { };
+            this.log = typeof opts?.log === 'function' ? opts.log : console.warn.bind(console);
             this.onAllFailed = typeof opts?.onAllFailed === 'function' ? opts.onAllFailed : null;
             this.onRecovered = typeof opts?.onRecovered === 'function' ? opts.onRecovered : null;
 
@@ -123,6 +177,7 @@
         /**
          * Start periodic refresh.
          * Call refresh() first for immediate data, or use startWithImmediateRefresh().
+         * Note: Calling start() clears any pending interval and starts a fresh one.
          * @param {number} [intervalMs]
          */
         start(intervalMs) {
@@ -144,16 +199,25 @@
             this.start(intervalMs);
         }
 
+        /**
+         * Stop periodic refresh.
+         */
         stop() {
             if (this.autoRefreshTimer === null) return;
             clearInterval(this.autoRefreshTimer);
             this.autoRefreshTimer = null;
         }
 
+        /**
+         * Abort the currently active refresh request.
+         */
         abortActive() {
             if (this.activeRefreshController) this.activeRefreshController.abort();
         }
 
+        /**
+         * Stop refreshing and abort active request, preventing further starts.
+         */
         destroy() {
             this.stop();
             this.abortActive();
@@ -161,6 +225,9 @@
             this._destroyed = true;
         }
 
+        /**
+         * Perform a single refresh, orchestrating backoff and retries.
+         */
         async refresh() {
             if (this._destroyed) return;
             if (this.isRefreshing) {
@@ -178,15 +245,19 @@
                 const success = Boolean(await this.refreshFn(controller.signal));
                 allFailed = !success;
             } catch (err) {
-                this.log('Refresh cycle failed unexpectedly:', err);
-                allFailed = true;
+                if (controller.signal.aborted) {
+                    allFailed = false;
+                } else {
+                    this.log('Refresh cycle failed unexpectedly:', err);
+                    allFailed = true;
+                }
             } finally {
                 if (this.activeRefreshController === controller) this.activeRefreshController = null;
                 this.isRefreshing = false;
                 if (this._destroyed) return;
 
                 if (allFailed) {
-                    this.consecutiveFailures += 1;
+                    this.consecutiveFailures = Math.min(this.consecutiveFailures + 1, 100);
                     const backoffMs = Math.min(
                         this.autoRefreshMs * Math.pow(2, this.consecutiveFailures - 1),
                         this.maxBackoffMs,
@@ -224,12 +295,36 @@
         }
     }
 
+    /**
+     * Create empty-state placeholder element.
+     * Requires CSS classes: .chart-empty-state, .chart-empty-state-text
+     * Requires Material Icons font for the icon element.
+     * @param {string} text
+     * @returns {HTMLDivElement}
+     */
+    function chartEmptyState(text = 'No Data Available') {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'chart-empty-state';
+        const icon = document.createElement('span');
+        icon.className = 'material-icons';
+        icon.textContent = 'show_chart';
+        icon.setAttribute('aria-hidden', 'true');
+        const msg = document.createElement('span');
+        msg.className = 'chart-empty-state-text';
+        msg.textContent = text;
+        wrapper.append(icon, msg);
+        return wrapper;
+    }
+
+    Object.freeze(RefreshScheduler.prototype);
     window.WBShared = Object.freeze({
         createDebugLogger,
         clearElement,
         isAbortError,
+        getDecimals,
         formatBytes,
         formatTrafficMetric,
         RefreshScheduler,
+        chartEmptyState,
     });
 })(window);

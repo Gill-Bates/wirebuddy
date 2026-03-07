@@ -102,6 +102,7 @@ class WgSettingsPayload(BaseModel):
 	gui_port: Optional[int] = Field(None, ge=1, le=65535, description="HTTP port for the web UI")
 	gui_localhost_only: Optional[bool] = Field(None, description="Only listen on localhost")
 	enable_status_page: Optional[bool] = Field(None, description="Enable public internal status page")
+	enable_swagger: Optional[bool] = Field(None, description="Enable Swagger API documentation")
 	traffic_analysis_enabled: Optional[bool] = Field(None, description="Enable traffic country analysis")
 
 	def get_db_value(self, field: str) -> str | None:
@@ -134,6 +135,9 @@ class WgSettingsPayload(BaseModel):
 			return v
 		except ValueError:
 			pass
+		# Reject colons in hostnames (only IPv6 addresses may contain colons)
+		if ":" in v:
+			raise ValueError("Colons are only allowed in IPv6 addresses; do not include a port")
 		if not v or ".." in v or v.startswith(".") or v.endswith("."):
 			raise ValueError("Invalid FQDN format")
 		return v
@@ -142,6 +146,12 @@ class WgSettingsPayload(BaseModel):
 class GlobalPskPayload(BaseModel):
 	"""Payload to set global WireGuard PresharedKey."""
 	psk: str = Field(..., min_length=44, max_length=44, description="WireGuard PSK (44-char base64)")
+
+	@field_validator("psk")
+	@classmethod
+	def strip_psk(cls, v: str) -> str:
+		"""Strip whitespace before length validation."""
+		return v.strip()
 
 
 # Issue #8: derive from model_fields so this list never drifts out-of-sync
@@ -176,7 +186,7 @@ def _peer_has_ipv6(peer_address: str) -> bool:
 	return False
 
 
-async def _regenerate_split_dns(conn: sqlite3.Connection) -> bool:
+async def _regenerate_split_dns(conn: sqlite3.Connection, fqdn: str | None = None) -> bool:
 	"""Regenerate split-DNS local-data after an FQDN or interface change.
 
 	Logs but does not propagate exceptions so a DNS hiccup never rolls back
@@ -184,7 +194,8 @@ async def _regenerate_split_dns(conn: sqlite3.Connection) -> bool:
 	"""
 	try:
 		interfaces = list_interfaces(conn)
-		fqdn = get_setting(conn, "wg_fqdn")
+		if fqdn is None:
+			fqdn = get_setting(conn, "wg_fqdn")
 		count = write_local_data_overrides(interfaces, fqdn)
 		if count > 0:
 			ok, msg = await unbound.reload_config()
@@ -296,10 +307,10 @@ def get_dns_for_peer(
 
 @router.get("/settings")
 async def get_wg_settings(
-	_: sqlite3.Row = Depends(get_current_user),
+	_: sqlite3.Row = Depends(require_admin),
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
-	"""Get WireGuard global settings."""
+	"""Get WireGuard global settings (admin only)."""
 	result = {}
 	for key in WG_SETTING_KEYS:
 		result[key] = get_setting(conn, key)
@@ -329,14 +340,18 @@ async def update_wg_settings(
 			raise HTTPException(status_code=422, detail=f"Setting '{key}' is required and cannot be cleared")
 		updates.append((key, action, payload.get_db_value(key)))
 
+	committed_fqdn: str | None = None
 	try:
-		with conn:
+		with transaction(conn, immediate=True):
 			for key, action, value in updates:
 				if action is _FieldAction.CLEAR:
 					delete_setting(conn, key)
 					_log.info("SETTING_CLEARED key=%s", key)
 				else:
-					set_setting(conn, key, str(value))
+					assert value is not None, f"BUG: UPDATE action with None value for {key}"
+					set_setting(conn, key, value)
+					if key == "wg_fqdn":
+						committed_fqdn = value
 	except Exception:
 		_log.exception("SETTINGS_UPDATE_FAILED")
 		raise HTTPException(status_code=500, detail="Failed to persist settings")
@@ -345,7 +360,7 @@ async def update_wg_settings(
 	warnings: list[str] = []
 
 	if "wg_fqdn" in updated:
-		if not await _regenerate_split_dns(conn):
+		if not await _regenerate_split_dns(conn, committed_fqdn):
 			warnings.append("Settings saved but split-DNS regeneration failed")
 
 	settings = {k: get_setting(conn, k) for k in WG_SETTING_KEYS}
@@ -362,7 +377,15 @@ async def get_global_psk(
 	current_user: sqlite3.Row = Depends(require_admin),  # named for audit log
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
-	"""Get the current global PresharedKey (masked or full)."""
+	"""Get the current global PresharedKey (masked or full).
+	
+	When reveal=True, rate limiting is enforced to prevent abuse.
+	"""
+	if reveal:
+		# Rate limit PSK reveal to prevent silent exfiltration
+		from ..utils.rate_limit import limiter, RATE_LIMIT_CRITICAL
+		await limiter.check(request, RATE_LIMIT_CRITICAL)
+	
 	cfg = get_config(request)
 	enc_psk = get_setting(conn, "wg_global_psk")
 	if not enc_psk:
@@ -422,7 +445,7 @@ async def set_global_psk(
 ):
 	"""Set a custom global PresharedKey (admin only)."""
 	cfg = get_config(request)
-	psk = payload.psk.strip()
+	psk = payload.psk  # Already stripped by field_validator
 	if not is_valid_wg_key(psk):
 		raise HTTPException(
 			status_code=422,

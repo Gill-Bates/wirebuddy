@@ -42,12 +42,49 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				otp_secret TEXT,
 				otp_enabled INTEGER NOT NULL DEFAULT 0,
 				otp_recovery_codes TEXT,
+				auth_method TEXT DEFAULT 'password',
+				passkey_enabled INTEGER DEFAULT 0,
+				passkey_pending INTEGER DEFAULT 0,
 				last_login_at timestamp,
 				last_login_ip TEXT,
 				created_at timestamp NOT NULL
 			)
 			"""
 		)
+
+		# Passkeys table (WebAuthn credentials)
+		conn.execute(
+			"""
+			CREATE TABLE IF NOT EXISTS passkeys (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				user_id INTEGER NOT NULL,
+				credential_id TEXT NOT NULL UNIQUE,
+				public_key BLOB NOT NULL,
+				sign_count INTEGER NOT NULL DEFAULT 0,
+				device_name TEXT,
+				transports TEXT,
+				created_at TIMESTAMP NOT NULL,
+				FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+			)
+			"""
+		)
+		conn.execute("CREATE INDEX IF NOT EXISTS idx_passkeys_user_id ON passkeys(user_id)")
+		conn.execute("CREATE INDEX IF NOT EXISTS idx_passkeys_credential_id ON passkeys(credential_id)")
+
+		# Passkey challenges (ephemeral, supports multi-worker deployments)
+		conn.execute(
+			"""
+			CREATE TABLE IF NOT EXISTS passkey_challenges (
+				challenge TEXT PRIMARY KEY,
+				ceremony_type TEXT NOT NULL CHECK (ceremony_type IN ('registration', 'authentication')),
+				user_id INTEGER,
+				username TEXT,
+				expires_at REAL NOT NULL,
+				created_at REAL NOT NULL
+			)
+			"""
+		)
+		conn.execute("CREATE INDEX IF NOT EXISTS idx_passkey_challenges_expires ON passkey_challenges(expires_at)")
 
 		# Auth tokens
 		conn.execute(

@@ -44,7 +44,7 @@ _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Current schema version.
 # Baseline is reset to v0 because all previous schema changes are now
 # integrated into init_schema() factory defaults.
-SCHEMA_VERSION = 0
+SCHEMA_VERSION = 3
 
 
 def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
@@ -165,7 +165,70 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 #
 # Migration naming convention: _migrate_NNNN_description(conn: sqlite3.Connection) -> None
 # where NNNN is the version number (must match version in tuple).
-_MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = []
+
+
+def _migrate_0001_passkey_support(conn: sqlite3.Connection) -> None:
+	"""Add passkey (WebAuthn) support: passkeys table and users columns."""
+	# Create passkeys table
+	conn.execute(
+		"""
+		CREATE TABLE IF NOT EXISTS passkeys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL,
+			credential_id TEXT NOT NULL UNIQUE,
+			public_key BLOB NOT NULL,
+			sign_count INTEGER NOT NULL DEFAULT 0,
+			device_name TEXT,
+			transports TEXT,
+			created_at TIMESTAMP NOT NULL,
+			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+		)
+		"""
+	)
+	conn.execute("CREATE INDEX IF NOT EXISTS idx_passkeys_user_id ON passkeys(user_id)")
+	conn.execute("CREATE INDEX IF NOT EXISTS idx_passkeys_credential_id ON passkeys(credential_id)")
+
+	# Add new columns to users table
+	columns = _get_columns(conn, "users")
+	_add_column_if_missing(conn, "users", "auth_method", "TEXT DEFAULT 'password'", columns)
+	_add_column_if_missing(conn, "users", "passkey_enabled", "INTEGER DEFAULT 0", columns)
+
+	_log.info("Migration 0001: Added passkey support")
+
+
+def _migrate_0002_passkey_pending(conn: sqlite3.Connection) -> None:
+	"""Add passkey_pending column for user onboarding flow."""
+	columns = _get_columns(conn, "users")
+	_add_column_if_missing(conn, "users", "passkey_pending", "INTEGER DEFAULT 0", columns)
+	_log.info("Migration 0002: Added passkey_pending column")
+
+
+def _migrate_0003_passkey_challenges(conn: sqlite3.Connection) -> None:
+	"""Add passkey_challenges table for multi-worker WebAuthn challenge storage."""
+	if not _table_exists(conn, "passkey_challenges"):
+		conn.execute(
+			"""
+			CREATE TABLE passkey_challenges (
+				challenge TEXT PRIMARY KEY,
+				ceremony_type TEXT NOT NULL CHECK (ceremony_type IN ('registration', 'authentication')),
+				user_id INTEGER,
+				username TEXT,
+				expires_at REAL NOT NULL,
+				created_at REAL NOT NULL
+			)
+			"""
+		)
+		conn.execute("CREATE INDEX IF NOT EXISTS idx_passkey_challenges_expires ON passkey_challenges(expires_at)")
+		_log.info("Migration 0003: Added passkey_challenges table")
+	else:
+		_log.info("Migration 0003: passkey_challenges table already exists")
+
+
+_MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+	(1, _migrate_0001_passkey_support),
+	(2, _migrate_0002_passkey_pending),
+	(3, _migrate_0003_passkey_challenges),
+]
 
 
 def _validate_migration_registry() -> None:

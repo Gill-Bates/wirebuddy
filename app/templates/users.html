@@ -43,6 +43,28 @@
         font-size: 18px;
     }
 
+    /* Last Login structure (all viewports) */
+    .last-login {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .login-time {
+        white-space: nowrap;
+    }
+
+    .login-ip {
+        overflow-x: auto;
+        max-width: 100%;
+    }
+
+    .login-ip code {
+        white-space: nowrap;
+        font-size: 0.8rem;
+        display: inline-block;
+    }
+
     @media (max-width: 768px) {
         .users-table thead {
             display: none;
@@ -66,24 +88,20 @@
 
         .users-table td {
             border: 0;
-            padding: 0.22rem 0.15rem;
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 0.7rem;
+            padding: 0.3rem 0.15rem;
+            display: grid;
+            grid-template-columns: 6.5rem 1fr;
+            align-items: start;
+            gap: 0.5rem;
         }
 
         .users-table td::before {
             content: attr(data-label);
             font-weight: 600;
             color: var(--bs-secondary-color);
-            flex: 0 0 6.5rem;
-            max-width: 6.5rem;
         }
 
-        .users-table td>* {
-            margin-left: auto;
-            max-width: 66%;
+        .users-table td > * {
             min-width: 0;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -94,24 +112,14 @@
             display: none;
         }
 
-        /* Allow Last Login to wrap to two rows */
-        .users-table td[data-label="Last Login"] {
-            flex-wrap: wrap;
-        }
-
-        .users-table td[data-label="Last Login"] > div {
-            flex: 0 0 calc(100% - 7.2rem);
-            margin-left: auto;
-            max-width: calc(100% - 7.2rem);
+        /* Last Login grid alignment */
+        .users-table td[data-label="Last Login"] .last-login {
             overflow: visible;
-            text-overflow: initial;
-            white-space: normal;
         }
 
-        .users-table td[data-label="Last Login"] > div.text-truncate {
-            overflow: visible !important;
-            text-overflow: initial !important;
-            white-space: normal !important;
+        .users-table td[data-label="Last Login"] .login-ip {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
         }
 
         .users-table .user-identity {
@@ -119,6 +127,7 @@
         }
 
         .users-table td.user-actions-cell {
+            display: flex;
             margin-top: 0.25rem;
             padding-top: 0.45rem;
             border-top: 1px solid var(--bs-border-color);
@@ -176,6 +185,7 @@
         height: 100%;
         transition: width 0.2s, background-color 0.2s;
     }
+
 </style>
 {% endblock %}
 
@@ -209,14 +219,16 @@
                         <td data-label="Username">
                             <span class="user-identity">
                                 <strong>{{ u['username'] }}</strong>
-                                {% if u['id'] == user['id'] %}
-                                <span class="badge bg-secondary ms-1">You</span>
-                                {% endif %}
                                 <span id="otp-indicator-{{ u['id'] }}">
                                     {% if u['otp_enabled'] %}
                                     <span class="material-icons text-success ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP enabled">verified_user</span>
                                     {% elif u['otp_secret'] %}
                                     <span class="material-icons text-warning ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP setup pending">schedule</span>
+                                    {% endif %}
+                                </span>
+                                <span id="passkey-indicator-{{ u['id'] }}">
+                                    {% if u['passkey_enabled'] %}
+                                    <span class="material-icons text-info ms-1" style="font-size: 16px; vertical-align: middle;" title="Passkey enabled">fingerprint</span>
                                     {% endif %}
                                 </span>
                             </span>
@@ -237,12 +249,14 @@
                         </td>
                         <td data-label="Last Login">
                             {% if u['last_login_at'] %}
-                            <div>{{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }}</div>
-                            {% if u['last_login_ip'] %}
-                            <div class="small text-muted text-truncate" style="max-width: 180px;" title="{{ u['last_login_ip'] }}">
-                                <code>{{ u['last_login_ip'] }}</code>
+                            <div class="last-login">
+                                <div class="login-time">{{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }}</div>
+                                {% if u['last_login_ip'] %}
+                                <div class="login-ip">
+                                    <code class="ipv6">{{ (u['last_login_ip'] or '').replace(':', ':\u200b').replace('/', '/\u200b') }}</code>
+                                </div>
+                                {% endif %}
                             </div>
-                            {% endif %}
                             {% else %}
                             <span class="text-muted">Never</span>
                             {% endif %}
@@ -265,6 +279,13 @@
                                     data-bs-toggle="tooltip" data-bs-title="OTP Settings">
                                     <span class="material-icons" aria-hidden="true">security</span>
                                 </button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary btn-passkey-settings"
+                                    id="passkey-settings-btn-{{ u['id'] }}"
+                                    data-user-id="{{ u['id'] }}"
+                                    data-username="{{ u['username'] }}"
+                                    data-bs-toggle="tooltip" data-bs-title="Passkey Settings">
+                                    <span class="material-icons" aria-hidden="true">fingerprint</span>
+                                </button>
                                 {% if u['id'] != user['id'] %}
                                 <button type="button" class="btn btn-sm btn-outline-danger btn-delete-user"
                                     data-user-id="{{ u['id'] }}"
@@ -285,12 +306,12 @@
 </div><!-- /.wb-page -->
 
 <!-- Add User Modal -->
-<div class="modal fade" id="addUserModal" aria-labelledby="addUserModalTitle" aria-modal="true">
+<div class="modal fade" id="addUserModal" tabindex="-1" aria-labelledby="addUserModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="addUserModalTitle">Add New User</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <form id="add-user-form">
                 <div class="modal-body">
@@ -329,12 +350,12 @@
 </div>
 
 <!-- Change Password Modal -->
-<div class="modal fade" id="changePasswordModal" aria-labelledby="changePasswordModalTitle" aria-modal="true">
+<div class="modal fade" id="changePasswordModal" tabindex="-1" aria-labelledby="changePasswordModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="changePasswordModalTitle">Change Password</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <form id="change-password-form">
                 <div class="modal-body">
@@ -373,7 +394,7 @@
 </div>
 
 <!-- OTP Settings Modal -->
-<div class="modal fade" id="otpSettingsModal" aria-labelledby="otpSettingsModalTitle" aria-modal="true">
+<div class="modal fade" id="otpSettingsModal" tabindex="-1" aria-labelledby="otpSettingsModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -381,7 +402,7 @@
                     <span class="material-icons align-middle me-2">security</span>
                     OTP Settings
                 </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <!-- Status display -->
@@ -401,6 +422,75 @@
                         <span class="material-icons align-middle me-1" id="otp-toggle-icon">security</span>
                         <span id="otp-toggle-label">Toggle OTP</span>
                     </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Passkey Settings Modal -->
+<div class="modal fade" id="passkeySettingsModal" tabindex="-1" aria-labelledby="passkeySettingsModalTitle" aria-modal="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="passkeySettingsModalTitle">
+                    <span class="material-icons align-middle me-2">fingerprint</span>
+                    Passkey Settings
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <!-- Status display -->
+                <div class="mb-3">
+                    <div class="d-flex align-items-center justify-content-between">
+                        <div>
+                            <strong id="passkey-modal-username"></strong>
+                            <div id="passkey-status-text" class="small text-muted"></div>
+                        </div>
+                        <div id="passkey-count-badge"></div>
+                    </div>
+                </div>
+
+                <!-- Passkey list -->
+                <div id="passkey-list-container" class="mb-3">
+                    <div id="passkey-list-loading" class="text-center py-3">
+                        <div class="spinner-border spinner-border-sm"></div>
+                        <span class="ms-2">Loading passkeys...</span>
+                    </div>
+                    <div id="passkey-list-empty" style="display: none;" class="text-center text-muted py-3">
+                        No passkeys registered
+                    </div>
+                    <div id="passkey-list" class="list-group" style="display: none;"></div>
+                </div>
+
+                <!-- Actions -->
+                <div id="passkey-action-section">
+                    <div id="passkey-register-section">
+                        <div class="mb-3">
+                            <label for="passkey-device-name" class="form-label">Device Name (optional)</label>
+                            <input type="text" class="form-control" id="passkey-device-name" 
+                                placeholder="e.g., MacBook Pro TouchID" maxlength="100"
+                                pattern="[^\x00-\x1F\x7F-\x9F]*"
+                                title="Device name cannot contain control characters">
+                            <small class="text-muted">A friendly name to identify this passkey</small>
+                        </div>
+                        <button type="button" class="btn btn-primary w-100" id="passkey-register-btn">
+                            <span class="material-icons align-middle me-1">add</span>
+                            Add Passkey
+                        </button>
+                    </div>
+                    
+                    <!-- Admin reset button (only for other users) -->
+                    <div id="passkey-admin-section" style="display: none;" class="mt-3 pt-3 border-top">
+                        <button type="button" class="btn btn-outline-danger w-100" id="passkey-reset-btn">
+                            <span class="material-icons align-middle me-1">restart_alt</span>
+                            Reset All Passkeys
+                        </button>
+                        <small class="text-muted d-block mt-1">Remove all passkeys for this user (admin action)</small>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -773,6 +863,13 @@
         }
     });
 
+    // Initialize tooltips on desktop only (touch devices don't benefit)
+    if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+        document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+            new bootstrap.Tooltip(el, { trigger: 'hover focus' });
+        });
+    }
+
     // Event delegation for user action buttons
     const usersTable = document.querySelector('.users-table');
     if (usersTable) {
@@ -808,8 +905,437 @@
                 );
                 return;
             }
+
+            const passkeyBtn = e.target.closest('.btn-passkey-settings');
+            if (passkeyBtn) {
+                e.preventDefault();
+                openPasskeySettings(
+                    parseInt(passkeyBtn.dataset.userId, 10),
+                    passkeyBtn.dataset.username
+                );
+                return;
+            }
         });
     }
+
+    // ─── PASSKEY MANAGEMENT ───────────────────────────────────────────
+    
+    const isWebAuthnSupported = window.PublicKeyCredential !== undefined;
+    
+    // Base64URL encoding/decoding helpers
+    function base64UrlToArrayBuffer(base64url) {
+        const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+        const padding = '='.repeat((4 - base64.length % 4) % 4);
+        let binary;
+        try {
+            binary = atob(base64 + padding);
+        } catch (e) {
+            throw new Error('Invalid data received from server. Please try again.');
+        }
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes.buffer;
+    }
+    
+    function arrayBufferToBase64Url(buffer) {
+        const bytes = new Uint8Array(buffer);
+        const CHUNK = 0x8000; // 32KB chunks (safe for all JS engines)
+        const parts = [];
+        
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+            // Use subarray + apply to avoid stack overflow on large buffers
+            parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK)));
+        }
+        
+        return btoa(parts.join(''))
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=/g, '');
+    }
+    
+    // Convert snake_case to camelCase recursively
+    function snakeToCamel(obj) {
+        if (obj === null || obj === undefined) return obj;
+        if (typeof obj !== 'object') return obj;
+        if (Array.isArray(obj)) return obj.map(snakeToCamel);
+        
+        const result = {};
+        for (const [key, value] of Object.entries(obj)) {
+            const camelKey = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+            result[camelKey] = snakeToCamel(value);
+        }
+        return result;
+    }
+    
+    // Build authenticatorSelection with explicit snake-to-camel conversion
+    function buildAuthenticatorSelection(serverAuthSel) {
+        if (!serverAuthSel) {
+            return {
+                residentKey: 'preferred',
+                userVerification: 'preferred'
+            };
+        }
+        
+        const result = {};
+        
+        // Map resident_key → residentKey
+        if (serverAuthSel.resident_key !== undefined) {
+            result.residentKey = serverAuthSel.resident_key;
+        } else if (serverAuthSel.residentKey !== undefined) {
+            result.residentKey = serverAuthSel.residentKey;
+        } else {
+            result.residentKey = 'preferred';
+        }
+        
+        // Map user_verification → userVerification
+        if (serverAuthSel.user_verification !== undefined) {
+            result.userVerification = serverAuthSel.user_verification;
+        } else if (serverAuthSel.userVerification !== undefined) {
+            result.userVerification = serverAuthSel.userVerification;
+        } else {
+            result.userVerification = 'preferred';
+        }
+        
+        // Map authenticator_attachment → authenticatorAttachment
+        if (serverAuthSel.authenticator_attachment !== undefined) {
+            result.authenticatorAttachment = serverAuthSel.authenticator_attachment;
+        } else if (serverAuthSel.authenticatorAttachment !== undefined) {
+            result.authenticatorAttachment = serverAuthSel.authenticatorAttachment;
+        }
+        
+        // Map require_resident_key → requireResidentKey
+        if (serverAuthSel.require_resident_key !== undefined) {
+            result.requireResidentKey = serverAuthSel.require_resident_key;
+        } else if (serverAuthSel.requireResidentKey !== undefined) {
+            result.requireResidentKey = serverAuthSel.requireResidentKey;
+        }
+        
+        return result;
+    }
+    
+    // Sanitize device name input
+    function sanitizeDeviceName(name) {
+        if (!name || typeof name !== 'string') return '';
+        
+        // Remove control characters, zero-width spaces, direction marks
+        const cleaned = name
+            .replace(/[\x00-\x1F\x7F-\x9F]/g, '') // Control characters
+            .replace(/[\u200B-\u200D\uFEFF]/g, '') // Zero-width spaces
+            .replace(/[\u202A-\u202E]/g, '') // Direction marks
+            .trim();
+        
+        return cleaned.slice(0, 100); // Enforce max length
+    }
+    
+    // Friendly error messages for common WebAuthn errors
+    const FRIENDLY_ERRORS = {
+        'NotAllowedError': 'Passkey registration was cancelled',
+        'InvalidStateError': 'This passkey may already be registered',
+        'NotSupportedError': 'Your browser does not support passkeys',
+        'SecurityError': 'Security error - please ensure you are using HTTPS',
+        'AbortError': 'Registration timed out (120 seconds)',
+        'UnknownError': 'An unknown error occurred',
+    };
+    
+    // Convert server options to WebAuthn format for registration
+    function prepareRegistrationOptions(serverOptions) {
+        const options = {
+            challenge: base64UrlToArrayBuffer(serverOptions.challenge),
+            rp: {
+                name: serverOptions.rp.name,
+                id: serverOptions.rp.id,
+            },
+            user: {
+                id: base64UrlToArrayBuffer(serverOptions.user.id),
+                name: serverOptions.user.name,
+                displayName: serverOptions.user.display_name || serverOptions.user.name,
+            },
+            pubKeyCredParams: serverOptions.pub_key_cred_params.map(p => ({
+                type: p.type,
+                alg: p.alg,
+            })),
+            timeout: serverOptions.timeout || 60000,
+            authenticatorSelection: buildAuthenticatorSelection(serverOptions.authenticator_selection),
+        };
+        
+        if (serverOptions.exclude_credentials && serverOptions.exclude_credentials.length > 0) {
+            options.excludeCredentials = serverOptions.exclude_credentials.map(cred => ({
+                type: 'public-key',
+                id: base64UrlToArrayBuffer(cred.id),
+                transports: cred.transports || undefined,
+            }));
+        }
+        
+        return options;
+    }
+    
+    // Convert registration credential to JSON for server
+    function registrationCredentialToJSON(credential) {
+        const response = {
+            id: credential.id,
+            rawId: arrayBufferToBase64Url(credential.rawId),
+            type: credential.type,
+            response: {
+                clientDataJSON: arrayBufferToBase64Url(credential.response.clientDataJSON),
+                attestationObject: arrayBufferToBase64Url(credential.response.attestationObject),
+            },
+        };
+        
+        // Include transports if available
+        if (credential.response.getTransports) {
+            response.response.transports = credential.response.getTransports();
+        }
+        
+        return response;
+    }
+    
+    let currentPasskeyUserId = null;
+    let currentPasskeyUsername = null;
+    
+    async function openPasskeySettings(userId, username) {
+        currentPasskeyUserId = userId;
+        currentPasskeyUsername = username;
+        
+        const currentUserId = {{ user['id'] }};
+        const isCurrentUser = userId === currentUserId;
+        const isAdmin = {{ 'true' if user['is_admin'] else 'false' }};
+        
+        const modalEl = document.getElementById('passkeySettingsModal');
+        modalEl.dataset.userId = userId;
+        modalEl.dataset.username = username;
+        
+        document.getElementById('passkey-modal-username').textContent = username;
+        document.getElementById('passkey-status-text').textContent = 'Loading...';
+        document.getElementById('passkey-count-badge').innerHTML = '';
+        
+        // Show loading state
+        document.getElementById('passkey-list-loading').style.display = 'block';
+        document.getElementById('passkey-list-empty').style.display = 'none';
+        document.getElementById('passkey-list').style.display = 'none';
+        
+        // Show/hide sections based on user context
+        const registerSection = document.getElementById('passkey-register-section');
+        const adminSection = document.getElementById('passkey-admin-section');
+        
+        if (isCurrentUser) {
+            registerSection.style.display = 'block';
+            adminSection.style.display = 'none';
+        } else if (isAdmin) {
+            registerSection.style.display = 'none';
+            adminSection.style.display = 'block';
+        } else {
+            registerSection.style.display = 'none';
+            adminSection.style.display = 'none';
+        }
+        
+        // Hide register section if WebAuthn not supported
+        if (!isWebAuthnSupported && isCurrentUser) {
+            registerSection.innerHTML = '<div class="alert alert-warning mb-0">Passkeys are not supported in this browser.</div>';
+        }
+        
+        // Show modal
+        const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.show();
+        
+        // Load passkeys
+        await loadPasskeys(userId, isCurrentUser, isAdmin);
+    }
+    
+    async function loadPasskeys(userId, isCurrentUser, isAdmin) {
+        try {
+            let endpoint = isCurrentUser ? '/api/passkeys' : `/api/passkeys/user/${userId}`;
+            const passkeys = await api('GET', endpoint) || [];
+            
+            document.getElementById('passkey-list-loading').style.display = 'none';
+            
+            const statusText = document.getElementById('passkey-status-text');
+            const countBadge = document.getElementById('passkey-count-badge');
+            
+            // Update passkey indicator in user row
+            updatePasskeyIndicator(userId, passkeys.length > 0);
+            
+            if (passkeys.length === 0) {
+                statusText.textContent = '';
+                countBadge.innerHTML = '<span class="badge bg-secondary">0 Passkeys</span>';
+                document.getElementById('passkey-list-empty').style.display = 'block';
+                document.getElementById('passkey-list').style.display = 'none';
+            } else {
+                statusText.textContent = `${passkeys.length} passkey${passkeys.length !== 1 ? 's' : ''} registered`;
+                countBadge.innerHTML = `<span class="badge bg-success">${passkeys.length} Passkey${passkeys.length !== 1 ? 's' : ''}</span>`;
+                document.getElementById('passkey-list-empty').style.display = 'none';
+                
+                const listEl = document.getElementById('passkey-list');
+                listEl.innerHTML = '';
+                
+                for (const pk of passkeys) {
+                    const item = document.createElement('div');
+                    item.className = 'list-group-item d-flex justify-content-between align-items-center';
+                    
+                    const createdAt = new Date(pk.created_at).toLocaleDateString();
+                    const deviceName = pk.device_name || 'Unnamed Passkey';
+                    const transports = pk.transports ? pk.transports.join(', ') : '';
+                    
+                    item.innerHTML = `
+                        <div>
+                            <strong>${escapeHtml(deviceName)}</strong>
+                            <div class="small text-muted">
+                                Created: ${createdAt}
+                                ${transports ? ` • ${transports}` : ''}
+                            </div>
+                        </div>
+                        ${isCurrentUser ? `
+                            <button type="button" class="btn btn-sm btn-outline-danger btn-delete-passkey" 
+                                data-passkey-id="${pk.id}" title="Delete passkey">
+                                <span class="material-icons" style="font-size: 18px;">delete</span>
+                            </button>
+                        ` : ''}
+                    `;
+                    listEl.appendChild(item);
+                }
+                
+                listEl.style.display = 'block';
+            }
+        } catch (error) {
+            document.getElementById('passkey-list-loading').style.display = 'none';
+            document.getElementById('passkey-list-empty').innerHTML = '<span class="text-danger">Failed to load passkeys</span>';
+            document.getElementById('passkey-list-empty').style.display = 'block';
+        }
+    }
+    
+    function updatePasskeyIndicator(userId, hasPasskeys) {
+        const indicator = document.getElementById(`passkey-indicator-${userId}`);
+        if (!indicator) return;
+        
+        if (hasPasskeys) {
+            indicator.innerHTML = '<span class="material-icons text-info ms-1" style="font-size: 16px; vertical-align: middle;" title="Passkey enabled">fingerprint</span>';
+        } else {
+            indicator.innerHTML = '';
+        }
+    }
+    
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    // Register new passkey
+    document.getElementById('passkey-register-btn')?.addEventListener('click', async function() {
+        if (this.disabled || !isWebAuthnSupported) return;
+        
+        const deviceNameInput = document.getElementById('passkey-device-name');
+        const deviceName = sanitizeDeviceName(deviceNameInput.value);
+        const btn = this;
+        const originalHtml = btn.innerHTML;
+        
+        btn.disabled = true;
+        btn.setAttribute('aria-busy', 'true');
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Registering...';
+        
+        // Create AbortController for timeout
+        const abortController = new AbortController();
+        const timeoutId = setTimeout(() => abortController.abort(), 120000); // 120 seconds
+        
+        try {
+            // 1. Get registration options
+            const startResp = await api('POST', '/api/passkeys/register/start');
+            const publicKeyOptions = prepareRegistrationOptions(startResp);
+            
+            // 2. Create credential with browser (with timeout)
+            const credential = await navigator.credentials.create({
+                publicKey: publicKeyOptions,
+                signal: abortController.signal,
+            });
+            
+            if (!credential) {
+                throw new Error('Passkey registration cancelled');
+            }
+            
+            // 3. Send credential to server
+            const credentialJSON = registrationCredentialToJSON(credential);
+            
+            await api('POST', '/api/passkeys/register/finish', {
+                credential: credentialJSON,
+                device_name: deviceName || null,
+            });
+            
+            // 4. Success - refresh list
+            wbToast('Passkey registered successfully', 'success');
+            deviceNameInput.value = '';
+            const currentUserId = {{ user['id'] }};
+            const isCurrentUser = currentPasskeyUserId === currentUserId;
+            await loadPasskeys(currentPasskeyUserId, isCurrentUser, {{ 'true' if user['is_admin'] else 'false' }});
+            
+        } catch (error) {
+            // Clear timeout on error
+            clearTimeout(timeoutId);
+            
+            // Show friendly error message
+            if (error.name !== 'NotAllowedError' && error.name !== 'AbortError') {
+                const friendlyMsg = FRIENDLY_ERRORS[error.name] || 'Failed to register passkey';
+                const serverMsg = error.message ? String(error.message).slice(0, 200) : '';
+                const displayMsg = FRIENDLY_ERRORS[error.name] ? friendlyMsg : `${friendlyMsg}: ${serverMsg}`;
+                
+                wbAlert(displayMsg, 'danger');
+            }
+        } finally {
+            clearTimeout(timeoutId);
+            btn.disabled = false;
+            btn.removeAttribute('aria-busy');
+            btn.innerHTML = originalHtml;
+        }
+    });
+    
+    // Delete passkey (event delegation)
+    document.getElementById('passkey-list')?.addEventListener('click', async (e) => {
+        const deleteBtn = e.target.closest('.btn-delete-passkey');
+        if (!deleteBtn) return;
+        
+        const passkeyId = parseInt(deleteBtn.dataset.passkeyId, 10);
+        
+        if (!await wbConfirm('Delete this passkey?', 'danger')) return;
+        
+        deleteBtn.disabled = true;
+        
+        try {
+            await api('DELETE', `/api/passkeys/${passkeyId}`);
+            wbToast('Passkey deleted', 'success');
+            const currentUserId = {{ user['id'] }};
+            const isCurrentUser = currentPasskeyUserId === currentUserId;
+            await loadPasskeys(currentPasskeyUserId, isCurrentUser, {{ 'true' if user['is_admin'] else 'false' }});
+        } catch (error) {
+            wbAlert('Failed to delete passkey: ' + error.message, 'danger');
+            deleteBtn.disabled = false;
+        }
+    });
+    
+    // Admin reset all passkeys
+    document.getElementById('passkey-reset-btn')?.addEventListener('click', async function() {
+        if (this.disabled) return;
+        
+        if (!await wbConfirm(`Reset ALL passkeys for "${currentPasskeyUsername}"? This cannot be undone.`, 'danger')) return;
+        
+        this.disabled = true;
+        
+        try {
+            const resp = await api('POST', `/api/passkeys/reset/${currentPasskeyUserId}`);
+            const deletedCount = resp.data?.deleted_count || 0;
+            wbToast(`Reset ${deletedCount} passkey(s)`, 'success');
+            
+            // Close modal
+            const modalEl = document.getElementById('passkeySettingsModal');
+            const modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+        } catch (error) {
+            wbAlert('Failed to reset passkeys: ' + error.message, 'danger');
+        } finally {
+            this.disabled = false;
+        }
+    });
+    
+    // ─── END PASSKEY MANAGEMENT ───────────────────────────────────────
 })();
 </script>
 {% endblock %}

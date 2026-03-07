@@ -184,6 +184,14 @@ def get_peer_metrics_stats(conn: sqlite3.Connection) -> dict[str, int | str]:
 	if db_row and len(db_row) >= 3 and db_row[2]:
 		db_path = str(db_row[2])
 
+	# Get database file size
+	size_bytes = 0
+	if db_path:
+		try:
+			size_bytes = Path(db_path).stat().st_size
+		except (OSError, ValueError):
+			pass
+
 	return {
 		"total_peers": int(row[0] or 0),
 		"peers_with_handshake": int(row[1] or 0),
@@ -191,6 +199,9 @@ def get_peer_metrics_stats(conn: sqlite3.Connection) -> dict[str, int | str]:
 		"storage_type": "sqlite",
 		# Return basename only to avoid leaking absolute filesystem layout.
 		"path": Path(db_path).name if db_path else "peers.db",
+		# Full path for admin settings display.
+		"full_path": db_path if db_path else "peers.db",
+		"size_bytes": size_bytes,
 	}
 
 

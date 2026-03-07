@@ -179,6 +179,7 @@ class UserPublic(BaseModel):
 	username: str
 	is_admin: bool
 	is_active: bool
+	otp_enabled: bool
 	created_at: datetime
 	last_login_at: datetime | None = None
 	last_login_ip: IPvAnyAddress | None = None

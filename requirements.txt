@@ -1,4 +1,5 @@
 aiosqlite==0.22.1
+cbor2==5.8.0
 cryptography==46.0.5
 email-validator==2.3.0
 fastapi==0.135.1
@@ -14,3 +15,4 @@ python-multipart==0.0.22
 qrcode[pil]==8.2
 slowapi>=0.1.9
 uvicorn[standard]==0.41.0
+webauthn==2.7.1

@@ -138,9 +138,8 @@ def write_interface_config(
     del private_key_plain
 
     # NOTE: DNS is intentionally omitted from the server-side config.
-    # wg-quick rewrites /etc/resolv.conf when DNS is set, which breaks
-    # container-internal DNS resolution.  DNS belongs only in the CLIENT
-    # config (PeerConfig) that peers download.
+    # The server doesn't need DNS routing through itself - DNS belongs only
+    # in the CLIENT config (PeerConfig) that peers download.
 
     # Query all peers (enabled + disabled) for this interface
     cur = conn.execute(

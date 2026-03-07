@@ -3,592 +3,33 @@
 {% block title %}DNS – WireBuddy{% endblock %}
 
 {% block extra_css %}
-<style>
-    .dns-header {
-        row-gap: 0.5rem;
-    }
-
-    .dns-toolbar {
-        width: auto;
-    }
-
-    /* Ad-Blocker dropdown button styles */
-    .adblocker-dropdown .btn {
-        min-width: 180px;
-        font-weight: 500;
-        transition: background-color 0.2s, border-color 0.2s;
-    }
-    .adblocker-dropdown .btn.btn-adblocker-enabled {
-        background-color: var(--bs-success);
-        border-color: var(--bs-success);
-        color: #fff;
-    }
-    .adblocker-dropdown .btn.btn-adblocker-enabled:hover,
-    .adblocker-dropdown .btn.btn-adblocker-enabled:focus {
-        background-color: var(--bs-success);
-        border-color: var(--bs-success);
-        filter: brightness(0.9);
-    }
-    .adblocker-dropdown .btn.btn-adblocker-disabled {
-        background-color: var(--bs-danger);
-        border-color: var(--bs-danger);
-        color: #fff;
-    }
-    .adblocker-dropdown .btn.btn-adblocker-disabled:hover,
-    .adblocker-dropdown .btn.btn-adblocker-disabled:focus {
-        background-color: var(--bs-danger);
-        border-color: var(--bs-danger);
-        filter: brightness(0.9);
-    }
-    .adblocker-dropdown .dropdown-item.active {
-        background-color: var(--bs-primary);
-        color: #fff;
-    }
-    .adblocker-countdown {
-        font-size: 0.85em;
-        opacity: 0.9;
-    }
-    /* Dropdown icon styles - moved from inline for CSP compliance */
-    .adblocker-dropdown .dropdown-item .material-icons {
-        font-size: 1rem;
-        vertical-align: middle;
-    }
-
-    /* Context menu positioning - moved from inline for CSP compliance */
-    #log-action-menu {
-        position: fixed;
-        z-index: 1200;
-    }
-
-    .dns-stat-label {
-        font-size: 0.72rem;
-        font-weight: 700;
-        letter-spacing: 0.02em;
-        text-transform: uppercase;
-        color: var(--bs-secondary-color);
-    }
-
-    .dns-stat-value {
-        font-size: 1.3rem;
-        font-weight: 600;
-        line-height: 1.1;
-    }
-
-    .dns-stat-icon {
-        font-size: 1.05rem;
-        color: currentColor;
-        opacity: 0.85;
-    }
-
-    .dns-card-title {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-        font-weight: 700;
-    }
-
-    .dns-card-title .material-icons {
-        font-size: 1.15rem;
-        color: currentColor;
-        opacity: 0.85;
-    }
-
-    .log-table {
-        width: 100%;
-        table-layout: auto;
-        font-size: 0.85rem;
-    }
-
-    .log-table td {
-        vertical-align: top;
-        padding: 0.4rem 0.65rem;
-    }
-
-    .log-table tr.log-empty-row {
-        border-bottom: none;
-    }
-
-    .log-table tr.log-empty-row > td {
-        border: none;
-        padding: 0;
-        height: calc(340px - 2.5rem);  /* log-table-wrap max-height minus thead */
-    }
-
-    .log-table tr.log-empty-row .log-empty-cell .chart-empty-state {
-        min-height: calc(340px - 2.5rem);
-    }
-
-    .log-table th.log-col-time,
-    .log-table td.log-col-time {
-        width: 100px;
-        white-space: nowrap;
-    }
-
-    .log-time-stack {
-        display: flex;
-        flex-direction: column;
-        line-height: 1.3;
-    }
-
-    .log-time-date {
-        font-size: 0.8rem;
-    }
-
-    .log-time-clock {
-        font-size: 0.75rem;
-        opacity: 0.75;
-    }
-
-    .log-table th.log-col-type,
-    .log-table td.log-col-type {
-        width: 72px;
-        white-space: nowrap;
-        text-align: left;
-    }
-
-
-
-    .log-domain-stack {
-        display: flex;
-        flex-direction: column;
-        line-height: 1.3;
-    }
-
-    .log-domain {
-        font-family: 'Roboto Flex', sans-serif;
-        font-stretch: 75%;
-        font-size: 0.8rem;
-        overflow-wrap: anywhere;
-    }
-
-    .log-domain-client {
-        font-size: 0.75rem;
-        opacity: 0.75;
-    }
-
-
-
-    .top-domain-bar {
-        height: 6px;
-        border-radius: 3px;
-        transition: width 0.4s ease;
-    }
-
-    #log-search {
-        max-width: 300px;
-    }
-
-    .top-domain-card-body {
-        height: clamp(220px, 26vh, 290px);
-        display: flex;
-        align-items: stretch;
-        overflow: hidden;
-    }
-
-    .top-domain-content {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: flex-start;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-    }
-
-    .top-domain-chart-wrap {
-        --donut-size: clamp(120px, 14vw, 160px);
-        width: var(--donut-size);
-        height: var(--donut-size);
-        flex-shrink: 0;
-    }
-
-    #top-queried-chart-wrap {
-        width: 100%;
-        height: 100%;
-        max-height: 280px;
-    }
-
-    #top-blocked-chart-wrap {
-        width: 100%;
-        height: 100%;
-        max-height: 280px;
-    }
-
-    /* Custom chart legend with badges */
-    .custom-chart-legend {
-        display: flex;
-        flex-direction: column;
-        gap: 3px;
-        width: 100%;
-        max-height: 100px;
-        overflow-y: auto;
-        font-size: 0.72rem;
-        padding: 0 4px;
-    }
-
-    .custom-chart-legend .legend-item {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        min-width: 0;
-    }
-
-    .custom-chart-legend .legend-dot {
-        flex-shrink: 0;
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-    }
-
-    .custom-chart-legend .legend-label {
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    .custom-chart-legend .badge {
-        flex-shrink: 0;
-        font-size: 0.6rem;
-        padding: 1px 4px;
-    }
-
-    #log-table-wrap {
-        max-height: 340px;
-        overflow-y: auto;
-    }
-
-    #trend-chart-wrap {
-        position: relative;
-        height: 300px;
-    }
-
-    .trend-chart-height {
-        height: 300px;
-    }
-
-
-    #dns-log-filters .form-select {
-        min-width: 120px;
-        max-width: 220px;
-    }
-
-    #dns-log-filters #peer-filter {
-        min-width: 140px;
-        max-width: 280px;
-    }
-
-    #dns-log-filters .form-control {
-        min-width: 120px;
-    }
-
-    @media (min-width: 992px) {
-        .log-filters-container {
-            flex-wrap: nowrap !important;
-        }
-
-        .log-table th.log-col-time,
-        .log-table td.log-col-time {
-            width: 6rem;
-        }
-
-        .log-table th.log-col-type,
-        .log-table td.log-col-type {
-            width: 5rem;
-            padding-right: 1.35rem;
-        }
-
-        .log-table th:last-child,
-        .log-table td:last-child {
-            padding-right: 1.35rem;
-        }
-
-        .top-domain-card-body {
-            height: clamp(250px, 31vh, 340px);
-        }
-
-        .top-domain-chart-wrap {
-            --donut-size: clamp(140px, 12vw, 180px);
-        }
-
-        #top-queried-chart-wrap {
-            max-height: 300px;
-        }
-
-        .custom-chart-legend {
-            max-height: 120px;
-        }
-
-        #log-table-wrap {
-            max-height: 660px;
-        }
-
-        #dns-log-filters {
-            display: flex !important;
-            height: auto !important;
-            visibility: visible !important;
-        }
-    }
-
-    .dns-ctrl-btn {
-        background: transparent;
-        border: 1px solid #6c757d;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-    }
-
-    .dns-ctrl-btn:hover:not(:disabled) {
-        background: rgba(0, 0, 0, 0.04);
-        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
-    }
-
-    .dns-ctrl-btn:disabled {
-        opacity: 0.5;
-    }
-
-    @media (max-width: 991.98px) {
-        .dns-header {
-            flex-direction: row;
-            align-items: center !important;
-            justify-content: space-between;
-            margin-bottom: 0.75rem !important;
-        }
-
-        .dns-header h1 {
-            margin-bottom: 0;
-            line-height: 1.2;
-        }
-
-        .dns-toolbar {
-            display: flex !important;
-            gap: 0.35rem !important;
-            margin: 0;
-            margin-left: auto;
-            justify-content: flex-end;
-        }
-
-        .dns-toolbar>button,
-        .dns-toolbar>#dns-controls {
-            width: auto;
-        }
-
-        .dns-toolbar>button {
-            min-width: 2.25rem;
-            padding: 0.25rem 0.4rem;
-        }
-
-        .dns-toolbar>#dns-controls {
-            display: flex !important;
-            gap: 0.35rem !important;
-        }
-
-        .dns-toolbar .dns-ctrl-btn {
-            padding: 0.25rem 0.4rem;
-            min-width: 2.25rem;
-        }
-
-        .dns-toolbar .dns-ctrl-btn .btn-label {
-            display: none;
-        }
-
-        .dns-toolbar .dns-ctrl-btn .material-icons {
-            margin: 0 !important;
-        }
-
-        .dns-header+.mb-4 {
-            margin-bottom: 0.75rem !important;
-        }
-
-        .dns-header+.mb-4 .row {
-            --bs-gutter-y: 0.75rem;
-        }
-
-        #dns-log-filters {
-            width: 100%;
-        }
-
-        #dns-log-filters .log-filters-container {
-            width: 100%;
-            display: grid !important;
-            grid-template-columns: 1fr;
-            gap: 0.5rem;
-        }
-
-        #dns-log-filters .btn,
-        #dns-log-filters .form-select,
-        #dns-log-filters .form-control {
-            width: 100% !important;
-            max-width: 100% !important;
-        }
-    }
-
-    @media (max-width: 575.98px) {
-        .dns-header .h3 {
-            font-size: 1.7rem;
-        }
-    }
-
-    @media (max-width: 767.98px) {
-        .top-domain-content {
-            gap: 0.5rem;
-        }
-
-        .top-domain-chart-wrap {
-            --donut-size: clamp(100px, 28vw, 140px);
-        }
-
-        #top-queried-chart-wrap {
-            max-height: 240px;
-        }
-
-        .custom-chart-legend {
-            max-height: 80px;
-            font-size: 0.68rem;
-        }
-
-        #log-table-wrap {
-            max-height: 460px;
-            overflow-x: hidden;
-        }
-
-        .log-table {
-            min-width: 100%;
-            width: 100%;
-            font-size: 0.78rem;
-            table-layout: auto;
-        }
-
-        .log-table thead {
-            display: table-header-group;
-        }
-
-        .log-table tbody {
-            display: table-row-group;
-        }
-
-        .log-table tr {
-            display: table-row;
-            border-bottom: 1px solid var(--bs-border-color);
-        }
-
-        .log-table tr.log-empty-row {
-            display: table-row;
-        }
-
-        .log-table tr.log-empty-row td {
-            width: auto;
-            padding-left: 0.75rem;
-            padding-right: 0.75rem;
-        }
-
-
-        .log-table th,
-        .log-table td {
-            display: table-cell;
-            border: 0;
-            padding: 0.3rem 0.45rem;
-            vertical-align: top;
-        }
-
-        .log-table th.log-col-time,
-        .log-table td.log-col-time {
-            width: 5.5rem;
-            min-width: 5.5rem;
-            white-space: nowrap;
-        }
-
-        .log-time-stack {
-            line-height: 1.2;
-        }
-
-        .log-time-date {
-            font-size: 0.75rem;
-        }
-
-        .log-time-clock {
-            font-size: 0.7rem;
-        }
-
-        .log-table th.log-col-type,
-        .log-table td.log-col-type {
-            width: 3rem;
-            min-width: 3rem;
-            white-space: nowrap;
-            text-align: left;
-        }
-
-        .log-table th.log-col-domain,
-        .log-table td[data-label="Domain"] {
-            width: auto;
-        }
-
-
-
-        .log-table td::before {
-            content: none;
-        }
-
-        .log-table td>* {
-            margin-left: 0;
-            text-align: left;
-            max-width: 100%;
-        }
-
-        .log-table td .log-domain {
-            display: block;
-            line-height: 1.2;
-            font-size: 0.75rem;
-            overflow-wrap: anywhere;
-        }
-
-        .log-domain-stack {
-            line-height: 1.2;
-        }
-
-        .log-domain-client {
-            display: block;
-            font-size: 0.72rem;
-            line-height: 1.2;
-        }
-
-
-
-        .log-table td code {
-            font-size: 0.72rem;
-            white-space: nowrap;
-        }
-
-        /* Add extra bottom padding in mobile view to prevent footer overlap */
-        .wb-page {
-            padding-bottom: 2rem;
-        }
-    }
-
-    @media (max-width: 575.98px) {
-        .log-table {
-            font-size: 0.82rem;
-        }
-
-        .log-table td .log-domain {
-            font-size: 0.78rem;
-        }
-
-        .log-domain-client {
-            font-size: 0.74rem;
-        }
-    }
-</style>
+<link rel='stylesheet' href='/static/css/dns.css'>
 {% endblock %}
 
 {% block content %}
-<div class="container-fluid wb-page">
+<div id="dns-app" class="container-fluid wb-page"
+     data-is-admin="{{ user['is_admin'] | tojson }}"
+     data-enable-blocklist="{{ enable_blocklist | tojson }}">
 <div class="wb-page-header flex-wrap gap-2 dns-header">
     <h2 class="page-title"><span class="material-icons me-2">dns</span>DNS Ad-Blocker</h2>
-    <div class="d-flex gap-2 align-items-center dns-toolbar">
+    <div class="d-flex gap-2 align-items-center flex-wrap dns-toolbar">
+        <!-- Global Quick Filters -->
+        <div class="d-flex gap-2 align-items-center flex-wrap dns-global-filters">
+            <select id="log-filter" class="form-select form-select-sm">
+                <option value="all">All</option>
+                <option value="blocked">Blocked only</option>
+                <option value="allowed">Allowed only</option>
+            </select>
+            <select id="peer-filter" class="form-select form-select-sm">
+                <option value="all">All Peers</option>
+            </select>
+            <input type="search" id="log-search" class="form-control form-control-sm" placeholder="Filter domain…">
+        </div>
+        <!-- Ad-Blocker Toggle -->
         <div class="dropdown adblocker-dropdown" id="adblocker-dropdown-wrap">
             <button class="btn btn-sm dropdown-toggle {{ 'btn-adblocker-enabled' if enable_blocklist else 'btn-adblocker-disabled' }}" type="button" id="adblocker-btn" data-bs-toggle="dropdown" aria-expanded="false"{% if not user['is_admin'] %} disabled{% endif %}>
                 <span id="adblocker-btn-text">{{ 'Ad-Blocker: Enabled' if enable_blocklist else 'Ad-Blocker: Disabled' }}</span>
-                <span id="adblocker-countdown" class="adblocker-countdown ms-1" style="display: none;"></span>
+                <span id="adblocker-countdown" class="adblocker-countdown ms-1 d-none"></span>
             </button>
             <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="adblocker-btn">
                 <li><a class="dropdown-item" href="#" data-adblocker-mode="enable"><span class="material-icons me-2">check_circle</span>Enable</a></li>
@@ -606,10 +47,10 @@
         <div class="card h-100">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-2">
-                    <div class="dns-stat-label">Status</div>
+                    <div class="dns-stat-label" id="label-status">Status</div>
                     <span class="material-icons dns-stat-icon">dns</span>
                 </div>
-                <div class="dns-stat-value" id="stat-status"><span class="spinner-border spinner-border-sm"></span>
+                <div class="dns-stat-value" id="stat-status" aria-labelledby="label-status"><span class="spinner-border spinner-border-sm"></span>
                 </div>
             </div>
         </div>
@@ -618,10 +59,10 @@
         <div class="card h-100">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-2">
-                    <div class="dns-stat-label">Queries</div>
+                    <div class="dns-stat-label" id="label-queries">Queries</div>
                     <span class="material-icons dns-stat-icon">query_stats</span>
                 </div>
-                <div class="dns-stat-value" id="stat-queries"><span class="spinner-border spinner-border-sm"></span>
+                <div class="dns-stat-value" id="stat-queries" aria-labelledby="label-queries"><span class="spinner-border spinner-border-sm"></span>
                 </div>
             </div>
         </div>
@@ -630,10 +71,10 @@
         <div class="card h-100">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-2">
-                    <div class="dns-stat-label">Blocked</div>
+                    <div class="dns-stat-label" id="label-blocked">Blocked</div>
                     <span class="material-icons dns-stat-icon">block</span>
                 </div>
-                <div class="dns-stat-value text-danger" id="stat-blocked"><span class="spinner-border spinner-border-sm"></span>
+                <div class="dns-stat-value text-danger" id="stat-blocked" aria-labelledby="label-blocked"><span class="spinner-border spinner-border-sm"></span>
                 </div>
             </div>
         </div>
@@ -642,10 +83,10 @@
         <div class="card h-100">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-2">
-                    <div class="dns-stat-label">% Blocked</div>
+                    <div class="dns-stat-label" id="label-percent">% Blocked</div>
                     <span class="material-icons dns-stat-icon">percent</span>
                 </div>
-                <div class="dns-stat-value text-danger" id="stat-percent"><span class="spinner-border spinner-border-sm"></span>
+                <div class="dns-stat-value text-danger" id="stat-percent" aria-labelledby="label-percent"><span class="spinner-border spinner-border-sm"></span>
                 </div>
             </div>
         </div>
@@ -654,10 +95,10 @@
         <div class="card h-100">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-2">
-                    <div class="dns-stat-label">Domains</div>
+                    <div class="dns-stat-label" id="label-domains">Domains</div>
                     <span class="material-icons dns-stat-icon">public</span>
                 </div>
-                <div class="dns-stat-value" id="stat-domains"><span class="spinner-border spinner-border-sm"></span>
+                <div class="dns-stat-value" id="stat-domains" aria-labelledby="label-domains"><span class="spinner-border spinner-border-sm"></span>
                 </div>
             </div>
         </div>
@@ -666,10 +107,10 @@
         <div class="card h-100">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-2">
-                    <div class="dns-stat-label">Blocklist</div>
+                    <div class="dns-stat-label" id="label-blocklist">Blocklist</div>
                     <span class="material-icons dns-stat-icon">list_alt</span>
                 </div>
-                <div class="dns-stat-value" id="stat-blocklist"><span class="spinner-border spinner-border-sm"></span>
+                <div class="dns-stat-value" id="stat-blocklist" aria-labelledby="label-blocklist"><span class="spinner-border spinner-border-sm"></span>
                 </div>
             </div>
         </div>
@@ -741,7 +182,7 @@
                         <span class="badge bg-secondary">30 Days</span>
                     </div>
                     <div class="card-body">
-                        <span class="d-none" id="trend-meta" aria-live="polite">Loading…</span>
+                        <span class="visually-hidden" id="trend-meta" aria-live="polite">Loading…</span>
                         <div id="trend-loading" class="d-flex align-items-center justify-content-center trend-chart-height">
                             <div class="spinner-border text-primary" role="status">
                                 <span class="visually-hidden">Loading...</span>
@@ -763,29 +204,13 @@
                     <span class="material-icons">receipt_long</span>
                     Query Log
                 </h5>
-                <button class="btn btn-sm btn-outline-secondary d-lg-none" data-bs-toggle="collapse"
-                    data-bs-target="#dns-log-filters" aria-expanded="false" aria-controls="dns-log-filters">
-                    <span class="material-icons align-middle me-1" style="font-size:18px;">filter_list</span>Filters
-                </button>
-                <div id="dns-log-filters" class="collapse">
-                    <div class="d-flex gap-2 align-items-center flex-wrap log-filters-container">
-                        <select id="log-filter" class="form-select form-select-sm">
-                            <option value="all">All</option>
-                            <option value="blocked">Blocked only</option>
-                            <option value="allowed">Allowed only</option>
-                        </select>
-                        <select id="peer-filter" class="form-select form-select-sm">
-                            <option value="all">All Peers</option>
-                        </select>
-                        <input type="search" id="log-search" class="form-control form-control-sm"
-                            placeholder="Filter domain…">
-                        <button id="log-refresh-btn" class="btn btn-sm btn-outline-secondary">
-                            <span class="material-icons align-middle" style="font-size:18px;">refresh</span>
-                        </button>
-                    </div>
-                </div>
             </div>
-            <div class="card-body p-0 flex-grow-1 d-flex flex-column" style="min-height: 0;">
+            <div class="card-body p-0 flex-grow-1 d-flex flex-column log-card-body">
+                <!-- Pull-to-refresh indicator (mobile only) -->
+                <div id="log-pull-refresh" class="pull-to-refresh-indicator d-sm-none">
+                    <span class="material-icons pull-arrow text-muted">arrow_downward</span>
+                    <span class="pull-text text-muted ms-2 small">Pull to refresh</span>
+                </div>
                 <div class="table-responsive flex-grow-1" id="log-table-wrap">
                     <table class="table table-hover log-table mb-0">
                         <thead class="sticky-top bg-body">
@@ -796,7 +221,7 @@
                             </tr>
                         </thead>
                         <tbody id="log-body">
-                            <tr>
+                            <tr class="log-empty-row">
                                 <td colspan="3" class="py-5">
                                     <div class="d-flex justify-content-center align-items-center">
                                         <div class="spinner-border text-primary" role="status">
@@ -809,11 +234,31 @@
                     </table>
                 </div>
                 <div id="log-action-menu" class="dropdown-menu"></div>
+                <!-- Screen reader announcement for search results -->
+                <div id="log-sr-announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
             </div>
         </div>
     </div>
 </div>
 </div>
+
+<template id="log-row-template">
+    <tr aria-description="Press Enter for rule actions">
+        <td data-label="Time" class="text-muted log-col-time">
+            <div class="log-time-stack">
+                <span class="log-time-date"></span>
+                <span class="log-time-clock"></span>
+            </div>
+        </td>
+        <td data-label="Domain">
+            <div class="log-domain-stack">
+                <span class="log-domain"></span>
+                <span class="text-muted log-domain-client"></span>
+            </div>
+        </td>
+        <td data-label="Type" class="log-col-type"><code></code></td>
+    </tr>
+</template>
 {% endblock %}
 
 {% block extra_js %}
@@ -847,9 +292,30 @@
     let _pollInterval = null;
     let _pollCount = 0;
     let _pollInProgress = false;
+    let _logsLoadInProgress = false;  // Guard against concurrent loadLogsOnly calls
     let _searchTimer = null;  // Debounce timer for search
     let _scrollRaf = null;  // RAF handle for scroll throttle
     let _logActionState = null; // Active row action context
+
+    /**
+     * Get comma-separated client IPs for the currently selected peer filter.
+     * Returns empty string if "All Peers" is selected.
+     */
+    function getSelectedPeerClientIps() {
+        const peerFilterEl = document.getElementById('peer-filter');
+        if (!peerFilterEl) return '';
+        const selectedPeer = peerFilterEl.value;
+        if (!selectedPeer || selectedPeer === 'all') return '';
+        
+        // Reverse lookup: find all IPs that map to the selected peer name
+        const ips = [];
+        for (const [ip, name] of Object.entries(_peerMap)) {
+            if (name === selectedPeer) {
+                ips.push(ip);
+            }
+        }
+        return ips.join(',');
+    }
 
     function clearNode(el) {
         while (el && el.firstChild) el.removeChild(el.firstChild);
@@ -860,6 +326,9 @@
         if (!menu) return;
         menu.classList.remove('show');
         _logActionState = null;
+        // Reset ARIA expanded state on all rows
+        document.querySelectorAll('[aria-expanded="true"]')
+            .forEach(el => el.setAttribute('aria-expanded', 'false'));
     }
 
     function openLogActionMenu(q, clickEvent) {
@@ -893,7 +362,7 @@
             btn.addEventListener('click', (ev) => {
                 ev.preventDefault();
                 ev.stopPropagation();
-                applyLogRuleAction(item.action, item.scope);
+                void applyLogRuleAction(item.action, item.scope);
             });
             menu.appendChild(btn);
         }
@@ -935,9 +404,13 @@
         // Position with viewport boundary checking using actual menu dimensions
         menu.style.left = `${Math.min(x, viewportWidth - menuRect.width - 8)}px`;
         menu.style.top = `${Math.min(y, viewportHeight - menuRect.height - 8)}px`;
+
+        // Set ARIA expanded on the triggering row
+        const row = clickEvent.target.closest('tr');
+        if (row) row.setAttribute('aria-expanded', 'true');
     }
 
-    function applyLogRuleAction(action, scope) {
+    async function applyLogRuleAction(action, scope) {
         const state = _logActionState;
         closeLogActionMenu();
         if (!state || !state.domain) return;
@@ -954,18 +427,17 @@
 
         wbToast('Applying rule…', 'success');
 
-        void api('POST', '/api/dns/custom-rules/actions', payload)
-            .then((res) => {
-                if (res?.duplicate) {
-                    wbToast('Rule already exists', 'info');
-                } else {
-                    wbToast(res?.message || 'Rule applied', 'success');
-                }
-                void loadLogsOnly();
-            })
-            .catch((e) => {
-                wbToast('Failed to apply DNS rule: ' + e.message, 'danger');
-            });
+        try {
+            const res = await api('POST', '/api/dns/custom-rules/actions', payload);
+            if (res?.duplicate) {
+                wbToast('Rule already exists', 'info');
+            } else {
+                wbToast(res?.message || 'Rule applied', 'success');
+            }
+            await loadLogsOnly();
+        } catch (e) {
+            wbToast('Failed to apply DNS rule: ' + e.message, 'danger');
+        }
     }
 
     function getChartThemeColors() {
@@ -997,30 +469,43 @@
 
     function fmtNum(n) {
         if (!Number.isFinite(n) || n <= 0) return '0';
-        if (n >= 999_500) return (n / 1_000_000).toFixed(1) + 'M';
+        if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+        if (n >= 10_000) return (n / 1_000).toFixed(0) + 'k';
         if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
         return Math.floor(n).toString();
     }
 
     /**
      * Calculate optimal bucket size for DNS trend chart based on viewport width.
-     * Returns bucket_minutes: smaller screens get larger buckets (fewer points).
+     * Returns bucket_minutes capped to backend API limit (<= 1440).
      */
     function getTrendBucketMinutes() {
         const width = window.innerWidth;
-        // Mobile (<576px): 2-day buckets = ~15 points
-        if (width < 576) return 2880;
-        // Tablet (<992px): 1.5-day buckets = ~20 points
-        if (width < 992) return 2160;
-        // Desktop: 1-day buckets = ~30 points
+        // Mobile (<576px): 12h buckets = ~60 points over 30 days.
+        if (width < 576) return 720;
+        // Tablet (<992px): 18h buckets = ~40 points.
+        if (width < 992) return 1080;
+        // Desktop: 24h buckets = ~30 points.
         return 1440;
     }
 
     async function loadTrend() {
         try {
             // 30 days = 720 hours, bucket size adapts to viewport
-            const bucketMinutes = getTrendBucketMinutes();
-            const t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}`);
+            const bucketMinutes = Math.min(1440, Math.max(5, getTrendBucketMinutes()));
+            const clientIps = getSelectedPeerClientIps();
+            const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
+            let t;
+            try {
+                t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}${clientIpsParam}`);
+            } catch (err) {
+                // Fallback for strict query validation mismatches on older deployments.
+                if (err?.code === 'HTTP_422' && bucketMinutes !== 1440) {
+                    t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=1440${clientIpsParam}`);
+                } else {
+                    throw err;
+                }
+            }
             const labels = (t.labels || []).map(_fmtTrendLabel);
             const blocked = t.blocked || [];
             const total = t.total || [];
@@ -1039,7 +524,7 @@
                     _trendChart.destroy();
                     _trendChart = null;
                 }
-                emptyEl.innerHTML = '';
+                clearNode(emptyEl);
                 emptyEl.appendChild(chartEmptyState());
                 return;
             }
@@ -1051,7 +536,10 @@
 
             // Ensure canvas exists (may have been replaced by empty state)
             if (!trendWrap.querySelector('#dnsTrendChart')) {
-                trendWrap.innerHTML = '<canvas id="dnsTrendChart"></canvas>';
+                clearNode(trendWrap);
+                const canvas = document.createElement('canvas');
+                canvas.id = 'dnsTrendChart';
+                trendWrap.appendChild(canvas);
                 _trendChart = null;
             }
 
@@ -1132,7 +620,10 @@
                             y: {
                                 beginAtZero: true,
                                 grid: { color: gridColor },
-                                ticks: { color: textColor },
+                                ticks: {
+                                    color: textColor,
+                                    callback: v => v >= 1e6 ? (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'K' : v
+                                },
                                 title: { display: true, text: 'Queries', color: textColor },
                             },
                             y1: {
@@ -1211,12 +702,31 @@
 
     async function loadTopDomains() {
         try {
-            const data = await api('GET', '/api/dns/top-domains?limit=15');
+            const clientIps = getSelectedPeerClientIps();
+            const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
+            const data = await api('GET', `/api/dns/top-domains?limit=15${clientIpsParam}`);
             const topQueried = data.top_queried || [];
             const topBlocked = data.top_blocked || [];
 
-            renderQueriedDoughnut(topQueried);
-            renderBlockedBarChart(topBlocked);
+            // Both render as horizontal bar charts
+            renderTopDomainBars({
+                items: topQueried,
+                loadingId: 'top-queried-loading',
+                contentId: 'top-queried-content',
+                listId: 'top-queried-list',
+                emptyId: 'top-queried-empty',
+                colors: queriedColors,
+                defaultColor: '#0d6efd'
+            });
+            renderTopDomainBars({
+                items: topBlocked,
+                loadingId: 'top-blocked-loading',
+                contentId: 'top-blocked-content',
+                listId: 'top-blocked-list',
+                emptyId: 'top-blocked-empty',
+                colors: blockedColors,
+                defaultColor: '#dc3545'
+            });
         } catch (e) {
             console.error('Top domains error:', e);
         }
@@ -1302,9 +812,7 @@
             topRow.className = 'd-flex justify-content-between align-items-end';
 
             const nameEl = document.createElement('span');
-            nameEl.className = 'log-domain text-truncate';
-            nameEl.style.fontSize = '0.85rem';
-            nameEl.style.maxWidth = '60%';
+            nameEl.className = 'log-domain text-truncate top-domain-name';
             nameEl.textContent = label;
             nameEl.title = label;
 
@@ -1312,13 +820,11 @@
             statsWrap.className = 'd-flex align-items-baseline gap-2';
 
             const valEl = document.createElement('span');
-            valEl.style.fontSize = '0.8rem';
-            valEl.style.fontWeight = '600';
+            valEl.className = 'top-domain-stats';
             valEl.textContent = fmtNum(val);
 
             const pctEl = document.createElement('span');
-            pctEl.className = 'badge bg-secondary';
-            pctEl.style.fontSize = '0.65rem';
+            pctEl.className = 'badge bg-secondary top-domain-percent';
             pctEl.textContent = totalPct + '%';
 
             statsWrap.appendChild(valEl);
@@ -1327,10 +833,7 @@
             topRow.appendChild(statsWrap);
 
             const barWrap = document.createElement('div');
-            barWrap.className = 'w-100 bg-secondary bg-opacity-25';
-            barWrap.style.borderRadius = '3px';
-            barWrap.style.height = '6px';
-            barWrap.style.overflow = 'hidden';
+            barWrap.className = 'w-100 bg-secondary bg-opacity-25 top-domain-bar-track';
 
             const barInner = document.createElement('div');
             barInner.className = 'top-domain-bar';
@@ -1344,36 +847,13 @@
         });
     }
 
-    function renderQueriedDoughnut(topQueried) {
-        renderTopDomainBars({
-            items: topQueried,
-            loadingId: 'top-queried-loading',
-            contentId: 'top-queried-content',
-            listId: 'top-queried-list',
-            emptyId: 'top-queried-empty',
-            colors: queriedColors,
-            defaultColor: '#0d6efd'
-        });
-    }
-
-    function renderBlockedBarChart(topBlocked) {
-        renderTopDomainBars({
-            items: topBlocked,
-            loadingId: 'top-blocked-loading',
-            contentId: 'top-blocked-content',
-            listId: 'top-blocked-list',
-            emptyId: 'top-blocked-empty',
-            colors: blockedColors,
-            defaultColor: '#dc3545'
-        });
-    }
-
     function showLogsLoadingState() {
         const tbody = document.getElementById('log-body');
         if (!tbody) return;
 
         clearNode(tbody);
         const tr = document.createElement('tr');
+        tr.className = 'log-empty-row';
         const td = document.createElement('td');
         td.colSpan = 3;
         td.className = 'py-5';
@@ -1397,18 +877,18 @@
     }
 
     async function loadLogsOnly(showLoading = true) {
-        const wrap = document.getElementById('log-table-wrap');
-        const scrollTop = wrap ? wrap.scrollTop : 0;
-        if (showLoading) {
-            showLogsLoadingState();
-        }
+        if (_logsLoadInProgress) return;
+        _logsLoadInProgress = true;
         try {
+            if (showLoading) {
+                showLogsLoadingState();
+            }
             const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}`);
             _logData = data.queries || [];
             _renderedCount = 0;  // Reset for fresh render
             renderLogs();
-            // Restore scroll position after render
-            if (wrap) wrap.scrollTop = scrollTop;
+            // Note: Scroll position restoration removed - with batched rendering,
+            // restoring to a position beyond the initial batch is incorrect.
         } catch (e) {
             if (showLoading) {
                 const tbody = document.getElementById('log-body');
@@ -1423,6 +903,8 @@
                 tr.appendChild(td);
                 tbody.appendChild(tr);
             }
+        } finally {
+            _logsLoadInProgress = false;
         }
     }
 
@@ -1535,10 +1017,11 @@
             if (q.blocked) tr.className = 'table-danger bg-opacity-10';
             if (isAdmin) {
                 tr.classList.add('log-row-actionable');
-                tr.style.cursor = 'pointer';
                 tr.title = 'Click for rule actions';
                 tr.setAttribute('tabindex', '0');
                 tr.setAttribute('role', 'button');
+                tr.setAttribute('aria-haspopup', 'menu');
+                tr.setAttribute('aria-expanded', 'false');
             }
             tr.dataset.logIndex = startIdx + i;
 
@@ -1645,11 +1128,11 @@
 
         const now = Math.floor(Date.now() / 1000);
         if (!enabled && disabledUntil > now) {
-            countdown.style.display = 'inline';
+            countdown.classList.remove('d-none');
             updateCountdownDisplay();
             _adblockerCountdownInterval = setInterval(updateCountdownDisplay, 1000);
         } else {
-            countdown.style.display = 'none';
+            countdown.classList.add('d-none');
             countdown.textContent = '';
         }
     }
@@ -1662,7 +1145,7 @@
         const remaining = _adblockerDisabledUntil - now;
 
         if (remaining <= 0) {
-            countdown.style.display = 'none';
+            countdown.classList.add('d-none');
             countdown.textContent = '';
             if (_adblockerCountdownInterval) {
                 clearInterval(_adblockerCountdownInterval);
@@ -1761,8 +1244,11 @@
             stopPolling();
             closeLogActionMenu();
         } else {
-            await loadPeers();
-            await Promise.allSettled([loadStats(), loadTopDomains(), loadTrend(), loadLogsOnly(), loadAdblockerStatus()]);
+            // Load all data in parallel
+            await Promise.allSettled([
+                loadPeers(), loadStats(), loadTopDomains(),
+                loadTrend(), loadLogsOnly(), loadAdblockerStatus()
+            ]);
             startPolling();
         }
     });
@@ -1828,28 +1314,131 @@
     // Attach event listeners to filter controls (moved from inline handlers for CSP compliance)
     const logFilterSelect = document.getElementById('log-filter');
     if (logFilterSelect) {
-        logFilterSelect.addEventListener('change', renderLogs);
+        // Load fresh data when filter changes
+        logFilterSelect.addEventListener('change', () => loadLogsOnly());
     }
 
     const peerFilterSelect = document.getElementById('peer-filter');
     if (peerFilterSelect) {
-        peerFilterSelect.addEventListener('change', renderLogs);
+        // Load fresh data when peer filter changes - affects logs, trend, and top domains
+        peerFilterSelect.addEventListener('change', async () => {
+            // Logs are filtered client-side, re-render immediately
+            renderLogs();
+            // Trend and top-domains need to re-fetch from API with new filter
+            await Promise.allSettled([loadTrend(), loadTopDomains()]);
+        });
     }
 
     const logSearchInput = document.getElementById('log-search');
     if (logSearchInput) {
+        // Only filter existing data on search (debounced)
         logSearchInput.addEventListener('input', debouncedRenderLogs);
     }
 
-    const logRefreshBtn = document.getElementById('log-refresh-btn');
-    if (logRefreshBtn) {
-        logRefreshBtn.addEventListener('click', () => loadLogsOnly());
+    // Pull-to-refresh for mobile
+    const pullRefreshIndicator = document.getElementById('log-pull-refresh');
+    const logTableWrap = document.getElementById('log-table-wrap');
+    
+    if (pullRefreshIndicator && logTableWrap && 'ontouchstart' in window) {
+        let touchStartY = 0;
+        let touchCurrentY = 0;
+        let isPulling = false;
+        let isRefreshing = false;
+        const PULL_THRESHOLD = 60;
+        
+        logTableWrap.addEventListener('touchstart', (e) => {
+            // Only allow pull-to-refresh when scrolled to top
+            if (logTableWrap.scrollTop === 0 && !isRefreshing) {
+                touchStartY = e.touches[0].clientY;
+                isPulling = true;
+            }
+        }, { passive: true });
+        
+        logTableWrap.addEventListener('touchmove', (e) => {
+            if (!isPulling || isRefreshing) return;
+            
+            touchCurrentY = e.touches[0].clientY;
+            const pullDistance = touchCurrentY - touchStartY;
+            
+            // Only show indicator when pulling down
+            if (pullDistance > 0 && logTableWrap.scrollTop === 0) {
+                pullRefreshIndicator.style.height = `${Math.min(pullDistance * 0.5, 50)}px`;
+                pullRefreshIndicator.classList.add('pulling');
+                
+                if (pullDistance >= PULL_THRESHOLD) {
+                    pullRefreshIndicator.classList.add('ready');
+                    pullRefreshIndicator.querySelector('.pull-text').textContent = 'Release to refresh';
+                } else {
+                    pullRefreshIndicator.classList.remove('ready');
+                    pullRefreshIndicator.querySelector('.pull-text').textContent = 'Pull to refresh';
+                }
+            }
+        }, { passive: true });
+        
+        logTableWrap.addEventListener('touchend', async () => {
+            if (!isPulling || isRefreshing) return;
+            
+            const pullDistance = touchCurrentY - touchStartY;
+            
+            if (pullDistance >= PULL_THRESHOLD && logTableWrap.scrollTop === 0) {
+                // Trigger refresh
+                isRefreshing = true;
+                pullRefreshIndicator.classList.remove('ready');
+                pullRefreshIndicator.classList.add('refreshing');
+                clearNode(pullRefreshIndicator);
+                
+                const spinner = document.createElement('div');
+                spinner.className = 'spinner-border spinner-border-sm text-primary';
+                spinner.setAttribute('role', 'status');
+                const srOnly = document.createElement('span');
+                srOnly.className = 'visually-hidden';
+                srOnly.textContent = 'Loading...';
+                spinner.appendChild(srOnly);
+                
+                const text = document.createElement('span');
+                text.className = 'text-muted ms-2 small';
+                text.textContent = 'Refreshing...';
+                
+                pullRefreshIndicator.appendChild(spinner);
+                pullRefreshIndicator.appendChild(text);
+                
+                try {
+                    await loadLogsOnly(false);
+                } finally {
+                    // Reset indicator
+                    isRefreshing = false;
+                    pullRefreshIndicator.classList.remove('pulling', 'refreshing');
+                    pullRefreshIndicator.style.height = '0';
+                    clearNode(pullRefreshIndicator);
+                    
+                    const arrow = document.createElement('span');
+                    arrow.className = 'material-icons pull-arrow text-muted';
+                    arrow.textContent = 'arrow_downward';
+                    const pullText = document.createElement('span');
+                    pullText.className = 'pull-text text-muted ms-2 small';
+                    pullText.textContent = 'Pull to refresh';
+                    
+                    pullRefreshIndicator.appendChild(arrow);
+                    pullRefreshIndicator.appendChild(pullText);
+                }
+            } else {
+                // Reset without refresh
+                pullRefreshIndicator.classList.remove('pulling', 'ready');
+                pullRefreshIndicator.style.height = '0';
+            }
+            
+            isPulling = false;
+            touchStartY = 0;
+            touchCurrentY = 0;
+        }, { passive: true });
     }
 
     // Initial load - wait for completion before starting polling to avoid race conditions
     (async () => {
-        await loadPeers();
-        await Promise.allSettled([loadStats(), loadTopDomains(), loadTrend(), loadLogsOnly(), loadAdblockerStatus()]);
+        await Promise.allSettled([
+            loadPeers(), loadStats(), loadTopDomains(),
+            loadTrend(), loadLogsOnly(), loadAdblockerStatus()
+        ]);
         startPolling(); // Only start polling after initial load completes
     })();
 </script>

@@ -10,15 +10,28 @@ function wbToast(message, type = 'info', duration = 4000) {
     const bgClasses = { info: 'text-bg-primary', success: 'text-bg-success', warning: 'text-bg-warning', danger: 'text-bg-danger' };
 
     const container = document.getElementById('wbToastContainer');
-    if (container) {
-        const existingToasts = container.querySelectorAll('.toast');
-        for (let t of existingToasts) {
-            const msgSpan = t.querySelector('.toast-body span:last-child');
-            if (msgSpan && msgSpan.textContent === message) {
-                try {
-                    const bsToast = bootstrap.Toast.getInstance(t);
-                    if (bsToast) bsToast.dispose();
-                } catch (e) { }
+    if (!container) {
+        console.error('wbToastContainer not found - toast cannot be displayed:', message);
+        return;
+    }
+
+    const existingToasts = container.querySelectorAll('.toast');
+    for (let t of existingToasts) {
+        const msgSpan = t.querySelector('.toast-body span:last-child');
+        if (msgSpan && msgSpan.textContent === message) {
+            try {
+                const bsToast = bootstrap.Toast.getInstance(t);
+                if (bsToast) {
+                    // Use hide() instead of dispose() — dispose() nullifies
+                    // _element immediately, which crashes if Bootstrap's
+                    // queued transition callback fires after disposal.
+                    // The 'hidden.bs.toast' listener already calls remove().
+                    bsToast.hide();
+                } else {
+                    // No active Bootstrap instance — safe to remove directly
+                    t.remove();
+                }
+            } catch (e) {
                 t.remove();
             }
         }
@@ -57,7 +70,7 @@ function wbToast(message, type = 'info', duration = 4000) {
 
     toastEl.appendChild(flexDiv);
 
-    document.getElementById('wbToastContainer').appendChild(toastEl);
+    container.appendChild(toastEl);
     const toast = new bootstrap.Toast(toastEl, { delay: duration });
     toast.show();
 

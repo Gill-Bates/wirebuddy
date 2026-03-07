@@ -583,6 +583,7 @@ async def dns_selftest(_: sqlite3.Row = Depends(get_current_user)):
 async def dns_trend(
 	hours: int = Query(24, ge=1, le=720),
 	bucket_minutes: int = Query(60, ge=5, le=1440),
+	client_ips: str | None = Query(None, description="Comma-separated client IPs to filter by"),
 	dns_dir: Path = Depends(get_dns_dir),
 	_: sqlite3.Row = Depends(get_current_user),
 ):
@@ -590,8 +591,15 @@ async def dns_trend(
 	
 	Data source: TSDB DNS query store (persisted across restarts).
 	"""
+	# Parse client IPs filter
+	client_filter: set[str] | None = None
+	if client_ips:
+		client_filter = {ip.strip() for ip in client_ips.split(",") if ip.strip()}
+		if not client_filter:
+			client_filter = None
+	
 	dns_key = str(dns_dir.resolve())
-	cache_key = (dns_key, hours, bucket_minutes)
+	cache_key = (dns_key, hours, bucket_minutes, client_ips or "")
 	cache_entry = _dns_trend_cache.get(cache_key)
 	now_mono = time.monotonic()
 	if cache_entry and (now_mono - cache_entry[0]) < _DNS_TREND_CACHE_TTL_SECONDS:
@@ -621,6 +629,9 @@ async def dns_trend(
 		if ts is None:
 			continue
 		if ts < since:
+			continue
+		# Apply client IP filter if specified
+		if client_filter and q.get("client") not in client_filter:
 			continue
 
 		bucket_ts = _bucket_start(ts)
@@ -1290,15 +1301,26 @@ async def dns_logs(
 @router.get("/top-domains")
 async def top_domains(
 	limit: int = 20,
+	client_ips: str | None = Query(None, description="Comma-separated client IPs to filter by"),
 	dns_dir: Path = Depends(get_dns_dir),
 	_: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Get top queried and blocked domains."""
+	# Parse client IPs filter
+	client_filter: set[str] | None = None
+	if client_ips:
+		client_filter = {ip.strip() for ip in client_ips.split(",") if ip.strip()}
+		if not client_filter:
+			client_filter = None
+	
 	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, dns_dir, 50000)
 	domain_counts: dict[str, int] = {}
 	blocked_counts: dict[str, int] = {}
 
 	for q in queries:
+		# Apply client IP filter if specified
+		if client_filter and q.get("client") not in client_filter:
+			continue
 		domain = str(q.get("domain", "")).strip()
 		if not domain:
 			continue

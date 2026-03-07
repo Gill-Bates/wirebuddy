@@ -370,6 +370,8 @@ def login(
 
 	# Check if OTP setup is pending (secret set but not confirmed)
 	otp_setup_pending = bool(user["otp_secret"]) and not bool(user["otp_enabled"])
+	# Check if passkey setup is pending (admin enabled but user hasn't registered)
+	passkey_setup_pending = bool(user["passkey_pending"]) and not bool(user["passkey_enabled"])
 	
 	now = datetime.now(timezone.utc)
 	token = new_token()
@@ -399,6 +401,10 @@ def login(
 	if otp_setup_pending:
 		_log.info("LOGIN_OTP_SETUP_PENDING ip=%s username=%s", client_ip, log_username)
 		data["otp_setup_pending"] = True
+
+	if passkey_setup_pending:
+		_log.info("LOGIN_PASSKEY_SETUP_PENDING ip=%s username=%s", client_ip, log_username)
+		data["passkey_setup_pending"] = True
 
 	return ok_response(data=data)
 
@@ -500,11 +506,19 @@ def verify_mfa(
 	else:
 		_log.info("LOGIN_SUCCESS ip=%s username=%s mfa=totp", client_ip, log_username)
 
+	# Check if passkey setup is pending (admin enabled but user hasn't registered)
+	passkey_setup_pending = bool(user["passkey_pending"]) and not bool(user["passkey_enabled"])
+
 	data = {
 		"token": token,
 		"expires_at": expires_at,
 		"token_type": "Bearer",
 	}
+	
+	if passkey_setup_pending:
+		_log.info("LOGIN_PASSKEY_SETUP_PENDING ip=%s username=%s", client_ip, log_username)
+		data["passkey_setup_pending"] = True
+	
 	return ok_response(data=data)
 
 
@@ -553,6 +567,8 @@ def get_current_user_info(user: sqlite3.Row = Depends(get_current_user)):
 		"is_active": bool(user["is_active"]),
 		"otp_enabled": bool(user["otp_enabled"]),
 		"otp_setup_pending": bool(user["otp_secret"]) and not bool(user["otp_enabled"]),
+		"passkey_enabled": bool(user["passkey_enabled"]),
+		"passkey_setup_pending": bool(user["passkey_pending"]) and not bool(user["passkey_enabled"]),
 	}
 	return ok_response(data=data)
 

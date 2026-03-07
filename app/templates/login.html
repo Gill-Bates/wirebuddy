@@ -11,6 +11,7 @@
     <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
     <link href="/static/css/style.css" rel="stylesheet">
     <link href="/static/css/wb-ui-system.css" rel="stylesheet">
+    <link href="/static/css/login.css" rel="stylesheet">
     <link href="/static/vendor/material-icons.css" rel="stylesheet">
     <script src="/static/js/theme.js"></script>
 </head>
@@ -20,25 +21,26 @@
         <div class="card-body p-4 p-sm-5">
             <div class="text-center mb-4">
                 <div class="logo-icon mb-3 d-flex justify-content-center">
-                    <img src="/static/img/wirebuddy_1c.svg" alt="WireBuddy"
-                        style="width: 260px; height: auto; display: block;" class="logo-themed">
+                    <img src="/static/img/wirebuddy_1c.svg" alt="WireBuddy" class="logo-main logo-themed">
                 </div>
                 <p class="login-tagline small mb-2">Use WireGuard with ease!</p>
             </div>
 
-            <div class="alert alert-danger" id="error-alert" role="alert" aria-live="assertive"></div>
+            <div class="alert alert-danger d-none" id="error-alert" role="alert" aria-live="assertive" aria-atomic="true"></div>
 
-            <form id="login-form">
+            <form id="login-form" aria-describedby="error-alert">
                 <div class="mb-3">
                     <label for="username" class="form-label">Username</label>
                     <input type="text" class="form-control form-control-lg" id="username" name="username"
-                        autocomplete="username" autocapitalize="off" autocorrect="off" required autofocus>
+                        autocomplete="username" autocapitalize="off" autocorrect="off" required autofocus
+                        aria-describedby="error-alert">
                 </div>
 
                 <div class="mb-4">
                     <label for="password" class="form-label">Password</label>
                     <input type="password" class="form-control form-control-lg" id="password" name="password"
-                        autocomplete="current-password" required>
+                        autocomplete="current-password" required
+                        aria-describedby="error-alert">
                 </div>
 
                 <button type="submit" class="btn btn-primary btn-lg w-100" id="submit-btn">
@@ -46,88 +48,25 @@
                 </button>
             </form>
 
-            <div id="mfa-form" style="display: none;">
+            <!-- Passkey Login Section -->
+            <div id="passkey-section" class="hidden">
+                <div class="d-flex align-items-center my-3">
+                    <hr class="flex-grow-1">
+                    <span class="px-3 text-muted small">or</span>
+                    <hr class="flex-grow-1">
+                </div>
+                <button type="button" class="btn btn-outline-secondary btn-lg w-100" id="passkey-login-btn">
+                    <span class="material-icons align-middle me-2 icon-sm">fingerprint</span>
+                    Sign in with Passkey
+                </button>
+            </div>
+
+            <div id="mfa-form" class="hidden">
                 <div class="text-center mb-3" id="mfa-header">
-                    <span class="material-icons" style="font-size: 48px; color: var(--bs-primary);">security</span>
+                    <span class="material-icons icon-lg text-primary">security</span>
                     <h5 class="mt-2 mb-1">Two-Factor Authentication</h5>
                     <p class="text-muted small mb-0">Enter the 6-digit code from your authenticator app</p>
                 </div>
-
-                <style>
-                    .otp-digits-container {
-                        display: flex;
-                        justify-content: center;
-                        align-items: center;
-                        gap: 0.375rem;
-                        flex-wrap: nowrap;
-                        width: 100%;
-                        max-width: 100%;
-                    }
-                    .otp-digits-container.d-none {
-                        display: none !important;
-                    }
-                    .otp-digit {
-                        flex: 0 0 auto;
-                        width: 44px;
-                        height: 52px;
-                        font-size: 1.25rem;
-                        line-height: 52px;
-                        padding: 0;
-                        min-height: 0;
-                        text-align: center;
-                        border-radius: 0.375rem;
-                        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-                        font-variant-numeric: tabular-nums;
-                        font-feature-settings: "tnum";
-                        font-weight: 500;
-                        text-rendering: geometricPrecision;
-                        -webkit-font-smoothing: antialiased;
-                    }
-                    .otp-digit:invalid {
-                        box-shadow: none;
-                        outline: none;
-                        color: inherit;
-                        border-color: var(--bs-border-color);
-                    }
-                    .otp-separator {
-                        flex: 0 0 auto;
-                        padding: 0 2px;
-                        color: var(--bs-secondary);
-                    }
-                    @media (max-width: 400px) {
-                        .otp-digits-container {
-                            gap: 0.25rem;
-                        }
-                        .otp-digit {
-                            width: 38px;
-                            height: 46px;
-                            font-size: 1.1rem;
-                            line-height: 46px;
-                        }
-                        .otp-separator {
-                            padding: 0;
-                        }
-                    }
-                    @media (max-width: 340px) {
-                        .otp-digit {
-                            width: 34px;
-                            height: 42px;
-                            font-size: 1rem;
-                            line-height: 42px;
-                        }
-                    }
-                    /* OTP error shake animation */
-                    @keyframes otp-shake {
-                        0%, 100% { transform: translateX(0); }
-                        10%, 50%, 90% { transform: translateX(-4px); }
-                        30%, 70% { transform: translateX(4px); }
-                    }
-                    .otp-digit.otp-error {
-                        border-color: var(--wb-danger) !important;
-                        color: var(--wb-danger) !important;
-                        animation: otp-shake 0.5s ease-in-out;
-                    }
-                </style>
 
                 <div class="otp-digits-container mb-3" id="otp-digits">
                     <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="0">
@@ -149,10 +88,12 @@
                     </button>
                 </div>
 
-                <div id="recovery-form" style="display: none;" class="mt-3">
+                <div id="recovery-form" class="hidden mt-3">
                     <div class="mb-3">
                         <label for="recovery-code" class="form-label">Recovery Code</label>
-                        <input type="text" class="form-control form-control-lg" id="recovery-code" placeholder="Enter recovery code" autocomplete="off">
+                        <input type="text" class="form-control form-control-lg" id="recovery-code" 
+                            placeholder="Enter recovery code" autocomplete="off"
+                            aria-label="Enter your recovery code">
                     </div>
                     <button type="button" class="btn btn-warning btn-lg w-100" id="recovery-submit-btn">
                         Verify Recovery Code
@@ -161,248 +102,18 @@
             </div>
 
             <div class="text-center mt-4">
-                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleTheme()"
-                    aria-label="Toggle theme" style="border-radius: 50%; width: 40px; height: 40px; padding: 0;">
-                    <span class="material-icons" id="theme-icon-login"
-                        style="font-size: 20px; vertical-align: middle;">dark_mode</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary theme-toggle-btn"
+                    id="theme-toggle-btn" aria-label="Toggle theme">
+                    <span class="material-icons theme-icon" id="theme-icon-login">dark_mode</span>
                 </button>
             </div>
         </div>
     </div>
 
-    <script>
-        let mfaUsername = '';
-        let mfaToken = '';
-
-        function setBusy(buttonEl, busyText) {
-            buttonEl.disabled = true;
-            buttonEl.textContent = busyText;
-            buttonEl.setAttribute('aria-busy', 'true');
-        }
-
-        function clearBusy(buttonEl, idleText) {
-            buttonEl.disabled = false;
-            buttonEl.textContent = idleText;
-            buttonEl.removeAttribute('aria-busy');
-        }
-
-        function showError(message) {
-            const errorAlert = document.getElementById('error-alert');
-            errorAlert.textContent = message;
-            errorAlert.style.display = 'block';
-        }
-
-        function hideError() {
-            const errorAlert = document.getElementById('error-alert');
-            errorAlert.style.display = 'none';
-        }
-
-        document.getElementById('login-form').addEventListener('submit', async function (e) {
-            e.preventDefault();
-
-            const submitBtn = document.getElementById('submit-btn');
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-
-            hideError();
-            setBusy(submitBtn, 'Signing in...');
-
-            try {
-                const response = await fetch('/api/login', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRF-Token': document.body.dataset.csrfToken,
-                    },
-                    body: JSON.stringify({ username, password }),
-                    credentials: 'same-origin',
-                });
-
-                let data = {};
-                try {
-                    data = await response.json();
-                } catch (jsonError) {
-                    throw new Error('Invalid response from server');
-                }
-
-                if (!response.ok) {
-                    throw new Error(data.detail || 'Login failed');
-                }
-
-                if (data?.data?.mfa_required) {
-                    mfaUsername = username;
-                    mfaToken = String(data?.data?.mfa_token || '').trim();
-                    if (!mfaToken) {
-                        throw new Error('MFA challenge could not be initialized');
-                    }
-                    document.getElementById('login-form').style.display = 'none';
-                    document.getElementById('mfa-form').style.display = 'block';
-                    initOtpDigits();
-                    return;
-                }
-
-                // Check if OTP setup is pending (secret set but not confirmed)
-                if (data?.data?.otp_setup_pending) {
-                    mfaUsername = username;
-                    sessionStorage.setItem('otp_setup_pending', 'true');
-                    sessionStorage.setItem('otp_setup_secret', data.data.otp_secret || '');
-                    sessionStorage.setItem('otp_setup_uri', data.data.provisioning_uri || '');
-                    sessionStorage.setItem('otp_setup_qr', data.data.qr_code_data_url || '');
-                    window.location.href = '/ui/otp-setup';
-                    return;
-                }
-
-                // Auth cookie is set by the server (HttpOnly, Secure, SameSite=Strict).
-                // No client-side token storage needed.
-                window.location.href = '/ui/dashboard';
-
-            } catch (error) {
-                showError(error.message);
-            } finally {
-                clearBusy(submitBtn, 'Sign In');
-            }
-        });
-
-        // OTP digit boxes with auto-advance and auto-submit
-        function initOtpDigits() {
-            const digits = document.querySelectorAll('.otp-digit');
-            const submitBtn = document.getElementById('mfa-submit-btn');
-
-            digits.forEach((input, idx) => {
-                input.value = '';
-                input.addEventListener('input', (e) => {
-                    const val = e.target.value.replace(/\D/g, '');
-                    e.target.value = val.slice(0, 1);
-
-                    if (val && idx < digits.length - 1) {
-                        digits[idx + 1].focus();
-                    }
-                    updateSubmitState();
-                    autoSubmitIfComplete();
-                });
-
-                input.addEventListener('keydown', (e) => {
-                    if (e.key === 'Backspace' && !e.target.value && idx > 0) {
-                        digits[idx - 1].focus();
-                    }
-                });
-
-                input.addEventListener('paste', (e) => {
-                    e.preventDefault();
-                    const paste = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '');
-                    for (let i = 0; i < Math.min(paste.length, digits.length); i++) {
-                        digits[i].value = paste[i];
-                    }
-                    const focusIdx = Math.min(paste.length, digits.length - 1);
-                    digits[focusIdx].focus();
-                    updateSubmitState();
-                    autoSubmitIfComplete();
-                });
-
-                input.addEventListener('focus', () => input.select());
-            });
-
-            digits[0].focus();
-
-            function updateSubmitState() {
-                const code = getOtpCode();
-                submitBtn.disabled = code.length !== 6;
-            }
-
-            function autoSubmitIfComplete() {
-                const code = getOtpCode();
-                if (code.length === 6) {
-                    submitMfa(code);
-                }
-            }
-        }
-
-        function getOtpCode() {
-            return Array.from(document.querySelectorAll('.otp-digit')).map(d => d.value).join('');
-        }
-
-        function clearOtpDigits() {
-            document.querySelectorAll('.otp-digit').forEach(d => d.value = '');
-            document.querySelector('.otp-digit')?.focus();
-            document.getElementById('mfa-submit-btn').disabled = true;
-        }
-
-        async function submitMfa(code) {
-            const mfaSubmitBtn = document.getElementById('mfa-submit-btn');
-
-            hideError();
-            setBusy(mfaSubmitBtn, 'Verifying...');
-
-            try {
-                const response = await fetch('/api/mfa/verify', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRF-Token': document.body.dataset.csrfToken,
-                    },
-                    body: JSON.stringify({ username: mfaUsername, mfa_token: mfaToken, code }),
-                    credentials: 'same-origin',
-                });
-
-                let data = {};
-                try {
-                    data = await response.json();
-                } catch (jsonError) {
-                    throw new Error('Invalid response from server');
-                }
-
-                if (!response.ok) {
-                    throw new Error(data.detail || 'MFA verification failed');
-                }
-
-                window.location.href = '/ui/dashboard';
-            } catch (error) {
-                // Shake + red flash, then clear for re-entry
-                const allDigits = document.querySelectorAll('.otp-digit');
-                allDigits.forEach(d => d.classList.add('otp-error'));
-                setTimeout(() => {
-                    allDigits.forEach(d => {
-                        d.classList.remove('otp-error');
-                        d.value = '';
-                    });
-                    document.querySelector('.otp-digit[data-index="0"]')?.focus();
-                    document.getElementById('mfa-submit-btn').disabled = true;
-                }, 600);
-            } finally {
-                clearBusy(mfaSubmitBtn, 'Verify');
-            }
-        }
-
-        document.getElementById('mfa-submit-btn').addEventListener('click', () => {
-            submitMfa(getOtpCode());
-        });
-
-        // Recovery code flow
-        document.getElementById('use-recovery-btn').addEventListener('click', () => {
-            document.getElementById('mfa-header').style.display = 'none';
-            document.getElementById('otp-digits').classList.add('d-none');
-            document.getElementById('mfa-submit-btn').style.display = 'none';
-            document.getElementById('use-recovery-btn').style.display = 'none';
-            document.getElementById('recovery-form').style.display = 'block';
-            document.getElementById('recovery-code').focus();
-        });
-
-        document.getElementById('recovery-submit-btn').addEventListener('click', async () => {
-            const code = document.getElementById('recovery-code').value.trim();
-            if (!code) {
-                showError('Please enter a recovery code');
-                return;
-            }
-            await submitMfa(code);
-        });
-
-        document.getElementById('recovery-code').addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                document.getElementById('recovery-submit-btn').click();
-            }
-        });
-    </script>
+    <!-- External JavaScript -->
+    <script src="/static/js/passkeys.js" defer></script>
+    <script src="/static/js/mfa.js" defer></script>
+    <script src="/static/js/login.js" defer></script>
 </body>
 
 </html>

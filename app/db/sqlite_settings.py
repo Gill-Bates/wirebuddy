@@ -163,6 +163,7 @@ _GLOBAL_SETTINGS_RECOVERY_KEYS = [
 	"gui_port",
 	"gui_localhost_only",
 	"enable_status_page",
+	"enable_swagger",
 ]
 
 
@@ -198,7 +199,7 @@ def _normalize_recovery_value(key: str, value: str) -> str | None:
 		keepalive = int(text)
 		return str(keepalive) if 0 <= keepalive <= 3600 else None
 
-	if key in {"wg_use_psk", "gui_localhost_only", "enable_status_page"}:
+	if key in {"wg_use_psk", "gui_localhost_only", "enable_status_page", "enable_swagger"}:
 		return _normalize_bool(text)
 
 	if key == "wg_fqdn":
@@ -310,10 +311,10 @@ def recover_missing_global_settings(
 
 
 DNS_LOG_RETENTION_OPTIONS = (0, 7, 30, 90, 180, 365)
-DEFAULT_DNS_LOG_RETENTION_DAYS = 30
+DEFAULT_DNS_LOG_RETENTION_DAYS = 7
 
 TSDB_RETENTION_OPTIONS = (0, 7, 30, 90, 180, 365)
-DEFAULT_TSDB_RETENTION_DAYS = 365
+DEFAULT_TSDB_RETENTION_DAYS = 7
 
 MAX_CUSTOM_RULES_LENGTH = 256_000
 DEFAULT_DNS_UPSTREAM_SERVERS = [

@@ -66,11 +66,11 @@
                 <div class="row g-3">
                     <div class="col-12 col-md-6">
                         <div class="small text-muted">Inbound IP</div>
-                        <div class="font-monospace">{{ client_ip }}</div>
+                        <div class="font-monospace">{{ (client_ip or '').replace(':', ':\u200b').replace('/', '/\u200b') }}</div>
                     </div>
                     <div class="col-12 col-md-6">
                         <div class="small text-muted">Public Client IP</div>
-                        <div class="font-monospace">{{ public_client_ip }}</div>
+                        <div class="font-monospace">{{ (public_client_ip or '').replace(':', ':\u200b').replace('/', '/\u200b') }}</div>
                         {% if public_client_country_code or public_client_city or public_client_as_org %}
                         <div class="small text-muted d-flex align-items-center gap-2 mt-1">
                             {% if public_client_country_code %}
@@ -88,7 +88,7 @@
                     </div>
                     <div class="col-12 col-md-6">
                         <div class="small text-muted">Outbound IP</div>
-                        <div class="font-monospace">{{ outbound_ip }}</div>
+                        <div class="font-monospace">{{ (outbound_ip or '').replace(':', ':\u200b').replace('/', '/\u200b') }}</div>
                     </div>
                     <div class="col-12">
                         <div class="small text-muted">WireGuard Interface</div>

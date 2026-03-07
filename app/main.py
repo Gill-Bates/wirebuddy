@@ -10,6 +10,7 @@
 """FastAPI application factory and startup lifecycle wiring."""
 
 from __future__ import annotations
+from typing import Any
 
 from .db.sqlite_interfaces import (
 	list_interfaces,
@@ -55,14 +56,16 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from .utils.config import load_config, WG_CONFIG_PATH
+from .utils.config import load_config, WG_CONFIG_PATH, Config
 from .utils.rate_limit import limiter
 from .utils.request_id import RequestIDMiddleware
 from .utils.scheduler import Scheduler
 from .utils.banner import print_banner_once
+from .utils.version import VERSION
 
 from .api import acme as acme_api
 from .api import auth as auth_api
+from .api import passkeys as passkeys_api
 from .api import users as users_api
 from .api import wireguard as wireguard_api
 from .api import dns as dns_api
@@ -264,6 +267,8 @@ async def _cleanup_stale_interfaces() -> list[str]:
 
 
 _PEER_STATE_MAX_SIZE = 100_000  # Evict oldest 10 % when full
+# NOTE: _peer_connection_state OrderedDict is only accessed from the single
+# event loop thread (in _sample_tsdb_metrics). Not thread-safe for concurrent access.
 
 
 class _ColoredFormatter(logging.Formatter):
@@ -366,7 +371,7 @@ def _get_addr_field(iface: object, key: str) -> str | None:
 	return getattr(iface, key, None)
 
 
-def _bootstrap_sync(cfg) -> tuple[bool, list[str], bool]:
+def _bootstrap_sync(cfg: Config) -> tuple[bool, list[str], bool]:
 	"""Run startup DB/bootstrap work synchronously (for asyncio.to_thread).
 	
 	Returns:
@@ -386,6 +391,8 @@ def _bootstrap_sync(cfg) -> tuple[bool, list[str], bool]:
 				"KEY_MISMATCH_DETECTED: WIREBUDDY_SECRET_KEY does not match the key used to encrypt this database. "
 				"Please set the correct WIREBUDDY_SECRET_KEY environment variable."
 			)
+			# CRITICAL: Do not continue with wrong key — prevents data corruption
+			return is_leader, interfaces_to_start, key_mismatch
 
 		# Acquire leader lock first so one worker performs migration checks/logging.
 		is_leader = try_acquire_leader_lock(conn)
@@ -534,6 +541,7 @@ def _read_dns_service_enabled_sync(db_path: Path) -> bool:
 		return get_dns_service_enabled(conn)
 	except Exception:
 		# default to "no action" on DB error to avoid watchdog restart loops
+		_log.warning("_read_dns_service_enabled_sync failed, defaulting to no-op", exc_info=True)
 		return False
 	finally:
 		close_connection(conn)
@@ -550,6 +558,7 @@ def _should_unbound_run_sync(db_path: Path) -> bool:
 		return len(interfaces) > 0
 	except Exception:
 		# default to "no action" on DB error to avoid watchdog restart loops
+		_log.warning("_should_unbound_run_sync failed, defaulting to no-op", exc_info=True)
 		return False
 	finally:
 		close_connection(conn)
@@ -561,6 +570,7 @@ def _read_blocklist_enabled_sync(db_path: Path) -> bool:
 	try:
 		return get_dns_blocklist_enabled(conn)
 	except Exception:
+		_log.warning("_read_blocklist_enabled_sync failed, defaulting to disabled", exc_info=True)
 		return False
 	finally:
 		close_connection(conn)
@@ -685,10 +695,12 @@ async def _lifespan(app: FastAPI):
 	if is_leader:
 		_log.info("GeoIP init scheduled in background (startup is non-blocking)")
 	
-	# Initialize and start Unbound DNS - leader only
-	# MUST happen BEFORE WireGuard start: wg-quick rewrites /etc/resolv.conf
-	# to point to Unbound, so Unbound must be running first.
+	# Prepare Unbound DNS config - leader only
+	# NOTE: Config is written BEFORE WireGuard starts, but Unbound is started
+	# AFTER WireGuard to ensure interface IPs exist for binding.
 	from .dns import unbound as _unbound
+	_dns_service_enabled = False
+	_dns_config_ready = False
 	if is_leader and _unbound.is_unbound_installed():
 		try:
 			# Always write WireBuddy config (overwrites Debian default)
@@ -696,12 +708,12 @@ async def _lifespan(app: FastAPI):
 			# with host DNS resolver when using network_mode: host.
 			# Do NOT include 127.0.0.1 - host may already have DNS on localhost.
 			dns_retention_days = DEFAULT_DNS_LOG_RETENTION_DAYS
-			dns_service_enabled = True
+			_dns_service_enabled = True
 			listen_addrs_ipv4: list[str] = []
 			listen_addrs_ipv6: list[str] = []
 			dns_data = await asyncio.to_thread(_load_dns_startup_data_sync, cfg.db_path)
-			dns_retention_days = int(dns_data.get("dns_retention_days", DEFAULT_DNS_LOG_RETENTION_DAYS))
-			dns_service_enabled = bool(dns_data.get("dns_service_enabled", True))
+			dns_retention_days = _safe_int(dns_data.get("dns_retention_days"), DEFAULT_DNS_LOG_RETENTION_DAYS)
+			_dns_service_enabled = bool(dns_data.get("dns_service_enabled", True))
 			interfaces = dns_data.get("interfaces", [])
 
 			# Extract WireGuard interface IPs (strip CIDR notation)
@@ -747,7 +759,7 @@ async def _lifespan(app: FastAPI):
 
 				await asyncio.to_thread(
 					dns_ingestion.enforce_dns_log_retention,
-					cfg.tsdb_dir,
+					cfg.dns_dir,
 					dns_retention_days,
 				)
 				_log.info(
@@ -771,34 +783,13 @@ async def _lifespan(app: FastAPI):
 					except Exception as exc:
 						_log.warning("BLOCKLIST_MIGRATION update failed: %s", exc)
 
-				unbound_running = await _unbound.is_running()
-				if dns_service_enabled:
-					if not unbound_running:
-						# Respect persisted user choice: start resolver after container restart
-						# unless it was explicitly stopped by the user.
-						ok, msg = await _unbound.start()
-						if ok:
-							_log.info("Unbound DNS started")
-							# Give Unbound a moment to establish upstream TLS connections
-							await asyncio.sleep(2)
-						else:
-							_log.warning("Failed to start Unbound: %s", msg)
-				else:
-					# Persisted manual stop: keep resolver down across restarts.
-					if unbound_running:
-						ok, msg = await _unbound.stop()
-						if ok:
-							_log.info("Unbound DNS kept stopped (persisted user preference)")
-						else:
-							_log.warning("Failed to keep Unbound stopped on startup: %s", msg)
-					else:
-						_log.info("Unbound autostart disabled; resolver remains stopped")
+				_dns_config_ready = True
 		except FileNotFoundError as exc:
 			_log.warning("DNS init skipped: unbound tools not found! Use Docker Image for full experience! (%s)", exc)
 		except Exception as exc:
 			# Issue #10: use exception() so stack trace is always captured for
 			# non-obvious errors (corrupted DB, key mismatch, permission failures).
-			_log.exception("DNS init failed: %s", exc)
+			_log.exception("DNS config failed: %s", exc)
 	
 	# Clean up stale/orphaned WireGuard interfaces (leader only)
 	# These are interfaces active in the kernel but without a config file,
@@ -809,49 +800,85 @@ async def _lifespan(app: FastAPI):
 			_log.info("Cleaned up %d stale interface(s): %s", len(removed_stale), removed_stale)
 
 	# Auto-start WireGuard interfaces (leader only)
-	# Runs AFTER Unbound because wg-quick rewrites /etc/resolv.conf to use
-	# the interface DNS (often Unbound), which must already be listening.
-	if is_leader and interfaces_to_start:
-		for iface_name in interfaces_to_start:
-			try:
-				# Check if interface is already up
-				check_proc = await asyncio.create_subprocess_exec(
-					"wg", "show", iface_name,
-					stdout=asyncio.subprocess.DEVNULL,
-					stderr=asyncio.subprocess.DEVNULL,
-				)
-				await _communicate_with_timeout(
-					check_proc,
-					timeout_seconds=_WG_CHECK_TIMEOUT_SECONDS,
-				)
-				
-				if check_proc.returncode == 0:
-					_log.info("WireGuard interface %s already running", iface_name)
-					# Issue #17: do NOT append to started_interfaces here.
-					# We only track interfaces that *we* started so that shutdown
-					# only brings down what we brought up.
-					continue
+	# Runs BEFORE Unbound so that interface IPs exist for DNS binding.
+	# NOTE: DNS is not set in server-side configs, so wg-quick does not
+	# rewrite /etc/resolv.conf. Unbound is started separately after WG.
+		# KNOWN LIMITATION (Issue #17):
+		# started_interfaces only tracks interfaces THIS process brought up.
+		# If the leader crashes and a new worker becomes leader, old interfaces
+		# remain active with no process tracking them for shutdown.
+		# This is intentional to avoid bringing down interfaces we didn't create.
+		if is_leader and interfaces_to_start:
+			for iface_name in interfaces_to_start:
+				try:
+					# Check if interface is already up
+					check_proc = await asyncio.create_subprocess_exec(
+						"wg", "show", iface_name,
+						stdout=asyncio.subprocess.DEVNULL,
+						stderr=asyncio.subprocess.DEVNULL,
+					)
+					await _communicate_with_timeout(
+						check_proc,
+						timeout_seconds=_WG_CHECK_TIMEOUT_SECONDS,
+					)
+					
+					if check_proc.returncode == 0:
+						_log.info("WireGuard interface %s already running", iface_name)
+						# Issue #17: do NOT append to started_interfaces here.
+						# We only track interfaces that *we* started so that shutdown
+						# only brings down what we brought up.
+						continue
 
-				# Start the interface
-				proc = await asyncio.create_subprocess_exec(
-					"wg-quick", "up", iface_name,
-					stdout=asyncio.subprocess.PIPE,
-					stderr=asyncio.subprocess.PIPE,
-				)
-				_, stderr = await _communicate_with_timeout(
-					proc,
-					timeout_seconds=_WG_UP_TIMEOUT_SECONDS,
-				)
-				if proc.returncode == 0:
-					_log.info("WireGuard interface %s started", iface_name)
-					started_interfaces.append(iface_name)
-				else:
-					_log.warning("Failed to start interface %s: %s", iface_name, stderr.decode("utf-8", errors="replace"))
-			except asyncio.TimeoutError:
-				_log.warning("Timeout while starting/checking interface %s", iface_name)
-			except Exception as e:
-				_log.warning("Failed to start interface %s: %s", iface_name, e)
+					# Start the interface
+					proc = await asyncio.create_subprocess_exec(
+						"wg-quick", "up", iface_name,
+						stdout=asyncio.subprocess.PIPE,
+						stderr=asyncio.subprocess.PIPE,
+					)
+					_, stderr = await _communicate_with_timeout(
+						proc,
+						timeout_seconds=_WG_UP_TIMEOUT_SECONDS,
+					)
+					if proc.returncode == 0:
+						_log.info("WireGuard interface %s started", iface_name)
+						started_interfaces.append(iface_name)
+					else:
+						_log.warning("Failed to start interface %s: %s", iface_name, stderr.decode("utf-8", errors="replace"))
+				except asyncio.TimeoutError:
+					_log.warning("Timeout while starting/checking interface %s", iface_name)
+				except Exception as e:
+					_log.warning("Failed to start interface %s: %s", iface_name, e)
 	
+	# ─── START UNBOUND DNS ─────────────────────────────────── (leader only)
+	# Runs AFTER WireGuard interfaces are up to ensure bind addresses exist.
+	# DNS config was written earlier, now we just start the resolver.
+	if is_leader and _unbound.is_unbound_installed() and _dns_config_ready:
+		try:
+			unbound_running = await _unbound.is_running()
+			if _dns_service_enabled:
+				if not unbound_running:
+					# Respect persisted user choice: start resolver after container restart
+					# unless it was explicitly stopped by the user.
+					ok, msg = await _unbound.start()
+					if ok:
+						_log.info("Unbound DNS started")
+						# Give Unbound a moment to establish upstream TLS connections
+						await asyncio.sleep(2)
+					else:
+						_log.warning("Failed to start Unbound: %s", msg)
+			else:
+				# Persisted manual stop: keep resolver down across restarts.
+				if unbound_running:
+					ok, msg = await _unbound.stop()
+					if ok:
+						_log.info("Unbound DNS kept stopped (persisted user preference)")
+					else:
+						_log.warning("Failed to keep Unbound stopped on startup: %s", msg)
+				else:
+					_log.info("Unbound autostart disabled; resolver remains stopped")
+		except Exception as exc:
+			_log.exception("DNS start failed: %s", exc)
+
 	# ─── SCHEDULER ─────────────────────────────────────────── (leader only)
 	scheduler: Scheduler | None = None
 	if is_leader:
@@ -886,7 +913,7 @@ async def _lifespan(app: FastAPI):
 				dns_retention_days = await asyncio.to_thread(_read_dns_retention_days_sync, cfg.db_path)
 				dns_retention = await asyncio.to_thread(
 					dns_ingestion.enforce_dns_log_retention,
-					cfg.tsdb_dir,
+					cfg.dns_dir,
 					dns_retention_days,
 				)
 				_log.info(
@@ -1223,20 +1250,29 @@ async def _lifespan(app: FastAPI):
 			)
 			conn = connect(cfg.db_path)
 			try:
-				disabled_until = get_blocklist_disabled_until(conn)
-				enabled = get_dns_blocklist_enabled(conn)
-				now = int(_time.time())
+				# Use explicit transaction to prevent TOCTOU race with concurrent API requests
+				conn.execute("BEGIN IMMEDIATE")
+				try:
+					disabled_until = get_blocklist_disabled_until(conn)
+					enabled = get_dns_blocklist_enabled(conn)
+					now = int(_time.time())
 
-				# If timer has expired and blocker is still disabled, re-enable it
-				if disabled_until > 0 and disabled_until <= now and not enabled:
-					set_dns_blocklist_enabled(conn, True)
-					clear_blocklist_disabled_until(conn)
-					_log.info("ADBLOCKER_TIMER timer expired, re-enabling ad-blocker")
+					# If timer has expired and blocker is still disabled, re-enable it
+					if disabled_until > 0 and disabled_until <= now and not enabled:
+						set_dns_blocklist_enabled(conn, True)
+						clear_blocklist_disabled_until(conn)
+						conn.commit()
+						_log.info("ADBLOCKER_TIMER timer expired, re-enabling ad-blocker")
 
-					# Regenerate peer tags and reload Unbound
-					from .api.wireguard_peers import regenerate_all_peer_tags
-					await asyncio.to_thread(regenerate_all_peer_tags, conn)
-					await _reload_unbound_for_adblocker(conn)
+						# Regenerate peer tags and reload Unbound
+						from .api.wireguard_peers import regenerate_all_peer_tags
+						await asyncio.to_thread(regenerate_all_peer_tags, conn)
+						await _reload_unbound_for_adblocker(conn)
+					else:
+						conn.rollback()
+				except Exception:
+					conn.rollback()
+					raise
 			except Exception as exc:
 				_log.warning("ADBLOCKER_TIMER check failed: %s", exc)
 			finally:
@@ -1245,14 +1281,7 @@ async def _lifespan(app: FastAPI):
 		async def _reload_unbound_for_adblocker(conn) -> None:
 			"""Reload Unbound config after adblocker state change."""
 			try:
-				from .db.sqlite_settings import (
-					get_dns_query_logging_enabled,
-					get_dns_blocklist_enabled,
-					get_dns_upstream_servers,
-					get_dnssec_enabled,
-				)
-				from .db.sqlite_interfaces import list_interfaces
-
+				# Use module-level imports (already imported at top)
 				enable_logging = get_dns_query_logging_enabled(conn)
 				enable_blocklist = get_dns_blocklist_enabled(conn)
 				upstream_dns = get_dns_upstream_servers(conn)
@@ -1471,7 +1500,7 @@ def create_app() -> FastAPI:
 	app = FastAPI(
 		title="WireBuddy",
 		description="Lightweight WireGuard Management WebUI",
-		version="0.1.0",
+		version=VERSION,
 		lifespan=_lifespan,
 		docs_url=None,
 		redoc_url=None,
@@ -1507,6 +1536,7 @@ def create_app() -> FastAPI:
 	
 	# ─── API ROUTES ──────────────────────────────────────────
 	app.include_router(auth_api.router, prefix="/api")
+	app.include_router(passkeys_api.router, prefix="/api/passkeys")
 	app.include_router(users_api.router, prefix="/api/users")
 	app.include_router(wireguard_api.router, prefix="/api/wireguard")
 	app.include_router(dns_api.router, prefix="/api/dns")
@@ -1523,18 +1553,32 @@ def create_app() -> FastAPI:
 
 def _register_swagger_routes(app: FastAPI) -> None:
 	"""Register admin-protected Swagger UI at /swagger."""
-	from fastapi import Depends
+	import sqlite3
+	from fastapi import Depends, HTTPException
 	from fastapi.responses import HTMLResponse, JSONResponse
 	from .api.auth import require_admin
+	from .utils.deps import get_conn
+
+	_SWAGGER_ENABLE_KEY = "enable_swagger"
+	_SWAGGER_TRUTHY = {"1", "true", "yes", "on"}
+
+	def _is_swagger_enabled(conn: sqlite3.Connection) -> bool:
+		"""Return whether Swagger UI is enabled."""
+		value = get_setting(conn, _SWAGGER_ENABLE_KEY, "0")
+		return str(value or "").strip().lower() in _SWAGGER_TRUTHY
 
 	@app.get("/swagger/openapi.json", include_in_schema=False)
-	async def swagger_openapi_json(_=Depends(require_admin)):
-		"""Serve OpenAPI schema (admin only)."""
+	async def swagger_openapi_json(_=Depends(require_admin), conn: sqlite3.Connection = Depends(get_conn)):
+		"""Serve OpenAPI schema (admin only, when enabled)."""
+		if not _is_swagger_enabled(conn):
+			raise HTTPException(status_code=404, detail="Swagger API disabled")
 		return JSONResponse(content=app.openapi())
 
 	@app.get("/swagger", include_in_schema=False)
-	async def swagger_ui(_=Depends(require_admin)):
-		"""Serve Swagger UI (admin only)."""
+	async def swagger_ui(_=Depends(require_admin), conn: sqlite3.Connection = Depends(get_conn)):
+		"""Serve Swagger UI (admin only, when enabled)."""
+		if not _is_swagger_enabled(conn):
+			raise HTTPException(status_code=404, detail="Swagger API disabled")
 		return HTMLResponse(_SWAGGER_HTML)
 
 
@@ -1544,7 +1588,10 @@ _SWAGGER_HTML = """
 <head>
   <meta charset="UTF-8">
   <title>WireBuddy – API Docs</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+  <!-- Pin exact version and use SRI to prevent CDN compromise / MITM attacks -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui.css"
+        integrity="sha384-OiJUz2Or7cLjcY1Eaw2xhMeUY3z5Csh2+HG9WXElrCqx45ddJCnYXN0a/HQQsJtz"
+        crossorigin="anonymous">
   <style>
     html { box-sizing: border-box; overflow-y: scroll; }
     body { margin: 0; background: #fafafa; }
@@ -1553,7 +1600,9 @@ _SWAGGER_HTML = """
 </head>
 <body>
   <div id="swagger-ui"></div>
-  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui-bundle.js"
+          integrity="sha384-BxL6Z8PoHDrYi8O8M1NBMsFQH7sRaSmCF6y7iWMN6ijIc0+QfMwJ3ZqY5rkGNwmq"
+          crossorigin="anonymous"></script>
   <script>
     SwaggerUIBundle({
       url: "/swagger/openapi.json",

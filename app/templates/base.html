@@ -1,4 +1,18 @@
 {% from 'macros/nav.html' import nav_item with context %}
+{# Define navigation items once for DRY principle #}
+{% set nav_items = [
+    ('/ui/dashboard', 'dashboard', 'Dashboard'),
+    ('/ui/peers', 'devices', 'Peers'),
+    ('/ui/dns', 'dns', 'DNS'),
+    ('/ui/traffic', 'show_chart', 'Traffic'),
+] %}
+{% if user and user['is_admin'] %}
+    {% set nav_items = nav_items + [('/ui/users', 'people', 'Users')] %}
+{% endif %}
+{% set nav_items = nav_items + [
+    ('/ui/settings', 'settings', 'Settings'),
+    ('/ui/about', 'info', 'About'),
+] %}
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="{{ theme | default('light') | e }}">
 
@@ -8,7 +22,7 @@
     <meta name="csrf-token" content="{{ csrf_token | e }}">
     <title>{% block title %}WireBuddy{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="/static/img/wirebuddy_1c.svg">
-    <!-- Preload critical font for faster icon rendering -->
+    <!-- Preload critical font to prevent FOIT -->
     <link rel="preload" href="/static/vendor/fonts/MaterialIcons.ttf" as="font" type="font/ttf" crossorigin>
     <!-- Theme Script in <head> prevents FOUC -->
     <script src="/static/js/theme.js"></script>
@@ -82,6 +96,21 @@
                 animation: none;
             }
         }
+
+        /* Modal and onboarding utility classes for CSP compliance */
+        .wb-modal-icon {
+            margin-top: 2px;
+        }
+
+        .wb-onboarding-step-badge {
+            width: 28px;
+            height: 28px;
+            flex-shrink: 0;
+        }
+
+        .wb-onboarding-icon {
+            font-size: 28px;
+        }
     </style>
     {% block extra_css %}{% endblock %}
 </head>
@@ -126,15 +155,9 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <!-- Mobile Navigation Links (2-column grid) -->
                 <div class="d-lg-none navbar-mobile-grid" aria-label="Mobile navigation">
-                    {{ nav_item('/ui/dashboard', 'dashboard', 'Dashboard') }}
-                    {{ nav_item('/ui/peers', 'devices', 'Peers') }}
-                    {{ nav_item('/ui/dns', 'dns', 'DNS') }}
-                    {{ nav_item('/ui/traffic', 'show_chart', 'Traffic') }}
-                    {% if user and user['is_admin'] %}
-                    {{ nav_item('/ui/users', 'people', 'Users') }}
-                    {% endif %}
-                    {{ nav_item('/ui/settings', 'settings', 'Settings') }}
-                    {{ nav_item('/ui/about', 'info', 'About') }}
+                    {% for href, icon, label in nav_items %}
+                    {{ nav_item(href, icon, label) }}
+                    {% endfor %}
                 </div>
                 <!-- Reserved for future desktop nav items -->
                 <!-- <ul class="navbar-nav ms-auto align-items-center d-none d-lg-flex"></ul> -->
@@ -142,18 +165,12 @@
         </div>
     </nav>
 
-    <div class="d-flex flex-grow-1">
+    <div class="wb-shell d-flex flex-grow-1">
         <!-- Sidebar -->
         <nav class="sidebar nav flex-column py-3 d-none d-lg-block" aria-label="Main navigation">
-            {{ nav_item('/ui/dashboard', 'dashboard', 'Dashboard') }}
-            {{ nav_item('/ui/peers', 'devices', 'Peers') }}
-            {{ nav_item('/ui/dns', 'dns', 'DNS') }}
-            {{ nav_item('/ui/traffic', 'show_chart', 'Traffic') }}
-            {% if user and user['is_admin'] %}
-            {{ nav_item('/ui/users', 'people', 'Users') }}
-            {% endif %}
-            {{ nav_item('/ui/settings', 'settings', 'Settings') }}
-            {{ nav_item('/ui/about', 'info', 'About') }}
+            {% for href, icon, label in nav_items %}
+            {{ nav_item(href, icon, label) }}
+            {% endfor %}
         </nav>
 
         <!-- Main Content -->
@@ -193,7 +210,7 @@
                 </div>
                 <div class="modal-body">
                     <div class="d-flex align-items-start gap-3">
-                        <span class="material-icons fs-3" id="wbModalIcon" style="margin-top:2px;">info</span>
+                        <span class="material-icons fs-3 wb-modal-icon" id="wbModalIcon">info</span>
                         <div class="flex-grow-1">
                             <p class="mb-0" id="wbModalMessage"></p>
                             <div class="mt-3 d-none" id="wbModalInputWrap">
@@ -212,15 +229,15 @@
     </div>
 
     <!-- Reconnect Modal -->
-    <div class="modal fade" id="wbReconnectModal" tabindex="-1" aria-labelledby="wbReconnectTitle">
+    <div class="modal fade" id="wbReconnectModal" tabindex="-1" aria-labelledby="wbReconnectTitle" data-bs-backdrop="static" data-bs-keyboard="false">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content wb-reconnect-pulse">
                 <div class="modal-body py-5 px-4">
                     <div class="d-flex flex-column align-items-center text-center gap-3">
                         <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
                         <div>
-                            <h5 id="wbReconnectTitle" class="mb-2" role="alert">Trying to reconnect ...</h5>
-                            <small class="text-muted">The server is restarting or temporarily unavailable.</small>
+                            <h5 id="wbReconnectTitle" class="mb-2">Connection Lost</h5>
+                            <p role="alert" class="text-muted small mb-3">Trying to reconnect to the server...</p>
                             <div class="mt-3 d-none" id="wbReconnectFailsafeWrap">
                                 <button class="btn btn-sm btn-outline-secondary" id="wbReconnectReload">Reload Page</button>
                             </div>
@@ -240,8 +257,7 @@
             <div class="modal-content">
                 <div class="modal-header border-0 pb-0">
                     <h4 class="modal-title" id="wbOnboardingTitle">
-                        <span class="material-icons align-middle text-primary me-2"
-                            style="font-size:28px;">rocket_launch</span>
+                        <span class="material-icons align-middle text-primary me-2 wb-onboarding-icon">rocket_launch</span>
                         Welcome to WireBuddy!
                     </h4>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -250,9 +266,7 @@
                     <p class="text-muted mb-4">Follow these steps to set up your WireGuard VPN server:</p>
                     <div class="d-flex flex-column gap-3">
                         <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
-                            <span
-                                class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center"
-                                style="width:28px;height:28px;flex-shrink:0;">1</span>
+                            <span class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center wb-onboarding-step-badge">1</span>
                             <div>
                                 <strong>Change Admin Password</strong>
                                 <p class="text-muted small mb-0">Go to <a href="/ui/users">Users</a> and set a secure
@@ -260,9 +274,7 @@
                             </div>
                         </div>
                         <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
-                            <span
-                                class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center"
-                                style="width:28px;height:28px;flex-shrink:0;">2</span>
+                            <span class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center wb-onboarding-step-badge">2</span>
                             <div>
                                 <strong>Create an Interface</strong>
                                 <p class="text-muted small mb-0">Under <a href="/ui/settings">Settings</a>, create your
@@ -270,9 +282,7 @@
                             </div>
                         </div>
                         <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
-                            <span
-                                class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center"
-                                style="width:28px;height:28px;flex-shrink:0;">3</span>
+                            <span class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center wb-onboarding-step-badge">3</span>
                             <div>
                                 <strong>Set Your Server FQDN</strong>
                                 <p class="text-muted small mb-0">In <a href="/ui/settings">Wireguard</a> settings, enter your
@@ -280,9 +290,7 @@
                             </div>
                         </div>
                         <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
-                            <span
-                                class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center"
-                                style="width:28px;height:28px;flex-shrink:0;">4</span>
+                            <span class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center wb-onboarding-step-badge">4</span>
                             <div>
                                 <strong>Enable PresharedKey <span
                                         class="badge bg-success-subtle text-success small">Recommended</span></strong>
@@ -291,9 +299,7 @@
                             </div>
                         </div>
                         <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
-                            <span
-                                class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center"
-                                style="width:28px;height:28px;flex-shrink:0;">5</span>
+                            <span class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center wb-onboarding-step-badge">5</span>
                             <div>
                                 <strong>Add Your First Peer</strong>
                                 <p class="text-muted small mb-0">Go to <a href="/ui/peers">Peers</a> and create VPN clients
@@ -324,8 +330,23 @@
 
     <!-- Consolidated Inline Scripts -->
     <script>
-        document.addEventListener('DOMContentLoaded', async function() {
-            // Reconnect Failsafe
+        document.addEventListener('DOMContentLoaded', function() {
+            function syncShellHairline() {
+                const shell = document.querySelector('.wb-shell');
+                const nav = document.querySelector('.navbar');
+                const footer = document.querySelector('.wb-footer');
+                if (!shell || !nav || !footer) return;
+
+                // Keep the desktop sidebar hairline visually bounded by navbar and footer.
+                const navBottom = Math.round(nav.getBoundingClientRect().bottom);
+                const footerHeight = Math.max(0, Math.round(window.innerHeight - footer.getBoundingClientRect().top));
+                document.documentElement.style.setProperty('--wb-shell-top', navBottom + 'px');
+                document.documentElement.style.setProperty('--wb-shell-bottom', footerHeight + 'px');
+            }
+
+            // Reconnect Failsafe Timeout
+            // Note: This handles the case where page loads with wb-reconnecting class
+            // (server-rendered during reconnect). For runtime reconnects, see reconnect.js.
             if (document.body.classList.contains('wb-reconnecting')) {
                 setTimeout(() => {
                     document.body.classList.remove('wb-reconnecting');
@@ -338,19 +359,6 @@
             const reloadBtn = document.getElementById('wbReconnectReload');
             if (reloadBtn) {
                 reloadBtn.addEventListener('click', () => window.location.reload());
-            }
-
-            // Key Mismatch Banner Check
-            try {
-                if (typeof api === 'function') {
-                    const data = await api('GET', '/api/system/status');
-                    if (data && data.key_mismatch) {
-                        const banner = document.getElementById('keyMismatchBanner');
-                        if (banner) banner.classList.remove('d-none');
-                    }
-                }
-            } catch (e) {
-                console.warn('[WB] System status check failed:', e?.message || e);
             }
 
             // Copyright year
@@ -374,6 +382,94 @@
                     if (typeof logout === 'function') logout();
                 });
             }
+
+            // Mobile navbar: close menu when clicking a nav link
+            const navbarCollapse = document.getElementById('navbarNav');
+            if (navbarCollapse) {
+                const mobileNavLinks = navbarCollapse.querySelectorAll('.navbar-mobile-grid a.nav-link');
+                const bsCollapse = bootstrap.Collapse.getOrCreateInstance(navbarCollapse, { toggle: false });
+                let _pendingNavUrl = null;
+
+                // Single hidden.bs.collapse listener to handle navigation
+                navbarCollapse.addEventListener('hidden.bs.collapse', () => {
+                    if (_pendingNavUrl) {
+                        window.location.assign(_pendingNavUrl);
+                        _pendingNavUrl = null;
+                    }
+                    navbarCollapse.classList.remove('wb-nav-closing');
+                });
+
+                navbarCollapse.addEventListener('show.bs.collapse', () => {
+                    navbarCollapse.classList.add('wb-nav-opening');
+                    navbarCollapse.classList.remove('wb-nav-closing');
+                    if (window.matchMedia('(max-width: 991.98px)').matches) {
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }
+                });
+
+                navbarCollapse.addEventListener('shown.bs.collapse', () => {
+                    navbarCollapse.classList.remove('wb-nav-opening');
+                });
+
+                navbarCollapse.addEventListener('hide.bs.collapse', () => {
+                    navbarCollapse.classList.add('wb-nav-closing');
+                    navbarCollapse.classList.remove('wb-nav-opening');
+                });
+                
+                mobileNavLinks.forEach(link => {
+                    link.addEventListener('click', (event) => {
+                        if (!navbarCollapse.classList.contains('show')) {
+                            return;
+                        }
+
+                        const href = link.getAttribute('href') || '';
+                        if (!href || href.startsWith('#')) {
+                            bsCollapse.hide();
+                            return;
+                        }
+
+                        event.preventDefault();
+                        _pendingNavUrl = link.href;
+                        bsCollapse.hide();
+                    });
+                });
+            }
+
+            // Bootstrap Modal Accessibility Fix
+            // Prevents ARIA warning when modal or its descendants have focus during hide
+            // Use event delegation on document to catch all modals (including dynamic ones)
+            document.addEventListener('hide.bs.modal', function(event) {
+                const modal = event.target;
+                // If focus is on the modal itself or inside it, blur it
+                if (document.activeElement === modal || modal.contains(document.activeElement)) {
+                    document.activeElement.blur();
+                }
+            }, true); // Use capture phase to ensure we run before Bootstrap
+
+            // Key Mismatch Banner Check (non-blocking)
+            async function checkKeyMismatch() {
+                try {
+                    if (typeof api === 'function') {
+                        const data = await api('GET', '/api/system/status');
+                        if (data && data.key_mismatch) {
+                            const banner = document.getElementById('keyMismatchBanner');
+                            if (banner) {
+                                banner.classList.remove('d-none');
+                                syncShellHairline();
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[WB] System status check failed:', e?.message || e);
+                } finally {
+                    // Ensure syncShellHairline runs regardless of API success/failure
+                    syncShellHairline();
+                    window.addEventListener('resize', syncShellHairline);
+                }
+            }
+
+            // Start async check without blocking UI setup
+            checkKeyMismatch();
         });
     </script>
 

@@ -52,8 +52,11 @@ TRAFFIC_RANGE_TO_HOURS = {
     "1y": 8760,
 }
 
-# Reverse mapping for O(1) lookup
-_HOURS_TO_RANGE = {v: k for k, v in TRAFFIC_RANGE_TO_HOURS.items()}
+# Reverse mapping: hours -> preset key (static dict, used for response label)
+_HOURS_TO_RANGE: dict[int, str] = {
+    6: "6h", 24: "24h", 72: "3d", 168: "7d",
+    720: "30d", 2160: "90d", 8760: "1y",
+}
 
 # Resource limits to prevent DoS
 MAX_PEERS_TRAFFIC = 100  # Max peers to include in traffic stats
@@ -72,6 +75,11 @@ def _bucket_counter_delta(
 ) -> dict[str, float]:
     """Aggregate counter deltas into time buckets (consumption per bucket).
 
+    Points are sorted defensively (TSDB contract guarantees chronological
+    order, but we guard against future regressions).  Deltas spanning a
+    time gap wider than ``2 * bucket_seconds`` are discarded because they
+    would dump an unreliable amount of traffic into a single bucket.
+
     Args:
         points: Time-series data points (expected to be counter values).
         since: Only include deltas from points after this time.
@@ -80,20 +88,37 @@ def _bucket_counter_delta(
     Returns:
         Dict mapping ISO timestamp labels to summed byte deltas.
     """
+    # Defensive sort — ensures correct delta computation even if the
+    # underlying TSDB implementation changes iteration order.
+    points = sorted(points, key=lambda p: p.ts)
+
     buckets: dict[str, float] = {}
     prev: float | None = None
+    prev_ts: datetime | None = None
+    gap_limit = bucket_seconds * 2
 
     for pt in points:
         if not isinstance(pt.value, (int, float)):
             continue
-        value = float(pt.value)
+        value = pt.value  # already numeric, no float() cast needed
 
         if prev is None:
             prev = value
+            prev_ts = pt.ts
+            continue
+
+        # Guard: if the gap between consecutive points is too large the
+        # delta would attribute an unreliable amount of traffic to one
+        # bucket.  Reset the baseline instead.
+        gap = (pt.ts - prev_ts).total_seconds() if prev_ts else 0
+        if gap > gap_limit:
+            prev = value
+            prev_ts = pt.ts
             continue
 
         delta = value - prev
         prev = value
+        prev_ts = pt.ts
 
         # Counter reset (e.g., WireGuard restart): discard this delta.
         # The next sample will establish a new baseline from the reset value.
@@ -111,9 +136,62 @@ def _bucket_counter_delta(
     return dict(sorted(buckets.items()))
 
 
+def _downsample_buckets(
+    labels: list[str],
+    peer_data: list[dict],
+    target_points: int,
+) -> tuple[list[str], list[dict]]:
+    """Downsample pre-bucketed data to at most *target_points* via summation.
+
+    Adjacent label groups are merged.  Each group's traffic value is the
+    **sum** of the raw values in that group so that total traffic volume is
+    preserved.  This avoids the problem where median aggregation combined
+    with zero-filled gaps would silently drop sparse peer traffic.
+
+    Args:
+        labels: Sorted ISO-timestamp labels.
+        peer_data: List of per-peer dicts with 'rx' and 'tx' bucket dicts.
+        target_points: Maximum number of output labels.
+
+    Returns:
+        (new_labels, new_peer_data) with len(new_labels) <= target_points.
+    """
+    n = len(labels)
+    if n <= target_points or target_points <= 0:
+        return labels, peer_data
+
+    # Distribute labels evenly into *target_points* groups
+    group_size = n / target_points  # float for even distribution
+    groups: list[list[str]] = []
+    for i in range(target_points):
+        start = int(round(i * group_size))
+        end = int(round((i + 1) * group_size))
+        groups.append(labels[start:end])
+
+    new_labels: list[str] = []
+    new_peer_data: list[dict] = [{**entry, "rx": {}, "tx": {}} for entry in peer_data]
+
+    for group in groups:
+        if not group:
+            continue
+        # Use the midpoint label as representative timestamp
+        representative = group[len(group) // 2]
+        new_labels.append(representative)
+
+        for idx, entry in enumerate(peer_data):
+            # Sum preserves total traffic volume in the merged window
+            rx_total = sum(entry["rx"].get(lbl, 0) for lbl in group)
+            tx_total = sum(entry["tx"].get(lbl, 0) for lbl in group)
+
+            new_peer_data[idx]["rx"][representative] = rx_total
+            new_peer_data[idx]["tx"][representative] = tx_total
+
+    return new_labels, new_peer_data
+
+
 # Default target data points for different display sizes
 DEFAULT_MAX_POINTS = 60  # Desktop
-MIN_MAX_POINTS = 20  # Minimum allowed
+MIN_MAX_POINTS = 10  # Minimum allowed (small mobile screens)
 MAX_MAX_POINTS = 200  # Maximum allowed (prevents DoS)
 
 
@@ -135,13 +213,17 @@ def _compute_traffic_stats(
         Dict with traffic data ready for JSON response.
     """
     since = utcnow() - timedelta(hours=hours)
-    query_since = since - timedelta(hours=1)
     resolved_range = _HOURS_TO_RANGE.get(hours, f"{hours}h")
 
     # Determine bucket size based on max_points (responsive design support)
-    # Clamp max_points to valid range
     target_points = max(MIN_MAX_POINTS, min(max_points, MAX_MAX_POINTS))
     bucket_seconds = max((hours * 3600) // target_points, 60)
+
+    # Pre-query window: fetch one extra bucket before `since` so that
+    # _bucket_counter_delta has a baseline for the first visible delta.
+    # Using bucket_seconds (instead of a fixed 1 hour) ensures the
+    # window scales properly for all range sizes.
+    query_since = since - timedelta(seconds=bucket_seconds)
 
     # Fetch all peers (blocking DB query)
     all_peers = list(get_all_peers(conn))
@@ -160,18 +242,21 @@ def _compute_traffic_stats(
         )
         peer_keys = peer_keys[:MAX_PEERS_TRAFFIC]
 
+    # Build name map only for the (possibly truncated) peer set
+    active_keys = set(peer_keys)
     peer_name_map: dict[str, str] = {
         peer["public_key"]: (peer["name"] or peer["public_key"][:8])
         for peer in all_peers
-        if peer["public_key"]
+        if peer["public_key"] and peer["public_key"] in active_keys
     }
 
-    # Collect per-peer traffic data (blocking file I/O)
-    peer_data: list[dict] = []
-    all_labels: set[str] = set()
-
-    for key in peer_keys:
-        # Blocking TSDB reads
+    # Collect per-peer traffic data with parallel TSDB queries
+    # Build all query tasks first
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    
+    def query_peer_metrics(key: str) -> tuple[str, dict, dict]:
+        """Query RX and TX for a single peer."""
         rx_points = tsdb.query(
             tsdb_dir,
             peer_key=key,
@@ -180,8 +265,7 @@ def _compute_traffic_stats(
             limit=MAX_POINTS_PER_PEER,
         )
         rx_buckets = _bucket_counter_delta(rx_points, since, bucket_seconds)
-        del rx_points  # Free memory before loading tx data
-        
+
         tx_points = tsdb.query(
             tsdb_dir,
             peer_key=key,
@@ -190,8 +274,17 @@ def _compute_traffic_stats(
             limit=MAX_POINTS_PER_PEER,
         )
         tx_buckets = _bucket_counter_delta(tx_points, since, bucket_seconds)
-        del tx_points  # Free memory before next peer
-
+        return (key, rx_buckets, tx_buckets)
+    
+    # Execute all queries in parallel using a thread pool
+    with ThreadPoolExecutor(max_workers=min(len(peer_keys), 10)) as executor:
+        results = list(executor.map(query_peer_metrics, peer_keys))
+    
+    # Process results
+    peer_data: list[dict] = []
+    all_labels: set[str] = set()
+    
+    for key, rx_buckets, tx_buckets in results:
         # Only include peers with actual data
         if rx_buckets or tx_buckets:
             peer_name = peer_name_map.get(key, key[:8])
@@ -206,6 +299,11 @@ def _compute_traffic_stats(
             all_labels.update(tx_buckets.keys())
 
     labels = sorted(all_labels)
+
+    # Downsample via median if we still have more labels than max_points
+    # (can happen when peers have data at slightly offset timestamps)
+    if len(labels) > target_points:
+        labels, peer_data = _downsample_buckets(labels, peer_data, target_points)
 
     # Build datasets for each peer (display-ready values only)
     max_bytes = 0.0
@@ -223,10 +321,19 @@ def _compute_traffic_stats(
             "key": entry["key"],
             "key_short": entry["key_short"],
             "name": entry["name"],
-            "rx": [round(bytes_to_unit(float(entry["rx"].get(label, 0)), display_unit), 4) for label in labels],
-            "tx": [round(bytes_to_unit(float(entry["tx"].get(label, 0)), display_unit), 4) for label in labels],
+            "rx": [round(bytes_to_unit(entry["rx"].get(label, 0), display_unit), 4) for label in labels],
+            "tx": [round(bytes_to_unit(entry["tx"].get(label, 0), display_unit), 4) for label in labels],
         }
         for entry in peer_data
+    ]
+
+    # Build list of ALL peers for filter dropdown (even those without traffic data)
+    all_peers_for_filter = [
+        {
+            "key": key,
+            "name": peer_name_map.get(key, key[:8]),
+        }
+        for key in peer_keys
     ]
 
     return {
@@ -234,8 +341,11 @@ def _compute_traffic_stats(
         "hours": hours,
         "labels": labels,
         "peers": peers_display,
+        "all_peers": all_peers_for_filter,  # All peers for filter dropdown
         "display_unit": display_unit,
         "bucket_seconds": bucket_seconds,
+        "actual_points": len(labels),
+        "requested_points": target_points,
     }
 
 
@@ -243,7 +353,7 @@ def _compute_traffic_stats(
 async def get_traffic_stats(
     hours: int = Query(24, ge=1, le=8760, description="Number of hours of history (1-8760)"),
     range_key: str | None = Query(None, pattern="^(6h|24h|3d|7d|30d|90d|1y)$"),
-    max_points: int = Query(DEFAULT_MAX_POINTS, ge=MIN_MAX_POINTS, le=MAX_MAX_POINTS, description="Target number of data points (20-200)"),
+    max_points: int = Query(DEFAULT_MAX_POINTS, ge=MIN_MAX_POINTS, le=MAX_MAX_POINTS, description="Target number of data points (10-200)"),
     conn: sqlite3.Connection = Depends(get_conn),
     tsdb_dir: Path = Depends(get_tsdb_dir),
     _: sqlite3.Row = Depends(require_admin),
@@ -274,14 +384,31 @@ async def get_traffic_stats(
             "hours": hours,
             "labels": [],
             "peers": [],
+            "all_peers": [],  # Empty filter list when logging disabled
             "display_unit": "B",
             "bucket_seconds": 3600,
         })
 
     # Offload blocking I/O to threadpool (conn uses check_same_thread=False)
+    t0 = _time.monotonic()
     data = await run_in_threadpool(_compute_traffic_stats, conn, tsdb_dir, hours, max_points)
+    elapsed = _time.monotonic() - t0
+    if elapsed > 5.0:
+        _log.warning(
+            "TRAFFIC_STATS took %.1fs for %d peers",
+            elapsed, len(data.get("peers", [])),
+        )
+
     data["retention_days"] = retention_days
     data["logging_disabled"] = False
+
+    # Signal to the client when the query window exceeds data retention
+    if retention_days and hours > retention_days * 24:
+        data["effective_hours"] = retention_days * 24
+        data["truncated"] = True
+    else:
+        data["effective_hours"] = hours
+        data["truncated"] = False
 
     return ok_response(data=data)
 
@@ -331,6 +458,7 @@ async def get_connection_stats(
             "interfaces": interfaces,
             "total_connected": total_connected,
             "total_peers": total_peers,
+            "display_unit": "B",
         }
         return ok_response(data=data)
 

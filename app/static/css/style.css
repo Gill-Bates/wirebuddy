@@ -24,6 +24,9 @@
     /* Z-index layering */
     --wb-z-banner: 1080;
     --wb-z-toast: 1090;
+    --wb-shell-top: 0px;
+    --wb-footer-height: 2.5rem;
+    --wb-shell-bottom: var(--wb-footer-height);
 }
 
 [data-bs-theme="dark"] {
@@ -189,6 +192,7 @@ html.login-page[data-bs-theme="dark"] .login-tagline {
     border: none;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
     border-radius: var(--wb-radius-lg);
+    overflow: hidden;
 }
 
 html.login-page .login-card {
@@ -297,6 +301,14 @@ html.login-page[data-bs-theme="dark"] .card .table,
 .form-check-input:checked {
     background-color: var(--wb-primary);
     border-color: var(--wb-primary);
+}
+
+.form-switch .form-check-input {
+    background-position: left 2px center;
+}
+
+.form-switch .form-check-input:checked {
+    background-position: right 2px center;
 }
 
 .form-switch .form-check-input:focus {
@@ -864,6 +876,10 @@ html.login-page[data-bs-theme="dark"] .card .table,
     background-color: #f8f9fa;
     border-right: 1px solid #e5e7eb;
     flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    height: calc(100vh - var(--wb-footer-height, 2.5rem));
+    overflow-y: auto;
 }
 
 [data-bs-theme="dark"] .sidebar {
@@ -903,8 +919,32 @@ html.login-page[data-bs-theme="dark"] .card .table,
 
 .sidebar .nav-link .material-icons {
     font-size: 20px;
+    width: 20px;
+    height: 20px;
     vertical-align: middle;
     margin-right: 0.5rem;
+}
+
+.wb-shell {
+    position: relative;
+}
+
+@media (min-width: 992px) {
+    .wb-shell::after {
+        content: "";
+        position: fixed;
+        left: 240px;
+        top: var(--wb-shell-top);
+        bottom: var(--wb-shell-bottom);
+        width: 1px;
+        background-color: #e5e7eb;
+        pointer-events: none;
+        z-index: 900;
+    }
+
+    [data-bs-theme="dark"] .wb-shell::after {
+        background-color: var(--wb-border-subtle);
+    }
 }
 
 /* -----------------------------------------------------------------------------
@@ -1065,6 +1105,47 @@ html.login-page[data-bs-theme="dark"] .card .table,
     gap: 0.5rem;
     width: 100%;
     padding: 1rem 0.75rem;
+    /* Isolate layout calculations to prevent reflow propagation */
+    contain: layout style;
+}
+
+/* ── Smooth mobile navbar open/close animation ────────────────────────────── */
+@media (max-width: 991.98px) {
+    .navbar-collapse.collapsing {
+        overflow: hidden;
+        transition: height 0.24s ease;
+    }
+
+    .navbar-mobile-grid {
+        opacity: 0;
+        transform: translateY(-8px);
+        transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+
+    .navbar-collapse.show .navbar-mobile-grid,
+    .navbar-collapse.wb-nav-opening .navbar-mobile-grid {
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    .navbar-collapse.wb-nav-closing .navbar-mobile-grid {
+        opacity: 0;
+        transform: translateY(-6px);
+    }
+}
+
+/* Respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) and (max-width: 991.98px) {
+
+    .navbar-collapse.collapsing,
+    .navbar-mobile-grid {
+        transition: none;
+    }
+
+    .navbar-mobile-grid {
+        opacity: 1;
+        transform: none;
+    }
 }
 
 .navbar-mobile-grid .nav-link {
@@ -1082,6 +1163,8 @@ html.login-page[data-bs-theme="dark"] .card .table,
 
 .navbar-mobile-grid .nav-link .material-icons {
     font-size: 22px;
+    width: 22px;
+    height: 22px;
     flex-shrink: 0;
 }
 
