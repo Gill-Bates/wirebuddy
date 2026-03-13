@@ -58,9 +58,21 @@ jobs:
           TAG="v${VERSION}"
           
           echo "build_date=${BUILD_DATE}" >> "$GITHUB_OUTPUT"
-          echo "app_version=${TAG}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy/tags/${{ steps.meta.outputs.tag }}/")
+          if [ "$RESPONSE" = "200" ]; then
+            echo "ERROR: Tag ${{ steps.meta.outputs.tag }} already exists on Docker Hub"
+            echo "Cannot overwrite existing release tag via manual workflow dispatch"
+            exit 1
+          fi
+          echo "✓ Tag does not exist, safe to proceed"
 
       - name: Build for local smoke test (amd64 only)
         run: |
@@ -70,7 +82,7 @@ jobs:
             --target runtime \
             --load \
             --cache-from type=gha \
-            --build-arg "APP_VERSION=${{ steps.meta.outputs.app_version }}" \
+            --build-arg "APP_VERSION=${{ steps.meta.outputs.tag }}" \
             --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
             --build-arg "VCS_REF=${{ github.sha }}" \
             -t wirebuddy:test \
@@ -88,39 +100,81 @@ jobs:
             -e WIREBUDDY_SKIP_NETWORK_CHECK="1" \
             wirebuddy:test
           
-          # Wait for startup and check if container is still running
+          # Wait for startup with active polling (max 30s)
           echo "Waiting for container to start..."
-          sleep 15
+          for i in $(seq 1 30); do
+            # Check if container is still running
+            if ! docker ps -q -f name=wirebuddy-test | grep -q .; then
+              echo "✗ Container exited during startup after ${i}s"
+              echo "=== Container logs ==="
+              docker logs wirebuddy-test 2>&1 || echo "Could not retrieve logs"
+              docker rm -f wirebuddy-test 2>/dev/null || true
+              exit 1
+            fi
+            
+            # Try health check
+            if curl -fsS --retry-connrefused --retry 2 --retry-delay 1 \
+                http://localhost:8000/api/system/status > /dev/null 2>&1; then
+              echo "✓ Container ready after ${i}s"
+              docker stop wirebuddy-test
+              docker rm wirebuddy-test
+              exit 0
+            fi
+            sleep 1
+          done
           
-          # Check if container is still running
-          if ! docker ps -q -f name=wirebuddy-test | grep -q .; then
-            echo "✗ Container exited during startup"
-            echo "=== Container logs ==="
-            docker logs wirebuddy-test 2>&1 || echo "Could not retrieve logs"
-            docker rm -f wirebuddy-test 2>/dev/null || true
-            exit 1
-          fi
-          
-          # Health check (matches Dockerfile HEALTHCHECK endpoint)
-          if curl -fsS --retry 3 --retry-delay 2 http://localhost:8000/api/system/status; then
-            echo "✓ Health check passed"
-            docker stop wirebuddy-test
-            docker rm wirebuddy-test
-          else
-            echo "✗ Health check failed"
-            echo "=== Container logs ==="
-            docker logs wirebuddy-test 2>&1 || echo "Could not retrieve logs"
-            echo "=== Container status ==="
-            docker ps -a -f name=wirebuddy-test
-            docker stop wirebuddy-test 2>/dev/null || true
-            docker rm -f wirebuddy-test 2>/dev/null || true
-            exit 1
-          fi
+          # Timeout after 30s
+          echo "✗ Health check timeout after 30s"
+          echo "=== Container logs ==="
+          docker logs wirebuddy-test 2>&1 || echo "Could not retrieve logs"
+          echo "=== Container status ==="
+          docker ps -a -f name=wirebuddy-test
+          docker stop wirebuddy-test 2>/dev/null || true
+          docker rm -f wirebuddy-test 2>/dev/null || true
+          exit 1
 
-      - name: Trivy vulnerability scan
+      - name: Trivy scan Python dependencies (requirements.txt)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: 'fs'
+          scan-ref: 'requirements.txt'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+          timeout: '5m'
+
+      - name: Trivy vulnerability scan (amd64)
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'wirebuddy:test'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          timeout: '10m'
+
+      - name: Build for security scan (arm64)
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/arm64 \
+            --target runtime \
+            --load \
+            --cache-from type=gha,scope=arm64-scan \
+            --cache-to type=gha,mode=max,scope=arm64-scan \
+            --build-arg "APP_VERSION=${{ steps.meta.outputs.tag }}" \
+            --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
+            --build-arg "VCS_REF=${{ github.sha }}" \
+            -t wirebuddy:test-arm64 \
+            -f docker/Dockerfile \
+            .
+
+      - name: Trivy vulnerability scan (arm64)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: 'wirebuddy:test-arm64'
           format: 'table'
           exit-code: '1'
           ignore-unfixed: true
@@ -132,37 +186,94 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Base tag (always applied)
-          TAGS="-t ${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy:${{ steps.meta.outputs.tag }}"
+          # Build tags array to prevent shell injection
+          TAGS=()
+          TAGS+=("-t" "${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy:${{ steps.meta.outputs.tag }}")
           
           # Only tag :latest on actual tag pushes (not workflow_dispatch)
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAGS="${TAGS} -t ${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy:latest"
+            TAGS+=("-t" "${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy:latest")
             echo "Building release: tagging as :latest"
           else
             echo "Manual build: NOT tagging as :latest"
           fi
           
           # Build and push
-          # Note: --network=host removed for security (build doesn't need host network access)
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --target runtime \
             --cache-from type=gha \
             --cache-to type=gha,mode=max \
-            --build-arg "APP_VERSION=${{ steps.meta.outputs.app_version }}" \
+            --build-arg "APP_VERSION=${{ steps.meta.outputs.tag }}" \
             --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
             --build-arg "VCS_REF=${{ github.sha }}" \
-            ${TAGS} \
+            "${TAGS[@]}" \
             -f docker/Dockerfile \
             --push \
             .
 
-      # Optional cleanup (disabled by default – Docker Hub rate limits API)
-      # Uncomment if you really want automatic tag pruning
-      # - name: Cleanup old Docker Hub tags
-      #   if: startsWith(github.ref, 'refs/tags/v')
-      #   run: echo "Disabled to avoid API rate limits"
+      - name: Cleanup old Docker Hub tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
+        env:
+          DH_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          
+          REPO="${DH_USERNAME}/wirebuddy"
+          CURRENT_TAG="${{ steps.meta.outputs.tag }}"
+          KEEP_COUNT=3  # Keep latest + 3 most recent version tags
+          
+          echo "Fetching Docker Hub token..."
+          TOKEN=$(jq -n \
+            --arg user "$DH_USERNAME" \
+            --arg pass "$DH_TOKEN" \
+            '{"username": $user, "password": $pass}' | \
+            curl -s -X POST \
+              -H "Content-Type: application/json" \
+              -d @- \
+              https://hub.docker.com/v2/users/login/ | jq -r .token)
+          
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "ERROR: Failed to authenticate with Docker Hub"
+            exit 1
+          fi
+          
+          # Fetch all tags with pagination
+          echo "Fetching all tags for ${REPO}..."
+          ALL_TAGS=""
+          NEXT_URL="https://hub.docker.com/v2/repositories/${REPO}/tags/?page_size=100"
+          
+          while [ -n "$NEXT_URL" ] && [ "$NEXT_URL" != "null" ]; do
+            RESPONSE=$(curl -s -H "Authorization: JWT ${TOKEN}" "$NEXT_URL")
+            PAGE_TAGS=$(echo "$RESPONSE" | jq -r '.results[].name')
+            ALL_TAGS="${ALL_TAGS}${PAGE_TAGS}\n"
+            NEXT_URL=$(echo "$RESPONSE" | jq -r '.next // empty')
+          done
+          
+          # Get version tags sorted by semver (newest first), keep top N
+          VERSIONED_TAGS=$(echo -e "$ALL_TAGS" | grep -E '^v[0-9]' | sort -Vr | head -n "$KEEP_COUNT")
+          
+          echo "Current tag: ${CURRENT_TAG}"
+          echo "Keeping version tags: ${VERSIONED_TAGS}"
+          
+          # Delete tags not in keep list
+          echo -e "$ALL_TAGS" | while read -r TAG; do
+            [ -z "$TAG" ] && continue
+            
+            if [ "$TAG" = "latest" ] || [ "$TAG" = "$CURRENT_TAG" ] || echo "$VERSIONED_TAGS" | grep -qx "$TAG"; then
+              echo "Keeping: ${TAG}"
+            else
+              echo "Deleting: ${TAG}"
+              curl -s -X DELETE \
+                -H "Authorization: JWT ${TOKEN}" \
+                "https://hub.docker.com/v2/repositories/${REPO}/tags/${TAG}/" || \
+                echo "Warning: Failed to delete ${TAG}"
+            fi
+          done
+          
+          echo "✓ Cleanup completed. Kept 'latest' + ${KEEP_COUNT} most recent versions."
 
       - name: Generate Release Notes
         if: startsWith(github.ref, 'refs/tags/v')
@@ -170,15 +281,14 @@ jobs:
           set -euo pipefail
           VERSION="${{ steps.meta.outputs.version }}"
           
-          # Escape version for regex (handle dots, plus signs, etc.)
-          VERSION_ESCAPED=$(echo "$VERSION" | sed 's/[.+*?^${}()|[\]\\]/\\&/g')
-          
-          awk -v ver="${VERSION_ESCAPED}" '
-            BEGIN { found=0 }
-            $0 ~ "^## \\[" ver "\\]" { found=1 }
+          # Use simple string matching instead of regex escaping
+          awk -v ver="$VERSION" '
+            BEGIN { header = "## [" ver "]" }
+            index($0, header) == 1 { found=1 }
             found {
-              if ($0 ~ "^## \\[" && $0 !~ "^## \\[" ver "\\]") exit
-              if ($0 ~ "^<details") exit
+              if (found > 1 && $0 ~ /^## \[/) exit
+              if ($0 ~ /^<details/) exit
+              found++
               print
             }
           ' CHANGELOG.md > RELEASE_NOTES.md
