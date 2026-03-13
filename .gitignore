@@ -34,3 +34,7 @@ BUILD_INFO
 
 # Environment (keep settings.env as template)
 .env
+
+# Linting
+ui-lint-output/
+tools/ui-lint/node_modules
