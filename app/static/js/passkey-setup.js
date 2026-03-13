@@ -56,6 +56,7 @@
 
     function showError(msg) {
         const el = document.getElementById('error-alert');
+        if (!el) return;
         el.textContent = msg;
         el.style.display = 'block';
     }
@@ -63,6 +64,38 @@
     function hideError() {
         const el = document.getElementById('error-alert');
         if (el) el.style.display = 'none';
+    }
+
+    function showFatalError(context, error) {
+        console.error(`Passkey setup ${context}:`, error);
+        showError('Failed to initialize passkey setup. Please reload the page.');
+    }
+
+    function setButtonLoading(btnText, loading, originalText) {
+        if (loading) {
+            btnText.textContent = '';
+            const spinner = document.createElement('span');
+            spinner.className = 'spinner-border spinner-border-sm me-1';
+            spinner.setAttribute('role', 'status');
+            spinner.setAttribute('aria-hidden', 'true');
+            const label = document.createElement('span');
+            label.textContent = 'Registering…';
+            btnText.append(spinner, label);
+        } else {
+            btnText.textContent = originalText;
+        }
+    }
+
+    function getSafeRedirectUrl() {
+        const raw = document.body.dataset?.redirect || '/';
+        try {
+            const url = new URL(raw, window.location.origin);
+            if (url.origin !== window.location.origin) return '/';
+            if (url.protocol === 'javascript:') return '/';
+            return url.pathname + url.search + url.hash;
+        } catch {
+            return '/';
+        }
     }
 
     // ============================================================================
@@ -105,15 +138,16 @@
     // Snake-case to Camel-case Converter
     // ============================================================================
 
-    function snakeToCamel(obj) {
+    function snakeToCamel(obj, depth = 0) {
+        if (depth > 10) return obj;
         if (Array.isArray(obj)) {
-            return obj.map(snakeToCamel);
+            return obj.map(v => snakeToCamel(v, depth + 1));
         }
         if (obj !== null && typeof obj === 'object') {
             return Object.fromEntries(
                 Object.entries(obj).map(([k, v]) => [
                     k.replace(/_([a-z0-9])/gi, (_, c) => c.toUpperCase()),
-                    snakeToCamel(v),
+                    snakeToCamel(v, depth + 1),
                 ])
             );
         }
@@ -158,7 +192,7 @@
                 type: p.type,
                 alg: p.alg,
             })),
-            timeout: s.timeout || 60000,
+            timeout: s.timeout || REGISTRATION_TIMEOUT_MS,
             authenticatorSelection: buildAuthenticatorSelection(s.authenticatorSelection),
         };
 
@@ -225,31 +259,35 @@
     // Passkey Registration
     // ============================================================================
 
+    const REGISTRATION_TIMEOUT_MS = 120000; // 2 minutes
+
     async function registerPasskey() {
         if (registering) return;
-        registering = true;
-        hideError();
 
         const btn = document.getElementById('register-btn');
         const btnText = document.getElementById('register-btn-text');
+        if (!btn || !btnText) {
+            registering = false;
+            return;
+        }
+
+        registering = true;
+        hideError();
         const originalText = btnText.textContent;
 
         btn.disabled = true;
         btn.setAttribute('aria-busy', 'true');
-        btnText.innerHTML =
-            '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>' +
-            '<span>Registering…</span>';
+        setButtonLoading(btnText, true, originalText);
 
         // AbortController for timeout
         const abortController = new AbortController();
         const timeoutId = setTimeout(() => {
             abortController.abort();
-        }, 120000); // 2 minute timeout
+        }, REGISTRATION_TIMEOUT_MS);
 
         try {
             // 1. Get registration options from server
             const serverOptions = await api('POST', '/api/passkeys/register/start');
-            const challenge = serverOptions.challenge;  // Save for finish request
             const publicKeyOptions = prepareRegistrationOptions(serverOptions);
 
             // 2. Create credential with browser (with timeout)
@@ -271,12 +309,13 @@
             await api('POST', '/api/passkeys/register/finish', {
                 credential: credentialJSON,
                 device_name: deviceName,
-                challenge: challenge,
             });
 
             // 4. Success - show success state
-            document.getElementById('step-setup').style.display = 'none';
-            document.getElementById('step-success').style.display = 'block';
+            const stepSetup = document.getElementById('step-setup');
+            const stepSuccess = document.getElementById('step-success');
+            if (stepSetup) stepSetup.style.display = 'none';
+            if (stepSuccess) stepSuccess.style.display = 'block';
 
         } catch (error) {
             // Use friendly error messages
@@ -290,7 +329,7 @@
             registering = false;
             btn.disabled = false;
             btn.removeAttribute('aria-busy');
-            btnText.textContent = originalText;
+            setButtonLoading(btnText, false, originalText);
         }
     }
 
@@ -302,8 +341,10 @@
         const isSupported = checkWebAuthnSupport();
 
         if (!isSupported) {
-            document.getElementById('step-setup').style.display = 'none';
-            document.getElementById('step-unsupported').style.display = 'block';
+            const stepSetup = document.getElementById('step-setup');
+            const stepUnsupported = document.getElementById('step-unsupported');
+            if (stepSetup) stepSetup.style.display = 'none';
+            if (stepUnsupported) stepUnsupported.style.display = 'block';
             return;
         }
 
@@ -312,21 +353,21 @@
             registerBtn.addEventListener('click', registerPasskey);
         }
 
-        // Get redirect URL from page data or use default
-        const redirectUrl = document.body.dataset?.redirect || '/';
+        // Get safe redirect URL from page data or use default
+        const redirectUrl = getSafeRedirectUrl();
 
         const continueBtn = document.getElementById('continue-btn');
         if (continueBtn) {
             continueBtn.addEventListener('click', () => {
                 window.location.href = redirectUrl;
-            });
+            }, { once: true });
         }
 
         const skipBtn = document.getElementById('skip-btn');
         if (skipBtn) {
             skipBtn.addEventListener('click', () => {
                 window.location.href = redirectUrl;
-            });
+            }, { once: true });
         }
 
         // Focus device name input
@@ -339,23 +380,9 @@
     // Run init when DOM is ready
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => {
-            init().catch(error => {
-                console.error('Passkey setup initialization failed:', error);
-                const el = document.getElementById('error-alert');
-                if (el) {
-                    el.textContent = 'Failed to initialize passkey setup. Please reload the page.';
-                    el.style.display = 'block';
-                }
-            });
+            init().catch(error => showFatalError('initialization failed', error));
         });
     } else {
         await init();
     }
-})().catch(error => {
-    console.error('Passkey setup fatal error:', error);
-    const el = document.getElementById('error-alert');
-    if (el) {
-        el.textContent = 'Failed to initialize passkey setup. Please reload the page.';
-        el.style.display = 'block';
-    }
-});
+})().catch(error => showFatalError('fatal error', error));

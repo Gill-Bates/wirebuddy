@@ -1,3 +1,17 @@
+## [1.3.1] - 2026-03-13
+
+- ``New`` New ``health`` endpoint for a Docker health check
+- ``New`` Added speed test to monitor server performance
+- ``Fix`` An incorrectly entered password did not generate an error message
+- ``Fix`` The charts for traffic metrics provided some contradictory information
+- ``Fix`` When logged in, several error messages appeared in the GUI under Settings
+- ``Fix`` A timeout occurred while saving DNS custom rules
+- ``Fix`` Security hardening in the MFA routine & Credential handling
+- ``Fix`` And as always: Several design improvements to make the front end more mobile-friendly
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.3.0] - 2026-03-07
 
 - ``New`` Introducing Passkey for Users to Signin
@@ -8,10 +22,6 @@
 - ``Fix`` Fixed display issues on tablets
 - ``Fix`` The retention policy for DNS logs did not apply correctly
 - ``Fix`` Fixed a bug that caused Unbound to crash on startup
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.2.2] - 2026-03-05
 

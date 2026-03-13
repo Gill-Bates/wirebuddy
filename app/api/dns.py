@@ -85,6 +85,10 @@ _dns_trend_cache: dict[tuple[str, int, int], tuple[float, dict]] = {}
 _ALLOWED_DOT_PORTS = frozenset({853, 8853})
 _DOT_TEST_CONCURRENCY = 8
 
+# Rebuild queue: prevents concurrent blocklist rebuilds that interfere
+_rebuild_queue: asyncio.Queue[tuple[list[str], str]] = asyncio.Queue(maxsize=1)
+_rebuild_worker_task: asyncio.Task[None] | None = None
+
 
 def _spawn_background_task(coro: Coroutine[object, object, None], *, name: str) -> None:
 	"""Track fire-and-forget tasks so they are not garbage-collected early."""
@@ -155,7 +159,16 @@ def _regenerate_peer_tags_for_blocklist(conn: sqlite3.Connection) -> None:
 	
 	This ensures that blocking takes effect immediately when the global
 	blocklist toggle is changed, rather than requiring a peer edit.
+	
+	IMPORTANT: If the global ad-blocker is disabled, peer-tags.conf is written
+	empty to prevent Unbound crash (tags without corresponding local-zone-tag rules).
 	"""
+	# If global ad-blocker is disabled, write empty peer-tags to avoid crash
+	if not get_dns_blocklist_enabled(conn):
+		unbound.write_peer_tags([])
+		_log.debug("DNS peer tags cleared (ad-blocker disabled globally)")
+		return
+	
 	enabled_blocklist_ids = get_enabled_blocklist_ids(conn)
 	peers = get_all_peers(conn)
 	peer_list = []
@@ -191,12 +204,12 @@ async def _background_reload_for_blocklist(enable_blocklist: bool) -> None:
 	"""
 	try:
 		# Import here to avoid circular dependency
-		from ..db.sqlite_schema import get_db_path
+		from ..utils.config import get_config
 		import sqlite3
 		
 		# Create new DB connection for background thread
 		# (cannot reuse request-scoped connection which is already closed)
-		db_path = get_db_path()
+		db_path = get_config().db_path
 		conn = sqlite3.connect(str(db_path), check_same_thread=False)
 		conn.row_factory = sqlite3.Row
 		
@@ -230,12 +243,21 @@ async def _background_reload_for_blocklist(enable_blocklist: bool) -> None:
 				listen_addrs_ipv6=ipv6_gateways if ipv6_gateways else None,
 			)
 			
-			# Reload unbound
-			ok, msg = await unbound.reload_config()
-			if ok:
-				_log.info("DNS_BG_RELOAD blocklist toggle reload completed successfully")
+			# Reload or start unbound (if it crashed, start it instead of waiting for watchdog)
+			if await unbound.is_running():
+				ok, msg = await unbound.reload_config()
+				if ok:
+					_log.info("DNS_BG_RELOAD blocklist toggle reload completed successfully")
+				else:
+					_log.warning("DNS_BG_RELOAD blocklist toggle reload failed: %s", msg)
 			else:
-				_log.warning("DNS_BG_RELOAD blocklist toggle reload failed: %s", msg)
+				# Unbound not running - start it instead of reload
+				_log.info("DNS_BG_RELOAD unbound not running, starting instead of reload")
+				ok, msg = await unbound.start()
+				if ok:
+					_log.info("DNS_BG_RELOAD blocklist toggle start completed successfully")
+				else:
+					_log.warning("DNS_BG_RELOAD blocklist toggle start failed: %s", msg)
 		finally:
 			conn.close()
 	except Exception as exc:
@@ -1000,19 +1022,8 @@ async def set_blocklist_sources(
 	custom_rules_text = get_dns_custom_rules(conn)
 	urls_copy = list(payload.urls)
 	
-	# Fire-and-forget background task for blocklist download
-	async def _background_update() -> None:
-		try:
-			count, msg = await unbound.update_blocklists(urls_copy, custom_rules_text=custom_rules_text)
-			ok, reload_msg = await unbound.restart()
-			if ok:
-				_log.info("BLOCKLIST_UPDATE_BG success: %s", msg)
-			else:
-				_log.warning("BLOCKLIST_UPDATE_BG %s but restart failed: %s", msg, reload_msg)
-		except Exception as exc:
-			_log.error("BLOCKLIST_UPDATE_BG failed: %s", exc)
-	
-	_spawn_background_task(_background_update(), name="dns:blocklist_sources_update")
+	# Queue rebuild (prevents concurrent rebuilds)
+	queued = await _queue_rebuild(urls_copy, custom_rules_text)
 	
 	return ok_response(
 		message="Blocklist update started",
@@ -1036,26 +1047,19 @@ async def update_blocklists(
 	custom_rules_text = get_dns_custom_rules(conn)
 	urls_copy = list(urls) if urls else []
 	
-	# Fire-and-forget background task
-	async def _background_update() -> None:
-		try:
-			count, msg = await unbound.update_blocklists(urls_copy, custom_rules_text=custom_rules_text)
-			ok, reload_msg = await unbound.restart()
-			if ok:
-				_log.info("BLOCKLIST_UPDATE_BG success: %s", msg)
-			else:
-				_log.warning("BLOCKLIST_UPDATE_BG %s but restart failed: %s", msg, reload_msg)
-		except FileNotFoundError:
-			_log.error("BLOCKLIST_UPDATE_BG failed: Unbound not installed")
-		except Exception as exc:
-			_log.error("BLOCKLIST_UPDATE_BG failed: %s", exc)
-	
-	_spawn_background_task(_background_update(), name="dns:blocklist_update")
+	# Queue rebuild
+	queued = await _queue_rebuild(urls_copy, custom_rules_text)
+	if not queued:
+		return ok_response(
+			message="Blocklist update already in progress",
+			data={"started": False, "queued": False},
+		)
 	
 	return ok_response(
-		message="Blocklist update started",
-		data={"started": True},
+		message="Blocklist update queued",
+		data={"started": True, "queued": True},
 	)
+
 
 
 @router.get("/blocklist/count")
@@ -1120,12 +1124,52 @@ async def _rebuild_dns_from_rules(conn: sqlite3.Connection, rules_text: str) -> 
 	reloaded, _ = await unbound.restart()
 	return reloaded, count, msg
 
+
+async def _rebuild_dns_background(urls: list[str], rules_text: str) -> None:
+	"""Background task to rebuild blocklist + restart Unbound (fire-and-forget)."""
+	try:
+		count, msg = await unbound.update_blocklists(urls, custom_rules_text=rules_text)
+		reloaded, _ = await unbound.restart()
+		_log.info("DNS_BACKGROUND rebuild complete: %s domains, reloaded=%s, %s", count, reloaded, msg)
+	except Exception:
+		_log.exception("DNS_BACKGROUND rebuild failed")
+
+
+async def _rebuild_worker() -> None:
+	"""Background worker: processes rebuild queue serially to prevent concurrent rebuilds."""
+	while True:
+		try:
+			urls, rules_text = await _rebuild_queue.get()
+			await _rebuild_dns_background(urls, rules_text)
+		except Exception:
+			_log.exception("DNS_REBUILD_WORKER unexpected error")
+		finally:
+			_rebuild_queue.task_done()
+
+
+def _ensure_rebuild_worker() -> None:
+	"""Ensure rebuild worker is running."""
+	global _rebuild_worker_task
+	if _rebuild_worker_task is None or _rebuild_worker_task.done():
+		_rebuild_worker_task = asyncio.create_task(_rebuild_worker(), name="dns-rebuild-worker")
+
+
+async def _queue_rebuild(urls: list[str], rules_text: str) -> bool:
+	"""Queue a rebuild. Returns True if queued, False if queue full (rebuild already pending)."""
+	_ensure_rebuild_worker()
+	try:
+		_rebuild_queue.put_nowait((urls, rules_text))
+		return True
+	except asyncio.QueueFull:
+		_log.warning("DNS_REBUILD_QUEUE full, skipping duplicate rebuild request")
+		return False
+
 @router.get("/custom-rules")
 async def get_custom_rules(
 	conn: sqlite3.Connection = Depends(get_conn),
-	_: sqlite3.Row = Depends(require_admin),
+	_: sqlite3.Row = Depends(get_current_user),
 ):
-	"""Get the current custom DNS rules text."""
+	"""Get the current custom DNS rules text (read: any user, write: admin only)."""
 	rules_text = get_dns_custom_rules(conn)
 	# Validate / parse for display
 	parsed, errors = parse_custom_rules(rules_text) if rules_text.strip() else ([], [])
@@ -1165,40 +1209,25 @@ async def update_custom_rules(
 	# Persist regardless of errors (user may want to save work-in-progress)
 	set_dns_custom_rules(conn, rules_text)
 
-	# Rebuild blocklist with custom rules applied
-	try:
-		ok, count, msg = await _rebuild_dns_from_rules(conn, rules_text)
-		return ok_response(
-			message=f"Custom rules saved. {msg}",
-			data={
-				"rules": rules_text,
-				"rule_count": len(parsed),
-				"error_count": len(errors),
-				"errors": [
-					{"line": e.line, "text": e.text, "error": e.error}
-					for e in errors
-				],
-				"domains_blocked": count,
-				"reloaded": ok,
-			},
-		)
-	except Exception as exc:
-		_log.exception("Failed to rebuild blocklist after custom rules update")
-		# Rules are saved even if rebuild fails
-		return ok_response(
-			message=f"Custom rules saved but blocklist rebuild failed: {exc}",
-			data={
-				"rules": rules_text,
-				"rule_count": len(parsed),
-				"error_count": len(errors),
-				"errors": [
-					{"line": e.line, "text": e.text, "error": e.error}
-					for e in errors
-				],
-				"domains_blocked": 0,
-				"reloaded": False,
-			},
-		)
+	# Queue rebuild (serial processing prevents concurrent interference)
+	urls = get_enabled_blocklists(conn)
+	queued = await _queue_rebuild(urls, rules_text)
+
+	# Return immediately - rebuild happens in background
+	return ok_response(
+		message="Custom rules saved. Blocklist update in progress.",
+		data={
+			"rules": rules_text,
+			"rule_count": len(parsed),
+			"error_count": len(errors),
+			"errors": [
+				{"line": e.line, "text": e.text, "error": e.error}
+				for e in errors
+			],
+			"domains_blocked": None,  # Unknown until rebuild completes
+			"reloaded": None,  # Pending
+		},
+	)
 
 
 @router.post("/custom-rules/actions")

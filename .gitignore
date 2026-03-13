@@ -12,6 +12,9 @@ full_codebase_*
 
 # Virtual Environment
 .venv/
+.tmp-playwright
+tools/ui-lint/node_modules/
+tools/ui-lint/ui-lint-output/
 
 # Data
 data/

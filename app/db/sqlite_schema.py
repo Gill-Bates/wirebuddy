@@ -19,6 +19,32 @@ _log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Default Settings (called AFTER key validation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def insert_default_settings(conn: sqlite3.Connection) -> None:
+	"""Insert factory default settings if not already present.
+	
+	MUST be called AFTER validate_secret_key() to avoid key validation failures.
+	"""
+	now = utcnow()
+	with transaction(conn):
+		conn.executemany(
+			"""
+			INSERT OR IGNORE INTO settings (key, value, updated_at)
+			VALUES (?, ?, ?)
+			""",
+			[
+				("gui_port", "8000", now),
+				("wg_mtu", "1420", now),
+				("wg_persistent_keepalive", "25", now),
+				("traffic_analysis_enabled", "0", now),
+			],
+		)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Schema Initialization
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -112,21 +138,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				updated_at timestamp NOT NULL
 			)
 			"""
-		)
-
-		# Factory defaults (insert once; preserve user overrides)
-		now = utcnow()
-		conn.executemany(
-			"""
-			INSERT OR IGNORE INTO settings (key, value, updated_at)
-			VALUES (?, ?, ?)
-			""",
-			[
-				("gui_port", "8000", now),
-				("wg_mtu", "1420", now),
-				("wg_persistent_keepalive", "25", now),
-				("traffic_analysis_enabled", "0", now),
-			],
 		)
 
 		# Login attempts (for brute-force protection)

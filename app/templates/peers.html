@@ -126,6 +126,8 @@
     .peer-status-indicator {
         background-color: var(--wb-primary, #88171a) !important;
         color: #fff !important;
+        font-family: 'Roboto Flex', system-ui, -apple-system, 'Segoe UI', sans-serif;
+        font-variant-numeric: normal;
     }
 
     /* Support for reduced motion preferences */
@@ -223,12 +225,46 @@
 
     .peers-pagination .btn[disabled] {
         pointer-events: none;
+        opacity: 1;
+    }
+
+    [data-bs-theme="dark"] .peers-pagination .btn[disabled],
+    [data-bs-theme="dark"] .peers-pagination .btn.disabled {
+        color: #f2f5f8;
+        border-color: #6c7683;
+        background-color: rgba(255, 255, 255, 0.04);
     }
 
     .peers-pagination .btn {
         display: inline-flex;
         align-items: center;
         justify-content: center;
+    }
+
+    .peers-pagination-status {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.3rem 0.65rem;
+        border: var(--bs-border-width) solid var(--bs-border-color);
+        background: var(--bs-secondary-bg);
+        color: var(--bs-secondary-color);
+        white-space: nowrap;
+        pointer-events: none;
+    }
+
+    .peers-pagination > :not(:first-child) {
+        margin-left: calc(var(--bs-border-width) * -1);
+    }
+
+    .peers-pagination > :first-child {
+        border-top-left-radius: var(--bs-border-radius-sm);
+        border-bottom-left-radius: var(--bs-border-radius-sm);
+    }
+
+    .peers-pagination > :last-child {
+        border-top-right-radius: var(--bs-border-radius-sm);
+        border-bottom-right-radius: var(--bs-border-radius-sm);
     }
 
     /* Mobile-optimized peers rows */
@@ -251,7 +287,10 @@
 
         .peers-pagination .btn {
             flex: 1 1 auto;
-            min-height: 44px;
+        }
+
+        .peers-pagination-status {
+            flex: 1 1 auto;
         }
 
         .peers-table {
@@ -492,7 +531,7 @@
                     %}disabled aria-disabled="true" {% endif %}>
                     Previous
                 </button>
-                <span class="btn btn-outline-secondary disabled" aria-current="page" role="status">
+                <span class="peers-pagination-status" aria-current="page" role="status">
                     Page {{ page }} / {{ total_pages }}
                 </span>
                 <button type="button" class="btn btn-outline-secondary"

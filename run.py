@@ -4,26 +4,34 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: AGPL-3.0
-#
-
-# WireBuddy - WireGuard Management WebUI
-# Local development entry point
-#
-
 import logging
 import os
+from pathlib import Path
 
 import uvicorn
+from dotenv import load_dotenv
+
+# ---------------------------------------------------------
+# Load environment early (before config is read)
+# ---------------------------------------------------------
+
+BASE_DIR = Path(__file__).resolve().parent
+ENV_FILE = BASE_DIR / ".env"
+
+if ENV_FILE.exists():
+	load_dotenv(ENV_FILE)
+
+# ---------------------------------------------------------
+
 from app.utils.config import load_config
 from app.db.sqlite_runtime import connect
 from app.db.sqlite_schema import init_schema
 from app.db.sqlite_settings import get_setting
 
+
 _LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-# Uvicorn logging dict-config that reuses the same format as the app
 _UVICORN_LOG_CONFIG: dict = {
 	"version": 1,
 	"disable_existing_loggers": False,
@@ -56,16 +64,17 @@ _UVICORN_LOG_CONFIG: dict = {
 	},
 }
 
-if __name__ == "__main__":
+
+def main():
 	cfg = load_config()
 
-	# Set levels in the uvicorn log-config to match the app
-	_level = cfg.log_level.upper()
-	for _logger in _UVICORN_LOG_CONFIG["loggers"].values():
-		_logger["level"] = _level
+	level = cfg.log_level.upper()
 
-	# Read GUI server settings from database
+	for logger in _UVICORN_LOG_CONFIG["loggers"].values():
+		logger["level"] = level
+
 	conn = connect(cfg.db_path)
+
 	try:
 		init_schema(conn)
 
@@ -79,16 +88,27 @@ if __name__ == "__main__":
 
 		gui_localhost_only = gui_localhost_only_str.lower() in ("true", "1", "yes")
 		host = "127.0.0.1" if gui_localhost_only else "0.0.0.0"
+
 	finally:
 		conn.close()
+
+	reload_enabled = os.environ.get("WIREBUDDY_DEV_RELOAD", "").lower() in (
+		"1",
+		"true",
+		"yes",
+	)
 
 	uvicorn.run(
 		"app:create_app",
 		host=host,
 		port=gui_port,
-		reload=os.environ.get("WIREBUDDY_DEV_RELOAD", "").lower() in ("1", "true", "yes"),
+		reload=reload_enabled,
 		factory=True,
 		log_config=_UVICORN_LOG_CONFIG,
 		proxy_headers=True,
-		forwarded_allow_ips="*",  # Allow all IPs in dev mode; production uses entrypoint.sh
+		forwarded_allow_ips="*",
 	)
+
+
+if __name__ == "__main__":
+	main()

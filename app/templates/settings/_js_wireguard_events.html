@@ -1,0 +1,272 @@
+    const pskToggle = document.getElementById('wg-use-psk');
+    if (pskToggle) {
+        pskToggle.addEventListener('change', async function () {
+            this.disabled = true;
+            try {
+                togglePskDetails(this.checked);
+                if (this.checked) {
+                    const display = document.getElementById('wg-psk-display');
+                    try {
+                        let existingMasked = '';
+                        try {
+                            const current = await api('GET', '/api/wireguard/settings/psk');
+                            existingMasked = current.masked || current.data?.masked || '';
+                        } catch (loadErr) {
+                            console.warn('Failed to load existing PSK, attempting to generate a new one:', loadErr.message);
+                        }
+
+                        if (existingMasked) {
+                            display.value = existingMasked;
+                            display.type = 'password';
+                            cachedMaskedPsk = existingMasked;
+                        } else {
+                            const res = await api('POST', '/api/wireguard/settings/generate-psk');
+                            const maskedValue = res.masked || res.data?.masked || '';
+                            display.value = maskedValue;
+                            display.type = 'password';
+                            cachedMaskedPsk = maskedValue;
+                            cachedRevealedPsk = '';
+                            wbToast('PresharedKey generated', 'success');
+                        }
+                    } catch (err) {
+                        wbToast('Failed to initialize PSK: ' + err.message, 'danger');
+                        this.checked = false;
+                        togglePskDetails(false);
+                        return;
+                    }
+                }
+                await saveWgSettings({ silentSuccess: true });
+            } finally {
+                this.disabled = false;
+            }
+        });
+    }
+
+    // PSK visibility toggle (loads actual key on reveal)
+    const pskVisBtn = document.getElementById('psk-toggle-visibility');
+    if (pskVisBtn) {
+        pskVisBtn.addEventListener('click', async function () {
+            const display = document.getElementById('wg-psk-display');
+            const icon = this.querySelector('.material-icons');
+            if (display.type === 'password') {
+                try {
+                    if (!cachedRevealedPsk) {
+                        const res = await api('GET', '/api/wireguard/settings/psk?reveal=true');
+                        cachedRevealedPsk = res.key || res.data?.key || '';
+                    }
+                    display.value = cachedRevealedPsk || display.value;
+                    display.type = 'text';
+                    setPskValidationState(false);
+                    icon.textContent = 'visibility_off';
+                } catch (e) {
+                    wbToast('Cannot reveal key', 'warning');
+                }
+            } else {
+                if (!cachedMaskedPsk) {
+                    const res = await api('GET', '/api/wireguard/settings/psk');
+                    cachedMaskedPsk = res.masked || res.data?.masked || '';
+                }
+                display.value = cachedMaskedPsk;
+                display.type = 'password';
+                setPskValidationState(false);
+                icon.textContent = 'visibility';
+            }
+        });
+    }
+
+    // PSK copy to clipboard
+    const pskCopyBtn = document.getElementById('psk-copy-btn');
+    if (pskCopyBtn) {
+        pskCopyBtn.addEventListener('click', async function () {
+            const display = document.getElementById('wg-psk-display');
+            let keyToCopy = display.value;
+
+            // If password is masked, fetch the actual key first
+            if (display.type === 'password') {
+                try {
+                    const res = await api('GET', '/api/wireguard/settings/psk?reveal=true');
+                    keyToCopy = res.key || res.data?.key || '';
+                } catch (e) {
+                    wbToast('Cannot retrieve key', 'danger');
+                    return;
+                }
+            }
+
+            if (!keyToCopy || keyToCopy === 'No key generated yet') {
+                wbToast('No key to copy', 'warning');
+                return;
+            }
+
+            try {
+                await navigator.clipboard.writeText(keyToCopy);
+                wbToast('PresharedKey copied to clipboard', 'success');
+            } catch (e) {
+                wbToast('Failed to copy to clipboard', 'danger');
+            }
+        });
+    }
+
+    // PSK generate button
+    const pskGenBtn = document.getElementById('psk-generate-btn');
+    if (pskGenBtn) {
+        pskGenBtn.addEventListener('click', async function () {
+            if (!await wbConfirm(
+                'Generate a new PresharedKey? Existing client configurations will need to be re-downloaded.',
+                'warning'
+            )) return;
+
+            try {
+                const res = await api('POST', '/api/wireguard/settings/generate-psk');
+                const display = document.getElementById('wg-psk-display');
+                // API returns {status: "ok", data: {masked: "..."}, masked: "..."}
+                // After processing by api(), we get {masked: "...", status: "ok"}
+                const maskedValue = res.masked || res.data?.masked || '';
+                display.value = maskedValue;
+                display.type = 'password';
+                cachedMaskedPsk = maskedValue;
+                cachedRevealedPsk = '';
+                setPskValidationState(false);
+                wbToast('New PresharedKey generated', 'success');
+            } catch (err) {
+                wbToast('Failed to generate PSK: ' + err.message, 'danger');
+            }
+        });
+    }
+
+    // PSK autosave for custom input (validated)
+    let pskSaveTimeout = null;
+    const pskDisplayInput = document.getElementById('wg-psk-display');
+    if (pskDisplayInput) {
+        pskDisplayInput.addEventListener('input', function () {
+            const pskToggleInput = document.getElementById('wg-use-psk');
+            if (!pskToggleInput?.checked) return;
+
+            const candidate = this.value.trim();
+            if (!candidate || isMaskedPskValue(candidate)) {
+                setPskValidationState(false);
+                return;
+            }
+
+            setPskValidationState(!isValidWgPsk(candidate));
+
+            clearTimeout(pskSaveTimeout);
+            pskSaveTimeout = setTimeout(async () => {
+                await saveCustomPsk(candidate, { silentSuccess: false, silentInvalid: true });
+            }, 800);
+        });
+
+        pskDisplayInput.addEventListener('blur', async function () {
+            const pskToggleInput = document.getElementById('wg-use-psk');
+            if (!pskToggleInput?.checked) return;
+
+            const candidate = this.value.trim();
+            if (!candidate || isMaskedPskValue(candidate)) {
+                setPskValidationState(false);
+                return;
+            }
+
+            clearTimeout(pskSaveTimeout);
+            await saveCustomPsk(candidate, { silentSuccess: false, silentInvalid: true });
+        });
+    }
+
+    // Add auto-save listeners to WG settings inputs
+    const wgFqdn = document.getElementById('wg-fqdn');
+    const guiPort = document.getElementById('gui-port');
+    const guiLocalhostOnly = document.getElementById('gui-localhost-only');
+    const wgMtu = document.getElementById('wg-mtu');
+    const wgKeepalive = document.getElementById('wg-keepalive');
+    const enableStatusPage = document.getElementById('enable-status-page');
+
+    if (wgFqdn) {
+        wgFqdn.addEventListener('input', () => {
+            updateStatusPageUrlPreview();
+            updateSwaggerUrlPreview();
+            saveWgSettingsDebounced();
+        });
+    }
+    if (guiPort) {
+        guiPort.addEventListener('change', () => {
+            updateStatusPageUrlPreview();
+            updateSwaggerUrlPreview();
+            saveWgSettingsDebounced();
+        });
+    }
+    if (guiLocalhostOnly) guiLocalhostOnly.addEventListener('change', saveWgSettings);
+    if (wgMtu) wgMtu.addEventListener('change', saveWgSettingsDebounced);
+    if (wgKeepalive) wgKeepalive.addEventListener('change', saveWgSettingsDebounced);
+    if (enableStatusPage) enableStatusPage.addEventListener('change', saveWgSettings);
+
+    const enableSwagger = document.getElementById('enable-swagger');
+    if (enableSwagger) enableSwagger.addEventListener('change', saveWgSettings);
+
+    const copyStatusPageUrlBtn = document.getElementById('btn-copy-status-page-url');
+    if (copyStatusPageUrlBtn) {
+        copyStatusPageUrlBtn.addEventListener('click', () => {
+            void copyStatusPageUrl();
+        });
+    }
+
+    const copySwaggerUrlBtn = document.getElementById('btn-copy-swagger-url');
+    if (copySwaggerUrlBtn) {
+        copySwaggerUrlBtn.addEventListener('click', () => {
+            void copySwaggerUrl();
+        });
+    }
+
+    const purgeTrafficBtn = document.getElementById('btn-purge-traffic-logs');
+    if (purgeTrafficBtn) {
+        purgeTrafficBtn.addEventListener('click', () => {
+            void purgeTrafficLogs();
+        });
+    }
+
+    const purgePeerBtn = document.getElementById('btn-purge-peer-logs');
+    if (purgePeerBtn) {
+        purgePeerBtn.addEventListener('click', () => {
+            void purgePeerLogs();
+        });
+    }
+
+    const openCreateInterfaceModalBtn = document.getElementById('btn-open-create-interface-modal');
+    if (openCreateInterfaceModalBtn) {
+        openCreateInterfaceModalBtn.addEventListener('click', () => {
+            void prepareCreateInterfaceModal();
+        });
+    }
+
+    const updateBlocklistBtn = document.getElementById('btn-update-blocklist');
+    if (updateBlocklistBtn) {
+        updateBlocklistBtn.addEventListener('click', () => {
+            void updateBlocklist();
+        });
+    }
+
+    const saveCustomRulesBtn = document.getElementById('save-custom-rules-btn');
+    if (saveCustomRulesBtn) {
+        saveCustomRulesBtn.addEventListener('click', () => {
+            void saveCustomRules();
+        });
+    }
+
+    const validateDnsBtn = document.getElementById('validate-dns-btn');
+    if (validateDnsBtn) {
+        validateDnsBtn.addEventListener('click', () => {
+            void validateDnsServers();
+        });
+    }
+
+    const purgeDnsLogsBtn = document.getElementById('btn-purge-dns-logs');
+    if (purgeDnsLogsBtn) {
+        purgeDnsLogsBtn.addEventListener('click', () => {
+            void purgeDnsLogs();
+        });
+    }
+
+    const purgeSpeedtestLogsBtn = document.getElementById('btn-purge-speedtest-logs');
+    if (purgeSpeedtestLogsBtn) {
+        purgeSpeedtestLogsBtn.addEventListener('click', () => {
+            void purgeSpeedtestLogs();
+        });
+    }
+

@@ -1,0 +1,150 @@
+    async function refreshCertificates() {
+        try {
+            const certs = await api('GET', '/api/acme/certificates');
+            const guidanceEl = document.getElementById('letsencrypt-guidance');
+            let html = '';
+
+            for (const cert of certs) {
+                const safeDomain = esc(cert.domain);
+                const dataDomain = esc(cert.domain).replace(/"/g, '&quot;');
+                const staging = !!cert.is_staging;
+                const stagingBadge = staging ? '<span class="badge bg-warning text-dark ms-1">Staging</span>' : '';
+                const isExpired = cert.days_until_expiry !== null && cert.days_until_expiry < 0;
+                const needsRenewal = cert.needs_renewal && !isExpired;
+
+                let statusBadge = '<span class="badge bg-success">Valid</span>';
+                if (isExpired) {
+                    statusBadge = '<span class="badge bg-danger">Expired</span>';
+                } else if (needsRenewal) {
+                    statusBadge = '<span class="badge bg-warning text-dark">Renew</span>';
+                }
+
+                const expiresDate = cert.expires_at ? new Date(cert.expires_at) : null;
+                const expiresStr = expiresDate ? expiresDate.toLocaleDateString() : 'Unknown';
+                const daysStr = cert.days_until_expiry !== null ? ` (${cert.days_until_expiry}d)` : '';
+
+                html += `
+                    <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+                        <div>
+                            <strong>${safeDomain}</strong>
+                            ${statusBadge}${stagingBadge}
+                            <br><small class="text-muted">Expires: ${expiresStr}${daysStr} • Issuer: ${esc(cert.issuer || 'Unknown')}</small>
+                        </div>
+                        <div class="d-flex gap-1">
+                            ${needsRenewal ? `<button class="btn btn-sm btn-outline-warning cert-renew-btn" data-domain="${dataDomain}" data-staging="${staging}" title="Renew"><span class="material-icons" style="font-size: 18px;">refresh</span></button>` : ''}
+                            <button class="btn btn-sm btn-outline-danger cert-delete-btn" data-domain="${dataDomain}" data-staging="${staging}" title="Delete">
+                                <span class="material-icons" style="font-size: 18px;">delete</span>
+                            </button>
+                        </div>
+                    </div>`;
+            }
+
+            if (!html) {
+                html = '<p class="text-muted mb-0">No certificates found. Click + to request one.</p>';
+            }
+
+            if (guidanceEl) {
+                guidanceEl.classList.toggle('d-none', certs.length > 0);
+            }
+
+            const listEl = document.getElementById('certificates-list');
+            listEl.innerHTML = html;
+
+            // Event delegation for certificate buttons
+            listEl.removeEventListener('click', handleCertificateClick);
+            listEl.addEventListener('click', handleCertificateClick);
+        } catch (error) {
+            const guidanceEl = document.getElementById('letsencrypt-guidance');
+            if (guidanceEl) {
+                guidanceEl.classList.remove('d-none');
+            }
+            document.getElementById('certificates-list').innerHTML = `<p class="text-danger mb-0">Failed to load certificates: ${esc(error.message)}</p>`;
+        }
+    }
+
+    async function handleCertificateClick(e) {
+        const renewBtn = e.target.closest('.cert-renew-btn');
+        const deleteBtn = e.target.closest('.cert-delete-btn');
+
+        if (renewBtn) {
+            const domain = renewBtn.dataset.domain;
+            const staging = renewBtn.dataset.staging === 'true';
+            await renewCertificate(domain, staging);
+        } else if (deleteBtn) {
+            const domain = deleteBtn.dataset.domain;
+            const staging = deleteBtn.dataset.staging === 'true';
+            await deleteCertificate(domain, staging);
+        }
+    }
+
+    async function requestCertificate() {
+        const domain = document.getElementById('cert-domain').value.trim();
+        const email = document.getElementById('cert-email').value.trim();
+        const staging = document.getElementById('cert-staging').checked;
+
+        if (!domain || !email) {
+            wbToast('Please fill in all fields', 'warning');
+            return;
+        }
+
+        const spinner = document.getElementById('cert-spinner');
+        spinner.classList.remove('d-none');
+
+        try {
+            await api('POST', '/api/acme/certificates/request', {
+                domain: domain,
+                email: email,
+                staging: staging
+            });
+
+            document.activeElement?.blur();
+            bootstrap.Modal.getInstance(document.getElementById('certModal')).hide();
+            document.getElementById('cert-form').reset();
+            wbToast('Certificate issued successfully!', 'success');
+            await refreshCertificates();
+        } catch (error) {
+            wbToast('Failed to request certificate: ' + error.message, 'danger');
+        } finally {
+            spinner.classList.add('d-none');
+        }
+    }
+
+    async function deleteCertificate(domain, isStaging) {
+        if (!await wbConfirm(`Delete certificate for ${domain}?`, 'danger')) return;
+
+        try {
+            await api('DELETE', `/api/acme/certificates/${encodeURIComponent(domain)}?staging=${isStaging}`);
+            wbToast('Certificate deleted', 'success');
+            await refreshCertificates();
+        } catch (error) {
+            wbToast('Failed to delete certificate: ' + error.message, 'danger');
+        }
+    }
+
+    async function renewCertificate(domain, isStaging) {
+        const email = await wbPrompt(`Enter email for renewal of ${domain}:`, 'admin@example.com');
+        if (!email) return;
+
+        try {
+            wbToast('Requesting certificate renewal...', 'info');
+            await api('POST', '/api/acme/certificates/request', {
+                domain: domain,
+                email: email,
+                staging: isStaging
+            });
+            wbToast('Certificate renewed successfully!', 'success');
+            await refreshCertificates();
+        } catch (error) {
+            wbToast('Failed to renew certificate: ' + error.message, 'danger');
+        }
+    }
+
+    // DNS Blocklist management
+    let blocklistSaveTimeout = null;
+    let dnsConfigLoaded = false;
+    let dnsConfigLastUpstream = [];
+    let dnsConfigHydrating = false;
+    let dnsConfigSaveTimeout = null;
+    let dnsConfigSaving = false;
+    let dnsConfigSavePending = false;
+    let dnsConfigListenersBound = false;

@@ -11,51 +11,85 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
+
+class UnsetType(Enum):
+	"""Singleton sentinel used to distinguish omitted update fields from ``None``."""
+
+	UNSET = "UNSET"
+
+	def __repr__(self) -> str:
+		return "UNSET"
+
+	def __bool__(self) -> bool:
+		return False
+
+
 # Sentinel value to distinguish "not provided" from "set to None" in update functions.
-# Use `is UNSET` to check if a parameter was not provided.
-# The type annotation `object` is intentionally broad; stricter typing would require
-# a dedicated Enum or Literal type, which adds complexity without runtime benefit.
-UNSET: object = object()
+# Use ``is UNSET`` to check if a parameter was not provided.
+UNSET = UnsetType.UNSET
+
+_SQLITE_ADAPTERS_REGISTERED = False
+_SQLITE_ADAPTERS_LOCK = threading.Lock()
+_SAVEPOINT_COUNTER = 0
+_SAVEPOINT_LOCK = threading.Lock()
 
 
 def _adapt_datetime(value: datetime) -> str:
 	if value.tzinfo is None:
 		raise ValueError("Naive datetime not allowed in SQLite")
-	return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+	return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _convert_datetime(value: bytes) -> datetime:
-	s = value.decode("utf-8")
-	if s.endswith("Z"):
-		s = s[:-1] + "+00:00"
 	try:
+		s = value.decode("utf-8")
+		if s.endswith("Z"):
+			s = s[:-1] + "+00:00"
 		dt = datetime.fromisoformat(s)
 		if dt.tzinfo is None:
 			dt = dt.replace(tzinfo=timezone.utc)
 		return dt.astimezone(timezone.utc)
-	except ValueError:
-		_log.error(
-			"Corrupt timestamp in database: %r - returning epoch",
-			value.decode("utf-8", errors="replace"),
-		)
-		return datetime(1970, 1, 1, tzinfo=timezone.utc)
+	except (UnicodeDecodeError, ValueError) as exc:
+		decoded = value.decode("utf-8", errors="replace")
+		_log.error("Corrupt timestamp in database: %r", decoded)
+		raise sqlite3.InterfaceError(f"Cannot parse timestamp: {decoded!r}") from exc
 
 
-# NOTE: sqlite3 adapter/converter registration is process-global.
-sqlite3.register_adapter(datetime, _adapt_datetime)
-sqlite3.register_converter("timestamp", _convert_datetime)
+def _ensure_sqlite_adapters() -> None:
+	"""Register sqlite3 adapters/converters once per process."""
+	global _SQLITE_ADAPTERS_REGISTERED
+	if _SQLITE_ADAPTERS_REGISTERED:
+		return
+	with _SQLITE_ADAPTERS_LOCK:
+		if _SQLITE_ADAPTERS_REGISTERED:
+			return
+		sqlite3.register_adapter(datetime, _adapt_datetime)
+		sqlite3.register_converter("timestamp", _convert_datetime)
+		_SQLITE_ADAPTERS_REGISTERED = True
+
+
+def _next_savepoint_name() -> str:
+	"""Generate a unique, SQLite-safe savepoint name."""
+	global _SAVEPOINT_COUNTER
+	with _SAVEPOINT_LOCK:
+		_SAVEPOINT_COUNTER += 1
+		return f"sp_{threading.get_ident()}_{_SAVEPOINT_COUNTER}"
 
 
 # ---------------------------------------------------------------------------
 # Connection Registry
 # ---------------------------------------------------------------------------
 
+# sqlite3.Connection is not weak-referenceable on this Python build, so the
+# registry must hold strong references and callers must close their connections.
 _OPEN_CONNECTIONS: set[sqlite3.Connection] = set()
 _CONNECTIONS_LOCK = threading.Lock()
 
@@ -63,13 +97,19 @@ _CONNECTIONS_LOCK = threading.Lock()
 def connect(db_path: Path) -> sqlite3.Connection:
 	"""Create a SQLite connection configured for this application.
 
-	Multi-worker safe: retries WAL mode activation if database is temporarily locked.
+	Concurrency contract:
+	- Connections may cross thread boundaries within a single request/task
+	  (hence ``check_same_thread=False``).
+	- Callers must not use the same connection concurrently from multiple
+	  threads; use one logical owner per connection.
+	- Multi-worker safe: retries WAL mode activation if database is temporarily locked.
 	"""
+	_ensure_sqlite_adapters()
 	db_path.parent.mkdir(parents=True, exist_ok=True)
 	conn = sqlite3.connect(
 		str(db_path),
 		detect_types=sqlite3.PARSE_DECLTYPES,
-		check_same_thread=False,
+		check_same_thread=False,  # Allows threadpool hops; not concurrent multi-thread use.
 		timeout=30.0,  # Busy timeout for multi-process access
 	)
 	conn.row_factory = sqlite3.Row
@@ -79,19 +119,20 @@ def connect(db_path: Path) -> sqlite3.Connection:
 	for attempt in range(max_retries):
 		try:
 			# Check current journal mode first (avoids unnecessary lock)
-			cursor = conn.execute("PRAGMA journal_mode")
-			current_mode = cursor.fetchone()[0].upper()
-			cursor.close()
+			current_mode = conn.execute("PRAGMA journal_mode").fetchone()[0].upper()
 
 			if current_mode != "WAL":
-				conn.execute("PRAGMA journal_mode=WAL")
+				result = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+				new_mode = str(result[0]).upper() if result and result[0] is not None else ""
+				if new_mode != "WAL":
+					raise sqlite3.OperationalError(
+						f"Failed to enable WAL mode (got {result[0]!r})"
+					)
 				_log.debug("Enabled WAL mode for database")
 			break
 		except sqlite3.OperationalError as e:
 			if "locked" in str(e).lower() and attempt < max_retries - 1:
 				# Another worker is initializing - wait and retry
-				import time
-
 				wait = 0.1 * (2 ** attempt)  # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s
 				_log.debug(
 					"Database locked during WAL activation (attempt %d/%d), retrying in %.1fs",
@@ -148,11 +189,7 @@ def checkpoint_wal(db_path: Path, mode: str = "TRUNCATE") -> dict[str, int | str
 
 	conn: sqlite3.Connection | None = None
 	try:
-		conn = sqlite3.connect(
-			str(db_path),
-			timeout=30.0,
-			check_same_thread=False,
-		)
+		conn = connect(db_path)
 		conn.execute("PRAGMA busy_timeout=30000")
 		row = conn.execute(f"PRAGMA wal_checkpoint({mode_upper})").fetchone()
 		if not row:
@@ -179,7 +216,7 @@ def checkpoint_wal(db_path: Path, mode: str = "TRUNCATE") -> dict[str, int | str
 	finally:
 		if conn is not None:
 			try:
-				conn.close()
+				close_connection(conn)
 			except Exception:
 				pass
 
@@ -188,20 +225,26 @@ def checkpoint_wal(db_path: Path, mode: str = "TRUNCATE") -> dict[str, int | str
 def transaction(conn: sqlite3.Connection, *, immediate: bool = False):
 	"""Transaction context manager that commits or rolls back on error.
 
-	If already inside a transaction, this is a no-op (the outer transaction
-	controls commit/rollback). This enables composability but means inner
-	functions MUST NOT catch and suppress exceptions that the outer transaction
-	needs to see for rollback.
+	If already inside a transaction, use a SAVEPOINT so nested callers can roll
+	back their own unit of work without blowing away the outer transaction.
 	"""
-	started_tx = False
-	if not conn.in_transaction:
-		conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
-		started_tx = True
+	if conn.in_transaction:
+		savepoint = _next_savepoint_name()
+		conn.execute(f"SAVEPOINT {savepoint}")
+		try:
+			yield
+			conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+		except Exception:
+			conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+			conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+			raise
+		return
+
+	conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
 	try:
 		yield
-		if started_tx:
-			conn.commit()
+		conn.commit()
 	except Exception:
-		if started_tx and conn.in_transaction:
+		if conn.in_transaction:
 			conn.rollback()
 		raise

@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from ..utils import vault
+from ..utils.config import get_config
 from ..utils.time import utcnow
 from .sqlite_runtime import transaction
 
@@ -37,6 +39,8 @@ __all__ = [
 	"set_dns_log_retention_days",
 	"get_tsdb_retention_days",
 	"set_tsdb_retention_days",
+	"get_speedtest_retention_days",
+	"set_speedtest_retention_days",
 	"get_dnssec_enabled",
 	"set_dnssec_enabled",
 	"get_dns_query_logging_enabled",
@@ -54,9 +58,21 @@ __all__ = [
 	"DEFAULT_DNS_LOG_RETENTION_DAYS",
 	"TSDB_RETENTION_OPTIONS",
 	"DEFAULT_TSDB_RETENTION_DAYS",
+	"SPEEDTEST_RETENTION_OPTIONS",
+	"DEFAULT_SPEEDTEST_RETENTION_DAYS",
 	"MAX_CUSTOM_RULES_LENGTH",
 	"DEFAULT_DNS_UPSTREAM_SERVERS",
 	"DEFAULT_DNS_CUSTOM_RULES",
+	"SPEEDTEST_SERVER_LIST",
+	"SPEEDTEST_SERVER_MAP",
+	"get_speedtest_enabled",
+	"set_speedtest_enabled",
+	"get_speedtest_target",
+	"set_speedtest_target",
+	"get_speedtest_upstream_mbit",
+	"set_speedtest_upstream_mbit",
+	"get_speedtest_downstream_mbit",
+	"set_speedtest_downstream_mbit",
 ]
 
 # Constant for key validation
@@ -65,6 +81,7 @@ _KEY_VALIDATION_PLAINTEXT = "WIREBUDDY_KEY_VALID_v1"
 _ALLOWED_RECOVERY_FILENAMES = {"wirebuddy.db"}
 _RECOVERY_ALLOWED_BASES = (Path("/app/data"), Path("/opt/wirebuddy/data"))
 _MAX_RECOVERY_VALUE_LEN = 1024
+_SECRET_SETTING_KEYS = frozenset({"wg_global_psk", _KEY_VALIDATION_TOKEN_KEY})
 _DNS_UPSTREAM_SERVER_RE = re.compile(
 	r"^(?P<ip>\[[0-9A-Fa-f:.]+\]|[0-9A-Fa-f:.]+)@(?P<port>\d{1,5})#(?P<host>[A-Za-z0-9.-]{1,253})$"
 )
@@ -137,13 +154,16 @@ def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) 
 def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
 	"""Set a setting value."""
 	now = utcnow()
+	stored_value = value
+	if key in _SECRET_SETTING_KEYS:
+		stored_value = vault.encrypt_if_needed(value, get_config().secret_key) or ""
 	with transaction(conn):
 		conn.execute(
 			"""
 			INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
 			ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
 			""",
-			(key, value, now),
+			(key, stored_value, now),
 		)
 
 
@@ -316,6 +336,10 @@ DEFAULT_DNS_LOG_RETENTION_DAYS = 7
 TSDB_RETENTION_OPTIONS = (0, 7, 30, 90, 180, 365)
 DEFAULT_TSDB_RETENTION_DAYS = 7
 
+# Speedtest data retention (longer default since data is sparse)
+SPEEDTEST_RETENTION_OPTIONS = (0, 7, 30, 90, 180, 365)
+DEFAULT_SPEEDTEST_RETENTION_DAYS = 365
+
 MAX_CUSTOM_RULES_LENGTH = 256_000
 DEFAULT_DNS_UPSTREAM_SERVERS = [
 	"1.1.1.1@853#cloudflare-dns.com",
@@ -468,6 +492,27 @@ def set_tsdb_retention_days(conn: sqlite3.Connection, days: int) -> None:
 	set_setting(conn, "tsdb_retention_days", str(days))
 
 
+def get_speedtest_retention_days(conn: sqlite3.Connection) -> int:
+	"""Return speedtest data retention period in days.
+
+	Allowed values: 0, 7, 30, 90, 180, 365
+	Default is 365 days since speedtest data is sparse.
+	"""
+	raw = get_setting(conn, "speedtest_retention_days", str(DEFAULT_SPEEDTEST_RETENTION_DAYS))
+	try:
+		parsed = int(str(raw).strip())
+	except (TypeError, ValueError):
+		return DEFAULT_SPEEDTEST_RETENTION_DAYS
+	return parsed if parsed in SPEEDTEST_RETENTION_OPTIONS else DEFAULT_SPEEDTEST_RETENTION_DAYS
+
+
+def set_speedtest_retention_days(conn: sqlite3.Connection, days: int) -> None:
+	"""Persist speedtest data retention period in days."""
+	if days not in SPEEDTEST_RETENTION_OPTIONS:
+		raise ValueError(f"Invalid speedtest retention days: {days}")
+	set_setting(conn, "speedtest_retention_days", str(days))
+
+
 def get_dnssec_enabled(conn: sqlite3.Connection) -> bool:
 	"""Get whether DNSSEC validation should be enabled."""
 	return _setting_is_truthy(get_setting(conn, "dnssec_enabled", "1"), default=True)
@@ -574,3 +619,69 @@ def set_dns_custom_rules(conn: sqlite3.Connection, rules_text: str) -> None:
 		raise ValueError("Custom rules text exceeds maximum allowed size")
 	normalized_rules = "" if not rules_text.strip() else rules_text
 	set_setting(conn, "dns_custom_rules", normalized_rules)
+
+
+# ---------------------------------------------------------------------------
+# Speedtest / Bandwidth Measurement
+# ---------------------------------------------------------------------------
+
+_SPEEDTEST_SERVERS = [
+	{"id": "hetzner", "name": "Hetzner", "url": "https://speed.hetzner.de/100MB.bin"},
+	{"id": "ovh", "name": "OVH", "url": "http://proof.ovh.net/files/100Mb.dat"},
+	{"id": "cachefly", "name": "CacheFly", "url": "http://cachefly.cachefly.net/100mb.test"},
+	{"id": "cloudflare", "name": "Cloudflare", "url": "https://speed.cloudflare.com/__down"},
+	{"id": "wtnet", "name": "wilhelm.tel (Hamburg)", "url": "https://speedtest.wtnet.de/backend/garbage.php?ckSize=100"},
+]
+
+SPEEDTEST_SERVER_MAP: dict[str, dict[str, str]] = {s["id"]: s for s in _SPEEDTEST_SERVERS}
+SPEEDTEST_SERVER_LIST: list[dict[str, str]] = list(_SPEEDTEST_SERVERS)
+
+
+def get_speedtest_enabled(conn: sqlite3.Connection) -> bool:
+	"""Return True if scheduled speed tests are enabled."""
+	return get_setting(conn, "speedtest_enabled", "0") == "1"
+
+
+def set_speedtest_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
+	set_setting(conn, "speedtest_enabled", "1" if enabled else "0")
+
+
+def get_speedtest_target(conn: sqlite3.Connection) -> str:
+	"""Return the speed test target id (or 'auto' for RTT-based selection)."""
+	return get_setting(conn, "speedtest_target", "auto") or "auto"
+
+
+def set_speedtest_target(conn: sqlite3.Connection, target: str) -> None:
+	if target != "auto" and target not in SPEEDTEST_SERVER_MAP:
+		raise ValueError(f"Unknown speedtest target: {target}")
+	set_setting(conn, "speedtest_target", target)
+
+
+def get_speedtest_upstream_mbit(conn: sqlite3.Connection) -> float:
+	"""Return the provider-rated upstream in Mbit/s."""
+	raw = get_setting(conn, "speedtest_upstream_mbit", "0")
+	try:
+		return float(raw)
+	except (TypeError, ValueError):
+		return 0.0
+
+
+def set_speedtest_upstream_mbit(conn: sqlite3.Connection, value: float) -> None:
+	if value < 0 or value > 100_000:
+		raise ValueError("Upstream value out of range")
+	set_setting(conn, "speedtest_upstream_mbit", str(round(value, 2)))
+
+
+def get_speedtest_downstream_mbit(conn: sqlite3.Connection) -> float:
+	"""Return the provider-rated downstream in Mbit/s."""
+	raw = get_setting(conn, "speedtest_downstream_mbit", "0")
+	try:
+		return float(raw)
+	except (TypeError, ValueError):
+		return 0.0
+
+
+def set_speedtest_downstream_mbit(conn: sqlite3.Connection, value: float) -> None:
+	if value < 0 or value > 100_000:
+		raise ValueError("Downstream value out of range")
+	set_setting(conn, "speedtest_downstream_mbit", str(round(value, 2)))

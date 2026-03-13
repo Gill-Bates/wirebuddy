@@ -27,6 +27,12 @@
     --wb-shell-top: 0px;
     --wb-footer-height: 2.5rem;
     --wb-shell-bottom: var(--wb-footer-height);
+    --wb-monospace-fg: #495057;
+    --wb-monospace-bg: rgba(0, 0, 0, 0.05);
+    --wb-danger-strong: #b4232c;
+    --wb-modal-backdrop-bg: rgba(15, 23, 42, 0.6);
+    --wb-modal-backdrop-blur: 8px;
+    --wb-modal-backdrop-saturate: 0.8;
 }
 
 [data-bs-theme="dark"] {
@@ -41,6 +47,9 @@
     --wb-text-secondary: #dee2e6;
     --wb-text-tertiary: #d1d5db;
     --wb-text-muted: #9ca3af;
+    --wb-monospace-fg: #dbe4ee;
+    --wb-monospace-bg: rgba(255, 255, 255, 0.08);
+    --wb-danger-strong: #ff9aa5;
 }
 
 /* -----------------------------------------------------------------------------
@@ -67,6 +76,12 @@ body {
     overflow-x: hidden;
 }
 
+.modal-backdrop.show {
+    background-color: var(--wb-modal-backdrop-bg);
+    -webkit-backdrop-filter: blur(var(--wb-modal-backdrop-blur)) saturate(var(--wb-modal-backdrop-saturate));
+    backdrop-filter: blur(var(--wb-modal-backdrop-blur)) saturate(var(--wb-modal-backdrop-saturate));
+}
+
 h1 {
     font-weight: 700;
 }
@@ -86,14 +101,28 @@ td[data-label="Last Seen"] {
 }
 
 /* Code Tag - Override Bootstrap red color with neutral dark */
-code {
-    color: #495057;
-    background-color: rgba(0, 0, 0, 0.05);
+:where(code, kbd, samp, .wb-monospace-value, .font-monospace:not(input):not(textarea):not(select):not(button):not(td):not(th):not(table):not(tr):not(tbody):not(thead), .asn-badge, .asn-inline) {
+    color: var(--wb-monospace-fg);
+    background-color: var(--wb-monospace-bg);
+    border-radius: var(--wb-radius-sm);
+    padding: 0.1rem 0.35rem;
 }
 
-[data-bs-theme="dark"] code {
-    color: #adb5bd;
-    background-color: rgba(255, 255, 255, 0.05);
+:where(code, kbd, samp) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+code,
+kbd,
+samp {
+    color: var(--wb-monospace-fg);
+    background-color: var(--wb-monospace-bg);
+    border-radius: var(--wb-radius-sm);
+    padding: 0.1rem 0.35rem;
+}
+
+:where(.wb-monospace-value, .font-monospace:not(input):not(textarea):not(select):not(button):not(td):not(th):not(table):not(tr):not(tbody):not(thead), .asn-badge, .asn-inline) {
+    display: inline-block;
 }
 
 html,
@@ -607,14 +636,18 @@ html.login-page[data-bs-theme="dark"] .card .table,
 }
 
 [data-bs-theme="dark"] .btn.btn-outline-secondary {
-    --bs-btn-border-color: #495057;
-    --bs-btn-color: var(--wb-text-secondary);
+    --bs-btn-border-color: #6c7683;
+    --bs-btn-color: #f2f5f8;
     --bs-btn-hover-bg: rgba(255, 255, 255, 0.08);
-    --bs-btn-hover-border-color: #6c757d;
+    --bs-btn-hover-border-color: #8c96a3;
     --bs-btn-hover-color: #f8f9fa;
     --bs-btn-active-bg: rgba(255, 255, 255, 0.12);
-    --bs-btn-active-border-color: #6c757d;
+    --bs-btn-active-border-color: #8c96a3;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+[data-bs-theme="dark"] .text-danger {
+    color: var(--wb-danger-strong) !important;
 }
 
 [data-bs-theme="dark"] .btn.btn-outline-info {
@@ -927,9 +960,19 @@ html.login-page[data-bs-theme="dark"] .card .table,
 
 .wb-shell {
     position: relative;
+    min-height: 0;
+    padding-bottom: var(--wb-footer-height);
+    overflow: hidden;
 }
 
 @media (min-width: 992px) {
+
+    html:not(.login-page),
+    html:not(.login-page) body {
+        height: 100vh;
+        overflow: hidden;
+    }
+
     .wb-shell::after {
         content: "";
         position: fixed;
@@ -953,8 +996,10 @@ html.login-page[data-bs-theme="dark"] .card .table,
 .main-content {
     flex: 1;
     min-width: 0;
+    min-height: 0;
     /* Prevent flex overflow bugs */
-    padding: 1.5rem;
+    padding: var(--wb-space-3);
+    padding-bottom: calc(var(--wb-space-3) + var(--wb-footer-height));
     overflow-y: auto;
 }
 
@@ -1003,11 +1048,6 @@ html.login-page[data-bs-theme="dark"] .card .table,
     background: var(--bs-body-bg);
     border-top: 1px solid var(--bs-border-color);
     z-index: 1000;
-}
-
-/* Add padding to main content to prevent footer overlap */
-.main-content {
-    padding-bottom: 3.5rem;
 }
 
 .wb-footer-content {

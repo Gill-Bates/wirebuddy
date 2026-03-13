@@ -29,22 +29,22 @@
             <select id="traffic-range" class="form-select form-select-sm traffic-range-select" aria-label="Select time range">
                 <option value="6h">6 h</option>
                 <option value="24h" selected>24 h</option>
-                <option value="3d">3 d</option>
                 <option value="7d">7 d</option>
                 <option value="30d">30 d</option>
                 <option value="90d">90 d</option>
-                <option value="1y">1 y</option>
+                <option value="180d">180 d</option>
+                <option value="y1">1 y</option>
             </select>
         </div>
     </div>
 
     {% if user['is_admin'] %}
     <!-- Traffic Chart Card (Admin only) -->
-    <div class="row g-4">
+    <div class="row g-3">
         <div class="col-12">
             <div class="card h-100">
                 <div class="card-header">
-                    <h5 class="mb-0">Per-Peer</h5>
+                    <h3 class="h5 mb-0">Per-Peer</h3>
                 </div>
                 <div class="card-body">
                     <div id="traffic-combined-loading" class="d-flex justify-content-center align-items-center traffic-loading-height">
@@ -63,16 +63,16 @@
     {% endif %}
 
     <!-- By Country & By ASN Cards -->
-    <div class="row g-4 mt-0">
+    <div class="row g-3 mt-0">
         <!-- By Country Card -->
         <div class="col-lg-6 col-12">
             <div class="card h-100">
                 <div class="card-header">
                     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-                        <h5 class="mb-0">
+                        <h3 class="h5 mb-0">
                             <span class="material-icons align-middle me-1" aria-hidden="true">public</span>
                             Country
-                        </h5>
+                        </h3>
                         <small class="text-muted" id="country-traffic-summary"></small>
                     </div>
                 </div>
@@ -113,10 +113,10 @@
             <div class="card h-100">
                 <div class="card-header">
                     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-                        <h5 class="mb-0">
+                        <h3 class="h5 mb-0">
                             <span class="material-icons align-middle me-1" aria-hidden="true">lan</span>
                             ASN
-                        </h5>
+                        </h3>
                         <small class="text-muted" id="asn-traffic-summary"></small>
                     </div>
                 </div>

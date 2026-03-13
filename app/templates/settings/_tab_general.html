@@ -1,0 +1,158 @@
+    <div class="tab-pane fade show active" id="general-pane" role="tabpanel" aria-labelledby="general-tab">
+        <div class="row g-3 settings-general-equal-row">
+            <div class="col-lg-6 settings-general-col settings-general-col-left">
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <h3 class="h5 mb-0">Public Status Page</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-check form-switch mb-2">
+                            <input class="form-check-input" type="checkbox" id="enable-status-page"{% if not user['is_admin'] %} disabled{% endif %}>
+                            <label class="form-check-label" for="enable-status-page">Enable Status Page</label>
+                        </div>
+                        <small class="text-muted">Publishes <span class="font-monospace">/status</span> for WireGuard-<strong>internal</strong> clients only.</small>
+                        <div class="mt-2 small text-muted d-flex align-items-center gap-2">
+                            <span id="status-page-url" class="font-monospace wb-monospace-value">/status</span>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
+                                id="btn-copy-status-page-url" aria-label="Copy status page URL" title="Copy URL">
+                                <span class="material-icons" style="font-size: 16px;">content_copy</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <h3 class="h5 mb-0">API Documentation</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-check form-switch mb-2">
+                            <input class="form-check-input" type="checkbox" id="enable-swagger"{% if not user['is_admin'] %} disabled{% endif %}>
+                            <label class="form-check-label" for="enable-swagger">Enable Swagger UI</label>
+                        </div>
+                        <small class="text-muted">Exposes <span class="font-monospace">/swagger</span> for <strong>admin</strong> users only.</small>
+                        <div class="mt-2 small text-muted d-flex align-items-center gap-2">
+                            <span id="swagger-url" class="font-monospace wb-monospace-value">/swagger</span>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
+                                id="btn-copy-swagger-url" aria-label="Copy Swagger URL" title="Copy URL">
+                                <span class="material-icons" style="font-size: 16px;">content_copy</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-lg-6 settings-general-col settings-general-col-right">
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <h3 class="h5 mb-0">Server Settings</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="wg-fqdn" class="form-label">Server FQDN / IP</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="wg-fqdn" placeholder="vpn.example.com"
+                                    autocomplete="url" autocapitalize="off" autocorrect="off" spellcheck="false"{% if not user['is_admin'] %} readonly{% endif %}>
+                                <button class="btn btn-outline-secondary btn-icon d-inline-flex align-items-center justify-content-center position-relative z-1" type="button" id="btn-fqdn-detect"
+                                    title="Auto-detect from current hostname">
+                                    <span class="material-icons" style="font-size: 18px;">auto_fix_high</span>
+                                </button>
+                            </div>
+                            <small class="text-muted">Public hostname or IP (without port) clients connect to</small>
+                        </div>
+                        <div class="mb-3">
+                            <label for="gui-port" class="form-label">HTTP Port (GUI)</label>
+                            <input type="number" class="form-control" id="gui-port" min="1" max="65535"
+                                placeholder="8000"{% if not user['is_admin'] %} readonly{% endif %}>
+                            <small class="text-muted">TCP port for the web interface</small>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="gui-localhost-only"{% if not user['is_admin'] %} disabled{% endif %}>
+                                <label class="form-check-label" for="gui-localhost-only">Only listen on
+                                    Localhost</label>
+                            </div>
+                            <small class="text-muted">When enabled, GUI only accessible from 127.0.0.1 (requires
+                                restart)</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Speedtest / Bandwidth Measurement -->
+        <div class="row g-3 mt-0">
+            <div class="col-lg-6">
+                <div class="card h-100">
+                    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                        <h3 class="h5 mb-0">
+                            <span class="material-icons align-middle me-1" style="font-size: 20px;">speed</span>Speedtest
+                        </h3>
+                        <div class="settings-header-actions">
+                            <button class="btn btn-sm btn-outline-primary text-nowrap" id="btn-speedtest-run"{% if not user['is_admin'] %} disabled{% endif %}
+                                title="Run speed test now">
+                                <span class="material-icons align-middle me-1" style="font-size: 16px;">play_arrow</span>Run Now
+                            </button>
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" id="speedtest-enabled"{% if not user['is_admin'] %} disabled{% endif %}>
+                                <label class="form-check-label" for="speedtest-enabled">Scheduled</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-md-4">
+                                <label for="speedtest-target" class="form-label">Target Server</label>
+                                <select class="form-select" id="speedtest-target"{% if not user['is_admin'] %} disabled{% endif %}>
+                                    <option value="auto">Automatic (RTT-based)</option>
+                                </select>
+                                <small class="text-muted">Automatic selects the server with lowest latency</small>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="speedtest-downstream" class="form-label">Downstream (Mbit/s)</label>
+                                <input type="number" class="form-control" id="speedtest-downstream" min="0" max="100000" step="0.01"
+                                    placeholder="e.g. 250"{% if not user['is_admin'] %} readonly{% endif %}>
+                                <small class="text-muted">Provider-rated downstream speed</small>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="speedtest-upstream" class="form-label">Upstream (Mbit/s)</label>
+                                <input type="number" class="form-control" id="speedtest-upstream" min="0" max="100000" step="0.01"
+                                    placeholder="e.g. 50"{% if not user['is_admin'] %} readonly{% endif %}>
+                                <small class="text-muted">Provider-rated upstream speed</small>
+                            </div>
+                        </div>
+                        <div id="speedtest-result" class="mt-3 d-none">
+                            <hr class="my-3">
+                            <div class="row g-3">
+                                <div class="col-6 col-md-3">
+                                    <div class="text-muted small">Download</div>
+                                    <div class="fw-semibold" id="speedtest-result-dl">&ndash;</div>
+                                </div>
+                                <div class="col-6 col-md-3">
+                                    <div class="text-muted small">Upload</div>
+                                    <div class="fw-semibold" id="speedtest-result-ul">&ndash;</div>
+                                </div>
+                                <div class="col-6 col-md-3">
+                                    <div class="text-muted small">RTT</div>
+                                    <div class="fw-semibold" id="speedtest-result-rtt">&ndash;</div>
+                                </div>
+                                <div class="col-6 col-md-3">
+                                    <div class="text-muted small">Server</div>
+                                    <div class="fw-semibold speedtest-result-server" id="speedtest-result-server" title="">&ndash;</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="speedtest-running" class="mt-3 d-none">
+                            <hr class="my-3">
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                    <span class="visually-hidden">Running...</span>
+                                </div>
+                                <span class="text-muted">Running speed test&hellip; This may take up to 2 minutes.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>

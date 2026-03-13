@@ -31,11 +31,12 @@ from __future__ import annotations
 import logging
 import sqlite3
 from datetime import timedelta
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, validator
 from starlette.concurrency import run_in_threadpool
 
 from ..db import tsdb
@@ -154,28 +155,228 @@ def _country_name(iso: str) -> str:
 	return _COUNTRY_NAMES.get(iso, iso)
 
 
+class TrafficType(Enum):
+	"""Traffic aggregation type."""
+	COUNTRY = "country"
+	ASN = "asn"
+
+
+def _validate_peer_filter(peer: str | None) -> str | None:
+	"""Validate peer filter parameter.
+
+	Args:
+		peer: Peer name to validate.
+
+	Raises:
+		HTTPException: If peer name is invalid.
+
+	Returns:
+		Validated peer name or None.
+	"""
+	if peer is None:
+		return None
+
+	if not peer.strip():
+		raise HTTPException(status_code=400, detail="Peer name cannot be empty")
+
+	if len(peer) > 255:
+		raise HTTPException(status_code=400, detail="Peer name too long (max 255 characters)")
+
+	# Basic sanitization: allow alphanumeric, underscore, hyphen, dot
+	if not all(c.isalnum() or c in "._- " for c in peer):
+		raise HTTPException(
+			status_code=400,
+			detail="Peer name contains invalid characters (allowed: alphanumeric, '.', '_', '-', space)"
+		)
+
+	return peer
+
+
+def _aggregate_snapshots(
+	points: list,
+	peer_filter: str | None,
+	traffic_type: TrafficType,
+) -> dict[str, dict[str, Any]]:
+	"""Extract and aggregate traffic data from TSDB snapshots.
+
+	Args:
+		points: TSDB query results.
+		peer_filter: Optional peer name to filter by.
+		traffic_type: Type of traffic aggregation (country or ASN).
+
+	Returns:
+		Dict mapping identifier (country code or ASN) to aggregated traffic stats.
+	"""
+	agg: dict[str, dict[str, Any]] = {}
+
+	for pt in points:
+		snapshot = pt.value
+		if not isinstance(snapshot, dict):
+			continue
+
+		for key, info in snapshot.items():
+			if not isinstance(info, dict):
+				continue
+
+			# Extract rx/tx based on peer filter
+			if peer_filter:
+				by_peer = info.get("by_peer", {})
+				if not isinstance(by_peer, dict):
+					continue
+				peer_data = by_peer.get(peer_filter)
+				if not peer_data:
+					continue  # This peer has no traffic to this entry in this snapshot
+				rx = int(peer_data.get("rx", 0))
+				tx = int(peer_data.get("tx", 0))
+			else:
+				# No filter: use aggregated values
+				rx = int(info.get("rx", 0))
+				tx = int(info.get("tx", 0))
+
+			if rx == 0 and tx == 0:
+				continue
+
+			if key not in agg:
+				agg[key] = {
+					"rx": 0,
+					"tx": 0,
+					"name": info.get("name", "Unknown"),  # For ASN; ignored for country
+					"peers": set(),
+					"peers_seen": 0,
+				}
+
+			agg[key]["rx"] += rx
+			agg[key]["tx"] += tx
+
+			# Collect peer names (capped at _MAX_PEER_NAMES)
+			if peer_filter:
+				agg[key]["peers_seen"] += 1
+				agg[key]["peers"].add(peer_filter)
+			else:
+				for name in info.get("peers", []):
+					agg[key]["peers_seen"] += 1
+					if len(agg[key]["peers"]) < _MAX_PEER_NAMES:
+						agg[key]["peers"].add(name)
+
+	# Freeze sets into sorted lists for deterministic JSON serialization
+	for info in agg.values():
+		info["peers"] = sorted(info["peers"])
+
+	return agg
+
+
+def _build_country_entry(code: str, info: dict[str, Any], display_unit: str) -> CountryEntry:
+	"""Build a CountryEntry from aggregated data.
+
+	Args:
+		code: ISO 3166-1 alpha-2 country code.
+		info: Aggregated traffic statistics.
+		display_unit: Unit for traffic display (B, KB, MB, GB, TB).
+
+	Returns:
+		CountryEntry model.
+	"""
+	try:
+		rx_display = round(bytes_to_unit(info["rx"], display_unit), 2)
+		tx_display = round(bytes_to_unit(info["tx"], display_unit), 2)
+		total_display = round(bytes_to_unit(info["rx"] + info["tx"], display_unit), 2)
+
+		# Validate results are finite
+		if not all(0 <= val < float('inf') for val in (rx_display, tx_display, total_display)):
+			_log.warning("Invalid traffic values for country %s: rx=%s tx=%s", code, rx_display, tx_display)
+			raise ValueError("Invalid traffic calculation")
+
+		return CountryEntry(
+			code=code,
+			name=_country_name(code),
+			rx=rx_display,
+			tx=tx_display,
+			total=total_display,
+			peers=len(info["peers"]),
+			peer_names=info["peers"],
+			peer_names_truncated=info["peers_seen"] > _MAX_PEER_NAMES,
+			flag=f"/static/vendor/images/flags/{code.lower()}.svg" if code != "XX" else None,
+		)
+	except (ValueError, ZeroDivisionError, OverflowError) as exc:
+		_log.warning("Failed to build country entry for %s: %s", code, exc)
+		raise
+
+
+def _build_asn_entry(asn_key: str, info: dict[str, Any], display_unit: str) -> ASNEntry:
+	"""Build an ASNEntry from aggregated data.
+
+	Args:
+		asn_key: ASN number as string.
+		info: Aggregated traffic statistics.
+		display_unit: Unit for traffic display (B, KB, MB, GB, TB).
+
+	Returns:
+		ASNEntry model.
+	"""
+	try:
+		rx_display = round(bytes_to_unit(info["rx"], display_unit), 2)
+		tx_display = round(bytes_to_unit(info["tx"], display_unit), 2)
+		total_display = round(bytes_to_unit(info["rx"] + info["tx"], display_unit), 2)
+
+		# Validate results are finite
+		if not all(0 <= val < float('inf') for val in (rx_display, tx_display, total_display)):
+			_log.warning("Invalid traffic values for ASN %s: rx=%s tx=%s", asn_key, rx_display, tx_display)
+			raise ValueError("Invalid traffic calculation")
+
+		return ASNEntry(
+			asn=asn_key,
+			name=info["name"],
+			rx=rx_display,
+			tx=tx_display,
+			total=total_display,
+			peers=len(info["peers"]),
+			peer_names=info["peers"],
+			peer_names_truncated=info["peers_seen"] > _MAX_PEER_NAMES,
+		)
+	except (ValueError, ZeroDivisionError, OverflowError) as exc:
+		_log.warning("Failed to build ASN entry for %s: %s", asn_key, exc)
+		raise
+
+
 def _compute_country_traffic(
 	tsdb_dir: Path,
 	hours: int,
+	peer_filter: str | None = None,
 ) -> CountryTrafficData:
 	"""Sum TSDB country snapshots for the requested time window (blocking).
 
 	Each TSDB point contains a JSON dict of per-country deltas produced
 	by the scheduler task::
 
-	    {"DE": {"rx": 1234, "tx": 5678, "peers": ["Alice"]}, ...}
+	    {"DE": {"rx": 1234, "tx": 5678, "peers": ["Alice"], "by_peer": {"Alice": {"rx": 1234, "tx": 5678}}}, ...}
 
 	This function sums all such snapshots within ``[now - hours, now]``.
+
+	Args:
+		tsdb_dir: Path to TSDB directory.
+		hours: Number of hours of history to query.
+		peer_filter: Optional peer name to filter by. When set, only traffic
+		             attributed to this specific peer is included.
 	"""
 	since = utcnow() - timedelta(hours=hours)
 
-	points = tsdb.query(
-		tsdb_dir,
-		peer_key=GEO_TRAFFIC_KEY,
-		metric=GEO_TRAFFIC_METRIC,
-		since=since,
-		limit=_MAX_POINTS,
-	)
+	try:
+		points = tsdb.query(
+			tsdb_dir,
+			peer_key=GEO_TRAFFIC_KEY,
+			metric=GEO_TRAFFIC_METRIC,
+			since=since,
+			limit=_MAX_POINTS,
+		)
+	except Exception as exc:
+		_log.error("COUNTRY_TRAFFIC TSDB query failed: %s", exc, exc_info=True)
+		# Return empty result on TSDB failure
+		return CountryTrafficData(
+			countries=[],
+			display_unit="B",
+			hours=hours,
+			total_countries=0,
+		)
 
 	if len(points) >= _MAX_POINTS:
 		_log.warning(
@@ -183,76 +384,36 @@ def _compute_country_traffic(
 			_MAX_POINTS, hours,
 		)
 
-	# Aggregate across all snapshot points.
-	# pt.value is a Python dict — TSDB already json.loads() its stored lines.
-	# {cc: {"rx": int, "tx": int, "peers": set[str], "peers_seen": int}}
-	country_agg: dict[str, dict[str, Any]] = {}
-
-	for pt in points:
-		snapshot = pt.value
-		if not isinstance(snapshot, dict):
-			continue
-		for cc, info in snapshot.items():
-			if not isinstance(info, dict):
-				continue
-			# Keep accumulation in int to avoid float precision loss at TB+ scale (#15)
-			rx = int(info.get("rx", 0))
-			tx = int(info.get("tx", 0))
-			if rx == 0 and tx == 0:
-				continue
-
-			if cc not in country_agg:
-				country_agg[cc] = {"rx": 0, "tx": 0, "peers": set(), "peers_seen": 0}
-
-			country_agg[cc]["rx"] += rx
-			country_agg[cc]["tx"] += tx
-
-			# Collect peer names (capped at _MAX_PEER_NAMES; track total for truncation flag)
-			for name in info.get("peers", []):
-				country_agg[cc]["peers_seen"] += 1
-				if len(country_agg[cc]["peers"]) < _MAX_PEER_NAMES:
-					country_agg[cc]["peers"].add(name)
-
-	# Freeze sets into sorted lists now so the agg dict is unconditionally
-	# JSON-serialisable even if accessed outside the response builder.
-	for agg in country_agg.values():
-		agg["peers"] = sorted(agg["peers"])
+	# Aggregate across all snapshot points using common logic
+	country_agg = _aggregate_snapshots(points, peer_filter, TrafficType.COUNTRY)
 
 	# Determine display unit from the max value (int 0 → "B", always valid)
-	max_bytes: int = 0
-	for info in country_agg.values():
-		max_bytes = max(max_bytes, info["rx"], info["tx"])
-
+	max_bytes = max(
+		(max(info["rx"], info["tx"]) for info in country_agg.values()),
+		default=0
+	)
 	display_unit = select_display_unit(max_bytes)
 
-	# Build Pydantic models for validation and consistent serialisation (#10)
+	# Build Pydantic models for validation and consistent serialisation
 	countries: list[CountryEntry] = []
 	for cc, info in sorted(
 		country_agg.items(),
 		key=lambda kv: kv[1]["rx"] + kv[1]["tx"],
 		reverse=True,
 	):
-		rx_display = round(bytes_to_unit(info["rx"], display_unit), 2)
-		tx_display = round(bytes_to_unit(info["tx"], display_unit), 2)
-		total_display = round(bytes_to_unit(info["rx"] + info["tx"], display_unit), 2)
-		# Skip entries with negligible traffic (< 0.01 in display unit) (#17)
-		if total_display < 0.01:
+		try:
+			entry = _build_country_entry(cc, info, display_unit)
+			# Skip entries with negligible traffic (< 0.01 in display unit)
+			if entry.total < 0.01:
+				continue
+			countries.append(entry)
+		except (ValueError, ZeroDivisionError, OverflowError):
+			# Skip entries with invalid values
 			continue
-		countries.append(CountryEntry(
-			code=cc,
-			name=_country_name(cc),
-			rx=rx_display,
-			tx=tx_display,
-			total=total_display,
-			peers=len(info["peers"]),
-			peer_names=info["peers"],
-			peer_names_truncated=info["peers_seen"] > _MAX_PEER_NAMES,
-			flag=f"/static/vendor/images/flags/{cc.lower()}.svg" if cc != "XX" else None,
-		))
 
 	_log.debug(
-		"COUNTRY_TRAFFIC hours=%d points=%d countries=%d display_unit=%s",
-		hours, len(points), len(countries), display_unit,
+		"COUNTRY_TRAFFIC hours=%d points=%d countries=%d display_unit=%s peer_filter=%s",
+		hours, len(points), len(countries), display_unit, peer_filter,
 	)
 
 	return CountryTrafficData(
@@ -266,9 +427,10 @@ def _compute_country_traffic(
 @router.get("/stats/traffic-by-country", response_model=None)
 async def get_traffic_by_country(
 	hours: int = Query(24, ge=1, le=8760, description="Hours of history (1-8760)"),
-	range_key: str | None = Query(None, pattern="^(6h|24h|3d|7d|30d|90d|1y)$"),
+	range_key: str | None = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
+	peer: str | None = Query(None, description="Filter by peer name", max_length=255),
 	tsdb_dir: Path = Depends(get_tsdb_dir),
-	_: sqlite3.Row = Depends(get_current_user),
+	current_user: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Traffic aggregated by **destination** country (admin only).
 
@@ -277,7 +439,8 @@ async def get_traffic_by_country(
 
 	Query params:
 		hours:     Number of hours (1-8760).
-		range_key: Preset (6h|24h|3d|7d|30d|90d|1y), overrides *hours*.
+		range_key: Preset (6h|24h|7d|30d|90d|180d|y1), overrides *hours*.
+		peer:      Optional peer name to filter by.
 
 	Returns:
 		``{countries: [{code, name, rx, tx, total, peers, peer_names, flag}, ...],
@@ -286,7 +449,18 @@ async def get_traffic_by_country(
 	if range_key:
 		hours = TRAFFIC_RANGE_TO_HOURS.get(range_key, hours)
 
-	data: CountryTrafficData = await run_in_threadpool(_compute_country_traffic, tsdb_dir, hours)
+	# Validate and log request
+	validated_peer = _validate_peer_filter(peer)
+	_log.info(
+		"COUNTRY_TRAFFIC query by user=%s hours=%d peer_filter=%s",
+		current_user["username"] if "username" in current_user.keys() else current_user.get("id", "unknown"),
+		hours,
+		validated_peer,
+	)
+
+	data: CountryTrafficData = await run_in_threadpool(
+		_compute_country_traffic, tsdb_dir, hours, validated_peer
+	)
 	return ok_response(data=data.model_dump())
 
 
@@ -319,24 +493,41 @@ class ASNTrafficData(BaseModel):
 def _compute_asn_traffic(
 	tsdb_dir: Path,
 	hours: int,
+	peer_filter: str | None = None,
 ) -> ASNTrafficData:
 	"""Sum TSDB ASN snapshots for the requested time window (blocking).
 
 	Each TSDB point contains a JSON dict of per-ASN deltas::
 
-	    {"13335": {"rx": 1234, "tx": 5678, "name": "Cloudflare", "peers": ["Alice"]}, ...}
+	    {"13335": {"rx": 1234, "tx": 5678, "name": "Cloudflare", "peers": ["Alice"], "by_peer": {"Alice": {"rx": 1234, "tx": 5678}}}, ...}
 
 	This function sums all such snapshots within ``[now - hours, now]``.
+
+	Args:
+		tsdb_dir: Path to TSDB directory.
+		hours: Number of hours of history to query.
+		peer_filter: Optional peer name to filter by. When set, only traffic
+		             attributed to this specific peer is included.
 	"""
 	since = utcnow() - timedelta(hours=hours)
 
-	points = tsdb.query(
-		tsdb_dir,
-		peer_key=ASN_TRAFFIC_KEY,
-		metric=ASN_TRAFFIC_METRIC,
-		since=since,
-		limit=_MAX_POINTS,
-	)
+	try:
+		points = tsdb.query(
+			tsdb_dir,
+			peer_key=ASN_TRAFFIC_KEY,
+			metric=ASN_TRAFFIC_METRIC,
+			since=since,
+			limit=_MAX_POINTS,
+		)
+	except Exception as exc:
+		_log.error("ASN_TRAFFIC TSDB query failed: %s", exc, exc_info=True)
+		# Return empty result on TSDB failure
+		return ASNTrafficData(
+			asns=[],
+			display_unit="B",
+			hours=hours,
+			total_asns=0,
+		)
 
 	if len(points) >= _MAX_POINTS:
 		_log.warning(
@@ -344,49 +535,14 @@ def _compute_asn_traffic(
 			_MAX_POINTS, hours,
 		)
 
-	# Aggregate across all snapshot points.
-	# {asn_key: {"rx": int, "tx": int, "name": str, "peers": set[str], "peers_seen": int}}
-	asn_agg: dict[str, dict[str, Any]] = {}
-
-	for pt in points:
-		snapshot = pt.value
-		if not isinstance(snapshot, dict):
-			continue
-		for asn_key, info in snapshot.items():
-			if not isinstance(info, dict):
-				continue
-			rx = int(info.get("rx", 0))
-			tx = int(info.get("tx", 0))
-			if rx == 0 and tx == 0:
-				continue
-
-			if asn_key not in asn_agg:
-				asn_agg[asn_key] = {
-					"rx": 0,
-					"tx": 0,
-					"name": info.get("name", "Unknown"),
-					"peers": set(),
-					"peers_seen": 0,
-				}
-
-			asn_agg[asn_key]["rx"] += rx
-			asn_agg[asn_key]["tx"] += tx
-
-			# Collect peer names (capped at _MAX_PEER_NAMES)
-			for name in info.get("peers", []):
-				asn_agg[asn_key]["peers_seen"] += 1
-				if len(asn_agg[asn_key]["peers"]) < _MAX_PEER_NAMES:
-					asn_agg[asn_key]["peers"].add(name)
-
-	# Freeze sets into sorted lists
-	for agg in asn_agg.values():
-		agg["peers"] = sorted(agg["peers"])
+	# Aggregate across all snapshot points using common logic
+	asn_agg = _aggregate_snapshots(points, peer_filter, TrafficType.ASN)
 
 	# Determine display unit from the max value
-	max_bytes: int = 0
-	for info in asn_agg.values():
-		max_bytes = max(max_bytes, info["rx"], info["tx"])
-
+	max_bytes = max(
+		(max(info["rx"], info["tx"]) for info in asn_agg.values()),
+		default=0
+	)
 	display_unit = select_display_unit(max_bytes)
 
 	# Build Pydantic models
@@ -396,26 +552,19 @@ def _compute_asn_traffic(
 		key=lambda kv: kv[1]["rx"] + kv[1]["tx"],
 		reverse=True,
 	):
-		rx_display = round(bytes_to_unit(info["rx"], display_unit), 2)
-		tx_display = round(bytes_to_unit(info["tx"], display_unit), 2)
-		total_display = round(bytes_to_unit(info["rx"] + info["tx"], display_unit), 2)
-		# Skip entries with negligible traffic (< 0.01 in display unit) (#17)
-		if total_display < 0.01:
+		try:
+			entry = _build_asn_entry(asn_key, info, display_unit)
+			# Skip entries with negligible traffic (< 0.01 in display unit)
+			if entry.total < 0.01:
+				continue
+			asns.append(entry)
+		except (ValueError, ZeroDivisionError, OverflowError):
+			# Skip entries with invalid values
 			continue
-		asns.append(ASNEntry(
-			asn=asn_key,
-			name=info["name"],
-			rx=rx_display,
-			tx=tx_display,
-			total=total_display,
-			peers=len(info["peers"]),
-			peer_names=info["peers"],
-			peer_names_truncated=info["peers_seen"] > _MAX_PEER_NAMES,
-		))
 
 	_log.debug(
-		"ASN_TRAFFIC hours=%d points=%d asns=%d display_unit=%s",
-		hours, len(points), len(asns), display_unit,
+		"ASN_TRAFFIC hours=%d points=%d asns=%d display_unit=%s peer_filter=%s",
+		hours, len(points), len(asns), display_unit, peer_filter,
 	)
 
 	return ASNTrafficData(
@@ -429,9 +578,10 @@ def _compute_asn_traffic(
 @router.get("/stats/traffic-by-asn", response_model=None)
 async def get_traffic_by_asn(
 	hours: int = Query(24, ge=1, le=8760, description="Hours of history (1-8760)"),
-	range_key: str | None = Query(None, pattern="^(6h|24h|3d|7d|30d|90d|1y)$"),
+	range_key: str | None = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
+	peer: str | None = Query(None, description="Filter by peer name", max_length=255),
 	tsdb_dir: Path = Depends(get_tsdb_dir),
-	_: sqlite3.Row = Depends(get_current_user),
+	current_user: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Traffic aggregated by **destination** ASN (admin only).
 
@@ -440,7 +590,8 @@ async def get_traffic_by_asn(
 
 	Query params:
 		hours:     Number of hours (1-8760).
-		range_key: Preset (6h|24h|3d|7d|30d|90d|1y), overrides *hours*.
+		range_key: Preset (6h|24h|7d|30d|90d|180d|y1), overrides *hours*.
+		peer:      Optional peer name to filter by.
 
 	Returns:
 		``{asns: [{asn, name, rx, tx, total, peers, peer_names}, ...],
@@ -449,5 +600,16 @@ async def get_traffic_by_asn(
 	if range_key:
 		hours = TRAFFIC_RANGE_TO_HOURS.get(range_key, hours)
 
-	data: ASNTrafficData = await run_in_threadpool(_compute_asn_traffic, tsdb_dir, hours)
+	# Validate and log request
+	validated_peer = _validate_peer_filter(peer)
+	_log.info(
+		"ASN_TRAFFIC query by user=%s hours=%d peer_filter=%s",
+		current_user["username"] if "username" in current_user.keys() else current_user.get("id", "unknown"),
+		hours,
+		validated_peer,
+	)
+
+	data: ASNTrafficData = await run_in_threadpool(
+		_compute_asn_traffic, tsdb_dir, hours, validated_peer
+	)
 	return ok_response(data=data.model_dump())

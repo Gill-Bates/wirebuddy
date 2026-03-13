@@ -8,28 +8,20 @@
     justify-content: flex-end;
 }
 
-/* Global filter styles */
-.dns-global-filters {
-    margin-left: auto;
-    max-width: 100%;
-}
-
-.dns-global-filters #log-filter {
+/* Global peer filter in header */
+#peer-filter {
     min-width: 140px;
     width: max-content;
     max-width: 200px;
 }
 
-.dns-global-filters #peer-filter {
-    min-width: 140px;
-    width: max-content;
-    max-width: 200px;
+/* Query Log card header filters */
+#log-filter {
+    min-width: 120px;
 }
 
-.dns-global-filters #log-search {
-    min-width: 180px;
-    width: max-content;
-    max-width: 280px;
+#log-search {
+    min-width: 120px;
 }
 
 /* Ad-Blocker dropdown button styles */
@@ -107,6 +99,10 @@
     font-size: 1.05rem;
     color: currentColor;
     opacity: 0.85;
+}
+
+.dns-stat-icon.wb-kpi-icon {
+    font-size: 2.2rem;
 }
 
 .dns-card-title {
@@ -210,9 +206,26 @@
     overflow: hidden;
 }
 
+.top-domain-scroll-area {
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 1rem;
+    scrollbar-gutter: stable;
+}
+
+.top-domain-top-row {
+    min-width: 0;
+}
+
 .top-domain-name {
     font-size: 0.85rem;
-    max-width: 60%;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.top-domain-stats-wrap {
+    flex: 0 0 auto;
+    margin-right: 0.25rem;
 }
 
 .top-domain-stats {
@@ -238,9 +251,7 @@
     position: relative;
 }
 
-#log-search {
-    max-width: 300px;
-}
+/* Removed - log-search is now in card header */
 
 .top-domain-card-body {
     height: clamp(220px, 26vh, 290px);
@@ -333,10 +344,6 @@
 }
 
 @media (min-width: 992px) {
-    .dns-global-filters {
-        flex-wrap: nowrap !important;
-    }
-
     .log-filters-container {
         flex-wrap: nowrap !important;
     }
@@ -444,10 +451,6 @@
 
     .dns-header+.mb-4 {
         margin-bottom: 0.75rem !important;
-    }
-
-    .dns-header+.mb-4 .row {
-        --bs-gutter-y: 0.75rem;
     }
 }
 
@@ -634,17 +637,16 @@
         gap: 0.5rem !important;
     }
 
-    .dns-global-filters {
-        width: 100%;
-        margin-left: 0;
-        flex-direction: column;
-        gap: 0.5rem !important;
+    /* Full width peer filter on mobile */
+    #peer-filter {
+        width: 100% !important;
+        min-width: 0;
+        max-width: none;
     }
 
-    /* Make all filter elements full width on mobile */
-    .dns-global-filters #log-filter,
-    .dns-global-filters #peer-filter,
-    .dns-global-filters #log-search {
+    /* Query Log card header filters stack on mobile */
+    #log-filter,
+    #log-search {
         width: 100% !important;
         min-width: 0;
         max-width: none;
@@ -658,6 +660,10 @@
     .adblocker-dropdown .btn {
         width: 100%;
         min-width: 0;
+    }
+
+    .dns-stat-icon.wb-kpi-icon {
+        font-size: 2rem;
     }
 
     .log-table {
@@ -680,4 +686,20 @@
 
 .top-domain-card-fading {
     opacity: 0;
+}
+
+/* Custom Rule Badge */
+.dns-badge-custom-rule {
+    font-size: 0.65rem;
+    font-weight: 500;
+    padding: 0.15em 0.45em;
+    vertical-align: middle;
+    background-color: var(--bs-purple);
+    color: #fff;
+    border-radius: 0.25rem;
+    white-space: nowrap;
+}
+
+[data-bs-theme="dark"] .dns-badge-custom-rule {
+    background-color: #9b59b6;
 }

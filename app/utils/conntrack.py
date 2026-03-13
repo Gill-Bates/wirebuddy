@@ -64,10 +64,12 @@ _CONNTRACK_ACCT = Path("/proc/sys/net/netfilter/nf_conntrack_acct")
 
 # Explicitly exclude ranges that may be treated inconsistently by
 # ``ip.is_global`` across Python versions.
-_EXTRA_NON_PUBLIC = (
+_EXTRA_NON_PUBLIC_V4 = (
 	ipaddress.ip_network("100.64.0.0/10"),  # Shared / CGNAT
 	ipaddress.ip_network("192.0.0.0/24"),   # IETF protocol assignments
 )
+# IPv6 has no known exclusions for this use case
+_EXTRA_NON_PUBLIC_V6: tuple = ()
 
 # Synthetic TSDB identifiers (re-exported for use by the scheduler task)
 GEO_TRAFFIC_KEY = "__geo_traffic__"
@@ -255,27 +257,31 @@ def _get_subnets_from_db() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network
 		return []
 
 	subnets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
-	with sqlite3.connect(str(cfg.db_path), timeout=3) as conn:
-		conn.row_factory = sqlite3.Row
-		rows = conn.execute(
-			"SELECT address, address6 FROM interfaces WHERE is_enabled = 1"
-		).fetchall()
-		for row in rows:
-			for addr_field in ("address", "address6"):
-				addr = row[addr_field]
-				if addr:
-					try:
-						net = ipaddress.ip_network(addr, strict=False)
-						if "/" not in addr and net.prefixlen in (32, 128):
-							_log.debug(
-								"COUNTRY_TRAFFIC DB address %r has no prefix length "
-								"and is treated as a host route (%s)",
-								addr,
-								net,
-							)
-						subnets.append(net)
-					except ValueError:
-						pass
+	try:
+		with sqlite3.connect(str(cfg.db_path), timeout=3) as conn:
+			conn.row_factory = sqlite3.Row
+			rows = conn.execute(
+				"SELECT address, address6 FROM interfaces WHERE is_enabled = 1"
+			).fetchall()
+			for row in rows:
+				for addr_field in ("address", "address6"):
+					addr = row[addr_field]
+					if addr:
+						try:
+							net = ipaddress.ip_network(addr, strict=False)
+							if "/" not in addr and net.prefixlen in (32, 128):
+								_log.debug(
+									"COUNTRY_TRAFFIC DB address %r has no prefix length "
+									"and is treated as a host route (%s)",
+									addr,
+									net,
+								)
+							subnets.append(net)
+						except ValueError:
+							pass
+	except (sqlite3.Error, OSError) as exc:
+		_log.debug("COUNTRY_TRAFFIC DB query failed: %s", exc)
+		return []
 
 	return subnets
 
@@ -362,6 +368,94 @@ def _parse_line(line: str) -> dict[str, Any] | None:
 		return None
 
 
+def _aggregate_traffic_by_country(
+	deltas: list[tuple[str, str, int, int]],
+	peer_ip_map: dict[str, str] | None,
+) -> dict[str, dict[str, Any]]:
+	"""Aggregate traffic deltas by destination country.
+
+	Args:
+		deltas: List of (dst_ip, src_ip, delta_tx, delta_rx) tuples.
+		peer_ip_map: Optional mapping from WireGuard IP to peer name.
+
+	Returns:
+		Dict mapping country code to {"rx", "tx", "peers", "by_peer"}.
+	"""
+	country_agg: dict[str, dict[str, Any]] = {}
+
+	for dst_ip, src_ip, delta_tx, delta_rx in deltas:
+		peer_name = peer_ip_map.get(src_ip) if peer_ip_map else None
+
+		# Country lookup
+		try:
+			geo = geolocate_ip(dst_ip)
+			cc = (geo.get("country") if geo else None) or "XX"
+		except Exception:
+			_log.debug("COUNTRY_TRAFFIC GeoIP lookup failed for %s", dst_ip, exc_info=True)
+			cc = "XX"
+
+		if cc not in country_agg:
+			country_agg[cc] = {"rx": 0, "tx": 0, "peers": set(), "by_peer": {}}
+
+		country_agg[cc]["rx"] += delta_rx
+		country_agg[cc]["tx"] += delta_tx
+
+		# Per-peer traffic attribution
+		if peer_name:
+			country_agg[cc]["peers"].add(peer_name)
+			if peer_name not in country_agg[cc]["by_peer"]:
+				country_agg[cc]["by_peer"][peer_name] = {"rx": 0, "tx": 0}
+			country_agg[cc]["by_peer"][peer_name]["rx"] += delta_rx
+			country_agg[cc]["by_peer"][peer_name]["tx"] += delta_tx
+
+	return country_agg
+
+
+def _aggregate_traffic_by_asn(
+	deltas: list[tuple[str, str, int, int]],
+	peer_ip_map: dict[str, str] | None,
+) -> dict[str, dict[str, Any]]:
+	"""Aggregate traffic deltas by destination ASN.
+
+	Args:
+		deltas: List of (dst_ip, src_ip, delta_tx, delta_rx) tuples.
+		peer_ip_map: Optional mapping from WireGuard IP to peer name.
+
+	Returns:
+		Dict mapping ASN number (as string) to {"rx", "tx", "name", "peers", "by_peer"}.
+	"""
+	asn_agg: dict[str, dict[str, Any]] = {}
+
+	for dst_ip, src_ip, delta_tx, delta_rx in deltas:
+		peer_name = peer_ip_map.get(src_ip) if peer_ip_map else None
+
+		# ASN lookup
+		try:
+			asn_num, asn_org = lookup_asn(dst_ip)
+			asn_key = str(asn_num) if asn_num else "0"
+			asn_name = asn_org or "Unknown"
+		except Exception:
+			_log.debug("ASN_TRAFFIC ASN lookup failed for %s", dst_ip, exc_info=True)
+			asn_key = "0"
+			asn_name = "Unknown"
+
+		if asn_key not in asn_agg:
+			asn_agg[asn_key] = {"rx": 0, "tx": 0, "name": asn_name, "peers": set(), "by_peer": {}}
+
+		asn_agg[asn_key]["rx"] += delta_rx
+		asn_agg[asn_key]["tx"] += delta_tx
+
+		# Per-peer traffic attribution
+		if peer_name:
+			asn_agg[asn_key]["peers"].add(peer_name)
+			if peer_name not in asn_agg[asn_key]["by_peer"]:
+				asn_agg[asn_key]["by_peer"][peer_name] = {"rx": 0, "tx": 0}
+			asn_agg[asn_key]["by_peer"][peer_name]["rx"] += delta_rx
+			asn_agg[asn_key]["by_peer"][peer_name]["tx"] += delta_tx
+
+	return asn_agg
+
+
 def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 	"""Return True if *ip* is a publicly routable address.
 
@@ -369,7 +463,15 @@ def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 	ranges with historically inconsistent handling across Python versions.
 	Takes a pre-parsed ``ip_address`` object to avoid re-parsing strings.
 	"""
-	return ip.is_global and not any(ip in net for net in _EXTRA_NON_PUBLIC)
+	if not ip.is_global:
+		return False
+	
+	# Fast path: IPv6 has no exclusions
+	if isinstance(ip, ipaddress.IPv6Address):
+		return True
+	
+	# IPv4: check exclusions
+	return not any(ip in net for net in _EXTRA_NON_PUBLIC_V4)
 
 
 # ---------------------------------------------------------------------------
@@ -493,51 +595,13 @@ def sample_country_traffic(
 
 			deltas.append((key[3], key[1], delta_tx, delta_rx))
 
-		# Update baseline for next sample
+		# Update baseline for next sample (replaces entire dict to prevent unbounded growth)
 		_ct_prev = current
 
 	# GeoIP + ASN aggregation intentionally outside _ct_lock
 	# to minimize lock hold time during potentially expensive lookups.
-	country_agg: dict[str, dict[str, Any]] = {}
-	asn_agg: dict[str, dict[str, Any]] = {}
-
-	for dst_ip, src_ip, delta_tx, delta_rx in deltas:
-		# Country lookup
-		try:
-			geo = geolocate_ip(dst_ip)
-			cc = (geo.get("country") if geo else None) or "XX"
-		except Exception:
-			_log.debug("COUNTRY_TRAFFIC GeoIP lookup failed for %s", dst_ip, exc_info=True)
-			cc = "XX"
-
-		if cc not in country_agg:
-			country_agg[cc] = {"rx": 0, "tx": 0, "peers": set()}
-
-		country_agg[cc]["rx"] += delta_rx
-		country_agg[cc]["tx"] += delta_tx
-
-		# ASN lookup
-		try:
-			asn_num, asn_org = lookup_asn(dst_ip)
-			asn_key = str(asn_num) if asn_num else "0"
-			asn_name = asn_org or "Unknown"
-		except Exception:
-			_log.debug("ASN_TRAFFIC ASN lookup failed for %s", dst_ip, exc_info=True)
-			asn_key = "0"
-			asn_name = "Unknown"
-
-		if asn_key not in asn_agg:
-			asn_agg[asn_key] = {"rx": 0, "tx": 0, "name": asn_name, "peers": set()}
-
-		asn_agg[asn_key]["rx"] += delta_rx
-		asn_agg[asn_key]["tx"] += delta_tx
-
-		# Peer attribution for both
-		if peer_ip_map:
-			peer_name = peer_ip_map.get(src_ip)
-			if peer_name:
-				country_agg[cc]["peers"].add(peer_name)
-				asn_agg[asn_key]["peers"].add(peer_name)
+	country_agg = _aggregate_traffic_by_country(deltas, peer_ip_map)
+	asn_agg = _aggregate_traffic_by_asn(deltas, peer_ip_map)
 
 	# Convert sets to sorted lists for JSON serialisation (outside lock)
 	country_result = {
@@ -545,6 +609,7 @@ def sample_country_traffic(
 			"rx": info["rx"],
 			"tx": info["tx"],
 			"peers": sorted(info["peers"]),
+			"by_peer": info["by_peer"],
 		}
 		for cc, info in country_agg.items()
 	}
@@ -555,6 +620,7 @@ def sample_country_traffic(
 			"tx": info["tx"],
 			"name": info["name"],
 			"peers": sorted(info["peers"]),
+			"by_peer": info["by_peer"],
 		}
 		for asn_key, info in asn_agg.items()
 	}
@@ -565,14 +631,16 @@ def sample_country_traffic(
 def reset_state() -> None:
 	"""Reset all internal state.
 
-	Not atomic across both locks; intended for testing or startup paths
-	where sampling is not running concurrently.
+	Acquires both locks in consistent order to prevent race conditions.
+	Intended for testing or startup paths where sampling is not running concurrently.
 	"""
 	global _ct_initialized, _ct_prev, _wg_subnets_cache, _wg_subnets_ts, _acct_warned
-	with _ct_lock:
-		_ct_prev.clear()
-		_ct_initialized = False
-		_acct_warned = False
+
+	# Acquire both locks in consistent order (wg_lock → ct_lock)
 	with _wg_lock:
-		_wg_subnets_cache = []
-		_wg_subnets_ts = 0.0
+		with _ct_lock:
+			_ct_prev.clear()
+			_ct_initialized = False
+			_acct_warned = False
+			_wg_subnets_cache = []
+			_wg_subnets_ts = 0.0

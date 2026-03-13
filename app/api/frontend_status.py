@@ -665,7 +665,7 @@ async def status_page(
 		return templates.TemplateResponse(
 			"status_disabled.html",
 			{"request": request},
-			status_code=404,
+			status_code=200,
 		)
 
 	context = await _resolve_status_client_context(

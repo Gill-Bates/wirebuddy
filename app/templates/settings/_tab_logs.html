@@ -1,0 +1,316 @@
+    <div class="tab-pane fade" id="logs-pane" role="tabpanel" aria-labelledby="logs-tab">
+        <div class="row g-3">
+
+            <!-- ── Traffic Metrics (TSDB) ── -->
+            <div class="col-lg-6 col-xl-3">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <h3 class="h5 mb-0">
+                            <span class="material-icons align-middle me-1" style="font-size: 20px;">show_chart</span>Traffic Metrics
+                        </h3>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-borderless mb-0">
+                            <tbody>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Storage Path</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value small" id="tsdb-path">&ndash;</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Storage Size</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value" id="tsdb-size">&ndash;</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Peers Tracked</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value" id="tsdb-peers">&ndash;</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Data Files</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value" id="tsdb-files">&ndash;</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Compressed Archives</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value" id="tsdb-archives">&ndash;</span>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <div class="metrics-footer mt-auto">
+                            {% if user['is_admin'] %}
+                            <hr class="my-3">
+                            <div class="mb-3 retention-scale">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <label for="tsdb-retention-slider" class="form-label mb-0">Retention Period</label>
+                                    <span class="badge text-bg-secondary" id="tsdb-retention-value">365 Days</span>
+                                </div>
+                                <input type="range" class="form-range retention-slider" id="tsdb-retention-slider"
+                                    min="0" max="5" step="1" value="5">
+                                <div class="retention-ticks" aria-hidden="true">
+                                    <span class="retention-tick" style="--i:0"></span>
+                                    <span class="retention-tick" style="--i:1"></span>
+                                    <span class="retention-tick" style="--i:2"></span>
+                                    <span class="retention-tick" style="--i:3"></span>
+                                    <span class="retention-tick" style="--i:4"></span>
+                                    <span class="retention-tick" style="--i:5"></span>
+                                </div>
+                                <div class="retention-labels" aria-hidden="true">
+                                    <span class="retention-label" style="--i:0">
+                                        <span class="retention-label-full">No Logs</span>
+                                        <span class="retention-label-abbr">Off</span>
+                                    </span>
+                                    <span class="retention-label" style="--i:1">7d</span>
+                                    <span class="retention-label" style="--i:2">30d</span>
+                                    <span class="retention-label" style="--i:3">90d</span>
+                                    <span class="retention-label" style="--i:4">180d</span>
+                                    <span class="retention-label" style="--i:5">1y</span>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            <div class="metrics-delete">
+                                <hr>
+                                <div class="metrics-delete-inner">
+                                    <div class="metrics-delete-copy">
+                                        <div class="fw-semibold text-danger settings-danger-label">Delete all Traffic Metrics</div>
+                                        <div class="small text-muted">Permanently removes all stored traffic metric data (TSDB).</div>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-danger" id="btn-purge-traffic-logs"{% if not user['is_admin'] %} disabled{% endif %}>
+                                        <span class="material-icons align-middle me-1" style="font-size: 16px;">delete_forever</span>Purge
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── DNS Metrics ── -->
+            <div class="col-lg-6 col-xl-3">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <h3 class="h5 mb-0">
+                            <span class="material-icons align-middle me-1" style="font-size: 20px;">dns</span>DNS Metrics
+                        </h3>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-borderless mb-0">
+                            <tbody>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Storage Path</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value small" id="dns-metrics-path">&ndash;</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Storage Size</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value" id="dns-metrics-size">&ndash;</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Log Files</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value" id="dns-metrics-files">&ndash;</span>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <div class="metrics-footer mt-auto">
+                            {% if user['is_admin'] %}
+                            <hr class="my-3">
+                            <div class="mb-3 retention-scale">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <label for="dns-metrics-retention-slider" class="form-label mb-0">Retention Period</label>
+                                    <span class="badge text-bg-secondary" id="dns-metrics-retention-value">30 Days</span>
+                                </div>
+                                <input type="range" class="form-range retention-slider" id="dns-metrics-retention-slider"
+                                    min="0" max="5" step="1" value="2">
+                                <div class="retention-ticks" aria-hidden="true">
+                                    <span class="retention-tick" style="--i:0"></span>
+                                    <span class="retention-tick" style="--i:1"></span>
+                                    <span class="retention-tick" style="--i:2"></span>
+                                    <span class="retention-tick" style="--i:3"></span>
+                                    <span class="retention-tick" style="--i:4"></span>
+                                    <span class="retention-tick" style="--i:5"></span>
+                                </div>
+                                <div class="retention-labels" aria-hidden="true">
+                                    <span class="retention-label" style="--i:0">
+                                        <span class="retention-label-full">No Logs</span>
+                                        <span class="retention-label-abbr">Off</span>
+                                    </span>
+                                    <span class="retention-label" style="--i:1">7d</span>
+                                    <span class="retention-label" style="--i:2">30d</span>
+                                    <span class="retention-label" style="--i:3">90d</span>
+                                    <span class="retention-label" style="--i:4">180d</span>
+                                    <span class="retention-label" style="--i:5">1y</span>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            <div class="metrics-delete">
+                                <hr>
+                                <div class="metrics-delete-inner">
+                                    <div class="metrics-delete-copy">
+                                        <div class="fw-semibold text-danger settings-danger-label">Delete all DNS Metrics</div>
+                                        <div class="small text-muted">Permanently removes all stored DNS query data.</div>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-danger" id="btn-purge-dns-logs"{% if not user['is_admin'] %} disabled{% endif %}>
+                                        <span class="material-icons align-middle me-1" style="font-size: 16px;">delete_forever</span>Purge
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Peer Metrics ── -->
+            <div class="col-lg-6 col-xl-3">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <h3 class="h5 mb-0">
+                            <span class="material-icons align-middle me-1" style="font-size: 20px;">people</span>Peer Metrics
+                        </h3>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-borderless mb-0">
+                            <tbody>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Database Path</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value small" id="peer-metrics-path">&ndash;</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Storage Size</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value" id="peer-metrics-size">&ndash;</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Total Peers</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value" id="peer-metrics-total">&ndash;</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Peers with Handshake</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value" id="peer-metrics-handshake">&ndash;</span>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <div class="metrics-footer mt-auto">
+                            <div class="metrics-delete">
+                                <hr>
+                                <div class="metrics-delete-inner">
+                                    <div class="metrics-delete-copy">
+                                        <div class="fw-semibold text-danger settings-danger-label">Reset all Peer Metrics</div>
+                                        <div class="small text-muted">Resets all peer connection tracking</div>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-danger" id="btn-purge-peer-logs"{% if not user['is_admin'] %} disabled{% endif %}>
+                                        <span class="material-icons align-middle me-1" style="font-size: 16px;">delete_forever</span>Reset
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Speedtest Metrics ── -->
+            <div class="col-lg-6 col-xl-3">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <h3 class="h5 mb-0">
+                            <span class="material-icons align-middle me-1" style="font-size: 20px;">speed</span>Speedtest Metrics
+                        </h3>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-borderless mb-0">
+                            <tbody>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Storage Path</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value small" id="speedtest-metrics-path">&ndash;</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Storage Size</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value" id="speedtest-metrics-size">&ndash;</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th scope="row" class="text-muted fw-normal">Test Results</th>
+                                    <td class="text-end">
+                                        <span class="font-monospace wb-monospace-value" id="speedtest-metrics-records">&ndash;</span>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <div class="metrics-footer mt-auto">
+                            {% if user['is_admin'] %}
+                            <hr class="my-3">
+                            <div class="mb-3 retention-scale">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <label for="speedtest-retention-slider" class="form-label mb-0">Retention Period</label>
+                                    <span class="badge text-bg-secondary" id="speedtest-retention-value">1 Year</span>
+                                </div>
+                                <input type="range" class="form-range retention-slider" id="speedtest-retention-slider"
+                                    min="0" max="5" step="1" value="5">
+                                <div class="retention-ticks" aria-hidden="true">
+                                    <span class="retention-tick" style="--i:0"></span>
+                                    <span class="retention-tick" style="--i:1"></span>
+                                    <span class="retention-tick" style="--i:2"></span>
+                                    <span class="retention-tick" style="--i:3"></span>
+                                    <span class="retention-tick" style="--i:4"></span>
+                                    <span class="retention-tick" style="--i:5"></span>
+                                </div>
+                                <div class="retention-labels" aria-hidden="true">
+                                    <span class="retention-label" style="--i:0">
+                                        <span class="retention-label-full">No Logs</span>
+                                        <span class="retention-label-abbr">Off</span>
+                                    </span>
+                                    <span class="retention-label" style="--i:1">7d</span>
+                                    <span class="retention-label" style="--i:2">30d</span>
+                                    <span class="retention-label" style="--i:3">90d</span>
+                                    <span class="retention-label" style="--i:4">180d</span>
+                                    <span class="retention-label" style="--i:5">1y</span>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            <div class="metrics-delete">
+                                <hr>
+                                <div class="metrics-delete-inner">
+                                    <div class="metrics-delete-copy">
+                                        <div class="fw-semibold text-danger settings-danger-label">Delete all Speedtest Data</div>
+                                        <div class="small text-muted">Permanently removes all stored bandwidth test history.</div>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-danger" id="btn-purge-speedtest-logs"{% if not user['is_admin'] %} disabled{% endif %}>
+                                        <span class="material-icons align-middle me-1" style="font-size: 16px;">delete_forever</span>Purge
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>

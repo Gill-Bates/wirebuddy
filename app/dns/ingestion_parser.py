@@ -28,6 +28,7 @@ class DnsQueryPoint:
 	qtype: str  # Query type (A, AAAA, HTTPS, etc.)
 	rcode: str  # Response code (NOERROR, NXDOMAIN, etc.) - empty for queries
 	blocked: bool  # Whether domain is in blocklist
+	custom_rule: bool = False  # Whether a custom rule affected this query
 
 
 def parse_unbound_line(
@@ -112,7 +113,7 @@ def parse_unbound_line(
 				if not rule_applies_to_client(rule, client):
 					continue
 				if rule.matches(domain):
-					# Whitelisted - not blocked, skip all other checks
+					# Whitelisted - not blocked, custom rule applied
 					return DnsQueryPoint(
 						ts=ts,
 						client=client,
@@ -120,10 +121,12 @@ def parse_unbound_line(
 						qtype=qtype,
 						rcode=rcode,
 						blocked=False,
+						custom_rule=True,
 					)
 		
 		# Priority 2: Check exact blocked domains (already lowercase)
 		blocked = _is_domain_blocked(domain, blocked_domains)
+		custom_rule = False
 		
 		# Priority 3: Check wildcard/regex block rules
 		if not blocked and block_rules:
@@ -132,6 +135,7 @@ def parse_unbound_line(
 					continue
 				if rule.matches(domain):
 					blocked = True
+					custom_rule = True
 					break
 		
 		return DnsQueryPoint(
@@ -141,6 +145,7 @@ def parse_unbound_line(
 			qtype=qtype,
 			rcode=rcode,
 			blocked=blocked,
+			custom_rule=custom_rule,
 		)
 	except Exception as exc:
 		_log.debug("DNS_PARSER failed to parse line: %s", exc)

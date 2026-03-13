@@ -22,4 +22,7 @@
     text-rendering: optimizeLegibility;
     -moz-osx-font-smoothing: grayscale;
     font-feature-settings: 'liga';
+    /* Prevent CLS during font loading */
+    width: 1em;
+    height: 1em;
 }

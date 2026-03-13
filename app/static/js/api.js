@@ -138,8 +138,9 @@ async function api(method, url, data = null, opts = {}) {
     if (res.status === 204) return null;
 
     // Normalize API envelope: {status: "ok", data: ...}
+    // Return data if present, otherwise return payload itself (for message-only responses)
     if (payload && payload.status === 'ok') {
-        return payload.data ?? null;
+        return payload.data !== undefined ? payload.data : payload;
     }
     return payload;
 }

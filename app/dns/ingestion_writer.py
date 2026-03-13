@@ -188,7 +188,7 @@ class DnsTsdbWriter:
 				# Extract date from ISO timestamp: 2026-02-19T10:15:23Z -> 2026-02-19
 				date_str = point.ts[:10]
 				
-				by_day.setdefault(date_str, []).append({
+				entry = {
 					'_v': JSONL_SCHEMA_VERSION,
 					'ts': point.ts,
 					'client': point.client,
@@ -196,7 +196,12 @@ class DnsTsdbWriter:
 					'qtype': point.qtype,
 					'rcode': point.rcode,
 					'blocked': point.blocked,
-				})
+				}
+				# Only include custom_rule if True (saves space)
+				if point.custom_rule:
+					entry['custom_rule'] = True
+				
+				by_day.setdefault(date_str, []).append(entry)
 			
 			# Write each day's queries with fsync
 			for date_str, points in by_day.items():

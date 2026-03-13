@@ -1,0 +1,430 @@
+    function toBool(v) {
+        return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
+    }
+
+    let _wgSettings = {};
+
+    async function loadWgSettings() {
+        try {
+            const settings = await api('GET', '/api/wireguard/settings');
+            _wgSettings = settings || {};
+            
+            const fqdnInput = document.getElementById('wg-fqdn');
+            if (fqdnInput && settings.wg_fqdn) {
+                fqdnInput.value = settings.wg_fqdn;
+            }
+            
+            const guiPortInput = document.getElementById('gui-port');
+            if (guiPortInput && settings.gui_port) {
+                guiPortInput.value = settings.gui_port;
+            }
+            
+            const mtuInput = document.getElementById('wg-mtu');
+            if (mtuInput && settings.wg_mtu !== null && settings.wg_mtu !== undefined && settings.wg_mtu !== '') {
+                mtuInput.value = settings.wg_mtu;
+            }
+            
+            const keepaliveInput = document.getElementById('wg-keepalive');
+            if (keepaliveInput && settings.wg_persistent_keepalive !== null && settings.wg_persistent_keepalive !== undefined && settings.wg_persistent_keepalive !== '') {
+                keepaliveInput.value = settings.wg_persistent_keepalive;
+            }
+
+            // Localhost toggle
+            const localhostToggle = document.getElementById('gui-localhost-only');
+            if (localhostToggle) {
+                localhostToggle.checked = toBool(settings.gui_localhost_only);
+            }
+
+            // PSK toggle
+            const pskToggle = document.getElementById('wg-use-psk');
+            if (pskToggle) {
+                pskToggle.checked = toBool(settings.wg_use_psk);
+                togglePskDetails(pskToggle.checked);
+                if (pskToggle.checked) await loadPsk();
+            }
+
+            const statusToggle = document.getElementById('enable-status-page');
+            if (statusToggle) {
+                // Disable transition during initial load to prevent animation
+                statusToggle.style.transition = 'none';
+                statusToggle.checked = toBool(settings.enable_status_page);
+                // Force reflow, then restore transition
+                statusToggle.offsetHeight;
+                statusToggle.style.transition = '';
+            }
+
+            const swaggerToggle = document.getElementById('enable-swagger');
+            if (swaggerToggle) {
+                swaggerToggle.style.transition = 'none';
+                swaggerToggle.checked = toBool(settings.enable_swagger);
+                swaggerToggle.offsetHeight;
+                swaggerToggle.style.transition = '';
+            }
+
+            updateStatusPageUrlPreview();
+            updateSwaggerUrlPreview();
+        } catch (error) {
+            console.error('Failed to load WG settings:', error.message);
+            wbToast('Failed to load WireGuard settings. Please refresh the page.', 'danger');
+        } finally {
+            // Always allow saves after load attempt to prevent permanent blocking
+            // If load failed, user can still manually enter values
+            wgSettingsLoaded = true;
+        }
+    }
+
+    function updateStatusPageUrlPreview() {
+        const target = document.getElementById('status-page-url');
+        if (!target) return;
+
+        const fqdnInput = document.getElementById('wg-fqdn');
+        const guiPortInput = document.getElementById('gui-port');
+        const rawHost = (fqdnInput?.value || '').trim().replace(/^\[|\]$/g, '');
+        const host = rawHost || window.location.hostname;
+        const protocol = 'http:';
+        const urlHost = host.includes(':') ? `[${host}]` : host;
+
+        // Priority: input field → DB setting → default 8000
+        // Always show port for internal VPN clients (they access directly, not via reverse proxy)
+        const DEFAULT_GUI_PORT = 8000;
+        const parsedInputPort = Number.parseInt(guiPortInput?.value || '', 10);
+        const parsedDbPort = Number.parseInt(String(_wgSettings?.gui_port || ''), 10);
+        const port = Number.isFinite(parsedInputPort) && parsedInputPort >= 1 && parsedInputPort <= 65535
+            ? parsedInputPort
+            : (Number.isFinite(parsedDbPort) && parsedDbPort >= 1 && parsedDbPort <= 65535
+                ? parsedDbPort
+                : DEFAULT_GUI_PORT);
+
+        target.textContent = `${protocol}//${urlHost}:${port}/status`;
+    }
+
+    async function copyStatusPageUrl() {
+        const target = document.getElementById('status-page-url');
+        const value = (target?.textContent || '').trim();
+        if (!value) {
+            wbToast('Status URL is empty', 'warning');
+            return;
+        }
+
+        try {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(value);
+            } else {
+                const el = document.createElement('textarea');
+                el.value = value;
+                el.setAttribute('readonly', '');
+                el.style.position = 'absolute';
+                el.style.left = '-9999px';
+                document.body.appendChild(el);
+                el.select();
+                document.execCommand('copy');
+                document.body.removeChild(el);
+            }
+            wbToast('Status URL copied', 'success');
+        } catch (error) {
+            wbToast('Failed to copy status URL', 'danger');
+        }
+    }
+
+    function updateSwaggerUrlPreview() {
+        const target = document.getElementById('swagger-url');
+        if (!target) return;
+
+        const fqdnInput = document.getElementById('wg-fqdn');
+        const guiPortInput = document.getElementById('gui-port');
+        const rawHost = (fqdnInput?.value || '').trim().replace(/^\[|\]$/g, '');
+        const host = rawHost || window.location.hostname;
+        const protocol = 'http:';
+        const urlHost = host.includes(':') ? `[${host}]` : host;
+
+        const DEFAULT_GUI_PORT = 8000;
+        const parsedInputPort = Number.parseInt(guiPortInput?.value || '', 10);
+        const parsedDbPort = Number.parseInt(String(_wgSettings?.gui_port || ''), 10);
+        const port = Number.isFinite(parsedInputPort) && parsedInputPort >= 1 && parsedInputPort <= 65535
+            ? parsedInputPort
+            : (Number.isFinite(parsedDbPort) && parsedDbPort >= 1 && parsedDbPort <= 65535
+                ? parsedDbPort
+                : DEFAULT_GUI_PORT);
+
+        target.textContent = `${protocol}//${urlHost}:${port}/swagger`;
+    }
+
+    async function copySwaggerUrl() {
+        const target = document.getElementById('swagger-url');
+        const value = (target?.textContent || '').trim();
+        if (!value) {
+            wbToast('Swagger URL is empty', 'warning');
+            return;
+        }
+
+        try {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(value);
+            } else {
+                const el = document.createElement('textarea');
+                el.value = value;
+                el.setAttribute('readonly', '');
+                el.style.position = 'absolute';
+                el.style.left = '-9999px';
+                document.body.appendChild(el);
+                el.select();
+                document.execCommand('copy');
+                document.body.removeChild(el);
+            }
+            wbToast('Swagger URL copied', 'success');
+        } catch (error) {
+            wbToast('Failed to copy Swagger URL', 'danger');
+        }
+    }
+
+    function togglePskDetails(show) {
+        const el = document.getElementById('psk-details');
+        if (el) el.classList.toggle('d-none', !show);
+    }
+
+    function isValidWgPsk(value) {
+        const trimmed = (value || '').trim();
+        if (!/^[A-Za-z0-9+/]{43}=$/.test(trimmed)) return false;
+        try {
+            return atob(trimmed).length === 32;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isMaskedPskValue(value) {
+        const trimmed = (value || '').trim();
+        return trimmed.includes('*');
+    }
+
+    function setPskValidationState(invalid, message = 'Invalid PSK format (must be 44-char WireGuard key)') {
+        const input = document.getElementById('wg-psk-display');
+        const feedback = document.getElementById('wg-psk-feedback');
+        if (!input || !feedback) return;
+
+        input.classList.toggle('is-invalid', invalid);
+        feedback.classList.toggle('d-none', !invalid);
+        feedback.textContent = message;
+    }
+
+    let lastSavedCustomPsk = null;
+    let cachedMaskedPsk = '';
+    let cachedRevealedPsk = '';
+
+    async function saveCustomPsk(rawValue, options = {}) {
+        const { silentSuccess = false, silentInvalid = false } = options;
+        const psk = (rawValue || '').trim();
+        if (!isValidWgPsk(psk)) {
+            setPskValidationState(true);
+            if (!silentInvalid) {
+                wbToast('Invalid PSK format (must be 44-char WireGuard key)', 'warning');
+            }
+            return false;
+        }
+        if (lastSavedCustomPsk && psk === lastSavedCustomPsk) {
+            setPskValidationState(false);
+            return true;
+        }
+        try {
+            const res = await api('PUT', '/api/wireguard/settings/psk', { psk });
+            const display = document.getElementById('wg-psk-display');
+            const maskedValue = res.masked || res.data?.masked || '';
+            if (display) {
+                display.value = maskedValue;
+                display.type = 'password';
+            }
+            lastSavedCustomPsk = psk;
+            cachedMaskedPsk = maskedValue;
+            cachedRevealedPsk = psk;
+            setPskValidationState(false);
+            if (!silentSuccess) {
+                wbToast('PresharedKey saved', 'success');
+            }
+            return true;
+        } catch (error) {
+            wbToast('Failed to save PSK: ' + error.message, 'danger');
+            return false;
+        }
+    }
+
+    async function loadPsk() {
+        if (!isAdmin) return;  // PSK endpoint requires admin
+        
+        try {
+            const res = await api('GET', '/api/wireguard/settings/psk');
+            const maskedValue = res.masked || res.data?.masked || '';
+            const display = document.getElementById('wg-psk-display');
+            if (display) {
+                display.value = maskedValue;
+                display.type = 'password';
+            }
+            cachedMaskedPsk = maskedValue;
+            setPskValidationState(false);
+        } catch (error) {
+            console.warn('Failed to load PSK:', error.message);
+        }
+    }
+
+    // WG settings auto-save with debouncing
+    let wgSettingsSaveTimeout = null;
+    let wgSettingsLoaded = false;  // Prevent saves before initial load completes
+
+    // Strict IPv4 CIDR validator: checks octet range (0-255) and prefix (0-32)
+    function isValidIPv4Cidr(value) {
+        const match = value.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/);
+        if (!match) return false;
+        const [, a, b, c, d, mask] = match.map(Number);
+        if ([a, b, c, d].some(n => n < 0 || n > 255)) return false;
+        if (mask < 0 || mask > 32) return false;
+        return true;
+    }
+
+    // IPv6 CIDR validator: validates prefix (0-128) and uses RFC-compliant regex
+    function isValidIPv6Cidr(value) {
+        const match = value.match(/^([0-9a-fA-F:]+)\/(\d{1,3})$/);
+        if (!match) return false;
+        const addr = match[1];
+        const mask = Number(match[2]);
+        if (!Number.isFinite(mask) || mask < 0 || mask > 128) return false;
+        
+        // Comprehensive IPv6 regex (handles all valid formats including ::1, 2001:db8::, etc.)
+        const ipv6Regex = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$/;
+        return ipv6Regex.test(addr);
+    }
+
+    function parseOptionalInt(rawValue, min, max, label) {
+        if (rawValue === '' || rawValue === null || rawValue === undefined) {
+            return { value: null, valid: true };
+        }
+        const parsed = Number.parseInt(rawValue, 10);
+        if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+            return {
+                value: null,
+                valid: false,
+                message: `${label} must be a number between ${min} and ${max}`,
+            };
+        }
+        return { value: parsed, valid: true };
+    }
+
+    async function saveWgSettings(options = {}) {
+        if (!isAdmin) return;
+        // Prevent saving before settings are loaded (race condition protection)
+        if (!wgSettingsLoaded) {
+            console.warn('[WG Settings] Save blocked - settings not yet loaded');
+            return;
+        }
+        const { silentSuccess = false } = options;
+        const payload = {};
+        
+        const fqdnInput = document.getElementById('wg-fqdn');
+        const guiPortInput = document.getElementById('gui-port');
+        const mtuInput = document.getElementById('wg-mtu');
+        const keepaliveInput = document.getElementById('wg-keepalive');
+        
+        if (fqdnInput) {
+            const fqdn = fqdnInput.value.trim();
+            payload.wg_fqdn = fqdn || null;
+        }
+
+        if (guiPortInput) {
+            const guiPortResult = parseOptionalInt(guiPortInput.value, 1, 65535, 'HTTP Port (GUI)');
+            if (!guiPortResult.valid) {
+                wbToast(guiPortResult.message, 'warning');
+                return;
+            }
+            payload.gui_port = guiPortResult.value;
+        }
+
+        if (mtuInput) {
+            const mtuResult = parseOptionalInt(mtuInput.value, 1280, 9000, 'MTU');
+            if (!mtuResult.valid) {
+                wbToast(mtuResult.message, 'warning');
+                return;
+            }
+            payload.wg_mtu = mtuResult.value;
+        }
+
+        if (keepaliveInput) {
+            const keepaliveResult = parseOptionalInt(keepaliveInput.value, 0, 600, 'Persistent Keepalive');
+            if (!keepaliveResult.valid) {
+                wbToast(keepaliveResult.message, 'warning');
+                return;
+            }
+            payload.wg_persistent_keepalive = keepaliveResult.value;
+        }
+
+        // Include localhost toggle state
+        const localhostToggle = document.getElementById('gui-localhost-only');
+        if (localhostToggle) payload.gui_localhost_only = localhostToggle.checked ? '1' : '0';
+
+        // Include PSK toggle state
+        const pskToggle = document.getElementById('wg-use-psk');
+        if (pskToggle) payload.wg_use_psk = pskToggle.checked ? '1' : '0';
+
+        const statusToggle = document.getElementById('enable-status-page');
+        if (statusToggle) payload.enable_status_page = statusToggle.checked ? '1' : '0';
+
+        const swaggerToggle = document.getElementById('enable-swagger');
+        if (swaggerToggle) payload.enable_swagger = swaggerToggle.checked ? '1' : '0';
+
+        // Guard against empty payload
+        if (Object.keys(payload).length === 0) {
+            return;
+        }
+
+        // Show immediate feedback for Swagger toggle (prevents multiple clicks)
+        const isSwaggerToggle = 'enable_swagger' in payload;
+        if (isSwaggerToggle && !silentSuccess) {
+            wbToast('Saving...', 'success');
+        }
+
+        try {
+            await api('PATCH', '/api/wireguard/settings', payload);
+            if (!silentSuccess) {
+                wbToast('Settings saved', 'success');
+            }
+        } catch (error) {
+            wbToast('Failed to save settings: ' + error.message, 'danger');
+        }
+    }
+
+    // FQDN Auto-Detect
+    const fqdnDetectBtn = document.getElementById('btn-fqdn-detect');
+    if (fqdnDetectBtn && fqdnDetectBtn.dataset.bound !== '1') {
+        fqdnDetectBtn.dataset.bound = '1';
+        fqdnDetectBtn.addEventListener('click', async () => {
+            const detected = detectHostname();
+            if (!detected) {
+                wbToast('Could not detect hostname', 'warning');
+                return;
+            }
+            const input = document.getElementById('wg-fqdn');
+            if (!input) return;
+            input.value = detected;
+            updateStatusPageUrlPreview();
+            await saveWgSettings({ silentSuccess: true });
+            wbToast(`Detected: ${detected}`, 'success');
+        });
+    }
+
+    // Certificate Domain Auto-Detect
+    document.getElementById('btn-cert-domain-detect')?.addEventListener('click', () => {
+        const detected = detectHostname();
+        if (!detected) {
+            wbToast('Could not detect hostname', 'warning');
+            return;
+        }
+        document.getElementById('cert-domain').value = detected;
+        wbToast(`Detected: ${detected}`, 'success');
+    });
+
+    function saveWgSettingsDebounced() {
+        clearTimeout(wgSettingsSaveTimeout);
+        wgSettingsSaveTimeout = setTimeout(saveWgSettings, 800);
+    }
+
+    // Cancel pending debounced saves on page unload to prevent stale writes
+    window.addEventListener('pagehide', () => clearTimeout(wgSettingsSaveTimeout));
+
+    // PSK toggle handler (with race condition protection)

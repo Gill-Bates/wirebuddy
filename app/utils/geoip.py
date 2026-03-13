@@ -45,6 +45,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 try:
 	import geoip2.database
+	import geoip2.errors
 
 	_HAS_GEOIP = True
 	_ReaderType = geoip2.database.Reader
@@ -56,7 +57,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Database path resolution & download constants
 # ---------------------------------------------------------------------------
-_GEOIP_SUBDIR = "GeoLite2"
+_GEOIP_SUBDIR = "geolite2"
 _GEOIP_CITY_DB = "GeoLite2-City.mmdb"
 _GEOIP_ASN_DB = "GeoLite2-ASN.mmdb"
 
@@ -93,6 +94,13 @@ def _get_data_dir() -> Path:
 def _get_geoip_dir() -> Path:
 	"""Return the GeoLite2 subdirectory for MMDB files."""
 	geoip_dir = _get_data_dir() / _GEOIP_SUBDIR
+	geoip_dir.mkdir(parents=True, exist_ok=True)
+	return geoip_dir
+
+
+def _get_geoip_dir_for(data_dir: Path) -> Path:
+	"""Return the GeoLite2 subdirectory for a given base data directory."""
+	geoip_dir = data_dir / _GEOIP_SUBDIR
 	geoip_dir.mkdir(parents=True, exist_ok=True)
 	return geoip_dir
 
@@ -145,7 +153,7 @@ def _http_date_from_mmdb(file_path: Path) -> str:
 
 def _get_last_check_time(data_dir: Path) -> float:
 	"""Return timestamp of last successful GeoIP update check, or 0."""
-	check_file = data_dir / _LAST_CHECK_FILE
+	check_file = _get_geoip_dir_for(data_dir) / _LAST_CHECK_FILE
 	try:
 		if check_file.exists():
 			return float(check_file.read_text().strip())
@@ -156,7 +164,7 @@ def _get_last_check_time(data_dir: Path) -> float:
 
 def _set_last_check_time(data_dir: Path) -> None:
 	"""Record current time as last successful GeoIP update check."""
-	check_file = data_dir / _LAST_CHECK_FILE
+	check_file = _get_geoip_dir_for(data_dir) / _LAST_CHECK_FILE
 	try:
 		check_file.write_text(str(time.time()))
 	except OSError as exc:
@@ -187,7 +195,7 @@ def get_geoip_build_info(data_dir: Path | None = None) -> tuple[str, int] | None
 	try:
 		if data_dir is None:
 			data_dir = _get_data_dir()
-		db_path = data_dir / _GEOIP_CITY_DB
+		db_path = _get_geoip_dir_for(data_dir) / _GEOIP_CITY_DB
 		if not db_path.exists():
 			return None
 		with geoip2.database.Reader(str(db_path)) as reader:
@@ -342,7 +350,7 @@ def _download_geoip_db(
 			content_type = response.headers.get("Content-Type", "")
 			if "text/html" in content_type.lower():
 				_log.error("GeoIP download returned HTML instead of binary data")
-				return None
+				return None, False
 
 			total_size = int(response.headers.get("Content-Length", 0))
 			downloaded = 0
@@ -399,8 +407,8 @@ def _download_geoip_db(
 			except Exception:
 				pass  # If we can't read old file, proceed with replacement
 
-		# Atomic rename (same filesystem)
-		temp_path.rename(target_path)
+		# Atomic replace (same filesystem, overwrites existing target cross-platform)
+		temp_path.replace(target_path)
 		temp_path = None
 		_log.info("GeoIP database installed: %s%s", target_path, db_info)
 		return target_path, True
@@ -443,8 +451,9 @@ def ensure_geoip_databases(data_dir: Path | None = None, *, force: bool = False)
 	if data_dir is None:
 		data_dir = _get_data_dir()
 
-	city_path = _get_geoip_dir() / _GEOIP_CITY_DB
-	asn_path = _get_geoip_dir() / _GEOIP_ASN_DB
+	geoip_dir = _get_geoip_dir_for(data_dir)
+	city_path = geoip_dir / _GEOIP_CITY_DB
+	asn_path = geoip_dir / _GEOIP_ASN_DB
 
 	# Skip remote check if we checked recently (unless force or DBs missing)
 	if not force and city_path.exists() and asn_path.exists():
@@ -669,11 +678,20 @@ def eager_init() -> None:
 	"""Pre-load GeoIP readers so first request is instant.
 
 	Safe to call even if databases are missing (returns silently).
+	Clears caches to ensure stale entries from pre-init lookups are discarded.
 	"""
-	_get_reader()
-	_get_asn_reader()
-	_log.debug("GeoIP eager_init complete (city=%s, asn=%s)",
-			   _reader is not None, _asn_reader is not None)
+	city_ok = _get_reader() is not None
+	asn_ok = _get_asn_reader() is not None
+	
+	# Clear caches to purge any stale (None, None) entries from pre-init lookups
+	if city_ok or asn_ok:
+		with _geo_cache_lock:
+			_geo_cache.clear()
+		with _asn_cache_lock:
+			_asn_cache.clear()
+		_log.debug("GeoIP caches cleared after initialization")
+	
+	_log.debug("GeoIP eager_init complete (city=%s, asn=%s)", city_ok, asn_ok)
 
 
 # ---------------------------------------------------------------------------
@@ -813,13 +831,34 @@ def lookup_asn(ip: str) -> tuple[Optional[int], Optional[str]]:
 			_asn_cache.move_to_end(ip)
 			return _asn_cache[ip]
 
+	try:
+		ip_obj = ipaddress.ip_address(ip)
+		if (
+			ip_obj.is_private
+			or ip_obj.is_loopback
+			or ip_obj.is_link_local
+			or ip_obj.is_reserved
+			or ip_obj.is_multicast
+			or ip_obj.is_unspecified
+		):
+			result = (None, None)
+			_asn_cache_put(ip, result)
+			return result
+	except ValueError:
+		_log.debug("Invalid IP for ASN lookup: %s", ip)
+		return None, None
+
 	reader = _get_asn_reader()
 	if not reader:
-		return None, None
+		return None, None  # do NOT cache – DB may appear later
 
 	try:
 		r = reader.asn(ip)
 		result = (r.autonomous_system_number, r.autonomous_system_organization)
+		_asn_cache_put(ip, result)
+		return result
+	except geoip2.errors.AddressNotFoundError:
+		result = (None, None)
 		_asn_cache_put(ip, result)
 		return result
 	except Exception:

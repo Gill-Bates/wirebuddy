@@ -45,17 +45,17 @@ __all__ = ["router"]
 TRAFFIC_RANGE_TO_HOURS = {
     "6h": 6,
     "24h": 24,
-    "3d": 72,
     "7d": 168,
     "30d": 720,
     "90d": 2160,
-    "1y": 8760,
+    "180d": 4320,
+    "y1": 8760,
 }
 
 # Reverse mapping: hours -> preset key (static dict, used for response label)
 _HOURS_TO_RANGE: dict[int, str] = {
-    6: "6h", 24: "24h", 72: "3d", 168: "7d",
-    720: "30d", 2160: "90d", 8760: "1y",
+    6: "6h", 24: "24h", 168: "7d",
+    720: "30d", 2160: "90d", 4320: "180d", 8760: "y1",
 }
 
 # Resource limits to prevent DoS
@@ -233,6 +233,21 @@ def _compute_traffic_stats(
     all_peers.sort(key=lambda p: p["last_handshake_at"] or 0, reverse=True)
     peer_keys = [peer["public_key"] for peer in all_peers if peer["public_key"]]
 
+    # Early exit if no peers exist
+    if not peer_keys:
+        resolved_range = _HOURS_TO_RANGE.get(hours, f"{hours}h")
+        return {
+            "range": resolved_range,
+            "hours": hours,
+            "labels": [],
+            "peers": [],
+            "all_peers": [],
+            "display_unit": "B",
+            "bucket_seconds": bucket_seconds,
+            "actual_points": 0,
+            "requested_points": target_points,
+        }
+
     # Apply peer limit to prevent DoS
     if len(peer_keys) > MAX_PEERS_TRAFFIC:
         _log.warning(
@@ -352,7 +367,7 @@ def _compute_traffic_stats(
 @router.get("/stats/traffic")
 async def get_traffic_stats(
     hours: int = Query(24, ge=1, le=8760, description="Number of hours of history (1-8760)"),
-    range_key: str | None = Query(None, pattern="^(6h|24h|3d|7d|30d|90d|1y)$"),
+    range_key: str | None = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
     max_points: int = Query(DEFAULT_MAX_POINTS, ge=MIN_MAX_POINTS, le=MAX_MAX_POINTS, description="Target number of data points (10-200)"),
     conn: sqlite3.Connection = Depends(get_conn),
     tsdb_dir: Path = Depends(get_tsdb_dir),
@@ -364,7 +379,7 @@ async def get_traffic_stats(
 
     Args:
         hours: Number of hours of history (1-8760, validated at API boundary).
-        range_key: Preset time range (6h, 24h, 3d, 7d, 30d, 90d, 1y). Overrides hours if provided.
+        range_key: Preset time range (6h, 24h, 7d, 30d, 90d, 180d, y1). Overrides hours if provided.
         max_points: Target number of data points/buckets (20-200). Lower values for mobile displays.
 
     Returns:

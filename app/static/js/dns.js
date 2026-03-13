@@ -23,6 +23,7 @@ let _scrollRaf = null;  // RAF handle for scroll throttle
 let _logActionState = null; // Active row action context
 let _isInitialTopDomainsRender = true; // Skip fade on first render
 let _topDomainFadeTimeout = null; // Timeout handle for fade animation fallback
+let _fadeAbort = null; // AbortController for peer filter fade animation
 
 /**
  * Get comma-separated client IPs for the currently selected peer filter.
@@ -108,7 +109,7 @@ function openLogActionMenu(q, clickEvent) {
     const viewportHeight = window.innerHeight;
     let x, y;
 
-    if (clickEvent.clientX != null && clickEvent.clientX !== 0) {
+    if (clickEvent.type === 'click' || clickEvent.type === 'pointerdown') {
         // Mouse event: position near click
         x = clickEvent.clientX;
         y = clickEvent.clientY;
@@ -132,8 +133,8 @@ function openLogActionMenu(q, clickEvent) {
 
     // Position with viewport boundary checking using actual menu dimensions
     // NOTE: Assumes menu has position:fixed in CSS - clientX/Y are viewport-relative
-    menu.style.left = `${Math.min(x, viewportWidth - menuRect.width - 8)}px`;
-    menu.style.top = `${Math.min(y, viewportHeight - menuRect.height - 8)}px`;
+    menu.style.left = `${Math.max(8, Math.min(x, viewportWidth - menuRect.width - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, viewportHeight - menuRect.height - 8))}px`;
 
     // Set ARIA expanded on the triggering row
     const row = clickEvent.target.closest('tr');
@@ -199,9 +200,8 @@ function _fmtTrendLabel(isoStr) {
 
 function fmtNum(n) {
     if (!Number.isFinite(n) || n <= 0) return '0';
-    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-    if (n >= 10_000) return (n / 1_000).toFixed(0) + 'k';
-    if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1_000) return (n / 1_000).toFixed(n >= 10_000 ? 0 : 1).replace(/\.0$/, '') + 'k';
     return Math.floor(n).toString();
 }
 
@@ -535,7 +535,7 @@ function renderTopDomainBars({ items, loadingId, contentId, listId, emptyId, col
         itemWrap.className = 'd-flex flex-column gap-1';
 
         const topRow = document.createElement('div');
-        topRow.className = 'd-flex justify-content-between align-items-end';
+        topRow.className = 'd-flex justify-content-between align-items-end gap-2 top-domain-top-row';
 
         const nameEl = document.createElement('span');
         nameEl.className = 'log-domain text-truncate top-domain-name';
@@ -543,7 +543,7 @@ function renderTopDomainBars({ items, loadingId, contentId, listId, emptyId, col
         nameEl.title = label;
 
         const statsWrap = document.createElement('div');
-        statsWrap.className = 'd-flex align-items-baseline gap-2';
+        statsWrap.className = 'd-flex align-items-baseline gap-2 top-domain-stats-wrap';
 
         const valEl = document.createElement('span');
         valEl.className = 'top-domain-stats';
@@ -610,7 +610,10 @@ async function loadLogsOnly(showLoading = true) {
             showLogsLoadingState();
         }
         const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}`);
-        _logData = data.queries || [];
+        // Strip client IPs for non-admins to prevent DevTools leakage
+        _logData = (data.queries || []).map(q =>
+            isAdmin ? q : { ...q, client: undefined }
+        );
         _renderedCount = 0;  // Reset for fresh render
         renderLogs();
         // Note: Scroll position restoration removed - with batched rendering,
@@ -656,7 +659,7 @@ async function loadPeers() {
         if (!peerFilter) return; // Guard against null
 
         const previousValue = peerFilter.value || 'all';
-        _peerMap = {};
+        const newMap = {}; // Build atomically to avoid partial state on error
 
         const seenNames = new Set();
         clearNode(peerFilter);
@@ -671,7 +674,7 @@ async function loadPeers() {
             const addrParts = (peer.peer_address || '').split(',');
             for (const part of addrParts) {
                 const ip = part.trim().split('/')[0];
-                if (ip) _peerMap[ip] = name;
+                if (ip) newMap[ip] = name;
             }
 
             if (peer.name && !seenNames.has(name)) {
@@ -682,6 +685,9 @@ async function loadPeers() {
                 peerFilter.appendChild(opt);
             }
         }
+
+        // Atomic swap to avoid partial state
+        _peerMap = newMap;
 
         const exists = Array.from(peerFilter.options).some(opt => opt.value === previousValue);
         peerFilter.value = exists ? previousValue : 'all';
@@ -951,17 +957,17 @@ const _refreshScheduler = new window.WBShared.RefreshScheduler({
     autoRefreshMs: 15000,
     maxBackoffMs: 300000,
     refreshFn: async () => {
-        let success = true;
-        try {
-            await Promise.allSettled([loadStats(), loadLogsOnly(false)]);
-            if (Date.now() - _lastSlowPoll > SLOW_POLL_INTERVAL) {
-                _lastSlowPoll = Date.now();
-                await Promise.allSettled([loadTopDomains(), loadTrend(), loadPeers()]);
-            }
-        } catch (e) {
-            success = false;
+        // Promise.allSettled never rejects - check results instead
+        const results = await Promise.allSettled([loadStats(), loadLogsOnly(false)]);
+        const fastOk = results.some(r => r.status === 'fulfilled');
+
+        if (Date.now() - _lastSlowPoll > SLOW_POLL_INTERVAL) {
+            _lastSlowPoll = Date.now();
+            const slowResults = await Promise.allSettled([loadTopDomains(), loadTrend(), loadPeers()]);
+            const slowOk = slowResults.some(r => r.status === 'fulfilled');
+            return fastOk || slowOk;
         }
-        return success;
+        return fastOk;
     }
 });
 
@@ -1000,7 +1006,25 @@ themeObserver.observe(document.documentElement, {
     attributes: true,
     attributeFilter: ['data-bs-theme'],
 });
-window.addEventListener('pagehide', () => themeObserver.disconnect(), { once: true });
+window.addEventListener('pagehide', () => {
+    themeObserver.disconnect();
+    if (_trendChart) {
+        _trendChart.destroy();
+        _trendChart = null;
+    }
+    if (_adblockerCountdownInterval) {
+        clearInterval(_adblockerCountdownInterval);
+        _adblockerCountdownInterval = null;
+    }
+    if (_searchTimer) {
+        clearTimeout(_searchTimer);
+        _searchTimer = null;
+    }
+    if (_fadeAbort) {
+        _fadeAbort.abort();
+        _fadeAbort = null;
+    }
+}, { once: true });
 
 // Infinite scroll for Query Log (throttled with RAF)
 const logContainer = document.getElementById('log-table-wrap');
@@ -1059,7 +1083,11 @@ if (peerFilterSelect) {
         // Logs are filtered client-side, re-render immediately
         renderLogs();
 
-        // Cancel any pending animation from previous filter change
+        // Cancel any stale animation from previous filter change
+        if (_fadeAbort) _fadeAbort.abort();
+        _fadeAbort = new AbortController();
+        const signal = _fadeAbort.signal;
+
         if (_topDomainFadeTimeout) {
             clearTimeout(_topDomainFadeTimeout);
             _topDomainFadeTimeout = null;
@@ -1082,15 +1110,14 @@ if (peerFilterSelect) {
         }
 
         // Fade out cards, re-render on transition complete
-        let handled = false;
         const handleTransitionEnd = () => {
-            if (handled) return;
-            handled = true;
+            if (signal.aborted) return;
             if (_topDomainFadeTimeout) {
                 clearTimeout(_topDomainFadeTimeout);
                 _topDomainFadeTimeout = null;
             }
             Promise.allSettled([loadTrend(), loadTopDomains()]).then(() => {
+                if (signal.aborted) return;
                 requestAnimationFrame(() => {
                     topQueriedCard.classList.remove('top-domain-card-fading');
                     topBlockedCard.classList.remove('top-domain-card-fading');
@@ -1098,12 +1125,15 @@ if (peerFilterSelect) {
             });
         };
 
-        topQueriedCard.addEventListener('transitionend', handleTransitionEnd, { once: true });
+        topQueriedCard.addEventListener('transitionend', handleTransitionEnd,
+            { once: true, signal });
         topQueriedCard.classList.add('top-domain-card-fading');
         topBlockedCard.classList.add('top-domain-card-fading');
 
         // Fallback timeout in case transitionend doesn't fire
-        _topDomainFadeTimeout = setTimeout(handleTransitionEnd, 300);
+        _topDomainFadeTimeout = setTimeout(() => {
+            if (!signal.aborted) handleTransitionEnd();
+        }, 300);
     });
 }
 

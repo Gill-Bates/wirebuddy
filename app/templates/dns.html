@@ -13,25 +13,18 @@
 <div class="wb-page-header flex-wrap gap-2 dns-header">
     <h2 class="page-title"><span class="material-icons me-2">dns</span>DNS Ad-Blocker</h2>
     <div class="d-flex gap-2 align-items-center flex-wrap dns-toolbar">
-        <!-- Global Quick Filters -->
-        <div class="d-flex gap-2 align-items-center flex-wrap dns-global-filters">
-            <select id="log-filter" class="form-select form-select-sm">
-                <option value="all">All</option>
-                <option value="blocked">Blocked only</option>
-                <option value="allowed">Allowed only</option>
-            </select>
-            <select id="peer-filter" class="form-select form-select-sm">
-                <option value="all">All Peers</option>
-            </select>
-            <input type="search" id="log-search" class="form-control form-control-sm" placeholder="Filter domain…">
-        </div>
+        <!-- Global Peer Filter -->
+        <label class="visually-hidden" for="peer-filter">Filter by peer</label>
+        <select id="peer-filter" class="form-select form-select-sm" aria-label="Filter by peer">
+            <option value="all">All Peers</option>
+        </select>
         <!-- Ad-Blocker Toggle -->
         <div class="dropdown adblocker-dropdown" id="adblocker-dropdown-wrap">
             <button class="btn btn-sm dropdown-toggle {{ 'btn-adblocker-enabled' if enable_blocklist else 'btn-adblocker-disabled' }}" type="button" id="adblocker-btn" data-bs-toggle="dropdown" aria-expanded="false"{% if not user['is_admin'] %} disabled{% endif %}>
                 <span id="adblocker-btn-text">{{ 'Ad-Blocker: Enabled' if enable_blocklist else 'Ad-Blocker: Disabled' }}</span>
                 <span id="adblocker-countdown" class="adblocker-countdown ms-1 d-none"></span>
             </button>
-            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="adblocker-btn">
+            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="adblocker-btn" aria-hidden="true">
                 <li><a class="dropdown-item" href="#" data-adblocker-mode="enable"><span class="material-icons me-2">check_circle</span>Enable</a></li>
                 <li><a class="dropdown-item" href="#" data-adblocker-mode="disable"><span class="material-icons me-2">cancel</span>Disable</a></li>
                 <li><hr class="dropdown-divider"></li>
@@ -42,13 +35,13 @@
     </div>
 </div>
 
-<div class="row g-4 mb-4 align-items-stretch">
+<div class="row g-3 mb-3 align-items-stretch">
     <div class="col-6 col-lg-2">
-        <div class="card h-100">
+        <div class="card h-100 wb-kpi-card">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-2">
                     <div class="dns-stat-label" id="label-status">Status</div>
-                    <span class="material-icons dns-stat-icon">dns</span>
+                    <span class="material-icons dns-stat-icon wb-kpi-icon">dns</span>
                 </div>
                 <div class="dns-stat-value" id="stat-status" aria-labelledby="label-status"><span class="spinner-border spinner-border-sm"></span>
                 </div>
@@ -56,11 +49,11 @@
         </div>
     </div>
     <div class="col-6 col-lg-2">
-        <div class="card h-100">
+        <div class="card h-100 wb-kpi-card">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-2">
                     <div class="dns-stat-label" id="label-queries">Queries</div>
-                    <span class="material-icons dns-stat-icon">query_stats</span>
+                    <span class="material-icons dns-stat-icon wb-kpi-icon">query_stats</span>
                 </div>
                 <div class="dns-stat-value" id="stat-queries" aria-labelledby="label-queries"><span class="spinner-border spinner-border-sm"></span>
                 </div>
@@ -68,11 +61,11 @@
         </div>
     </div>
     <div class="col-6 col-lg-2">
-        <div class="card h-100">
+        <div class="card h-100 wb-kpi-card">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-2">
                     <div class="dns-stat-label" id="label-blocked">Blocked</div>
-                    <span class="material-icons dns-stat-icon">block</span>
+                    <span class="material-icons dns-stat-icon wb-kpi-icon">block</span>
                 </div>
                 <div class="dns-stat-value text-danger" id="stat-blocked" aria-labelledby="label-blocked"><span class="spinner-border spinner-border-sm"></span>
                 </div>
@@ -80,11 +73,11 @@
         </div>
     </div>
     <div class="col-6 col-lg-2">
-        <div class="card h-100">
+        <div class="card h-100 wb-kpi-card">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-2">
                     <div class="dns-stat-label" id="label-percent">% Blocked</div>
-                    <span class="material-icons dns-stat-icon">percent</span>
+                    <span class="material-icons dns-stat-icon wb-kpi-icon">percent</span>
                 </div>
                 <div class="dns-stat-value text-danger" id="stat-percent" aria-labelledby="label-percent"><span class="spinner-border spinner-border-sm"></span>
                 </div>
@@ -92,11 +85,11 @@
         </div>
     </div>
     <div class="col-6 col-lg-2">
-        <div class="card h-100">
+        <div class="card h-100 wb-kpi-card">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-2">
                     <div class="dns-stat-label" id="label-domains">Domains</div>
-                    <span class="material-icons dns-stat-icon">public</span>
+                    <span class="material-icons dns-stat-icon wb-kpi-icon">public</span>
                 </div>
                 <div class="dns-stat-value" id="stat-domains" aria-labelledby="label-domains"><span class="spinner-border spinner-border-sm"></span>
                 </div>
@@ -104,11 +97,11 @@
         </div>
     </div>
     <div class="col-6 col-lg-2">
-        <div class="card h-100">
+        <div class="card h-100 wb-kpi-card">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-2">
                     <div class="dns-stat-label" id="label-blocklist">Blocklist</div>
-                    <span class="material-icons dns-stat-icon">list_alt</span>
+                    <span class="material-icons dns-stat-icon wb-kpi-icon">list_alt</span>
                 </div>
                 <div class="dns-stat-value" id="stat-blocklist" aria-labelledby="label-blocklist"><span class="spinner-border spinner-border-sm"></span>
                 </div>
@@ -117,16 +110,16 @@
     </div>
 </div>
 
-<div class="row g-4 mt-0 align-items-stretch">
+<div class="row g-3 mt-0 align-items-stretch wb-main-grid">
     <div class="col-12 col-lg-6">
-        <div class="row g-4 h-100">
+        <div class="row g-3 h-100">
             <div class="col-12 col-md-6 col-lg-6">
                 <div class="card h-100">
                     <div class="card-header">
-                        <h5 class="mb-0 dns-card-title">
+                        <h3 class="h5 mb-0 dns-card-title">
                             <span class="material-icons">query_stats</span>
                             Top Queried Domains
-                        </h5>
+                        </h3>
                     </div>
                     <div class="card-body d-flex flex-column top-domain-card-body pt-3 pb-3">
                         <div id="top-queried-loading" class="flex-grow-1 d-flex flex-column align-items-center justify-content-center">
@@ -134,7 +127,7 @@
                                 <span class="visually-hidden">Loading...</span>
                             </div>
                         </div>
-                        <div id="top-queried-content" class="w-100 h-100 overflow-y-auto pe-2 d-none">
+                        <div id="top-queried-content" class="w-100 h-100 top-domain-scroll-area d-none">
                             <div id="top-queried-list" class="d-flex flex-column gap-3 w-100 h-100">
                                 <!-- HTML bars go here -->
                             </div>
@@ -149,10 +142,10 @@
             <div class="col-12 col-md-6 col-lg-6">
                 <div class="card h-100">
                     <div class="card-header">
-                        <h5 class="mb-0 dns-card-title">
+                        <h3 class="h5 mb-0 dns-card-title">
                             <span class="material-icons">gpp_bad</span>
                             Top Blocked Domains
-                        </h5>
+                        </h3>
                     </div>
                     <div class="card-body d-flex flex-column top-domain-card-body pt-3 pb-3">
                         <div id="top-blocked-loading" class="flex-grow-1 d-flex flex-column align-items-center justify-content-center">
@@ -160,7 +153,7 @@
                                 <span class="visually-hidden">Loading...</span>
                             </div>
                         </div>
-                        <div id="top-blocked-content" class="w-100 h-100 overflow-y-auto pe-2 d-none">
+                        <div id="top-blocked-content" class="w-100 h-100 top-domain-scroll-area d-none">
                             <div id="top-blocked-list" class="d-flex flex-column gap-3 w-100 h-100">
                                 <!-- HTML bars go here -->
                             </div>
@@ -175,10 +168,10 @@
             <div class="col-12">
                 <div class="card h-100">
                     <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0 dns-card-title">
+                        <h3 class="h5 mb-0 dns-card-title">
                             <span class="material-icons">show_chart</span>
                             Blockrate Trend
-                        </h5>
+                        </h3>
                         <span class="badge bg-secondary">30 Days</span>
                     </div>
                     <div class="card-body">
@@ -200,10 +193,20 @@
     <div class="col-12 col-lg-6">
         <div class="card h-100 d-flex flex-column">
             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <h5 class="mb-0 dns-card-title">
+                <h3 class="h5 mb-0 dns-card-title">
                     <span class="material-icons">receipt_long</span>
                     Query Log
-                </h5>
+                </h3>
+                <div class="d-flex gap-2 align-items-center flex-wrap">
+                    <label class="visually-hidden" for="log-filter">Filter query log entries</label>
+                    <select id="log-filter" class="form-select form-select-sm" style="width: auto;" aria-label="Filter query log entries">
+                        <option value="all">All</option>
+                        <option value="blocked">Blocked only</option>
+                        <option value="allowed">Allowed only</option>
+                    </select>
+                    <label class="visually-hidden" for="log-search">Search query log domains</label>
+                    <input type="search" id="log-search" class="form-control form-control-sm" placeholder="Filter domain…" style="width: 150px;" aria-label="Search query log domains">
+                </div>
             </div>
             <div class="card-body p-0 flex-grow-1 d-flex flex-column log-card-body">
                 <!-- Pull-to-refresh indicator (mobile only) -->
@@ -809,7 +812,7 @@
             itemWrap.className = 'd-flex flex-column gap-1';
 
             const topRow = document.createElement('div');
-            topRow.className = 'd-flex justify-content-between align-items-end';
+            topRow.className = 'd-flex justify-content-between align-items-end gap-2 top-domain-top-row';
 
             const nameEl = document.createElement('span');
             nameEl.className = 'log-domain text-truncate top-domain-name';
@@ -817,7 +820,7 @@
             nameEl.title = label;
 
             const statsWrap = document.createElement('div');
-            statsWrap.className = 'd-flex align-items-baseline gap-2';
+            statsWrap.className = 'd-flex align-items-baseline gap-2 top-domain-stats-wrap';
 
             const valEl = document.createElement('span');
             valEl.className = 'top-domain-stats';
@@ -1057,6 +1060,14 @@
             domainText.className = 'log-domain';
             domainText.textContent = q.domain || '';
             domainWrap.appendChild(domainText);
+            
+            // Add Custom Rule badge if applicable
+            if (q.custom_rule) {
+                const badge = document.createElement('span');
+                badge.className = 'badge dns-badge-custom-rule ms-2';
+                badge.textContent = 'Custom Rule';
+                domainWrap.appendChild(badge);
+            }
 
             // Add client/peer info below domain
             const peerName = _peerMap[q.client];
@@ -1212,6 +1223,17 @@
             setAdblockerMode(mode);
         });
     });
+
+    const adblockerMenu = document.querySelector('#adblocker-dropdown-wrap .dropdown-menu');
+    const adblockerWrap = document.getElementById('adblocker-dropdown-wrap');
+    if (adblockerMenu && adblockerWrap) {
+        adblockerWrap.addEventListener('show.bs.dropdown', () => {
+            adblockerMenu.setAttribute('aria-hidden', 'false');
+        });
+        adblockerWrap.addEventListener('hide.bs.dropdown', () => {
+            adblockerMenu.setAttribute('aria-hidden', 'true');
+        });
+    }
 
     async function pollTick() {
         if (_pollInProgress) return;

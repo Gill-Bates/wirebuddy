@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import sqlite3
 
+from ..utils.config import get_config
 from ..utils.time import utcnow
+from ..utils import vault
 from .sqlite_runtime import transaction
 
 
@@ -33,6 +35,7 @@ def create_interface(
 ) -> int:
 	"""Create a new WireGuard interface in the database."""
 	now = utcnow()
+	private_key_stored = vault.encrypt_if_needed(private_key, get_config().secret_key)
 	with transaction(conn):
 		cur = conn.execute(
 			"""
@@ -44,7 +47,7 @@ def create_interface(
 			""",
 			(
 				name,
-				private_key,
+				private_key_stored,
 				public_key,
 				address,
 				address6,

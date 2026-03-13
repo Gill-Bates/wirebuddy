@@ -10,24 +10,33 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Optional
 
+from ..utils.config import get_config
 from ..utils.time import utcnow
-from .sqlite_peers import get_peer_by_id
-from .sqlite_runtime import UNSET, transaction
+from ..utils import vault
+from .sqlite_runtime import UNSET, UnsetType, transaction
+
+_VALID_ALLOWED_IPS_MODES = frozenset({"full", "split", "custom"})
+
+
+def _validate_allowed_ips_mode(allowed_ips_mode: str) -> str:
+	"""Validate the allowed-IPs mode before writing it to the database."""
+	if allowed_ips_mode not in _VALID_ALLOWED_IPS_MODES:
+		raise ValueError(f"Invalid allowed_ips_mode: {allowed_ips_mode!r}")
+	return allowed_ips_mode
 
 
 def create_peer(
 	conn: sqlite3.Connection,
 	public_key: str,
 	allowed_ips: str,
-	name: Optional[str] = None,
-	description: Optional[str] = None,
-	endpoint: Optional[str] = None,
+	name: str | None = None,
+	description: str | None = None,
+	endpoint: str | None = None,
 	interface: str = "wg0",
-	private_key: Optional[str] = None,
-	preshared_key: Optional[str] = None,
-	peer_address: Optional[str] = None,
+	private_key: str | None = None,
+	preshared_key: str | None = None,
+	peer_address: str | None = None,
 	allowed_ips_mode: str = "full",
 	use_adblocker: bool = True,
 	blocklist_ids: list[str] | None = None,
@@ -41,7 +50,11 @@ def create_peer(
 	"""
 	now = utcnow()
 	blocklist_ids_json = json.dumps(blocklist_ids) if blocklist_ids is not None else None
-	with transaction(conn):
+	pepper = get_config().secret_key
+	private_key_stored = vault.encrypt_if_needed(private_key, pepper)
+	preshared_key_stored = vault.encrypt_if_needed(preshared_key, pepper)
+	allowed_ips_mode = _validate_allowed_ips_mode(allowed_ips_mode)
+	with transaction(conn, immediate=True):
 		cur = conn.execute(
 			"""
 			INSERT INTO peers (
@@ -53,8 +66,8 @@ def create_peer(
 			""",
 			(
 				public_key,
-				private_key,
-				preshared_key,
+				private_key_stored,
+				preshared_key_stored,
 				name,
 				description,
 				allowed_ips,
@@ -75,20 +88,24 @@ def create_peer(
 def update_peer(
 	conn: sqlite3.Connection,
 	peer_id: int,
-	name: str | None | object = UNSET,
-	description: str | None | object = UNSET,
-	allowed_ips: str | None | object = UNSET,
-	allowed_ips_mode: str | None | object = UNSET,
-	endpoint: str | None | object = UNSET,
-	is_enabled: bool | None | object = UNSET,
-	use_adblocker: bool | None | object = UNSET,
-	blocklist_ids: list[str] | None | object = UNSET,
-	client_isolation: bool | None | object = UNSET,
+	name: str | None | UnsetType = UNSET,
+	description: str | None | UnsetType = UNSET,
+	allowed_ips: str | None | UnsetType = UNSET,
+	allowed_ips_mode: str | None | UnsetType = UNSET,
+	endpoint: str | None | UnsetType = UNSET,
+	is_enabled: bool | None | UnsetType = UNSET,
+	use_adblocker: bool | None | UnsetType = UNSET,
+	blocklist_ids: list[str] | None | UnsetType = UNSET,
+	client_isolation: bool | None | UnsetType = UNSET,
+	private_key: str | None | UnsetType = UNSET,
+	preshared_key: str | None | UnsetType = UNSET,
 ) -> bool:
 	"""Update a peer by ID. Returns True if peer was found and updated.
 
 	Parameters:
 		name, description, endpoint: Can be set to None (NULL in database).
+		private_key, preshared_key: Use UNSET to leave unchanged, None to clear,
+			or a plaintext/encrypted value to persist.
 		allowed_ips, allowed_ips_mode: Cannot be None (NOT NULL constraint).
 			Pass UNSET to leave unchanged, or a string value to update.
 		is_enabled, use_adblocker, client_isolation: Cannot be None.
@@ -96,15 +113,8 @@ def update_peer(
 		blocklist_ids: Use UNSET to leave unchanged, None to reset to all,
 			or a list of IDs to set specific blocklists.
 	"""
-	try:
-		conn.execute("BEGIN IMMEDIATE")
-
-		# Check if peer exists
-		peer = get_peer_by_id(conn, peer_id)
-		if not peer:
-			conn.rollback()
-			return False
-
+	pepper = get_config().secret_key
+	with transaction(conn, immediate=True):
 		updates = []
 		params = []
 
@@ -114,31 +124,47 @@ def update_peer(
 		if description is not UNSET:
 			updates.append("description = ?")
 			params.append(description)
-		if allowed_ips is not UNSET and allowed_ips is not None:
+		if private_key is not UNSET:
+			updates.append("private_key = ?")
+			params.append(vault.encrypt_if_needed(private_key, pepper))
+		if preshared_key is not UNSET:
+			updates.append("preshared_key = ?")
+			params.append(vault.encrypt_if_needed(preshared_key, pepper))
+		if allowed_ips is not UNSET:
+			if allowed_ips is None:
+				raise ValueError("allowed_ips cannot be None")
 			updates.append("allowed_ips = ?")
 			params.append(allowed_ips)
-		if allowed_ips_mode is not UNSET and allowed_ips_mode is not None:
+		if allowed_ips_mode is not UNSET:
+			if allowed_ips_mode is None:
+				raise ValueError("allowed_ips_mode cannot be None")
 			updates.append("allowed_ips_mode = ?")
-			params.append(allowed_ips_mode)
+			params.append(_validate_allowed_ips_mode(allowed_ips_mode))
 		if endpoint is not UNSET:
 			updates.append("endpoint = ?")
 			params.append(endpoint)
-		if is_enabled is not UNSET and is_enabled is not None:
+		if is_enabled is not UNSET:
+			if is_enabled is None:
+				raise ValueError("is_enabled cannot be None")
 			updates.append("is_enabled = ?")
 			params.append(int(is_enabled))
-		if use_adblocker is not UNSET and use_adblocker is not None:
+		if use_adblocker is not UNSET:
+			if use_adblocker is None:
+				raise ValueError("use_adblocker cannot be None")
 			updates.append("use_adblocker = ?")
 			params.append(int(use_adblocker))
 		if blocklist_ids is not UNSET:
 			updates.append("blocklist_ids = ?")
 			params.append(json.dumps(blocklist_ids) if blocklist_ids is not None else None)
-		if client_isolation is not UNSET and client_isolation is not None:
+		if client_isolation is not UNSET:
+			if client_isolation is None:
+				raise ValueError("client_isolation cannot be None")
 			updates.append("client_isolation = ?")
 			params.append(int(client_isolation))
 
 		if not updates:
-			conn.rollback()
-			return True
+			row = conn.execute("SELECT 1 FROM peers WHERE id = ?", (peer_id,)).fetchone()
+			return row is not None
 
 		updates.append("updated_at = ?")
 		params.append(utcnow())
@@ -146,16 +172,15 @@ def update_peer(
 
 		sql = f"UPDATE peers SET {', '.join(updates)} WHERE id = ?"
 		cur = conn.execute(sql, params)
-		conn.commit()
-		# Verify update actually affected a row
 		return cur.rowcount > 0
-	except Exception:
-		conn.rollback()
-		raise
 
 
 def delete_peer(conn: sqlite3.Connection, peer_id: int) -> bool:
-	"""Delete a peer by ID. Returns True if peer was found and deleted."""
-	with transaction(conn):
+	"""Delete a peer by ID.
+
+	Note: This only removes the database row. Callers are responsible for
+	removing the peer from the live WireGuard interface first.
+	"""
+	with transaction(conn, immediate=True):
 		cur = conn.execute("DELETE FROM peers WHERE id = ?", (peer_id,))
 		return cur.rowcount > 0

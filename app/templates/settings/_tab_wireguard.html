@@ -1,0 +1,112 @@
+    <div class="tab-pane fade" id="wireguard-pane" role="tabpanel" aria-labelledby="wireguard-tab">
+        <div class="row g-3 settings-general-equal-row">
+            <div class="col-lg-6 settings-general-col settings-general-col-left">
+                <!-- WireGuard Global Settings -->
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <h3 class="h5 mb-0">Global Settings</h3>
+                    </div>
+                    <div class="card-body">
+                        <form id="wg-settings-form" autocomplete="off">
+                            <!-- Hidden username helps password managers classify this form correctly -->
+                            <input
+                                type="text"
+                                name="username"
+                                autocomplete="username"
+                                value="{{ user['username'] | e }}"
+                                tabindex="-1"
+                                aria-hidden="true"
+                                role="presentation"
+                                style="position:absolute;left:-10000px;width:1px;height:1px;opacity:0;pointer-events:none;"
+                            >
+                            <div class="mb-3">
+                                <label for="wg-mtu" class="form-label">MTU</label>
+                                <input type="number" class="form-control" id="wg-mtu" min="1280" max="9000"
+                                    placeholder="1420"{% if not user['is_admin'] %} readonly{% endif %}>
+                                <small class="text-muted">Default: 1420. Typical range: 1280–1500</small>
+                            </div>
+                            <div class="mb-3">
+                                <label for="wg-keepalive" class="form-label">Persistent Keepalive (seconds)</label>
+                                <input type="number" class="form-control" id="wg-keepalive" min="0" max="600"
+                                    placeholder="25"{% if not user['is_admin'] %} readonly{% endif %}>
+                                <small class="text-muted">0 = disabled. Recommended: 25 for NAT traversal</small>
+                            </div>
+                            <hr>
+                            <div class="mb-3">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="wg-use-psk"{% if not user['is_admin'] %} disabled{% endif %}>
+                                    <label class="form-check-label" for="wg-use-psk">Use PresharedKey</label>
+                                </div>
+                                <small class="text-muted">Add a PresharedKey to new peers for post-quantum
+                                    resistance</small>
+                            </div>
+                            <div class="mb-3 d-none" id="psk-details">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <label class="form-label mb-0">Global PresharedKey</label>
+                                    <button type="button" class="btn btn-sm btn-warning" id="psk-generate-btn">
+                                        <span class="material-icons" style="font-size: 16px;">refresh</span>
+                                        Regenerate PSK
+                                    </button>
+                                </div>
+                                <div class="input-group">
+                                    <input type="password" class="form-control font-monospace" id="wg-psk-display"
+                                        name="wireguard_psk_manual" value="" placeholder="No key generated yet"
+                                        autocomplete="new-password" spellcheck="false" autocapitalize="off"
+                                        autocorrect="off" data-lpignore="true" data-1p-ignore="true"{% if not user['is_admin'] %} readonly{% endif %}>
+                                    <button class="btn btn-outline-secondary btn-icon d-inline-flex align-items-center justify-content-center" type="button" id="psk-copy-btn"
+                                        title="Copy to Clipboard">
+                                        <span class="material-icons" style="font-size: 18px;">content_copy</span>
+                                    </button>
+                                    <button class="btn btn-outline-secondary btn-icon d-inline-flex align-items-center justify-content-center" type="button" id="psk-toggle-visibility"
+                                        title="Show / Hide">
+                                        <span class="material-icons" style="font-size: 18px;">visibility</span>
+                                    </button>
+                                </div>
+                                <div id="wg-psk-feedback" class="invalid-feedback d-none">Invalid PSK format (must be 44-char WireGuard key)</div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-6 settings-general-col settings-general-col-right">
+                <!-- WireGuard Interfaces -->
+                <div class="card mb-3">
+                    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                        <h3 class="h5 mb-0">Interfaces</h3>
+                        <div class="settings-header-actions">
+                            <button class="btn btn-sm btn-primary" id="btn-open-create-interface-modal"{% if user['is_admin'] %} data-bs-toggle="modal" data-bs-target="#ifaceModal"{% endif %}>
+                                <span class="material-icons align-middle me-1" style="font-size: 18px;">add_circle</span>Add Interface
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div id="interfaces-list">
+                            <p class="text-muted mb-0">Loading interfaces...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Traffic Analysis -->
+                <div class="card mb-3">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h3 class="h5 mb-0">Traffic Analysis</h3>
+                        <span id="traffic-requirements-badge" class="badge bg-secondary" style="display: none;">
+                            <span class="material-icons align-middle me-1" style="font-size: 14px;">info</span>
+                            <span class="badge-text">Checking...</span>
+                        </span>
+                    </div>
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <p class="mb-1">Country Traffic Analysis</p>
+                                <small class="text-muted">Analyze VPN traffic by destination country using conntrack</small>
+                            </div>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" id="traffic-analysis-toggle" aria-label="Country Traffic Analysis"{% if not user['is_admin'] %} disabled{% endif %}>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>

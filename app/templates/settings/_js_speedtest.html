@@ -1,0 +1,169 @@
+    let _speedtestRunning = false;
+
+    async function loadSpeedtestSettings() {
+        try {
+            const res = await api('GET', '/api/wireguard/speedtest/settings');
+            const data = res.data || res;
+
+            const enabledToggle = document.getElementById('speedtest-enabled');
+            if (enabledToggle) {
+                enabledToggle.style.transition = 'none';
+                enabledToggle.checked = !!data.enabled;
+                enabledToggle.offsetHeight;
+                enabledToggle.style.transition = '';
+            }
+
+            // Populate server dropdown
+            const targetSelect = document.getElementById('speedtest-target');
+            if (targetSelect && data.servers) {
+                // Keep the auto option, add server options
+                const existingOpts = targetSelect.querySelectorAll('option:not([value="auto"])');
+                existingOpts.forEach(o => o.remove());
+                data.servers.forEach(s => {
+                    const opt = document.createElement('option');
+                    opt.value = s.id;
+                    opt.textContent = s.name;
+                    targetSelect.appendChild(opt);
+                });
+                targetSelect.value = data.target || 'auto';
+            }
+
+            const downInput = document.getElementById('speedtest-downstream');
+            if (downInput && data.downstream_mbit > 0) {
+                downInput.value = data.downstream_mbit;
+            }
+
+            const upInput = document.getElementById('speedtest-upstream');
+            if (upInput && data.upstream_mbit > 0) {
+                upInput.value = data.upstream_mbit;
+            }
+
+            // Bind event listeners
+            if (isAdmin) {
+                enabledToggle?.addEventListener('change', () => saveSpeedtestSettings());
+                targetSelect?.addEventListener('change', () => saveSpeedtestSettings());
+                downInput?.addEventListener('change', () => saveSpeedtestSettings());
+                upInput?.addEventListener('change', () => saveSpeedtestSettings());
+
+                document.getElementById('btn-speedtest-run')?.addEventListener('click', runSpeedtest);
+            }
+        } catch (e) {
+            console.error('Failed to load speedtest settings:', e.message);
+        }
+    }
+
+    async function saveSpeedtestSettings() {
+        if (!isAdmin) return;
+        const payload = {};
+
+        const enabledToggle = document.getElementById('speedtest-enabled');
+        if (enabledToggle) payload.enabled = enabledToggle.checked;
+
+        const targetSelect = document.getElementById('speedtest-target');
+        if (targetSelect) payload.target = targetSelect.value;
+
+        const downInput = document.getElementById('speedtest-downstream');
+        if (downInput && downInput.value) {
+            payload.downstream_mbit = parseFloat(downInput.value) || 0;
+        }
+
+        const upInput = document.getElementById('speedtest-upstream');
+        if (upInput && upInput.value) {
+            payload.upstream_mbit = parseFloat(upInput.value) || 0;
+        }
+
+        try {
+            await api('PATCH', '/api/wireguard/speedtest/settings', payload);
+            // Only show enabled/disabled if that's what changed
+            if (payload.enabled !== undefined && Object.keys(payload).length === 1) {
+                const status = payload.enabled ? 'enabled' : 'disabled';
+                wbToast(`Speedtest ${status}`, 'success');
+            } else {
+                wbToast('Speedtest settings saved', 'success');
+            }
+        } catch (e) {
+            wbToast('Failed to save speedtest settings: ' + e.message, 'danger');
+        }
+    }
+
+    async function runSpeedtest() {
+        if (_speedtestRunning || !isAdmin) return;
+        _speedtestRunning = true;
+
+        const btn = document.getElementById('btn-speedtest-run');
+        const runningEl = document.getElementById('speedtest-running');
+        const resultEl = document.getElementById('speedtest-result');
+
+        if (btn) btn.disabled = true;
+        if (runningEl) runningEl.classList.remove('d-none');
+        if (resultEl) resultEl.classList.add('d-none');
+
+        try {
+            const res = await api('POST', '/api/wireguard/speedtest/run', null, { timeoutMs: 180000 });
+            const data = res.data || res;
+
+            if (data.status === 'busy') {
+                wbToast('Network appears busy — measurement skipped', 'warning');
+            } else {
+                showSpeedtestResult(data);
+                wbToast('Speed test completed', 'success');
+                // Notify dashboard to refresh speedtest chart
+                document.dispatchEvent(new CustomEvent('speedtest-completed'));
+            }
+        } catch (e) {
+            wbToast('Speed test failed: ' + e.message, 'danger');
+        } finally {
+            _speedtestRunning = false;
+            if (btn) btn.disabled = false;
+            if (runningEl) runningEl.classList.add('d-none');
+        }
+    }
+
+    function showSpeedtestResult(data) {
+        const resultEl = document.getElementById('speedtest-result');
+        if (!resultEl) return;
+        resultEl.classList.remove('d-none');
+
+        const dlEl = document.getElementById('speedtest-result-dl');
+        const ulEl = document.getElementById('speedtest-result-ul');
+        const rttEl = document.getElementById('speedtest-result-rtt');
+        const serverEl = document.getElementById('speedtest-result-server');
+
+        if (dlEl) dlEl.textContent = data.download_mbit != null ? `${data.download_mbit.toFixed(2)} Mbit/s` : '–';
+        if (ulEl) ulEl.textContent = data.upload_mbit != null ? `${data.upload_mbit.toFixed(2)} Mbit/s` : '–';
+        if (rttEl) rttEl.textContent = data.rtt_ms != null ? `${data.rtt_ms.toFixed(2)} ms (±${(data.jitter_ms || 0).toFixed(2)})` : '–';
+        if (serverEl) {
+            try {
+                const url = new URL(data.server || '');
+                serverEl.textContent = url.hostname;
+                serverEl.title = data.server || '';
+            } catch {
+                serverEl.textContent = data.server || '–';
+                serverEl.title = data.server || '';
+            }
+        }
+    }
+
+    window.WBSettings = {
+        purgeTrafficLogs,
+        purgeDnsLogs,
+        purgePeerLogs,
+        refreshInterfaces,
+        prepareCreateInterfaceModal,
+        updateBlocklist,
+        saveCustomRules,
+        validateDnsServers,
+        refreshCertificates,
+        requestCertificate,
+        submitInterfaceForm,
+    };
+
+    // Cleanup debounced timers on navigation
+    window.addEventListener('pagehide', () => {
+        clearTimeout(wgSettingsSaveTimeout);
+        clearTimeout(blocklistSaveTimeout);
+        clearTimeout(dnsConfigSaveTimeout);
+    });
+
+    // Initialize tabs on page load (await to ensure settings are loaded before user interaction)
+    await initTabs();

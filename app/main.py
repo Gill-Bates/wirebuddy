@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # app/main.py
-# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+# Copyright (C) 2025 Gill-Bates http://github.com/Gill-Bates
 #
 
 # SPDX-License-Identifier: AGPL-3.0
@@ -10,7 +10,6 @@
 """FastAPI application factory and startup lifecycle wiring."""
 
 from __future__ import annotations
-from typing import Any
 
 from .db.sqlite_interfaces import (
 	list_interfaces,
@@ -26,7 +25,7 @@ from .db.sqlite_runtime import (
 	connect,
 )
 from .db.sqlite_leader import try_acquire_leader_lock, release_leader_lock
-from .db.sqlite_schema import ensure_default_admin, init_schema
+from .db.sqlite_schema import ensure_default_admin, init_schema, insert_default_settings
 from .db.sqlite_settings import (
 	DEFAULT_DNS_LOG_RETENTION_DAYS,
 	get_dns_blocklist_enabled,
@@ -48,6 +47,7 @@ import collections
 import ipaddress
 import logging
 import os
+import random
 import re
 import sys
 import time
@@ -70,6 +70,7 @@ from .api import users as users_api
 from .api import wireguard as wireguard_api
 from .api import dns as dns_api
 from .api import frontend_shared as frontend_ui
+from .api import speedtest as speedtest_api
 from .db import tsdb
 from .dns import unbound
 from .dns import ingestion as dns_ingestion
@@ -106,6 +107,11 @@ _DNS_WATCHDOG_INTERVAL_SECONDS = 30
 _ADBLOCKER_TIMER_CHECK_INTERVAL_SECONDS = 15
 _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS = 2.0
 _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS = 300.0
+
+# Speedtest night window: run between 02:00 and 04:00 local time
+_SPEEDTEST_NIGHT_WINDOW_START_HOUR = 2
+_SPEEDTEST_NIGHT_WINDOW_END_HOUR = 4
+_SPEEDTEST_RETRY_DELAY_MINUTES = 30  # Retry delay if peers are active
 
 # Docker default bridge gateway ranges
 _DOCKER_BRIDGE_NETWORKS = (
@@ -271,13 +277,63 @@ _PEER_STATE_MAX_SIZE = 100_000  # Evict oldest 10 % when full
 # event loop thread (in _sample_tsdb_metrics). Not thread-safe for concurrent access.
 
 
-class _ColoredFormatter(logging.Formatter):
+def _humanize_aiosqlite_message(message: str) -> str:
+	"""Rewrite low-signal aiosqlite debug messages into readable text."""
+	def _describe_operation(operation: str) -> tuple[str, str]:
+		known_operations = (
+			("built-in method close of sqlite3.Connection", "closing SQLite connection", "SQLite connection closed"),
+			("built-in method close of sqlite3.Cursor", "closing SQLite cursor", "SQLite cursor closed"),
+			("built-in method commit of sqlite3.Connection", "committing SQLite transaction", "SQLite transaction committed"),
+			("built-in method rollback of sqlite3.Connection", "rolling back SQLite transaction", "SQLite transaction rolled back"),
+			("built-in method execute of sqlite3.Connection", "executing SQLite statement", "SQLite statement executed"),
+			("built-in method execute of sqlite3.Cursor", "executing SQLite cursor statement", "SQLite cursor statement executed"),
+			("built-in method fetchone of sqlite3.Cursor", "fetching one SQLite row", "SQLite row fetched"),
+			("built-in method fetchall of sqlite3.Cursor", "fetching SQLite rows", "SQLite rows fetched"),
+			("built-in method close of sqlite3.Blob", "closing SQLite blob handle", "SQLite blob handle closed"),
+			("Connection.stop.<locals>.close_and_stop", "stopping SQLite worker thread", "SQLite worker thread stopped"),
+			("connect.<locals>.connector", "opening SQLite connection", "SQLite connection opened"),
+			("built-in method cursor of sqlite3.Connection", "creating SQLite cursor", "SQLite cursor created"),
+		)
+		for needle, active_text, done_text in known_operations:
+			if needle in operation:
+				return active_text, done_text
+		return "running SQLite background operation", "SQLite background operation completed"
+
+	if message.startswith("executing "):
+		active_text, _ = _describe_operation(message[len("executing "):])
+		return active_text
+	if message.startswith("operation ") and message.endswith(" completed"):
+		_, done_text = _describe_operation(message[len("operation "):-len(" completed")])
+		return done_text
+	if message.startswith("returning exception "):
+		return f"SQLite background operation failed: {message[len('returning exception '):]}"
+	return message
+
+
+def _prepare_log_record(record: logging.LogRecord) -> logging.LogRecord:
+	"""Clone and normalize a log record before formatting."""
+	# Work on a shallow copy so concurrent handlers see the unmodified record
+	# (issue #16: modifying the shared LogRecord object is not thread-safe).
+	record = logging.makeLogRecord(record.__dict__)
+	if record.name == "aiosqlite":
+		record.msg = _humanize_aiosqlite_message(record.getMessage())
+		record.args = ()
+	return record
+
+
+class _HumanizedFormatter(logging.Formatter):
+	"""Formatter that normalizes noisy third-party log messages."""
+
+	def format(self, record: logging.LogRecord) -> str:
+		record = _prepare_log_record(record)
+		return super().format(record)
+
+
+class _ColoredFormatter(_HumanizedFormatter):
 	"""Custom formatter that adds color to log levels in TTY."""
 
 	def format(self, record: logging.LogRecord) -> str:
-		# Work on a shallow copy so concurrent handlers see the unmodified record
-		# (issue #16: modifying the shared LogRecord object is not thread-safe).
-		record = logging.makeLogRecord(record.__dict__)
+		# Call parent to prepare record (avoid duplicate logic)
 		if record.levelname in _LOG_COLORS:
 			record.levelname = f"{_LOG_COLORS[record.levelname]}{record.levelname:<8}{_RESET}"
 		else:
@@ -393,6 +449,9 @@ def _bootstrap_sync(cfg: Config) -> tuple[bool, list[str], bool]:
 			)
 			# CRITICAL: Do not continue with wrong key — prevents data corruption
 			return is_leader, interfaces_to_start, key_mismatch
+
+		# Insert default settings AFTER key validation (to avoid validation token conflicts)
+		insert_default_settings(conn)
 
 		# Acquire leader lock first so one worker performs migration checks/logging.
 		is_leader = try_acquire_leader_lock(conn)
@@ -534,6 +593,16 @@ def _read_tsdb_retention_days_sync(db_path: Path) -> int:
 		close_connection(conn)
 
 
+def _read_speedtest_retention_days_sync(db_path: Path) -> int:
+	"""Read speedtest retention days synchronously."""
+	from .db.sqlite_settings import get_speedtest_retention_days
+	conn = connect(db_path)
+	try:
+		return get_speedtest_retention_days(conn)
+	finally:
+		close_connection(conn)
+
+
 def _read_dns_service_enabled_sync(db_path: Path) -> bool:
 	"""Read whether DNS service should be running synchronously."""
 	conn = connect(db_path)
@@ -641,7 +710,7 @@ def _setup_logging(log_level: str) -> None:
 			datefmt="%Y-%m-%d %H:%M:%S",
 		)
 	else:
-		formatter = logging.Formatter(
+		formatter = _HumanizedFormatter(
 			fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
 			datefmt="%Y-%m-%d %H:%M:%S",
 		)
@@ -686,6 +755,11 @@ async def _lifespan(app: FastAPI):
 	is_leader, interfaces_to_start, key_mismatch = await asyncio.to_thread(_bootstrap_sync, cfg)
 	app.state.key_mismatch = key_mismatch
 	
+	# CRITICAL: Abort if encryption key doesn't match database
+	if key_mismatch:
+		_log.critical("Aborting startup: WIREBUDDY_SECRET_KEY does not match database encryption key")
+		raise StartupFatalError("Encryption key mismatch")
+	
 	# Initialize TSDB (idempotent, safe for multi-worker)
 	tsdb.init_tsdb(cfg.tsdb_dir)
 	
@@ -708,7 +782,6 @@ async def _lifespan(app: FastAPI):
 			# with host DNS resolver when using network_mode: host.
 			# Do NOT include 127.0.0.1 - host may already have DNS on localhost.
 			dns_retention_days = DEFAULT_DNS_LOG_RETENTION_DAYS
-			_dns_service_enabled = True
 			listen_addrs_ipv4: list[str] = []
 			listen_addrs_ipv6: list[str] = []
 			dns_data = await asyncio.to_thread(_load_dns_startup_data_sync, cfg.db_path)
@@ -786,12 +859,10 @@ async def _lifespan(app: FastAPI):
 				_dns_config_ready = True
 		except FileNotFoundError as exc:
 			_log.warning("DNS init skipped: unbound tools not found! Use Docker Image for full experience! (%s)", exc)
-		except Exception as exc:
+		except Exception:
 			# Issue #10: use exception() so stack trace is always captured for
 			# non-obvious errors (corrupted DB, key mismatch, permission failures).
-			_log.exception("DNS config failed: %s", exc)
-	
-	# Clean up stale/orphaned WireGuard interfaces (leader only)
+			_log.exception("DNS config failed")
 	# These are interfaces active in the kernel but without a config file,
 	# typically left over after clearing the data directory in host network mode.
 	if is_leader:
@@ -803,51 +874,51 @@ async def _lifespan(app: FastAPI):
 	# Runs BEFORE Unbound so that interface IPs exist for DNS binding.
 	# NOTE: DNS is not set in server-side configs, so wg-quick does not
 	# rewrite /etc/resolv.conf. Unbound is started separately after WG.
-		# KNOWN LIMITATION (Issue #17):
-		# started_interfaces only tracks interfaces THIS process brought up.
-		# If the leader crashes and a new worker becomes leader, old interfaces
-		# remain active with no process tracking them for shutdown.
-		# This is intentional to avoid bringing down interfaces we didn't create.
-		if is_leader and interfaces_to_start:
-			for iface_name in interfaces_to_start:
-				try:
-					# Check if interface is already up
-					check_proc = await asyncio.create_subprocess_exec(
-						"wg", "show", iface_name,
-						stdout=asyncio.subprocess.DEVNULL,
-						stderr=asyncio.subprocess.DEVNULL,
-					)
-					await _communicate_with_timeout(
-						check_proc,
-						timeout_seconds=_WG_CHECK_TIMEOUT_SECONDS,
-					)
-					
-					if check_proc.returncode == 0:
-						_log.info("WireGuard interface %s already running", iface_name)
-						# Issue #17: do NOT append to started_interfaces here.
-						# We only track interfaces that *we* started so that shutdown
-						# only brings down what we brought up.
-						continue
+	# KNOWN LIMITATION (Issue #17):
+	# started_interfaces only tracks interfaces THIS process brought up.
+	# If the leader crashes and a new worker becomes leader, old interfaces
+	# remain active with no process tracking them for shutdown.
+	# This is intentional to avoid bringing down interfaces we didn't create.
+	if is_leader and interfaces_to_start:
+		for iface_name in interfaces_to_start:
+			try:
+				# Check if interface is already up
+				check_proc = await asyncio.create_subprocess_exec(
+					"wg", "show", iface_name,
+					stdout=asyncio.subprocess.DEVNULL,
+					stderr=asyncio.subprocess.DEVNULL,
+				)
+				await _communicate_with_timeout(
+					check_proc,
+					timeout_seconds=_WG_CHECK_TIMEOUT_SECONDS,
+				)
+				
+				if check_proc.returncode == 0:
+					_log.info("WireGuard interface %s already running", iface_name)
+					# Issue #17: do NOT append to started_interfaces here.
+					# We only track interfaces that *we* started so that shutdown
+					# only brings down what we brought up.
+					continue
 
-					# Start the interface
-					proc = await asyncio.create_subprocess_exec(
-						"wg-quick", "up", iface_name,
-						stdout=asyncio.subprocess.PIPE,
-						stderr=asyncio.subprocess.PIPE,
-					)
-					_, stderr = await _communicate_with_timeout(
-						proc,
-						timeout_seconds=_WG_UP_TIMEOUT_SECONDS,
-					)
-					if proc.returncode == 0:
-						_log.info("WireGuard interface %s started", iface_name)
-						started_interfaces.append(iface_name)
-					else:
-						_log.warning("Failed to start interface %s: %s", iface_name, stderr.decode("utf-8", errors="replace"))
-				except asyncio.TimeoutError:
-					_log.warning("Timeout while starting/checking interface %s", iface_name)
-				except Exception as e:
-					_log.warning("Failed to start interface %s: %s", iface_name, e)
+				# Start the interface
+				proc = await asyncio.create_subprocess_exec(
+					"wg-quick", "up", iface_name,
+					stdout=asyncio.subprocess.PIPE,
+					stderr=asyncio.subprocess.PIPE,
+				)
+				_, stderr = await _communicate_with_timeout(
+					proc,
+					timeout_seconds=_WG_UP_TIMEOUT_SECONDS,
+				)
+				if proc.returncode == 0:
+					_log.info("WireGuard interface %s started", iface_name)
+					started_interfaces.append(iface_name)
+				else:
+					_log.warning("Failed to start interface %s: %s", iface_name, stderr.decode("utf-8", errors="replace"))
+			except asyncio.TimeoutError:
+				_log.warning("Timeout while starting/checking interface %s", iface_name)
+			except Exception as e:
+				_log.warning("Failed to start interface %s: %s", iface_name, e)
 	
 	# ─── START UNBOUND DNS ─────────────────────────────────── (leader only)
 	# Runs AFTER WireGuard interfaces are up to ensure bind addresses exist.
@@ -876,17 +947,16 @@ async def _lifespan(app: FastAPI):
 						_log.warning("Failed to keep Unbound stopped on startup: %s", msg)
 				else:
 					_log.info("Unbound autostart disabled; resolver remains stopped")
-		except Exception as exc:
-			_log.exception("DNS start failed: %s", exc)
-
-	# ─── SCHEDULER ─────────────────────────────────────────── (leader only)
+		except Exception:
+			_log.exception("DNS start failed")
 	scheduler: Scheduler | None = None
 	if is_leader:
 		scheduler = Scheduler()
+		unbound_installed = _unbound.is_unbound_installed()
 
 		async def _update_blocklists() -> None:
 			"""Scheduled task: download and apply blocklists."""
-			if not _unbound.is_unbound_installed():
+			if not unbound_installed:
 				return  # Skip if Unbound not installed
 			# Skip if blocklist is disabled
 			blocklist_enabled = await asyncio.to_thread(_read_blocklist_enabled_sync, cfg.db_path)
@@ -909,7 +979,21 @@ async def _lifespan(app: FastAPI):
 			"""Scheduled task: prune/rotate/compress TSDB series."""
 			try:
 				tsdb_retention_days = await asyncio.to_thread(_read_tsdb_retention_days_sync, cfg.db_path)
-				stats = await asyncio.to_thread(tsdb.run_maintenance, cfg.tsdb_dir, tsdb_retention_days)
+				speedtest_retention_days = await asyncio.to_thread(_read_speedtest_retention_days_sync, cfg.db_path)
+				
+				# Build synthetic key retention mapping
+				synthetic_retention = {
+					"speedtest": speedtest_retention_days,
+					"geo_traffic": tsdb_retention_days,
+					"asn_traffic": tsdb_retention_days,
+				}
+				
+				stats = await asyncio.to_thread(
+					tsdb.run_maintenance,
+					cfg.tsdb_dir,
+					tsdb_retention_days,
+					synthetic_retention,
+				)
 				dns_retention_days = await asyncio.to_thread(_read_dns_retention_days_sync, cfg.db_path)
 				dns_retention = await asyncio.to_thread(
 					dns_ingestion.enforce_dns_log_retention,
@@ -917,13 +1001,14 @@ async def _lifespan(app: FastAPI):
 					dns_retention_days,
 				)
 				_log.info(
-					"TSDB_MAINTENANCE series=%d rotated=%d pruned=%d dns_deleted=%d dns_remaining=%d dns_days=%d",
+					"TSDB_MAINTENANCE series=%d rotated=%d pruned=%d dns_deleted=%d dns_remaining=%d dns_days=%d speedtest_days=%d",
 					stats.get("series", 0),
 					stats.get("rotated", 0),
 					stats.get("pruned", 0),
 					dns_retention.get("deleted_files", 0),
 					dns_retention.get("remaining_files", 0),
 					dns_retention_days,
+					speedtest_retention_days,
 				)
 			except Exception as exc:
 				_log.error("TSDB_MAINTENANCE failed: %s", exc)
@@ -965,34 +1050,28 @@ async def _lifespan(app: FastAPI):
 				_log.debug("TSDB_SAMPLE no peers found in wg dump output")
 				return
 
-			# Track connection state changes for logging
+			# Offload blocking TSDB writes to thread (issue #2)
+			def _write_tsdb_points():
+				nonlocal peer_counters
+				points = 0
+				for public_key, (rx, tx, latest_handshake) in peer_counters.items():
+					tsdb.append_point(cfg.tsdb_dir, peer_key=public_key, metric="rx_bytes", value=rx)
+					tsdb.append_point(cfg.tsdb_dir, peer_key=public_key, metric="tx_bytes", value=tx)
+					points += 2
+					if latest_handshake > 0:
+						tsdb.append_point(cfg.tsdb_dir, peer_key=public_key, metric="latest_handshake", value=latest_handshake)
+						points += 1
+				return points
+
+			points = await asyncio.to_thread(_write_tsdb_points)
+			_log.debug("TSDB_SAMPLE peers=%d points=%d", len(peer_counters), points)
+
+			# Track connection state changes for logging (on event loop thread)
 			now = time.time()
 			state_changes: list[tuple[str, bool]] = []  # (public_key, is_now_connected)
 
-			points = 0
 			for public_key, (rx, tx, latest_handshake) in peer_counters.items():
-				tsdb.append_point(
-					cfg.tsdb_dir,
-					peer_key=public_key,
-					metric="rx_bytes",
-					value=rx,
-				)
-				tsdb.append_point(
-					cfg.tsdb_dir,
-					peer_key=public_key,
-					metric="tx_bytes",
-					value=tx,
-				)
-				points += 2
 				if latest_handshake > 0:
-					tsdb.append_point(
-						cfg.tsdb_dir,
-						peer_key=public_key,
-						metric="latest_handshake",
-						value=latest_handshake,
-					)
-					points += 1
-
 					# Detect connection state changes
 					is_connected = (now - latest_handshake) < _PEER_CONNECTION_THRESHOLD
 					was_connected = peer_connection_state.get(public_key, False)
@@ -1017,8 +1096,6 @@ async def _lifespan(app: FastAPI):
 						peer_connection_state[public_key] = is_connected
 						peer_connection_state.move_to_end(public_key)
 						state_changes.append((public_key, is_connected))
-
-			_log.debug("TSDB_SAMPLE peers=%d points=%d", len(peer_counters), points)
 
 			# Log connection state changes with peer names
 			if state_changes:
@@ -1047,7 +1124,10 @@ async def _lifespan(app: FastAPI):
 		# Reuse existing blocklist after container restart.
 		# Only do an immediate startup download if there is no local blocklist yet.
 		# Skip all blocklist scheduling if blocklist is disabled.
-		blocklist_enabled_startup = await asyncio.to_thread(_read_blocklist_enabled_sync, cfg.db_path)
+		blocklist_enabled_startup = unbound_installed and await asyncio.to_thread(
+			_read_blocklist_enabled_sync,
+			cfg.db_path,
+		)
 		blocklist_interval_seconds = _BLOCKLIST_UPDATE_INTERVAL_SECONDS
 		blocklist_jitter_pct = 0.1
 		blocklist_run_on_start = False
@@ -1068,17 +1148,21 @@ async def _lifespan(app: FastAPI):
 					max_delay_h,
 				)
 		else:
-			_log.info("BLOCKLIST_STARTUP skipped: ad-blocker is disabled")
-		blocklist_initial_delay = 15.0 if blocklist_run_on_start else 0.0
+			if unbound_installed:
+				_log.info("BLOCKLIST_STARTUP skipped: ad-blocker is disabled")
+			else:
+				_log.info("BLOCKLIST_STARTUP skipped: Unbound not installed")
 
-		scheduler.add(
-			"blocklist-update",
-			interval_seconds=blocklist_interval_seconds,
-			func=_update_blocklists,
-			run_on_start=blocklist_run_on_start,
-			initial_delay=blocklist_initial_delay,  # Delay only applies when run_on_start=True
-			jitter_pct=blocklist_jitter_pct,  # ±10% jitter (±2.4h) to distribute load across instances
-		)
+		if unbound_installed:
+			blocklist_initial_delay = 15.0 if blocklist_run_on_start else 0.0
+			scheduler.add(
+				"blocklist-update",
+				interval_seconds=blocklist_interval_seconds,
+				func=_update_blocklists,
+				run_on_start=blocklist_run_on_start,
+				initial_delay=blocklist_initial_delay,  # Delay only applies when run_on_start=True
+				jitter_pct=blocklist_jitter_pct,  # ±10% jitter (±2.4h) to distribute load across instances
+			)
 		scheduler.add(
 			"tsdb-maintenance",
 			interval_seconds=_TSDB_MAINTENANCE_INTERVAL_SECONDS,  # 6 h
@@ -1120,13 +1204,26 @@ async def _lifespan(app: FastAPI):
 					sample_country_traffic, peer_ip_map
 				)
 
+				# Offload TSDB writes to thread
+				def _write_country_traffic():
+					if country_deltas:
+						tsdb.append_point(
+							cfg.tsdb_dir,
+							peer_key=GEO_TRAFFIC_KEY,
+							metric=GEO_TRAFFIC_METRIC,
+							value=country_deltas,
+						)
+					if asn_deltas:
+						tsdb.append_point(
+							cfg.tsdb_dir,
+							peer_key=ASN_TRAFFIC_KEY,
+							metric=ASN_TRAFFIC_METRIC,
+							value=asn_deltas,
+						)
+
+				await asyncio.to_thread(_write_country_traffic)
+
 				if country_deltas:
-					tsdb.append_point(
-						cfg.tsdb_dir,
-						peer_key=GEO_TRAFFIC_KEY,
-						metric=GEO_TRAFFIC_METRIC,
-						value=country_deltas,
-					)
 					total_rx = sum(v.get("rx", 0) for v in country_deltas.values())
 					total_tx = sum(v.get("tx", 0) for v in country_deltas.values())
 					_log.debug(
@@ -1135,12 +1232,6 @@ async def _lifespan(app: FastAPI):
 					)
 
 				if asn_deltas:
-					tsdb.append_point(
-						cfg.tsdb_dir,
-						peer_key=ASN_TRAFFIC_KEY,
-						metric=ASN_TRAFFIC_METRIC,
-						value=asn_deltas,
-					)
 					_log.debug(
 						"ASN_TRAFFIC asns=%d",
 						len(asn_deltas),
@@ -1223,65 +1314,74 @@ async def _lifespan(app: FastAPI):
 		# Periodically check if Unbound is running and restart if crashed
 		async def _dns_watchdog() -> None:
 			"""Scheduled task: restart Unbound if it crashed."""
-			if not _unbound.is_unbound_installed():
+			if not unbound_installed:
 				return  # Skip if Unbound not installed
-			should_run = await asyncio.to_thread(_should_unbound_run_sync, cfg.db_path)
-			await _unbound.watchdog(lambda: should_run)
+			# Pass callable that re-evaluates the condition on each watchdog check
+			await _unbound.watchdog(lambda: asyncio.to_thread(_should_unbound_run_sync, cfg.db_path))
 
-		scheduler.add(
-			"dns-watchdog",
-			interval_seconds=_DNS_WATCHDOG_INTERVAL_SECONDS,  # Check every 30 seconds
-			func=_dns_watchdog,
-			run_on_start=True,  # Run first check after initial_delay
-			initial_delay=60.0,  # Wait for initial startup to complete
-			timeout=30.0,
-		)
+		if unbound_installed:
+			scheduler.add(
+				"dns-watchdog",
+				interval_seconds=_DNS_WATCHDOG_INTERVAL_SECONDS,  # Check every 30 seconds
+				func=_dns_watchdog,
+				run_on_start=True,  # Run first check after initial_delay
+				initial_delay=60.0,  # Wait for initial startup to complete
+				timeout=30.0,
+			)
 
 		# ─── ADBLOCKER TIMER CHECK ────────────────────────────────────
 		# Periodically check if timed disable has expired and re-enable adblocker
-		async def _check_adblocker_timer() -> None:
-			"""Scheduled task: re-enable ad-blocker when timed disable expires."""
-			import time as _time
+		def _check_adblocker_timer_sync(db_path: Path) -> bool:
+			"""Check and re-enable adblocker if timer expired. Returns True if re-enabled."""
 			from .db.sqlite_settings import (
 				get_blocklist_disabled_until,
 				clear_blocklist_disabled_until,
 				get_dns_blocklist_enabled,
 				set_dns_blocklist_enabled,
 			)
-			conn = connect(cfg.db_path)
-			try:
-				# Use explicit transaction to prevent TOCTOU race with concurrent API requests
-				conn.execute("BEGIN IMMEDIATE")
-				try:
-					disabled_until = get_blocklist_disabled_until(conn)
-					enabled = get_dns_blocklist_enabled(conn)
-					now = int(_time.time())
+			from .api.wireguard_peers import regenerate_all_peer_tags
 
-					# If timer has expired and blocker is still disabled, re-enable it
-					if disabled_until > 0 and disabled_until <= now and not enabled:
+			conn = connect(db_path)
+			try:
+				# Read-only check first - avoid write lock if not needed
+				disabled_until = get_blocklist_disabled_until(conn)
+				enabled = get_dns_blocklist_enabled(conn)
+				now = int(time.time())
+
+				if disabled_until > 0 and disabled_until <= now and not enabled:
+					# Timer expired and blocklist is still disabled - need to re-enable
+					conn.execute("BEGIN IMMEDIATE")
+					try:
 						set_dns_blocklist_enabled(conn, True)
 						clear_blocklist_disabled_until(conn)
+						regenerate_all_peer_tags(conn)
 						conn.commit()
-						_log.info("ADBLOCKER_TIMER timer expired, re-enabling ad-blocker")
-
-						# Regenerate peer tags and reload Unbound
-						from .api.wireguard_peers import regenerate_all_peer_tags
-						await asyncio.to_thread(regenerate_all_peer_tags, conn)
-						await _reload_unbound_for_adblocker(conn)
-					else:
+						return True
+					except Exception:
 						conn.rollback()
-				except Exception:
-					conn.rollback()
-					raise
-			except Exception as exc:
-				_log.warning("ADBLOCKER_TIMER check failed: %s", exc)
+						raise
+				return False
 			finally:
 				close_connection(conn)
+
+		async def _check_adblocker_timer() -> None:
+			"""Scheduled task: re-enable ad-blocker when timed disable expires."""
+			try:
+				re_enabled = await asyncio.to_thread(_check_adblocker_timer_sync, cfg.db_path)
+				if re_enabled:
+					_log.info("ADBLOCKER_TIMER timer expired, re-enabling ad-blocker")
+					# Reload Unbound config (read-only DB access for config)
+					conn = connect(cfg.db_path)
+					try:
+						await _reload_unbound_for_adblocker(conn)
+					finally:
+						close_connection(conn)
+			except Exception as exc:
+				_log.warning("ADBLOCKER_TIMER check failed: %s", exc)
 
 		async def _reload_unbound_for_adblocker(conn) -> None:
 			"""Reload Unbound config after adblocker state change."""
 			try:
-				# Use module-level imports (already imported at top)
 				enable_logging = get_dns_query_logging_enabled(conn)
 				enable_blocklist = get_dns_blocklist_enabled(conn)
 				upstream_dns = get_dns_upstream_servers(conn)
@@ -1299,7 +1399,10 @@ async def _lifespan(app: FastAPI):
 						if ip4 not in ipv4_gateways:
 							ipv4_gateways.append(ip4)
 				ipv6_gateways = _unbound.get_interface_ipv6_gateways(interfaces)
-				_unbound.write_config(
+
+				# Offload sync file I/O to thread (issue #8)
+				await asyncio.to_thread(
+					_unbound.write_config,
 					enable_logging=enable_logging,
 					enable_blocklist=enable_blocklist,
 					upstream_dns=upstream_dns,
@@ -1311,14 +1414,208 @@ async def _lifespan(app: FastAPI):
 			except Exception:
 				_log.warning("ADBLOCKER_TIMER failed to reload Unbound", exc_info=True)
 
+		if unbound_installed:
+			scheduler.add(
+				"adblocker-timer-check",
+				interval_seconds=_ADBLOCKER_TIMER_CHECK_INTERVAL_SECONDS,  # Check every 15 seconds
+				func=_check_adblocker_timer,
+				run_on_start=False,  # No need to run immediately on start
+				timeout=30.0,
+			)
+
+		# ─── SPEEDTEST (BANDWIDTH MEASUREMENT) ───────────────────────
+		_SPEEDTEST_INTERVAL_SECONDS = 86400  # 24 h (runs nightly)
+
+		async def _has_active_peers() -> bool:
+			"""Check if any WireGuard peers are currently connected.
+			
+			A peer is considered active if its last handshake was within
+			_PEER_CONNECTION_THRESHOLD seconds (default: 3 minutes).
+			"""
+			try:
+				proc = await asyncio.create_subprocess_exec(
+					"wg", "show", "all", "dump",
+					stdout=asyncio.subprocess.PIPE,
+					stderr=asyncio.subprocess.PIPE,
+				)
+				stdout_raw, _ = await asyncio.wait_for(
+					proc.communicate(),
+					timeout=_WG_CHECK_TIMEOUT_SECONDS,
+				)
+				if proc.returncode != 0:
+					return False
+				
+				stdout = (stdout_raw or b"").decode("utf-8", errors="replace")
+				if not stdout.strip():
+					return False
+				
+				peer_counters = _parse_wg_dump_counters(stdout)
+				now = time.time()
+				
+				for public_key, (rx, tx, latest_handshake) in peer_counters.items():
+					if latest_handshake > 0:
+						if (now - latest_handshake) < _PEER_CONNECTION_THRESHOLD:
+							_log.debug(
+								"SPEEDTEST_CHECK active peer detected: %s (handshake %ds ago)",
+								public_key[:16], int(now - latest_handshake)
+							)
+							return True
+				return False
+			except Exception as exc:
+				_log.debug("SPEEDTEST_CHECK peer check failed: %s", exc)
+				return False  # Assume no peers on error; proceed with test
+
+		def _seconds_until_night_window() -> float:
+			"""Calculate seconds until the next speedtest night window with random jitter.
+			
+			Returns 0 if currently within the window, otherwise seconds until
+			a random point within the next window (02:00-04:00 local time).
+			
+			The random jitter ensures that many installations don't all start
+			their speedtest at exactly 02:00, which would overload test servers.
+			
+			Note: Uses local server time (UTC in Docker by default). To customize,
+			set the TZ environment variable (e.g. TZ=Europe/Berlin).
+			"""
+			from datetime import datetime as dt
+			now = dt.now()  # Local time (UTC in Docker unless TZ is set)
+			current_hour = now.hour
+			
+			# Currently within night window - return small random offset (0-10 min)
+			# to spread load even for concurrent startups within the window
+			if _SPEEDTEST_NIGHT_WINDOW_START_HOUR <= current_hour < _SPEEDTEST_NIGHT_WINDOW_END_HOUR:
+				return random.uniform(0, 600)  # 0-10 minutes
+			
+			# Calculate next window start
+			if current_hour < _SPEEDTEST_NIGHT_WINDOW_START_HOUR:
+				# Today, before window: wait until window start today
+				next_window = now.replace(
+					hour=_SPEEDTEST_NIGHT_WINDOW_START_HOUR,
+					minute=0, second=0, microsecond=0
+				)
+			else:
+				# Today, after window: wait until window start tomorrow
+				from datetime import timedelta
+				next_window = (now + timedelta(days=1)).replace(
+					hour=_SPEEDTEST_NIGHT_WINDOW_START_HOUR,
+					minute=0, second=0, microsecond=0
+				)
+			
+			# Add random jitter: 0-120 minutes within the 2-hour window
+			# This spreads load across all installations
+			window_duration_seconds = (_SPEEDTEST_NIGHT_WINDOW_END_HOUR - _SPEEDTEST_NIGHT_WINDOW_START_HOUR) * 3600
+			jitter_seconds = random.uniform(0, window_duration_seconds)
+			
+			return (next_window - now).total_seconds() + jitter_seconds
+
+		async def _run_scheduled_speedtest() -> None:
+			"""Scheduled task: run bandwidth measurement if enabled.
+			
+			The test only runs during the night window (02:00-04:00) when no
+			peers are actively connected, to avoid skewing results with real traffic.
+			If peers are active, the test is deferred by 30 minutes.
+			"""
+			try:
+				from .db.sqlite_settings import (
+					get_speedtest_enabled,
+					get_speedtest_target,
+				)
+				from .db.sqlite_settings import SPEEDTEST_SERVER_MAP
+				from .speedtest.tester import BandwidthTester
+				from .api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
+
+				conn = connect(cfg.db_path)
+				try:
+					enabled = get_speedtest_enabled(conn)
+					if not enabled:
+						_log.debug("SPEEDTEST_SCHEDULED skipped: disabled")
+						return
+
+					target = get_speedtest_target(conn)
+				finally:
+					close_connection(conn)
+
+				# Wait until night window if not already there
+				wait_seconds = _seconds_until_night_window()
+				if wait_seconds > 0:
+					_log.info(
+						"SPEEDTEST_SCHEDULED waiting %.0f seconds for night window (02:00-04:00)",
+						wait_seconds
+					)
+					await asyncio.sleep(wait_seconds)
+
+				# Check for active peers; if any, defer the test
+				max_retries = 4  # Max ~2 hours of deferral within the window
+				for attempt in range(max_retries):
+					if not await _has_active_peers():
+						break
+					_log.info(
+						"SPEEDTEST_SCHEDULED deferred: active peers detected (attempt %d/%d), "
+						"retrying in %d minutes",
+						attempt + 1, max_retries, _SPEEDTEST_RETRY_DELAY_MINUTES
+					)
+					await asyncio.sleep(_SPEEDTEST_RETRY_DELAY_MINUTES * 60)
+				else:
+					# All retries exhausted, peers still active
+					_log.warning(
+						"SPEEDTEST_SCHEDULED skipped: peers still active after %d retries",
+						max_retries
+					)
+					return
+
+				servers = None
+				if target != "auto":
+					server_info = SPEEDTEST_SERVER_MAP.get(target)
+					if server_info:
+						servers = [server_info["url"]]
+
+				_log.info("SPEEDTEST_SCHEDULED starting bandwidth measurement")
+				tester = BandwidthTester(servers=servers)
+				result = await tester.run()
+
+				# Offload TSDB write to thread
+				await asyncio.to_thread(
+					tsdb.append_point,
+					cfg.tsdb_dir,
+					peer_key=SPEEDTEST_TSDB_KEY,
+					metric=SPEEDTEST_TSDB_METRIC,
+					value=result,
+				)
+
+				if result.get("status") == "ok":
+					_log.info(
+						"SPEEDTEST_SCHEDULED server=%s dl=%.2f ul=%.2f rtt=%.2fms",
+						result.get("server", "?"),
+						result.get("download_mbit", 0),
+						result.get("upload_mbit", 0),
+						result.get("rtt_ms", 0),
+					)
+				else:
+					_log.warning("SPEEDTEST_SCHEDULED status=%s server=%s", result.get("status"), result.get("server"))
+			except Exception as exc:
+				_log.error("SPEEDTEST_SCHEDULED failed: %s", exc)
+
+		# Calculate initial delay to reach the next night window (includes random jitter)
+		initial_speedtest_delay = _seconds_until_night_window()
+		if initial_speedtest_delay > 0:
+			from datetime import datetime as dt, timedelta
+			scheduled_time = dt.now() + timedelta(seconds=initial_speedtest_delay)
+			_log.info(
+				"SPEEDTEST_SCHEDULER first run in %.1f hours (at ~%s)",
+				initial_speedtest_delay / 3600,
+				scheduled_time.strftime("%H:%M"),
+			)
+
 		scheduler.add(
-			"adblocker-timer-check",
-			interval_seconds=_ADBLOCKER_TIMER_CHECK_INTERVAL_SECONDS,  # Check every 15 seconds
-			func=_check_adblocker_timer,
-			run_on_start=False,  # No need to run immediately on start
-			timeout=30.0,
+			"speedtest",
+			interval_seconds=_SPEEDTEST_INTERVAL_SECONDS,  # 24 h
+			func=_run_scheduled_speedtest,
+			run_on_start=True,  # First run after initial_delay
+			initial_delay=initial_speedtest_delay,  # Seconds until night window (0 if already there)
+			timeout=7500.0,  # ~2h max (includes potential deferrals for active peers)
+			jitter_pct=0.05,  # Reduced jitter since we manage timing ourselves
 		)
-		
+
 		await scheduler.start()
 		
 		# ─── DNS INGESTION DAEMON ─────────────────────────────────────
@@ -1429,7 +1726,19 @@ async def _lifespan(app: FastAPI):
 		if scheduler:
 			await scheduler.stop_graceful(timeout=5.0)
 
-		# 3. Bring down WireGuard interfaces we started
+		# 3. Stop Unbound DNS (issue #5)
+		if is_leader and _unbound.is_unbound_installed():
+			try:
+				if await _unbound.is_running():
+					ok, msg = await _unbound.stop()
+					if ok:
+						_log.info("Unbound DNS stopped")
+					else:
+						_log.warning("Failed to stop Unbound: %s", msg)
+			except Exception as exc:
+				_log.warning("Unbound shutdown failed: %s", exc)
+
+		# 4. Bring down WireGuard interfaces we started
 		if is_leader and started_interfaces:
 			for iface_name in started_interfaces:
 				try:
@@ -1451,14 +1760,14 @@ async def _lifespan(app: FastAPI):
 				except Exception as e:
 					_log.warning("Failed to stop interface %s: %s", iface_name, e)
 
-		# 4. Release leader lock (issue #2: always runs, even on startup crash)
+		# 5. Release leader lock (issue #2: always runs, even on startup crash)
 		if is_leader:
 			try:
 				await asyncio.to_thread(_release_leader_lock_sync, cfg.db_path)
 			except Exception:
 				_log.exception("Failed to release leader lock")
 
-		# 5. TSDB fsync
+		# 6. TSDB fsync
 		try:
 			tsdb_stats = tsdb.finalize_shutdown(cfg.tsdb_dir)
 			_log.info(
@@ -1472,7 +1781,7 @@ async def _lifespan(app: FastAPI):
 		except Exception as exc:
 			_log.warning("TSDB_SHUTDOWN failed: %s", exc)
 
-		# 6. SQLite WAL checkpoint + close all connections
+		# 7. SQLite WAL checkpoint + close all connections
 		checkpoint, closed_connections = await asyncio.to_thread(
 			_sqlite_shutdown_sync,
 			cfg.db_path,
@@ -1521,10 +1830,35 @@ def create_app() -> FastAPI:
 
 	app.state.limiter = limiter
 
-	from slowapi import _rate_limit_exceeded_handler
 	from slowapi.errors import RateLimitExceeded
-	app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+	from starlette.requests import Request
+	from starlette.responses import JSONResponse
+
+	async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+		"""Custom rate limit handler that uses 'detail' for API consistency."""
+		response = JSONResponse(
+			status_code=429,
+			content={"detail": "Too many requests. Please try again later."},
+		)
+
+		limiter_instance = getattr(request.app.state, "limiter", None)
+		view_rate_limit = getattr(request.state, "view_rate_limit", None)
+		if limiter_instance is not None and view_rate_limit is not None:
+			try:
+				response = limiter_instance._inject_headers(response, view_rate_limit)
+			except Exception:
+				pass
+
+		response.headers.setdefault("Retry-After", "60")
+		return response
+
+	app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
 	app.add_exception_handler(frontend_ui.RedirectTo, frontend_ui.redirect_to_handler)
+
+	@app.get("/health", include_in_schema=False)
+	async def healthcheck() -> JSONResponse:
+		"""Lightweight unauthenticated health endpoint for container probes."""
+		return JSONResponse(content={"status": "ok", "version": VERSION})
 
 	# ─── STATIC FILES ────────────────────────────────────────
 	from fastapi.staticfiles import StaticFiles
@@ -1541,6 +1875,7 @@ def create_app() -> FastAPI:
 	app.include_router(wireguard_api.router, prefix="/api/wireguard")
 	app.include_router(dns_api.router, prefix="/api/dns")
 	app.include_router(acme_api.router, prefix="/api/acme")
+	app.include_router(speedtest_api.router, prefix="/api/wireguard")
 	
 	# ─── FRONTEND ROUTES ─────────────────────────────────────
 	app.include_router(frontend_ui.router)

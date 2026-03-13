@@ -307,10 +307,10 @@ def get_dns_for_peer(
 
 @router.get("/settings")
 async def get_wg_settings(
-	_: sqlite3.Row = Depends(require_admin),
+	_: sqlite3.Row = Depends(get_current_user),
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
-	"""Get WireGuard global settings (admin only)."""
+	"""Get WireGuard global settings (read: any user, write: admin only)."""
 	result = {}
 	for key in WG_SETTING_KEYS:
 		result[key] = get_setting(conn, key)

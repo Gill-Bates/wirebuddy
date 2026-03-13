@@ -19,23 +19,12 @@
         gap: 0.75rem;
     }
 
-    .dashboard-stat-icon {
-        font-size: 2.5rem;
-        color: var(--bs-body-color) !important;
-        opacity: 0.95;
-    }
-
-    [data-bs-theme="dark"] .dashboard-stat-icon {
-        color: #e5e7eb !important;
-        opacity: 1;
-    }
-
     .map-kpis {
         flex-wrap: wrap;
     }
 
     #peer-map {
-        height: min(56vh, 600px);
+        height: clamp(400px, 50vh, 650px);
         border-radius: 0.5rem;
         position: relative;
         z-index: 0;
@@ -58,17 +47,108 @@
         margin-left: 0.5rem;
     }
 
-    .dashboard-side-split {
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-        gap: 1.5rem;
+    .dashboard-kpi-subtext {
+        display: block;
+        font-size: 0.7rem;
     }
 
-    .dashboard-side-split>.card {
-        flex: 1 1 0;
-        min-height: 0;
-        overflow: hidden;
+    .dashboard-bandwidth-main {
+        line-height: 1.1;
+    }
+
+    .dashboard-bandwidth-sub {
+        line-height: 1.2;
+    }
+
+    .dashboard-stats-row .wb-kpi-card {
+        min-height: 109px;
+    }
+
+    .dashboard-traffic-summary {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+    }
+
+    .dashboard-traffic-summary .dashboard-traffic-metric {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 0.35rem;
+        flex-wrap: wrap;
+    }
+
+    .dashboard-traffic-summary .dashboard-metric-prefix {
+        font-weight: 600;
+    }
+
+    .speedtest-card {
+        height: 100%;
+    }
+
+    .recent-peers-card {
+        height: 100%;
+    }
+
+    @media (min-width: 1200px) {
+        #peer-map {
+            height: clamp(380px, 47vh, 620px);
+        }
+
+        .dashboard-speedtest-col .card-body > div {
+            height: 200px !important;
+        }
+
+        .dashboard-stats-row {
+            margin-bottom: 1rem !important;
+        }
+
+        .dashboard-main-grid {
+            margin-bottom: 0 !important;
+        }
+
+        .dashboard-main-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+            grid-template-rows: auto minmax(0, 1fr);
+            gap: 1.5rem;
+            margin: 0;
+            align-items: stretch;
+        }
+
+        .dashboard-main-grid > [class*="col-"] {
+            width: auto;
+            max-width: none;
+            margin: 0;
+            padding: 0;
+        }
+
+        .dashboard-map-col {
+            grid-column: 1;
+            grid-row: 1 / span 2;
+            min-height: 0;
+        }
+
+        .dashboard-speedtest-col {
+            grid-column: 2;
+            grid-row: 1;
+            min-height: 0;
+        }
+
+        .dashboard-recent-peers-col {
+            grid-column: 2;
+            grid-row: 2;
+            min-height: 0;
+        }
+
+        .dashboard-speedtest-col .card,
+        .dashboard-recent-peers-col .card,
+        .dashboard-map-col .card {
+            height: 100%;
+        }
+
+        .dashboard-speedtest-col .card-body {
+            padding-bottom: 0.75rem;
+        }
     }
 
     .recent-peer-subline {
@@ -113,31 +193,33 @@
     }
 
 
+    @media (max-width: 1199.98px) {
+        .speedtest-card,
+        .recent-peers-card {
+            height: auto;
+        }
+    }
+
     @media (max-width: 991.98px) {
         #peer-map {
-            height: 40vh;
-            min-height: 320px;
+            height: 45vh;
+            min-height: 360px;
         }
 
         .map-kpis {
             font-size: 0.8rem;
         }
 
-        .dashboard-side-split {
-            display: block;
-            height: auto;
-        }
-
-        .dashboard-side-split>.card {
+        .recent-peers-card {
             flex: none;
-            min-height: 220px;
+            min-height: 280px;
             max-height: none;
         }
     }
 
     @media (max-width: 767.98px) {
         #peer-map {
-            height: 280px;
+            height: 320px;
         }
 
         .dashboard-traffic-metric .dashboard-metric-unit {
@@ -148,15 +230,12 @@
             white-space: nowrap;
         }
 
-        .dashboard-side-split>.card {
-            min-height: 180px;
+        .recent-peers-card {
+            min-height: 220px;
         }
 
-        .leaflet-control-zoom a {
-            width: 44px;
-            height: 44px;
-            line-height: 44px;
-            font-size: 1.1rem;
+        .speedtest-card {
+            min-height: 180px;
         }
     }
 
@@ -174,16 +253,6 @@
         #recent-peers .peer-row-clickable {
             padding-top: 0.75rem;
             padding-bottom: 0.75rem;
-        }
-
-        /* Add extra padding for stat cards on mobile to prevent text from hugging edges */
-        .col-6 .card-body {
-            padding: 1rem;
-        }
-
-        /* Reduce icon size slightly on mobile for better text fit */
-        .dashboard-stat-icon {
-            font-size: 2rem;
         }
 
     }
@@ -292,17 +361,17 @@
 </div>
 
 <!-- Stats Cards -->
-<div class="row g-4 mb-4">
+<div class="row g-3 mb-3 wb-kpi-row dashboard-stats-row">
     <div class="col-6 col-xl-3">
-        <div class="card h-100">
+        <div class="card h-100 wb-kpi-card">
             <div class="card-body">
                 <div class="d-flex align-items-center">
                     <div class="flex-shrink-0">
-                        <span class="material-icons dashboard-stat-icon text-primary" aria-hidden="true">router</span>
+                        <span class="material-icons wb-kpi-icon text-primary" aria-hidden="true">router</span>
                     </div>
                     <div class="flex-grow-1 ms-3">
-                        <h6 class="text-muted mb-1" id="label-interfaces">Interfaces</h6>
-                        <p class="h3 mb-0" id="interfaces-count" aria-labelledby="label-interfaces" aria-live="polite">-
+                        <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-interfaces">Interfaces</div>
+                        <p class="h3 mb-0 wb-kpi-value" id="interfaces-count" aria-labelledby="label-interfaces" aria-live="polite">-
                         </p>
                     </div>
                 </div>
@@ -311,15 +380,15 @@
     </div>
 
     <div class="col-6 col-xl-3">
-        <div class="card h-100">
+        <div class="card h-100 wb-kpi-card">
             <div class="card-body">
                 <div class="d-flex align-items-center">
                     <div class="flex-shrink-0">
-                        <span class="material-icons dashboard-stat-icon text-success" aria-hidden="true">cell_tower</span>
+                        <span class="material-icons wb-kpi-icon text-success" aria-hidden="true">cell_tower</span>
                     </div>
                     <div class="flex-grow-1 ms-3">
-                        <h6 class="text-muted mb-1" id="label-peers">Connections</h6>
-                        <p class="h3 mb-0" id="peers-count" aria-labelledby="label-peers" aria-live="polite">-</p>
+                        <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-peers">Connections</div>
+                        <p class="h3 mb-0 wb-kpi-value" id="peers-count" aria-labelledby="label-peers" aria-live="polite">-</p>
                         <small class="text-muted" id="peers-count-label">Peers Online</small>
                     </div>
                 </div>
@@ -328,16 +397,18 @@
     </div>
 
     <div class="col-6 col-xl-3">
-        <div class="card h-100">
+        <div class="card h-100 wb-kpi-card">
             <div class="card-body">
                 <div class="d-flex align-items-center">
                     <div class="flex-shrink-0">
-                        <span class="material-icons dashboard-stat-icon text-info" aria-hidden="true">download</span>
+                        <span class="material-icons wb-kpi-icon text-info" aria-hidden="true">swap_vert</span>
                     </div>
                     <div class="flex-grow-1 ms-3">
-                        <h6 class="text-muted mb-1" id="label-total-rx">RX</h6>
-                        <p class="h3 mb-0 dashboard-traffic-metric" id="total-rx" aria-labelledby="label-total-rx" aria-live="polite">-</p>
-                        <small class="text-muted" style="font-size: 0.7rem;">Total Traffic</small>
+                        <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-total-traffic">Traffic</div>
+                        <div class="dashboard-bandwidth dashboard-traffic-summary" aria-labelledby="label-total-traffic" aria-live="polite">
+                            <p class="h3 mb-0 dashboard-bandwidth-main dashboard-traffic-metric" id="total-rx">↓ -</p>
+                            <small class="text-muted dashboard-kpi-subtext dashboard-bandwidth-sub dashboard-traffic-metric" id="total-tx">↑ -</small>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -345,16 +416,18 @@
     </div>
 
     <div class="col-6 col-xl-3">
-        <div class="card h-100">
+        <div class="card h-100 wb-kpi-card">
             <div class="card-body">
                 <div class="d-flex align-items-center">
                     <div class="flex-shrink-0">
-                        <span class="material-icons dashboard-stat-icon text-warning" aria-hidden="true">upload</span>
+                        <span class="material-icons wb-kpi-icon text-danger" aria-hidden="true">speed</span>
                     </div>
                     <div class="flex-grow-1 ms-3">
-                        <h6 class="text-muted mb-1" id="label-total-tx">TX</h6>
-                        <p class="h3 mb-0 dashboard-traffic-metric" id="total-tx" aria-labelledby="label-total-tx" aria-live="polite">-</p>
-                        <small class="text-muted" style="font-size: 0.7rem;">Total Traffic</small>
+                        <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-speedtest">Bandwidth</div>
+                        <div class="dashboard-bandwidth" aria-labelledby="label-speedtest" aria-live="polite">
+                            <p class="h3 mb-0 dashboard-bandwidth-main" id="speedtest-download">–</p>
+                            <small class="text-muted dashboard-kpi-subtext dashboard-bandwidth-sub" id="speedtest-upload"></small>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -362,16 +435,17 @@
     </div>
 </div>
 
-<!-- Map and Recent Peers Row -->
-<div class="row g-4 mb-4">
-    <div class="col-12 col-lg-9">
+<!-- Map and Charts Row -->
+<div class="row g-3 mb-3 mt-0 wb-main-grid dashboard-main-grid">
+    <!-- MAP -->
+    <div class="col-12 col-xl-8 dashboard-map-col">
         <div class="card h-100">
             <div class="card-header">
                 <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-                    <h5 class="mb-0">
+                    <h3 class="h5 mb-0">
                         <span class="material-icons align-middle me-1" aria-hidden="true">public</span>
                         Peer Locations
-                    </h5>
+                    </h3>
                     <div class="d-flex gap-3 align-items-center map-kpis">
                         <span class="map-kpi" title="Online Peers">
                             <span class="material-icons text-primary" style="font-size:16px;" aria-hidden="true">fiber_manual_record</span>
@@ -395,27 +469,54 @@
         </div>
     </div>
 
-    <div class="col-12 col-lg-3">
-        <div class="dashboard-side-split">
-            <div class="card d-flex flex-column recent-peers-card">
-                <div class="card-header">
-                    <h5 class="mb-0">
-                        <span class="material-icons align-middle me-1" aria-hidden="true">history</span>
-                        Recent Peer Activity
-                    </h5>
-                </div>
-                <div class="card-body flex-grow-1">
-                    <div id="recent-peers">
-                        <div class="text-center py-4">
-                            <div class="spinner-border text-primary" role="status">
-                                <span class="visually-hidden">Loading...</span>
-                            </div>
+    <!-- RECENT PEERS - Mobile: order-2 (after map), XL: order-3 with offset to align under Speedtest -->
+    <div class="col-12 col-xl-4 offset-xl-8 order-2 order-xl-3 dashboard-recent-peers-col">
+        <div class="card d-flex flex-column recent-peers-card">
+            <div class="card-header">
+                <h3 class="h5 mb-0">
+                    <span class="material-icons align-middle me-1" aria-hidden="true">history</span>
+                    Recent Peer Activity
+                </h3>
+            </div>
+            <div class="card-body flex-grow-1">
+                <div id="recent-peers">
+                    <div class="text-center py-4">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
                         </div>
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
 
-
+    <!-- SPEEDTEST - Mobile: order-3 (last), XL: order-2 (next to map) -->
+    <div class="col-12 col-xl-4 order-3 order-xl-2 dashboard-speedtest-col">
+        <div class="card speedtest-card">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <h3 class="h5 mb-0">
+                    <span class="material-icons align-middle me-1" aria-hidden="true">speed</span>
+                    Speedtest
+                </h3>
+                <select id="speedtest-range" class="form-select form-select-sm" style="width: auto;" aria-label="Select time range">
+                    <option value="6h">6 h</option>
+                    <option value="24h" selected>24 h</option>
+                    <option value="7d">7 d</option>
+                    <option value="30d">30 d</option>
+                    <option value="90d">90 d</option>
+                    <option value="180d">180 d</option>
+                    <option value="y1">1 y</option>
+                </select>
+            </div>
+            <div class="card-body">
+                <div style="position: relative; height: 220px;">
+                    <canvas id="speedtest-chart"></canvas>
+                    <div id="speedtest-chart-empty" class="chart-empty-state d-none" style="position: absolute; inset: 0;">
+                        <span class="material-icons">show_chart</span>
+                        <span class="chart-empty-state-text">No Speedtest Data Available</span>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -425,6 +526,7 @@
 
 {% block extra_js %}
 <script src="/static/js/dashboard_traffic_shared.js"></script>
+<script src="/static/vendor/chart.umd.min.js"></script>
 <script>
     const DEBUG = false;
     const CONNECTED_THRESHOLD_SEC = 180;
@@ -479,12 +581,26 @@
         return Number((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + unit;
     });
 
-    function setTrafficMetric(el, bytes) {
+    function setTrafficMetric(el, bytes, direction) {
         if (!el) return;
         const formatted = String(formatBytes(bytes) || '').trim();
+        const prefix = direction === 'rx' ? '↓' : direction === 'tx' ? '↑' : '';
         const match = formatted.match(/^(.+?)\s+([A-Za-z]+)$/);
         if (!match) {
-            el.textContent = formatted || '-';
+            el.textContent = prefix ? `${prefix} ${formatted || '-'}` : formatted || '-';
+            return;
+        }
+        if (prefix) {
+            const prefixSpan = document.createElement('span');
+            prefixSpan.className = 'dashboard-metric-prefix';
+            prefixSpan.textContent = prefix;
+            const valueSpan = document.createElement('span');
+            valueSpan.className = 'dashboard-metric-value';
+            valueSpan.textContent = match[1];
+            const unitSpan = document.createElement('span');
+            unitSpan.className = 'dashboard-metric-unit';
+            unitSpan.textContent = match[2];
+            el.replaceChildren(prefixSpan, valueSpan, unitSpan);
             return;
         }
         const valueSpan = document.createElement('span');
@@ -494,6 +610,22 @@
         unitSpan.className = 'dashboard-metric-unit';
         unitSpan.textContent = match[2];
         el.replaceChildren(valueSpan, unitSpan);
+    }
+
+    function setBandwidthMetric(downloadMbit, uploadMbit) {
+        const downEl = document.getElementById('speedtest-download');
+        const upEl = document.getElementById('speedtest-upload');
+
+        if (!downEl || !upEl) return;
+
+        if (!Number.isFinite(downloadMbit) || !Number.isFinite(uploadMbit)) {
+            downEl.textContent = '–';
+            upEl.textContent = '';
+            return;
+        }
+
+        downEl.textContent = `↓ ${downloadMbit.toFixed(1)} Mbit/s`;
+        upEl.textContent = `↑ ${uploadMbit.toFixed(1)} Mbit/s`;
     }
 
     function unwrapInterfaces(payload) {
@@ -710,27 +842,55 @@
 
                 // Click handler: zoom map to this peer's location
                 const peerEndpointIp = peer.endpoint_ip || '';
+                const peerPubKey = peer.public_key || '';
                 const peerName = displayName;
                 const zoomToPeer = () => {
+                    dbg('zoomToPeer clicked:', { peerName, peerEndpointIp, peerPubKey: peerPubKey?.slice(0, 8) });
+                    dbg('cachedPeerLocations count:', cachedPeerLocations.length);
+                    
+                    // Check prerequisites
+                    if (!peerMap) {
+                        dbg('zoomToPeer: peerMap not ready');
+                        wbToast('Map not ready yet', 'warning');
+                        return;
+                    }
+                    if (!cachedPeerLocations.length) {
+                        dbg('zoomToPeer: no cached locations');
+                        wbToast('No peer locations available', 'warning');
+                        return;
+                    }
+
                     // Prioritized matching: exact IP first, then name lookup
                     let loc = null;
                     if (peerEndpointIp) {
                         loc = cachedPeerLocations.find(l => l.ip && l.ip === peerEndpointIp);
+                        if (loc) dbg('Matched by IP:', peerEndpointIp);
                     }
                     if (!loc) {
                         loc = cachedPeerLocations.find(l =>
                             l.names && l.names.includes(peerName)
                         );
+                        if (loc) dbg('Matched by names array:', peerName);
                     }
                     if (!loc) {
                         loc = cachedPeerLocations.find(l =>
                             l.name && l.name === peerName
                         );
+                        if (loc) dbg('Matched by name:', peerName);
                     }
-                    if (!loc || !peerMap) return;
+                    if (!loc) {
+                        dbg('zoomToPeer: no matching location found for', { peerName, peerEndpointIp });
+                        dbg('Available locations:', cachedPeerLocations.map(l => ({ ip: l.ip, name: l.name, names: l.names })));
+                        wbToast('Peer location not available', 'info');
+                        return;
+                    }
+                    
                     const lat = Number(loc.lat);
                     const lon = Number(loc.lon);
-                    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+                    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+                        dbg('zoomToPeer: invalid coordinates', { lat, lon });
+                        return;
+                    }
 
                     // Prevent auto-refresh from overriding this zoom
                     userZoomedToPeer = true;
@@ -808,8 +968,8 @@
                 recentPeersEl.appendChild(emptyState);
             }
 
-            setTrafficMetric(totalRxEl, totalRx);
-            setTrafficMetric(totalTxEl, totalTx);
+            setTrafficMetric(totalRxEl, totalRx, 'rx');
+            setTrafficMetric(totalTxEl, totalTx, 'tx');
             return true;
         } catch (error) {
             if (isAbortError(error)) return true;
@@ -1197,6 +1357,11 @@
         themeObserver = new MutationObserver(() => {
             updateMapTiles();
         });
+        // Initial load of speedtest chart (only once, not periodic)
+        refreshSpeedtestChart(new AbortController().signal).catch(e => {
+            console.error('Failed to load initial speedtest chart:', e);
+        });
+
         themeObserver.observe(document.documentElement, {
             attributes: true,
             attributeFilter: ['data-bs-theme'],
@@ -1247,5 +1412,293 @@
             startAutoRefresh();
         });
     })();
+
+    // ─── SPEEDTEST CHART ─────────────────────────────────────────
+    let speedtestChart = null;
+    let speedtestDataLoaded = false;
+
+    // Listen for speedtest completion events to refresh chart
+    document.addEventListener('speedtest-completed', () => {
+        refreshSpeedtestChart(new AbortController().signal).catch(e => {
+            console.error('Failed to refresh speedtest chart:', e);
+        });
+    });
+
+    // Listen for range selector changes
+    const speedtestRange = document.getElementById('speedtest-range');
+    if (speedtestRange) {
+        speedtestRange.addEventListener('change', () => {
+            refreshSpeedtestChart(new AbortController().signal).catch(e => {
+                console.error('Failed to refresh speedtest chart:', e);
+            });
+        });
+    }
+
+    function getChartColors() {
+        const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+        return {
+            textColor: dark ? '#b7c2d0' : '#6c757d',
+            gridColor: dark ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.08)',
+            dlColor: 'rgba(13, 110, 253, 0.85)',
+            dlBg: 'rgba(13, 110, 253, 0.1)',
+            ulColor: 'rgba(25, 135, 84, 0.85)',
+            ulBg: 'rgba(25, 135, 84, 0.1)',
+            rttColor: 'rgba(255, 193, 7, 0.85)',
+            maxLineColor: 'rgba(220, 53, 69, 0.5)',
+        };
+    }
+
+    function initSpeedtestChart() {
+        const canvas = document.getElementById('speedtest-chart');
+        if (!canvas || typeof Chart === 'undefined') return;
+
+        if (speedtestChart) {
+            speedtestChart.destroy();
+            speedtestChart = null;
+        }
+
+        const colors = getChartColors();
+
+        speedtestChart = new Chart(canvas, {
+            type: 'line',
+            data: { labels: [], datasets: [] },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false,
+                },
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: { 
+                            color: colors.textColor, 
+                            usePointStyle: true, 
+                            pointStyle: 'circle', 
+                            padding: 16,
+                            filter: function(legendItem, chartData) {
+                                // Hide max bandwidth legend entries
+                                const label = legendItem.text || '';
+                                return !label.includes('max (');
+                            }
+                        },
+                    },
+                    tooltip: {
+                        filter: function(tooltipItem) {
+                            const label = tooltipItem?.dataset?.label || '';
+                            return !label.includes('max (');
+                        },
+                        callbacks: {
+                            labelColor: function(ctx) {
+                                if (ctx.dataset.label?.includes('RTT')) {
+                                    return {
+                                        borderColor: 'rgba(255, 193, 7, 1)',
+                                        backgroundColor: 'rgba(255, 193, 7, 1)',
+                                    };
+                                }
+                                if (ctx.dataset.label?.includes('Upload')) {
+                                    return {
+                                        borderColor: 'rgba(25, 135, 84, 1)',
+                                        backgroundColor: 'rgba(25, 135, 84, 1)',
+                                    };
+                                }
+                                return {
+                                    borderColor: 'rgba(13, 110, 253, 1)',
+                                    backgroundColor: 'rgba(13, 110, 253, 1)',
+                                };
+                            },
+                            label: function(ctx) {
+                                if (ctx.dataset.label?.includes('RTT')) {
+                                    return `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(2) ?? '–'} ms`;
+                                }
+                                return `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(2) ?? '–'} Mbit/s`;
+                            },
+                            afterBody: function(items) {
+                                // Show server info from hidden data
+                                const idx = items[0]?.dataIndex;
+                                if (idx != null && window._speedtestServers && window._speedtestServers[idx]) {
+                                    return ['', `Server: ${window._speedtestServers[idx]}`];
+                                }
+                                return '';
+                            }
+                        }
+                    },
+                },
+                scales: {
+                    x: {
+                        ticks: { display: false, color: colors.textColor, maxTicksLimit: 12 },
+                        grid: { color: colors.gridColor },
+                    },
+                    y: {
+                        type: 'linear',
+                        position: 'left',
+                        title: { display: true, text: 'Mbit/s', color: colors.textColor },
+                        ticks: { color: colors.textColor },
+                        grid: { color: colors.gridColor },
+                        beginAtZero: true,
+                    },
+                    y1: {
+                        type: 'linear',
+                        position: 'right',
+                        title: { display: true, text: 'RTT (ms)', color: colors.textColor },
+                        ticks: { color: colors.textColor },
+                        grid: { drawOnChartArea: false },
+                        beginAtZero: true,
+                    },
+                },
+            },
+        });
+    }
+
+    async function refreshSpeedtestChart(signal) {
+        try {
+            const range = speedtestRange?.value || '24h';
+            const res = await api('GET', `/api/wireguard/speedtest/history?range_key=${range}`, null, { signal, timeoutMs: API_TIMEOUT_MS });
+            const data = res.data || res;
+            const history = data.history || [];
+            const downMax = data.downstream_mbit || 0;
+            const upMax = data.upstream_mbit || 0;
+
+            const chartRow = document.getElementById('speedtest-chart-row');
+            const emptyEl = document.getElementById('speedtest-chart-empty');
+            const canvas = document.getElementById('speedtest-chart');
+            const speedtestDownload = document.getElementById('speedtest-download');
+            const speedtestUpload = document.getElementById('speedtest-upload');
+            if (!history.length) {
+                if (canvas) canvas.style.display = 'none';
+                if (emptyEl) emptyEl.classList.remove('d-none');
+                if (speedtestDownload) speedtestDownload.textContent = '–';
+                if (speedtestUpload) speedtestUpload.textContent = 'No data';
+                return true;
+            }
+
+            if (canvas) canvas.style.display = '';
+            if (emptyEl) emptyEl.classList.add('d-none');
+
+            // Only init chart once
+            if (!speedtestChart) initSpeedtestChart();
+            if (!speedtestChart) return true;
+
+            const okHistory = history.filter(h => h.status === 'ok');
+            if (!okHistory.length) {
+                if (speedtestDownload) speedtestDownload.textContent = '–';
+                if (speedtestUpload) speedtestUpload.textContent = 'No Metrics available';
+                return true;
+            }
+
+            const labels = okHistory.map(h => {
+                const d = new Date(h.ts);
+                return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+                    + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+            });
+
+            // Store server names for tooltip
+            window._speedtestServers = okHistory.map(h => {
+                try { return new URL(h.server).hostname; } catch { return h.server || '–'; }
+            });
+
+            const colors = getChartColors();
+
+            const datasets = [
+                {
+                    label: 'Download',
+                    data: okHistory.map(h => h.download_mbit || 0),
+                    borderColor: colors.dlColor,
+                    backgroundColor: colors.dlBg,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 3,
+                    yAxisID: 'y',
+                },
+                {
+                    label: 'Upload',
+                    data: okHistory.map(h => h.upload_mbit || 0),
+                    borderColor: colors.ulColor,
+                    backgroundColor: colors.ulBg,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 3,
+                    yAxisID: 'y',
+                },
+                {
+                    label: 'RTT',
+                    data: okHistory.map(h => h.rtt_ms || 0),
+                    borderColor: colors.rttColor,
+                    backgroundColor: 'transparent',
+                    borderDash: [4, 4],
+                    tension: 0.3,
+                    pointRadius: 2,
+                    yAxisID: 'y1',
+                },
+            ];
+
+            // Add provider-rated max lines if configured
+            if (downMax > 0) {
+                datasets.push({
+                    label: `Downstream max (${downMax} Mbit/s)`,
+                    data: okHistory.map(() => downMax),
+                    borderColor: colors.maxLineColor,
+                    backgroundColor: 'rgba(220, 53, 69, 0.05)',
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    fill: 'origin',
+                    yAxisID: 'y',
+                    order: 10,
+                });
+            }
+            if (upMax > 0) {
+                datasets.push({
+                    label: `Upstream max (${upMax} Mbit/s)`,
+                    data: okHistory.map(() => upMax),
+                    borderColor: 'rgba(25, 135, 84, 0.4)',
+                    backgroundColor: 'rgba(25, 135, 84, 0.05)',
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    fill: 'origin',
+                    yAxisID: 'y',
+                    order: 10,
+                });
+            }
+
+            speedtestChart.data.labels = labels;
+            speedtestChart.data.datasets = datasets;
+            speedtestChart.update();
+
+            // Update KPI card
+            const latest = okHistory[okHistory.length - 1];
+            if (latest) {
+                setBandwidthMetric(latest.download_mbit, latest.upload_mbit);
+            }
+
+            speedtestDataLoaded = true;
+            return true;
+        } catch (e) {
+            if (e?.code === 'ABORTED' || e?.name === 'AbortError') return true;
+            console.error('Speedtest chart error:', e);
+            const speedtestDownload = document.getElementById('speedtest-download');
+            const speedtestUpload = document.getElementById('speedtest-upload');
+            if (speedtestDownload) speedtestDownload.textContent = '–';
+            if (speedtestUpload) speedtestUpload.textContent = '';
+            return false;
+        }
+    }
+
+    // Update chart colors on theme change
+    new MutationObserver(() => {
+        if (!speedtestChart) return;
+        const colors = getChartColors();
+        if (speedtestChart.options.plugins?.legend?.labels) {
+            speedtestChart.options.plugins.legend.labels.color = colors.textColor;
+        }
+        if (speedtestChart.options.scales?.x?.ticks) speedtestChart.options.scales.x.ticks.color = colors.textColor;
+        if (speedtestChart.options.scales?.x?.grid) speedtestChart.options.scales.x.grid.color = colors.gridColor;
+        if (speedtestChart.options.scales?.y?.ticks) speedtestChart.options.scales.y.ticks.color = colors.textColor;
+        if (speedtestChart.options.scales?.y?.title) speedtestChart.options.scales.y.title.color = colors.textColor;
+        if (speedtestChart.options.scales?.y?.grid) speedtestChart.options.scales.y.grid.color = colors.gridColor;
+        if (speedtestChart.options.scales?.y1?.ticks) speedtestChart.options.scales.y1.ticks.color = colors.textColor;
+        if (speedtestChart.options.scales?.y1?.title) speedtestChart.options.scales.y1.title.color = colors.textColor;
+        speedtestChart.update();
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-bs-theme'] });
 </script>
 {% endblock %}

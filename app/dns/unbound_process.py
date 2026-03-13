@@ -10,15 +10,16 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import ipaddress
 import logging
 import os
 import shutil
 import signal
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from .unbound_constants import UNBOUND_CONF, UNBOUND_PID_FILE, run_exec
-from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ _log = logging.getLogger(__name__)
 
 _START_TIMEOUT = 3.0  # seconds
 _START_POLL_INTERVAL = 0.15  # seconds
+_KILL_POLL_INTERVAL = 0.15  # seconds
 _IS_RUNNING_CACHE_TTL = 5.0  # seconds
 _RESOLV_CONF = Path("/etc/resolv.conf")
 
@@ -53,6 +55,13 @@ def is_unbound_installed() -> bool:
 			_log.warning("DNS_INIT unbound not installed, DNS features disabled")
 	return _unbound_installed
 
+def _is_valid_ip(addr: str) -> bool:
+	"""Validate that addr is a well-formed IPv4 or IPv6 address."""
+	try:
+		ipaddress.ip_address(addr)
+		return True
+	except ValueError:
+		return False
 
 def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 	"""Configure /etc/resolv.conf to use local Unbound resolver.
@@ -71,10 +80,11 @@ def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 		# Try to read from unbound.conf to find the first interface IP
 		try:
 			if UNBOUND_CONF.exists():
-				for line in UNBOUND_CONF.read_text(encoding="utf-8").splitlines():
-					line = line.strip()
-					if line.startswith("interface:"):
-						ip = line.split(":", 1)[1].strip()
+				for config_line in UNBOUND_CONF.read_text(encoding="utf-8").splitlines():
+					config_line = config_line.strip()
+					if config_line.startswith("interface:"):
+						# Handle 'interface: 10.13.13.1@53' syntax (strip port)
+						ip = config_line.split(":", 1)[1].strip().split("@")[0]
 						# Skip localhost (would conflict with host DNS)
 						if ip and ip not in ("127.0.0.1", "::1"):
 							dns_ip = ip
@@ -84,6 +94,11 @@ def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 	
 	if not dns_ip:
 		_log.debug("DNS_RESOLV no WireGuard DNS IP available, skipping resolv.conf config")
+		return
+	
+	# Validate IP format before writing to prevent injection attacks
+	if not _is_valid_ip(dns_ip):
+		_log.debug("DNS_RESOLV invalid IP %r, skipping resolv.conf config", dns_ip)
 		return
 	
 	try:
@@ -147,6 +162,7 @@ class _RunningState:
 _unbound_proc: asyncio.subprocess.Process | None = None
 _supervisor_task: asyncio.Task | None = None
 _running_state = _RunningState()
+_intentional_stop: bool = False  # Flag to suppress supervisor warnings during restart
 
 # Lock for all state-changing operations to prevent race conditions
 _proc_lock = asyncio.Lock()
@@ -229,7 +245,7 @@ async def _kill_pid(pid: int, *, timeout: float = 3.0) -> bool:
 	while time.monotonic() < deadline:
 		if not _pid_is_running(pid):
 			return True
-		await asyncio.sleep(0.15)
+		await asyncio.sleep(_KILL_POLL_INTERVAL)
 
 	try:
 		os.kill(pid, signal.SIGKILL)
@@ -243,7 +259,7 @@ async def _kill_pid(pid: int, *, timeout: float = 3.0) -> bool:
 	while time.monotonic() < kill_deadline:
 		if not _pid_is_running(pid):
 			return True
-		await asyncio.sleep(0.15)
+		await asyncio.sleep(_KILL_POLL_INTERVAL)
 	return not _pid_is_running(pid)
 
 
@@ -298,7 +314,7 @@ async def is_running() -> bool:
 
 async def _supervise_unbound() -> None:
 	"""Background task: reap managed unbound process on unexpected exit."""
-	global _unbound_proc, _supervisor_task
+	global _unbound_proc, _supervisor_task, _intentional_stop
 	proc = _unbound_proc
 	if proc is None:
 		_supervisor_task = None
@@ -308,15 +324,22 @@ async def _supervise_unbound() -> None:
 	except Exception:
 		pass
 	# Acquire lock to safely clear the handle
-	async with _proc_lock:
-		# Only clear handle if it's still the same process we're supervising
-		if _unbound_proc is proc:
-			_unbound_proc = None
-			invalidate_running_cache()
-			_log.warning(
-				"DNS_SUPERVISOR unbound exited unexpectedly (code=%s)",
-				proc.returncode,
-			)
+	try:
+		async with _proc_lock:
+			# Only clear handle if it's still the same process we're supervising
+			if _unbound_proc is proc:
+				_unbound_proc = None
+				invalidate_running_cache()
+				# Don't warn if this was an intentional stop (via restart())
+				if not _intentional_stop:
+					_log.warning(
+						"DNS_SUPERVISOR unbound exited unexpectedly (code=%s)",
+						proc.returncode,
+					)
+				_intentional_stop = False  # Reset flag
+	except asyncio.CancelledError:
+		_log.debug("DNS_SUPERVISOR task cancelled (expected during stop/restart)")
+		raise
 	if _supervisor_task is asyncio.current_task():
 		_supervisor_task = None
 
@@ -352,7 +375,6 @@ async def _start_impl() -> tuple[bool, str]:
 	
 	if await is_running():
 		return True, "Unbound is already running"
-	_remove_stale_pid_file()
 	
 	# Ensure config exists (write minimal config without localhost binding
 	# to avoid conflicts with host DNS in Docker host network mode)
@@ -377,11 +399,13 @@ async def _start_impl() -> tuple[bool, str]:
 
 		deadline = time.monotonic() + _START_TIMEOUT
 		while time.monotonic() < deadline:
-			invalidate_running_cache()
-			if await is_running():
+			# Fast-check managed process directly (avoid pgrep spam during startup)
+			if _unbound_proc is not None and _pid_is_running(_unbound_proc.pid):
+				_running_state.update(True)
 				_log.info("DNS_START unbound started")
 				# Configure /etc/resolv.conf so container can use local DNS
-				_configure_resolv_conf()
+				# (run in thread to avoid blocking event loop on slow filesystems)
+				await asyncio.to_thread(_configure_resolv_conf)
 				# Start supervisor task to reap process on unexpected exit
 				_ensure_supervisor_task()
 				return True, "Unbound started"
@@ -428,9 +452,13 @@ async def _stop_impl() -> tuple[bool, str]:
 	# 3. Fallback: pgrep to find PID, then targeted kill
 	code, stdout, _ = await run_exec("pgrep", "-x", "unbound")
 	if code == 0:
+		killed_all = True
 		for line in stdout.strip().splitlines():
 			if line.strip().isdigit():
-				await _kill_pid(int(line.strip()))
+				if not await _kill_pid(int(line.strip())):
+					killed_all = False
+		if not killed_all:
+			_log.warning("DNS_STOP some unbound processes could not be killed")
 		_remove_stale_pid_file()
 		await _reap_managed_proc()
 		invalidate_running_cache()
@@ -505,7 +533,7 @@ async def start() -> tuple[bool, str]:
 		result = await _start_impl()
 		if result[0]:
 			# Reset watchdog failures on successful start
-			reset_watchdog_failures()
+			_reset_watchdog_failures()
 		return result
 
 
@@ -517,11 +545,13 @@ async def stop() -> tuple[bool, str]:
 
 async def restart() -> tuple[bool, str]:
 	"""Restart unbound."""
+	global _intentional_stop
 	async with _proc_lock:
+		_intentional_stop = True  # Signal supervisor not to warn
 		await _stop_impl()
 		result = await _start_impl()
 		if result[0]:
-			reset_watchdog_failures()
+			_reset_watchdog_failures()
 		return result
 
 
@@ -580,6 +610,12 @@ async def watchdog(should_be_running_func) -> None:
 			# Will reset if manually started or DNS toggled
 			return
 
+		# Exponential backoff on retry to avoid rapid restart loops
+		if _watchdog_failures > 0:
+			backoff = min(2 ** _watchdog_failures, 60)
+			_log.info("DNS_WATCHDOG backing off %ds before retry", backoff)
+			await asyncio.sleep(backoff)
+
 		_log.warning(
 			"DNS_WATCHDOG unbound not running, attempting restart (attempt %d/%d)",
 			_watchdog_failures + 1,
@@ -605,10 +641,23 @@ async def watchdog(should_be_running_func) -> None:
 				)
 
 
-def reset_watchdog_failures() -> None:
-	"""Reset the watchdog failure counter (called on manual start)."""
+def _reset_watchdog_failures() -> None:
+	"""Reset the watchdog failure counter (internal, no lock).
+	
+	IMPORTANT: Caller must hold _proc_lock or ensure no concurrent access.
+	"""
 	global _watchdog_failures
 	_watchdog_failures = 0
+
+
+async def reset_watchdog_failures() -> None:
+	"""Reset the watchdog failure counter (public API).
+	
+	Safe to call from anywhere. For internal use within _proc_lock context,
+	prefer _reset_watchdog_failures() to avoid lock re-entry.
+	"""
+	async with _proc_lock:
+		_reset_watchdog_failures()
 
 
 __all__ = [

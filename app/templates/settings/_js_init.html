@@ -1,0 +1,113 @@
+    // XSS protection helper
+    function esc(str) {
+        const d = document.createElement('div');
+        d.textContent = str ?? '';
+        return d.innerHTML;
+    }
+
+    // Simple string hash for generating stable DOM IDs
+    // Returns a short alphanumeric string based on input
+    function simpleHash(str) {
+        if (!str) return 'empty';
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+            const char = str.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash |= 0; // Convert to 32bit integer
+        }
+        // Convert to positive base-36 string (0-9, a-z)
+        return Math.abs(hash).toString(36);
+    }
+
+    // FQDN/Domain detection helper (DRY)
+    function detectHostname() {
+        const hostname = window.location.hostname;
+        if (!hostname) return null;
+        // Strip brackets from IPv6 [::1] → ::1
+        return hostname.replace(/^\[|\]$/g, '');
+    }
+
+    // Tab state tracking for lazy loading
+    const tabLoaded = {
+        general: false,
+        wireguard: false,
+        letsencrypt: false,
+        dns: false,
+        logs: false
+    };
+
+    // Initialize tabs with URL hash support
+    async function initTabs() {
+        const hash = window.location.hash.replace('#', '');
+        const validTabs = ['general', 'wireguard', 'letsencrypt', 'dns', 'logs'];
+
+        if (hash && validTabs.includes(hash)) {
+            const tabBtn = document.getElementById(`${hash}-tab`);
+            if (tabBtn) {
+                const tab = new bootstrap.Tab(tabBtn);
+                tab.show();
+            }
+        }
+
+        // Listen for tab changes (use replaceState to avoid history pollution)
+        document.querySelectorAll('#settingsTabs button[data-bs-toggle="tab"]').forEach(tabBtn => {
+            tabBtn.addEventListener('shown.bs.tab', async function (e) {
+                const tabId = e.target.id.replace('-tab', '');
+                history.replaceState(null, '', `#${tabId}`);
+                await loadTabData(tabId);
+            });
+        });
+
+        // Load initial tab data and wait for it to complete
+        const activeTab = document.querySelector('#settingsTabs .nav-link.active');
+        if (activeTab) {
+            await loadTabData(activeTab.id.replace('-tab', ''));
+        }
+    }
+
+    // Lazy load tab data
+    async function loadTabData(tabId) {
+        if (tabLoaded[tabId]) return;
+
+        switch (tabId) {
+            case 'general':
+                await loadWgSettings();  // Status Page toggle is on General tab
+                await loadSpeedtestSettings();
+                tabLoaded.general = true;
+                break;
+            case 'wireguard':
+                await loadWgSettings();  // Must await to ensure wgSettingsLoaded is true before user interaction
+                refreshInterfaces();
+                loadTrafficStatus();
+                tabLoaded.wireguard = true;
+                break;
+            case 'letsencrypt':
+                if (document.getElementById('certificates-list')) {
+                    refreshCertificates();
+                }
+                tabLoaded.letsencrypt = true;
+                break;
+            case 'dns':
+                if (document.getElementById('blocklist-sources')) {
+                    loadBlocklistSources();
+                }
+                bindDnsConfigListeners();
+                if (document.getElementById('dns-upstream-servers')) {
+                    loadDnsConfig();
+                }
+                loadCustomRules();
+                loadDnsServiceStatus();
+                tabLoaded.dns = true;
+                break;
+            case 'logs':
+                loadTsdbStats();
+                loadDnsMetricsStats();
+                loadPeerMetricsStats();
+                loadSpeedtestStats();
+                tabLoaded.logs = true;
+                break;
+        }
+    }
+
+    // WireGuard global settings
+    // Type-safe boolean conversion for settings values (handles '1', 1, true, 'true', etc.)

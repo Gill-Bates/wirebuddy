@@ -67,7 +67,7 @@ _log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["wireguard"])
 
-__all__ = ["router"]
+__all__ = ["router", "regenerate_all_peer_tags"]
 
 
 def _regenerate_peer_tags(conn: sqlite3.Connection) -> None:
@@ -98,6 +98,10 @@ def _regenerate_peer_tags(conn: sqlite3.Connection) -> None:
 		})
 	
 	_unbound.write_peer_tags(peer_list)
+
+
+# Public alias for external import (used by main.py scheduler)
+regenerate_all_peer_tags = _regenerate_peer_tags
 
 
 def _row_to_public(row: sqlite3.Row, enabled_blocklist_ids: list[str]) -> PeerPublic:

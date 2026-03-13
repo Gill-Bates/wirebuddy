@@ -6,13 +6,17 @@
 /* ---------- 1. Design Tokens ---------- */
 
 :root {
+    /* Spacing System (UI-Lint: VERTICAL_GAP 22-26px, target: 24px) */
+    --wb-space-1: 6px;
+    --wb-space-2: 12px;
+    --wb-space-3: 24px;
+    --wb-space-4: 32px;
+
     /* Typography */
     --wb-font-base: 0.875rem;
     /* 14px */
     --wb-font-sm: 0.75rem;
     /* 12px */
-    --wb-font-md: 0.875rem;
-    /* 14px */
     --wb-font-lg: 1rem;
     /* 16px */
     --wb-font-xl: 1.25rem;
@@ -34,8 +38,10 @@
     --wb-muted-bg: rgba(0, 0, 0, 0.035);
     --wb-hover-bg: rgba(0, 0, 0, 0.025);
 
-    /* Transition */
-    --wb-transition: all 0.2s ease;
+    /* Transitions (specific for better performance) */
+    --wb-transition-shadow: box-shadow 0.2s ease;
+    --wb-transition-bg: background-color 0.2s ease;
+    --wb-transition-transform: transform 0.2s ease;
 }
 
 [data-bs-theme="dark"] {
@@ -76,7 +82,10 @@ small {
     border: 1px solid rgba(0, 0, 0, 0.06);
     border-radius: var(--wb-radius-lg);
     box-shadow: var(--wb-shadow-1);
-    transition: var(--wb-transition);
+    transition: var(--wb-transition-shadow);
+    /* Clip card contents to rounded corners without relying on visible overflow. */
+    overflow: hidden;
+    overflow: clip;
 }
 
 .card:hover {
@@ -95,15 +104,69 @@ small {
     padding: 1rem;
 }
 
+/* Ensure scrollable card-body respects parent border-radius */
+.card-body:last-child {
+    border-bottom-left-radius: inherit;
+    border-bottom-right-radius: inherit;
+}
 
-/* ---------- 4. Buttons ---------- */
+/* Opt-in: keep the card body on the card surface so bottom radii stay visible. */
+.wb-card-body-surface {
+    background-color: inherit;
+}
+
+
+/* ---------- 4. KPI Cards (Dashboard, DNS, etc.) ---------- */
+
+.wb-kpi-row {
+    /* Consistent spacing for KPI card rows across all pages */
+}
+
+.wb-kpi-card {
+    /* Standardized KPI card appearance */
+}
+
+.wb-kpi-card .card-body {
+    padding: 1rem;
+}
+
+.wb-kpi-icon {
+    font-size: 2.2rem;
+    opacity: 0.95;
+}
+
+[data-bs-theme="dark"] .wb-kpi-icon {
+    color: #e5e7eb !important;
+    opacity: 1;
+}
+
+.wb-kpi-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--bs-secondary-color);
+}
+
+.wb-kpi-value {
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+/* Mobile: slightly smaller icon */
+@media (max-width: 575.98px) {
+    .wb-kpi-icon {
+        font-size: 2rem;
+    }
+}
+
+
+/* ---------- 5. Buttons ---------- */
 
 .btn {
     font-size: 0.8rem;
     font-weight: 500;
     padding: 0.4rem 0.8rem;
     border-radius: var(--wb-radius-md);
-    transition: var(--wb-transition);
+    transition: var(--wb-transition-bg), var(--wb-transition-shadow);
 }
 
 .btn-sm {
@@ -137,7 +200,7 @@ small {
 }
 
 
-/* ---------- 5. Tables ---------- */
+/* ---------- 6. Tables ---------- */
 
 .table {
     font-size: 0.8rem;
@@ -153,7 +216,7 @@ small {
 }
 
 .table tbody tr {
-    transition: var(--wb-transition);
+    transition: var(--wb-transition-bg);
 }
 
 .table tbody tr:hover {
@@ -161,7 +224,7 @@ small {
 }
 
 
-/* ---------- 6. Badges ---------- */
+/* ---------- 7. Badges ---------- */
 
 .badge {
     font-weight: 500;
@@ -171,29 +234,39 @@ small {
 }
 
 
-/* ---------- 7. Form Controls ---------- */
+/* ---------- 8. Form Controls ---------- */
 
 .form-control,
 .form-select {
     font-size: 0.85rem;
     border-radius: var(--wb-radius-md);
-    transition: var(--wb-transition);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+summary {
+    cursor: pointer;
 }
 
 
-/* ---------- 8. Section Spacing ---------- */
+/* ---------- 9. Section Spacing ---------- */
 
 .wb-section {
-    margin-bottom: 1.75rem;
+    margin-bottom: var(--wb-space-3);
 }
 
 .wb-page {
-    padding-top: 1.5rem;
-    padding-bottom: 2rem;
+    padding-top: var(--wb-space-3);
+    padding-bottom: var(--wb-space-3);
+}
+
+@media (min-width: 992px) {
+    .wb-main-grid>[class*="col-"] {
+        margin-top: 0;
+    }
 }
 
 
-/* ---------- 9. Subtle Panels ---------- */
+/* ---------- 10. Subtle Panels ---------- */
 
 .wb-muted-panel {
     background: var(--wb-muted-bg);
@@ -202,13 +275,13 @@ small {
 }
 
 
-/* ---------- 10. Page Header ---------- */
+/* ---------- 11. Page Header ---------- */
 
 .wb-page-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 1.5rem;
+    margin-bottom: var(--wb-space-3);
 }
 
 .wb-page-header .page-title {
@@ -216,7 +289,7 @@ small {
 }
 
 
-/* ---------- 11. Stat Cards ---------- */
+/* ---------- 12. Stat Cards ---------- */
 
 .wb-stat-card {
     text-align: center;
@@ -234,7 +307,15 @@ small {
 }
 
 
-/* ---------- 12. Icon Consistency ---------- */
+/* ---------- 13. Icon Consistency ---------- */
+
+/* Prevent layout shift during font loading - use line-height instead of
+   fixed width/height to avoid clipping in flex layouts and baseline alignment issues */
+.material-icons {
+    line-height: 1;
+    vertical-align: middle;
+    flex-shrink: 0;
+}
 
 .material-icons.icon-sm {
     font-size: 1rem;
@@ -255,16 +336,16 @@ span+.material-icons {
 }
 
 
-/* ---------- 13. List Groups ---------- */
+/* ---------- 14. List Groups ---------- */
 
 .list-group-item {
     font-size: var(--wb-font-base);
     padding: 0.6rem 1rem;
-    transition: var(--wb-transition);
+    transition: var(--wb-transition-bg);
 }
 
 
-/* ---------- 14. Alerts ---------- */
+/* ---------- 15. Alerts ---------- */
 
 .alert {
     font-size: var(--wb-font-base);
@@ -273,7 +354,7 @@ span+.material-icons {
 }
 
 
-/* ---------- 15. Dropdowns ---------- */
+/* ---------- 16. Dropdowns ---------- */
 
 .dropdown-menu {
     font-size: var(--wb-font-base);
@@ -283,11 +364,11 @@ span+.material-icons {
 
 .dropdown-item {
     padding: 0.4rem 1rem;
-    transition: var(--wb-transition);
+    transition: var(--wb-transition-bg);
 }
 
 
-/* ---------- 16. Modal Consistency ---------- */
+/* ---------- 17. Modal Consistency ---------- */
 
 .modal-content {
     border-radius: var(--wb-radius-lg);
@@ -307,17 +388,17 @@ span+.material-icons {
 }
 
 
-/* ---------- 17. Nav Tabs ---------- */
+/* ---------- 18. Nav Tabs ---------- */
 
 .nav-tabs .nav-link {
     font-size: var(--wb-font-base);
     padding: 0.5rem 1rem;
     border-radius: var(--wb-radius-md) var(--wb-radius-md) 0 0;
-    transition: var(--wb-transition);
+    transition: var(--wb-transition-bg), border-color 0.2s ease;
 }
 
 
-/* ---------- 18. Progress Bars ---------- */
+/* ---------- 19. Progress Bars ---------- */
 
 .progress {
     height: 0.5rem;
@@ -325,7 +406,7 @@ span+.material-icons {
 }
 
 
-/* ---------- 19. Tooltips ---------- */
+/* ---------- 20. Tooltips ---------- */
 
 .tooltip-inner {
     font-size: var(--wb-font-sm);
@@ -334,7 +415,7 @@ span+.material-icons {
 }
 
 
-/* ---------- 20. Utility Classes ---------- */
+/* ---------- 21. Utility Classes ---------- */
 
 .text-muted-light {
     color: var(--bs-secondary-color) !important;
@@ -353,16 +434,160 @@ span+.material-icons {
 }
 
 
-/* ---------- 21. Mobile Optimizations ---------- */
+/* ---------- 22. Bootstrap Grid Gutter Overrides ---------- */
+
+/* Map Bootstrap gutter classes to WireBuddy spacing tokens
+   so g-3 = 24px (layout gap) matches UI-Lint VERTICAL_GAP 22-26px */
+
+.g-1 {
+    --bs-gutter-x: var(--wb-space-1);
+    --bs-gutter-y: var(--wb-space-1);
+}
+
+.g-2 {
+    --bs-gutter-x: var(--wb-space-2);
+    --bs-gutter-y: var(--wb-space-2);
+}
+
+.g-3 {
+    --bs-gutter-x: var(--wb-space-3);
+    --bs-gutter-y: var(--wb-space-3);
+}
+
+.g-4 {
+    --bs-gutter-x: var(--wb-space-4);
+    --bs-gutter-y: var(--wb-space-4);
+}
+
+.gx-1 {
+    --bs-gutter-x: var(--wb-space-1);
+}
+
+.gx-2 {
+    --bs-gutter-x: var(--wb-space-2);
+}
+
+.gx-3 {
+    --bs-gutter-x: var(--wb-space-3);
+}
+
+.gx-4 {
+    --bs-gutter-x: var(--wb-space-4);
+}
+
+.gy-1 {
+    --bs-gutter-y: var(--wb-space-1);
+}
+
+.gy-2 {
+    --bs-gutter-y: var(--wb-space-2);
+}
+
+.gy-3 {
+    --bs-gutter-y: var(--wb-space-3);
+}
+
+.gy-4 {
+    --bs-gutter-y: var(--wb-space-4);
+}
+
+
+/* ---------- 23. Bootstrap Margin Utility Overrides ---------- */
+
+/* CAUTION: Global Bootstrap utility overrides - affects all Bootstrap components!
+   Map Bootstrap margin classes to WireBuddy spacing tokens for consistent spacing.
+   mb-3 = 24px matches g-3 = 24px for row-to-row gaps.
+   
+   RISK: Third-party components expecting Bootstrap defaults may break.
+   ALTERNATIVE: Consider using wb-mb-3 prefixed utilities instead of global overrides.
+   
+   body prefix for maximum specificity to override Bootstrap !important */
+
+/* TODO: Evaluate migrating to scoped .wb-mb-* utilities to reduce global override risk */
+
+body .mb-1,
+html body .mb-1 {
+    margin-bottom: 6px !important;
+}
+
+body .mb-2,
+html body .mb-2 {
+    margin-bottom: 12px !important;
+}
+
+body .mb-3,
+html body .mb-3 {
+    margin-bottom: 24px !important;
+}
+
+body .mb-4,
+html body .mb-4 {
+    margin-bottom: 32px !important;
+}
+
+body .mt-1,
+html body .mt-1 {
+    margin-top: 6px !important;
+}
+
+body .mt-2,
+html body .mt-2 {
+    margin-top: 12px !important;
+}
+
+body .mt-3,
+html body .mt-3 {
+    margin-top: 24px !important;
+}
+
+body .mt-4,
+html body .mt-4 {
+    margin-top: 32px !important;
+}
+
+body .my-1,
+html body .my-1 {
+    margin-top: 6px !important;
+    margin-bottom: 6px !important;
+}
+
+body .my-2,
+html body .my-2 {
+    margin-top: 12px !important;
+    margin-bottom: 12px !important;
+}
+
+body .my-3,
+html body .my-3 {
+    margin-top: 24px !important;
+    margin-bottom: 24px !important;
+}
+
+body .my-4,
+html body .my-4 {
+    margin-top: 32px !important;
+    margin-bottom: 32px !important;
+}
+
+
+/* ---------- 24. Mobile Optimizations ---------- */
 
 /* Reduzierte Seitenabstände für bessere Viewport-Nutzung auf mobilen Geräten */
 @media (max-width: 767.98px) {
 
-    /* Main content area - reduziertes Padding (preserved bottom padding for consistent footer spacing) */
+    /* Main content area - reduziertes Padding (consistent bottom for footer spacing) */
     .main-content {
         padding-top: 0.75rem;
         padding-left: 0.75rem;
         padding-right: 0.75rem;
+        padding-bottom: calc(1rem + var(--wb-footer-height));
+    }
+
+    /* Grid Rows - nur horizontale Gutters reduziert; vertikale bleiben
+       beim Layout-Standard (24px) für konsistente Kachelabstände. */
+    .row.g-3,
+    .row.g-4 {
+        --bs-gutter-x: 0.75rem;
     }
 
     /* Container - minimales Padding für mehr Platz */
@@ -387,21 +612,21 @@ span+.material-icons {
         margin-left: 0.8rem;
     }
 
-    /* Page wrapper - angepasstes vertikales Padding */
+    /* Page wrapper - angepasstes vertikales Padding (spacing-2 = 12px) */
     .wb-page {
-        padding-top: 1rem;
-        padding-bottom: 1rem;
+        padding-top: var(--wb-space-2);
+        padding-bottom: var(--wb-space-2);
     }
 
     /* Page header - kompakteres Layout */
     .wb-page-header {
-        margin-bottom: 1rem;
+        margin-bottom: var(--wb-space-2);
         gap: 0.5rem;
     }
 
     /* Sections - reduzierter Abstand */
     .wb-section {
-        margin-bottom: 1rem;
+        margin-bottom: var(--wb-space-2);
     }
 
     /* Cards - kompakteres Padding */
@@ -424,11 +649,19 @@ span+.material-icons {
 /* Tablet-Optimierungen für mittlere Bildschirmgrößen */
 @media (min-width: 768px) and (max-width: 991.98px) {
 
-    /* Main content - leicht reduziertes Padding (preserved bottom padding for consistent footer spacing) */
+    /* Grid Rows - nur horizontale Gutters angepasst; vertikale bleiben
+       beim Layout-Standard (24px) für konsistente Kachelabstände. */
+    .row.g-3,
+    .row.g-4 {
+        --bs-gutter-x: 1rem;
+    }
+
+    /* Main content - leicht reduziertes Padding (consistent bottom for footer spacing) */
     .main-content {
         padding-top: 1rem;
         padding-left: 1rem;
         padding-right: 1rem;
+        padding-bottom: calc(1.25rem + var(--wb-footer-height));
     }
 
     /* Container - moderates Padding */
@@ -453,9 +686,46 @@ span+.material-icons {
         margin-left: 0.25rem;
     }
 
-    /* Page wrapper */
+    /* Page wrapper - spacing-3 like desktop */
     .wb-page {
-        padding-top: 1.5rem;
-        padding-bottom: 1.5rem;
+        padding-top: var(--wb-space-3);
+        padding-bottom: var(--wb-space-3);
     }
+}
+
+
+/* ---------- 25. Read-Only Mode (Non-Admin) ---------- */
+
+/* Container class applied to settings content when user is not admin.
+   Disables all interactive elements uniformly while keeping content visible. */
+
+.wb-readonly .btn:not(.nav-link):not([data-bs-toggle="tab"]) {
+    pointer-events: none;
+    opacity: 0.45;
+    filter: grayscale(40%);
+    cursor: default;
+    box-shadow: none;
+}
+
+.wb-readonly .form-control,
+.wb-readonly .form-select,
+.wb-readonly textarea.form-control {
+    pointer-events: none;
+    background-color: var(--bs-secondary-bg);
+    opacity: 0.65;
+}
+
+.wb-readonly .form-check-input {
+    pointer-events: none;
+    opacity: 0.45;
+}
+
+.wb-readonly .form-range {
+    pointer-events: none;
+    opacity: 0.45;
+}
+
+.wb-readonly .input-group .btn {
+    pointer-events: none;
+    opacity: 0.45;
 }

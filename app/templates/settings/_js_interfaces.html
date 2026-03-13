@@ -1,0 +1,466 @@
+    async function loadTrafficStatus() {
+        const toggle = document.getElementById('traffic-analysis-toggle');
+        const badge = document.getElementById('traffic-requirements-badge');
+        const badgeText = badge?.querySelector('.badge-text');
+        const badgeIcon = badge?.querySelector('.material-icons');
+
+        try {
+            const status = await api('GET', '/api/wireguard/settings/traffic');
+            const enabled = status.enabled === true;
+            const requirementsMet = status.requirements_met === true;
+
+            if (toggle) {
+                toggle.checked = enabled;
+                toggle.disabled = !isAdmin || !requirementsMet;
+            }
+
+            if (badge && badgeText && badgeIcon) {
+                badge.style.display = '';
+                if (requirementsMet) {
+                    badge.className = 'badge bg-success';
+                    badgeText.textContent = 'Available';
+                    badgeIcon.textContent = 'check_circle';
+                } else {
+                    badge.className = 'badge bg-warning text-dark';
+                    badgeText.textContent = 'conntrack not available';
+                    badgeIcon.textContent = 'warning';
+                }
+            }
+        } catch (e) {
+            if (badge && badgeText) {
+                badge.style.display = '';
+                badge.className = 'badge bg-secondary';
+                badgeText.textContent = 'Unknown';
+            }
+            if (toggle) toggle.disabled = true;
+        }
+    }
+
+    async function toggleTrafficAnalysis() {
+        const toggle = document.getElementById('traffic-analysis-toggle');
+        if (!toggle) return;
+
+        try {
+            await api('PATCH', '/api/wireguard/settings', {
+                traffic_analysis_enabled: toggle.checked
+            });
+            wbToast(`Traffic analysis ${toggle.checked ? 'enabled' : 'disabled'}`, 'success');
+        } catch (e) {
+            toggle.checked = !toggle.checked;
+            wbToast('Failed to update traffic analysis setting: ' + (e.message || e), 'danger');
+        }
+    }
+
+    // Attach traffic analysis toggle event listener
+    document.getElementById('traffic-analysis-toggle')?.addEventListener('change', toggleTrafficAnalysis);
+
+    // DNS Service Control
+    async function loadDnsServiceStatus() {
+        const startBtn = document.getElementById('btn-dns-start');
+        const stopBtn = document.getElementById('btn-dns-stop');
+        const restartBtn = document.getElementById('btn-dns-restart');
+
+        try {
+            // Check if any WireGuard interfaces exist (DNS needs interface IPs to bind)
+            let hasInterfaces = false;
+            try {
+                const ifaceRes = await api('GET', '/api/wireguard/interfaces');
+                hasInterfaces = ifaceRes?.interfaces?.length > 0;
+            } catch (e) {
+                console.warn('Could not check WireGuard interfaces:', e);
+            }
+
+            const status = await api('GET', '/api/dns/status');
+            const isRunning = status.is_running === true;
+            // Start only available if not running and interfaces exist.
+            if (startBtn) {
+                startBtn.disabled = !isAdmin || isRunning || !hasInterfaces;
+            }
+            if (stopBtn) stopBtn.disabled = !isAdmin || !isRunning;
+            if (restartBtn) restartBtn.disabled = !isAdmin || !isRunning;
+        } catch (e) {
+            if (startBtn) {
+                startBtn.disabled = true;
+                startBtn.title = 'DNS status unavailable';
+            }
+            if (stopBtn) stopBtn.disabled = true;
+            if (restartBtn) restartBtn.disabled = true;
+        }
+    }
+
+    async function dnsServiceAction(action) {
+        const validActions = ['start', 'stop', 'restart'];
+        if (!validActions.includes(action)) {
+            wbToast('Invalid DNS action', 'danger');
+            return;
+        }
+
+        if (action === 'stop') {
+            if (!await wbConfirm('Stop the DNS resolver? VPN clients may lose DNS resolution.')) return;
+        }
+
+        try {
+            await api('POST', `/api/dns/${encodeURIComponent(action)}`);
+            await loadDnsServiceStatus();
+            wbToast(`DNS ${action} successful`, 'success');
+        } catch (e) {
+            wbToast('DNS action failed: ' + (e.message || e), 'danger');
+        }
+    }
+
+    const dnsStartBtn = document.getElementById('btn-dns-start');
+    if (dnsStartBtn) {
+        dnsStartBtn.addEventListener('click', () => dnsServiceAction('start'));
+    }
+    const dnsStopBtn = document.getElementById('btn-dns-stop');
+    if (dnsStopBtn) {
+        dnsStopBtn.addEventListener('click', () => dnsServiceAction('stop'));
+    }
+    const dnsRestartBtn = document.getElementById('btn-dns-restart');
+    if (dnsRestartBtn) {
+        dnsRestartBtn.addEventListener('click', () => dnsServiceAction('restart'));
+    }
+
+    const requestCertificateBtn = document.getElementById('btn-request-certificate');
+    if (requestCertificateBtn) {
+        requestCertificateBtn.addEventListener('click', () => {
+            void requestCertificate();
+        });
+    }
+
+    const ifaceSubmitBtn = document.getElementById('iface-submit-btn');
+    if (ifaceSubmitBtn) {
+        ifaceSubmitBtn.addEventListener('click', () => {
+            void submitInterfaceForm();
+        });
+    }
+
+    // WireGuard interface management
+    let editingInterfaceName = null;
+    const interfaceDefaults = {
+        name: 'wg0',
+        address: '10.13.13.1/24',
+        address6: 'fd13:13:13::1/64',
+        listen_port: 51820,
+        dns: '',
+    };
+
+    function setInterfaceSubmitBusy(isBusy) {
+        const spinner = document.getElementById('iface-spinner');
+        const submitBtn = document.getElementById('iface-submit-btn');
+        if (spinner) spinner.classList.toggle('d-none', !isBusy);
+        if (submitBtn) submitBtn.disabled = isBusy;
+    }
+
+    async function prepareCreateInterfaceModal() {
+        editingInterfaceName = null;
+
+        const title = document.getElementById('ifaceModalTitle');
+        const submitLabel = document.getElementById('iface-submit-label');
+        const nameInput = document.getElementById('iface-name');
+        const addressInput = document.getElementById('iface-address');
+        const address6Input = document.getElementById('iface-address6');
+        const portInput = document.getElementById('iface-port');
+        const dnsInput = document.getElementById('iface-dns');
+        const wbDnsToggle = document.getElementById('iface-use-wb-dns');
+        const form = document.getElementById('iface-form');
+
+        if (title) title.textContent = 'Create WireGuard Interface';
+        if (submitLabel) submitLabel.textContent = 'Create Interface';
+        if (form) form.reset();
+
+        // Fetch next available subnet from API
+        let nextSubnet = {
+            address: interfaceDefaults.address,
+            address6: interfaceDefaults.address6,
+            listen_port: interfaceDefaults.listen_port
+        };
+        try {
+            const res = await api('GET', '/api/wireguard/interfaces/_next-subnet');
+            if (res.address) nextSubnet.address = res.address;
+            if (res.address6) nextSubnet.address6 = res.address6;
+            if (res.listen_port) nextSubnet.listen_port = res.listen_port;
+        } catch (err) {
+            console.warn('Could not fetch next subnet, using defaults:', err);
+        }
+
+        if (nameInput) {
+            nameInput.value = interfaceDefaults.name;
+            nameInput.readOnly = false;
+        }
+        if (addressInput) addressInput.value = nextSubnet.address;
+        if (address6Input) address6Input.value = nextSubnet.address6;
+        if (portInput) portInput.value = String(nextSubnet.listen_port);
+        if (dnsInput) {
+            dnsInput.value = interfaceDefaults.dns;
+            dnsInput.readOnly = false;
+        }
+        if (wbDnsToggle) wbDnsToggle.checked = false;
+    }
+
+    async function refreshInterfaces() {
+        try {
+            const res = await api('GET', '/api/wireguard/interfaces');
+            let html = '';
+            for (const iface of res.interfaces) {
+                const safeName = esc(iface.name);
+                const dataName = esc(iface.name).replace(/"/g, '&quot;');
+                const statusBadge = iface.is_active
+                    ? '<span class="badge bg-success">Active</span>'
+                    : '<span class="badge bg-secondary">Inactive</span>';
+
+                // Button states
+                const isActive = !!iface.is_active;
+                const isConfigured = !!(iface.is_configured ?? (iface.in_database || iface.has_config_file));
+                
+                // Action buttons - disabled for non-admins or based on state
+                const startDisabled = !isAdmin || isActive;
+                const stopDisabled = !isAdmin || !isActive;
+                const restartDisabled = !isAdmin || !isActive;
+                const deleteDisabled = !isAdmin || isActive;
+                
+                // Start: only enabled if admin and not active
+                const startBtn = `<button class="btn btn-sm btn-light btn-icon px-2 iface-action-btn" data-iface="${dataName}" data-action="up" title="${!isAdmin ? 'Admin privileges required' : 'Start'}" aria-label="Start"${startDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle text-success" style="font-size: 20px;">play_arrow</span></button>`;
+                // Stop: only enabled if admin and active
+                const stopBtn = `<button class="btn btn-sm btn-light btn-icon px-2 iface-action-btn" data-iface="${dataName}" data-action="down" title="${!isAdmin ? 'Admin privileges required' : 'Stop'}" aria-label="Stop"${stopDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle text-danger" style="font-size: 20px;">stop</span></button>`;
+                // Restart: only enabled if admin and active
+                const restartBtn = `<button class="btn btn-sm btn-light btn-icon px-2 iface-action-btn" data-iface="${dataName}" data-action="restart" title="${!isAdmin ? 'Admin privileges required' : 'Restart'}" aria-label="Restart"${restartDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle" style="font-size: 20px;">restart_alt</span></button>`;
+                // Delete: only enabled if admin and not active
+                const deleteBtn = (isAdmin)
+                    ? `<button class="btn btn-sm btn-light btn-icon px-2 iface-delete-btn" data-iface="${dataName}" title="Delete" aria-label="Delete"${deleteDisabled ? ' disabled' : ''}><span class="material-icons align-middle text-danger" style="font-size: 20px;">delete</span></button>`
+                    : '';
+                const editBtn = (isAdmin && isConfigured)
+                    ? `<button class="btn btn-sm btn-light btn-icon px-2 iface-edit-btn" data-iface="${dataName}" title="Edit" aria-label="Edit"><span class="material-icons align-middle" style="font-size: 20px;">edit</span></button>`
+                    : '';
+
+                html += `
+                    <div class="settings-interface-row">
+                        <div>
+                            <strong>${safeName}</strong>
+                            <span class="ms-2">${statusBadge}</span>
+                        </div>
+                        <div class="settings-interface-actions">${startBtn}${stopBtn}${restartBtn}${editBtn}${deleteBtn}</div>
+                    </div>`;
+            }
+            if (!html) {
+                html = isAdmin
+                    ? '<p class="text-muted mb-0">No WireGuard interfaces. Click <strong>+</strong> to create one.</p>'
+                    : '<p class="text-muted mb-0">No WireGuard interfaces configured.</p>';
+            }
+            const listEl = document.getElementById('interfaces-list');
+            listEl.innerHTML = html;
+
+            // Event delegation for interface buttons
+            listEl.removeEventListener('click', handleInterfaceClick);
+            listEl.addEventListener('click', handleInterfaceClick);
+        } catch (error) {
+            document.getElementById('interfaces-list').innerHTML = `<p class="text-danger mb-0">Failed to load interfaces: ${esc(error.message)}</p>`;
+        }
+    }
+
+    async function handleInterfaceClick(e) {
+        const actionBtn = e.target.closest('.iface-action-btn');
+        const editBtn = e.target.closest('.iface-edit-btn');
+        const deleteBtn = e.target.closest('.iface-delete-btn');
+
+        if (actionBtn) {
+            if (!isAdmin) return;  // Safety check
+            const name = actionBtn.dataset.iface;
+            const action = actionBtn.dataset.action;
+            await toggleInterface(name, action);
+        } else if (editBtn) {
+            if (!isAdmin) return;  // Safety check
+            const name = editBtn.dataset.iface;
+            await editInterface(name);
+        } else if (deleteBtn) {
+            if (!isAdmin) return;  // Safety check
+            const name = deleteBtn.dataset.iface;
+            await deleteInterface(name);
+        }
+    }
+
+    async function toggleInterface(name, action) {
+        try {
+            await api('POST', `/api/wireguard/interfaces/${encodeURIComponent(name)}/${action}`);
+            await refreshInterfaces();
+            const actionText = action === 'up' ? 'started' : (action === 'down' ? 'stopped' : 'restarted');
+            wbToast(`Interface '${name}' successfully ${actionText}`, 'success');
+        } catch (e) {
+            wbToast(`Failed to ${action} interface: ` + e.message, 'danger');
+        }
+    }
+
+    async function createInterface() {
+        const name = document.getElementById('iface-name').value.trim();
+        const address = document.getElementById('iface-address').value.trim();
+        const address6 = document.getElementById('iface-address6').value.trim() || null;
+        const port = document.getElementById('iface-port').value || 51820;
+        const dns = document.getElementById('iface-dns').value.trim() || null;
+
+        if (!name || !address) {
+            wbToast('Please fill in name and address', 'warning');
+            return;
+        }
+
+        // Validate interface name (1-15 alphanumeric chars, _, -)
+        if (!/^[a-zA-Z0-9_-]{1,15}$/.test(name)) {
+            wbToast('Interface name must be 1–15 alphanumeric characters (a-z, 0-9, _, -)', 'warning');
+            return;
+        }
+
+        // Validate CIDR notation (octet range 0-255, mask 0-32)
+        if (!isValidIPv4Cidr(address)) {
+            wbToast('IPv4 address must be in CIDR format with valid octets and prefix (e.g. 10.13.13.1/24)', 'warning');
+            return;
+        }
+
+        if (address6 && !isValidIPv6Cidr(address6)) {
+            wbToast('IPv6 address must be valid CIDR notation (e.g. fd13:13:13::1/64)', 'warning');
+            return;
+        }
+
+        setInterfaceSubmitBusy(true);
+        try {
+            await api('POST', '/api/wireguard/interfaces', {
+                name: name,
+                address: address,
+                address6: address6,
+                listen_port: parseInt(port),
+                dns: dns
+            });
+
+            document.activeElement?.blur();
+            bootstrap.Modal.getInstance(document.getElementById('ifaceModal')).hide();
+            void prepareCreateInterfaceModal();
+
+            wbToast(`Interface '${name}' created successfully!`, 'success');
+            await refreshInterfaces();
+            // Refresh DNS status (Unbound may have auto-started)
+            await loadDnsServiceStatus();
+        } catch (error) {
+            wbToast('Failed to create interface: ' + error.message, 'danger');
+        } finally {
+            setInterfaceSubmitBusy(false);
+        }
+    }
+
+    async function editInterface(name) {
+        try {
+            const res = await api('GET', `/api/wireguard/interfaces/${encodeURIComponent(name)}/config`);
+            const iface = res?.data || res;
+            editingInterfaceName = iface.name || name;
+
+            document.getElementById('ifaceModalTitle').textContent = `Edit Interface ${editingInterfaceName}`;
+            document.getElementById('iface-submit-label').textContent = 'Save Changes';
+
+            const nameInput = document.getElementById('iface-name');
+            nameInput.value = editingInterfaceName;
+            nameInput.readOnly = true;
+
+            document.getElementById('iface-address').value = iface.address || '';
+            document.getElementById('iface-address6').value = iface.address6 || '';
+            document.getElementById('iface-port').value = String(iface.listen_port || 51820);
+            document.getElementById('iface-dns').value = iface.dns || '';
+
+            // Optional WireBuddy DNS toggle (may not exist in all versions)
+            const serverIp = (iface.address || '').split('/')[0];
+            const wbDnsToggle = document.getElementById('iface-use-wb-dns');
+            const dnsInput = document.getElementById('iface-dns');
+            const isWireBuddyDns = Boolean(iface.dns) && iface.dns === serverIp;
+            if (wbDnsToggle) wbDnsToggle.checked = isWireBuddyDns;
+            if (dnsInput) dnsInput.readOnly = isWireBuddyDns;
+
+            const modalEl = document.getElementById('ifaceModal');
+            const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+            modal.show();
+        } catch (error) {
+            wbToast('Failed to load interface config: ' + error.message, 'danger');
+        }
+    }
+
+    async function updateInterface() {
+        if (!editingInterfaceName) return;
+
+        const address = document.getElementById('iface-address').value.trim();
+        const address6 = document.getElementById('iface-address6').value.trim() || null;
+        const port = document.getElementById('iface-port').value || 51820;
+        const dns = document.getElementById('iface-dns').value.trim() || null;
+
+        if (!address) {
+            wbToast('Please fill in an IPv4 address', 'warning');
+            return;
+        }
+
+        // Validate CIDR notation (octet range 0-255, mask 0-32)
+        if (!isValidIPv4Cidr(address)) {
+            wbToast('IPv4 address must be in CIDR format with valid octets and prefix (e.g. 10.13.13.1/24)', 'warning');
+            return;
+        }
+
+        if (address6 && !isValidIPv6Cidr(address6)) {
+            wbToast('IPv6 address must be valid CIDR notation (e.g. fd13:13:13::1/64)', 'warning');
+            return;
+        }
+
+        setInterfaceSubmitBusy(true);
+        try {
+            const res = await api('PUT', `/api/wireguard/interfaces/${encodeURIComponent(editingInterfaceName)}`, {
+                address: address,
+                address6: address6,
+                listen_port: parseInt(port),
+                dns: dns
+            });
+            const payload = res?.data || res;
+
+            const updatedName = editingInterfaceName;
+
+            document.activeElement?.blur();
+            bootstrap.Modal.getInstance(document.getElementById('ifaceModal')).hide();
+            void prepareCreateInterfaceModal();
+
+            wbToast(`Interface '${updatedName}' updated`, 'success');
+            if (payload?.restart_required) {
+                wbToast(`Interface '${updatedName}' is active. Restart to fully apply changes.`, 'warning');
+            }
+            await refreshInterfaces();
+        } catch (error) {
+            wbToast('Failed to update interface: ' + error.message, 'danger');
+        } finally {
+            setInterfaceSubmitBusy(false);
+        }
+    }
+
+    async function submitInterfaceForm() {
+        if (editingInterfaceName) {
+            await updateInterface();
+            return;
+        }
+        await createInterface();
+    }
+
+    async function deleteInterface(name) {
+        if (!await wbConfirm(`Delete interface '${name}'? This will remove the configuration file. Connected peers will lose connectivity.`, 'danger')) return;
+
+        try {
+            await api('DELETE', `/api/wireguard/interfaces/${encodeURIComponent(name)}`);
+            wbToast(`Interface '${name}' deleted`, 'success');
+            await refreshInterfaces();
+            // Refresh DNS status (Unbound may have auto-stopped)
+            await loadDnsServiceStatus();
+        } catch (error) {
+            wbToast('Failed to delete interface: ' + (error?.message || String(error)), 'danger');
+        }
+    }
+
+    document.getElementById('ifaceModal')?.addEventListener('hidden.bs.modal', function () {
+        setInterfaceSubmitBusy(false);
+        void prepareCreateInterfaceModal();
+    });
+
+    document.getElementById('iface-use-frontend-port')?.addEventListener('change', function () {
+        toggleFrontendPortField(this.checked);
+    });
+
+    // Interfaces are loaded by tab system (initTabs)
+
+    // SSL/TLS Certificate management

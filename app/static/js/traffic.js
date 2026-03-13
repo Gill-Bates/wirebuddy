@@ -43,9 +43,10 @@
     let resizeHandler = null;
     let peerFilterHandler = null;
     let rangeChangeHandler = null;
+    let peerFilterTimeout = null; // Timeout handle for peer filter debounce
 
     // Color palette for multiple peers (FIX #8: moved to scope to avoid recreation)
-    const peerColors = [
+    const peerColors = Object.freeze([
         '#3b82f6',   // blue
         '#10b981',   // emerald green
         '#6f42c1',   // purple
@@ -54,7 +55,7 @@
         '#d63384',   // pink
         '#20c997',   // teal
         '#ef4444',   // red
-    ];
+    ]);
 
     // Get user permissions and config from data attributes
     const appEl = document.getElementById('traffic-app');
@@ -129,11 +130,11 @@
         const labels = {
             '6h': 'last 6 hours',
             '24h': 'last 24 hours',
-            '3d': 'last 3 days',
             '7d': 'last 7 days',
             '30d': 'last 30 days',
             '90d': 'last 90 days',
-            '1y': 'last year',
+            '180d': 'last 180 days',
+            'y1': 'last year',
         };
         return labels[rangeKey] || rangeKey;
     }
@@ -243,6 +244,7 @@
      */
     function shortLabel(isoStr, hours) {
         const d = new Date(isoStr);
+        if (isNaN(d.getTime())) return '—';
         const h = Number(hours);
         if (h > 168) {
             return d.toLocaleDateString([], { month: 'short', day: '2-digit' });
@@ -348,7 +350,7 @@
             trafficCombinedChart = null;
         }
         // Also check if Chart.js has a chart instance for this canvas
-        if (trafficCombinedCanvas) {
+        if (trafficCombinedCanvas && typeof Chart !== 'undefined') {
             const existingChart = Chart.getChart(trafficCombinedCanvas);
             if (existingChart) {
                 existingChart.destroy();
@@ -472,9 +474,14 @@
     async function refreshCountryTraffic(signal) {
         try {
             const range = trafficRange?.value || '24h';
+            const peerFilter = trafficPeerFilter?.value || '';
+            let url = `/api/wireguard/stats/traffic-by-country?range_key=${encodeURIComponent(range)}`;
+            if (peerFilter) {
+                url += `&peer=${encodeURIComponent(peerFilter)}`;
+            }
             const result = await api(
                 'GET',
-                `/api/wireguard/stats/traffic-by-country?range_key=${encodeURIComponent(range)}`,
+                url,
                 null,
                 { signal, timeoutMs: API_TIMEOUT_MS },
             );
@@ -498,14 +505,10 @@
         // Check if peer attribution data exists (any country has peer_names)
         const hasPeerData = countries.some(c => Array.isArray(c.peer_names) && c.peer_names.length > 0);
 
-        // Filter by selected peer (match peer name in peer_names list)
+        // Note: Server-side filtering is now applied via the `peer` query param.
+        // Client-side filtering is kept as fallback for historical data without by_peer.
         const peerFilter = trafficPeerFilter?.value || '';
         const unfilteredCount = countries.length;
-        if (peerFilter && countries.length > 0) {
-            countries = countries.filter(c =>
-                Array.isArray(c.peer_names) && c.peer_names.some(n => n === peerFilter)
-            );
-        }
 
         // Filter out countries with zero or negligible traffic (that would display as "0")
         const minDisplayThreshold = (unit === 'MB' || unit === 'GB') ? 0.05 : 0.005;
@@ -552,8 +555,10 @@
                 return nameCell;
             },
             buildRenderKey: (items, u, pf) => {
-                // FIX #3: Position-weighted hash to catch swaps at different positions
-                const hash = items.reduce((h, c, i) => h + c.total * (i + 1), 0).toFixed(4);
+                // Use item identifiers for robust deduplication (avoids hash collisions)
+                const hash = items.map((c, i) =>
+                    `${c.name || i}:${c.total.toFixed(2)}`
+                ).join(';');
                 return `${u}|${pf}|${items.length}|${hash}`;
             },
             renderKey: {
@@ -572,9 +577,14 @@
     async function refreshASNTraffic(signal) {
         try {
             const range = trafficRange?.value || '24h';
+            const peerFilter = trafficPeerFilter?.value || '';
+            let url = `/api/wireguard/stats/traffic-by-asn?range_key=${encodeURIComponent(range)}`;
+            if (peerFilter) {
+                url += `&peer=${encodeURIComponent(peerFilter)}`;
+            }
             const result = await api(
                 'GET',
-                `/api/wireguard/stats/traffic-by-asn?range_key=${encodeURIComponent(range)}`,
+                url,
                 null,
                 { signal, timeoutMs: API_TIMEOUT_MS },
             );
@@ -598,14 +608,10 @@
         // Check if peer attribution data exists (any ASN has peer_names)
         const hasPeerData = asns.some(a => Array.isArray(a.peer_names) && a.peer_names.length > 0);
 
-        // Filter by selected peer
+        // Note: Server-side filtering is now applied via the `peer` query param.
+        // Client-side filtering is kept as fallback for historical data without by_peer.
         const peerFilter = trafficPeerFilter?.value || '';
         const unfilteredCount = asns.length;
-        if (peerFilter && asns.length > 0) {
-            asns = asns.filter(a =>
-                Array.isArray(a.peer_names) && a.peer_names.some(n => n === peerFilter)
-            );
-        }
 
         // Filter out ASNs with zero or negligible traffic (that would display as "0")
         const minDisplayThreshold = (unit === 'MB' || unit === 'GB') ? 0.05 : 0.005;
@@ -649,8 +655,10 @@
                 return nameCell;
             },
             buildRenderKey: (items, u, pf) => {
-                // FIX #3: Position-weighted hash to catch swaps at different positions
-                const hash = items.reduce((h, a, i) => h + a.total * (i + 1), 0).toFixed(4);
+                // Use item identifiers for robust deduplication (avoids hash collisions)
+                const hash = items.map((a, i) =>
+                    `${a.asn || a.name || i}:${a.total.toFixed(2)}`
+                ).join(';');
                 return `${u}|${pf}|${items.length}|${hash}`;
             },
             renderKey: {
@@ -735,7 +743,8 @@
 
     function renderTrafficCharts() {
         if (!isAdmin || !trafficCombinedWrap || !trafficEmptyState || !trafficCombinedCanvas) return;
-        const traffic = cachedTrafficData;
+        // Handle both wrapped { data: {...} } and bare response formats
+        const traffic = cachedTrafficData?.data || cachedTrafficData;
         if (!traffic) return;
 
         // Hide loading indicator and show content on first render
@@ -860,7 +869,28 @@
             if (trafficCombinedChart.options?.scales?.x?.ticks) {
                 trafficCombinedChart.options.scales.x.ticks.maxTicksLimit = chartProfile.maxXTicks;
             }
+            // Update legend to recalculate sums with current unit
+            if (trafficCombinedChart.options?.plugins?.legend?.labels) {
+                trafficCombinedChart.options.plugins.legend.labels.generateLabels = (chart) => {
+                    const original = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+                    return original.map((item) => {
+                        const dataset = chart.data.datasets[item.datasetIndex];
+                        if (dataset && Array.isArray(dataset.data)) {
+                            const sum = dataset.data.reduce((acc, val) => acc + (Number(val) || 0), 0);
+                            const formattedSum = formatTrafficMetric(sum, unit);
+                            item.text = `${item.text} (${formattedSum})`;
+                        }
+                        return item;
+                    });
+                };
+            }
             trafficCombinedChart.update('none');
+            return;
+        }
+
+        // Guard against Chart.js not being loaded
+        if (typeof Chart === 'undefined') {
+            console.error('Chart.js not loaded');
             return;
         }
 
@@ -893,6 +923,19 @@
                             color: colors.textColor,
                             padding: 12,
                             font: { size: 11 },
+                            generateLabels: (chart) => {
+                                const original = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+                                // Add sum to each label
+                                return original.map((item, index) => {
+                                    const dataset = chart.data.datasets[item.datasetIndex];
+                                    if (dataset && Array.isArray(dataset.data)) {
+                                        const sum = dataset.data.reduce((acc, val) => acc + (Number(val) || 0), 0);
+                                        const formattedSum = formatTrafficMetric(sum, unit);
+                                        item.text = `${item.text} (${formattedSum})`;
+                                    }
+                                    return item;
+                                });
+                            },
                         },
                     },
                     tooltip: {
@@ -945,6 +988,7 @@
     function cleanup() {
         clearTimeout(trafficRangeDebounce);
         clearTimeout(resizeDebounce);
+        clearTimeout(peerFilterTimeout);
         if (themeObserver) {
             themeObserver.disconnect();
             themeObserver = null;
@@ -989,6 +1033,16 @@
         }
         if (!window.WBShared?.RefreshScheduler) {
             console.error('Traffic page requires WBShared.RefreshScheduler');
+            return;
+        }
+
+        // Validate required DOM elements BEFORE setting up resources
+        if (!trafficRange) {
+            console.error('Traffic page: required element #traffic-range not found');
+            return;
+        }
+        if (!countryTbody || !asnTbody) {
+            console.error('Traffic page: required table elements not found');
             return;
         }
 
@@ -1043,30 +1097,29 @@
         window.addEventListener('pagehide', cleanup);
 
         peerFilterHandler = () => {
+            // Cancel any pending timeout from previous filter change
+            clearTimeout(peerFilterTimeout);
+
+            // Server-side filtering requires a full refresh to re-fetch data with the new peer filter.
+            // This ensures Country and ASN traffic reflect only the selected peer's traffic.
             if (!trafficCombinedWrap) {
-                // No chart to fade, render immediately
-                renderTrafficCharts();
-                renderCountryTraffic();
-                renderASNTraffic();
+                // No chart to fade, refresh immediately
+                refreshAll();
                 return;
             }
 
             // Skip fade effect on initial render - only fade when user actively changes filter
             if (isInitialRender) {
-                renderTrafficCharts();
-                renderCountryTraffic();
-                renderASNTraffic();
+                refreshAll();
                 return;
             }
 
-            // Fade out chart, re-render on transition complete
+            // Fade out chart, refresh on transition complete
             let handled = false;
-            const handleTransitionEnd = () => {
+            const handleTransitionEnd = async () => {
                 if (handled) return;
                 handled = true;
-                renderTrafficCharts();
-                renderCountryTraffic();
-                renderASNTraffic();
+                await refreshAll();
                 requestAnimationFrame(() => {
                     trafficCombinedWrap.classList.remove('traffic-chart-fading');
                 });
@@ -1076,7 +1129,7 @@
             trafficCombinedWrap.classList.add('traffic-chart-fading');
 
             // Fallback timeout in case transitionend doesn't fire
-            setTimeout(handleTransitionEnd, 300);
+            peerFilterTimeout = setTimeout(handleTransitionEnd, 300);
         };
         trafficPeerFilter?.addEventListener('change', peerFilterHandler);
 
@@ -1089,35 +1142,27 @@
         trafficRange?.addEventListener('change', rangeChangeHandler);
 
         // FIX #2: Store handler reference for cleanup
-        // Responsive resize handler
+        // Responsive resize handler (admin only - non-admins have no chart)
         // Chart.js handles visual resizing automatically. We only need to fetch new data
         // if the optimal point count increases beyond what we have cached.
-        resizeHandler = () => {
-            clearTimeout(resizeDebounce);
-            resizeDebounce = setTimeout(() => {
-                const newMaxPoints = getOptimalMaxPoints();
+        if (isAdmin) {
+            resizeHandler = () => {
+                clearTimeout(resizeDebounce);
+                resizeDebounce = setTimeout(() => {
+                    const newMaxPoints = getOptimalMaxPoints();
 
-                // Re-fetch when the optimal point count changes significantly
-                // (both up AND down — e.g. rotating phone from landscape to portrait)
-                if (lastMaxPoints > 0 && Math.abs(newMaxPoints - lastMaxPoints) > lastMaxPoints * 0.2) {
-                    dbg(`Resize detected: ${lastMaxPoints} -> ${newMaxPoints} points, fetching new data...`);
-                    if (isAdmin) refreshAll();
-                } else {
-                    // Just re-render from cache - Chart.js handles the responsive layout
-                    dbg(`Resize detected: chart will adapt automatically`);
-                }
-            }, 500);
-        };
-        window.addEventListener('resize', resizeHandler);
-
-        // Validate required DOM elements
-        if (!trafficRange) {
-            console.error('Traffic page: required element #traffic-range not found');
-            return;
-        }
-        if (!countryTbody || !asnTbody) {
-            console.error('Traffic page: required table elements not found');
-            return;
+                    // Re-fetch when the optimal point count changes significantly
+                    // (both up AND down — e.g. rotating phone from landscape to portrait)
+                    if (lastMaxPoints > 0 && Math.abs(newMaxPoints - lastMaxPoints) > lastMaxPoints * 0.2) {
+                        dbg(`Resize detected: ${lastMaxPoints} -> ${newMaxPoints} points, fetching new data...`);
+                        refreshAll();
+                    } else {
+                        // Just re-render from cache - Chart.js handles the responsive layout
+                        dbg(`Resize detected: chart will adapt automatically`);
+                    }
+                }, 500);
+            };
+            window.addEventListener('resize', resizeHandler);
         }
 
         // FIX #4: Mark initial render complete immediately after first refresh, not after arbitrary timeout

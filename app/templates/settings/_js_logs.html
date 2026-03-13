@@ -1,0 +1,491 @@
+    function formatBytes(size) {
+        const n = Number(size) || 0;
+        if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+        if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(2) + ' MB';
+        if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+        return n + ' B';
+    }
+
+    // TSDB retention slider values (includes 0 for "No Logs")
+    const TSDB_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
+
+    function tsdbRetentionLabel(days) {
+        const n = Number(days);
+        if (n === 0) return 'No Logs';
+        if (n === 365) return '1 Year';
+        return `${n} Days`;
+    }
+
+    function tsdbRetentionIndexForDays(days) {
+        const idx = TSDB_RETENTION_VALUES.indexOf(Number(days));
+        return idx >= 0 ? idx : 5; // default: 365 days
+    }
+
+    function tsdbRetentionDaysFromSlider(rawValue) {
+        const parsed = Number.parseInt(String(rawValue), 10);
+        const idx = Number.isFinite(parsed)
+            ? Math.max(0, Math.min(TSDB_RETENTION_VALUES.length - 1, parsed))
+            : 5;
+        return TSDB_RETENTION_VALUES[idx];
+    }
+
+    function updateTsdbRetentionPreview(rawValue) {
+        const days = tsdbRetentionDaysFromSlider(rawValue);
+        const labelEl = document.getElementById('tsdb-retention-value');
+        if (labelEl) {
+            labelEl.textContent = tsdbRetentionLabel(days);
+            // Visual warning when logging is disabled
+            labelEl.className = days === 0
+                ? 'badge text-bg-danger'
+                : 'badge text-bg-secondary';
+        }
+        return days;
+    }
+
+    // DNS metrics retention slider (mirrors DNS_RETENTION_VALUES)
+    const DNS_METRICS_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
+
+    function dnsMetricsRetentionLabel(days) {
+        const n = Number(days);
+        if (n === 0) return 'No Logs';
+        if (n === 365) return '1 Year';
+        return `${n} Days`;
+    }
+
+    function dnsMetricsRetentionIndexForDays(days) {
+        const idx = DNS_METRICS_RETENTION_VALUES.indexOf(Number(days));
+        return idx >= 0 ? idx : 2; // default: 30 days
+    }
+
+    function dnsMetricsRetentionDaysFromSlider(rawValue) {
+        const parsed = Number.parseInt(String(rawValue), 10);
+        const idx = Number.isFinite(parsed)
+            ? Math.max(0, Math.min(DNS_METRICS_RETENTION_VALUES.length - 1, parsed))
+            : 2;
+        return DNS_METRICS_RETENTION_VALUES[idx];
+    }
+
+    function updateDnsMetricsRetentionPreview(rawValue) {
+        const days = dnsMetricsRetentionDaysFromSlider(rawValue);
+        const labelEl = document.getElementById('dns-metrics-retention-value');
+        if (labelEl) {
+            labelEl.textContent = dnsMetricsRetentionLabel(days);
+            labelEl.className = days === 0
+                ? 'badge text-bg-danger'
+                : 'badge text-bg-secondary';
+        }
+        return days;
+    }
+
+    // Speedtest retention slider (same values as TSDB but default 365 days)
+    const SPEEDTEST_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
+
+    function speedtestRetentionLabel(days) {
+        const n = Number(days);
+        if (n === 0) return 'No Logs';
+        if (n === 365) return '1 Year';
+        return `${n} Days`;
+    }
+
+    function speedtestRetentionIndexForDays(days) {
+        const idx = SPEEDTEST_RETENTION_VALUES.indexOf(Number(days));
+        return idx >= 0 ? idx : 5; // default: 365 days
+    }
+
+    function speedtestRetentionDaysFromSlider(rawValue) {
+        const parsed = Number.parseInt(String(rawValue), 10);
+        const idx = Number.isFinite(parsed)
+            ? Math.max(0, Math.min(SPEEDTEST_RETENTION_VALUES.length - 1, parsed))
+            : 5;
+        return SPEEDTEST_RETENTION_VALUES[idx];
+    }
+
+    function updateSpeedtestRetentionPreview(rawValue) {
+        const days = speedtestRetentionDaysFromSlider(rawValue);
+        const labelEl = document.getElementById('speedtest-retention-value');
+        if (labelEl) {
+            labelEl.textContent = speedtestRetentionLabel(days);
+            labelEl.className = days === 0
+                ? 'badge text-bg-danger'
+                : 'badge text-bg-secondary';
+        }
+        return days;
+    }
+
+    let _tsdbRetentionSaving = false;
+    let _dnsMetricsRetentionSaving = false;
+    let _speedtestRetentionSaving = false;
+
+    async function loadTsdbStats() {
+        try {
+            const stats = await api('GET', '/api/wireguard/stats/tsdb');
+
+            const size = stats.size_bytes || 0;
+            const compressedSize = stats.compressed_size_bytes || 0;
+            const archiveCount = stats.archive_count || 0;
+
+            const pathEl = document.getElementById('tsdb-path');
+            if (pathEl) pathEl.textContent = stats.path || '–';
+
+            document.getElementById('tsdb-size').textContent = formatBytes(size);
+            document.getElementById('tsdb-peers').textContent = stats.peer_count || 0;
+            document.getElementById('tsdb-files').textContent = stats.file_count || 0;
+            document.getElementById('tsdb-archives').textContent =
+                `${archiveCount} (${formatBytes(compressedSize)})`;
+
+            // Set retention slider
+            const slider = document.getElementById('tsdb-retention-slider');
+            if (slider && stats.retention_days != null) {
+                slider.value = String(tsdbRetentionIndexForDays(stats.retention_days));
+                updateTsdbRetentionPreview(slider.value);
+            }
+        } catch (e) {
+            console.error('Failed to load TSDB stats:', e);
+        }
+    }
+
+    async function loadDnsMetricsStats() {
+        try {
+            const stats = await api('GET', '/api/dns/storage');
+
+            const pathEl = document.getElementById('dns-metrics-path');
+            if (pathEl) pathEl.textContent = stats.path || '–';
+
+            const sizeEl = document.getElementById('dns-metrics-size');
+            if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
+
+            const filesEl = document.getElementById('dns-metrics-files');
+            if (filesEl) filesEl.textContent = stats.file_count || 0;
+
+            // Set retention slider
+            const slider = document.getElementById('dns-metrics-retention-slider');
+            if (slider && stats.retention_days != null) {
+                slider.value = String(dnsMetricsRetentionIndexForDays(stats.retention_days));
+                updateDnsMetricsRetentionPreview(slider.value);
+            }
+        } catch (e) {
+            console.error('Failed to load DNS metrics stats:', e);
+        }
+    }
+
+    async function loadPeerMetricsStats() {
+        try {
+            const stats = await api('GET', '/api/wireguard/stats/peer-metrics');
+
+            const pathEl = document.getElementById('peer-metrics-path');
+            if (pathEl) pathEl.textContent = stats.full_path || stats.path || '–';
+
+            const sizeEl = document.getElementById('peer-metrics-size');
+            if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
+
+            const totalEl = document.getElementById('peer-metrics-total');
+            if (totalEl) totalEl.textContent = stats.total_peers || 0;
+
+            const hsEl = document.getElementById('peer-metrics-handshake');
+            if (hsEl) hsEl.textContent = stats.peers_with_handshake || 0;
+        } catch (e) {
+            console.error('Failed to load peer metrics stats:', e);
+        }
+    }
+
+    async function loadSpeedtestStats() {
+        try {
+            const stats = await api('GET', '/api/wireguard/speedtest/storage');
+
+            const pathEl = document.getElementById('speedtest-metrics-path');
+            if (pathEl) pathEl.textContent = stats.path || '–';
+
+            const sizeEl = document.getElementById('speedtest-metrics-size');
+            if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
+
+            const recordsEl = document.getElementById('speedtest-metrics-records');
+            if (recordsEl) recordsEl.textContent = stats.record_count || 0;
+
+            // Set retention slider (admin only)
+            const slider = document.getElementById('speedtest-retention-slider');
+            if (slider && stats.retention_days != null) {
+                slider.value = String(speedtestRetentionIndexForDays(stats.retention_days));
+                updateSpeedtestRetentionPreview(slider.value);
+            }
+        } catch (e) {
+            console.error('Failed to load speedtest stats:', e);
+        }
+    }
+
+    async function saveTsdbRetention() {
+        if (_tsdbRetentionSaving) return;
+        _tsdbRetentionSaving = true;
+        const slider = document.getElementById('tsdb-retention-slider');
+        const days = tsdbRetentionDaysFromSlider(slider?.value ?? 5);
+
+        if (days === 0) {
+            const ok = await wbConfirm(
+                '"No Logs" disables traffic logging and deletes existing data. Dashboard charts will show "Logging disabled". Continue?',
+                'warning'
+            );
+            if (!ok) {
+                // Revert slider
+                loadTsdbStats();
+                _tsdbRetentionSaving = false;
+                return;
+            }
+        }
+
+        try {
+            await api('PATCH', '/api/wireguard/stats/tsdb/retention', { retention_days: days });
+            wbToast(`Traffic retention set to ${tsdbRetentionLabel(days)}`, 'success');
+        } catch (e) {
+            wbToast('Failed to update traffic retention: ' + e.message, 'danger');
+        } finally {
+            _tsdbRetentionSaving = false;
+        }
+    }
+
+    async function saveDnsMetricsRetention() {
+        if (_dnsMetricsRetentionSaving) return;
+        _dnsMetricsRetentionSaving = true;
+        const slider = document.getElementById('dns-metrics-retention-slider');
+        const days = dnsMetricsRetentionDaysFromSlider(slider?.value ?? 2);
+
+        if (days === 0) {
+            const ok = await wbConfirm(
+                '"No Logs" disables DNS logging and deletes existing DNS data. Continue?',
+                'warning'
+            );
+            if (!ok) {
+                // Revert slider
+                loadDnsMetricsStats();
+                _dnsMetricsRetentionSaving = false;
+                return;
+            }
+        }
+
+        try {
+            await api('POST', '/api/dns/config', { log_retention_days: days });
+            wbToast(`DNS retention set to ${dnsMetricsRetentionLabel(days)}`, 'success');
+        } catch (e) {
+            wbToast('Failed to update DNS retention: ' + e.message, 'danger');
+        } finally {
+            _dnsMetricsRetentionSaving = false;
+        }
+    }
+
+    async function saveSpeedtestRetention() {
+        if (_speedtestRetentionSaving) return;
+        _speedtestRetentionSaving = true;
+        const slider = document.getElementById('speedtest-retention-slider');
+        const days = speedtestRetentionDaysFromSlider(slider?.value ?? 5);
+
+        if (days === 0) {
+            const ok = await wbConfirm(
+                '"No Logs" disables speedtest logging and deletes existing data. Bandwidth history chart will be empty. Continue?',
+                'warning'
+            );
+            if (!ok) {
+                // Revert slider
+                loadSpeedtestStats();
+                _speedtestRetentionSaving = false;
+                return;
+            }
+        }
+
+        try {
+            await api('PATCH', '/api/wireguard/speedtest/storage/retention', { retention_days: days });
+            wbToast(`Speedtest retention set to ${speedtestRetentionLabel(days)}`, 'success');
+        } catch (e) {
+            wbToast('Failed to update speedtest retention: ' + e.message, 'danger');
+        } finally {
+            _speedtestRetentionSaving = false;
+        }
+    }
+
+    // Bind retention slider listeners
+    (function bindMetricsRetentionListeners() {
+        const tsdbSlider = document.getElementById('tsdb-retention-slider');
+        if (tsdbSlider) {
+            tsdbSlider.addEventListener('input', function () {
+                updateTsdbRetentionPreview(this.value);
+            });
+            tsdbSlider.addEventListener('change', function () {
+                saveTsdbRetention();
+            });
+        }
+
+        const dnsSlider = document.getElementById('dns-metrics-retention-slider');
+        if (dnsSlider) {
+            dnsSlider.addEventListener('input', function () {
+                updateDnsMetricsRetentionPreview(this.value);
+            });
+            dnsSlider.addEventListener('change', function () {
+                saveDnsMetricsRetention();
+            });
+        }
+
+        const speedtestSlider = document.getElementById('speedtest-retention-slider');
+        if (speedtestSlider) {
+            speedtestSlider.addEventListener('input', function () {
+                updateSpeedtestRetentionPreview(this.value);
+            });
+            speedtestSlider.addEventListener('change', function () {
+                saveSpeedtestRetention();
+            });
+        }
+    })();
+
+    async function purgeTrafficLogs() {
+        if (!await wbConfirm('Delete all traffic metric data? This cannot be undone.', 'danger')) return;
+
+        try {
+            const res = await api('DELETE', '/api/wireguard/stats/tsdb');
+            wbToast(res.message || 'Traffic metrics deleted', 'success');
+            loadTsdbStats();
+        } catch (e) {
+            wbToast('Failed to delete traffic metrics: ' + e.message, 'danger');
+        }
+    }
+
+    async function purgeDnsLogs() {
+        if (!await wbConfirm('Delete all DNS query data? This cannot be undone.', 'danger')) return;
+
+        try {
+            const res = await api('DELETE', '/api/dns/logs');
+            wbToast(res.message || 'DNS metrics deleted', 'success');
+            loadDnsMetricsStats();
+        } catch (e) {
+            wbToast('Failed to delete DNS metrics: ' + e.message, 'danger');
+        }
+    }
+
+    async function purgePeerLogs() {
+        if (!await wbConfirm('Reset all peer connection tracking data? This cannot be undone.', 'danger')) return;
+
+        try {
+            const res = await api('DELETE', '/api/wireguard/stats/peer-logs');
+            wbToast(res.message || 'Peer metrics reset', 'success');
+            loadPeerMetricsStats();
+        } catch (e) {
+            wbToast('Failed to reset peer metrics: ' + e.message, 'danger');
+        }
+    }
+
+    async function purgeSpeedtestLogs() {
+        if (!await wbConfirm('Delete all speedtest data? Bandwidth history chart will be empty. This cannot be undone.', 'danger')) return;
+
+        try {
+            const res = await api('DELETE', '/api/wireguard/speedtest/storage');
+            wbToast(res.message || 'Speedtest data deleted', 'success');
+            loadSpeedtestStats();
+            // Notify dashboard to refresh speedtest chart
+            document.dispatchEvent(new CustomEvent('speedtest-completed'));
+        } catch (e) {
+            const errorMsg = e?.message || String(e);
+            wbToast('Failed to delete speedtest data: ' + errorMsg, 'danger');
+        }
+    }
+
+    /* ── Custom DNS Rules ──────────────────────────────────── */
+
+    async function loadCustomRules() {
+        try {
+            const res = await api('GET', '/api/dns/custom-rules');
+            const data = res.data || res;
+            const input = document.getElementById('custom-rules-input');
+            if (input) {
+                const rulesText = typeof data.rules === 'string' ? data.rules : '';
+                input.value = rulesText.trim() ? rulesText : '';
+            }
+            updateCustomRulesCount(data.rule_count || 0);
+            showCustomRulesErrors(data.errors || []);
+        } catch (e) {
+            // Silently ignore — custom rules are optional
+        }
+    }
+
+    function updateCustomRulesCount(count) {
+        const badge = document.getElementById('custom-rules-count');
+        if (badge) badge.textContent = count === 1 ? '1 rule' : `${count} rules`;
+    }
+
+    function showCustomRulesErrors(errors) {
+        const container = document.getElementById('custom-rules-errors');
+        if (!container) return;
+        if (!errors || errors.length === 0) {
+            container.style.display = 'none';
+            container.replaceChildren();
+            return;
+        }
+        container.style.display = 'block';
+        container.replaceChildren();
+
+        errors.slice(0, 5).forEach(e => {
+            const div = document.createElement('div');
+            div.className = 'text-danger small';
+
+            const icon = document.createElement('span');
+            icon.className = 'material-icons align-middle me-1';
+            icon.style.fontSize = '14px';
+            icon.textContent = 'error';
+
+            div.appendChild(icon);
+            div.appendChild(document.createTextNode(`Line ${e?.line ?? '–'}: ${e?.error ?? 'Unknown error'}`));
+            container.appendChild(div);
+        });
+
+        if (errors.length > 5) {
+            const extra = document.createElement('div');
+            extra.className = 'text-muted small';
+            extra.textContent = `… and ${errors.length - 5} more errors`;
+            container.appendChild(extra);
+        }
+    }
+
+    async function saveCustomRules() {
+        const input = document.getElementById('custom-rules-input');
+        const btn = document.getElementById('save-custom-rules-btn');
+        const statusEl = document.getElementById('custom-rules-status');
+        if (!input) return;
+
+        const rules = input.value;
+        if (btn) btn.disabled = true;
+        if (statusEl) {
+            statusEl.innerHTML = '';
+            statusEl.className = 'small text-muted';
+        }
+
+        try {
+            const res = await api('PATCH', '/api/dns/custom-rules', { rules });
+            const data = res.data || res;
+            updateCustomRulesCount(data.rule_count || 0);
+            showCustomRulesErrors(data.errors || []);
+
+            if (data.error_count > 0) {
+                wbToast(`Rules saved with ${data.error_count} syntax error(s)`, 'warning');
+                if (statusEl) {
+                    statusEl.innerHTML = `<span class="material-icons align-middle text-warning" style="font-size:16px;">warning</span> ${data.error_count} error(s)`;
+                    statusEl.className = 'small text-warning';
+                }
+            } else {
+                wbToast('Custom rules saved', 'success');
+                if (statusEl) {
+                    statusEl.innerHTML = '';
+                    statusEl.className = 'small text-muted';
+                }
+            }
+        } catch (e) {
+            wbToast('Failed to save custom rules: ' + e.message, 'danger');
+            if (statusEl) {
+                statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Failed';
+                statusEl.className = 'small text-danger';
+            }
+            // Also update rule count from textarea to reflect actual state
+            const lines = rules.split('\n').filter(l => {
+                const trimmed = l.trim();
+                return trimmed && !trimmed.startsWith('!') && !trimmed.startsWith('#');
+            });
+            updateCustomRulesCount(lines.length);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    // ─── SPEEDTEST / BANDWIDTH MEASUREMENT ──────────────────────

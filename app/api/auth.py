@@ -4,7 +4,16 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-"""Authentication API routes and dependencies."""
+"""Authentication API routes and dependencies.
+
+WARNING: This module uses in-memory caches (_mfa_challenge_cache,
+_recovery_download_cache) that are per-process. Running with multiple
+Uvicorn workers (--workers N where N > 1) will cause intermittent MFA
+failures as challenges stored by one worker won't be visible to others.
+
+For production with >1 worker, migrate caches to a shared store (Redis,
+database table) or enforce --workers 1 as a hard requirement.
+"""
 
 from __future__ import annotations
 
@@ -13,13 +22,13 @@ import ipaddress
 import io
 import logging
 import os
+import qrcode
 import sqlite3
 import re
 import threading
 import time
 import zipfile
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -55,6 +64,7 @@ from ..utils.otp import (
 	use_recovery_code,
 	verify_otp,
 )
+import pyotp
 from ..utils.rate_limit import RATE_LIMIT_AUTH, limiter
 from .response import ok_response
 
@@ -63,8 +73,13 @@ _security = HTTPBearer(auto_error=False)
 
 router = APIRouter(tags=["auth"])
 
-_DUMMY_OTP_SECRET = "JBSWY3DPEHPK3PXP"
+# Random ephemeral dummy OTP secret (prevents timing side-channels from being
+# identical across deployments; never actually used for authentication after fix)
+_DUMMY_OTP_SECRET = pyotp.random_base32()
 _MFA_CHALLENGE_TTL_SECONDS = 180
+_MAX_MFA_CHALLENGES = 10_000
+_MAX_RECOVERY_DOWNLOADS = 1_000
+_MAX_MFA_CHALLENGES_PER_USER = 3
 _RECOVERY_DOWNLOAD_TTL_SECONDS = 300
 _AUTH_COOKIE = "auth_token"
 _CSRF_COOKIE = "csrf_token"
@@ -114,14 +129,28 @@ def _parse_ip(value: str | None) -> str | None:
 
 
 def _store_mfa_challenge(user_id: int, username: str, client_ip: str) -> str:
-	"""Store one-time MFA challenge and return challenge token."""
+	"""Store one-time MFA challenge and return challenge token.
+	
+	Raises HTTPException(503) if cache is full or user has too many pending challenges.
+	"""
 	token = new_token()
 	expires_at = time.monotonic() + _MFA_CHALLENGE_TTL_SECONDS
 	with _mfa_challenge_cache_lock:
 		now = time.monotonic()
+		# Cleanup expired entries
 		expired = [key for key, value in _mfa_challenge_cache.items() if value[3] <= now]
 		for key in expired:
 			_mfa_challenge_cache.pop(key, None)
+		
+		# Check global cache size limit (DoS protection)
+		if len(_mfa_challenge_cache) >= _MAX_MFA_CHALLENGES:
+			raise HTTPException(status_code=503, detail="Service busy, try again later")
+		
+		# Check per-user limit (prevent single user from exhausting cache)
+		user_challenges = sum(1 for entry in _mfa_challenge_cache.values() if entry[0] == user_id)
+		if user_challenges >= _MAX_MFA_CHALLENGES_PER_USER:
+			raise HTTPException(status_code=429, detail="Too many pending MFA challenges, complete or wait for expiration")
+		
 		_mfa_challenge_cache[token] = (user_id, username, client_ip, expires_at)
 	return token
 
@@ -143,7 +172,10 @@ def _consume_mfa_challenge(token: str, username: str, client_ip: str) -> int | N
 
 
 def _store_recovery_download(user_id: int, username: str, codes: list[str]) -> str:
-	"""Store one-time recovery download payload and return a token."""
+	"""Store one-time recovery download payload and return a token.
+	
+	Raises HTTPException(503) if cache is full.
+	"""
 	token = new_token()
 	expires_at = time.monotonic() + _RECOVERY_DOWNLOAD_TTL_SECONDS
 	with _recovery_download_cache_lock:
@@ -152,6 +184,11 @@ def _store_recovery_download(user_id: int, username: str, codes: list[str]) -> s
 		expired = [key for key, value in _recovery_download_cache.items() if value[3] <= now]
 		for key in expired:
 			_recovery_download_cache.pop(key, None)
+		
+		# Check global cache size limit (DoS protection)
+		if len(_recovery_download_cache) >= _MAX_RECOVERY_DOWNLOADS:
+			raise HTTPException(status_code=503, detail="Service busy, try again later")
+		
 		_recovery_download_cache[token] = (user_id, username, list(codes), expires_at)
 	return token
 
@@ -220,13 +257,31 @@ def _get_client_ip(request: Request) -> str:
 
 
 def _is_https(request: Request) -> bool:
-	"""Determine HTTPS while honoring trusted reverse proxy headers."""
+	"""Determine HTTPS while honoring trusted reverse proxy headers.
+	
+	Raises HTTPException if client IP cannot be determined (prevents silent
+	cookie security degradation).
+	
+	Can be overridden with FORCE_HTTPS_COOKIES=true env var for production
+	deployments behind misconfigured reverse proxies.
+	"""
+	# Override for production deployments (use with caution)
+	force_https = os.environ.get("FORCE_HTTPS_COOKIES", "").lower() in ("true", "1", "yes")
+	if force_https:
+		return True
+	
 	if request.url.scheme == "https":
 		return True
 
 	scope_client = request.scope.get("client")
-	socket_ip = _parse_ip(scope_client[0]) if scope_client and scope_client[0] else None
-	if socket_ip and _is_trusted_proxy_ip(socket_ip):
+	if not scope_client or not scope_client[0]:
+		raise HTTPException(status_code=400, detail="Unable to determine client IP for secure cookie")
+	
+	socket_ip = _parse_ip(scope_client[0])
+	if not socket_ip:
+		raise HTTPException(status_code=400, detail="Unable to determine client IP for secure cookie")
+	
+	if _is_trusted_proxy_ip(socket_ip):
 		return request.headers.get("X-Forwarded-Proto", "").lower() == "https"
 
 	return False
@@ -457,8 +512,14 @@ def verify_mfa(
 
 	# Decrypt OTP secret for verification (stored encrypted at rest)
 	raw_secret = decrypt_otp_secret(user["otp_secret"])
-	user_secret = raw_secret if raw_secret else _DUMMY_OTP_SECRET
-	otp_valid = verify_otp(user_secret, payload.code)
+	if raw_secret:
+		otp_valid = verify_otp(raw_secret, payload.code)
+	else:
+		# Constant-time work to prevent timing oracle; always reject.
+		# Decryption failure indicates key rotation, corruption, or migration error.
+		verify_otp(_DUMMY_OTP_SECRET, payload.code)
+		otp_valid = False
+		_log.error("OTP_DECRYPT_FAILED user_id=%s", user["id"])
 
 	used_recovery = False
 

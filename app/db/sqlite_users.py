@@ -42,13 +42,8 @@ def _encrypt_otp_secret(secret: str) -> str:
 
 def decrypt_otp_secret(encrypted: str | None) -> str | None:
 	"""Decrypt OTP secret from storage. Returns None if not set."""
-	if not encrypted:
-		return None
-	# Handle legacy unencrypted secrets (migration window)
-	if not vault.is_encrypted(encrypted):
-		return encrypted
 	pepper = get_config().secret_key
-	return vault.decrypt(encrypted, pepper)
+	return vault.decrypt_if_needed(encrypted, pepper)
 
 
 # ---------------------------------------------------------------------------

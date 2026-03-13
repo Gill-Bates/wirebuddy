@@ -32,19 +32,17 @@ factory defaults, so migration versioning is reset to 0.
 from __future__ import annotations
 
 import logging
-import re
 import sqlite3
 from typing import Callable
 
 from ..db.sqlite_runtime import transaction
 
 _log = logging.getLogger(__name__)
-_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Current schema version.
 # Baseline is reset to v0 because all previous schema changes are now
 # integrated into init_schema() factory defaults.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 0
 
 
 def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
@@ -90,145 +88,9 @@ def _set_schema_version(conn: sqlite3.Connection, version: int) -> None:
 	)
 
 
-# ---------------------------------------------------------------------------
-# Helper functions for migrations
-# ---------------------------------------------------------------------------
-
-
-def _validate_identifier(name: str) -> str:
-	"""Validate that *name* is a safe SQL identifier."""
-	if not _IDENT_RE.fullmatch(name):
-		raise ValueError(f"Invalid SQL identifier: {name!r}")
-	return name
-
-
-def _quote_identifier(name: str) -> str:
-	"""Return a safely quoted SQL identifier.
-	
-	Note: Relies on _validate_identifier to reject names containing quotes.
-	Does not perform quote escaping.
-	"""
-	validated = _validate_identifier(name)
-	return f'"{validated}"'
-
-
-def _get_columns(conn: sqlite3.Connection, table: str) -> set[str]:
-	"""Return the set of column names for a table."""
-	table_ident = _quote_identifier(table)
-	cur = conn.execute(f"PRAGMA table_info({table_ident})")
-	return {row[1] for row in cur.fetchall()}
-
-
-def _add_column_if_missing(
-	conn: sqlite3.Connection,
-	table: str,
-	column: str,
-	definition: str,
-	columns: set[str] | None = None,
-) -> bool:
-	"""Add a column to *table* if it does not exist yet.  Returns True if added.
-	
-	Note: This only checks column presence, not schema correctness (type, default, constraints).
-	If a migration is partially applied with wrong column type, re-running will skip it silently.
-	
-	Warning: The *definition* parameter is unsanitized SQL interpolated directly.
-	Callers MUST ensure it contains only trusted, validated SQL (e.g. "TEXT NOT NULL DEFAULT ''").
-	This is internal-only and assumes migration functions are trusted code.
-	"""
-	table_ident = _quote_identifier(table)
-	column_ident = _quote_identifier(column)
-	if columns is None:
-		columns = _get_columns(conn, table)
-	if column not in columns:
-		conn.execute(f"ALTER TABLE {table_ident} ADD COLUMN {column_ident} {definition}")
-		_log.info("Migration: %s.%s column added", table, column)
-		return True
-	return False
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-	"""Check if a table exists in the database."""
-	validated_table = _validate_identifier(table)
-	cur = conn.execute(
-		"SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-		(validated_table,),
-	)
-	return cur.fetchone() is not None
-
-
-# ---------------------------------------------------------------------------
-# Migration registry
-# ---------------------------------------------------------------------------
-
 # Historical migrations are now part of the factory-default schema.
 # Start a new migration history from 0 for future schema changes.
-#
-# Migration naming convention: _migrate_NNNN_description(conn: sqlite3.Connection) -> None
-# where NNNN is the version number (must match version in tuple).
-
-
-def _migrate_0001_passkey_support(conn: sqlite3.Connection) -> None:
-	"""Add passkey (WebAuthn) support: passkeys table and users columns."""
-	# Create passkeys table
-	conn.execute(
-		"""
-		CREATE TABLE IF NOT EXISTS passkeys (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			user_id INTEGER NOT NULL,
-			credential_id TEXT NOT NULL UNIQUE,
-			public_key BLOB NOT NULL,
-			sign_count INTEGER NOT NULL DEFAULT 0,
-			device_name TEXT,
-			transports TEXT,
-			created_at TIMESTAMP NOT NULL,
-			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-		)
-		"""
-	)
-	conn.execute("CREATE INDEX IF NOT EXISTS idx_passkeys_user_id ON passkeys(user_id)")
-	conn.execute("CREATE INDEX IF NOT EXISTS idx_passkeys_credential_id ON passkeys(credential_id)")
-
-	# Add new columns to users table
-	columns = _get_columns(conn, "users")
-	_add_column_if_missing(conn, "users", "auth_method", "TEXT DEFAULT 'password'", columns)
-	_add_column_if_missing(conn, "users", "passkey_enabled", "INTEGER DEFAULT 0", columns)
-
-	_log.info("Migration 0001: Added passkey support")
-
-
-def _migrate_0002_passkey_pending(conn: sqlite3.Connection) -> None:
-	"""Add passkey_pending column for user onboarding flow."""
-	columns = _get_columns(conn, "users")
-	_add_column_if_missing(conn, "users", "passkey_pending", "INTEGER DEFAULT 0", columns)
-	_log.info("Migration 0002: Added passkey_pending column")
-
-
-def _migrate_0003_passkey_challenges(conn: sqlite3.Connection) -> None:
-	"""Add passkey_challenges table for multi-worker WebAuthn challenge storage."""
-	if not _table_exists(conn, "passkey_challenges"):
-		conn.execute(
-			"""
-			CREATE TABLE passkey_challenges (
-				challenge TEXT PRIMARY KEY,
-				ceremony_type TEXT NOT NULL CHECK (ceremony_type IN ('registration', 'authentication')),
-				user_id INTEGER,
-				username TEXT,
-				expires_at REAL NOT NULL,
-				created_at REAL NOT NULL
-			)
-			"""
-		)
-		conn.execute("CREATE INDEX IF NOT EXISTS idx_passkey_challenges_expires ON passkey_challenges(expires_at)")
-		_log.info("Migration 0003: Added passkey_challenges table")
-	else:
-		_log.info("Migration 0003: passkey_challenges table already exists")
-
-
-_MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
-	(1, _migrate_0001_passkey_support),
-	(2, _migrate_0002_passkey_pending),
-	(3, _migrate_0003_passkey_challenges),
-]
+_MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = []
 
 
 def _validate_migration_registry() -> None:
@@ -364,6 +226,7 @@ def check_migration_status(conn: sqlite3.Connection) -> dict:
 	Returns:
 		Dict with schema version info and pending migrations
 	"""
+	_ensure_schema_version_table(conn)
 	current_version = get_schema_version(conn)
 	
 	pending = [

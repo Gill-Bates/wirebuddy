@@ -1,0 +1,488 @@
+    const DNS_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
+
+    // Cache frequently accessed DOM elements for better performance
+    const domCache = {
+        dnsUpstream: null,
+        dnssecToggle: null,
+        dnssecStatus: null,
+        init() {
+            this.dnsUpstream = document.getElementById('dns-upstream-servers');
+            this.dnssecToggle = document.getElementById('dnssec-enabled');
+            this.dnssecStatus = document.getElementById('dnssec-status');
+        }
+    };
+
+    async function loadBlocklistSources() {
+        try {
+            const [res, status] = await Promise.all([
+                api('GET', '/api/dns/blocklist/sources'),
+                api('GET', '/api/dns/status'),
+            ]);
+            const sortedSources = [...(res.sources || [])].sort((a, b) => {
+                const aEnabled = !!a?.enabled;
+                const bEnabled = !!b?.enabled;
+                if (aEnabled !== bEnabled) return aEnabled ? -1 : 1;
+
+                const aName = String(a?.name || '').trim();
+                const bName = String(b?.name || '').trim();
+                const byName = aName.localeCompare(bName, undefined, { sensitivity: 'base' });
+                if (byName !== 0) return byName;
+
+                const aUrl = String(a?.url || '').trim();
+                const bUrl = String(b?.url || '').trim();
+                return aUrl.localeCompare(bUrl, undefined, { sensitivity: 'base' });
+            });
+            let html = '';
+            for (let i = 0; i < sortedSources.length; i++) {
+                const source = sortedSources[i];
+                const checked = source.enabled ? 'checked' : '';
+                const enabledClass = source.enabled ? ' enabled' : '';
+                const domainsValue = source.domains;
+                const domains = Number.isFinite(Number(domainsValue))
+                    ? Number(domainsValue).toLocaleString()
+                    : (String(domainsValue ?? '').trim() || '—');
+                const updated = source.last_updated || '—';
+                // Use hash + index to prevent ID collisions
+                const sourceId = `blocklist-${simpleHash(source.url)}-${i}`;
+                const dataUrl = esc(source.url).replace(/"/g, '&quot;');
+                const sourceTooltip = esc(source.url).replace(/"/g, '&quot;');
+                html += `
+                    <article class="blocklist-hero-card${enabledClass}">
+                        <div class="d-flex justify-content-between align-items-start gap-3">
+                            <div class="flex-grow-1">
+                                <div class="blocklist-hero-title-wrap">
+                                    <label class="blocklist-hero-title" for="${sourceId}" style="cursor: pointer;">${esc(source.name)}</label>
+                                    <button type="button" class="blocklist-source-info"
+                                        data-bs-toggle="tooltip" data-bs-title="${sourceTooltip}"
+                                        aria-label="Show source URL">
+                                        <span class="material-icons" aria-hidden="true">info</span>
+                                    </button>
+                                </div>
+                                <p class="blocklist-hero-desc mt-1">${esc(source.description)}</p>
+                            </div>
+                            <div class="form-check form-switch m-0">
+                                <input class="form-check-input" type="checkbox" id="${sourceId}"
+                                    data-url="${dataUrl}" ${checked}${isAdmin ? '' : ' disabled'}>
+                            </div>
+                        </div>
+                        <div class="blocklist-hero-meta">
+                            <span class="badge text-bg-secondary">Domains ${domains}</span>
+                            <span class="badge text-bg-secondary">Updated ${updated}</span>
+                        </div>
+                    </article>`;
+            }
+            const container = document.getElementById('blocklist-sources');
+            // Disable transitions during initial render to prevent toggle animation
+            container.classList.add('no-transitions');
+            container.innerHTML =
+                html || '<div class="text-muted text-center py-3">No blocklist sources available</div>';
+            bindBlocklistSourceListeners();
+            initBlocklistTooltips();
+            // Re-enable transitions after render completes
+            requestAnimationFrame(() => {
+                container.classList.remove('no-transitions');
+            });
+            const updEl = document.getElementById('blocklist-last-update');
+            const updValueEl = updEl?.querySelector('.blocklist-last-value');
+            if (updEl) {
+                if (status?.blocklist_updated_at) {
+                    const d = new Date(status.blocklist_updated_at);
+                    const value = d.toLocaleString();
+                    if (updValueEl) {
+                        updValueEl.textContent = value;
+                    } else {
+                        updEl.textContent = value;
+                    }
+                } else if (updValueEl) {
+                    updValueEl.textContent = '–';
+                } else {
+                    updEl.textContent = '–';
+                }
+            }
+        } catch (error) {
+            document.getElementById('blocklist-sources').innerHTML =
+                `<div class="text-danger py-2">Failed to load blocklists: ${error.message}</div>`;
+            const updEl = document.getElementById('blocklist-last-update');
+            const updValueEl = updEl?.querySelector('.blocklist-last-value');
+            if (updValueEl) {
+                updValueEl.textContent = '–';
+            } else if (updEl) {
+                updEl.textContent = '–';
+            }
+        }
+    }
+
+    function initBlocklistTooltips() {
+        if (!window.bootstrap?.Tooltip) return;
+        document.querySelectorAll('#blocklist-sources [data-bs-toggle="tooltip"]').forEach(el => {
+            const instance = bootstrap.Tooltip.getInstance(el);
+            if (instance) instance.dispose();
+            new bootstrap.Tooltip(el, { trigger: 'hover focus' });
+        });
+    }
+
+    function bindBlocklistSourceListeners() {
+        document.querySelectorAll('#blocklist-sources input[type="checkbox"][data-url]').forEach(cb => {
+            cb.addEventListener('change', () => {
+                toggleBlocklistCardState(cb);
+                saveBlocklistsDebounced();
+            });
+        });
+    }
+
+    function toggleBlocklistCardState(checkboxEl) {
+        const card = checkboxEl?.closest('.blocklist-hero-card');
+        if (!card) return;
+        card.classList.toggle('enabled', !!checkboxEl.checked);
+    }
+
+    function saveBlocklistsDebounced() {
+        // Debounce to avoid spamming when clicking multiple checkboxes quickly
+        clearTimeout(blocklistSaveTimeout);
+        blocklistSaveTimeout = setTimeout(saveBlocklists, 500);
+    }
+
+    async function saveBlocklists() {
+        const checkboxes = document.querySelectorAll('#blocklist-sources input[type="checkbox"]');
+        const enabledUrls = Array.from(checkboxes)
+            .filter(cb => cb.checked)
+            .map(cb => cb.dataset.url);
+
+        try {
+            const res = await api('POST', '/api/dns/blocklist/sources', {
+                urls: enabledUrls,
+            });
+            wbToast(res?.message || 'Blocklist update started', 'success');
+            // Refresh after a short delay to show updated state
+            setTimeout(() => loadBlocklistSources(), 2000);
+        } catch (error) {
+            wbToast('Failed to save blocklists: ' + error.message, 'danger');
+        }
+    }
+
+    async function updateBlocklist() {
+        try {
+            const res = await api('POST', '/api/dns/blocklist/update');
+            wbToast(res?.message || 'Blocklist update started', 'success');
+            // Refresh after a short delay to show updated state
+            setTimeout(() => loadBlocklistSources(), 2000);
+        } catch (e) {
+            wbToast('Update failed: ' + e.message, 'danger');
+        }
+    }
+
+    function dnsRetentionLabel(days) {
+        const n = Number(days);
+        if (n === 0) return 'No Logs';
+        if (n === 365) return '1 Year';
+        return `${n} Days`;
+    }
+
+    function dnsRetentionIndexForDays(days) {
+        const idx = DNS_RETENTION_VALUES.indexOf(Number(days));
+        return idx >= 0 ? idx : 2; // default: 30 days
+    }
+
+    function dnsRetentionDaysFromSlider(rawValue) {
+        const parsed = Number.parseInt(String(rawValue), 10);
+        const idx = Number.isFinite(parsed)
+            ? Math.max(0, Math.min(DNS_RETENTION_VALUES.length - 1, parsed))
+            : 2;
+        return DNS_RETENTION_VALUES[idx];
+    }
+
+    function updateDnsRetentionPreview(rawValue) {
+        const days = dnsRetentionDaysFromSlider(rawValue);
+        const labelEl = document.getElementById('dns-retention-value');
+        if (labelEl) {
+            labelEl.textContent = dnsRetentionLabel(days);
+            // Visual warning when logging is disabled
+            labelEl.className = days === 0
+                ? 'badge text-bg-danger'
+                : 'badge text-bg-secondary';
+        }
+        return days;
+    }
+
+    function getSelectedDnsRetention() {
+        const slider = document.getElementById('dns-retention-slider');
+        return dnsRetentionDaysFromSlider(slider?.value ?? 2);
+    }
+
+    function parseDnsUpstreamInput(raw) {
+        return (raw || '')
+            .split(/[,\n]+/)
+            .map(v => v.trim())
+            .filter(Boolean);
+    }
+
+    // DNS server format regex: IP@port#hostname
+    const DNS_FORMAT_RE = /^([^@#]+)(?:@(\d+))?(?:#(.+))?$/;
+
+    function validateDnsServerSyntax(server) {
+        const match = DNS_FORMAT_RE.exec(server.trim());
+        if (!match) return { valid: false, error: 'Invalid format' };
+
+        const ip = match[1]?.trim();
+        const port = match[2] ? parseInt(match[2], 10) : 853;
+        const hostname = match[3]?.trim();
+
+        // IPv4 validation with range checks
+        const ipv4Re = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+        const ipv4Match = ipv4Re.exec(ip);
+        if (ipv4Match) {
+            // Check each octet is 0-255
+            for (let i = 1; i <= 4; i++) {
+                const octet = parseInt(ipv4Match[i], 10);
+                if (octet < 0 || octet > 255) {
+                    return { valid: false, error: `Invalid IPv4 octet: ${octet}` };
+                }
+            }
+        } else {
+            // IPv6 validation (stricter - must have at least one colon and valid hex groups)
+            const ipv6Re = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$/;
+            if (!ipv6Re.test(ip)) {
+                return { valid: false, error: `Invalid IP address: ${ip}` };
+            }
+        }
+
+        if (port < 1 || port > 65535) {
+            return { valid: false, error: `Invalid port: ${port}` };
+        }
+
+        if (!hostname) {
+            return { valid: false, error: 'Hostname required for DoT' };
+        }
+
+        return { valid: true };
+    }
+
+    async function validateDnsServers() {
+        const btn = document.getElementById('validate-dns-btn');
+        const statusEl = document.getElementById('dns-validation-status');
+        const upstreamInput = document.getElementById('dns-upstream-servers');
+
+        if (!upstreamInput) return;
+
+        const servers = parseDnsUpstreamInput(upstreamInput.value);
+
+        if (servers.length === 0) {
+            wbToast('No DNS servers entered', 'warning');
+            return;
+        }
+
+        // First: Client-side syntax validation
+        const syntaxErrors = [];
+        for (const server of servers) {
+            const result = validateDnsServerSyntax(server);
+            if (!result.valid) {
+                syntaxErrors.push(`${server}: ${result.error}`);
+            }
+        }
+
+        if (syntaxErrors.length > 0) {
+            wbToast('Syntax errors:\n' + syntaxErrors.join('\n'), 'danger');
+            return;
+        }
+
+        // Second: Backend connectivity test
+        btn.disabled = true;
+        statusEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing servers...';
+        statusEl.className = 'small text-muted';
+
+        try {
+            const res = await api('POST', '/api/dns/test-upstream', { servers });
+
+            if (res.all_success) {
+                statusEl.innerHTML = '<span class="material-icons align-middle text-success" style="font-size:16px;">check_circle</span> All servers validated';
+                statusEl.className = 'small text-success';
+                wbToast(`All ${res.results.length} DNS servers are reachable`, 'success');
+            } else {
+                const failedServers = res.results
+                    .filter(r => !r.success)
+                    .map(r => `${r.server}: ${r.error}`)
+                    .join('\n');
+
+                statusEl.innerHTML = `<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> ${res.failed_count} server(s) failed`;
+                statusEl.className = 'small text-danger';
+                wbToast('DNS server validation failed:\n' + failedServers, 'danger');
+            }
+        } catch (error) {
+            statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Test failed';
+            statusEl.className = 'small text-danger';
+            wbToast('DNS validation error: ' + error.message, 'danger');
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    function setDnssecStatusText(data) {
+        const dnssecStatus = domCache.dnssecStatus || document.getElementById('dnssec-status');
+        if (!dnssecStatus) return;
+        if (data?.dnssec_available) {
+            dnssecStatus.textContent = data?.dnssec_active
+                ? 'DNSSEC active (root key available)'
+                : 'DNSSEC disabled (root key available)';
+        } else {
+            dnssecStatus.textContent = data?.dnssec_enabled
+                ? 'DNSSEC configured but unavailable (root key missing on system)'
+                : 'DNSSEC unavailable (root key missing on system)';
+        }
+    }
+
+    function bindDnsConfigListeners() {
+        if (dnsConfigListenersBound) return;
+        // Initialize DOM cache when binding listeners
+        if (!domCache.dnsUpstream) domCache.init();
+        const upstreamInput = domCache.dnsUpstream;
+        const dnssecToggle = domCache.dnssecToggle;
+        if (!upstreamInput || !dnssecToggle) return;
+
+        upstreamInput.addEventListener('change', function () {
+            if (dnsConfigHydrating) return;
+            saveDnsConfigDebounced();
+        });
+        dnssecToggle.addEventListener('change', async function () {
+            if (dnsConfigHydrating) return;
+            await saveDnsConfig();
+        });
+        dnsConfigListenersBound = true;
+    }
+
+    function saveDnsConfigDebounced() {
+        clearTimeout(dnsConfigSaveTimeout);
+        dnsConfigSaveTimeout = setTimeout(() => {
+            saveDnsConfig();
+        }, 500);
+    }
+
+    async function loadDnsConfig() {
+        try {
+            dnsConfigHydrating = true;
+            const res = await api('GET', '/api/dns/config');
+            const upstream = Array.isArray(res.upstream_dns) ? res.upstream_dns : [];
+            const upstreamInput = document.getElementById('dns-upstream-servers');
+            if (upstreamInput) upstreamInput.value = upstream.join('\n');
+
+            dnsConfigLastUpstream = upstream.slice();
+
+            const dnssecToggle = document.getElementById('dnssec-enabled');
+            if (dnssecToggle) {
+                dnssecToggle.checked = !!res.dnssec_active;
+                dnssecToggle.disabled = !isAdmin || !res.dnssec_available;
+            }
+            setDnssecStatusText(res);
+
+            dnsConfigLoaded = true;
+        } catch (error) {
+            const dnssecStatus = document.getElementById('dnssec-status');
+            if (dnssecStatus) dnssecStatus.textContent = 'Failed to load DNS settings';
+        } finally {
+            dnsConfigHydrating = false;
+        }
+    }
+
+    async function saveDnsConfig() {
+        if (dnsConfigHydrating) return;
+        if (dnsConfigSaving) {
+            dnsConfigSavePending = true;
+            return;
+        }
+        if (!dnsConfigLoaded) {
+            await loadDnsConfig();
+            if (!dnsConfigLoaded) return;
+        }
+
+        dnsConfigSaving = true;
+
+        try {
+            const upstreamInput = document.getElementById('dns-upstream-servers');
+            const dnssecToggle = document.getElementById('dnssec-enabled');
+            const servers = parseDnsUpstreamInput(upstreamInput?.value || '');
+
+            // Check if upstream servers changed
+            const upstreamChanged = JSON.stringify(servers) !== JSON.stringify(dnsConfigLastUpstream);
+
+            // Validate DNS servers before saving (only if they changed and any are specified)
+            if (upstreamChanged && servers.length > 0) {
+                // Syntax validation
+                const syntaxErrors = [];
+                for (const server of servers) {
+                    const result = validateDnsServerSyntax(server);
+                    if (!result.valid) {
+                        syntaxErrors.push(`${server}: ${result.error}`);
+                    }
+                }
+                if (syntaxErrors.length > 0) {
+                    wbToast('DNS syntax errors:\n' + syntaxErrors.join('\n'), 'danger');
+                    return;
+                }
+
+                // Connectivity test
+                const statusEl = document.getElementById('dns-validation-status');
+                if (statusEl) {
+                    statusEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Validating...';
+                    statusEl.className = 'small text-muted';
+                }
+
+                try {
+                    const testRes = await api('POST', '/api/dns/test-upstream', { servers });
+                    if (!testRes.all_success) {
+                        const failedServers = testRes.results
+                            .filter(r => !r.success)
+                            .map(r => `${r.server}: ${r.error}`)
+                            .join('\n');
+                        if (statusEl) {
+                            statusEl.innerHTML = `<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> ${testRes.failed_count} failed`;
+                            statusEl.className = 'small text-danger';
+                        }
+                        wbToast('DNS validation failed - settings not saved:\n' + failedServers, 'danger');
+                        return;
+                    }
+                    if (statusEl) {
+                        statusEl.innerHTML = '<span class="material-icons align-middle text-success" style="font-size:16px;">check_circle</span> Validated';
+                        statusEl.className = 'small text-success';
+                    }
+                } catch (error) {
+                    if (statusEl) {
+                        statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Test failed';
+                        statusEl.className = 'small text-danger';
+                    }
+                    wbToast('DNS validation error: ' + error.message, 'danger');
+                    return;
+                }
+            }
+
+            const payload = {
+                upstream_dns: servers,
+                dnssec_enabled: !!dnssecToggle?.checked,
+            };
+
+            const res = await api('POST', '/api/dns/config', payload);
+            dnsConfigLastUpstream = servers.slice();
+
+            // Use existing dnssecToggle reference (no shadowing)
+            if (dnssecToggle) {
+                dnssecToggle.checked = !!res?.dnssec_active;
+                dnssecToggle.disabled = !res?.dnssec_available;
+            }
+            setDnssecStatusText(res);
+
+            wbToast('DNS settings saved', 'success');
+        } catch (error) {
+            wbToast('Failed to save DNS settings: ' + error.message, 'danger');
+        } finally {
+            dnsConfigSaving = false;
+            // Retry pattern: ensure all pending saves are processed
+            if (dnsConfigSavePending) {
+                dnsConfigSavePending = false;
+                // Use setTimeout to avoid recursive call stack buildup
+                setTimeout(() => saveDnsConfig(), 50);
+            }
+        }
+    }
+
+    // Load blocklists (called by tab system)
+    // Removed automatic loading - now handled by initTabs()
+
+    /* ── Metrics Stats & Retention ─────────────────────────── */
