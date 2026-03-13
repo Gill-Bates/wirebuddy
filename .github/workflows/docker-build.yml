@@ -61,19 +61,6 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Check if tag already exists (workflow_dispatch only)
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          set -euo pipefail
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
-            "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy/tags/${{ steps.meta.outputs.tag }}/")
-          if [ "$RESPONSE" = "200" ]; then
-            echo "ERROR: Tag ${{ steps.meta.outputs.tag }} already exists on Docker Hub"
-            echo "Cannot overwrite existing release tag via manual workflow dispatch"
-            exit 1
-          fi
-          echo "✓ Tag does not exist, safe to proceed"
-
       - name: Build for local smoke test (amd64 only)
         run: |
           set -euo pipefail
