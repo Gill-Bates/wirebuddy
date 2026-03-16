@@ -1,0 +1,83 @@
+/* Custom styles for WireBuddy documentation */
+
+:root {
+    --wb-primary: #4f46e5;
+    --wb-accent: #3b82f6;
+}
+
+/* Improve code block styling */
+.highlight {
+    border-radius: 8px;
+    margin: 1em 0;
+}
+
+/* Custom admonition colors */
+.md-typeset .admonition.tip {
+    border-left-color: var(--wb-accent);
+}
+
+/* Grid cards styling */
+.grid.cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 1rem;
+    margin: 2rem 0;
+}
+
+.grid.cards>* {
+    border: 1px solid var(--md-default-fg-color--lightest);
+    border-radius: 8px;
+    padding: 1.5rem;
+    transition: box-shadow 0.2s;
+}
+
+.grid.cards>*:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+/* Material icon sizing in lists */
+.md-typeset .lg {
+    font-size: 2em;
+}
+
+.md-typeset .middle {
+    vertical-align: middle;
+}
+
+/* Button styling */
+.md-button {
+    margin: 0.2rem;
+}
+
+/* Table improvements */
+.md-typeset table:not([class]) {
+    font-size: 0.9em;
+}
+
+.md-typeset table:not([class]) th {
+    background-color: var(--md-default-fg-color--lightest);
+    font-weight: 600;
+}
+
+/* Code copy button enhancement */
+.md-clipboard {
+    color: var(--md-primary-fg-color);
+}
+
+/* Mermaid diagram styling */
+.mermaid {
+    background-color: transparent;
+}
+
+/* Light/Dark mode logo switching */
+.wb-logo-dark {
+    display: none;
+}
+
+[data-md-color-scheme="slate"] .wb-logo-light {
+    display: none;
+}
+
+[data-md-color-scheme="slate"] .wb-logo-dark {
+    display: inline;
+}

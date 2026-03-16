@@ -16,6 +16,7 @@ import os
 import shutil
 import signal
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -82,13 +83,15 @@ def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 			if UNBOUND_CONF.exists():
 				for config_line in UNBOUND_CONF.read_text(encoding="utf-8").splitlines():
 					config_line = config_line.strip()
-					if config_line.startswith("interface:"):
-						# Handle 'interface: 10.13.13.1@53' syntax (strip port)
-						ip = config_line.split(":", 1)[1].strip().split("@")[0]
-						# Skip localhost (would conflict with host DNS)
-						if ip and ip not in ("127.0.0.1", "::1"):
-							dns_ip = ip
-							break
+					# Skip comments and non-interface lines
+					if config_line.startswith("#") or not config_line.startswith("interface:"):
+						continue
+					# Handle 'interface: 10.13.13.1@53' and inline comments
+					ip = config_line.split(":", 1)[1].strip().split("@")[0].split("#")[0].strip()
+					# Skip localhost (would conflict with host DNS)
+					if ip and ip not in ("127.0.0.1", "::1"):
+						dns_ip = ip
+						break
 		except Exception as exc:
 			_log.debug("DNS_RESOLV failed to read unbound.conf: %s", exc)
 	
@@ -111,7 +114,15 @@ def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 		if f"nameserver {dns_ip}" in current:
 			_log.debug("DNS_RESOLV /etc/resolv.conf already configured for %s", dns_ip)
 			return
-		
+
+		# Backup current resolv.conf for restoration on stop
+		backup_path = _RESOLV_CONF.with_suffix(".conf.backup")
+		if not backup_path.exists() and current.strip():
+			try:
+				backup_path.write_text(current, encoding="utf-8")
+			except Exception as exc:
+				_log.debug("DNS_RESOLV failed to backup resolv.conf: %s", exc)
+
 		# Write new resolv.conf with WireGuard DNS
 		# Preserve search domains if present
 		lines = [f"# Configured by WireBuddy for local Unbound DNS", f"nameserver {dns_ip}"]
@@ -205,6 +216,24 @@ def _pid_is_running(pid: int) -> bool:
 		return False
 
 
+def _pid_is_unbound(pid: int) -> bool:
+	"""Return True if the PID is an unbound process (verified by process name).
+	
+	This prevents false positives from PID reuse when an unrelated process
+	inherits the PID after unbound crashes. Falls back to simple PID check
+	on non-Linux systems or if /proc is unavailable.
+	"""
+	if not _pid_is_running(pid):
+		return False
+	try:
+		# Linux-specific: check process name in /proc
+		comm = Path(f"/proc/{pid}/comm").read_text().strip()
+		return comm == "unbound"
+	except Exception:
+		# Fallback for non-Linux or permission errors
+		return True  # Assume PID is correct if we can't verify
+
+
 def _remove_stale_pid_file() -> None:
 	"""Delete unbound PID file when it points to a dead process."""
 	pid = _read_unbound_pid()
@@ -229,6 +258,10 @@ async def _reap_managed_proc() -> None:
 	if _supervisor_task is not None:
 		if not _supervisor_task.done():
 			_supervisor_task.cancel()
+			try:
+				await _supervisor_task
+			except (asyncio.CancelledError, Exception):
+				pass
 		_supervisor_task = None
 
 
@@ -294,9 +327,9 @@ async def is_running() -> bool:
 		if not _running_state.is_stale():
 			return _running_state.last_result
 
-		# Fast path: PID file check (pure syscall, no subprocess)
+		# Fast path: PID file check with process name verification
 		pid = _read_unbound_pid()
-		if pid and _pid_is_running(pid):
+		if pid and _pid_is_unbound(pid):
 			_running_state.update(True)
 			return True
 
@@ -321,8 +354,8 @@ async def _supervise_unbound() -> None:
 		return
 	try:
 		await proc.wait()
-	except Exception:
-		pass
+	except Exception as exc:
+		_log.debug("DNS_SUPERVISOR proc.wait() error: %s", exc)
 	# Acquire lock to safely clear the handle
 	try:
 		async with _proc_lock:
@@ -379,7 +412,10 @@ async def _start_impl() -> tuple[bool, str]:
 	# Ensure config exists (write minimal config without localhost binding
 	# to avoid conflicts with host DNS in Docker host network mode)
 	if not UNBOUND_CONF.exists():
-		write_config(listen_addrs_ipv4=[])
+		try:
+			write_config(listen_addrs_ipv4=[])
+		except Exception as exc:
+			return False, f"Failed to write initial config: {exc}"
 	
 	# First check config is valid (30s timeout for large blocklists)
 	code, _, stderr = await run_exec("unbound-checkconf", str(UNBOUND_CONF), timeout=30.0)
@@ -409,7 +445,7 @@ async def _start_impl() -> tuple[bool, str]:
 				# Start supervisor task to reap process on unexpected exit
 				_ensure_supervisor_task()
 				return True, "Unbound started"
-			if _unbound_proc.returncode is not None:
+			if _unbound_proc is not None and _unbound_proc.returncode is not None:
 				# Process exited during startup
 				msg = f"Failed to start (exit code {_unbound_proc.returncode})"
 				_log.error("DNS_START %s", msg)
@@ -428,6 +464,22 @@ async def _start_impl() -> tuple[bool, str]:
 		return False, f"Failed to start: {e}"
 
 
+def _restore_resolv_conf() -> None:
+	"""Restore /etc/resolv.conf from backup created during start."""
+	backup_path = _RESOLV_CONF.with_suffix(".conf.backup")
+	if not backup_path.exists():
+		return
+	try:
+		tmp_path = _RESOLV_CONF.with_suffix(".tmp")
+		backup_content = backup_path.read_text(encoding="utf-8")
+		tmp_path.write_text(backup_content, encoding="utf-8")
+		tmp_path.replace(_RESOLV_CONF)  # Atomic, matches _configure_resolv_conf
+		backup_path.unlink()
+		_log.info("DNS_STOP restored /etc/resolv.conf from backup")
+	except Exception as exc:
+		_log.debug("DNS_STOP failed to restore resolv.conf: %s", exc)
+
+
 async def _stop_impl() -> tuple[bool, str]:
 	"""Stop unbound (internal implementation without lock)."""
 	invalidate_running_cache()
@@ -437,6 +489,7 @@ async def _stop_impl() -> tuple[bool, str]:
 		if await _kill_pid(_unbound_proc.pid):
 			await _reap_managed_proc()
 			_remove_stale_pid_file()
+			_restore_resolv_conf()
 			_log.info("DNS_STOP unbound stopped (managed proc)")
 			return True, "Unbound stopped"
 
@@ -446,6 +499,7 @@ async def _stop_impl() -> tuple[bool, str]:
 		if await _kill_pid(pid):
 			_remove_stale_pid_file()
 			await _reap_managed_proc()
+			_restore_resolv_conf()
 			_log.info("DNS_STOP unbound stopped (pid file)")
 			return True, "Unbound stopped"
 
@@ -463,11 +517,13 @@ async def _stop_impl() -> tuple[bool, str]:
 		await _reap_managed_proc()
 		invalidate_running_cache()
 		if not await is_running():
+			_restore_resolv_conf()
 			_log.info("DNS_STOP unbound stopped (pgrep fallback)")
 			return True, "Unbound stopped"
 
 	invalidate_running_cache()
 	if not await is_running():
+		_restore_resolv_conf()
 		return True, "Unbound is not running"
 
 	return False, "Failed to stop unbound"
@@ -550,6 +606,7 @@ async def restart() -> tuple[bool, str]:
 		_intentional_stop = True  # Signal supervisor not to warn
 		await _stop_impl()
 		result = await _start_impl()
+		_intentional_stop = False  # Always reset after restart completes
 		if result[0]:
 			_reset_watchdog_failures()
 		return result
@@ -570,13 +627,13 @@ _MAX_WATCHDOG_FAILURES = 5
 _watchdog_failures = 0
 
 
-async def watchdog(should_be_running_func) -> None:
+async def watchdog(should_be_running_func: Callable[[], bool | Awaitable[bool]]) -> None:
 	"""Health check: restart unbound if it crashed unexpectedly.
 	
 	Args:
 		should_be_running_func: Callable that returns True if DNS service
 			is enabled (i.e., unbound should be running).
-			Must be synchronous (not async).
+			Can be synchronous or return an awaitable (coroutine).
 	
 	This is designed to be called periodically by the scheduler.
 	It will only attempt restart if:
@@ -592,29 +649,43 @@ async def watchdog(should_be_running_func) -> None:
 		return
 	
 	# Check if DNS service should be running
-	if not should_be_running_func():
+	result = should_be_running_func()
+	# Handle both sync and async callables
+	if asyncio.iscoroutine(result):
+		should_run = await result
+	else:
+		should_run = result
+	
+	if not should_run:
 		# User disabled DNS, don't auto-restart
 		async with _proc_lock:
 			_watchdog_failures = 0  # Reset failure counter
 		return
 	
+	# Read failure count under lock, then release before sleeping
 	async with _proc_lock:
-		# Check if already running (under lock to avoid TOCTOU with start/stop)
 		if await is_running():
 			_watchdog_failures = 0  # Reset on success
 			return
-
-		# Unbound is down but should be up
 		if _watchdog_failures >= _MAX_WATCHDOG_FAILURES:
 			# Too many failures, stop trying (prevent log spam)
 			# Will reset if manually started or DNS toggled
 			return
-
-		# Exponential backoff on retry to avoid rapid restart loops
-		if _watchdog_failures > 0:
-			backoff = min(2 ** _watchdog_failures, 60)
-			_log.info("DNS_WATCHDOG backing off %ds before retry", backoff)
-			await asyncio.sleep(backoff)
+		current_failures = _watchdog_failures
+	
+	# Exponential backoff WITHOUT holding the lock
+	if current_failures > 0:
+		backoff = min(2 ** current_failures, 60)
+		_log.info("DNS_WATCHDOG backing off %ds before retry", backoff)
+		await asyncio.sleep(backoff)
+	
+	# Re-acquire and re-check (state may have changed during sleep)
+	async with _proc_lock:
+		if await is_running():
+			_watchdog_failures = 0  # Reset on success
+			return
+		if _watchdog_failures >= _MAX_WATCHDOG_FAILURES:
+			return
 
 		_log.warning(
 			"DNS_WATCHDOG unbound not running, attempting restart (attempt %d/%d)",

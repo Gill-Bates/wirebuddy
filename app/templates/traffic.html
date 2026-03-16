@@ -9,7 +9,7 @@
 
 {% block content %}
 <!-- Data container for passing server-side values to JavaScript (CSP-compliant) -->
-<div id="traffic-app" data-is-admin="{{ user['is_admin'] | tojson }}" style="display: none;"></div>
+<div id="traffic-app" data-is-admin="{{ user['is_admin'] | tojson }}" data-traffic-analysis-enabled="{{ traffic_analysis_enabled | tojson }}" style="display: none;"></div>
 
 <div class="container-fluid wb-page">
     <!-- Header -->
@@ -18,7 +18,7 @@
             <span class="material-icons me-2">show_chart</span>
             Traffic
         </h2>
-        <div class="traffic-controls">
+        <div class="traffic-controls{% if not traffic_analysis_enabled %} d-none{% endif %}" id="traffic-controls">
             {% if user['is_admin'] %}
             <label for="traffic-peer-filter" class="visually-hidden">Filter by peer</label>
             <select id="traffic-peer-filter" class="form-select form-select-sm traffic-peer-filter-select" aria-label="Filter by peer">
@@ -38,6 +38,31 @@
         </div>
     </div>
 
+    <!-- Disabled Banner (shown when traffic analysis is disabled) -->
+    {% if not traffic_analysis_enabled %}
+    <div class="row g-3" id="traffic-disabled-banner">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body text-center py-5">
+                    <span class="material-icons text-muted mb-3" style="font-size: 3rem;">show_chart</span>
+                    <h3 class="h5 mb-2">Traffic Analysis Disabled</h3>
+                    <p class="text-muted mb-3">Enable Traffic Analysis in Settings to use this feature.</p>
+                    {% if user['is_admin'] %}
+                    <a href="/ui/settings#wireguard" class="btn btn-primary">
+                        <span class="material-icons align-middle me-1">settings</span>
+                        Go to Settings
+                    </a>
+                    {% else %}
+                    <p class="text-muted small mb-0">Contact an administrator to enable this feature.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Traffic Content (hidden when disabled) -->
+    <div id="traffic-content"{% if not traffic_analysis_enabled %} class="d-none"{% endif %}>
     {% if user['is_admin'] %}
     <!-- Traffic Chart Card (Admin only) -->
     <div class="row g-3">
@@ -152,6 +177,7 @@
             </div>
         </div>
     </div>
+    </div><!-- end traffic-content -->
 </div>
 {% endblock %}
 

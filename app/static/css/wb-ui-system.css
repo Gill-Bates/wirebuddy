@@ -195,6 +195,23 @@ small {
     padding: 0.3rem 0.5rem;
 }
 
+/* Fix: input-group buttons must match form-control height exactly
+   form-control: content = 0.85rem × 1.5 = 1.275rem, padding = 0.75rem, border = 2px
+   button icon:  content = 1.125rem (18px), needs extra 0.075rem padding per side
+   → button padding = 0.375rem + 0.075rem = 0.45rem */
+.input-group .btn-icon {
+    padding: 0.45rem 0.75rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.input-group .btn-icon .material-icons {
+    font-size: 1.125rem;
+    /* 18px */
+    line-height: 1;
+}
+
 .btn-icon .material-icons {
     margin-right: 0;
 }
@@ -728,4 +745,61 @@ html body .my-4 {
 .wb-readonly .input-group .btn {
     pointer-events: none;
     opacity: 0.45;
+}
+
+
+/* ---------- 26. Status Page Components ---------- */
+
+/* Status page main container — replaces inline style */
+.status-main {
+    max-width: 860px;
+}
+
+/* Flag icons — consistent sizing across all pages */
+.flag-icon {
+    width: 16px;
+    height: 12px;
+    object-fit: cover;
+    border-radius: 2px;
+}
+
+.flag-icon-sm {
+    width: 14px;
+    height: 10px;
+}
+
+
+/* ---------- 27. Accessibility — Reduced Motion ---------- */
+
+/* Respect user's motion preferences for animations.
+   Disables potentially disorienting animations for users with vestibular disorders. */
+@media (prefers-reduced-motion: reduce) {
+    .flow-line {
+        animation: none !important;
+    }
+
+    /* General animation/transition disable for all decorative animations */
+    * {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+
+/* ---------- 28. Visually Hidden (Screen Reader Only) ---------- */
+
+/* Bootstrap already has .visually-hidden, but ensure it's available */
+.visually-hidden,
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
 }

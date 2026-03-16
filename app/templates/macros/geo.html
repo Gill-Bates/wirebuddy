@@ -1,0 +1,27 @@
+{#
+  Macro: geo_badge
+  
+  Displays a country flag + city/ASN badge for geolocated IPs.
+  
+  Parameters:
+    - country_code: Two-letter country code (lowercase)
+    - city: City name (optional)
+    - as_org: AS organization name (optional)
+    - flag_size: Size variant - 'sm' for 14x10px, default is 16x12px
+#}
+{% macro geo_badge(country_code, city, as_org, flag_size='') %}
+{% if country_code or city or as_org %}
+<div class="small text-muted d-flex align-items-center gap-2 mt-1">
+    {% if country_code %}
+    <img alt="{{ country_code|upper }} flag"
+         src="/static/vendor/images/flags/{{ country_code }}.svg"
+         class="flag-icon{% if flag_size == 'sm' %} flag-icon-sm{% endif %}">
+    {% endif %}
+    <span>
+        {% if city %}{{ city }}{% endif %}
+        {% if city and as_org %} · {% endif %}
+        {% if as_org %}{{ as_org }}{% endif %}
+    </span>
+</div>
+{% endif %}
+{% endmacro %}

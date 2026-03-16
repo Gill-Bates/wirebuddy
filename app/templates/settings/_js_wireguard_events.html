@@ -192,13 +192,19 @@
             saveWgSettingsDebounced();
         });
     }
-    if (guiLocalhostOnly) guiLocalhostOnly.addEventListener('change', saveWgSettings);
+    if (guiLocalhostOnly) {
+        guiLocalhostOnly.addEventListener('change', () => saveWgSettings({ fields: ['gui_localhost_only'] }));
+    }
     if (wgMtu) wgMtu.addEventListener('change', saveWgSettingsDebounced);
     if (wgKeepalive) wgKeepalive.addEventListener('change', saveWgSettingsDebounced);
-    if (enableStatusPage) enableStatusPage.addEventListener('change', saveWgSettings);
+    if (enableStatusPage) {
+        enableStatusPage.addEventListener('change', () => saveWgSettings({ fields: ['enable_status_page'] }));
+    }
 
     const enableSwagger = document.getElementById('enable-swagger');
-    if (enableSwagger) enableSwagger.addEventListener('change', saveWgSettings);
+    if (enableSwagger) {
+        enableSwagger.addEventListener('change', () => saveWgSettings({ fields: ['enable_swagger'] }));
+    }
 
     const copyStatusPageUrlBtn = document.getElementById('btn-copy-status-page-url');
     if (copyStatusPageUrlBtn) {

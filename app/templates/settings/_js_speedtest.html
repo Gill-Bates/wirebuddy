@@ -93,10 +93,100 @@
         const btn = document.getElementById('btn-speedtest-run');
         const runningEl = document.getElementById('speedtest-running');
         const resultEl = document.getElementById('speedtest-result');
+        const statusEl = document.getElementById('speedtest-status');
+        const progressEl = document.getElementById('speedtest-progress');
 
         if (btn) btn.disabled = true;
         if (runningEl) runningEl.classList.remove('d-none');
         if (resultEl) resultEl.classList.add('d-none');
+        if (statusEl) statusEl.textContent = 'Initializing…';
+        if (progressEl) progressEl.textContent = '0%';
+
+        // Try SSE first, fall back to regular POST
+        const useSSE = typeof EventSource !== 'undefined';
+        
+        if (useSSE) {
+            try {
+                await runSpeedtestWithSSE(statusEl, progressEl, resultEl);
+            } catch (e) {
+                console.warn('SSE failed, falling back to POST:', e);
+                await runSpeedtestFallback(statusEl, progressEl, resultEl);
+            }
+        } else {
+            await runSpeedtestFallback(statusEl, progressEl, resultEl);
+        }
+
+        _speedtestRunning = false;
+        if (btn) btn.disabled = false;
+        if (runningEl) runningEl.classList.add('d-none');
+    }
+
+    function runSpeedtestWithSSE(statusEl, progressEl, resultEl) {
+        return new Promise((resolve, reject) => {
+            const es = new EventSource('/api/wireguard/speedtest/run/stream');
+            let completed = false;
+
+            es.addEventListener('progress', (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    if (statusEl) statusEl.textContent = data.message || 'Running…';
+                    if (progressEl) progressEl.textContent = `${Math.round(data.progress * 100)}%`;
+                } catch (err) {
+                    console.warn('Failed to parse progress event:', err);
+                }
+            });
+
+            es.addEventListener('result', (e) => {
+                completed = true;
+                es.close();
+                try {
+                    const data = JSON.parse(e.data);
+                    if (data.status === 'busy') {
+                        wbToast('Network appears busy — measurement skipped', 'warning');
+                    } else {
+                        showSpeedtestResult(data);
+                        wbToast('Speed test completed', 'success');
+                        document.dispatchEvent(new CustomEvent('speedtest-completed'));
+                    }
+                    resolve(data);
+                } catch (err) {
+                    reject(err);
+                }
+            });
+
+            es.addEventListener('error', (e) => {
+                completed = true;
+                es.close();
+                try {
+                    const data = JSON.parse(e.data);
+                    wbToast('Speed test failed: ' + (data.reason || 'Unknown error'), 'danger');
+                    reject(new Error(data.reason || 'Unknown error'));
+                } catch {
+                    // SSE connection error (not a server-sent error event)
+                    reject(new Error('Connection failed'));
+                }
+            });
+
+            es.onerror = () => {
+                if (!completed) {
+                    es.close();
+                    reject(new Error('SSE connection lost'));
+                }
+            };
+
+            // Safety timeout
+            setTimeout(() => {
+                if (!completed) {
+                    es.close();
+                    reject(new Error('Timeout'));
+                }
+            }, 180000);
+        });
+    }
+
+    async function runSpeedtestFallback(statusEl, progressEl, resultEl) {
+        if (statusEl) statusEl.textContent = 'Running speed test…';
+        if (progressEl) progressEl.textContent = '50%';
 
         try {
             const res = await api('POST', '/api/wireguard/speedtest/run', null, { timeoutMs: 180000 });
@@ -107,15 +197,10 @@
             } else {
                 showSpeedtestResult(data);
                 wbToast('Speed test completed', 'success');
-                // Notify dashboard to refresh speedtest chart
                 document.dispatchEvent(new CustomEvent('speedtest-completed'));
             }
         } catch (e) {
             wbToast('Speed test failed: ' + e.message, 'danger');
-        } finally {
-            _speedtestRunning = false;
-            if (btn) btn.disabled = false;
-            if (runningEl) runningEl.classList.add('d-none');
         }
     }
 

@@ -8,127 +8,59 @@
         <h2 class="page-title"><span class="material-icons me-2">info</span>About</h2>
     </div>
 
-    <div class="row g-3 about-layout">
-        <div class="col-12 col-lg-8 d-flex flex-column gap-3 about-left-col">
-            <div class="row g-3 about-top-row">
-                <!-- Card 1: Application Details -->
-                <div class="col-12 col-lg-6 d-flex">
-                    <div class="card flex-grow-1 d-flex flex-column">
-                        <div class="card-header d-flex align-items-center">
-                            <span class="material-icons me-2">code</span>
-                            <span class="fw-semibold">Application Details</span>
-                        </div>
-                        <div class="card-body">
-                            <table class="table table-sm table-borderless mb-3">
-                                <thead class="visually-hidden">
-                                    <tr>
-                                        <th scope="col">Property</th>
-                                        <th scope="col">Value</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr>
-                                        <td class="ps-0" style="width: 90px;"><strong>Version</strong></td>
-                                        <td><code class="about-meta-value about-meta-value-mono about-reference-value">{{ version }}</code></td>
-                                    </tr>
-                                    <tr>
-                                        <td class="ps-0"><strong>Build</strong></td>
-                                        <td><code class="about-meta-value about-meta-value-mono">{{ build_info[:7] if build_info != 'dev' else 'dev' }}</code></td>
-                                    </tr>
-                                    <tr>
-                                        <td class="ps-0"><strong>Python</strong></td>
-                                        <td><code class="about-meta-value about-meta-value-mono">{{ python_version }}</code></td>
-                                    </tr>
-                                    <tr>
-                                        <td class="ps-0"><strong>WireGuard</strong></td>
-                                        <td><code class="about-meta-value about-meta-value-mono">{{ wireguard_version }}</code></td>
-                                    </tr>
-                                    <tr>
-                                        <td class="ps-0"><strong>Unbound</strong></td>
-                                        <td><code class="about-meta-value about-meta-value-mono">{{ unbound_version }}</code></td>
-                                    </tr>
-                                </tbody>
-                            </table>
-
-                            <!-- Author -->
-                            <div class="pt-3 border-top author-section d-none d-lg-block">
-                                <h3 class="h6 text-muted mb-2">Author</h3>
-                                <div class="d-flex align-items-center">
-                                    <span class="material-icons me-2 text-primary">person</span>
-                                    <div>
-                                        <strong>Gill-Bates</strong>
-                                        <br>
-                                        <a href="https://github.com/Gill-Bates/wirebuddy" target="_blank" rel="noopener"
-                                            class="text-decoration-none small">
-                                            https://github.com/Gill-Bates/wirebuddy
-                                        </a>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
+    <div class="about-layout d-flex flex-column gap-3">
+        <!-- Row 1: Three cards side by side -->
+        <div class="row g-3 about-top-row">
+            <!-- Card 1: Application Details -->
+            <div class="col-12 col-lg-4 d-flex">
+                <div class="card flex-grow-1 d-flex flex-column">
+                    <div class="card-header d-flex align-items-center">
+                        <span class="material-icons me-2">code</span>
+                        <span class="fw-semibold">Application Details</span>
                     </div>
-                </div>
+                    <div class="card-body">
+                        <table class="table table-sm table-borderless mb-3">
+                            <thead class="visually-hidden">
+                                <tr>
+                                    <th scope="col">Property</th>
+                                    <th scope="col">Value</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td class="ps-0" style="width: 90px;"><strong>Version</strong></td>
+                                    <td><code class="about-meta-value about-meta-value-mono about-reference-value">{{ version }}</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="ps-0"><strong>Build</strong></td>
+                                    <td><code class="about-meta-value about-meta-value-mono">{{ build_info[:7] if build_info != 'dev' else 'dev' }}</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="ps-0"><strong>Python</strong></td>
+                                    <td><code class="about-meta-value about-meta-value-mono">{{ python_version }}</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="ps-0"><strong>WireGuard</strong></td>
+                                    <td><code class="about-meta-value about-meta-value-mono">{{ wireguard_version }}</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="ps-0"><strong>Unbound</strong></td>
+                                    <td><code class="about-meta-value about-meta-value-mono">{{ unbound_version }}</code></td>
+                                </tr>
+                            </tbody>
+                        </table>
 
-                <!-- Card 2: Check for Updates -->
-                <div class="col-12 col-lg-6 d-flex">
-                    <div class="card flex-grow-1 d-flex flex-column">
-                        <div class="card-header d-flex align-items-center justify-content-between">
-                            <div>
-                                <span class="material-icons me-2">system_update</span>
-                                <span class="fw-semibold">Check for Updates</span>
-                            </div>
-                            <button class="btn btn-sm btn-outline-secondary btn-icon d-inline-flex align-items-center justify-content-center flex-shrink-0 ms-2" id="btn-check-updates" title="Check now" aria-label="Check for updates now" data-is-admin="{{ user['is_admin'] | tojson }}">
-                                <span class="material-icons" style="font-size: 16px;">refresh</span>
-                            </button>
-                        </div>
-                        <div class="card-body">
-                            <div id="update-check-loading" class="text-center py-2">
-                                <div class="spinner-border spinner-border-sm text-primary" role="status">
-                                    <span class="visually-hidden">Checking...</span>
-                                </div>
-                                <span class="ms-2 text-muted small">Checking for updates...</span>
-                            </div>
-                            
-                            <div id="update-check-result" class="d-none">
-                                <div id="update-status-badge" class="mb-2"></div>
-                                
-                                <table class="table table-borderless table-sm mb-0">
-                                    <thead class="visually-hidden">
-                                        <tr>
-                                            <th scope="col">Field</th>
-                                            <th scope="col">Version value</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <tr>
-                                            <td class="ps-0" style="width: 50%;">Current</td>
-                                            <td class="text-end">
-                                                <code class="about-meta-value about-meta-value-mono about-update-value" id="update-current-version">–</code>
-                                            </td>
-                                        </tr>
-                                        <tr>
-                                            <td class="ps-0">Latest</td>
-                                            <td class="text-end">
-                                                <code class="about-meta-value about-meta-value-mono about-update-value" id="update-latest-version">–</code>
-                                            </td>
-                                        </tr>
-                                        <tr id="update-published-row" class="d-none">
-                                            <td class="ps-0">Released</td>
-                                            <td class="text-end">
-                                                <code class="about-meta-value about-meta-value-mono about-update-value" id="update-published-at">–</code>
-                                            </td>
-                                        </tr>
-                                    </tbody>
-                                </table>
-                                
-                                <div id="update-error" class="alert alert-warning mt-2 mb-0 py-1 d-none">
-                                    <small id="update-error-text"></small>
-                                </div>
-                                
-                                <div id="update-available-section" class="d-none mt-2">
-                                    <a id="update-release-link" href="#" target="_blank" class="btn btn-sm btn-primary w-100">
-                                        <span class="material-icons me-1" style="font-size: 14px;">open_in_new</span>
-                                        View Release on GitHub
+                        <!-- Author -->
+                        <div class="pt-3 border-top author-section d-none d-lg-block">
+                            <h3 class="h6 text-muted mb-2">Author</h3>
+                            <div class="d-flex align-items-center">
+                                <span class="material-icons me-2 text-primary">person</span>
+                                <div>
+                                    <strong>Gill-Bates</strong>
+                                    <br>
+                                    <a href="https://github.com/Gill-Bates/wirebuddy" target="_blank" rel="noopener"
+                                        class="text-decoration-none small">
+                                        https://github.com/Gill-Bates/wirebuddy
                                     </a>
                                 </div>
                             </div>
@@ -137,47 +69,114 @@
                 </div>
             </div>
 
-            <!-- Changelog -->
-            <div class="row g-3 about-cards-row flex-grow-1">
-                <div class="col-12 d-flex about-changelog-col">
-                    <div class="card flex-grow-1 d-flex flex-column card-fill">
-                        <div class="card-header d-flex align-items-center">
-                            <span class="material-icons me-2">history</span>
-                            <span class="fw-semibold">Changelog</span>
+            <!-- Card 2: Check for Updates -->
+            <div class="col-12 col-lg-4 d-flex">
+                <div class="card flex-grow-1 d-flex flex-column">
+                    <div class="card-header d-flex align-items-center justify-content-between">
+                        <div>
+                            <span class="material-icons me-2">system_update</span>
+                            <span class="fw-semibold">Check for Updates</span>
                         </div>
-                        <div class="card-body wb-card-body-surface changelog-content flex-grow-1 flex-scroll">
-                            {{ changelog_html | safe }}
+                        <button class="btn btn-sm btn-outline-secondary btn-icon d-inline-flex align-items-center justify-content-center flex-shrink-0 ms-2" id="btn-check-updates" title="Check now" aria-label="Check for updates now" data-is-admin="{{ user['is_admin'] | tojson }}">
+                            <span class="material-icons" style="font-size: 16px;">refresh</span>
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div id="update-check-loading" class="text-center py-2">
+                            <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                <span class="visually-hidden">Checking...</span>
+                            </div>
+                            <span class="ms-2 text-muted small">Checking for updates...</span>
+                        </div>
+                        
+                        <div id="update-check-result" class="d-none">
+                            <div id="update-status-badge" class="mb-2"></div>
+                            
+                            <table class="table table-borderless table-sm mb-0">
+                                <thead class="visually-hidden">
+                                    <tr>
+                                        <th scope="col">Field</th>
+                                        <th scope="col">Version value</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td class="ps-0" style="width: 50%;">Current</td>
+                                        <td class="text-end">
+                                            <code class="about-meta-value about-meta-value-mono about-update-value" id="update-current-version">–</code>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="ps-0">Latest</td>
+                                        <td class="text-end">
+                                            <code class="about-meta-value about-meta-value-mono about-update-value" id="update-latest-version">–</code>
+                                        </td>
+                                    </tr>
+                                    <tr id="update-published-row" class="d-none">
+                                        <td class="ps-0">Released</td>
+                                        <td class="text-end">
+                                            <code class="about-meta-value about-meta-value-mono about-update-value" id="update-published-at">–</code>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            
+                            <div id="update-error" class="alert alert-warning mt-2 mb-0 py-1 d-none">
+                                <small id="update-error-text"></small>
+                            </div>
+                            
+                            <div id="update-available-section" class="d-none mt-2">
+                                <a id="update-release-link" href="#" target="_blank" class="btn btn-sm btn-primary w-100">
+                                    <span class="material-icons me-1" style="font-size: 14px;">open_in_new</span>
+                                    View Release on GitHub
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Card 3: Dependencies -->
+            <div class="col-12 col-lg-4 d-flex about-deps-col">
+                <div class="card flex-grow-1 d-flex flex-column">
+                    <div class="card-header d-flex align-items-center">
+                        <span class="material-icons me-2">inventory_2</span>
+                        <span class="fw-semibold">Dependencies</span>
+                    </div>
+                    <div class="card-body p-0 d-flex flex-column">
+                        <div class="table-responsive dependencies-scroll flex-grow-1">
+                            <table class="table table-sm table-hover mb-0 dependencies-table">
+                                <thead class="sticky-top">
+                                    <tr>
+                                        <th>Package</th>
+                                        <th class="text-end">Version</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for pkg, ver in dependencies %}
+                                    <tr>
+                                        <td><code>{{ pkg }}</code></td>
+                                        <td class="text-end"><code class="about-meta-value about-meta-value-mono">{{ ver }}</code></td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Dependencies -->
-        <div class="col-12 col-lg-4 d-flex about-deps-col">
-            <div class="card flex-grow-1 d-flex flex-column card-fill">
-                <div class="card-header d-flex align-items-center">
-                    <span class="material-icons me-2">inventory_2</span>
-                    <span class="fw-semibold">Dependencies</span>
-                </div>
-                <div class="card-body p-0 d-flex flex-column">
-                    <div class="table-responsive dependencies-scroll flex-grow-1">
-                        <table class="table table-sm table-hover mb-0 dependencies-table">
-                            <thead class="sticky-top">
-                                <tr>
-                                    <th>Package</th>
-                                    <th class="text-end">Version</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for pkg, ver in dependencies %}
-                                <tr>
-                                    <td><code>{{ pkg }}</code></td>
-                                    <td class="text-end"><span class="badge bg-secondary">{{ ver }}</span></td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
+        <!-- Row 2: Changelog (full width) -->
+        <div class="row g-3 about-changelog-row flex-grow-1">
+            <div class="col-12 d-flex about-changelog-col">
+                <div class="card flex-grow-1 d-flex flex-column card-fill">
+                    <div class="card-header d-flex align-items-center">
+                        <span class="material-icons me-2">history</span>
+                        <span class="fw-semibold">Changelog</span>
+                    </div>
+                    <div class="card-body wb-card-body-surface changelog-content flex-grow-1 flex-scroll">
+                        {{ changelog_html | safe }}
                     </div>
                 </div>
             </div>
@@ -202,85 +201,83 @@
         flex: 0 0 auto;
     }
 
-    .about-cards-row {
-        flex: 1 1 0;
-        flex-grow: 1;
-        min-height: 0;
+    /* Make all three top cards equal height on desktop */
+    @media (min-width: 992px) {
+        .about-top-row {
+            align-items: stretch;
+        }
+
+        .about-top-row > .col-lg-4 {
+            display: flex;
+        }
+
+        .about-top-row > .col-lg-4 > .card {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Dependencies card: use position absolute to not affect row height */
+        .about-deps-col {
+            position: relative;
+        }
+
+        .about-deps-col > .card {
+            position: absolute;
+            top: 0;
+            left: calc(var(--bs-gutter-x) * 0.5);
+            right: calc(var(--bs-gutter-x) * 0.5);
+            bottom: 0;
+            overflow: hidden;
+        }
+
+        .about-deps-col .card-body {
+            flex: 1 1 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .about-deps-col .dependencies-scroll {
+            flex: 1 1 0;
+            min-height: 0;
+            overflow-y: auto;
+        }
     }
 
-    .about-left-col,
-    .about-deps-col,
-    .about-changelog-col {
-        min-height: 0;
-    }
-
-    .about-changelog-col {
-        height: 100%;
+    .about-changelog-row {
         flex: 1 1 auto;
-        flex-direction: column;
+        min-height: 300px;
+    }
+
+    .about-changelog-col {
         min-height: 0;
+        height: 100%;
+        flex-direction: column;
     }
 
     .dependencies-scroll {
         flex: 1 1 auto;
         overflow-y: auto;
-        padding: 0.5rem 1rem;
-    }
-
-    @media (min-width: 992px) {
-        .about-layout {
-            flex: 1;
-            min-height: 0;
-            overflow: hidden;
-        }
-
-        .about-left-col,
-        .about-deps-col {
-            flex: 1;
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .about-cards-row {
-            flex: 1;
-            min-height: 0;
-        }
-
-        .about-changelog-col {
-            flex: 1;
-            min-height: 0;
-        }
-
-        .about-deps-col .dependencies-scroll {
-            height: 100%;
-            max-height: none;
-        }
+        padding: 0.5rem 1rem 0.75rem;
     }
 
     @media (max-width: 991.98px) {
         .about-layout,
-        .about-left-col,
-        .about-deps-col,
-        .about-cards-row,
+        .about-changelog-row,
         .about-changelog-col {
             flex: 0 0 auto;
             min-height: auto;
         }
 
-        .about-cards-row .card-fill,
-        .about-deps-col .card-fill {
+        .about-changelog-col .card-fill {
             height: auto;
             max-height: none;
         }
 
-        /* Reorder: Dependencies first, then Changelog */
-        .about-deps-col {
-            order: 1;
-        }
-
-        .about-left-col {
-            order: 2;
+        .about-deps-col .dependencies-scroll {
+            max-height: 300px;
         }
     }
 
@@ -307,6 +304,9 @@
     .about-deps-col .card-body {
         min-height: 0;
         padding: 0;
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
     }
 
     .about-changelog-col .card-body {
@@ -396,6 +396,14 @@
 
     .dependencies-table td {
         padding: 0.5rem;
+    }
+
+    .dependencies-table tbody tr {
+        border-bottom: 1px solid var(--bs-border-color-translucent);
+    }
+
+    .dependencies-table tbody tr:last-child {
+        border-bottom: none;
     }
 
     .dependencies-table tbody tr:first-child td {

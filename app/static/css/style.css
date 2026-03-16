@@ -86,6 +86,13 @@ h1 {
     font-weight: 700;
 }
 
+/* Summary element focus indicator (used in details/summary) */
+summary:focus-visible {
+    outline: 2px solid var(--wb-primary);
+    outline-offset: 2px;
+    border-radius: var(--wb-radius-sm);
+}
+
 /* Material Icons - Vertical Alignment */
 .material-icons {
     vertical-align: middle;
@@ -669,10 +676,18 @@ html.login-page[data-bs-theme="dark"] .card .table,
     --bs-btn-hover-color: #ffe69c;
 }
 
+[data-bs-theme="dark"] .btn.btn-outline-danger {
+    --bs-btn-border-color: #ff6b6b;
+    --bs-btn-color: #ff6b6b;
+    --bs-btn-hover-bg: rgba(220, 53, 69, 0.15);
+    --bs-btn-hover-color: #ff8a8a;
+}
+
 [data-bs-theme="dark"] .btn.btn-outline-secondary:hover,
 [data-bs-theme="dark"] .btn.btn-outline-info:hover,
 [data-bs-theme="dark"] .btn.btn-outline-success:hover,
-[data-bs-theme="dark"] .btn.btn-outline-warning:hover {
+[data-bs-theme="dark"] .btn.btn-outline-warning:hover,
+[data-bs-theme="dark"] .btn.btn-outline-danger:hover {
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
@@ -708,6 +723,13 @@ html.login-page[data-bs-theme="dark"] .card .table,
 /* =============================================================================
    Dark Mode Fixes
    ============================================================================= */
+
+/* ── Fix: btn-light focus-visible for light mode ────────────────────────── */
+.btn.btn-light:focus-visible {
+    outline: 2px solid #6c757d;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 3px rgba(108, 117, 125, 0.25);
+}
 
 /* ── Fix: btn-light in Dark Mode (used for interface action buttons) ─────── */
 [data-bs-theme="dark"] .btn.btn-light {

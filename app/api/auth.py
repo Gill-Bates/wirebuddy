@@ -18,6 +18,7 @@ database table) or enforce --workers 1 as a hard requirement.
 from __future__ import annotations
 
 import base64
+import hmac
 import ipaddress
 import io
 import logging
@@ -29,6 +30,7 @@ import threading
 import time
 import zipfile
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -40,6 +42,7 @@ from ..db.sqlite_auth import (
 	get_user_by_token,
 	is_ip_locked,
 	record_failed_login,
+	refresh_auth_token,
 )
 from ..db.sqlite_users import (
 	decrypt_otp_secret,
@@ -164,9 +167,10 @@ def _consume_mfa_challenge(token: str, username: str, client_ip: str) -> int | N
 	user_id, expected_username, expected_ip, expires_at = entry
 	if expires_at <= time.monotonic():
 		return None
-	if expected_username != username:
+	# Use constant-time comparison to prevent timing oracle on username/IP
+	if not hmac.compare_digest(expected_username, username):
 		return None
-	if expected_ip != client_ip:
+	if not hmac.compare_digest(expected_ip, client_ip):
 		return None
 	return user_id
 
@@ -200,10 +204,12 @@ def _consume_recovery_download(token: str, user_id: int) -> tuple[str, list[str]
 	if not entry:
 		return None
 	stored_user_id, username, codes, expires_at = entry
-	if stored_user_id != user_id:
+	# Use constant-time comparison for user_id (defense in depth)
+	if not hmac.compare_digest(str(stored_user_id), str(user_id)):
 		return None
 	if expires_at <= time.monotonic():
 		return None
+	return username, codes
 	return username, codes
 
 
@@ -295,11 +301,22 @@ def _lookup_user_by_token(
 	token: str,
 	conn: sqlite3.Connection,
 	require_active: bool = True,
+	refresh: bool = False,
 ) -> Optional[sqlite3.Row]:
-	"""Helper to get user by token with optional is_active check."""
+	"""Helper to get user by token with optional is_active check.
+	
+	Args:
+		token: The auth token to look up
+		conn: Database connection
+		require_active: If True, return None for inactive users
+		refresh: If True, extend the token's sliding-window expiry (up to max_expires_at)
+	"""
 	user = get_user_by_token(conn, token)
 	if user and require_active and not user["is_active"]:
 		return None
+	if user and refresh:
+		# Extend sliding-window expiry by 1 hour (capped at max_expires_at by DB function)
+		refresh_auth_token(conn, token, hours=1)
 	return user
 
 
@@ -311,19 +328,20 @@ def get_current_user_optional(
 	"""Get the authenticated user, or None if not authenticated.
 	
 	Note: Still checks is_active to prevent disabled users from accessing resources.
+	Cookie-based auth extends the sliding-window session expiry on each request.
 	"""
-	# 1. Explicit Bearer token
+	# 1. Explicit Bearer token (no refresh - API clients manage their own tokens)
 	if credentials and credentials.credentials:
 		return _lookup_user_by_token(credentials.credentials, conn, require_active=True)
 
-	# 2. Cookie-based auth (UI routes only)
+	# 2. Cookie-based auth (UI routes only) - refresh sliding window
 	path = request.url.path
 	if not _allow_cookie_auth_for_path(path):
 		return None
 	
 	token = request.cookies.get(_AUTH_COOKIE)
 	if token:
-		return _lookup_user_by_token(token, conn, require_active=True)
+		return _lookup_user_by_token(token, conn, require_active=True, refresh=True)
 	
 	return None
 
@@ -333,8 +351,11 @@ def get_current_user(
 	credentials: Optional[HTTPAuthorizationCredentials] = Depends(_security),
 	conn: sqlite3.Connection = Depends(get_conn),
 ) -> sqlite3.Row:
-	"""FastAPI dependency that enforces authentication."""
-	# Prefer explicit bearer tokens
+	"""FastAPI dependency that enforces authentication.
+	
+	Cookie-based auth extends the sliding-window session expiry on each request.
+	"""
+	# Prefer explicit bearer tokens (no refresh - API clients manage their own tokens)
 	if credentials and credentials.credentials:
 		user = _lookup_user_by_token(credentials.credentials, conn, require_active=False)
 		if user:
@@ -343,12 +364,12 @@ def get_current_user(
 			return user
 		raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-	# Allow cookie-based auth on UI routes
+	# Allow cookie-based auth on UI routes - refresh sliding window
 	path = request.url.path
 	if _allow_cookie_auth_for_path(path):
 		token = request.cookies.get(_AUTH_COOKIE)
 		if token:
-			user = _lookup_user_by_token(token, conn, require_active=False)
+			user = _lookup_user_by_token(token, conn, require_active=False, refresh=True)
 			if user:
 				if not user["is_active"]:
 					raise HTTPException(status_code=403, detail="Account disabled")
@@ -435,13 +456,16 @@ def login(
 	create_auth_token(conn, user["id"], token, expires_at, max_expires_at)
 	update_last_login(conn, user["id"], client_ip)
 
-	max_age = max(0, int((expires_at - now).total_seconds()))
+	# Cookie max_age uses max_expires_at (24h) since the DB is the authority for
+	# sliding-window expiry. This prevents the browser from deleting the cookie
+	# before the session could be extended by user activity.
+	max_age = max(0, int((max_expires_at - now).total_seconds()))
 	response.set_cookie(
 		key=_AUTH_COOKIE,
 		value=token,
 		httponly=True,
 		secure=_is_https(request),
-		samesite="strict",
+		samesite="lax",  # Allow cross-site navigation for passkey/WebAuthn flows
 		max_age=max_age,
 		path="/",
 	)
@@ -551,13 +575,16 @@ def verify_mfa(
 	create_auth_token(conn, user["id"], token, expires_at, max_expires_at)
 	update_last_login(conn, user["id"], client_ip)
 
-	max_age = max(0, int((expires_at - now).total_seconds()))
+	# Cookie max_age uses max_expires_at (24h) since the DB is the authority for
+	# sliding-window expiry. This prevents the browser from deleting the cookie
+	# before the session could be extended by user activity.
+	max_age = max(0, int((max_expires_at - now).total_seconds()))
 	response.set_cookie(
 		key=_AUTH_COOKIE,
 		value=token,
 		httponly=True,
 		secure=_is_https(request),
-		samesite="strict",
+		samesite="lax",  # Allow cross-site navigation for passkey/WebAuthn flows
 		max_age=max_age,
 		path="/",
 	)
@@ -635,7 +662,8 @@ def get_current_user_info(user: sqlite3.Row = Depends(get_current_user)):
 
 
 @router.get("/me/otp/setup")
-def get_otp_setup_info(user: sqlite3.Row = Depends(get_current_user)):
+@limiter.limit(RATE_LIMIT_AUTH)
+def get_otp_setup_info(request: Request, user: sqlite3.Row = Depends(get_current_user)):
 	"""Get OTP provisioning info for the current user (only if setup is pending)."""
 	if not user["otp_secret"]:
 		raise HTTPException(status_code=400, detail="OTP setup not initiated")
@@ -653,18 +681,17 @@ def get_otp_setup_info(user: sqlite3.Row = Depends(get_current_user)):
 		username=user["username"],
 	)
 
-	# Generate QR code data URL
-	import qrcode
-
+	# Generate QR code data URL (provisioning URI already contains the secret)
 	img = qrcode.make(provisioning_uri)
 	buffer = io.BytesIO()
 	img.save(buffer, format="PNG")
 	qr_code_data_url = f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode('ascii')}"
 
+	# SECURITY: Do not return plaintext secret in JSON - it's encoded in the QR code
+	# and provisioning_uri if manual entry is needed
 	return ok_response(
 		data={
 			"provisioning_uri": provisioning_uri,
-			"secret": plaintext_secret,
 			"qr_code_data_url": qr_code_data_url,
 		}
 	)
@@ -700,10 +727,11 @@ def confirm_my_otp_setup(
 
 	_log.info("USER_OTP_SELF_CONFIRMED user_id=%d username=%s", user["id"], user["username"])
 	recovery_download_token = _store_recovery_download(user["id"], user["username"], recovery_codes)
+	# SECURITY: Do not return plaintext recovery codes in JSON - they should only
+	# be accessed via the secure ZIP download endpoint to prevent logging/caching
 	return ok_response(
 		data={
 			"otp_enabled": True,
-			"recovery_codes": recovery_codes,
 			"recovery_download_token": recovery_download_token,
 		}
 	)

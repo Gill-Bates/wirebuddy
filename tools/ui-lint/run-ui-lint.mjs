@@ -3,6 +3,10 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
+// tools/ui-lint/run-ui-lint.mjs
+// Copyright (C) 2025 Gill-Bates http://github.com/Gill-Bates
+//
+
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -52,6 +56,12 @@ const MODAL_BACKDROP_SATURATE_TOLERANCE = 0.05;
 const MODAL_BACKDROP_ALPHA_EXPECTED = 0.6;
 const MODAL_BACKDROP_ALPHA_TOLERANCE = 0.05;
 
+// Form Control Height validation (input-group consistency)
+// Current Bootstrap-based WireBuddy controls render at ~44px total height
+// for default-sized .form-control/.btn combinations in settings input groups.
+const INPUT_GROUP_HEIGHT_EXPECTED_PX = 44;
+const INPUT_GROUP_HEIGHT_TOLERANCE_PX = 2;
+
 // KPI Card validation constants
 const KPI_CARD_PADDING_EXPECTED = 16; // px (1rem)
 const KPI_CARD_PADDING_TOLERANCE = 1;
@@ -71,6 +81,17 @@ const WCAG_CONTRAST = {
     LARGE_TEXT_SIZE_BOLD_PX: 18.66,
     BOLD_WEIGHT: 700,
 };
+
+const STATUS_FLOW_NODE_EXPECTATIONS = [
+    { key: 'client', label: 'Client', icon: 'devices' },
+    { key: 'wireguard', label: 'WireGuard', icon: 'vpn_lock' },
+    { key: 'internet', label: 'Internet', icon: 'public' },
+];
+
+const STATUS_FLOW_CONNECTOR_EXPECTATIONS = [
+    'client-wireguard',
+    'wireguard-internet',
+];
 
 const LOGIN_FAILURE_VIEW_DEFS = [
     { name: 'login-error', url: '/login', scope: 'login' },
@@ -172,7 +193,7 @@ async function resetLayoutShiftMetric(page) {
 }
 
 async function login(page) {
-    await page.goto(`${BASE_URL}/login`, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.goto(`${BASE_URL}/login`, { waitUntil: 'networkidle', timeout: 10000 });
     await disableMotion(page, 'login');
 
     // Clear any previous form state
@@ -182,7 +203,7 @@ async function login(page) {
     await page.fill('#username', USERNAME);
     await page.fill('#password', PASSWORD);
     await Promise.all([
-        page.waitForURL((url) => !url.toString().includes('/login'), { timeout: 30000 }),
+        page.waitForURL((url) => !url.toString().includes('/login'), { timeout: 10000 }),
         page.click('#submit-btn'),
     ]);
 
@@ -291,11 +312,14 @@ async function captureStablePair(page, name) {
 }
 
 /**
- * Compares two screenshots and returns difference metrics.
- * @param {string} name - View name for output files
- * @param {string} shotA - Path to first screenshot
- * @param {string} shotB - Path to second screenshot
- * @returns {Object} Diff metrics including ratio and pixel counts
+ * Compares two screenshots pixel-by-pixel using pixelmatch algorithm.
+ * Detects visual regressions by measuring pixel differences between two PNG images.
+ * 
+ * @param {string} name - View name for output files (used for diff image naming)
+ * @param {string} shotA - Absolute path to first PNG screenshot
+ * @param {string} shotB - Absolute path to second PNG screenshot
+ * @returns {Object} Diff metrics: { ratio: number (0-1), mismatched: number, total: number, sizeMismatch: boolean, diffPath: string }
+ * @throws {Error} If PNG files cannot be read or dimensions mismatch severely
  */
 function diffScreenshots(name, shotA, shotB) {
     const img1 = PNG.sync.read(fs.readFileSync(shotA));
@@ -746,6 +770,63 @@ async function collectPageMetrics(page, scope) {
             })
             .filter(Boolean);
 
+        const isScrollContainer = (el) => {
+            if (!el || !isVisible(el) || !isInContentRoot(el)) return false;
+            const style = window.getComputedStyle(el);
+            return style.overflowY === 'auto' || style.overflowY === 'scroll';
+        };
+
+        // Generic scroll-bottom clearance check.
+        const scrollBottomCrowding = Array.from(contentRoot.querySelectorAll('*'))
+            .filter((el) => isScrollContainer(el))
+            .map((container) => {
+                const children = Array.from(container.children)
+                    .filter((child) => isVisible(child));
+
+                if (!children.length) return null;
+
+                const lastChild = children[children.length - 1];
+                const containerRect = container.getBoundingClientRect();
+                const childRect = lastChild.getBoundingClientRect();
+                const clearance = round(containerRect.bottom - childRect.bottom);
+
+                if (clearance >= constants.SCROLL_EDGE_CLEARANCE_MIN) return null;
+
+                return {
+                    clearance,
+                    container: rectInfo(container),
+                    lastChild: rectInfo(lastChild),
+                };
+            })
+            .filter(Boolean)
+            .slice(0, 20);
+
+        // Detect scroll-in-scroll and direct .card > scroll-container patterns.
+        const nestedScrollContainers = Array.from(contentRoot.querySelectorAll('*'))
+            .filter((el) => isScrollContainer(el))
+            .map((container) => {
+                let parentScroll = null;
+                let ancestor = container.parentElement;
+                while (ancestor && ancestor !== contentRoot.parentElement) {
+                    if (isScrollContainer(ancestor)) {
+                        parentScroll = ancestor;
+                        break;
+                    }
+                    ancestor = ancestor.parentElement;
+                }
+
+                const directCardParent = container.parentElement?.classList?.contains('card') || false;
+                if (!parentScroll && !directCardParent) return null;
+
+                return {
+                    container: rectInfo(container),
+                    parent: parentScroll ? rectInfo(parentScroll) : null,
+                    directCardParent,
+                };
+            })
+            .filter(Boolean)
+            .slice(0, 20);
+
         const referenceBadge = document.createElement('span');
         referenceBadge.className = 'badge bg-secondary';
         referenceBadge.textContent = 'Reference';
@@ -970,6 +1051,8 @@ async function collectPageMetrics(page, scope) {
                 if (!text || text.length < 2 || el.children.length > 0) return [];
                 if (el.classList.contains('material-icons') || el.closest('.material-icons')) return [];
                 if (el.closest('.navbar') || el.closest('.wb-footer')) return [];
+                const disabledAncestor = el.closest('button, [role="button"], input, select, textarea, .btn');
+                if (disabledAncestor && isDisabled(disabledAncestor)) return [];
                 const style = window.getComputedStyle(el);
                 const color = parseColor(style.color || '');
                 if (!color || color.a < 0.99) return [];
@@ -1336,6 +1419,150 @@ async function collectPageMetrics(page, scope) {
             };
         }
 
+        // Status page: Network flow diagram validation
+        if (scope === 'status') {
+            const flowWrapper = document.querySelector('[data-ui-lint="status-flow"]') || document.querySelector('.flow-wrapper');
+            const flowNodes = Array.from((flowWrapper || document).querySelectorAll('.flow-node'))
+                .filter((el) => isVisible(el));
+            const flowConnectors = Array.from((flowWrapper || document).querySelectorAll('.flow-connector'))
+                .filter((el) => isVisible(el));
+            const flowWrapperRect = flowWrapper ? flowWrapper.getBoundingClientRect() : null;
+            const desktopLayout = window.innerWidth > 991.98;
+
+            const flowNodeMetrics = flowNodes.map((node) => {
+                const icon = node.querySelector('.material-icons.flow-icon');
+                const label = node.querySelector('.flow-label');
+                const meta = node.querySelector('.flow-meta');
+                const style = window.getComputedStyle(node);
+                const rect = node.getBoundingClientRect();
+                const nodeKey = node.getAttribute('data-flow-node') || null;
+                const iconName = norm(icon?.textContent);
+                const labelText = label ? norm(label.textContent) : null;
+
+                return {
+                    key: nodeKey,
+                    width: round(rect.width),
+                    height: round(rect.height),
+                    left: round(rect.left),
+                    right: round(rect.right),
+                    top: round(rect.top),
+                    bottom: round(rect.bottom),
+                    borderWidth: Number.parseFloat(style.borderTopWidth || '0'),
+                    borderRadius: Number.parseFloat(style.borderTopLeftRadius || '0'),
+                    padding: Number.parseFloat(style.padding || '0'),
+                    hasActiveClass: node.classList.contains('flow-node-active'),
+                    hasInactiveClass: node.classList.contains('flow-node-inactive'),
+                    hasIcon: Boolean(icon),
+                    hasLabel: Boolean(label),
+                    hasMeta: Boolean(meta),
+                    iconName,
+                    labelText,
+                    metaText: meta ? norm(meta.textContent) : null,
+                };
+            });
+
+            const flowConnectorMetrics = flowConnectors.map((connector) => {
+                const line = connector.querySelector('.flow-line');
+                const lineStyle = line ? window.getComputedStyle(line) : null;
+                const rect = connector.getBoundingClientRect();
+                const connectorKey = connector.getAttribute('data-flow-connector') || line?.getAttribute('data-flow-line') || null;
+
+                return {
+                    key: connectorKey,
+                    width: round(rect.width),
+                    height: round(rect.height),
+                    left: round(rect.left),
+                    right: round(rect.right),
+                    top: round(rect.top),
+                    bottom: round(rect.bottom),
+                    hasLine: Boolean(line),
+                    lineHeight: lineStyle ? Number.parseFloat(lineStyle.height || '0') : null,
+                    lineWidth: lineStyle ? Number.parseFloat(lineStyle.width || '0') : null,
+                    hasAnimation: lineStyle ? lineStyle.animationName !== 'none' : false,
+                    hasInactiveClass: line ? line.classList.contains('flow-line-inactive') : false,
+                };
+            });
+
+            const flowHeightVariance = flowNodeMetrics.length > 1
+                ? Math.max(...flowNodeMetrics.map(n => n.height)) - Math.min(...flowNodeMetrics.map(n => n.height))
+                : 0;
+            const flowWidthVariance = flowNodeMetrics.length > 1
+                ? Math.max(...flowNodeMetrics.map((node) => node.width)) - Math.min(...flowNodeMetrics.map((node) => node.width))
+                : 0;
+            const orderedNodeKeys = flowNodeMetrics.map((node) => node.key);
+            const orderedConnectorKeys = flowConnectorMetrics.map((connector) => connector.key);
+            const expectedNodeKeys = constants.STATUS_FLOW_NODE_EXPECTATIONS.map((node) => node.key);
+            const expectedConnectorKeys = constants.STATUS_FLOW_CONNECTOR_EXPECTATIONS;
+            const expectedNodeLabels = new Map(constants.STATUS_FLOW_NODE_EXPECTATIONS.map((node) => [node.key, node.label]));
+            const expectedNodeIcons = new Map(constants.STATUS_FLOW_NODE_EXPECTATIONS.map((node) => [node.key, node.icon]));
+            const labelMismatches = flowNodeMetrics
+                .filter((node) => node.key && expectedNodeLabels.has(node.key))
+                .filter((node) => node.labelText !== expectedNodeLabels.get(node.key))
+                .map((node) => ({ key: node.key, labelText: node.labelText, expected: expectedNodeLabels.get(node.key) }));
+            const iconMismatches = flowNodeMetrics
+                .filter((node) => node.key && expectedNodeIcons.has(node.key))
+                .filter((node) => node.iconName !== expectedNodeIcons.get(node.key))
+                .map((node) => ({ key: node.key, iconName: node.iconName, expected: expectedNodeIcons.get(node.key) }));
+            const nodeStateConflicts = flowNodeMetrics
+                .filter((node) => node.hasActiveClass === node.hasInactiveClass)
+                .map((node) => ({ key: node.key, active: node.hasActiveClass, inactive: node.hasInactiveClass }));
+            const expectedOrientation = desktopLayout ? 'horizontal' : 'vertical';
+            const orientationIssues = [];
+
+            if (flowNodeMetrics.length === expectedNodeKeys.length) {
+                for (let index = 1; index < flowNodeMetrics.length; index += 1) {
+                    const previous = flowNodeMetrics[index - 1];
+                    const current = flowNodeMetrics[index];
+                    if (desktopLayout) {
+                        if (current.left <= previous.left || Math.abs(current.top - previous.top) > 8) {
+                            orientationIssues.push({ index, expectedOrientation, previous, current });
+                        }
+                    } else if (current.top <= previous.top || Math.abs(current.left - previous.left) > 8) {
+                        orientationIssues.push({ index, expectedOrientation, previous, current });
+                    }
+                }
+            }
+
+            const connectorOrientationIssues = flowConnectorMetrics.filter((connector) => {
+                if (desktopLayout) {
+                    return !(connector.width > connector.height && (connector.lineWidth || 0) >= (connector.lineHeight || 0));
+                }
+                return !(connector.height > connector.width && (connector.lineHeight || 0) >= (connector.lineWidth || 0));
+            }).map((connector) => ({
+                key: connector.key,
+                width: connector.width,
+                height: connector.height,
+                lineWidth: connector.lineWidth,
+                lineHeight: connector.lineHeight,
+                expectedOrientation,
+            }));
+
+            spacing.statusFlow = {
+                hasWrapper: Boolean(flowWrapper),
+                wrapperWidth: flowWrapperRect ? round(flowWrapperRect.width) : null,
+                wrapperHeight: flowWrapperRect ? round(flowWrapperRect.height) : null,
+                expectedOrientation,
+                nodeCount: flowNodes.length,
+                connectorCount: flowConnectors.length,
+                expectedNodeCount: 3, // Client, WireGuard, Internet
+                expectedConnectorCount: 2,
+                nodeCountMatch: flowNodes.length === 3,
+                connectorCountMatch: flowConnectors.length === 2,
+                nodeOrderMatches: orderedNodeKeys.join('|') === expectedNodeKeys.join('|'),
+                connectorOrderMatches: orderedConnectorKeys.join('|') === expectedConnectorKeys.join('|'),
+                nodes: flowNodeMetrics,
+                connectors: flowConnectorMetrics,
+                heightVariance: round(flowHeightVariance),
+                widthVariance: round(flowWidthVariance),
+                allNodesHaveStructure: flowNodeMetrics.every(n => n.hasIcon && n.hasLabel && n.hasMeta),
+                labelMismatches,
+                iconMismatches,
+                nodeStateConflicts,
+                orientationIssues,
+                connectorOrientationIssues,
+            };
+        }
+
         let loginFailure = null;
         if (scope === 'login') {
             const errorAlert = document.getElementById('error-alert');
@@ -1476,6 +1703,85 @@ async function collectPageMetrics(page, scope) {
             }
         }
 
+        // Form-switch margin consistency: expect mb-2 (12px) for proper card spacing
+        // Exception: switches in mb-3 wrappers (no direct margin) are also valid
+        const FORM_SWITCH_EXPECTED_MARGIN_PX = 12;
+        const FORM_SWITCH_MARGIN_TOLERANCE_PX = 2;
+        const formSwitchMarginIssues = Array.from(contentRoot.querySelectorAll('.form-check.form-switch'))
+            .filter((el) => isVisible(el) && isInContentRoot(el))
+            .map((el) => {
+                const style = window.getComputedStyle(el);
+                const marginBottom = Number.parseFloat(style.marginBottom || '0');
+                const hasMb0 = el.classList.contains('mb-0');
+                const hasMb2 = el.classList.contains('mb-2');
+                const marginOk = Math.abs(marginBottom - FORM_SWITCH_EXPECTED_MARGIN_PX) <= FORM_SWITCH_MARGIN_TOLERANCE_PX;
+
+                // Check if switch is in an mb-3 wrapper (valid pattern)
+                const parentHasMb3 = el.parentElement?.classList.contains('mb-3');
+                const isInMb3Wrapper = parentHasMb3 && marginBottom <= FORM_SWITCH_MARGIN_TOLERANCE_PX;
+
+                // Valid patterns: mb-2 on switch, mb-0 on switch, or switch in mb-3 wrapper
+                if (marginOk || hasMb0 || isInMb3Wrapper) return null;
+
+                return {
+                    ...rectInfo(el),
+                    marginBottom: round(marginBottom),
+                    hasMb0,
+                    hasMb2,
+                    parentHasMb3,
+                    label: el.querySelector('.form-check-label')?.textContent?.trim().slice(0, 40) || null,
+                };
+            })
+            .filter(Boolean);
+
+        // Input-group height consistency: all children must have matching heights
+        // and the group height should be close to the expected form-control height (~34px)
+        const inputGroupHeightIssues = Array.from(contentRoot.querySelectorAll('.input-group'))
+            .filter((group) => isVisible(group) && isInContentRoot(group))
+            .map((group) => {
+                const children = Array.from(group.children).filter((el) => isVisible(el));
+                if (children.length < 2) return null;
+
+                const heights = children.map((el) => {
+                    const rect = el.getBoundingClientRect();
+                    return round(rect.height);
+                });
+
+                const minHeight = Math.min(...heights);
+                const maxHeight = Math.max(...heights);
+                const heightVariance = maxHeight - minHeight;
+                const avgHeight = heights.reduce((a, b) => a + b, 0) / heights.length;
+                const expectedDeviation = Math.abs(avgHeight - constants.INPUT_GROUP_HEIGHT_EXPECTED_PX);
+
+                // Issue if: children don't match OR height deviates from expected
+                const hasVarianceIssue = heightVariance > constants.INPUT_GROUP_HEIGHT_TOLERANCE_PX;
+                const hasExpectedHeightIssue = expectedDeviation > constants.INPUT_GROUP_HEIGHT_TOLERANCE_PX;
+
+                if (!hasVarianceIssue && !hasExpectedHeightIssue) return null;
+
+                return {
+                    ...rectInfo(group),
+                    heights,
+                    minHeight,
+                    maxHeight,
+                    avgHeight: round(avgHeight),
+                    expectedHeight: constants.INPUT_GROUP_HEIGHT_EXPECTED_PX,
+                    heightVariance,
+                    expectedDeviation: round(expectedDeviation),
+                    issues: [
+                        hasVarianceIssue && 'childHeightMismatch',
+                        hasExpectedHeightIssue && 'unexpectedGroupHeight',
+                    ].filter(Boolean),
+                    childCount: children.length,
+                    childInfo: children.map((el) => ({
+                        tag: el.tagName,
+                        classList: typeof el.className === 'string' ? el.className.split(' ').filter(Boolean) : [],
+                        height: round(el.getBoundingClientRect().height),
+                    })),
+                };
+            })
+            .filter(Boolean);
+
         return {
             duplicateIds,
             emptyAriaLabels,
@@ -1492,6 +1798,8 @@ async function collectPageMetrics(page, scope) {
             focusOrderIssues,
             focusIndicatorMissing,
             scrollEdgeCrowding,
+            scrollBottomCrowding,
+            nestedScrollContainers,
             badgeStyleMismatches,
             monospaceToneMismatches,
             layoutShift,
@@ -1502,6 +1810,8 @@ async function collectPageMetrics(page, scope) {
             loginFailure,
             modalBackdrop,
             visualContainmentIssues,
+            formSwitchMarginIssues,
+            inputGroupHeightIssues,
         };
     }, {
         scope, constants: {
@@ -1529,6 +1839,10 @@ async function collectPageMetrics(page, scope) {
             MODAL_BACKDROP_SATURATE_TOLERANCE,
             MODAL_BACKDROP_ALPHA_EXPECTED,
             MODAL_BACKDROP_ALPHA_TOLERANCE,
+            INPUT_GROUP_HEIGHT_EXPECTED_PX,
+            INPUT_GROUP_HEIGHT_TOLERANCE_PX,
+            STATUS_FLOW_NODE_EXPECTATIONS,
+            STATUS_FLOW_CONNECTOR_EXPECTATIONS,
             WCAG_NORMAL_AA: WCAG_CONTRAST.NORMAL_AA,
             WCAG_LARGE_AA: WCAG_CONTRAST.LARGE_AA,
             WCAG_LARGE_TEXT_SIZE_PX: WCAG_CONTRAST.LARGE_TEXT_SIZE_PX,
@@ -1560,6 +1874,8 @@ function summarizeFindings(result) {
     if (result.metrics.focusOrderIssues?.length) pushWarning(`focusOrderIssues=${result.metrics.focusOrderIssues.length}`);
     if (result.metrics.focusIndicatorMissing?.length) pushWarning(`focusIndicatorMissing=${result.metrics.focusIndicatorMissing.length}`);
     if (result.metrics.scrollEdgeCrowding?.length) pushWarning(`scrollEdgeCrowding=${result.metrics.scrollEdgeCrowding.length}`);
+    if (result.metrics.scrollBottomCrowding?.length) pushWarning(`scrollBottomCrowding=${result.metrics.scrollBottomCrowding.length}`);
+    if (result.metrics.nestedScrollContainers?.length) pushWarning(`nestedScrollContainers=${result.metrics.nestedScrollContainers.length}`);
     if (result.metrics.badgeStyleMismatches?.length) pushWarning(`badgeStyleMismatches=${result.metrics.badgeStyleMismatches.length}`);
     if (result.metrics.monospaceToneMismatches?.length) pushWarning(`monospaceToneMismatches=${result.metrics.monospaceToneMismatches.length}`);
     if (result.metrics.cardContainment.cardsPastFooter.length) pushWarning(`cardsPastFooter=${result.metrics.cardContainment.cardsPastFooter.length}`);
@@ -1596,6 +1912,8 @@ function summarizeFindings(result) {
     if (result.metrics.componentLayoutShift?.length) pushHard(`componentLayoutShift=${result.metrics.componentLayoutShift.length}`);
     if (result.metrics.contrastProblems.length) pushHard(`contrastProblems=${result.metrics.contrastProblems.length}`);
     if (result.metrics.visualContainmentIssues?.length) pushWarning(`visualContainmentIssues=${result.metrics.visualContainmentIssues.length}`);
+    if (result.metrics.formSwitchMarginIssues?.length) pushWarning(`formSwitchMarginIssues=${result.metrics.formSwitchMarginIssues.length}`);
+    if (result.metrics.inputGroupHeightIssues?.length) pushHard(`inputGroupHeightIssues=${result.metrics.inputGroupHeightIssues.length}`);
     if (result.diff.ratio > VISUAL_DRIFT_THRESHOLD) pushHard(`visualDrift=${result.diff.ratio.toFixed(4)}`);
     if (result.network.consoleEntries.length) pushHard(`console=${result.network.consoleEntries.length}`);
     if (result.network.pageErrors.length) pushHard(`pageErrors=${result.network.pageErrors.length}`);
@@ -1705,6 +2023,58 @@ function summarizeFindings(result) {
         }
     }
 
+    // Status page: Network flow diagram validation
+    if (result.name.includes('status') && result.metrics.spacing.statusFlow) {
+        const flow = result.metrics.spacing.statusFlow;
+
+        if (!flow.hasWrapper) {
+            pushHard('statusFlowWrapperMissing');
+        }
+        if (!flow.nodeCountMatch) {
+            pushHard(`statusFlowNodeCount=${flow.nodeCount}/${flow.expectedNodeCount}`);
+        }
+        if (!flow.connectorCountMatch) {
+            pushHard(`statusFlowConnectorCount=${flow.connectorCount}/${flow.expectedConnectorCount}`);
+        }
+        if (!flow.nodeOrderMatches) {
+            pushHard('statusFlowNodeOrderMismatch');
+        }
+        if (!flow.connectorOrderMatches) {
+            pushHard('statusFlowConnectorOrderMismatch');
+        }
+        if (!flow.allNodesHaveStructure) {
+            const incomplete = flow.nodes.filter(n => !n.hasIcon || !n.hasLabel || !n.hasMeta);
+            pushWarning(`statusFlowIncompleteNodes=${incomplete.length}`);
+        }
+        if (flow.labelMismatches.length) {
+            pushHard(`statusFlowLabelMismatch=${flow.labelMismatches.length}`);
+        }
+        if (flow.iconMismatches.length) {
+            pushHard(`statusFlowIconMismatch=${flow.iconMismatches.length}`);
+        }
+        if (flow.nodeStateConflicts.length) {
+            pushHard(`statusFlowStateConflict=${flow.nodeStateConflicts.length}`);
+        }
+        if (flow.heightVariance > 5) {
+            pushWarning(`statusFlowHeightVariance=${flow.heightVariance}`);
+        }
+        if (flow.widthVariance > 24) {
+            pushWarning(`statusFlowWidthVariance=${flow.widthVariance}`);
+        }
+        if (flow.orientationIssues.length) {
+            pushHard(`statusFlowOrientation=${flow.orientationIssues.length}`);
+        }
+        if (flow.connectorOrientationIssues.length) {
+            pushHard(`statusFlowConnectorOrientation=${flow.connectorOrientationIssues.length}`);
+        }
+
+        // Validate connectors have animation when active
+        const inactiveConnectors = flow.connectors.filter(c => !c.hasInactiveClass && !c.hasAnimation);
+        if (inactiveConnectors.length) {
+            pushWarning(`statusFlowInactiveConnectors=${inactiveConnectors.length}`);
+        }
+    }
+
     if (result.name.includes('login-error')) {
         const loginFailure = result.metrics.loginFailure || {};
         const errorText = loginFailure.errorText || '';
@@ -1805,7 +2175,7 @@ async function auditView(page, view) {
 
 async function auditLoginFailureView(page, view) {
     const detachNetwork = collectConsoleAndNetwork(page);
-    await page.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 10000 });
     await disableMotion(page, view.name);
     await applyTheme(page, view.theme, view.name);
 
@@ -1928,30 +2298,61 @@ async function main() {
         // Run login-failure tests LAST to avoid rate limiting blocking the real login
         for (const [index, view] of LOGIN_FAILURE_VIEWS.entries()) {
             const page = view.mobile ? mobilePage : desktopPage;
-            try {
-                if (index > 0 && index % 3 === 0) {
-                    await new Promise((resolve) => setTimeout(resolve, LOGIN_LOCKOUT_RESET_MS));
+
+            // Retry logic for rate limiting: detect "too many attempts" and wait before retry
+            let result;
+            let attempt = 0;
+            const maxRetries = 3;
+
+            while (attempt < maxRetries) {
+                try {
+                    // Preventive delay every 3 tests
+                    if (index > 0 && index % 3 === 0 && attempt === 0) {
+                        await new Promise((resolve) => setTimeout(resolve, LOGIN_LOCKOUT_RESET_MS));
+                    }
+
+                    result = await auditLoginFailureView(page, view);
+
+                    // Check if rate limited by examining error text
+                    const errorText = result?.metrics?.loginFailure?.errorText?.toLowerCase() || '';
+                    if (errorText.includes('too many') || errorText.includes('rate limit') || errorText.includes('locked')) {
+                        if (attempt < maxRetries - 1) {
+                            console.warn(`[${view.name}] Rate limited, waiting ${LOGIN_LOCKOUT_RESET_MS}ms before retry ${attempt + 1}/${maxRetries - 1}`);
+                            await new Promise((resolve) => setTimeout(resolve, LOGIN_LOCKOUT_RESET_MS));
+                            attempt++;
+                            continue;
+                        }
+                    }
+
+                    // Success or non-rate-limit error
+                    break;
+                } catch (err) {
+                    if (attempt === maxRetries - 1) {
+                        console.error(`[${view.name}] Audit failed after ${maxRetries} attempts: ${err.message}`);
+                        result = {
+                            name: view.name,
+                            url: view.url,
+                            theme: view.theme,
+                            error: err.message,
+                            findings: ['auditError'],
+                            hardFindings: ['auditError'],
+                            warnings: [],
+                            diff: { ratio: 0, sizeMismatch: false },
+                            metrics: {},
+                            network: { consoleEntries: [], pageErrors: [], requestFailures: [], badResponses: [], requests: [], duplicateRequests: [] },
+                        };
+                        break;
+                    }
+                    attempt++;
                 }
-                const result = await auditLoginFailureView(page, view);
+            }
+
+            if (result) {
                 const summarized = summarizeFindings(result);
                 result.findings = summarized.findings;
                 result.hardFindings = summarized.hardFindings;
                 result.warnings = summarized.warnings;
                 results.push(result);
-            } catch (err) {
-                console.error(`[${view.name}] Audit failed: ${err.message}`);
-                results.push({
-                    name: view.name,
-                    url: view.url,
-                    theme: view.theme,
-                    error: err.message,
-                    findings: ['auditError'],
-                    hardFindings: ['auditError'],
-                    warnings: [],
-                    diff: { ratio: 0, sizeMismatch: false },
-                    metrics: {},
-                    network: { consoleEntries: [], pageErrors: [], requestFailures: [], badResponses: [], requests: [], duplicateRequests: [] },
-                });
             }
         }
     } finally {
@@ -1985,6 +2386,8 @@ async function main() {
             focusOrderIssues: metrics.focusOrderIssues?.length || 0,
             focusIndicatorMissing: metrics.focusIndicatorMissing?.length || 0,
             scrollEdgeCrowding: metrics.scrollEdgeCrowding?.length || 0,
+            scrollBottomCrowding: metrics.scrollBottomCrowding?.length || 0,
+            nestedScrollContainers: metrics.nestedScrollContainers?.length || 0,
             badgeStyleMismatches: metrics.badgeStyleMismatches?.length || 0,
             monospaceToneMismatches: metrics.monospaceToneMismatches?.length || 0,
             modalBackdropBlur: metrics.modalBackdrop?.blurPx ?? null,
@@ -2000,6 +2403,9 @@ async function main() {
             kpiCards: spacing.kpiCards?.length || 0,
             kpiMissingClass: spacing.cardsMissingKpiClass?.length || 0,
             kpiHeightVariance: spacing.kpiHeightVariance || 0,
+            statusFlowNodes: spacing.statusFlow?.nodeCount || 0,
+            statusFlowConnectors: spacing.statusFlow?.connectorCount || 0,
+            statusFlowHeightVariance: spacing.statusFlow?.heightVariance || 0,
             loginErrorVisible: Boolean(metrics.loginFailure?.alertVisible),
             loginShakeActive: Boolean(metrics.loginFailure?.cardAnimationActive),
             loginPasswordInvalid: Boolean(metrics.loginFailure?.passwordInvalidClass),

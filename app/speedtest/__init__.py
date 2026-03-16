@@ -6,6 +6,20 @@
 
 """Lightweight bandwidth measurement module."""
 
-from .tester import BandwidthTester
+from .guard import (
+	DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
+	SpeedtestBusyError,
+	SpeedtestCooldownError,
+	acquire_speedtest_run_lease,
+)
+from .tester import BandwidthTester, ProgressCallback, ProgressEvent
 
-__all__ = ["BandwidthTester"]
+__all__ = [
+	"BandwidthTester",
+	"ProgressCallback",
+	"ProgressEvent",
+	"DEFAULT_SPEEDTEST_COOLDOWN_SECONDS",
+	"SpeedtestBusyError",
+	"SpeedtestCooldownError",
+	"acquire_speedtest_run_lease",
+]

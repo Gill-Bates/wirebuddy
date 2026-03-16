@@ -78,24 +78,11 @@
         if (!target) return;
 
         const fqdnInput = document.getElementById('wg-fqdn');
-        const guiPortInput = document.getElementById('gui-port');
         const rawHost = (fqdnInput?.value || '').trim().replace(/^\[|\]$/g, '');
         const host = rawHost || window.location.hostname;
-        const protocol = 'http:';
         const urlHost = host.includes(':') ? `[${host}]` : host;
 
-        // Priority: input field → DB setting → default 8000
-        // Always show port for internal VPN clients (they access directly, not via reverse proxy)
-        const DEFAULT_GUI_PORT = 8000;
-        const parsedInputPort = Number.parseInt(guiPortInput?.value || '', 10);
-        const parsedDbPort = Number.parseInt(String(_wgSettings?.gui_port || ''), 10);
-        const port = Number.isFinite(parsedInputPort) && parsedInputPort >= 1 && parsedInputPort <= 65535
-            ? parsedInputPort
-            : (Number.isFinite(parsedDbPort) && parsedDbPort >= 1 && parsedDbPort <= 65535
-                ? parsedDbPort
-                : DEFAULT_GUI_PORT);
-
-        target.textContent = `${protocol}//${urlHost}:${port}/status`;
+        target.textContent = `https://${urlHost}/status`;
     }
 
     async function copyStatusPageUrl() {
@@ -131,22 +118,11 @@
         if (!target) return;
 
         const fqdnInput = document.getElementById('wg-fqdn');
-        const guiPortInput = document.getElementById('gui-port');
         const rawHost = (fqdnInput?.value || '').trim().replace(/^\[|\]$/g, '');
         const host = rawHost || window.location.hostname;
-        const protocol = 'http:';
         const urlHost = host.includes(':') ? `[${host}]` : host;
 
-        const DEFAULT_GUI_PORT = 8000;
-        const parsedInputPort = Number.parseInt(guiPortInput?.value || '', 10);
-        const parsedDbPort = Number.parseInt(String(_wgSettings?.gui_port || ''), 10);
-        const port = Number.isFinite(parsedInputPort) && parsedInputPort >= 1 && parsedInputPort <= 65535
-            ? parsedInputPort
-            : (Number.isFinite(parsedDbPort) && parsedDbPort >= 1 && parsedDbPort <= 65535
-                ? parsedDbPort
-                : DEFAULT_GUI_PORT);
-
-        target.textContent = `${protocol}//${urlHost}:${port}/swagger`;
+        target.textContent = `https://${urlHost}/swagger`;
     }
 
     async function copySwaggerUrl() {
@@ -312,80 +288,78 @@
         // Prevent saving before settings are loaded (race condition protection)
         if (!wgSettingsLoaded) {
             console.warn('[WG Settings] Save blocked - settings not yet loaded');
-            return;
+            return false;
         }
-        const { silentSuccess = false } = options;
+        const { silentSuccess = false, fields = null } = options;
         const payload = {};
+        const includeField = (field) => !Array.isArray(fields) || fields.includes(field);
         
         const fqdnInput = document.getElementById('wg-fqdn');
         const guiPortInput = document.getElementById('gui-port');
         const mtuInput = document.getElementById('wg-mtu');
         const keepaliveInput = document.getElementById('wg-keepalive');
         
-        if (fqdnInput) {
+        if (fqdnInput && includeField('wg_fqdn')) {
             const fqdn = fqdnInput.value.trim();
             payload.wg_fqdn = fqdn || null;
         }
 
-        if (guiPortInput) {
+        if (guiPortInput && includeField('gui_port')) {
             const guiPortResult = parseOptionalInt(guiPortInput.value, 1, 65535, 'HTTP Port (GUI)');
             if (!guiPortResult.valid) {
                 wbToast(guiPortResult.message, 'warning');
-                return;
+                return false;
             }
             payload.gui_port = guiPortResult.value;
         }
 
-        if (mtuInput) {
+        if (mtuInput && includeField('wg_mtu')) {
             const mtuResult = parseOptionalInt(mtuInput.value, 1280, 9000, 'MTU');
             if (!mtuResult.valid) {
                 wbToast(mtuResult.message, 'warning');
-                return;
+                return false;
             }
             payload.wg_mtu = mtuResult.value;
         }
 
-        if (keepaliveInput) {
+        if (keepaliveInput && includeField('wg_persistent_keepalive')) {
             const keepaliveResult = parseOptionalInt(keepaliveInput.value, 0, 600, 'Persistent Keepalive');
             if (!keepaliveResult.valid) {
                 wbToast(keepaliveResult.message, 'warning');
-                return;
+                return false;
             }
             payload.wg_persistent_keepalive = keepaliveResult.value;
         }
 
         // Include localhost toggle state
         const localhostToggle = document.getElementById('gui-localhost-only');
-        if (localhostToggle) payload.gui_localhost_only = localhostToggle.checked ? '1' : '0';
+        if (localhostToggle && includeField('gui_localhost_only')) payload.gui_localhost_only = localhostToggle.checked ? '1' : '0';
 
         // Include PSK toggle state
         const pskToggle = document.getElementById('wg-use-psk');
-        if (pskToggle) payload.wg_use_psk = pskToggle.checked ? '1' : '0';
+        if (pskToggle && includeField('wg_use_psk')) payload.wg_use_psk = pskToggle.checked ? '1' : '0';
 
         const statusToggle = document.getElementById('enable-status-page');
-        if (statusToggle) payload.enable_status_page = statusToggle.checked ? '1' : '0';
+        if (statusToggle && includeField('enable_status_page')) payload.enable_status_page = statusToggle.checked ? '1' : '0';
 
         const swaggerToggle = document.getElementById('enable-swagger');
-        if (swaggerToggle) payload.enable_swagger = swaggerToggle.checked ? '1' : '0';
+        if (swaggerToggle && includeField('enable_swagger')) payload.enable_swagger = swaggerToggle.checked ? '1' : '0';
 
         // Guard against empty payload
         if (Object.keys(payload).length === 0) {
-            return;
-        }
-
-        // Show immediate feedback for Swagger toggle (prevents multiple clicks)
-        const isSwaggerToggle = 'enable_swagger' in payload;
-        if (isSwaggerToggle && !silentSuccess) {
-            wbToast('Saving...', 'success');
+            return true;
         }
 
         try {
-            await api('PATCH', '/api/wireguard/settings', payload);
+            const response = await api('PATCH', '/api/wireguard/settings', payload);
+            _wgSettings = response?.settings || response?.data?.settings || _wgSettings;
             if (!silentSuccess) {
                 wbToast('Settings saved', 'success');
             }
+            return true;
         } catch (error) {
             wbToast('Failed to save settings: ' + error.message, 'danger');
+            return false;
         }
     }
 

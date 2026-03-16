@@ -71,10 +71,12 @@ __all__ = [
 	"get_all_peer_hashes",
 	"get_all_peer_keys",  # Deprecated, but kept for backwards compat
 	"get_db_stats",
+	"get_synthetic_storage_stats",
 	"run_maintenance",
 	"flush_to_disk",
 	"finalize_shutdown",
 	"delete_peer_data",
+	"purge_synthetic_data",
 	"purge_tsdb",
 	"reset_all",
 ]
@@ -217,8 +219,10 @@ def _series_path(tsdb_dir: Path, peer_key: str, metric: str) -> Path:
 		dir_name = peer_key.strip("_")
 		return tsdb_dir / _TRAFFIC_DIRNAME / dir_name / f"{metric}.jsonl"
 	if peer_key in SYNTHETIC_KEYS:
-		dir_name = peer_key.strip("_")
-		return tsdb_dir / dir_name / f"{metric}.jsonl"
+		# If we reach here, a synthetic key was added to SYNTHETIC_KEYS but not handled above
+		raise ValueError(
+			f"Unhandled synthetic key: {peer_key} — add explicit path mapping in _series_path"
+		)
 
 	return tsdb_dir / _PEERS_DIRNAME / _peer_dir_name(peer_key) / f"{metric}.jsonl"
 
@@ -226,6 +230,30 @@ def _series_path(tsdb_dir: Path, peer_key: str, metric: str) -> Path:
 def _lock_path(series_path: Path) -> Path:
 	"""Return the lock file path for a series."""
 	return series_path.with_suffix(".lock")
+
+
+def _synthetic_dir_path(tsdb_dir: Path, peer_key: str) -> Path:
+	"""Return the storage directory for a synthetic key."""
+	if peer_key == "__speedtest__":
+		return tsdb_dir / _SPEEDTEST_DIRNAME
+	if peer_key in {"__geo_traffic__", "__asn_traffic__"}:
+		return tsdb_dir / _TRAFFIC_DIRNAME / peer_key.strip("_")
+	if peer_key in SYNTHETIC_KEYS:
+		return tsdb_dir / peer_key.strip("_")
+	raise ValueError(f"Unsupported synthetic key: {peer_key}")
+
+
+def _count_lines(path: Path) -> int:
+	"""Count newline-delimited records efficiently (handles both plain and gzip)."""
+	count = 0
+	open_func = gzip.open if path.suffix == ".gz" else open
+	with open_func(path, "rb") as fp:
+		while True:
+			chunk = fp.read(1 << 16)
+			if not chunk:
+				break
+			count += chunk.count(b"\n")
+	return count
 
 
 class _ReadWriteLock:
@@ -254,11 +282,10 @@ class _ReadWriteLock:
 	
 	def release_read(self):
 		"""Release a shared read lock."""
-		self._lock.acquire()
-		self._readers -= 1
-		if self._readers == 0:
-			self._write_ready.notify()
-		self._lock.release()
+		with self._read_ready:
+			self._readers -= 1
+			if self._readers == 0:
+				self._write_ready.notify()
 	
 	def acquire_write(self):
 		"""Acquire an exclusive write lock.
@@ -267,11 +294,12 @@ class _ReadWriteLock:
 		"""
 		self._write_ready.acquire()
 		self._writers_waiting += 1
+		acquired = False
 		try:
 			# CRITICAL: Detect reentrant lock attempts (same thread calling twice)
 			# This would deadlock without detection
 			current_thread_id = threading.current_thread().ident
-			if self._writers > 0 and getattr(self, '_writer_thread_id', None) == current_thread_id:
+			if self._writers > 0 and self._writer_thread_id == current_thread_id:
 				raise RuntimeError(
 					"_ReadWriteLock is not reentrant. "
 					"Same thread cannot acquire write lock twice. "
@@ -282,9 +310,15 @@ class _ReadWriteLock:
 				self._write_ready.wait()
 			self._writers = 1
 			self._writer_thread_id = current_thread_id
+			acquired = True
 		finally:
 			self._writers_waiting -= 1
-		self._write_ready.release()
+			if not acquired:
+				self._write_ready.release()
+		
+		# Only release if acquisition succeeded (outside finally to avoid double-release)
+		if acquired:
+			self._write_ready.release()
 	
 	def release_write(self):
 		"""Release an exclusive write lock."""
@@ -353,7 +387,12 @@ class _FileLock:
 					pass
 			
 			# CRITICAL FIX #1: Recover uncompressed rotations left by crashes
-			_recover_uncompressed_rotations(self._series_path)
+			# FIX: Only run once per series to avoid redundant glob operations
+			key = str(self._series_path)
+			with _recovered_series_lock:
+				if key not in _recovered_series:
+					_recover_uncompressed_rotations(self._series_path)
+					_recovered_series.add(key)
 		
 		return self
 
@@ -403,14 +442,14 @@ def _should_prune(series_path: Path) -> bool:
 		try:
 			# Try to get exclusive lock without blocking
 			fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-			# Double-check after acquiring lock (only if marker existed before)
-			if marker_existed:
-				try:
-					last_prune = os.fstat(fd).st_mtime
-					if now - last_prune < PRUNE_INTERVAL_SECONDS:
-						return False
-				except OSError:
-					pass
+			# Always double-check after acquiring lock to handle race conditions
+			try:
+				last_prune = os.fstat(fd).st_mtime
+				if now - last_prune < PRUNE_INTERVAL_SECONDS:
+					return False
+			except OSError:
+				# First time or stat failed - proceed with prune
+				pass
 			# Update mtime to claim the slot
 			os.utime(fd)
 			return True
@@ -432,6 +471,26 @@ def _validate_retention(retention_days: int) -> int:
 	return retention_days
 
 
+def _archive_sort_key(p: Path) -> str:
+	"""Normalize archive timestamps to fixed-width for correct sorting.
+	
+	Old archives use YYYYMMDDTHHMMSSz (16 chars), new ones use
+	YYYYMMDDTHHMMSSµµµµµµz (22 chars with microseconds). Without
+	normalization, 'Z' > '0' causes chronological inversion.
+	"""
+	name = p.name
+	marker = ".jsonl."
+	idx = name.find(marker)
+	if idx < 0:
+		return name
+	after = name[idx + len(marker):]
+	ts = after.removesuffix(".gz")
+	# Pad old format (no microseconds) to match new format width
+	if len(ts) == 16:  # "YYYYMMDDTHHMMSSz"
+		ts = ts[:-1] + "000000Z"
+	return ts
+
+
 def _rotated_archives(series_path: Path) -> list[Path]:
 	"""Return rotated archive files for a series (sorted oldest -> newest).
 	
@@ -448,8 +507,8 @@ def _rotated_archives(series_path: Path) -> list[Path]:
 		and not p.name.endswith(".gz")
 	]
 	
-	# Combine and sort by filename (timestamp embedded in name)
-	return sorted(gz_archives + uncompressed, key=lambda p: p.name)
+	# Combine and sort by normalized timestamp to handle format transitions
+	return sorted(gz_archives + uncompressed, key=_archive_sort_key)
 
 
 def _iter_series_files(series_path: Path) -> list[Path]:
@@ -536,12 +595,15 @@ def _prune_archives_locked(series_path: Path, cutoff: datetime) -> None:
 	for arc in _rotated_archives(series_path):
 		try:
 			# Parse timestamp from filename: metric.jsonl.20260219T120000123456Z.gz (with microseconds)
-			# Extract the timestamp part (before .gz)
-			parts = arc.stem.split(".")  # Remove .gz, get ['metric', 'jsonl', '20260219T120000123456Z']
-			if len(parts) < 3:
+			# Extract timestamp - must work for both .gz and uncompressed rotations
+			name = arc.name
+			marker = ".jsonl."
+			idx = name.find(marker)
+			if idx < 0:
 				_log.warning("Archive filename does not contain timestamp: %s", arc.name)
 				continue
-			timestamp_str = parts[-1]  # Get '20260219T120000123456Z'
+			after = name[idx + len(marker):]  # "20260219T120000123456Z.gz" or "20260219T120000123456Z"
+			timestamp_str = after.removesuffix(".gz")  # Get '20260219T120000123456Z'
 			# Parse ISO 8601 basic format timestamp (try with microseconds first, fall back to seconds)
 			try:
 				arc_time = datetime.strptime(timestamp_str, "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)
@@ -644,7 +706,7 @@ def purge_tsdb(tsdb_dir: Path) -> None:
 					Path(root, d).rmdir()
 				except OSError:
 					pass
-	tsdb_dir.mkdir(parents=True, exist_ok=True)
+	init_tsdb(tsdb_dir)
 
 
 def delete_peer_data(tsdb_dir: Path, peer_key: str) -> None:
@@ -658,11 +720,12 @@ def delete_peer_data(tsdb_dir: Path, peer_key: str) -> None:
 	
 	The caller MUST ensure no append_point() calls are in-flight for this peer_key.
 	"""
-	tdir = tsdb_dir / _PEERS_DIRNAME / _peer_dir_name(peer_key)
+	dir_name = _peer_dir_name(peer_key)
+	tdir = tsdb_dir / _PEERS_DIRNAME / dir_name
 	if not tdir.exists():
 		return
 	
-	_log.info("Deleting peer data for key_hash=%s (NO LOCKS - ensure peer inactive)", key_hash)
+	_log.info("Deleting peer data: %s (NO LOCKS - ensure peer inactive)", dir_name)
 	
 	try:
 		shutil.rmtree(tdir)
@@ -683,6 +746,10 @@ def delete_peer_data(tsdb_dir: Path, peer_key: str) -> None:
 _MAX_FSYNC_ENTRIES = 2000
 _fsync_batch_state: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _fsync_batch_lock = threading.Lock()
+
+# Recovery tracking to avoid redundant uncompressed rotation recovery per series
+_recovered_series: set[str] = set()
+_recovered_series_lock = threading.Lock()
 
 
 def _should_fsync_batch(series_path: Path) -> bool:
@@ -860,7 +927,8 @@ def query(
 		if latest:
 			# CRITICAL FIX #5: Iterate files in REVERSE order for latest queries
 			# This allows early termination instead of reading entire history
-			buffer: deque[MetricPoint] = deque(maxlen=limit)
+			# No maxlen on deque - rely on collected check to prevent over-collection
+			buffer: deque[MetricPoint] = deque()
 			collected = 0
 			
 			# Read files from newest to oldest
@@ -900,8 +968,10 @@ def query(
 			
 			return list(buffer)
 		else:
-			# For non-latest queries, collect up to limit
+			# For non-latest queries, collect all matching points
+			# FIX: Early termination when limit reached and no time filter
 			all_matching: list[MetricPoint] = []
+			collected = 0
 			for src in _iter_series_files(p):
 				for line in _iter_json_lines(src):
 					line = line.strip()
@@ -923,13 +993,14 @@ def query(
 						continue
 
 					all_matching.append(MetricPoint(ts=ts, value=val))
+					collected += 1
+					# Early termination: if no time filter and already have enough
+					if since_u is None and collected >= limit:
+						break
+				if since_u is None and collected >= limit:
+					break
 
-					if len(all_matching) >= limit:
-						# MEDIUM FIX #6: Ensure chronological sort
-						all_matching.sort(key=lambda pt: pt.ts)
-						return all_matching[:limit]
-
-			# MEDIUM FIX #6: Ensure chronological sort
+			# Sort once after collecting all matches to ensure correct chronological order
 			all_matching.sort(key=lambda pt: pt.ts)
 			return all_matching[:limit]
 
@@ -995,7 +1066,7 @@ def get_all_peer_keys(tsdb_dir: Path) -> list[str]:
 	warnings.warn(
 		"get_all_peer_keys is deprecated and returns hashes, not keys. "
 		"Use get_all_peer_hashes() instead.",
-		DeprecationWarning,
+		FutureWarning,
 		stacklevel=2
 	)
 	return get_all_peer_hashes(tsdb_dir)
@@ -1014,7 +1085,6 @@ def get_db_stats(tsdb_dir: Path) -> dict[str, Any]:
 			"peer_count": 0,
 			"file_count": 0,
 			"archive_count": 0,
-			"retention_days": DEFAULT_RETENTION_DAYS,
 			"max_series_file_bytes": MAX_SERIES_FILE_BYTES,
 		}
 	
@@ -1045,9 +1115,69 @@ def get_db_stats(tsdb_dir: Path) -> dict[str, Any]:
 		"peer_count": peer_count,
 		"file_count": file_count,
 		"archive_count": archive_count,
-		"retention_days": DEFAULT_RETENTION_DAYS,
 		"max_series_file_bytes": MAX_SERIES_FILE_BYTES,
 	}
+
+
+def get_synthetic_storage_stats(tsdb_dir: Path, peer_key: str) -> dict[str, Any]:
+	"""Get storage statistics for a synthetic key bucket."""
+	dir_path = _synthetic_dir_path(tsdb_dir, peer_key)
+	if not dir_path.exists():
+		return {
+			"path": str(dir_path),
+			"size_bytes": 0,
+			"file_count": 0,
+			"record_count": 0,
+		}
+
+	size_bytes = 0
+	file_count = 0
+	record_count = 0
+
+	for entry in dir_path.iterdir():
+		if not entry.is_file():
+			continue
+		name = entry.name
+		if not (name.endswith(".jsonl") or (".jsonl." in name and name.endswith(".gz"))):
+			continue
+		try:
+			stat = entry.stat()
+			size_bytes += stat.st_size
+			file_count += 1
+			record_count += _count_lines(entry)
+		except OSError:
+			pass
+
+	return {
+		"path": str(dir_path),
+		"size_bytes": size_bytes,
+		"file_count": file_count,
+		"record_count": record_count,
+	}
+
+
+def purge_synthetic_data(tsdb_dir: Path, peer_key: str) -> int:
+	"""Delete all files for a synthetic key bucket and return deleted bytes.
+	
+	WARNING: This does NOT acquire per-series locks. Ensure no concurrent
+	writes are in-flight for this peer_key before calling. Typically safe for
+	__speedtest__ (API layer manages concurrency) but use with caution.
+	"""
+	dir_path = _synthetic_dir_path(tsdb_dir, peer_key)
+	if not dir_path.exists():
+		return 0
+
+	deleted_bytes = 0
+	for entry in dir_path.rglob("*"):
+		if not entry.is_file():
+			continue
+		try:
+			deleted_bytes += entry.stat().st_size
+		except OSError:
+			pass
+
+	shutil.rmtree(dir_path)
+	return deleted_bytes
 
 
 def reset_all(tsdb_dir: Path) -> int:
@@ -1120,8 +1250,9 @@ def run_maintenance(
 		else:
 			series_retention = retention_days
 		
-		before_archives = len(_rotated_archives(series_path))
+		# Acquire lock before reading archive counts to avoid TOCTOU races
 		with _FileLock(series_path):
+			before_archives = len(_rotated_archives(series_path))
 			_rotate_series_locked(series_path)
 			after_rotate_archives = len(_rotated_archives(series_path))
 			if after_rotate_archives > before_archives:

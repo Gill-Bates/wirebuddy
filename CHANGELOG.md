@@ -1,3 +1,19 @@
+## [1.3.2] - 2026-03-16
+
+- ``New`` A documentary is now available online: https://gill-bates.github.io/wirebuddy/
+- ``New`` Search filter for peers
+- ``New`` Connection animation on the status page
+- ``Fix`` Hardening the TDSB Engine for Handling Compressed Files
+- ``Fix`` Improved stability in the Unbound Watchdog process
+- ``Fix`` Improved stability in the speed test engine
+- ``Fix`` Sessions expired after 1 hour, despite user interaction
+- ``Fix`` A validation routine in the DNS Leak Indicator produced incorrect results
+- ``Fix`` Several design improvements
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.3.1] - 2026-03-13
 
 - ``New`` New ``health`` endpoint for a Docker health check
@@ -8,9 +24,6 @@
 - ``Fix`` A timeout occurred while saving DNS custom rules
 - ``Fix`` Security hardening in the MFA routine & Credential handling
 - ``Fix`` And as always: Several design improvements to make the front end more mobile-friendly
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.3.0] - 2026-03-07
 

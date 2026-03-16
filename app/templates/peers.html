@@ -132,8 +132,9 @@
 
     /* Support for reduced motion preferences */
     @media (prefers-reduced-motion: reduce) {
-        * {
-            animation: none !important;
+        *, *::before, *::after {
+            animation-duration: 0.001ms !important;
+            animation-iteration-count: 1 !important;
         }
     }
 
@@ -223,48 +224,83 @@
         }
     }
 
-    .peers-pagination .btn[disabled] {
+    /* Search filter */
+    .peers-search-wrapper {
+        position: relative;
+        max-width: 280px;
+    }
+
+    .peers-search-wrapper .material-icons {
+        position: absolute;
+        left: 0.75rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--bs-secondary-color);
+        font-size: 18px;
         pointer-events: none;
+    }
+
+    .peers-search-input {
+        padding-left: 2.25rem;
+    }
+
+    .peers-search-clear {
+        position: absolute;
+        right: 0.5rem;
+        top: 50%;
+        transform: translateY(-50%);
+        background: none;
+        border: none;
+        padding: 0.25rem;
+        cursor: pointer;
+        color: var(--bs-secondary-color);
+        line-height: 1;
+        opacity: 0.7;
+    }
+
+    .peers-search-clear:hover {
         opacity: 1;
     }
 
-    [data-bs-theme="dark"] .peers-pagination .btn[disabled],
-    [data-bs-theme="dark"] .peers-pagination .btn.disabled {
-        color: #f2f5f8;
-        border-color: #6c7683;
-        background-color: rgba(255, 255, 255, 0.04);
+    .peers-search-clear .material-icons {
+        position: static;
+        transform: none;
+        font-size: 16px;
     }
 
-    .peers-pagination .btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
+    /* Scrollable peers container */
+    .peers-scroll-container {
+        max-height: 65vh;
+        overflow-y: auto;
+        overflow-x: hidden;
     }
 
-    .peers-pagination-status {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 0.3rem 0.65rem;
-        border: var(--bs-border-width) solid var(--bs-border-color);
+    .peers-scroll-container::-webkit-scrollbar {
+        width: 8px;
+    }
+
+    .peers-scroll-container::-webkit-scrollbar-track {
         background: var(--bs-secondary-bg);
+        border-radius: 4px;
+    }
+
+    .peers-scroll-container::-webkit-scrollbar-thumb {
+        background: var(--bs-border-color);
+        border-radius: 4px;
+    }
+
+    .peers-scroll-container::-webkit-scrollbar-thumb:hover {
+        background: var(--bs-secondary-color);
+    }
+
+    .peer-row-hidden {
+        display: none !important;
+    }
+
+    .peers-no-results {
+        text-align: center;
+        padding: 2rem 1rem;
         color: var(--bs-secondary-color);
-        white-space: nowrap;
-        pointer-events: none;
-    }
-
-    .peers-pagination > :not(:first-child) {
-        margin-left: calc(var(--bs-border-width) * -1);
-    }
-
-    .peers-pagination > :first-child {
-        border-top-left-radius: var(--bs-border-radius-sm);
-        border-bottom-left-radius: var(--bs-border-radius-sm);
-    }
-
-    .peers-pagination > :last-child {
-        border-top-right-radius: var(--bs-border-radius-sm);
-        border-bottom-right-radius: var(--bs-border-radius-sm);
     }
 
     /* Mobile-optimized peers rows */
@@ -280,17 +316,12 @@
             gap: 0.5rem;
         }
 
-        .peers-pagination {
-            width: 100%;
-            display: flex;
+        .peers-search-wrapper {
+            max-width: 100%;
         }
 
-        .peers-pagination .btn {
-            flex: 1 1 auto;
-        }
-
-        .peers-pagination-status {
-            flex: 1 1 auto;
+        .peers-scroll-container {
+            max-height: 60vh;
         }
 
         .peers-table {
@@ -371,12 +402,13 @@
         }
 
         /* Collapse client-ip row automatically if no stack exists */
-        .peers-table td.peer-client-ip:not(:has(.peer-client-ip-stack)) {
+        /* Fallback for browsers without :has() support */
+        .peers-table td.peer-client-ip.peer-client-ip--empty {
             display: none;
         }
         
-        /* Fallback for browsers without :has() support */
-        .peers-table td.peer-client-ip.peer-client-ip--empty {
+        /* Modern browsers with :has() support (override fallback) */
+        .peers-table td.peer-client-ip:not(:has(.peer-client-ip-stack)) {
             display: none;
         }
 
@@ -522,25 +554,26 @@
 <div class="card">
     <div class="card-body">
         <div class="peers-list-toolbar d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-            <small class="text-muted">
-                Showing {{ start_index }}-{{ end_index }} of {{ total_peers }} peers
+            <small class="text-muted peers-count-label">
+                Showing <span id="peers-visible-count">{{ total_peers }}</span> of {{ total_peers }} peers
             </small>
-            <div class="peers-pagination btn-group btn-group-sm" role="group" aria-label="Peers pages">
-                <button type="button" class="btn btn-outline-secondary"
-                    data-page-url="/ui/peers?page={{ (page - 1)|int }}&page_size={{ page_size|int }}" {% if not has_prev
-                    %}disabled aria-disabled="true" {% endif %}>
-                    Previous
-                </button>
-                <span class="peers-pagination-status" aria-current="page" role="status">
-                    Page {{ page }} / {{ total_pages }}
-                </span>
-                <button type="button" class="btn btn-outline-secondary"
-                    data-page-url="/ui/peers?page={{ (page + 1)|int }}&page_size={{ page_size|int }}" {% if not has_next
-                    %}disabled aria-disabled="true" {% endif %}>
-                    Next
+            <div class="peers-search-wrapper">
+                <span class="material-icons" aria-hidden="true">search</span>
+                <input type="text" 
+                    class="form-control form-control-sm peers-search-input" 
+                    id="peers-search-input"
+                    placeholder="Filter peers..." 
+                    aria-label="Filter peers"
+                    autocomplete="off">
+                <button type="button" 
+                    class="peers-search-clear d-none" 
+                    id="peers-search-clear"
+                    aria-label="Clear search">
+                    <span class="material-icons" aria-hidden="true">close</span>
                 </button>
             </div>
         </div>
+        <div class="peers-scroll-container" id="peers-scroll-container">
         <div class="table-responsive">
             <table class="table table-hover mb-0 peers-table">
                 <thead>
@@ -558,6 +591,7 @@
                 <tbody id="peers-table" aria-live="polite" aria-relevant="text">
                     {% for peer in peers %}
                     {% set mode = peer['allowed_ips_mode'] or 'full' %}
+                    {% set routing_label = {'full': 'Full Tunnel', 'split': 'Split Tunnel'}.get(mode, 'Custom') %}
                     <tr data-peer-id="{{ peer['id'] }}"
                         data-peer-public-key="{{ peer['public_key'] or '' }}"
                         data-last-handshake="{{ peer['last_handshake_at'] or '' }}"
@@ -567,13 +601,7 @@
                         data-last-client-as-org="{{ peer['last_client_as_org'] or '' }}">
                         <td data-label="Name">
                             {{ peer['name'] or 'Unnamed' }}
-                            {% if mode == 'full' %}
-                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">Full Tunnel</span>
-                            {% elif mode == 'split' %}
-                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">Split Tunnel</span>
-                            {% else %}
-                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">Custom</span>
-                            {% endif %}
+                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">{{ routing_label }}</span>
                         </td>
                         <td data-label="VPN Address" class="peer-vpn-address">
                             {% if peer['peer_ipv4'] %}
@@ -590,13 +618,7 @@
                             {% endif %}
                         </td>
                         <td data-label="Routing" class="peer-routing">
-                            {% if mode == 'full' %}
-                            <span class="badge bg-secondary">Full Tunnel</span>
-                            {% elif mode == 'split' %}
-                            <span class="badge bg-secondary">Split Tunnel</span>
-                            {% else %}
-                            <span class="badge bg-secondary">Custom</span>
-                            {% endif %}
+                            <span class="badge bg-secondary">{{ routing_label }}</span>
                         </td>
                         <td data-label="Interface" class="peer-interface">{{ peer['interface'] }}</td>
                         <td data-label="Last Seen" class="peer-last-seen">
@@ -611,7 +633,7 @@
                             <div class="peer-client-ip-stack">
                                 <div class="peer-client-ip-main">
                                     {% if peer['last_client_country_code'] %}
-                                    <img class="peer-country-flag" alt="{{ peer['last_client_country_code']|upper }} flag"
+                                    <img class="peer-country-flag" alt="Country flag: {{ peer['last_client_country_code']|upper }}"
                                         decoding="async"
                                         src="/static/vendor/images/flags/{{ peer['last_client_country_code'] }}.svg">
                                     {% endif %}
@@ -639,13 +661,7 @@
                             {% else %}
                             <span class="badge bg-secondary" role="status">Disabled</span>
                             {% endif %}
-                            {% if mode == 'full' %}
-                            <span class="badge bg-secondary d-none d-md-inline-block d-lg-none">Full Tunnel</span>
-                            {% elif mode == 'split' %}
-                            <span class="badge bg-secondary d-none d-md-inline-block d-lg-none">Split Tunnel</span>
-                            {% else %}
-                            <span class="badge bg-secondary d-none d-md-inline-block d-lg-none">Custom</span>
-                            {% endif %}
+                            <span class="badge bg-secondary d-none d-md-inline-block d-lg-none">{{ routing_label }}</span>
                         </td>
                         <td data-label="Actions" class="peer-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
@@ -706,6 +722,11 @@
                 </tbody>
             </table>
         </div>
+        <div class="peers-no-results d-none" id="peers-no-results">
+            <span class="material-icons mb-2" style="font-size: 2.5rem;">search_off</span>
+            <div>No peers match your search</div>
+        </div>
+        </div><!-- /.peers-scroll-container -->
     </div>
 </div>
 </div><!-- /.wb-page -->
@@ -1039,7 +1060,7 @@
         peerRows = Array.from(document.querySelectorAll('#peers-table tr[data-peer-id]'));
     }
 
-    function reloadSoon(delay = 450) {
+    function reloadSoon(delay = 600) {
         setTimeout(() => window.location.reload(), delay);
     }
 
@@ -1142,9 +1163,9 @@
     }
 
     function trimCache(map) {
-        if (map.size <= MAX_LAST_SEEN_CACHE) return;
-        const oldestKey = map.keys().next().value;
-        if (oldestKey !== undefined) {
+        while (map.size > MAX_LAST_SEEN_CACHE) {
+            const oldestKey = map.keys().next().value;
+            if (oldestKey === undefined) break;
             map.delete(oldestKey);
         }
     }
@@ -1484,7 +1505,7 @@
             document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('addPeerModal')).hide();
             wbToast('Peer created successfully', 'success');
-            reloadSoon(4200);
+            reloadSoon();
         } catch (error) {
             wbAlert('Failed to create peer: ' + safeErrorMessage(error), 'danger');
         } finally {
@@ -1542,7 +1563,7 @@
             document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('editPeerModal')).hide();
             wbToast('Peer updated successfully', 'success');
-            reloadSoon(4200);
+            reloadSoon();
         } catch (error) {
             wbAlert('Failed to update peer: ' + safeErrorMessage(error), 'danger');
         } finally {
@@ -1559,8 +1580,8 @@
     qrModalEl?.addEventListener('hidden.bs.modal', () => {
         if (qrAbortController) {
             qrAbortController.abort();
-            qrAbortController = null;
         }
+        qrAbortController = null;
         revokeQrBlobUrl();
         const image = document.getElementById('qr-image');
         image.removeAttribute('src');
@@ -1929,14 +1950,103 @@
         revokeQrBlobUrl();
     });
 
-    document.querySelectorAll('.peers-pagination [data-page-url]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-            const targetUrl = btn.dataset.pageUrl;
-            if (!btn.disabled && targetUrl) {
-                window.location.href = targetUrl;
+    // Real-time peer search/filter
+    const searchInput = document.getElementById('peers-search-input');
+    const searchClearBtn = document.getElementById('peers-search-clear');
+    const visibleCountEl = document.getElementById('peers-visible-count');
+    const noResultsEl = document.getElementById('peers-no-results');
+    const peersTableEl = document.getElementById('peers-table');
+    let searchDebounceTimer = null;
+
+    function filterPeers(query) {
+        const searchTerm = (query || '').toLowerCase().trim();
+        let visibleCount = 0;
+
+        // Make sure we have the latest rows
+        refreshPeerRows();
+
+        peerRows.forEach(row => {
+            if (!searchTerm) {
+                row.classList.remove('peer-row-hidden');
+                visibleCount++;
+                return;
+            }
+
+            // Search in peer name, VPN address, client IP, interface, city, provider, routing
+            const name = (row.querySelector('td[data-label="Name"]')?.textContent || '').toLowerCase();
+            const vpnAddress = (row.querySelector('td[data-label="VPN Address"]')?.textContent || '').toLowerCase();
+            const clientIpCell = row.querySelector('.peer-client-ip');
+            const clientIp = (clientIpCell?.textContent || '').toLowerCase();
+            const interface_ = (row.querySelector('.peer-interface')?.textContent || '').toLowerCase();
+            const routing = (row.querySelector('.peer-routing')?.textContent || '').toLowerCase();
+
+            const matches = name.includes(searchTerm) ||
+                           vpnAddress.includes(searchTerm) ||
+                           clientIp.includes(searchTerm) ||
+                           interface_.includes(searchTerm) ||
+                           routing.includes(searchTerm);
+
+            if (matches) {
+                row.classList.remove('peer-row-hidden');
+                visibleCount++;
+            } else {
+                row.classList.add('peer-row-hidden');
             }
         });
-    });
+
+        // Update visible count
+        if (visibleCountEl) {
+            visibleCountEl.textContent = String(visibleCount);
+        }
+
+        // Show/hide no results message
+        if (noResultsEl && peersTableEl) {
+            if (visibleCount === 0 && peerRows.length > 0) {
+                noResultsEl.classList.remove('d-none');
+                peersTableEl.closest('.table-responsive')?.classList.add('d-none');
+            } else {
+                noResultsEl.classList.add('d-none');
+                peersTableEl.closest('.table-responsive')?.classList.remove('d-none');
+            }
+        }
+
+        // Show/hide clear button
+        if (searchClearBtn) {
+            if (searchTerm) {
+                searchClearBtn.classList.remove('d-none');
+            } else {
+                searchClearBtn.classList.add('d-none');
+            }
+        }
+    }
+
+    if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+            clearTimeout(searchDebounceTimer);
+            searchDebounceTimer = setTimeout(() => {
+                filterPeers(e.target.value);
+            }, 100);
+        });
+
+        // Handle Escape key to clear search
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                searchInput.value = '';
+                filterPeers('');
+                searchInput.blur();
+            }
+        });
+    }
+
+    if (searchClearBtn) {
+        searchClearBtn.addEventListener('click', () => {
+            if (searchInput) {
+                searchInput.value = '';
+                filterPeers('');
+                searchInput.focus();
+            }
+        });
+    }
 
     document.getElementById('peers-table')?.addEventListener('click', async (event) => {
         const button = event.target.closest('button[data-action][data-peer-id]');

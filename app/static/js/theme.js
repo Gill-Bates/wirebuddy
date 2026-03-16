@@ -42,4 +42,17 @@ document.documentElement.setAttribute('data-bs-theme', initialTheme);
 // Update icons when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
     updateThemeIcon(initialTheme);
+
+    // Attach event handlers without inline onclick (CSP-friendly)
+    // Theme toggle buttons
+    const themeToggles = document.querySelectorAll('[data-action="toggle-theme"]');
+    themeToggles.forEach(btn => {
+        btn.addEventListener('click', toggleTheme);
+    });
+
+    // Reload button on status page
+    const reloadBtn = document.querySelector('[data-action="reload-page"]');
+    if (reloadBtn) {
+        reloadBtn.addEventListener('click', () => window.location.reload());
+    }
 });

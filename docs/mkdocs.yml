@@ -1,0 +1,143 @@
+site_name: WireBuddy Documentation
+site_description: Modern WireGuard VPN Management with DNS Ad-Blocking
+site_author: Gill-Bates
+site_url: https://gill-bates.github.io/wirebuddy/
+
+repo_name: Gill-Bates/wirebuddy
+repo_url: https://github.com/Gill-Bates/wirebuddy
+edit_uri: edit/main/docs/
+
+docs_dir: .
+site_dir: ../site
+
+theme:
+  name: material
+  language: en
+  palette:
+    # Light mode
+    - scheme: default
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Dark mode
+    - scheme: slate
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Roboto
+    code: Roboto Mono
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
+
+plugins:
+  - search:
+      lang: en
+  - minify:
+      minify_html: true
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Gill-Bates
+    - icon: fontawesome/brands/docker
+      link: https://hub.docker.com/r/giiibates/wirebuddy
+
+extra_css:
+  - stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quick Start: getting-started/quick-start.md
+    - Installation: getting-started/installation.md
+    - First Steps: getting-started/first-steps.md
+    - Docker Setup: getting-started/docker.md
+  - Features:
+    - WireGuard Management: features/wireguard.md
+    - DNS Ad-Blocking: features/dns.md
+    - Monitoring & Analytics: features/monitoring.md
+    - GeoIP & Maps: features/geoip.md
+    - User Management: features/users.md
+    - Let's Encrypt: features/acme.md
+  - Configuration:
+    - Environment Variables: configuration/environment.md
+    - WireGuard Settings: configuration/wireguard.md
+    - DNS Settings: configuration/dns.md
+    - Security Settings: configuration/security.md
+    - Monitoring Settings: configuration/monitoring.md
+    - Status Page: configuration/status-page.md
+  - Security:
+    - Overview: security/overview.md
+    - Authentication: security/authentication.md
+    - Passkeys (WebAuthn): security/passkeys.md
+    - Rate Limiting: security/rate-limiting.md
+    - Best Practices: security/best-practices.md
+  - API Reference:
+    - Overview: api/overview.md
+    - Authentication: api/authentication.md
+    - Endpoints: api/endpoints.md
+  - Development:
+    - Setup: development/setup.md
+    - Architecture: development/architecture.md
+    - Contributing: development/contributing.md
+  - Troubleshooting: troubleshooting.md
+  - Changelog: changelog.md
+  - License: license.md
+
+copyright: Copyright &copy; 2026 Gill-Bates | Licensed under AGPL-3.0

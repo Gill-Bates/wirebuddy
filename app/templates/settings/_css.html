@@ -37,6 +37,12 @@
         min-height: 2rem;
     }
 
+    .dns-retention-slider:focus-visible,
+    .retention-slider:focus-visible {
+        outline: 2px solid var(--wb-primary);
+        outline-offset: 2px;
+    }
+
     .dns-retention-slider::-webkit-slider-thumb,
     .retention-slider::-webkit-slider-thumb {
         background-color: var(--wb-primary);
@@ -273,6 +279,11 @@
     .blocklist-source-info:focus-visible {
         color: var(--bs-body-color);
         background: var(--bs-tertiary-bg);
+    }
+
+    .blocklist-source-info:focus-visible {
+        outline: 2px solid var(--bs-secondary-color);
+        outline-offset: 1px;
     }
 
     #btn-fqdn-detect {

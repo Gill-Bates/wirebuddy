@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import ipaddress
 import logging
 import os
@@ -19,11 +20,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from ..db import tsdb
 from ..db.sqlite_interfaces import list_interfaces
 from ..db.sqlite_settings import get_setting
 from ..dns import ingestion as dns_ingestion
@@ -33,7 +36,7 @@ from ..utils.deps import get_conn
 from ..utils.network import parse_ip
 from ..utils.rate_limit import RATE_LIMIT_DEFAULT, limiter
 from .auth import _get_client_ip, get_current_user_optional
-from .frontend_shared import _extract_geo_fields, _lookup_ip_cached, router, templates
+from .frontend_shared import extract_geo_fields, lookup_ip_cached, router, templates
 
 _log = logging.getLogger(__name__)
 
@@ -49,6 +52,7 @@ _STATUS_DNS_PROBE_CACHE_TTL = 60.0
 _STATUS_DNS_LEAK_CACHE_TTL = 60.0
 _STATUS_DNS_LEAK_VERIFY_WINDOW_SECONDS = 900
 _STATUS_DNS_LEAK_VERIFY_MAX_QUERIES = 5000
+_STATUS_DNS_LEAK_CACHE_MAX_SIZE = 2000
 _STATUS_TRUSTED_PROXY_CIDRS_ENV = "WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS"
 
 _outbound_ip_cache: tuple[str | None, str, float] | None = None
@@ -57,6 +61,14 @@ _dns_leak_cache: dict[tuple[str, str], tuple[str, str, float]] = {}
 _outbound_ip_cache_lock = asyncio.Lock()
 _dns_probe_cache_lock = asyncio.Lock()
 _dns_leak_cache_lock = asyncio.Lock()
+
+
+class CheckState(str, enum.Enum):
+	"""Health check result states."""
+	OK = "ok"
+	WARN = "warn"
+	ERROR = "error"
+	INFO = "info"
 
 
 @dataclass(frozen=True)
@@ -211,7 +223,8 @@ def _find_peer_public_ip_for_vpn_ip(
 			""",
 			(interface_name,),
 		).fetchall()
-	except Exception:
+	except sqlite3.Error as exc:
+		_log.warning("Failed to query peers for public IP resolution: %s", exc)
 		return None
 
 	for row in rows:
@@ -360,12 +373,20 @@ async def _detect_outbound_ip() -> tuple[str | None, str]:
 			try:
 				resp = await client.get(url)
 				resp.raise_for_status()
-				candidate = (resp.text or "").strip().splitlines()[0].strip()
+				lines = (resp.text or "").strip().splitlines()
+				if not lines:
+					_log.debug("Outbound IP probe %s returned empty response", url)
+					continue
+				candidate = lines[0].strip()
 				ip_obj = ipaddress.ip_address(candidate)
 				if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped:
 					candidate = str(ip_obj.ipv4_mapped)
 				return candidate, "Detected via external probe"
-			except Exception:
+			except httpx.HTTPStatusError as exc:
+				_log.debug("Outbound IP probe %s failed: %s", url, exc)
+				continue
+			except (httpx.RequestError, ValueError) as exc:
+				_log.debug("Outbound IP probe %s error: %s", url, exc)
 				continue
 	return None, "Outbound IP probe unavailable"
 
@@ -437,84 +458,202 @@ async def _dns_leak_indicator(
 	client_ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
 	iface: sqlite3.Row | None,
 ) -> tuple[str, str]:
-	"""Return DNS leak status with runtime verification from Unbound-ingested queries."""
+	"""Return DNS leak status with runtime verification from Unbound-ingested queries.
+
+	Runtime verification (DNS logs) takes precedence over static config checks.
+	If DNS queries from this client are seen in WireBuddy logs, that proves
+	the client is using WireBuddy DNS regardless of interface config.
+	"""
 	config_ok, config_detail = _dns_config_indicator(iface)
 	if config_ok is None:
-		return "info", config_detail
-	if not config_ok:
-		return "warn", config_detail
+		return CheckState.INFO, config_detail
 
 	cache_key = (str(client_ip), str(iface["name"]) if iface is not None else "")
 	now_mono = time.monotonic()
+
 	async with _dns_leak_cache_lock:
+		# Check cache
 		cached = _dns_leak_cache.get(cache_key)
 		if cached and (now_mono - cached[2]) < _STATUS_DNS_LEAK_CACHE_TTL:
 			return cached[0], cached[1]
 
-	try:
-		cfg = get_config()
-		queries = await asyncio.to_thread(
-			dns_ingestion.read_recent_queries,
-			Path(cfg.tsdb_dir),
-			_STATUS_DNS_LEAK_VERIFY_MAX_QUERIES,
-		)
-	except Exception:
-		_log.debug("DNS leak runtime verification unavailable", exc_info=True)
-		result = ("warn", (
-			f"{config_detail}; runtime verification unavailable "
-			"(could not read recent DNS logs)"
-		))
-		async with _dns_leak_cache_lock:
+		# Evict stale entries if cache grows too large
+		if len(_dns_leak_cache) > _STATUS_DNS_LEAK_CACHE_MAX_SIZE:
+			cutoff = now_mono - _STATUS_DNS_LEAK_CACHE_TTL
+			stale_keys = [k for k, v in _dns_leak_cache.items() if v[2] < cutoff]
+			for k in stale_keys:
+				del _dns_leak_cache[k]
+
+		# Perform the expensive work while holding lock (prevents thundering herd)
+		try:
+			cfg = get_config()
+			queries = await asyncio.to_thread(
+				dns_ingestion.read_recent_queries,
+				Path(cfg.tsdb_dir),
+				_STATUS_DNS_LEAK_VERIFY_MAX_QUERIES,
+			)
+		except (OSError, IOError) as exc:
+			_log.warning("DNS leak runtime verification failed: %s", exc)
+			if config_ok:
+				result = (CheckState.WARN, (
+					f"{config_detail}; runtime verification unavailable "
+					"(could not read recent DNS logs)"
+				))
+			else:
+				result = (CheckState.WARN, config_detail)
 			_dns_leak_cache[cache_key] = (result[0], result[1], now_mono)
-		return result
+			return result
 
-	client_ip_text = str(client_ip)
-	now = datetime.now(timezone.utc)
-	window = _STATUS_DNS_LEAK_VERIFY_WINDOW_SECONDS
+		client_ip_text = str(client_ip)
+		now = datetime.now(timezone.utc)
+		window = _STATUS_DNS_LEAK_VERIFY_WINDOW_SECONDS
 
-	for row in queries:
-		if str(row.get("client", "")).strip() != client_ip_text:
-			continue
-		ts = _parse_iso_ts(str(row.get("ts", "")))
-		if ts is None:
-			continue
-		age_s = max(0, int((now - ts).total_seconds()))
-		if age_s <= window:
-			if age_s < 60:
+		# Scan ALL rows to find the most recent match (don't assume sort order)
+		best_age: int | None = None
+		for row in queries:
+			if str(row.get("client", "")).strip() != client_ip_text:
+				continue
+			ts = _parse_iso_ts(str(row.get("ts", "")))
+			if ts is None:
+				continue
+			age_s = max(0, int((now - ts).total_seconds()))
+			if age_s <= window and (best_age is None or age_s < best_age):
+				best_age = age_s
+
+		if best_age is not None:
+			if best_age < 60:
 				age_label = "just now"
 			else:
-				age_label = f"{age_s // 60}m ago"
-			result = ("ok", f"Verified via WireBuddy DNS logs ({age_label})")
-			async with _dns_leak_cache_lock:
-				_dns_leak_cache[cache_key] = (result[0], result[1], now_mono)
+				age_label = f"{best_age // 60}m ago"
+			result = (CheckState.OK, f"Verified via WireBuddy DNS logs ({age_label})")
+			_dns_leak_cache[cache_key] = (result[0], result[1], now_mono)
 			return result
-		break
 
-	window_min = max(1, window // 60)
-	result = ("warn", (
-		f"{config_detail}; no DNS query from this client seen in WireBuddy logs "
-		f"within last {window_min} minutes (status currently unknown)"
-	))
-	async with _dns_leak_cache_lock:
+		# No recent DNS queries found from this client
+		window_min = max(1, window // 60)
+		result = (CheckState.WARN, (
+			f"No DNS query from this client seen in WireBuddy logs "
+			f"within last {window_min} minutes"
+		))
 		_dns_leak_cache[cache_key] = (result[0], result[1], now_mono)
-	return result
+		return result
 
 
-async def _is_trusted_status_proxy_hop(
-	conn: sqlite3.Connection,
+def _format_relative_time(ts: datetime, *, now: datetime | None = None) -> str:
+	"""Format a datetime as a compact relative label."""
+	now_utc = datetime.now(timezone.utc) if now is None else now.astimezone(timezone.utc)
+	ts_utc = ts.astimezone(timezone.utc)
+	diff = max(0, int((now_utc - ts_utc).total_seconds()))
+	if diff < 60:
+		return "just now"
+	if diff < 3600:
+		return f"{diff // 60}m ago"
+	if diff < 86400:
+		return f"{diff // 3600}h ago"
+	return f"{diff // 86400}d ago"
+
+
+def _format_speedtest_server(value: object) -> str:
+	"""Return a compact host label for a speedtest server."""
+	text = str(value or "").strip()
+	if not text:
+		return "unknown server"
+	try:
+		parsed = urlparse(text)
+		if parsed.hostname:
+			return parsed.hostname
+	except ValueError:
+		pass
+	return text
+
+
+def _latest_speedtest_check() -> dict[str, str]:
+	"""Build a health-card payload from the latest stored speedtest result."""
+	from .speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
+
+	try:
+		points = tsdb.query_latest(
+			get_config().tsdb_dir,
+			peer_key=SPEEDTEST_TSDB_KEY,
+			metric=SPEEDTEST_TSDB_METRIC,
+			count=1,
+		)
+	except (OSError, ValueError) as exc:
+		_log.warning("Failed to read latest speedtest result: %s", exc)
+		return {
+			"title": "Last Speedtest",
+			"state": CheckState.WARN,
+			"label": "WARN",
+			"detail": "Latest speedtest result could not be read",
+		}
+
+	if not points:
+		return {
+			"title": "Last Speedtest",
+			"state": CheckState.INFO,
+			"label": "N/A",
+			"detail": "No speedtest result available yet",
+		}
+
+	point = points[0]
+	data = dict(point.value) if isinstance(point.value, dict) else {}
+	status = str(data.get("status") or "").strip().lower()
+	age_label = _format_relative_time(point.ts)
+	server_label = _format_speedtest_server(data.get("server"))
+
+	if status == "ok":
+		download = data.get("download_mbit")
+		upload = data.get("upload_mbit")
+		rtt = data.get("rtt_ms")
+		parts: list[str] = []
+		if isinstance(download, (int, float)):
+			parts.append(f"{download:.2f} Mbit/s down")
+		if isinstance(upload, (int, float)):
+			parts.append(f"{upload:.2f} Mbit/s up")
+		if isinstance(rtt, (int, float)):
+			parts.append(f"{rtt:.2f} ms RTT")
+		parts.append(server_label)
+		parts.append(age_label)
+		return {
+			"title": "Last Speedtest",
+			"state": CheckState.OK,
+			"label": "OK",
+			"detail": " • ".join(parts),
+		}
+
+	error_text = str(data.get("error") or "").strip()
+	status_label = status or "unknown"
+	detail = f"Last run {age_label} on {server_label} ended with status: {status_label}"
+	if error_text:
+		detail = f"{detail} ({error_text})"
+	return {
+		"title": "Last Speedtest",
+		"state": CheckState.WARN,
+		"label": "WARN",
+		"detail": detail,
+	}
+
+
+def _is_trusted_status_proxy_hop(
 	socket_ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address | None,
 ) -> bool:
-	"""Return True if socket peer should be trusted as reverse-proxy hop for /status."""
+	"""Return True if socket peer should be trusted as reverse-proxy hop for /status.
+
+	Trust model (in order):
+	1. Loopback addresses (127.0.0.1, ::1) are always trusted
+	2. Explicitly configured CIDRs via WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS
+	3. All other addresses are NOT trusted (security-first default)
+
+	To trust LAN proxies, configure WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS explicitly.
+	"""
 	if socket_ip_obj is None:
 		return False
 	if socket_ip_obj.is_loopback:
 		return True
 	if _STATUS_TRUSTED_PROXY_NETWORKS:
 		return _ip_in_networks(socket_ip_obj, _STATUS_TRUSTED_PROXY_NETWORKS)
-	if not (socket_ip_obj.is_private or socket_ip_obj.is_link_local):
-		return False
-	is_wg_subnet_ip = await asyncio.to_thread(_is_wireguard_client_subnet_ip, conn, socket_ip_obj)
-	return not is_wg_subnet_ip
+	# Security: Don't auto-trust private IPs - require explicit configuration
+	return False
 
 
 async def _resolve_status_client_context(
@@ -552,7 +691,7 @@ async def _resolve_status_client_context(
 			socket_ip_obj,
 		)
 		if socket_ip_obj and (forwarded_for or x_real_ip):
-			if await _is_trusted_status_proxy_hop(conn, socket_ip_obj):
+			if _is_trusted_status_proxy_hop(socket_ip_obj):
 				fallback_trusted = {str(socket_ip_obj)}
 				forwarded_ip_obj = _pick_forwarded_client_ip(forwarded_for, fallback_trusted)
 				forwarded_ip_value = str(forwarded_ip_obj) if forwarded_ip_obj is not None else None
@@ -581,6 +720,14 @@ async def _resolve_status_client_context(
 								client_ip_obj,
 								socket_ip_obj,
 							)
+			else:
+				# Proxy headers present but socket IP not in trusted list
+				_log.warning(
+					"/status: ignoring proxy headers from untrusted source %s "
+					"(set %s to trust this proxy)",
+					socket_ip_obj,
+					_STATUS_TRUSTED_PROXY_CIDRS_ENV,
+				)
 
 	if matched_iface is None and user and user["is_admin"]:
 		auth_ip_source = "admin-token"
@@ -603,7 +750,8 @@ async def _is_unbound_running_safe() -> bool:
 		return await unbound.is_running()
 	except FileNotFoundError:
 		return False
-	except Exception:
+	except OSError as exc:
+		_log.debug("Unbound running check failed: %s", exc)
 		return False
 
 
@@ -612,9 +760,8 @@ async def _run_status_health_checks(
 	matched_iface: sqlite3.Row | None,
 ) -> tuple[list[dict[str, str]], str | None]:
 	"""Compute status checks and outbound IP details."""
-	app_health = {"state": "ok", "label": "OK", "detail": "Status page request was served successfully"}
-
-	dns_running, dns_probe_result, leak_result, outbound_result = await asyncio.gather(
+	last_speedtest, dns_running, dns_probe_result, leak_result, outbound_result = await asyncio.gather(
+		asyncio.to_thread(_latest_speedtest_check),
 		_is_unbound_running_safe(),
 		_resolve_dns_probe_cached(matched_iface),
 		_dns_leak_indicator(client_ip_obj, matched_iface),
@@ -623,29 +770,29 @@ async def _run_status_health_checks(
 
 	dns_probe_ok, dns_probe_detail = dns_probe_result
 	if matched_iface is None:
-		dns_health = {"state": "info", "label": "N/A", "detail": "Not connected via WireGuard – DNS check not applicable"}
+		dns_health = {"state": CheckState.INFO, "label": "N/A", "detail": "Not connected via WireGuard – DNS check not applicable"}
 	elif dns_running and dns_probe_ok:
-		dns_health = {"state": "ok", "label": "OK", "detail": dns_probe_detail}
+		dns_health = {"state": CheckState.OK, "label": "OK", "detail": dns_probe_detail}
 	elif dns_probe_ok:
-		dns_health = {"state": "warn", "label": "WARN", "detail": "Resolver probe passed, Unbound process not detected"}
+		dns_health = {"state": CheckState.WARN, "label": "WARN", "detail": "Resolver probe passed, Unbound process not detected"}
 	else:
-		dns_health = {"state": "error", "label": "ERROR", "detail": dns_probe_detail}
+		dns_health = {"state": CheckState.ERROR, "label": "ERROR", "detail": dns_probe_detail}
 
 	leak_state, leak_detail = leak_result
-	if leak_state == "ok":
+	if leak_state == CheckState.OK:
 		leak_label = "OK"
-	elif leak_state == "info":
+	elif leak_state == CheckState.INFO:
 		leak_label = "N/A"
 	else:
 		leak_label = "WARN"
 	leak_health = {"state": leak_state, "label": leak_label, "detail": leak_detail}
 
 	outbound_ip, outbound_detail = outbound_result
-	outbound_state = "ok" if outbound_ip else "warn"
+	outbound_state = CheckState.OK if outbound_ip else CheckState.WARN
 	outbound_label = "OK" if outbound_ip else "WARN"
 
 	checks = [
-		{"title": "Status Page", **app_health},
+		last_speedtest,
 		{"title": "DNS Resolution", **dns_health},
 		{"title": "DNS Leak Indicator", **leak_health},
 		{"title": "Outbound IP Probe", "state": outbound_state, "label": outbound_label, "detail": outbound_detail},
@@ -685,12 +832,22 @@ async def status_page(
 	client_geo_city: str | None = None
 	client_geo_as_org: str | None = None
 	if public_client_ip:
-		geo_fields = _extract_geo_fields(await asyncio.to_thread(_lookup_ip_cached, public_client_ip))
+		geo_fields = extract_geo_fields(await asyncio.to_thread(lookup_ip_cached, public_client_ip))
 		client_geo_country_code = geo_fields["country_code"]
 		client_geo_city = geo_fields["city"]
 		client_geo_as_org = geo_fields["as_org"]
 
 	checks, outbound_ip = await _run_status_health_checks(context.client_ip, context.matched_iface)
+
+	# Lookup GeoIP for outbound IP
+	outbound_geo_country_code: str | None = None
+	outbound_geo_city: str | None = None
+	outbound_geo_as_org: str | None = None
+	if outbound_ip:
+		outbound_geo_fields = extract_geo_fields(await asyncio.to_thread(lookup_ip_cached, outbound_ip))
+		outbound_geo_country_code = outbound_geo_fields["country_code"]
+		outbound_geo_city = outbound_geo_fields["city"]
+		outbound_geo_as_org = outbound_geo_fields["as_org"]
 
 	return templates.TemplateResponse("status.html", {
 		"request": request,
@@ -703,6 +860,9 @@ async def status_page(
 		"socket_ip": str(context.socket_ip) if context.socket_ip is not None else "n/a",
 		"forwarded_ip": context.forwarded_ip or "n/a",
 		"outbound_ip": outbound_ip or "n/a",
+		"outbound_country_code": outbound_geo_country_code,
+		"outbound_city": outbound_geo_city,
+		"outbound_as_org": outbound_geo_as_org,
 		"interface_name": context.matched_iface["name"] if context.matched_iface is not None else "n/a",
 		"checks": checks,
 	})

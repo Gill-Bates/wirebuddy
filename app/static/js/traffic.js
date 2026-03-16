@@ -17,6 +17,7 @@
     const AUTO_REFRESH_MS = 30000;
     const API_TIMEOUT_MS = 25000;
     const MAX_BACKOFF_MS = 300000;
+    const MIN_VISIBLE_REFRESH_INTERVAL_MS = 5000;
 
     // Responsive data point settings
     const MIN_POINTS = 10;
@@ -26,6 +27,7 @@
 
     // State variables (scoped within IIFE to avoid global pollution)
     let trafficCombinedChart = null;
+    let cleanupComplete = false;
     let cachedTrafficData = null;
     let cachedCountryData = null;
     let cachedASNData = null;
@@ -45,7 +47,7 @@
     let rangeChangeHandler = null;
     let peerFilterTimeout = null; // Timeout handle for peer filter debounce
 
-    // Color palette for multiple peers (FIX #8: moved to scope to avoid recreation)
+    // Color palette for multiple peers
     const peerColors = Object.freeze([
         '#3b82f6',   // blue
         '#10b981',   // emerald green
@@ -61,6 +63,7 @@
     const appEl = document.getElementById('traffic-app');
     // Handle both "true" and "1" (SQLite stores booleans as integers)
     const isAdmin = appEl?.dataset.isAdmin === 'true' || appEl?.dataset.isAdmin === '1';
+    const trafficAnalysisEnabled = appEl?.dataset.trafficAnalysisEnabled === 'true' || appEl?.dataset.trafficAnalysisEnabled === '1';
 
     // DOM element references
     const trafficCombinedCanvas = isAdmin ? document.getElementById('trafficCombinedChart') : null;
@@ -86,17 +89,16 @@
     const asnTbody = document.getElementById('asn-traffic-tbody');
 
     // Utility functions from WBShared
-    const dbg = window.WBShared?.createDebugLogger
-        ? window.WBShared.createDebugLogger('Traffic', DEBUG)
-        : (...args) => { if (DEBUG) console.log('[Traffic]', ...args); };
+    const dbg = window.WBShared?.createDebugLogger?.('Traffic', DEBUG)
+        || ((...args) => { if (DEBUG) console.log('[Traffic]', ...args); });
     const clearElement = window.WBShared?.clearElement || ((el) => { if (el) el.replaceChildren(); });
     const isAbortError = window.WBShared?.isAbortError || ((err) => err?.code === 'ABORTED' || err?.name === 'AbortError' || err?.message === 'Request cancelled');
 
-    // FIX #4: Defensive fallback if WBShared.formatTrafficMetric is missing
+    // Defensive fallback if WBShared.formatTrafficMetric is missing
     const formatTrafficMetric = window.WBShared?.formatTrafficMetric
         || (() => { throw new Error('WBShared.formatTrafficMetric required'); });
 
-    // FIX #5: Use shared chartEmptyState function
+    // Use shared chartEmptyState function
     const chartEmptyState = window.WBShared?.chartEmptyState || ((text = 'No data available.') => {
         const wrapper = document.createElement('div');
         wrapper.className = 'chart-empty-state';
@@ -345,21 +347,18 @@
     }
 
     function destroyTrafficCharts() {
-        if (trafficCombinedChart) {
-            trafficCombinedChart.destroy();
-            trafficCombinedChart = null;
-        }
-        // Also check if Chart.js has a chart instance for this canvas
+        // Use Chart.js registry as source of truth to avoid tracking multiple references
         if (trafficCombinedCanvas && typeof Chart !== 'undefined') {
             const existingChart = Chart.getChart(trafficCombinedCanvas);
             if (existingChart) {
                 existingChart.destroy();
             }
         }
+        trafficCombinedChart = null;
     }
 
     /**
-     * FIX #7: Generic traffic table renderer to eliminate duplication between country and ASN tables.
+     * Generic traffic table renderer to eliminate duplication between country and ASN tables.
      * 
      * @param {Object} config - Render configuration
      * @param {Array} config.items - Array of items to render (countries or ASNs)
@@ -423,7 +422,7 @@
         if (!tbody) return;
         const maxTotal = items[0]?.total || 1;
 
-        // FIX #3: Improved render deduplication key with content hash
+        // Render deduplication - skip if data unchanged
         const newRenderKey = buildRenderKey(items, unit, peerFilter);
         if (newRenderKey === renderKey.get()) return;
         renderKey.set(newRenderKey);
@@ -557,7 +556,7 @@
             buildRenderKey: (items, u, pf) => {
                 // Use item identifiers for robust deduplication (avoids hash collisions)
                 const hash = items.map((c, i) =>
-                    `${c.name || i}:${c.total.toFixed(2)}`
+                    `${c.code || c.name || i}:${c.total.toFixed(2)}`
                 ).join(';');
                 return `${u}|${pf}|${items.length}|${hash}`;
             },
@@ -983,9 +982,13 @@
     }
 
     /**
-     * FIX #1, #2, #6: Centralized cleanup to ensure consistency across beforeunload and pagehide.
+     * Centralized cleanup to ensure consistency across beforeunload and pagehide.
+     * Idempotent - safe to call multiple times.
      */
     function cleanup() {
+        if (cleanupComplete) return;
+        cleanupComplete = true;
+
         clearTimeout(trafficRangeDebounce);
         clearTimeout(resizeDebounce);
         clearTimeout(peerFilterTimeout);
@@ -1023,6 +1026,16 @@
 
     function initTraffic() {
         dbg('Initializing traffic page...');
+
+        // Skip initialization if traffic analysis is disabled
+        if (!trafficAnalysisEnabled) {
+            dbg('Traffic analysis disabled, skipping initialization');
+            return;
+        }
+
+        // Reset state for bfcache restore
+        isInitialRender = true;
+        cleanupComplete = false;
 
         // Clean up any existing chart from previous page load (bfcache restore)
         destroyTrafficCharts();
@@ -1070,20 +1083,20 @@
             },
         });
 
-        // FIX #1: Hoist themeObserver to scope so cleanup can access it
+        // Observe theme changes for chart color updates
         themeObserver = new MutationObserver(() => updateChartTheme());
         themeObserver.observe(document.documentElement, {
             attributes: true,
             attributeFilter: ['data-bs-theme'],
         });
 
-        // FIX #2: Store handler reference for cleanup
+        // Store handler reference for cleanup
         visibilityHandler = () => {
             if (document.hidden) {
                 stopAutoRefresh();
             } else {
                 const now = Date.now();
-                if (now - lastVisibleRefresh > 5000) {
+                if (now - lastVisibleRefresh > MIN_VISIBLE_REFRESH_INTERVAL_MS) {
                     lastVisibleRefresh = now;
                     refreshAll();
                 }
@@ -1092,7 +1105,7 @@
         };
         document.addEventListener('visibilitychange', visibilityHandler);
 
-        // FIX #6: Use centralized cleanup
+        // Centralized cleanup on page unload
         window.addEventListener('beforeunload', cleanup);
         window.addEventListener('pagehide', cleanup);
 
@@ -1119,7 +1132,11 @@
             const handleTransitionEnd = async () => {
                 if (handled) return;
                 handled = true;
-                await refreshAll();
+                try {
+                    await refreshAll();
+                } catch (e) {
+                    dbg('Refresh failed during filter transition:', e);
+                }
                 requestAnimationFrame(() => {
                     trafficCombinedWrap.classList.remove('traffic-chart-fading');
                 });
@@ -1141,7 +1158,6 @@
         };
         trafficRange?.addEventListener('change', rangeChangeHandler);
 
-        // FIX #2: Store handler reference for cleanup
         // Responsive resize handler (admin only - non-admins have no chart)
         // Chart.js handles visual resizing automatically. We only need to fetch new data
         // if the optimal point count increases beyond what we have cached.
@@ -1165,7 +1181,7 @@
             window.addEventListener('resize', resizeHandler);
         }
 
-        // FIX #4: Mark initial render complete immediately after first refresh, not after arbitrary timeout
+        // Initial data fetch and start auto-refresh
         refreshAll()
             .catch(e => dbg('Initial refresh failed:', e))
             .finally(() => {

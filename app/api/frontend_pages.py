@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import re
 import sqlite3
 import subprocess
@@ -23,10 +22,11 @@ from typing import Optional
 import nh3
 from fastapi import Depends, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from pydantic import BaseModel
 
-from ..db.sqlite_peers import count_peers, get_peers_paginated
+from ..db.sqlite_peers import get_all_peers
 from ..db.sqlite_runtime import connect, close_connection
-from ..db.sqlite_settings import get_dns_blocklist_enabled
+from ..db.sqlite_settings import get_dns_blocklist_enabled, get_setting
 from ..db.sqlite_users import get_all_users
 from ..utils.config import get_config
 from ..utils.deps import get_conn
@@ -35,24 +35,29 @@ from ..utils.version import BUILD_INFO, VERSION
 from .acme import get_certs_dir, get_challenge_response
 from .auth import get_current_user_optional
 from .frontend_shared import (
-	_extract_geo_fields,
-	_format_last_seen_label,
-	_get_csrf_token,
-	_lookup_ip_cached,
-	require_admin_or_redirect,
-	require_user_or_redirect,
-	router,
-	templates,
+    extract_geo_fields,
+    format_last_seen_label,
+    get_csrf_token,
+    lookup_ip_cached,
+    require_admin_or_redirect,
+    require_user_or_redirect,
+    router,
+    templates,
 )
 from .wireguard_isolation import extract_peer_ips
 
 _log = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _APP_ROOT = Path("/app")
-_ACME_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_ACME_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
 
 # Semaphore to limit concurrent geo-IP lookups (prevents thread pool exhaustion)
 _GEO_LOOKUP_SEMAPHORE = asyncio.Semaphore(20)
+
+
+class SystemStatusResponse(BaseModel):
+	"""System status response model."""
+	key_mismatch: bool
 
 
 @lru_cache(maxsize=1)
@@ -83,7 +88,7 @@ def _get_about_data() -> dict:
 							requirements_versions[pkg] = ver
 							break
 				break
-			except Exception as exc:
+			except (OSError, ValueError, UnicodeDecodeError) as exc:
 				_log.warning("Failed to parse requirements.txt: %s", exc)
 
 	key_packages = [
@@ -196,14 +201,16 @@ def _get_about_data() -> dict:
 	}
 
 
-@router.get("/api/system/status", response_model=dict)
+@router.get("/api/system/status", response_model=SystemStatusResponse)
 @limiter.limit(RATE_LIMIT_DEFAULT)
-def get_system_status(request: Request) -> dict:
-	"""Get system status including key mismatch warning."""
+def get_system_status(request: Request) -> SystemStatusResponse:
+	"""Get system status including key mismatch warning.
+	
+	Note: Intentionally unauthenticated for health-check infrastructure.
+	Only exposes non-sensitive key mismatch state.
+	"""
 	key_mismatch = getattr(request.app.state, "key_mismatch", False)
-	return {
-		"key_mismatch": key_mismatch,
-	}
+	return SystemStatusResponse(key_mismatch=key_mismatch)
 
 
 @router.get("/", response_class=RedirectResponse)
@@ -229,7 +236,7 @@ def login_page(
 
 	return templates.TemplateResponse("login.html", {
 		"request": request,
-		"csrf_token": _get_csrf_token(request),
+		"csrf_token": get_csrf_token(request),
 	})
 
 
@@ -253,7 +260,7 @@ def otp_setup_page(
 	return templates.TemplateResponse("otp_setup.html", {
 		"request": request,
 		"user": user,
-		"csrf_token": _get_csrf_token(request),
+		"csrf_token": get_csrf_token(request),
 	})
 
 
@@ -277,7 +284,7 @@ def passkey_setup_page(
 	return templates.TemplateResponse("passkey_setup.html", {
 		"request": request,
 		"user": user,
-		"csrf_token": _get_csrf_token(request),
+		"csrf_token": get_csrf_token(request),
 	})
 
 
@@ -291,48 +298,33 @@ def dashboard(
 	return templates.TemplateResponse("dashboard.html", {
 		"request": request,
 		"user": user,
-		"csrf_token": _get_csrf_token(request),
+		"csrf_token": get_csrf_token(request),
 	})
 
 
 @router.get("/ui/peers", response_class=HTMLResponse)
-@limiter.limit(RATE_LIMIT_HEAVY)  # Expensive: paginated DB + geo-IP lookups
+@limiter.limit(RATE_LIMIT_HEAVY)  # Expensive: DB query + geo-IP lookups
 async def peers_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
 ):
-	"""Peers management page with paginated data and geo-IP lookups.
+	"""Peers management page with all peers and geo-IP lookups.
 	
 	Note: Database connection is created inside the thread pool to avoid
 	SQLite threading issues (connections are not thread-safe).
 	"""
-	try:
-		page = int(request.query_params.get("page", "1"))
-	except ValueError:
-		page = 1
-	try:
-		page_size = int(request.query_params.get("page_size", "50"))
-	except ValueError:
-		page_size = 50
-	page = max(1, page)
-	# Clamp page_size to valid range (10-200)
-	page_size = min(max(10, page_size), 200)
-
 	db_path = request.app.state.db_path
 
-	def _load_page_data() -> tuple[int, int, int, list[sqlite3.Row]]:
-		"""Load peer data in thread pool with dedicated connection."""
+	def _load_all_peers() -> list[sqlite3.Row]:
+		"""Load all peer data in thread pool with dedicated connection."""
 		thread_conn = connect(db_path)
 		try:
-			total = count_peers(thread_conn)
-			pages = max(1, math.ceil(total / page_size)) if total else 1
-			current_page = min(page, pages)
-			rows = get_peers_paginated(thread_conn, page=current_page, page_size=page_size)
-			return total, pages, current_page, rows
+			return get_all_peers(thread_conn)
 		finally:
 			close_connection(thread_conn)
 
-	total_peers, total_pages, page, peer_rows = await asyncio.to_thread(_load_page_data)
+	peer_rows = await asyncio.to_thread(_load_all_peers)
+	total_peers = len(peer_rows)
 	peers: list[dict] = []
 	now_epoch = int(time.time())
 	unique_client_ips = list({
@@ -345,18 +337,25 @@ async def peers_page(
 		# Use semaphore to limit concurrent geo-IP lookups (prevents thread pool exhaustion)
 		async def _bounded_lookup(ip: str) -> dict | None:
 			async with _GEO_LOOKUP_SEMAPHORE:
-				return await asyncio.to_thread(_lookup_ip_cached, ip)
+				return await asyncio.to_thread(lookup_ip_cached, ip)
 		
 		results = await asyncio.gather(*[
 			_bounded_lookup(client_ip)
 			for client_ip in unique_client_ips
-		])
-		geoip_cache = dict(zip(unique_client_ips, results, strict=True))
+		], return_exceptions=True)
+		
+		# Filter out exceptions from failed lookups
+		for ip, result in zip(unique_client_ips, results):
+			if isinstance(result, BaseException):
+				_log.debug("Geo-IP lookup failed for %s: %s", ip, result)
+				geoip_cache[ip] = None
+			else:
+				geoip_cache[ip] = result
 
 	for row in peer_rows:
 		peer = dict(row)
 		handshake_epoch = int(peer.get("last_handshake_at") or 0)
-		last_seen = _format_last_seen_label(handshake_epoch, now_epoch=now_epoch)
+		last_seen = format_last_seen_label(handshake_epoch, now_epoch=now_epoch)
 		peer["last_seen_text"] = last_seen.text
 		peer["last_seen_class"] = last_seen.css_class
 		peer["last_seen_active"] = last_seen.is_active
@@ -373,28 +372,18 @@ async def peers_page(
 		if peer["last_client_ip_display"]:
 			client_ip = peer["last_client_ip_display"]
 			info = geoip_cache.get(client_ip)
-			geo_fields = _extract_geo_fields(info)
+			geo_fields = extract_geo_fields(info)
 			peer["last_client_country_code"] = geo_fields["country_code"]
 			peer["last_client_city"] = geo_fields["city"]
 			peer["last_client_as_org"] = geo_fields["as_org"]
 		peers.append(peer)
 
-	start_index = ((page - 1) * page_size) + 1 if total_peers else 0
-	end_index = min(page * page_size, total_peers)
-
 	return templates.TemplateResponse("peers.html", {
 		"request": request,
 		"user": user,
 		"peers": peers,
-		"page": page,
-		"page_size": page_size,
-		"total_pages": total_pages,
 		"total_peers": total_peers,
-		"has_prev": page > 1,
-		"has_next": page < total_pages,
-		"start_index": start_index,
-		"end_index": end_index,
-		"csrf_token": _get_csrf_token(request),
+		"csrf_token": get_csrf_token(request),
 	})
 
 
@@ -402,20 +391,21 @@ async def peers_page(
 @limiter.limit(RATE_LIMIT_DEFAULT)
 def users_page(
 	request: Request,
-	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_admin_or_redirect),
+	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Users management page (admin only).
 	
 	Note: This is a sync handler, so FastAPI runs it in a threadpool worker.
 	The conn dependency is created and used in the same thread — safe.
+	Auth check happens before DB connection to avoid wasting resources.
 	"""
 	users = get_all_users(conn)
 	return templates.TemplateResponse("users.html", {
 		"request": request,
 		"user": user,
 		"users": users,
-		"csrf_token": _get_csrf_token(request),
+		"csrf_token": get_csrf_token(request),
 	})
 
 
@@ -436,7 +426,7 @@ def dns_page(
 		"request": request,
 		"user": user,
 		"enable_blocklist": enable_blocklist,
-		"csrf_token": _get_csrf_token(request),
+		"csrf_token": get_csrf_token(request),
 	})
 
 
@@ -444,13 +434,16 @@ def dns_page(
 @limiter.limit(RATE_LIMIT_DEFAULT)
 def traffic_page(
 	request: Request,
+	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_user_or_redirect),
 ):
 	"""Traffic usage page."""
+	traffic_analysis_enabled = get_setting(conn, "traffic_analysis_enabled") == "1"
 	return templates.TemplateResponse("traffic.html", {
 		"request": request,
 		"user": user,
-		"csrf_token": _get_csrf_token(request),
+		"traffic_analysis_enabled": traffic_analysis_enabled,
+		"csrf_token": get_csrf_token(request),
 	})
 
 
@@ -470,7 +463,7 @@ def about_page(
 	return templates.TemplateResponse("about.html", {
 		"request": request,
 		"user": user,
-		"csrf_token": _get_csrf_token(request),
+		"csrf_token": get_csrf_token(request),
 		**about_data,
 	})
 
@@ -485,14 +478,18 @@ def settings_page(
 	return templates.TemplateResponse("settings.html", {
 		"request": request,
 		"user": user,
-		"csrf_token": _get_csrf_token(request),
+		"csrf_token": get_csrf_token(request),
 	})
 
 
 @router.get("/.well-known/acme-challenge/{token}", response_class=PlainTextResponse)
 @limiter.limit(RATE_LIMIT_DEFAULT)
-async def acme_challenge(request: Request, token: str):
-	"""Serve ACME HTTP-01 challenge response for Let's Encrypt."""
+def acme_challenge(request: Request, token: str):
+	"""Serve ACME HTTP-01 challenge response for Let's Encrypt.
+	
+	Note: Sync handler so FastAPI runs it in threadpool (get_challenge_response
+	performs file I/O and should not block the event loop).
+	"""
 	if not _ACME_TOKEN_RE.match(token):
 		_log.warning("ACME challenge: invalid token format (length=%d)", len(token))
 		return PlainTextResponse("Invalid token", status_code=400)
