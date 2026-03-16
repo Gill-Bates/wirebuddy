@@ -15,7 +15,7 @@ hide:
 </p>
 
 <p align="center">
-  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/v/giiibates/wirebuddy?label=Docker%20Hub&logo=docker&logoColor=white" alt="Docker Hub"></a>
+  <a href="https://github.com/Gill-Bates/wirebuddy/releases"><img src="https://img.shields.io/github/v/release/Gill-Bates/wirebuddy?logo=github&logoColor=white" alt="GitHub Release"></a>
   <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/pulls/giiibates/wirebuddy?logo=docker&logoColor=white" alt="Docker Pulls"></a>
   <a href="https://github.com/Gill-Bates/wirebuddy"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License"></a>
 </p>
