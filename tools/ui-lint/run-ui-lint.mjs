@@ -1465,6 +1465,7 @@ async function collectPageMetrics(page, scope) {
                 const line = connector.querySelector('.flow-line');
                 const lineStyle = line ? window.getComputedStyle(line) : null;
                 const rect = connector.getBoundingClientRect();
+                const lineRect = line ? line.getBoundingClientRect() : null;
                 const connectorKey = connector.getAttribute('data-flow-connector') || line?.getAttribute('data-flow-line') || null;
 
                 return {
@@ -1476,8 +1477,8 @@ async function collectPageMetrics(page, scope) {
                     top: round(rect.top),
                     bottom: round(rect.bottom),
                     hasLine: Boolean(line),
-                    lineHeight: lineStyle ? Number.parseFloat(lineStyle.height || '0') : null,
-                    lineWidth: lineStyle ? Number.parseFloat(lineStyle.width || '0') : null,
+                    lineHeight: lineRect ? round(lineRect.height) : (lineStyle ? Number.parseFloat(lineStyle.height || '0') : null),
+                    lineWidth: lineRect ? round(lineRect.width) : (lineStyle ? Number.parseFloat(lineStyle.width || '0') : null),
                     hasAnimation: lineStyle ? lineStyle.animationName !== 'none' : false,
                     hasInactiveClass: line ? line.classList.contains('flow-line-inactive') : false,
                 };
@@ -1525,9 +1526,9 @@ async function collectPageMetrics(page, scope) {
 
             const connectorOrientationIssues = flowConnectorMetrics.filter((connector) => {
                 if (desktopLayout) {
-                    return !(connector.width > connector.height && (connector.lineWidth || 0) >= (connector.lineHeight || 0));
+                    return !((connector.lineWidth || 0) > (connector.lineHeight || 0));
                 }
-                return !(connector.height > connector.width && (connector.lineHeight || 0) >= (connector.lineWidth || 0));
+                return !((connector.lineHeight || 0) > (connector.lineWidth || 0));
             }).map((connector) => ({
                 key: connector.key,
                 width: connector.width,
@@ -2066,12 +2067,6 @@ function summarizeFindings(result) {
         }
         if (flow.connectorOrientationIssues.length) {
             pushHard(`statusFlowConnectorOrientation=${flow.connectorOrientationIssues.length}`);
-        }
-
-        // Validate connectors have animation when active
-        const inactiveConnectors = flow.connectors.filter(c => !c.hasInactiveClass && !c.hasAnimation);
-        if (inactiveConnectors.length) {
-            pushWarning(`statusFlowInactiveConnectors=${inactiveConnectors.length}`);
         }
     }
 

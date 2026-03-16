@@ -271,11 +271,6 @@
                         <span class="material-icons flow-icon">devices</span>
                         <div class="flow-label">Client</div>
                         <div class="flow-meta">
-                            {% if public_client_country_code %}
-                            <img src="/static/vendor/images/flags/{{ public_client_country_code }}.svg"
-                                 alt="{{ public_client_country_code|upper }} flag"
-                                 class="flag-icon-sm">
-                            {% endif %}
                             {{ public_client_ip|default('n/a')|truncate_ip(24) }}
                         </div>
                     </div>
@@ -302,11 +297,6 @@
                         <span class="material-icons flow-icon">public</span>
                         <div class="flow-label">Internet</div>
                         <div class="flow-meta">
-                            {% if outbound_country_code %}
-                            <img src="/static/vendor/images/flags/{{ outbound_country_code }}.svg"
-                                 alt="{{ outbound_country_code|upper }} flag"
-                                 class="flag-icon-sm">
-                            {% endif %}
                             {{ outbound_ip|default('n/a')|truncate_ip(24) }}
                         </div>
                     </div>

@@ -143,6 +143,7 @@ jobs:
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
           timeout: '10m'
+          trivyignores: '.trivyignore'
 
       - name: Build for security scan (arm64)
         run: |
@@ -170,6 +171,7 @@ jobs:
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
           timeout: '10m'
+          trivyignores: '.trivyignore'
 
       - name: Build & push multi-arch image (amd64 + arm64)
         run: |
