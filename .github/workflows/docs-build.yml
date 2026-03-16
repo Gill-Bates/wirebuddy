@@ -16,10 +16,6 @@ on:
       - 'docs/**'
       - 'CHANGELOG.md'
       - 'LICENSE'
-  workflow_run:
-    workflows: ["Docker Multi-Arch Build"]
-    types:
-      - completed
   workflow_dispatch:
 
 permissions:
