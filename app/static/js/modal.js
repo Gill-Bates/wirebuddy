@@ -101,8 +101,8 @@ function wbConfirm(message, type = 'confirm') {
     return _showModal({ title: 'Confirm', message, type, showCancel: true, showInput: false });
 }
 
-function wbPrompt(message, { defaultValue = '', placeholder = '', inputType = 'text' } = {}) {
-    return _showModal({ title: 'Input', message, type: 'prompt', showCancel: true, showInput: true, inputDefault: defaultValue, inputPlaceholder: placeholder, inputType });
+function wbPrompt(message, { defaultValue = '', placeholder = '', inputType = 'text', title = 'Input' } = {}) {
+    return _showModal({ title, message, type: 'prompt', showCancel: true, showInput: true, inputDefault: defaultValue, inputPlaceholder: placeholder, inputType });
 }
 
 function chartEmptyState() {

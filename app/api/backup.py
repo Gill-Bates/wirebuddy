@@ -48,7 +48,7 @@ router = APIRouter(prefix="/backup", tags=["backup"])
 
 # Directories to include in backup (relative to data_dir)
 # These contain all persistent state that should survive a restore
-BACKUP_DIRECTORIES = ("tsdb", "dns", "certs", "geolite2")
+BACKUP_DIRECTORIES = ("tsdb", "dns", "certs")
 BACKUP_DATABASE_NAME = "wirebuddy.db"
 BACKUP_SUBDIR = "backup"  # Scheduled backups stored here
 BACKUP_RETENTION_DAYS = 30
@@ -283,6 +283,79 @@ def create_backup(
 		media_type="application/gzip",
 		headers={"Content-Disposition": f'attachment; filename="{filename}"'}
 	)
+
+
+@router.post("/validate")
+async def validate_backup(
+	request: Request,
+	file: UploadFile = File(...),
+	admin: dict = Depends(require_admin),
+):
+	"""Validate a backup file's HMAC signature without restoring.
+	
+	Use this to check backup integrity before prompting for password confirmation.
+	Returns 200 if valid, 400 with error detail if invalid.
+	"""
+	db_path = request.app.state.cfg.db_path
+	filename = file.filename or ""
+	
+	# Validate filename format and extract HMAC
+	match = re.match(r"wirebuddy_backup_\d{8}_\d{6}_([a-f0-9]{32})\.tar\.gz$", filename)
+	if not match:
+		raise HTTPException(
+			status_code=400,
+			detail="Invalid backup file. Expected format: wirebuddy_backup_YYYYMMDD_HHMMSS_<hmac>.tar.gz"
+		)
+	
+	expected_hmac = match.group(1)
+	
+	# Stream upload to temp file
+	fd, tmp_upload_str = tempfile.mkstemp(suffix=".tar.gz")
+	os.close(fd)
+	tmp_upload_path = Path(tmp_upload_str)
+	
+	conn = connect(db_path)
+	try:
+		chunk_size = 1024 * 1024
+		first_chunk = True
+		total_written = 0
+		
+		with open(tmp_upload_path, "wb") as tmp_upload:
+			while True:
+				chunk = await file.read(chunk_size)
+				if not chunk:
+					break
+				total_written += len(chunk)
+				if total_written > MAX_BACKUP_UPLOAD_BYTES:
+					tmp_upload_path.unlink(missing_ok=True)
+					raise HTTPException(status_code=413, detail="Backup file too large")
+				
+				# Validate gzip magic bytes on first chunk
+				if first_chunk:
+					if len(chunk) < 2 or chunk[:2] != b"\x1f\x8b":
+						tmp_upload_path.unlink(missing_ok=True)
+						raise HTTPException(
+							status_code=400,
+							detail="Invalid backup file (not a gzip archive)"
+						)
+					first_chunk = False
+				
+				tmp_upload.write(chunk)
+		
+		# Verify HMAC (constant-time comparison to prevent timing attacks)
+		actual_hmac = _compute_backup_hmac(tmp_upload_path, conn)
+		if not hmac.compare_digest(actual_hmac, expected_hmac):
+			tmp_upload_path.unlink(missing_ok=True)
+			_log.warning("Backup validation failed: HMAC mismatch")
+			raise HTTPException(
+				status_code=400,
+				detail="Backup integrity check failed (HMAC mismatch - wrong instance or corrupted file)"
+			)
+		
+		return ok_response(message="Backup file is valid")
+	finally:
+		tmp_upload_path.unlink(missing_ok=True)
+		close_connection(conn)
 
 
 class RestoreRequest(BaseModel):

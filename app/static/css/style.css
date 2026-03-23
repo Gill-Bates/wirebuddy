@@ -1407,6 +1407,11 @@ body.wb-onboarding .modal-backdrop.show {
     color: var(--bs-primary);
 }
 
+/* Spinners inside buttons must inherit button text color */
+.btn .spinner-border {
+    color: inherit;
+}
+
 #wbReconnectModal .modal-dialog {
     max-width: 460px;
 }

@@ -67,16 +67,11 @@
                         </p>
 
                         <div class="row g-3 align-items-end">
-                            <div class="col-md-5">
+                            <div class="col-md-8">
                                 <label for="backup-restore-file" class="form-label">Backup File</label>
                                 <input type="file" class="form-control form-control-sm" id="backup-restore-file" accept=".tar.gz,.gz"{% if not user['is_admin'] %} disabled{% endif %}>
                             </div>
                             <div class="col-md-4">
-                                <label for="backup-restore-confirm" class="form-label">Confirmation</label>
-                                <input type="text" class="form-control form-control-sm" id="backup-restore-confirm"
-                                    placeholder="Type RESTORE to confirm"{% if not user['is_admin'] %} disabled{% endif %}>
-                            </div>
-                            <div class="col-md-3">
                                 <button class="btn btn-sm btn-danger w-100" type="button" id="btn-backup-restore"{% if not user['is_admin'] %} disabled{% endif %}
                                     title="Restore configuration from backup" disabled>
                                     Restore Backup
