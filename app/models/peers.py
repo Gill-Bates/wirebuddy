@@ -17,8 +17,7 @@ from pydantic import BaseModel, Field, field_validator
 
 class PeerCreate(BaseModel):
 	"""Peer creation payload."""
-	name: Optional[str] = Field(None, max_length=128)
-	description: Optional[str] = Field(None, max_length=512)
+	name: str = Field(..., min_length=1, max_length=128, description="Display name for this peer (required)")
 	allowed_ips: str = Field(..., min_length=1, max_length=256)
 	allowed_ips_mode: Literal["full", "split", "custom"] = "full"
 	client_isolation: bool = Field(
@@ -37,6 +36,13 @@ class PeerCreate(BaseModel):
 	public_key: Optional[str] = None
 	private_key: Optional[str] = None
 	preshared_key: Optional[str] = None
+
+	@field_validator("name")
+	@classmethod
+	def name_not_blank(cls, v: str) -> str:
+		if not v or not v.strip():
+			raise ValueError("Peer name is required and cannot be blank")
+		return v.strip()
 
 	@field_validator("interface")
 	@classmethod
@@ -58,7 +64,6 @@ class PeerCreate(BaseModel):
 class PeerUpdate(BaseModel):
 	"""Peer update payload."""
 	name: Optional[str] = Field(None, max_length=128)
-	description: Optional[str] = Field(None, max_length=512)
 	allowed_ips: Optional[str] = Field(None, max_length=256)
 	allowed_ips_mode: Optional[Literal["full", "split", "custom"]] = None
 	client_isolation: Optional[bool] = Field(
@@ -73,13 +78,19 @@ class PeerUpdate(BaseModel):
 		description="Enabled blocklist IDs (null=all, []=none, ['ads','porn']=specific)",
 	)
 
+	@field_validator("name")
+	@classmethod
+	def name_not_blank_if_provided(cls, v: Optional[str]) -> Optional[str]:
+		if v is not None and not v.strip():
+			raise ValueError("Peer name cannot be blank")
+		return v.strip() if v else v
+
 
 class PeerPublic(BaseModel):
 	"""Public peer representation."""
 	id: int
 	public_key: str
 	name: Optional[str] = None
-	description: Optional[str] = None
 	allowed_ips: str
 	allowed_ips_mode: Literal["full", "split", "custom"] = "full"
 	client_isolation: bool = False

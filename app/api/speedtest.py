@@ -25,15 +25,11 @@ from ..db.sqlite_settings import (
 	SPEEDTEST_SERVER_LIST,
 	SPEEDTEST_SERVER_MAP,
 	SPEEDTEST_RETENTION_OPTIONS,
-	get_speedtest_downstream_mbit,
 	get_speedtest_enabled,
 	get_speedtest_target,
-	get_speedtest_upstream_mbit,
 	get_speedtest_retention_days,
-	set_speedtest_downstream_mbit,
 	set_speedtest_enabled,
 	set_speedtest_target,
-	set_speedtest_upstream_mbit,
 	set_speedtest_retention_days,
 )
 from ..speedtest import (
@@ -72,8 +68,6 @@ class SpeedtestSettingsPayload(BaseModel):
 	"""Payload for updating speedtest settings."""
 	enabled: Optional[bool] = None
 	target: Optional[str] = Field(None, max_length=64)
-	upstream_mbit: Optional[float] = Field(None, ge=0, le=100_000)
-	downstream_mbit: Optional[float] = Field(None, ge=0, le=100_000)
 
 	@field_validator("target")
 	@classmethod
@@ -95,8 +89,6 @@ async def get_speedtest_settings(
 	return ok_response(data={
 		"enabled": get_speedtest_enabled(conn),
 		"target": get_speedtest_target(conn),
-		"upstream_mbit": get_speedtest_upstream_mbit(conn),
-		"downstream_mbit": get_speedtest_downstream_mbit(conn),
 		"servers": SPEEDTEST_SERVER_LIST,
 	})
 
@@ -114,16 +106,10 @@ async def update_speedtest_settings(
 				set_speedtest_enabled(conn, payload.enabled)
 			if payload.target is not None:
 				set_speedtest_target(conn, payload.target)
-			if payload.upstream_mbit is not None:
-				set_speedtest_upstream_mbit(conn, payload.upstream_mbit)
-			if payload.downstream_mbit is not None:
-				set_speedtest_downstream_mbit(conn, payload.downstream_mbit)
 			# Read response data inside transaction to avoid TOCTOU
 			result = {
 				"enabled": get_speedtest_enabled(conn),
 				"target": get_speedtest_target(conn),
-				"upstream_mbit": get_speedtest_upstream_mbit(conn),
-				"downstream_mbit": get_speedtest_downstream_mbit(conn),
 			}
 	except ValueError as exc:
 		raise HTTPException(status_code=422, detail=str(exc)) from None
@@ -367,13 +353,10 @@ async def get_speedtest_history(
 		entry["ts"] = pt.ts.isoformat()
 		history.append(entry)
 
-	# Also return the configured min/max (provider values)
 	return ok_response(data={
 		"history": history,
 		"limit": limit,
 		"truncated": len(points) == limit,
-		"upstream_mbit": get_speedtest_upstream_mbit(conn),
-		"downstream_mbit": get_speedtest_downstream_mbit(conn),
 	})
 
 

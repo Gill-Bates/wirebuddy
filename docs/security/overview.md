@@ -16,10 +16,10 @@ graph TB
     H --> I[Data Encryption]
     I --> J[Database]
     
-    style D fill:#ff6b6b
-    style E fill:#ff6b6b
-    style G fill:#ff6b6b
-    style I fill:#ff6b6b
+    style D fill:#ff6384
+    style E fill:#ff6384
+    style G fill:#ff6384
+    style I fill:#ff6384
 ```
 
 ## Authentication

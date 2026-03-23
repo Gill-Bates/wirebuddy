@@ -71,6 +71,7 @@ from .api import wireguard as wireguard_api
 from .api import dns as dns_api
 from .api import frontend_shared as frontend_ui
 from .api import speedtest as speedtest_api
+from .api import network_stats as network_stats_api
 from .db import tsdb
 from .dns import unbound
 from .dns import ingestion as dns_ingestion
@@ -1278,6 +1279,17 @@ async def _lifespan(app: FastAPI):
 				initial_delay=15.0,  # after tsdb-sample (10 s) to stagger I/O
 			)
 
+			# ─── NETWORK STATS (SPARKLINE HISTORY) ────────────────────────
+			async def _sample_network_stats() -> None:
+				await scheduled_tasks.sample_network_stats(ctx)
+			scheduler.add(
+				"network-stats",
+				interval_seconds=30,  # 30 seconds for ~120 points/hour sparkline
+				func=_sample_network_stats,
+				run_on_start=True,
+				initial_delay=12.0,  # after tsdb-sample (10 s) to stagger I/O
+			)
+
 			async def _update_geoip() -> None:
 				await scheduled_tasks.update_geoip(ctx)
 			scheduler.add(
@@ -1598,6 +1610,7 @@ def create_app() -> FastAPI:
 	app.include_router(dns_api.router, prefix="/api/dns")
 	app.include_router(acme_api.router, prefix="/api/acme")
 	app.include_router(speedtest_api.router, prefix="/api/wireguard")
+	app.include_router(network_stats_api.router, prefix="/api")
 	
 	# ─── FRONTEND ROUTES ─────────────────────────────────────
 	app.include_router(frontend_ui.router)

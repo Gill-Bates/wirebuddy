@@ -72,6 +72,23 @@
 
             const status = await api('GET', '/api/dns/status');
             const isRunning = status.is_running === true;
+            const dnsUnavailable = status.unavailable === true;
+            // DNS unavailable (Unbound not installed) - disable all DNS controls
+            if (dnsUnavailable) {
+                if (startBtn) {
+                    startBtn.disabled = true;
+                    startBtn.title = 'Unbound not installed';
+                }
+                if (stopBtn) {
+                    stopBtn.disabled = true;
+                    stopBtn.title = 'Unbound not installed';
+                }
+                if (restartBtn) {
+                    restartBtn.disabled = true;
+                    restartBtn.title = 'Unbound not installed';
+                }
+                return;
+            }
             // Start only available if not running and interfaces exist.
             if (startBtn) {
                 startBtn.disabled = !isAdmin || isRunning || !hasInterfaces;
@@ -128,7 +145,7 @@
         });
     }
 
-    const ifaceSubmitBtn = document.getElementById('iface-submit-btn');
+    const ifaceSubmitBtn = document.getElementById('btn-iface-submit');
     if (ifaceSubmitBtn) {
         ifaceSubmitBtn.addEventListener('click', () => {
             void submitInterfaceForm();
@@ -147,7 +164,7 @@
 
     function setInterfaceSubmitBusy(isBusy) {
         const spinner = document.getElementById('iface-spinner');
-        const submitBtn = document.getElementById('iface-submit-btn');
+        const submitBtn = document.getElementById('btn-iface-submit');
         if (spinner) spinner.classList.toggle('d-none', !isBusy);
         if (submitBtn) submitBtn.disabled = isBusy;
     }
@@ -156,13 +173,14 @@
         editingInterfaceName = null;
 
         const title = document.getElementById('ifaceModalTitle');
-        const submitLabel = document.getElementById('iface-submit-label');
+        const submitLabel = document.getElementById('btn-iface-submit-label');
         const nameInput = document.getElementById('iface-name');
         const addressInput = document.getElementById('iface-address');
         const address6Input = document.getElementById('iface-address6');
         const portInput = document.getElementById('iface-port');
         const dnsInput = document.getElementById('iface-dns');
         const wbDnsToggle = document.getElementById('iface-use-wb-dns');
+        const showOnDashboardToggle = document.getElementById('iface-show-on-dashboard');
         const form = document.getElementById('iface-form');
 
         if (title) title.textContent = 'Create WireGuard Interface';
@@ -196,6 +214,7 @@
             dnsInput.readOnly = false;
         }
         if (wbDnsToggle) wbDnsToggle.checked = false;
+        if (showOnDashboardToggle) showOnDashboardToggle.checked = true;  // Default to showing on dashboard
     }
 
     async function refreshInterfaces() {
@@ -220,17 +239,17 @@
                 const deleteDisabled = !isAdmin || isActive;
                 
                 // Start: only enabled if admin and not active
-                const startBtn = `<button class="btn btn-sm btn-light btn-icon px-2 iface-action-btn" data-iface="${dataName}" data-action="up" title="${!isAdmin ? 'Admin privileges required' : 'Start'}" aria-label="Start"${startDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle text-success" style="font-size: 20px;">play_arrow</span></button>`;
+                const startBtn = `<button class="btn btn-sm btn-outline-success text-nowrap iface-action-btn" data-iface="${dataName}" data-action="up" title="${!isAdmin ? 'Admin privileges required' : 'Start'}" aria-label="Start"${startDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle icon-md">play_arrow</span></button>`;
                 // Stop: only enabled if admin and active
-                const stopBtn = `<button class="btn btn-sm btn-light btn-icon px-2 iface-action-btn" data-iface="${dataName}" data-action="down" title="${!isAdmin ? 'Admin privileges required' : 'Stop'}" aria-label="Stop"${stopDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle text-danger" style="font-size: 20px;">stop</span></button>`;
+                const stopBtn = `<button class="btn btn-sm btn-outline-danger text-nowrap iface-action-btn" data-iface="${dataName}" data-action="down" title="${!isAdmin ? 'Admin privileges required' : 'Stop'}" aria-label="Stop"${stopDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle icon-md">stop</span></button>`;
                 // Restart: only enabled if admin and active
-                const restartBtn = `<button class="btn btn-sm btn-light btn-icon px-2 iface-action-btn" data-iface="${dataName}" data-action="restart" title="${!isAdmin ? 'Admin privileges required' : 'Restart'}" aria-label="Restart"${restartDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle" style="font-size: 20px;">restart_alt</span></button>`;
+                const restartBtn = `<button class="btn btn-sm btn-outline-warning text-nowrap iface-action-btn" data-iface="${dataName}" data-action="restart" title="${!isAdmin ? 'Admin privileges required' : 'Restart'}" aria-label="Restart"${restartDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle icon-md">restart_alt</span></button>`;
                 // Delete: only enabled if admin and not active
                 const deleteBtn = (isAdmin)
-                    ? `<button class="btn btn-sm btn-light btn-icon px-2 iface-delete-btn" data-iface="${dataName}" title="Delete" aria-label="Delete"${deleteDisabled ? ' disabled' : ''}><span class="material-icons align-middle text-danger" style="font-size: 20px;">delete</span></button>`
+                    ? `<button class="btn btn-sm btn-outline-danger text-nowrap iface-delete-btn" data-iface="${dataName}" title="Delete" aria-label="Delete"${deleteDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">delete</span></button>`
                     : '';
                 const editBtn = (isAdmin && isConfigured)
-                    ? `<button class="btn btn-sm btn-light btn-icon px-2 iface-edit-btn" data-iface="${dataName}" title="Edit" aria-label="Edit"><span class="material-icons align-middle" style="font-size: 20px;">edit</span></button>`
+                    ? `<button class="btn btn-sm btn-outline-secondary text-nowrap iface-edit-btn" data-iface="${dataName}" title="Edit" aria-label="Edit"><span class="material-icons align-middle icon-md">edit</span></button>`
                     : '';
 
                 html += `
@@ -351,7 +370,7 @@
             editingInterfaceName = iface.name || name;
 
             document.getElementById('ifaceModalTitle').textContent = `Edit Interface ${editingInterfaceName}`;
-            document.getElementById('iface-submit-label').textContent = 'Save Changes';
+            document.getElementById('btn-iface-submit-label').textContent = 'Save Changes';
 
             const nameInput = document.getElementById('iface-name');
             nameInput.value = editingInterfaceName;
@@ -361,6 +380,12 @@
             document.getElementById('iface-address6').value = iface.address6 || '';
             document.getElementById('iface-port').value = String(iface.listen_port || 51820);
             document.getElementById('iface-dns').value = iface.dns || '';
+
+            // Show on Dashboard toggle
+            const showOnDashboardToggle = document.getElementById('iface-show-on-dashboard');
+            if (showOnDashboardToggle) {
+                showOnDashboardToggle.checked = iface.show_on_dashboard !== false;
+            }
 
             // Optional WireBuddy DNS toggle (may not exist in all versions)
             const serverIp = (iface.address || '').split('/')[0];
@@ -385,6 +410,8 @@
         const address6 = document.getElementById('iface-address6').value.trim() || null;
         const port = document.getElementById('iface-port').value || 51820;
         const dns = document.getElementById('iface-dns').value.trim() || null;
+        const showOnDashboardToggle = document.getElementById('iface-show-on-dashboard');
+        const showOnDashboard = showOnDashboardToggle ? showOnDashboardToggle.checked : true;
 
         if (!address) {
             wbToast('Please fill in an IPv4 address', 'warning');
@@ -404,11 +431,12 @@
 
         setInterfaceSubmitBusy(true);
         try {
-            const res = await api('PUT', `/api/wireguard/interfaces/${encodeURIComponent(editingInterfaceName)}`, {
+            const res = await api('PATCH', `/api/wireguard/interfaces/${encodeURIComponent(editingInterfaceName)}`, {
                 address: address,
                 address6: address6,
                 listen_port: parseInt(port),
-                dns: dns
+                dns: dns,
+                show_on_dashboard: showOnDashboard
             });
             const payload = res?.data || res;
 

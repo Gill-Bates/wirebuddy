@@ -55,7 +55,8 @@ router = APIRouter()
 
 __all__ = ["router", "InterfaceCreate", "InterfaceUpdate"]
 
-_IFACE_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+# Issue #16: Renamed from _IFACE_NAME_RE for clarity — only used for outbound iface validation
+_OUTBOUND_IFACE_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -82,9 +83,10 @@ async def _regenerate_split_dns(conn: sqlite3.Connection) -> str | None:
 			else:
 				_log.warning("SPLIT_DNS_RELOAD_FAILED records=%d msg=%s", count, msg)
 				return f"Split-DNS reload failed: {msg}"
-	except Exception:
+	# Catch only expected errors; let programming errors propagate
+	except (OSError, sqlite3.Error) as exc:
 		_log.exception("SPLIT_DNS_REGENERATE_FAILED")
-		return "Split-DNS regeneration failed; DNS override may be stale"
+		return f"Split-DNS regeneration failed: {exc}"
 	return None
 
 
@@ -102,7 +104,9 @@ def _get_default_route_iface() -> str:
 				parts = line.split()
 				# Columns: Iface Dest Gateway Flags RefCnt Use Metric Mask ...
 				if len(parts) >= 8 and parts[1] == "00000000" and parts[7] == "00000000":
-					return parts[0]
+					detected = parts[0]
+					_log.debug("AUTO_DETECTED_DEFAULT_ROUTE_IFACE iface=%s", detected)
+					return detected
 	except (OSError, StopIteration, IndexError):
 		pass
 	_log.warning("Could not detect default route interface, falling back to eth0")
@@ -153,6 +157,10 @@ class InterfaceUpdate(BaseModel):
 	dns: Optional[str] = Field(default=None, description="DNS servers for clients")
 	post_up: Optional[str] = Field(default=None, description="PostUp script")
 	post_down: Optional[str] = Field(default=None, description="PostDown script")
+	show_on_dashboard: Optional[bool] = Field(
+		default=None,
+		description="Show this interface on dashboard network gauges",
+	)
 
 
 def _build_default_firewall_rules(
@@ -161,7 +169,7 @@ def _build_default_firewall_rules(
 	outbound_iface: str = "eth0",
 ) -> tuple[str, str]:
 	"""Build default PostUp/PostDown iptables rules for NAT and DNS."""
-	if not _IFACE_NAME_RE.fullmatch(outbound_iface):
+	if not _OUTBOUND_IFACE_RE.fullmatch(outbound_iface):
 		raise ValueError(f"Suspicious outbound interface name: {outbound_iface!r}")
 	try:
 		v4_net = ipaddress.ip_network(v4_subnet, strict=False)
@@ -265,6 +273,12 @@ async def create_interface(
 		raise HTTPException(status_code=422, detail=f"Invalid address: {payload.address}")
 	if v4.version != 4:
 		raise HTTPException(status_code=422, detail="address must be an IPv4 CIDR (e.g. 10.0.0.1/24)")
+	# Issue #4 (Security): Enforce subnet prefix — /32 host address is useless for VPN
+	if v4.network.prefixlen == 32:
+		raise HTTPException(
+			status_code=422,
+			detail="address must include a subnet prefix (e.g. /24), not a /32 host address",
+		)
 
 	v6_str = payload.address6 or None
 	if v6_str:
@@ -274,6 +288,12 @@ async def create_interface(
 			raise HTTPException(status_code=422, detail=f"Invalid IPv6 address: {v6_str}")
 		if v6_obj.version != 6:
 			raise HTTPException(status_code=422, detail="address6 must be an IPv6 CIDR (e.g. fd00::1/64)")
+		# Issue #4 (Security): Enforce subnet prefix — /128 host address is useless
+		if v6_obj.network.prefixlen == 128:
+			raise HTTPException(
+				status_code=422,
+				detail="address6 must include a subnet prefix (e.g. /64), not a /128 host address",
+			)
 
 	# Check for subnet overlap with existing interfaces
 	existing_interfaces = list_interfaces(conn)
@@ -290,10 +310,10 @@ async def create_interface(
 						status_code=409,
 						detail=f"IPv4 subnet {new_v4_net} overlaps with interface '{iface['name']}' ({existing_v4})"
 					)
-			except ValueError:
-				pass  # Skip invalid addresses in DB
-
-		# Check IPv6 overlap
+			except ValueError as exc:
+				# Issue #19: Log invalid DB entries at DEBUG level for diagnostic visibility
+				_log.debug("Skipping invalid IPv4 address in DB for interface %s: %s", iface["name"], exc)
+				pass
 		if new_v6_net and iface["address6"]:
 			try:
 				existing_v6 = ipaddress.ip_interface(iface["address6"]).network
@@ -302,10 +322,10 @@ async def create_interface(
 						status_code=409,
 						detail=f"IPv6 subnet {new_v6_net} overlaps with interface '{iface['name']}' ({existing_v6})"
 					)
-			except ValueError:
-				pass  # Skip invalid addresses in DB
-
-	# Check for port conflict
+			except ValueError as exc:
+				# Issue #19: Log invalid DB entries at DEBUG level for diagnostic visibility
+				_log.debug("Skipping invalid IPv6 address in DB for interface %s: %s", iface["name"], exc)
+				pass
 	for iface in existing_interfaces:
 		if iface["listen_port"] == payload.listen_port:
 			raise HTTPException(
@@ -331,6 +351,7 @@ async def create_interface(
 		v4_subnet = str(v4.network)
 		v6_subnet = str(ipaddress.ip_interface(v6_str).network) if v6_str else None
 		outbound_iface = _get_default_route_iface()
+		_log.info("AUTO_DETECTED_OUTBOUND_IFACE iface=%s for interface=%s", outbound_iface, payload.name)
 		default_up, default_down = _build_default_firewall_rules(v4_subnet, v6_subnet, outbound_iface)
 		if not post_up:
 			post_up = default_up
@@ -462,7 +483,9 @@ async def create_interface(
 	return ok_response(data=data)
 
 
-@router.put("/interfaces/{name}", status_code=200)
+# Issue #3 (Bug): PUT requires full resource replacement, conflicts with PATCH semantics.
+# Current implementation uses PATCH semantics (partial update via model_fields_set).
+# Removing @router.put decorator to avoid semantic confusion.
 @router.patch("/interfaces/{name}", status_code=200)
 async def update_interface(
 	request: Request,
@@ -494,6 +517,11 @@ async def update_interface(
 		v4 = ipaddress.ip_interface(new_address)
 	except ValueError:
 		raise HTTPException(status_code=422, detail=f"Invalid address: {new_address}")
+	if v4.network.prefixlen == 32:
+		raise HTTPException(
+			status_code=422,
+			detail="address must include a subnet prefix (e.g. /24), not a /32 host address",
+		)
 	if v4.version != 4:
 		raise HTTPException(status_code=422, detail="address must be an IPv4 CIDR")
 
@@ -505,6 +533,11 @@ async def update_interface(
 			raise HTTPException(status_code=422, detail=f"Invalid IPv6 address: {v6_str}")
 		if v6_obj.version != 6:
 			raise HTTPException(status_code=422, detail="address6 must be an IPv6 CIDR")
+		if v6_obj.network.prefixlen == 128:
+			raise HTTPException(
+				status_code=422,
+				detail="address6 must include a subnet prefix (e.g. /64), not a /128 host address",
+			)
 
 	new_dns = payload.dns if "dns" in fields_set else iface["dns"]
 	new_post_up = payload.post_up if "post_up" in fields_set else iface["post_up"]
@@ -524,7 +557,9 @@ async def update_interface(
 						status_code=409,
 						detail=f"IPv4 subnet {new_v4_net} overlaps with interface '{other['name']}' ({other_v4})",
 					)
-			except ValueError:
+			except ValueError as exc:
+				# Issue #19: Log invalid DB entries at DEBUG level for diagnostic visibility
+				_log.debug("Skipping invalid IPv4 address in DB for interface %s: %s", other["name"], exc)
 				pass
 		if new_v6_net and other["address6"]:
 			try:
@@ -534,7 +569,9 @@ async def update_interface(
 						status_code=409,
 						detail=f"IPv6 subnet {new_v6_net} overlaps with interface '{other['name']}' ({other_v6})",
 					)
-			except ValueError:
+			except ValueError as exc:
+				# Issue #19: Log invalid DB entries at DEBUG level for diagnostic visibility
+				_log.debug("Skipping invalid IPv6 address in DB for interface %s: %s", other["name"], exc)
 				pass
 		if other["listen_port"] == new_listen_port:
 			raise HTTPException(
@@ -571,6 +608,15 @@ async def update_interface(
 	config_path = WG_CONFIG_PATH
 	conf_file = config_path / f"{name}.conf"
 
+	# Handle show_on_dashboard field (DB-only, not in config file)
+	# Issue #7 (Bug): Use sentinel to distinguish "not provided" from "explicitly False"
+	_UNSET = object()
+	new_show_on_dashboard = _UNSET
+	if "show_on_dashboard" in fields_set:
+		new_show_on_dashboard = payload.show_on_dashboard
+	# Only pass to DB if explicitly set, otherwise db_update_interface keeps existing value
+	new_show_on_dashboard_db = new_show_on_dashboard if new_show_on_dashboard is not _UNSET else None
+
 	old = {
 		"address": iface["address"],
 		"address6": iface["address6"],
@@ -598,6 +644,7 @@ async def update_interface(
 				dns=new_dns,
 				post_up=new_post_up,
 				post_down=new_post_down,
+				show_on_dashboard=new_show_on_dashboard_db,
 			)
 			write_interface_config(
 				config_path=config_path,
@@ -623,7 +670,13 @@ async def update_interface(
 		raise HTTPException(status_code=500, detail="Failed to update interface config; changes were rolled back")
 
 	code, _, _ = await run_wg_command("wg", "show", name)
-	restart_required = (code == 0)
+	
+	# Check if only show_on_dashboard was changed (no config-relevant changes)
+	config_relevant_fields = {"address", "address6", "listen_port", "dns", "post_up", "post_down"}
+	config_changed = bool(fields_set & config_relevant_fields)
+	
+	# Only require restart if interface is active AND config was actually changed
+	restart_required = (code == 0) and config_changed
 
 	data = {
 		"name": name,
@@ -692,29 +745,30 @@ async def delete_interface(
 
 	# Issue #8: use DB-layer function instead of raw SQL
 	if db_exists:
-		# Get all peers before deletion to clean up their TSDB data
+		# Issue #1 (Critical): Wrap DB operations in transaction for atomicity
+		# Issue #5 (Security): Get peers before deletion but delete TSDB data AFTER successful DB delete
 		try:
 			peers = await run_in_threadpool(get_all_peers, conn, name)
-			for peer in peers:
-				public_key = peer["public_key"]
-				try:
-					await run_in_threadpool(tsdb.delete_peer_data, tsdb_dir, public_key)
-				except Exception:
-					_log.exception("Failed to delete TSDB data for peer %s...", public_key[:8])
 		except Exception:
-			_log.exception("Failed to cleanup TSDB data for interface peers")
-		
-		try:
-			deleted = delete_peers_by_interface(conn, name)
-			_log.info("INTERFACE_PEERS_DELETED name=%s count=%d", name, deleted)
-		except Exception as exc:
-			_log.warning("Failed to delete peers for interface %s: %s", name, exc)
+			_log.exception("Failed to fetch peers for interface %s", name)
+			peers = []  # Continue with DB delete even if peer fetch fails
 
 		try:
-			db_delete_interface(conn, name)
+			with transaction(conn, immediate=True):
+				deleted = delete_peers_by_interface(conn, name)
+				_log.info("INTERFACE_PEERS_DELETED name=%s count=%d", name, deleted)
+				db_delete_interface(conn, name)
 		except Exception:
 			_log.exception("INTERFACE_DB_DELETE_FAILED name=%s", name)
 			raise HTTPException(status_code=500, detail="Failed to delete interface from database")
+
+		# Issue #5: Clean up TSDB data only after successful DB deletion
+		for peer in peers:
+			public_key = peer["public_key"]
+			try:
+				await run_in_threadpool(tsdb.delete_peer_data, tsdb_dir, public_key)
+			except Exception:
+				_log.exception("Failed to delete TSDB data for peer %s...", public_key[:8])
 
 	_log.info("INTERFACE_DELETED name=%s", name)
 

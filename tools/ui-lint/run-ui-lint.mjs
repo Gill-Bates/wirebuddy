@@ -3,25 +3,34 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-// tools/ui-lint/run-ui-lint.mjs
-// Copyright (C) 2025 Gill-Bates http://github.com/Gill-Bates
-//
-
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import pixelmatch from 'pixelmatch';
 import { PNG } from 'pngjs';
 import { chromium, devices } from 'playwright';
 
 const BASE_URL = process.env.UI_LINT_BASE_URL || 'http://localhost:8000';
-const USERNAME = process.env.UI_LINT_USERNAME || 'admin';
-const PASSWORD = process.env.UI_LINT_PASSWORD || 'admin';
-const OUTPUT_DIR = path.resolve(process.cwd(), process.env.UI_LINT_OUTPUT_DIR || 'ui-lint-output');
+const USERNAME = process.env.UI_LINT_USERNAME;
+const PASSWORD = process.env.UI_LINT_PASSWORD;
+
+if (!USERNAME || !PASSWORD) {
+    console.error('Error: UI_LINT_USERNAME and UI_LINT_PASSWORD environment variables must be set');
+    console.error('Example: export UI_LINT_USERNAME=admin && export UI_LINT_PASSWORD=your-password');
+    process.exit(1);
+}
+
+// Generate unique session ID for this test run to avoid conflicts
+const SESSION_ID = Date.now();
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const OUTPUT_DIR = process.env.UI_LINT_OUTPUT_DIR || `/tmp/wirebuddy-ui-lint-${SESSION_ID}`;
 const SCREENSHOT_DIR = path.resolve(
     OUTPUT_DIR,
     process.env.UI_LINT_SCREENSHOT_DIR || 'screenshots'
 );
+// Results JSON stays in tools/ui-lint/, not in temp
+const RESULTS_DIR = SCRIPT_DIR;
 
 // Thresholds and timing constants
 const VERTICAL_GAP_MIN = 22;
@@ -30,15 +39,20 @@ const VISUAL_DRIFT_THRESHOLD = 0.0025;
 const SCREENSHOT_SETTLE_MS = 800;
 const TAB_SWITCH_SETTLE_MS = 700;
 const DETAILS_EXPAND_SETTLE_MS = 300;
-const OVERFLOW_TOLERANCE_PX = 2;
+// Increased tolerance to avoid false positives on tablet Safari
+const OVERFLOW_TOLERANCE_PX = 6;
 const FOOTER_OVERLAP_TOLERANCE_PX = 1;
 const SCROLL_EDGE_CLEARANCE_MIN = 12;
 const LAYOUT_SHIFT_THRESHOLD = 0.02;
 const COMPONENT_LAYOUT_SHIFT_THRESHOLD_PX = 2;
-const COMPONENT_LAYOUT_SHIFT_SETTLE_MS = 500;
+// Charts and canvases can stabilize slower on tablets
+const COMPONENT_LAYOUT_SHIFT_SETTLE_MS = 800;
 const CLICK_TARGET_MIN_SIZE_PX = 44;
 const LOGIN_ERROR_SETTLE_MS = 120;
 const LOGIN_LOCKOUT_RESET_MS = 16000;
+// Auth rate limit is 5/minute. With 6 login-failure tests, we must stagger them.
+// Wait 12s between each test to stay under 5 attempts/minute (60s/5 = 12s minimum).
+const LOGIN_TEST_STAGGER_MS = 13000;
 const LOGS_DELETE_HAIRLINE_TOLERANCE_PX = 2;
 const BADGE_FONT_SIZE_TOLERANCE_PX = 0.5;
 const BADGE_FONT_WEIGHT_TOLERANCE = 50;
@@ -55,12 +69,47 @@ const MODAL_BACKDROP_SATURATE_EXPECTED = 0.8;
 const MODAL_BACKDROP_SATURATE_TOLERANCE = 0.05;
 const MODAL_BACKDROP_ALPHA_EXPECTED = 0.6;
 const MODAL_BACKDROP_ALPHA_TOLERANCE = 0.05;
+const FORM_SWITCH_MAX_HEIGHT_PX = 22;
+const FORM_SWITCH_HEIGHT_TOLERANCE_PX = 1;
+
+// =============================================================================
+// Peers Modal Design Rules
+// =============================================================================
+// Add Peer Modal (#addPeerModal):
+// - Name field is REQUIRED (not optional) — enforced via:
+//   1. <span class="text-danger">*</span> marker after label text
+//   2. `required` HTML attribute on <input id="peer-name">
+//   3. `maxlength="128"` (backend max)
+//   4. Frontend JS validation before API call (shows alert + focuses field)
+//   5. Backend Pydantic model: `name: str = Field(..., min_length=1, max_length=128)`
+// - Routing Mode: dropdown with full/split/custom options
+// - Interface: required dropdown populated from active interfaces
+// - Use WireBuddy DNS: checkbox (default checked)
+// - Active Blocklists: shown only when DNS enabled
+// - Client Isolation: optional switch with help collapse
+//
+// Edit Peer Modal (#editPeerModal):
+// - Name field follows same required pattern as Add Peer
+// - Pre-populated with existing peer data
+//
+// Required Field Visual Convention:
+// - Label pattern: `<label>Field Name <span class="text-danger">*</span></label>`
+// - Required fields MUST have both visual marker AND `required` attribute
+// =============================================================================
 
 // Form Control Height validation (input-group consistency)
 // Current Bootstrap-based WireBuddy controls render at ~44px total height
 // for default-sized .form-control/.btn combinations in settings input groups.
 const INPUT_GROUP_HEIGHT_EXPECTED_PX = 44;
 const INPUT_GROUP_HEIGHT_TOLERANCE_PX = 2;
+const COMPACT_CARD_ACTION_MARGIN_TOP_MAX_PX = 10;
+const COMPACT_CARD_ACTION_PADDING_TOP_MAX_PX = 2;
+const COMPACT_CARD_ACTION_BORDER_TOP_MAX_PX = 0.5;
+
+// Ghost scroll container detection (scrollbar visible but minimal content overflow)
+// Catches cases like scrollHeight = clientHeight + 1–6px caused by thead/padding
+const GHOST_SCROLL_DELTA_MAX_PX = 8;
+const GHOST_SCROLL_MIN_HEIGHT_PX = 120;
 
 // KPI Card validation constants
 const KPI_CARD_PADDING_EXPECTED = 16; // px (1rem)
@@ -70,7 +119,24 @@ const KPI_ICON_MAX = 40;
 const KPI_VISUAL_DRIFT_THRESHOLD = 0.01;
 const KPI_HEIGHT_TOLERANCE_PX = 2;
 const KPI_ROW_VARIANCE_MAX = 3;
+const KPI_ICON_CENTER_TOLERANCE_PX = 4;
+const KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX = 12;
+const KPI_CONTEXTUAL_ICON_CLASSES = ['text-primary', 'text-success', 'text-info', 'text-danger', 'text-warning'];
+const SETTINGS_TAB_COLOR_DISTANCE_MAX = 12;
+const DASHBOARD_TRANSFER_COLOR_DISTANCE_MIN = 40;
 const KPI_CARD_REQUIRED_SCOPES = ['dashboard', 'dns'];
+
+// Card border-radius consistency (--wb-radius-lg: 12px)
+const CARD_BORDER_RADIUS_EXPECTED_PX = 12;
+const CARD_BORDER_RADIUS_TOLERANCE_PX = 1;
+
+// About page card layout (reference layout pattern)
+// The About page serves as the reference implementation for card grid layouts:
+// - Top row: 3 equal-height cards using flexbox (col-lg-4 + d-flex + flex-grow-1)
+// - Bottom row: Full-width card
+// Other pages should follow this pattern for consistent card sizing.
+const ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX = 2;
+
 const THEMES = ['light', 'dark'];
 
 // WCAG 2.1 AA contrast requirements
@@ -97,7 +163,7 @@ const LOGIN_FAILURE_VIEW_DEFS = [
     { name: 'login-error', url: '/login', scope: 'login' },
 ];
 
-// View definitions (DRY: desktop and mobile generated from base definitions)
+// View definitions (DRY: desktop, tablet, and mobile generated from base definitions)
 const VIEW_DEFS = [
     { name: 'dashboard', url: '/ui/dashboard', scope: 'dashboard' },
     { name: 'peers', url: '/ui/peers', scope: 'peers' },
@@ -114,15 +180,16 @@ const VIEW_DEFS = [
 ];
 
 /**
- * Expands view definitions into desktop/mobile × light/dark variants.
+ * Expands view definitions into desktop/tablet/mobile × light/dark variants.
  * @param {Array} viewDefs - Base view definitions
  * @returns {Array} Expanded view definitions with all variants
  */
 function expandViewDefinitions(viewDefs) {
     return viewDefs.flatMap((def) =>
         THEMES.flatMap((theme) => [
-            { ...def, name: `desktop-${def.name}-${theme}`, mobile: false, theme },
-            { ...def, name: `mobile-${def.name}-${theme}`, mobile: true, theme },
+            { ...def, name: `desktop-${def.name}-${theme}`, device: 'desktop', theme },
+            { ...def, name: `tablet-${def.name}-${theme}`, device: 'tablet', theme },
+            { ...def, name: `mobile-${def.name}-${theme}`, device: 'mobile', theme },
         ])
     );
 }
@@ -196,10 +263,7 @@ async function login(page) {
     await page.goto(`${BASE_URL}/login`, { waitUntil: 'networkidle', timeout: 10000 });
     await disableMotion(page, 'login');
 
-    // Clear any previous form state
-    await page.fill('#username', '');
-    await page.fill('#password', '');
-
+    // Playwright's fill() automatically clears before filling
     await page.fill('#username', USERNAME);
     await page.fill('#password', PASSWORD);
     await Promise.all([
@@ -305,9 +369,9 @@ async function captureStablePair(page, name) {
     const safeName = sanitize(name);
     const shotA = path.join(SCREENSHOT_DIR, `${safeName}-a.png`);
     const shotB = path.join(SCREENSHOT_DIR, `${safeName}-b.png`);
-    await page.screenshot({ path: shotA, fullPage: true });
+    await page.screenshot({ path: shotA, fullPage: true, animations: 'disabled' });
     await page.waitForTimeout(SCREENSHOT_SETTLE_MS);
-    await page.screenshot({ path: shotB, fullPage: true });
+    await page.screenshot({ path: shotB, fullPage: true, animations: 'disabled' });
     return { shotA, shotB };
 }
 
@@ -322,6 +386,7 @@ async function captureStablePair(page, name) {
  * @throws {Error} If PNG files cannot be read or dimensions mismatch severely
  */
 function diffScreenshots(name, shotA, shotB) {
+    // Intentional sync I/O: this runs in a single-shot CLI audit after screenshots are captured.
     const img1 = PNG.sync.read(fs.readFileSync(shotA));
     const img2 = PNG.sync.read(fs.readFileSync(shotB));
     const sizeMismatch = img1.width !== img2.width || img1.height !== img2.height;
@@ -345,6 +410,14 @@ function diffScreenshots(name, shotA, shotB) {
         diffPath,
     };
 }
+
+/**
+ * Collects comprehensive page metrics including accessibility, layout, and styling issues.
+ * 
+ * @param {Page} page - Playwright page instance
+ * @param {string} scope - View scope (e.g., 'dashboard', 'settings')
+ * @returns {Promise<Object>} Metrics object containing all collected data
+ */
 
 async function captureKpiCards(page, viewName) {
     const cards = await page.$$('.wb-kpi-card');
@@ -377,6 +450,7 @@ function diffKpiSets(nameA, setA, nameB, setB) {
     const minSetLength = Math.min(setA.length, setB.length);
 
     for (let i = 0; i < minSetLength; i += 1) {
+        // Intentional sync I/O: KPI diffs are small and executed in the same CLI-only post-processing step.
         const img1 = PNG.sync.read(fs.readFileSync(setA[i]));
         const img2 = PNG.sync.read(fs.readFileSync(setB[i]));
 
@@ -415,6 +489,14 @@ async function collectPageMetrics(page, scope) {
     return page.evaluate(async ({ scope, constants }) => {
         const round = (value) => Math.round(value * 10) / 10;
         const norm = (value) => (value || '').replace(/\s+/g, ' ').trim();
+        const BREAKPOINT_MIN = {
+            base: 0,
+            sm: 576,
+            md: 768,
+            lg: 992,
+            xl: 1200,
+            xxl: 1400,
+        };
         const interactiveSelector = 'button, [role="button"], a[href], input:not([type="hidden"]), select, textarea';
         const clickTargetSelector = [
             'button',
@@ -425,6 +507,8 @@ async function collectPageMetrics(page, scope) {
             'input[type="button"]',
             'input[type="submit"]',
             'input[type="reset"]',
+            // Full-size form selects (not -sm variants used in compact toolbars)
+            'select.form-select:not(.form-select-sm)',
         ].join(', ');
         const focusableSelector = [
             'a[href]',
@@ -496,6 +580,8 @@ async function collectPageMetrics(page, scope) {
         const shouldSkipInlineClickTarget = (el) => {
             if (el.tagName !== 'A') return false;
             if (el.classList.contains('btn') || el.getAttribute('role') === 'button') return false;
+            // Footer text links are intentionally compact and are not treated as button-like touch targets.
+            if (el.classList.contains('wb-footer-link') || el.closest('.wb-footer')) return true;
             return Boolean(el.closest('p, li, td, th, .table, .dropdown-menu, .breadcrumb, .pagination'));
         };
 
@@ -548,6 +634,57 @@ async function collectPageMetrics(page, scope) {
             };
         };
 
+        const getActiveBreakpoint = () => {
+            const width = window.innerWidth;
+            if (width >= BREAKPOINT_MIN.xxl) return 'xxl';
+            if (width >= BREAKPOINT_MIN.xl) return 'xl';
+            if (width >= BREAKPOINT_MIN.lg) return 'lg';
+            if (width >= BREAKPOINT_MIN.md) return 'md';
+            if (width >= BREAKPOINT_MIN.sm) return 'sm';
+            return 'base';
+        };
+
+        const activeBreakpoint = getActiveBreakpoint();
+        const contentElements = Array.from(contentRoot.querySelectorAll('*'));
+
+        const hasBootstrapColClass = (el) => {
+            if (!(el instanceof Element)) return false;
+            return Array.from(el.classList).some((cls) => /^col(?:-(?:sm|md|lg|xl|xxl))?(?:-(?:auto|\d{1,2}))?$/.test(cls));
+        };
+
+        const getActiveColSpan = (el) => {
+            if (!(el instanceof Element)) return null;
+            const classes = Array.from(el.classList);
+            const candidates = [];
+
+            for (const cls of classes) {
+                const match = cls.match(/^col(?:-(sm|md|lg|xl|xxl))?-(\d{1,2})$/);
+                if (!match) continue;
+                const breakpoint = match[1] || 'base';
+                const minWidth = BREAKPOINT_MIN[breakpoint] ?? 0;
+                if (window.innerWidth >= minWidth) {
+                    candidates.push({ minWidth, span: Number.parseInt(match[2], 10), breakpoint });
+                }
+            }
+
+            if (!candidates.length) return null;
+            candidates.sort((a, b) => b.minWidth - a.minWidth);
+            return candidates[0].span;
+        };
+
+        const getDisplayUtilityMap = (el) => {
+            const map = new Map();
+            for (const cls of Array.from(el.classList)) {
+                const match = cls.match(/^d(?:-(sm|md|lg|xl|xxl))?-(none|inline|inline-block|block|grid|table|table-cell|table-row|flex|inline-flex)$/);
+                if (!match) continue;
+                const breakpoint = match[1] || 'base';
+                const value = match[2];
+                if (!map.has(breakpoint)) map.set(breakpoint, new Set());
+                map.get(breakpoint).add(value);
+            }
+            return map;
+        };
+
         const normalizeFontFamily = (value) =>
             String(value || '')
                 .toLowerCase()
@@ -558,6 +695,37 @@ async function collectPageMetrics(page, scope) {
             String(value || '')
                 .toLowerCase()
                 .replace(/\s+/g, '');
+        const colorProbe = document.createElement('span');
+        colorProbe.setAttribute('aria-hidden', 'true');
+        colorProbe.style.position = 'fixed';
+        colorProbe.style.left = '-9999px';
+        colorProbe.style.top = '0';
+        colorProbe.style.pointerEvents = 'none';
+        colorProbe.style.visibility = 'hidden';
+        document.body.appendChild(colorProbe);
+        const parseColor = (raw) => {
+            const value = String(raw || '').trim();
+            if (!value) return null;
+
+            const parseComputedColor = (computed) => {
+                const match = computed.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([0-9.]+))?\)/i);
+                if (!match) return null;
+                return {
+                    r: Number(match[1]),
+                    g: Number(match[2]),
+                    b: Number(match[3]),
+                    a: match[4] == null ? 1 : Number(match[4]),
+                };
+            };
+
+            const directMatch = parseComputedColor(value);
+            if (directMatch) return directMatch;
+
+            colorProbe.style.color = '';
+            colorProbe.style.color = value;
+            if (!colorProbe.style.color) return null;
+            return parseComputedColor(window.getComputedStyle(colorProbe).color || '');
+        };
         const parseBackdropFilter = (value) => {
             const raw = String(value || '');
             const blurMatch = raw.match(/blur\(([-\d.]+)px\)/i);
@@ -627,8 +795,41 @@ async function collectPageMetrics(page, scope) {
                 text: norm(el.textContent).slice(0, 60) || null,
             }));
 
+        // Icon buttons: icons inside buttons must have pointer-events: none
+        // to ensure touch events pass through to the button (mobile touch fix)
+        const iconButtonsTouchBlocked = Array.from(contentRoot.querySelectorAll('button .material-icons, [role="button"] .material-icons'))
+            .filter((icon) => {
+                if (!isVisible(icon)) return false;
+                const btn = icon.closest('button, [role="button"]');
+                if (!btn || !isInContentRoot(btn)) return false;
+                const style = window.getComputedStyle(icon);
+                return style.pointerEvents !== 'none';
+            })
+            .slice(0, 20)
+            .map((icon) => {
+                const btn = icon.closest('button, [role="button"]');
+                return {
+                    ...rectInfo(btn),
+                    iconText: icon.textContent?.trim() || null,
+                    pointerEvents: window.getComputedStyle(icon).pointerEvents,
+                };
+            });
+
+        // Deprecated button classes check (exclude input-group buttons where btn-icon is valid)
+        const deprecatedButtonClasses = Array.from(contentRoot.querySelectorAll('.btn-icon, button.btn-icon, [role="button"].btn-icon'))
+            .filter((el) => isVisible(el) && isInContentRoot(el))
+            .filter((el) => !el.closest('.input-group')) // btn-icon is valid inside input-groups
+            .slice(0, 20)
+            .map((el) => ({
+                ...rectInfo(el),
+                text: norm(el.textContent).slice(0, 60) || null,
+                deprecatedClass: 'btn-icon',
+                replacement: 'Use btn-outline-* with icon-md class instead of btn-icon',
+            }));
+
         const focusableElements = Array.from(contentRoot.querySelectorAll(focusableSelector))
             .filter((el) => isVisible(el) && isInContentRoot(el) && !isDisabled(el))
+            .filter((el) => !el.closest('.leaflet-control-container'))
             .filter((el) => el.tabIndex >= 0);
 
         const focusOrderIssues = [];
@@ -687,9 +888,33 @@ async function collectPageMetrics(page, scope) {
             .filter((table) => isVisible(table) && isInContentRoot(table) && !table.querySelector('th'))
             .map(rectInfo);
 
+        // Detect tables overflowing containers without responsive wrapper
+        const tablesWithoutResponsive = Array.from(document.querySelectorAll('table'))
+            .filter((table) => {
+                if (!isVisible(table) || !isInContentRoot(table)) return false;
+                const rect = table.getBoundingClientRect();
+                const parentRect = table.parentElement?.getBoundingClientRect();
+                return (
+                    parentRect &&
+                    rect.width > parentRect.width + 2 &&
+                    !table.closest('.table-responsive')
+                );
+            });
+
+        // Ghost scroll detection (tablet common issue)
         const doc = document.documentElement;
+        const ghostScroll = doc.scrollHeight > window.innerHeight &&
+            contentElements.some((el) => {
+                const style = window.getComputedStyle(el);
+                return (
+                    isVisible(el) &&
+                    (style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+                    el.scrollHeight > el.clientHeight
+                );
+            });
+
         const horizontalOverflow = {
-            hasOverflow: doc.scrollWidth > window.innerWidth + 2,
+            hasOverflow: doc.scrollWidth > window.innerWidth + constants.OVERFLOW_TOLERANCE_PX,
             scrollWidth: doc.scrollWidth,
             viewportWidth: window.innerWidth,
             contentRight: round(contentRoot.getBoundingClientRect().right),
@@ -750,6 +975,114 @@ async function collectPageMetrics(page, scope) {
                 className: typeof el.className === 'string' ? el.className : null,
             }));
 
+        const bootstrapGridIssues = Array.from(contentRoot.querySelectorAll('.row'))
+            .filter((row) => row instanceof HTMLElement && isInContentRoot(row) && !isIntentionallyHidden(row))
+            .map((row) => {
+                const children = Array.from(row.children)
+                    .filter((child) => child instanceof HTMLElement)
+                    .filter((child) => !child.matches('script, style, template'));
+                const visibleChildren = children.filter((child) => isVisible(child));
+                if (!children.length || !visibleChildren.length) return null;
+
+                const nonColumnChildren = visibleChildren.filter((child) => !hasBootstrapColClass(child));
+                const spans = visibleChildren
+                    .map((child) => getActiveColSpan(child))
+                    .filter((span) => Number.isFinite(span));
+                const fixedSpanTotal = spans.reduce((sum, span) => sum + span, 0);
+                const issues = [];
+
+                if (!visibleChildren.some((child) => hasBootstrapColClass(child))) {
+                    issues.push('rowWithoutColumns');
+                }
+                if (nonColumnChildren.length) {
+                    issues.push('nonColumnDirectChildren');
+                }
+                if (fixedSpanTotal > 12) {
+                    issues.push('columnSpanOverflow');
+                }
+
+                if (!issues.length) return null;
+
+                return {
+                    ...rectInfo(row),
+                    issues,
+                    activeBreakpoint,
+                    fixedSpanTotal,
+                    visibleChildCount: visibleChildren.length,
+                    nonColumnChildren: nonColumnChildren.length,
+                };
+            })
+            .filter(Boolean)
+            .slice(0, 20);
+
+        const bootstrapColumnsOutsideRows = contentElements
+            .filter((el) => el instanceof HTMLElement && isVisible(el) && isInContentRoot(el))
+            .filter((el) => hasBootstrapColClass(el))
+            .filter((el) => !el.closest('.row'))
+            .slice(0, 20)
+            .map((el) => ({
+                ...rectInfo(el),
+                activeBreakpoint,
+            }));
+
+        const breakpointDisplayConflicts = Array.from(contentRoot.querySelectorAll('[class]'))
+            .filter((el) => el instanceof HTMLElement && isInContentRoot(el) && !isIntentionallyHidden(el))
+            .map((el) => {
+                const displayMap = getDisplayUtilityMap(el);
+                const conflicts = Array.from(displayMap.entries())
+                    .filter(([, values]) => values.size > 1)
+                    .map(([breakpoint, values]) => ({ breakpoint, values: Array.from(values) }));
+
+                if (!conflicts.length) return null;
+
+                return {
+                    ...rectInfo(el),
+                    conflicts,
+                };
+            })
+            .filter(Boolean)
+            .slice(0, 20);
+
+        const navbarCollapseIssues = (() => {
+            const issues = [];
+            const collapses = Array.from(document.querySelectorAll('.navbar-collapse'));
+            const togglers = Array.from(document.querySelectorAll('.navbar-toggler'));
+
+            if (!collapses.length) return issues;
+
+            if (!togglers.length) {
+                issues.push({ type: 'missingNavbarToggler', collapseCount: collapses.length });
+            }
+
+            for (const collapse of collapses) {
+                if (!collapse.classList.contains('collapse')) {
+                    issues.push({ type: 'navbarCollapseMissingCollapseClass', element: rectInfo(collapse) });
+                }
+            }
+
+            for (const toggler of togglers) {
+                const target = toggler.getAttribute('data-bs-target') || (toggler.getAttribute('aria-controls') ? `#${toggler.getAttribute('aria-controls')}` : null);
+                if (!target) {
+                    issues.push({ type: 'navbarTogglerMissingTarget', element: rectInfo(toggler) });
+                    continue;
+                }
+
+                const targetEl = document.querySelector(target);
+                if (!targetEl) {
+                    issues.push({ type: 'navbarTogglerTargetMissing', target, element: rectInfo(toggler) });
+                }
+            }
+
+            if (window.matchMedia('(max-width: 991.98px)').matches) {
+                const visibleUncollapsed = collapses
+                    .filter((collapse) => isVisible(collapse) && !collapse.classList.contains('show'))
+                    .map((collapse) => ({ type: 'navbarCollapseVisibleWithoutShow', element: rectInfo(collapse) }));
+                issues.push(...visibleUncollapsed);
+            }
+
+            return issues.slice(0, 20);
+        })();
+
         const scrollEdgeCrowding = Array.from(contentRoot.querySelectorAll('.top-domain-scroll-area .top-domain-percent'))
             .filter((el) => isVisible(el))
             .map((el) => {
@@ -777,7 +1110,7 @@ async function collectPageMetrics(page, scope) {
         };
 
         // Generic scroll-bottom clearance check.
-        const scrollBottomCrowding = Array.from(contentRoot.querySelectorAll('*'))
+        const scrollBottomCrowding = contentElements
             .filter((el) => isScrollContainer(el))
             .map((container) => {
                 const children = Array.from(container.children)
@@ -801,9 +1134,37 @@ async function collectPageMetrics(page, scope) {
             .filter(Boolean)
             .slice(0, 20);
 
+        // Detect ghost scroll containers (scrollbar visible but minimal overflow 1-8px)
+        // Catches layout issues like thead + padding causing tiny overflow
+        const ghostScrollContainers = contentElements
+            .filter((el) => isVisible(el) && isInContentRoot(el))
+            .filter((el) => {
+                const style = window.getComputedStyle(el);
+                const overflowY = style.overflowY;
+                if (overflowY !== 'auto' && overflowY !== 'scroll') return false;
+
+                const delta = el.scrollHeight - el.clientHeight;
+                // Real scroll (delta > threshold) is legitimate
+                if (delta <= 0) return false;
+                if (delta > constants.GHOST_SCROLL_DELTA_MAX_PX) return false;
+                // Skip very small containers
+                if (el.clientHeight < constants.GHOST_SCROLL_MIN_HEIGHT_PX) return false;
+
+                return true;
+            })
+            .slice(0, 20)
+            .map((el) => ({
+                ...rectInfo(el),
+                scrollHeight: el.scrollHeight,
+                clientHeight: el.clientHeight,
+                delta: el.scrollHeight - el.clientHeight,
+                overflowY: window.getComputedStyle(el).overflowY,
+            }));
+
         // Detect scroll-in-scroll and direct .card > scroll-container patterns.
-        const nestedScrollContainers = Array.from(contentRoot.querySelectorAll('*'))
+        const nestedScrollContainers = contentElements
             .filter((el) => isScrollContainer(el))
+            .filter((el) => el.dataset.uiLintAllow !== 'nested-scroll')
             .map((container) => {
                 let parentScroll = null;
                 let ancestor = container.parentElement;
@@ -938,7 +1299,7 @@ async function collectPageMetrics(page, scope) {
         };
         referenceMonospace.remove();
 
-        const monospaceToneMismatches = Array.from(contentRoot.querySelectorAll('code, kbd, samp, .wb-monospace-value, .font-monospace, .asn-badge, .asn-inline'))
+        const monospaceToneMismatches = Array.from(contentRoot.querySelectorAll('code, kbd, samp, .wb-monospace-value, .font-monospace, .asn-badge, .asn-inline, .blocklist-meta-mono'))
             .filter((el) => isVisible(el) && isInContentRoot(el))
             .filter((el) => !el.matches(monospaceToneExcludeSelector) && !el.closest(monospaceToneExcludeSelector))
             .map((el) => {
@@ -982,15 +1343,13 @@ async function collectPageMetrics(page, scope) {
             .filter(Boolean)
             .slice(0, 20);
 
-        const parseColor = (raw) => {
-            const match = raw.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([0-9.]+))?\)/i);
-            if (!match) return null;
-            return {
-                r: Number(match[1]),
-                g: Number(match[2]),
-                b: Number(match[3]),
-                a: match[4] == null ? 1 : Number(match[4]),
-            };
+        const colorDistance = (c1, c2) => {
+            if (!c1 || !c2) return null;
+            return Math.sqrt(
+                Math.pow(c1.r - c2.r, 2) +
+                Math.pow(c1.g - c2.g, 2) +
+                Math.pow(c1.b - c2.b, 2)
+            );
         };
         const modalBackdropProbe = document.createElement('div');
         modalBackdropProbe.className = 'modal-backdrop show';
@@ -1044,7 +1403,7 @@ async function collectPageMetrics(page, scope) {
             return bodyColor && bodyColor.a > 0.98 ? bodyColor : { r: 255, g: 255, b: 255, a: 1 };
         };
 
-        const contrastProblems = Array.from(contentRoot.querySelectorAll('*'))
+        const contrastProblems = contentElements
             .filter((el) => isVisible(el))
             .flatMap((el) => {
                 const text = norm(el.textContent);
@@ -1138,6 +1497,21 @@ async function collectPageMetrics(page, scope) {
             cardsPastFooter: [],
         };
 
+        // Anti-pattern: .row.g-*.mt-0 breaks Bootstrap's negative gutter margin compensation
+        // This causes doubled vertical gaps between rows (e.g., 48px instead of 24px)
+        spacing.rowGutterMarginConflicts = Array.from(contentRoot.querySelectorAll('.row'))
+            .filter((row) => {
+                const classes = Array.from(row.classList);
+                const hasGutter = classes.some((c) => /^g[xy]?-[1-5]$/.test(c));
+                const hasMt0 = classes.includes('mt-0');
+                return hasGutter && hasMt0;
+            })
+            .map((row) => ({
+                ...rectInfo(row),
+                classList: Array.from(row.classList).join(' '),
+            }))
+            .slice(0, 10);
+
         const footer = document.querySelector('.wb-footer');
         const pageHasVerticalOverflow = Math.max(
             contentRoot.scrollHeight,
@@ -1176,10 +1550,38 @@ async function collectPageMetrics(page, scope) {
             const statCards = Array.from(document.querySelectorAll('.dashboard-stats-row > div .card')).slice(0, 4);
             spacing.statCardWidths = statCards.map((card) => round(card.getBoundingClientRect().width));
 
+            const topRowColumns = Array.from(document.querySelectorAll('.row.g-3.mb-3 > .col-lg-6'))
+                .filter((el) => isVisible(el))
+                .slice(0, 2);
+            if (topRowColumns.length === 2) {
+                const heights = topRowColumns.map((col) => round(col.getBoundingClientRect().height));
+                spacing.dashboardTopRowAlignment = {
+                    heights,
+                    variance: round(Math.abs(heights[0] - heights[1])),
+                    aligned: Math.abs(heights[0] - heights[1]) <= 4,
+                };
+            }
+
             const mapCard = document.querySelector('.dashboard-map-col .card');
             const recentCard = document.querySelector('.dashboard-recent-peers-col .card');
             const speedCard = document.querySelector('.dashboard-speedtest-col .card');
-            if (mapCard && recentCard && speedCard && window.innerWidth >= 1200) {
+
+            // Mobile stack order is intentional: Speedtest -> Peer Locations -> Recent Peer Activity.
+            if (mapCard && recentCard && speedCard && window.matchMedia('(max-width: 767.98px)').matches) {
+                const mapRect = mapCard.getBoundingClientRect();
+                const recentRect = recentCard.getBoundingClientRect();
+                const speedRect = speedCard.getBoundingClientRect();
+                spacing.dashboardMobileStackOrder = {
+                    speedtestAboveMap: speedRect.top <= mapRect.top + 2,
+                    mapAboveRecent: mapRect.top <= recentRect.top + 2,
+                    speedTop: round(speedRect.top),
+                    mapTop: round(mapRect.top),
+                    recentTop: round(recentRect.top),
+                };
+            }
+
+            // Detect desktop-style layout using Bootstrap breakpoint
+            if (mapCard && recentCard && speedCard && window.matchMedia('(min-width: 1200px)').matches) {
                 const mapRect = mapCard.getBoundingClientRect();
                 const recentRect = recentCard.getBoundingClientRect();
                 const speedRect = speedCard.getBoundingClientRect();
@@ -1212,6 +1614,28 @@ async function collectPageMetrics(page, scope) {
             spacing.verticalGaps = verticalGaps;
             spacing.outlierVerticalGaps = verticalGaps.filter((gap) => gap > constants.VERTICAL_GAP_MAX || gap < constants.VERTICAL_GAP_MIN);
 
+            const settingsPrimaryColor = parseColor(
+                getComputedStyle(document.documentElement).getPropertyValue('--bs-primary').trim()
+                || getComputedStyle(document.documentElement).getPropertyValue('--wb-primary').trim()
+                || ''
+            );
+            spacing.settingsTabColors = Array.from(document.querySelectorAll('#settingsTabs .nav-link.active'))
+                .filter((el) => isVisible(el))
+                .map((el) => {
+                    const style = window.getComputedStyle(el);
+                    const color = parseColor(style.color || '');
+                    const delta = colorDistance(color, settingsPrimaryColor);
+                    return {
+                        id: el.id || null,
+                        text: norm(el.textContent),
+                        color: normalizeColor(style.color),
+                        primaryColor: settingsPrimaryColor
+                            ? `rgb(${settingsPrimaryColor.r},${settingsPrimaryColor.g},${settingsPrimaryColor.b})`
+                            : null,
+                        colorDelta: delta == null ? null : round(delta),
+                    };
+                });
+
             if (activePane?.id === 'logs-pane') {
                 const logCards = Array.from(activePane.querySelectorAll('.card'))
                     .filter((card) => isVisible(card));
@@ -1235,7 +1659,61 @@ async function collectPageMetrics(page, scope) {
                     hairlineVariance,
                     hairlineAligned: hairlineVariance <= constants.LOGS_DELETE_HAIRLINE_TOLERANCE_PX,
                 };
+
+                const metricPaths = Array.from(activePane.querySelectorAll('.settings-storage-path'))
+                    .filter((el) => isVisible(el))
+                    .map((el) => {
+                        const style = window.getComputedStyle(el);
+                        const range = document.createRange();
+                        range.selectNodeContents(el);
+                        const lineRects = Array.from(range.getClientRects())
+                            .filter((rect) => rect.width > 0 && rect.height > 0);
+                        return {
+                            id: el.id || null,
+                            text: norm(el.textContent),
+                            whiteSpace: style.whiteSpace,
+                            textOverflow: style.textOverflow,
+                            overflowX: style.overflowX,
+                            wraps: style.whiteSpace === 'nowrap' ? false : lineRects.length > 1,
+                        };
+                    });
+
+                spacing.logsPathLayout = metricPaths;
             }
+
+            // Compact action rows inside settings cards should sit close to the
+            // preceding content and must not introduce divider hairlines.
+            spacing.compactCardActionRows = Array.from(
+                activePane?.querySelectorAll('.card-body > .d-flex.justify-content-end.align-items-center') ?? []
+            )
+                .filter((el) => isVisible(el))
+                .filter((el) => el.querySelector('.btn'))
+                .map((el) => {
+                    const style = window.getComputedStyle(el);
+                    const buttons = Array.from(el.querySelectorAll('.btn'))
+                        .filter((btn) => isVisible(btn));
+                    const marginTop = Number.parseFloat(style.marginTop || '0');
+                    const paddingTop = Number.parseFloat(style.paddingTop || '0');
+                    const borderTopWidth = Number.parseFloat(style.borderTopWidth || '0');
+                    const hasBorderTopClass = el.classList.contains('border-top');
+                    const isCompactMargin = marginTop <= constants.COMPACT_CARD_ACTION_MARGIN_TOP_MAX_PX;
+                    const isCompactPadding = paddingTop <= constants.COMPACT_CARD_ACTION_PADDING_TOP_MAX_PX;
+                    const isBorderless = !hasBorderTopClass && borderTopWidth <= constants.COMPACT_CARD_ACTION_BORDER_TOP_MAX_PX;
+
+                    return {
+                        ...rectInfo(el),
+                        classList: Array.from(el.classList),
+                        buttonCount: buttons.length,
+                        buttonIds: buttons.map((btn) => btn.id || null).filter(Boolean),
+                        marginTop: round(marginTop),
+                        paddingTop: round(paddingTop),
+                        borderTopWidth: round(borderTopWidth),
+                        hasBorderTopClass,
+                        isCompactMargin,
+                        isCompactPadding,
+                        isBorderless,
+                    };
+                });
 
             // Retention slider tick alignment validation
             const sliderScales = Array.from(activePane?.querySelectorAll('.retention-scale') ?? [])
@@ -1360,6 +1838,44 @@ async function collectPageMetrics(page, scope) {
             }).filter(Boolean);
         }
 
+        // Peers page: Modal form validation (required field markers)
+        if (scope === 'peers') {
+            const addPeerModal = document.getElementById('addPeerModal');
+            const editPeerModal = document.getElementById('editPeerModal');
+
+            const validatePeerModal = (modal, modalName) => {
+                if (!modal) return { found: false, modalName };
+
+                const nameInput = modal.querySelector('#peer-name') || modal.querySelector('#edit-peer-name');
+                const nameLabel = nameInput ? modal.querySelector(`label[for="${nameInput.id}"]`) : null;
+
+                const hasRequiredAttr = nameInput?.hasAttribute('required') ?? false;
+                const hasMaxLength = nameInput?.hasAttribute('maxlength') ?? false;
+                const maxLengthValue = nameInput?.getAttribute('maxlength') ?? null;
+
+                // Check for required field visual marker (red asterisk)
+                const hasRequiredMarker = nameLabel
+                    ? Boolean(nameLabel.querySelector('span.text-danger'))
+                    : false;
+
+                return {
+                    found: true,
+                    modalName,
+                    nameInputId: nameInput?.id ?? null,
+                    hasRequiredAttr,
+                    hasMaxLength,
+                    maxLengthValue,
+                    hasRequiredMarker,
+                    valid: hasRequiredAttr && hasRequiredMarker,
+                };
+            };
+
+            spacing.peersModalValidation = {
+                addPeerModal: validatePeerModal(addPeerModal, 'addPeerModal'),
+                editPeerModal: validatePeerModal(editPeerModal, 'editPeerModal'),
+            };
+        }
+
         if (scope === 'about') {
             const changelogCard = document.querySelector('.about-changelog-col .card');
             const changelogBody = document.querySelector('.about-changelog-col .card-body');
@@ -1409,6 +1925,17 @@ async function collectPageMetrics(page, scope) {
                     })
                     .filter(Boolean)
                 : [];
+
+            // About page card layout validation (reference layout pattern)
+            // Validates that cards in the same row have consistent heights (flexbox equal-height pattern)
+            const topRowCards = Array.from(document.querySelectorAll('.about-top-row .card'))
+                .filter((el) => isVisible(el));
+            const topRowHeights = topRowCards.map((card) => round(card.getBoundingClientRect().height));
+            const topRowMaxHeight = Math.max(...topRowHeights);
+            const topRowMinHeight = Math.min(...topRowHeights);
+            const topRowHeightVariance = topRowHeights.length > 1 ? topRowMaxHeight - topRowMinHeight : 0;
+            const topRowHeightsMatch = topRowHeightVariance <= 2; // 2px tolerance for rounding
+
             spacing.about = {
                 changelogCardBottom: changelogCard ? round(changelogCard.getBoundingClientRect().bottom) : null,
                 changelogBodyScrollHeight: changelogBody?.scrollHeight ?? null,
@@ -1416,6 +1943,14 @@ async function collectPageMetrics(page, scope) {
                 depsCardBottom: depsCard ? round(depsCard.getBoundingClientRect().bottom) : null,
                 footerTop: footer ? round(footer.getBoundingClientRect().top) : null,
                 updateValueStyleMismatches,
+                // Reference layout metrics (About page is the reference for card grid layouts)
+                topRowLayout: {
+                    cardCount: topRowCards.length,
+                    heights: topRowHeights,
+                    heightsMatch: topRowHeightsMatch,
+                    variance: topRowHeightVariance,
+                    pattern: 'equal-height-flexbox', // Documents the expected pattern
+                },
             };
         }
 
@@ -1427,7 +1962,8 @@ async function collectPageMetrics(page, scope) {
             const flowConnectors = Array.from((flowWrapper || document).querySelectorAll('.flow-connector'))
                 .filter((el) => isVisible(el));
             const flowWrapperRect = flowWrapper ? flowWrapper.getBoundingClientRect() : null;
-            const desktopLayout = window.innerWidth > 991.98;
+            // Use Bootstrap breakpoint detection instead of raw width
+            const desktopLayout = window.matchMedia('(min-width: 992px)').matches;
 
             const flowNodeMetrics = flowNodes.map((node) => {
                 const icon = node.querySelector('.material-icons.flow-icon');
@@ -1562,6 +2098,41 @@ async function collectPageMetrics(page, scope) {
                 orientationIssues,
                 connectorOrientationIssues,
             };
+
+            // Status page: Status check cards monospace validation
+            // "Last Speedtest" uses inline <span class="font-monospace"> children,
+            // while DNS checks use font-monospace on the <p> itself.
+            const statusCheckTitles = ['DNS Resolution', 'Last Speedtest', 'DNS Leak Indicator', 'Outbound IP Probe'];
+            const statusCheckCards = Array.from(document.querySelectorAll('.card'))
+                .filter((card) => {
+                    const title = card.querySelector('.h6, h3');
+                    return title && statusCheckTitles.includes(norm(title.textContent));
+                })
+                .map((card) => {
+                    const title = card.querySelector('.h6, h3');
+                    const detail = card.querySelector('p.small');
+                    const titleText = title ? norm(title.textContent) : null;
+                    const hasMonoOnP = detail ? detail.classList.contains('font-monospace') : false;
+                    const hasMonoSpans = detail ? detail.querySelectorAll('span.font-monospace').length > 0 : false;
+                    const hasMonospace = hasMonoOnP || hasMonoSpans;
+                    const detailText = detail ? norm(detail.textContent).slice(0, 100) : null;
+
+                    return {
+                        title: titleText,
+                        hasDetail: Boolean(detail),
+                        hasMonospace,
+                        detailText,
+                        isMissing: Boolean(detail && !hasMonospace),
+                    };
+                });
+
+            const statusCheckMonospaceMissing = statusCheckCards.filter((card) => card.isMissing);
+
+            spacing.statusCheckMonospace = {
+                cards: statusCheckCards,
+                missing: statusCheckMonospaceMissing,
+                allCorrect: statusCheckMonospaceMissing.length === 0,
+            };
         }
 
         let loginFailure = null;
@@ -1572,11 +2143,12 @@ async function collectPageMetrics(page, scope) {
             const passwordStyle = passwordInput ? window.getComputedStyle(passwordInput) : null;
             const cardStyle = loginCard ? window.getComputedStyle(loginCard) : null;
             const borderColor = parseColor(passwordStyle?.borderTopColor || '');
+            // Danger-like border heuristic updated for #ff6384 (rgb(255, 99, 132))
             const dangerLikeBorder = Boolean(
                 borderColor
                 && borderColor.r >= 180
                 && borderColor.g <= 100
-                && borderColor.b <= 120
+                && borderColor.b <= 140
             );
 
             loginFailure = {
@@ -1594,7 +2166,8 @@ async function collectPageMetrics(page, scope) {
             };
         }
 
-        // KPI Card validation: measure padding, icon size, and height consistency
+        // KPI Card validation: measure padding, icon size, height consistency,
+        // and dashboard-specific icon color/alignment consistency.
         const kpiCards = Array.from(document.querySelectorAll('.wb-kpi-card'))
             .filter((el) => isVisible(el))
             .map((card) => {
@@ -1612,6 +2185,37 @@ async function collectPageMetrics(page, scope) {
                     iconSize: iconRect ? round(iconRect.height) : null,
                 };
             });
+
+        const dashboardKpiIcons = scope === 'dashboard'
+            ? Array.from(document.querySelectorAll('.dashboard-kpi-grid .wb-kpi-card'))
+                .filter((el) => isVisible(el))
+                .map((card) => {
+                    const body = card.querySelector('.card-body');
+                    const icon = card.querySelector('.wb-kpi-icon');
+                    const label = card.querySelector('.wb-kpi-label');
+                    const bodyRect = body?.getBoundingClientRect() || null;
+                    const iconRect = icon?.getBoundingClientRect() || null;
+                    const iconStyle = icon ? window.getComputedStyle(icon) : null;
+                    const labelStyle = label ? window.getComputedStyle(label) : null;
+                    const iconColor = iconStyle?.color || '';
+                    const labelColor = labelStyle?.color || '';
+                    const iconColorParsed = parseColor(iconColor);
+                    const labelColorParsed = parseColor(labelColor);
+                    const delta = colorDistance(iconColorParsed, labelColorParsed);
+                    const iconCenter = iconRect ? (iconRect.top + iconRect.bottom) / 2 : null;
+                    const bodyCenter = bodyRect ? (bodyRect.top + bodyRect.bottom) / 2 : null;
+                    return {
+                        label: norm(label?.textContent) || null,
+                        iconName: norm(icon?.textContent) || null,
+                        iconColor: normalizeColor(iconColor),
+                        labelColor: normalizeColor(labelColor),
+                        iconColorDelta: delta == null ? null : round(delta),
+                        iconCenterDelta: iconCenter == null || bodyCenter == null ? null : round(Math.abs(iconCenter - bodyCenter)),
+                        contextualClasses: Array.from(icon?.classList || [])
+                            .filter((cls) => constants.KPI_CONTEXTUAL_ICON_CLASSES.includes(cls)),
+                    };
+                })
+            : [];
 
         const kpiHeights = Array.from(document.querySelectorAll('.wb-kpi-card'))
             .filter((el) => isVisible(el))
@@ -1648,9 +2252,77 @@ async function collectPageMetrics(page, scope) {
             .map(rectInfo);
 
         spacing.kpiCards = kpiCards;
+        spacing.dashboardKpiIcons = dashboardKpiIcons;
         spacing.kpiHeights = kpiHeights;
         spacing.kpiHeightVariance = kpiHeightVariance;
         spacing.cardsMissingKpiClass = cardsWithoutKpiClass;
+
+        // Card border-radius consistency: all .card elements should use --wb-radius-lg (12px)
+        const cardBorderRadiusIssues = Array.from(document.querySelectorAll('.card'))
+            .filter((el) => isVisible(el) && isInContentRoot(el))
+            .map((card) => {
+                const style = window.getComputedStyle(card);
+                const radius = Number.parseFloat(style.borderTopLeftRadius || '0');
+                if (Math.abs(radius - constants.CARD_BORDER_RADIUS_EXPECTED_PX) <= constants.CARD_BORDER_RADIUS_TOLERANCE_PX) return null;
+                return {
+                    ...rectInfo(card),
+                    radius: round(radius),
+                    expected: constants.CARD_BORDER_RADIUS_EXPECTED_PX,
+                };
+            })
+            .filter(Boolean)
+            .slice(0, 10);
+
+        spacing.cardBorderRadiusIssues = cardBorderRadiusIssues;
+
+        // DNS page: Chart empty state spacing validation
+        // Validate that "DNS Unavailable" and "Unbound is not installed." have minimal gap
+        if (scope === 'dns') {
+            const chartEmptyStates = Array.from(document.querySelectorAll('.chart-empty-state'))
+                .filter((el) => isVisible(el) && isInContentRoot(el));
+
+            const dnsUnavailableStates = chartEmptyStates
+                .filter((state) => {
+                    const textSpans = Array.from(state.querySelectorAll('.chart-empty-state-text'));
+                    return textSpans.some((span) => norm(span.textContent).includes('DNS Unavailable'));
+                })
+                .map((state) => {
+                    const icon = state.querySelector('.material-icons');
+                    const textSpans = Array.from(state.querySelectorAll('.chart-empty-state-text'));
+                    const mainText = textSpans.find((span) => !span.classList.contains('small'));
+                    const subText = textSpans.find((span) => span.classList.contains('small'));
+
+                    const stateStyle = window.getComputedStyle(state);
+                    const gap = Number.parseFloat(stateStyle.gap || '0');
+
+                    const subTextStyle = subText ? window.getComputedStyle(subText) : null;
+                    const marginTop = subTextStyle ? Number.parseFloat(subTextStyle.marginTop || '0') : 0;
+
+                    // Calculate visual spacing between mainText and subText
+                    let visualGap = null;
+                    if (mainText && subText) {
+                        const mainRect = mainText.getBoundingClientRect();
+                        const subRect = subText.getBoundingClientRect();
+                        visualGap = round(subRect.top - mainRect.bottom);
+                    }
+
+                    return {
+                        id: state.id || null,
+                        hasIcon: Boolean(icon),
+                        hasMainText: Boolean(mainText),
+                        hasSubText: Boolean(subText),
+                        hasSmallClass: Boolean(subText?.classList.contains('small')),
+                        gap: round(gap),
+                        marginTop: round(marginTop),
+                        visualGap,
+                        // Expected: negative margin-top to compensate gap (should be close to -gap)
+                        marginCompensatesGap: marginTop < 0 && Math.abs(marginTop + gap) <= 2,
+                        visualGapExpected: visualGap !== null && Math.abs(visualGap) <= 3,
+                    };
+                });
+
+            spacing.dnsUnavailableStates = dnsUnavailableStates;
+        }
 
         // Visual containment issues: detect rendering problems in rounded cards
         const visualContainmentIssues = [];
@@ -1735,6 +2407,53 @@ async function collectPageMetrics(page, scope) {
             })
             .filter(Boolean);
 
+        // Form-switch proportion check: toggles must not be square (width > height, min 44px)
+        const FORM_SWITCH_MIN_WIDTH_PX = 44;
+        const formSwitchProportionIssues = Array.from(contentRoot.querySelectorAll('.form-switch .form-check-input'))
+            .filter((el) => isVisible(el) && isInContentRoot(el))
+            .map((el) => {
+                const rect = el.getBoundingClientRect();
+                const width = rect.width;
+                const height = rect.height;
+                const isSquare = Math.abs(width - height) < 4; // tolerance for minor rounding
+                const tooNarrow = width < FORM_SWITCH_MIN_WIDTH_PX;
+
+                if (!isSquare && !tooNarrow) return null;
+
+                const parent = el.closest('.form-switch');
+                return {
+                    ...rectInfo(el),
+                    width: round(width),
+                    height: round(height),
+                    isSquare,
+                    tooNarrow,
+                    label: parent?.querySelector('.form-check-label')?.textContent?.trim().slice(0, 40) || null,
+                };
+            })
+            .filter(Boolean);
+
+        // Form-switch height consistency: toggles should stay slightly flatter
+        // than the default checkbox sizing while keeping the wider switch width.
+        const formSwitchHeightIssues = Array.from(contentRoot.querySelectorAll('.form-switch .form-check-input'))
+            .filter((el) => isVisible(el) && isInContentRoot(el))
+            .map((el) => {
+                const rect = el.getBoundingClientRect();
+                const height = rect.height;
+                const tooTall = height > (constants.FORM_SWITCH_MAX_HEIGHT_PX + constants.FORM_SWITCH_HEIGHT_TOLERANCE_PX);
+
+                if (!tooTall) return null;
+
+                const parent = el.closest('.form-switch');
+                return {
+                    ...rectInfo(el),
+                    height: round(height),
+                    maxHeight: constants.FORM_SWITCH_MAX_HEIGHT_PX,
+                    tolerance: constants.FORM_SWITCH_HEIGHT_TOLERANCE_PX,
+                    label: parent?.querySelector('.form-check-label')?.textContent?.trim().slice(0, 40) || null,
+                };
+            })
+            .filter(Boolean);
+
         // Input-group height consistency: all children must have matching heights
         // and the group height should be close to the expected form-control height (~34px)
         const inputGroupHeightIssues = Array.from(contentRoot.querySelectorAll('.input-group'))
@@ -1783,6 +2502,159 @@ async function collectPageMetrics(page, scope) {
             })
             .filter(Boolean);
 
+        // Color scheme consistency: Dashboard Speedtest & Network Gauges
+        // Check that Download/Upload colors match between charts for visual consistency
+        const colorSchemeConsistency = (() => {
+            if (scope !== 'dashboard') return null;
+
+            const issues = [];
+            const roundColor = (color) => parseColor(color);
+
+            const colorDistance = (c1, c2) => {
+                if (!c1 || !c2) return Infinity;
+                return Math.sqrt(
+                    Math.pow(c1.r - c2.r, 2) +
+                    Math.pow(c1.g - c2.g, 2) +
+                    Math.pow(c1.b - c2.b, 2)
+                );
+            };
+
+            // Get gauge colors (RX = Download, TX = Upload)
+            const gaugeRxColor = document.querySelector('.network-item .rx, .network-gauge-rate.rx');
+            const gaugeTxColor = document.querySelector('.network-item .tx, .network-gauge-rate.tx');
+
+            if (!gaugeRxColor || !gaugeTxColor) {
+                issues.push({
+                    type: 'missingGaugeElements',
+                    message: 'Network gauge elements not found on dashboard'
+                });
+                return issues.length ? issues : null;
+            }
+
+            const gaugeRxStyle = window.getComputedStyle(gaugeRxColor);
+            const gaugeTxStyle = window.getComputedStyle(gaugeTxColor);
+            const gaugeRxColorParsed = roundColor(gaugeRxStyle.color);
+            const gaugeTxColorParsed = roundColor(gaugeTxStyle.color);
+
+            // Check if speedtest chart exists and has datasets
+            const speedtestCanvas = document.getElementById('speedtest-chart');
+            if (!speedtestCanvas) {
+                // Chart not visible yet - skip check
+                return null;
+            }
+
+            // Try to access Chart.js instance
+            const chartInstance = speedtestCanvas && typeof Chart !== 'undefined' ? Chart.getChart(speedtestCanvas) : null;
+            if (!chartInstance || !chartInstance.data.datasets || chartInstance.data.datasets.length < 2) {
+                // No data yet - skip check
+                return null;
+            }
+
+            // Get Download (index 0) and Upload (index 1) dataset colors
+            const downloadDataset = chartInstance.data.datasets[0];
+            const uploadDataset = chartInstance.data.datasets[1];
+
+            const downloadColor = roundColor(downloadDataset.borderColor);
+            const uploadColor = roundColor(uploadDataset.borderColor);
+
+            // Compare colors (allow small RGB delta for rounding differences)
+            const TOLERATED_COLOR_DISTANCE = 15; // RGB distance threshold
+
+            const downloadDistance = colorDistance(gaugeRxColorParsed, downloadColor);
+            const uploadDistance = colorDistance(gaugeTxColorParsed, uploadColor);
+            const transferDistance = colorDistance(gaugeRxColorParsed, gaugeTxColorParsed);
+
+            if (downloadDistance > TOLERATED_COLOR_DISTANCE) {
+                issues.push({
+                    type: 'downloadColorMismatch',
+                    gaugeColor: gaugeRxStyle.color,
+                    chartColor: downloadDataset.borderColor,
+                    distance: Math.round(downloadDistance)
+                });
+            }
+
+            if (uploadDistance > TOLERATED_COLOR_DISTANCE) {
+                issues.push({
+                    type: 'uploadColorMismatch',
+                    gaugeColor: gaugeTxStyle.color,
+                    chartColor: uploadDataset.borderColor,
+                    distance: Math.round(uploadDistance)
+                });
+            }
+
+            if (transferDistance < constants.DASHBOARD_TRANSFER_COLOR_DISTANCE_MIN) {
+                issues.push({
+                    type: 'transferColorsTooSimilar',
+                    rxColor: gaugeRxStyle.color,
+                    txColor: gaugeTxStyle.color,
+                    distance: Math.round(transferDistance)
+                });
+            }
+
+            return issues.length ? issues : null;
+        })();
+
+        // Deprecated red color validation: ensure deprecated reds are not used
+        // Only approved red is #ff6384 (rgb(255, 99, 132))
+        // Deprecated reds: #ff6b6b (rgb(255, 107, 107)), #ff9cab (rgb(255, 156, 171))
+        const deprecatedColorUsage = (() => {
+            const issues = [];
+            const DEPRECATED_REDS = [
+                { r: 255, g: 107, b: 107 }, // #ff6b6b
+                { r: 255, g: 156, b: 171 }, // #ff9cab
+            ];
+            const TOLERANCE = 3; // Allow small rounding differences
+
+            const isDeprecatedRed = (color) => {
+                if (!color) return false;
+                return DEPRECATED_REDS.some((deprecated) =>
+                    Math.abs(color.r - deprecated.r) <= TOLERANCE &&
+                    Math.abs(color.g - deprecated.g) <= TOLERANCE &&
+                    Math.abs(color.b - deprecated.b) <= TOLERANCE
+                );
+            };
+
+            const checkElement = (el, property, propertyName) => {
+                try {
+                    const style = window.getComputedStyle(el);
+                    const colorValue = style[property];
+                    if (!colorValue) return;
+
+                    const color = parseColor(colorValue);
+                    if (!color) return;
+
+                    if (isDeprecatedRed(color)) {
+                        issues.push({
+                            element: rectInfo(el),
+                            property: propertyName,
+                            value: colorValue,
+                            expected: 'rgb(255, 99, 132) or #ff6384',
+                            selector: el.className ? `.${Array.from(el.classList).join('.')}` : el.tagName
+                        });
+                    }
+                } catch (e) {
+                    // Ignore elements that can't be inspected
+                }
+            };
+
+            // Check all visible elements for deprecated color usage
+            const allElements = contentElements
+                .filter((el) => isVisible(el) && isInContentRoot(el));
+
+            for (const el of allElements) {
+                checkElement(el, 'color', 'color');
+                checkElement(el, 'backgroundColor', 'background-color');
+                checkElement(el, 'borderTopColor', 'border-color');
+                checkElement(el, 'borderBottomColor', 'border-color');
+                checkElement(el, 'borderLeftColor', 'border-color');
+                checkElement(el, 'borderRightColor', 'border-color');
+            }
+
+            return issues.length ? issues : null;
+        })();
+
+        colorProbe.remove();
+
         return {
             duplicateIds,
             emptyAriaLabels,
@@ -1792,10 +2664,19 @@ async function collectPageMetrics(page, scope) {
             namelessButtons,
             headingSkips,
             tablesWithoutHeaders,
+            tablesWithoutResponsive,
+            ghostScroll,
+            ghostScrollContainers,
             horizontalOverflow,
             clippedButtons,
             clickTargetsTooSmall,
+            iconButtonsTouchBlocked,
+            deprecatedButtonClasses,
             hiddenInteractiveElements,
+            bootstrapGridIssues,
+            bootstrapColumnsOutsideRows,
+            breakpointDisplayConflicts,
+            navbarCollapseIssues,
             focusOrderIssues,
             focusIndicatorMissing,
             scrollEdgeCrowding,
@@ -1812,7 +2693,11 @@ async function collectPageMetrics(page, scope) {
             modalBackdrop,
             visualContainmentIssues,
             formSwitchMarginIssues,
+            formSwitchProportionIssues,
+            formSwitchHeightIssues,
             inputGroupHeightIssues,
+            colorSchemeConsistency,
+            deprecatedColorUsage,
         };
     }, {
         scope, constants: {
@@ -1821,6 +2706,8 @@ async function collectPageMetrics(page, scope) {
             VERTICAL_GAP_MIN,
             VERTICAL_GAP_MAX,
             SCROLL_EDGE_CLEARANCE_MIN,
+            GHOST_SCROLL_DELTA_MAX_PX,
+            GHOST_SCROLL_MIN_HEIGHT_PX,
             COMPONENT_LAYOUT_SHIFT_THRESHOLD_PX,
             COMPONENT_LAYOUT_SHIFT_SETTLE_MS,
             CLICK_TARGET_MIN_SIZE_PX,
@@ -1840,8 +2727,19 @@ async function collectPageMetrics(page, scope) {
             MODAL_BACKDROP_SATURATE_TOLERANCE,
             MODAL_BACKDROP_ALPHA_EXPECTED,
             MODAL_BACKDROP_ALPHA_TOLERANCE,
+            FORM_SWITCH_MAX_HEIGHT_PX,
+            FORM_SWITCH_HEIGHT_TOLERANCE_PX,
             INPUT_GROUP_HEIGHT_EXPECTED_PX,
             INPUT_GROUP_HEIGHT_TOLERANCE_PX,
+            COMPACT_CARD_ACTION_MARGIN_TOP_MAX_PX,
+            COMPACT_CARD_ACTION_PADDING_TOP_MAX_PX,
+            COMPACT_CARD_ACTION_BORDER_TOP_MAX_PX,
+            CARD_BORDER_RADIUS_EXPECTED_PX,
+            CARD_BORDER_RADIUS_TOLERANCE_PX,
+            KPI_ICON_CENTER_TOLERANCE_PX,
+            KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX,
+            KPI_CONTEXTUAL_ICON_CLASSES,
+            DASHBOARD_TRANSFER_COLOR_DISTANCE_MIN,
             STATUS_FLOW_NODE_EXPECTATIONS,
             STATUS_FLOW_CONNECTOR_EXPECTATIONS,
             WCAG_NORMAL_AA: WCAG_CONTRAST.NORMAL_AA,
@@ -1865,13 +2763,22 @@ function summarizeFindings(result) {
     if (result.metrics.namelessButtons.length) pushHard(`namelessButtons=${result.metrics.namelessButtons.length}`);
     if (result.metrics.headingSkips.length) pushWarning(`headingSkips=${result.metrics.headingSkips.length}`);
     if (result.metrics.tablesWithoutHeaders.length) pushWarning(`tablesWithoutHeaders=${result.metrics.tablesWithoutHeaders.length}`);
+    if (result.metrics.tablesWithoutResponsive?.length) pushWarning(`tablesWithoutResponsive=${result.metrics.tablesWithoutResponsive.length}`);
+    if (result.metrics.ghostScroll) pushWarning('ghostScrollDetected');
+    if (result.metrics.ghostScrollContainers?.length) pushWarning(`ghostScrollContainers=${result.metrics.ghostScrollContainers.length}`);
     if (result.metrics.horizontalOverflow.hasOverflow) pushHard('horizontalOverflow');
     if (result.metrics.horizontalOverflow.hasOverflow && result.metrics.horizontalOverflow.offenders.length) {
         pushHard(`overflowOffenders=${result.metrics.horizontalOverflow.offenders.length}`);
     }
     if (result.metrics.clippedButtons.length) pushWarning(`clippedButtons=${result.metrics.clippedButtons.length}`);
     if (result.metrics.clickTargetsTooSmall?.length) pushHard(`clickTargetsTooSmall=${result.metrics.clickTargetsTooSmall.length}`);
+    if (result.metrics.iconButtonsTouchBlocked?.length) pushHard(`iconButtonsTouchBlocked=${result.metrics.iconButtonsTouchBlocked.length}`);
+    if (result.metrics.deprecatedButtonClasses?.length) pushHard(`deprecatedButtonClasses=${result.metrics.deprecatedButtonClasses.length}`);
     if (result.metrics.hiddenInteractiveElements.length) pushHard(`hiddenInteractive=${result.metrics.hiddenInteractiveElements.length}`);
+    if (result.metrics.bootstrapGridIssues?.length) pushWarning(`bootstrapGridIssues=${result.metrics.bootstrapGridIssues.length}`);
+    if (result.metrics.bootstrapColumnsOutsideRows?.length) pushWarning(`bootstrapColumnsOutsideRows=${result.metrics.bootstrapColumnsOutsideRows.length}`);
+    if (result.metrics.breakpointDisplayConflicts?.length) pushWarning(`breakpointDisplayConflicts=${result.metrics.breakpointDisplayConflicts.length}`);
+    if (result.metrics.navbarCollapseIssues?.length) pushWarning(`navbarCollapseIssues=${result.metrics.navbarCollapseIssues.length}`);
     if (result.metrics.focusOrderIssues?.length) pushWarning(`focusOrderIssues=${result.metrics.focusOrderIssues.length}`);
     if (result.metrics.focusIndicatorMissing?.length) pushWarning(`focusIndicatorMissing=${result.metrics.focusIndicatorMissing.length}`);
     if (result.metrics.scrollEdgeCrowding?.length) pushWarning(`scrollEdgeCrowding=${result.metrics.scrollEdgeCrowding.length}`);
@@ -1895,6 +2802,24 @@ function summarizeFindings(result) {
         pushWarning(`rowToRowGapOutOfRange=${result.metrics.spacing.rowToRowGap}`);
     }
     if (result.metrics.spacing.outlierVerticalGaps?.length) pushWarning(`outlierVerticalGaps=${result.metrics.spacing.outlierVerticalGaps.length}`);
+    if (result.metrics.spacing.rowGutterMarginConflicts?.length) pushWarning(`rowGutterMarginConflicts=${result.metrics.spacing.rowGutterMarginConflicts.length}`);
+    if (result.name.includes('settings') && result.metrics.spacing.settingsTabColors?.length) {
+        const tabColorProblems = result.metrics.spacing.settingsTabColors.filter(
+            (entry) => entry.colorDelta != null && entry.colorDelta > SETTINGS_TAB_COLOR_DISTANCE_MAX
+        );
+        if (tabColorProblems.length) {
+            pushWarning(`settingsTabActiveColorMismatch=${tabColorProblems.length}`);
+        }
+    }
+    if (result.name.includes('dashboard') && result.metrics.spacing.dashboardTopRowAlignment && !result.metrics.spacing.dashboardTopRowAlignment.aligned) {
+        pushWarning(`dashboardTopRowVariance=${result.metrics.spacing.dashboardTopRowAlignment.variance}`);
+    }
+    if (result.name.includes('mobile-dashboard') && result.metrics.spacing.dashboardMobileStackOrder) {
+        const order = result.metrics.spacing.dashboardMobileStackOrder;
+        if (!order.speedtestAboveMap || !order.mapAboveRecent) {
+            pushWarning('dashboardMobileStackOrder');
+        }
+    }
     if (result.name.includes('desktop-settings-logs') && result.metrics.spacing.logsDeleteLayout) {
         const logsDeleteLayout = result.metrics.spacing.logsDeleteLayout;
         if (
@@ -1908,12 +2833,51 @@ function summarizeFindings(result) {
             pushWarning(`logsDeleteHairlineVariance=${logsDeleteLayout.hairlineVariance}`);
         }
     }
+    if (result.name.includes('settings-logs') && result.metrics.spacing.logsPathLayout?.length) {
+        const pathStyleProblems = result.metrics.spacing.logsPathLayout.filter(
+            (entry) => entry.whiteSpace !== 'nowrap' || entry.textOverflow !== 'ellipsis' || entry.overflowX !== 'hidden'
+        );
+        if (pathStyleProblems.length) {
+            pushWarning(`logsPathStyleMismatch=${pathStyleProblems.length}`);
+        }
+
+        const wrappedPaths = result.metrics.spacing.logsPathLayout.filter((entry) => entry.wraps);
+        if (wrappedPaths.length) {
+            pushWarning(`logsPathWrapped=${wrappedPaths.length}`);
+        }
+    }
+    if (result.name.includes('settings') && result.metrics.spacing.compactCardActionRows?.length) {
+        const compactActionRowProblems = result.metrics.spacing.compactCardActionRows.filter(
+            (entry) => !entry.isCompactMargin || !entry.isCompactPadding || !entry.isBorderless
+        );
+        if (compactActionRowProblems.length) {
+            pushWarning(`compactCardActionRows=${compactActionRowProblems.length}`);
+        }
+    }
     if (result.metrics.spacing.about?.updateValueStyleMismatches?.length) pushWarning(`aboutUpdateValueStyleMismatches=${result.metrics.spacing.about.updateValueStyleMismatches.length}`);
+    if (result.metrics.spacing.about?.topRowLayout && !result.metrics.spacing.about.topRowLayout.heightsMatch) {
+        pushWarning(`aboutTopRowHeightMismatch=${result.metrics.spacing.about.topRowLayout.variance}px`);
+    }
+    // Peers modal required field validation (Name field must have required attr + visual marker)
+    if (result.metrics.spacing.peersModalValidation) {
+        const addModal = result.metrics.spacing.peersModalValidation.addPeerModal;
+        if (addModal?.found && !addModal.valid) {
+            if (!addModal.hasRequiredAttr) pushHard('peerNameInputMissingRequired');
+            if (!addModal.hasRequiredMarker) pushWarning('peerNameLabelMissingRequiredMarker');
+        }
+        const editModal = result.metrics.spacing.peersModalValidation.editPeerModal;
+        if (editModal?.found && !editModal.valid) {
+            if (!editModal.hasRequiredAttr) pushHard('editPeerNameInputMissingRequired');
+            if (!editModal.hasRequiredMarker) pushWarning('editPeerNameLabelMissingRequiredMarker');
+        }
+    }
     if (result.metrics.layoutShift.value > LAYOUT_SHIFT_THRESHOLD) pushHard(`layoutShift=${result.metrics.layoutShift.value.toFixed(4)}`);
     if (result.metrics.componentLayoutShift?.length) pushHard(`componentLayoutShift=${result.metrics.componentLayoutShift.length}`);
     if (result.metrics.contrastProblems.length) pushHard(`contrastProblems=${result.metrics.contrastProblems.length}`);
     if (result.metrics.visualContainmentIssues?.length) pushWarning(`visualContainmentIssues=${result.metrics.visualContainmentIssues.length}`);
     if (result.metrics.formSwitchMarginIssues?.length) pushWarning(`formSwitchMarginIssues=${result.metrics.formSwitchMarginIssues.length}`);
+    if (result.metrics.formSwitchProportionIssues?.length) pushHard(`formSwitchProportionIssues=${result.metrics.formSwitchProportionIssues.length}`);
+    if (result.metrics.formSwitchHeightIssues?.length) pushHard(`formSwitchHeightIssues=${result.metrics.formSwitchHeightIssues.length}`);
     if (result.metrics.inputGroupHeightIssues?.length) pushHard(`inputGroupHeightIssues=${result.metrics.inputGroupHeightIssues.length}`);
     if (result.diff.ratio > VISUAL_DRIFT_THRESHOLD) pushHard(`visualDrift=${result.diff.ratio.toFixed(4)}`);
     if (result.network.consoleEntries.length) pushHard(`console=${result.network.consoleEntries.length}`);
@@ -1955,6 +2919,29 @@ function summarizeFindings(result) {
         }
     }
 
+    if (result.name.includes('dashboard') && result.metrics.spacing.dashboardKpiIcons?.length) {
+        const contextualColorProblems = result.metrics.spacing.dashboardKpiIcons.filter(
+            (card) => card.contextualClasses?.length
+        );
+        if (contextualColorProblems.length) {
+            pushWarning(`dashboardKpiContextualIconColor=${contextualColorProblems.length}`);
+        }
+
+        const neutralColorProblems = result.metrics.spacing.dashboardKpiIcons.filter(
+            (card) => card.iconColorDelta != null && card.iconColorDelta > KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX
+        );
+        if (neutralColorProblems.length) {
+            pushWarning(`dashboardKpiNeutralIconMismatch=${neutralColorProblems.length}`);
+        }
+
+        const verticalCenterProblems = result.metrics.spacing.dashboardKpiIcons.filter(
+            (card) => card.iconCenterDelta != null && card.iconCenterDelta > KPI_ICON_CENTER_TOLERANCE_PX
+        );
+        if (verticalCenterProblems.length) {
+            pushWarning(`dashboardKpiIconVerticalCenter=${verticalCenterProblems.length}`);
+        }
+    }
+
     // Dashboard KPI card width variance
     if (result.name.includes('dashboard') && result.metrics.spacing.kpiCards?.length) {
         const widths = result.metrics.spacing.statCardWidths || [];
@@ -1983,8 +2970,8 @@ function summarizeFindings(result) {
         }
     }
 
-    // Desktop-only: first KPI row height consistency
-    if (result.name.includes('desktop') && result.metrics.spacing.kpiHeights?.length >= 4) {
+    // Desktop + Tablet KPI consistency check
+    if (!result.name.includes('mobile') && result.metrics.spacing.kpiHeights?.length >= 4) {
         const firstRow = result.metrics.spacing.kpiHeights.slice(0, 4);
         const variance = Math.max(...firstRow) - Math.min(...firstRow);
 
@@ -2001,6 +2988,35 @@ function summarizeFindings(result) {
         pushWarning(
             `cardsMissingKpiClass=${result.metrics.spacing.cardsMissingKpiClass.length}`
         );
+    }
+
+    // Card border-radius consistency (should match --wb-radius-lg token)
+    if (result.metrics.spacing.cardBorderRadiusIssues?.length) {
+        pushWarning(`cardBorderRadiusMismatch=${result.metrics.spacing.cardBorderRadiusIssues.length}`);
+    }
+
+    // DNS page: Chart empty state spacing validation
+    if (result.name.includes('dns') && result.metrics.spacing.dnsUnavailableStates?.length) {
+        const states = result.metrics.spacing.dnsUnavailableStates;
+
+        for (const state of states) {
+            if (!state.hasSubText) {
+                pushWarning(`dnsUnavailableNoSubtext:${state.id || 'unknown'}`);
+                continue;
+            }
+
+            if (!state.hasSmallClass) {
+                pushHard(`dnsUnavailableMissingSmallClass:${state.id || 'unknown'}`);
+            }
+
+            if (!state.marginCompensatesGap) {
+                pushHard(`dnsUnavailableSpacingIncorrect:${state.id || 'unknown'} (gap=${state.gap}, marginTop=${state.marginTop})`);
+            }
+
+            if (!state.visualGapExpected) {
+                pushWarning(`dnsUnavailableVisualGap:${state.id || 'unknown'} (${state.visualGap}px)`);
+            }
+        }
     }
 
     // Slider tick alignment (settings-logs views)
@@ -2070,6 +3086,16 @@ function summarizeFindings(result) {
         }
     }
 
+    // Status page: Status check cards monospace validation
+    if (result.name.includes('status') && result.metrics.spacing.statusCheckMonospace) {
+        const checkMonospace = result.metrics.spacing.statusCheckMonospace;
+
+        if (!checkMonospace.allCorrect) {
+            const missingTitles = checkMonospace.missing.map(c => c.title).join(', ');
+            pushHard(`statusCheckMonospaceMissing: ${missingTitles}`);
+        }
+    }
+
     if (result.name.includes('login-error')) {
         const loginFailure = result.metrics.loginFailure || {};
         const errorText = loginFailure.errorText || '';
@@ -2091,6 +3117,28 @@ function summarizeFindings(result) {
         }
     }
 
+    // Color scheme consistency (Dashboard: Speedtest vs Network Gauges)
+    if (result.metrics.colorSchemeConsistency?.length) {
+        for (const issue of result.metrics.colorSchemeConsistency) {
+            if (issue.type === 'downloadColorMismatch') {
+                pushWarning(`colorScheme:downloadMismatch:distance=${issue.distance}`);
+            } else if (issue.type === 'uploadColorMismatch') {
+                pushWarning(`colorScheme:uploadMismatch:distance=${issue.distance}`);
+            } else if (issue.type === 'transferColorsTooSimilar') {
+                pushWarning(`colorScheme:transferColorsTooSimilar:distance=${issue.distance}`);
+            } else if (issue.type === 'missingGaugeElements') {
+                pushWarning('colorScheme:missingElements');
+            }
+        }
+    }
+
+    // Deprecated color usage: ensure #ff6b6b is replaced with #ff6384
+    if (result.metrics.deprecatedColorUsage?.length) {
+        for (const issue of result.metrics.deprecatedColorUsage) {
+            pushHard(`deprecatedColor:${issue.property}:${issue.selector}:${issue.value}`);
+        }
+    }
+
     return {
         findings: [...hardFindings, ...warnings],
         hardFindings,
@@ -2109,120 +3157,132 @@ function isExpectedStatusUnavailable(view, response) {
 
 async function auditView(page, view) {
     const detachNetwork = collectConsoleAndNetwork(page);
-    await applyTheme(page, view.theme, view.name);
-    const response = await page.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 30000 });
-    await disableMotion(page, view.name);
-    if (view.scope === 'about') {
-        await page.evaluate(() => {
-            const details = document.querySelector('.about-changelog-col details');
-            if (details) details.open = true;
-        });
-        await page.waitForTimeout(DETAILS_EXPAND_SETTLE_MS);
+    let network = null;
+    try {
+        await applyTheme(page, view.theme, view.name);
+        const response = await page.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 30000 });
+        await disableMotion(page, view.name);
+        if (view.scope === 'about') {
+            await page.evaluate(() => {
+                const details = document.querySelector('.about-changelog-col details');
+                if (details) details.open = true;
+            });
+            await page.waitForTimeout(DETAILS_EXPAND_SETTLE_MS);
+        }
+        if (view.tab) {
+            await page.click(view.tab);
+            await page.waitForTimeout(TAB_SWITCH_SETTLE_MS);
+        }
+        if (view.scope === 'traffic') {
+            await page.waitForFunction(() => {
+                const chartLoading = document.getElementById('traffic-combined-loading');
+                const countryLoading = document.getElementById('country-traffic-loading');
+                const asnLoading = document.getElementById('asn-traffic-loading');
+                const hidden = (el) => !el || el.classList.contains('d-none');
+                return hidden(chartLoading) && hidden(countryLoading) && hidden(asnLoading);
+            }, { timeout: 10000 }).catch(() => { });
+        }
+        await resetLayoutShiftMetric(page);
+        await page.waitForTimeout(SCREENSHOT_SETTLE_MS);
+        const shots = await captureStablePair(page, view.name);
+        const kpiShots = await captureKpiCards(page, view.name);
+        const diff = diffScreenshots(view.name, shots.shotA, shots.shotB);
+        const metrics = await collectPageMetrics(page, view.scope);
+        network = detachNetwork();
+        const statusUnavailableExpected = isExpectedStatusUnavailable(view, response);
+        network.requestFailures = network.requestFailures.filter((entry) => entry.error !== 'net::ERR_ABORTED');
+        if (statusUnavailableExpected) {
+            network.consoleEntries = network.consoleEntries.filter((entry) => {
+                const text = String(entry.text || '');
+                return !(text.includes('/status') && text.includes('404'));
+            });
+            network.badResponses = network.badResponses.filter((entry) => {
+                try {
+                    return !(entry.status === 404 && new URL(entry.url).pathname === '/status');
+                } catch {
+                    return true;
+                }
+            });
+        }
+        return {
+            name: view.name,
+            url: page.url(),
+            theme: view.theme,
+            diff,
+            metrics,
+            network,
+            statusUnavailableExpected,
+            findings: [],
+            screenshots: { ...shots, diffPath: diff.diffPath },
+            kpiShots,
+        };
+    } finally {
+        // Always detach network listeners to prevent memory leaks
+        if (!network) detachNetwork();
     }
-    if (view.tab) {
-        await page.click(view.tab);
-        await page.waitForTimeout(TAB_SWITCH_SETTLE_MS);
-    }
-    if (view.scope === 'traffic') {
-        await page.waitForFunction(() => {
-            const chartLoading = document.getElementById('traffic-combined-loading');
-            const countryLoading = document.getElementById('country-traffic-loading');
-            const asnLoading = document.getElementById('asn-traffic-loading');
-            const hidden = (el) => !el || el.classList.contains('d-none');
-            return hidden(chartLoading) && hidden(countryLoading) && hidden(asnLoading);
-        }, { timeout: 10000 }).catch(() => { });
-    }
-    await resetLayoutShiftMetric(page);
-    await page.waitForTimeout(SCREENSHOT_SETTLE_MS);
-    const shots = await captureStablePair(page, view.name);
-    const kpiShots = await captureKpiCards(page, view.name);
-    const diff = diffScreenshots(view.name, shots.shotA, shots.shotB);
-    const metrics = await collectPageMetrics(page, view.scope);
-    const network = detachNetwork();
-    const statusUnavailableExpected = isExpectedStatusUnavailable(view, response);
-    network.requestFailures = network.requestFailures.filter((entry) => entry.error !== 'net::ERR_ABORTED');
-    if (statusUnavailableExpected) {
-        network.consoleEntries = network.consoleEntries.filter((entry) => {
-            const text = String(entry.text || '');
-            return !(text.includes('/status') && text.includes('404'));
-        });
-        network.badResponses = network.badResponses.filter((entry) => {
-            try {
-                return !(entry.status === 404 && new URL(entry.url).pathname === '/status');
-            } catch {
-                return true;
-            }
-        });
-    }
-    return {
-        name: view.name,
-        url: page.url(),
-        theme: view.theme,
-        diff,
-        metrics,
-        network,
-        statusUnavailableExpected,
-        findings: [],
-        screenshots: shots,
-        kpiShots,
-    };
 }
 
 async function auditLoginFailureView(page, view) {
     const detachNetwork = collectConsoleAndNetwork(page);
-    await page.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 10000 });
-    await disableMotion(page, view.name);
-    await applyTheme(page, view.theme, view.name);
+    let network = null;
+    try {
+        await page.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 10000 });
+        await disableMotion(page, view.name);
+        await applyTheme(page, view.theme, view.name);
 
-    const invalidPassword = `${PASSWORD}__ui_lint_invalid`;
-    await page.fill('#username', USERNAME);
-    await page.fill('#password', invalidPassword);
+        const invalidPassword = `${PASSWORD}__ui_lint_invalid`;
+        await page.fill('#username', USERNAME);
+        await page.fill('#password', invalidPassword);
 
-    const [loginResponse] = await Promise.all([
-        page.waitForResponse((response) => {
+        const [loginResponse] = await Promise.all([
+            page.waitForResponse((response) => {
+                try {
+                    return new URL(response.url()).pathname === '/api/login';
+                } catch {
+                    return false;
+                }
+            }, { timeout: 30000 }),
+            page.click('#submit-btn'),
+        ]);
+
+        // Wait for error alert to appear (attached to DOM without d-none class)
+        // Use 'attached' state since visibility can be affected by animations
+        await page.waitForSelector('#error-alert:not(.d-none)', { state: 'attached', timeout: 30000 });
+        await page.waitForTimeout(LOGIN_ERROR_SETTLE_MS);
+
+        const metrics = await collectPageMetrics(page, view.scope);
+        const shots = await captureStablePair(page, view.name);
+        const kpiShots = await captureKpiCards(page, view.name);
+        const diff = diffScreenshots(view.name, shots.shotA, shots.shotB);
+        network = detachNetwork();
+        network.consoleEntries = network.consoleEntries.filter((entry) =>
+            !(loginResponse.status() === 401 && entry.text.includes('401 (Unauthorized)'))
+        );
+        network.requestFailures = network.requestFailures.filter((entry) => entry.error !== 'net::ERR_ABORTED');
+        network.badResponses = network.badResponses.filter((entry) => {
             try {
-                return new URL(response.url()).pathname === '/api/login';
+                return !(entry.status === 401 && new URL(entry.url).pathname === '/api/login');
             } catch {
-                return false;
+                return true;
             }
-        }, { timeout: 30000 }),
-        page.click('#submit-btn'),
-    ]);
+        });
 
-    // Wait for error alert to appear (attached to DOM without d-none class)
-    // Use 'attached' state since visibility can be affected by animations
-    await page.waitForSelector('#error-alert:not(.d-none)', { state: 'attached', timeout: 30000 });
-    await page.waitForTimeout(LOGIN_ERROR_SETTLE_MS);
-
-    const metrics = await collectPageMetrics(page, view.scope);
-    const shots = await captureStablePair(page, view.name);
-    const kpiShots = await captureKpiCards(page, view.name);
-    const diff = diffScreenshots(view.name, shots.shotA, shots.shotB);
-    const network = detachNetwork();
-    network.consoleEntries = network.consoleEntries.filter((entry) =>
-        !(loginResponse.status() === 401 && entry.text.includes('401 (Unauthorized)'))
-    );
-    network.requestFailures = network.requestFailures.filter((entry) => entry.error !== 'net::ERR_ABORTED');
-    network.badResponses = network.badResponses.filter((entry) => {
-        try {
-            return !(entry.status === 401 && new URL(entry.url).pathname === '/api/login');
-        } catch {
-            return true;
-        }
-    });
-
-    return {
-        name: view.name,
-        url: page.url(),
-        theme: view.theme,
-        diff,
-        metrics,
-        network,
-        findings: [],
-        screenshots: shots,
-        kpiShots,
-        loginResponseStatus: loginResponse.status(),
-    };
+        return {
+            name: view.name,
+            url: page.url(),
+            theme: view.theme,
+            diff,
+            metrics,
+            network,
+            findings: [],
+            screenshots: { ...shots, diffPath: diff.diffPath },
+            kpiShots,
+            loginResponseStatus: loginResponse.status(),
+        };
+    } finally {
+        // Always detach network listeners to prevent memory leaks
+        if (!network) detachNetwork();
+    }
 }
 
 async function main() {
@@ -2253,19 +3313,32 @@ async function main() {
             viewport: { width: 1440, height: 1100 },
             storageState: authState,
         });
+        const tabletContext = await browser.newContext({
+            ...devices['iPad Pro 11'],
+            storageState: authState,
+        });
         const mobileContext = await browser.newContext({
             ...devices['iPhone 13'],
             storageState: authState,
         });
         await installLayoutShiftObserver(desktopContext);
+        await installLayoutShiftObserver(tabletContext);
         await installLayoutShiftObserver(mobileContext);
 
         const desktopPage = await desktopContext.newPage();
+        const tabletPage = await tabletContext.newPage();
         const mobilePage = await mobileContext.newPage();
 
         // Run authenticated view tests
         for (const view of VIEWS) {
-            const page = view.mobile ? mobilePage : desktopPage;
+            let page;
+            if (view.device === 'mobile') {
+                page = mobilePage;
+            } else if (view.device === 'tablet') {
+                page = tabletPage;
+            } else {
+                page = desktopPage;
+            }
             try {
                 const result = await auditView(page, view);
                 const summarized = summarizeFindings(result);
@@ -2292,7 +3365,14 @@ async function main() {
 
         // Run login-failure tests LAST to avoid rate limiting blocking the real login
         for (const [index, view] of LOGIN_FAILURE_VIEWS.entries()) {
-            const page = view.mobile ? mobilePage : desktopPage;
+            let page;
+            if (view.device === 'mobile') {
+                page = mobilePage;
+            } else if (view.device === 'tablet') {
+                page = tabletPage;
+            } else {
+                page = desktopPage;
+            }
 
             // Retry logic for rate limiting: detect "too many attempts" and wait before retry
             let result;
@@ -2301,9 +3381,9 @@ async function main() {
 
             while (attempt < maxRetries) {
                 try {
-                    // Preventive delay every 3 tests
-                    if (index > 0 && index % 3 === 0 && attempt === 0) {
-                        await new Promise((resolve) => setTimeout(resolve, LOGIN_LOCKOUT_RESET_MS));
+                    // Stagger login attempts to stay under 5/minute rate limit
+                    if (index > 0 && attempt === 0) {
+                        await new Promise((resolve) => setTimeout(resolve, LOGIN_TEST_STAGGER_MS));
                     }
 
                     result = await auditLoginFailureView(page, view);
@@ -2356,8 +3436,11 @@ async function main() {
         }
     }
 
-    const summaryPath = path.join(OUTPUT_DIR, 'ui-lint-summary.json');
+    const summaryPath = path.join(RESULTS_DIR, 'ui-lint-summary.json');
     fs.writeFileSync(summaryPath, JSON.stringify(results, null, 2));
+
+    console.log(`\nResults saved to: ${summaryPath}`);
+    console.log(`Screenshots: ${SCREENSHOT_DIR}\n`);
 
     console.log('UI_LINT_START');
     for (const result of results) {
@@ -2377,11 +3460,17 @@ async function main() {
             overflowOffenders: horizontalOverflow.offenders?.length || 0,
             clippedButtons: metrics.clippedButtons?.length || 0,
             clickTargetsTooSmall: metrics.clickTargetsTooSmall?.length || 0,
+            iconButtonsTouchBlocked: metrics.iconButtonsTouchBlocked?.length || 0,
             hiddenInteractive: metrics.hiddenInteractiveElements?.length || 0,
+            bootstrapGridIssues: metrics.bootstrapGridIssues?.length || 0,
+            bootstrapColumnsOutsideRows: metrics.bootstrapColumnsOutsideRows?.length || 0,
+            breakpointDisplayConflicts: metrics.breakpointDisplayConflicts?.length || 0,
+            navbarCollapseIssues: metrics.navbarCollapseIssues?.length || 0,
             focusOrderIssues: metrics.focusOrderIssues?.length || 0,
             focusIndicatorMissing: metrics.focusIndicatorMissing?.length || 0,
             scrollEdgeCrowding: metrics.scrollEdgeCrowding?.length || 0,
             scrollBottomCrowding: metrics.scrollBottomCrowding?.length || 0,
+            ghostScrollContainers: metrics.ghostScrollContainers?.length || 0,
             nestedScrollContainers: metrics.nestedScrollContainers?.length || 0,
             badgeStyleMismatches: metrics.badgeStyleMismatches?.length || 0,
             monospaceToneMismatches: metrics.monospaceToneMismatches?.length || 0,
@@ -2394,13 +3483,30 @@ async function main() {
             sliderAlignment: spacing.sliderAlignment?.length || 0,
             sliderTickMisaligned: spacing.sliderAlignment?.filter((s) => s.tickMisaligned?.length)?.length || 0,
             sliderLabelOverlap: spacing.sliderAlignment?.filter((s) => s.labelOverlap?.length)?.length || 0,
+            settingsTabColors: spacing.settingsTabColors?.length || 0,
+            settingsTabActiveColorMismatch: spacing.settingsTabColors?.filter((entry) => entry.colorDelta != null && entry.colorDelta > SETTINGS_TAB_COLOR_DISTANCE_MAX)?.length || 0,
+            logsPathLayout: spacing.logsPathLayout?.length || 0,
+            logsPathStyleMismatch: spacing.logsPathLayout?.filter((entry) => entry.whiteSpace !== 'nowrap' || entry.textOverflow !== 'ellipsis' || entry.overflowX !== 'hidden')?.length || 0,
+            logsPathWrapped: spacing.logsPathLayout?.filter((entry) => entry.wraps)?.length || 0,
+            compactCardActionRows: spacing.compactCardActionRows?.length || 0,
+            compactCardActionRowIssues: spacing.compactCardActionRows?.filter((entry) => !entry.isCompactMargin || !entry.isCompactPadding || !entry.isBorderless)?.length || 0,
             duplicateRequests: result.network.duplicateRequests?.length || 0,
             kpiCards: spacing.kpiCards?.length || 0,
+            dashboardKpiIcons: spacing.dashboardKpiIcons?.length || 0,
+            dashboardKpiContextualIconColor: spacing.dashboardKpiIcons?.filter((card) => card.contextualClasses?.length)?.length || 0,
+            dashboardKpiNeutralIconMismatch: spacing.dashboardKpiIcons?.filter((card) => card.iconColorDelta != null && card.iconColorDelta > KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX)?.length || 0,
+            dashboardKpiIconVerticalCenter: spacing.dashboardKpiIcons?.filter((card) => card.iconCenterDelta != null && card.iconCenterDelta > KPI_ICON_CENTER_TOLERANCE_PX)?.length || 0,
             kpiMissingClass: spacing.cardsMissingKpiClass?.length || 0,
+            cardBorderRadiusMismatch: spacing.cardBorderRadiusIssues?.length || 0,
             kpiHeightVariance: spacing.kpiHeightVariance || 0,
+            dashboardTopRowVariance: spacing.dashboardTopRowAlignment?.variance || 0,
+            dnsUnavailableStates: spacing.dnsUnavailableStates?.length || 0,
+            dnsUnavailableIncorrectSpacing: spacing.dnsUnavailableStates?.filter(s => !s.marginCompensatesGap || !s.visualGapExpected)?.length || 0,
             statusFlowNodes: spacing.statusFlow?.nodeCount || 0,
             statusFlowConnectors: spacing.statusFlow?.connectorCount || 0,
             statusFlowHeightVariance: spacing.statusFlow?.heightVariance || 0,
+            statusCheckMonospaceCards: spacing.statusCheckMonospace?.cards?.length || 0,
+            statusCheckMonospaceMissing: spacing.statusCheckMonospace?.missing?.length || 0,
             loginErrorVisible: Boolean(metrics.loginFailure?.alertVisible),
             loginShakeActive: Boolean(metrics.loginFailure?.cardAnimationActive),
             loginPasswordInvalid: Boolean(metrics.loginFailure?.passwordInvalidClass),

@@ -83,7 +83,7 @@
     padding: 0;
     min-height: 0;
     text-align: center;
-    border-radius: 0.375rem;
+    border-radius: var(--wb-radius-sm);
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
@@ -134,8 +134,8 @@
 /* Theme toggle button */
 .theme-toggle-btn {
     border-radius: 50%;
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     padding: 0;
 }
 

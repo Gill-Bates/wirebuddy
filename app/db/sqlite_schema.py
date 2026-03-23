@@ -164,7 +164,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				private_key TEXT,
 				preshared_key TEXT,
 				name TEXT,
-				description TEXT,
 				allowed_ips TEXT NOT NULL,
 				allowed_ips_mode TEXT NOT NULL DEFAULT 'full',
 				client_isolation INTEGER NOT NULL DEFAULT 0,
@@ -231,6 +230,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				post_up TEXT,
 				post_down TEXT,
 				is_enabled INTEGER NOT NULL DEFAULT 1,
+				show_on_dashboard INTEGER NOT NULL DEFAULT 1,
 				created_at timestamp NOT NULL,
 				updated_at timestamp NOT NULL
 			)

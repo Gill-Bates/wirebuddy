@@ -10,11 +10,20 @@ const isAdmin = dnsApp ? (dnsApp.dataset.isAdmin === 'true' || dnsApp.dataset.is
 const clearNode = window.WBShared?.clearElement || (el => el?.replaceChildren());
 const chartEmptyState = window.WBShared?.chartEmptyState || (() => document.createElement('div'));
 
+// Track ad-blocker enabled state (for Top Blocked / Blockrate disabled message)
+let _adBlockerEnabled = dnsApp ? (dnsApp.dataset.enableBlocklist === 'true' || dnsApp.dataset.enableBlocklist === '1') : true;
+
+// Named constants
+const LOG_BATCH_SIZE = 50;  // Items to render per batch
+const LOG_FETCH_LIMIT = 1000;  // Max items to fetch from API
+const SCROLL_THRESHOLD_PX = 100;  // Trigger infinite scroll when this close to bottom
+const SEARCH_DEBOUNCE_MS = 250;  // Debounce delay for search input
+const MENU_VIEWPORT_MARGIN_PX = 8;  // Minimum margin for context menu
+const FADE_FALLBACK_MS = 300;  // Fallback timeout for CSS transitions
+
 let _logData = [];
 let _peerMap = {};
 let _trendChart = null;
-const LOG_BATCH_SIZE = 50;  // Items to render per batch
-const LOG_FETCH_LIMIT = 1000;  // Max items to fetch from API
 let _renderedCount = 0;  // How many items currently rendered
 let _filteredData = [];  // Filtered data for infinite scroll
 let _logsLoadInProgress = false;  // Guard against concurrent loadLogsOnly calls
@@ -24,6 +33,7 @@ let _logActionState = null; // Active row action context
 let _isInitialTopDomainsRender = true; // Skip fade on first render
 let _topDomainFadeTimeout = null; // Timeout handle for fade animation fallback
 let _fadeAbort = null; // AbortController for peer filter fade animation
+const _pageAbort = new AbortController();  // Abort controller for page cleanup
 
 /**
  * Get comma-separated client IPs for the currently selected peer filter.
@@ -127,14 +137,15 @@ function openLogActionMenu(q, clickEvent) {
         }
     }
 
-    // Show menu first so we can measure its actual dimensions
+    // Make menu visible but invisible to measure dimensions without flash
+    menu.style.visibility = 'hidden';
     menu.classList.add('show');
     const menuRect = menu.getBoundingClientRect();
 
     // Position with viewport boundary checking using actual menu dimensions
-    // NOTE: Assumes menu has position:fixed in CSS - clientX/Y are viewport-relative
-    menu.style.left = `${Math.max(8, Math.min(x, viewportWidth - menuRect.width - 8))}px`;
-    menu.style.top = `${Math.max(8, Math.min(y, viewportHeight - menuRect.height - 8))}px`;
+    menu.style.left = `${Math.max(MENU_VIEWPORT_MARGIN_PX, Math.min(x, viewportWidth - menuRect.width - MENU_VIEWPORT_MARGIN_PX))}px`;
+    menu.style.top = `${Math.max(MENU_VIEWPORT_MARGIN_PX, Math.min(y, viewportHeight - menuRect.height - MENU_VIEWPORT_MARGIN_PX))}px`;
+    menu.style.visibility = '';  // Now make visible
 
     // Set ARIA expanded on the triggering row
     const row = clickEvent.target.closest('tr');
@@ -201,7 +212,8 @@ function _fmtTrendLabel(isoStr) {
 function fmtNum(n) {
     if (!Number.isFinite(n) || n <= 0) return '0';
     if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
-    if (n >= 1_000) return (n / 1_000).toFixed(n >= 10_000 ? 0 : 1).replace(/\.0$/, '') + 'k';
+    if (n >= 10_000) return (n / 1_000).toFixed(0) + 'k';
+    if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'k';
     return Math.floor(n).toString();
 }
 
@@ -220,6 +232,24 @@ function getTrendBucketMinutes() {
 }
 
 async function loadTrend() {
+    const loadingEl = document.getElementById('trend-loading');
+    const trendWrap = document.getElementById('trend-chart-wrap');
+    const emptyEl = document.getElementById('trend-empty');
+
+    // Show disabled message when ad-blocker is disabled
+    if (!_adBlockerEnabled) {
+        loadingEl.classList.add('d-none');
+        trendWrap.classList.add('d-none');
+        emptyEl.classList.remove('d-none');
+        if (_trendChart) {
+            _trendChart.destroy();
+            _trendChart = null;
+        }
+        clearNode(emptyEl);
+        emptyEl.appendChild(chartEmptyState('DNS Ad-Blocker Disabled. Enable DNS Ad-Blocker in Settings to use this feature.'));
+        return;
+    }
+
     try {
         // 30 days = 720 hours, bucket size adapts to viewport
         const bucketMinutes = Math.min(1440, Math.max(5, getTrendBucketMinutes()));
@@ -240,10 +270,6 @@ async function loadTrend() {
         const blocked = t.blocked || [];
         const total = t.total || [];
         const rate = t.block_rate || [];
-
-        const loadingEl = document.getElementById('trend-loading');
-        const trendWrap = document.getElementById('trend-chart-wrap');
-        const emptyEl = document.getElementById('trend-empty');
 
         const hasData = labels.length > 0 && total.some(v => v > 0);
         if (!hasData) {
@@ -408,8 +434,19 @@ async function loadStats() {
 
         // Update adblocker button state
         const btn = document.getElementById('adblocker-btn');
+        const btnText = document.getElementById('adblocker-btn-text');
         if (btn && isAdmin) {
-            btn.disabled = false;
+            // Disable button if Unbound is not installed
+            if (s.unavailable) {
+                btn.disabled = true;
+                btn.title = s.reason || 'DNS unavailable';
+                btn.classList.remove('btn-adblocker-enabled');
+                btn.classList.add('btn-adblocker-disabled');
+                if (btnText) btnText.textContent = 'Ad-Blocker: Unavailable';
+            } else {
+                btn.disabled = false;
+                btn.title = '';
+            }
         }
     } catch (e) {
         // Update status for error state using DOM APIs
@@ -426,6 +463,22 @@ async function loadStats() {
     }
 }
 
+/**
+ * Render disabled state for a Top Domain card (when ad-blocker is off).
+ */
+function renderTopDomainDisabled({ loadingId, contentId, emptyId, disabledId, unavailableId }) {
+    const loadingEl = document.getElementById(loadingId);
+    const contentEl = document.getElementById(contentId);
+    const emptyEl = document.getElementById(emptyId);
+    const disabledEl = document.getElementById(disabledId);
+    const unavailableEl = document.getElementById(unavailableId);
+    if (loadingEl) loadingEl.classList.add('d-none');
+    if (contentEl) contentEl.classList.add('d-none');
+    if (emptyEl) emptyEl.classList.add('d-none');
+    if (unavailableEl) unavailableEl.classList.add('d-none');
+    if (disabledEl) disabledEl.classList.remove('d-none');
+}
+
 async function loadTopDomains() {
     try {
         const clientIps = getSelectedPeerClientIps();
@@ -434,25 +487,40 @@ async function loadTopDomains() {
         const topQueried = data.top_queried || [];
         const topBlocked = data.top_blocked || [];
 
-        // Both render as horizontal bar charts
+        // Top Queried always renders regardless of ad-blocker state
         renderTopDomainBars({
             items: topQueried,
             loadingId: 'top-queried-loading',
             contentId: 'top-queried-content',
             listId: 'top-queried-list',
             emptyId: 'top-queried-empty',
+            unavailableId: 'top-queried-unavailable',
             colors: queriedColors,
             defaultColor: '#0d6efd'
         });
-        renderTopDomainBars({
-            items: topBlocked,
-            loadingId: 'top-blocked-loading',
-            contentId: 'top-blocked-content',
-            listId: 'top-blocked-list',
-            emptyId: 'top-blocked-empty',
-            colors: blockedColors,
-            defaultColor: '#dc3545'
-        });
+
+        // Top Blocked: show disabled message when ad-blocker is off
+        if (!_adBlockerEnabled) {
+            renderTopDomainDisabled({
+                loadingId: 'top-blocked-loading',
+                contentId: 'top-blocked-content',
+                emptyId: 'top-blocked-empty',
+                disabledId: 'top-blocked-disabled',
+                unavailableId: 'top-blocked-unavailable'
+            });
+        } else {
+            renderTopDomainBars({
+                items: topBlocked,
+                loadingId: 'top-blocked-loading',
+                contentId: 'top-blocked-content',
+                listId: 'top-blocked-list',
+                emptyId: 'top-blocked-empty',
+                disabledId: 'top-blocked-disabled',
+                unavailableId: 'top-blocked-unavailable',
+                colors: blockedColors,
+                defaultColor: '#dc3545'
+            });
+        }
     } catch (e) {
         console.error('Top domains error:', e);
     }
@@ -503,22 +571,26 @@ function prepareBarChartData(items, maxSlices = 12) {
 }
 
 // Shared function to render bar charts for top domains
-function renderTopDomainBars({ items, loadingId, contentId, listId, emptyId, colors, maxSlices = 12, defaultColor = '#0d6efd' }) {
+function renderTopDomainBars({ items, loadingId, contentId, listId, emptyId, disabledId, unavailableId, colors, maxSlices = 12, defaultColor = '#0d6efd' }) {
     const loadingEl = document.getElementById(loadingId);
     const contentEl = document.getElementById(contentId);
     const listEl = document.getElementById(listId);
     const emptyEl = document.getElementById(emptyId);
+    const disabledEl = document.getElementById(disabledId);
+    const unavailableEl = document.getElementById(unavailableId);
 
-    loadingEl.classList.add('d-none');
+    if (loadingEl) loadingEl.classList.add('d-none');
+    if (disabledEl) disabledEl.classList.add('d-none');
+    if (unavailableEl) unavailableEl.classList.add('d-none');
 
     if (!items.length) {
-        contentEl.classList.add('d-none');
-        emptyEl.classList.remove('d-none');
+        if (contentEl) contentEl.classList.add('d-none');
+        if (emptyEl) emptyEl.classList.remove('d-none');
         return;
     }
 
-    contentEl.classList.remove('d-none');
-    emptyEl.classList.add('d-none');
+    if (contentEl) contentEl.classList.remove('d-none');
+    if (emptyEl) emptyEl.classList.add('d-none');
 
     const { labels, values, total } = prepareBarChartData(items, maxSlices);
     const chartColors = getChartColors(labels, colors);
@@ -610,15 +682,44 @@ async function loadLogsOnly(showLoading = true) {
             showLogsLoadingState();
         }
         const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}`);
-        // Strip client IPs for non-admins to prevent DevTools leakage
-        _logData = (data.queries || []).map(q =>
+        // IMPORTANT: Backend should omit client field for non-admins in the API response.
+        // This client-side stripping is cosmetic only - data already sent over the wire.
+        // Fix: GET /api/dns/logs should check user.is_admin before including client IPs.
+        const newData = (data.queries || []).map(q =>
             isAdmin ? q : { ...q, client: undefined }
         );
-        _renderedCount = 0;  // Reset for fresh render
+
+        // Detect if data changed to avoid unnecessary re-renders
+        const dataChanged = JSON.stringify(newData) !== JSON.stringify(_logData);
+        if (!showLoading && !dataChanged) {
+            // Data unchanged during poll - skip render
+            return;
+        }
+
+        // Close action menu to prevent stale references
+        closeLogActionMenu();
+
+        // Preserve scroll state if data changed during background poll
+        const logContainer = document.getElementById('log-table-wrap');
+        const scrollTop = logContainer?.scrollTop ?? 0;
+        const prevRendered = _renderedCount;
+
+        _logData = newData;
+        _renderedCount = 0;
         renderLogs();
-        // Note: Scroll position restoration removed - with batched rendering,
-        // restoring to a position beyond the initial batch is incorrect.
+
+        // Re-render additional batches to restore scroll depth
+        if (!showLoading && prevRendered > LOG_BATCH_SIZE) {
+            while (_renderedCount < Math.min(prevRendered, _filteredData.length)) {
+                renderLogs(true);
+            }
+            // Restore scroll position
+            if (logContainer) {
+                logContainer.scrollTop = scrollTop;
+            }
+        }
     } catch (e) {
+        console.error('Failed to load logs:', e);
         if (showLoading) {
             const tbody = document.getElementById('log-body');
             if (!tbody) return;
@@ -830,7 +931,7 @@ function renderLogs(append = false) {
 
 function debouncedRenderLogs() {
     clearTimeout(_searchTimer);
-    _searchTimer = setTimeout(renderLogs, 250);
+    _searchTimer = setTimeout(renderLogs, SEARCH_DEBOUNCE_MS);
 }
 
 function loadMoreLogs() {
@@ -847,6 +948,16 @@ function updateAdblockerButton(enabled, disabledUntil = 0) {
     const btnText = document.getElementById('adblocker-btn-text');
     const countdown = document.getElementById('adblocker-countdown');
     if (!btn || !btnText || !countdown) return;
+
+    // Update ad-blocker state and re-render affected cards if changed
+    const wasEnabled = _adBlockerEnabled;
+    _adBlockerEnabled = enabled;
+
+    // If state changed, re-render Top Blocked Domains and Blockrate Trend
+    if (wasEnabled !== enabled) {
+        void loadTopDomains();
+        void loadTrend();
+    }
 
     _adblockerDisabledUntil = disabledUntil;
 
@@ -959,7 +1070,10 @@ const _refreshScheduler = new window.WBShared.RefreshScheduler({
     refreshFn: async () => {
         // Promise.allSettled never rejects - check results instead
         const results = await Promise.allSettled([loadStats(), loadLogsOnly(false)]);
-        const fastOk = results.some(r => r.status === 'fulfilled');
+        // Require at least one critical call to succeed (not just "any")
+        const statsOk = results[0].status === 'fulfilled';
+        const logsOk = results[1].status === 'fulfilled';
+        const fastOk = statsOk || logsOk;
 
         if (Date.now() - _lastSlowPoll > SLOW_POLL_INTERVAL) {
             _lastSlowPoll = Date.now();
@@ -1024,6 +1138,8 @@ window.addEventListener('pagehide', () => {
         _fadeAbort.abort();
         _fadeAbort = null;
     }
+    // Abort all in-flight API requests
+    _pageAbort.abort();
 }, { once: true });
 
 // Infinite scroll for Query Log (throttled with RAF)
@@ -1033,7 +1149,7 @@ if (logContainer) {
         if (_scrollRaf) return;
         _scrollRaf = requestAnimationFrame(() => {
             const scrollBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight;
-            if (scrollBottom < 100) {  // Near bottom
+            if (scrollBottom < SCROLL_THRESHOLD_PX) {
                 loadMoreLogs();
             }
             _scrollRaf = null;
@@ -1109,6 +1225,12 @@ if (peerFilterSelect) {
             return;
         }
 
+        // Remove classes first to ensure fresh transition starts
+        topQueriedCard.classList.remove('top-domain-card-fading');
+        topBlockedCard.classList.remove('top-domain-card-fading');
+        // Force reflow to restart CSS transition
+        void topQueriedCard.offsetHeight;
+
         // Fade out cards, re-render on transition complete
         const handleTransitionEnd = () => {
             if (signal.aborted) return;
@@ -1133,7 +1255,7 @@ if (peerFilterSelect) {
         // Fallback timeout in case transitionend doesn't fire
         _topDomainFadeTimeout = setTimeout(() => {
             if (!signal.aborted) handleTransitionEnd();
-        }, 300);
+        }, FADE_FALLBACK_MS);
     });
 }
 
@@ -1227,8 +1349,11 @@ if (pullRefreshIndicator && logTableWrap && 'ontouchstart' in window) {
 
 // Initial load
 (async () => {
+    // Load peers first to avoid race with log filtering
+    await loadPeers();
+
     const results = await Promise.allSettled([
-        loadPeers(), loadStats(), loadTopDomains(),
+        loadStats(), loadTopDomains(),
         loadTrend(), loadLogsOnly(), loadAdblockerStatus()
     ]);
     const failures = results.filter(r => r.status === 'rejected');

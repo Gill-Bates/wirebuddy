@@ -5,17 +5,17 @@
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h3 class="h5 mb-0">DNS Service</h3>
                 <div class="d-flex gap-2 flex-wrap align-items-center" id="dns-service-controls">
-                    <button class="btn btn-sm btn-outline-success" id="btn-dns-start" disabled title="Start DNS" aria-label="Start DNS">
-                        <span class="material-icons align-middle" style="font-size:18px;">play_arrow</span>
+                    <button class="btn btn-sm btn-outline-success flex-grow-1" id="btn-dns-start" disabled aria-disabled="true" title="Start DNS" aria-label="Start DNS">
+                        <span class="material-icons align-middle icon-md">play_arrow</span>
                         <span class="dns-btn-label">Start</span>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" id="btn-dns-stop" disabled title="Stop DNS" aria-label="Stop DNS">
-                        <span class="material-icons align-middle" style="font-size:18px;">stop</span>
-                        <span class="dns-btn-label">Stop</span>
-                    </button>
-                    <button class="btn btn-sm btn-outline-warning" id="btn-dns-restart" disabled title="Restart DNS" aria-label="Restart DNS">
-                        <span class="material-icons align-middle" style="font-size:18px;">restart_alt</span>
+                    <button class="btn btn-sm btn-outline-warning flex-grow-1" id="btn-dns-restart" disabled aria-disabled="true" title="Restart DNS" aria-label="Restart DNS">
+                        <span class="material-icons align-middle icon-md">restart_alt</span>
                         <span class="dns-btn-label">Restart</span>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger flex-grow-1" id="btn-dns-stop" disabled aria-disabled="true" title="Stop DNS" aria-label="Stop DNS">
+                        <span class="material-icons align-middle icon-md">stop</span>
+                        <span class="dns-btn-label">Stop</span>
                     </button>
                 </div>
             </div>
@@ -23,7 +23,7 @@
 
         <!-- DNS Filtering -->
         <div class="card mb-3">
-            <div class="card-header">
+            <div class="card-header d-flex align-items-center justify-content-between">
                 <h3 class="h5 mb-0">DNS Filtering</h3>
             </div>
             <div class="card-body">
@@ -31,114 +31,129 @@
                 <!-- Blocklists -->
                 <h4 class="h6 text-muted mb-3">Blocklists</h4>
 
-                <div id="blocklist-sources" class="blocklist-clean-grid">
+                <div id="blocklist-sources" class="blocklist-list">
                     <div class="blocklist-loading-spinner">
-                        <div class="spinner-border text-primary" role="status" style="width: 2.5rem; height: 2.5rem;">
+                        <div class="spinner-border text-primary spinner-lg" role="status" aria-live="polite">
                             <span class="visually-hidden">Loading...</span>
                         </div>
                     </div>
+                    <div class="blocklist-error text-danger d-none">Failed to load blocklists</div>
                 </div>
 
-                <div class="d-flex justify-content-end align-items-center mt-3 pt-3 border-top">
+                <div class="d-flex justify-content-end align-items-center mt-2">
                     <button class="btn btn-sm btn-outline-secondary" id="btn-update-blocklist">
-                        <span class="material-icons align-middle me-1" style="font-size:18px;">cached</span>Update Blocklists
+                        <span class="material-icons align-middle me-1" style="font-size: 16px;">cached</span>Update Blocklists
                     </button>
                 </div>
-
-                <hr class="my-4">
-
-                <!-- Custom Rules -->
-                <h4 class="h6 text-muted mb-2">Custom Rules</h4>
-
-                <label for="custom-rules-input" class="visually-hidden">Custom DNS Rules</label>
-                <textarea id="custom-rules-input"
-                          class="form-control font-monospace"
-                          rows="8"
-                          placeholder="! Block a domain&#10;||ads.example.com^&#10;&#10;! Allow (whitelist) a domain&#10;@@||safe.example.com^&#10;&#10;! Wildcard block&#10;||tracker*.example.com^&#10;&#10;! Regex block&#10;/^ad[0-9]+\./"
-                          spellcheck="false"
-                          autocomplete="off"
-                          autocorrect="off"
-                          autocapitalize="off"
-                          {% if not user['is_admin'] %}readonly{% endif %}></textarea>
-
-                <div id="custom-rules-errors" class="mt-2" style="display: none;"></div>
-
-                <div class="d-flex justify-content-between align-items-center mt-2 settings-inline-actions">
-                    <span class="small text-muted" id="custom-rules-count">0 rules</span>
-                    <div class="d-flex align-items-center gap-2 settings-header-actions">
-                        <span id="custom-rules-status" class="small text-muted" aria-live="polite"></span>
-                        <button class="btn btn-sm btn-primary" id="save-custom-rules-btn">
-                            <span class="material-icons align-middle me-1" style="font-size: 16px;">save</span>Save Rules
-                        </button>
-                    </div>
-                </div>
-
-                <details class="mt-3 small text-muted">
-                    <summary style="cursor:pointer;">Syntax reference</summary>
-                    <div class="mt-2 ps-2 small">
-                        <code class="d-block mb-1">||example.com^        Block domain + subdomains</code>
-                        <code class="d-block mb-1">@@||example.com^      Allow override</code>
-                        <code class="d-block mb-1">||ads*.example.com^   Wildcard</code>
-                        <code class="d-block mb-1">/^ad[0-9]+\./         Regex</code>
-                        <code class="d-block mb-0">! comment             Comment</code>
-                    </div>
-                </details>
 
             </div>
         </div>
 
-        <!-- DNS Resolver -->
-        <div class="card mb-3">
-            <div class="card-header">
-                <h3 class="h5 mb-0">DNS Resolver</h3>
-            </div>
-            <div class="card-body">
-
-                <!-- DNSSEC -->
-                <div class="form-check form-switch mb-2">
-                    <input class="form-check-input"
-                           type="checkbox"
-                           id="dnssec-enabled"
-                           {% if not user['is_admin'] %}disabled{% endif %}>
-                    <label class="form-check-label" for="dnssec-enabled">
-                        Enable DNSSEC
-                    </label>
-                </div>
-                <div class="small text-muted mb-4" id="dnssec-status">
-                    Loading DNSSEC status...
-                </div>
-
-                <hr>
-
-                <!-- Upstream DNS -->
-                <h4 class="h6 text-muted mt-4 mb-2">Upstream DNS (DoT)</h4>
-
-                <label for="dns-upstream-servers" class="visually-hidden">Upstream DNS Servers</label>
-                <textarea id="dns-upstream-servers"
-                          class="form-control font-monospace"
-                          rows="4"
-                          placeholder="1.1.1.1@853#cloudflare-dns.com&#10;9.9.9.9@853#dns.quad9.net&#10;91.239.100.100@853#unicast.censurfridns.dk&#10;45.90.28.0@853#dns.nextdns.io&#10;194.242.2.2@853#dns.mullvad.net"
-                          {% if not user['is_admin'] %}readonly{% endif %}></textarea>
-
-                <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
-                        <button class="btn btn-sm btn-outline-secondary text-nowrap" id="validate-dns-btn">
-                        <span class="material-icons align-middle me-1" style="font-size: 16px;">verified</span>Validate
-                    </button>
-                    <span id="dns-validation-status"
-                          class="small text-muted"
-                          aria-live="polite"></span>
-                </div>
-
-                <details class="mt-3 small text-muted">
-                    <summary style="cursor:pointer;">How load balancing works</summary>
-                    <div class="mt-2 ps-2">
-Round-robin based on RTT<br>
-Automatic failover on timeout<br>
-Failed servers skipped for 2 minutes<br>
-Format: IP@PORT#HOSTNAME
+        <!-- Custom Rules + DNS Resolver side by side -->
+        <div class="row g-3 mb-3">
+            <!-- Custom Rules -->
+            <div class="col-xl-6">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <h3 class="h5 mb-0">Custom Rules</h3>
                     </div>
-                </details>
+                    <div class="card-body">
 
+                        <label for="custom-rules-input" class="visually-hidden">Custom DNS Rules</label>
+                        <textarea id="custom-rules-input"
+                                  class="form-control font-monospace custom-rules-textarea"
+                                  rows="8"
+                                  placeholder="! Custom DNS Rules (AdGuard Syntax)&#10;! Example: ||ads.example.com^"
+                                  spellcheck="false"
+                                  autocomplete="off"
+                                  autocorrect="off"
+                                  autocapitalize="off"
+                                  {% if not user['is_admin'] %}readonly{% endif %}></textarea>
+
+                        <div id="custom-rules-errors" class="mt-2" style="display: none;"></div>
+
+                        <div class="d-flex justify-content-between align-items-center mt-2 settings-inline-actions">
+                            <span class="small text-muted" id="custom-rules-count">0 rules</span>
+                            <div class="d-flex align-items-center gap-2 settings-header-actions">
+                                <span id="custom-rules-status" class="small text-muted" aria-live="polite"></span>
+                                <button class="btn btn-sm btn-primary text-nowrap" id="save-custom-rules-btn">
+                                    <span class="material-icons align-middle me-1" style="font-size: 16px;">save</span>Save Rules
+                                </button>
+                            </div>
+                        </div>
+
+                        <details class="mt-3 small text-muted">
+                            <summary style="cursor:pointer;">Syntax reference</summary>
+                            <div class="mt-2 ps-2 small">
+                                <code class="d-block mb-1">||example.com^        Block domain + subdomains</code>
+                                <code class="d-block mb-1">@@||example.com^      Allow override</code>
+                                <code class="d-block mb-1">||ads*.example.com^   Wildcard</code>
+                                <code class="d-block mb-1">/^ad[0-9]+\./         Regex</code>
+                                <code class="d-block mb-0">! comment             Comment</code>
+                            </div>
+                        </details>
+
+                    </div>
+                </div>
+            </div>
+
+            <!-- DNS Resolver -->
+            <div class="col-xl-6">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <h3 class="h5 mb-0">DNS Resolver</h3>
+                    </div>
+                    <div class="card-body">
+
+                        <!-- DNSSEC -->
+                        <div class="d-flex align-items-center justify-content-between mb-1 settings-switch-row">
+                            <label for="dnssec-enabled" class="form-label mb-0">
+                                Enable DNSSEC
+                            </label>
+                            <div class="form-check form-switch m-0 settings-switch-control">
+                                <input class="form-check-input"
+                                       type="checkbox"
+                                       id="dnssec-enabled"
+                                       {% if not user['is_admin'] %}disabled aria-disabled="true"{% endif %}>
+                            </div>
+                        </div>
+                        <div class="small text-muted mb-4" id="dnssec-status">
+                            Loading DNSSEC status...
+                        </div>
+
+                        <hr>
+
+                        <!-- Upstream DNS -->
+                        <h4 class="h6 text-muted mt-4 mb-2">Upstream DNS (DoT)</h4>
+
+                        <label for="dns-upstream-servers" class="visually-hidden">Upstream DNS Servers</label>
+                        <textarea id="dns-upstream-servers"
+                                  class="form-control font-monospace"
+                                  rows="4"
+                                  placeholder="1.1.1.1@853#cloudflare-dns.com&#10;9.9.9.9@853#dns.quad9.net&#10;91.239.100.100@853#unicast.censurfridns.dk&#10;45.90.28.0@853#dns.nextdns.io&#10;194.242.2.2@853#dns.mullvad.net"
+                                  {% if not user['is_admin'] %}readonly{% endif %}></textarea>
+
+                        <div class="d-flex flex-wrap gap-2 align-items-center justify-content-end mt-2">
+                            <span id="dns-validation-status"
+                                  class="small"
+                                  aria-live="polite"></span>
+                            <button class="btn btn-sm btn-outline-secondary text-nowrap" id="validate-dns-btn">
+                                <span class="material-icons align-middle me-1" style="font-size: 16px;">verified</span>Validate
+                            </button>
+                        </div>
+
+                        <details class="mt-3 small text-muted">
+                            <summary style="cursor:pointer;">How load balancing works</summary>
+                            <div class="mt-2 ps-2">
+        Round-robin based on RTT<br>
+        Automatic failover on timeout<br>
+        Failed servers skipped for 2 minutes<br>
+        Format: IP@PORT#HOSTNAME
+                            </div>
+                        </details>
+
+                    </div>
+                </div>
             </div>
         </div>
 

@@ -106,7 +106,7 @@ WireBuddy offers three routing presets:
 
 - **Persistent Keepalive:** `25` seconds (recommended for NAT traversal)
 - **Preshared Key:** Optional additional encryption layer
-- **Enable DNS:** Use WireBuddy's DNS resolver (if configured)
+- **Use WireBuddy DNS:** Route DNS through WireBuddy's resolver for ad-blocking. When disabled, clients use Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)
 
 Click **Create Peer**.
 

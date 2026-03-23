@@ -54,7 +54,7 @@
                         <div class="pt-3 border-top author-section d-none d-lg-block">
                             <h3 class="h6 text-muted mb-2">Author</h3>
                             <div class="d-flex align-items-center">
-                                <span class="material-icons me-2 text-primary">person</span>
+                                <span class="material-icons me-2 about-accent-icon">person</span>
                                 <div>
                                     <strong>Gill-Bates</strong>
                                     <br>
@@ -77,8 +77,8 @@
                             <span class="material-icons me-2">system_update</span>
                             <span class="fw-semibold">Check for Updates</span>
                         </div>
-                        <button class="btn btn-sm btn-outline-secondary btn-icon d-inline-flex align-items-center justify-content-center flex-shrink-0 ms-2" id="btn-check-updates" title="Check now" aria-label="Check for updates now" data-is-admin="{{ user['is_admin'] | tojson }}">
-                            <span class="material-icons" style="font-size: 16px;">refresh</span>
+                        <button class="btn btn-sm btn-outline-secondary text-nowrap ms-2" id="btn-check-updates" title="Check now" data-is-admin="{{ user['is_admin'] | tojson }}">
+                            <span class="material-icons align-middle me-1" style="font-size: 16px;">refresh</span>Check Now
                         </button>
                     </div>
                     <div class="card-body">
@@ -190,6 +190,11 @@
         flex-direction: column;
         flex: 1;
         min-height: 0;
+        --about-accent-text: rgb(var(--wb-accent-red-rgb));
+    }
+
+    [data-bs-theme="dark"] .about-page {
+        --about-accent-text: rgb(var(--wb-accent-red-rgb));
     }
 
     .about-layout {
@@ -313,11 +318,15 @@
         min-height: 0;
     }
 
+    .about-accent-icon {
+        color: var(--about-accent-text);
+    }
+
     /* Changelog markdown styling */
     .changelog-content h2 {
         font-size: 1rem;
         font-weight: 600;
-        color: var(--wb-primary) !important;
+        color: var(--about-accent-text) !important;
         border-bottom: 1px solid var(--bs-border-color);
         padding-bottom: 0.5rem;
         margin-top: 1rem;
@@ -326,10 +335,6 @@
 
     .changelog-content h2:first-child {
         margin-top: 0;
-    }
-
-    [data-bs-theme="dark"] .changelog-content h2 {
-        color: #ffb8bb !important;
     }
 
     .changelog-content ul {
@@ -365,7 +370,7 @@
     }
 
     .changelog-content summary:hover {
-        color: var(--wb-primary);
+        color: var(--about-accent-text);
     }
 
     [data-bs-theme="dark"] .changelog-content summary {
@@ -373,7 +378,7 @@
     }
 
     [data-bs-theme="dark"] .changelog-content summary:hover {
-        color: #ffb8bb;
+        color: var(--about-accent-text);
     }
 
     .changelog-content details[open] summary {

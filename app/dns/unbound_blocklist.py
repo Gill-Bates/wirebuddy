@@ -14,6 +14,7 @@ import logging
 import os
 import random
 import re
+import socket
 import urllib.parse
 from collections.abc import Set as AbstractSet
 from datetime import datetime, timezone
@@ -25,8 +26,10 @@ except ImportError:
 
 try:
 	import idna
+	_IDNAError: type[Exception] = idna.IDNAError
 except ImportError:
 	idna = None  # type: ignore
+	_IDNAError = UnicodeError  # type: ignore[misc,assignment]
 
 from .custom_rules import (
 	ParsedRule,
@@ -56,6 +59,13 @@ _ACCEPTABLE_TEXT_TYPES = frozenset([
 	"text/x-hosts",
 	*ALLOWED_BLOCKLIST_CONTENT_TYPES,
 ])
+_BLOCKLIST_URL_TO_ID = {
+	str(meta.get("url")): bid
+	for bid, meta in BLOCKLIST_REGISTRY.items()
+	if meta.get("url")
+}
+_BLOCKLIST_TAG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+CUSTOM_RULES_TAG = "custom"
 
 _log = logging.getLogger(__name__)
 
@@ -121,6 +131,14 @@ def _normalize_domain(raw: str) -> str | None:
 	domain = raw.strip().strip(".").lower()
 	if not domain or domain in _LOCALHOST_DOMAINS or len(domain) > 253:
 		return None
+	
+	# Reject bare IP addresses (they're not domain names)
+	try:
+		ipaddress.ip_address(domain)
+		return None  # It's an IP, not a domain
+	except ValueError:
+		pass  # Not an IP, continue with domain validation
+	
 	try:
 		if idna:
 			# Use IDNA 2008 for better modern TLD support
@@ -128,7 +146,7 @@ def _normalize_domain(raw: str) -> str | None:
 		else:
 			# Fallback to IDNA 2003 (built-in)
 			ascii_domain = domain.encode("idna").decode("ascii")
-	except (UnicodeError, idna.IDNAError if idna else UnicodeError):
+	except (UnicodeError, _IDNAError):
 		return None
 	except Exception:
 		# Unexpected error from idna library - log and skip
@@ -147,17 +165,44 @@ def _normalize_domain(raw: str) -> str | None:
 
 
 def _extract_domains_from_hosts_line(line: str) -> list[str]:
-	"""Extract all normalized domains from a hosts-format line.
+	"""Extract all normalized domains from a hosts-format or AdGuard-format line.
 	
-	Hosts files can have multiple domains per line:
-	  0.0.0.0 example.com www.example.com tracking.example.com
+	Supported formats:
+	  - Hosts: 0.0.0.0 example.com www.example.com tracking.example.com
+	  - Simple domain list: example.com
+	  - AdGuard block rules: ||example.com^
+	
+	AdGuard whitelist rules (@@||domain^) are ignored since we only collect
+	blocked domains. Wildcard rules (||*.domain^) are simplified to the base domain.
 	
 	Returns:
 		List of normalized domain strings (may be empty).
 	"""
 	line = line.strip()
-	if not line or line.startswith("#"):
+	# AdGuard comment lines start with !
+	if not line or line.startswith("#") or line.startswith("!"):
 		return []
+	# Skip AdGuard whitelist/exception rules
+	if line.startswith("@@"):
+		return []
+	
+	# Handle AdGuard block rule format: ||domain.com^ or ||domain.com^$options
+	if line.startswith("||"):
+		# Extract domain from AdGuard rule: ||domain.com^ or ||domain.com^$...
+		rule = line[2:]  # Strip leading ||
+		# Remove trailing ^ and any modifiers ($third-party, etc.)
+		if "^" in rule:
+			rule = rule.split("^", 1)[0]
+		# Handle wildcard prefix: ||*.domain.com → domain.com
+		if rule.startswith("*."):
+			rule = rule[2:]
+		# Skip rules with wildcards in the middle or other unsupported patterns
+		if "*" in rule or "/" in rule:
+			return []
+		norm = _normalize_domain(rule)
+		return [norm] if norm else []
+	
+	# Strip inline # comments (common in hosts files)
 	if "#" in line:
 		line = line.split("#", 1)[0].strip()
 	if not line:
@@ -213,7 +258,8 @@ async def _download_hosts_domains(
 
 		async for raw_line in resp.aiter_lines():
 			line_count += 1
-			size_bytes += len(raw_line.encode("utf-8", errors="ignore")) + 1
+			# Approximate size (ASCII-dominant content) to avoid per-line encoding overhead
+			size_bytes += len(raw_line) + 1
 			if line_count > BLOCKLIST_MAX_LINES:
 				raise _CapacityExceeded(f"Blocklist line limit exceeded ({BLOCKLIST_MAX_LINES})")
 			if size_bytes > BLOCKLIST_MAX_BYTES:
@@ -229,12 +275,38 @@ async def _download_hosts_domains(
 				if len(existing_domains) + unique_new_domains > BLOCKLIST_MAX_DOMAINS:
 					raise _CapacityExceeded(f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})")
 
-def _is_safe_url(url: str) -> bool:
-	"""Validate URL and reject SSRF targets (private IPs, localhost, link-local)."""
-	import socket
+	return line_count, parsed_domains
+
+
+def _is_ip_unsafe(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+	"""Check if an IP address is unsafe (private, loopback, etc.).
 	
+	Handles IPv4-mapped IPv6 addresses (e.g., ::ffff:127.0.0.1) which
+	Python < 3.11 does not correctly identify as loopback/private.
+	"""
+	check = addr
+	# Unwrap IPv4-mapped IPv6 addresses for proper safety checks
+	if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+		check = addr.ipv4_mapped
+	return (
+		check.is_private
+		or check.is_loopback
+		or check.is_link_local
+		or check.is_reserved
+		or check.is_multicast
+		or check.is_unspecified
+	)
+
+
+def _is_safe_url(url: str) -> bool:
+	"""Validate URL and reject SSRF targets (private IPs, localhost, etc.).
+	
+	Note: This check is subject to DNS rebinding (TOCTOU) since httpx resolves
+	the hostname again. Mitigated by only allowing URLs from BLOCKLIST_REGISTRY.
+	"""
 	parsed = urllib.parse.urlparse(url)
-	if parsed.scheme not in ("http", "https") or not parsed.netloc:
+	# Require HTTPS to prevent MITM attacks on blocklist content
+	if parsed.scheme != "https" or not parsed.netloc:
 		return False
 	
 	hostname = parsed.hostname
@@ -244,14 +316,14 @@ def _is_safe_url(url: str) -> bool:
 	# Check if hostname is an IP address
 	try:
 		addr = ipaddress.ip_address(hostname)
-		if addr.is_private or addr.is_loopback or addr.is_link_local:
+		if _is_ip_unsafe(addr):
 			return False
 	except ValueError:
 		# It's a hostname, not an IP — resolve and check all addresses
 		try:
 			for info in socket.getaddrinfo(hostname, None):
 				addr = ipaddress.ip_address(info[4][0])
-				if addr.is_private or addr.is_loopback or addr.is_link_local:
+				if _is_ip_unsafe(addr):
 					return False
 		except socket.gaierror:
 			return False
@@ -259,12 +331,27 @@ def _is_safe_url(url: str) -> bool:
 	return True
 
 
+async def _is_safe_url_async(url: str) -> bool:
+	"""Async wrapper for _is_safe_url to avoid blocking the event loop."""
+	try:
+		return await asyncio.wait_for(asyncio.to_thread(_is_safe_url, url), timeout=5.0)
+	except asyncio.TimeoutError:
+		_log.warning("DNS_BLOCKLIST URL safety check timed out: %s", url)
+		return False
+
+
 def _url_to_blocklist_id(url: str) -> str | None:
 	"""Map a blocklist URL to its registry ID."""
-	for bid, meta in BLOCKLIST_REGISTRY.items():
-		if meta["url"] == url:
-			return bid
-	return None
+	return _BLOCKLIST_URL_TO_ID.get(url)
+
+
+def _format_tag_string(tags: AbstractSet[str]) -> str:
+	"""Format a tag set for unbound config after validating tag names."""
+	sorted_tags = sorted(tags)
+	for tag in sorted_tags:
+		if not _BLOCKLIST_TAG_RE.fullmatch(tag):
+			raise ValueError(f"Unsafe blocklist tag: {tag!r}")
+	return " ".join(sorted_tags)
 
 
 async def update_blocklists(
@@ -287,22 +374,30 @@ async def update_blocklists(
 	if httpx is None:
 		raise RuntimeError("httpx required for blocklist updates: pip install httpx")
 
-	urls = urls or DEFAULT_BLOCKLISTS
+	# Only use default if urls is None (not provided).
+	# An empty list [] means user explicitly disabled all blocklists.
+	if urls is None:
+		urls = DEFAULT_BLOCKLISTS
+	
+	# Handle empty URLs: clear blocklist and return early
+	if not urls:
+		blocklist_path = get_blocklist_file()
+		def _write_empty_blocklist():
+			with atomic_write(blocklist_path) as f:
+				f.write("# Blocklist disabled – no sources enabled\n")
+				f.write(f"# Updated: {datetime.now(timezone.utc).isoformat()}\n")
+		await asyncio.to_thread(_write_empty_blocklist)
+		_invalidate_blocked_domains_cache()
+		set_custom_rules_cache([])  # Clear custom rules cache too
+		_log.info("DNS_BLOCKLIST cleared (no sources enabled)")
+		return 0, "Blocklist cleared: no sources enabled"
 	
 	# Track domains and their source tags: domain -> set of blocklist IDs
 	domain_tags: dict[str, set[str]] = {}
 	
-	# Validate URL schemes and reject SSRF targets (prevent file://, private IPs, etc.)
-	safe_urls: list[str] = []
-	for url in urls:
-		if not _is_safe_url(url):
-			_log.warning("DNS_BLOCKLIST rejected unsafe URL (SSRF risk): %s", url)
-			continue
-		safe_urls.append(url)
-	if not safe_urls:
-		return 0, "No valid blocklist URLs provided"
+	# Only registry-backed sources are supported; reject unknown URLs before any DNS lookup.
 	known_sources: list[tuple[str, str]] = []
-	for url in safe_urls:
+	for url in urls:
 		blocklist_id = _url_to_blocklist_id(url)
 		if not blocklist_id:
 			_log.warning("DNS_BLOCKLIST unknown URL (not in registry): %s", url)
@@ -310,14 +405,27 @@ async def update_blocklists(
 		known_sources.append((url, blocklist_id))
 	if not known_sources:
 		return 0, "No supported blocklist URLs provided"
+
+	# Validate scheme/host safety only for supported registry URLs.
+	safe_results = await asyncio.gather(*(_is_safe_url_async(url) for url, _ in known_sources))
+	safe_sources: list[tuple[str, str]] = []
+	for (url, blocklist_id), is_safe in zip(known_sources, safe_results):
+		if not is_safe:
+			_log.warning("DNS_BLOCKLIST rejected unsafe URL (SSRF risk): %s", url)
+			continue
+		safe_sources.append((url, blocklist_id))
+	if not safe_sources:
+		return 0, "No valid blocklist URLs provided"
 	loaded_any = False
 
 	async with httpx.AsyncClient(
 		timeout=30,
 		follow_redirects=True,
+		max_redirects=3,  # Limit redirects to mitigate SSRF via redirect chains
+		verify=True,
 		headers={"User-Agent": "WireBuddy/1.0 DNS-Blocker"},
 	) as client:
-		for idx, (url, blocklist_id) in enumerate(known_sources):
+		for idx, (url, blocklist_id) in enumerate(safe_sources):
 			# Add jitter between downloads to avoid hammering servers
 			if idx > 0:
 				jitter = random.uniform(0.5, 2.0)
@@ -374,10 +482,15 @@ async def update_blocklists(
 			custom_added = {domain for domain in custom_added if domain in all_domains}
 
 			# Add new block domains to the tag map (tagged as "custom")
-			for domain in custom_added:
-				if domain not in domain_tags:
-					domain_tags[domain] = set()
-				domain_tags[domain].add("custom")
+			try:
+				for domain in custom_added:
+					if domain not in domain_tags:
+						if len(domain_tags) >= BLOCKLIST_MAX_DOMAINS:
+							raise _CapacityExceeded(f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})")
+						domain_tags[domain] = set()
+					domain_tags[domain].add(CUSTOM_RULES_TAG)
+			except _CapacityExceeded as exc:
+				_log.warning("DNS_CUSTOM_RULES capacity limit: %s", exc)
 
 			# Remove allowed domains from the tag map
 			for domain in custom_removed:
@@ -388,35 +501,39 @@ async def update_blocklists(
 				len(parsed_custom_rules), len(custom_added), len(custom_removed),
 			)
 
-	# Update runtime cache for wildcard/regex matching at query time
-	set_custom_rules_cache(parsed_custom_rules)
-
-	# Write client-specific custom rule overrides (server include file)
-	try:
-		unbound_config.write_custom_client_rules(parsed_custom_rules)
-	except Exception:
-		_log.exception("DNS_CUSTOM_CLIENT_RULES failed to write override file")
+	# Collect active tags for header documentation
+	active_tags = {tag for tag_set in domain_tags.values() for tag in tag_set}
 
 	# Write unbound local-zone file with tags (atomic replace)
 	# Offload heavy write/sort to thread pool to avoid blocking event loop
-	def _write_blocklist_file():
-		blocklist_path = get_blocklist_file()
+	blocklist_path = get_blocklist_file()
+	def _write_blocklist_file() -> None:
 		with atomic_write(blocklist_path) as f:
 			f.write(f"# Auto-generated blocklist – {len(domain_tags)} domains\n")
 			f.write(f"# Updated: {datetime.now(timezone.utc).isoformat()}\n")
-			f.write(f"# Tags: {' '.join(BLOCKLIST_REGISTRY.keys())}\n")
+			f.write(f"# Active tags: {' '.join(sorted(active_tags))}\n")
 			if custom_added or custom_removed:
 				f.write(f"# Custom rules: +{len(custom_added)} blocked, -{len(custom_removed)} allowed\n")
 			f.write("\n")
 			# Sort for deterministic output (helps with diffing/debugging)
 			for domain in sorted(domain_tags.keys()):
 				tags = domain_tags[domain]
-				tag_str = " ".join(sorted(tags))
+				tag_str = _format_tag_string(tags)
 				# tagged local-zone: domain is blocked only for clients with matching tag
+				# Domain normalization guarantees no " or \n characters (injection-safe)
 				f.write(f'local-zone: "{domain}." always_nxdomain\n')
 				f.write(f'local-zone-tag: "{domain}." "{tag_str}"\n')
 	
 	await asyncio.to_thread(_write_blocklist_file)
+
+	# Update runtime caches AFTER successful file write (state consistency)
+	set_custom_rules_cache(parsed_custom_rules)
+	
+	# Write client-specific custom rule overrides (server include file)
+	try:
+		unbound_config.write_custom_client_rules(parsed_custom_rules)
+	except Exception:
+		_log.exception("DNS_CUSTOM_CLIENT_RULES failed to write override file")
 
 	_invalidate_blocked_domains_cache()
 	_log.info("DNS_BLOCKLIST wrote %d tagged domains to %s", len(domain_tags), blocklist_path)
@@ -493,8 +610,11 @@ def _load_blocked_domains() -> frozenset[str]:
 	except OSError:
 		return frozenset()
 
-	if _BLOCKED_DOMAINS_CACHE_ENTRY is not None and _BLOCKED_DOMAINS_CACHE_ENTRY[1] == mtime_ns:
-		return _BLOCKED_DOMAINS_CACHE_ENTRY[0]
+	# Snapshot cache entry to prevent TOCTOU race if another thread invalidates
+	# the cache between the None check and the index access.
+	entry = _BLOCKED_DOMAINS_CACHE_ENTRY
+	if entry is not None and entry[1] == mtime_ns:
+		return entry[0]
 
 	try:
 		with blocklist_path.open("r", encoding="utf-8") as f:
@@ -598,7 +718,7 @@ def check_and_reset_stale_blocklist() -> bool:
 		return False
 	
 	known_tags = set(BLOCKLIST_REGISTRY.keys())
-	known_tags.add("custom")  # Custom rules also add this tag
+	known_tags.add(CUSTOM_RULES_TAG)  # Custom rules also add this tag
 	
 	unknown_tags: set[str] = set()
 	tag_re = re.compile(r'^local-zone-tag:\s+"[^"]+"\s+"([^"]+)"')

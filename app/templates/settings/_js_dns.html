@@ -18,56 +18,71 @@
                 api('GET', '/api/dns/blocklist/sources'),
                 api('GET', '/api/dns/status'),
             ]);
+            // DNS unavailable (Unbound not installed) - disable all blocklist controls
+            const dnsUnavailable = status?.unavailable || false;
+            const rebuildInProgress = res.rebuild_in_progress || false;
+            // Level priority: Moderate → Balanced → Extreme! → 18+
+            const levelPriority = { 'Moderat': 1, 'Ausgewogen': 2, 'Extrem': 3, '18+': 4 };
             const sortedSources = [...(res.sources || [])].sort((a, b) => {
                 const aEnabled = !!a?.enabled;
                 const bEnabled = !!b?.enabled;
                 if (aEnabled !== bEnabled) return aEnabled ? -1 : 1;
 
+                // Sort by level priority (intensity)
+                const aLevel = levelPriority[a?.level] ?? 99;
+                const bLevel = levelPriority[b?.level] ?? 99;
+                if (aLevel !== bLevel) return aLevel - bLevel;
+
                 const aName = String(a?.name || '').trim();
                 const bName = String(b?.name || '').trim();
-                const byName = aName.localeCompare(bName, undefined, { sensitivity: 'base' });
-                if (byName !== 0) return byName;
-
-                const aUrl = String(a?.url || '').trim();
-                const bUrl = String(b?.url || '').trim();
-                return aUrl.localeCompare(bUrl, undefined, { sensitivity: 'base' });
+                return aName.localeCompare(bName, undefined, { sensitivity: 'base' });
             });
             let html = '';
             for (let i = 0; i < sortedSources.length; i++) {
                 const source = sortedSources[i];
                 const checked = source.enabled ? 'checked' : '';
-                const enabledClass = source.enabled ? ' enabled' : '';
                 const domainsValue = source.domains;
-                const domains = Number.isFinite(Number(domainsValue))
-                    ? Number(domainsValue).toLocaleString()
-                    : (String(domainsValue ?? '').trim() || '—');
+                // Show "Pending" for enabled blocklists with 0 domains during rebuild
+                const isPending = source.enabled && rebuildInProgress && Number(domainsValue) === 0;
+                const domains = isPending
+                    ? 'Pending'
+                    : (Number.isFinite(Number(domainsValue))
+                        ? Number(domainsValue).toLocaleString()
+                        : (String(domainsValue ?? '').trim() || '—'));
                 const updated = source.last_updated || '—';
+                const level = source.level || '';
+                const levelBadgeLabel = {
+                    'Moderat': 'Moderate',
+                    'Ausgewogen': 'Balanced',
+                    'Extrem': '🔥Extreme',
+                    '18+': '❤️ 18+',
+                }[level] || (level ? esc(level) : '');
+                const levelBadgeIcon = '';
+                const levelBadge = levelBadgeLabel
+                    ? `<span class="badge text-bg-secondary blocklist-level-badge">${levelBadgeIcon}${levelBadgeLabel}</span>`
+                    : '';
                 // Use hash + index to prevent ID collisions
                 const sourceId = `blocklist-${simpleHash(source.url)}-${i}`;
                 const dataUrl = esc(source.url).replace(/"/g, '&quot;');
-                const sourceTooltip = esc(source.url).replace(/"/g, '&quot;');
                 html += `
-                    <article class="blocklist-hero-card${enabledClass}">
-                        <div class="d-flex justify-content-between align-items-start gap-3">
+                    <article class="blocklist-item">
+                        <div class="blocklist-row">
                             <div class="flex-grow-1">
-                                <div class="blocklist-hero-title-wrap">
-                                    <label class="blocklist-hero-title" for="${sourceId}" style="cursor: pointer;">${esc(source.name)}</label>
-                                    <button type="button" class="blocklist-source-info"
-                                        data-bs-toggle="tooltip" data-bs-title="${sourceTooltip}"
-                                        aria-label="Show source URL">
-                                        <span class="material-icons" aria-hidden="true">info</span>
-                                    </button>
+                                <label class="blocklist-title" for="${sourceId}">
+                                    <span>${esc(source.name)}</span>
+                                    ${levelBadge}
+                                </label>
+                                <div class="blocklist-desc">${esc(source.description)}</div>
+                                <div class="blocklist-meta">
+                                    <span class="blocklist-meta-mono">${domains} domains</span>
+                                    <span class="blocklist-meta-separator" aria-hidden="true">·</span>
+                                    <span class="blocklist-meta-mono">Updated ${updated}</span>
                                 </div>
-                                <p class="blocklist-hero-desc mt-1">${esc(source.description)}</p>
                             </div>
                             <div class="form-check form-switch m-0">
                                 <input class="form-check-input" type="checkbox" id="${sourceId}"
-                                    data-url="${dataUrl}" ${checked}${isAdmin ? '' : ' disabled'}>
+                                    data-url="${dataUrl}" data-name="${esc(source.name)}" ${checked}${(isAdmin && !dnsUnavailable) ? '' : ' disabled'}>
                             </div>
-                        </div>
-                        <div class="blocklist-hero-meta">
-                            <span class="badge text-bg-secondary">Domains ${domains}</span>
-                            <span class="badge text-bg-secondary">Updated ${updated}</span>
                         </div>
                     </article>`;
             }
@@ -77,11 +92,35 @@
             container.innerHTML =
                 html || '<div class="text-muted text-center py-3">No blocklist sources available</div>';
             bindBlocklistSourceListeners();
-            initBlocklistTooltips();
             // Re-enable transitions after render completes
             requestAnimationFrame(() => {
                 container.classList.remove('no-transitions');
             });
+            
+            // DNS unavailable - disable all DNS filtering controls
+            const updateBlocklistBtn = document.getElementById('btn-update-blocklist');
+            const saveCustomRulesBtn = document.getElementById('save-custom-rules-btn');
+            const customRulesInput = document.getElementById('custom-rules-input');
+            if (dnsUnavailable) {
+                if (updateBlocklistBtn) {
+                    updateBlocklistBtn.disabled = true;
+                    updateBlocklistBtn.title = 'Unbound not installed';
+                }
+                if (saveCustomRulesBtn) {
+                    saveCustomRulesBtn.disabled = true;
+                    saveCustomRulesBtn.title = 'Unbound not installed';
+                }
+                if (customRulesInput) {
+                    customRulesInput.disabled = true;
+                    customRulesInput.title = 'Unbound not installed';
+                }
+            } else {
+                // Re-enable controls (respecting admin check)
+                if (updateBlocklistBtn) updateBlocklistBtn.disabled = !isAdmin;
+                if (saveCustomRulesBtn) saveCustomRulesBtn.disabled = !isAdmin;
+                if (customRulesInput && isAdmin) customRulesInput.disabled = false;
+            }
+            
             const updEl = document.getElementById('blocklist-last-update');
             const updValueEl = updEl?.querySelector('.blocklist-last-value');
             if (updEl) {
@@ -112,18 +151,16 @@
         }
     }
 
-    function initBlocklistTooltips() {
-        if (!window.bootstrap?.Tooltip) return;
-        document.querySelectorAll('#blocklist-sources [data-bs-toggle="tooltip"]').forEach(el => {
-            const instance = bootstrap.Tooltip.getInstance(el);
-            if (instance) instance.dispose();
-            new bootstrap.Tooltip(el, { trigger: 'hover focus' });
-        });
-    }
+    // Track last toggled blocklist for better toast messages
+    let lastToggledBlocklist = null;
 
     function bindBlocklistSourceListeners() {
         document.querySelectorAll('#blocklist-sources input[type="checkbox"][data-url]').forEach(cb => {
             cb.addEventListener('change', () => {
+                lastToggledBlocklist = {
+                    name: cb.dataset.name || 'Blocklist',
+                    enabled: cb.checked,
+                };
                 toggleBlocklistCardState(cb);
                 saveBlocklistsDebounced();
             });
@@ -131,7 +168,7 @@
     }
 
     function toggleBlocklistCardState(checkboxEl) {
-        const card = checkboxEl?.closest('.blocklist-hero-card');
+        const card = checkboxEl?.closest('.blocklist-item');
         if (!card) return;
         card.classList.toggle('enabled', !!checkboxEl.checked);
     }
@@ -148,11 +185,19 @@
             .filter(cb => cb.checked)
             .map(cb => cb.dataset.url);
 
+        // Capture toggle info before async call (may be cleared by subsequent toggle)
+        const toggleInfo = lastToggledBlocklist;
+        lastToggledBlocklist = null;
+
         try {
             const res = await api('POST', '/api/dns/blocklist/sources', {
                 urls: enabledUrls,
             });
-            wbToast(res?.message || 'Blocklist update started', 'success');
+            // Show specific message for toggle, generic for other updates
+            const msg = toggleInfo
+                ? `Blocklist '${toggleInfo.name}' ${toggleInfo.enabled ? 'enabled' : 'disabled'}`
+                : (res?.message || 'Blocklist update started');
+            wbToast(msg, 'success');
             // Refresh after a short delay to show updated state
             setTimeout(() => loadBlocklistSources(), 2000);
         } catch (error) {

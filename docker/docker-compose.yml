@@ -1,6 +1,6 @@
 services:
   wirebuddy:
-    image: docker.cirrio.de/wirebuddy:latest
+    image: giiibates/wirebuddy:latest
     container_name: wirebuddy
     restart: always
     network_mode: host

@@ -1,6 +1,7 @@
 <!-- Certificate Request Modal -->
+<!-- Security Note: Backend must enforce admin authorization independently -->
 {% if user['is_admin'] %}
-<div class="modal fade" id="certModal" tabindex="-1" aria-labelledby="certModalTitle" aria-modal="true">
+<div class="modal fade" id="certModal" tabindex="-1" role="dialog" aria-labelledby="certModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -13,19 +14,19 @@
                         <label for="cert-domain" class="form-label">Domain</label>
                         <div class="input-group">
                             <input type="text" class="form-control" id="cert-domain" placeholder="vpn.example.com"
-                                required>
-                            <button class="btn btn-outline-secondary btn-icon d-inline-flex align-items-center justify-content-center" type="button" id="btn-cert-domain-detect"
-                                title="Auto-detect from current hostname">
+                                aria-describedby="cert-domain-help" autocomplete="off" required>
+                            <button class="btn btn-outline-secondary btn-icon" type="button" id="btn-cert-domain-detect"
+                                aria-label="Auto-detect domain from current hostname" title="Auto-detect from current hostname">
                                 <span class="material-icons">auto_fix_high</span>
                             </button>
                         </div>
-                        <small class="text-muted">The domain must point to this server</small>
+                        <small id="cert-domain-help" class="text-muted">The domain must point to this server</small>
                     </div>
                     <div class="mb-3">
                         <label for="cert-email" class="form-label">Email</label>
                         <input type="email" class="form-control" id="cert-email" placeholder="admin@example.com"
-                            required>
-                        <small class="text-muted">Used for expiry notifications</small>
+                            aria-describedby="cert-email-help" autocomplete="email" required>
+                        <small id="cert-email-help" class="text-muted">Used for expiry notifications</small>
                     </div>
                     <div class="form-check mb-3">
                         <input class="form-check-input" type="checkbox" id="cert-staging">
@@ -33,7 +34,7 @@
                             Use staging environment (testing)
                         </label>
                     </div>
-                    <div class="alert alert-info small mb-0">
+                    <div class="alert alert-info small mb-3">
                         <strong>Requirements:</strong>
                         <ul class="mb-0 ps-3">
                             <li>Domain must resolve to this server's IP</li>
@@ -46,7 +47,7 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-primary" id="btn-request-certificate">
-                    <span id="cert-spinner" class="spinner-border spinner-border-sm text-light d-none" role="status"></span>
+                    <span id="cert-spinner" class="spinner-border spinner-border-sm text-light d-none" role="status" aria-label="Requesting certificate"></span>
                     Request Certificate
                 </button>
             </div>
@@ -56,8 +57,9 @@
 {% endif %}
 
 <!-- Interface Creation Modal -->
+<!-- Security Note: Backend must enforce admin authorization and validate all inputs -->
 {% if user['is_admin'] %}
-<div class="modal fade" id="ifaceModal" tabindex="-1" aria-labelledby="ifaceModalTitle" aria-modal="true">
+<div class="modal fade" id="ifaceModal" tabindex="-1" role="dialog" aria-labelledby="ifaceModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -68,38 +70,49 @@
                 <form id="iface-form">
                     <div class="mb-3">
                         <label for="iface-name" class="form-label">Interface Name</label>
-                        <input type="text" class="form-control" id="iface-name" placeholder="wg0" value="wg0" required
-                            maxlength="15">
-                        <small class="text-muted">e.g., wg0, wg1, vpn0</small>
+                        <input type="text" class="form-control" id="iface-name" placeholder="wg0" value="wg0"
+                            aria-describedby="iface-name-help" autocomplete="off" pattern="[a-zA-Z0-9]+" required maxlength="15">
+                        <small id="iface-name-help" class="text-muted">e.g., wg0, wg1, vpn0</small>
                     </div>
                     <div class="mb-3">
                         <label for="iface-address" class="form-label">IPv4 Address (CIDR)</label>
-                        <input type="text" class="form-control" id="iface-address" value="10.13.13.1/24" required>
-                        <small class="text-muted">Server VPN address – peers get IPs from this subnet
-                            automatically</small>
+                        <input type="text" class="form-control" id="iface-address" value="10.13.13.1/24"
+                            aria-describedby="iface-address-help" autocomplete="off" required>
+                        <small id="iface-address-help" class="text-muted">Server VPN address – peers get IPs from this subnet automatically</small>
                     </div>
                     <div class="mb-3">
                         <label for="iface-address6" class="form-label">IPv6 Address (optional)</label>
-                        <input type="text" class="form-control" id="iface-address6" value="fd13:13:13::1/64">
-                        <small class="text-muted">ULA prefix for dual-stack – leave empty to disable IPv6</small>
+                        <input type="text" class="form-control" id="iface-address6" placeholder="fd13:13:13::1/64"
+                            aria-describedby="iface-address6-help" autocomplete="off">
+                        <small id="iface-address6-help" class="text-muted">ULA prefix for dual-stack – leave empty to disable IPv6</small>
                     </div>
                     <div class="mb-3">
                         <label for="iface-port" class="form-label">Listen Port</label>
-                        <input type="number" class="form-control" id="iface-port" value="51820" min="1" max="65535">
+                        <input type="number" class="form-control" id="iface-port" value="51820"
+                            aria-describedby="iface-port-help" autocomplete="off" min="1" max="65535" required>
+                        <small id="iface-port-help" class="text-muted">WireGuard listen port (default: 51820)</small>
                     </div>
                     <div class="mb-3">
                         <label for="iface-dns" class="form-label">DNS (optional)</label>
-                        <input type="text" class="form-control" id="iface-dns" placeholder="1.1.1.1, 8.8.8.8">
-                        <small class="text-muted">DNS servers for connected clients (leave empty to use peer
-                            defaults)</small>
+                        <input type="text" class="form-control" id="iface-dns" placeholder="1.1.1.1,8.8.8.8"
+                            aria-describedby="iface-dns-help" autocomplete="off">
+                        <small id="iface-dns-help" class="text-muted">DNS servers for connected clients (leave empty to use peer defaults)</small>
+                    </div>
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch" id="iface-show-on-dashboard"
+                                aria-describedby="iface-dashboard-help" checked>
+                            <label class="form-check-label" for="iface-show-on-dashboard">Show on Dashboard</label>
+                        </div>
+                        <small id="iface-dashboard-help" class="text-muted">Display this interface in the dashboard network gauges</small>
                     </div>
                 </form>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" id="iface-submit-btn">
-                    <span id="iface-spinner" class="spinner-border spinner-border-sm text-light d-none" role="status"></span>
-                    <span id="iface-submit-label">Create Interface</span>
+                <button type="button" class="btn btn-primary" id="btn-iface-submit">
+                    <span id="iface-spinner" class="spinner-border spinner-border-sm text-light d-none" role="status" aria-label="Creating interface"></span>
+                    <span id="btn-iface-submit-label">Create Interface</span>
                 </button>
             </div>
         </div>

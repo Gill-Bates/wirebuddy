@@ -12,6 +12,9 @@
     --wb-space-3: 24px;
     --wb-space-4: 32px;
 
+    /* Layout: Footer height for padding calculations (set via JS if dynamic) */
+    --wb-footer-height: 48px;
+
     /* Typography */
     --wb-font-base: 0.875rem;
     /* 14px */
@@ -83,8 +86,9 @@ small {
     border-radius: var(--wb-radius-lg);
     box-shadow: var(--wb-shadow-1);
     transition: var(--wb-transition-shadow);
-    /* Clip card contents to rounded corners without relying on visible overflow. */
+    /* Fallback for browsers without clip support */
     overflow: hidden;
+    /* Preferred: clip doesn't create a scroll container, avoiding layout side effects */
     overflow: clip;
 }
 
@@ -118,14 +122,6 @@ small {
 
 /* ---------- 4. KPI Cards (Dashboard, DNS, etc.) ---------- */
 
-.wb-kpi-row {
-    /* Consistent spacing for KPI card rows across all pages */
-}
-
-.wb-kpi-card {
-    /* Standardized KPI card appearance */
-}
-
 .wb-kpi-card .card-body {
     padding: 1rem;
 }
@@ -136,7 +132,7 @@ small {
 }
 
 [data-bs-theme="dark"] .wb-kpi-icon {
-    color: #e5e7eb !important;
+    color: var(--wb-kpi-icon-dark, #e5e7eb);
     opacity: 1;
 }
 
@@ -177,6 +173,8 @@ small {
     font-size: 1rem;
     vertical-align: middle;
     line-height: 1;
+    pointer-events: none;
+    /* Ensure touch events pass through to button */
 }
 
 /* Buttons with text + icon: add right margin to icon */
@@ -193,6 +191,11 @@ small {
 /* Icon-only buttons */
 .btn-icon {
     padding: 0.3rem 0.5rem;
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 /* Fix: input-group buttons must match form-control height exactly
@@ -206,6 +209,13 @@ small {
     justify-content: center;
 }
 
+/* Enforce consistent height for input-group elements (UI-lint requirement: 44px ±2px)
+   Base height is set globally on .form-control/.form-select (Section 8).
+   This rule ensures .btn inside input-groups also matches. */
+.input-group .btn {
+    height: 44px;
+}
+
 .input-group .btn-icon .material-icons {
     font-size: 1.125rem;
     /* 18px */
@@ -214,6 +224,55 @@ small {
 
 .btn-icon .material-icons {
     margin-right: 0;
+}
+
+/* Checkbox and switch touch target improvement (44px minimum) */
+.form-check-input {
+    width: 1.25em;
+    height: 1.25em;
+    min-width: 24px;
+    min-height: 24px;
+    margin-top: 0;
+}
+
+/* Restore switch toggle proportions (Bootstrap default: 2em × 1em) */
+.form-switch .form-check-input {
+    width: 2.71em;
+    height: 1.1em;
+    min-width: 44px;
+    min-height: 22px;
+    margin-left: 0;
+}
+
+.form-check {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding-left: 0;
+}
+
+.form-check .form-check-input {
+    float: none;
+    margin-left: 0;
+    margin-right: 0;
+}
+
+.form-check-label {
+    margin-bottom: 0;
+}
+
+/* Peer modal blocklist options: wrap badges below name on small screens */
+#peer-blocklist-options .form-check-label,
+#edit-peer-blocklist-options .form-check-label {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.125rem 0.375rem;
+}
+
+#peer-blocklist-options .badge,
+#edit-peer-blocklist-options .badge {
+    margin-left: 0 !important;
 }
 
 
@@ -256,8 +315,20 @@ small {
 .form-control,
 .form-select {
     font-size: 0.85rem;
+    height: 44px;
     border-radius: var(--wb-radius-md);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Small variants use Bootstrap's natural height (compact headers/toolbars) */
+.form-control-sm,
+.form-select-sm {
+    height: auto;
+}
+
+/* Multi-line textareas must grow freely */
+textarea.form-control {
+    height: auto;
 }
 
 summary {
@@ -331,6 +402,7 @@ summary {
 .material-icons {
     line-height: 1;
     vertical-align: middle;
+    color: currentColor;
     flex-shrink: 0;
 }
 
@@ -714,7 +786,13 @@ html body .my-4 {
 /* ---------- 25. Read-Only Mode (Non-Admin) ---------- */
 
 /* Container class applied to settings content when user is not admin.
-   Disables all interactive elements uniformly while keeping content visible. */
+   Disables all interactive elements uniformly while keeping content visible.
+   
+   SECURITY NOTE: pointer-events:none only blocks mouse/touch — keyboard users
+   can still Tab into inputs and modify values. For true read-only enforcement:
+   1. Apply `inert` attribute to the container in HTML/JS, OR
+   2. Set `tabindex="-1"` + `aria-disabled="true"` on each input
+   3. ALWAYS enforce authorization server-side — CSS is UI-only */
 
 .wb-readonly .btn:not(.nav-link):not([data-bs-toggle="tab"]) {
     pointer-events: none;
@@ -747,6 +825,14 @@ html body .my-4 {
     opacity: 0.45;
 }
 
+/* Dark mode: ensure readonly inputs have visible contrast */
+[data-bs-theme="dark"] .wb-readonly .form-control,
+[data-bs-theme="dark"] .wb-readonly .form-select,
+[data-bs-theme="dark"] .wb-readonly textarea.form-control {
+    background-color: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.08);
+}
+
 
 /* ---------- 26. Status Page Components ---------- */
 
@@ -759,6 +845,8 @@ html body .my-4 {
 .flag-icon {
     width: 16px;
     height: 12px;
+    flex: 0 0 auto;
+    display: inline-block;
     object-fit: cover;
     border-radius: 2px;
 }
@@ -766,23 +854,27 @@ html body .my-4 {
 .flag-icon-sm {
     width: 14px;
     height: 10px;
+    flex: 0 0 auto;
 }
 
 
 /* ---------- 27. Accessibility — Reduced Motion ---------- */
 
-/* Respect user's motion preferences for animations.
-   Disables potentially disorienting animations for users with vestibular disorders. */
+/* Respect user's motion preferences for decorative animations.
+   Preserves functional transitions (focus rings, collapse indicators) while
+   disabling potentially disorienting decorative animations. */
 @media (prefers-reduced-motion: reduce) {
-    .flow-line {
+
+    /* Decorative animation classes */
+    .flow-line,
+    .pulse-marker,
+    .wb-animate,
+    [data-animate] {
         animation: none !important;
     }
 
-    /* General animation/transition disable for all decorative animations */
-    * {
-        animation-duration: 0.01ms !important;
-        animation-iteration-count: 1 !important;
-        transition-duration: 0.01ms !important;
+    /* Disable scroll-behavior site-wide */
+    html {
         scroll-behavior: auto !important;
     }
 }
@@ -790,7 +882,8 @@ html body .my-4 {
 
 /* ---------- 28. Visually Hidden (Screen Reader Only) ---------- */
 
-/* Bootstrap already has .visually-hidden, but ensure it's available */
+/* Bootstrap provides .visually-hidden; .sr-only is included for legacy
+   compatibility with older templates using the Bootstrap 4 class name. */
 .visually-hidden,
 .sr-only {
     position: absolute;
@@ -802,4 +895,141 @@ html body .my-4 {
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border-width: 0;
+}
+
+
+/* ---------- 29. Blocklist Components (DNS Settings) ---------- */
+
+/* Grid layout for blocklist cards with responsive columns */
+.blocklist-list {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+}
+
+/* Individual blocklist card */
+.blocklist-item {
+    min-width: 0;
+    height: 100%;
+    padding: 0.85rem 0.9rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--wb-radius-lg);
+    background: var(--bs-body-bg);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+/* Enhanced border for enabled blocklists */
+.blocklist-item.enabled {
+    border-color: color-mix(in srgb, var(--bs-primary) 28%, var(--bs-border-color));
+    background: var(--bs-tertiary-bg);
+}
+
+/* Card content layout: text left, toggle right */
+.blocklist-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+    height: 100%;
+}
+
+.blocklist-row>.form-check.form-switch,
+.settings-switch-control.form-check.form-switch {
+    min-height: auto;
+    align-items: flex-start;
+    padding-top: 0;
+}
+
+.settings-switch-row {
+    align-items: flex-start !important;
+}
+
+/* Blocklist title with level badge */
+.blocklist-title {
+    font-weight: 600;
+    font-size: 0.92rem;
+    line-height: 1.25;
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+/* Level indicators (Moderate, Balanced, Extreme, 18+) */
+.blocklist-level-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    font-size: 0.68rem;
+    font-weight: 600;
+}
+
+.blocklist-level-icon {
+    font-size: 0.8rem;
+    color: var(--bs-warning);
+    line-height: 1;
+}
+
+/* Blocklist description text */
+.blocklist-desc {
+    font-size: 0.78rem;
+    color: var(--bs-secondary-color);
+    margin-top: 0.3rem;
+}
+
+/* Meta information (domain count, last updated) */
+.blocklist-meta {
+    font-size: 0.72rem;
+    color: var(--bs-secondary-color);
+    margin-top: 0.45rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.3rem;
+}
+
+.blocklist-meta-mono {
+    font-family: var(--bs-font-monospace);
+    color: var(--wb-monospace-fg);
+    background-color: var(--wb-monospace-bg);
+    border-radius: var(--wb-radius-sm);
+    padding: 0.1rem 0.35rem;
+    display: inline-block;
+}
+
+.blocklist-meta-separator {
+    font-family: var(--bs-body-font-family);
+}
+
+/* Responsive grid: 1 column (mobile) → 2 columns (tablet) → 4 columns (desktop) */
+@media (min-width: 768px) {
+    .blocklist-list {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (min-width: 1400px) {
+    .blocklist-list {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}
+
+/* Mobile: Toggle left, title right (same line) */
+@media (max-width: 767px) {
+    .blocklist-row {
+        flex-direction: row;
+        flex-wrap: nowrap;
+        gap: 1rem;
+    }
+
+    .blocklist-row>.form-check.form-switch {
+        order: -1;
+        flex: 0 0 auto;
+    }
+
+    .blocklist-row>.flex-grow-1 {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-width: 0;
+    }
 }

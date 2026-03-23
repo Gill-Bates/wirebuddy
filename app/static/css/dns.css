@@ -1,5 +1,7 @@
 .dns-header {
     row-gap: 0.5rem;
+    margin-bottom: var(--wb-space-2);
+    /* reduce spacing below header */
 }
 
 .dns-toolbar {
@@ -46,6 +48,13 @@
     filter: brightness(0.9);
 }
 
+.adblocker-dropdown .btn.btn-adblocker-enabled:focus-visible {
+    background-color: var(--bs-success);
+    border-color: var(--bs-success);
+    outline: 2px solid var(--bs-success);
+    outline-offset: 2px;
+}
+
 .adblocker-dropdown .btn.btn-adblocker-disabled {
     background-color: var(--bs-danger);
     border-color: var(--bs-danger);
@@ -57,6 +66,13 @@
     background-color: var(--bs-danger);
     border-color: var(--bs-danger);
     filter: brightness(0.9);
+}
+
+.adblocker-dropdown .btn.btn-adblocker-disabled:focus-visible {
+    background-color: var(--bs-danger);
+    border-color: var(--bs-danger);
+    outline: 2px solid var(--bs-danger);
+    outline-offset: 2px;
 }
 
 .adblocker-dropdown .dropdown-item.active {
@@ -136,12 +152,11 @@
 .log-table tr.log-empty-row>td {
     border: none;
     padding: 0;
-    height: calc(340px - 2.5rem);
-    /* log-table-wrap max-height minus thead */
+    /* Height handled by flex layout, no hardcoded values to avoid ghost scroll */
 }
 
 .log-table tr.log-empty-row .log-empty-cell .chart-empty-state {
-    min-height: calc(340px - 2.5rem);
+    /* Flex-grow handles height; min-height removed to prevent ghost scroll */
 }
 
 .log-table th.log-col-time,

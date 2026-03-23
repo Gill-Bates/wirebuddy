@@ -31,7 +31,6 @@ def create_peer(
 	public_key: str,
 	allowed_ips: str,
 	name: str | None = None,
-	description: str | None = None,
 	endpoint: str | None = None,
 	interface: str = "wg0",
 	private_key: str | None = None,
@@ -58,18 +57,17 @@ def create_peer(
 		cur = conn.execute(
 			"""
 			INSERT INTO peers (
-				public_key, private_key, preshared_key, name, description,
+				public_key, private_key, preshared_key, name,
 				allowed_ips, endpoint, interface, peer_address, allowed_ips_mode,
 				use_adblocker, blocklist_ids, client_isolation, created_at, updated_at
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			""",
 			(
 				public_key,
 				private_key_stored,
 				preshared_key_stored,
 				name,
-				description,
 				allowed_ips,
 				endpoint,
 				interface,
@@ -89,7 +87,6 @@ def update_peer(
 	conn: sqlite3.Connection,
 	peer_id: int,
 	name: str | None | UnsetType = UNSET,
-	description: str | None | UnsetType = UNSET,
 	allowed_ips: str | None | UnsetType = UNSET,
 	allowed_ips_mode: str | None | UnsetType = UNSET,
 	endpoint: str | None | UnsetType = UNSET,
@@ -103,7 +100,7 @@ def update_peer(
 	"""Update a peer by ID. Returns True if peer was found and updated.
 
 	Parameters:
-		name, description, endpoint: Can be set to None (NULL in database).
+		name, endpoint: Can be set to None (NULL in database).
 		private_key, preshared_key: Use UNSET to leave unchanged, None to clear,
 			or a plaintext/encrypted value to persist.
 		allowed_ips, allowed_ips_mode: Cannot be None (NOT NULL constraint).
@@ -121,9 +118,6 @@ def update_peer(
 		if name is not UNSET:
 			updates.append("name = ?")
 			params.append(name)
-		if description is not UNSET:
-			updates.append("description = ?")
-			params.append(description)
 		if private_key is not UNSET:
 			updates.append("private_key = ?")
 			params.append(vault.encrypt_if_needed(private_key, pepper))

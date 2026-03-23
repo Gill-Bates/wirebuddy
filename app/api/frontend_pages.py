@@ -17,17 +17,19 @@ import sys
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+import ipaddress
+import markdown as _markdown
 
 import nh3
 from fastapi import Depends, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from ..db.sqlite_peers import get_all_peers
 from ..db.sqlite_runtime import connect, close_connection
-from ..db.sqlite_settings import get_dns_blocklist_enabled, get_setting
+from ..db.sqlite_settings import get_dns_blocklist_enabled, get_setting, get_speedtest_enabled
 from ..db.sqlite_users import get_all_users
+from ..dns import unbound
 from ..utils.config import get_config
 from ..utils.deps import get_conn
 from ..utils.rate_limit import RATE_LIMIT_DEFAULT, RATE_LIMIT_HEAVY, limiter
@@ -60,15 +62,48 @@ class SystemStatusResponse(BaseModel):
 	key_mismatch: bool
 
 
-@lru_cache(maxsize=1)
-def _get_about_data() -> dict:
-	"""Compute about page data once and cache it."""
-	python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+# Absolute paths for system tools (avoids PATH manipulation attacks)
+_UNBOUND_PATH = "/usr/sbin/unbound"
+_WG_PATH = "/usr/bin/wg"
 
-	def _normalize_pkg_name(name: str) -> str:
-		return re.sub(r"[-_.]+", "-", str(name or "").strip().lower())
+# Hostname/IP validation pattern for FQDN (RFC 1123 hostname or IPv4/IPv6)
+_HOSTNAME_RE = re.compile(
+	r"^(?:"
+	r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z]{2,63}"  # FQDN
+	r"|localhost"  # localhost
+	r"|(?:\d{1,3}\.){3}\d{1,3}"  # IPv4
+	r"|[a-fA-F0-9:]+(?:%[a-zA-Z0-9]+)?"  # IPv6 (simplified)
+	r")$"
+)
 
-	requirements_versions: dict[str, str] = {}
+# Key packages to display in about page
+_KEY_PACKAGES = [
+	"fastapi", "httpx", "jinja2", "markdown", "Pillow", "pydantic", "pydantic-settings",
+	"python-multipart", "qrcode", "slowapi", "uvicorn", "nh3",
+]
+
+# Allowed HTML tags/attrs for changelog rendering
+_CHANGELOG_ALLOWED_TAGS = {
+	"h1", "h2", "h3", "h4", "h5", "h6", "p", "br", "hr",
+	"ul", "ol", "li", "a", "strong", "em", "b", "i",
+	"code", "pre", "blockquote", "table", "thead", "tbody",
+	"tr", "th", "td", "dl", "dt", "dd", "abbr", "sup", "sub",
+	"details", "summary",
+}
+_CHANGELOG_ALLOWED_ATTRS = {
+	"a": {"href", "title"},
+	"abbr": {"title"},
+	"details": {"open"},
+}
+
+
+def _normalize_pkg_name(name: str) -> str:
+	"""Normalize package name for comparison (PEP 503)."""
+	return re.sub(r"[-_.]+", "-", str(name or "").strip().lower())
+
+
+def _parse_requirements() -> dict[str, str]:
+	"""Parse requirements.txt and return package->version mapping."""
 	requirements_paths = [
 		_PROJECT_ROOT / "requirements.txt",
 		_APP_ROOT / "requirements.txt",
@@ -76,6 +111,7 @@ def _get_about_data() -> dict:
 	for req_path in requirements_paths:
 		if req_path.exists():
 			try:
+				versions: dict[str, str] = {}
 				for raw_line in req_path.read_text(encoding="utf-8").splitlines():
 					line = raw_line.strip()
 					if not line or line.startswith("#") or line.startswith("-"):
@@ -85,120 +121,128 @@ def _get_about_data() -> dict:
 							pkg, ver = line.split(sep, 1)
 							pkg = _normalize_pkg_name(pkg.split("[")[0])
 							ver = ver.split("#")[0].split(";")[0].strip()
-							requirements_versions[pkg] = ver
+							versions[pkg] = ver
 							break
-				break
+				return versions
 			except (OSError, ValueError, UnicodeDecodeError) as exc:
 				_log.warning("Failed to parse requirements.txt: %s", exc)
+	return {}
 
-	key_packages = [
-		"fastapi", "httpx", "jinja2", "markdown", "pydantic", "pydantic-settings",
-		"python-multipart", "qrcode", "slowapi", "uvicorn", "nh3",
-	]
+
+def _resolve_dependencies(requirements_versions: dict[str, str]) -> list[tuple[str, str]]:
+	"""Resolve dependency versions from requirements or importlib.metadata."""
+	from importlib.metadata import PackageNotFoundError, version as get_pkg_version
 
 	dependencies = []
-	for pkg_name in key_packages:
+	for pkg_name in _KEY_PACKAGES:
 		ver = requirements_versions.get(_normalize_pkg_name(pkg_name))
 		if ver:
 			dependencies.append((pkg_name, ver))
 		else:
 			try:
-				from importlib.metadata import version as get_pkg_version
 				ver = get_pkg_version(pkg_name)
 				dependencies.append((pkg_name, ver))
-			except Exception as exc:
-				_log.debug("Dependency version lookup failed for %s: %s", pkg_name, exc)
+			except PackageNotFoundError:
+				_log.debug("Package not found: %s", pkg_name)
 				dependencies.append((pkg_name, "?"))
-
-	unbound_version = "not available"
-	try:
-		result = subprocess.run(
-			["unbound", "-V"],
-			capture_output=True,
-			text=True,
-			timeout=5,
-		)
-		output = (result.stdout or result.stderr or "").strip()
-		if result.returncode == 0 and output:
-			m = re.search(r"(\d+\.\d+(?:\.\d+)?)", output)
-			if m:
-				unbound_version = m.group(1)
-			else:
-				first_line = output.splitlines()[0] if output.splitlines() else ""
-				unbound_version = first_line.strip() or "?"
-	except FileNotFoundError:
-		unbound_version = "not installed"
-	except Exception as exc:
-		_log.debug("Failed to get unbound version: %s", exc)
-
-	wireguard_version = "not available"
-	try:
-		result = subprocess.run(
-			["wg", "--version"],
-			capture_output=True,
-			text=True,
-			timeout=5,
-		)
-		output = (result.stdout or result.stderr or "").strip()
-		if result.returncode == 0 and output:
-			m = re.search(r"v([\d.]+)", output)
-			wireguard_version = m.group(1) if m else output
-	except FileNotFoundError:
-		wireguard_version = "not installed"
-	except Exception as exc:
-		_log.debug("Failed to get WireGuard version: %s", exc)
-
 	dependencies.sort(key=lambda x: x[0].lower())
+	return dependencies
 
-	license_text = "License file not found."
+
+def _get_system_tool_version(cmd_path: str, version_pattern: str) -> str:
+	"""Get version string from a system tool.
+	
+	Args:
+		cmd_path: Absolute path to the command
+		version_pattern: Regex pattern to extract version (first group is used)
+	
+	Returns:
+		Version string, "not installed", or "not available"
+	"""
+	try:
+		result = subprocess.run(
+			[cmd_path, "-V" if "unbound" in cmd_path else "--version"],
+			capture_output=True,
+			text=True,
+			timeout=5,
+		)
+		output = (result.stdout or result.stderr or "").strip()
+		if result.returncode == 0 and output:
+			m = re.search(version_pattern, output)
+			if m:
+				return m.group(1)
+			# Fallback: return first line
+			first_line = output.splitlines()[0] if output.splitlines() else ""
+			return first_line.strip() or "?"
+		return "not available"
+	except FileNotFoundError:
+		return "not installed"
+	except (subprocess.TimeoutExpired, OSError) as exc:
+		_log.warning("Failed to get version from %s: %s", cmd_path, exc)
+		return "not available"
+
+
+def _read_license() -> str:
+	"""Read LICENSE file content."""
 	for lp in [_PROJECT_ROOT / "LICENSE", _APP_ROOT / "LICENSE"]:
 		if lp.exists():
 			try:
-				license_text = lp.read_text(encoding="utf-8")
-				break
-			except Exception:
-				pass
+				return lp.read_text(encoding="utf-8")
+			except (OSError, UnicodeDecodeError) as exc:
+				_log.warning("Failed to read LICENSE: %s", exc)
+	return "License file not found."
 
-	changelog_html = "<p>Changelog not found.</p>"
+
+def _render_changelog() -> str:
+	"""Render CHANGELOG.md to sanitized HTML."""
 	for cp in [_PROJECT_ROOT / "CHANGELOG.md", _APP_ROOT / "CHANGELOG.md"]:
 		if cp.exists():
 			try:
-				import markdown as _markdown
 				raw = cp.read_text(encoding="utf-8")
 				rendered = _markdown.markdown(raw, extensions=["extra", "sane_lists", "md_in_html"])
-				allowed_tags = {
-					"h1", "h2", "h3", "h4", "h5", "h6", "p", "br", "hr",
-					"ul", "ol", "li", "a", "strong", "em", "b", "i",
-					"code", "pre", "blockquote", "table", "thead", "tbody",
-					"tr", "th", "td", "dl", "dt", "dd", "abbr", "sup", "sub",
-					"details", "summary",
-				}
-				allowed_attrs = {
-					"a": {"href", "title"},
-					"abbr": {"title"},
-					"details": {"open"},
-				}
-				changelog_html = nh3.clean(
+				return nh3.clean(
 					rendered,
-					tags=allowed_tags,
-					attributes=allowed_attrs,
+					tags=_CHANGELOG_ALLOWED_TAGS,
+					attributes=_CHANGELOG_ALLOWED_ATTRS,
 					strip_comments=True,
 				)
-				break
-			except Exception as exc:
+			except (OSError, UnicodeDecodeError) as exc:
+				_log.warning("Failed to read changelog: %s", exc)
+				return "<p>Failed to read changelog.</p>"
+			except (ValueError, TypeError) as exc:
 				_log.warning("Failed to render changelog: %s", exc)
-				changelog_html = "<p>Failed to render changelog.</p>"
+				return "<p>Failed to render changelog.</p>"
+	return "<p>Changelog not found.</p>"
+
+
+@lru_cache(maxsize=1)
+def _get_about_data() -> dict:
+	"""Compute about page data once and cache it."""
+	python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+	requirements_versions = _parse_requirements()
 
 	return {
 		"version": VERSION,
 		"build_info": BUILD_INFO,
 		"python_version": python_version,
-		"wireguard_version": wireguard_version,
-		"unbound_version": unbound_version,
-		"dependencies": dependencies,
-		"license_text": license_text,
-		"changelog_html": changelog_html,
+		"wireguard_version": _get_system_tool_version(_WG_PATH, r"v([\d.]+)"),
+		"unbound_version": _get_system_tool_version(_UNBOUND_PATH, r"(\d+\.\d+(?:\.\d+)?)"),
+		"dependencies": _resolve_dependencies(requirements_versions),
+		"license_text": _read_license(),
+		"changelog_html": _render_changelog(),
 	}
+
+
+def _is_loopback_request(request: Request) -> bool:
+	"""Check if request originates from loopback address."""
+	client_host = request.client.host if request.client else None
+	if not client_host:
+		return False
+	try:
+		addr = ipaddress.ip_address(client_host)
+		return addr.is_loopback
+	except ValueError:
+		return False
 
 
 @router.get("/api/system/status", response_model=SystemStatusResponse)
@@ -206,9 +250,13 @@ def _get_about_data() -> dict:
 def get_system_status(request: Request) -> SystemStatusResponse:
 	"""Get system status including key mismatch warning.
 	
-	Note: Intentionally unauthenticated for health-check infrastructure.
-	Only exposes non-sensitive key mismatch state.
+	Restricted to loopback addresses only (localhost health checks).
+	Returns key_mismatch=False for non-loopback clients to avoid leaking
+	internal configuration state.
 	"""
+	if not _is_loopback_request(request):
+		# Don't leak internal state to external clients
+		return SystemStatusResponse(key_mismatch=False)
 	key_mismatch = getattr(request.app.state, "key_mismatch", False)
 	return SystemStatusResponse(key_mismatch=key_mismatch)
 
@@ -216,7 +264,7 @@ def get_system_status(request: Request) -> SystemStatusResponse:
 @router.get("/", response_class=RedirectResponse)
 def index(
 	request: Request,
-	user: Optional[sqlite3.Row] = Depends(get_current_user_optional),
+	user: sqlite3.Row | None = Depends(get_current_user_optional),
 ) -> RedirectResponse:
 	"""Root redirect to dashboard or login."""
 	if user:
@@ -224,28 +272,31 @@ def index(
 	return RedirectResponse(url="/login", status_code=303)
 
 
-@router.get("/login", response_class=HTMLResponse)
+@router.get("/login", response_class=Response)
 @limiter.limit(RATE_LIMIT_DEFAULT)
 def login_page(
 	request: Request,
-	user: Optional[sqlite3.Row] = Depends(get_current_user_optional),
-):
+	user: sqlite3.Row | None = Depends(get_current_user_optional),
+) -> Response:
 	"""Login page."""
 	if user:
 		return RedirectResponse(url="/ui/dashboard", status_code=303)
 
-	return templates.TemplateResponse("login.html", {
-		"request": request,
-		"csrf_token": get_csrf_token(request),
-	})
+	return templates.TemplateResponse(
+		request,
+		name="login.html",
+		context={
+			"csrf_token": get_csrf_token(request),
+		},
+	)
 
 
-@router.get("/ui/otp-setup", response_class=HTMLResponse)
+@router.get("/ui/otp-setup", response_class=Response)
 @limiter.limit(RATE_LIMIT_DEFAULT)
 def otp_setup_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
-):
+) -> Response:
 	"""OTP onboarding page for first-time setup after admin enabled OTP.
 	
 	Redirects to dashboard if:
@@ -257,19 +308,22 @@ def otp_setup_page(
 	if not has_secret or already_enabled:
 		return RedirectResponse(url="/ui/dashboard", status_code=303)
 
-	return templates.TemplateResponse("otp_setup.html", {
-		"request": request,
-		"user": user,
-		"csrf_token": get_csrf_token(request),
-	})
+	return templates.TemplateResponse(
+		request,
+		name="otp_setup.html",
+		context={
+			"user": user,
+			"csrf_token": get_csrf_token(request),
+		},
+	)
 
 
-@router.get("/ui/passkey-setup", response_class=HTMLResponse)
+@router.get("/ui/passkey-setup", response_class=Response)
 @limiter.limit(RATE_LIMIT_DEFAULT)
 def passkey_setup_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
-):
+) -> Response:
 	"""Passkey onboarding page for first-time setup after admin enabled passkeys.
 	
 	Redirects to dashboard if:
@@ -281,11 +335,14 @@ def passkey_setup_page(
 	if not passkey_pending or already_enabled:
 		return RedirectResponse(url="/ui/dashboard", status_code=303)
 
-	return templates.TemplateResponse("passkey_setup.html", {
-		"request": request,
-		"user": user,
-		"csrf_token": get_csrf_token(request),
-	})
+	return templates.TemplateResponse(
+		request,
+		name="passkey_setup.html",
+		context={
+			"user": user,
+			"csrf_token": get_csrf_token(request),
+		},
+	)
 
 
 @router.get("/ui/dashboard", response_class=HTMLResponse)
@@ -293,13 +350,20 @@ def passkey_setup_page(
 def dashboard(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
-):
+) -> Response:
 	"""Dashboard page."""
-	return templates.TemplateResponse("dashboard.html", {
-		"request": request,
-		"user": user,
-		"csrf_token": get_csrf_token(request),
-	})
+	return templates.TemplateResponse(
+		request,
+		name="dashboard.html",
+		context={
+			"user": user,
+			"csrf_token": get_csrf_token(request),
+		},
+	)
+
+
+# Batch size for geo-IP lookups to limit memory pressure from coroutine objects
+_GEO_LOOKUP_BATCH_SIZE = 100
 
 
 @router.get("/ui/peers", response_class=HTMLResponse)
@@ -307,7 +371,7 @@ def dashboard(
 async def peers_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
-):
+) -> Response:
 	"""Peers management page with all peers and geo-IP lookups.
 	
 	Note: Database connection is created inside the thread pool to avoid
@@ -339,18 +403,21 @@ async def peers_page(
 			async with _GEO_LOOKUP_SEMAPHORE:
 				return await asyncio.to_thread(lookup_ip_cached, ip)
 		
-		results = await asyncio.gather(*[
-			_bounded_lookup(client_ip)
-			for client_ip in unique_client_ips
-		], return_exceptions=True)
-		
-		# Filter out exceptions from failed lookups
-		for ip, result in zip(unique_client_ips, results):
-			if isinstance(result, BaseException):
-				_log.debug("Geo-IP lookup failed for %s: %s", ip, result)
-				geoip_cache[ip] = None
-			else:
-				geoip_cache[ip] = result
+		# Process in batches to limit memory pressure from coroutine objects
+		for batch_start in range(0, len(unique_client_ips), _GEO_LOOKUP_BATCH_SIZE):
+			batch = unique_client_ips[batch_start:batch_start + _GEO_LOOKUP_BATCH_SIZE]
+			results = await asyncio.gather(*[
+				_bounded_lookup(client_ip)
+				for client_ip in batch
+			], return_exceptions=True)
+			
+			# Filter out exceptions from failed lookups
+			for ip, result in zip(batch, results):
+				if isinstance(result, BaseException):
+					_log.debug("Geo-IP lookup failed for %s: %s", ip, result)
+					geoip_cache[ip] = None
+				else:
+					geoip_cache[ip] = result
 
 	for row in peer_rows:
 		peer = dict(row)
@@ -378,13 +445,16 @@ async def peers_page(
 			peer["last_client_as_org"] = geo_fields["as_org"]
 		peers.append(peer)
 
-	return templates.TemplateResponse("peers.html", {
-		"request": request,
-		"user": user,
-		"peers": peers,
-		"total_peers": total_peers,
-		"csrf_token": get_csrf_token(request),
-	})
+	return templates.TemplateResponse(
+		request,
+		name="peers.html",
+		context={
+			"user": user,
+			"peers": peers,
+			"total_peers": total_peers,
+			"csrf_token": get_csrf_token(request),
+		},
+	)
 
 
 @router.get("/ui/users", response_class=HTMLResponse)
@@ -393,7 +463,7 @@ def users_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_admin_or_redirect),
 	conn: sqlite3.Connection = Depends(get_conn),
-):
+) -> Response:
 	"""Users management page (admin only).
 	
 	Note: This is a sync handler, so FastAPI runs it in a threadpool worker.
@@ -401,50 +471,65 @@ def users_page(
 	Auth check happens before DB connection to avoid wasting resources.
 	"""
 	users = get_all_users(conn)
-	return templates.TemplateResponse("users.html", {
-		"request": request,
-		"user": user,
-		"users": users,
-		"csrf_token": get_csrf_token(request),
-	})
+	return templates.TemplateResponse(
+		request,
+		name="users.html",
+		context={
+			"user": user,
+			"users": users,
+			"csrf_token": get_csrf_token(request),
+		},
+	)
 
 
 @router.get("/ui/dns", response_class=HTMLResponse)
 @limiter.limit(RATE_LIMIT_DEFAULT)
 def dns_page(
 	request: Request,
-	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_user_or_redirect),
-):
+	conn: sqlite3.Connection = Depends(get_conn),
+) -> Response:
 	"""DNS ad-blocking page.
 	
 	Note: This is a sync handler, so FastAPI runs it in a threadpool worker.
 	The conn dependency is created and used in the same thread — safe.
+	Auth check happens before DB connection to avoid wasting resources.
 	"""
 	enable_blocklist = get_dns_blocklist_enabled(conn)
-	return templates.TemplateResponse("dns.html", {
-		"request": request,
-		"user": user,
-		"enable_blocklist": enable_blocklist,
-		"csrf_token": get_csrf_token(request),
-	})
+	dns_unavailable = not unbound.is_unbound_installed()
+	return templates.TemplateResponse(
+		request,
+		name="dns.html",
+		context={
+			"user": user,
+			"enable_blocklist": enable_blocklist,
+			"dns_unavailable": dns_unavailable,
+			"csrf_token": get_csrf_token(request),
+		},
+	)
 
 
 @router.get("/ui/traffic", response_class=HTMLResponse)
 @limiter.limit(RATE_LIMIT_DEFAULT)
 def traffic_page(
 	request: Request,
-	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_user_or_redirect),
-):
-	"""Traffic usage page."""
+	conn: sqlite3.Connection = Depends(get_conn),
+) -> Response:
+	"""Traffic usage page.
+	
+	Auth check happens before DB connection to avoid wasting resources.
+	"""
 	traffic_analysis_enabled = get_setting(conn, "traffic_analysis_enabled") == "1"
-	return templates.TemplateResponse("traffic.html", {
-		"request": request,
-		"user": user,
-		"traffic_analysis_enabled": traffic_analysis_enabled,
-		"csrf_token": get_csrf_token(request),
-	})
+	return templates.TemplateResponse(
+		request,
+		name="traffic.html",
+		context={
+			"user": user,
+			"traffic_analysis_enabled": traffic_analysis_enabled,
+			"csrf_token": get_csrf_token(request),
+		},
+	)
 
 
 @router.get("/ui/about", response_class=HTMLResponse)
@@ -452,7 +537,7 @@ def traffic_page(
 def about_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
-):
+) -> Response:
 	"""About page with version, dependencies, changelog, and license.
 	
 	Note: Data is cached via @lru_cache for performance. Cache persists until
@@ -460,12 +545,15 @@ def about_page(
 	won't be reflected without restart.
 	"""
 	about_data = _get_about_data()
-	return templates.TemplateResponse("about.html", {
-		"request": request,
-		"user": user,
-		"csrf_token": get_csrf_token(request),
-		**about_data,
-	})
+	return templates.TemplateResponse(
+		request,
+		name="about.html",
+		context={
+			"user": user,
+			"csrf_token": get_csrf_token(request),
+			**about_data,
+		},
+	)
 
 
 @router.get("/ui/settings", response_class=HTMLResponse)
@@ -473,18 +561,45 @@ def about_page(
 def settings_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
-):
+	conn: sqlite3.Connection = Depends(get_conn),
+) -> Response:
 	"""Settings page."""
-	return templates.TemplateResponse("settings.html", {
-		"request": request,
-		"user": user,
-		"csrf_token": get_csrf_token(request),
-	})
+	# Load toggle states server-side to avoid visual jump on page load
+	# Calculate URLs server-side to prevent flickering
+	wg_fqdn = get_setting(conn, "wg_fqdn") or ""
+	raw_host = wg_fqdn.strip().strip("[]") if wg_fqdn else str(request.url.hostname or "localhost")
+	
+	# Validate hostname/IP to prevent URL injection attacks
+	if not _HOSTNAME_RE.match(raw_host):
+		_log.warning("Invalid FQDN in settings: %r", raw_host[:50])
+		raw_host = "localhost"  # Fallback to safe default
+	
+	url_host = f"[{raw_host}]" if ":" in raw_host else raw_host
+	
+	settings = {
+		"enable_status_page": get_setting(conn, "enable_status_page") == "1",
+		"enable_swagger": get_setting(conn, "enable_swagger") == "1",
+		"gui_localhost_only": get_setting(conn, "gui_localhost_only") == "1",
+		"wg_use_psk": get_setting(conn, "wg_use_psk") == "1",
+		"traffic_analysis_enabled": get_setting(conn, "traffic_analysis_enabled") == "1",
+		"speedtest_enabled": get_speedtest_enabled(conn),
+		"status_page_url": f"https://{url_host}/status",
+		"swagger_url": f"https://{url_host}/swagger",
+	}
+	return templates.TemplateResponse(
+		request,
+		name="settings.html",
+		context={
+			"user": user,
+			"csrf_token": get_csrf_token(request),
+			"settings": settings,
+		},
+	)
 
 
 @router.get("/.well-known/acme-challenge/{token}", response_class=PlainTextResponse)
 @limiter.limit(RATE_LIMIT_DEFAULT)
-def acme_challenge(request: Request, token: str):
+def acme_challenge(request: Request, token: str) -> PlainTextResponse:
 	"""Serve ACME HTTP-01 challenge response for Let's Encrypt.
 	
 	Note: Sync handler so FastAPI runs it in threadpool (get_challenge_response

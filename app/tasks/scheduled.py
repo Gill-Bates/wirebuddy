@@ -19,7 +19,7 @@ import asyncio
 import logging
 import random
 import time
-from datetime import datetime as dt, timedelta
+from datetime import date, datetime as dt, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -34,6 +34,32 @@ _SPEEDTEST_NIGHT_WINDOW_END_HOUR = 4
 _SPEEDTEST_RETRY_DELAY_MINUTES = 30
 _WG_CHECK_TIMEOUT_SECONDS = 5.0
 _PEER_STATE_MAX_SIZE = 100_000
+
+
+def _evict_peer_state_entries(peer_connection_state) -> int:
+	"""Evict oldest peer state entries, preferring disconnected peers."""
+	evict_target = _PEER_STATE_MAX_SIZE // 10
+	evicted = 0
+	disconnected_keys = [
+		public_key for public_key, is_connected in peer_connection_state.items()
+		if not is_connected
+	]
+	for public_key in disconnected_keys[:evict_target]:
+		if public_key in peer_connection_state:
+			del peer_connection_state[public_key]
+			evicted += 1
+
+	while evicted < evict_target and peer_connection_state:
+		peer_connection_state.popitem(last=False)
+		evicted += 1
+
+	return evicted
+
+
+def _local_wall_clock_timestamp(day: date, hour: int) -> float:
+	"""Return the local timestamp for a wall-clock hour using system DST rules."""
+	wall_time = dt(day.year, day.month, day.day, hour, 0, 0)
+	return time.mktime(wall_time.timetuple())
 
 
 async def update_blocklists(ctx: main.LifespanContext) -> None:
@@ -78,10 +104,12 @@ async def maintain_tsdb(ctx: main.LifespanContext) -> None:
 		speedtest_retention_days = await asyncio.to_thread(_read_speedtest_retention_days_sync, ctx.cfg.db_path)
 		
 		# Build synthetic key retention mapping
+		# network_stats uses 7 days to support 1h sparkline history with headroom
 		synthetic_retention = {
 			"speedtest": speedtest_retention_days,
 			"geo_traffic": tsdb_retention_days,
 			"asn_traffic": tsdb_retention_days,
+			"network": 7,  # 7 days retention for network stats sparklines
 		}
 		
 		stats = await asyncio.to_thread(
@@ -188,11 +216,9 @@ async def sample_tsdb_metrics(ctx: main.LifespanContext) -> None:
 				)
 
 			if is_connected != was_connected:
-				# LRU eviction: drop oldest 10 % when near capacity
+				# LRU eviction: prefer disconnected peers to avoid false reconnect logs.
 				if len(ctx.peer_connection_state) >= _PEER_STATE_MAX_SIZE:
-					evict = _PEER_STATE_MAX_SIZE // 10
-					for _ in range(evict):
-						ctx.peer_connection_state.popitem(last=False)
+					evict = _evict_peer_state_entries(ctx.peer_connection_state)
 					_log.warning("PEER_STATE evicted %d oldest entries", evict)
 				ctx.peer_connection_state[public_key] = is_connected
 				ctx.peer_connection_state.move_to_end(public_key)
@@ -319,39 +345,49 @@ async def check_adblocker_timer(ctx: main.LifespanContext) -> None:
 
 
 def _seconds_until_night_window() -> float:
-	"""Calculate seconds until the next speedtest night window with random jitter.
+	"""Calculate seconds until a jittered start time in the local night window.
 	
-	Returns 0 if currently within the window, otherwise seconds until
-	a random point within the next window (02:00-04:00 local time).
+	The target window is 02:00-04:00 local time. If less than five minutes
+	remain in the current window, defer to the next night's window instead
+	of starting immediately.
 	"""
-	now = dt.now()  # Local time (UTC in Docker unless TZ is set)
-	current_hour = now.hour
-	
-	# Currently within night window - return small random offset, clamped to avoid overshooting
-	if _SPEEDTEST_NIGHT_WINDOW_START_HOUR <= current_hour < _SPEEDTEST_NIGHT_WINDOW_END_HOUR:
-		remaining = (now.replace(hour=_SPEEDTEST_NIGHT_WINDOW_END_HOUR, minute=0,
-		                        second=0, microsecond=0) - now).total_seconds()
-		# Leave at least 5 min for the test itself
-		max_jitter = max(0, remaining - 300)
-		return random.uniform(0, min(600, max_jitter))
-	
-	# Calculate next window start
-	if current_hour < _SPEEDTEST_NIGHT_WINDOW_START_HOUR:
-		next_window = now.replace(
-			hour=_SPEEDTEST_NIGHT_WINDOW_START_HOUR,
-			minute=0, second=0, microsecond=0
-		)
+	now_ts = time.time()
+	now_local = dt.fromtimestamp(now_ts)
+	today = now_local.date()
+	start_today = _local_wall_clock_timestamp(today, _SPEEDTEST_NIGHT_WINDOW_START_HOUR)
+	end_today = _local_wall_clock_timestamp(today, _SPEEDTEST_NIGHT_WINDOW_END_HOUR)
+	min_test_runtime_seconds = 300.0
+
+	# Currently within night window.
+	if start_today <= now_ts < end_today:
+		remaining = max(0.0, end_today - now_ts)
+		if remaining <= min_test_runtime_seconds:
+			next_day = today + timedelta(days=1)
+			next_start = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_START_HOUR)
+			next_end = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_END_HOUR)
+			window_duration_seconds = max(0.0, next_end - next_start)
+			jitter_cap = max(0.0, window_duration_seconds - min_test_runtime_seconds)
+			jitter_seconds = random.uniform(0.0, jitter_cap) if jitter_cap > 0 else 0.0
+			return max(0.0, (next_start - now_ts) + jitter_seconds)
+
+		# Stay within the current window and leave at least 5 minutes for the test.
+		max_jitter = max(0.0, remaining - min_test_runtime_seconds)
+		return random.uniform(0.0, min(600.0, max_jitter))
+
+	# Calculate next window start in local wall-clock time.
+	if now_ts < start_today:
+		next_start = start_today
+		next_end = end_today
 	else:
-		next_window = (now + timedelta(days=1)).replace(
-			hour=_SPEEDTEST_NIGHT_WINDOW_START_HOUR,
-			minute=0, second=0, microsecond=0
-		)
-	
-	# Add random jitter: spread load across the 2-hour window
-	window_duration_seconds = (_SPEEDTEST_NIGHT_WINDOW_END_HOUR - _SPEEDTEST_NIGHT_WINDOW_START_HOUR) * 3600
-	jitter_seconds = random.uniform(0, window_duration_seconds - 300)
-	
-	return (next_window - now).total_seconds() + jitter_seconds
+		next_day = today + timedelta(days=1)
+		next_start = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_START_HOUR)
+		next_end = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_END_HOUR)
+
+	window_duration_seconds = max(0.0, next_end - next_start)
+	jitter_cap = max(0.0, window_duration_seconds - min_test_runtime_seconds)
+	jitter_seconds = random.uniform(0.0, jitter_cap) if jitter_cap > 0 else 0.0
+
+	return max(0.0, (next_start - now_ts) + jitter_seconds)
 
 
 async def _has_active_peers() -> bool:
@@ -387,9 +423,11 @@ async def _has_active_peers() -> bool:
 					)
 					return True
 		return False
-	except Exception as exc:
-		_log.debug("SPEEDTEST_CHECK peer check failed: %s", exc)
-		return False  # Assume no peers on error; proceed with test
+	except asyncio.CancelledError:
+		raise
+	except (asyncio.TimeoutError, FileNotFoundError, OSError, ValueError) as exc:
+		_log.warning("SPEEDTEST_CHECK peer check failed: %s", exc)
+		return False  # Assume no peers on operational error; proceed with test
 
 
 async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
@@ -414,11 +452,18 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 				return get_speedtest_enabled(conn), get_speedtest_target(conn)
 			finally:
 				close_connection(conn)
+
+		async def _refresh_speedtest_settings(skip_reason: str) -> tuple[bool, str] | None:
+			enabled, target = await asyncio.to_thread(_read_speedtest_settings)
+			if not enabled:
+				_log.info("SPEEDTEST_SCHEDULED skipped: %s", skip_reason)
+				return None
+			return enabled, target
 		
-		enabled, target = await asyncio.to_thread(_read_speedtest_settings)
-		if not enabled:
-			_log.debug("SPEEDTEST_SCHEDULED skipped: disabled")
+		settings = await _refresh_speedtest_settings("disabled")
+		if settings is None:
 			return
+		_, target = settings
 
 		# Wait until night window if not already there
 		wait_seconds = _seconds_until_night_window()
@@ -428,6 +473,10 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 				wait_seconds
 			)
 			await asyncio.sleep(wait_seconds)
+			settings = await _refresh_speedtest_settings("disabled during wait")
+			if settings is None:
+				return
+			_, target = settings
 
 		# Check for active peers; if any, defer the test
 		max_retries = 4  # Max ~2 hours of deferral within the window
@@ -440,6 +489,10 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 				attempt + 1, max_retries, _SPEEDTEST_RETRY_DELAY_MINUTES
 			)
 			await asyncio.sleep(_SPEEDTEST_RETRY_DELAY_MINUTES * 60)
+			settings = await _refresh_speedtest_settings("disabled during peer deferral")
+			if settings is None:
+				return
+			_, target = settings
 		else:
 			# All retries exhausted, peers still active
 			_log.warning(
@@ -466,19 +519,30 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 			_log.info("SPEEDTEST_SCHEDULED skipped: cooldown active (%s)", exc)
 			return
 
-		async with lease:
+		with lease:
 			_log.info("SPEEDTEST_SCHEDULED starting bandwidth measurement")
 			tester = BandwidthTester(servers=servers)
-			result = await tester.run()
+			try:
+				result = await tester.run()
+			except asyncio.CancelledError:
+				raise
+			except Exception as exc:
+				result = {
+					"status": "error",
+					"reason": f"{type(exc).__name__}: {exc}",
+					"server": servers[0] if servers else None,
+				}
+				_log.warning("SPEEDTEST_SCHEDULED test execution failed: %s", exc)
 
-		# Offload TSDB write to thread
-		await asyncio.to_thread(
-			tsdb.append_point,
-			ctx.cfg.tsdb_dir,
-			peer_key=SPEEDTEST_TSDB_KEY,
-			metric=SPEEDTEST_TSDB_METRIC,
-			value=result,
-		)
+			# Keep the run lease until the result is persisted to avoid interleaved
+			# scheduled/manual speedtest writes.
+			await asyncio.to_thread(
+				tsdb.append_point,
+				ctx.cfg.tsdb_dir,
+				peer_key=SPEEDTEST_TSDB_KEY,
+				metric=SPEEDTEST_TSDB_METRIC,
+				value=result,
+			)
 
 		if result.get("status") == "ok":
 			_log.info(
@@ -492,3 +556,19 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 			_log.warning("SPEEDTEST_SCHEDULED status=%s server=%s", result.get("status"), result.get("server"))
 	except Exception as exc:
 		_log.error("SPEEDTEST_SCHEDULED failed: %s", exc)
+
+
+async def sample_network_stats(ctx: main.LifespanContext) -> None:
+	"""Scheduled task: sample network interface throughput rates into TSDB.
+	
+	Runs every 30 seconds to collect bandwidth data for sparkline history.
+	Stores rx_rate, tx_rate, and total for each visible interface.
+	"""
+	from ..api.network_stats import sample_network_stats as do_sample
+	
+	try:
+		points = await asyncio.to_thread(do_sample, ctx.cfg.tsdb_dir)
+		if points > 0:
+			_log.debug("NETWORK_STATS_SAMPLE interfaces=%d", points)
+	except Exception as exc:
+		_log.warning("NETWORK_STATS_SAMPLE failed: %s", exc)

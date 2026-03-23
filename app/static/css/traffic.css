@@ -14,11 +14,6 @@
     gap: 0.75rem;
 }
 
-.traffic-controls .form-select {
-    height: auto;
-    align-self: center;
-}
-
 .traffic-peer-filter-select {
     min-width: 200px;
     width: max-content;
@@ -34,7 +29,7 @@
     height: 400px;
     transition: opacity 0.2s ease;
     overflow: hidden;
-    border-radius: var(--wb-radius-md, 0.5rem);
+    border-radius: var(--wb-radius-md, 10px);
 }
 
 .traffic-loading-height,
@@ -58,7 +53,9 @@
 .traffic-table-wrap {
     max-height: 400px;
     overflow-y: auto;
-    border-radius: var(--wb-radius-md, 0.5rem);
+    border-radius: var(--wb-radius-md, 10px);
+    /* Minimum clearance between content and scrollbar per UI-Lint SCROLL_EDGE_CLEARANCE_MIN */
+    padding-right: 12px;
 }
 
 .country-flag {
@@ -243,8 +240,7 @@
 
     .traffic-table-wrap {
         max-height: 300px;
-        padding-right: 8px;
-        /* Add space between content and scrollbar */
+        /* padding-right inherited from base rule (12px) */
     }
 
     .traffic-loading-min-height,

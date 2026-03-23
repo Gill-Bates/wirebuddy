@@ -64,6 +64,32 @@
         min-height: 109px;
     }
 
+    .dashboard-stats-row .wb-kpi-card .card-body {
+        display: flex;
+    }
+
+    /* Allow cards to shrink inside grid/flex layouts */
+    .card,
+    .card-body {
+        min-width: 0;
+    }
+
+    .dashboard-kpi-grid .wb-kpi-card .card-body > .d-flex {
+        width: 100%;
+        min-height: 100%;
+    }
+
+    .dashboard-kpi-grid .flex-shrink-0 {
+        display: flex;
+        align-items: center;
+    }
+
+    .dashboard-kpi-grid .wb-kpi-icon {
+        display: block;
+        line-height: 1;
+        color: var(--bs-secondary-color);
+    }
+
     .dashboard-traffic-summary {
         display: flex;
         flex-direction: column;
@@ -89,55 +115,121 @@
         height: 100%;
     }
 
+    /* Mobile-first Grid Layout */
+    .dashboard-main-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: var(--wb-space-3);
+        margin-bottom: var(--wb-space-3);
+    }
+
+    /* Prevent grid children from overflowing horizontally */
+    .dashboard-main-grid > * {
+        min-width: 0;
+    }
+
+    .dashboard-recent-peers-col,
+    .dashboard-speedtest-col,
+    .dashboard-map-col {
+        min-width: 0;
+    }
+
     @media (min-width: 1200px) {
+        /* Dashboard page fills viewport — no scroll on desktop */
+        .dashboard-page {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        /* KPI row stays at natural height */
+        .dashboard-page > .row:first-of-type {
+            flex-shrink: 0;
+        }
+
+        .dashboard-page > .wb-page-header {
+            flex-shrink: 0;
+        }
+
+        /* Main grid fills all remaining viewport space */
+        .dashboard-main-grid {
+            flex: 1 1 0;
+            min-height: 0;
+            margin-bottom: 0;
+            /* Map bekommt feste Priorität, rechte Spalte schrumpft */
+            grid-template-columns: minmax(600px, 2fr) minmax(280px, 1fr);
+            grid-template-rows: 280px 1fr;
+        }
+
+        /* Map column spans full grid height */
+        .dashboard-map-col {
+            grid-column: 1;
+            grid-row: 1 / 3;
+            min-height: 0;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .dashboard-map-col .card {
+            flex: 1 1 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .dashboard-map-col .card-body {
+            flex: 1 1 0;
+            min-height: 0;
+        }
+
         #peer-map {
-            height: clamp(380px, 47vh, 620px);
+            height: 100%;
+            min-height: 350px;
+        }
+
+        /* Speedtest: compact, fixed height */
+        .dashboard-speedtest-col {
+            grid-column: 2;
+            grid-row: 1;
+            min-height: 0;
+            min-width: 0;
+        }
+
+        .dashboard-speedtest-col .card {
+            height: 100%;
         }
 
         .dashboard-speedtest-col .card-body > div {
             height: 200px !important;
         }
 
-        .dashboard-stats-row {
-            margin-bottom: 1rem !important;
+        .dashboard-speedtest-col .card-body {
+            padding-bottom: 0.75rem;
         }
 
-        .dashboard-main-grid {
-            margin-bottom: 0 !important;
-        }
-
-        .dashboard-main-grid {
-            display: grid;
-            grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-            grid-template-rows: auto minmax(0, 1fr);
-            gap: 1.5rem;
-            margin: 0;
-            align-items: stretch;
-        }
-
-        .dashboard-main-grid > [class*="col-"] {
-            width: auto;
-            max-width: none;
-            margin: 0;
-            padding: 0;
-        }
-
-        .dashboard-map-col {
-            grid-column: 1;
-            grid-row: 1 / span 2;
-            min-height: 0;
-        }
-
-        .dashboard-speedtest-col {
-            grid-column: 2;
-            grid-row: 1;
-            min-height: 0;
-        }
-
+        /* Recent Peer Activity: fills remaining height, scrolls */
         .dashboard-recent-peers-col {
             grid-column: 2;
             grid-row: 2;
             min-height: 0;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .dashboard-recent-peers-col .card {
+            flex: 1 1 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .dashboard-recent-peers-col .card-body {
+            flex: 1 1 0;
+            min-height: 0;
+            overflow-y: auto;
         }
 
         .dashboard-speedtest-col .card,
@@ -146,8 +238,8 @@
             height: 100%;
         }
 
-        .dashboard-speedtest-col .card-body {
-            padding-bottom: 0.75rem;
+        .dashboard-stats-row {
+            margin-bottom: 1rem !important;
         }
     }
 
@@ -183,6 +275,11 @@
         min-width: 0;
     }
 
+    /* Ensure inner containers don't force overflow */
+    .network-gauges-grid {
+        min-width: 0;
+    }
+
     #recent-peers .peer-row-clickable {
         cursor: pointer;
         transition: background-color 0.15s ease;
@@ -198,12 +295,20 @@
         .recent-peers-card {
             height: auto;
         }
+
+        .dashboard-map-col .card {
+            height: auto;
+        }
+
+        .recent-peers-card .card-body {
+            max-height: 400px;
+            overflow-y: auto;
+        }
     }
 
     @media (max-width: 991.98px) {
         #peer-map {
-            height: 45vh;
-            min-height: 360px;
+            height: clamp(360px, 45vh, 500px);
         }
 
         .map-kpis {
@@ -212,8 +317,7 @@
 
         .recent-peers-card {
             flex: none;
-            min-height: 280px;
-            max-height: none;
+            min-height: 200px;
         }
     }
 
@@ -230,8 +334,9 @@
             white-space: nowrap;
         }
 
-        .recent-peers-card {
-            min-height: 220px;
+        .recent-peers-card .card-body {
+            max-height: 350px;
+            overflow-y: auto;
         }
 
         .speedtest-card {
@@ -240,6 +345,10 @@
     }
 
     @media (max-width: 575.98px) {
+        .dashboard-stats-row .wb-kpi-card {
+            min-height: 124px;
+        }
+
         .dashboard-header {
             flex-direction: column;
             align-items: stretch;
@@ -308,7 +417,7 @@
 
     .pulse-marker.connected {
         background: var(--wb-primary, #88171a);
-        box-shadow: 0 0 0 6px rgba(136, 23, 26, 0.35);
+        box-shadow: 0 0 0 6px rgba(var(--bs-primary-rgb), 0.35);
         opacity: 1;
         animation: pulse-online 2s ease-in-out infinite;
     }
@@ -351,63 +460,212 @@
         font-size: 0.8rem;
         margin-top: 0.15rem;
     }
+
+    /* ─── Network Stats Items ───────────────────────────── */
+    .network-gauges-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem;
+    }
+
+    /* Single interface takes full width */
+    .network-item:only-child {
+        grid-column: 1 / -1;
+    }
+
+    @media (max-width: 575.98px) {
+        .network-gauges-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    .network-item {
+        padding: 0.75rem;
+        border-radius: 0.5rem;
+        background: var(--bs-tertiary-bg);
+        border: 1px solid rgba(0, 0, 0, 0.06);
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        transition: border-color 0.15s ease, opacity 0.15s ease;
+    }
+
+    [data-bs-theme="dark"] .network-item {
+        background: rgba(255, 255, 255, 0.02);
+        border-color: rgba(255, 255, 255, 0.06);
+    }
+
+    /* Idle interfaces are visually subdued */
+    .network-item:not(.active) {
+        opacity: 0.6;
+    }
+
+    /* Hover feedback */
+    .network-item:hover {
+        border-color: rgba(0, 0, 0, 0.18);
+    }
+
+    [data-bs-theme="dark"] .network-item:hover {
+        border-color: rgba(255, 255, 255, 0.18);
+    }
+
+    .network-item-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.8rem;
+    }
+
+    .network-item-name {
+        font-weight: 700;
+        color: var(--bs-body-color);
+    }
+
+    .network-item-total {
+        font-weight: 800;
+        font-size: 0.9rem;
+        color: var(--bs-body-color);
+    }
+
+    .network-sparkline {
+        width: 100%;
+        height: 24px;
+        opacity: 0.85;
+    }
+
+    .network-item-bar {
+        height: 6px;
+        background: rgba(0, 0, 0, 0.08);
+        border-radius: 999px;
+        overflow: hidden;
+    }
+
+    [data-bs-theme="dark"] .network-item-bar {
+        background: rgba(255, 255, 255, 0.08);
+    }
+
+    .network-item-bar-fill {
+        height: 100%;
+        width: 0%;
+        background: var(--wb-accent-red, #ff6384);
+        transition: width 0.2s linear;
+    }
+
+    [data-bs-theme="dark"] .network-item-bar-fill {
+        background: var(--wb-accent-red, #ff6384);
+    }
+
+    .network-item-rates {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.7rem;
+        color: var(--bs-secondary-color);
+    }
+
+    .network-item .rx {
+        color: var(--wb-danger-strong, #b02a37);
+    }
+
+    [data-bs-theme="dark"] .network-item .rx {
+        color: var(--wb-danger-strong, #ff9cab);
+    }
+
+    .network-item .tx {
+        color: var(--wb-info-strong, #0a58ca);
+    }
+
+    [data-bs-theme="dark"] .network-item .tx {
+        color: var(--wb-info-strong, #6edff6);
+    }
+
+    /* Active interfaces highlight */
+    .network-item.active {
+        border-color: rgba(0, 0, 0, 0.12);
+    }
+
+    [data-bs-theme="dark"] .network-item.active {
+        border-color: rgba(255, 255, 255, 0.12);
+    }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="container-fluid wb-page">
+<div class="container-fluid wb-page dashboard-page">
 <div class="wb-page-header">
     <h2 class="page-title"><span class="material-icons me-2" aria-hidden="true">dashboard</span>Dashboard</h2>
 </div>
 
-<!-- Stats Cards -->
-<div class="row g-3 mb-3 wb-kpi-row dashboard-stats-row">
-    <div class="col-6 col-xl-3">
-        <div class="card h-100 wb-kpi-card">
-            <div class="card-body">
-                <div class="d-flex align-items-center">
-                    <div class="flex-shrink-0">
-                        <span class="material-icons wb-kpi-icon text-primary" aria-hidden="true">router</span>
-                    </div>
-                    <div class="flex-grow-1 ms-3">
-                        <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-interfaces">Interfaces</div>
-                        <p class="h3 mb-0 wb-kpi-value" id="interfaces-count" aria-labelledby="label-interfaces" aria-live="polite">-
-                        </p>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="col-6 col-xl-3">
-        <div class="card h-100 wb-kpi-card">
-            <div class="card-body">
-                <div class="d-flex align-items-center">
-                    <div class="flex-shrink-0">
-                        <span class="material-icons wb-kpi-icon text-success" aria-hidden="true">cell_tower</span>
-                    </div>
-                    <div class="flex-grow-1 ms-3">
-                        <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-peers">Connections</div>
-                        <p class="h3 mb-0 wb-kpi-value" id="peers-count" aria-labelledby="label-peers" aria-live="polite">-</p>
-                        <small class="text-muted" id="peers-count-label">Peers Online</small>
+<!-- Stats Cards + Network Gauges Side by Side -->
+<div class="row g-3 mb-3">
+    <!-- Left: 2x2 KPI Cards -->
+    <div class="col-lg-6 col-12">
+        <div class="row g-3 h-100 dashboard-stats-row">
+            <div class="col-6">
+                <div class="card h-100 wb-kpi-card">
+                    <div class="card-body">
+                        <div class="d-flex align-items-center">
+                            <div class="flex-shrink-0">
+                                <span class="material-icons wb-kpi-icon" aria-hidden="true">router</span>
+                            </div>
+                            <div class="flex-grow-1 ms-3">
+                                <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-interfaces">Interfaces</div>
+                                <p class="h3 mb-0 wb-kpi-value" id="interfaces-count" aria-labelledby="label-interfaces" aria-live="polite">-</p>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
-    </div>
 
-    <div class="col-6 col-xl-3">
-        <div class="card h-100 wb-kpi-card">
-            <div class="card-body">
-                <div class="d-flex align-items-center">
-                    <div class="flex-shrink-0">
-                        <span class="material-icons wb-kpi-icon text-info" aria-hidden="true">swap_vert</span>
+            <div class="col-6">
+                <div class="card h-100 wb-kpi-card">
+                    <div class="card-body">
+                        <div class="d-flex align-items-center">
+                            <div class="flex-shrink-0">
+                                <span class="material-icons wb-kpi-icon" aria-hidden="true">cell_tower</span>
+                            </div>
+                            <div class="flex-grow-1 ms-3">
+                                <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-peers">Connections</div>
+                                <p class="h3 mb-0 wb-kpi-value" id="peers-count" aria-labelledby="label-peers" aria-live="polite">-</p>
+                                <small class="text-muted" id="peers-count-label">Peers Online</small>
+                            </div>
+                        </div>
                     </div>
-                    <div class="flex-grow-1 ms-3">
-                        <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-total-traffic">Traffic</div>
-                        <div class="dashboard-bandwidth dashboard-traffic-summary" aria-labelledby="label-total-traffic" aria-live="polite">
-                            <p class="h3 mb-0 dashboard-bandwidth-main dashboard-traffic-metric" id="total-rx">↓ -</p>
-                            <small class="text-muted dashboard-kpi-subtext dashboard-bandwidth-sub dashboard-traffic-metric" id="total-tx">↑ -</small>
+                </div>
+            </div>
+
+            <div class="col-6">
+                <div class="card h-100 wb-kpi-card">
+                    <div class="card-body">
+                        <div class="d-flex align-items-center">
+                            <div class="flex-shrink-0">
+                                <span class="material-icons wb-kpi-icon" aria-hidden="true">swap_vert</span>
+                            </div>
+                            <div class="flex-grow-1 ms-3">
+                                <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-total-traffic">Traffic</div>
+                                <div class="dashboard-bandwidth dashboard-traffic-summary" aria-labelledby="label-total-traffic" aria-live="polite">
+                                    <p class="h3 mb-0 dashboard-bandwidth-main dashboard-traffic-metric" id="total-rx">↓ -</p>
+                                    <small class="text-muted dashboard-kpi-subtext dashboard-bandwidth-sub dashboard-traffic-metric" id="total-tx">↑ -</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-6">
+                <div class="card h-100 wb-kpi-card">
+                    <div class="card-body">
+                        <div class="d-flex align-items-center">
+                            <div class="flex-shrink-0">
+                                <span class="material-icons wb-kpi-icon" aria-hidden="true">speed</span>
+                            </div>
+                            <div class="flex-grow-1 ms-3">
+                                <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-speedtest">Bandwidth</div>
+                                <div class="dashboard-bandwidth" aria-labelledby="label-speedtest" aria-live="polite">
+                                    <p class="h3 mb-0 dashboard-bandwidth-main" id="speedtest-download">–</p>
+                                    <small class="text-muted dashboard-kpi-subtext dashboard-bandwidth-sub" id="speedtest-upload"></small>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -415,18 +673,23 @@
         </div>
     </div>
 
-    <div class="col-6 col-xl-3">
-        <div class="card h-100 wb-kpi-card">
-            <div class="card-body">
-                <div class="d-flex align-items-center">
-                    <div class="flex-shrink-0">
-                        <span class="material-icons wb-kpi-icon text-danger" aria-hidden="true">speed</span>
-                    </div>
-                    <div class="flex-grow-1 ms-3">
-                        <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-speedtest">Bandwidth</div>
-                        <div class="dashboard-bandwidth" aria-labelledby="label-speedtest" aria-live="polite">
-                            <p class="h3 mb-0 dashboard-bandwidth-main" id="speedtest-download">–</p>
-                            <small class="text-muted dashboard-kpi-subtext dashboard-bandwidth-sub" id="speedtest-upload"></small>
+    <!-- Right: Network Throughput Gauges -->
+    <div class="col-lg-6 col-12">
+        <div class="card h-100">
+            <div class="card-header">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <h3 class="h5 mb-0">
+                        <span class="material-icons align-middle me-1" aria-hidden="true">speed</span>
+                        Network
+                    </h3>
+                    <span class="badge bg-secondary" id="network-stats-status">Loading...</span>
+                </div>
+            </div>
+            <div class="card-body d-flex flex-column">
+                <div id="network-gauges-container" class="network-gauges-grid w-100 flex-grow-1">
+                    <div class="text-center py-3">
+                        <div class="spinner-border spinner-border-sm text-primary" role="status">
+                            <span class="visually-hidden">Loading network stats...</span>
                         </div>
                     </div>
                 </div>
@@ -436,9 +699,41 @@
 </div>
 
 <!-- Map and Charts Row -->
-<div class="row g-3 mb-3 mt-0 wb-main-grid dashboard-main-grid">
+<div class="wb-main-grid dashboard-main-grid">
+    <!-- SPEEDTEST -->
+    <div class="dashboard-speedtest-col">
+        <div class="card speedtest-card">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <h3 class="h5 mb-0">
+                    <span class="material-icons align-middle me-1" aria-hidden="true">speed</span>
+                    Speedtest
+                </h3>
+                <select id="speedtest-range" class="form-select form-select-sm" style="width: auto;" aria-label="Select time range">
+                    <option value="7d" selected>7 d</option>
+                    <option value="30d">30 d</option>
+                    <option value="90d">90 d</option>
+                    <option value="180d">180 d</option>
+                    <option value="y1">1 y</option>
+                </select>
+            </div>
+            <div class="card-body">
+                <div style="position: relative; height: 220px;">
+                    <canvas id="speedtest-chart"></canvas>
+                    <div id="speedtest-chart-empty" class="chart-empty-state d-none" style="position: absolute; inset: 0;">
+                        <span class="material-icons">show_chart</span>
+                        <span class="chart-empty-state-text">No Data Available</span>
+                    </div>
+                </div>
+                <div id="speedtest-last-run" class="text-muted small mt-2 d-none">
+                    <span class="material-icons align-middle me-1" style="font-size: 14px;" aria-hidden="true">schedule</span>
+                    Last run: <span id="speedtest-last-ts">–</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- MAP -->
-    <div class="col-12 col-xl-8 dashboard-map-col">
+    <div class="dashboard-map-col">
         <div class="card h-100">
             <div class="card-header">
                 <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -469,8 +764,8 @@
         </div>
     </div>
 
-    <!-- RECENT PEERS - Mobile: order-2 (after map), XL: order-3 with offset to align under Speedtest -->
-    <div class="col-12 col-xl-4 offset-xl-8 order-2 order-xl-3 dashboard-recent-peers-col">
+    <!-- RECENT PEERS -->
+    <div class="dashboard-recent-peers-col">
         <div class="card d-flex flex-column recent-peers-card">
             <div class="card-header">
                 <h3 class="h5 mb-0">
@@ -478,40 +773,12 @@
                     Recent Peer Activity
                 </h3>
             </div>
-            <div class="card-body flex-grow-1">
+            <div class="card-body flex-grow-1" data-ui-lint-allow="nested-scroll">
                 <div id="recent-peers">
                     <div class="text-center py-4">
                         <div class="spinner-border text-primary" role="status">
                             <span class="visually-hidden">Loading...</span>
                         </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- SPEEDTEST - Mobile: order-3 (last), XL: order-2 (next to map) -->
-    <div class="col-12 col-xl-4 order-3 order-xl-2 dashboard-speedtest-col">
-        <div class="card speedtest-card">
-            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <h3 class="h5 mb-0">
-                    <span class="material-icons align-middle me-1" aria-hidden="true">speed</span>
-                    Speedtest
-                </h3>
-                <select id="speedtest-range" class="form-select form-select-sm" style="width: auto;" aria-label="Select time range">
-                    <option value="7d" selected>7 d</option>
-                    <option value="30d">30 d</option>
-                    <option value="90d">90 d</option>
-                    <option value="180d">180 d</option>
-                    <option value="y1">1 y</option>
-                </select>
-            </div>
-            <div class="card-body">
-                <div style="position: relative; height: 220px;">
-                    <canvas id="speedtest-chart"></canvas>
-                    <div id="speedtest-chart-empty" class="chart-empty-state d-none" style="position: absolute; inset: 0;">
-                        <span class="material-icons">show_chart</span>
-                        <span class="chart-empty-state-text">No Speedtest Data Available</span>
                     </div>
                 </div>
             </div>
@@ -536,7 +803,7 @@
     const PEER_MAP_FLYTO_DURATION_SEC = 1.2;
     const PEER_MAP_POPUP_DELAY_MS = 1250;
     let cachedPeerLocations = [];
-    let peerMarkerMap = {};
+    let peerMarkerMap = new Map();
     let userZoomedToPeer = false;
     let userZoomResetTimer = null;
     let peerMap = null;
@@ -545,6 +812,7 @@
     let leafletReady = false;
     let refreshScheduler = null;
     let mapResizeBound = false;
+    let dashboardResizeTimer = null;
     let themeObserver = null;
     let activeTileSources = [];
     let activeTileIndex = 0;
@@ -569,6 +837,14 @@
         : (...args) => { if (DEBUG) console.log('[Dashboard]', ...args); };
     const clearElement = window.WBShared?.clearElement || ((el) => { if (el) el.replaceChildren(); });
     const isAbortError = window.WBShared?.isAbortError || ((err) => err?.code === 'ABORTED' || err?.name === 'AbortError' || err?.message === 'Request cancelled');
+    
+    /**
+     * Sanitize string for use in HTML element IDs
+     * Replaces any character that isn't alphanumeric, hyphen, or underscore
+     */
+    function toSafeId(value) {
+        return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
     const formatBytes = window.WBShared?.formatBytes || ((bytes) => {
         if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
         const k = 1024;
@@ -897,7 +1173,7 @@
 
                     // Use marker key consistent with marker generation
                     const markerKey = makeMarkerKey(lat, lon);
-                    const marker = peerMarkerMap[markerKey];
+                    const marker = peerMarkerMap.get(markerKey);
 
                     // Use flyTo for smoother, more reliable navigation
                     peerMap.flyTo([lat, lon], 14, { animate: true, duration: PEER_MAP_FLYTO_DURATION_SEC });
@@ -1092,8 +1368,8 @@
         }, 100);
         if (!mapResizeBound) {
             window.addEventListener('resize', () => {
-                clearTimeout(window._dashboardResizeTimer);
-                window._dashboardResizeTimer = setTimeout(() => {
+                clearTimeout(dashboardResizeTimer);
+                dashboardResizeTimer = setTimeout(() => {
                     if (peerMap && peerMap.getContainer()) peerMap.invalidateSize();
                 }, 150);
             });
@@ -1144,16 +1420,16 @@
             cachedPeerLocations = locs;
 
             if (!locs.length) {
-                for (const marker of Object.values(peerMarkerMap)) {
+                for (const marker of peerMarkerMap.values()) {
                     markerLayer.removeLayer(marker);
                 }
-                peerMarkerMap = {};
+                peerMarkerMap.clear();
                 setMapBadgeState(badge, 'No peers located');
                 resetMapToWorld();
                 return true;
             }
 
-            const nextPeerMarkerMap = {};
+            const nextPeerMarkerMap = new Map();
             const validLocs = [];
 
             // Create/update pulsating markers for each peer location
@@ -1171,7 +1447,7 @@
                 validLocs.push(p);
 
                 const markerKey = makeMarkerKey(lat, lon);
-                if (nextPeerMarkerMap[markerKey]) return;
+                if (nextPeerMarkerMap.has(markerKey)) return;
 
                 const isConnected = Boolean(p.connected);
 
@@ -1202,7 +1478,7 @@
                     peerCount,
                 );
 
-                let marker = peerMarkerMap[markerKey];
+                let marker = peerMarkerMap.get(markerKey);
                 if (marker) {
                     marker.setIcon(pulseIcon);
                     if (marker.getPopup()) {
@@ -1225,11 +1501,11 @@
                     });
                     markerLayer.addLayer(marker);
                 }
-                nextPeerMarkerMap[markerKey] = marker;
+                nextPeerMarkerMap.set(markerKey, marker);
             });
 
-            for (const [markerKey, marker] of Object.entries(peerMarkerMap)) {
-                if (!nextPeerMarkerMap[markerKey]) {
+            for (const [markerKey, marker] of peerMarkerMap.entries()) {
+                if (!nextPeerMarkerMap.has(markerKey)) {
                     markerLayer.removeLayer(marker);
                 }
             }
@@ -1281,9 +1557,20 @@
 
     function loadScript(src) {
         return new Promise((resolve, reject) => {
+            const existing = document.querySelector(`script[src="${src}"]`);
+            if (existing) {
+                if (existing.dataset.loaded === 'true') return resolve();
+                existing.addEventListener('load', resolve, { once: true });
+                existing.addEventListener('error', reject, { once: true });
+                return;
+            }
+
             const s = document.createElement('script');
             s.src = src;
-            s.onload = resolve;
+            s.onload = () => {
+                s.dataset.loaded = 'true';
+                resolve();
+            };
             s.onerror = reject;
             document.head.appendChild(s);
         });
@@ -1391,9 +1678,9 @@
                 clearTimeout(tileWatchdogTimer);
                 tileWatchdogTimer = null;
             }
-            if (window._dashboardResizeTimer) {
-                clearTimeout(window._dashboardResizeTimer);
-                window._dashboardResizeTimer = null;
+            if (dashboardResizeTimer) {
+                clearTimeout(dashboardResizeTimer);
+                dashboardResizeTimer = null;
             }
             if (refreshScheduler) {
                 refreshScheduler.destroy();
@@ -1413,7 +1700,6 @@
 
     // ─── SPEEDTEST CHART ─────────────────────────────────────────
     let speedtestChart = null;
-    let speedtestDataLoaded = false;
 
     // Listen for speedtest completion events to refresh chart
     document.addEventListener('speedtest-completed', () => {
@@ -1433,16 +1719,16 @@
     }
 
     function getChartColors() {
-        const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+        // Use same color scheme as network gauges for visual consistency
+        const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--wb-accent-red').trim() || '#ff6384';
         return {
-            textColor: dark ? '#b7c2d0' : '#6c757d',
-            gridColor: dark ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.08)',
-            dlColor: 'rgba(13, 110, 253, 0.85)',
-            dlBg: 'rgba(13, 110, 253, 0.1)',
-            ulColor: 'rgba(25, 135, 84, 0.85)',
-            ulBg: 'rgba(25, 135, 84, 0.1)',
+            textColor: document.documentElement.getAttribute('data-bs-theme') === 'dark' ? '#b7c2d0' : '#6c757d',
+            gridColor: document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.08)',
+            dlColor: primaryColor,
+            dlBg: 'rgba(255, 99, 132, 0.1)',
+            ulColor: document.documentElement.getAttribute('data-bs-theme') === 'dark' ? '#6edff6' : '#0dcaf0',
+            ulBg: document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'rgba(110, 223, 246, 0.12)' : 'rgba(13, 202, 240, 0.12)',
             rttColor: 'rgba(255, 193, 7, 0.85)',
-            maxLineColor: 'rgba(220, 53, 69, 0.5)',
         };
     }
 
@@ -1475,20 +1761,23 @@
                             usePointStyle: true, 
                             pointStyle: 'circle', 
                             padding: 16,
-                            filter: function(legendItem, chartData) {
-                                // Hide max bandwidth legend entries
-                                const label = legendItem.text || '';
-                                return !label.includes('max (');
-                            }
                         },
                     },
                     tooltip: {
-                        filter: function(tooltipItem) {
-                            const label = tooltipItem?.dataset?.label || '';
-                            return !label.includes('max (');
-                        },
+                        // Position tooltip at top of chart to avoid covering data
+                        position: 'nearest',
+                        yAlign: 'bottom',
+                        xAlign: 'center',
+                        caretPadding: 8,
+                        // Compact styling for mobile
+                        padding: window.innerWidth < 768 ? 6 : 10,
+                        boxPadding: window.innerWidth < 768 ? 2 : 4,
+                        titleFont: { size: window.innerWidth < 768 ? 11 : 13 },
+                        bodyFont: { size: window.innerWidth < 768 ? 11 : 12 },
                         callbacks: {
                             labelColor: function(ctx) {
+                                const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--wb-accent-red').trim() || '#ff6384';
+                                
                                 if (ctx.dataset.label?.includes('RTT')) {
                                     return {
                                         borderColor: 'rgba(255, 193, 7, 1)',
@@ -1497,13 +1786,14 @@
                                 }
                                 if (ctx.dataset.label?.includes('Upload')) {
                                     return {
-                                        borderColor: 'rgba(25, 135, 84, 1)',
-                                        backgroundColor: 'rgba(25, 135, 84, 1)',
+                                        borderColor: document.documentElement.getAttribute('data-bs-theme') === 'dark' ? '#6edff6' : '#0dcaf0',
+                                        backgroundColor: document.documentElement.getAttribute('data-bs-theme') === 'dark' ? '#6edff6' : '#0dcaf0',
                                     };
                                 }
+                                // Download - primary color
                                 return {
-                                    borderColor: 'rgba(13, 110, 253, 1)',
-                                    backgroundColor: 'rgba(13, 110, 253, 1)',
+                                    borderColor: primaryColor,
+                                    backgroundColor: primaryColor,
                                 };
                             },
                             label: function(ctx) {
@@ -1551,14 +1841,12 @@
 
     async function refreshSpeedtestChart(signal) {
         try {
-            const range = speedtestRange?.value || '24h';
+            const range = speedtestRange?.value || '7d';
             const res = await api('GET', `/api/wireguard/speedtest/history?range_key=${range}`, null, { signal, timeoutMs: API_TIMEOUT_MS });
             const data = res.data || res;
             const history = data.history || [];
-            const downMax = data.downstream_mbit || 0;
-            const upMax = data.upstream_mbit || 0;
 
-            const chartRow = document.getElementById('speedtest-chart-row');
+
             const emptyEl = document.getElementById('speedtest-chart-empty');
             const canvas = document.getElementById('speedtest-chart');
             const speedtestDownload = document.getElementById('speedtest-download');
@@ -1631,34 +1919,6 @@
                 },
             ];
 
-            // Add provider-rated max lines if configured
-            if (downMax > 0) {
-                datasets.push({
-                    label: `Downstream max (${downMax} Mbit/s)`,
-                    data: okHistory.map(() => downMax),
-                    borderColor: colors.maxLineColor,
-                    backgroundColor: 'rgba(220, 53, 69, 0.05)',
-                    borderWidth: 1,
-                    pointRadius: 0,
-                    fill: 'origin',
-                    yAxisID: 'y',
-                    order: 10,
-                });
-            }
-            if (upMax > 0) {
-                datasets.push({
-                    label: `Upstream max (${upMax} Mbit/s)`,
-                    data: okHistory.map(() => upMax),
-                    borderColor: 'rgba(25, 135, 84, 0.4)',
-                    backgroundColor: 'rgba(25, 135, 84, 0.05)',
-                    borderWidth: 1,
-                    pointRadius: 0,
-                    fill: 'origin',
-                    yAxisID: 'y',
-                    order: 10,
-                });
-            }
-
             speedtestChart.data.labels = labels;
             speedtestChart.data.datasets = datasets;
             speedtestChart.update();
@@ -1669,10 +1929,19 @@
                 setBandwidthMetric(latest.download_mbit, latest.upload_mbit);
             }
 
-            speedtestDataLoaded = true;
+            // Update last-run timestamp
+            const lastRunEl = document.getElementById('speedtest-last-run');
+            const lastTsEl = document.getElementById('speedtest-last-ts');
+            if (latest && lastRunEl && lastTsEl) {
+                const d = new Date(latest.ts);
+                lastTsEl.textContent = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+                    + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                lastRunEl.classList.remove('d-none');
+            }
+
             return true;
         } catch (e) {
-            if (e?.code === 'ABORTED' || e?.name === 'AbortError') return true;
+            if (isAbortError(e)) return true;
             console.error('Speedtest chart error:', e);
             const speedtestDownload = document.getElementById('speedtest-download');
             const speedtestUpload = document.getElementById('speedtest-upload');
@@ -1686,6 +1955,22 @@
     new MutationObserver(() => {
         if (!speedtestChart) return;
         const colors = getChartColors();
+        
+        // Update dataset colors (Download/Upload)
+        if (speedtestChart.data.datasets.length > 0) {
+            // Download dataset (index 0)
+            if (speedtestChart.data.datasets[0]) {
+                speedtestChart.data.datasets[0].borderColor = colors.dlColor;
+                speedtestChart.data.datasets[0].backgroundColor = colors.dlBg;
+            }
+            // Upload dataset (index 1)
+            if (speedtestChart.data.datasets[1]) {
+                speedtestChart.data.datasets[1].borderColor = colors.ulColor;
+                speedtestChart.data.datasets[1].backgroundColor = colors.ulBg;
+            }
+        }
+        
+        // Update axis and legend colors
         if (speedtestChart.options.plugins?.legend?.labels) {
             speedtestChart.options.plugins.legend.labels.color = colors.textColor;
         }
@@ -1698,5 +1983,449 @@
         if (speedtestChart.options.scales?.y1?.title) speedtestChart.options.scales.y1.title.color = colors.textColor;
         speedtestChart.update();
     }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-bs-theme'] });
+
+    // ─── NETWORK STATS ──────────────────────────────────────────
+    const NETWORK_STATS_REFRESH_MS = 2000;
+    const SPARKLINE_HISTORY_LENGTH = 120; // 1 hour @ 30s intervals
+    const SPARKLINE_ANIMATION_MS = 300; // Smooth transition duration
+    
+    let networkGauges = {}; // { interfaceName: true }
+    let networkHistory = {}; // { interfaceName: [totalRateValues] }
+    let networkTargetHistory = {}; // { interfaceName: [targetValues] } for animation
+    let networkAnimationFrames = {}; // { interfaceName: requestAnimationFrame ID }
+    let networkHistoryLoaded = {}; // { interfaceName: true } - track which interfaces have loaded history
+    let networkStatsTimer = null;
+    let networkStatsAbort = null;
+    
+    const networkGaugesContainer = document.getElementById('network-gauges-container');
+    const networkStatsStatus = document.getElementById('network-stats-status');
+    
+    /**
+     * Format bytes/sec to human-readable rate string
+     */
+    function formatRate(bytesPerSec) {
+        if (!Number.isFinite(bytesPerSec) || bytesPerSec < 0) return '0 B/s';
+        
+        if (bytesPerSec >= 1073741824) { // >= 1 GB/s
+            return (bytesPerSec / 1073741824).toFixed(1) + ' GB/s';
+        }
+        if (bytesPerSec >= 1048576) { // >= 1 MB/s
+            return (bytesPerSec / 1048576).toFixed(1) + ' MB/s';
+        }
+        if (bytesPerSec >= 1024) { // >= 1 KB/s
+            return (bytesPerSec / 1024).toFixed(1) + ' KB/s';
+        }
+        return Math.round(bytesPerSec) + ' B/s';
+    }
+    
+    /**
+     * Load historical network stats for an interface (1 hour of data)
+     * @param {string} ifaceName - Interface name
+     * @returns {Promise<number[]>} Array of total rate values
+     */
+    async function loadNetworkHistory(ifaceName) {
+        if (networkHistoryLoaded[ifaceName]) return null;
+        
+        try {
+            const res = await api('GET', `/api/network/stats/history?interface=${encodeURIComponent(ifaceName)}&range=1h`, null, {
+                timeoutMs: 10000,
+            });
+            
+            const data = res.data || res;
+            const points = data.points || [];
+            
+            if (points.length === 0) {
+                networkHistoryLoaded[ifaceName] = true;
+                return null;
+            }
+            
+            // Extract total values from historical data
+            const history = points.map(pt => pt.total || 0);
+            
+            // Pad or trim to SPARKLINE_HISTORY_LENGTH
+            while (history.length < SPARKLINE_HISTORY_LENGTH) {
+                history.unshift(0); // Pad with zeros at the start
+            }
+            if (history.length > SPARKLINE_HISTORY_LENGTH) {
+                history.splice(0, history.length - SPARKLINE_HISTORY_LENGTH);
+            }
+            
+            networkHistoryLoaded[ifaceName] = true;
+            return history;
+        } catch (e) {
+            console.warn(`Failed to load history for ${ifaceName}:`, e.message);
+            networkHistoryLoaded[ifaceName] = true; // Don't retry on error
+            return null;
+        }
+    }
+    
+    /**
+     * Draw a sparkline on a canvas element with smooth animation
+     * @param {HTMLCanvasElement} canvas
+     * @param {number[]} data - Array of rate values (current interpolated)
+     * @param {number} [maxOverride] - Optional global max for consistent scaling
+     */
+    function drawSparkline(canvas, data, maxOverride) {
+        if (!canvas || !data || data.length < 2) return;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.offsetWidth;
+        const h = canvas.offsetHeight;
+        
+        // Only resize if dimensions changed
+        if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+            canvas.width = w * dpr;
+            canvas.height = h * dpr;
+            canvas.style.width = w + 'px';
+            canvas.style.height = h + 'px';
+        }
+        
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.scale(dpr, dpr);
+        ctx.clearRect(0, 0, w, h);
+
+        // Skip drawing if all values are zero (idle interface)
+        if (data.every(v => v === 0)) return;
+
+        // Use global max if provided, otherwise local max (min 1 KB/s)
+        const max = maxOverride || Math.max(...data, 1024);
+        const strokeColor = getComputedStyle(document.documentElement).getPropertyValue('--wb-accent-red').trim() || '#ff6384';
+        const accentRgb = getComputedStyle(document.documentElement).getPropertyValue('--wb-accent-red-rgb').trim() || '255, 99, 132';
+        const fillColor = `rgba(${accentRgb}, 0.1)`;
+
+        // Draw filled area
+        ctx.beginPath();
+        ctx.moveTo(0, h);
+        data.forEach((v, i) => {
+            const x = (i / (data.length - 1)) * w;
+            const y = h - (v / max) * (h - 2);
+            ctx.lineTo(x, y);
+        });
+        ctx.lineTo(w, h);
+        ctx.closePath();
+        ctx.fillStyle = fillColor;
+        ctx.fill();
+
+        // Draw line
+        ctx.beginPath();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = strokeColor;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        data.forEach((v, i) => {
+            const x = (i / (data.length - 1)) * w;
+            const y = h - (v / max) * (h - 2);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+    }
+    
+    /**
+     * Animate sparkline from current values to target values
+     * @param {string} ifaceName - Interface name
+     * @param {HTMLCanvasElement} canvas
+     * @param {number} globalMax - Global max for scaling
+     */
+    function animateSparkline(ifaceName, canvas, globalMax) {
+        // Cancel any running animation for this interface
+        if (networkAnimationFrames[ifaceName]) {
+            cancelAnimationFrame(networkAnimationFrames[ifaceName]);
+        }
+        
+        const current = networkHistory[ifaceName];
+        const target = networkTargetHistory[ifaceName];
+        
+        if (!current || !target || current.length !== target.length) {
+            // No animation needed, just draw target
+            if (target) {
+                networkHistory[ifaceName] = [...target];
+                drawSparkline(canvas, target, globalMax);
+            }
+            return;
+        }
+        
+        const startTime = performance.now();
+        const startValues = [...current];
+        
+        function animate(now) {
+            const elapsed = now - startTime;
+            const progress = Math.min(1, elapsed / SPARKLINE_ANIMATION_MS);
+            
+            // Ease-out cubic for smooth deceleration
+            const eased = 1 - Math.pow(1 - progress, 3);
+            
+            // Interpolate each value
+            const interpolated = startValues.map((start, i) => {
+                return start + (target[i] - start) * eased;
+            });
+            
+            networkHistory[ifaceName] = interpolated;
+            drawSparkline(canvas, interpolated, globalMax);
+            
+            if (progress < 1) {
+                networkAnimationFrames[ifaceName] = requestAnimationFrame(animate);
+            } else {
+                // Ensure we end exactly at target
+                networkHistory[ifaceName] = [...target];
+                delete networkAnimationFrames[ifaceName];
+            }
+        }
+        
+        networkAnimationFrames[ifaceName] = requestAnimationFrame(animate);
+    }
+
+    /**
+     * Create or update network item element for an interface
+     * @param {Object} iface - Interface data
+     * @param {HTMLElement} container - Container element
+     * @param {number} globalMax - Global max rate for consistent scaling
+     */
+    function updateGaugeElement(iface, container, globalMax) {
+        const safeId = toSafeId(iface.name);
+        let el = document.getElementById(`net-${safeId}`);
+        let isNewElement = false;
+
+        if (!el) {
+            isNewElement = true;
+            el = document.createElement('div');
+            el.id = `net-${safeId}`;
+            el.className = 'network-item';
+
+            el.innerHTML = `
+                <div class="network-item-header">
+                    <span class="network-item-name">${iface.name}</span>
+                    <span class="network-item-total" id="net-total-${safeId}">0 B/s</span>
+                </div>
+                <canvas class="network-sparkline" id="net-spark-${safeId}"></canvas>
+                <div class="network-item-bar">
+                    <div class="network-item-bar-fill" id="net-bar-${safeId}"></div>
+                </div>
+                <div class="network-item-rates">
+                    <span class="rx" id="net-rx-${safeId}">↓ 0 B/s</span>
+                    <span class="tx" id="net-tx-${safeId}">↑ 0 B/s</span>
+                </div>
+            `;
+
+            container.appendChild(el);
+            
+            // Load historical data for new interface (async, non-blocking)
+            loadNetworkHistory(iface.name).then(history => {
+                if (history && history.length > 0) {
+                    networkHistory[iface.name] = history;
+                    networkTargetHistory[iface.name] = [...history];
+                    // Redraw sparkline with historical data
+                    const sparkCanvas = document.getElementById(`net-spark-${safeId}`);
+                    if (sparkCanvas) {
+                        const sparklineGlobalMax = Math.max(
+                            1024,
+                            ...Object.values(networkTargetHistory).flat()
+                        );
+                        drawSparkline(sparkCanvas, history, sparklineGlobalMax);
+                    }
+                }
+            });
+        }
+
+        const total = iface.rx_rate + iface.tx_rate;
+
+        // Initialize history arrays if needed (only if not loaded from history)
+        if (!networkHistory[iface.name]) {
+            networkHistory[iface.name] = new Array(SPARKLINE_HISTORY_LENGTH).fill(0);
+        }
+        if (!networkTargetHistory[iface.name]) {
+            networkTargetHistory[iface.name] = new Array(SPARKLINE_HISTORY_LENGTH).fill(0);
+        }
+        
+        // Shift target history left and add new value (creates scrolling effect)
+        networkTargetHistory[iface.name].shift();
+        networkTargetHistory[iface.name].push(total);
+
+        const totalEl = document.getElementById(`net-total-${safeId}`);
+        const rxEl = document.getElementById(`net-rx-${safeId}`);
+        const txEl = document.getElementById(`net-tx-${safeId}`);
+        const barEl = document.getElementById(`net-bar-${safeId}`);
+
+        if (totalEl) totalEl.textContent = total > 0 ? formatRate(total) : 'Idle';
+        if (rxEl) rxEl.textContent = `↓ ${formatRate(iface.rx_rate)}`;
+        if (txEl) txEl.textContent = `↑ ${formatRate(iface.tx_rate)}`;
+
+        // Bar uses global max for consistent comparison
+        const pct = Math.min(100, (total / globalMax) * 100);
+
+        if (barEl) {
+            barEl.style.width = pct + '%';
+            barEl.style.opacity = total > 0 ? 1 : 0.3;
+        }
+
+        el.classList.toggle('active', total > 0);
+        el.title = `Interface: ${iface.name}\n${iface.is_wg ? 'WireGuard' : 'Host'} Interface`;
+
+        // Animate sparkline with global max for comparison
+        const sparkCanvas = document.getElementById(`net-spark-${safeId}`);
+        if (sparkCanvas && networkTargetHistory[iface.name]) {
+            // Compute global sparkline max from all interface target histories
+            const sparklineGlobalMax = Math.max(
+                1024,
+                ...Object.values(networkTargetHistory).flat()
+            );
+            animateSparkline(iface.name, sparkCanvas, sparklineGlobalMax);
+        }
+
+        return el;
+    }
+    
+    /**
+     * Fetch network stats and update gauges
+     */
+    async function refreshNetworkStats() {
+        if (!networkGaugesContainer) return;
+        
+        try {
+            if (networkStatsAbort) {
+                networkStatsAbort.abort();
+            }
+            networkStatsAbort = new AbortController();
+            
+            const res = await api('GET', '/api/network/stats', null, {
+                signal: networkStatsAbort.signal,
+                timeoutMs: 5000,
+            });
+            
+            const data = res.data || res;
+            const interfaces = data.interfaces || [];
+            
+            if (interfaces.length === 0) {
+                networkGaugesContainer.innerHTML = `
+                    <div class="text-center text-muted py-3">
+                        <span class="material-icons mb-2" style="font-size: 2rem;">wifi_off</span>
+                        <div>No network interfaces found</div>
+                    </div>
+                `;
+                if (networkStatsStatus) {
+                    networkStatsStatus.textContent = 'No interfaces';
+                    networkStatsStatus.className = 'badge bg-warning text-dark';
+                }
+                return;
+            }
+            
+            // Clear loading spinner on first data
+            const spinner = networkGaugesContainer.querySelector('.spinner-border');
+            if (spinner) {
+                networkGaugesContainer.innerHTML = '';
+            }
+            
+            // Track existing gauges
+            const currentInterfaces = new Set(interfaces.map(i => i.name));
+            
+            // Remove items for interfaces that no longer exist
+            for (const name of Object.keys(networkGauges)) {
+                if (!currentInterfaces.has(name)) {
+                    const el = document.getElementById(`net-${toSafeId(name)}`);
+                    if (el) el.remove();
+                    delete networkGauges[name];
+                }
+            }
+            
+            // Sort by traffic (highest first) for clear priority
+            const sortedInterfaces = [...interfaces].sort((a, b) => {
+                const aRate = (a.rx_rate || 0) + (a.tx_rate || 0);
+                const bRate = (b.rx_rate || 0) + (b.tx_rate || 0);
+                return bRate - aRate;
+            });
+
+            // Compute global max for consistent bar scaling (min 1 Mbit/s)
+            const globalMax = Math.max(
+                125000,
+                ...interfaces.map(i => (i.rx_rate || 0) + (i.tx_rate || 0))
+            );
+
+            // Update/create network items for each interface
+            for (const iface of sortedInterfaces) {
+                updateGaugeElement(iface, networkGaugesContainer, globalMax);
+                networkGauges[iface.name] = true;
+            }
+
+            // Reorder DOM elements to match sorted order (prevents layout jitter)
+            const orderedElements = sortedInterfaces
+                .map(i => document.getElementById(`net-${toSafeId(i.name)}`))
+                .filter(Boolean);
+            networkGaugesContainer.replaceChildren(...orderedElements);
+            
+            // Count active interfaces (any traffic)
+            const activeCount = interfaces.filter(i => i.rx_rate > 0 || i.tx_rate > 0).length;
+            const wgCount = interfaces.filter(i => i.is_wg).length;
+            
+            if (networkStatsStatus) {
+                if (activeCount > 0) {
+                    networkStatsStatus.textContent = `${activeCount} active`;
+                    networkStatsStatus.className = 'badge bg-primary';
+                } else {
+                    networkStatsStatus.textContent = wgCount > 0 ? `${wgCount} WG` : 'Idle';
+                    networkStatsStatus.className = 'badge bg-secondary';
+                }
+            }
+            
+        } catch (e) {
+            if (isAbortError(e)) return;
+            console.error('Network stats error:', e);
+            if (networkStatsStatus) {
+                networkStatsStatus.textContent = 'Error';
+                networkStatsStatus.className = 'badge bg-danger';
+            }
+        }
+    }
+    
+    /**
+     * Start periodic network stats refresh
+     */
+    function startNetworkStatsRefresh() {
+        if (networkStatsTimer) return;
+        refreshNetworkStats();
+        networkStatsTimer = setInterval(refreshNetworkStats, NETWORK_STATS_REFRESH_MS);
+    }
+    
+    /**
+     * Stop network stats refresh
+     */
+    function stopNetworkStatsRefresh() {
+        if (networkStatsTimer) {
+            clearInterval(networkStatsTimer);
+            networkStatsTimer = null;
+        }
+        if (networkStatsAbort) {
+            networkStatsAbort.abort();
+            networkStatsAbort = null;
+        }
+        // Cancel all running sparkline animations
+        for (const frameId of Object.values(networkAnimationFrames)) {
+            cancelAnimationFrame(frameId);
+        }
+        networkAnimationFrames = {};
+        // Reset history loaded flags so we reload on next start
+        networkHistoryLoaded = {};
+    }
+    
+    // Start network stats when page loads
+    if (networkGaugesContainer) {
+        startNetworkStatsRefresh();
+        
+        // Pause when tab hidden, resume when visible
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                stopNetworkStatsRefresh();
+            } else {
+                startNetworkStatsRefresh();
+            }
+        });
+        
+        // Cleanup on unload
+        window.addEventListener('beforeunload', stopNetworkStatsRefresh);
+        
+        // Theme changes are handled via CSS custom properties, no JS update needed
+    }
 </script>
 {% endblock %}

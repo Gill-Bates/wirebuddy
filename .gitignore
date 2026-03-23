@@ -37,8 +37,8 @@ BUILD_INFO
 .env
 
 # Linting
-ui-lint-output/
 tools/ui-lint/node_modules
+tools/ui-lint/ui-lint-summary.json
 
 # Documentation
 site/

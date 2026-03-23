@@ -34,7 +34,7 @@
                             <hr>
                             <div class="mb-3">
                                 <div class="form-check form-switch">
-                                    <input class="form-check-input" type="checkbox" id="wg-use-psk"{% if not user['is_admin'] %} disabled{% endif %}>
+                                    <input class="form-check-input" type="checkbox" id="wg-use-psk"{% if settings.wg_use_psk %} checked{% endif %}{% if not user['is_admin'] %} disabled{% endif %}>
                                     <label class="form-check-label" for="wg-use-psk">Use PresharedKey</label>
                                 </div>
                                 <small class="text-muted">Add a PresharedKey to new peers for post-quantum
@@ -53,11 +53,11 @@
                                         name="wireguard_psk_manual" value="" placeholder="No key generated yet"
                                         autocomplete="new-password" spellcheck="false" autocapitalize="off"
                                         autocorrect="off" data-lpignore="true" data-1p-ignore="true"{% if not user['is_admin'] %} readonly{% endif %}>
-                                    <button class="btn btn-outline-secondary btn-icon d-inline-flex align-items-center justify-content-center" type="button" id="psk-copy-btn"
+                                    <button class="btn btn-outline-secondary btn-icon" type="button" id="psk-copy-btn"
                                         title="Copy to Clipboard">
                                         <span class="material-icons">content_copy</span>
                                     </button>
-                                    <button class="btn btn-outline-secondary btn-icon d-inline-flex align-items-center justify-content-center" type="button" id="psk-toggle-visibility"
+                                    <button class="btn btn-outline-secondary btn-icon" type="button" id="psk-toggle-visibility"
                                         title="Show / Hide">
                                         <span class="material-icons">visibility</span>
                                     </button>
@@ -97,7 +97,7 @@
                     </div>
                     <div class="card-body">
                         <div class="form-check form-switch mb-2">
-                            <input class="form-check-input" type="checkbox" role="switch" id="traffic-analysis-toggle"{% if not user['is_admin'] %} disabled{% endif %}>
+                            <input class="form-check-input" type="checkbox" role="switch" id="traffic-analysis-toggle"{% if settings.traffic_analysis_enabled %} checked{% endif %}{% if not user['is_admin'] %} disabled{% endif %}>
                             <label class="form-check-label" for="traffic-analysis-toggle">Country Traffic Analysis</label>
                         </div>
                         <small class="text-muted">Analyze VPN traffic by destination country using conntrack</small>

@@ -12,242 +12,24 @@
     <link href="/static/vendor/material-icons.css" rel="stylesheet">
     <link href="/static/css/style.css" rel="stylesheet">
     <link href="/static/css/wb-ui-system.css" rel="stylesheet">
-    <style>
-        .status-navbar-actions {
-            gap: 0.45rem;
-        }
-
-        .status-navbar-actions .status-icon-btn {
-            width: 2.25rem;
-            height: 2.25rem;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 0.375rem;
-        }
-
-        .status-navbar-actions .status-icon-btn .material-icons {
-            font-size: 1.2rem;
-            line-height: 1;
-        }
-
-        @media (max-width: 575.98px) {
-            .status-navbar-actions {
-                gap: 0.25rem;
-            }
-
-            .status-navbar-actions .status-icon-btn {
-                width: 2.5rem;
-                height: 2.5rem;
-            }
-        }
-
-        /* Network Flow Diagram */
-        .flow-wrapper {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) 72px minmax(0, 1.1fr) 72px minmax(0, 1fr);
-            align-items: center;
-            gap: var(--wb-space-3, 24px);
-        }
-
-        .flow-node {
-            min-width: 0;
-            position: relative;
-            background:
-                linear-gradient(180deg, rgba(var(--bs-body-color-rgb), 0.03), rgba(var(--bs-body-color-rgb), 0)),
-                var(--bs-body-bg);
-            border: 1px solid rgba(var(--bs-body-color-rgb), 0.08);
-            border-radius: 14px;
-            padding: 1rem 0.9rem;
-            text-align: center;
-            box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
-            transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-        }
-
-        .flow-node::before {
-            content: "";
-            position: absolute;
-            inset: 0;
-            border-radius: inherit;
-            pointer-events: none;
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
-        }
-
-        .flow-node-active {
-            border-color: rgba(25, 135, 84, 0.38);
-            box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
-        }
-
-        .flow-node-inactive {
-            border-color: rgba(var(--bs-secondary-rgb), 0.24);
-            background:
-                linear-gradient(180deg, rgba(var(--bs-secondary-rgb), 0.05), rgba(var(--bs-secondary-rgb), 0.02)),
-                var(--bs-body-bg);
-        }
-
-        .flow-icon {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.55rem;
-            line-height: 1;
-            margin-bottom: 0.5rem;
-            color: var(--bs-body-color);
-        }
-
-        .flow-node-active .flow-icon {
-            color: var(--bs-success);
-        }
-
-        .flow-node-inactive .flow-icon {
-            color: var(--bs-secondary-color);
-        }
-
-        .flow-label {
-            font-size: 0.82rem;
-            font-weight: 700;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-        }
-
-        .flow-meta {
-            font-size: 0.78rem;
-            color: var(--bs-secondary-color);
-            font-family: monospace;
-            margin-top: 0.35rem;
-            overflow-wrap: normal;
-            word-break: normal;
-            white-space: nowrap;
-        }
-
-        .flow-node-inactive .flow-label,
-        .flow-node-inactive .flow-meta {
-            color: var(--bs-secondary-color);
-        }
-
-        .flow-connector {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-width: 0;
-        }
-
-        .flow-line {
-            position: relative;
-            height: 4px;
-            width: 100%;
-            max-width: 72px;
-            border-radius: 999px;
-            background: linear-gradient(
-                90deg,
-                rgba(25, 135, 84, 0.08),
-                rgba(25, 135, 84, 0.92),
-                rgba(25, 135, 84, 0.08)
-            );
-            background-size: 200% 100%;
-            animation: flow 1.6s linear infinite;
-            box-shadow: 0 0 0 1px rgba(25, 135, 84, 0.08);
-        }
-
-        .flow-line::after {
-            content: "";
-            position: absolute;
-            right: -2px;
-            top: 50%;
-            width: 10px;
-            height: 10px;
-            border-top: 2px solid currentColor;
-            border-right: 2px solid currentColor;
-            color: rgba(25, 135, 84, 0.92);
-            transform: translateY(-50%) rotate(45deg);
-        }
-
-        .flow-line-inactive {
-            background: linear-gradient(
-                90deg,
-                rgba(var(--bs-secondary-rgb), 0.08),
-                rgba(var(--bs-secondary-rgb), 0.55),
-                rgba(var(--bs-secondary-rgb), 0.08)
-            );
-            opacity: 0.75;
-            animation: none;
-            box-shadow: 0 0 0 1px rgba(var(--bs-secondary-rgb), 0.12);
-        }
-
-        .flow-line-inactive::after {
-            color: rgba(var(--bs-secondary-rgb), 0.65);
-        }
-
-        @keyframes flow {
-            0% { background-position: 200% 0; }
-            100% { background-position: -200% 0; }
-        }
-
-        /* Mobile/Tablet - stack vertically; explicit coarse-pointer clause covers iOS landscape */
-        @media (max-width: 991.98px), ((hover: none) and (pointer: coarse) and (orientation: landscape)) {
-            .flow-wrapper {
-                grid-template-columns: 1fr;
-                justify-items: stretch;
-            }
-
-            .flow-node {
-                width: 100%;
-                max-width: none;
-            }
-
-            .flow-connector {
-                width: 100%;
-                min-height: 38px;
-            }
-
-            .flow-line {
-                width: 4px;
-                height: 100%;
-                max-width: none;
-                animation: none;
-            }
-
-            .flow-line::after {
-                right: 50%;
-                top: auto;
-                bottom: -2px;
-                transform: translateX(50%) rotate(135deg);
-            }
-
-            .flow-line-inactive {
-                opacity: 0.8;
-            }
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-            .flow-node {
-                transition: none;
-            }
-
-            .flow-node-active {
-                transform: none;
-            }
-
-            .flow-line {
-                animation: none;
-            }
-        }
-    </style>
+    <link href="/static/css/status.css" rel="stylesheet">
 </head>
 <body>
     <noscript>
-        <div class="alert alert-warning m-3" role="alert">
-            <strong>JavaScript Required:</strong> Some features like theme switching require JavaScript to be enabled.
+        <div class="container mt-3">
+            <div class="alert alert-warning" role="alert">
+                <strong>JavaScript Required:</strong> Some features like theme switching require JavaScript to be enabled.
+            </div>
         </div>
     </noscript>
-    <nav class="navbar navbar-expand-lg navbar-dark">
+    <nav class="navbar navbar-expand-lg" data-bs-theme="dark">
         <div class="container-fluid">
             <a class="navbar-brand d-flex align-items-center" href="/status">
                 <img src="/static/img/wirebuddy_1c.svg" alt="WireBuddy" class="navbar-logo">
             </a>
             <div class="d-flex align-items-center status-navbar-actions">
                 <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn status-icon-btn"
-                    data-action="toggle-theme" aria-label="Toggle theme">
+                    data-action="toggle-theme" aria-label="Toggle theme" title="Toggle theme">
                     <span class="material-icons" id="theme-icon">dark_mode</span>
                 </button>
                 <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn status-icon-btn"
@@ -258,6 +40,10 @@
         </div>
     </nav>
 
+    {% set _public_client_ip = public_client_ip|default(None, true) %}
+    {% set _interface_name = interface_name|default(None, true) %}
+    {% set _outbound_ip = outbound_ip|default(None, true) %}
+
     <main class="container py-4 py-md-5 status-main">
 
         <!-- Network Flow Diagram -->
@@ -267,37 +53,37 @@
 
                 <div class="flow-wrapper" data-ui-lint="status-flow">
                     <!-- Client Node -->
-                    <div class="flow-node{% if public_client_ip != 'n/a' %} flow-node-active{% else %} flow-node-inactive{% endif %}" data-flow-node="client">
+                    <div class="flow-node{% if _public_client_ip %} flow-node-active{% else %} flow-node-inactive{% endif %}" data-flow-node="client">
                         <span class="material-icons flow-icon">devices</span>
                         <div class="flow-label">Client</div>
                         <div class="flow-meta">
-                            {{ public_client_ip|default('n/a')|truncate_ip(24) }}
+                            <span class="flow-meta-text"{% if _public_client_ip %} title="{{ _public_client_ip|e }}"{% endif %}>{{ (_public_client_ip or 'n/a')|e }}</span>
                         </div>
                     </div>
 
                     <!-- Connector -->
                     <div class="flow-connector" data-flow-connector="client-wireguard">
-                        <div class="flow-line{% if interface_name == 'n/a' %} flow-line-inactive{% endif %}" data-flow-line="client-wireguard"></div>
+                        <div class="flow-line{% if not _interface_name %} flow-line-inactive{% endif %}" data-flow-line="client-wireguard"></div>
                     </div>
 
                     <!-- WireGuard Node -->
-                    <div class="flow-node{% if interface_name != 'n/a' %} flow-node-active{% else %} flow-node-inactive{% endif %}" data-flow-node="wireguard">
+                    <div class="flow-node{% if _interface_name %} flow-node-active{% else %} flow-node-inactive{% endif %}" data-flow-node="wireguard">
                         <span class="material-icons flow-icon">vpn_lock</span>
                         <div class="flow-label">WireGuard</div>
-                        <div class="flow-meta">{{ interface_name }}</div>
+                        <div class="flow-meta">{{ (_interface_name or 'n/a')|e }}</div>
                     </div>
 
                     <!-- Connector -->
                     <div class="flow-connector" data-flow-connector="wireguard-internet">
-                        <div class="flow-line{% if outbound_ip == 'n/a' %} flow-line-inactive{% endif %}" data-flow-line="wireguard-internet"></div>
+                        <div class="flow-line{% if not _outbound_ip %} flow-line-inactive{% endif %}" data-flow-line="wireguard-internet"></div>
                     </div>
 
                     <!-- Internet Node -->
-                    <div class="flow-node{% if outbound_ip != 'n/a' %} flow-node-active{% else %} flow-node-inactive{% endif %}" data-flow-node="internet">
+                    <div class="flow-node{% if _outbound_ip %} flow-node-active{% else %} flow-node-inactive{% endif %}" data-flow-node="internet">
                         <span class="material-icons flow-icon">public</span>
                         <div class="flow-label">Internet</div>
                         <div class="flow-meta">
-                            {{ outbound_ip|default('n/a')|truncate_ip(24) }}
+                            <span class="flow-meta-text"{% if _outbound_ip %} title="{{ _outbound_ip|e }}"{% endif %}>{{ (_outbound_ip or 'n/a')|e }}</span>
                         </div>
                     </div>
                 </div>
@@ -305,38 +91,39 @@
         </div>
 
         <!-- Detailed IP Information -->
-        <div class="card mb-3">
-            <div class="card-body">
-                <div class="row g-3">
-                    <div class="col-12 col-md-6">
-                        <div class="small text-muted">Inbound IP</div>
-                        <div class="font-monospace">{{ client_ip|wbr_ip }}</div>
-                    </div>
-                    <div class="col-12 col-md-6">
-                        <div class="small text-muted">Public Client IP</div>
+        <div class="row g-3 mb-3">
+            <div class="col-12 col-md-6">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h3 class="h6 mb-1">Public Client IP</h3>
                         <div class="font-monospace">{{ public_client_ip|wbr_ip }}</div>
                         {{ geo_badge(public_client_country_code, public_client_city, public_client_as_org) }}
                     </div>
-                    <div class="col-12 col-md-6">
-                        <div class="small text-muted">Outbound IP</div>
+                </div>
+            </div>
+            <div class="col-12 col-md-6">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h3 class="h6 mb-1">Outbound IP</h3>
                         <div class="font-monospace">{{ outbound_ip|wbr_ip }}</div>
                         {{ geo_badge(outbound_country_code, outbound_city, outbound_as_org) }}
-                    </div>
-                    <div class="col-12 col-md-6">
-                        <div class="small text-muted">WireGuard Interface</div>
-                        <div class="font-monospace">{{ interface_name }}</div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <section class="d-grid gap-3">
+        <section class="d-grid gap-3" aria-label="Status checks">
+            <h2 class="visually-hidden">Status Checks</h2>
             {% for check in checks %}
-            <article class="card">
+            <div class="card">
                 <div class="card-body d-flex justify-content-between align-items-start gap-3">
                     <div>
-                        <h2 class="h6 mb-1">{{ check.title }}</h2>
-                        <p class="mb-0 text-muted small">{{ check.detail }}</p>
+                        <h3 class="h6 mb-1">{{ check.title|e }}</h3>
+                        {% if check.detail_html %}
+                        <p class="mb-0 text-muted small">{{ check.detail_html|safe }}</p>
+                        {% else %}
+                        <p class="mb-0 text-muted small font-monospace">{{ check.detail|e }}</p>
+                        {% endif %}
                     </div>
                     {% if check.state == 'ok' %}
                     <span class="badge text-bg-success">
@@ -351,12 +138,12 @@
                         <span class="visually-hidden">Info: </span>{{ check.label }}
                     </span>
                     {% else %}
-                    <span class="badge text-bg-warning text-dark">
+                    <span class="badge text-bg-warning">
                         <span class="visually-hidden">Warning: </span>{{ check.label }}
                     </span>
                     {% endif %}
                 </div>
-            </article>
+            </div>
             {% endfor %}
         </section>
     </main>

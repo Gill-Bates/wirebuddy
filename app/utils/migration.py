@@ -42,7 +42,7 @@ _log = logging.getLogger(__name__)
 # Current schema version.
 # Baseline is reset to v0 because all previous schema changes are now
 # integrated into init_schema() factory defaults.
-SCHEMA_VERSION = 0
+SCHEMA_VERSION = 2
 
 
 def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
@@ -90,7 +90,54 @@ def _set_schema_version(conn: sqlite3.Connection, version: int) -> None:
 
 # Historical migrations are now part of the factory-default schema.
 # Start a new migration history from 0 for future schema changes.
-_MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = []
+
+
+def _migrate_0001_add_show_on_dashboard(conn: sqlite3.Connection) -> None:
+	"""Add show_on_dashboard column to interfaces table.
+
+	This column controls whether a WireGuard interface appears in the
+	dashboard's network throughput gauges. Defaults to 1 (shown).
+	"""
+	# Check if column already exists (idempotent)
+	cur = conn.execute("PRAGMA table_info(interfaces)")
+	columns = [row[1] for row in cur.fetchall()]
+	if "show_on_dashboard" not in columns:
+		conn.execute(
+			"ALTER TABLE interfaces ADD COLUMN show_on_dashboard INTEGER NOT NULL DEFAULT 1"
+		)
+		_log.info("Added show_on_dashboard column to interfaces table")
+
+
+def _migrate_0002_drop_peers_description(conn: sqlite3.Connection) -> None:
+	"""Remove description column from peers table.
+
+	SQLite doesn't support DROP COLUMN before 3.35.0, so we
+	check the runtime version and use ALTER TABLE DROP COLUMN
+	when available, otherwise recreate the table.
+	"""
+	cur = conn.execute("PRAGMA table_info(peers)")
+	columns = [row[1] for row in cur.fetchall()]
+	if "description" not in columns:
+		return  # already removed
+
+	sqlite_version = tuple(int(x) for x in sqlite3.sqlite_version.split("."))
+	if sqlite_version >= (3, 35, 0):
+		conn.execute("ALTER TABLE peers DROP COLUMN description")
+		_log.info("Dropped description column from peers table")
+	else:
+		# Rebuild without the column
+		keep = [c for c in columns if c != "description"]
+		cols = ", ".join(keep)
+		conn.execute(f"CREATE TABLE peers_backup AS SELECT {cols} FROM peers")
+		conn.execute("DROP TABLE peers")
+		conn.execute(f"ALTER TABLE peers_backup RENAME TO peers")
+		_log.info("Rebuilt peers table without description column (SQLite < 3.35)")
+
+
+_MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+	(1, _migrate_0001_add_show_on_dashboard),
+	(2, _migrate_0002_drop_peers_description),
+]
 
 
 def _validate_migration_registry() -> None:
@@ -136,8 +183,8 @@ def run_pending_migrations(conn: sqlite3.Connection) -> int:
 	partial progress is preserved on failure and no standalone
 	commit()/rollback() calls are needed.
 
-	When no migrations are registered, schema_version is normalized to
-	SCHEMA_VERSION (currently 0) so baseline resets are applied.
+	Fresh installs skip migrations: If schema_version is 0 and no users exist,
+	set version to SCHEMA_VERSION directly (all columns already in init_schema).
 
 	Returns:
 		Number of migrations applied
@@ -148,6 +195,19 @@ def run_pending_migrations(conn: sqlite3.Connection) -> int:
 	# Ensure schema_version table exists before reading
 	_ensure_schema_version_table(conn)
 	current_version = get_schema_version(conn)
+
+	# Fresh install detection: If version is 0 and no users exist, skip migrations
+	# (init_schema already created tables with all current columns)
+	if current_version == 0:
+		user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+		if user_count == 0:
+			_log.info(
+				"MIGRATION Fresh installation detected, setting schema_version to v%d (skipping migrations)",
+				SCHEMA_VERSION,
+			)
+			with transaction(conn, immediate=True):
+				_set_schema_version(conn, SCHEMA_VERSION)
+			return 0
 
 	# Handle version downgrade scenarios
 	if current_version > SCHEMA_VERSION:

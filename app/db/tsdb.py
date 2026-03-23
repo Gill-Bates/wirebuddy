@@ -37,11 +37,11 @@ import shutil
 import threading
 import time
 import warnings
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Generator, Optional
 from weakref import WeakValueDictionary
 
 # Platform check for fcntl (Unix-only)
@@ -94,12 +94,19 @@ FSYNC_BATCH_SIZE = 10  # Fsync every N appends (durability vs performance tradeo
 FSYNC_BATCH_INTERVAL = 5.0  # Or fsync after N seconds, whichever comes first
 
 # Synthetic peer keys used for aggregated traffic statistics
-SYNTHETIC_KEYS = frozenset(["__geo_traffic__", "__asn_traffic__", "__speedtest__"])
+SYNTHETIC_KEYS = frozenset(["__geo_traffic__", "__asn_traffic__", "__speedtest__", "__network_stats__"])
 
 _PEERS_DIRNAME = "peers"
 _TRAFFIC_DIRNAME = "traffic"
+_NETWORK_DIRNAME = "network"
 _SPEEDTEST_DIRNAME = "speedtest"
 _LEGACY_TRAFFIC_DIRS = ("geo_traffic", "asn_traffic")
+_SYNTHETIC_DIR_MAP = {
+	"__speedtest__": _SPEEDTEST_DIRNAME,
+	"__network_stats__": _NETWORK_DIRNAME,
+	"__geo_traffic__": f"{_TRAFFIC_DIRNAME}/geo_traffic",
+	"__asn_traffic__": f"{_TRAFFIC_DIRNAME}/asn_traffic",
+}
 
 
 def _peer_dir_name(peer_key: str) -> str:
@@ -212,17 +219,13 @@ def _series_path(tsdb_dir: Path, peer_key: str, metric: str) -> Path:
 			f"Invalid metric name '{metric}': only alphanumeric, underscore, and hyphen allowed"
 		)
 	
-	# Use human-readable directory names for synthetic keys
-	if peer_key == "__speedtest__":
-		return tsdb_dir / _SPEEDTEST_DIRNAME / f"{metric}.jsonl"
-	if peer_key in {"__geo_traffic__", "__asn_traffic__"}:
-		dir_name = peer_key.strip("_")
-		return tsdb_dir / _TRAFFIC_DIRNAME / dir_name / f"{metric}.jsonl"
 	if peer_key in SYNTHETIC_KEYS:
-		# If we reach here, a synthetic key was added to SYNTHETIC_KEYS but not handled above
-		raise ValueError(
-			f"Unhandled synthetic key: {peer_key} — add explicit path mapping in _series_path"
-		)
+		dir_name = _SYNTHETIC_DIR_MAP.get(peer_key)
+		if dir_name is None:
+			raise ValueError(
+				f"Unhandled synthetic key: {peer_key} — add explicit path mapping in _series_path"
+			)
+		return tsdb_dir / Path(dir_name) / f"{metric}.jsonl"
 
 	return tsdb_dir / _PEERS_DIRNAME / _peer_dir_name(peer_key) / f"{metric}.jsonl"
 
@@ -234,12 +237,9 @@ def _lock_path(series_path: Path) -> Path:
 
 def _synthetic_dir_path(tsdb_dir: Path, peer_key: str) -> Path:
 	"""Return the storage directory for a synthetic key."""
-	if peer_key == "__speedtest__":
-		return tsdb_dir / _SPEEDTEST_DIRNAME
-	if peer_key in {"__geo_traffic__", "__asn_traffic__"}:
-		return tsdb_dir / _TRAFFIC_DIRNAME / peer_key.strip("_")
-	if peer_key in SYNTHETIC_KEYS:
-		return tsdb_dir / peer_key.strip("_")
+	dir_name = _SYNTHETIC_DIR_MAP.get(peer_key)
+	if dir_name is not None:
+		return tsdb_dir / Path(dir_name)
 	raise ValueError(f"Unsupported synthetic key: {peer_key}")
 
 
@@ -273,12 +273,11 @@ class _ReadWriteLock:
 	
 	def acquire_read(self):
 		"""Acquire a shared read lock."""
-		self._read_ready.acquire()
-		# Block new readers if writers are waiting to prevent starvation
-		while self._writers > 0 or self._writers_waiting > 0:
-			self._read_ready.wait()
-		self._readers += 1
-		self._read_ready.release()
+		with self._read_ready:
+			# Block new readers if writers are waiting to prevent starvation
+			while self._writers > 0 or self._writers_waiting > 0:
+				self._read_ready.wait()
+			self._readers += 1
 	
 	def release_read(self):
 		"""Release a shared read lock."""
@@ -292,42 +291,33 @@ class _ReadWriteLock:
 		
 		SIGNIFICANT FIX #4: Non-reentrant - raises if same thread tries to acquire twice.
 		"""
-		self._write_ready.acquire()
-		self._writers_waiting += 1
-		acquired = False
-		try:
-			# CRITICAL: Detect reentrant lock attempts (same thread calling twice)
-			# This would deadlock without detection
-			current_thread_id = threading.current_thread().ident
-			if self._writers > 0 and self._writer_thread_id == current_thread_id:
-				raise RuntimeError(
-					"_ReadWriteLock is not reentrant. "
-					"Same thread cannot acquire write lock twice. "
-					"This usually indicates a bug in lock management."
-				)
-			
-			while self._readers > 0 or self._writers > 0:
-				self._write_ready.wait()
-			self._writers = 1
-			self._writer_thread_id = current_thread_id
-			acquired = True
-		finally:
-			self._writers_waiting -= 1
-			if not acquired:
-				self._write_ready.release()
-		
-		# Only release if acquisition succeeded (outside finally to avoid double-release)
-		if acquired:
-			self._write_ready.release()
+		with self._write_ready:
+			self._writers_waiting += 1
+			try:
+				# CRITICAL: Detect reentrant lock attempts (same thread calling twice)
+				# This would deadlock without detection
+				current_thread_id = threading.current_thread().ident
+				if self._writers > 0 and self._writer_thread_id == current_thread_id:
+					raise RuntimeError(
+						"_ReadWriteLock is not reentrant. "
+						"Same thread cannot acquire write lock twice. "
+						"This usually indicates a bug in lock management."
+					)
+				
+				while self._readers > 0 or self._writers > 0:
+					self._write_ready.wait()
+				self._writers = 1
+				self._writer_thread_id = current_thread_id
+			finally:
+				self._writers_waiting -= 1
 	
 	def release_write(self):
 		"""Release an exclusive write lock."""
-		self._lock.acquire()
-		self._writers = 0
-		self._writer_thread_id = None  # Clear thread tracking
-		self._write_ready.notify()
-		self._read_ready.notify_all()
-		self._lock.release()
+		with self._lock:
+			self._writers = 0
+			self._writer_thread_id = None  # Clear thread tracking
+			self._write_ready.notify()
+			self._read_ready.notify_all()
 
 
 class _FileLock:
@@ -457,8 +447,15 @@ def _should_prune(series_path: Path) -> bool:
 			# Another process is pruning right now
 			return False
 		finally:
-			fcntl.flock(fd, fcntl.LOCK_UN)
-			os.close(fd)
+			try:
+				fcntl.flock(fd, fcntl.LOCK_UN)
+			except OSError:
+				pass
+			finally:
+				try:
+					os.close(fd)
+				except OSError:
+					pass
 	except OSError as e:
 		_log.debug("Prune marker check failed: %s", e)
 		return False
@@ -624,7 +621,7 @@ def _prune_archives_locked(series_path: Path, cutoff: datetime) -> None:
 				_log.warning("Failed to delete archive %s: %s", arc.name, e)
 
 
-def _iter_json_lines(path: Path):
+def _iter_json_lines(path: Path) -> Generator[str, None, None]:
 	"""Yield JSONL lines from plain or gzip files.
 	
 	Handles corrupted gzip archives gracefully by logging and skipping.
@@ -636,8 +633,11 @@ def _iter_json_lines(path: Path):
 		except (gzip.BadGzipFile, OSError, EOFError) as e:
 			_log.warning("Corrupted or truncated gzip archive %s: %s (skipping)", path.name, e)
 		return
-	with path.open("r", encoding="utf-8") as f:
-		yield from f
+	try:
+		with path.open("r", encoding="utf-8") as f:
+			yield from f
+	except OSError as e:
+		_log.warning("Cannot read series file %s: %s (skipping)", path.name, e)
 
 
 def _fsync_path(path: Path, *, directory: bool = False) -> bool:
@@ -671,6 +671,7 @@ def init_tsdb(tsdb_dir: Path) -> None:
 	tsdb_dir.mkdir(parents=True, exist_ok=True)
 	(tsdb_dir / _PEERS_DIRNAME).mkdir(parents=True, exist_ok=True)
 	(tsdb_dir / _TRAFFIC_DIRNAME).mkdir(parents=True, exist_ok=True)
+	(tsdb_dir / _NETWORK_DIRNAME).mkdir(parents=True, exist_ok=True)
 	(tsdb_dir / _SPEEDTEST_DIRNAME).mkdir(parents=True, exist_ok=True)
 	_migrate_legacy_layout(tsdb_dir)
 
@@ -923,18 +924,11 @@ def query(
 
 	# Use shared lock for reads to allow concurrent queries
 	with _FileLock(p, read_only=True):
-		# Memory-efficient collection for latest queries
 		if latest:
-			# CRITICAL FIX #5: Iterate files in REVERSE order for latest queries
-			# This allows early termination instead of reading entire history
-			# No maxlen on deque - rely on collected check to prevent over-collection
-			buffer: deque[MetricPoint] = deque()
-			collected = 0
-			
-			# Read files from newest to oldest
-			for src in reversed(_iter_series_files(p)):
-				lines_from_file: list[tuple[datetime, Any]] = []
-				
+			# Correctness beats early termination here: callers can append backdated
+			# timestamps via `at=`, so file order is not a reliable proxy for time order.
+			all_matching: list[MetricPoint] = []
+			for src in _iter_series_files(p):
 				for line in _iter_json_lines(src):
 					line = line.strip()
 					if not line:
@@ -953,20 +947,12 @@ def query(
 						continue
 					if until_u and ts > until_u:
 						continue
-					
-					lines_from_file.append((ts, val))
-				
-				# Add points from this file in reverse order (latest first)
-				for ts, val in reversed(lines_from_file):
-					buffer.appendleft(MetricPoint(ts=ts, value=val))
-					collected += 1
-					if collected >= limit:
-						break
-				
-				if collected >= limit:
-					break
+					all_matching.append(MetricPoint(ts=ts, value=val))
 			
-			return list(buffer)
+			all_matching.sort(key=lambda pt: pt.ts)
+			if limit <= 0:
+				return []
+			return all_matching[-limit:]
 		else:
 			# For non-latest queries, collect all matching points
 			# FIX: Early termination when limit reached and no time filter
@@ -994,10 +980,10 @@ def query(
 
 					all_matching.append(MetricPoint(ts=ts, value=val))
 					collected += 1
-					# Early termination: if no time filter and already have enough
-					if since_u is None and collected >= limit:
+					# Early termination is only safe when no time window is applied.
+					if since_u is None and until_u is None and collected >= limit:
 						break
-				if since_u is None and collected >= limit:
+				if since_u is None and until_u is None and collected >= limit:
 					break
 
 			# Sort once after collecting all matches to ensure correct chronological order
@@ -1134,7 +1120,7 @@ def get_synthetic_storage_stats(tsdb_dir: Path, peer_key: str) -> dict[str, Any]
 	file_count = 0
 	record_count = 0
 
-	for entry in dir_path.iterdir():
+	for entry in dir_path.rglob("*"):
 		if not entry.is_file():
 			continue
 		name = entry.name
@@ -1171,6 +1157,9 @@ def purge_synthetic_data(tsdb_dir: Path, peer_key: str) -> int:
 	for entry in dir_path.rglob("*"):
 		if not entry.is_file():
 			continue
+		name = entry.name
+		if not (name.endswith(".jsonl") or (".jsonl." in name and name.endswith(".gz"))):
+			continue
 		try:
 			deleted_bytes += entry.stat().st_size
 		except OSError:
@@ -1190,7 +1179,12 @@ def reset_all(tsdb_dir: Path) -> int:
 		return 0
 	
 	deleted = 0
-	for bucket in (tsdb_dir / _PEERS_DIRNAME, tsdb_dir / _TRAFFIC_DIRNAME, tsdb_dir / _SPEEDTEST_DIRNAME):
+	for bucket in (
+		tsdb_dir / _PEERS_DIRNAME,
+		tsdb_dir / _TRAFFIC_DIRNAME,
+		tsdb_dir / _NETWORK_DIRNAME,
+		tsdb_dir / _SPEEDTEST_DIRNAME,
+	):
 		if not bucket.exists():
 			continue
 		for d in list(bucket.iterdir()):

@@ -469,15 +469,27 @@ def _restore_resolv_conf() -> None:
 	backup_path = _RESOLV_CONF.with_suffix(".conf.backup")
 	if not backup_path.exists():
 		return
+	tmp_path = _RESOLV_CONF.with_suffix(".tmp")
 	try:
-		tmp_path = _RESOLV_CONF.with_suffix(".tmp")
 		backup_content = backup_path.read_text(encoding="utf-8")
 		tmp_path.write_text(backup_content, encoding="utf-8")
 		tmp_path.replace(_RESOLV_CONF)  # Atomic, matches _configure_resolv_conf
 		backup_path.unlink()
 		_log.info("DNS_STOP restored /etc/resolv.conf from backup")
+	except OSError as exc:
+		# EBUSY is expected in Docker host networking when resolv.conf is a mount
+		if exc.errno == errno.EBUSY:
+			_log.debug("DNS_STOP /etc/resolv.conf is mounted (host networking), skipping restore")
+		else:
+			_log.debug("DNS_STOP failed to restore resolv.conf: %s", exc)
 	except Exception as exc:
 		_log.debug("DNS_STOP failed to restore resolv.conf: %s", exc)
+	finally:
+		# Clean up temp file on failure
+		try:
+			tmp_path.unlink(missing_ok=True)
+		except Exception:
+			pass
 
 
 async def _stop_impl() -> tuple[bool, str]:

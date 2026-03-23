@@ -91,6 +91,8 @@ Peers represent individual clients (laptops, phones, etc.) connecting to your VP
 | **Public Key** | No | Auto-generated if not provided |
 | **Preshared Key** | No | Additional encryption layer |
 | **Persistent Keepalive** | No | Seconds between keepalive packets (25 recommended for NAT) |
+| **Use WireBuddy DNS** | No | Route DNS through WireBuddy's resolver for ad-blocking. When disabled, uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9) |
+| **Client Isolation** | No | Prevent peer from communicating with other VPN peers |
 
 ### Routing Modes
 

@@ -32,6 +32,7 @@ class BlocklistMeta(TypedDict):
 	name: str
 	description: str
 	url: str
+	level: str  # Badge label: Moderat, Ausgewogen, Extrem, 18+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -46,25 +47,35 @@ DNSSEC_ROOT_KEY = Path("/var/lib/unbound/root.key")
 # Blocklist definitions with stable IDs for per-peer tagging
 BLOCKLIST_REGISTRY: dict[str, BlocklistMeta] = {
 	"ads": {
-		"name": "Ads & Trackers",
-		"description": "StevenBlack unified hosts (ads, malware, trackers)",
+		"name": "StevenBlack",
+		"description": "Unified hosts (ads, malware, trackers)",
 		"url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+		"level": "Moderat",
+	},
+	"adguard": {
+		"name": "AdGuard DNS filter",
+		"description": "AdGuard's curated filter list",
+		"url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt",
+		"level": "Ausgewogen",
 	},
 	"porn": {
-		"name": "Adult Content",
+		"name": "StevenBlack Adult",
 		"description": "StevenBlack porn-only hosts",
 		"url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",
+		"level": "18+",
 	},
 	"hagezi": {
 		"name": "HaGeZi Pro",
-		"description": "HaGeZi's Pro DNS Blocklist (ads, trackers, malware)",
+		"description": "HaGeZi's Pro DNS Blocklist",
 		"url": "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/hosts/pro-compressed.txt",
+		"level": "Extrem",
 	},
 }
 
 # Default blocklists for new installations
 # Adult content list ("porn") is available, but disabled by default.
-DEFAULT_BLOCKLIST_IDS = ["ads", "hagezi"]
+# HaGeZi Pro ("hagezi") is available, but disabled by default (large list).
+DEFAULT_BLOCKLIST_IDS = ["ads"]
 
 # Computed once at import; BLOCKLIST_REGISTRY must not change at runtime.
 for _bid in DEFAULT_BLOCKLIST_IDS:

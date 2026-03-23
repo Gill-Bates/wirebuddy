@@ -35,22 +35,23 @@
         margin: 0;
         margin-bottom: 0;
         min-height: 2rem;
+        accent-color: var(--wb-accent-red);
     }
 
     .dns-retention-slider:focus-visible,
     .retention-slider:focus-visible {
-        outline: 2px solid var(--wb-primary);
+        outline: 2px solid var(--wb-accent-red);
         outline-offset: 2px;
     }
 
     .dns-retention-slider::-webkit-slider-thumb,
     .retention-slider::-webkit-slider-thumb {
-        background-color: var(--wb-primary);
+        background-color: var(--wb-accent-red);
     }
 
     .dns-retention-slider::-moz-range-thumb,
     .retention-slider::-moz-range-thumb {
-        background-color: var(--wb-primary);
+        background-color: var(--wb-accent-red);
     }
 
     @media (pointer: coarse) {
@@ -85,7 +86,7 @@
         width: 2px;
         height: 100%;
         border-radius: 1px;
-        background-color: var(--bs-border-color);
+        background-color: rgba(var(--wb-accent-red-rgb), 0.55);
     }
 
     .dns-retention-labels, .retention-labels {
@@ -175,11 +176,11 @@
 
     #settingsTabs .nav-link:hover,
     #settingsTabs .nav-link:focus {
-        color: var(--wb-primary);
+        color: var(--wb-accent-red);
     }
 
     #settingsTabs .nav-link.active {
-        color: var(--wb-primary);
+        color: var(--wb-accent-red);
         font-weight: 600;
     }
 
@@ -190,7 +191,7 @@
     [data-bs-theme="dark"] #settingsTabs .nav-link:hover,
     [data-bs-theme="dark"] #settingsTabs .nav-link:focus,
     [data-bs-theme="dark"] #settingsTabs .nav-link.active {
-        color: #f2b1b3;
+        color: var(--wb-accent-red);
     }
 
     .blocklist-hero-grid {
@@ -216,15 +217,7 @@
     }
 
     .blocklist-hero-card {
-        border: 1px solid var(--bs-border-color);
-        border-radius: 0.5rem;
-        padding: 0.5rem 0.55rem;
-        min-width: 0;
-        max-width: 100%;
-        overflow: hidden;
-        background: var(--bs-tertiary-bg);
-        box-shadow: none;
-        transition: border-color 0.15s ease;
+        all: unset;
     }
 
     @media (hover: hover) {
@@ -288,13 +281,16 @@
 
     #btn-fqdn-detect {
         min-width: 2.75rem;
-        min-height: 2.75rem;
         z-index: 2;
         isolation: isolate;
         flex-shrink: 0;
     }
 
     .settings-danger-label {
+        color: var(--bs-danger-text-emphasis, var(--wb-danger-strong)) !important;
+    }
+
+    [data-bs-theme="dark"] .settings-danger-label {
         color: var(--wb-danger-strong) !important;
     }
 
@@ -415,6 +411,8 @@
         box-shadow: 0 5px 12px rgba(0, 0, 0, 0.28);
     }
 
+    /* Blocklist tile layout — base styles are in wb-ui-system.css Section 29 */
+
     /* Clean Blocklist Grid */
     .blocklist-clean-grid {
         display: grid;
@@ -436,15 +434,22 @@
         }
     }
 
-    @media (min-width: 768px) {
+    @media (min-width: 1200px) {
         .blocklist-clean-grid {
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-columns: repeat(4, minmax(0, 1fr));
         }
     }
 
     /* Less badge overload */
     .blocklist-hero-meta .badge {
         font-size: 0.7rem;
+    }
+
+    /* Custom Rules textarea - hide placeholder on mobile */
+    @media (max-width: 767.98px) {
+        .custom-rules-textarea::placeholder {
+            color: transparent;
+        }
     }
 
     /* Logging danger spacing */
@@ -457,6 +462,11 @@
     /* Harmonize spacing */
     #dns-pane .card-body {
         padding: 1.25rem;
+    }
+
+    .spinner-lg {
+        width: 2.5rem;
+        height: 2.5rem;
     }
 
     @media (max-width: 767.98px) {
@@ -604,8 +614,13 @@
     }
 
     #logs-pane table {
-        table-layout: fixed;
+        table-layout: auto;
         width: 100%;
+    }
+
+    #logs-pane table th[scope="row"] {
+        width: 1%;
+        white-space: nowrap;
     }
 
     #logs-pane .logs-grid {
@@ -621,14 +636,26 @@
         padding: 0;
     }
 
-    #tsdb-path,
-    #dns-metrics-path,
-    #peer-metrics-path,
-    #speedtest-metrics-path {
-        display: inline-block;
+    #logs-pane .settings-storage-path {
+        display: block;
+        width: 100%;
+        min-width: 0;
         max-width: 100%;
-        overflow-wrap: anywhere;
-        word-break: break-word;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        overflow-wrap: normal;
+        word-break: normal;
+    }
+
+    #logs-pane .settings-storage-path-row td {
+        padding-top: 0.75rem;
+        padding-bottom: 0.85rem;
+        text-align: left;
+    }
+
+    #logs-pane .settings-storage-path-label {
+        margin-bottom: 0.35rem;
     }
 
     /* Logs cards: push delete section to bottom for aligned hairlines */

@@ -48,7 +48,7 @@ ProgressCallback = Callable[[ProgressEvent], None]
 # Default speed test servers (ordered by reliability)
 # Using large files to support Gbit+ connections (1 Gbit/s × 6s = 750 MB needed)
 DEFAULT_SERVERS = [
-	"http://speedtest.tele2.net/1000MB.zip",  # 1 GB
+	"http://speedtest.tele2.net/1GB.zip",  # 1 GB
 	"http://cachefly.cachefly.net/100mb.test",  # 100 MB
 	"http://ipv4.download.thinkbroadband.com/100MB.zip",  # 100 MB
 ]
@@ -787,7 +787,7 @@ class BandwidthTester:
 				# Download test
 				self._emit_progress(
 					"testing", run_base,
-					f"Run {i + 1}/{self.runs}: Testing download ({server})...",
+					f"Run {i + 1}/{self.runs}: Testing download – {server}",
 					{"run": i + 1, "total_runs": self.runs, "phase": "download"}
 				)
 				dl = await self.download_test(download_client, server)
@@ -796,7 +796,7 @@ class BandwidthTester:
 				upload_server_label = self._target_label(upload_target)
 				self._emit_progress(
 					"testing", run_base + (run_progress_share * 0.5),
-					f"Run {i + 1}/{self.runs}: Testing upload ({upload_server_label})...",
+					f"Run {i + 1}/{self.runs}: Testing upload – {upload_server_label}",
 					{"run": i + 1, "total_runs": self.runs, "phase": "upload"}
 				)
 				ul = await self.upload_test(upload_client, upload_url)
@@ -818,7 +818,7 @@ class BandwidthTester:
 					f"Run {i + 1}/{self.runs}: DL {dl:.1f} / UL {ul:.1f} Mbit/s",
 					{"run": i + 1, "download_mbit": round(dl, 2), "upload_mbit": round(ul, 2)}
 				)
-				_log.debug(
+				_log.info(
 					"SPEEDTEST run=%d/%d dl=%.2f ul=%.2f Mbit/s",
 					i + 1,
 					self.runs,

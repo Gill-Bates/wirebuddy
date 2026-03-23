@@ -69,10 +69,6 @@ __all__ = [
 	"set_speedtest_enabled",
 	"get_speedtest_target",
 	"set_speedtest_target",
-	"get_speedtest_upstream_mbit",
-	"set_speedtest_upstream_mbit",
-	"get_speedtest_downstream_mbit",
-	"set_speedtest_downstream_mbit",
 ]
 
 # Constant for key validation
@@ -657,31 +653,4 @@ def set_speedtest_target(conn: sqlite3.Connection, target: str) -> None:
 	set_setting(conn, "speedtest_target", target)
 
 
-def get_speedtest_upstream_mbit(conn: sqlite3.Connection) -> float:
-	"""Return the provider-rated upstream in Mbit/s."""
-	raw = get_setting(conn, "speedtest_upstream_mbit", "0")
-	try:
-		return float(raw)
-	except (TypeError, ValueError):
-		return 0.0
 
-
-def set_speedtest_upstream_mbit(conn: sqlite3.Connection, value: float) -> None:
-	if value < 0 or value > 100_000:
-		raise ValueError("Upstream value out of range")
-	set_setting(conn, "speedtest_upstream_mbit", str(round(value, 2)))
-
-
-def get_speedtest_downstream_mbit(conn: sqlite3.Connection) -> float:
-	"""Return the provider-rated downstream in Mbit/s."""
-	raw = get_setting(conn, "speedtest_downstream_mbit", "0")
-	try:
-		return float(raw)
-	except (TypeError, ValueError):
-		return 0.0
-
-
-def set_speedtest_downstream_mbit(conn: sqlite3.Connection, value: float) -> None:
-	if value < 0 or value > 100_000:
-		raise ValueError("Downstream value out of range")
-	set_setting(conn, "speedtest_downstream_mbit", str(round(value, 2)))

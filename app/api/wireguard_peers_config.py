@@ -27,7 +27,7 @@ from ..utils.config import WG_DEFAULT_DNS
 from ..utils.deps import get_conn, get_config
 from ..utils.network import allowed_ips_with_dns_routes
 from ..utils.vault import decrypt as vault_decrypt
-from .auth import get_current_user, require_admin
+from .auth import require_admin
 from .response import ok_response
 from .wireguard_utils import run_wg_command
 from .wireguard_settings import get_server_endpoint, get_dns_for_peer, InterfaceConfigError
@@ -46,8 +46,8 @@ DUMP_PEER_ALLOWED = 3
 DUMP_PEER_HANDSHAKE = 4
 DUMP_PEER_RX = 5
 DUMP_PEER_TX = 6
-DUMP_PEER_KEEPALIVE = 7
-DUMP_PEER_MIN_FIELDS = 7
+DUMP_PEER_KEEPALIVE = 7   # defined for documentation; not currently read
+DUMP_PEER_MIN_FIELDS = 7  # columns 0..6 are required; keepalive (7) is optional
 
 
 async def _build_peer_config(
@@ -116,7 +116,9 @@ async def _build_peer_config(
 		)
 	server_public_key = stdout.strip()
 	
-	# Determine DNS based on adblocker setting
+	# Determine DNS based on adblocker setting.
+	# NULL (never explicitly set by user) defaults to True — ad-blocking is
+	# opt-out, matching the server-wide default when the feature is enabled.
 	use_adblocker = True if peer["use_adblocker"] is None else bool(peer["use_adblocker"])
 	try:
 		dns_servers = get_dns_for_peer(
@@ -166,7 +168,8 @@ async def get_peer_stats(
 	# Get stats from wg show dump
 	code, stdout, stderr = await run_wg_command("wg", "show", interface_name, "dump")
 	if code != 0:
-		raise HTTPException(status_code=500, detail=f"Failed to get stats: {stderr}")
+		_log.error("wg show dump failed for %s: %s", interface_name, stderr)
+		raise HTTPException(status_code=500, detail="Failed to retrieve peer stats.")
 	
 	# Parse dump output (tab-separated)
 	# Format: interface private-key public-key listen-port fwmark
@@ -218,49 +221,42 @@ async def get_peer_qrcode(
 ):
 	"""Generate a QR code for peer configuration (admin only).
 	
-	Note: Requires 'qrcode' package (optional dependency).
+	Note: Requires 'qrcode' and 'Pillow' packages.
 	"""
 	config, peer, private_key_plain, preshared_key_plain = await _build_peer_config(request, peer_id, conn)
 	
-	# Serialize config to text (contains plaintext private key)
-	config_text = config.to_wg_config()
-	
-	# Generate QR code
 	try:
-		import qrcode
-		qr = qrcode.QRCode(version=1, box_size=10, border=4)
-		qr.add_data(config_text)
-		qr.make(fit=True)
-		
-		img = qr.make_image(fill_color="black", back_color="white")
-		
-		import io
-		buffer = io.BytesIO()
-		img.save(buffer, format="PNG")
-		buffer.seek(0)
-		
-		# Sanitize filename to prevent header injection and path traversal
-		safe_name = re.sub(r'[^\w.-]', '_', peer['name'] or 'peer').lstrip('.')
+		from ..utils.qrimage import generate_qr_png
+
+		# Serialize inside try – avoid decrypting for nothing when deps are missing
+		config_text = config.to_wg_config()
+		peer_name = peer["name"] or "Peer"
+
+		png_bytes = generate_qr_png(config_text, peer_name)
+
+		# Sanitize filename — restrict to ASCII-safe characters (\w is
+		# unicode-aware in Python 3 and would let through non-ASCII)
+		safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', peer['name'] or 'peer').lstrip('.')
 		if not safe_name:
 			safe_name = 'peer'
-		
+
 		_log.info(
 			"QR_CODE_DISPLAYED peer_id=%s peer_name=%s interface=%s user=%s",
 			peer_id, peer['name'], peer['interface'], current_user['username'],
 		)
-		
+
 		result = Response(
-			content=buffer.getvalue(),
+			content=png_bytes,
 			media_type="image/png",
 			headers={"Content-Disposition": f'inline; filename="{safe_name}.png"'},
 		)
-		
-		# Clear sensitive data from memory
+
+		# NOTE: best-effort only; Python cannot guarantee scrubbing of immutable strings
 		del config_text, private_key_plain, preshared_key_plain
-		
+
 		return result
 	except ImportError:
-		raise HTTPException(status_code=500, detail="QR code generation not available (qrcode package missing)")
+		raise HTTPException(status_code=500, detail="QR code generation not available (qrcode/Pillow package missing)")
 	except Exception:
 		_log.exception("QR code generation error for peer_id=%s", peer_id)
 		raise HTTPException(status_code=500, detail="QR code generation failed")
@@ -277,8 +273,8 @@ async def get_peer_config(
 	"""Get the WireGuard configuration file for a peer (admin only)."""
 	config, peer, private_key_plain, preshared_key_plain = await _build_peer_config(request, peer_id, conn)
 	
-	# Sanitize filename to prevent header injection and path traversal
-	safe_name = re.sub(r'[^\w.-]', '_', peer['name'] or 'wg0').lstrip('.')
+	# Sanitize filename — restrict to ASCII-safe characters
+	safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', peer['name'] or 'wg0').lstrip('.')
 	if not safe_name:
 		safe_name = 'wg0'
 	
@@ -295,7 +291,7 @@ async def get_peer_config(
 		headers={"Content-Disposition": f'attachment; filename="{safe_name}.conf"'},
 	)
 	
-	# Clear sensitive data from memory
+	# NOTE: best-effort only; Python cannot guarantee scrubbing of immutable strings
 	del config_text, private_key_plain, preshared_key_plain
 	
 	return result

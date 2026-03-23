@@ -2,356 +2,316 @@
 
 Advanced DNS configuration options in WireBuddy.
 
-## Unbound Configuration
+## DNS Resolver Settings
 
-WireBuddy uses Unbound as its DNS resolver.
+### Upstream DNS Servers
 
-### Custom Configuration
+Configure upstream DNS-over-TLS servers:
 
-Add custom Unbound configuration:
+**Settings → DNS → DNS Resolver**
 
-**Settings → DNS → Advanced → Custom Config**
+Format: `IP@PORT#HOSTNAME`
 
-```yaml
-server:
-  # Performance
-  num-threads: 4
-  msg-cache-size: 50m
-  rrset-cache-size: 100m
-  
-  # Security
-  hide-identity: yes
-  hide-version: yes
-  
-  # Privacy
-  qname-minimisation: yes
-  aggressive-nsec: yes
+```
+1.1.1.1@853#cloudflare-dns.com
+9.9.9.9@853#dns.quad9.net
 ```
 
-### Upstream Resolvers
+| Component | Description |
+|-----------|-------------|
+| `IP` | Server IP address (IPv4 or IPv6) |
+| `PORT` | TLS port (typically 853) |
+| `HOSTNAME` | TLS hostname for certificate verification |
 
-Configure upstream DNS servers:
+### Popular Upstream Providers
 
-```yaml
-forward-zone:
-  name: "."
-  forward-tls-upstream: yes
-  
-  # Cloudflare
-  forward-addr: 1.1.1.1@853#cloudflare-dns.com
-  forward-addr: 1.0.0.1@853#cloudflare-dns.com
-```
+??? example "Cloudflare DNS"
+    ```
+    1.1.1.1@853#cloudflare-dns.com
+    1.0.0.1@853#cloudflare-dns.com
+    ```
+    Privacy-focused, fast global network.
+
+??? example "Quad9"
+    ```
+    9.9.9.9@853#dns.quad9.net
+    149.112.112.112@853#dns.quad9.net
+    ```
+    Security-focused with malware blocking.
+
+??? example "AdGuard DNS"
+    ```
+    94.140.14.14@853#dns.adguard.com
+    94.140.15.15@853#dns.adguard.com
+    ```
+    Ad-blocking at the DNS level.
+
+??? example "Google DNS"
+    ```
+    8.8.8.8@853#dns.google
+    8.8.4.4@853#dns.google
+    ```
+    High availability and performance.
+
+### Validate Servers
+
+Before saving, use the **Validate** button to test:
+
+- TLS connectivity
+- Certificate verification
+- DNS response validation
 
 ## Blocklists
 
-### Custom Blocklist Sources
+### Available Blocklists
 
-Add your own blocklist URLs:
+WireBuddy includes four pre-configured blocklists:
 
-**Settings → DNS → Blocklists → Add Custom**
+| ID | Name | Level | Description |
+|----|------|-------|-------------|
+| `ads` | StevenBlack | Moderate | Unified hosts (ads, malware, trackers) |
+| `adguard` | AdGuard DNS filter | Balanced | Curated filter (ads, trackers, phishing) |
+| `hagezi` | HaGeZi Pro | Extreme | Aggressive blocking - may cause false positives |
+| `porn` | StevenBlack Adult | 18+ | Adult content blocking |
 
-Supported formats:
+### Default Configuration
 
-- Hosts format (`0.0.0.0 domain.com`)
-- Domains format (`domain.com`)
-- AdBlock format (`||domain.com^`)
+- New installations have **StevenBlack** enabled by default
+- Adult and Extreme blocklists are disabled by default
 
-### Whitelist
+### Blocklist Sources
 
-Override blocklists for specific domains:
+Blocklists are downloaded from trusted sources:
 
-```
-allow ads.example.com
-allow tracking.legitimate-service.com
-```
+- StevenBlack: `github.com/StevenBlack/hosts`
+- AdGuard: `adguardteam.github.io/HostlistsRegistry`
+- HaGeZi: `github.com/hagezi/dns-blocklists`
 
 ## Custom Rules
 
-### Global Rules
+### AdGuard Syntax
 
-```
-# Block entire domain and subdomains
-block tracker.com
+Custom rules use AdGuard filter syntax:
 
-# Allow specific subdomain
-allow safe.tracker.com
+```adblock
+! Block domain and subdomains
+||example.com^
 
-# Wildcard blocking
-block *.adnetwork.com
+! Allow (whitelist) - overrides blocklists
+@@||safe.example.com^
+
+! Wildcard blocking
+||ads*.example.com^
+||tracking-*.cdn.com^
+
+! Regex matching (substring, case-insensitive)
+/analytics[0-9]+\.js/
+
+! Comments
+! This is a comment
+# This is also a comment
 ```
 
 ### Per-Client Rules
 
-```
-# Block social media for specific client
-$client=kids-ipad block facebook.com
-$client=kids-ipad block instagram.com
-$client=kids-ipad block tiktok.com
+Apply rules to specific clients using IP/CIDR scope:
 
-# Allow work domains for work laptop
-$client=work-laptop allow *.company.internal
-```
+```adblock
+! Client: John's Phone (10.13.13.2/32)
+! $client=10.13.13.2/32
+||facebook.com^
+||instagram.com^
+||tiktok.com^
 
-## Local DNS Records
-
-Define custom DNS records:
-
-**Settings → DNS → Local Records**
-
-### A Records
-
-```
-home.local → 192.168.1.100
-nas.local → 192.168.1.50
+! Client: Work Laptop (10.13.13.3/32)
+! $client=10.13.13.3/32
+@@||corporate-analytics.work.com^
 ```
 
-### AAAA Records
+### Rule Priority
 
-```
-home.local → fd42::100
-```
+1. **Allow rules always win** - `@@||domain^` overrides any block
+2. Custom rules override blocklist entries
+3. More specific rules (exact domain) don't override less specific (wildcard)
 
-### CNAME Records
+### Maximum Size
 
-```
-storage.local → nas.local
-media.local → nas.local
-```
-
-### PTR Records (Reverse DNS)
-
-```
-100.1.168.192.in-addr.arpa → home.local
-```
+Custom rules text is limited to 100 KB.
 
 ## DNSSEC Configuration
 
-Enable DNSSEC validation:
+### Enable DNSSEC
 
-**Settings → DNS → Security → Enable DNSSEC**
+**Settings → DNS → DNS Resolver → DNSSEC Toggle**
 
-Configure trust anchors:
+DNSSEC validates DNS responses cryptographically, protecting against:
 
-```yaml
-server:
-  auto-trust-anchor-file: "/var/lib/unbound/root.key"
-  trust-anchor-file: "/etc/unbound/keys.d/*.key"
+- DNS spoofing
+- Cache poisoning
+- Man-in-the-middle attacks
+
+### Requirements
+
+DNSSEC requires the root trust anchor file:
+
+```
+/var/lib/unbound/root.key
 ```
 
-## DNS-over-TLS Configuration
+If this file is missing, the DNSSEC toggle will be disabled.
 
-Enable encrypted upstream queries:
+### Verification
 
-```yaml
-forward-zone:
-  name: "."
-  forward-tls-upstream: yes
-  
-  # Quad9
-  forward-addr: 9.9.9.9@853#dns.quad9.net
-  forward-addr: 149.112.112.112@853#dns.quad9.net
-```
-
-### Verify DoT
-
-Check Unbound logs:
+Check if DNSSEC is working:
 
 ```bash
-docker compose exec wirebuddy tail -f /var/log/unbound/unbound.log
+dig @10.13.13.1 dnssec.vs.uni-due.de +dnssec
 ```
 
-Look for: `SSL connection established`
-
-## Response Policy Zones (RPZ)
-
-Import RPZ files for advanced blocking:
-
-```yaml
-rpz:
-  name: "custom.rpz"
-  zonefile: "/etc/unbound/rpz/custom.rpz"
-  rpz-log: yes
-  rpz-log-name: "custom-rpz"
-```
-
-## Conditional Forwarding
-
-Forward specific domains to different servers:
-
-```yaml
-# Forward internal domain to corporate DNS
-forward-zone:
-  name: "internal.corp"
-  forward-addr: 192.168.1.10
-
-# Forward reverse DNS for local network
-forward-zone:
-  name: "1.168.192.in-addr.arpa"
-  forward-addr: 192.168.1.1
-```
+Look for `ad` (Authenticated Data) flag in the response.
 
 ## Query Logging
 
-Configure DNS query logging:
+### Log Retention
 
-**Settings → DNS → Logging**
+**Settings → Logs → DNS Log Retention**
 
-Options:
+| Option | Storage Impact |
+|--------|----------------|
+| No Logs | Minimal - queries not stored |
+| 7 Days | ~50-100 MB per active client |
+| 30 Days | ~200-400 MB per active client |
+| 90 Days | ~600 MB-1.2 GB per active client |
+| 180 Days | ~1.2-2.4 GB per active client |
+| 1 Year | ~2.4-5 GB per active client |
 
-- **Log All Queries:** Full query log
-- **Log Blocked Only:** Only blocked queries
-- **Disable Logging:** No query logs (privacy mode)
+### Purge Logs
 
-### Log Rotation
+**Settings → Logs → Purge DNS Logs**
 
-```bash
-# /etc/logrotate.d/unbound
-/var/log/unbound/*.log {
-    daily
-    rotate 7
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 0640 unbound unbound
-    postrotate
-        systemctl reload unbound
-    endscript
-}
+Immediately delete all stored DNS query data.
+
+### Storage Location
+
+Query logs are stored in JSONL format:
+
+```
+/app/data/dns/queries/
 ```
 
-## Performance Optimization
+## Ad-Blocker Mode
 
-### Cache Configuration
+### Temporary Disable
 
-```yaml
-server:
-  # Cache sizes
-  msg-cache-size: 50m
-  rrset-cache-size: 100m
-  key-cache-size: 4m
-  neg-cache-size: 4m
-  
-  # TTL settings
-  cache-min-ttl: 300
-  cache-max-ttl: 86400
-  
-  # Prefetching
-  prefetch: yes
-  prefetch-key: yes
-```
+Programmatically disable the ad-blocker:
 
-### Thread Optimization
+| Mode | Behavior |
+|------|----------|
+| `enable` | Enable immediately, clear any timer |
+| `disable` | Disable indefinitely |
+| `disable_1h` | Disable for 1 hour, then auto-enable |
+| `disable_today` | Disable until midnight (server time) |
 
-```yaml
-server:
-  # Set to number of CPU cores
-  num-threads: 4
-  
-  # Distribute queries
-  so-reuseport: yes
-```
+### Timer Behavior
 
-## Privacy Configuration
+- Timer runs on the server
+- If WireBuddy restarts, the timer state is preserved
+- Expired timers are cleaned up on next status check
 
-### Minimize Query Name
+## Per-Peer Blocklist Selection
 
-```yaml
-server:
-  qname-minimisation: yes
-  qname-minimisation-strict: no
-```
+### Configuration
 
-### Aggressive NSEC
+Each peer can have custom blocklist selection:
 
-Cache NSEC records for faster NXDOMAIN responses:
+**Peers → Edit → Blocklist Settings**
 
-```yaml
-server:
-  aggressive-nsec: yes
-```
+| Option | Behavior |
+|--------|----------|
+| **Default** | Use globally enabled blocklists |
+| **Custom** | Select specific blocklists for this peer |
+| **None** | Disable all ad-blocking for this peer |
+
+### Use Cases
+
+- **Children's devices:** Enable all blocklists including Adult
+- **Work devices:** Use only Moderate blocklist
+- **Gaming devices:** Disable ad-blocking to avoid issues
+- **Guest devices:** Use Balanced blocklist
 
 ## Integration with WireGuard
 
-### Automatic DNS for Peers
+### Automatic DNS Configuration
 
-WireBuddy automatically sets DNS in peer configs:
+When creating or editing peers:
 
-```ini
-[Interface]
-DNS = 10.8.0.1  # WireBuddy DNS resolver
-```
+1. If DNS field is empty, WireBuddy uses the interface gateway IP
+2. This automatically routes DNS through the VPN
+3. Peers receive ad-blocking without manual configuration
 
-### Split DNS
+### DNS Server Binding
 
-Configure split DNS for specific domains:
+The DNS resolver binds to WireGuard interface IPs only:
 
-```bash
-# Client-side (systemd-resolved)
-resolvectl domain wg0 ~internal.corp
-```
-
-## Monitoring
-
-### Query Statistics
-
-View in WireBuddy:
-
-- **DNS → Statistics**
-- Total queries
-- Blocked percentage
-- Top domains
-- Client activity
-
-### Prometheus Metrics (Future)
-
-Export DNS metrics to Prometheus:
-
-```yaml
-server:
-  extended-statistics: yes
-  statistics-cumulative: yes
-```
+- Prevents conflicts with host DNS (in Docker host network mode)
+- Each interface's gateway IP becomes a DNS listening address
+- Example: `10.13.13.1:53` for the `wg0` interface
 
 ## Troubleshooting
 
-### DNS Not Resolving
+### Unbound Not Installed
 
-1. Check Unbound is running:
-   ```bash
-   docker compose exec wirebuddy systemctl status unbound
-   ```
+Symptoms:
+- All DNS controls are disabled
+- Buttons show "Unbound not installed" tooltip
+- API returns `503 Service Unavailable`
 
-2. Test resolution:
-   ```bash
-   dig @10.8.0.1 google.com
-   ```
+Solution:
+- Use the Docker image which includes Unbound
+- Or install Unbound manually: `apt install unbound`
 
-3. Check logs:
+### Config Reload Failed
+
+If DNS settings don't apply:
+
+1. Check Unbound logs:
    ```bash
    docker compose logs wirebuddy | grep -i unbound
    ```
 
-### Slow DNS Resolution
-
-1. Increase cache sizes
-2. Enable prefetching
-3. Check upstream latency:
+2. Validate configuration:
    ```bash
-   dig @1.1.1.1 google.com +stats
+   unbound-checkconf /etc/unbound/unbound.conf
    ```
 
-### False Positives
+3. Restart DNS:
+   - Settings → DNS → Restart
 
-1. Check which blocklist is blocking:
-   - Review DNS query log
-2. Add to whitelist:
-   ```
-   allow falsely-blocked-domain.com
-   ```
+### High Memory Usage
+
+The blocklist file can be large (~10-50 MB). To reduce memory:
+
+1. Disable aggressive blocklists (HaGeZi Pro)
+2. Use fewer blocklists
+3. Restart Unbound to clear stale cache
+
+## API Reference
+
+### Key Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/dns/status` | GET | DNS status and statistics |
+| `/api/dns/config` | GET/POST | DNS configuration |
+| `/api/dns/blocklist/sources` | GET/POST | Blocklist selection |
+| `/api/dns/custom-rules` | GET/PATCH | Custom rules management |
+| `/api/dns/adblocker/mode` | POST | Change ad-blocker mode |
+| `/api/dns/logs` | GET | Query log data |
+
+See [API Documentation](../api/dns.md) for full details.
 
 ## Next Steps
 
-- [Security Configuration](security.md)
-- [Status Page](status-page.md)
-- [DNS Features](../features/dns.md)
+- [DNS Features](../features/dns.md) - User guide
+- [Security Configuration](security.md) - Security settings
+- [Environment Variables](environment.md) - Server configuration

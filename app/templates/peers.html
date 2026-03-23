@@ -210,17 +210,31 @@
         #editPeerModal .modal-dialog {
             max-width: 95vw;
             margin: 0.5rem auto;
-            max-height: calc(100vh - 1rem);
         }
 
         #addPeerModal .modal-content,
         #editPeerModal .modal-content {
             max-height: calc(100vh - 1rem);
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* form sits between modal-content and modal-body/footer –
+           must participate in the flex layout so footer stays visible */
+        #addPeerModal .modal-content > form,
+        #editPeerModal .modal-content > form {
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            overflow: hidden;
+            min-height: 0;
         }
 
         #addPeerModal .modal-body,
         #editPeerModal .modal-body {
             padding: 0.75rem;
+            overflow-y: auto;
+            flex: 1 1 auto;
         }
     }
 
@@ -754,8 +768,9 @@
                     </div>
                     
                     <div class="mb-3">
-                        <label for="peer-name" class="form-label">Name</label>
-                        <input type="text" class="form-control" id="peer-name" maxlength="64" placeholder="e.g., John's iPhone">
+                        <label for="peer-name" class="form-label">Name <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="peer-name" maxlength="128" placeholder="e.g., John's iPhone" required>
+                        <div class="invalid-feedback">Peer name is required</div>
                     </div>
                     <div class="mb-3">
                         <label for="peer-allowed-ips-mode" class="form-label">
@@ -767,7 +782,7 @@
                             </a>
                         </label>
                         <div class="collapse mb-2" id="routingModeHelp">
-                            <div class="card card-body small bg-light">
+                            <div class="card card-body small bg-body-secondary">
                                 <strong>Full Tunnel:</strong> All client network traffic is routed through the VPN.
                                 The client uses the VPN IP for all connections.<br>
                                 <strong>Split Tunnel:</strong> Only VPN network traffic is routed. Local network
@@ -801,15 +816,14 @@
                             <label class="form-check-label" for="peer-use-adblocker">
                                 Use WireBuddy DNS
                             </label>
-                            <br><small class="text-muted">Route DNS through built-in ad-blocker</small>
                         </div>
+                        <small class="text-muted d-none" id="peer-fallback-dns-hint">Uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)</small>
                     </div>
                     <div class="mb-3" id="peer-blocklist-section">
                         <label class="form-label">Active Blocklists</label>
-                        <div id="peer-blocklist-options" class="d-flex flex-wrap gap-2">
+                        <div id="peer-blocklist-options" class="row gy-1 gx-2">
                             <!-- Populated dynamically -->
                         </div>
-                        <small class="text-muted">Only globally enabled blocklists can be applied for this peer</small>
                     </div>
                     <div class="mb-3">
                         <div class="form-check form-switch">
@@ -825,7 +839,7 @@
                         </div>
                         <small class="text-muted">Prevents communication with other VPN peers</small>
                         <div class="collapse mt-2" id="clientIsolationHelp">
-                            <div class="card card-body small bg-light">
+                            <div class="card card-body small bg-body-secondary">
                                 <strong>What is Client Isolation?</strong><br>
                                 When enabled, this peer cannot communicate with other VPN clients. The peer
                                 can only access the Internet and the VPN server, but not other connected
@@ -834,10 +848,6 @@
                                 isolated from each other for security reasons.
                             </div>
                         </div>
-                    </div>
-                    <div class="mb-3">
-                        <label for="peer-description" class="form-label">Description (optional)</label>
-                        <textarea class="form-control" id="peer-description" rows="2" maxlength="256"></textarea>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -890,8 +900,9 @@
                     <p class="visually-hidden" id="editPeerModalDesc">Update peer settings, routing and DNS behavior.
                     </p>
                     <div class="mb-3">
-                        <label for="edit-peer-name" class="form-label">Name</label>
-                        <input type="text" class="form-control" id="edit-peer-name" maxlength="64" placeholder="e.g., John's iPhone">
+                        <label for="edit-peer-name" class="form-label">Name <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="edit-peer-name" maxlength="128" placeholder="e.g., John's iPhone" required>
+                        <div class="invalid-feedback">Peer name is required</div>
                     </div>
                     <div class="mb-3">
                         <label for="edit-peer-allowed-ips-mode" class="form-label">
@@ -903,7 +914,7 @@
                             </a>
                         </label>
                         <div class="collapse mb-2" id="editRoutingModeHelp">
-                            <div class="card card-body small bg-light">
+                            <div class="card card-body small bg-body-secondary">
                                 <strong>Full Tunnel:</strong> All client network traffic is routed through the VPN.
                                 The client uses the VPN IP for all connections.<br>
                                 <strong>Split Tunnel:</strong> Only VPN network traffic is routed. Local network
@@ -931,15 +942,14 @@
                             <label class="form-check-label" for="edit-peer-use-adblocker">
                                 Use WireBuddy DNS
                             </label>
-                            <br><small class="text-muted">Route DNS through built-in ad-blocker</small>
                         </div>
+                        <small class="text-muted d-none" id="edit-peer-fallback-dns-hint">Uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)</small>
                     </div>
                     <div class="mb-3" id="edit-peer-blocklist-section">
                         <label class="form-label">Active Blocklists</label>
-                        <div id="edit-peer-blocklist-options" class="d-flex flex-wrap gap-2">
+                        <div id="edit-peer-blocklist-options" class="row gy-1 gx-2">
                             <!-- Populated dynamically -->
                         </div>
-                        <small class="text-muted">Only globally enabled blocklists can be applied for this peer</small>
                     </div>
                     <div class="mb-3">
                         <div class="form-check form-switch">
@@ -955,7 +965,7 @@
                         </div>
                         <small class="text-muted">Prevents communication with other VPN peers</small>
                         <div class="collapse mt-2" id="editClientIsolationHelp">
-                            <div class="card card-body small bg-light">
+                            <div class="card card-body small bg-body-secondary">
                                 <strong>What is Client Isolation?</strong><br>
                                 When enabled, this peer cannot communicate with other VPN clients. The peer
                                 can only access the Internet and the VPN server, but not other connected
@@ -970,10 +980,6 @@
                             <input class="form-check-input" type="checkbox" id="edit-peer-enabled" checked>
                             <label class="form-check-label" for="edit-peer-enabled">Enabled</label>
                         </div>
-                    </div>
-                    <div class="mb-3">
-                        <label for="edit-peer-description" class="form-label">Description (optional)</label>
-                        <textarea class="form-control" id="edit-peer-description" rows="2" maxlength="256"></textarea>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -1286,6 +1292,10 @@
         const allSelected = selectedIds === null;
 
         blocklistRegistry.forEach(source => {
+            // Column wrapper for 2-column grid layout
+            const col = document.createElement('div');
+            col.className = 'col-6';
+
             const wrapper = document.createElement('div');
             wrapper.className = 'form-check';
 
@@ -1299,12 +1309,34 @@
             const label = document.createElement('label');
             label.className = 'form-check-label';
             label.htmlFor = checkbox.id;
-            label.textContent = source.name;
             label.title = source.description || '';
+
+            // Main label text
+            const labelText = document.createTextNode(source.name);
+            label.appendChild(labelText);
+
+            // Add level badge if available
+            const level = source.level || '';
+            const levelBadgeLabel = {
+                'Moderat': 'Moderate',
+                'Ausgewogen': 'Balanced',
+                'Extrem': '🔥Extreme',
+                '18+': '❤️ 18+',
+            }[level] || (level ? level : '');
+
+            if (levelBadgeLabel) {
+                const badge = document.createElement('span');
+                badge.className = 'badge text-bg-secondary ms-1';
+                badge.style.fontSize = '0.65rem';
+                badge.textContent = levelBadgeLabel;
+                label.appendChild(document.createTextNode(' '));
+                label.appendChild(badge);
+            }
 
             wrapper.appendChild(checkbox);
             wrapper.appendChild(label);
-            container.appendChild(wrapper);
+            col.appendChild(wrapper);
+            container.appendChild(col);
         });
     }
 
@@ -1335,8 +1367,14 @@
     function toggleBlocklistSection(checkboxId, sectionId) {
         const checkbox = document.getElementById(checkboxId);
         const section = document.getElementById(sectionId);
+        // Derive fallback hint ID from checkbox ID (peer-use-adblocker → peer-fallback-dns-hint)
+        const hintId = checkboxId.replace('use-adblocker', 'fallback-dns-hint');
+        const hint = document.getElementById(hintId);
         if (checkbox && section) {
             section.style.display = checkbox.checked ? 'block' : 'none';
+        }
+        if (hint) {
+            hint.classList.toggle('d-none', checkbox?.checked ?? true);
         }
     }
 
@@ -1383,6 +1421,9 @@
     const addPeerModalEl = document.getElementById('addPeerModal');
     if (addPeerModalEl) {
     addPeerModalEl.addEventListener('show.bs.modal', async function () {
+        // Reset validation state
+        document.getElementById('peer-name')?.classList.remove('is-invalid');
+        
         if (addPeerModalAbort) addPeerModalAbort.abort();
         addPeerModalAbort = new AbortController();
         const signal = addPeerModalAbort.signal;
@@ -1468,6 +1509,10 @@
 
     const addPeerFormEl = document.getElementById('add-peer-form');
     if (addPeerFormEl) {
+    // Clear validation state on input
+    document.getElementById('peer-name')?.addEventListener('input', function() {
+        this.classList.remove('is-invalid');
+    });
     addPeerFormEl.addEventListener('submit', async function (e) {
         e.preventDefault();
 
@@ -1475,16 +1520,23 @@
         const submitText = submitBtn.querySelector('.submit-text');
         const submitSpinner = submitBtn.querySelector('.spinner-border');
 
+        const peerNameInput = document.getElementById('peer-name');
+        const peerName = peerNameInput.value.trim();
+        if (!peerName) {
+            peerNameInput.classList.add('is-invalid');
+            peerNameInput.focus();
+            return;
+        }
+
         const allowedIpsMode = document.getElementById('peer-allowed-ips-mode').value;
         const allowedIps = validateAndGetAllowedIps();
         if (!allowedIps) return;
 
         const data = {
-            name: document.getElementById('peer-name').value.trim() || null,
+            name: peerName,
             allowed_ips: allowedIps,
             allowed_ips_mode: allowedIpsMode,
             interface: document.getElementById('peer-interface').value,
-            description: document.getElementById('peer-description').value.trim() || null,
             use_adblocker: document.getElementById('peer-use-adblocker').checked,
             blocklist_ids: getSelectedBlocklistIds('peer-blocklist-options'),
             client_isolation: document.getElementById('peer-client-isolation').checked,
@@ -1520,6 +1572,10 @@
 
     const editPeerFormEl = document.getElementById('edit-peer-form');
     if (editPeerFormEl) {
+    // Clear validation state on input
+    document.getElementById('edit-peer-name')?.addEventListener('input', function() {
+        this.classList.remove('is-invalid');
+    });
     editPeerFormEl.addEventListener('submit', async function (e) {
         e.preventDefault();
 
@@ -1533,8 +1589,14 @@
             return;
         }
 
-        const name = document.getElementById('edit-peer-name').value.trim();
-        const description = document.getElementById('edit-peer-description').value.trim();
+        const editPeerNameInput = document.getElementById('edit-peer-name');
+        const name = editPeerNameInput.value.trim();
+        if (!name) {
+            editPeerNameInput.classList.add('is-invalid');
+            editPeerNameInput.focus();
+            return;
+        }
+
         const allowedIpsMode = document.getElementById('edit-peer-allowed-ips-mode').value;
         const allowedIps = validateAndGetAllowedIps('edit-');
         const isEnabled = document.getElementById('edit-peer-enabled').checked;
@@ -1543,8 +1605,7 @@
         if (!allowedIps) return;
 
         const data = {
-            name: name || null,
-            description: description || null,
+            name: name,
             allowed_ips: allowedIps,
             allowed_ips_mode: allowedIpsMode,
             is_enabled: isEnabled,
@@ -1706,6 +1767,9 @@
             return;
         }
         const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('editPeerModal'));
+        
+        // Reset validation state
+        document.getElementById('edit-peer-name')?.classList.remove('is-invalid');
 
         // Load current peer data
         try {
@@ -1713,8 +1777,6 @@
 
             document.getElementById('edit-peer-id').value = peerId;
             document.getElementById('edit-peer-name').value = peer.name || '';
-            document.getElementById('edit-peer-description').value = peer.description || '';
-
             // Set allowed IPs mode dropdown
             const mode = detectAllowedIpsMode(peer.allowed_ips);
             document.getElementById('edit-peer-allowed-ips-mode').value = mode;

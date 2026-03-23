@@ -10,26 +10,24 @@
     --wb-primary-hover: #6f1215;
     --bs-primary: #88171a;
     --bs-primary-rgb: 136, 23, 26;
+    --wb-accent-red: #ff6384;
+    --wb-accent-red-rgb: 255, 99, 132;
+    --wb-accent-red-strong: #b4234d;
     --wb-success: #198754;
     --wb-danger: #dc3545;
     --wb-warning: #ffc107;
     --wb-info: #0dcaf0;
+    --wb-info-strong: #0a58ca;
     --wb-secondary: #6c757d;
+    --wb-sidebar-link-color: #4b5563;
     --wb-bg-soft: #f8f9fa;
     --wb-bg-strong: #e9ecef;
-    /* Border radius tokens */
-    --wb-radius-sm: 0.375rem;
-    --wb-radius-md: 0.5rem;
-    --wb-radius-lg: 1rem;
     /* Z-index layering */
     --wb-z-banner: 1080;
     --wb-z-toast: 1090;
-    --wb-shell-top: 0px;
-    --wb-footer-height: 2.5rem;
-    --wb-shell-bottom: var(--wb-footer-height);
     --wb-monospace-fg: #495057;
     --wb-monospace-bg: rgba(0, 0, 0, 0.05);
-    --wb-danger-strong: #b4232c;
+    --wb-danger-strong: #b02a37;
     --wb-modal-backdrop-bg: rgba(15, 23, 42, 0.6);
     --wb-modal-backdrop-blur: 8px;
     --wb-modal-backdrop-saturate: 0.8;
@@ -43,13 +41,16 @@
     --wb-bg-elevated: #4b5563;
     --wb-border-subtle: #374151;
     --wb-border-strong: #4b5563;
+    --wb-sidebar-link-color: #b0b8c4;
     --wb-text-primary: #f3f4f6;
     --wb-text-secondary: #dee2e6;
     --wb-text-tertiary: #d1d5db;
     --wb-text-muted: #9ca3af;
     --wb-monospace-fg: #dbe4ee;
     --wb-monospace-bg: rgba(255, 255, 255, 0.08);
-    --wb-danger-strong: #ff9aa5;
+    --wb-accent-red-strong: #ff8aa5;
+    --wb-info-strong: #6edff6;
+    --wb-danger-strong: #ff6384;
 }
 
 /* -----------------------------------------------------------------------------
@@ -74,6 +75,7 @@ body {
     flex-direction: column;
     background-color: var(--bs-body-bg);
     overflow-x: hidden;
+    overflow-y: auto;
 }
 
 .modal-backdrop.show {
@@ -93,12 +95,7 @@ summary:focus-visible {
     border-radius: var(--wb-radius-sm);
 }
 
-/* Material Icons - Vertical Alignment */
-.material-icons {
-    vertical-align: middle;
-    color: currentColor;
-    line-height: 1;
-}
+/* Material Icons base styles are in wb-ui-system.css Section 13 */
 
 /* Timestamp Display - Monospace Font */
 .peer-last-seen,
@@ -108,20 +105,10 @@ td[data-label="Last Seen"] {
 }
 
 /* Code Tag - Override Bootstrap red color with neutral dark */
-:where(code, kbd, samp, .wb-monospace-value, .font-monospace:not(input):not(textarea):not(select):not(button):not(td):not(th):not(table):not(tr):not(tbody):not(thead), .asn-badge, .asn-inline) {
-    color: var(--wb-monospace-fg);
-    background-color: var(--wb-monospace-bg);
-    border-radius: var(--wb-radius-sm);
-    padding: 0.1rem 0.35rem;
-}
-
-:where(code, kbd, samp) {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-}
-
 code,
 kbd,
 samp {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     color: var(--wb-monospace-fg);
     background-color: var(--wb-monospace-bg);
     border-radius: var(--wb-radius-sm);
@@ -129,6 +116,10 @@ samp {
 }
 
 :where(.wb-monospace-value, .font-monospace:not(input):not(textarea):not(select):not(button):not(td):not(th):not(table):not(tr):not(tbody):not(thead), .asn-badge, .asn-inline) {
+    color: var(--wb-monospace-fg);
+    background-color: var(--wb-monospace-bg);
+    border-radius: var(--wb-radius-sm);
+    padding: 0.1rem 0.35rem;
     display: inline-block;
 }
 
@@ -224,12 +215,7 @@ html.login-page[data-bs-theme="dark"] .login-tagline {
 /* -----------------------------------------------------------------------------
    Cards
    ----------------------------------------------------------------------------- */
-.card {
-    border: none;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-    border-radius: var(--wb-radius-lg);
-    overflow: hidden;
-}
+/* Base .card styles (border, shadow, radius, overflow) are in wb-ui-system.css */
 
 html.login-page .login-card {
     box-shadow: 0 20px 48px -18px rgba(5, 23, 49, 0.45), 0 8px 18px rgba(5, 23, 49, 0.2);
@@ -427,12 +413,12 @@ html.login-page[data-bs-theme="dark"] .card .table,
     --bs-btn-disabled-bg: var(--wb-primary);
     --bs-btn-disabled-border-color: var(--wb-primary);
     --bs-btn-disabled-color: #fff;
-    --bs-btn-focus-shadow-rgb: 136, 23, 26;
-    box-shadow: 0 1px 3px rgba(136, 23, 26, 0.2);
+    --bs-btn-focus-shadow-rgb: var(--bs-primary-rgb);
+    box-shadow: 0 1px 3px rgba(var(--bs-primary-rgb), 0.2);
 }
 
 .btn.btn-primary:hover {
-    box-shadow: 0 2px 6px rgba(136, 23, 26, 0.3);
+    box-shadow: 0 2px 6px rgba(var(--bs-primary-rgb), 0.3);
 }
 
 .btn.btn-primary:focus-visible {
@@ -530,11 +516,11 @@ html.login-page[data-bs-theme="dark"] .card .table,
     --bs-btn-active-bg: rgba(var(--bs-primary-rgb), 0.12);
     --bs-btn-active-border-color: var(--wb-primary-hover);
     --bs-btn-active-color: var(--wb-primary-hover);
-    box-shadow: 0 1px 3px rgba(136, 23, 26, 0.1);
+    box-shadow: 0 1px 3px rgba(var(--bs-primary-rgb), 0.1);
 }
 
 .btn.btn-outline-primary:hover {
-    box-shadow: 0 2px 6px rgba(136, 23, 26, 0.15);
+    box-shadow: 0 2px 6px rgba(var(--bs-primary-rgb), 0.15);
 }
 
 .btn.btn-outline-primary:focus-visible {
@@ -677,8 +663,8 @@ html.login-page[data-bs-theme="dark"] .card .table,
 }
 
 [data-bs-theme="dark"] .btn.btn-outline-danger {
-    --bs-btn-border-color: #ff6b6b;
-    --bs-btn-color: #ff6b6b;
+    --bs-btn-border-color: #ff6384;
+    --bs-btn-color: #ff6384;
     --bs-btn-hover-bg: rgba(220, 53, 69, 0.15);
     --bs-btn-hover-color: #ff8a8a;
 }
@@ -756,6 +742,22 @@ html.login-page[data-bs-theme="dark"] .card .table,
     outline: 2px solid var(--wb-border-strong);
     outline-offset: 2px;
     box-shadow: 0 0 0 3px rgba(75, 85, 99, 0.25);
+}
+
+/* ── Icon buttons focus indicator ───────────────────────────── */
+.btn-icon:focus-visible {
+    outline: 2px solid var(--wb-primary);
+    outline-offset: 2px;
+}
+
+/* ── Form range (sliders) focus indicator ───────────────────── */
+.form-range:focus-visible {
+    outline: 2px solid var(--wb-primary);
+    outline-offset: 2px;
+}
+
+.form-range:focus {
+    box-shadow: none;
 }
 
 /* ── Optional: subtle action accent on hover (interfaces) ─────────────────── */
@@ -933,7 +935,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     flex-shrink: 0;
     position: sticky;
     top: 0;
-    height: calc(100vh - var(--wb-footer-height, 2.5rem));
+    height: calc(100vh - var(--wb-footer-height, 48px));
     overflow-y: auto;
 }
 
@@ -943,7 +945,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
 }
 
 .sidebar .nav-link {
-    color: var(--wb-bg-elevated);
+    color: var(--wb-sidebar-link-color);
     padding: 0.75rem 1rem;
     border-radius: var(--wb-radius-md);
     margin: 0.25rem 0.5rem;
@@ -952,10 +954,6 @@ html.login-page[data-bs-theme="dark"] .card .table,
 
 .sidebar .nav-link:hover {
     background-color: #e5e7eb;
-}
-
-[data-bs-theme="dark"] .sidebar .nav-link {
-    color: #b0b8c4;
 }
 
 [data-bs-theme="dark"] .sidebar .nav-link:hover {
@@ -987,6 +985,12 @@ html.login-page[data-bs-theme="dark"] .card .table,
     overflow: hidden;
 }
 
+@media (max-width: 991.98px) {
+    .wb-shell {
+        padding-bottom: 0;
+    }
+}
+
 @media (min-width: 992px) {
 
     html:not(.login-page),
@@ -997,14 +1001,14 @@ html.login-page[data-bs-theme="dark"] .card .table,
 
     .wb-shell::after {
         content: "";
-        position: fixed;
+        position: absolute;
         left: 240px;
-        top: var(--wb-shell-top);
-        bottom: var(--wb-shell-bottom);
+        top: 0;
+        bottom: var(--wb-footer-height);
         width: 1px;
         background-color: #e5e7eb;
         pointer-events: none;
-        z-index: 900;
+        z-index: 1;
     }
 
     [data-bs-theme="dark"] .wb-shell::after {
@@ -1168,7 +1172,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     width: 100%;
     padding: 1rem 0.75rem;
     /* Isolate layout calculations to prevent reflow propagation */
-    contain: layout style;
+    contain: layout;
 }
 
 /* ── Smooth mobile navbar open/close animation ────────────────────────────── */
@@ -1353,6 +1357,15 @@ html.login-page .alert {
     opacity: 0.6;
 }
 
+.chart-empty-state-text.small {
+    margin-top: -0.55rem;
+    /* compensate gap to remove spacing */
+}
+
+.chart-empty-state-text-tight {
+    margin-top: -0.35rem;
+}
+
 /* -----------------------------------------------------------------------------
    Mobile Condensed Tables (Roboto Flex width axis)
    Scope to specific class if needed for condensed display
@@ -1411,17 +1424,17 @@ body.wb-onboarding .modal-backdrop.show {
 @keyframes wbReconnectSoftPulse {
     0% {
         transform: scale(1);
-        box-shadow: 0 0 0 rgba(136, 23, 26, 0.0);
+        box-shadow: 0 0 0 rgba(var(--bs-primary-rgb), 0);
     }
 
     50% {
         transform: scale(1.012);
-        box-shadow: 0 0 0.85rem rgba(136, 23, 26, 0.22);
+        box-shadow: 0 0 0.85rem rgba(var(--bs-primary-rgb), 0.22);
     }
 
     100% {
         transform: scale(1);
-        box-shadow: 0 0 0 rgba(136, 23, 26, 0.0);
+        box-shadow: 0 0 0 rgba(var(--bs-primary-rgb), 0);
     }
 }
 

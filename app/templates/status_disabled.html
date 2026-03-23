@@ -3,17 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Status Page Disabled</title>
-    <script src="/static/js/theme.js"></script>
+    <title>WireBuddy Status</title>
+    <link rel="icon" href="/static/img/wirebuddy_1c.svg" type="image/svg+xml">
+    <script src="/static/js/theme.js" defer></script>
     <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
-    <link href="/static/css/style.css" rel="stylesheet">
+    <link href="/static/vendor/material-icons.css" rel="stylesheet">
+    <link href="/static/css/wb-ui-system.css" rel="stylesheet">
+    <link href="/static/css/status.css" rel="stylesheet">
 </head>
 <body>
-    <main class="container py-5" style="max-width: 640px;">
+    <nav class="navbar navbar-expand-lg" data-bs-theme="dark">
+        <div class="container-fluid">
+            <a class="navbar-brand d-flex align-items-center" href="/status">
+                <img src="/static/img/wirebuddy_1c.svg" alt="WireBuddy" class="navbar-logo">
+            </a>
+            <div class="d-flex align-items-center status-navbar-actions">
+                <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn status-icon-btn"
+                    data-action="toggle-theme" aria-label="Toggle theme" title="Toggle theme">
+                    <span class="material-icons" id="theme-icon">dark_mode</span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container py-4 py-md-5" style="max-width: 640px;">
         <div class="card">
             <div class="card-body text-center py-5">
-                <h1 class="h4 mb-2">Status Page disabled</h1>
-                <p class="text-muted mb-0">This endpoint is currently not available</p>
+                <span class="material-icons text-muted mb-3" style="font-size: 48px;" aria-hidden="true">visibility_off</span>
+                <h1 class="h4 mb-2">Status Page Disabled</h1>
+                <p class="mb-0" style="color: #ff6384;">This endpoint is currently not available.</p>
             </div>
         </div>
     </main>

@@ -282,6 +282,7 @@ async def get_interface_config(
 			"post_up": iface["post_up"],
 			"post_down": iface["post_down"],
 			"is_enabled": bool(iface["is_enabled"]),
+			"show_on_dashboard": bool(iface["show_on_dashboard"] if "show_on_dashboard" in iface.keys() else 1),
 		},
 		name=iface["name"],
 		address=iface["address"],
@@ -289,4 +290,5 @@ async def get_interface_config(
 		listen_port=iface["listen_port"],
 		dns=iface["dns"],
 		is_enabled=bool(iface["is_enabled"]),
+		show_on_dashboard=bool(iface["show_on_dashboard"] if "show_on_dashboard" in iface.keys() else 1),
 	)

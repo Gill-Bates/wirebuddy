@@ -1,3 +1,19 @@
+## [1.3.3] - 2026-03-23
+
+- ``New`` The dashboard now also displays the network load for each interface
+- ``Fix`` Design optimized for iPad display
+- ``Fix`` Fixed an issue with the test server selection for the speed test
+- ``Fix`` The DNS ad blocker could be launched even if Unbound wasn't installed
+- ``Fix`` The changes to the downstream and upstream values were not saved
+- ``Fix`` In some cases, the peer name was not displayed in the DNS logs
+- ``Fix`` If a DNS blocklist has been disabled, the filter has not been updated
+- ``Fix`` Several design improvements in the GUI
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
+
 ## [1.3.2] - 2026-03-16
 
 - ``New`` A documentary is now available online: https://gill-bates.github.io/wirebuddy/
@@ -9,10 +25,6 @@
 - ``Fix`` Sessions expired after 1 hour, despite user interaction
 - ``Fix`` A validation routine in the DNS Leak Indicator produced incorrect results
 - ``Fix`` Several design improvements
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.3.1] - 2026-03-13
 

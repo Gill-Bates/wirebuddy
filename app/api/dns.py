@@ -81,13 +81,16 @@ _background_tasks: set[asyncio.Task[None]] = set()
 _DNS_STATUS_CACHE_TTL_SECONDS = 5.0
 _DNS_TREND_CACHE_TTL_SECONDS = 10.0
 _dns_status_cache: dict[str, tuple[float, dict]] = {}
-_dns_trend_cache: dict[tuple[str, int, int], tuple[float, dict]] = {}
+_dns_trend_cache: dict[tuple[str, int, int, str], tuple[float, dict]] = {}
 _ALLOWED_DOT_PORTS = frozenset({853, 8853})
 _DOT_TEST_CONCURRENCY = 8
 
-# Rebuild queue: prevents concurrent blocklist rebuilds that interfere
-_rebuild_queue: asyncio.Queue[tuple[list[str], str]] = asyncio.Queue(maxsize=1)
+# Rebuild coordination: "latest-wins" pattern to prevent concurrent rebuilds
+# while ensuring the most recent request is always processed
+_rebuild_latest: tuple[list[str], str] | None = None
+_rebuild_event: asyncio.Event | None = None
 _rebuild_worker_task: asyncio.Task[None] | None = None
+_rebuild_in_progress: bool = False
 
 
 def _spawn_background_task(coro: Coroutine[object, object, None], *, name: str) -> None:
@@ -192,6 +195,25 @@ def _regenerate_peer_tags_for_blocklist(conn: sqlite3.Connection) -> None:
 	_log.debug("DNS peer tags regenerated for %d peers", len(peer_list))
 
 
+def _collect_listen_addresses(
+	conn: sqlite3.Connection,
+) -> tuple[list[str], list[str] | None]:
+	"""Collect WireGuard interface IPs for Unbound to bind to."""
+	interfaces = list_interfaces(conn)
+	ipv4: list[str] = []
+	for iface in interfaces:
+		try:
+			addr4 = iface["address"]
+		except (KeyError, TypeError, IndexError):
+			addr4 = getattr(iface, "address", None)
+		if addr4:
+			ip4 = str(addr4).split("/")[0]
+			if ip4 not in ipv4:
+				ipv4.append(ip4)
+	ipv6 = unbound.get_interface_ipv6_gateways(interfaces)
+	return ipv4, ipv6 or None
+
+
 async def _background_reload_for_blocklist(enable_blocklist: bool) -> None:
 	"""Background task: Write full Unbound config and reload after blocklist toggle.
 	
@@ -204,62 +226,47 @@ async def _background_reload_for_blocklist(enable_blocklist: bool) -> None:
 	"""
 	try:
 		# Import here to avoid circular dependency
+		from ..db.sqlite_runtime import close_connection, connect
 		from ..utils.config import get_config
-		import sqlite3
-		
-		# Create new DB connection for background thread
-		# (cannot reuse request-scoped connection which is already closed)
 		db_path = get_config().db_path
-		conn = sqlite3.connect(str(db_path), check_same_thread=False)
-		conn.row_factory = sqlite3.Row
-		
-		try:
-			# Re-read current settings from DB
-			enable_logging = get_dns_query_logging_enabled(conn)
-			upstream_dns = get_dns_upstream_servers(conn)
-			dnssec_enabled = get_dnssec_enabled(conn)
-			
-			# Collect interface gateway addresses for DNS binding
-			interfaces = list_interfaces(conn)
-			ipv4_gateways: list[str] = []
-			for iface in interfaces:
-				try:
-					addr4 = iface["address"]
-				except (KeyError, TypeError, IndexError):
-					addr4 = getattr(iface, "address", None)
-				if addr4:
-					ip4 = str(addr4).split("/")[0]
-					if ip4 not in ipv4_gateways:
-						ipv4_gateways.append(ip4)
-			ipv6_gateways = unbound.get_interface_ipv6_gateways(interfaces)
-			
-			# Write config (runs in current thread, not blocking event loop since this is a bg task)
-			unbound.write_config(
-				enable_logging=enable_logging,
-				enable_blocklist=enable_blocklist,
-				upstream_dns=upstream_dns,
-				enable_dnssec=dnssec_enabled,
-				listen_addrs_ipv4=ipv4_gateways,
-				listen_addrs_ipv6=ipv6_gateways if ipv6_gateways else None,
-			)
-			
-			# Reload or start unbound (if it crashed, start it instead of waiting for watchdog)
-			if await unbound.is_running():
-				ok, msg = await unbound.reload_config()
-				if ok:
-					_log.info("DNS_BG_RELOAD blocklist toggle reload completed successfully")
-				else:
-					_log.warning("DNS_BG_RELOAD blocklist toggle reload failed: %s", msg)
+
+		def _sync_work() -> None:
+			"""Synchronous DB reads and config write (run in thread)."""
+			conn = connect(db_path)
+			try:
+				enable_logging = get_dns_query_logging_enabled(conn)
+				upstream_dns = get_dns_upstream_servers(conn)
+				dnssec_enabled = get_dnssec_enabled(conn)
+				ipv4_gateways, ipv6_gateways = _collect_listen_addresses(conn)
+				unbound.write_config(
+					enable_logging=enable_logging,
+					enable_blocklist=enable_blocklist,
+					upstream_dns=upstream_dns,
+					enable_dnssec=dnssec_enabled,
+					listen_addrs_ipv4=ipv4_gateways,
+					listen_addrs_ipv6=ipv6_gateways,
+				)
+			finally:
+				close_connection(conn)
+
+		# Run blocking I/O in thread to avoid blocking event loop
+		await asyncio.to_thread(_sync_work)
+
+		# Reload or start unbound (if it crashed, start it instead of waiting for watchdog)
+		if await unbound.is_running():
+			ok, msg = await unbound.reload_config()
+			if ok:
+				_log.info("DNS_BG_RELOAD blocklist toggle reload completed successfully")
 			else:
-				# Unbound not running - start it instead of reload
-				_log.info("DNS_BG_RELOAD unbound not running, starting instead of reload")
-				ok, msg = await unbound.start()
-				if ok:
-					_log.info("DNS_BG_RELOAD blocklist toggle start completed successfully")
-				else:
-					_log.warning("DNS_BG_RELOAD blocklist toggle start failed: %s", msg)
-		finally:
-			conn.close()
+				_log.warning("DNS_BG_RELOAD blocklist toggle reload failed: %s", msg)
+		else:
+			# Unbound not running - start it instead of reload
+			_log.info("DNS_BG_RELOAD unbound not running, starting instead of reload")
+			ok, msg = await unbound.start()
+			if ok:
+				_log.info("DNS_BG_RELOAD blocklist toggle start completed successfully")
+			else:
+				_log.warning("DNS_BG_RELOAD blocklist toggle start failed: %s", msg)
 	except Exception as exc:
 		_log.error("DNS_BG_RELOAD background reload failed: %s", exc, exc_info=True)
 
@@ -312,6 +319,31 @@ def _normalize_hostname(hostname: str) -> str:
 		if label.startswith("-") or label.endswith("-"):
 			raise ValueError(f"Invalid hostname label: {label}")
 	return ascii_host
+
+
+def _parse_client_ip_filter(client_ips: str | None) -> tuple[set[str] | None, str]:
+	"""Parse, validate, and normalize a comma-separated client IP filter."""
+	if not client_ips:
+		return None, ""
+	if len(client_ips) > 4096:
+		raise HTTPException(status_code=422, detail="client_ips too long")
+
+	client_filter: set[str] = set()
+	for raw_ip in client_ips.split(","):
+		ip = raw_ip.strip()
+		if not ip:
+			continue
+		try:
+			client_filter.add(str(ipaddress.ip_address(ip)))
+		except ValueError:
+			raise HTTPException(status_code=422, detail=f"Invalid client IP: {ip}") from None
+
+	if not client_filter:
+		return None, ""
+	if len(client_filter) > 64:
+		raise HTTPException(status_code=422, detail="Too many client IP filters (max 64)")
+
+	return client_filter, ",".join(sorted(client_filter))
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +399,8 @@ class DnsConfigUpdate(BaseModel):
 			hostname = _normalize_hostname(hostname_part)
 			port = int(port_part) if port_part else 853
 			validated.append(f"{ip_part}@{port}#{hostname}")
+		if not validated:
+			raise ValueError("At least one upstream DNS server is required")
 		return validated
 
 	@field_validator("log_retention_days")
@@ -517,13 +551,13 @@ async def dns_status(
 	is_installed = await asyncio.to_thread(unbound.is_unbound_installed)
 	if not is_installed:
 		unavailable = True
-		reason = "Unbound not installed (requires Docker)"
+		reason = "Unbound not installed"
 	else:
 		try:
 			running = await unbound.is_running()
 		except FileNotFoundError:
 			unavailable = True
-			reason = "Unbound not installed (requires Docker)"
+			reason = "Unbound not installed"
 		except Exception as exc:
 			_log.debug("DNS status running-check failed: %s", exc)
 
@@ -554,10 +588,15 @@ async def dns_status(
 
 
 @router.get("/selftest")
-async def dns_selftest(_: sqlite3.Row = Depends(get_current_user)):
-	"""Run a lightweight DNS self-test against local Unbound."""
-	def _query_local_unbound(qname: str = "cloudflare.com", timeout: float = 2.0) -> tuple[bool, str]:
+async def dns_selftest(
+	conn: sqlite3.Connection = Depends(get_conn),
+	_: sqlite3.Row = Depends(get_current_user),
+):
+	"""Run a lightweight DNS self-test against the configured local Unbound listener."""
+	def _query_local_unbound(server_ip: str, qname: str = "cloudflare.com", timeout: float = 2.0) -> tuple[bool, str]:
 		try:
+			ip_obj = ipaddress.ip_address(server_ip)
+			family = socket.AF_INET6 if ip_obj.version == 6 else socket.AF_INET
 			# Minimal DNS A query packet
 			tid = os.urandom(2)  # Random transaction ID to prevent spoofing
 			flags = b"\x01\x00"  # recursion desired
@@ -568,15 +607,23 @@ async def dns_selftest(_: sqlite3.Row = Depends(get_current_user)):
 			question = qname_wire + b"\x00\x01\x00\x01"  # A IN
 			packet = header + question
 
-			with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+			with socket.socket(family, socket.SOCK_DGRAM) as s:
 				s.settimeout(timeout)
-				s.sendto(packet, ("127.0.0.1", 53))
+				target = (server_ip, 53, 0, 0) if family == socket.AF_INET6 else (server_ip, 53)
+				s.sendto(packet, target)
 				data, _ = s.recvfrom(2048)
 				if len(data) < 12:
 					return False, "short DNS response"
+				if data[:2] != tid:
+					return False, "mismatched DNS transaction"
+				if not (data[2] & 0x80):
+					return False, "not a DNS response"
 				rcode = data[3] & 0x0F
+				ancount = int.from_bytes(data[6:8], "big")
 				if rcode != 0:
 					return False, f"dns rcode={rcode}"
+				if ancount == 0:
+					return False, "no answers in response"
 				return True, "ok"
 		except socket.timeout:
 			return False, "query timeout"
@@ -589,12 +636,18 @@ async def dns_selftest(_: sqlite3.Row = Depends(get_current_user)):
 			data = {"running": False, "reachable": False, "detail": "unbound not running"}
 			return ok_response(data=data)
 
+		ipv4_gateways, ipv6_gateways = _collect_listen_addresses(conn)
+		target_ip = ipv4_gateways[0] if ipv4_gateways else (ipv6_gateways[0] if ipv6_gateways else None)
+		if not target_ip:
+			data = {"running": True, "reachable": False, "detail": "no DNS listen address configured"}
+			return ok_response(data=data)
+
 		# Offload blocking socket I/O to a thread to avoid blocking the event loop
-		ok, detail = await asyncio.to_thread(_query_local_unbound)
+		ok, detail = await asyncio.to_thread(_query_local_unbound, target_ip)
 		data = {"running": True, "reachable": ok, "detail": detail}
 		return ok_response(data=data)
 	except FileNotFoundError:
-		raise HTTPException(status_code=503, detail="Unbound not installed (requires Docker)")
+		raise HTTPException(status_code=503, detail="Unbound not installed")
 	except Exception as exc:
 		_log.exception("DNS selftest failed")
 		data = {"running": False, "reachable": False, "detail": f"selftest failed: {exc}"}
@@ -613,15 +666,10 @@ async def dns_trend(
 	
 	Data source: TSDB DNS query store (persisted across restarts).
 	"""
-	# Parse client IPs filter
-	client_filter: set[str] | None = None
-	if client_ips:
-		client_filter = {ip.strip() for ip in client_ips.split(",") if ip.strip()}
-		if not client_filter:
-			client_filter = None
+	client_filter, client_filter_key = _parse_client_ip_filter(client_ips)
 	
 	dns_key = str(dns_dir.resolve())
-	cache_key = (dns_key, hours, bucket_minutes, client_ips or "")
+	cache_key = (dns_key, hours, bucket_minutes, client_filter_key)
 	cache_entry = _dns_trend_cache.get(cache_key)
 	now_mono = time.monotonic()
 	if cache_entry and (now_mono - cache_entry[0]) < _DNS_TREND_CACHE_TTL_SECONDS:
@@ -709,6 +757,10 @@ async def dns_start(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Start the DNS resolver."""
+	# Guard: Unbound must be installed
+	if not unbound.is_unbound_installed():
+		raise HTTPException(status_code=503, detail="Unbound not installed")
+	
 	# Check if any WireGuard interfaces exist (Unbound needs interface IPs to bind)
 	interfaces = list_interfaces(conn)
 	if not interfaces:
@@ -719,7 +771,7 @@ async def dns_start(
 	try:
 		ok, msg = await unbound.start()
 	except FileNotFoundError:
-		raise HTTPException(status_code=503, detail="Unbound not installed (requires Docker)")
+		raise HTTPException(status_code=503, detail="Unbound not installed")
 	if not ok:
 		raise HTTPException(status_code=500, detail=msg)
 	set_dns_service_enabled(conn, True)
@@ -732,10 +784,14 @@ async def dns_stop(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Stop the DNS resolver."""
+	# Guard: Unbound must be installed
+	if not unbound.is_unbound_installed():
+		raise HTTPException(status_code=503, detail="Unbound not installed")
+	
 	try:
 		ok, msg = await unbound.stop()
 	except FileNotFoundError:
-		raise HTTPException(status_code=503, detail="Unbound not installed (requires Docker)")
+		raise HTTPException(status_code=503, detail="Unbound not installed")
 	if not ok:
 		raise HTTPException(status_code=500, detail=msg)
 	set_dns_service_enabled(conn, False)
@@ -748,10 +804,14 @@ async def dns_restart(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Restart the DNS resolver."""
+	# Guard: Unbound must be installed
+	if not unbound.is_unbound_installed():
+		raise HTTPException(status_code=503, detail="Unbound not installed")
+	
 	try:
 		ok, msg = await unbound.restart()
 	except FileNotFoundError:
-		raise HTTPException(status_code=503, detail="Unbound not installed (requires Docker)")
+		raise HTTPException(status_code=503, detail="Unbound not installed")
 	if not ok:
 		raise HTTPException(status_code=500, detail=msg)
 	set_dns_service_enabled(conn, True)
@@ -800,6 +860,10 @@ async def update_dns_config(
 	the Unbound config reload happens in the background. This improves UX
 	responsiveness for the common ad-blocker toggle use case.
 	"""
+	# Guard: Cannot enable blocklist without Unbound installed
+	if payload.enable_blocklist is True and not unbound.is_unbound_installed():
+		raise HTTPException(status_code=503, detail="Unbound not installed")
+	
 	# Validate conflicting fields early
 	if payload.enable_logging is not None and payload.log_retention_days is not None:
 		if payload.enable_logging and payload.log_retention_days == 0:
@@ -891,28 +955,16 @@ async def update_dns_config(
 			)
 
 		# Standard path: Write full config and wait for reload
-		# Collect IPv6 gateway addresses from all interfaces for dual-stack DNS
 		# Bind ONLY to WireGuard interface IPs to avoid conflicts with host DNS
 		# when running in Docker host network mode.
-		interfaces = list_interfaces(conn)
-		ipv4_gateways: list[str] = []
-		for iface in interfaces:
-			try:
-				addr4 = iface["address"]
-			except (KeyError, TypeError, IndexError):
-				addr4 = getattr(iface, "address", None)
-			if addr4:
-				ip4 = str(addr4).split("/")[0]
-				if ip4 not in ipv4_gateways:
-					ipv4_gateways.append(ip4)
-		ipv6_gateways = unbound.get_interface_ipv6_gateways(interfaces)
+		ipv4_gateways, ipv6_gateways = _collect_listen_addresses(conn)
 		unbound.write_config(
 			enable_logging=enable_logging,
 			enable_blocklist=enable_blocklist,
 			upstream_dns=upstream_dns,
 			enable_dnssec=dnssec_enabled,
 			listen_addrs_ipv4=ipv4_gateways,
-			listen_addrs_ipv6=ipv6_gateways if ipv6_gateways else None,
+			listen_addrs_ipv6=ipv6_gateways,
 		)
 		ok, msg = await unbound.reload_config()
 		dnssec_available = unbound.is_dnssec_available()
@@ -939,7 +991,7 @@ async def update_dns_config(
 			data=response_data,
 		)
 	except FileNotFoundError:
-		raise HTTPException(status_code=503, detail="Unbound not installed (requires Docker)")
+		raise HTTPException(status_code=503, detail="Unbound not installed")
 	except HTTPException:
 		raise
 	except (OSError, sqlite3.Error, RuntimeError, ValueError) as e:
@@ -994,12 +1046,13 @@ async def get_blocklist_sources(
 			"url": meta["url"],
 			"name": meta["name"],
 			"description": meta["description"],
+			"level": meta.get("level", ""),
 			"domains": source_counts.get(bid, 0),
 			"last_updated": blocklist_updated if is_enabled else "—",
 			"enabled": is_enabled,
 		})
 
-	data = {"sources": sources}
+	data = {"sources": sources, "rebuild_in_progress": _rebuild_in_progress}
 	return ok_response(data=data)
 
 
@@ -1010,7 +1063,22 @@ async def set_blocklist_sources(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Save enabled blocklist sources and trigger background update."""
+	# Guard: Cannot enable blocklists without Unbound installed
+	if payload.urls and not unbound.is_unbound_installed():
+		raise HTTPException(status_code=503, detail="Unbound not installed")
+	
 	set_enabled_blocklists(conn, payload.urls)
+	
+	# Auto-toggle ad-blocker based on blocklist selection:
+	# - No blocklists selected → disable ad-blocker
+	# - Blocklists selected but ad-blocker off → enable ad-blocker
+	if not payload.urls:
+		set_dns_blocklist_enabled(conn, False)
+		_log.info("DNS_ADBLOCKER auto-disabled: no blocklists selected")
+	elif not get_dns_blocklist_enabled(conn):
+		set_dns_blocklist_enabled(conn, True)
+		_log.info("DNS_ADBLOCKER auto-enabled: blocklists selected")
+	
 	# Global blocklist selection must override peer-specific selections immediately.
 	try:
 		await asyncio.to_thread(_regenerate_peer_tags_for_blocklist, conn)
@@ -1021,13 +1089,18 @@ async def set_blocklist_sources(
 	# connection may be closed once this handler returns).
 	custom_rules_text = get_dns_custom_rules(conn)
 	urls_copy = list(payload.urls)
+	adblocker_enabled = get_dns_blocklist_enabled(conn)
 	
 	# Queue rebuild (prevents concurrent rebuilds)
-	queued = await _queue_rebuild(urls_copy, custom_rules_text)
+	await _queue_rebuild(urls_copy, custom_rules_text)
 	
 	return ok_response(
-		message="Blocklist update started",
-		data={"enabled_count": len(payload.urls), "started": True},
+		message="Blocklist update started" if payload.urls else "Blocklist cleared",
+		data={
+			"enabled_count": len(payload.urls),
+			"started": True,
+			"adblocker_enabled": adblocker_enabled,
+		},
 	)
 
 
@@ -1038,6 +1111,10 @@ async def update_blocklists(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Trigger background download and update of ad-blocking lists."""
+	# Guard: Cannot update blocklists without Unbound installed
+	if not unbound.is_unbound_installed():
+		raise HTTPException(status_code=503, detail="Unbound not installed")
+	
 	# Use saved blocklists if no URLs provided
 	urls = payload.urls if payload and payload.urls else None
 	if urls is None:
@@ -1048,18 +1125,12 @@ async def update_blocklists(
 	urls_copy = list(urls) if urls else []
 	
 	# Queue rebuild
-	queued = await _queue_rebuild(urls_copy, custom_rules_text)
-	if not queued:
-		return ok_response(
-			message="Blocklist update already in progress",
-			data={"started": False, "queued": False},
-		)
+	await _queue_rebuild(urls_copy, custom_rules_text)
 	
 	return ok_response(
 		message="Blocklist update queued",
 		data={"started": True, "queued": True},
 	)
-
 
 
 @router.get("/blocklist/count")
@@ -1127,42 +1198,62 @@ async def _rebuild_dns_from_rules(conn: sqlite3.Connection, rules_text: str) -> 
 
 async def _rebuild_dns_background(urls: list[str], rules_text: str) -> None:
 	"""Background task to rebuild blocklist + restart Unbound (fire-and-forget)."""
+	global _rebuild_in_progress
+	_rebuild_in_progress = True
 	try:
 		count, msg = await unbound.update_blocklists(urls, custom_rules_text=rules_text)
 		reloaded, _ = await unbound.restart()
 		_log.info("DNS_BACKGROUND rebuild complete: %s domains, reloaded=%s, %s", count, reloaded, msg)
 	except Exception:
 		_log.exception("DNS_BACKGROUND rebuild failed")
+	finally:
+		_rebuild_in_progress = False
 
 
 async def _rebuild_worker() -> None:
-	"""Background worker: processes rebuild queue serially to prevent concurrent rebuilds."""
+	"""Background worker: processes rebuilds serially using latest-wins pattern.
+	
+	Instead of a fixed-size queue that drops requests, this worker uses an event
+	and a shared variable. Multiple requests simply overwrite _rebuild_latest,
+	ensuring the final state is always processed.
+	"""
+	global _rebuild_latest, _rebuild_event
+	if _rebuild_event is None:
+		_rebuild_event = asyncio.Event()
+	
 	while True:
 		try:
-			urls, rules_text = await _rebuild_queue.get()
-			await _rebuild_dns_background(urls, rules_text)
+			await _rebuild_event.wait()
+			_rebuild_event.clear()
+			work = _rebuild_latest
+			_rebuild_latest = None
+			if work:
+				await _rebuild_dns_background(*work)
 		except Exception:
 			_log.exception("DNS_REBUILD_WORKER unexpected error")
-		finally:
-			_rebuild_queue.task_done()
 
 
 def _ensure_rebuild_worker() -> None:
 	"""Ensure rebuild worker is running."""
-	global _rebuild_worker_task
+	global _rebuild_worker_task, _rebuild_event
+	if _rebuild_event is None:
+		_rebuild_event = asyncio.Event()
 	if _rebuild_worker_task is None or _rebuild_worker_task.done():
 		_rebuild_worker_task = asyncio.create_task(_rebuild_worker(), name="dns-rebuild-worker")
 
 
 async def _queue_rebuild(urls: list[str], rules_text: str) -> bool:
-	"""Queue a rebuild. Returns True if queued, False if queue full (rebuild already pending)."""
+	"""Queue a rebuild using latest-wins pattern. Always returns True.
+	
+	If a rebuild is in progress and another is pending, this overwrites the
+	pending request so the most recent configuration is always applied.
+	"""
+	global _rebuild_latest, _rebuild_event
 	_ensure_rebuild_worker()
-	try:
-		_rebuild_queue.put_nowait((urls, rules_text))
-		return True
-	except asyncio.QueueFull:
-		_log.warning("DNS_REBUILD_QUEUE full, skipping duplicate rebuild request")
-		return False
+	_rebuild_latest = (urls, rules_text)
+	if _rebuild_event is not None:
+		_rebuild_event.set()
+	return True
 
 @router.get("/custom-rules")
 async def get_custom_rules(
@@ -1201,6 +1292,10 @@ async def update_custom_rules(
 	  /regex/                Regex match
 	  ! comment              Comment line
 	"""
+	# Guard: Cannot set custom rules without Unbound installed
+	if not unbound.is_unbound_installed():
+		raise HTTPException(status_code=503, detail="Unbound not installed")
+	
 	rules_text = payload.rules
 
 	# Parse and validate
@@ -1211,7 +1306,7 @@ async def update_custom_rules(
 
 	# Queue rebuild (serial processing prevents concurrent interference)
 	urls = get_enabled_blocklists(conn)
-	queued = await _queue_rebuild(urls, rules_text)
+	await _queue_rebuild(urls, rules_text)
 
 	# Return immediately - rebuild happens in background
 	return ok_response(
@@ -1240,6 +1335,10 @@ async def add_custom_rule_action(
 
 	The endpoint enforces canonical form and prevents duplicate creation.
 	"""
+	# Guard: Cannot add custom rules without Unbound installed
+	if not unbound.is_unbound_installed():
+		raise HTTPException(status_code=503, detail="Unbound not installed")
+	
 	if payload.scope == "client" and not payload.client:
 		raise HTTPException(status_code=400, detail="Client scope requires a client address")
 
@@ -1265,29 +1364,19 @@ async def add_custom_rule_action(
 
 	set_dns_custom_rules(conn, updated_rules)
 
-	try:
-		reloaded, domains_blocked, msg = await _rebuild_dns_from_rules(conn, updated_rules)
-		return ok_response(
-			message=f"Rule applied. {msg}",
-			data={
-				"created": created,
-				"duplicate": False,
-				"rule": canonical,
-				"reloaded": reloaded,
-				"domains_blocked": domains_blocked,
-			},
-		)
-	except Exception as exc:
-		_log.exception("Failed to rebuild DNS artifacts after custom rule action")
-		return ok_response(
-			message=f"Rule saved but DNS rebuild failed: {exc}",
-			data={
-				"created": created,
-				"duplicate": False,
-				"rule": canonical,
-				"reloaded": False,
-			},
-		)
+	# Route through the rebuild queue to prevent race conditions with concurrent rebuilds
+	urls = get_enabled_blocklists(conn)
+	await _queue_rebuild(list(urls), updated_rules)
+	
+	return ok_response(
+		message="Rule applied, rebuild queued",
+		data={
+			"created": created,
+			"duplicate": False,
+			"rule": canonical,
+			"reloaded": None,  # Rebuild happens in background
+		},
+	)
 
 
 # ---------------------------------------------------------------------------
@@ -1298,24 +1387,42 @@ async def add_custom_rule_action(
 async def dns_logs(
 	lines: int = 200,
 	dns_dir: Path = Depends(get_dns_dir),
+	conn: sqlite3.Connection = Depends(get_conn),
 	user_row: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Get recent DNS query log entries.
 
 	Returns the most recent queries with blocked status from TSDB.
 	For non-admin users, client-identifying fields are obfuscated.
+	Client names are resolved from peer_address→name mapping.
 	"""
 	lines = min(max(lines, 10), 5000)
 	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, dns_dir, lines)
 	is_admin = bool(user_row["is_admin"])
 	masked = "*****"
 
+	# Build peer IP→name mapping for client name resolution
+	peer_ip_map: dict[str, str] = {}
+	for peer in get_all_peers(conn):
+		addr = peer["peer_address"]
+		name = peer["name"]
+		if addr and name:
+			# Strip CIDR suffix if present (e.g., 10.13.13.2/32 → 10.13.13.2)
+			peer_ip_map[addr.split("/")[0]] = name
+
+	def _format_client(client_ip: str) -> str:
+		"""Format client display: 'PeerName (IP)' or just 'IP'."""
+		peer_name = peer_ip_map.get(client_ip)
+		if peer_name:
+			return f"{peer_name} ({client_ip})"
+		return client_ip
+
 	data = {
 		"queries": [
 			{
 				"timestamp": _format_tsdb_timestamp(str(q.get("ts", ""))),
-				"client": str(q.get("client", "")) if is_admin else masked,
-				"client_name": str(q.get("client_name", "")) if is_admin else masked,
+				"client": _format_client(str(q.get("client", ""))) if is_admin else masked,
+				"client_name": peer_ip_map.get(str(q.get("client", "")), "") if is_admin else masked,
 				"domain": str(q.get("domain", "")),
 				"type": str(q.get("qtype", "")),
 				"blocked": bool(q.get("blocked", False)),
@@ -1329,18 +1436,13 @@ async def dns_logs(
 
 @router.get("/top-domains")
 async def top_domains(
-	limit: int = 20,
+	limit: int = Query(20, ge=1, le=100),
 	client_ips: str | None = Query(None, description="Comma-separated client IPs to filter by"),
 	dns_dir: Path = Depends(get_dns_dir),
 	_: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Get top queried and blocked domains."""
-	# Parse client IPs filter
-	client_filter: set[str] | None = None
-	if client_ips:
-		client_filter = {ip.strip() for ip in client_ips.split(",") if ip.strip()}
-		if not client_filter:
-			client_filter = None
+	client_filter, _ = _parse_client_ip_filter(client_ips)
 	
 	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, dns_dir, 50000)
 	domain_counts: dict[str, int] = {}
@@ -1402,13 +1504,20 @@ def _test_dot_server(addr: str, timeout: float = 5.0) -> dict:
 	except ValueError:
 		result["error"] = f"Invalid IP address: {ip_part}"
 		return result
+	
+	# Unwrap IPv4-mapped IPv6 to check the real address (SSRF protection)
+	# On Python < 3.11, ::ffff:127.0.0.1 reports is_loopback=False
+	check_ip = ip_obj
+	if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped:
+		check_ip = ip_obj.ipv4_mapped
+	
 	if (
-		ip_obj.is_private
-		or ip_obj.is_loopback
-		or ip_obj.is_link_local
-		or ip_obj.is_reserved
-		or ip_obj.is_multicast
-		or ip_obj.is_unspecified
+		check_ip.is_private
+		or check_ip.is_loopback
+		or check_ip.is_link_local
+		or check_ip.is_reserved
+		or check_ip.is_multicast
+		or check_ip.is_unspecified
 	):
 		result["error"] = "Private/reserved addresses not allowed"
 		return result
@@ -1548,6 +1657,8 @@ async def delete_dns_logs(
 			raise RuntimeError("Invalid queries directory") from exc
 		if not queries_dir.exists():
 			return 0
+		if not queries_dir.is_dir():
+			raise RuntimeError("Invalid queries directory")
 		count = sum(1 for f in queries_dir.glob("*.jsonl"))
 		shutil.rmtree(queries_dir)
 		_log.info("DNS_LOGS_PURGE deleted %d log files", count)
@@ -1635,8 +1746,8 @@ async def get_adblocker_status(
 	if disabled_until > now:
 		remaining = disabled_until - now
 	elif disabled_until > 0:
-		# Timer has expired but wasn't cleaned up yet — clear it
-		clear_blocklist_disabled_until(conn)
+		# Timer expiry is handled by the scheduled adblocker timer task.
+		# Keep this GET endpoint side-effect free.
 		disabled_until = 0
 
 	return ok_response(data={
@@ -1663,6 +1774,10 @@ async def set_adblocker_mode(
 	Performance: DB changes and peer-tags are applied immediately, then
 	Unbound config reload happens in the background for fast response.
 	"""
+	# Guard: Unbound must be installed
+	if not unbound.is_unbound_installed():
+		raise HTTPException(status_code=503, detail="Unbound not installed")
+
 	mode = payload.mode
 	now = int(time.time())
 
@@ -1696,9 +1811,10 @@ async def set_adblocker_mode(
 	if mode == "disable_1h":
 		until = now + 3600
 	else:  # disable_today
-		from datetime import datetime as dt
-		midnight = dt.now().replace(hour=23, minute=59, second=59, microsecond=0)
-		until = int(midnight.timestamp())
+		# Compute end-of-day in server local time (23:59:59.999999)
+		local_now = datetime.now().astimezone()
+		end_of_day = local_now.replace(hour=23, minute=59, second=59, microsecond=999999)
+		until = int(end_of_day.timestamp())
 		# Ensure at least 60 seconds
 		if until - now < 60:
 			until = now + 60

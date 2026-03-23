@@ -6,6 +6,20 @@
         return n + ' B';
     }
 
+    function setMetricPath(elementId, rawValue) {
+        const el = document.getElementById(elementId);
+        if (!el) return;
+        const value = rawValue || '–';
+        el.textContent = value;
+        if (value === '–') {
+            el.removeAttribute('title');
+            el.removeAttribute('aria-label');
+            return;
+        }
+        el.title = value;
+        el.setAttribute('aria-label', value);
+    }
+
     // TSDB retention slider values (includes 0 for "No Logs")
     const TSDB_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
 
@@ -124,8 +138,7 @@
             const compressedSize = stats.compressed_size_bytes || 0;
             const archiveCount = stats.archive_count || 0;
 
-            const pathEl = document.getElementById('tsdb-path');
-            if (pathEl) pathEl.textContent = stats.path || '–';
+            setMetricPath('tsdb-path', stats.path);
 
             document.getElementById('tsdb-size').textContent = formatBytes(size);
             document.getElementById('tsdb-peers').textContent = stats.peer_count || 0;
@@ -148,8 +161,7 @@
         try {
             const stats = await api('GET', '/api/dns/storage');
 
-            const pathEl = document.getElementById('dns-metrics-path');
-            if (pathEl) pathEl.textContent = stats.path || '–';
+            setMetricPath('dns-metrics-path', stats.path);
 
             const sizeEl = document.getElementById('dns-metrics-size');
             if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
@@ -172,8 +184,7 @@
         try {
             const stats = await api('GET', '/api/wireguard/stats/peer-metrics');
 
-            const pathEl = document.getElementById('peer-metrics-path');
-            if (pathEl) pathEl.textContent = stats.full_path || stats.path || '–';
+            setMetricPath('peer-metrics-path', stats.full_path || stats.path);
 
             const sizeEl = document.getElementById('peer-metrics-size');
             if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
@@ -192,8 +203,7 @@
         try {
             const stats = await api('GET', '/api/wireguard/speedtest/storage');
 
-            const pathEl = document.getElementById('speedtest-metrics-path');
-            if (pathEl) pathEl.textContent = stats.path || '–';
+            setMetricPath('speedtest-metrics-path', stats.path);
 
             const sizeEl = document.getElementById('speedtest-metrics-size');
             if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);

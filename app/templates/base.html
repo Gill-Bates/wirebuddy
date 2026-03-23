@@ -65,17 +65,17 @@
         @keyframes wbReconnectSoftPulse {
             0% {
                 transform: scale(1);
-                box-shadow: 0 0 0 rgba(136, 23, 26, 0.0);
+                box-shadow: 0 0 0 rgba(var(--bs-primary-rgb), 0);
             }
 
             50% {
                 transform: scale(1.012);
-                box-shadow: 0 0 0.85rem rgba(136, 23, 26, 0.22);
+                box-shadow: 0 0 0.85rem rgba(var(--bs-primary-rgb), 0.22);
             }
 
             100% {
                 transform: scale(1);
-                box-shadow: 0 0 0 rgba(136, 23, 26, 0.0);
+                box-shadow: 0 0 0 rgba(var(--bs-primary-rgb), 0);
             }
         }
 
@@ -324,19 +324,6 @@
     <!-- Consolidated Inline Scripts -->
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            function syncShellHairline() {
-                const shell = document.querySelector('.wb-shell');
-                const nav = document.querySelector('.navbar');
-                const footer = document.querySelector('.wb-footer');
-                if (!shell || !nav || !footer) return;
-
-                // Keep the desktop sidebar hairline visually bounded by navbar and footer.
-                const navBottom = Math.round(nav.getBoundingClientRect().bottom);
-                const footerHeight = Math.max(0, Math.round(window.innerHeight - footer.getBoundingClientRect().top));
-                document.documentElement.style.setProperty('--wb-shell-top', navBottom + 'px');
-                document.documentElement.style.setProperty('--wb-shell-bottom', footerHeight + 'px');
-            }
-
             // Reconnect Failsafe Timeout
             // Note: This handles the case where page loads with wb-reconnecting class
             // (server-rendered during reconnect). For runtime reconnects, see reconnect.js.
@@ -448,16 +435,11 @@
                             const banner = document.getElementById('keyMismatchBanner');
                             if (banner) {
                                 banner.classList.remove('d-none');
-                                syncShellHairline();
                             }
                         }
                     }
                 } catch (e) {
                     console.warn('[WB] System status check failed:', e?.message || e);
-                } finally {
-                    // Ensure syncShellHairline runs regardless of API success/failure
-                    syncShellHairline();
-                    window.addEventListener('resize', syncShellHairline);
                 }
             }
 

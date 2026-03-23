@@ -1,0 +1,267 @@
+.status-navbar-actions {
+    gap: 0.45rem;
+}
+
+.status-navbar-actions .status-icon-btn {
+    width: 2.25rem;
+    height: 2.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--wb-radius-sm);
+}
+
+.status-navbar-actions .status-icon-btn .material-icons {
+    font-size: 1.2rem;
+    line-height: 1;
+}
+
+@media (max-width: 575.98px) {
+    .status-navbar-actions {
+        gap: 0.25rem;
+    }
+
+    .status-navbar-actions .status-icon-btn {
+        width: 2.5rem;
+        height: 2.5rem;
+    }
+}
+
+.flow-wrapper {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 72px minmax(0, 1.1fr) 72px minmax(0, 1fr);
+    align-items: center;
+    gap: var(--wb-space-3, 24px);
+}
+
+.flow-node {
+    min-width: 0;
+    position: relative;
+    background:
+        linear-gradient(180deg, rgba(var(--bs-body-color-rgb), 0.03), rgba(var(--bs-body-color-rgb), 0)),
+        var(--bs-body-bg);
+    border: 1px solid rgba(var(--bs-body-color-rgb), 0.08);
+    border-radius: 14px;
+    padding: 1rem 0.9rem;
+    text-align: center;
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.flow-node:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 16px 32px rgba(15, 23, 42, 0.1);
+}
+
+.flow-node::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+[data-bs-theme="dark"] .flow-node {
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
+}
+
+[data-bs-theme="dark"] .flow-node:hover {
+    box-shadow: 0 16px 32px rgba(0, 0, 0, 0.25);
+}
+
+[data-bs-theme="dark"] .flow-node::before {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+[data-bs-theme="dark"] .flow-node-inactive {
+    border-color: rgba(var(--bs-secondary-rgb), 0.18);
+}
+
+.flow-node-active {
+    border-color: rgba(var(--bs-success-rgb), 0.38);
+}
+
+.flow-node-inactive {
+    border-color: rgba(var(--bs-secondary-rgb), 0.24);
+    background:
+        linear-gradient(180deg, rgba(var(--bs-secondary-rgb), 0.05), rgba(var(--bs-secondary-rgb), 0.02)),
+        var(--bs-body-bg);
+}
+
+.flow-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.55rem;
+    line-height: 1;
+    margin-bottom: 0.5rem;
+    color: var(--bs-body-color);
+}
+
+.flow-node-active .flow-icon {
+    color: rgba(var(--bs-success-rgb), 1);
+}
+
+.flow-node-inactive .flow-icon {
+    color: var(--bs-secondary-color);
+}
+
+.flow-label {
+    font-size: 0.82rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.flow-meta {
+    font-size: 0.78rem;
+    color: var(--bs-secondary-color);
+    font-family: var(--bs-font-monospace, monospace);
+    margin-top: 0.35rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    white-space: nowrap;
+    text-align: center;
+    min-width: 0;
+}
+
+.flow-meta .flag-icon,
+.flow-meta .flag-icon-sm {
+    flex-shrink: 0;
+}
+
+.flow-meta-text {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.flow-node-inactive .flow-label,
+.flow-node-inactive .flow-meta {
+    color: var(--bs-secondary-color);
+}
+
+.flow-connector {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+}
+
+.flow-line {
+    position: relative;
+    height: 4px;
+    width: 100%;
+    max-width: 72px;
+    border-radius: 999px;
+    background: linear-gradient(90deg,
+            rgba(var(--bs-success-rgb), 0.08),
+            rgba(var(--bs-success-rgb), 0.92),
+            rgba(var(--bs-success-rgb), 0.08));
+    background-size: 200% 100%;
+    animation: flow 1.6s linear infinite;
+    will-change: background-position;
+    box-shadow: 0 0 0 1px rgba(var(--bs-success-rgb), 0.08);
+}
+
+.flow-line::after {
+    content: "";
+    position: absolute;
+    right: -2px;
+    top: 50%;
+    width: 10px;
+    height: 10px;
+    border-top: 2px solid currentColor;
+    border-right: 2px solid currentColor;
+    color: rgba(var(--bs-success-rgb), 0.92);
+    transform: translateY(-50%) rotate(45deg);
+}
+
+.flow-line-inactive {
+    background: linear-gradient(90deg,
+            rgba(var(--bs-secondary-rgb), 0.08),
+            rgba(var(--bs-secondary-rgb), 0.55),
+            rgba(var(--bs-secondary-rgb), 0.08));
+    opacity: 0.75;
+    animation: none;
+    will-change: auto;
+    /* reset: no animation on inactive lines */
+    box-shadow: 0 0 0 1px rgba(var(--bs-secondary-rgb), 0.12);
+}
+
+.flow-line-inactive::after {
+    color: rgba(var(--bs-secondary-rgb), 0.65);
+}
+
+@keyframes flow {
+    0% {
+        background-position: 200% 0;
+    }
+
+    100% {
+        background-position: -200% 0;
+    }
+}
+
+@media (max-width: 991.98px),
+((hover: none) and (pointer: coarse) and (orientation: landscape)) {
+    .flow-wrapper {
+        grid-template-columns: 1fr;
+        justify-items: stretch;
+    }
+
+    .flow-node {
+        width: 100%;
+        max-width: none;
+    }
+
+    .flow-connector {
+        width: 100%;
+        height: 38px;
+        /* explicit height required for child's percentage height */
+    }
+
+    .flow-line {
+        width: 4px;
+        height: 100%;
+        /* resolves against parent's explicit height */
+        max-width: none;
+        animation: none;
+        will-change: auto;
+        /* reset: no animation in vertical layout */
+    }
+
+    .flow-line::after {
+        right: 50%;
+        top: auto;
+        bottom: -2px;
+        transform: translateX(50%) rotate(135deg);
+    }
+
+    .flow-line-inactive {
+        opacity: 0.75;
+        /* consistent with desktop */
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .flow-node {
+        transition: none;
+    }
+
+    .flow-node:hover {
+        transform: none;
+    }
+
+    .flow-line {
+        animation: none;
+        will-change: auto;
+        /* reset: respect user motion preferences */
+    }
+}

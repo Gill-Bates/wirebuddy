@@ -23,6 +23,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
+from markupsafe import escape as html_escape
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
@@ -489,7 +490,7 @@ async def _dns_leak_indicator(
 			cfg = get_config()
 			queries = await asyncio.to_thread(
 				dns_ingestion.read_recent_queries,
-				Path(cfg.tsdb_dir),
+				Path(cfg.dns_dir),
 				_STATUS_DNS_LEAK_VERIFY_MAX_QUERIES,
 			)
 		except (OSError, IOError) as exc:
@@ -605,20 +606,23 @@ def _latest_speedtest_check() -> dict[str, str]:
 		download = data.get("download_mbit")
 		upload = data.get("upload_mbit")
 		rtt = data.get("rtt_ms")
-		parts: list[str] = []
+		mono_parts: list[str] = []
 		if isinstance(download, (int, float)):
-			parts.append(f"{download:.2f} Mbit/s down")
+			mono_parts.append(f"{download:.2f} Mbit/s down")
 		if isinstance(upload, (int, float)):
-			parts.append(f"{upload:.2f} Mbit/s up")
+			mono_parts.append(f"{upload:.2f} Mbit/s up")
 		if isinstance(rtt, (int, float)):
-			parts.append(f"{rtt:.2f} ms RTT")
-		parts.append(server_label)
-		parts.append(age_label)
+			mono_parts.append(f"{rtt:.2f} ms RTT")
+		mono_parts.append(str(html_escape(server_label)))
+		# Build HTML: metrics in monospace, separators and age in normal text
+		html_spans = [f'<span class="font-monospace">{p}</span>' for p in mono_parts]
+		detail_html = " &middot; ".join(html_spans) + f" &middot; {html_escape(age_label)}"
 		return {
 			"title": "Last Speedtest",
 			"state": CheckState.OK,
 			"label": "OK",
-			"detail": " • ".join(parts),
+			"detail": " \u2022 ".join(mono_parts + [age_label]),
+			"detail_html": detail_html,
 		}
 
 	error_text = str(data.get("error") or "").strip()
@@ -810,9 +814,10 @@ async def status_page(
 	"""Public internal status page (WireGuard clients only)."""
 	if not await asyncio.to_thread(_is_status_page_enabled, conn):
 		return templates.TemplateResponse(
-			"status_disabled.html",
-			{"request": request},
-			status_code=200,
+			request,
+			name="status_disabled.html",
+			context={},
+			status_code=404,
 		)
 
 	context = await _resolve_status_client_context(
@@ -849,20 +854,23 @@ async def status_page(
 		outbound_geo_city = outbound_geo_fields["city"]
 		outbound_geo_as_org = outbound_geo_fields["as_org"]
 
-	return templates.TemplateResponse("status.html", {
-		"request": request,
-		"client_ip": str(context.client_ip),
-		"public_client_ip": public_client_ip or "n/a",
-		"public_client_country_code": client_geo_country_code,
-		"public_client_city": client_geo_city,
-		"public_client_as_org": client_geo_as_org,
-		"client_ip_source": context.auth_ip_source,
-		"socket_ip": str(context.socket_ip) if context.socket_ip is not None else "n/a",
-		"forwarded_ip": context.forwarded_ip or "n/a",
-		"outbound_ip": outbound_ip or "n/a",
-		"outbound_country_code": outbound_geo_country_code,
-		"outbound_city": outbound_geo_city,
-		"outbound_as_org": outbound_geo_as_org,
-		"interface_name": context.matched_iface["name"] if context.matched_iface is not None else "n/a",
-		"checks": checks,
-	})
+	return templates.TemplateResponse(
+		request,
+		name="status.html",
+		context={
+			"client_ip": str(context.client_ip),
+			"public_client_ip": public_client_ip or "n/a",
+			"public_client_country_code": client_geo_country_code,
+			"public_client_city": client_geo_city,
+			"public_client_as_org": client_geo_as_org,
+			"client_ip_source": context.auth_ip_source,
+			"socket_ip": str(context.socket_ip) if context.socket_ip is not None else "n/a",
+			"forwarded_ip": context.forwarded_ip or "n/a",
+			"outbound_ip": outbound_ip or "n/a",
+			"outbound_country_code": outbound_geo_country_code,
+			"outbound_city": outbound_geo_city,
+			"outbound_as_org": outbound_geo_as_org,
+			"interface_name": context.matched_iface["name"] if context.matched_iface is not None else "n/a",
+			"checks": checks,
+		},
+	)

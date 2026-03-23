@@ -77,19 +77,31 @@ def update_interface(
 	dns: str | None,
 	post_up: str | None,
 	post_down: str | None,
+	show_on_dashboard: bool | None = None,
 ) -> bool:
 	"""Update mutable settings of an existing WireGuard interface."""
 	now = utcnow()
 	with transaction(conn):
-		cur = conn.execute(
-			"""
-			UPDATE interfaces
-			SET address = ?, address6 = ?, listen_port = ?,
-				dns = ?, post_up = ?, post_down = ?, updated_at = ?
-			WHERE name = ?
-			""",
-			(address, address6, listen_port, dns, post_up, post_down, now, name),
-		)
+		if show_on_dashboard is not None:
+			cur = conn.execute(
+				"""
+				UPDATE interfaces
+				SET address = ?, address6 = ?, listen_port = ?,
+					dns = ?, post_up = ?, post_down = ?, show_on_dashboard = ?, updated_at = ?
+				WHERE name = ?
+				""",
+				(address, address6, listen_port, dns, post_up, post_down, int(show_on_dashboard), now, name),
+			)
+		else:
+			cur = conn.execute(
+				"""
+				UPDATE interfaces
+				SET address = ?, address6 = ?, listen_port = ?,
+					dns = ?, post_up = ?, post_down = ?, updated_at = ?
+				WHERE name = ?
+				""",
+				(address, address6, listen_port, dns, post_up, post_down, now, name),
+			)
 		return cur.rowcount > 0
 
 

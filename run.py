@@ -32,6 +32,18 @@ from app.db.sqlite_settings import get_setting
 _LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+
+class UvicornMessageFilter(logging.Filter):
+	"""Filter to downgrade specific uvicorn messages from INFO to DEBUG."""
+	
+	def filter(self, record: logging.LogRecord) -> bool:
+		# Downgrade "Finished server process" from INFO to DEBUG
+		if record.levelno == logging.INFO and "Finished server process" in record.getMessage():
+			record.levelno = logging.DEBUG
+			record.levelname = "DEBUG"
+		return True
+
+
 _UVICORN_LOG_CONFIG: dict = {
 	"version": 1,
 	"disable_existing_loggers": False,
@@ -45,11 +57,17 @@ _UVICORN_LOG_CONFIG: dict = {
 			"datefmt": _DATE_FORMAT,
 		},
 	},
+	"filters": {
+		"uvicorn_filter": {
+			"()": "run.UvicornMessageFilter",
+		},
+	},
 	"handlers": {
 		"default": {
 			"formatter": "default",
 			"class": "logging.StreamHandler",
 			"stream": "ext://sys.stderr",
+			"filters": ["uvicorn_filter"],
 		},
 		"access": {
 			"formatter": "access",

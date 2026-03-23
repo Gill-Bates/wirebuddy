@@ -9,7 +9,8 @@
 {% block content %}
 <div id="dns-app" class="container-fluid wb-page"
      data-is-admin="{{ user['is_admin'] | tojson }}"
-     data-enable-blocklist="{{ enable_blocklist | tojson }}">
+     data-enable-blocklist="{{ enable_blocklist | tojson }}"
+     data-dns-unavailable="{{ dns_unavailable | default(false) | tojson }}">
 <div class="wb-page-header flex-wrap gap-2 dns-header">
     <h2 class="page-title"><span class="material-icons me-2">dns</span>DNS Ad-Blocker</h2>
     <div class="d-flex gap-2 align-items-center flex-wrap dns-toolbar">
@@ -20,8 +21,8 @@
         </select>
         <!-- Ad-Blocker Toggle -->
         <div class="dropdown adblocker-dropdown" id="adblocker-dropdown-wrap">
-            <button class="btn btn-sm dropdown-toggle {{ 'btn-adblocker-enabled' if enable_blocklist else 'btn-adblocker-disabled' }}" type="button" id="adblocker-btn" data-bs-toggle="dropdown" aria-expanded="false"{% if not user['is_admin'] %} disabled{% endif %}>
-                <span id="adblocker-btn-text">{{ 'Ad-Blocker: Enabled' if enable_blocklist else 'Ad-Blocker: Disabled' }}</span>
+            <button class="btn btn-sm dropdown-toggle {% if dns_unavailable %}btn-adblocker-disabled{% elif enable_blocklist %}btn-adblocker-enabled{% else %}btn-adblocker-disabled{% endif %}" type="button" id="adblocker-btn" data-bs-toggle="dropdown" aria-expanded="false"{% if not user['is_admin'] or dns_unavailable %} disabled{% endif %}{% if dns_unavailable %} title="Unbound not installed"{% endif %}>
+                <span id="adblocker-btn-text">{% if dns_unavailable %}Ad-Blocker: Unavailable{% elif enable_blocklist %}Ad-Blocker: Enabled{% else %}Ad-Blocker: Disabled{% endif %}</span>
                 <span id="adblocker-countdown" class="adblocker-countdown ms-1 d-none"></span>
             </button>
             <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="adblocker-btn" aria-hidden="true">
@@ -43,7 +44,7 @@
                     <div class="dns-stat-label" id="label-status">Status</div>
                     <span class="material-icons dns-stat-icon wb-kpi-icon">dns</span>
                 </div>
-                <div class="dns-stat-value" id="stat-status" aria-labelledby="label-status"><span class="spinner-border spinner-border-sm"></span>
+                <div class="dns-stat-value{% if dns_unavailable %} text-muted{% endif %}" id="stat-status" aria-labelledby="label-status">{% if dns_unavailable %}N/A{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}
                 </div>
             </div>
         </div>
@@ -55,7 +56,7 @@
                     <div class="dns-stat-label" id="label-queries">Queries</div>
                     <span class="material-icons dns-stat-icon wb-kpi-icon">query_stats</span>
                 </div>
-                <div class="dns-stat-value" id="stat-queries" aria-labelledby="label-queries"><span class="spinner-border spinner-border-sm"></span>
+                <div class="dns-stat-value" id="stat-queries" aria-labelledby="label-queries">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}
                 </div>
             </div>
         </div>
@@ -67,7 +68,7 @@
                     <div class="dns-stat-label" id="label-blocked">Blocked</div>
                     <span class="material-icons dns-stat-icon wb-kpi-icon">block</span>
                 </div>
-                <div class="dns-stat-value text-danger" id="stat-blocked" aria-labelledby="label-blocked"><span class="spinner-border spinner-border-sm"></span>
+                <div class="dns-stat-value{% if not dns_unavailable %} text-danger{% endif %}" id="stat-blocked" aria-labelledby="label-blocked">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}
                 </div>
             </div>
         </div>
@@ -79,7 +80,7 @@
                     <div class="dns-stat-label" id="label-percent">% Blocked</div>
                     <span class="material-icons dns-stat-icon wb-kpi-icon">percent</span>
                 </div>
-                <div class="dns-stat-value text-danger" id="stat-percent" aria-labelledby="label-percent"><span class="spinner-border spinner-border-sm"></span>
+                <div class="dns-stat-value{% if not dns_unavailable %} text-danger{% endif %}" id="stat-percent" aria-labelledby="label-percent">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}
                 </div>
             </div>
         </div>
@@ -91,7 +92,7 @@
                     <div class="dns-stat-label" id="label-domains">Domains</div>
                     <span class="material-icons dns-stat-icon wb-kpi-icon">public</span>
                 </div>
-                <div class="dns-stat-value" id="stat-domains" aria-labelledby="label-domains"><span class="spinner-border spinner-border-sm"></span>
+                <div class="dns-stat-value" id="stat-domains" aria-labelledby="label-domains">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}
                 </div>
             </div>
         </div>
@@ -103,7 +104,7 @@
                     <div class="dns-stat-label" id="label-blocklist">Blocklist</div>
                     <span class="material-icons dns-stat-icon wb-kpi-icon">list_alt</span>
                 </div>
-                <div class="dns-stat-value" id="stat-blocklist" aria-labelledby="label-blocklist"><span class="spinner-border spinner-border-sm"></span>
+                <div class="dns-stat-value" id="stat-blocklist" aria-labelledby="label-blocklist">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}
                 </div>
             </div>
         </div>
@@ -122,10 +123,8 @@
                         </h3>
                     </div>
                     <div class="card-body d-flex flex-column top-domain-card-body pt-3 pb-3">
-                        <div id="top-queried-loading" class="flex-grow-1 d-flex flex-column align-items-center justify-content-center">
-                            <div class="spinner-border text-primary" role="status">
-                                <span class="visually-hidden">Loading...</span>
-                            </div>
+                        <div id="top-queried-loading" class="flex-grow-1 d-flex flex-column align-items-center justify-content-center{% if dns_unavailable %} d-none{% endif %}">
+                            <div class="spinner-border text-primary" role="status" aria-label="Loading"></div>
                         </div>
                         <div id="top-queried-content" class="w-100 h-100 top-domain-scroll-area d-none">
                             <div id="top-queried-list" class="d-flex flex-column gap-3 w-100 h-100">
@@ -135,6 +134,11 @@
                         <div id="top-queried-empty" class="chart-empty-state d-none flex-grow-1 d-flex flex-column align-items-center justify-content-center">
                             <span class="material-icons">show_chart</span>
                             <span class="chart-empty-state-text">No Data Available</span>
+                        </div>
+                        <div id="top-queried-unavailable" class="chart-empty-state flex-grow-1 d-flex flex-column align-items-center justify-content-center{% if not dns_unavailable %} d-none{% endif %}">
+                            <span class="material-icons">block</span>
+                            <span class="chart-empty-state-text">DNS Unavailable</span>
+                            <span class="chart-empty-state-text small">Unbound is not installed.</span>
                         </div>
                     </div>
                 </div>
@@ -148,10 +152,8 @@
                         </h3>
                     </div>
                     <div class="card-body d-flex flex-column top-domain-card-body pt-3 pb-3">
-                        <div id="top-blocked-loading" class="flex-grow-1 d-flex flex-column align-items-center justify-content-center">
-                            <div class="spinner-border text-primary" role="status">
-                                <span class="visually-hidden">Loading...</span>
-                            </div>
+                        <div id="top-blocked-loading" class="flex-grow-1 d-flex flex-column align-items-center justify-content-center{% if dns_unavailable %} d-none{% endif %}">
+                            <div class="spinner-border text-primary" role="status" aria-label="Loading"></div>
                         </div>
                         <div id="top-blocked-content" class="w-100 h-100 top-domain-scroll-area d-none">
                             <div id="top-blocked-list" class="d-flex flex-column gap-3 w-100 h-100">
@@ -161,6 +163,16 @@
                         <div id="top-blocked-empty" class="chart-empty-state d-none flex-grow-1 d-flex flex-column align-items-center justify-content-center">
                             <span class="material-icons">show_chart</span>
                             <span class="chart-empty-state-text">No Data Available</span>
+                        </div>
+                        <div id="top-blocked-disabled" class="chart-empty-state d-none flex-grow-1 d-flex flex-column align-items-center justify-content-center">
+                            <span class="material-icons">block</span>
+                            <span class="chart-empty-state-text">Ad-Blocker Disabled</span>
+                            <span class="chart-empty-state-text small">Enable the Ad-Blocker to see blocked domains.</span>
+                        </div>
+                        <div id="top-blocked-unavailable" class="chart-empty-state flex-grow-1 d-flex flex-column align-items-center justify-content-center{% if not dns_unavailable %} d-none{% endif %}">
+                            <span class="material-icons">block</span>
+                            <span class="chart-empty-state-text">DNS Unavailable</span>
+                            <span class="chart-empty-state-text small">Unbound is not installed.</span>
                         </div>
                     </div>
                 </div>
@@ -176,15 +188,23 @@
                     </div>
                     <div class="card-body">
                         <span class="visually-hidden" id="trend-meta" aria-live="polite">Loading…</span>
-                        <div id="trend-loading" class="d-flex align-items-center justify-content-center trend-chart-height">
-                            <div class="spinner-border text-primary" role="status">
-                                <span class="visually-hidden">Loading...</span>
-                            </div>
+                        <div id="trend-loading" class="d-flex align-items-center justify-content-center trend-chart-height{% if dns_unavailable %} d-none{% endif %}">
+                            <div class="spinner-border text-primary" role="status" aria-label="Loading"></div>
                         </div>
                         <div id="trend-chart-wrap" class="d-none trend-chart-height">
                             <canvas id="dnsTrendChart"></canvas>
                         </div>
                         <div id="trend-empty" class="chart-empty-state d-none trend-chart-height"></div>
+                        <div id="trend-disabled" class="chart-empty-state d-none trend-chart-height">
+                            <span class="material-icons">block</span>
+                            <span class="chart-empty-state-text">Ad-Blocker Disabled</span>
+                            <span class="chart-empty-state-text small">Enable the Ad-Blocker to see blockrate trends.</span>
+                        </div>
+                        <div id="trend-unavailable" class="chart-empty-state trend-chart-height{% if not dns_unavailable %} d-none{% endif %}">
+                            <span class="material-icons">block</span>
+                            <span class="chart-empty-state-text">DNS Unavailable</span>
+                            <span class="chart-empty-state-text small">Unbound is not installed.</span>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -208,7 +228,7 @@
                     <input type="search" id="log-search" class="form-control form-control-sm" placeholder="Filter domain…" style="width: 150px;" aria-label="Search query log domains">
                 </div>
             </div>
-            <div class="card-body p-0 flex-grow-1 d-flex flex-column log-card-body">
+            <div class="card-body p-0 flex-grow-1 d-flex flex-column log-card-body position-relative">
                 <!-- Pull-to-refresh indicator (mobile only) -->
                 <div id="log-pull-refresh" class="pull-to-refresh-indicator d-sm-none">
                     <span class="material-icons pull-arrow text-muted">arrow_downward</span>
@@ -227,9 +247,7 @@
                             <tr class="log-empty-row">
                                 <td colspan="3" class="py-5">
                                     <div class="d-flex justify-content-center align-items-center">
-                                        <div class="spinner-border text-primary" role="status">
-                                            <span class="visually-hidden">Loading...</span>
-                                        </div>
+                                        <div class="spinner-border text-primary" role="status" aria-label="Loading"></div>
                                     </div>
                                 </td>
                             </tr>
@@ -239,6 +257,12 @@
                 <div id="log-action-menu" class="dropdown-menu"></div>
                 <!-- Screen reader announcement for search results -->
                 <div id="log-sr-announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+                <!-- DNS unavailable overlay (z-index higher than sticky header) -->
+                <div id="log-unavailable" class="chart-empty-state position-absolute top-0 start-0 w-100 h-100 d-flex flex-column align-items-center justify-content-center bg-body{% if not dns_unavailable %} d-none{% endif %}" style="z-index: 1030;">
+                    <span class="material-icons">block</span>
+                    <span class="chart-empty-state-text">DNS Unavailable</span>
+                    <span class="chart-empty-state-text small">Unbound is not installed.</span>
+                </div>
             </div>
         </div>
     </div>
@@ -268,6 +292,7 @@
 <script src="/static/vendor/chart.umd.min.js"></script>
 <script>
     // User permission check
+    const dnsApp = document.getElementById('dns-app');
     const isAdmin = {{ 'true' if user['is_admin'] else 'false' }};
 
     function chartEmptyState(text = 'No Data Available') {
@@ -493,6 +518,9 @@
     }
 
     async function loadTrend() {
+        // Skip trend loading if ad-blocker is disabled (shows disabled state instead)
+        if (!_adblockerEnabled) return;
+
         try {
             // 30 days = 720 hours, bucket size adapts to viewport
             const bucketMinutes = Math.min(1440, Math.max(5, getTrendBucketMinutes()));
@@ -685,8 +713,25 @@
             // Update adblocker button state (status is loaded separately for timer info)
             // Only update the enabled state from config; status endpoint handles timer
             const btn = document.getElementById('adblocker-btn');
+            const btnText = document.getElementById('adblocker-btn-text');
             if (btn && isAdmin) {
-                btn.disabled = false;
+                // Disable button if Unbound is not installed
+                if (s.unavailable) {
+                    btn.disabled = true;
+                    btn.title = s.reason || 'DNS unavailable';
+                    // Visual state: show as disabled (red)
+                    btn.classList.remove('btn-adblocker-enabled');
+                    btn.classList.add('btn-adblocker-disabled');
+                    // Update button text to reflect unavailable state
+                    if (btnText) btnText.textContent = 'Ad-Blocker: Unavailable';
+                    // Show unavailable state for all DNS sections
+                    updateDnsUnavailable(true);
+                } else {
+                    btn.disabled = false;
+                    btn.title = '';
+                    // Clear unavailable state if DNS becomes available
+                    updateDnsUnavailable(false);
+                }
             }
         } catch (e) {
             // Update status for error state using DOM APIs
@@ -718,18 +763,36 @@
                 contentId: 'top-queried-content',
                 listId: 'top-queried-list',
                 emptyId: 'top-queried-empty',
+                unavailableId: 'top-queried-unavailable',
                 colors: queriedColors,
                 defaultColor: '#0d6efd'
             });
-            renderTopDomainBars({
-                items: topBlocked,
-                loadingId: 'top-blocked-loading',
-                contentId: 'top-blocked-content',
-                listId: 'top-blocked-list',
-                emptyId: 'top-blocked-empty',
-                colors: blockedColors,
-                defaultColor: '#dc3545'
-            });
+            // Only render blocked domains if ad-blocker is enabled
+            if (_adblockerEnabled) {
+                renderTopDomainBars({
+                    items: topBlocked,
+                    loadingId: 'top-blocked-loading',
+                    contentId: 'top-blocked-content',
+                    listId: 'top-blocked-list',
+                    emptyId: 'top-blocked-empty',
+                    disabledId: 'top-blocked-disabled',
+                    unavailableId: 'top-blocked-unavailable',
+                    colors: blockedColors,
+                    defaultColor: '#dc3545'
+                });
+            } else {
+                // Show disabled state for Top Blocked when ad-blocker is off
+                const blockedLoading = document.getElementById('top-blocked-loading');
+                const blockedContent = document.getElementById('top-blocked-content');
+                const blockedEmpty = document.getElementById('top-blocked-empty');
+                const blockedDisabled = document.getElementById('top-blocked-disabled');
+                const blockedUnavailable = document.getElementById('top-blocked-unavailable');
+                if (blockedLoading) blockedLoading.classList.add('d-none');
+                if (blockedContent) blockedContent.classList.add('d-none');
+                if (blockedEmpty) blockedEmpty.classList.add('d-none');
+                if (blockedUnavailable) blockedUnavailable.classList.add('d-none');
+                if (blockedDisabled) blockedDisabled.classList.remove('d-none');
+            }
         } catch (e) {
             console.error('Top domains error:', e);
         }
@@ -780,22 +843,26 @@
     }
 
     // Shared function to render bar charts for top domains
-    function renderTopDomainBars({ items, loadingId, contentId, listId, emptyId, colors, maxSlices = 12, defaultColor = '#0d6efd' }) {
+    function renderTopDomainBars({ items, loadingId, contentId, listId, emptyId, disabledId, unavailableId, colors, maxSlices = 12, defaultColor = '#0d6efd' }) {
         const loadingEl = document.getElementById(loadingId);
         const contentEl = document.getElementById(contentId);
         const listEl = document.getElementById(listId);
         const emptyEl = document.getElementById(emptyId);
+        const disabledEl = document.getElementById(disabledId);
+        const unavailableEl = document.getElementById(unavailableId);
 
-        loadingEl.classList.add('d-none');
+        if (loadingEl) loadingEl.classList.add('d-none');
+        if (disabledEl) disabledEl.classList.add('d-none');
+        if (unavailableEl) unavailableEl.classList.add('d-none');
 
         if (!items.length) {
-            contentEl.classList.add('d-none');
-            emptyEl.classList.remove('d-none');
+            if (contentEl) contentEl.classList.add('d-none');
+            if (emptyEl) emptyEl.classList.remove('d-none');
             return;
         }
 
-        contentEl.classList.remove('d-none');
-        emptyEl.classList.add('d-none');
+        if (contentEl) contentEl.classList.remove('d-none');
+        if (emptyEl) emptyEl.classList.add('d-none');
 
         const { labels, values, total } = prepareBarChartData(items, maxSlices);
         const chartColors = getChartColors(labels, colors);
@@ -867,12 +934,7 @@
         const spinner = document.createElement('div');
         spinner.className = 'spinner-border text-primary';
         spinner.setAttribute('role', 'status');
-
-        const hidden = document.createElement('span');
-        hidden.className = 'visually-hidden';
-        hidden.textContent = 'Loading...';
-
-        spinner.appendChild(hidden);
+        spinner.setAttribute('aria-label', 'Loading');
         wrap.appendChild(spinner);
         td.appendChild(wrap);
         tr.appendChild(td);
@@ -1112,6 +1174,113 @@
         _isLoadingMore = false;
     }
 
+    // Blocked sections visibility (Top Blocked Domains + Blockrate Trend)
+    let _adblockerEnabled = {{ enable_blocklist | tojson }};  // Initial state from server
+
+    function updateBlockedSectionsVisibility(enabled) {
+        _adblockerEnabled = enabled;  // Cache state for other functions
+
+        // Top Blocked Domains
+        const blockedLoading = document.getElementById('top-blocked-loading');
+        const blockedContent = document.getElementById('top-blocked-content');
+        const blockedEmpty = document.getElementById('top-blocked-empty');
+        const blockedDisabled = document.getElementById('top-blocked-disabled');
+        const blockedUnavailable = document.getElementById('top-blocked-unavailable');
+        
+        // Blockrate Trend
+        const trendLoading = document.getElementById('trend-loading');
+        const trendChart = document.getElementById('trend-chart-wrap');
+        const trendEmpty = document.getElementById('trend-empty');
+        const trendDisabled = document.getElementById('trend-disabled');
+        const trendUnavailable = document.getElementById('trend-unavailable');
+
+        if (enabled) {
+            // Hide disabled state, show loading state (data will populate shortly)
+            if (blockedDisabled) blockedDisabled.classList.add('d-none');
+            if (blockedUnavailable) blockedUnavailable.classList.add('d-none');
+            if (blockedContent) blockedContent.classList.add('d-none');
+            if (blockedEmpty) blockedEmpty.classList.add('d-none');
+            if (blockedLoading) blockedLoading.classList.remove('d-none');
+
+            if (trendDisabled) trendDisabled.classList.add('d-none');
+            if (trendUnavailable) trendUnavailable.classList.add('d-none');
+            if (trendChart) trendChart.classList.add('d-none');
+            if (trendEmpty) trendEmpty.classList.add('d-none');
+            if (trendLoading) trendLoading.classList.remove('d-none');
+        } else {
+            // Hide all states, show disabled state
+            if (blockedLoading) blockedLoading.classList.add('d-none');
+            if (blockedContent) blockedContent.classList.add('d-none');
+            if (blockedEmpty) blockedEmpty.classList.add('d-none');
+            if (blockedUnavailable) blockedUnavailable.classList.add('d-none');
+            if (blockedDisabled) blockedDisabled.classList.remove('d-none');
+            
+            if (trendLoading) trendLoading.classList.add('d-none');
+            if (trendChart) trendChart.classList.add('d-none');
+            if (trendEmpty) trendEmpty.classList.add('d-none');
+            if (trendUnavailable) trendUnavailable.classList.add('d-none');
+            if (trendDisabled) trendDisabled.classList.remove('d-none');
+        }
+    }
+
+    // DNS unavailable state (Unbound not installed) - read initial state from server
+    let _dnsUnavailable = dnsApp ? (dnsApp.dataset.dnsUnavailable === 'true') : false;
+
+    function updateDnsUnavailable(unavailable) {
+        _dnsUnavailable = unavailable;
+
+        // Top Queried Domains
+        const queriedLoading = document.getElementById('top-queried-loading');
+        const queriedContent = document.getElementById('top-queried-content');
+        const queriedEmpty = document.getElementById('top-queried-empty');
+        const queriedUnavailable = document.getElementById('top-queried-unavailable');
+
+        // Top Blocked Domains
+        const blockedLoading = document.getElementById('top-blocked-loading');
+        const blockedContent = document.getElementById('top-blocked-content');
+        const blockedEmpty = document.getElementById('top-blocked-empty');
+        const blockedDisabled = document.getElementById('top-blocked-disabled');
+        const blockedUnavailable = document.getElementById('top-blocked-unavailable');
+
+        // Blockrate Trend
+        const trendLoading = document.getElementById('trend-loading');
+        const trendChart = document.getElementById('trend-chart-wrap');
+        const trendEmpty = document.getElementById('trend-empty');
+        const trendDisabled = document.getElementById('trend-disabled');
+        const trendUnavailable = document.getElementById('trend-unavailable');
+
+        // Query Log
+        const logUnavailable = document.getElementById('log-unavailable');
+
+        if (unavailable) {
+            // Hide all states, show unavailable state for all sections
+            if (queriedLoading) queriedLoading.classList.add('d-none');
+            if (queriedContent) queriedContent.classList.add('d-none');
+            if (queriedEmpty) queriedEmpty.classList.add('d-none');
+            if (queriedUnavailable) queriedUnavailable.classList.remove('d-none');
+
+            if (blockedLoading) blockedLoading.classList.add('d-none');
+            if (blockedContent) blockedContent.classList.add('d-none');
+            if (blockedEmpty) blockedEmpty.classList.add('d-none');
+            if (blockedDisabled) blockedDisabled.classList.add('d-none');
+            if (blockedUnavailable) blockedUnavailable.classList.remove('d-none');
+
+            if (trendLoading) trendLoading.classList.add('d-none');
+            if (trendChart) trendChart.classList.add('d-none');
+            if (trendEmpty) trendEmpty.classList.add('d-none');
+            if (trendDisabled) trendDisabled.classList.add('d-none');
+            if (trendUnavailable) trendUnavailable.classList.remove('d-none');
+
+            if (logUnavailable) logUnavailable.classList.remove('d-none');
+        } else {
+            // Hide unavailable states
+            if (queriedUnavailable) queriedUnavailable.classList.add('d-none');
+            if (blockedUnavailable) blockedUnavailable.classList.add('d-none');
+            if (trendUnavailable) trendUnavailable.classList.add('d-none');
+            if (logUnavailable) logUnavailable.classList.add('d-none');
+        }
+    }
+
     // Ad-Blocker dropdown state
     let _adblockerCountdownInterval = null;
     let _adblockerDisabledUntil = 0;
@@ -1130,6 +1299,9 @@
 
         // Update button text
         btnText.textContent = enabled ? 'Ad-Blocker: Enabled' : 'Ad-Blocker: Disabled';
+
+        // Update Top Blocked Domains and Blockrate Trend visibility
+        updateBlockedSectionsVisibility(enabled);
 
         // Handle countdown
         if (_adblockerCountdownInterval) {
@@ -1204,8 +1376,14 @@
             wbToast(data.enabled ? 'Ad-Blocker enabled' : 'Ad-Blocker disabled', 'success');
             await loadStats();
             
+            // If enabling, reload blocked sections (they were showing disabled state)
+            if (data.enabled) {
+                await Promise.allSettled([loadTopDomains(), loadTrend()]);
+            }
+            
             // Close dropdown after selection
             const dropdown = bootstrap.Dropdown.getInstance(btn);
+            if (dropdown) dropdown.hide();
             if (dropdown) dropdown.hide();
         } catch (e) {
             wbToast('Failed to update Ad-Blocker: ' + e.message, 'danger');
@@ -1412,10 +1590,7 @@
                 const spinner = document.createElement('div');
                 spinner.className = 'spinner-border spinner-border-sm text-primary';
                 spinner.setAttribute('role', 'status');
-                const srOnly = document.createElement('span');
-                srOnly.className = 'visually-hidden';
-                srOnly.textContent = 'Loading...';
-                spinner.appendChild(srOnly);
+                spinner.setAttribute('aria-label', 'Refreshing');
                 
                 const text = document.createElement('span');
                 text.className = 'text-muted ms-2 small';
@@ -1457,6 +1632,15 @@
 
     // Initial load - wait for completion before starting polling to avoid race conditions
     (async () => {
+        // If DNS is unavailable (Unbound not installed), show unavailable state immediately
+        // and skip all API calls
+        if (_dnsUnavailable) {
+            updateDnsUnavailable(true);
+            // Still load peers for the filter dropdown (doesn't require Unbound)
+            await loadPeers();
+            return; // Skip polling - nothing to poll
+        }
+        
         await Promise.allSettled([
             loadPeers(), loadStats(), loadTopDomains(),
             loadTrend(), loadLogsOnly(), loadAdblockerStatus()

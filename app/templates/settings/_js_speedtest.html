@@ -28,22 +28,10 @@
                 targetSelect.value = data.target || 'auto';
             }
 
-            const downInput = document.getElementById('speedtest-downstream');
-            if (downInput && data.downstream_mbit > 0) {
-                downInput.value = data.downstream_mbit;
-            }
-
-            const upInput = document.getElementById('speedtest-upstream');
-            if (upInput && data.upstream_mbit > 0) {
-                upInput.value = data.upstream_mbit;
-            }
-
             // Bind event listeners
             if (isAdmin) {
                 enabledToggle?.addEventListener('change', () => saveSpeedtestSettings());
                 targetSelect?.addEventListener('change', () => saveSpeedtestSettings());
-                downInput?.addEventListener('change', () => saveSpeedtestSettings());
-                upInput?.addEventListener('change', () => saveSpeedtestSettings());
 
                 document.getElementById('btn-speedtest-run')?.addEventListener('click', runSpeedtest);
             }
@@ -61,16 +49,6 @@
 
         const targetSelect = document.getElementById('speedtest-target');
         if (targetSelect) payload.target = targetSelect.value;
-
-        const downInput = document.getElementById('speedtest-downstream');
-        if (downInput && downInput.value) {
-            payload.downstream_mbit = parseFloat(downInput.value) || 0;
-        }
-
-        const upInput = document.getElementById('speedtest-upstream');
-        if (upInput && upInput.value) {
-            payload.upstream_mbit = parseFloat(upInput.value) || 0;
-        }
 
         try {
             await api('PATCH', '/api/wireguard/speedtest/settings', payload);
@@ -129,7 +107,14 @@
             es.addEventListener('progress', (e) => {
                 try {
                     const data = JSON.parse(e.data);
-                    if (statusEl) statusEl.textContent = data.message || 'Running…';
+                    if (statusEl) {
+                        // Wrap URLs in monospace
+                        const msg = (data.message || 'Running…').replace(
+                            /\((https?:\/\/[^)]+)\)/g,
+                            '(<code class="small">$1</code>)'
+                        );
+                        statusEl.innerHTML = msg;
+                    }
                     if (progressEl) progressEl.textContent = `${Math.round(data.progress * 100)}%`;
                 } catch (err) {
                     console.warn('Failed to parse progress event:', err);
