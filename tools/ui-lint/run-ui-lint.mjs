@@ -95,6 +95,17 @@ const FORM_SWITCH_HEIGHT_TOLERANCE_PX = 1;
 // Required Field Visual Convention:
 // - Label pattern: `<label>Field Name <span class="text-danger">*</span></label>`
 // - Required fields MUST have both visual marker AND `required` attribute
+//
+// =============================================================================
+// Peers Mobile Layout Rules (< 768px)
+// =============================================================================
+// Grid layout:  "name status" / "vpn clientip" / "actions actions"
+// - Both badges visible: connection badge + enabled badge (flex row, right-aligned)
+// - Last-seen time merged INTO connection badge via .peer-badge-time span
+//   (e.g. "Offline · 3d ago"), hidden on desktop, shown on mobile
+// - Separate .peer-last-seen cell: display:none on mobile
+// - Status cell aligned with Name row (top-aligned, same grid row)
+// - Client IP cell positioned right of VPN address hairline (same grid row)
 // =============================================================================
 
 // Form Control Height validation (input-group consistency)

@@ -137,11 +137,17 @@
 
     .peer-name-meta {
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         gap: 0.25rem 0.5rem;
         font-size: 0.75rem;
         color: var(--bs-secondary-color);
         font-weight: 400;
+        white-space: nowrap;
+    }
+
+    .peer-name-meta span + span::before {
+        content: "·";
+        margin-right: 0.5rem;
     }
 
     /* Last-seen time inside connection badge (mobile only) */
@@ -540,6 +546,10 @@
         .peer-client-ip-meta .peer-meta-city,
         .peer-client-ip-meta .peer-meta-provider {
             display: inline;
+        }
+
+        .peer-client-ip-meta .peer-meta-city + .peer-meta-provider {
+            margin-left: 0.25em;
         }
 
         .peer-client-ip-meta .peer-meta-provider {
