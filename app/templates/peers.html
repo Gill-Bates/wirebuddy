@@ -616,6 +616,9 @@
                         <td data-label="Name">
                             {{ peer['name'] or 'Unnamed' }}
                             <span class="badge bg-secondary d-inline-block d-md-none ms-1">{{ routing_label }}</span>
+                            {% if peer['client_isolation'] %}
+                            <span class="badge bg-warning d-inline-block d-md-none ms-1">Client Isolation</span>
+                            {% endif %}
                         </td>
                         <td data-label="VPN Address" class="peer-vpn-address">
                             {% if peer['peer_ipv4'] %}
@@ -633,6 +636,9 @@
                         </td>
                         <td data-label="Routing" class="peer-routing">
                             <span class="badge bg-secondary">{{ routing_label }}</span>
+                            {% if peer['client_isolation'] %}
+                            <span class="badge bg-warning ms-1">Client Isolation</span>
+                            {% endif %}
                         </td>
                         <td data-label="Interface" class="peer-interface">{{ peer['interface'] }}</td>
                         <td data-label="Last Seen" class="peer-last-seen">
@@ -676,6 +682,9 @@
                             <span class="badge bg-secondary" role="status">Disabled</span>
                             {% endif %}
                             <span class="badge bg-secondary d-none d-md-inline-block d-lg-none">{{ routing_label }}</span>
+                            {% if peer['client_isolation'] %}
+                            <span class="badge bg-warning d-none d-md-inline-block d-lg-none ms-1">Client Isolation</span>
+                            {% endif %}
                         </td>
                         <td data-label="Actions" class="peer-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
@@ -759,6 +768,9 @@
                 <div class="modal-body">
                     <p class="visually-hidden" id="addPeerModalDesc">Create a peer and configure routing, DNS and
                         blocklists.</p>
+
+                    <!-- BASICS -->
+                    <h6 class="text-muted text-uppercase small mb-2">Basics</h6>
                     
                     <!-- Warning: Server FQDN not configured -->
                     <div id="peer-fqdn-warning" class="alert alert-warning d-none" role="alert">
@@ -767,12 +779,22 @@
                         Otherwise, the peer configuration will contain a placeholder address.
                     </div>
                     
-                    <div class="mb-3">
-                        <label for="peer-name" class="form-label">Name <span class="text-danger">*</span></label>
+                    <div class="mb-2">
+                        <label for="peer-name" class="form-label">Device Name <span class="text-danger">*</span></label>
                         <input type="text" class="form-control" id="peer-name" maxlength="128" placeholder="e.g., John's iPhone" required>
                         <div class="invalid-feedback">Peer name is required</div>
                     </div>
-                    <div class="mb-3">
+                    <div class="mb-2">
+                        <label for="peer-interface" class="form-label">Interface</label>
+                        <select class="form-select" id="peer-interface" required>
+                            <option value="" disabled selected>Loading...</option>
+                        </select>
+                    </div>
+
+                    <!-- ROUTING -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">Traffic Routing</h6>
+
+                    <div class="mb-2">
                         <label for="peer-allowed-ips-mode" class="form-label">
                             Routing Mode
                             <a class="text-muted ms-1" data-bs-toggle="collapse" href="#routingModeHelp" role="button"
@@ -783,49 +805,62 @@
                         </label>
                         <div class="collapse mb-2" id="routingModeHelp">
                             <div class="card card-body small bg-body-secondary">
-                                <strong>Full Tunnel:</strong> All client network traffic is routed through the VPN.
+                                <strong>Recommended:</strong> All traffic goes through the VPN.<br>
                                 The client uses the VPN IP for all connections.<br>
-                                <strong>Split Tunnel:</strong> Only VPN network traffic is routed. Local network
-                                connections (e.g., printers, NAS) remain directly accessible.<br>
-                                <strong>Custom:</strong> Define custom CIDR ranges to be routed through the VPN.
+                                <strong>Local access:</strong> Keep access to local network devices.<br>
+                                <strong>Advanced:</strong> Define custom CIDR ranges.
                             </div>
                         </div>
                         <select class="form-select" id="peer-allowed-ips-mode">
-                            <option value="full" selected>Full Tunnel (all traffic through VPN)</option>
-                            <option value="split">Split Tunnel (0.0.0.0/1 + 128.0.0.0/1)</option>
-                            <option value="custom">Custom</option>
+                            <option value="full" selected>Recommended (all traffic through VPN)</option>
+                            <option value="split">Local network access</option>
+                            <option value="custom">Advanced (custom routes)</option>
                         </select>
                         <small class="text-muted" id="allowed-ips-hint">Routes all IPv4 and IPv6 traffic through
                             VPN</small>
                     </div>
-                    <div class="mb-3 d-none" id="peer-allowed-ips-custom-wrapper">
+                    <div class="mb-2 d-none" id="peer-allowed-ips-custom-wrapper">
                         <label for="peer-allowed-ips-custom" class="form-label">Custom Allowed IPs</label>
                         <input type="text" class="form-control" id="peer-allowed-ips-custom"
                             placeholder="e.g., 10.0.0.0/24, 192.168.1.0/24">
                         <small class="text-muted">Comma-separated CIDR ranges</small>
                     </div>
-                    <div class="mb-3">
-                        <label for="peer-interface" class="form-label">Interface</label>
-                        <select class="form-select" id="peer-interface" required>
-                            <option value="" disabled selected>Loading...</option>
-                        </select>
-                    </div>
-                    <div class="mb-3">
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" id="peer-use-adblocker" checked>
-                            <label class="form-check-label" for="peer-use-adblocker">
-                                Use WireBuddy DNS
-                            </label>
+
+                    <!-- DNS & FILTERING -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">DNS & Filtering</h6>
+
+                    <!-- DNS Settings Group -->
+                    <div class="mb-2 p-3 border rounded" style="background-color: var(--bs-body-bg);">
+                        <div class="mb-2">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="peer-use-adblocker" checked>
+                                <label class="form-check-label" for="peer-use-adblocker">
+                                    Use Ad-blocking DNS (WireBuddy)
+                                </label>
+                            </div>
+                            <small class="text-muted d-none" id="peer-fallback-dns-hint">Uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)</small>
                         </div>
-                        <small class="text-muted d-none" id="peer-fallback-dns-hint">Uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)</small>
-                    </div>
-                    <div class="mb-3" id="peer-blocklist-section">
-                        <label class="form-label">Active Blocklists</label>
-                        <div id="peer-blocklist-options" class="row gy-1 gx-2">
-                            <!-- Populated dynamically -->
+                        <div class="mb-2" id="peer-blocklist-section">
+                            <label class="form-label">Active Blocklists</label>
+                            <div id="peer-blocklist-options" class="row gy-1 gx-2">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
+                        <div class="mb-0">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="peer-dns-logging" checked>
+                                <label class="form-check-label" for="peer-dns-logging">
+                                    DNS Logging
+                                </label>
+                            </div>
+                            <small class="text-muted">Log DNS queries for this device</small>
                         </div>
                     </div>
-                    <div class="mb-3">
+
+                    <!-- SECURITY -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">Security</h6>
+
+                    <div class="mb-0">
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="peer-client-isolation">
                             <label class="form-check-label" for="peer-client-isolation">
@@ -837,7 +872,7 @@
                                 </a>
                             </label>
                         </div>
-                        <small class="text-muted">Prevents communication with other VPN peers</small>
+                        <small class="text-muted">Prevents access to other VPN devices</small>
                         <div class="collapse mt-2" id="clientIsolationHelp">
                             <div class="card card-body small bg-body-secondary">
                                 <strong>What is Client Isolation?</strong><br>
@@ -853,7 +888,7 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="submit" class="btn btn-primary" id="add-peer-submit-btn">
-                        <span class="submit-text">Create Peer</span>
+                        <span class="submit-text">Create Device</span>
                         <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
                     </button>
                 </div>
@@ -899,12 +934,20 @@
                 <div class="modal-body">
                     <p class="visually-hidden" id="editPeerModalDesc">Update peer settings, routing and DNS behavior.
                     </p>
-                    <div class="mb-3">
-                        <label for="edit-peer-name" class="form-label">Name <span class="text-danger">*</span></label>
+
+                    <!-- BASICS -->
+                    <h6 class="text-muted text-uppercase small mb-2">Basics</h6>
+
+                    <div class="mb-2">
+                        <label for="edit-peer-name" class="form-label">Device Name <span class="text-danger">*</span></label>
                         <input type="text" class="form-control" id="edit-peer-name" maxlength="128" placeholder="e.g., John's iPhone" required>
                         <div class="invalid-feedback">Peer name is required</div>
                     </div>
-                    <div class="mb-3">
+
+                    <!-- ROUTING -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">Traffic Routing</h6>
+
+                    <div class="mb-2">
                         <label for="edit-peer-allowed-ips-mode" class="form-label">
                             Routing Mode
                             <a class="text-muted ms-1" data-bs-toggle="collapse" href="#editRoutingModeHelp"
@@ -915,43 +958,62 @@
                         </label>
                         <div class="collapse mb-2" id="editRoutingModeHelp">
                             <div class="card card-body small bg-body-secondary">
-                                <strong>Full Tunnel:</strong> All client network traffic is routed through the VPN.
+                                <strong>Recommended:</strong> All traffic goes through the VPN.<br>
                                 The client uses the VPN IP for all connections.<br>
-                                <strong>Split Tunnel:</strong> Only VPN network traffic is routed. Local network
-                                connections (e.g., printers, NAS) remain directly accessible.<br>
-                                <strong>Custom:</strong> Define custom CIDR ranges to be routed through the VPN.
+                                <strong>Local access:</strong> Keep access to local network devices.<br>
+                                <strong>Advanced:</strong> Define custom CIDR ranges.
                             </div>
                         </div>
                         <select class="form-select" id="edit-peer-allowed-ips-mode">
-                            <option value="full">Full Tunnel (all traffic through VPN)</option>
-                            <option value="split">Split Tunnel (0.0.0.0/1 + 128.0.0.0/1)</option>
-                            <option value="custom">Custom</option>
+                            <option value="full">Recommended (all traffic through VPN)</option>
+                            <option value="split">Local network access</option>
+                            <option value="custom">Advanced (custom routes)</option>
                         </select>
                         <small class="text-muted" id="edit-allowed-ips-hint">Routes all IPv4 and IPv6 traffic through
                             VPN</small>
                     </div>
-                    <div class="mb-3 d-none" id="edit-peer-allowed-ips-custom-wrapper">
+                    <div class="mb-2 d-none" id="edit-peer-allowed-ips-custom-wrapper">
                         <label for="edit-peer-allowed-ips-custom" class="form-label">Custom Allowed IPs</label>
                         <input type="text" class="form-control" id="edit-peer-allowed-ips-custom"
                             placeholder="e.g., 10.0.0.0/24, 192.168.1.0/24">
                         <small class="text-muted">Comma-separated CIDR ranges</small>
                     </div>
-                    <div class="mb-3">
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" id="edit-peer-use-adblocker" checked>
-                            <label class="form-check-label" for="edit-peer-use-adblocker">
-                                Use WireBuddy DNS
-                            </label>
+
+                    <!-- DNS & FILTERING -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">DNS & Filtering</h6>
+
+                    <!-- DNS Settings Group -->
+                    <div class="mb-2 p-3 border rounded" style="background-color: var(--bs-body-bg);">
+                        <div class="mb-2">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="edit-peer-use-adblocker" checked>
+                                <label class="form-check-label" for="edit-peer-use-adblocker">
+                                    Use Ad-blocking DNS (WireBuddy)
+                                </label>
+                            </div>
+                            <small class="text-muted d-none" id="edit-peer-fallback-dns-hint">Uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)</small>
                         </div>
-                        <small class="text-muted d-none" id="edit-peer-fallback-dns-hint">Uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)</small>
-                    </div>
-                    <div class="mb-3" id="edit-peer-blocklist-section">
-                        <label class="form-label">Active Blocklists</label>
-                        <div id="edit-peer-blocklist-options" class="row gy-1 gx-2">
-                            <!-- Populated dynamically -->
+                        <div class="mb-2" id="edit-peer-blocklist-section">
+                            <label class="form-label">Active Blocklists</label>
+                            <div id="edit-peer-blocklist-options" class="row gy-1 gx-2">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
+                        <div class="mb-0">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="edit-peer-dns-logging" checked>
+                                <label class="form-check-label" for="edit-peer-dns-logging">
+                                    DNS Logging
+                                </label>
+                            </div>
+                            <small class="text-muted">Log DNS queries for this device</small>
                         </div>
                     </div>
-                    <div class="mb-3">
+
+                    <!-- SECURITY -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">Security</h6>
+
+                    <div class="mb-2">
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="edit-peer-client-isolation">
                             <label class="form-check-label" for="edit-peer-client-isolation">
@@ -963,7 +1025,7 @@
                                 </a>
                             </label>
                         </div>
-                        <small class="text-muted">Prevents communication with other VPN peers</small>
+                        <small class="text-muted">Prevents access to other VPN devices</small>
                         <div class="collapse mt-2" id="editClientIsolationHelp">
                             <div class="card card-body small bg-body-secondary">
                                 <strong>What is Client Isolation?</strong><br>
@@ -975,7 +1037,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="mb-3">
+                    <div class="mb-0">
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="edit-peer-enabled" checked>
                             <label class="form-check-label" for="edit-peer-enabled">Enabled</label>
@@ -1438,7 +1500,7 @@
         const submitSpinner = submitBtn?.querySelector('.spinner-border');
         if (submitBtn && submitText && submitSpinner) {
             submitBtn.disabled = false;
-            submitText.textContent = 'Create Peer';
+            submitText.textContent = 'Create Device';
             submitText.classList.remove('d-none');
             submitSpinner.classList.add('d-none');
         }
@@ -1538,6 +1600,7 @@
             allowed_ips_mode: allowedIpsMode,
             interface: document.getElementById('peer-interface').value,
             use_adblocker: document.getElementById('peer-use-adblocker').checked,
+            dns_logging_enabled: document.getElementById('peer-dns-logging').checked,
             blocklist_ids: getSelectedBlocklistIds('peer-blocklist-options'),
             client_isolation: document.getElementById('peer-client-isolation').checked,
         };
@@ -1563,7 +1626,7 @@
         } finally {
             // Reset button state
             submitBtn.disabled = false;
-            submitText.textContent = 'Create Peer';
+            submitText.textContent = 'Create Device';
             submitText.classList.remove('d-none');
             submitSpinner.classList.add('d-none');
         }
@@ -1610,6 +1673,7 @@
             allowed_ips_mode: allowedIpsMode,
             is_enabled: isEnabled,
             use_adblocker: useAdblocker,
+            dns_logging_enabled: document.getElementById('edit-peer-dns-logging').checked,
             blocklist_ids: getSelectedBlocklistIds('edit-peer-blocklist-options'),
             client_isolation: document.getElementById('edit-peer-client-isolation').checked,
         };
@@ -1788,6 +1852,7 @@
             toggleAllowedIpsCustom('edit-');
 
             document.getElementById('edit-peer-use-adblocker').checked = peer.use_adblocker !== false;
+            document.getElementById('edit-peer-dns-logging').checked = peer.dns_logging_enabled !== false;
             document.getElementById('edit-peer-enabled').checked = peer.is_enabled;
             document.getElementById('edit-peer-client-isolation').checked = peer.client_isolation === true;
 

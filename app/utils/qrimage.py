@@ -98,7 +98,7 @@ def generate_qr_png(config_text: str, peer_name: str) -> bytes:
 	text_section_h = text_h + padding
 
 	canvas_w = qr_w
-	canvas_h = qr_h + logo_section_h + text_section_h + padding
+	canvas_h = qr_h + logo_section_h + text_section_h + padding * 2
 	canvas = Image.new("RGBA", (canvas_w, canvas_h), "white")
 
 	# Paste QR code at top

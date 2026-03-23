@@ -121,6 +121,7 @@ def _row_to_public(row: sqlite3.Row, enabled_blocklist_ids: list[str]) -> PeerPu
 		interface=row["interface"],
 		is_enabled=bool(row["is_enabled"]),
 		use_adblocker=bool(row["use_adblocker"]),
+		dns_logging_enabled=bool(safe_row_get(row, "dns_logging_enabled", True)),
 		blocklist_ids=blocklist_ids,
 		client_isolation=bool(safe_row_get(row, "client_isolation", False)),
 		created_at=row["created_at"],
@@ -346,6 +347,7 @@ async def create_peer(
 					endpoint=payload.endpoint,
 					interface=payload.interface,
 					use_adblocker=payload.use_adblocker,
+					dns_logging_enabled=payload.dns_logging_enabled,
 					blocklist_ids=filter_peer_blocklist_ids(payload.blocklist_ids, enabled_blocklist_ids),
 					client_isolation=payload.client_isolation,
 				)
@@ -459,6 +461,7 @@ async def update_peer(
 		endpoint=_val_or_unset("endpoint"),
 		is_enabled=_val_or_unset("is_enabled"),
 		use_adblocker=_val_or_unset("use_adblocker"),
+		dns_logging_enabled=_val_or_unset("dns_logging_enabled"),
 		blocklist_ids=blocklist_ids_update,
 		client_isolation=_val_or_unset("client_isolation"),
 	)

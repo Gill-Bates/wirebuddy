@@ -27,6 +27,10 @@ class PeerCreate(BaseModel):
 	endpoint: Optional[str] = Field(None, max_length=256)
 	interface: str = Field(default="wg0", max_length=32)
 	use_adblocker: bool = True
+	dns_logging_enabled: bool = Field(
+		default=True,
+		description="Enable DNS query logging for this peer",
+	)
 	blocklist_ids: Optional[list[str]] = Field(
 		None,
 		description="Enabled blocklist IDs (null=all, []=none, ['ads','porn']=specific)",
@@ -73,6 +77,7 @@ class PeerUpdate(BaseModel):
 	endpoint: Optional[str] = Field(None, max_length=256)
 	is_enabled: Optional[bool] = None
 	use_adblocker: Optional[bool] = None
+	dns_logging_enabled: Optional[bool] = None
 	blocklist_ids: Optional[list[str]] = Field(
 		None,
 		description="Enabled blocklist IDs (null=all, []=none, ['ads','porn']=specific)",
@@ -99,6 +104,7 @@ class PeerPublic(BaseModel):
 	interface: str
 	is_enabled: bool
 	use_adblocker: bool = True
+	dns_logging_enabled: bool = True
 	blocklist_ids: Optional[list[str]] = None  # null=all enabled
 	created_at: datetime
 	updated_at: datetime

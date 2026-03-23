@@ -172,6 +172,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				interface TEXT NOT NULL DEFAULT 'wg0',
 				is_enabled INTEGER NOT NULL DEFAULT 1,
 					use_adblocker INTEGER NOT NULL DEFAULT 1,
+				dns_logging_enabled INTEGER NOT NULL DEFAULT 1,
 				blocklist_ids TEXT,
 				last_client_ip TEXT,
 				last_handshake_at INTEGER,

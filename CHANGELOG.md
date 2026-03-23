@@ -1,5 +1,8 @@
-## [1.3.4] - 2026-03-xx
+## [1.4.0] - 2026-03-xx
+
+- ``New`` DNS logging can be enabled or disabled for each peer
 - ``Fix`` Fixed an issue with the test server selection for the speed test
+- ``Fix`` Several design improvements in the GUI
 
 
 <details markdown="1">
