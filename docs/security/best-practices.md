@@ -303,7 +303,7 @@ NEW_KEY=$(openssl rand -base64 32)
 
 Add post-quantum security:
 
-**Peers → Edit → Generate Preshared Key**
+**Settings → WireGuard → Use PresharedKey**
 
 ### Regular Key Rotation
 

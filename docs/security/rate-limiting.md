@@ -176,7 +176,7 @@ Rate limit violations are logged:
 {
   "timestamp": "2026-03-15T14:30:00Z",
   "event": "rate_limit_exceeded",
-  "endpoint": "/api/peers",
+  "endpoint": "/api/wireguard/peers",
   "ip": "203.0.113.42",
   "user": "admin",
   "limit": 100,
@@ -230,7 +230,7 @@ session.mount("https://", adapter)
 
 # Use session for requests
 response = session.get(
-    "https://vpn.example.com/api/peers",
+  "https://vpn.example.com/api/wireguard/peers",
     headers={"Authorization": f"Bearer {TOKEN}"}
 )
 

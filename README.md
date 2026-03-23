@@ -41,8 +41,8 @@
 
 | Category | Highlights |
 |---|---|
-| 🔒 **WireGuard VPN** | Multi-interface management, automatic keypair generation, routing presets, QR codes for mobile setup |
-| 🌍 **DNS Ad-Blocking** | Integrated Unbound resolver with blocklists, DNS-over-TLS, real-time query log, DNSSEC, client-scoped rules |
+| 🔒 **WireGuard VPN** | Multi-interface management, automatic keypair generation, routing presets, client isolation, QR codes for mobile setup |
+| 🌍 **DNS Ad-Blocking** | Integrated Unbound resolver with blocklists, DNS-over-TLS, real-time query log, DNSSEC, and per-peer filtering |
 | 📊 **Monitoring** | Built-in time-series database, per-peer traffic charts, traffic analysis by country & ASN |
 | 🗺️ **GeoIP** | MaxMind GeoLite2 integration, interactive heatmap, country flags & ASN badges |
 | 🔐 **Let's Encrypt** | Built-in ACME client with HTTP-01 challenge, certificate management UI |
