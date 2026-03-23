@@ -148,7 +148,8 @@ async def trigger_speedtest(
 
 		target = get_speedtest_target(conn)
 		if target == "auto":
-			servers = None  # Use defaults (RTT-based selection)
+			# Use all configured servers for RTT-based selection
+			servers = [s["url"] for s in SPEEDTEST_SERVER_LIST]
 		else:
 			server_info = SPEEDTEST_SERVER_MAP.get(target)
 			if not server_info:
@@ -218,7 +219,8 @@ async def trigger_speedtest_stream(
 	# Build server list
 	target = get_speedtest_target(conn)
 	if target == "auto":
-		servers = None
+		# Use all configured servers for RTT-based selection
+		servers = [s["url"] for s in SPEEDTEST_SERVER_LIST]
 	else:
 		server_info = SPEEDTEST_SERVER_MAP.get(target)
 		if not server_info:

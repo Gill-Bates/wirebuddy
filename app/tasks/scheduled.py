@@ -433,7 +433,7 @@ async def _has_active_peers() -> bool:
 async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 	"""Scheduled task: run bandwidth measurement if enabled."""
 	from ..db import tsdb
-	from ..db.sqlite_settings import get_speedtest_enabled, get_speedtest_target, SPEEDTEST_SERVER_MAP
+	from ..db.sqlite_settings import get_speedtest_enabled, get_speedtest_target, SPEEDTEST_SERVER_MAP, SPEEDTEST_SERVER_LIST
 	from ..db.sqlite_runtime import connect, close_connection
 	from ..speedtest import (
 		DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
@@ -501,11 +501,16 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 			)
 			return
 
-		servers = None
-		if target != "auto":
+		if target == "auto":
+			# Use all configured servers for RTT-based selection
+			servers = [s["url"] for s in SPEEDTEST_SERVER_LIST]
+		else:
 			server_info = SPEEDTEST_SERVER_MAP.get(target)
 			if server_info:
 				servers = [server_info["url"]]
+			else:
+				# Fallback to all servers if unknown target
+				servers = [s["url"] for s in SPEEDTEST_SERVER_LIST]
 
 		try:
 			lease = acquire_speedtest_run_lease(
