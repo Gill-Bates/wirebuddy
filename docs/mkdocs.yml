@@ -115,6 +115,7 @@ nav:
     - GeoIP & Maps: features/geoip.md
     - User Management: features/users.md
     - Let's Encrypt: features/acme.md
+    - Backup & Restore: features/backup.md
   - Configuration:
     - Environment Variables: configuration/environment.md
     - WireGuard Settings: configuration/wireguard.md

@@ -233,7 +233,7 @@ def update_backup_settings(
 		_log.info(
 			"Scheduled backup %s by %s",
 			"enabled" if payload.scheduled_enabled else "disabled",
-			admin.get("username"),
+			admin["username"],
 		)
 		return ok_response(message="Backup settings updated")
 	finally:
@@ -265,7 +265,7 @@ def create_backup(
 		
 		_log.info(
 			"Backup created: %s (%d bytes) by %s",
-			filename, file_size, admin.get("username"),
+			filename, file_size, admin["username"],
 		)
 	finally:
 		close_connection(conn)
@@ -369,7 +369,7 @@ async def restore_backup(  # async: uses await for file I/O
 			
 			_log.warning(
 				"Backup restore initiated by %s",
-				admin.get("username"),
+				admin["username"],
 			)
 			
 			# Extract to temporary directory
@@ -559,7 +559,7 @@ def delete_scheduled_backup(
 		raise HTTPException(status_code=404, detail="Backup not found")
 	
 	backup_path.unlink()
-	_log.info("Deleted scheduled backup: %s by %s", filename, admin.get("username"))
+	_log.info("Deleted scheduled backup: %s by %s", filename, admin["username"])
 	
 	return ok_response(message="Backup deleted")
 

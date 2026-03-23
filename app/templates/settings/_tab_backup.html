@@ -14,21 +14,10 @@
                             Creates a full snapshot of the database, DNS settings, certificates and traffic data as a signed <code>.tar.gz</code> archive.
                         </p>
 
-                        <button class="btn btn-primary w-100 mb-3" id="btn-backup-download"{% if not user['is_admin'] %} disabled{% endif %}
+                        <button class="btn btn-primary w-100" id="btn-backup-download"{% if not user['is_admin'] %} disabled{% endif %}
                             title="Create and download configuration backup">
                             Create &amp; Download Backup
                         </button>
-
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <div class="text-muted small">Last Backup</div>
-                                <div class="fw-semibold" id="backup-last-at">No backups yet</div>
-                            </div>
-                            <div class="col-6">
-                                <div class="text-muted small">Stored Backups</div>
-                                <div class="fw-semibold" id="backup-count">0</div>
-                            </div>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -46,9 +35,19 @@
                             <input class="form-check-input" type="checkbox" id="backup-scheduled-enabled"{% if not user['is_admin'] %} disabled{% endif %}>
                             <label class="form-check-label" for="backup-scheduled-enabled">Daily Backups (03:00 UTC)</label>
                         </div>
-                        <small class="text-muted">
+                        <small class="text-muted d-block mb-3">
                             Backups are created daily at 03:00 and retained for 30 days.
                         </small>
+                        <div class="row g-2 d-none" id="backup-scheduled-stats">
+                            <div class="col-6">
+                                <div class="text-muted small">Last Backup</div>
+                                <div class="fw-semibold font-monospace" id="backup-last-at">No backups yet</div>
+                            </div>
+                            <div class="col-6">
+                                <div class="text-muted small">Stored Backups</div>
+                                <div class="fw-semibold font-monospace" id="backup-count">0</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -70,15 +69,15 @@
                         <div class="row g-3 align-items-end">
                             <div class="col-md-5">
                                 <label for="backup-restore-file" class="form-label">Backup File</label>
-                                <input type="file" class="form-control" id="backup-restore-file" accept=".tar.gz,.gz"{% if not user['is_admin'] %} disabled{% endif %}>
+                                <input type="file" class="form-control form-control-sm" id="backup-restore-file" accept=".tar.gz,.gz"{% if not user['is_admin'] %} disabled{% endif %}>
                             </div>
                             <div class="col-md-4">
                                 <label for="backup-restore-confirm" class="form-label">Confirmation</label>
-                                <input type="text" class="form-control" id="backup-restore-confirm"
+                                <input type="text" class="form-control form-control-sm" id="backup-restore-confirm"
                                     placeholder="Type RESTORE to confirm"{% if not user['is_admin'] %} disabled{% endif %}>
                             </div>
                             <div class="col-md-3">
-                                <button class="btn btn-danger w-100" type="button" id="btn-backup-restore"{% if not user['is_admin'] %} disabled{% endif %}
+                                <button class="btn btn-sm btn-danger w-100" type="button" id="btn-backup-restore"{% if not user['is_admin'] %} disabled{% endif %}
                                     title="Restore configuration from backup" disabled>
                                     Restore Backup
                                 </button>
