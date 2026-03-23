@@ -1874,6 +1874,53 @@ async function collectPageMetrics(page, scope) {
                 addPeerModal: validatePeerModal(addPeerModal, 'addPeerModal'),
                 editPeerModal: validatePeerModal(editPeerModal, 'editPeerModal'),
             };
+
+            // Mobile layout: badge visibility, last-seen merged into badge, client-ip placement
+            if (window.innerWidth < 768) {
+                const peerRows = Array.from(document.querySelectorAll('#peers-table tr[data-peer-id]'));
+                spacing.peersMobileLayout = peerRows.slice(0, 10).map((row) => {
+                    const peerId = row.dataset.peerId;
+                    const statusCell = row.querySelector('td[data-label="Status"]');
+                    const connectionBadge = statusCell?.querySelector('.peer-connection-badge-mobile');
+                    const enabledBadge = statusCell?.querySelector('.peer-enabled-badge');
+                    const lastSeenCell = row.querySelector('.peer-last-seen');
+                    const clientIpCell = row.querySelector('.peer-client-ip');
+                    const vpnCell = row.querySelector('td[data-label="VPN Address"]');
+                    const nameCell = row.querySelector('td[data-label="Name"]');
+
+                    const connVisible = connectionBadge ? window.getComputedStyle(connectionBadge).display !== 'none' : false;
+                    const enabledVisible = enabledBadge ? window.getComputedStyle(enabledBadge).display !== 'none' : false;
+                    const lastSeenHidden = lastSeenCell ? window.getComputedStyle(lastSeenCell).display === 'none' : true;
+                    const badgeTimeSpan = connectionBadge?.querySelector('.peer-badge-time');
+                    const badgeTimeVisible = badgeTimeSpan ? window.getComputedStyle(badgeTimeSpan).display !== 'none' : false;
+
+                    // Check status badges are right-aligned at the same vertical level as name
+                    const nameRect = nameCell ? nameCell.getBoundingClientRect() : null;
+                    const statusRect = statusCell ? statusCell.getBoundingClientRect() : null;
+                    const statusAlignedWithName = (nameRect && statusRect)
+                        ? Math.abs(nameRect.top - statusRect.top) < 8
+                        : false;
+
+                    // Check client-ip is to the right of VPN address (hairline)
+                    const vpnRect = vpnCell ? vpnCell.getBoundingClientRect() : null;
+                    const clientIpRect = clientIpCell ? clientIpCell.getBoundingClientRect() : null;
+                    const clientIpStyle = clientIpCell ? window.getComputedStyle(clientIpCell) : null;
+                    const clientIpVisible = clientIpStyle ? clientIpStyle.display !== 'none' : false;
+                    const clientIpRightOfVpn = (vpnRect && clientIpRect && clientIpVisible)
+                        ? clientIpRect.left >= vpnRect.right - 2
+                        : true; // pass if client-ip is hidden (empty)
+
+                    return {
+                        peerId,
+                        connectionBadgeVisible: connVisible,
+                        enabledBadgeVisible: enabledVisible,
+                        lastSeenCellHidden: lastSeenHidden,
+                        badgeTimeVisible,
+                        statusAlignedWithName,
+                        clientIpRightOfVpn,
+                    };
+                });
+            }
         }
 
         if (scope === 'about') {
@@ -2857,6 +2904,23 @@ function summarizeFindings(result) {
     if (result.metrics.spacing.about?.updateValueStyleMismatches?.length) pushWarning(`aboutUpdateValueStyleMismatches=${result.metrics.spacing.about.updateValueStyleMismatches.length}`);
     if (result.metrics.spacing.about?.topRowLayout && !result.metrics.spacing.about.topRowLayout.heightsMatch) {
         pushWarning(`aboutTopRowHeightMismatch=${result.metrics.spacing.about.topRowLayout.variance}px`);
+    }
+    // Peers mobile layout: both badges visible, last-seen merged into badge, client-ip right of hairline
+    if (result.metrics.spacing.peersMobileLayout?.length) {
+        const mobileIssues = result.metrics.spacing.peersMobileLayout.filter(
+            (r) => !r.connectionBadgeVisible || !r.enabledBadgeVisible || !r.lastSeenCellHidden || !r.statusAlignedWithName || !r.clientIpRightOfVpn
+        );
+        if (mobileIssues.length) {
+            const reasons = new Set();
+            for (const issue of mobileIssues) {
+                if (!issue.connectionBadgeVisible) reasons.add('connectionBadgeHidden');
+                if (!issue.enabledBadgeVisible) reasons.add('enabledBadgeHidden');
+                if (!issue.lastSeenCellHidden) reasons.add('lastSeenCellVisible');
+                if (!issue.statusAlignedWithName) reasons.add('statusNotAlignedWithName');
+                if (!issue.clientIpRightOfVpn) reasons.add('clientIpNotRightOfVpn');
+            }
+            pushHard(`peersMobileLayout=${[...reasons].join('+')}`);
+        }
     }
     // Peers modal required field validation (Name field must have required attr + visual marker)
     if (result.metrics.spacing.peersModalValidation) {

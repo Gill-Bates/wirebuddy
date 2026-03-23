@@ -144,6 +144,11 @@
         font-weight: 400;
     }
 
+    /* Last-seen time inside connection badge (mobile only) */
+    .peer-badge-time {
+        display: none;
+    }
+
     /* Support for reduced motion preferences */
     @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after {
@@ -372,7 +377,6 @@
             display: grid;
             grid-template-areas:
                 "name      status"
-                "vpn       lastseen"
                 "vpn       clientip"
                 "actions   actions";
             grid-template-columns: minmax(0, 1fr) auto;
@@ -383,6 +387,16 @@
             padding: 0.5rem 0.65rem;
             margin-bottom: 0.45rem;
             background: var(--bs-body-bg);
+        }
+
+        /* Show last-seen time inside connection badge on mobile */
+        .peer-badge-time {
+            display: inline;
+        }
+
+        /* Hide separate last-seen cell (time is in the badge now) */
+        .peers-table td.peer-last-seen {
+            display: none !important;
         }
 
         .peers-table td {
@@ -446,16 +460,6 @@
             bottom: 15%;
             width: 1px;
             background: var(--bs-border-color);
-        }
-
-        .peers-table td.peer-last-seen {
-            grid-area: lastseen;
-            align-self: center;
-            text-align: right;
-            font-size: 0.78rem;
-            white-space: nowrap;
-            padding-left: 0.6rem;
-            border-left: none;
         }
 
         .peers-table td.peer-client-ip {
@@ -574,32 +578,26 @@
         }
     }
 
-    /* Very narrow screens (< 400px): status stays next to name */
+    /* Very narrow screens (< 400px): keep same layout */
     @media (max-width: 399.98px) {
         .peers-table tr[data-peer-id] {
             grid-template-areas:
                 "name     status"
-                "vpn      lastseen"
-                "clientip clientip"
+                "vpn      clientip"
                 "actions  actions";
             grid-template-columns: minmax(0, 1fr) auto;
         }
     }
 
-    /* Tiny screens (< 320px): stack everything but keep status next to name */
+    /* Tiny screens (< 320px): stack VPN/clientip but keep status next to name */
     @media (max-width: 319.98px) {
         .peers-table tr[data-peer-id] {
             grid-template-areas:
                 "name   status"
                 "vpn    vpn"
-                "lastseen lastseen"
                 "clientip clientip"
                 "actions actions";
             grid-template-columns: minmax(0, 1fr) auto;
-        }
-
-        .peers-table td.peer-last-seen {
-            text-align: left;
         }
     }
 
@@ -734,7 +732,7 @@
                             {% if peer['last_seen_active'] %}
                             <span class="badge bg-success peer-connection-badge peer-connection-badge-mobile" role="status">Online</span>
                             {% else %}
-                            <span class="badge bg-secondary peer-connection-badge peer-connection-badge-mobile" role="status">Offline</span>
+                            <span class="badge bg-secondary peer-connection-badge peer-connection-badge-mobile" role="status">Offline<span class="peer-badge-time"> · {{ peer['last_seen_text'] or 'Never' }}</span></span>
                             {% endif %}
                             {% if peer['is_enabled'] %}
                             <span class="badge bg-success peer-enabled-badge" role="status">Enabled</span>
@@ -2019,18 +2017,25 @@
             const persistedCity = String(row.dataset.lastClientCity || '').trim() || null;
             const persistedAsOrg = String(row.dataset.lastClientAsOrg || '').trim() || null;
 
-            const setConnectionStatus = (active = false) => {
+            const setConnectionStatus = (active = false, lastSeenText = '') => {
                 if (!connectionBadges.length) return;
                 connectionBadges.forEach((badge) => {
-                    badge.textContent = active ? 'Online' : 'Offline';
+                    const label = active ? 'Online' : 'Offline';
                     badge.classList.toggle('bg-success', active);
                     badge.classList.toggle('bg-secondary', !active);
+                    badge.textContent = label;
+                    if (!active && lastSeenText) {
+                        const timeSpan = document.createElement('span');
+                        timeSpan.className = 'peer-badge-time';
+                        timeSpan.textContent = ` · ${lastSeenText}`;
+                        badge.appendChild(timeSpan);
+                    }
                 });
             };
 
             const setLastSeen = (text, cls, active = false) => {
                 lastSeenCell.textContent = '';
-                setConnectionStatus(active);
+                setConnectionStatus(active, text);
                 const span = document.createElement('span');
                 span.className = cls;
                 span.textContent = text;
