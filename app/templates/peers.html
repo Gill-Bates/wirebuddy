@@ -167,7 +167,9 @@
 
         /* Stabilize VPN address on iPad */
         .peers-table td[data-label="VPN Address"] code {
-            white-space: nowrap;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
 
         .peer-name-meta {
@@ -369,12 +371,13 @@
         .peers-table tr[data-peer-id] {
             display: grid;
             grid-template-areas:
-                "name      name"
+                "name      status"
                 "vpn       lastseen"
-                "clientip  clientip"
+                "vpn       clientip"
                 "actions   actions";
-            grid-template-columns: 1fr auto;
-            gap: 0.2rem 0.6rem;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: start;
+            gap: 0.3rem 0.6rem;
             border: 1px solid var(--bs-border-color);
             border-radius: 0.5rem;
             padding: 0.5rem 0.65rem;
@@ -398,32 +401,51 @@
         /* Grid area assignments */
         .peers-table td[data-label="Name"] {
             grid-area: name;
-            align-self: center;
+            align-self: start;
             font-weight: 500;
+            min-width: 0;
         }
 
         .peers-table td[data-label="Status"] {
-            display: none;
+            grid-area: status;
+            justify-self: end;
+            align-self: start;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+            justify-content: flex-end;
+        }
+
+        .peers-table td[data-label="Status"] .peer-enabled-badge {
+            display: inline-flex;
+        }
+
+        .peers-table td[data-label="Status"] .peer-connection-badge-mobile {
+            display: inline-flex;
+        }
+
+        .peers-table td[data-label="Status"] .badge {
+            white-space: nowrap;
+            font-size: 0.7rem;
+            padding: 0.25em 0.5em;
         }
 
         .peers-table td[data-label="VPN Address"] {
             grid-area: vpn;
             align-self: center;
-            position: relative;
             padding-right: 0.75rem;
-            margin-right: 0.5rem;
+            position: relative;
         }
 
-        /* Vertical divider between VPN (private) and Client (public) IP */
+        /* saubere vertikale Haarlinie */
         .peers-table td[data-label="VPN Address"]::after {
             content: "";
             position: absolute;
-            top: 10%;
-            bottom: 10%;
             right: 0;
+            top: 15%;
+            bottom: 15%;
             width: 1px;
-            background-color: var(--bs-border-color);
-            opacity: 0.6;
+            background: var(--bs-border-color);
         }
 
         .peers-table td.peer-last-seen {
@@ -432,11 +454,17 @@
             text-align: right;
             font-size: 0.78rem;
             white-space: nowrap;
+            padding-left: 0.6rem;
+            border-left: none;
         }
 
         .peers-table td.peer-client-ip {
             grid-area: clientip;
-            padding-left: 0.5rem;
+            align-self: center;
+            padding-left: 0.6rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
         }
 
         /* Collapse client-ip row automatically if no stack exists */
@@ -459,9 +487,11 @@
         .peers-table td.peer-actions-cell {
             grid-area: actions;
             border-top: 1px solid var(--bs-border-color);
-            padding-top: 0.35rem;
-            margin-top: 0.1rem;
+            padding-top: 0.4rem;
+            margin-top: 0.2rem;
             white-space: normal;
+            display: flex;
+            justify-content: flex-end;
         }
 
         .peers-table td.peer-actions-cell::before {
@@ -469,7 +499,8 @@
         }
 
         .peers-table td.peer-actions-cell .d-flex.gap-1 {
-            justify-content: flex-end;
+            justify-content: flex-end !important;
+            margin-left: auto;
             gap: 0.35rem !important;
             flex-wrap: nowrap;
         }
@@ -543,11 +574,11 @@
         }
     }
 
-    /* Very narrow screens (< 400px): status under name */
+    /* Very narrow screens (< 400px): status stays next to name */
     @media (max-width: 399.98px) {
         .peers-table tr[data-peer-id] {
             grid-template-areas:
-                "name     name"
+                "name     status"
                 "vpn      lastseen"
                 "clientip clientip"
                 "actions  actions";
@@ -555,17 +586,16 @@
         }
     }
 
-    /* Tiny screens (< 320px): stack everything */
+    /* Tiny screens (< 320px): stack everything but keep status next to name */
     @media (max-width: 319.98px) {
         .peers-table tr[data-peer-id] {
             grid-template-areas:
-                "name"
-                "status"
-                "vpn"
-                "lastseen"
-                "clientip"
-                "actions";
-            grid-template-columns: 1fr;
+                "name   status"
+                "vpn    vpn"
+                "lastseen lastseen"
+                "clientip clientip"
+                "actions actions";
+            grid-template-columns: minmax(0, 1fr) auto;
         }
 
         .peers-table td.peer-last-seen {
@@ -640,11 +670,6 @@
                             <div class="peer-name-stack">
                                 <div class="peer-name-main">
                                     <span class="peer-name-text">{{ peer['name'] or 'Unnamed' }}</span>
-                                    {% if peer['last_seen_active'] %}
-                                    <span class="badge bg-success peer-connection-badge" role="status">Online</span>
-                                    {% else %}
-                                    <span class="badge bg-secondary peer-connection-badge" role="status">Offline</span>
-                                    {% endif %}
                                 </div>
                                 <div class="peer-name-meta d-lg-none">
                                     <span>{{ routing_label }}</span>
@@ -706,10 +731,15 @@
                         </td>
                         <td data-label="Status"
                             aria-label="Status: {{ 'Enabled' if peer['is_enabled'] else 'Disabled' }}">
-                            {% if peer['is_enabled'] %}
-                            <span class="badge bg-success" role="status">Enabled</span>
+                            {% if peer['last_seen_active'] %}
+                            <span class="badge bg-success peer-connection-badge peer-connection-badge-mobile" role="status">Online</span>
                             {% else %}
-                            <span class="badge bg-secondary" role="status">Disabled</span>
+                            <span class="badge bg-secondary peer-connection-badge peer-connection-badge-mobile" role="status">Offline</span>
+                            {% endif %}
+                            {% if peer['is_enabled'] %}
+                            <span class="badge bg-success peer-enabled-badge" role="status">Enabled</span>
+                            {% else %}
+                            <span class="badge bg-secondary peer-enabled-badge" role="status">Disabled</span>
                             {% endif %}
                         </td>
                         <td data-label="Actions" class="peer-actions-cell">
@@ -1981,7 +2011,7 @@
             const stats = byId.get(peerId) || (peerPublicKey ? byPublicKey.get(peerPublicKey) : null) || {};
 
             const lastSeenCell = row.querySelector('.peer-last-seen');
-            const connectionBadge = row.querySelector('.peer-connection-badge');
+            const connectionBadges = row.querySelectorAll('.peer-connection-badge-mobile');
             const clientIpCell = row.querySelector('.peer-client-ip');
             const persistedHandshake = toEpochSeconds(row.dataset.lastHandshake);
             const persistedEndpointIp = String(row.dataset.lastClientIp || '').trim();
@@ -1990,10 +2020,12 @@
             const persistedAsOrg = String(row.dataset.lastClientAsOrg || '').trim() || null;
 
             const setConnectionStatus = (active = false) => {
-                if (!connectionBadge) return;
-                connectionBadge.textContent = active ? 'Online' : 'Offline';
-                connectionBadge.classList.toggle('bg-success', active);
-                connectionBadge.classList.toggle('bg-secondary', !active);
+                if (!connectionBadges.length) return;
+                connectionBadges.forEach((badge) => {
+                    badge.textContent = active ? 'Online' : 'Offline';
+                    badge.classList.toggle('bg-success', active);
+                    badge.classList.toggle('bg-secondary', !active);
+                });
             };
 
             const setLastSeen = (text, cls, active = false) => {

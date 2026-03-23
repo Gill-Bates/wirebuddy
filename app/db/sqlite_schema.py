@@ -249,6 +249,25 @@ def init_schema(conn: sqlite3.Connection) -> None:
 			"""
 		)
 
+	# Run migrations for existing databases
+	_run_migrations(conn)
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+	"""Apply schema migrations for existing databases.
+	
+	These migrations handle columns/tables added after initial release.
+	Safe to run multiple times (idempotent).
+	"""
+	# Get existing columns in peers table
+	cursor = conn.execute("PRAGMA table_info(peers)")
+	existing_columns = {row[1] for row in cursor.fetchall()}
+	
+	# Migration: Add dns_logging_enabled column (added in v1.4.0)
+	if "dns_logging_enabled" not in existing_columns:
+		_log.info("Migrating peers table: adding dns_logging_enabled column")
+		conn.execute("ALTER TABLE peers ADD COLUMN dns_logging_enabled INTEGER NOT NULL DEFAULT 1")
+
 
 def ensure_default_admin(conn: sqlite3.Connection) -> None:
 	"""Create a default admin user if no users exist.
