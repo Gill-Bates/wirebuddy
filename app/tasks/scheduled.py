@@ -577,3 +577,36 @@ async def sample_network_stats(ctx: main.LifespanContext) -> None:
 			_log.debug("NETWORK_STATS_SAMPLE interfaces=%d", points)
 	except Exception as exc:
 		_log.warning("NETWORK_STATS_SAMPLE failed: %s", exc)
+
+
+async def run_scheduled_backup(ctx: main.LifespanContext) -> None:
+	"""Scheduled task: create nightly backup if enabled.
+	
+	Runs once per day (at night) and:
+	- Creates a backup archive in data/backup/
+	- Removes backups older than 30 days
+	"""
+	from ..api.backup import is_scheduled_backup_enabled, run_scheduled_backup as do_backup
+	
+	try:
+		# Check if scheduled backups are enabled
+		enabled = await asyncio.to_thread(is_scheduled_backup_enabled, ctx.cfg.db_path)
+		if not enabled:
+			_log.debug("SCHEDULED_BACKUP skipped: disabled")
+			return
+		
+		_log.info("SCHEDULED_BACKUP starting nightly backup")
+		result = await asyncio.to_thread(
+			do_backup,
+			ctx.cfg.data_dir,
+			ctx.cfg.db_path,
+		)
+		
+		_log.info(
+			"SCHEDULED_BACKUP completed: %s (%d bytes), deleted %d old backups",
+			result.get("filename"),
+			result.get("size_bytes", 0),
+			result.get("deleted_old_backups", 0),
+		)
+	except Exception as exc:
+		_log.error("SCHEDULED_BACKUP failed: %s", exc)

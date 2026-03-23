@@ -1,0 +1,204 @@
+    // ─── BACKUP MANAGEMENT ─────────────────────────────────────────────────────
+
+    // Load backup settings and status
+    async function loadBackupSettings() {
+        if (!isAdmin) return;
+        
+        try {
+            const data = await api('GET', '/api/backup/settings');
+            
+            // Update UI
+            document.getElementById('backup-scheduled-enabled').checked = data.scheduled_enabled;
+            document.getElementById('backup-count').textContent = data.backup_count.toString();
+            
+            if (data.last_backup_at) {
+                const date = new Date(data.last_backup_at);
+                document.getElementById('backup-last-at').textContent = date.toLocaleString();
+            } else {
+                document.getElementById('backup-last-at').textContent = 'Never';
+            }
+        } catch (err) {
+            console.error('Failed to load backup settings:', err);
+        }
+    }
+
+    // Toggle scheduled backups
+    async function toggleScheduledBackup(enabled) {
+        if (!isAdmin) return;
+        
+        try {
+            await api('PATCH', '/api/backup/settings', { scheduled_enabled: enabled });
+            
+            // Reload settings to confirm change
+            await loadBackupSettings();
+        } catch (err) {
+            console.error('Failed to toggle scheduled backup:', err);
+            // Revert checkbox state on error
+            document.getElementById('backup-scheduled-enabled').checked = !enabled;
+            alert('Failed to update backup settings: ' + err.message);
+        }
+    }
+
+    // Download backup
+    async function downloadBackup() {
+        if (!isAdmin) return;
+        
+        const btn = document.getElementById('btn-backup-download');
+        const originalHtml = btn.innerHTML;
+        
+        try {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Creating...';
+            
+            const resp = await fetch('/api/backup/download', {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': getCsrfToken() },
+                credentials: 'same-origin'
+            });
+            
+            if (!resp.ok) {
+                const error = await resp.json().catch(() => ({ detail: 'Unknown error' }));
+                throw new Error(error.detail || 'Failed to create backup');
+            }
+            
+            // Get filename from Content-Disposition header
+            const disposition = resp.headers.get('Content-Disposition');
+            let filename = 'wirebuddy_backup.tar.gz';
+            if (disposition) {
+                const match = disposition.match(/filename=([^;]+)/);
+                if (match) filename = match[1].trim();
+            }
+            
+            // Download the file
+            const blob = await resp.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            a.remove();
+            
+            // Reload settings to update last backup time
+            await loadBackupSettings();
+        } catch (err) {
+            console.error('Failed to download backup:', err);
+            alert('Failed to create backup: ' + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
+    }
+
+    // Restore backup
+    async function restoreBackup() {
+        if (!isAdmin) return;
+        
+        const fileInput = document.getElementById('backup-restore-file');
+        const file = fileInput.files[0];
+        
+        if (!file) {
+            alert('Please select a backup file first.');
+            return;
+        }
+        
+        // Validate file extension
+        if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.gz')) {
+            alert('Invalid file type. Please select a .tar.gz backup file.');
+            return;
+        }
+        
+        // Confirm with password prompt
+        const password = prompt(
+            'WARNING: This will overwrite all configuration and restart the application.\n\n' +
+            'Enter your admin password to confirm:'
+        );
+        
+        if (!password) return;
+        
+        const btn = document.getElementById('btn-backup-restore');
+        const originalHtml = btn.innerHTML;
+        
+        try {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('password', password);
+            
+            const resp = await fetch('/api/backup/restore', {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': getCsrfToken() },
+                credentials: 'same-origin',
+                body: formData
+            });
+            
+            if (!resp.ok) {
+                const error = await resp.json().catch(() => ({ detail: 'Unknown error' }));
+                throw new Error(error.detail || 'Failed to restore backup');
+            }
+            
+            const result = await resp.json();
+            
+            // Show success message and wait for restart
+            alert(result.message + '\n\nThe page will reload automatically.');
+            
+            // Wait a moment then start checking for server restart
+            setTimeout(() => {
+                pollForRestart();
+            }, 2000);
+            
+        } catch (err) {
+            console.error('Failed to restore backup:', err);
+            alert('Failed to restore backup: ' + err.message);
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
+    }
+
+    // Poll for server restart after restore
+    function pollForRestart() {
+        const checkInterval = setInterval(async () => {
+            try {
+                const resp = await fetch('/health', { cache: 'no-store' });
+                if (resp.ok) {
+                    clearInterval(checkInterval);
+                    window.location.reload();
+                }
+            } catch (e) {
+                // Server not ready yet, keep polling
+            }
+        }, 1000);
+        
+        // Give up after 60 seconds
+        setTimeout(() => {
+            clearInterval(checkInterval);
+            alert('Server restart took too long. Please refresh the page manually.');
+        }, 60000);
+    }
+
+    // Bind backup event listeners
+    function bindBackupListeners() {
+        const scheduledCheckbox = document.getElementById('backup-scheduled-enabled');
+        if (scheduledCheckbox) {
+            scheduledCheckbox.addEventListener('change', (e) => {
+                toggleScheduledBackup(e.target.checked);
+            });
+        }
+        
+        const downloadBtn = document.getElementById('btn-backup-download');
+        if (downloadBtn) {
+            downloadBtn.addEventListener('click', downloadBackup);
+        }
+        
+        const restoreBtn = document.getElementById('btn-backup-restore');
+        if (restoreBtn) {
+            restoreBtn.addEventListener('click', restoreBackup);
+        }
+    }
+
+    // Initialize backup functionality
+    bindBackupListeners();
+    loadBackupSettings();

@@ -65,6 +65,7 @@ from .utils.version import VERSION
 
 from .api import acme as acme_api
 from .api import auth as auth_api
+from .api import backup as backup_api
 from .api import passkeys as passkeys_api
 from .api import users as users_api
 from .api import wireguard as wireguard_api
@@ -1397,6 +1398,42 @@ async def _lifespan(app: FastAPI):
 				jitter_pct=0.05,  # Reduced jitter since we manage timing ourselves
 			)
 
+			# ─── SCHEDULED BACKUP ─────────────────────────────────────────
+			# Nightly configuration backup with 30-day retention
+			from datetime import datetime as dt, timedelta
+			_BACKUP_INTERVAL_SECONDS = 86400  # 24 h (runs nightly)
+			_BACKUP_NIGHT_HOUR = 3  # Run backups at 03:00 local time
+
+			def _seconds_until_backup_time() -> float:
+				"""Calculate seconds until next 03:00 local time."""
+				now_local = dt.now()
+				today_backup_time = now_local.replace(hour=_BACKUP_NIGHT_HOUR, minute=0, second=0, microsecond=0)
+				if now_local >= today_backup_time:
+					# Already past 03:00 today, schedule for tomorrow
+					tomorrow = now_local + timedelta(days=1)
+					next_backup = tomorrow.replace(hour=_BACKUP_NIGHT_HOUR, minute=0, second=0, microsecond=0)
+				else:
+					next_backup = today_backup_time
+				return max(0.0, (next_backup - now_local).total_seconds())
+
+			initial_backup_delay = _seconds_until_backup_time()
+			_log.info(
+				"SCHEDULED_BACKUP first run in %.1f hours (at ~03:00)",
+				initial_backup_delay / 3600,
+			)
+
+			async def _run_scheduled_backup() -> None:
+				await scheduled_tasks.run_scheduled_backup(ctx)
+			scheduler.add(
+				"scheduled-backup",
+				interval_seconds=_BACKUP_INTERVAL_SECONDS,  # 24 h
+				func=_run_scheduled_backup,
+				run_on_start=True,  # First run after initial_delay
+				initial_delay=initial_backup_delay,  # Seconds until 03:00
+				timeout=300.0,  # 5 min max
+				jitter_pct=0.05,  # ±5% jitter to avoid exact same time every day
+			)
+
 			await scheduler.start()
 			
 			# ─── DNS INGESTION DAEMON ─────────────────────────────────────
@@ -1611,6 +1648,7 @@ def create_app() -> FastAPI:
 	app.include_router(acme_api.router, prefix="/api/acme")
 	app.include_router(speedtest_api.router, prefix="/api/wireguard")
 	app.include_router(network_stats_api.router, prefix="/api")
+	app.include_router(backup_api.router, prefix="/api")
 	
 	# ─── FRONTEND ROUTES ─────────────────────────────────────
 	app.include_router(frontend_ui.router)
