@@ -1,3 +1,9 @@
+## [1.3.4] - 2026-03-xx
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.3.3] - 2026-03-23
 
 - ``New`` The dashboard now also displays the network load for each interface
@@ -8,11 +14,6 @@
 - ``Fix`` In some cases, the peer name was not displayed in the DNS logs
 - ``Fix`` If a DNS blocklist has been disabled, the filter has not been updated
 - ``Fix`` Several design improvements in the GUI
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
-
 
 ## [1.3.2] - 2026-03-16
 
