@@ -176,11 +176,9 @@
             table-layout: auto;
         }
 
-        /* Stabilize VPN address on iPad */
+        /* VPN address: keep IPv4/IPv6 on single lines */
         .peers-table td[data-label="VPN Address"] code {
-            white-space: normal;
-            overflow-wrap: anywhere;
-            word-break: break-word;
+            white-space: nowrap;
         }
 
         .peer-name-meta {
@@ -383,14 +381,15 @@
             display: grid;
             grid-template-areas:
                 "name      status"
-                "vpn       clientip"
+                "vpn       vpn"
+                "clientip  clientip"
                 "actions   actions";
             grid-template-columns: minmax(0, 1fr) auto;
             align-items: start;
-            gap: 0.3rem 0.6rem;
+            gap: 0.25rem 0.5rem;
             border: 1px solid var(--bs-border-color);
             border-radius: 0.5rem;
-            padding: 0.5rem 0.65rem;
+            padding: 0.45rem 0.55rem;
             margin-bottom: 0.45rem;
             background: var(--bs-body-bg);
         }
@@ -426,6 +425,13 @@
             min-width: 0;
         }
 
+        .peers-table td[data-label="Name"] .peer-name-text {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            display: block;
+        }
+
         .peers-table td[data-label="Status"] {
             grid-area: status;
             justify-self: end;
@@ -434,6 +440,7 @@
             flex-wrap: wrap;
             gap: 0.25rem;
             justify-content: flex-end;
+            flex-shrink: 0;
         }
 
         .peers-table td[data-label="Status"] .peer-enabled-badge {
@@ -453,25 +460,13 @@
         .peers-table td[data-label="VPN Address"] {
             grid-area: vpn;
             align-self: center;
-            padding-right: 0.75rem;
-            position: relative;
         }
 
-        /* saubere vertikale Haarlinie */
-        .peers-table td[data-label="VPN Address"]::after {
-            content: "";
-            position: absolute;
-            right: 0;
-            top: 15%;
-            bottom: 15%;
-            width: 1px;
-            background: var(--bs-border-color);
-        }
+        /* Hairline removed — VPN and Client IP are stacked now */
 
         .peers-table td.peer-client-ip {
             grid-area: clientip;
             align-self: center;
-            padding-left: 0.6rem;
             display: flex;
             flex-direction: column;
             justify-content: center;
@@ -516,9 +511,9 @@
         }
 
         .peers-table td.peer-actions-cell .btn {
-            min-width: 44px;
-            min-height: 44px;
-            padding: 0.35rem;
+            min-width: 40px;
+            min-height: 40px;
+            padding: 0.3rem;
             display: inline-flex;
             align-items: center;
             justify-content: center;
@@ -533,13 +528,15 @@
             word-break: break-all;
         }
 
+        /* VPN address: allow wrapping for long IPv6 */
+        .peers-table td[data-label="VPN Address"] code {
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+
         .peer-client-ip-meta {
             display: block;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            word-break: normal;
-            max-width: none;
+            white-space: normal;
             margin-left: 0;
         }
 
@@ -588,25 +585,14 @@
         }
     }
 
-    /* Very narrow screens (< 400px): keep same layout */
+    /* Narrow and tiny screens now use same stacked layout */
     @media (max-width: 399.98px) {
         .peers-table tr[data-peer-id] {
             grid-template-areas:
                 "name     status"
-                "vpn      clientip"
-                "actions  actions";
-            grid-template-columns: minmax(0, 1fr) auto;
-        }
-    }
-
-    /* Tiny screens (< 320px): stack VPN/clientip but keep status next to name */
-    @media (max-width: 319.98px) {
-        .peers-table tr[data-peer-id] {
-            grid-template-areas:
-                "name   status"
-                "vpn    vpn"
+                "vpn      vpn"
                 "clientip clientip"
-                "actions actions";
+                "actions  actions";
             grid-template-columns: minmax(0, 1fr) auto;
         }
     }
