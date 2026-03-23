@@ -728,7 +728,7 @@
                             {% if peer['last_seen_active'] %}
                             <span class="badge bg-success peer-connection-badge peer-connection-badge-mobile" role="status">Online</span>
                             {% else %}
-                            <span class="badge bg-secondary peer-connection-badge peer-connection-badge-mobile" role="status">Offline<span class="peer-badge-time"> · {{ peer['last_seen_text'] or 'Never' }}</span></span>
+                            <span class="badge bg-secondary peer-connection-badge peer-connection-badge-mobile" role="status">Offline{% if peer['last_seen_text'] and peer['last_seen_text'] != 'Never' %}<span class="peer-badge-time"> · {{ peer['last_seen_text'] }}</span>{% endif %}</span>
                             {% endif %}
                             {% if peer['is_enabled'] %}
                             <span class="badge bg-success peer-enabled-badge" role="status">Enabled</span>
@@ -2020,7 +2020,7 @@
                     badge.classList.toggle('bg-success', active);
                     badge.classList.toggle('bg-secondary', !active);
                     badge.textContent = label;
-                    if (!active && lastSeenText) {
+                    if (!active && lastSeenText && lastSeenText !== 'Never') {
                         const timeSpan = document.createElement('span');
                         timeSpan.className = 'peer-badge-time';
                         timeSpan.textContent = ` · ${lastSeenText}`;
