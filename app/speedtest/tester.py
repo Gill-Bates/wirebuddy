@@ -56,9 +56,10 @@ DEFAULT_SERVERS = [
 # Fixed upload test targets. These are intentionally not user-configurable.
 # The endpoints below are public throwaway/speedtest upload sinks intended for
 # high-volume POST traffic rather than generic echo services.
-# Note: Tele2 was removed because it requires PUT method (curl -T), not POST.
+# Each target specifies its HTTP method: POST (default) or PUT (e.g., Tele2).
 DEFAULT_UPLOAD_TARGETS = [
-	{"name": "Serverius (Netherlands)", "url": "http://speedtest.serverius.net/upload"},
+	{"name": "Serverius (Netherlands)", "url": "http://speedtest.serverius.net/upload", "method": "POST"},
+	{"name": "Tele2 (Anycast Europe)", "url": "http://speedtest.tele2.net/upload.php", "method": "PUT"},
 ]
 
 # Browser-like User-Agent to avoid bot detection
@@ -465,11 +466,15 @@ class BandwidthTester:
 		upload_url: str,
 		duration: float,
 		started_event: asyncio.Event | None = None,
+		method: str = "POST",
 	) -> tuple[int, float]:
 		"""Upload worker using streaming (chunked transfer encoding).
 		
-		Single POST with async generator eliminates RTT overhead per chunk,
+		Single request with async generator eliminates RTT overhead per chunk,
 		resulting in accurate bandwidth measurement regardless of latency.
+		
+		Args:
+			method: HTTP method - "POST" (default) or "PUT" (e.g., Tele2).
 		"""
 		total = 0
 		start = time.perf_counter()
@@ -492,7 +497,8 @@ class BandwidthTester:
 				write=duration + _REQUEST_TIMEOUT_BUFFER_SECONDS,
 				pool=5.0,
 			)
-			response = await client.post(
+			response = await client.request(
+				method,
 				upload_url,
 				content=counting_stream(),
 				headers={"Content-Type": "application/octet-stream"},
@@ -523,10 +529,10 @@ class BandwidthTester:
 		]
 		await asyncio.gather(*tasks)
 
-	async def upload_warmup(self, client: httpx.AsyncClient, upload_url: str) -> None:
+	async def upload_warmup(self, client: httpx.AsyncClient, upload_url: str, method: str = "POST") -> None:
 		"""Warm up upload connections (TCP slow start affects upload too)."""
 		tasks = [
-			self._upload_worker(client, upload_url, self.warmup_duration)
+			self._upload_worker(client, upload_url, self.warmup_duration, method=method)
 			for _ in range(self.streams)
 		]
 		await asyncio.gather(*tasks)
@@ -594,7 +600,7 @@ class BandwidthTester:
 		)
 
 	async def upload_busy_check(
-		self, client: httpx.AsyncClient, upload_url: str
+		self, client: httpx.AsyncClient, upload_url: str, method: str = "POST"
 	) -> bool:
 		"""Check if upload path is busy/congested.
 		
@@ -616,7 +622,7 @@ class BandwidthTester:
 		load_duration = self._busy_check_load_duration()
 		task = asyncio.create_task(
 			self._upload_worker(
-				client, upload_url, load_duration, started_event=load_started
+				client, upload_url, load_duration, started_event=load_started, method=method
 			)
 		)
 		try:
@@ -660,9 +666,9 @@ class BandwidthTester:
 		results = await asyncio.gather(*tasks)
 		return self._calculate_throughput(results, label="Download")
 
-	async def upload_test(self, client: httpx.AsyncClient, upload_url: str) -> float:
+	async def upload_test(self, client: httpx.AsyncClient, upload_url: str, method: str = "POST") -> float:
 		tasks = [
-			self._upload_worker(client, upload_url, self.test_duration)
+			self._upload_worker(client, upload_url, self.test_duration, method=method)
 			for _ in range(self.streams)
 		]
 		results = await asyncio.gather(*tasks)
@@ -721,6 +727,7 @@ class BandwidthTester:
 				unverified_client,
 			)
 			upload_url = str(upload_target["url"])
+			upload_method = str(upload_target.get("method", "POST")).upper()
 			# Use unverified client for all speedtest traffic - we only measure bandwidth,
 			# not transferring sensitive data, so expired/invalid certs shouldn't block tests.
 			download_client = unverified_client
@@ -744,7 +751,7 @@ class BandwidthTester:
 			self._emit_progress("busy_check", 0.12, "Checking download path congestion...")
 			download_busy = await self.download_busy_check(download_client, server)
 			self._emit_progress("busy_check", 0.16, "Checking upload path congestion...")
-			upload_busy = await self.upload_busy_check(upload_client, upload_url)
+			upload_busy = await self.upload_busy_check(upload_client, upload_url, upload_method)
 
 			if download_busy or upload_busy:
 				busy_direction = (
@@ -774,7 +781,7 @@ class BandwidthTester:
 			self._emit_progress("warmup", 0.22, "Warming up download and upload connections...")
 			await asyncio.gather(
 				self.warmup(download_client, server),
-				self.upload_warmup(upload_client, upload_url),
+				self.upload_warmup(upload_client, upload_url, upload_method),
 			)
 			self._emit_progress("warmup", 0.30, "Warmup complete")
 
@@ -803,7 +810,7 @@ class BandwidthTester:
 					f"Run {i + 1}/{self.runs}: Testing upload – {upload_server_label}",
 					{"run": i + 1, "total_runs": self.runs, "phase": "upload"}
 				)
-				ul = await self.upload_test(upload_client, upload_url)
+				ul = await self.upload_test(upload_client, upload_url, upload_method)
 
 				# Exclude failed runs (0.0) from median calculation to avoid skewing results
 				if dl > 0:
