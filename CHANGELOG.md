@@ -1,4 +1,5 @@
 ## [1.3.4] - 2026-03-xx
+- ``Fix`` Fixed an issue with the test server selection for the speed test
 
 
 <details markdown="1">
@@ -8,7 +9,6 @@
 
 - ``New`` The dashboard now also displays the network load for each interface
 - ``Fix`` Design optimized for iPad display
-- ``Fix`` Fixed an issue with the test server selection for the speed test
 - ``Fix`` The DNS ad blocker could be launched even if Unbound wasn't installed
 - ``Fix`` The changes to the downstream and upstream values were not saved
 - ``Fix`` In some cases, the peer name was not displayed in the DNS logs
