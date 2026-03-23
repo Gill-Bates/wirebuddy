@@ -409,6 +409,21 @@
         .peers-table td[data-label="VPN Address"] {
             grid-area: vpn;
             align-self: center;
+            position: relative;
+            padding-right: 0.75rem;
+            margin-right: 0.5rem;
+        }
+
+        /* Vertical divider between VPN (private) and Client (public) IP */
+        .peers-table td[data-label="VPN Address"]::after {
+            content: "";
+            position: absolute;
+            top: 10%;
+            bottom: 10%;
+            right: 0;
+            width: 1px;
+            background-color: var(--bs-border-color);
+            opacity: 0.6;
         }
 
         .peers-table td.peer-last-seen {
@@ -421,6 +436,7 @@
 
         .peers-table td.peer-client-ip {
             grid-area: clientip;
+            padding-left: 0.5rem;
         }
 
         /* Collapse client-ip row automatically if no stack exists */
