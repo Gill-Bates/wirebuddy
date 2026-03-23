@@ -56,8 +56,8 @@ DEFAULT_SERVERS = [
 # Fixed upload test targets. These are intentionally not user-configurable.
 # The endpoints below are public throwaway/speedtest upload sinks intended for
 # high-volume POST traffic rather than generic echo services.
+# Note: Tele2 was removed because it requires PUT method (curl -T), not POST.
 DEFAULT_UPLOAD_TARGETS = [
-	{"name": "Tele2 (Anycast Europe)", "url": "http://speedtest.tele2.net/upload.php"},
 	{"name": "Serverius (Netherlands)", "url": "http://speedtest.serverius.net/upload"},
 ]
 
@@ -309,9 +309,11 @@ class BandwidthTester:
 		min_successes = max(2, (self.rtt_samples + 1) // 2)
 
 		# Probe all candidate targets in parallel.
+		# Use unverified_client for all speedtest probes - we only measure bandwidth,
+		# not transferring sensitive data, so expired/invalid certs shouldn't block tests.
 		tasks = [
 			self.measure_rtt(
-				unverified_client if self._is_ip_url(self._target_probe_url(target)) else verified_client,
+				unverified_client,
 				self._target_probe_url(target),
 			)
 			for target in targets
@@ -719,8 +721,10 @@ class BandwidthTester:
 				unverified_client,
 			)
 			upload_url = str(upload_target["url"])
-			download_client = unverified_client if self._is_ip_url(server) else verified_client
-			upload_client = unverified_client if self._is_ip_url(upload_url) else verified_client
+			# Use unverified client for all speedtest traffic - we only measure bandwidth,
+			# not transferring sensitive data, so expired/invalid certs shouldn't block tests.
+			download_client = unverified_client
+			upload_client = unverified_client
 			self._emit_progress(
 				"server_selection", 0.10,
 				f"Upload server: {self._target_label(upload_target)}",
