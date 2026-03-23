@@ -99,13 +99,14 @@ const FORM_SWITCH_HEIGHT_TOLERANCE_PX = 1;
 // =============================================================================
 // Peers Mobile Layout Rules (< 768px)
 // =============================================================================
-// Grid layout:  "name status" / "vpn clientip" / "actions actions"
+// Grid layout:  "name status" / "vpn vpn" / "clientip clientip" / "actions actions"
 // - Both badges visible: connection badge + enabled badge (flex row, right-aligned)
 // - Last-seen time merged INTO connection badge via .peer-badge-time span
 //   (e.g. "Offline · 3d ago"), hidden on desktop, shown on mobile
 // - Separate .peer-last-seen cell: display:none on mobile
 // - Status cell aligned with Name row (top-aligned, same grid row)
-// - Client IP cell positioned right of VPN address hairline (same grid row)
+// - VPN address and Client IP stacked vertically (each spans full width)
+// - VPN address allows wrapping for long IPv6 addresses
 // =============================================================================
 
 // Form Control Height validation (input-group consistency)
@@ -1912,13 +1913,13 @@ async function collectPageMetrics(page, scope) {
                         ? Math.abs(nameRect.top - statusRect.top) < 8
                         : false;
 
-                    // Check client-ip is to the right of VPN address (hairline)
+                    // Check client-ip is below VPN address (stacked layout)
                     const vpnRect = vpnCell ? vpnCell.getBoundingClientRect() : null;
                     const clientIpRect = clientIpCell ? clientIpCell.getBoundingClientRect() : null;
                     const clientIpStyle = clientIpCell ? window.getComputedStyle(clientIpCell) : null;
                     const clientIpVisible = clientIpStyle ? clientIpStyle.display !== 'none' : false;
-                    const clientIpRightOfVpn = (vpnRect && clientIpRect && clientIpVisible)
-                        ? clientIpRect.left >= vpnRect.right - 2
+                    const clientIpBelowVpn = (vpnRect && clientIpRect && clientIpVisible)
+                        ? clientIpRect.top >= vpnRect.bottom - 4
                         : true; // pass if client-ip is hidden (empty)
 
                     return {
@@ -1928,7 +1929,7 @@ async function collectPageMetrics(page, scope) {
                         lastSeenCellHidden: lastSeenHidden,
                         badgeTimeVisible,
                         statusAlignedWithName,
-                        clientIpRightOfVpn,
+                        clientIpBelowVpn,
                     };
                 });
             }
@@ -2916,10 +2917,10 @@ function summarizeFindings(result) {
     if (result.metrics.spacing.about?.topRowLayout && !result.metrics.spacing.about.topRowLayout.heightsMatch) {
         pushWarning(`aboutTopRowHeightMismatch=${result.metrics.spacing.about.topRowLayout.variance}px`);
     }
-    // Peers mobile layout: both badges visible, last-seen merged into badge, client-ip right of hairline
+    // Peers mobile layout: both badges visible, last-seen merged into badge, stacked VPN/clientip
     if (result.metrics.spacing.peersMobileLayout?.length) {
         const mobileIssues = result.metrics.spacing.peersMobileLayout.filter(
-            (r) => !r.connectionBadgeVisible || !r.enabledBadgeVisible || !r.lastSeenCellHidden || !r.statusAlignedWithName || !r.clientIpRightOfVpn
+            (r) => !r.connectionBadgeVisible || !r.enabledBadgeVisible || !r.lastSeenCellHidden || !r.statusAlignedWithName || !r.clientIpBelowVpn
         );
         if (mobileIssues.length) {
             const reasons = new Set();
@@ -2928,7 +2929,7 @@ function summarizeFindings(result) {
                 if (!issue.enabledBadgeVisible) reasons.add('enabledBadgeHidden');
                 if (!issue.lastSeenCellHidden) reasons.add('lastSeenCellVisible');
                 if (!issue.statusAlignedWithName) reasons.add('statusNotAlignedWithName');
-                if (!issue.clientIpRightOfVpn) reasons.add('clientIpNotRightOfVpn');
+                if (!issue.clientIpBelowVpn) reasons.add('clientIpNotBelowVpn');
             }
             pushHard(`peersMobileLayout=${[...reasons].join('+')}`);
         }
