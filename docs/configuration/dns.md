@@ -224,13 +224,14 @@ Programmatically disable the ad-blocker:
 
 Each peer can have custom blocklist selection:
 
-**Peers → Edit → Blocklist Settings**
+**Peers → Add Peer / Edit Peer → DNS & Filtering**
 
 | Option | Behavior |
 |--------|----------|
-| **Default** | Use globally enabled blocklists |
-| **Custom** | Select specific blocklists for this peer |
-| **None** | Disable all ad-blocking for this peer |
+| **Use Ad-blocking DNS (WireBuddy) enabled + all blocklists selected** | Use all globally enabled blocklists |
+| **Use Ad-blocking DNS (WireBuddy) enabled + subset selected** | Apply only the selected blocklists to this peer |
+| **Use Ad-blocking DNS (WireBuddy) enabled + no blocklists selected** | Keep WireBuddy DNS, but disable blocklist enforcement for this peer |
+| **Use Ad-blocking DNS (WireBuddy) disabled** | Client falls back to Cloudflare (`1.1.1.1`) and Quad9 (`9.9.9.9`) |
 
 ### Use Cases
 
@@ -245,9 +246,9 @@ Each peer can have custom blocklist selection:
 
 When creating or editing peers:
 
-1. If DNS field is empty, WireBuddy uses the interface gateway IP
-2. This automatically routes DNS through the VPN
-3. Peers receive ad-blocking without manual configuration
+1. Enable **Use Ad-blocking DNS (WireBuddy)** to route DNS through the VPN
+2. WireBuddy injects the interface gateway IP into the generated client configuration
+3. Optionally select a per-peer blocklist profile in **Active Blocklists**
 
 ### DNS Server Binding
 

@@ -288,3 +288,43 @@ def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> Optional[
 			result += f", {next_v6}/128"
 
 	return result
+
+
+def get_dns_logging_disabled_ips(conn: sqlite3.Connection) -> set[str]:
+	"""Return set of peer VPN IP addresses that have DNS logging disabled.
+	
+	Extracts pure IP addresses (without CIDR prefix) from peer_address field
+	for all peers where dns_logging_enabled = 0.
+	
+	Returns:
+		Set of IP address strings (e.g., {"10.13.13.2", "fd13:13:13::2"})
+	"""
+	import ipaddress
+	
+	# Use safe column check for backward compatibility
+	try:
+		cur = conn.execute(
+			"SELECT peer_address FROM peers WHERE dns_logging_enabled = 0 AND peer_address IS NOT NULL"
+		)
+	except sqlite3.OperationalError:
+		# Column doesn't exist yet (old schema)
+		return set()
+	
+	disabled_ips: set[str] = set()
+	for row in cur.fetchall():
+		peer_address = row[0]
+		if not peer_address:
+			continue
+		# peer_address can be "10.0.0.2/32" or "10.0.0.2/32, fd13:13::2/128"
+		for part in str(peer_address).split(","):
+			part = part.strip()
+			if not part:
+				continue
+			try:
+				# Extract IP from CIDR notation
+				iface = ipaddress.ip_interface(part)
+				disabled_ips.add(str(iface.ip))
+			except ValueError:
+				continue
+	
+	return disabled_ips

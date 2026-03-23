@@ -78,41 +78,44 @@ Configure the peer:
 
 | Field | Example | Description |
 |-------|---------|-------------|
-| **Name** | `John's iPhone` | Descriptive name |
+| **Device Name** | `John's iPhone` | Descriptive name shown in the Peers list |
 | **Interface** | `wg0` | Select your interface |
-| **IP Address** | `10.8.0.2` | Static IP from your subnet |
-| **Routing Mode** | `Full Tunnel` | All traffic through VPN |
+| **Routing Mode** | `Recommended` | Routes all traffic through the VPN |
+| **Use Ad-blocking DNS (WireBuddy)** | `On` | Uses the built-in DNS resolver with blocklists |
+| **Active Blocklists** | `StevenBlack, AdGuard` | Optional per-device DNS filtering profile |
+| **Client Isolation** | `Off` | Optional: prevent access to other VPN devices |
+
+WireBuddy allocates the peer's VPN address automatically from the selected interface.
 
 #### Routing Modes
 
 WireBuddy offers three routing presets:
 
-=== "Full Tunnel"
+=== "Recommended"
     - **Routes all traffic** through the VPN
     - **Allowed IPs:** `0.0.0.0/0, ::/0`
-    - **Best for:** Maximum privacy, bypassing geographic restrictions
+    - **Best for:** Maximum privacy, roaming devices, simple setup
 
-=== "Isolated"
-    - **Only VPN traffic** (access to other peers)
-    - **Allowed IPs:** VPN subnet only
-    - **Best for:** Simple VPN access without routing all internet traffic
+=== "Local Network Access"
+    - **Keeps access to local network devices** such as printers or NAS systems
+    - **Allowed IPs:** Split-tunnel preset managed by WireBuddy
+    - **Best for:** Laptops and phones used on trusted local networks
 
-=== "Custom"
+=== "Advanced"
     - **Specify custom routes**
     - **Allowed IPs:** Define manually (e.g., `192.168.1.0/24`)
-    - **Best for:** Split tunneling, specific subnets
+    - **Best for:** Specific subnets, advanced split-tunnel setups
 
 ### Advanced Peer Options
 
-- **Persistent Keepalive:** `25` seconds (recommended for NAT traversal)
-- **Preshared Key:** Optional additional encryption layer
-- **Use WireBuddy DNS:** Route DNS through WireBuddy's resolver for ad-blocking. When disabled, clients use Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)
+- **Use Ad-blocking DNS (WireBuddy):** Routes DNS through WireBuddy's resolver with optional per-peer blocklists
+- **Client Isolation:** Prevents the device from reaching other VPN devices on the same WireGuard interface
 
-Click **Create Peer**.
+Click **Create Device**.
 
 ## 4. Configure the Client Device
 
-After creating the peer, WireBuddy displays several options:
+After creating the peer, WireBuddy displays these actions in the peer list:
 
 ### Option 1: QR Code (Mobile Devices)
 
@@ -132,10 +135,6 @@ Click **Download Config** and import into:
   sudo cp john-iphone.conf /etc/wireguard/wg0-client.conf
   sudo wg-quick up wg0-client
   ```
-
-### Option 3: Copy Configuration
-
-Click **Copy Config** to get the configuration text directly.
 
 ??? example "Example Client Configuration"
     ```ini
@@ -193,12 +192,12 @@ Click **Settings** → **DNS** tab.
 
 ### Update Peer DNS Settings
 
-Edit your peer and set:
+Edit your peer and configure the **DNS & Filtering** section:
 
-- **DNS:** `10.8.0.1` (your WireGuard server IP)
-- Click **Update Peer**
+- **Use Ad-blocking DNS (WireBuddy):** Enable to route DNS through WireBuddy
+- **Active Blocklists:** Select all, a subset, or none of the globally enabled blocklists
 
-Regenerate the client config with the new DNS settings.
+Then regenerate the client config using **Download Config** or **Show QR Code**.
 
 ### Monitor DNS Queries
 
@@ -279,7 +278,7 @@ You're now ready to use WireBuddy! Continue with:
     Yes! WireBuddy supports multiple interfaces (wg0, wg1, etc.). Create them in **Settings → Interfaces** with different ports and IP ranges.
 
 ??? question "How do I add more peers?"
-    Navigate to **Peers** → **Add Peer**. Each peer needs a unique IP within your interface's subnet.
+    Navigate to **Peers** → **Add Peer**. WireBuddy automatically assigns the next free peer address in the selected interface.
 
 ??? question "What if my peer can't connect?"
     Check:
@@ -290,11 +289,7 @@ You're now ready to use WireBuddy! Continue with:
     4. Client config matches server settings
 
 ??? question "Can peers communicate with each other?"
-    By default, no (isolated mode). To enable peer-to-peer:
-    
-    1. Enable IP forwarding between interfaces
-    2. Configure firewall rules appropriately
-    3. Use **Route Table** in advanced interface settings
+    Yes, unless **Client Isolation** is enabled for that peer. Enable **Client Isolation** in **Peers** → **Edit Peer** when a device should only reach the internet and the VPN server, but not other VPN devices.
 
 ??? question "How do I backup my configuration?"
     WireBuddy stores all data in `data/` directory. Back up:

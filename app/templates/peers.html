@@ -1369,12 +1369,13 @@
             checkbox.checked = allSelected || (Array.isArray(selectedIds) && selectedIds.includes(source.id));
 
             const label = document.createElement('label');
-            label.className = 'form-check-label';
+            label.className = 'form-check-label d-inline-flex align-items-center flex-wrap';
             label.htmlFor = checkbox.id;
             label.title = source.description || '';
 
             // Main label text
-            const labelText = document.createTextNode(source.name);
+            const labelText = document.createElement('span');
+            labelText.textContent = source.name;
             label.appendChild(labelText);
 
             // Add level badge if available
@@ -1389,9 +1390,8 @@
             if (levelBadgeLabel) {
                 const badge = document.createElement('span');
                 badge.className = 'badge text-bg-secondary ms-1';
-                badge.style.fontSize = '0.65rem';
+                badge.style.cssText = 'font-size: 0.65rem; line-height: 1.2; vertical-align: middle;';
                 badge.textContent = levelBadgeLabel;
-                label.appendChild(document.createTextNode(' '));
                 label.appendChild(badge);
             }
 

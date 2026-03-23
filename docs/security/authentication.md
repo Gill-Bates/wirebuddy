@@ -214,7 +214,7 @@ wb_1234567890abcdefghijklmnopqrstuvwxyz
 
 ```bash
 curl -H "Authorization: Bearer wb_TOKEN" \
-  https://vpn.example.com/api/peers
+    https://vpn.example.com/api/wireguard/peers
 ```
 
 See [API Authentication](../api/authentication.md) for details.

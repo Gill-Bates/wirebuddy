@@ -50,7 +50,7 @@ https://vpn.example.com/api
 ### List Interfaces
 
 ```
-GET /api/interfaces
+GET /api/wireguard/interfaces
 ```
 
 **Response:**
@@ -73,13 +73,13 @@ GET /api/interfaces
 ### Get Interface
 
 ```
-GET /api/interfaces/{name}
+GET /api/wireguard/interfaces/{name}
 ```
 
 ### Create Interface
 
 ```
-POST /api/interfaces
+POST /api/wireguard/interfaces
 ```
 
 **Request:**
@@ -96,25 +96,25 @@ POST /api/interfaces
 ### Update Interface
 
 ```
-PUT /api/interfaces/{name}
+PUT /api/wireguard/interfaces/{name}
 ```
 
 ### Delete Interface
 
 ```
-DELETE /api/interfaces/{name}
+DELETE /api/wireguard/interfaces/{name}
 ```
 
 ### Start Interface
 
 ```
-POST /api/interfaces/{name}/start
+POST /api/wireguard/interfaces/{name}/start
 ```
 
 ### Stop Interface
 
 ```
-POST /api/interfaces/{name}/stop
+POST /api/wireguard/interfaces/{name}/stop
 ```
 
 ## Peers
@@ -122,51 +122,50 @@ POST /api/interfaces/{name}/stop
 ### List Peers
 
 ```
-GET /api/peers
+GET /api/wireguard/peers
 ```
 
 **Query Parameters:**
 
 - `interface` - Filter by interface name
-- `status` - Filter by status (active, inactive, disabled)
-- `limit` - Results per page (default: 50)
-- `offset` - Pagination offset
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "data": {
-    "peers": [
-      {
-        "id": "123e4567-e89b-12d3-a456-426614174000",
-        "name": "John's iPhone",
-        "interface": "wg0",
-        "ip": "10.8.0.2",
-        "status": "connected",
-        "last_handshake": "2026-03-15T14:30:00Z",
-        "transfer_tx": 1048576000,
-        "transfer_rx": 524288000
-      }
-    ],
-    "total": 12,
-    "limit": 50,
-    "offset": 0
-  }
+  "data": [
+    {
+      "id": 12,
+      "public_key": "base64publickey=",
+      "name": "John's iPhone",
+      "allowed_ips": "0.0.0.0/0, ::/0",
+      "allowed_ips_mode": "full",
+      "client_isolation": false,
+      "peer_address": "10.13.13.2/32, fd13:13:13::2/128",
+      "endpoint": null,
+      "interface": "wg0",
+      "is_enabled": true,
+      "use_adblocker": true,
+      "dns_logging_enabled": true,
+      "blocklist_ids": ["ads", "adguard"],
+      "created_at": "2026-03-23T12:00:00Z",
+      "updated_at": "2026-03-23T12:00:00Z"
+    }
+  ]
 }
 ```
 
 ### Get Peer
 
 ```
-GET /api/peers/{id}
+GET /api/wireguard/peers/{peer_id}
 ```
 
 ### Create Peer
 
 ```
-POST /api/peers
+POST /api/wireguard/peers
 ```
 
 **Request:**
@@ -175,28 +174,43 @@ POST /api/peers
 {
   "name": "New Peer",
   "interface": "wg0",
-  "ip": "10.8.0.10",
-  "routing_mode": "full_tunnel",
-  "persistent_keepalive": 25
+  "allowed_ips": "0.0.0.0/0, ::/0",
+  "allowed_ips_mode": "full",
+  "use_adblocker": true,
+  "dns_logging_enabled": true,
+  "blocklist_ids": ["ads", "adguard"],
+  "client_isolation": false
 }
 ```
+
+WireBuddy allocates `peer_address` automatically from the selected interface.
 
 ### Update Peer
 
 ```
-PUT /api/peers/{id}
+PATCH /api/wireguard/peers/{peer_id}
+```
+
+The update endpoint accepts partial payloads. Example:
+
+```json
+{
+  "allowed_ips_mode": "split",
+  "use_adblocker": false,
+  "client_isolation": true
+}
 ```
 
 ### Delete Peer
 
 ```
-DELETE /api/peers/{id}
+DELETE /api/wireguard/peers/{peer_id}
 ```
 
 ### Get Peer Config
 
 ```
-GET /api/peers/{id}/config
+GET /api/wireguard/peers/{peer_id}/config
 ```
 
 **Response:**
@@ -217,7 +231,7 @@ PersistentKeepalive = 25
 ### Generate QR Code
 
 ```
-GET /api/peers/{id}/qrcode
+GET /api/wireguard/peers/{peer_id}/qrcode
 ```
 
 Returns PNG image of QR code.

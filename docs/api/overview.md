@@ -19,12 +19,12 @@ See [API Authentication](authentication.md) for details.
 | Resource | Description |
 |----------|-------------|
 | `/api/auth/*` | Authentication and session management |
-| `/api/interfaces/*` | WireGuard interface management |
-| `/api/peers/*` | Peer management |
+| `/api/wireguard/interfaces/*` | WireGuard interface management |
+| `/api/wireguard/peers/*` | Peer management |
 | `/api/dns/*` | DNS configuration and query logs |
 | `/api/metrics/*` | Traffic statistics and analytics |
 | `/api/users/*` | User management (admin only) |
-| `/api/settings/*` | Application settings (admin only) |
+| `/api/wireguard/settings/*` | WireGuard settings (admin only) |
 
 See [API Endpoints](endpoints.md) for complete reference.
 
@@ -33,7 +33,7 @@ See [API Endpoints](endpoints.md) for complete reference.
 ```bash
 # Get all peers
 curl -H "Authorization: Bearer YOUR_TOKEN" \
-  https://vpn.example.com/api/peers
+  https://vpn.example.com/api/wireguard/peers
 ```
 
 ## OpenAPI Documentation

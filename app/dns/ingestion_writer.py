@@ -43,6 +43,7 @@ class DnsTsdbWriter:
 	- Flushes on batch size or time interval
 	- fsync for durability before offset commit
 	- Graceful shutdown support
+	- Per-peer DNS logging control
 	"""
 	
 	def __init__(
@@ -52,6 +53,7 @@ class DnsTsdbWriter:
 		retention_days_func: Callable[[], int] | None,
 		offset_tracker: OffsetTracker,
 		stop_event: asyncio.Event,
+		dns_logging_disabled_ips_func: Callable[[], set[str]] | None = None,
 	):
 		self.dns_dir = dns_dir
 		self.blocked_domains_func = blocked_domains_func
@@ -66,6 +68,8 @@ class DnsTsdbWriter:
 		self._log_retention_days: int = DEFAULT_DNS_LOG_RETENTION_DAYS
 		self._last_settings_refresh: float = 0.0
 		self._consecutive_flush_failures: int = 0
+		self._dns_logging_disabled_ips_func = dns_logging_disabled_ips_func
+		self._dns_logging_disabled_ips: set[str] = set()
 	
 	async def run(self, q: queue.Queue[str]) -> None:
 		"""Run writer loop until stopped."""
@@ -114,6 +118,11 @@ class DnsTsdbWriter:
 				self._log_retention_days = normalize_dns_log_retention_days(self.retention_days_func())
 			except Exception as e:
 				_log.warning("DNS_WRITER failed to refresh retention: %s", e)
+		if self._dns_logging_disabled_ips_func is not None:
+			try:
+				self._dns_logging_disabled_ips = self._dns_logging_disabled_ips_func()
+			except Exception as e:
+				_log.warning("DNS_WRITER failed to refresh logging-disabled IPs: %s", e)
 		self._last_settings_refresh = now
 
 	def _drain_and_process(self, q: queue.Queue[str]) -> bool:
