@@ -48,6 +48,14 @@
         white-space: nowrap;
     }
 
+    .peers-table td.peer-actions-cell .btn {
+        min-width: 44px;
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
     .peers-table td {
         overflow-wrap: anywhere;
         word-break: break-word;
@@ -107,27 +115,33 @@
         flex: 0 0 auto;
     }
 
-    /* Peer active status pulse indicator */
-    @keyframes peer-pulse-active {
-        0% {
-            transform: scale(1);
-            opacity: 1;
-        }
-        50% {
-            transform: scale(1.4);
-            opacity: 0.5;
-        }
-        100% {
-            transform: scale(1);
-            opacity: 1;
-        }
+    .peer-name-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+        min-width: 0;
     }
 
-    .peer-status-indicator {
-        background-color: var(--wb-primary, #88171a) !important;
-        color: #fff !important;
-        font-family: 'Roboto Flex', system-ui, -apple-system, 'Segoe UI', sans-serif;
-        font-variant-numeric: normal;
+    .peer-name-main {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+        flex-wrap: wrap;
+    }
+
+    .peer-name-text {
+        font-weight: 600;
+        min-width: 0;
+    }
+
+    .peer-name-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem 0.5rem;
+        font-size: 0.75rem;
+        color: var(--bs-secondary-color);
+        font-weight: 400;
     }
 
     /* Support for reduced motion preferences */
@@ -156,12 +170,8 @@
             white-space: nowrap;
         }
 
-        /* Stack Status and Routing mode badges vertically on tablet */
-        .peers-table td[data-label="Status"] {
+        .peer-name-meta {
             display: flex;
-            flex-direction: column;
-            gap: 0.35rem;
-            align-items: flex-end;
         }
     }
 
@@ -359,7 +369,7 @@
         .peers-table tr[data-peer-id] {
             display: grid;
             grid-template-areas:
-                "name      status"
+                "name      name"
                 "vpn       lastseen"
                 "clientip  clientip"
                 "actions   actions";
@@ -393,9 +403,7 @@
         }
 
         .peers-table td[data-label="Status"] {
-            grid-area: status;
-            align-self: center;
-            text-align: right;
+            display: none;
         }
 
         .peers-table td[data-label="VPN Address"] {
@@ -451,9 +459,9 @@
         }
 
         .peers-table td.peer-actions-cell .btn {
-            min-width: 0;
-            min-height: 0;
-            padding: 0.2rem 0.35rem;
+            min-width: 44px;
+            min-height: 44px;
+            padding: 0.35rem;
             display: inline-flex;
             align-items: center;
             justify-content: center;
@@ -523,7 +531,7 @@
     @media (max-width: 399.98px) {
         .peers-table tr[data-peer-id] {
             grid-template-areas:
-                "name     status"
+                "name     name"
                 "vpn      lastseen"
                 "clientip clientip"
                 "actions  actions";
@@ -544,7 +552,6 @@
             grid-template-columns: 1fr;
         }
 
-        .peers-table td[data-label="Status"],
         .peers-table td.peer-last-seen {
             text-align: left;
         }
@@ -589,7 +596,7 @@
         </div>
         <div class="peers-scroll-container" id="peers-scroll-container">
         <div class="table-responsive">
-            <table class="table table-hover mb-0 peers-table">
+            <table class="table table-hover align-middle mb-0 peers-table">
                 <thead>
                     <tr>
                         <th>Name</th>
@@ -598,7 +605,7 @@
                         <th class="peer-col-interface">Interface</th>
                         <th>Last Seen</th>
                         <th>Client&nbsp;IP</th>
-                        <th>Status</th>
+                        <th class="text-nowrap">Status</th>
                         <th></th>
                     </tr>
                 </thead>
@@ -614,11 +621,22 @@
                         data-last-client-city="{{ peer['last_client_city'] or '' }}"
                         data-last-client-as-org="{{ peer['last_client_as_org'] or '' }}">
                         <td data-label="Name">
-                            {{ peer['name'] or 'Unnamed' }}
-                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">{{ routing_label }}</span>
-                            {% if peer['client_isolation'] %}
-                            <span class="badge bg-warning d-inline-block d-md-none ms-1">Client Isolation</span>
-                            {% endif %}
+                            <div class="peer-name-stack">
+                                <div class="peer-name-main">
+                                    <span class="peer-name-text">{{ peer['name'] or 'Unnamed' }}</span>
+                                    {% if peer['last_seen_active'] %}
+                                    <span class="badge bg-success peer-connection-badge" role="status">Online</span>
+                                    {% else %}
+                                    <span class="badge bg-secondary peer-connection-badge" role="status">Offline</span>
+                                    {% endif %}
+                                </div>
+                                <div class="peer-name-meta d-lg-none">
+                                    <span>{{ routing_label }}</span>
+                                    {% if peer['client_isolation'] %}
+                                    <span>Client Isolation</span>
+                                    {% endif %}
+                                </div>
+                            </div>
                         </td>
                         <td data-label="VPN Address" class="peer-vpn-address">
                             {% if peer['peer_ipv4'] %}
@@ -637,16 +655,12 @@
                         <td data-label="Routing" class="peer-routing">
                             <span class="badge bg-secondary">{{ routing_label }}</span>
                             {% if peer['client_isolation'] %}
-                            <span class="badge bg-warning ms-1">Client Isolation</span>
+                            <span class="badge bg-secondary ms-1">Client Isolation</span>
                             {% endif %}
                         </td>
                         <td data-label="Interface" class="peer-interface">{{ peer['interface'] }}</td>
-                        <td data-label="Last Seen" class="peer-last-seen">
-                            {% if peer['last_seen_active'] %}
-                            <span class="badge peer-status-indicator">Online</span>
-                            {% else %}
+                        <td data-label="Last Seen" class="peer-last-seen text-nowrap">
                             <span class="{{ peer['last_seen_class'] }}">{{ peer['last_seen_text'] }}</span>
-                            {% endif %}
                         </td>
                         <td data-label="Client IP" class="peer-client-ip">
                             {% if peer['last_client_ip_display'] %}
@@ -680,10 +694,6 @@
                             <span class="badge bg-success" role="status">Enabled</span>
                             {% else %}
                             <span class="badge bg-secondary" role="status">Disabled</span>
-                            {% endif %}
-                            <span class="badge bg-secondary d-none d-md-inline-block d-lg-none">{{ routing_label }}</span>
-                            {% if peer['client_isolation'] %}
-                            <span class="badge bg-warning d-none d-md-inline-block d-lg-none ms-1">Client Isolation</span>
                             {% endif %}
                         </td>
                         <td data-label="Actions" class="peer-actions-cell">
@@ -1424,6 +1434,9 @@
         return allChecked ? null : selected;
     }
 
+    // Cache for global DNS logging state (updated when modals open)
+    let _globalDnsLoggingEnabled = { add: true, edit: true };
+
     // Toggle blocklist section visibility based on use_adblocker checkbox
     function toggleBlocklistSection(checkboxId, sectionId) {
         const checkbox = document.getElementById(checkboxId);
@@ -1431,17 +1444,41 @@
         // Derive fallback hint ID from checkbox ID (peer-use-adblocker → peer-fallback-dns-hint)
         const hintId = checkboxId.replace('use-adblocker', 'fallback-dns-hint');
         const hint = document.getElementById(hintId);
+        // Derive DNS logging wrapper ID (peer-use-adblocker → peer-dns-logging-wrapper)
+        const dnsLoggingWrapperId = checkboxId.replace('use-adblocker', 'dns-logging-wrapper');
+        const dnsLoggingWrapper = document.getElementById(dnsLoggingWrapperId);
+        
+        const isAdblockingEnabled = checkbox?.checked ?? true;
+        // Determine which modal we're in (add or edit)
+        const isEditModal = checkboxId.startsWith('edit-');
+        const globalDnsLogging = isEditModal ? _globalDnsLoggingEnabled.edit : _globalDnsLoggingEnabled.add;
+        
         if (checkbox && section) {
-            section.style.display = checkbox.checked ? 'block' : 'none';
+            section.style.display = isAdblockingEnabled ? 'block' : 'none';
         }
         if (hint) {
-            hint.classList.toggle('d-none', checkbox?.checked ?? true);
+            hint.classList.toggle('d-none', isAdblockingEnabled);
+        }
+        // Show DNS logging only if BOTH adblocking is enabled AND global DNS logging is enabled
+        if (dnsLoggingWrapper) {
+            dnsLoggingWrapper.style.display = (isAdblockingEnabled && globalDnsLogging) ? 'block' : 'none';
         }
     }
 
-    function toggleDnsLoggingControl(wrapperId, enabled) {
+    function toggleDnsLoggingControl(wrapperId, enabled, updateCache = false) {
         const wrapper = document.getElementById(wrapperId);
         if (!wrapper) return;
+        
+        // Update cache if requested (when modal opens)
+        if (updateCache) {
+            const isEditModal = wrapperId.startsWith('edit-');
+            if (isEditModal) {
+                _globalDnsLoggingEnabled.edit = enabled;
+            } else {
+                _globalDnsLoggingEnabled.add = enabled;
+            }
+        }
+        
         wrapper.style.display = enabled ? 'block' : 'none';
     }
 
@@ -1532,11 +1569,11 @@
         try {
             const dnsConfig = await api('GET', '/api/dns/config', null, { signal });
             if (signal.aborted) return;
-            toggleDnsLoggingControl('peer-dns-logging-wrapper', dnsConfig?.enable_logging !== false);
+            toggleDnsLoggingControl('peer-dns-logging-wrapper', dnsConfig?.enable_logging !== false, true);
         } catch (e) {
             if (e?.name === 'AbortError') return;
             console.warn('Could not check DNS config:', e);
-            toggleDnsLoggingControl('peer-dns-logging-wrapper', true);
+            toggleDnsLoggingControl('peer-dns-logging-wrapper', true, true);
         }
 
         // Ensure latest blocklist registry is loaded before rendering options
@@ -1874,7 +1911,7 @@
             document.getElementById('edit-peer-dns-logging').checked = peer.dns_logging_enabled !== false;
             document.getElementById('edit-peer-enabled').checked = peer.is_enabled;
             document.getElementById('edit-peer-client-isolation').checked = peer.client_isolation === true;
-            toggleDnsLoggingControl('edit-peer-dns-logging-wrapper', dnsConfig?.enable_logging !== false);
+            toggleDnsLoggingControl('edit-peer-dns-logging-wrapper', dnsConfig?.enable_logging !== false, true);
 
             // Ensure latest blocklist registry is loaded before rendering options
             await loadBlocklistRegistry();
@@ -1928,6 +1965,7 @@
             const stats = byId.get(peerId) || (peerPublicKey ? byPublicKey.get(peerPublicKey) : null) || {};
 
             const lastSeenCell = row.querySelector('.peer-last-seen');
+            const connectionBadge = row.querySelector('.peer-connection-badge');
             const clientIpCell = row.querySelector('.peer-client-ip');
             const persistedHandshake = toEpochSeconds(row.dataset.lastHandshake);
             const persistedEndpointIp = String(row.dataset.lastClientIp || '').trim();
@@ -1935,21 +1973,20 @@
             const persistedCity = String(row.dataset.lastClientCity || '').trim() || null;
             const persistedAsOrg = String(row.dataset.lastClientAsOrg || '').trim() || null;
 
+            const setConnectionStatus = (active = false) => {
+                if (!connectionBadge) return;
+                connectionBadge.textContent = active ? 'Online' : 'Offline';
+                connectionBadge.classList.toggle('bg-success', active);
+                connectionBadge.classList.toggle('bg-secondary', !active);
+            };
+
             const setLastSeen = (text, cls, active = false) => {
                 lastSeenCell.textContent = '';
-                if (active) {
-                    // Show Online badge for active connections (matches Dashboard style)
-                    const badge = document.createElement('span');
-                    badge.className = 'badge peer-status-indicator';
-                    badge.textContent = 'Online';
-                    lastSeenCell.appendChild(badge);
-                } else {
-                    // Show time text for inactive connections
-                    const span = document.createElement('span');
-                    span.className = cls;
-                    span.textContent = text;
-                    lastSeenCell.appendChild(span);
-                }
+                setConnectionStatus(active);
+                const span = document.createElement('span');
+                span.className = cls;
+                span.textContent = text;
+                lastSeenCell.appendChild(span);
             };
 
             const liveHandshake = toEpochSeconds(stats.latest_handshake);

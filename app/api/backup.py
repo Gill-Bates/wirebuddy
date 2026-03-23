@@ -36,7 +36,7 @@ from pydantic import BaseModel
 
 from ..db.sqlite_runtime import close_all_connections, connect, close_connection
 from ..db.sqlite_settings import get_setting, set_setting
-from ..models.users import verify_password
+from ..utils.crypto import verify_password
 from ..db.sqlite_users import get_user_by_id
 from ..utils.time import utcnow
 from .auth import require_admin

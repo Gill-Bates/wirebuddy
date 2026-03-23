@@ -1,5 +1,12 @@
     // ─── BACKUP MANAGEMENT ─────────────────────────────────────────────────────
 
+    function updateRestoreButtonState() {
+        const confirmInput = document.getElementById('backup-restore-confirm');
+        const restoreBtn = document.getElementById('btn-backup-restore');
+        if (!confirmInput || !restoreBtn || !isAdmin) return;
+        restoreBtn.disabled = confirmInput.value !== 'RESTORE';
+    }
+
     // Load backup settings and status
     async function loadBackupSettings() {
         if (!isAdmin) return;
@@ -15,7 +22,7 @@
                 const date = new Date(data.last_backup_at);
                 document.getElementById('backup-last-at').textContent = date.toLocaleString();
             } else {
-                document.getElementById('backup-last-at').textContent = 'Never';
+                document.getElementById('backup-last-at').textContent = 'No backups yet';
             }
         } catch (err) {
             console.error('Failed to load backup settings:', err);
@@ -65,7 +72,7 @@
             const disposition = resp.headers.get('Content-Disposition');
             let filename = 'wirebuddy_backup.tar.gz';
             if (disposition) {
-                const match = disposition.match(/filename=([^;]+)/);
+                const match = disposition.match(/filename="?([^";]+)"?/);
                 if (match) filename = match[1].trim();
             }
             
@@ -96,6 +103,7 @@
         if (!isAdmin) return;
         
         const fileInput = document.getElementById('backup-restore-file');
+        const confirmInput = document.getElementById('backup-restore-confirm');
         const file = fileInput.files[0];
         
         if (!file) {
@@ -141,6 +149,14 @@
             }
             
             const result = await resp.json();
+
+            if (confirmInput) {
+                confirmInput.value = '';
+                updateRestoreButtonState();
+            }
+            if (fileInput) {
+                fileInput.value = '';
+            }
             
             // Show success message and wait for restart
             alert(result.message + '\n\nThe page will reload automatically.');
@@ -153,8 +169,8 @@
         } catch (err) {
             console.error('Failed to restore backup:', err);
             alert('Failed to restore backup: ' + err.message);
-            btn.disabled = false;
             btn.innerHTML = originalHtml;
+            updateRestoreButtonState();
         }
     }
 
@@ -197,6 +213,13 @@
         if (restoreBtn) {
             restoreBtn.addEventListener('click', restoreBackup);
         }
+
+        const restoreConfirmInput = document.getElementById('backup-restore-confirm');
+        if (restoreConfirmInput) {
+            restoreConfirmInput.addEventListener('input', updateRestoreButtonState);
+        }
+
+        updateRestoreButtonState();
     }
 
     // Initialize backup functionality
