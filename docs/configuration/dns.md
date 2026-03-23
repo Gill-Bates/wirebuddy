@@ -308,7 +308,7 @@ The blocklist file can be large (~10-50 MB). To reduce memory:
 | `/api/dns/adblocker/mode` | POST | Change ad-blocker mode |
 | `/api/dns/logs` | GET | Query log data |
 
-See [API Documentation](../api/dns.md) for full details.
+See [API Documentation](../api/endpoints.md#dns) for full details.
 
 ## Next Steps
 
