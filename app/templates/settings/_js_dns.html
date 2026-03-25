@@ -332,7 +332,7 @@
 
         // Second: Backend connectivity test
         btn.disabled = true;
-        statusEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing servers...';
+        statusEl.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-1"></span>Testing servers...';
         statusEl.className = 'small text-muted';
 
         try {
@@ -466,7 +466,7 @@
                 // Connectivity test
                 const statusEl = document.getElementById('dns-validation-status');
                 if (statusEl) {
-                    statusEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Validating...';
+                    statusEl.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-1"></span>Validating...';
                     statusEl.className = 'small text-muted';
                 }
 

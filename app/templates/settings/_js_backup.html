@@ -1,9 +1,29 @@
     // ─── BACKUP MANAGEMENT ─────────────────────────────────────────────────────
 
+    // Backup retention days mapping (slider index → days)
+    const BACKUP_RETENTION_DAYS = [1, 7, 14, 21, 30];
+    const BACKUP_RETENTION_LABELS = ['1 Day', '7 Days', '14 Days', '21 Days', '30 Days'];
+
+    // Format bytes to human-readable string
+    function formatBackupSize(bytes) {
+        if (bytes === 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+        const value = bytes / Math.pow(1024, i);
+        return value.toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
+    }
+
     // Helper: Parse API error response
     async function parseBackupApiError(resp) {
         const error = await resp.json().catch(() => ({}));
         return error.detail || 'Unknown error';
+    }
+
+    function updateBackupRetentionBadge(sliderValue) {
+        const badge = document.getElementById('backup-retention-value');
+        if (badge) {
+            badge.textContent = BACKUP_RETENTION_LABELS[sliderValue] || '30 Days';
+        }
     }
 
     function updateRestoreButtonState() {
@@ -25,17 +45,37 @@
             const countEl = document.getElementById('backup-count');
             const lastAtEl = document.getElementById('backup-last-at');
             const statsEl = document.getElementById('backup-scheduled-stats');
+            const retentionSlider = document.getElementById('backup-retention-slider');
+            const sizeEl = document.getElementById('backup-size');
+            const diskWarningEl = document.getElementById('backup-disk-warning');
             
             if (scheduledEl) scheduledEl.checked = data.scheduled_enabled;
             if (countEl) countEl.textContent = data.backup_count.toString();
+            
+            // Set retention slider value
+            if (retentionSlider && data.retention_days !== undefined) {
+                const sliderIndex = BACKUP_RETENTION_DAYS.indexOf(data.retention_days);
+                retentionSlider.value = sliderIndex >= 0 ? sliderIndex : 4; // Default to 30 days
+                updateBackupRetentionBadge(retentionSlider.value);
+            }
             
             // Show/hide stats section based on scheduled status
             if (statsEl) {
                 statsEl.classList.toggle('d-none', !data.scheduled_enabled);
             }
             
+            // Update backup size
+            if (sizeEl && data.backup_size_bytes !== undefined) {
+                sizeEl.textContent = formatBackupSize(data.backup_size_bytes);
+            }
+            
+            // Show/hide disk warning
+            if (diskWarningEl) {
+                diskWarningEl.classList.toggle('d-none', !data.disk_warning);
+            }
+            
             if (lastAtEl) {
-                if (data.last_backup_at) {
+                if (data.last_backup_at && data.backup_count > 0) {
                     const date = new Date(data.last_backup_at);
                     lastAtEl.textContent = date.toLocaleString();
                 } else {
@@ -78,6 +118,24 @@
         }
     }
 
+    // Update backup retention period
+    async function updateBackupRetention(sliderValue) {
+        if (!isAdmin) return;
+        
+        const days = BACKUP_RETENTION_DAYS[sliderValue] || 30;
+        updateBackupRetentionBadge(sliderValue);
+        
+        try {
+            await api('PATCH', '/api/backup/settings', { retention_days: days });
+            wbToast(`Backup retention set to ${BACKUP_RETENTION_LABELS[sliderValue]}`, 'success');
+        } catch (err) {
+            console.error('Failed to update backup retention:', err);
+            wbToast('Failed to update backup retention: ' + err.message, 'danger');
+            // Reload to revert slider
+            await loadBackupSettings();
+        }
+    }
+
     // Download backup
     async function downloadBackup() {
         if (!isAdmin) return;
@@ -88,7 +146,7 @@
         
         try {
             btn.disabled = true;
-            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Creating...';
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-1" role="status"></span>Creating...';
             
             const resp = await fetch('/api/backup/download', {
                 method: 'POST',
@@ -156,7 +214,7 @@
         try {
             // Step 1: Validate backup file HMAC before asking for password
             btn.disabled = true;
-            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Validating...';
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle" role="status"></span> Validating...';
             
             const validateFormData = new FormData();
             validateFormData.append('file', file);
@@ -187,7 +245,7 @@
             
             // Step 3: Perform actual restore
             btn.disabled = true;
-            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Restoring...';
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle" role="status"></span> Restoring...';
             
             const restoreFormData = new FormData();
             restoreFormData.append('file', file);
@@ -262,6 +320,18 @@
             });
         }
         
+        const retentionSlider = document.getElementById('backup-retention-slider');
+        if (retentionSlider) {
+            // Update badge on input (while dragging)
+            retentionSlider.addEventListener('input', (e) => {
+                updateBackupRetentionBadge(e.target.value);
+            });
+            // Save on change (when released)
+            retentionSlider.addEventListener('change', (e) => {
+                updateBackupRetention(parseInt(e.target.value, 10));
+            });
+        }
+        
         const downloadBtn = document.getElementById('btn-backup-download');
         if (downloadBtn) {
             downloadBtn.addEventListener('click', downloadBackup);
@@ -273,8 +343,20 @@
         }
 
         const restoreFileInput = document.getElementById('backup-restore-file');
+        const browseBtn = document.getElementById('btn-backup-browse');
+        const filenameDisplay = document.getElementById('backup-restore-filename');
+
+        if (browseBtn && restoreFileInput) {
+            browseBtn.addEventListener('click', () => restoreFileInput.click());
+        }
+
         if (restoreFileInput) {
-            restoreFileInput.addEventListener('change', updateRestoreButtonState);
+            restoreFileInput.addEventListener('change', () => {
+                if (filenameDisplay) {
+                    filenameDisplay.value = restoreFileInput.files[0]?.name || '';
+                }
+                updateRestoreButtonState();
+            });
         }
 
         updateRestoreButtonState();

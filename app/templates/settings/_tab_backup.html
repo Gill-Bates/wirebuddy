@@ -31,21 +31,52 @@
                         </h3>
                     </div>
                     <div class="card-body">
-                        <div class="form-check form-switch mb-2">
+                        <div class="form-check form-switch mb-3">
                             <input class="form-check-input" type="checkbox" id="backup-scheduled-enabled"{% if not user['is_admin'] %} disabled{% endif %}>
                             <label class="form-check-label" for="backup-scheduled-enabled">Daily Backups (03:00 UTC)</label>
                         </div>
-                        <small class="text-muted d-block mb-3">
-                            Backups are created daily at 03:00 and retained for 30 days.
-                        </small>
+
+                        <div class="mb-3 retention-scale">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label for="backup-retention-slider" class="form-label mb-0">Retention Period</label>
+                                <span class="badge text-bg-secondary" id="backup-retention-value">30 Days</span>
+                            </div>
+                            <input type="range" class="form-range retention-slider" id="backup-retention-slider" min="0" max="4" step="1" value="4"{% if not user['is_admin'] %} disabled{% endif %}>
+                            <div class="retention-ticks" aria-hidden="true">
+                                <span class="retention-tick" style="--i:0"></span>
+                                <span class="retention-tick" style="--i:1"></span>
+                                <span class="retention-tick" style="--i:2"></span>
+                                <span class="retention-tick" style="--i:3"></span>
+                                <span class="retention-tick" style="--i:4"></span>
+                            </div>
+                            <div class="retention-labels" aria-hidden="true">
+                                <span class="retention-label" style="--i:0">1d</span>
+                                <span class="retention-label" style="--i:1">7d</span>
+                                <span class="retention-label" style="--i:2">14d</span>
+                                <span class="retention-label" style="--i:3">21d</span>
+                                <span class="retention-label" style="--i:4">30d</span>
+                            </div>
+                        </div>
+
+                        <div class="alert alert-warning small py-2 mb-3 d-none" id="backup-disk-warning">
+                            <span class="material-icons align-middle me-1" style="font-size: 1rem;">warning</span>
+                            Low disk space. Backups may fail.
+                        </div>
+
                         <div class="row g-2 d-none" id="backup-scheduled-stats">
                             <div class="col-6">
                                 <div class="text-muted small">Last Backup</div>
-                                <div class="fw-semibold font-monospace" id="backup-last-at">No backups yet</div>
+                                <div class="fw-semibold font-monospace text-nowrap" id="backup-last-at">No backups yet</div>
                             </div>
-                            <div class="col-6">
+                            <div class="col-6 text-end">
                                 <div class="text-muted small">Stored Backups</div>
                                 <div class="fw-semibold font-monospace" id="backup-count">0</div>
+                            </div>
+                            <div class="col-12 mt-2 pt-2 border-top">
+                                <div class="d-flex justify-content-between">
+                                    <span class="text-muted small">Backup Size</span>
+                                    <span class="fw-semibold font-monospace" id="backup-size">0 B</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -53,8 +84,8 @@
             </div>
 
             <!-- Restore (Danger Zone) -->
-            <div class="col-12">
-                <div class="card border-danger">
+            <div class="col-lg-6">
+                <div class="card border-danger h-100">
                     <div class="card-header">
                         <h3 class="h5 mb-0 text-danger">
                             Restore (Danger Zone)
@@ -67,11 +98,17 @@
                         </p>
 
                         <div class="row g-3 align-items-end">
-                            <div class="col-md-8">
+                            <div class="col-12">
                                 <label for="backup-restore-file" class="form-label">Backup File</label>
-                                <input type="file" class="form-control form-control-sm" id="backup-restore-file" accept=".tar.gz,.gz"{% if not user['is_admin'] %} disabled{% endif %}>
+                                <div class="input-group input-group-sm">
+                                    <input type="file" class="d-none" id="backup-restore-file" accept=".tar.gz,.gz"{% if not user['is_admin'] %} disabled{% endif %}>
+                                    <input type="text" class="form-control form-control-sm" id="backup-restore-filename" placeholder="No file selected" readonly>
+                                    <button class="btn btn-outline-secondary" type="button" id="btn-backup-browse"{% if not user['is_admin'] %} disabled{% endif %}>
+                                        Choose File
+                                    </button>
+                                </div>
                             </div>
-                            <div class="col-md-4">
+                            <div class="col-12">
                                 <button class="btn btn-sm btn-danger w-100" type="button" id="btn-backup-restore"{% if not user['is_admin'] %} disabled{% endif %}
                                     title="Restore configuration from backup" disabled>
                                     Restore Backup

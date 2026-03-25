@@ -51,13 +51,15 @@ router = APIRouter(prefix="/backup", tags=["backup"])
 BACKUP_DIRECTORIES = ("tsdb", "dns", "certs")
 BACKUP_DATABASE_NAME = "wirebuddy.db"
 BACKUP_SUBDIR = "backup"  # Scheduled backups stored here
-BACKUP_RETENTION_DAYS = 30
+BACKUP_RETENTION_DAYS = 30  # Default retention
+BACKUP_RETENTION_OPTIONS = {1, 7, 14, 21, 30}  # Valid retention values
 MAX_BACKUP_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB
 
 # Settings keys for backup configuration
 SETTING_BACKUP_ENABLED = "backup_scheduled_enabled"
 SETTING_BACKUP_LAST_AT = "backup_last_at"
 SETTING_BACKUP_HMAC_SECRET = "backup_hmac_secret"
+SETTING_BACKUP_RETENTION = "backup_retention_days"
 
 
 def _get_backup_hmac_secret(conn) -> str:
@@ -189,11 +191,16 @@ class BackupSettingsResponse(BaseModel):
 	scheduled_enabled: bool
 	last_backup_at: str | None
 	backup_count: int
+	retention_days: int
+	backup_size_bytes: int
+	disk_free_bytes: int
+	disk_warning: bool  # True if disk space is low
 
 
 class BackupSettingsUpdate(BaseModel):
 	"""Backup settings update payload."""
-	scheduled_enabled: bool
+	scheduled_enabled: bool | None = None
+	retention_days: int | None = None
 
 
 @router.get("/settings", response_model=BackupSettingsResponse)
@@ -206,15 +213,32 @@ def get_backup_settings(
 	try:
 		enabled = get_setting(conn, SETTING_BACKUP_ENABLED, "0") == "1"
 		last_backup = get_setting(conn, SETTING_BACKUP_LAST_AT)
+		retention = int(get_setting(conn, SETTING_BACKUP_RETENTION, str(BACKUP_RETENTION_DAYS)))
 		
-		# Count existing backups
+		# Count existing backups and calculate total size
 		backup_dir = _get_backup_dir(request.app.state.cfg.data_dir)
-		backup_count = len(list(backup_dir.glob("wirebuddy_backup_*.tar.gz")))
+		backup_files = list(backup_dir.glob("wirebuddy_backup_*.tar.gz"))
+		backup_count = len(backup_files)
+		backup_size = sum(f.stat().st_size for f in backup_files)
+		
+		# Get disk space info
+		disk_free = shutil.disk_usage(backup_dir).free
+		# Warn if less than 500MB free or if free space < 2x current backup size
+		disk_warning = disk_free < 500 * 1024 * 1024 or (backup_size > 0 and disk_free < backup_size * 2)
+		
+		# Verify last_backup timestamp points to an existing file
+		if last_backup and backup_count == 0:
+			# Timestamp exists but no backups found - clear stale timestamp
+			last_backup = None
 		
 		return BackupSettingsResponse(
 			scheduled_enabled=enabled,
 			last_backup_at=last_backup,
 			backup_count=backup_count,
+			retention_days=retention,
+			backup_size_bytes=backup_size,
+			disk_free_bytes=disk_free,
+			disk_warning=disk_warning,
 		)
 	finally:
 		close_connection(conn)
@@ -229,12 +253,27 @@ def update_backup_settings(
 	"""Update backup settings (enable/disable scheduled backups)."""
 	conn = connect(request.app.state.cfg.db_path)
 	try:
-		set_setting(conn, SETTING_BACKUP_ENABLED, "1" if payload.scheduled_enabled else "0")
-		_log.info(
-			"Scheduled backup %s by %s",
-			"enabled" if payload.scheduled_enabled else "disabled",
-			admin["username"],
-		)
+		if payload.scheduled_enabled is not None:
+			set_setting(conn, SETTING_BACKUP_ENABLED, "1" if payload.scheduled_enabled else "0")
+			_log.info(
+				"Scheduled backup %s by %s",
+				"enabled" if payload.scheduled_enabled else "disabled",
+				admin["username"],
+			)
+		
+		if payload.retention_days is not None:
+			if payload.retention_days not in BACKUP_RETENTION_OPTIONS:
+				raise HTTPException(
+					status_code=400,
+					detail=f"Invalid retention_days. Allowed: {sorted(BACKUP_RETENTION_OPTIONS)}",
+				)
+			set_setting(conn, SETTING_BACKUP_RETENTION, str(payload.retention_days))
+			_log.info(
+				"Backup retention set to %d days by %s",
+				payload.retention_days,
+				admin["username"],
+			)
+		
 		return ok_response(message="Backup settings updated")
 	finally:
 		close_connection(conn)
@@ -653,44 +692,71 @@ def run_scheduled_backup(data_dir: Path, db_path: Path) -> dict:
 	"""Execute a scheduled backup and manage retention.
 	
 	Called by the scheduler task. Creates a new backup and removes
-	backups older than BACKUP_RETENTION_DAYS.
+	backups older than the configured retention period.
 	
 	Returns:
 		Dict with backup status and cleanup stats
+	
+	Raises:
+		OSError: If insufficient disk space
 	"""
 	conn = connect(db_path)
 	try:
+		# Get retention setting
+		retention_days = int(get_setting(conn, SETTING_BACKUP_RETENTION, str(BACKUP_RETENTION_DAYS)))
+		
+		# Check disk space before creating backup
+		backup_dir = _get_backup_dir(data_dir)
+		disk_free = shutil.disk_usage(backup_dir).free
+		min_required = 100 * 1024 * 1024  # Require at least 100MB free
+		
+		if disk_free < min_required:
+			_log.error("Insufficient disk space for backup: %d bytes free, need %d", disk_free, min_required)
+			raise OSError(f"Insufficient disk space: {disk_free // (1024*1024)}MB free, need at least 100MB")
+		
 		# Create backup archive
 		tmp_path, filename, file_size = _create_backup_archive(data_dir, db_path, conn)
 		
 		# Move to backup directory
-		backup_dir = _get_backup_dir(data_dir)
 		final_path = backup_dir / filename
 		shutil.move(str(tmp_path), str(final_path))
 		
-		# Update last backup timestamp
+		# Verify file was created successfully before updating timestamp
+		if not final_path.exists():
+			_log.error("Backup file not found after move: %s", final_path)
+			raise OSError(f"Backup file not created: {filename}")
+		
+		actual_size = final_path.stat().st_size
+		if actual_size != file_size:
+			_log.warning("Backup size mismatch: expected %d, got %d", file_size, actual_size)
+		
+		# Update last backup timestamp only after successful file creation
 		set_setting(conn, SETTING_BACKUP_LAST_AT, utcnow().isoformat())
 		
-		_log.info("Scheduled backup created: %s (%d bytes)", filename, file_size)
+		_log.info("Scheduled backup created: %s (%d bytes)", filename, actual_size)
 		
 		# Cleanup old backups
-		deleted_count = _cleanup_old_backups(backup_dir)
+		deleted_count = _cleanup_old_backups(backup_dir, retention_days)
 		
 		return {
 			"filename": filename,
-			"size_bytes": file_size,
+			"size_bytes": actual_size,
 			"deleted_old_backups": deleted_count,
 		}
 	finally:
 		close_connection(conn)
 
 
-def _cleanup_old_backups(backup_dir: Path) -> int:
+def _cleanup_old_backups(backup_dir: Path, retention_days: int = BACKUP_RETENTION_DAYS) -> int:
 	"""Remove backups older than retention period.
+	
+	Args:
+		backup_dir: Directory containing backup files
+		retention_days: Number of days to retain backups
 	
 	Returns: Number of deleted backups
 	"""
-	cutoff_time = time.time() - (BACKUP_RETENTION_DAYS * 86400)
+	cutoff_time = time.time() - (retention_days * 86400)
 	deleted = 0
 	
 	for backup_file in backup_dir.glob("wirebuddy_backup_*.tar.gz"):

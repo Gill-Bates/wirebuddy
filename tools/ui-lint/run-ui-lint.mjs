@@ -109,6 +109,36 @@ const FORM_SWITCH_HEIGHT_TOLERANCE_PX = 1;
 // - VPN address allows wrapping for long IPv6 addresses
 // =============================================================================
 
+// =============================================================================
+// Settings Backup Tab Design Rules
+// =============================================================================
+// Layout: Row with 3 cards (col-lg-6 each, 2 cards in row 1, 1 card in row 2)
+//
+// Card 1: Download Backup
+// - Simple card with download button (.btn-primary.w-100)
+//
+// Card 2: Scheduled Backups
+// - Form switch for enabling daily backups
+// - Retention slider (.retention-scale) with 5 stops: 1d, 7d, 14d, 21d, 30d
+//   - Uses same slider component as Logs tab
+//   - Badge (#backup-retention-value) shows current selection
+// - Disk warning alert (#backup-disk-warning):
+//   - .alert.alert-warning with material icon "warning"
+//   - Hidden by default (d-none), shown when disk_warning=true from API
+// - Stats section (#backup-scheduled-stats):
+//   - Hidden when scheduled backups disabled
+//   - Row with 2 columns: "Last Backup" (left) and "Stored Backups" (right, text-end)
+//   - Border-top separator row with "Backup Size" metric (flexbox justify-content-between)
+//   - Last Backup shows "No backups yet" when no backups exist
+//   - Backup Size formatted: B/KB/MB/GB
+//
+// Card 3: Restore (Danger Zone)
+// - .card.border-danger with .text-danger card header
+// - Custom file input: hidden native input + input-group with text display + "Choose File" button
+// - Restore button (#btn-backup-restore): .btn-danger, disabled when no file selected
+// - Disabled danger buttons MUST appear gray (not light red) per wb-ui-system.css
+// =============================================================================
+
 // Form Control Height validation (input-group consistency)
 // Current Bootstrap-based WireBuddy controls render at ~44px total height
 // for default-sized .form-control/.btn combinations in settings input groups.
@@ -189,6 +219,7 @@ const VIEW_DEFS = [
     { name: 'settings-dns', url: '/ui/settings', scope: 'settings', tab: '#dns-tab' },
     { name: 'settings-letsencrypt', url: '/ui/settings', scope: 'settings', tab: '#letsencrypt-tab' },
     { name: 'settings-logs', url: '/ui/settings', scope: 'settings', tab: '#logs-tab' },
+    { name: 'settings-backup', url: '/ui/settings', scope: 'settings', tab: '#backup-tab' },
 ];
 
 /**
