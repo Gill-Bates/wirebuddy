@@ -24,10 +24,12 @@ Each backup contains a complete snapshot of your WireBuddy installation:
 | Component | Description |
 |-----------|-------------|
 | **Database** | All peers, interfaces, users, and settings (`wirebuddy.db`) |
-| **DNS Data** | Custom rules, blocklist state, and DNS configuration |
-| **Certificates** | Let's Encrypt certificates and private keys |
-| **GeoLite2** | GeoIP database files |
-| **Traffic Data** | Time-series metrics and statistics |
+| **DNS Data** | Custom rules, blocklist state, and DNS configuration (`dns/`) |
+| **Certificates** | Let's Encrypt certificates and private keys (`certs/`) |
+| **Traffic Data** | Time-series metrics and statistics (`tsdb/`) |
+
+!!! note "Excluded Data"
+    GeoIP databases (GeoLite2) are **not** included in backups. They are automatically downloaded on startup and updated weekly.
 
 !!! info "Backup Format"
     Backups are stored as `.tar.gz` archives with an HMAC signature embedded in the filename for integrity verification.
