@@ -40,9 +40,9 @@
         </div>
     </nav>
 
-    {% set _public_client_ip = public_client_ip|default(None, true) %}
-    {% set _interface_name = interface_name|default(None, true) %}
-    {% set _outbound_ip = outbound_ip|default(None, true) %}
+    {% set _public_client_ip = None if not public_client_ip or public_client_ip|string|lower == 'n/a' else public_client_ip %}
+    {% set _interface_name = None if not interface_name or interface_name|string|lower == 'n/a' else interface_name %}
+    {% set _outbound_ip = None if not outbound_ip or outbound_ip|string|lower == 'n/a' else outbound_ip %}
 
     <main class="container py-4 py-md-5 status-main">
 
@@ -57,7 +57,9 @@
                         <span class="material-icons flow-icon">devices</span>
                         <div class="flow-label">Client</div>
                         <div class="flow-meta">
-                            <span class="flow-meta-text"{% if _public_client_ip %} title="{{ _public_client_ip|e }}"{% endif %}>{{ (_public_client_ip or 'n/a')|e }}</span>
+                            {% if _public_client_ip %}
+                            <span class="flow-meta-text" title="{{ _public_client_ip|e }}">{{ _public_client_ip|e }}</span>
+                            {% endif %}
                         </div>
                     </div>
 
@@ -70,7 +72,7 @@
                     <div class="flow-node{% if _interface_name %} flow-node-active{% else %} flow-node-inactive{% endif %}" data-flow-node="wireguard">
                         <span class="material-icons flow-icon">vpn_lock</span>
                         <div class="flow-label">WireGuard</div>
-                        <div class="flow-meta">{{ (_interface_name or 'n/a')|e }}</div>
+                        <div class="flow-meta">{% if _interface_name %}{{ _interface_name|e }}{% endif %}</div>
                     </div>
 
                     <!-- Connector -->
@@ -83,7 +85,9 @@
                         <span class="material-icons flow-icon">public</span>
                         <div class="flow-label">Internet</div>
                         <div class="flow-meta">
-                            <span class="flow-meta-text"{% if _outbound_ip %} title="{{ _outbound_ip|e }}"{% endif %}>{{ (_outbound_ip or 'n/a')|e }}</span>
+                            {% if _outbound_ip %}
+                            <span class="flow-meta-text" title="{{ _outbound_ip|e }}">{{ _outbound_ip|e }}</span>
+                            {% endif %}
                         </div>
                     </div>
                 </div>
@@ -91,26 +95,32 @@
         </div>
 
         <!-- Detailed IP Information -->
+        {% if _public_client_ip or _outbound_ip %}
         <div class="row g-3 mb-3">
-            <div class="col-12 col-md-6">
+            {% if _public_client_ip %}
+            <div class="col-12{% if _outbound_ip %} col-md-6{% endif %}">
                 <div class="card h-100">
                     <div class="card-body">
                         <h3 class="h6 mb-1">Public Client IP</h3>
-                        <div class="font-monospace">{{ public_client_ip|wbr_ip }}</div>
+                        <div class="font-monospace">{{ _public_client_ip|wbr_ip }}</div>
                         {{ geo_badge(public_client_country_code, public_client_city, public_client_as_org) }}
                     </div>
                 </div>
             </div>
-            <div class="col-12 col-md-6">
+            {% endif %}
+            {% if _outbound_ip %}
+            <div class="col-12{% if _public_client_ip %} col-md-6{% endif %}">
                 <div class="card h-100">
                     <div class="card-body">
                         <h3 class="h6 mb-1">Outbound IP</h3>
-                        <div class="font-monospace">{{ outbound_ip|wbr_ip }}</div>
+                        <div class="font-monospace">{{ _outbound_ip|wbr_ip }}</div>
                         {{ geo_badge(outbound_country_code, outbound_city, outbound_as_org) }}
                     </div>
                 </div>
             </div>
+            {% endif %}
         </div>
+        {% endif %}
 
         <section class="d-grid gap-3" aria-label="Status checks">
             <h2 class="visually-hidden">Status Checks</h2>
