@@ -174,17 +174,45 @@ class BandwidthTester:
 		"""Return a human-readable label for a download/upload target."""
 		return target.get("name") or target.get("url") or "unknown"
 
+	@staticmethod
+	def _is_dynamic_endpoint(url: str) -> bool:
+		"""Detect dynamic endpoints that don't support Range requests.
+		
+		Dynamic endpoints (PHP scripts, query-string-driven generators) typically
+		return 404 or ignore Range headers when probed with GET + Range: bytes=0-0.
+		For these, we probe the origin instead of the full path.
+		"""
+		parsed = urlparse(url)
+		# Query parameters indicate a dynamic endpoint
+		if parsed.query:
+			return True
+		# Common script extensions that generate content dynamically
+		path_lower = parsed.path.lower()
+		dynamic_extensions = (".php", ".asp", ".aspx", ".jsp", ".cgi", ".pl")
+		return any(path_lower.endswith(ext) for ext in dynamic_extensions)
+
+	@staticmethod
+	def _origin(url: str) -> str:
+		"""Extract origin (scheme + netloc) from URL."""
+		p = urlparse(url)
+		return f"{p.scheme}://{p.netloc}"
+
 	def _target_probe_url(self, target: SpeedtestTarget) -> str:
 		"""Return the URL used for RTT probing for a target.
 
-		Uses the full URL (not just origin) so CDN routing for the specific content
-		path is measured — a CDN root and a 100 MB test file can resolve to different
-		PoPs or cache layers.
+		For static files (CDN-hosted .zip, .bin, .test), probes the full URL so
+		CDN routing for the specific content path is measured.
+		
+		For dynamic endpoints (PHP scripts, query-string URLs), probes the origin
+		only, since these don't support Range requests on the actual endpoint.
 		"""
 		probe_url = str(target.get("probe_url") or "").strip()
 		if probe_url:
 			return probe_url
-		return str(target.get("url") or "")
+		url = str(target.get("url") or "")
+		if self._is_dynamic_endpoint(url):
+			return self._origin(url)
+		return url
 
 	def _busy_check_load_duration(self) -> float:
 		"""Keep synthetic load active long enough for RTT probing to overlap."""
