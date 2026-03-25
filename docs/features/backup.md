@@ -54,7 +54,7 @@ The backup card displays:
 
 - **Last Backup** - Timestamp of the most recent backup (manual or scheduled)
 - **Stored Backups** - Number of scheduled backups on the server
-- **Backup Size** - Total size of all stored backups
+- **Total Backup Size** - Total size of all stored backups
 
 ## Scheduled Backups
 
