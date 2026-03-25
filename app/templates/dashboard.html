@@ -923,13 +923,23 @@
     function getRelativeTimeInfo(epochSeconds) {
         const sec = Number(epochSeconds || 0);
         if (!Number.isFinite(sec) || sec <= 0) {
-            return { className: 'badge bg-secondary', text: 'Offline' };
+            return { className: 'badge bg-secondary', text: 'Offline', timeText: '' };
         }
         const diffSec = Math.max(0, Math.floor(Date.now() / 1000) - sec);
         if (diffSec < CONNECTED_THRESHOLD_SEC) {
-            return { className: 'badge badge-online', text: 'Online' };
+            return { className: 'badge badge-online', text: 'Online', timeText: '' };
         }
-        return { className: 'badge bg-secondary', text: 'Offline' };
+        // Offline — compute relative time
+        const diffMins = Math.floor(diffSec / 60);
+        let timeText = '';
+        if (diffMins < 60) {
+            timeText = `${diffMins}m ago`;
+        } else if (diffMins < 1440) {
+            timeText = `${Math.floor(diffMins / 60)}h ago`;
+        } else {
+            timeText = `${Math.floor(diffMins / 1440)}d ago`;
+        }
+        return { className: 'badge bg-secondary', text: 'Offline', timeText };
     }
 
     function createCountryFlagElement(countryCode) {
@@ -1198,6 +1208,12 @@
                 const badge = document.createElement('span');
                 badge.className = relative.className;
                 badge.textContent = relative.text;
+                // Append time info for offline peers (e.g., "Offline · 2h ago")
+                if (relative.timeText) {
+                    const timeSpan = document.createElement('span');
+                    timeSpan.textContent = ` · ${relative.timeText}`;
+                    badge.appendChild(timeSpan);
+                }
                 headerLine.appendChild(badge);
 
                 const name = document.createElement('strong');

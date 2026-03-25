@@ -171,11 +171,16 @@ class BandwidthTester:
 		return target.get("name") or target.get("url") or "unknown"
 
 	def _target_probe_url(self, target: SpeedtestTarget) -> str:
-		"""Return the URL used for RTT probing for a target."""
+		"""Return the URL used for RTT probing for a target.
+
+		Uses the full URL (not just origin) so CDN routing for the specific content
+		path is measured — a CDN root and a 100 MB test file can resolve to different
+		PoPs or cache layers.
+		"""
 		probe_url = str(target.get("probe_url") or "").strip()
 		if probe_url:
 			return probe_url
-		return self._origin(str(target.get("url") or ""))
+		return str(target.get("url") or "")
 
 	def _busy_check_load_duration(self) -> float:
 		"""Keep synthetic load active long enough for RTT probing to overlap."""
@@ -243,13 +248,16 @@ class BandwidthTester:
 		self, client: httpx.AsyncClient, url: str
 	) -> RTTResult | None:
 		"""Measure round-trip time to server.
+
+		Probes the exact URL (not just the origin) so CDN routing for the content
+		path is reflected in the result. Uses GET with Range: bytes=0-0 instead of
+		HEAD because some CDNs/load balancers disconnect on HEAD without a response.
 		
-		Uses GET with Range header instead of HEAD because some CDNs/load balancers
-		don't properly support HEAD requests and disconnect without response.
-		Range: bytes=0-0 fetches only 1 byte, minimizing bandwidth while ensuring
-		the server actually processes the request.
+		For 206 responses the 1-byte body is fully drained, allowing connection
+		reuse across samples (stable jitter). For 200 responses (server ignores
+		Range) the connection is closed early; those servers contribute a slightly
+		higher first-probe cost but are still usable for server selection.
 		"""
-		origin = self._origin(url)
 		samples: list[float] = []
 		failures = 0
 
@@ -259,27 +267,29 @@ class BandwidthTester:
 				# Use GET with Range instead of HEAD for better compatibility
 				# Some servers (e.g., Hetzner) disconnect on HEAD without response
 				headers = {"Range": "bytes=0-0"}
-				async with client.stream("GET", origin, headers=headers) as response:
+				async with client.stream("GET", url, headers=headers) as response:
 					if response.status_code >= 400:
 						failures += 1
-						_log.debug("RTT probe HTTP error for %s: %s", origin, response.status_code)
+						_log.debug("RTT probe HTTP error for %s: %s", url, response.status_code)
 						continue
 					async for _chunk in response.aiter_bytes(1):
 						break
 					if response.status_code != 206:
+						# Range header was ignored — body unread, close to avoid
+						# stalling the connection pool on subsequent probes.
 						await response.aclose()
 				samples.append(time.perf_counter() - start)
 			except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.TimeoutException) as exc:
 				failures += 1
-				_log.debug("RTT probe failed for %s: %s", origin, exc)
+				_log.debug("RTT probe failed for %s: %s", url, exc)
 			except Exception as exc:
 				failures += 1
-				_log.debug("RTT probe failed for %s: %s", origin, exc, exc_info=True)
+				_log.debug("RTT probe failed for %s: %s", url, exc, exc_info=True)
 
 		if not samples:
 			_log.warning(
 				"RTT measurement failed for %s (%d/%d probes failed)",
-				origin, failures, self.rtt_samples
+				url, failures, self.rtt_samples
 			)
 			return None
 
