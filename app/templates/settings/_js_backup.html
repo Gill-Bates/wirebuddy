@@ -137,8 +137,17 @@
         updateBackupRetentionBadge(sliderValue);
         
         try {
-            await api('PATCH', '/api/backup/settings', { retention_days: days });
-            wbToast(`Backup retention set to ${BACKUP_RETENTION_LABELS[sliderValue]}`, 'success');
+            const result = await api('PATCH', '/api/backup/settings', { retention_days: days });
+            
+            // Check if old backups were deleted
+            if (result?.deleted_backups > 0) {
+                wbToast(`Retention set to ${BACKUP_RETENTION_LABELS[sliderValue]} — ${result.deleted_backups} old backup(s) removed`, 'success');
+            } else {
+                wbToast(`Backup retention set to ${BACKUP_RETENTION_LABELS[sliderValue]}`, 'success');
+            }
+            
+            // Reload to update backup count and size
+            await loadBackupSettings();
         } catch (err) {
             console.error('Failed to update backup retention:', err);
             wbToast('Failed to update backup retention: ' + err.message, 'danger');

@@ -75,6 +75,7 @@ The backup card displays:
 
 - Scheduled backups are stored in `data/backup/`
 - Backups older than the configured retention period are automatically deleted
+- **Immediate cleanup:** When you reduce the retention period (e.g., from 30 to 7 days), old backups are deleted immediately
 - Manual downloads are not affected by retention
 
 ### Disk Space Monitoring

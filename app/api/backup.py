@@ -274,6 +274,16 @@ def update_backup_settings(
 				payload.retention_days,
 				admin["username"],
 			)
+			
+			# Immediately cleanup backups that exceed new retention period
+			backup_dir = _get_backup_dir(request.app.state.cfg.data_dir)
+			deleted_count = _cleanup_old_backups(backup_dir, payload.retention_days)
+			if deleted_count > 0:
+				_log.info("Cleaned up %d old backup(s) after retention change", deleted_count)
+				return ok_response(
+					message="Backup settings updated",
+					deleted_backups=deleted_count,
+				)
 		
 		return ok_response(message="Backup settings updated")
 	finally:
