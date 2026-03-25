@@ -111,6 +111,7 @@ nav:
   - Features:
     - WireGuard Management: features/wireguard.md
     - DNS Ad-Blocking: features/dns.md
+    - Speed Test: features/speedtest.md
     - Monitoring & Analytics: features/monitoring.md
     - GeoIP & Maps: features/geoip.md
     - User Management: features/users.md

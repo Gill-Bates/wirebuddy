@@ -385,6 +385,113 @@ GET /api/settings
 PUT /api/settings
 ```
 
+## Speed Test
+
+See [Speed Test Feature](../features/speedtest.md) for detailed documentation.
+
+### Get Settings
+
+```
+GET /api/wireguard/speedtest/settings
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "enabled": true,
+    "target": "auto",
+    "servers": [
+      {"id": "tele2", "name": "Tele2 (Europe)", "url": "http://speedtest.tele2.net/1GB.zip"},
+      {"id": "cachefly", "name": "CacheFly (CDN)", "url": "http://cachefly.cachefly.net/100mb.test"},
+      {"id": "thinkbroadband", "name": "ThinkBroadband (UK)", "url": "http://ipv4.download.thinkbroadband.com/100MB.zip"}
+    ]
+  }
+}
+```
+
+### Update Settings (Admin Only)
+
+```
+PATCH /api/wireguard/speedtest/settings
+```
+
+**Request:**
+
+```json
+{
+  "enabled": true,
+  "target": "auto"
+}
+```
+
+### Run Speed Test (Admin Only)
+
+```
+POST /api/wireguard/speedtest/run
+```
+
+Returns immediately. Test runs in background.
+
+### Run Speed Test with Streaming Progress (Admin Only)
+
+```
+GET /api/wireguard/speedtest/run/stream
+```
+
+Returns Server-Sent Events (SSE) stream with progress updates.
+
+**Response (SSE):**
+
+```
+data: {"phase": "server_selection", "progress": 0.05, "message": "Selecting download server..."}
+
+data: {"phase": "testing", "progress": 0.5, "message": "Run 2/3: DL 245.3 / UL 48.2 Mbit/s"}
+
+data: {"phase": "complete", "progress": 1.0, "message": "Complete: DL 248.5 / UL 47.8 Mbit/s"}
+
+data: {"type": "result", "status": "ok", "download_mbit": 248.5, "upload_mbit": 47.8, "rtt_ms": 28.5, "jitter_ms": 12.3}
+```
+
+### Get History
+
+```
+GET /api/wireguard/speedtest/history
+```
+
+**Query Parameters:**
+
+- `range` - Time range: `6h`, `24h`, `7d`, `30d`, `90d`, `180d`, `y1`
+- `limit` - Max results (default: 500, max: 5000)
+
+### Get Storage Stats
+
+```
+GET /api/wireguard/speedtest/storage
+```
+
+### Update Retention (Admin Only)
+
+```
+PATCH /api/wireguard/speedtest/storage/retention
+```
+
+**Request:**
+
+```json
+{
+  "retention_days": 90
+}
+```
+
+### Purge Data (Admin Only)
+
+```
+DELETE /api/wireguard/speedtest/storage
+```
+
 ## Rate Limits
 
 | Endpoint Type | Authenticated | Unauthenticated |

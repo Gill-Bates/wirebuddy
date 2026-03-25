@@ -80,6 +80,8 @@ _UPLOAD_PAYLOAD_VARIANTS = 4  # Rotate payloads to reduce repeated-block bias
 _DEFAULT_CHUNK_SIZE = 262_144  # 256 KB - better throughput for Gbit+ connections
 _REQUEST_TIMEOUT_BUFFER_SECONDS = 10.0
 _BUSY_CHECK_PROBE_BUDGET_SECONDS = 0.5
+_CONNECT_TIMEOUT_SECONDS = 5.0  # TCP+TLS connection timeout
+_BUSY_CHECK_START_TIMEOUT_SECONDS = 8.0  # Must exceed connect timeout + response time
 
 
 class SpeedtestTarget(TypedDict, total=False):
@@ -444,10 +446,10 @@ class BandwidthTester:
 		total = 0
 		start = time.perf_counter()
 		download_timeout = httpx.Timeout(
-			connect=5.0,
+			connect=_CONNECT_TIMEOUT_SECONDS,
 			read=duration + _REQUEST_TIMEOUT_BUFFER_SECONDS,
-			write=5.0,
-			pool=5.0,
+			write=_CONNECT_TIMEOUT_SECONDS,
+			pool=_CONNECT_TIMEOUT_SECONDS,
 		)
 
 		while time.perf_counter() - start < duration:
@@ -521,10 +523,10 @@ class BandwidthTester:
 		try:
 			# Use dedicated timeout: total duration + buffer for connection/response
 			upload_timeout = httpx.Timeout(
-				connect=5.0,
+				connect=_CONNECT_TIMEOUT_SECONDS,
 				read=duration + _REQUEST_TIMEOUT_BUFFER_SECONDS,
 				write=duration + _REQUEST_TIMEOUT_BUFFER_SECONDS,
-				pool=5.0,
+				pool=_CONNECT_TIMEOUT_SECONDS,
 			)
 			response = await client.request(
 				method,
@@ -602,7 +604,8 @@ class BandwidthTester:
 			self._download_worker(client, url, load_duration, started_event=load_started)
 		)
 		try:
-			await asyncio.wait_for(load_started.wait(), timeout=min(2.0, self.busy_check_duration))
+			# Timeout must exceed connect timeout (5s) + initial response time
+			await asyncio.wait_for(load_started.wait(), timeout=_BUSY_CHECK_START_TIMEOUT_SECONDS)
 		except asyncio.TimeoutError:
 			task.cancel()
 			try:
@@ -657,7 +660,8 @@ class BandwidthTester:
 			)
 		)
 		try:
-			await asyncio.wait_for(load_started.wait(), timeout=min(2.0, self.busy_check_duration))
+			# Timeout must exceed connect timeout (5s) + initial response time
+			await asyncio.wait_for(load_started.wait(), timeout=_BUSY_CHECK_START_TIMEOUT_SECONDS)
 		except asyncio.TimeoutError:
 			task.cancel()
 			try:
