@@ -35,6 +35,7 @@ from ..db.sqlite_settings import (
 from ..utils.deps import get_conn, get_tsdb_dir
 from ..utils.geoip import lookup_ip
 from .auth import get_current_user, require_admin
+from .frontend_shared import CONNECTED_THRESHOLD_S
 from .response import ok_response
 from .wireguard_utils import parse_wg_show_dump, run_wg_command
 
@@ -43,9 +44,6 @@ _log = logging.getLogger(__name__)
 router = APIRouter(tags=["wireguard"])
 
 __all__ = ["router"]
-
-# Seconds since last handshake below which a peer is considered "connected"
-_CONNECTED_THRESHOLD_S = 180
 _GEO_LOOKUP_CONCURRENCY = 20
 _GEO_CACHE_TTL_S = 300.0
 _GEO_CACHE_MAX_SIZE = 2048
@@ -109,7 +107,7 @@ async def get_peer_locations(
 	Also includes peers with persisted last_client_ip from DB.
 	"""
 	now = time.time()
-	threshold = _CONNECTED_THRESHOLD_S
+	threshold = CONNECTED_THRESHOLD_S
 
 	# Build peer name lookup and last-seen data from DB (async via threadpool)
 	all_db_peers = await run_in_threadpool(get_all_peers, conn)
@@ -232,7 +230,7 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 		db_handshakes[pub_key] = int(row["last_handshake_at"] or 0)
 
 	now = time.time()
-	threshold = _CONNECTED_THRESHOLD_S
+	threshold = CONNECTED_THRESHOLD_S
 	db_updates: list[tuple[str, int, str]] = []
 
 	try:

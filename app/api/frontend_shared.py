@@ -28,6 +28,11 @@ from .auth import get_current_user_optional
 
 _log = logging.getLogger(__name__)
 
+# Canonical threshold: peers with a handshake within this many seconds
+# are considered "connected / online".  Every backend module and every
+# frontend JS constant MUST reference or mirror this single value.
+CONNECTED_THRESHOLD_S: int = 180
+
 router = APIRouter(tags=["frontend"])
 
 _templates_path = Path(__file__).parent.parent / "templates"
@@ -65,6 +70,7 @@ __all__ = [
     "require_admin_or_redirect",
     "get_csrf_token",
     "lookup_ip_cached",
+    "CONNECTED_THRESHOLD_S",
     "format_last_seen_label",
     "extract_geo_fields",
 ]
@@ -176,19 +182,25 @@ def require_admin_or_redirect(
 
 
 def format_last_seen_label(handshake_epoch: int, *, now_epoch: int | None = None) -> LastSeenLabel:
-    """Format a handshake timestamp as a compact relative label + CSS class + active flag."""
+    """Format a handshake timestamp as a compact relative label + CSS class + active flag.
+
+    ``is_active`` uses :data:`CONNECTED_THRESHOLD_S` (180 s) so that the
+    server-rendered badge matches the API ``connected`` field and the JS
+    threshold on both the Dashboard and Peers pages.
+    """
     if handshake_epoch <= 0:
         return LastSeenLabel(text="Never", css_class="text-muted", is_active=False)
 
     now = int(time.time()) if now_epoch is None else int(now_epoch)
     diff = max(0, now - handshake_epoch)
+    active = diff < CONNECTED_THRESHOLD_S
     if diff < 60:
-        return LastSeenLabel(text="Now", css_class="text-success fw-semibold", is_active=True)
+        return LastSeenLabel(text="Now", css_class="text-success fw-semibold", is_active=active)
     if diff < 3600:
-        return LastSeenLabel(text=f"{diff // 60}m ago", css_class="text-muted", is_active=False)
+        return LastSeenLabel(text=f"{diff // 60}m ago", css_class="text-muted", is_active=active)
     if diff < 86400:
-        return LastSeenLabel(text=f"{diff // 3600}h ago", css_class="text-muted", is_active=False)
-    return LastSeenLabel(text=f"{diff // 86400}d ago", css_class="text-muted", is_active=False)
+        return LastSeenLabel(text=f"{diff // 3600}h ago", css_class="text-muted", is_active=active)
+    return LastSeenLabel(text=f"{diff // 86400}d ago", css_class="text-muted", is_active=active)
 
 
 def extract_geo_fields(info: dict | None) -> dict[str, str | None]:

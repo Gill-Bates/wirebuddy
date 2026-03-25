@@ -32,6 +32,7 @@ from ..db import tsdb
 from ..utils.deps import get_conn, get_tsdb_dir
 from ..utils.time import utcnow
 from .auth import require_admin
+from .frontend_shared import CONNECTED_THRESHOLD_S as HANDSHAKE_THRESHOLD
 from .response import ok_response
 from .wireguard_utils import bytes_to_unit, parse_wg_show_dump, run_wg_command, safe_int, select_display_unit
 
@@ -61,11 +62,6 @@ _HOURS_TO_RANGE: dict[int, str] = {
 # Resource limits to prevent DoS
 MAX_PEERS_TRAFFIC = 100  # Max peers to include in traffic stats
 MAX_POINTS_PER_PEER = 5000  # Reduced from 10000
-
-# Handshake freshness threshold (seconds) — peers with handshake < 3 min are "connected"
-# NOTE: Uses system clock (time.time()). Clock jumps (NTP adjustments) may cause
-# temporary inaccuracy in connection status reporting.
-HANDSHAKE_THRESHOLD = 180
 
 
 def _bucket_counter_delta(

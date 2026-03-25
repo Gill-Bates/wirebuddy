@@ -53,8 +53,16 @@ BACKUP_DIRECTORIES = ("tsdb", "dns", "certs")
 BACKUP_DATABASE_NAME = "wirebuddy.db"
 BACKUP_SUBDIR = "backup"  # Scheduled backups stored here
 BACKUP_RETENTION_DAYS = 30  # Default retention
-BACKUP_RETENTION_OPTIONS = {1, 7, 14, 21, 30}  # Valid retention values
+BACKUP_RETENTION_OPTIONS = (1, 7, 14, 21, 30)  # Valid retention values (tuple for deterministic ordering)
 MAX_BACKUP_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB
+
+# Compiled regex for backup filename validation (shared by validate + restore + delete)
+_BACKUP_FILENAME_RE = re.compile(
+	r"wirebuddy_backup_\d{8}_\d{6}_([a-f0-9]{32})\.tar\.gz$"
+)
+
+# Concurrency guard — only one restore may run at a time
+_restore_lock = asyncio.Lock()
 
 # Settings keys for backup configuration
 SETTING_BACKUP_ENABLED = "backup_scheduled_enabled"
@@ -128,6 +136,69 @@ def _get_backup_dir(data_dir: Path) -> Path:
 	backup_dir = data_dir / BACKUP_SUBDIR
 	backup_dir.mkdir(parents=True, exist_ok=True)
 	return backup_dir
+
+
+async def _receive_and_verify_upload(
+	file: UploadFile,
+	conn,
+	*,
+	max_bytes: int = MAX_BACKUP_UPLOAD_BYTES,
+) -> tuple[Path, str]:
+	"""Stream an uploaded backup to a temp file, validate gzip magic + HMAC.
+
+	Returns ``(tmp_path, filename)``.  The caller owns cleanup of *tmp_path*.
+	Raises :class:`HTTPException` on any validation failure.
+	"""
+	filename = file.filename or ""
+
+	match = _BACKUP_FILENAME_RE.match(filename)
+	if not match:
+		raise HTTPException(
+			status_code=400,
+			detail="Invalid backup file. Expected format: wirebuddy_backup_YYYYMMDD_HHMMSS_<hmac>.tar.gz",
+		)
+
+	expected_hmac = match.group(1)
+
+	fd, tmp_str = tempfile.mkstemp(suffix=".tar.gz")
+	os.close(fd)
+	tmp_path = Path(tmp_str)
+
+	try:
+		total = 0
+		first_chunk = True
+		with open(tmp_path, "wb") as out:
+			while True:
+				chunk = await file.read(1024 * 1024)
+				if not chunk:
+					break
+				total += len(chunk)
+				if total > max_bytes:
+					raise HTTPException(status_code=413, detail="Backup file too large")
+				if first_chunk:
+					if len(chunk) < 2 or chunk[:2] != b"\x1f\x8b":
+						raise HTTPException(
+							status_code=400,
+							detail="Invalid backup file (not a gzip archive)",
+						)
+					first_chunk = False
+				out.write(chunk)
+
+		if total == 0:
+			raise HTTPException(status_code=400, detail="Backup file is empty")
+
+		actual_hmac = _compute_backup_hmac(tmp_path, conn)
+		if not hmac.compare_digest(actual_hmac, expected_hmac):
+			_log.warning("Backup HMAC mismatch for file: %s", filename)
+			raise HTTPException(
+				status_code=400,
+				detail="Backup integrity check failed (HMAC mismatch - wrong instance or corrupted file)",
+			)
+	except Exception:
+		tmp_path.unlink(missing_ok=True)
+		raise
+
+	return tmp_path, filename
 
 
 def _create_backup_archive(data_dir: Path, db_path: Path, conn) -> tuple[Path, str, int]:
@@ -293,6 +364,7 @@ def update_backup_settings(
 @router.post("/download")
 def create_backup(
 	request: Request,
+	background_tasks: BackgroundTasks,
 	admin: sqlite3.Row = Depends(require_admin),
 ):
 	"""Create and download a backup of the configuration.
@@ -322,11 +394,11 @@ def create_backup(
 	
 	# Stream the file (conn is already closed)
 	def iter_file():
-		try:
-			with open(tmp_path, "rb") as f:
-				yield from iter(lambda: f.read(1024 * 1024), b"")
-		finally:
-			tmp_path.unlink(missing_ok=True)
+		with open(tmp_path, "rb") as f:
+			yield from iter(lambda: f.read(1024 * 1024), b"")
+	
+	# Guaranteed cleanup even on client disconnect
+	background_tasks.add_task(tmp_path.unlink, missing_ok=True)
 	
 	return StreamingResponse(
 		iter_file(),
@@ -346,70 +418,12 @@ async def validate_backup(
 	Use this to check backup integrity before prompting for password confirmation.
 	Returns 200 if valid, 400 with error detail if invalid.
 	"""
-	db_path = request.app.state.cfg.db_path
-	filename = file.filename or ""
-	
-	# Validate filename format and extract HMAC
-	match = re.match(r"wirebuddy_backup_\d{8}_\d{6}_([a-f0-9]{32})\.tar\.gz$", filename)
-	if not match:
-		raise HTTPException(
-			status_code=400,
-			detail="Invalid backup file. Expected format: wirebuddy_backup_YYYYMMDD_HHMMSS_<hmac>.tar.gz"
-		)
-	
-	expected_hmac = match.group(1)
-	
-	# Stream upload to temp file
-	fd, tmp_upload_str = tempfile.mkstemp(suffix=".tar.gz")
-	os.close(fd)
-	tmp_upload_path = Path(tmp_upload_str)
-	
-	conn = connect(db_path)
+	conn = connect(request.app.state.cfg.db_path)
 	try:
-		chunk_size = 1024 * 1024
-		first_chunk = True
-		total_written = 0
-		
-		with open(tmp_upload_path, "wb") as tmp_upload:
-			while True:
-				chunk = await file.read(chunk_size)
-				if not chunk:
-					break
-				total_written += len(chunk)
-				if total_written > MAX_BACKUP_UPLOAD_BYTES:
-					tmp_upload_path.unlink(missing_ok=True)
-					raise HTTPException(status_code=413, detail="Backup file too large")
-				
-				# Validate gzip magic bytes on first chunk
-				if first_chunk:
-					if len(chunk) < 2 or chunk[:2] != b"\x1f\x8b":
-						tmp_upload_path.unlink(missing_ok=True)
-						raise HTTPException(
-							status_code=400,
-							detail="Invalid backup file (not a gzip archive)"
-						)
-					first_chunk = False
-				
-				tmp_upload.write(chunk)
-		
-		# Reject empty uploads (would bypass gzip magic check)
-		if total_written == 0:
-			tmp_upload_path.unlink(missing_ok=True)
-			raise HTTPException(status_code=400, detail="Backup file is empty")
-		
-		# Verify HMAC (constant-time comparison to prevent timing attacks)
-		actual_hmac = _compute_backup_hmac(tmp_upload_path, conn)
-		if not hmac.compare_digest(actual_hmac, expected_hmac):
-			tmp_upload_path.unlink(missing_ok=True)
-			_log.warning("Backup validation failed: HMAC mismatch for %s", filename)
-			raise HTTPException(
-				status_code=400,
-				detail="Backup integrity check failed (HMAC mismatch - wrong instance or corrupted file)"
-			)
-		
+		tmp_path, _filename = await _receive_and_verify_upload(file, conn)
+		tmp_path.unlink(missing_ok=True)
 		return ok_response(message="Backup file is valid")
 	finally:
-		tmp_upload_path.unlink(missing_ok=True)
 		close_connection(conn)
 
 
@@ -431,223 +445,179 @@ async def restore_backup(  # async: uses await for file I/O
 	CRITICAL: Requires password confirmation (destructive operation).
 	Validates HMAC signature before restoring.
 	Triggers application restart after successful restore.
+	Only one restore may run at a time (concurrency guard).
 	"""
-	data_dir = request.app.state.cfg.data_dir
-	db_path = request.app.state.cfg.db_path
-	restored_items: list[str] = []
-	
-	conn = connect(db_path)
-	try:
-		# Verify admin password
-		_verify_admin_password(conn, admin, password)
-		
-		filename = file.filename or ""
-		
-		# Validate filename format and extract HMAC
-		match = re.match(r"wirebuddy_backup_\d{8}_\d{6}_([a-f0-9]{32})\.tar\.gz$", filename)
-		if not match:
-			raise HTTPException(
-				status_code=400,
-				detail="Invalid backup file. Expected format: wirebuddy_backup_YYYYMMDD_HHMMSS_<hmac>.tar.gz"
-			)
-		
-		expected_hmac = match.group(1)
-		
-		# Stream upload to temp file
-		fd, tmp_upload_str = tempfile.mkstemp(suffix=".tar.gz")
-		os.close(fd)
-		tmp_upload_path = Path(tmp_upload_str)
-		
+	if _restore_lock.locked():
+		raise HTTPException(
+			status_code=409,
+			detail="A restore operation is already in progress",
+		)
+
+	async with _restore_lock:
+		data_dir = request.app.state.cfg.data_dir
+		db_path = request.app.state.cfg.db_path
+		restored_items: list[str] = []
+
+		conn = connect(db_path)
 		try:
-			chunk_size = 1024 * 1024
-			first_chunk = True
-			total_written = 0
-			
-			with open(tmp_upload_path, "wb") as tmp_upload:
-				while True:
-					chunk = await file.read(chunk_size)
-					if not chunk:
-						break
-					total_written += len(chunk)
-					if total_written > MAX_BACKUP_UPLOAD_BYTES:
-						tmp_upload_path.unlink(missing_ok=True)
-						raise HTTPException(status_code=413, detail="Backup file too large")
-					
-					# Validate gzip magic bytes on first chunk
-					if first_chunk:
-						if len(chunk) < 2 or chunk[:2] != b"\x1f\x8b":
-							tmp_upload_path.unlink(missing_ok=True)
-							raise HTTPException(
-								status_code=400,
-								detail="Invalid backup file (not a gzip archive)"
-							)
-						first_chunk = False
-					
-					tmp_upload.write(chunk)
-			
-			# Reject empty uploads (would bypass gzip magic check)
-			if total_written == 0:
-				tmp_upload_path.unlink(missing_ok=True)
-				raise HTTPException(status_code=400, detail="Backup file is empty")
-			
-			# Verify HMAC (constant-time comparison to prevent timing attacks)
-			actual_hmac = _compute_backup_hmac(tmp_upload_path, conn)
-			if not hmac.compare_digest(actual_hmac, expected_hmac):
-				tmp_upload_path.unlink(missing_ok=True)
-				_log.warning("Backup HMAC mismatch for file: %s", filename)
-				raise HTTPException(
-					status_code=400,
-					detail="Backup integrity check failed (HMAC mismatch - wrong instance or corrupted file)"
+			# Verify admin password
+			_verify_admin_password(conn, admin, password)
+
+			# Stream, validate gzip, and verify HMAC (shared with /validate)
+			tmp_upload_path, filename = await _receive_and_verify_upload(file, conn)
+
+			try:
+				_log.warning(
+					"Backup restore initiated by %s",
+					admin["username"],
 				)
-			
-			_log.warning(
-				"Backup restore initiated by %s",
-				admin["username"],
-			)
-			
-			# Extract to temporary directory
-			with tempfile.TemporaryDirectory() as tmpdir:
-				tmp_path = Path(tmpdir)
-				
-				try:
-					with tarfile.open(tmp_upload_path, mode="r:gz") as tar:
-						_safe_tar_extract(tar, tmp_path)
-				except ValueError as e:
-					_log.error("Unsafe tar archive: %s", e)
-					raise HTTPException(
-						status_code=400,
-						detail=f"Backup security violation: {e}"
-					)
-				except Exception as e:
-					_log.error("Failed to extract backup: %s", e)
-					raise HTTPException(
-						status_code=400,
-						detail="Failed to extract backup archive"
-					)
-				
-				extracted_data = tmp_path / "data"
-				if not extracted_data.exists():
-					raise HTTPException(
-						status_code=400,
-						detail="Invalid backup structure (no data directory)"
-					)
-				
-				# Validate restored database integrity before proceeding
-				extracted_db = extracted_data / BACKUP_DATABASE_NAME
-				if extracted_db.exists():
+
+				# Extract to temporary directory
+				with tempfile.TemporaryDirectory() as tmpdir:
+					tmp_path = Path(tmpdir)
+
 					try:
-						test_conn = sqlite3.connect(str(extracted_db))
-						result = test_conn.execute("PRAGMA integrity_check").fetchone()
-						test_conn.close()
-						if result[0] != "ok":
-							raise HTTPException(
-								status_code=400,
-								detail="Backup contains corrupt database"
-							)
-					except sqlite3.Error as e:
+						with tarfile.open(tmp_upload_path, mode="r:gz") as tar:
+							_safe_tar_extract(tar, tmp_path)
+					except ValueError as e:
+						_log.error("Unsafe tar archive: %s", e)
 						raise HTTPException(
 							status_code=400,
-							detail=f"Backup database is invalid: {e}"
+							detail=f"Backup security violation: {e}",
 						)
-				
-				# Close our own connection before closing all connections
-				close_connection(conn)
-				conn = None  # prevent double-close in outer finally
-				
-				# Close all remaining SQLite connections before restore
-				closed_count = close_all_connections()
-				_log.info("Closed %d SQLite connections before restore", closed_count)
-				
-				# Create rollback directory
-				rollback_dir = data_dir / f".rollback_{utcnow().strftime('%Y%m%d_%H%M%S')}"
-				rollback_dir.mkdir(exist_ok=True)
-				restore_succeeded = False
-				
-				try:
-					# Restore database (extracted_db defined above)
+					except Exception as e:
+						_log.error("Failed to extract backup: %s", e)
+						raise HTTPException(
+							status_code=400,
+							detail="Failed to extract backup archive",
+						)
+
+					extracted_data = tmp_path / "data"
+					if not extracted_data.exists():
+						raise HTTPException(
+							status_code=400,
+							detail="Invalid backup structure (no data directory)",
+						)
+
+					# Validate restored database integrity before proceeding
+					extracted_db = extracted_data / BACKUP_DATABASE_NAME
 					if extracted_db.exists():
-						if db_path.exists():
-							shutil.move(str(db_path), str(rollback_dir / BACKUP_DATABASE_NAME))
-						shutil.move(str(extracted_db), str(db_path))
-						restored_items.append(BACKUP_DATABASE_NAME)
-						_log.info("Restored database")
-					
-					# Restore directories
-					for subdir in BACKUP_DIRECTORIES:
-						extracted_subdir = extracted_data / subdir
-						target_subdir = data_dir / subdir
-						
-						if extracted_subdir.exists():
-							if target_subdir.exists():
-								shutil.move(str(target_subdir), str(rollback_dir / subdir))
-							shutil.move(str(extracted_subdir), str(target_subdir))
-							restored_items.append(subdir)
-							_log.info("Restored directory: %s", subdir)
-					
-					restore_succeeded = True
-					_log.info("Restored %d items: %s", len(restored_items), ", ".join(restored_items))
-					
-				except Exception as e:
-					_log.error("Restore failed: %s. Attempting rollback...", e)
-					
-					# Attempt rollback
+						try:
+							test_conn = sqlite3.connect(str(extracted_db))
+							result = test_conn.execute("PRAGMA integrity_check").fetchone()
+							test_conn.close()
+							if result[0] != "ok":
+								raise HTTPException(
+									status_code=400,
+									detail="Backup contains corrupt database",
+								)
+						except sqlite3.Error as e:
+							raise HTTPException(
+								status_code=400,
+								detail=f"Backup database is invalid: {e}",
+							)
+
+					# Close our own connection before closing all connections
+					close_connection(conn)
+					conn = None  # prevent double-close in outer finally
+
+					# Block concurrent requests from opening fresh DB connections
+					request.app.state.maintenance = True
+
+					# Close all remaining SQLite connections before restore
+					closed_count = close_all_connections()
+					_log.info("Closed %d SQLite connections before restore", closed_count)
+
+					# Create rollback directory
+					rollback_dir = data_dir / f".rollback_{utcnow().strftime('%Y%m%d_%H%M%S')}"
+					rollback_dir.mkdir(exist_ok=True)
+					restore_succeeded = False
+
 					try:
-						# Rollback database
-						if BACKUP_DATABASE_NAME in restored_items:
+						# Restore database (extracted_db defined above)
+						if extracted_db.exists():
 							if db_path.exists():
-								db_path.unlink()
-							rollback_db = rollback_dir / BACKUP_DATABASE_NAME
-							if rollback_db.exists():
-								shutil.move(str(rollback_db), str(db_path))
-						
-						# Rollback directories
+								shutil.move(str(db_path), str(rollback_dir / BACKUP_DATABASE_NAME))
+							shutil.move(str(extracted_db), str(db_path))
+							restored_items.append(BACKUP_DATABASE_NAME)
+							_log.info("Restored database")
+
+						# Restore directories
 						for subdir in BACKUP_DIRECTORIES:
+							extracted_subdir = extracted_data / subdir
 							target_subdir = data_dir / subdir
-							rollback_subdir = rollback_dir / subdir
-							
-							if subdir in restored_items and target_subdir.exists():
-								shutil.rmtree(target_subdir)
-							if rollback_subdir.exists():
-								shutil.move(str(rollback_subdir), str(target_subdir))
-						
-						_log.info("Rollback successful")
-					except Exception as rollback_error:
-						_log.critical("ROLLBACK FAILED: %s. Manual intervention required!", rollback_error)
+
+							if extracted_subdir.exists():
+								if target_subdir.exists():
+									shutil.move(str(target_subdir), str(rollback_dir / subdir))
+								shutil.move(str(extracted_subdir), str(target_subdir))
+								restored_items.append(subdir)
+								_log.info("Restored directory: %s", subdir)
+
+						restore_succeeded = True
+						_log.info("Restored %d items: %s", len(restored_items), ", ".join(restored_items))
+
+					except Exception as e:
+						_log.error("Restore failed: %s. Attempting rollback...", e)
+
+						# Attempt rollback
+						try:
+							# Rollback database
+							if BACKUP_DATABASE_NAME in restored_items:
+								if db_path.exists():
+									db_path.unlink()
+								rollback_db = rollback_dir / BACKUP_DATABASE_NAME
+								if rollback_db.exists():
+									shutil.move(str(rollback_db), str(db_path))
+
+							# Rollback directories
+							for subdir in BACKUP_DIRECTORIES:
+								target_subdir = data_dir / subdir
+								rollback_subdir = rollback_dir / subdir
+
+								if subdir in restored_items and target_subdir.exists():
+									shutil.rmtree(target_subdir)
+								if rollback_subdir.exists():
+									shutil.move(str(rollback_subdir), str(target_subdir))
+
+							_log.info("Rollback successful")
+						except Exception as rollback_error:
+							_log.critical("ROLLBACK FAILED: %s. Manual intervention required!", rollback_error)
+							raise HTTPException(
+								status_code=500,
+								detail=f"Restore AND rollback failed! Backup at: {rollback_dir}",
+							)
+
 						raise HTTPException(
 							status_code=500,
-							detail=f"Restore AND rollback failed! Backup at: {rollback_dir}"
+							detail="Restore failed, rollback successful. Original data restored.",
 						)
-					
-					raise HTTPException(
-						status_code=500,
-						detail="Restore failed, rollback successful. Original data restored."
-					)
-				
-				finally:
-					if restore_succeeded and rollback_dir.exists():
-						try:
-							shutil.rmtree(rollback_dir)
-						except Exception as cleanup_error:
-							_log.warning("Failed to clean up rollback: %s", cleanup_error)
-		
+
+					finally:
+						if restore_succeeded and rollback_dir.exists():
+							try:
+								shutil.rmtree(rollback_dir)
+							except Exception as cleanup_error:
+								_log.warning("Failed to clean up rollback: %s", cleanup_error)
+
+			finally:
+				await file.close()
+				tmp_upload_path.unlink(missing_ok=True)
+
 		finally:
-			await file.close()
-			tmp_upload_path.unlink(missing_ok=True)
-	
-	finally:
-		if conn is not None:
-			close_connection(conn)
-	
+			if conn is not None:
+				close_connection(conn)
+
 	_log.warning("Backup restored successfully, initiating restart")
-	
+
 	# Schedule application restart
 	async def restart_app():
 		await asyncio.sleep(1)
 		_log.critical("Intentional process termination for restart after backup restore")
 		os.kill(os.getpid(), signal.SIGTERM)
-	
+
 	background_tasks.add_task(restart_app)
-	
+
 	return ok_response(
 		message="Backup restored successfully. Application is restarting...",
 		restored=restored_items,
@@ -682,7 +652,7 @@ def delete_scheduled_backup(
 ):
 	"""Delete a specific scheduled backup."""
 	# Validate filename format to prevent path traversal
-	if not re.match(r"wirebuddy_backup_\d{8}_\d{6}_[a-f0-9]{32}\.tar\.gz$", filename):
+	if not _BACKUP_FILENAME_RE.match(filename):
 		raise HTTPException(status_code=400, detail="Invalid backup filename")
 	
 	backup_dir = _get_backup_dir(request.app.state.cfg.data_dir)
