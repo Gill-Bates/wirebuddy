@@ -8,6 +8,7 @@ services:
       - NET_ADMIN
     environment:
       LOG_LEVEL: INFO # DEBUG
+      TZ: Etc/UTC
       WIREBUDDY_SECRET_KEY: "" # Generate with: head -c 32 /dev/urandom | base64
     logging:
       driver: json-file

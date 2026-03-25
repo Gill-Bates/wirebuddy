@@ -24,6 +24,7 @@ import secrets
 import shutil
 import signal
 import sqlite3
+import sys
 import tarfile
 import tempfile
 import time
@@ -94,18 +95,18 @@ def _safe_tar_extract(tar: tarfile.TarFile, dest: Path) -> None:
 	
 	Uses Python 3.12+ filter='data' when available, falls back to manual checks.
 	Raises ValueError if any member attempts to escape the destination directory
-	or if any symlinks are present (known TAR exploit vector).
+	or contains non-regular file types (symlinks, device files, FIFOs, etc.).
 	"""
-	import sys
-
 	if sys.version_info >= (3, 12):
 		tar.extractall(dest, filter="data")
 	else:
 		dest = dest.resolve()
 		members = tar.getmembers()
 		for member in members:
-			if member.issym() or member.islnk():
-				raise ValueError(f"Symlinks are not allowed in backups: {member.name}")
+			# Only allow regular files and directories (block symlinks, hardlinks,
+			# device files, FIFOs, etc. to match Python 3.12's filter="data")
+			if not member.isfile() and not member.isdir():
+				raise ValueError(f"Unsupported file type in backup: {member.name}")
 			member_path = (dest / member.name).resolve()
 			if dest not in member_path.parents and member_path != dest:
 				raise ValueError(f"Path traversal attempt detected: {member.name}")
@@ -206,7 +207,7 @@ class BackupSettingsUpdate(BaseModel):
 @router.get("/settings", response_model=BackupSettingsResponse)
 def get_backup_settings(
 	request: Request,
-	admin: dict = Depends(require_admin),
+	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Get current backup settings and status."""
 	conn = connect(request.app.state.cfg.db_path)
@@ -248,7 +249,7 @@ def get_backup_settings(
 def update_backup_settings(
 	request: Request,
 	payload: BackupSettingsUpdate,
-	admin: dict = Depends(require_admin),
+	admin: sqlite3.Row = Depends(require_admin),
 ):
 	"""Update backup settings (enable/disable scheduled backups)."""
 	conn = connect(request.app.state.cfg.db_path)
@@ -282,7 +283,7 @@ def update_backup_settings(
 @router.post("/download")
 def create_backup(
 	request: Request,
-	admin: dict = Depends(require_admin),
+	admin: sqlite3.Row = Depends(require_admin),
 ):
 	"""Create and download a backup of the configuration.
 	
@@ -328,7 +329,7 @@ def create_backup(
 async def validate_backup(
 	request: Request,
 	file: UploadFile = File(...),
-	admin: dict = Depends(require_admin),
+	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Validate a backup file's HMAC signature without restoring.
 	
@@ -381,11 +382,16 @@ async def validate_backup(
 				
 				tmp_upload.write(chunk)
 		
+		# Reject empty uploads (would bypass gzip magic check)
+		if total_written == 0:
+			tmp_upload_path.unlink(missing_ok=True)
+			raise HTTPException(status_code=400, detail="Backup file is empty")
+		
 		# Verify HMAC (constant-time comparison to prevent timing attacks)
 		actual_hmac = _compute_backup_hmac(tmp_upload_path, conn)
 		if not hmac.compare_digest(actual_hmac, expected_hmac):
 			tmp_upload_path.unlink(missing_ok=True)
-			_log.warning("Backup validation failed: HMAC mismatch")
+			_log.warning("Backup validation failed: HMAC mismatch for %s", filename)
 			raise HTTPException(
 				status_code=400,
 				detail="Backup integrity check failed (HMAC mismatch - wrong instance or corrupted file)"
@@ -408,7 +414,7 @@ async def restore_backup(  # async: uses await for file I/O
 	background_tasks: BackgroundTasks,
 	password: str = Form(...),
 	file: UploadFile = File(...),
-	admin: dict = Depends(require_admin),
+	admin: sqlite3.Row = Depends(require_admin),
 ):
 	"""Restore configuration from an uploaded backup.
 	
@@ -469,11 +475,16 @@ async def restore_backup(  # async: uses await for file I/O
 					
 					tmp_upload.write(chunk)
 			
+			# Reject empty uploads (would bypass gzip magic check)
+			if total_written == 0:
+				tmp_upload_path.unlink(missing_ok=True)
+				raise HTTPException(status_code=400, detail="Backup file is empty")
+			
 			# Verify HMAC (constant-time comparison to prevent timing attacks)
 			actual_hmac = _compute_backup_hmac(tmp_upload_path, conn)
 			if not hmac.compare_digest(actual_hmac, expected_hmac):
 				tmp_upload_path.unlink(missing_ok=True)
-				_log.warning("Backup HMAC mismatch: expected %s, got %s", expected_hmac, actual_hmac)
+				_log.warning("Backup HMAC mismatch for file: %s", filename)
 				raise HTTPException(
 					status_code=400,
 					detail="Backup integrity check failed (HMAC mismatch - wrong instance or corrupted file)"
@@ -636,7 +647,7 @@ async def restore_backup(  # async: uses await for file I/O
 @router.get("/list")
 def list_backups(
 	request: Request,
-	admin: dict = Depends(require_admin),
+	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""List scheduled backups stored on the server."""
 	backup_dir = _get_backup_dir(request.app.state.cfg.data_dir)
@@ -657,7 +668,7 @@ def list_backups(
 def delete_scheduled_backup(
 	request: Request,
 	filename: str,
-	admin: dict = Depends(require_admin),
+	admin: sqlite3.Row = Depends(require_admin),
 ):
 	"""Delete a specific scheduled backup."""
 	# Validate filename format to prevent path traversal

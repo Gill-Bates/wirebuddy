@@ -112,7 +112,7 @@ const FORM_SWITCH_HEIGHT_TOLERANCE_PX = 1;
 // =============================================================================
 // Settings Backup Tab Design Rules
 // =============================================================================
-// Layout: Row with 3 cards (col-lg-6 each, 2 cards in row 1, 1 card in row 2)
+// Layout: Row with 3 cards (col-lg-4 each, all 3 cards in a single row on desktop)
 //
 // Card 1: Download Backup
 // - Simple card with download button (.btn-primary.w-100)
@@ -120,7 +120,8 @@ const FORM_SWITCH_HEIGHT_TOLERANCE_PX = 1;
 // Card 2: Scheduled Backups
 // - Form switch for enabling daily backups
 // - Retention slider (.retention-scale) with 5 stops: 1d, 7d, 14d, 21d, 30d
-//   - Uses same slider component as Logs tab
+//   - Uses same slider component as Logs tab BUT with --rs-steps: 4 (not 5)
+//   - Hidden by default (d-none), shown when scheduled backups enabled
 //   - Badge (#backup-retention-value) shows current selection
 // - Disk warning alert (#backup-disk-warning):
 //   - .alert.alert-warning with material icon "warning"

@@ -45,6 +45,7 @@
             const countEl = document.getElementById('backup-count');
             const lastAtEl = document.getElementById('backup-last-at');
             const statsEl = document.getElementById('backup-scheduled-stats');
+            const retentionSection = document.getElementById('backup-retention-section');
             const retentionSlider = document.getElementById('backup-retention-slider');
             const sizeEl = document.getElementById('backup-size');
             const diskWarningEl = document.getElementById('backup-disk-warning');
@@ -59,7 +60,10 @@
                 updateBackupRetentionBadge(retentionSlider.value);
             }
             
-            // Show/hide stats section based on scheduled status
+            // Show/hide retention slider and stats section based on scheduled status
+            if (retentionSection) {
+                retentionSection.classList.toggle('d-none', !data.scheduled_enabled);
+            }
             if (statsEl) {
                 statsEl.classList.toggle('d-none', !data.scheduled_enabled);
             }
@@ -91,8 +95,12 @@
     async function toggleScheduledBackup(enabled) {
         if (!isAdmin) return;
         
-        // Immediately show/hide stats section for responsiveness
+        // Immediately show/hide retention slider and stats section for responsiveness
+        const retentionSection = document.getElementById('backup-retention-section');
         const statsEl = document.getElementById('backup-scheduled-stats');
+        if (retentionSection) {
+            retentionSection.classList.toggle('d-none', !enabled);
+        }
         if (statsEl) {
             statsEl.classList.toggle('d-none', !enabled);
         }
@@ -110,7 +118,10 @@
             // Revert checkbox state on error
             const checkbox = document.getElementById('backup-scheduled-enabled');
             if (checkbox) checkbox.checked = !enabled;
-            // Revert stats visibility
+            // Revert visibility on error
+            if (retentionSection) {
+                retentionSection.classList.toggle('d-none', enabled);
+            }
             if (statsEl) {
                 statsEl.classList.toggle('d-none', enabled);
             }

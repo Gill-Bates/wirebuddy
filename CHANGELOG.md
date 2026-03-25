@@ -1,6 +1,7 @@
 ## [1.4.0] - 2026-03-xx
 
 - ``New`` DNS logging can be enabled or disabled for each peer
+- ``New`` Added the ``tzdata`` package to support time zones
 - ``Fix`` Fixed an issue with the test server selection for the speed test
 - ``Fix`` Several design improvements in the GUI
 

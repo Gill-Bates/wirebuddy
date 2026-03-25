@@ -278,15 +278,17 @@ CORS_ORIGINS=https://vpn.example.com,https://admin.example.com
 
 Default: Not set (CORS disabled)
 
-### TIMEZONE
+### TZ
 
-Application timezone.
+Timezone for scheduled tasks (backups run at 03:00 local time). Uses standard IANA timezone names.
 
 ```bash
-TIMEZONE=America/New_York
+TZ=America/New_York
 ```
 
-Default: `UTC`
+See: [List of tz database time zones](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)
+
+Default: `Etc/UTC`
 
 ## Example Configuration Files
 
@@ -307,7 +309,7 @@ RATELIMIT_ENABLED=true
 SWAGGER_ENABLED=false
 
 # Optional
-TIMEZONE=America/New_York
+TZ=America/New_York
 ```
 
 ### Development (.env)

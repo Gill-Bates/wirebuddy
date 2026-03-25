@@ -2,7 +2,7 @@
         <div class="row g-3">
 
             <!-- Download Backup -->
-            <div class="col-lg-6">
+            <div class="col-lg-4">
                 <div class="card h-100">
                     <div class="card-header">
                         <h3 class="h5 mb-0">
@@ -23,7 +23,7 @@
             </div>
 
             <!-- Scheduled Backups -->
-            <div class="col-lg-6">
+            <div class="col-lg-4">
                 <div class="card h-100">
                     <div class="card-header">
                         <h3 class="h5 mb-0">
@@ -33,10 +33,10 @@
                     <div class="card-body">
                         <div class="form-check form-switch mb-3">
                             <input class="form-check-input" type="checkbox" id="backup-scheduled-enabled"{% if not user['is_admin'] %} disabled{% endif %}>
-                            <label class="form-check-label" for="backup-scheduled-enabled">Daily Backups (03:00 UTC)</label>
+                            <label class="form-check-label" for="backup-scheduled-enabled">Daily Backups (03:00 local time)</label>
                         </div>
 
-                        <div class="mb-3 retention-scale">
+                        <div class="mb-3 retention-scale d-none" id="backup-retention-section" style="--rs-steps: 4">
                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <label for="backup-retention-slider" class="form-label mb-0">Retention Period</label>
                                 <span class="badge text-bg-secondary" id="backup-retention-value">30 Days</span>
@@ -84,7 +84,7 @@
             </div>
 
             <!-- Restore (Danger Zone) -->
-            <div class="col-lg-6">
+            <div class="col-lg-4">
                 <div class="card border-danger h-100">
                     <div class="card-header">
                         <h3 class="h5 mb-0 text-danger">

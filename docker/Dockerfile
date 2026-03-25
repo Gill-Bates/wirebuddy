@@ -38,6 +38,7 @@ RUN apt-get update && \
         curl \
         ca-certificates \
         sqlite3 \
+        tzdata \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -90,6 +91,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 
 # Configurable worker count (2 for resilience, SQLite/TSDB are multi-process safe)
 ENV UVICORN_WORKERS=2
+
+# Timezone (default: UTC). Override with TZ=America/New_York etc.
+# See: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+ENV TZ=Etc/UTC
 
 # X-Forwarded-For / X-Real-IP proxy header handling.
 #
