@@ -179,6 +179,9 @@ const CARD_BORDER_RADIUS_TOLERANCE_PX = 1;
 // - Bottom row: Full-width card
 // Other pages should follow this pattern for consistent card sizing.
 const ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX = 2;
+const ABOUT_APPLICATION_DETAILS_REQUIRED_ROWS = ['Version', 'Python', 'Timezone', 'WireGuard', 'Unbound'];
+const ABOUT_APPLICATION_DETAILS_FORBIDDEN_ROWS = ['Build'];
+const ABOUT_UPDATE_TABLE_LABELS = ['Current', 'Latest', 'Released'];
 
 const THEMES = ['light', 'dark'];
 
@@ -201,6 +204,7 @@ const STATUS_FLOW_CONNECTOR_EXPECTATIONS = [
     'client-wireguard',
     'wireguard-internet',
 ];
+const STATUS_DETAIL_CARD_TITLES = ['Public Client IP', 'Outbound IP'];
 
 const LOGIN_FAILURE_VIEW_DEFS = [
     { name: 'login-error', url: '/login', scope: 'login' },
@@ -1971,6 +1975,17 @@ async function collectPageMetrics(page, scope) {
             const changelogCard = document.querySelector('.about-changelog-col .card');
             const changelogBody = document.querySelector('.about-changelog-col .card-body');
             const depsCard = document.querySelector('.about-deps-col .card');
+            const aboutDetailsCard = Array.from(document.querySelectorAll('.about-top-row .card'))
+                .find((card) => norm(card.querySelector('.card-header')?.textContent).includes('Application Details'));
+            const aboutDetailsRows = aboutDetailsCard
+                ? Array.from(aboutDetailsCard.querySelectorAll('tbody tr'))
+                    .map((row) => norm(row.querySelector('td:first-child')?.textContent))
+                    .filter(Boolean)
+                : [];
+            const missingDetailsRows = constants.ABOUT_APPLICATION_DETAILS_REQUIRED_ROWS
+                .filter((label) => !aboutDetailsRows.includes(label));
+            const forbiddenDetailsRows = aboutDetailsRows
+                .filter((label) => constants.ABOUT_APPLICATION_DETAILS_FORBIDDEN_ROWS.includes(label));
             const aboutReferenceValue = document.querySelector('.about-reference-value');
             const aboutReferenceStyle = aboutReferenceValue ? window.getComputedStyle(aboutReferenceValue) : null;
             const aboutReferenceMetrics = aboutReferenceStyle ? {
@@ -1978,6 +1993,19 @@ async function collectPageMetrics(page, scope) {
                 fontSize: Number.parseFloat(aboutReferenceStyle.fontSize || '0'),
                 backgroundColor: normalizeColor(aboutReferenceStyle.backgroundColor),
             } : null;
+            const updateLabelRows = Array.from(document.querySelectorAll('#update-check-result tbody tr'))
+                .map((row) => {
+                    const labelCell = row.querySelector('td:first-child');
+                    const labelText = norm(labelCell?.textContent);
+                    const labelStrong = labelCell?.querySelector('strong');
+                    return {
+                        label: labelText,
+                        hasStrong: Boolean(labelStrong && norm(labelStrong.textContent) === labelText),
+                    };
+                })
+                .filter((row) => row.label);
+            const missingBoldUpdateLabels = constants.ABOUT_UPDATE_TABLE_LABELS
+                .filter((label) => updateLabelRows.some((row) => row.label === label && !row.hasStrong));
             const updateValueStyleMismatches = aboutReferenceMetrics
                 ? Array.from(document.querySelectorAll('.about-update-value'))
                     .filter((el) => isVisible(el))
@@ -2033,6 +2061,10 @@ async function collectPageMetrics(page, scope) {
                 changelogBodyClientHeight: changelogBody?.clientHeight ?? null,
                 depsCardBottom: depsCard ? round(depsCard.getBoundingClientRect().bottom) : null,
                 footerTop: footer ? round(footer.getBoundingClientRect().top) : null,
+                detailsRows: aboutDetailsRows,
+                missingDetailsRows,
+                forbiddenDetailsRows,
+                missingBoldUpdateLabels,
                 updateValueStyleMismatches,
                 // Reference layout metrics (About page is the reference for card grid layouts)
                 topRowLayout: {
@@ -2055,12 +2087,16 @@ async function collectPageMetrics(page, scope) {
             const flowWrapperRect = flowWrapper ? flowWrapper.getBoundingClientRect() : null;
             // Use Bootstrap breakpoint detection instead of raw width
             const desktopLayout = window.matchMedia('(min-width: 992px)').matches;
+            const compactMobileLayout = window.matchMedia('(max-width: 575.98px)').matches;
 
             const flowNodeMetrics = flowNodes.map((node) => {
                 const icon = node.querySelector('.material-icons.flow-icon');
                 const label = node.querySelector('.flow-label');
                 const meta = node.querySelector('.flow-meta');
                 const style = window.getComputedStyle(node);
+                const iconStyle = icon ? window.getComputedStyle(icon) : null;
+                const labelStyle = label ? window.getComputedStyle(label) : null;
+                const metaStyle = meta ? window.getComputedStyle(meta) : null;
                 const rect = node.getBoundingClientRect();
                 const nodeKey = node.getAttribute('data-flow-node') || null;
                 const iconName = norm(icon?.textContent);
@@ -2077,6 +2113,9 @@ async function collectPageMetrics(page, scope) {
                     borderWidth: Number.parseFloat(style.borderTopWidth || '0'),
                     borderRadius: Number.parseFloat(style.borderTopLeftRadius || '0'),
                     padding: Number.parseFloat(style.padding || '0'),
+                    iconFontSize: Number.parseFloat(iconStyle?.fontSize || '0'),
+                    labelFontSize: Number.parseFloat(labelStyle?.fontSize || '0'),
+                    metaFontSize: Number.parseFloat(metaStyle?.fontSize || '0'),
                     hasActiveClass: node.classList.contains('flow-node-active'),
                     hasInactiveClass: node.classList.contains('flow-node-inactive'),
                     hasIcon: Boolean(icon),
@@ -2117,12 +2156,14 @@ async function collectPageMetrics(page, scope) {
             const flowWidthVariance = flowNodeMetrics.length > 1
                 ? Math.max(...flowNodeMetrics.map((node) => node.width)) - Math.min(...flowNodeMetrics.map((node) => node.width))
                 : 0;
+            const flowPopulatedMetaCount = flowNodeMetrics.filter((node) => node.metaText).length;
             const orderedNodeKeys = flowNodeMetrics.map((node) => node.key);
             const orderedConnectorKeys = flowConnectorMetrics.map((connector) => connector.key);
             const expectedNodeKeys = constants.STATUS_FLOW_NODE_EXPECTATIONS.map((node) => node.key);
             const expectedConnectorKeys = constants.STATUS_FLOW_CONNECTOR_EXPECTATIONS;
             const expectedNodeLabels = new Map(constants.STATUS_FLOW_NODE_EXPECTATIONS.map((node) => [node.key, node.label]));
             const expectedNodeIcons = new Map(constants.STATUS_FLOW_NODE_EXPECTATIONS.map((node) => [node.key, node.icon]));
+            const expectedHeightVarianceMax = flowPopulatedMetaCount > 0 && flowPopulatedMetaCount < flowNodeMetrics.length ? 24 : 5;
             const labelMismatches = flowNodeMetrics
                 .filter((node) => node.key && expectedNodeLabels.has(node.key))
                 .filter((node) => node.labelText !== expectedNodeLabels.get(node.key))
@@ -2134,6 +2175,17 @@ async function collectPageMetrics(page, scope) {
             const nodeStateConflicts = flowNodeMetrics
                 .filter((node) => node.hasActiveClass === node.hasInactiveClass)
                 .map((node) => ({ key: node.key, active: node.hasActiveClass, inactive: node.hasInactiveClass }));
+            const nodeContentStateMismatches = flowNodeMetrics
+                .filter((node) => {
+                    const hasContent = Boolean(node.metaText);
+                    return hasContent ? !node.hasActiveClass || node.hasInactiveClass : !node.hasInactiveClass || node.hasActiveClass;
+                })
+                .map((node) => ({
+                    key: node.key,
+                    metaText: node.metaText,
+                    active: node.hasActiveClass,
+                    inactive: node.hasInactiveClass,
+                }));
             const expectedOrientation = desktopLayout ? 'horizontal' : 'vertical';
             const orientationIssues = [];
 
@@ -2164,6 +2216,21 @@ async function collectPageMetrics(page, scope) {
                 lineHeight: connector.lineHeight,
                 expectedOrientation,
             }));
+            const compactMobileIssues = compactMobileLayout
+                ? {
+                    nodes: flowNodeMetrics.filter((node) =>
+                        node.padding > 11
+                        || node.borderRadius > 11
+                        || node.iconFontSize > 19.5
+                        || node.labelFontSize > 12.5
+                        || (node.metaText && node.metaFontSize > 11.8)
+                    ),
+                    connectors: flowConnectorMetrics.filter((connector) =>
+                        connector.height > 18
+                        || (connector.lineWidth || 0) > 2.5
+                    ),
+                }
+                : { nodes: [], connectors: [] };
 
             spacing.statusFlow = {
                 hasWrapper: Boolean(flowWrapper),
@@ -2182,13 +2249,38 @@ async function collectPageMetrics(page, scope) {
                 connectors: flowConnectorMetrics,
                 heightVariance: round(flowHeightVariance),
                 widthVariance: round(flowWidthVariance),
+                populatedMetaCount: flowPopulatedMetaCount,
+                expectedHeightVarianceMax,
                 allNodesHaveStructure: flowNodeMetrics.every(n => n.hasIcon && n.hasLabel && n.hasMeta),
                 labelMismatches,
                 iconMismatches,
                 nodeStateConflicts,
+                nodeContentStateMismatches,
                 orientationIssues,
                 connectorOrientationIssues,
+                compactMobileLayout,
+                compactMobileIssues,
             };
+
+            const statusDetailCards = Array.from(document.querySelectorAll('.card'))
+                .map((card) => {
+                    const title = card.querySelector('.h6, h3');
+                    const titleText = title ? norm(title.textContent) : null;
+                    if (!titleText || !constants.STATUS_DETAIL_CARD_TITLES.includes(titleText)) {
+                        return null;
+                    }
+
+                    const value = card.querySelector('.font-monospace');
+                    const valueText = norm(value?.textContent);
+
+                    return {
+                        title: titleText,
+                        hasValue: Boolean(value && valueText),
+                        valueText,
+                    };
+                })
+                .filter(Boolean);
+            const emptyStatusDetailCards = statusDetailCards.filter((card) => !card.hasValue);
 
             // Status page: Status check cards monospace validation
             // "Last Speedtest" uses inline <span class="font-monospace"> children,
@@ -2223,6 +2315,11 @@ async function collectPageMetrics(page, scope) {
                 cards: statusCheckCards,
                 missing: statusCheckMonospaceMissing,
                 allCorrect: statusCheckMonospaceMissing.length === 0,
+            };
+            spacing.statusDetailCards = {
+                cards: statusDetailCards,
+                empty: emptyStatusDetailCards,
+                allPopulated: emptyStatusDetailCards.length === 0,
             };
         }
 
@@ -2831,8 +2928,12 @@ async function collectPageMetrics(page, scope) {
             KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX,
             KPI_CONTEXTUAL_ICON_CLASSES,
             DASHBOARD_TRANSFER_COLOR_DISTANCE_MIN,
+            ABOUT_APPLICATION_DETAILS_REQUIRED_ROWS,
+            ABOUT_APPLICATION_DETAILS_FORBIDDEN_ROWS,
+            ABOUT_UPDATE_TABLE_LABELS,
             STATUS_FLOW_NODE_EXPECTATIONS,
             STATUS_FLOW_CONNECTOR_EXPECTATIONS,
+            STATUS_DETAIL_CARD_TITLES,
             WCAG_NORMAL_AA: WCAG_CONTRAST.NORMAL_AA,
             WCAG_LARGE_AA: WCAG_CONTRAST.LARGE_AA,
             WCAG_LARGE_TEXT_SIZE_PX: WCAG_CONTRAST.LARGE_TEXT_SIZE_PX,
@@ -2946,6 +3047,15 @@ function summarizeFindings(result) {
         }
     }
     if (result.metrics.spacing.about?.updateValueStyleMismatches?.length) pushWarning(`aboutUpdateValueStyleMismatches=${result.metrics.spacing.about.updateValueStyleMismatches.length}`);
+    if (result.metrics.spacing.about?.missingDetailsRows?.length) {
+        pushHard(`aboutDetailsMissing=${result.metrics.spacing.about.missingDetailsRows.join(',')}`);
+    }
+    if (result.metrics.spacing.about?.forbiddenDetailsRows?.length) {
+        pushHard(`aboutDetailsForbidden=${result.metrics.spacing.about.forbiddenDetailsRows.join(',')}`);
+    }
+    if (result.metrics.spacing.about?.missingBoldUpdateLabels?.length) {
+        pushHard(`aboutUpdateLabelsNotBold=${result.metrics.spacing.about.missingBoldUpdateLabels.join(',')}`);
+    }
     if (result.metrics.spacing.about?.topRowLayout && !result.metrics.spacing.about.topRowLayout.heightsMatch) {
         pushWarning(`aboutTopRowHeightMismatch=${result.metrics.spacing.about.topRowLayout.variance}px`);
     }
@@ -3180,8 +3290,11 @@ function summarizeFindings(result) {
         if (flow.nodeStateConflicts.length) {
             pushHard(`statusFlowStateConflict=${flow.nodeStateConflicts.length}`);
         }
-        if (flow.heightVariance > 5) {
-            pushWarning(`statusFlowHeightVariance=${flow.heightVariance}`);
+        if (flow.nodeContentStateMismatches.length) {
+            pushHard(`statusFlowContentStateMismatch=${flow.nodeContentStateMismatches.length}`);
+        }
+        if (flow.heightVariance > flow.expectedHeightVarianceMax) {
+            pushWarning(`statusFlowHeightVariance=${flow.heightVariance}/${flow.expectedHeightVarianceMax}`);
         }
         if (flow.widthVariance > 24) {
             pushWarning(`statusFlowWidthVariance=${flow.widthVariance}`);
@@ -3192,6 +3305,14 @@ function summarizeFindings(result) {
         if (flow.connectorOrientationIssues.length) {
             pushHard(`statusFlowConnectorOrientation=${flow.connectorOrientationIssues.length}`);
         }
+        if (flow.compactMobileLayout) {
+            if (flow.compactMobileIssues.nodes.length) {
+                pushWarning(`statusFlowCompactMobileNodes=${flow.compactMobileIssues.nodes.length}`);
+            }
+            if (flow.compactMobileIssues.connectors.length) {
+                pushWarning(`statusFlowCompactMobileConnectors=${flow.compactMobileIssues.connectors.length}`);
+            }
+        }
     }
 
     // Status page: Status check cards monospace validation
@@ -3201,6 +3322,13 @@ function summarizeFindings(result) {
         if (!checkMonospace.allCorrect) {
             const missingTitles = checkMonospace.missing.map(c => c.title).join(', ');
             pushHard(`statusCheckMonospaceMissing: ${missingTitles}`);
+        }
+    }
+    if (result.name.includes('status') && result.metrics.spacing.statusDetailCards) {
+        const detailCards = result.metrics.spacing.statusDetailCards;
+        if (!detailCards.allPopulated) {
+            const emptyTitles = detailCards.empty.map((card) => card.title).join(', ');
+            pushHard(`statusDetailCardsEmpty=${emptyTitles}`);
         }
     }
 

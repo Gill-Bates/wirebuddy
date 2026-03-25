@@ -1,17 +1,19 @@
 {% from 'macros/nav.html' import nav_item with context %}
 {# Define navigation items once for DRY principle #}
+{# Format: (path, icon, label, external) - external defaults to false #}
 {% set nav_items = [
-    ('/ui/dashboard', 'dashboard', 'Dashboard'),
-    ('/ui/peers', 'devices', 'Peers'),
-    ('/ui/dns', 'dns', 'DNS'),
-    ('/ui/traffic', 'show_chart', 'Traffic'),
+    ('/ui/dashboard', 'dashboard', 'Dashboard', false),
+    ('/ui/peers', 'devices', 'Peers', false),
+    ('/ui/dns', 'dns', 'DNS', false),
+    ('/ui/traffic', 'show_chart', 'Traffic', false),
 ] %}
 {% if user and user['is_admin'] %}
-    {% set nav_items = nav_items + [('/ui/users', 'people', 'Users')] %}
+    {% set nav_items = nav_items + [('/ui/users', 'people', 'Users', false)] %}
 {% endif %}
 {% set nav_items = nav_items + [
-    ('/ui/settings', 'settings', 'Settings'),
-    ('/ui/about', 'info', 'About'),
+    ('/ui/settings', 'settings', 'Settings', false),
+    ('https://gill-bates.github.io/wirebuddy/', 'description', 'Documentation', true),
+    ('/ui/about', 'info', 'About', false),
 ] %}
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="{{ theme | default('light') | e }}">
@@ -148,8 +150,8 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <!-- Mobile Navigation Links (2-column grid) -->
                 <div class="d-lg-none navbar-mobile-grid" aria-label="Mobile navigation">
-                    {% for href, icon, label in nav_items %}
-                    {{ nav_item(href, icon, label) }}
+                    {% for href, icon, label, external in nav_items %}
+                    {{ nav_item(href, icon, label, external) }}
                     {% endfor %}
                 </div>
                 <!-- Reserved for future desktop nav items -->
@@ -161,8 +163,8 @@
     <div class="wb-shell d-flex flex-grow-1">
         <!-- Sidebar -->
         <nav class="sidebar nav flex-column py-3 d-none d-lg-block" aria-label="Main navigation">
-            {% for href, icon, label in nav_items %}
-            {{ nav_item(href, icon, label) }}
+            {% for href, icon, label, external in nav_items %}
+            {{ nav_item(href, icon, label, external) }}
             {% endfor %}
         </nav>
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import sqlite3
 import subprocess
@@ -215,6 +216,33 @@ def _render_changelog() -> str:
 	return "<p>Changelog not found.</p>"
 
 
+def _get_configured_timezone() -> str:
+	"""Return the configured local timezone label for display."""
+	get_config()  # Ensure settings.env is loaded before reading env vars.
+
+	tz_name = os.getenv("TZ", "").strip()
+	if tz_name:
+		return tz_name
+
+	tz_file = Path("/etc/timezone")
+	try:
+		tz_text = tz_file.read_text(encoding="utf-8").strip()
+		if tz_text:
+			return tz_text
+	except OSError:
+		pass
+
+	try:
+		localtime_path = Path("/etc/localtime").resolve()
+		zoneinfo_root = Path("/usr/share/zoneinfo")
+		if zoneinfo_root in localtime_path.parents:
+			return str(localtime_path.relative_to(zoneinfo_root))
+	except OSError:
+		pass
+
+	return "System local time"
+
+
 @lru_cache(maxsize=1)
 def _get_about_data() -> dict:
 	"""Compute about page data once and cache it."""
@@ -225,6 +253,7 @@ def _get_about_data() -> dict:
 		"version": VERSION,
 		"build_info": BUILD_INFO,
 		"python_version": python_version,
+		"timezone": _get_configured_timezone(),
 		"wireguard_version": _get_system_tool_version(_WG_PATH, r"v([\d.]+)"),
 		"unbound_version": _get_system_tool_version(_UNBOUND_PATH, r"(\d+\.\d+(?:\.\d+)?)"),
 		"dependencies": _resolve_dependencies(requirements_versions),

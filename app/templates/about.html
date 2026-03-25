@@ -32,12 +32,12 @@
                                     <td><code class="about-meta-value about-meta-value-mono about-reference-value">{{ version }}</code></td>
                                 </tr>
                                 <tr>
-                                    <td class="ps-0"><strong>Build</strong></td>
-                                    <td><code class="about-meta-value about-meta-value-mono">{{ build_info[:7] if build_info != 'dev' else 'dev' }}</code></td>
-                                </tr>
-                                <tr>
                                     <td class="ps-0"><strong>Python</strong></td>
                                     <td><code class="about-meta-value about-meta-value-mono">{{ python_version }}</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="ps-0"><strong>Timezone</strong></td>
+                                    <td><code class="about-meta-value about-meta-value-mono">{{ timezone }}</code></td>
                                 </tr>
                                 <tr>
                                     <td class="ps-0"><strong>WireGuard</strong></td>
@@ -101,19 +101,19 @@
                                 </thead>
                                 <tbody>
                                     <tr>
-                                        <td class="ps-0" style="width: 50%;">Current</td>
+                                        <td class="ps-0" style="width: 50%;"><strong>Current</strong></td>
                                         <td class="text-end">
                                             <code class="about-meta-value about-meta-value-mono about-update-value" id="update-current-version">–</code>
                                         </td>
                                     </tr>
                                     <tr>
-                                        <td class="ps-0">Latest</td>
+                                        <td class="ps-0"><strong>Latest</strong></td>
                                         <td class="text-end">
                                             <code class="about-meta-value about-meta-value-mono about-update-value" id="update-latest-version">–</code>
                                         </td>
                                     </tr>
                                     <tr id="update-published-row" class="d-none">
-                                        <td class="ps-0">Released</td>
+                                        <td class="ps-0"><strong>Released</strong></td>
                                         <td class="text-end">
                                             <code class="about-meta-value about-meta-value-mono about-update-value" id="update-published-at">–</code>
                                         </td>
