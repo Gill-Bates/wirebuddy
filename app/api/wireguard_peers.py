@@ -131,6 +131,20 @@ def _row_to_public(row: sqlite3.Row, enabled_blocklist_ids: list[str]) -> PeerPu
 	)
 
 
+async def _bump_and_notify_node(conn: sqlite3.Connection, node_id: str) -> None:
+	"""Bump node config version and notify via SSE for instant push.
+	
+	This combines the DB update with the SSE notification to ensure
+	nodes receive configuration changes immediately instead of waiting
+	for the next polling interval.
+	"""
+	from ..db.sqlite_nodes import bump_node_config_version
+	from ..node import notifier as node_notifier
+	
+	new_version = await run_in_threadpool(bump_node_config_version, conn, node_id)
+	await node_notifier.notify_config_changed(node_id, new_version)
+
+
 def _extract_peer_client_scopes(peer_address: str | None) -> set[str]:
 	"""Extract canonical client scopes from a peer address field."""
 	if not peer_address:
@@ -299,7 +313,7 @@ async def create_peer(
 	# 4b. If assigned to a remote node, skip local WireGuard — store in DB only
 	is_remote = bool(payload.node_id)
 	if is_remote:
-		from ..db.sqlite_nodes import get_node as db_get_node, bump_node_config_version
+		from ..db.sqlite_nodes import get_node as db_get_node
 		node = await run_in_threadpool(db_get_node, conn, payload.node_id)
 		if not node:
 			raise HTTPException(status_code=404, detail=f"Node '{payload.node_id}' not found")
@@ -385,11 +399,11 @@ async def create_peer(
 	
 	# 6. Post-create synchronization
 	if is_remote:
-		# For remote peers: bump node config version so node picks up the change
+		# For remote peers: bump node config version and notify via SSE
 		try:
-			await run_in_threadpool(bump_node_config_version, conn, payload.node_id)
+			await _bump_and_notify_node(conn, payload.node_id)
 		except Exception as exc:
-			_log.warning("Failed to bump config version for node %s: %s", payload.node_id, exc)
+			_log.warning("Failed to bump/notify config for node %s: %s", payload.node_id, exc)
 	else:
 		# For local peers: sync WG config and apply isolation rules
 		try:
@@ -616,12 +630,11 @@ async def update_peer(
 		await apply_client_isolation_runtime(interface_name, conn)
 
 	if "node_id" in fields_set or ("is_enabled" in fields_set and (old_is_remote or new_is_remote)):
-		from ..db.sqlite_nodes import bump_node_config_version
 		for node_id in {old_node_id, new_node_id} - {None}:
 			try:
-				await run_in_threadpool(bump_node_config_version, conn, node_id)
+				await _bump_and_notify_node(conn, node_id)
 			except Exception as exc:
-				_log.warning("Failed to bump config version for node %s: %s", node_id, exc)
+				_log.warning("Failed to bump/notify config for node %s: %s", node_id, exc)
 	
 	# Regenerate Unbound peer tags if blocklist settings changed
 	if "blocklist_ids" in fields_set or "use_adblocker" in fields_set:
@@ -663,15 +676,14 @@ async def delete_peer(
 
 	if is_remote:
 		# Remote peer: no local WG entry to remove — just delete from DB
-		# and bump the node config version so the node picks up the removal
+		# and notify the node via SSE so it picks up the removal immediately
 		old_node_id = peer["node_id"]
 		await run_in_threadpool(db_delete_peer, conn, peer_id)
 
 		try:
-			from ..db.sqlite_nodes import bump_node_config_version
-			await run_in_threadpool(bump_node_config_version, conn, old_node_id)
+			await _bump_and_notify_node(conn, old_node_id)
 		except Exception as exc:
-			_log.warning("Failed to bump config version for node %s after peer delete: %s", old_node_id, exc)
+			_log.warning("Failed to bump/notify config for node %s after peer delete: %s", old_node_id, exc)
 
 		_log.info("PEER_DELETED (remote) id=%d public_key=%s... node=%s", peer_id, public_key[:8], old_node_id)
 		return

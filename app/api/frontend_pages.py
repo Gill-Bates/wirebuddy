@@ -518,6 +518,13 @@ async def peers_page(
 		peer["is_node_tunnel"] = peer["id"] in tunnel_peer_ids
 		peers.append(peer)
 
+	# Sort peers: regular peers first (alphabetically), then node tunnel peers
+	peers.sort(key=lambda p: (
+		p["is_node_tunnel"],  # False (regular) before True (tunnel)
+		p.get("interface", ""),
+		p.get("name", "").lower(),
+	))
+
 	# Load nodes for the node selector in the Add Peer modal (admin only)
 	nodes_data = []
 	if user["is_admin"]:

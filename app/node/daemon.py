@@ -355,74 +355,111 @@ async def main() -> None:
 		_log.debug("Using api_secret hash=%s... for sync requests",
 			hashlib.sha256(api_secret.encode("utf-8")).hexdigest()[:8])
 
+		# Start SSE listener for instant push notifications
+		config_changed_event = asyncio.Event()
+		sse_task = asyncio.create_task(
+			_sse_listener(
+				master_url,
+				api_secret,
+				cert_fingerprint,
+				tls_verify,
+				config_changed_event,
+				shutdown_event,
+			)
+		)
+
 		# Sync loop
 		backoff = 1
-		while not shutdown_event.is_set():
-			heartbeat_failed = False
-			config_failed = False
-			try:
-				await _push_heartbeat(
-					client,
-					master_url,
-					node_id,
-					api_secret,
-					cert_fingerprint,
-				)
-			except httpx.HTTPStatusError as exc:
-				detail = _extract_error_detail(exc.response)
-				_log.warning("Heartbeat failed: %s (detail: %s)", exc, detail)
-				heartbeat_failed = True
-			except httpx.HTTPError as exc:
-				_log.warning("Heartbeat failed: %s", exc)
-				heartbeat_failed = True
-			except Exception as exc:
-				_log.exception("Unexpected heartbeat failure: %s", exc)
-				heartbeat_failed = True
-
-			try:
-				if not heartbeat_failed:
-					# Pull config
-					new_version = await _pull_config(
+		try:
+			while not shutdown_event.is_set():
+				heartbeat_failed = False
+				config_failed = False
+				
+				# Check if SSE triggered a config change
+				config_push_received = config_changed_event.is_set()
+				if config_push_received:
+					config_changed_event.clear()
+					_log.info("Config push received via SSE — pulling config immediately")
+				
+				try:
+					await _push_heartbeat(
 						client,
 						master_url,
 						node_id,
-						current_config_version,
 						api_secret,
 						cert_fingerprint,
 					)
-					if new_version is not None:
-						current_config_version = new_version
-						node_state["config_version"] = current_config_version
-						_save_state(node_state)
+				except httpx.HTTPStatusError as exc:
+					detail = _extract_error_detail(exc.response)
+					_log.warning("Heartbeat failed: %s (detail: %s)", exc, detail)
+					heartbeat_failed = True
+				except httpx.HTTPError as exc:
+					_log.warning("Heartbeat failed: %s", exc)
+					heartbeat_failed = True
+				except Exception as exc:
+					_log.exception("Unexpected heartbeat failure: %s", exc)
+					heartbeat_failed = True
 
-			except httpx.HTTPStatusError as exc:
-				detail = _extract_error_detail(exc.response)
-				_log.warning("Config sync error: %s (detail: %s)", exc, detail)
-				config_failed = True
-			except httpx.HTTPError as exc:
-				_log.warning("Config sync error: %s", exc)
-				config_failed = True
-			except Exception as exc:
-				_log.exception("Unexpected error while pulling config: %s", exc)
-				config_failed = True
+				try:
+					if not heartbeat_failed:
+						# Pull config (always pull if push was received, otherwise use ETag-style check)
+						new_version = await _pull_config(
+							client,
+							master_url,
+							node_id,
+							current_config_version,
+							api_secret,
+							cert_fingerprint,
+						)
+						if new_version is not None:
+							current_config_version = new_version
+							node_state["config_version"] = current_config_version
+							_save_state(node_state)
 
-			if heartbeat_failed or config_failed:
-				backoff = min(backoff * 2, 300)
-				if config_failed:
-					_log.warning("Retrying config pull in %ds", backoff)
-			else:
-				backoff = 1  # Reset on success
+				except httpx.HTTPStatusError as exc:
+					detail = _extract_error_detail(exc.response)
+					_log.warning("Config sync error: %s (detail: %s)", exc, detail)
+					config_failed = True
+				except httpx.HTTPError as exc:
+					_log.warning("Config sync error: %s", exc)
+					config_failed = True
+				except Exception as exc:
+					_log.exception("Unexpected error while pulling config: %s", exc)
+					config_failed = True
 
-			# Wait for interval or shutdown
-			wait_time = backoff if backoff > 1 else SYNC_INTERVAL
-			try:
-				await asyncio.wait_for(
-					shutdown_event.wait(),
-					timeout=wait_time,
+				if heartbeat_failed or config_failed:
+					backoff = min(backoff * 2, 300)
+					if config_failed:
+						_log.warning("Retrying config pull in %ds", backoff)
+				else:
+					backoff = 1  # Reset on success
+
+				# Wait for interval, SSE push event, or shutdown
+				wait_time = backoff if backoff > 1 else SYNC_INTERVAL
+				done, _ = await asyncio.wait(
+					[
+						asyncio.create_task(shutdown_event.wait()),
+						asyncio.create_task(config_changed_event.wait()),
+						asyncio.create_task(asyncio.sleep(wait_time)),
+					],
+					return_when=asyncio.FIRST_COMPLETED,
 				)
-				break  # shutdown_event was set
-			except asyncio.TimeoutError:
-				pass  # Normal timeout, continue loop
+				
+				# Cancel remaining tasks
+				for task in _:
+					task.cancel()
+				
+				if shutdown_event.is_set():
+					break
+				# If config_changed_event is set, loop continues immediately
+
+		finally:
+			# Cancel SSE listener
+			sse_task.cancel()
+			try:
+				await sse_task
+			except asyncio.CancelledError:
+				pass
 
 	# Graceful shutdown
 	_log.info("Shutting down WireGuard interfaces...")
@@ -498,6 +535,86 @@ async def _push_heartbeat(
 		},
 	)
 	resp.raise_for_status()
+
+
+async def _sse_listener(
+	master_url: str,
+	api_secret: str,
+	cert_fingerprint: str,
+	tls_verify: bool | str,
+	config_changed_event: asyncio.Event,
+	shutdown_event: asyncio.Event,
+) -> None:
+	"""Listen for Server-Sent Events from master for instant config push.
+	
+	When a config_changed event is received, sets config_changed_event
+	to trigger an immediate config pull in the main sync loop.
+	"""
+	reconnect_delay = 1
+	max_reconnect_delay = 60
+	
+	while not shutdown_event.is_set():
+		try:
+			_log.info("Connecting to master SSE event stream...")
+			async with httpx.AsyncClient(
+				timeout=None,  # SSE connections are long-lived
+				verify=tls_verify,
+			) as sse_client:
+				async with sse_client.stream(
+					"GET",
+					f"{master_url}/api/nodes/events",
+					headers=_build_request_headers(api_secret, cert_fingerprint),
+				) as response:
+					if response.status_code != 200:
+						_log.warning("SSE connection failed: HTTP %d", response.status_code)
+						raise httpx.HTTPStatusError(
+							f"SSE failed with {response.status_code}",
+							request=response.request,
+							response=response,
+						)
+					
+					_log.info("SSE event stream connected — config changes will be pushed instantly")
+					reconnect_delay = 1  # Reset on successful connection
+					
+					async for line in response.aiter_lines():
+						if shutdown_event.is_set():
+							break
+						
+						line = line.strip()
+						if not line or line.startswith(":"):
+							continue  # Comment or keepalive
+						
+						if line.startswith("event: config_changed"):
+							_log.info("Received config_changed event from master")
+							config_changed_event.set()
+						elif line.startswith("data:"):
+							# Data line follows event line, already handled
+							pass
+						
+		except httpx.HTTPStatusError as exc:
+			if exc.response.status_code == 401:
+				_log.error("SSE authentication failed — check api_secret")
+			else:
+				_log.warning("SSE HTTP error: %s", exc)
+		except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
+			_log.warning("SSE connection error: %s", exc)
+		except asyncio.CancelledError:
+			_log.debug("SSE listener cancelled")
+			return
+		except Exception as exc:
+			_log.exception("Unexpected SSE error: %s", exc)
+		
+		if shutdown_event.is_set():
+			break
+		
+		_log.info("SSE reconnecting in %ds...", reconnect_delay)
+		try:
+			await asyncio.wait_for(shutdown_event.wait(), timeout=reconnect_delay)
+			break  # Shutdown requested
+		except asyncio.TimeoutError:
+			pass
+		
+		reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
 
 
 async def _pull_config(

@@ -807,6 +807,7 @@
                         </td>
                         <td data-label="Actions" class="peer-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
+                                {% if not peer['is_node_tunnel'] %}
                                 {% if user['is_admin'] %}
                                 <button type="button" class="btn btn-sm btn-outline-secondary" data-action="show-qr"
                                     data-peer-id="{{ peer['id'] }}"
@@ -840,22 +841,6 @@
                                 </span>
                                 {% endif %}
                                 {% if user['is_admin'] %}
-                                {% if peer['is_node_tunnel'] %}
-                                <span class="d-inline-block" data-bs-toggle="tooltip"
-                                      data-bs-title="Node tunnel peers cannot be edited">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" disabled
-                                            style="pointer-events: none;">
-                                        <span class="material-icons" aria-hidden="true">edit</span>
-                                    </button>
-                                </span>
-                                <span class="d-inline-block" data-bs-toggle="tooltip"
-                                      data-bs-title="Delete the node to remove this peer">
-                                    <button type="button" class="btn btn-sm btn-outline-danger" disabled
-                                            style="pointer-events: none;">
-                                        <span class="material-icons" aria-hidden="true">delete</span>
-                                    </button>
-                                </span>
-                                {% else %}
                                 <button type="button" class="btn btn-sm btn-outline-secondary" data-action="edit-peer"
                                     data-peer-id="{{ peer['id'] }}" aria-label="Edit {{ peer['name'] or 'peer' }}"
                                     data-bs-toggle="tooltip" data-bs-title="Edit Peer">
@@ -867,6 +852,8 @@
                                     <span class="material-icons" aria-hidden="true">delete</span>
                                 </button>
                                 {% endif %}
+                                {% else %}
+                                <span class="text-muted small">Managed by node</span>
                                 {% endif %}
                             </div>
                         </td>

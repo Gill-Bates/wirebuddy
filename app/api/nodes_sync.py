@@ -18,6 +18,7 @@ import logging
 import sqlite3
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import typing
 
@@ -44,6 +45,7 @@ from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
 from ..api.wireguard_utils import generate_keypair, run_wg_command
 from ..db.sqlite_runtime import transaction
 from ..utils.rate_limit import limiter
+from ..node import notifier as node_notifier
 
 _log = logging.getLogger(__name__)
 
@@ -317,3 +319,40 @@ def get_config_endpoint(
 
 	config = get_node_config(conn, node["id"])
 	return ok_response(data=config)
+
+
+@router.get("/events")
+async def node_events(
+	node: sqlite3.Row = Depends(get_current_node),
+):
+	"""Server-Sent Events stream for real-time config change notifications.
+
+	Nodes subscribe to this endpoint to receive instant push notifications
+	when their configuration changes (e.g., new peer added). This eliminates
+	the 30-second polling delay.
+
+	Event format:
+		event: config_changed
+		data: <new_config_version>
+
+	The node should pull the full config via GET /api/nodes/config after
+	receiving an event.
+	"""
+	node_id = node["id"]
+	_log.info("Node %s connected to SSE event stream", node_id)
+
+	async def event_generator():
+		# Send initial keepalive
+		yield ": keepalive\n\n"
+		async for event in node_notifier.subscribe(node_id):
+			yield event
+
+	return StreamingResponse(
+		event_generator(),
+		media_type="text/event-stream",
+		headers={
+			"Cache-Control": "no-cache",
+			"Connection": "keep-alive",
+			"X-Accel-Buffering": "no",  # Disable nginx buffering
+		},
+	)
