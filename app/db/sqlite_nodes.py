@@ -260,7 +260,8 @@ def get_node_config(
 ) -> dict:
 	"""Build the full configuration payload for a node.
 
-	Returns a dict with interfaces (+ keypairs) and assigned peers.
+	Returns a dict with interfaces (+ keypairs), assigned peers, and master_peer
+	for the Node→Master DNS tunnel.
 	"""
 	pepper = get_config().secret_key
 	node = get_node(conn, node_id)
@@ -305,10 +306,51 @@ def get_node_config(
 			"allowed_ips": p["allowed_ips"],
 		})
 
+	# Master peer info for Node→Master DNS tunnel
+	master_peer = None
+	tunnel_peer_id = node["tunnel_peer_id"] if "tunnel_peer_id" in node.keys() else None
+	if tunnel_peer_id:
+		tunnel_peer = conn.execute(
+			"SELECT * FROM peers WHERE id = ?", (tunnel_peer_id,)
+		).fetchone()
+		if tunnel_peer:
+			# Get master interface info for this peer
+			master_iface = conn.execute(
+				"SELECT * FROM interfaces WHERE name = ?", (tunnel_peer["interface"],)
+			).fetchone()
+			if master_iface:
+				# Get master endpoint from settings
+				endpoint_row = conn.execute(
+					"SELECT value FROM settings WHERE key = 'wg_endpoint'"
+				).fetchone()
+				# Extract gateway IP from interface address (e.g., "10.13.13.1/24" → "10.13.13.1")
+				import ipaddress
+				try:
+					master_ip = str(ipaddress.ip_interface(master_iface["address"]).ip)
+				except ValueError:
+					master_ip = master_iface["address"].split("/")[0]
+				# AllowedIPs = just the master's gateway IP for DNS routing
+				allowed_ips = f"{master_ip}/32"
+				# Add IPv6 if available
+				if master_iface["address6"]:
+					try:
+						master_ip6 = str(ipaddress.ip_interface(master_iface["address6"]).ip)
+						allowed_ips += f", {master_ip6}/128"
+					except ValueError:
+						pass
+				master_peer = {
+					"interface": tunnel_peer["interface"],
+					"public_key": master_iface["public_key"],
+					"endpoint": endpoint_row["value"] if endpoint_row else None,
+					"allowed_ips": allowed_ips,
+					"tunnel_address": tunnel_peer["peer_address"],  # Node's address on master
+				}
+
 	return {
 		"config_version": node["config_version"],
 		"interfaces": interfaces,
 		"peers": peers,
+		"master_peer": master_peer,
 	}
 
 

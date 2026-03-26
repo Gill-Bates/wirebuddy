@@ -315,6 +315,7 @@ def apply_config(config: dict[str, Any]) -> str:
 			"config_version": "abc123",
 			"interfaces": [{name, private_key, public_key, address, ...}],
 			"peers": [{interface, public_key, preshared_key, peer_address, ...}],
+			"master_peer": {interface, public_key, endpoint, allowed_ips, tunnel_address} or None,
 		}
 
 	Returns the applied config_version.
@@ -322,6 +323,7 @@ def apply_config(config: dict[str, Any]) -> str:
 	version = config.get("config_version", "")
 	raw_interfaces = config.get("interfaces", [])
 	raw_peers = config.get("peers", [])
+	master_peer = config.get("master_peer")
 	if not isinstance(raw_interfaces, list) or not isinstance(raw_peers, list):
 		raise ValueError("Invalid config payload: interfaces/peers must be lists")
 
@@ -354,7 +356,11 @@ def apply_config(config: dict[str, Any]) -> str:
 	for iface_name in desired_ifaces:
 		_sync_peers_for_interface(iface_name, peers_by_interface.get(iface_name, []))
 
-	# 3. Bring down interfaces that are no longer in config
+	# 3. Configure master peer for DNS tunnel (Node→Master)
+	if master_peer:
+		_configure_master_peer(master_peer)
+
+	# 4. Bring down interfaces that are no longer in config
 	for name in running - desired_ifaces:
 		if _is_managed_interface(name):
 			_log.info("Bringing down removed interface %s...", name)
@@ -362,6 +368,48 @@ def apply_config(config: dict[str, Any]) -> str:
 			_remove_interface_config(name)
 
 	return version
+
+
+def _configure_master_peer(master_peer: dict[str, Any]) -> None:
+	"""Configure the master as a WireGuard peer for DNS routing.
+
+	This allows the node to route DNS queries through the tunnel to the master's
+	Unbound DNS resolver.
+	"""
+	iface_name = master_peer.get("interface")
+	public_key = master_peer.get("public_key")
+	endpoint = master_peer.get("endpoint")
+	allowed_ips = master_peer.get("allowed_ips")
+
+	if not all([iface_name, public_key, endpoint, allowed_ips]):
+		_log.warning("Incomplete master_peer config, skipping DNS tunnel setup")
+		return
+
+	# Validate
+	if not _INTERFACE_RE.fullmatch(iface_name):
+		_log.error("Invalid interface name in master_peer: %s", iface_name)
+		return
+	if not _WG_KEY_RE.fullmatch(public_key):
+		_log.error("Invalid public key in master_peer")
+		return
+
+	# Add master as a peer
+	cmd = [
+		"wg", "set", iface_name,
+		"peer", public_key,
+		"allowed-ips", allowed_ips,
+		"endpoint", endpoint,
+		"persistent-keepalive", "25",
+	]
+	code, _, stderr = _run(cmd)
+	if code != 0:
+		_log.error("Failed to configure master peer on %s: %s", iface_name, stderr.strip())
+		return
+
+	_log.info(
+		"Configured master peer for DNS tunnel: iface=%s, endpoint=%s, allowed_ips=%s",
+		iface_name, endpoint, allowed_ips,
+	)
 
 
 def _sync_peers_for_interface(iface_name: str, desired_peers: list[dict[str, Any]]) -> None:

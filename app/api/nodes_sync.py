@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..api.response import ok_response
-from ..db.sqlite_interfaces import list_interfaces
+from ..db.sqlite_interfaces import list_interfaces, get_interface
 from ..db.sqlite_nodes import (
 	bump_node_config_version,
 	create_node_interface,
@@ -29,8 +29,11 @@ from ..db.sqlite_nodes import (
 	get_node,
 	get_node_by_api_secret,
 	get_node_config,
+	set_node_tunnel_peer,
 	update_node_heartbeat,
 )
+from ..db.sqlite_peers import allocate_peer_ip
+from ..db.sqlite_peers_mutations import create_peer
 from ..utils.config import get_config
 from ..utils.crypto import hash_token
 from ..utils.deps import get_conn
@@ -168,12 +171,35 @@ async def enroll_node_endpoint(
 	keypairs = [(iface["name"], await generate_keypair()) for iface in interfaces]
 
 	# Enroll atomically so partial interface/keypair creation cannot persist.
+	tunnel_peer_id = None
 	with transaction(conn, immediate=True):
 		if not enroll_node(conn, node_id, fingerprint):
 			raise HTTPException(status_code=409, detail="Node already enrolled")
 
 		for iface_name, (privkey, pubkey) in keypairs:
 			create_node_interface(conn, node_id, iface_name, privkey, pubkey)
+
+		# Create tunnel peer on master for Node→Master DNS routing
+		# Use the first interface's keypair for the tunnel
+		if keypairs:
+			first_iface_name, (_, first_pubkey) = keypairs[0]
+			tunnel_address = allocate_peer_ip(conn, first_iface_name)
+			if tunnel_address:
+				tunnel_peer_id = create_peer(
+					conn,
+					public_key=first_pubkey,
+					allowed_ips=tunnel_address,  # Node can only access its own IP on master
+					name=f"[Node] {node['name']}",
+					interface=first_iface_name,
+					peer_address=tunnel_address,
+					allowed_ips_mode="custom",
+					use_adblocker=False,  # No DNS filtering for node tunnel
+					dns_logging_enabled=False,  # No DNS logging for node tunnel
+				)
+				set_node_tunnel_peer(conn, node_id, tunnel_peer_id)
+				_log.info("Created tunnel peer for node=%s, peer_id=%d, address=%s", node_id, tunnel_peer_id, tunnel_address)
+			else:
+				_log.warning("Could not allocate tunnel address for node=%s (pool exhausted?)", node_id)
 
 		bump_node_config_version(conn, node_id)
 	config = get_node_config(conn, node_id)
