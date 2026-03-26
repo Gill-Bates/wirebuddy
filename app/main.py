@@ -1436,6 +1436,17 @@ async def _lifespan(app: FastAPI):
 				jitter_pct=0.05,  # ±5% jitter to avoid exact same time every day
 			)
 
+			# ─── NODE HEALTH MONITOR ──────────────────────────────────────
+			async def _run_node_health() -> None:
+				await scheduled_tasks.monitor_node_health(ctx)
+			scheduler.add(
+				"node-health",
+				interval_seconds=60,
+				func=_run_node_health,
+				run_on_start=False,
+				timeout=15.0,
+			)
+
 			await scheduler.start()
 			
 			# ─── DNS INGESTION DAEMON ─────────────────────────────────────

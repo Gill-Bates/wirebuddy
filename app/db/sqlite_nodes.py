@@ -349,3 +349,12 @@ def get_peers_count_by_node(conn: sqlite3.Connection) -> dict[str | None, int]:
 		"SELECT node_id, COUNT(*) AS cnt FROM peers GROUP BY node_id"
 	).fetchall()
 	return {r["node_id"]: r["cnt"] for r in rows}
+
+
+def get_peer_count_for_node(conn: sqlite3.Connection, node_id: str) -> int:
+	"""Return the number of peers currently assigned to ``node_id``."""
+	row = conn.execute(
+		"SELECT COUNT(*) AS cnt FROM peers WHERE node_id = ?",
+		(node_id,),
+	).fetchone()
+	return int(row["cnt"] or 0) if row else 0

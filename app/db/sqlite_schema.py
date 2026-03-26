@@ -188,7 +188,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 		)
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_interface ON peers(interface)")
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_peer_address ON peers(peer_address)")
-		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_node_id ON peers(node_id)")
+		# Note: idx_peers_node_id is created in _run_migrations() after the column is added
 		# Enforce uniqueness for assigned peer VPN address per interface.
 		# Safe rollout: if legacy duplicates exist, keep startup running and warn.
 		duplicate = conn.execute(
@@ -306,9 +306,47 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 		_log.info("Migrating peers table: adding dns_logging_enabled column")
 		conn.execute("ALTER TABLE peers ADD COLUMN dns_logging_enabled INTEGER NOT NULL DEFAULT 1")
 
-	# Migration: Add node_id column to peers table (Master-Node architecture)
+	# Migration: Master-Node architecture — create nodes tables and add node_id to peers
 	if "node_id" not in existing_columns:
-		_log.info("Migrating peers table: adding node_id column")
+		_log.info("Migrating database: adding Master-Node architecture (nodes tables + peers.node_id)")
+		
+		# Create nodes table (safe if already exists)
+		conn.execute(
+			"""
+			CREATE TABLE IF NOT EXISTS nodes (
+				id TEXT PRIMARY KEY,
+				name TEXT NOT NULL,
+				fqdn TEXT NOT NULL,
+				wg_port INTEGER NOT NULL DEFAULT 51820,
+				api_secret_hash TEXT NOT NULL,
+				cert_fingerprint TEXT,
+				status TEXT NOT NULL DEFAULT 'pending'
+					CHECK (status IN ('pending', 'online', 'offline', 'error')),
+				last_seen timestamp,
+				enrolled_at timestamp,
+				created_at timestamp NOT NULL,
+				config_version TEXT,
+				metadata TEXT
+			)
+			"""
+		)
+		
+		# Create node_interfaces table (safe if already exists)
+		conn.execute(
+			"""
+			CREATE TABLE IF NOT EXISTS node_interfaces (
+				node_id TEXT NOT NULL,
+				interface_name TEXT NOT NULL,
+				private_key TEXT NOT NULL,
+				public_key TEXT NOT NULL,
+				created_at timestamp NOT NULL,
+				PRIMARY KEY (node_id, interface_name),
+				FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+			)
+			"""
+		)
+		
+		# Now add the node_id column with foreign key
 		conn.execute("ALTER TABLE peers ADD COLUMN node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL")
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_node_id ON peers(node_id)")
 
