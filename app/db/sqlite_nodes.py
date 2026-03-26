@@ -140,6 +140,25 @@ def enroll_node(
 		return cur.rowcount > 0
 
 
+def rotate_node_session_secret(
+	conn: sqlite3.Connection,
+	node_id: str,
+	api_secret_hash: str,
+) -> bool:
+	"""Replace the API secret hash after successful enrollment.
+
+	This invalidates the enrollment token's api_secret so the token
+	becomes single-use.  Does NOT change enrollment status.
+	Returns True if the row was updated.
+	"""
+	with transaction(conn, immediate=True):
+		cur = conn.execute(
+			"UPDATE nodes SET api_secret_hash = ? WHERE id = ?",
+			(api_secret_hash, node_id),
+		)
+		return cur.rowcount > 0
+
+
 def update_node_api_secret(
 	conn: sqlite3.Connection,
 	node_id: str,
@@ -343,10 +362,26 @@ def get_node_config(
 			"SELECT * FROM interfaces WHERE name = ?", (tunnel_peer["interface"],)
 		).fetchone()
 		if master_iface:
-			# Get master endpoint from settings
-			endpoint_row = conn.execute(
-				"SELECT value FROM settings WHERE key = 'wg_endpoint'"
+			# Build master endpoint from wg_fqdn + interface listen port
+			fqdn_row = conn.execute(
+				"SELECT value FROM settings WHERE key = 'wg_fqdn'"
 			).fetchone()
+			master_fqdn = fqdn_row["value"].strip() if fqdn_row and fqdn_row["value"] else None
+			master_port = master_iface["listen_port"] or 51820
+			if master_fqdn:
+				# Wrap IPv6 in brackets for endpoint notation
+				try:
+					addr = ipaddress.ip_address(master_fqdn.strip("[]"))
+					if addr.version == 6:
+						master_endpoint = f"[{addr.compressed}]:{master_port}"
+					else:
+						master_endpoint = f"{addr.compressed}:{master_port}"
+				except ValueError:
+					master_endpoint = f"{master_fqdn}:{master_port}"
+			else:
+				master_endpoint = None
+				_log.warning("wg_fqdn not configured — master_peer endpoint will be empty")
+
 			# Extract gateway IP from interface address (e.g., "10.13.13.1/24" → "10.13.13.1")
 			try:
 				master_ip = str(ipaddress.ip_interface(master_iface["address"]).ip)
@@ -364,7 +399,7 @@ def get_node_config(
 			master_peer = {
 				"interface": tunnel_peer["interface"],
 				"public_key": master_iface["public_key"],
-				"endpoint": endpoint_row["value"] if endpoint_row else None,
+				"endpoint": master_endpoint,
 				"allowed_ips": allowed_ips,
 				"tunnel_address": tunnel_peer["peer_address"],  # Node's address on master
 			}

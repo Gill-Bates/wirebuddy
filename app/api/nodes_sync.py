@@ -19,9 +19,10 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
+import typing
 
 from ..api.response import ok_response
-from ..db.sqlite_interfaces import list_interfaces, get_interface
+from ..db.sqlite_interfaces import list_interfaces
 from ..db.sqlite_nodes import (
 	bump_node_config_version,
 	create_node_interface,
@@ -29,18 +30,20 @@ from ..db.sqlite_nodes import (
 	get_node,
 	get_node_by_api_secret,
 	get_node_config,
+	rotate_node_session_secret,
 	set_node_tunnel_peer,
 	update_node_heartbeat,
 )
 from ..db.sqlite_peers import allocate_peer_ip
 from ..db.sqlite_peers_mutations import create_peer
 from ..utils.config import get_config
-from ..utils.crypto import hash_token
+from ..utils.crypto import hash_token, new_token
 from ..utils.deps import get_conn
 from ..utils.network import parse_ip_str
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
-from ..api.wireguard_utils import generate_keypair, wg_set_peer_with_psk, run_wg_command
+from ..api.wireguard_utils import generate_keypair, run_wg_command
 from ..db.sqlite_runtime import transaction
+from ..utils.rate_limit import limiter
 
 _log = logging.getLogger(__name__)
 
@@ -91,6 +94,10 @@ def get_current_node(
 	if not client_cert_fp:
 		raise HTTPException(status_code=403, detail="Missing client certificate fingerprint")
 
+	# Verify the request came from localhost (trusted proxy) to prevent spoofing
+	if request.client and request.client.host not in ("127.0.0.1", "::1"):
+		raise HTTPException(status_code=403, detail="Direct access not permitted. Must pass through a trusted proxy.")
+
 	stored_cert_fp = (node["cert_fingerprint"] or "").strip().lower()
 	if not stored_cert_fp:
 		_log.error("Node %s is enrolled without a stored certificate fingerprint", node["id"])
@@ -116,7 +123,7 @@ class EnrollRequest(BaseModel):
 
 class HeartbeatRequest(BaseModel):
 	"""Node heartbeat payload."""
-	wg_dump: dict | None = Field(None, description="Parsed wg show dump data")
+
 	uptime: float | None = Field(None, description="System uptime in seconds")
 	interfaces_status: dict | None = Field(None, description="WG interface up/down status")
 
@@ -127,6 +134,7 @@ class HeartbeatRequest(BaseModel):
 
 
 @router.post("/enroll")
+@limiter.limit("10/minute")
 async def enroll_node_endpoint(
 	request: Request,
 	body: EnrollRequest,
@@ -147,7 +155,8 @@ async def enroll_node_endpoint(
 	node_id = payload["node_id"]
 	api_secret = payload["api_secret"]
 
-	# Verify node exists and is pending
+	# Verify node exists and is pending — quick pre-check before heavier work.
+	# The definitive serialised check is repeated inside the IMMEDIATE transaction.
 	node = get_node(conn, node_id)
 	if node is None:
 		raise HTTPException(status_code=404, detail="Node not found")
@@ -162,7 +171,7 @@ async def enroll_node_endpoint(
 	try:
 		cert_pem_bytes = body.cert_pem.encode("utf-8")
 		fingerprint = get_cert_fingerprint(cert_pem_bytes)
-	except Exception as exc:
+	except (ValueError, UnicodeDecodeError) as exc:
 		_log.warning("Node enrollment rejected due to invalid certificate for node=%s: %s", node_id, exc)
 		raise HTTPException(status_code=422, detail="Invalid certificate") from exc
 
@@ -170,10 +179,13 @@ async def enroll_node_endpoint(
 	interfaces = list_interfaces(conn)
 	keypairs = [(iface["name"], await generate_keypair()) for iface in interfaces]
 
-	# Enroll atomically so partial interface/keypair creation cannot persist.
+	# Enroll atomically — status check, keypairs, tunnel peer, secret rotation,
+	# and config-version bump all commit together or not at all.
+	session_secret = new_token()
 	tunnel_peer_id = None
 	tunnel_info = None  # (interface, pubkey, address) for WG sync
 	with transaction(conn, immediate=True):
+		# Definitive serialised pending check inside the IMMEDIATE lock
 		if not enroll_node(conn, node_id, fingerprint):
 			raise HTTPException(status_code=409, detail="Node already enrolled")
 
@@ -205,20 +217,33 @@ async def enroll_node_endpoint(
 
 		bump_node_config_version(conn, node_id)
 
+		# ── Secret rotation: make the enrollment token single-use ──
+		# Generate a fresh session secret inside the atomic transaction
+		session_secret = new_token()
+		session_hash = hash_token(session_secret)
+		rotate_node_session_secret(conn, node_id, session_hash)
+
 	# Add tunnel peer to master's WireGuard (outside transaction)
+	warning_msg = None
 	if tunnel_info:
 		iface_name, pubkey, address = tunnel_info
 		code, _, stderr = await run_wg_command(
 			"wg", "set", iface_name,
 			"peer", pubkey,
-			"allowed-ips", address,
+			"allowed-ips", f"{address}/32" if "/" not in address else address,
 		)
 		if code != 0:
 			_log.error("Failed to add tunnel peer to WireGuard: %s", stderr.strip())
+			warning_msg = "Tunnel peer could not be activated; retry sync"
 		else:
 			_log.info("Added tunnel peer to master WireGuard: interface=%s, pubkey=%s...", iface_name, pubkey[:8])
 
+	_log.info("Rotated API secret for node=%s (enrollment token invalidated)", node_id)
+
 	config = get_node_config(conn, node_id)
+	config["session_secret"] = session_secret  # One-time delivery over TLS
+	if warning_msg:
+		config["_warning"] = warning_msg
 
 	socket_ip = _get_socket_ip(request)
 	_log.info(
@@ -240,16 +265,14 @@ async def enroll_node_endpoint(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@router.post("/{node_id}/heartbeat")
+@router.post("/heartbeat")
 def heartbeat(
-	node_id: str,
 	body: HeartbeatRequest,
 	node: sqlite3.Row = Depends(get_current_node),
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Receive heartbeat with metrics from a remote node."""
-	if node["id"] != node_id:
-		raise HTTPException(status_code=403, detail="Node ID mismatch")
+	node_id = node["id"]
 
 	metadata = {}
 	if body.uptime is not None:
@@ -269,9 +292,8 @@ def heartbeat(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@router.get("/{node_id}/config")
+@router.get("/config")
 def get_config_endpoint(
-	node_id: str,
 	version: str | None = None,
 	node: sqlite3.Row = Depends(get_current_node),
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -281,16 +303,15 @@ def get_config_endpoint(
 	If ``version`` matches the current ``config_version``, returns an
 	unchanged response with ``data=None`` for node-daemon compatibility.
 	"""
-	if node["id"] != node_id:
-		raise HTTPException(status_code=403, detail="Node ID mismatch")
+	node_id = node["id"]
 
 	db_node = get_node(conn, node_id)
 	if db_node is None:
 		raise HTTPException(status_code=404, detail="Node not found")
 
 	# ETag-style: skip full payload if version matches
-	if version is not None and db_node["config_version"] and version == db_node["config_version"]:
+	if version is not None and db_node["config_version"] is not None and version == str(db_node["config_version"]):
 		return ok_response(data=None, message="Config unchanged", config_version=db_node["config_version"])
 
-	config = get_node_config(conn, node_id)
+	config = get_node_config(conn, node["id"])
 	return ok_response(data=config)

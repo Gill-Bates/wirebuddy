@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -37,7 +38,6 @@ _log = logging.getLogger(__name__)
 SYNC_INTERVAL = int(os.environ.get("WIREBUDDY_NODE_SYNC_INTERVAL", "30"))
 ENROLLMENT_RETRY_ATTEMPTS = max(1, int(os.environ.get("WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS", "3")))
 DATA_DIR = Path("/app/data")
-ENROLLED_FILE = DATA_DIR / ".enrolled"
 STATE_FILE = DATA_DIR / "node_state.json"
 
 
@@ -114,15 +114,11 @@ def _save_state(state: dict[str, Any]) -> None:
 def _clear_enrollment_state() -> None:
 	"""Clear all enrollment state for re-enrollment with a new token.
 
-	Removes node state, certificates, and legacy enrollment marker.
+	Removes node state and certificates.
 	"""
 	if STATE_FILE.exists():
 		STATE_FILE.unlink()
 		_log.info("Removed old node state file")
-
-	if ENROLLED_FILE.exists():
-		ENROLLED_FILE.unlink()
-		_log.info("Removed legacy enrollment marker")
 
 	clear_node_cert(DATA_DIR)
 
@@ -141,11 +137,6 @@ def _resolve_tls_verify(state: dict[str, Any] | None) -> tuple[bool | str, str |
 		raise RuntimeError(f"Configured master CA file does not exist: {ca_path}")
 
 	return str(ca_path), str(ca_path)
-
-
-def _write_legacy_enrollment_marker(node_id: str) -> None:
-	"""Maintain the legacy enrollment marker for backward compatibility."""
-	ENROLLED_FILE.write_text(node_id, encoding="utf-8")
 
 
 async def main() -> None:
@@ -174,12 +165,7 @@ async def main() -> None:
 
 	if state is None:
 		if not token_str:
-			if ENROLLED_FILE.exists():
-				_log.critical(
-					"Legacy enrollment marker exists but no persisted node state was found. Re-provide WIREBUDDY_ENROLLMENT_TOKEN once to migrate state.",
-				)
-			else:
-				_log.critical("WIREBUDDY_ENROLLMENT_TOKEN is required for first bootstrap")
+			_log.critical("WIREBUDDY_ENROLLMENT_TOKEN is required for first bootstrap")
 			sys.exit(1)
 		try:
 			payload = _parse_enrollment_token(token_str, verify_key)
@@ -194,19 +180,31 @@ async def main() -> None:
 				needs_reenroll = False
 				reason = ""
 
+				# Compare via enrollment_secret_hash (not api_secret, which was
+				# replaced by a session secret after the first enrollment).
+				token_secret_hash = hashlib.sha256(
+					payload["api_secret"].encode("utf-8")
+				).hexdigest()
+				stored_hash = state.get("enrollment_secret_hash", "")
+
 				if payload["node_id"] != state["node_id"]:
 					needs_reenroll = True
 					reason = f"node_id changed ({payload['node_id']} vs {state['node_id']})"
-				elif payload["api_secret"] != state["api_secret"]:
+				elif not stored_hash:
+					# No enrollment hash stored — force re-enrollment to
+					# establish session secret rotation.
 					needs_reenroll = True
-					reason = "api_secret changed (token was regenerated)"
+					reason = "no enrollment hash in state (clean re-enrollment required)"
+				elif token_secret_hash != stored_hash:
+					needs_reenroll = True
+					reason = "enrollment token was regenerated"
 
 				if needs_reenroll:
 					_log.warning("Enrollment token changed: %s — clearing old state for re-enrollment", reason)
 					_clear_enrollment_state()
 					state = None  # Force re-enrollment
 				else:
-					_log.info("Ignoring WIREBUDDY_ENROLLMENT_TOKEN because persisted node state already exists")
+					_log.info("Ignoring WIREBUDDY_ENROLLMENT_TOKEN — already enrolled with this token")
 					payload = None  # Not needed, using existing state
 			except ValueError as exc:
 				_log.critical("Failed to parse enrollment token: %s", exc)
@@ -263,8 +261,9 @@ async def main() -> None:
 		# Enrollment phase
 		if state is None:
 			current_config_version = None
+			session_secret: str | None = None
 			for attempt in range(1, ENROLLMENT_RETRY_ATTEMPTS + 1):
-				current_config_version = await _enroll(
+				current_config_version, session_secret = await _enroll(
 					client,
 					master_url,
 					token_str,
@@ -294,10 +293,22 @@ async def main() -> None:
 				_log.critical("Enrollment failed — exiting")
 				sys.exit(1)
 
+			# Replace the enrollment api_secret with the session secret
+			# returned by the master.  This makes the enrollment token
+			# worthless — an attacker who captured it cannot authenticate.
+			if session_secret:
+				# Store a hash of the original token secret so we can detect
+				# genuinely new tokens on future restarts.
+				node_state["enrollment_secret_hash"] = hashlib.sha256(
+					api_secret.encode("utf-8")
+				).hexdigest()
+				api_secret = session_secret
+				node_state["api_secret"] = api_secret
+				_log.info("Switched to session secret (enrollment token invalidated)")
+
 			current_config_version = current_config_version or None
 			node_state["config_version"] = current_config_version
 			_save_state(node_state)
-			_write_legacy_enrollment_marker(node_id)
 
 			if current_config_version is None:
 				_log.info("Enrollment completed without config payload, fetching full config...")
@@ -322,8 +333,6 @@ async def main() -> None:
 		else:
 			if state.get("master_ca_file") != master_ca_file:
 				_save_state(node_state)
-			if not ENROLLED_FILE.exists():
-				_write_legacy_enrollment_marker(node_id)
 			_log.info("Already enrolled, resuming sync loop")
 
 		# Sync loop
@@ -390,8 +399,14 @@ async def _enroll(
 	cert_pem: bytes,
 	api_secret: str,
 	cert_fingerprint: str,
-) -> str | None:
-	"""Enroll with the master. Returns initial config_version or None on failure."""
+) -> tuple[str | None, str | None]:
+	"""Enroll with the master.
+
+	Returns:
+		(config_version, session_secret) on success.
+		("", None) if the node is already enrolled (409).
+		(None, None) on failure.
+	"""
 	_log.info("Enrolling with master...")
 	try:
 		resp = await client.post(
@@ -404,20 +419,23 @@ async def _enroll(
 		)
 		if resp.status_code == 409:
 			_log.info("Node already enrolled (409), will fetch config in sync loop")
-			return ""
+			return "", None
 		resp.raise_for_status()
 		data = resp.json()
 		config = data.get("data", {})
+		session_secret = config.pop("session_secret", None) if config else None
+		version = ""
 		if config:
 			version = await asyncio.to_thread(apply_config, config)
-			return version
-		return ""
+		if session_secret:
+			_log.info("Received session secret from master (enrollment token is now invalidated)")
+		return version, session_secret
 	except httpx.HTTPStatusError as exc:
 		_log.error("Enrollment HTTP error %d: %s", exc.response.status_code, exc.response.text[:200])
-		return None
+		return None, None
 	except Exception as exc:
 		_log.exception("Enrollment failed: %s", exc)
-		return None
+		return None, None
 
 
 async def _push_heartbeat(
@@ -428,15 +446,11 @@ async def _push_heartbeat(
 	cert_fingerprint: str,
 ) -> None:
 	"""Push heartbeat with WireGuard stats to master."""
-	wg_data, uptime = await asyncio.gather(
-		asyncio.to_thread(get_wg_dump),
-		asyncio.to_thread(_get_uptime),
-	)
+	uptime = await asyncio.to_thread(_get_uptime)
 	resp = await client.post(
-		f"{master_url}/api/nodes/{node_id}/heartbeat",
+		f"{master_url}/api/nodes/heartbeat",
 		headers=_build_request_headers(api_secret, cert_fingerprint),
 		json={
-			"wg_dump": wg_data,
 			"uptime": uptime,
 		},
 	)
@@ -457,7 +471,7 @@ async def _pull_config(
 		params["version"] = current_version
 
 	resp = await client.get(
-		f"{master_url}/api/nodes/{node_id}/config",
+		f"{master_url}/api/nodes/config",
 		headers=_build_request_headers(api_secret, cert_fingerprint),
 		params=params,
 	)

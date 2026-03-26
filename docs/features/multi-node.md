@@ -230,6 +230,13 @@ QR codes automatically reflect the node assignment:
 - **Local peer**: Master's FQDN + master's public key
 - **Remote peer**: Node's FQDN + node interface's public key
 
+#### Node Badge
+
+For peers assigned to a remote node, the QR code image includes a **coloured badge** showing the node name (e.g., "Frankfurt", "NYC-01"). This makes it easy to identify which VPN exit a configuration targets — especially useful when printing QR codes or managing many devices.
+
+!!! info "Local Peers"
+    Peers assigned to the master (local) do not show a node badge.
+
 ### Node Management
 
 **View Node Status:**
@@ -304,12 +311,23 @@ Nodes create WireGuard interfaces based on master configuration:
 - Keypairs are **node-specific** and stored in `node_interfaces` table
 - Private keys are Fernet-encrypted in master database
 
-### DNS Resolution
+### DNS Resolution & Tunneling
 
-Nodes do **not** run DNS resolvers. Peer configuration from the master specifies:
+Nodes do **not** run their own DNS resolver. Instead, a **WireGuard tunnel** is automatically created between each node and the master during enrollment:
 
-- Master's DNS server IPs (if Unbound is enabled on master)
-- Or upstream DNS servers (e.g., `1.1.1.1`)
+1. Master allocates a tunnel IP for the node on the first WireGuard interface
+2. Node configures the master as a WireGuard peer with `PersistentKeepalive = 25`
+3. Node peers receive the **master's DNS server IP** (Unbound) in their client config
+4. DNS queries from node peers are routed through the WireGuard tunnel back to the master
+
+This ensures:
+
+- **Centralised ad-blocking** — all peers benefit from the master's blocklists, regardless of which node they connect to
+- **Centralised DNS logging** — all queries appear in the master's DNS log
+- **No DNS software required on nodes** — keeps node footprint minimal
+
+!!! note "Internet Traffic"
+    Only DNS traffic is tunnelled to the master. Regular internet traffic exits directly through the node's outbound connection.
 
 ### Metrics & Logs
 
