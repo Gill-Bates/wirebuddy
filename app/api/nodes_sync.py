@@ -125,11 +125,15 @@ def get_current_node(
 	socket_ip = _get_socket_ip(request)
 	if not _is_trusted_proxy_ip(socket_ip):
 		_log.warning(
-			"Rejected client certificate fingerprint header from untrusted source node=%s socket_ip=%s",
+			"Rejected client certificate fingerprint header from untrusted source node=%s socket_ip=%s trusted_cidrs=%s",
 			node["id"],
 			socket_ip or "unknown",
+			",".join(str(n) for n in _TRUSTED_PROXY_NETWORKS),
 		)
-		raise HTTPException(status_code=403, detail="Client certificate headers require a trusted proxy")
+		raise HTTPException(
+			status_code=403,
+			detail=f"Client certificate headers require a trusted proxy (socket_ip={socket_ip})",
+		)
 
 	stored_cert_fp = (node["cert_fingerprint"] or "").strip().lower()
 	if not stored_cert_fp:
