@@ -102,19 +102,37 @@ async def _build_peer_config(
 				detail="Cannot decrypt peer configuration. WIREBUDDY_SECRET_KEY does not match the database encryption key.",
 			)
 	
-	# Get server public key
-	code, stdout, stderr = await run_wg_command("wg", "show", peer["interface"], "public-key")
-	if code != 0 or not stdout.strip():
-		_log.warning(
-			"public-key retrieval failed for interface=%s: %s",
-			peer["interface"],
-			stderr.strip() if stderr else "no output",
-		)
-		raise HTTPException(
-			status_code=503,
-			detail=f"WireGuard interface '{peer['interface']}' is not running. Bring it up first.",
-		)
-	server_public_key = stdout.strip()
+	# Get server public key and endpoint — differs for node-assigned peers
+	node_id = peer["node_id"] if "node_id" in peer.keys() else None
+	if node_id:
+		# Peer runs on a remote node: use node's keypair and endpoint
+		from ..db.sqlite_nodes import get_node as db_get_node, get_node_interface_public_key
+		node = db_get_node(conn, node_id)
+		if not node:
+			raise HTTPException(status_code=404, detail="Assigned node not found")
+		node_pubkey = get_node_interface_public_key(conn, node_id, peer["interface"])
+		if not node_pubkey:
+			raise HTTPException(
+				status_code=503,
+				detail=f"Node '{node['name']}' has no keypair for interface '{peer['interface']}'",
+			)
+		server_public_key = node_pubkey
+		server_endpoint = f"{node['fqdn']}:{node['wg_port']}"
+	else:
+		# Local peer: get public key from running WireGuard interface
+		code, stdout, stderr = await run_wg_command("wg", "show", peer["interface"], "public-key")
+		if code != 0 or not stdout.strip():
+			_log.warning(
+				"public-key retrieval failed for interface=%s: %s",
+				peer["interface"],
+				stderr.strip() if stderr else "no output",
+			)
+			raise HTTPException(
+				status_code=503,
+				detail=f"WireGuard interface '{peer['interface']}' is not running. Bring it up first.",
+			)
+		server_public_key = stdout.strip()
+		server_endpoint = get_server_endpoint(conn, peer["interface"])
 	
 	# Determine DNS based on adblocker setting.
 	# NULL (never explicitly set by user) defaults to True — ad-blocking is
@@ -143,7 +161,7 @@ async def _build_peer_config(
 		address=peer_address,
 		dns=dns_servers,
 		server_public_key=server_public_key,
-		server_endpoint=get_server_endpoint(conn, peer["interface"]),
+		server_endpoint=server_endpoint,
 		allowed_ips=client_allowed_ips,
 		preshared_key=preshared_key_plain.get_secret_value() if preshared_key_plain else None,
 	)

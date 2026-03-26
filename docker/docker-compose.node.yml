@@ -1,0 +1,38 @@
+# WireBuddy Node — Docker Compose Example
+#
+# Deploy this on your remote VPN server. Obtain the enrollment token
+# from the master UI at /ui/nodes → "Add Node".
+#
+# Workflow:
+#   1. Master admin creates a node and copies the enrollment token
+#   2. Set WIREBUDDY_ENROLLMENT_TOKEN below
+#   3. docker compose -f docker-compose.node.yml up -d
+#   4. Node enrolls automatically and starts serving WireGuard peers
+#
+# The node runs NO web server, NO database, NO DNS — only WireGuard.
+# All management happens through the master.
+
+services:
+  wirebuddy-node:
+    image: giiibates/wirebuddy:latest
+    container_name: wirebuddy-node
+    restart: always
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    environment:
+      SERVER_MODE: node
+      WIREBUDDY_ENROLLMENT_TOKEN: "${WIREBUDDY_ENROLLMENT_TOKEN}"
+      LOG_LEVEL: INFO
+      TZ: ${TZ:-Etc/UTC}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./data:/data  # Stores node certificate only

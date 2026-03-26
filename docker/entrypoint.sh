@@ -9,6 +9,15 @@
 
 set -e
 
+# ─── NODE MODE ───────────────────────────────────────────
+# In node mode, skip all master logic and run the daemon directly
+SERVER_MODE="${SERVER_MODE:-master}"
+if [ "$SERVER_MODE" = "node" ]; then
+    echo "Starting WireBuddy in NODE mode"
+    exec python -c "from app.node.daemon import run; run()"
+fi
+
+# ─── MASTER MODE ─────────────────────────────────────────
 DB_PATH="${WIREBUDDY_DATA_DIR:-/data}/wirebuddy.db"
 HOST="0.0.0.0"
 PORT="8000"

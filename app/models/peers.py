@@ -151,6 +151,11 @@ class PeerCreate(BaseModel):
 	)
 	endpoint: Optional[str] = Field(None, max_length=256)
 	interface: str = Field(default="wg0", max_length=32)
+	node_id: Optional[str] = Field(
+		None,
+		max_length=64,
+		description="Assign peer to a remote node (null=local/master)",
+	)
 	use_adblocker: bool = True
 	dns_logging_enabled: bool = Field(
 		default=True,
@@ -216,6 +221,11 @@ class PeerUpdate(BaseModel):
 		None,
 		description="Enabled blocklist IDs (null=all, []=none, ['ads','porn']=specific)",
 	)
+	node_id: Optional[str] = Field(
+		None,
+		max_length=64,
+		description="Migrate peer to a different node (null=local/master)",
+	)
 
 	@field_validator("name")
 	@classmethod
@@ -253,6 +263,7 @@ class PeerPublic(BaseModel):
 	peer_address: Optional[str] = None
 	endpoint: Optional[str] = None
 	interface: str
+	node_id: Optional[str] = None
 	is_enabled: bool
 	use_adblocker: bool = True
 	dns_logging_enabled: bool = True

@@ -244,13 +244,14 @@ async def create_peer(
 			detail="Server FQDN/IP not configured. Please set 'Server FQDN / IP' in Settings → WireGuard before creating peers.",
 		)
 	
-	# 1. Verify interface exists and is active
-	code, _, stderr = await run_wg_command("wg", "show", payload.interface)
-	if code != 0:
-		raise HTTPException(
-			status_code=400,
-			detail=f"Interface '{payload.interface}' is not active. Bring it up first.",
-		)
+	# 1. Verify interface exists and is active (skip for remote node peers)
+	if not payload.node_id:
+		code, _, stderr = await run_wg_command("wg", "show", payload.interface)
+		if code != 0:
+			raise HTTPException(
+				status_code=400,
+				detail=f"Interface '{payload.interface}' is not active. Bring it up first.",
+			)
 	
 	# 2. Generate or validate keypair
 	private_key = payload.private_key
@@ -293,6 +294,14 @@ async def create_peer(
 	if existing:
 		raise HTTPException(status_code=409, detail="Peer with this public key already exists")
 
+	# 4b. If assigned to a remote node, skip local WireGuard — store in DB only
+	is_remote = bool(payload.node_id)
+	if is_remote:
+		from ..db.sqlite_nodes import get_node as db_get_node, bump_node_config_version
+		node = await run_in_threadpool(db_get_node, conn, payload.node_id)
+		if not node:
+			raise HTTPException(status_code=404, detail=f"Node '{payload.node_id}' not found")
+
 	# 5. Store peer in WireGuard + DB (with retry on concurrent IP allocation conflict)
 	# Encrypt private_key and preshared_key before storage
 	private_key_encrypted = vault_encrypt(private_key, cfg.secret_key)
@@ -312,27 +321,28 @@ async def create_peer(
 					detail=f"No available IP addresses in interface '{payload.interface}' subnet",
 				)
 
-			# Add peer to WireGuard - with or without PSK
-			if preshared_key:
-				code, _, stderr = await wg_set_peer_with_psk(
-					payload.interface,
-					public_key,
-					peer_address,
-					preshared_key,
-				)
-			else:
-				code, _, stderr = await run_wg_command(
-					"wg", "set", payload.interface,
-					"peer", public_key,
-					"allowed-ips", peer_address,
-				)
-			if code != 0:
-				err = stderr.strip()
-				_log.error("WG_SET_FAILED interface=%s code=%d stderr=%s", payload.interface, code, err)
-				raise HTTPException(
-					status_code=500,
-					detail=f"Failed to add peer to WireGuard: {err}",
-				)
+			# Add peer to local WireGuard (skip for remote nodes)
+			if not is_remote:
+				if preshared_key:
+					code, _, stderr = await wg_set_peer_with_psk(
+						payload.interface,
+						public_key,
+						peer_address,
+						preshared_key,
+					)
+				else:
+					code, _, stderr = await run_wg_command(
+						"wg", "set", payload.interface,
+						"peer", public_key,
+						"allowed-ips", peer_address,
+					)
+				if code != 0:
+					err = stderr.strip()
+					_log.error("WG_SET_FAILED interface=%s code=%d stderr=%s", payload.interface, code, err)
+					raise HTTPException(
+						status_code=500,
+						detail=f"Failed to add peer to WireGuard: {err}",
+					)
 
 			try:
 				peer_id = db_create_peer(
@@ -350,12 +360,14 @@ async def create_peer(
 					dns_logging_enabled=payload.dns_logging_enabled,
 					blocklist_ids=filter_peer_blocklist_ids(payload.blocklist_ids, enabled_blocklist_ids),
 					client_isolation=payload.client_isolation,
+					node_id=payload.node_id,
 				)
 				break
 			except sqlite3.IntegrityError as e:
-				# Rollback: remove peer from WireGuard
+				# Rollback: remove peer from WireGuard (only if local)
 				_log.error("DB integrity error, rolling back WG peer: %s", e)
-				await run_wg_command("wg", "set", payload.interface, "peer", public_key, "remove")
+				if not is_remote:
+					await run_wg_command("wg", "set", payload.interface, "peer", public_key, "remove")
 				ip_conflict = "idx_peers_address_interface_unique" in str(e) or "peer_address" in str(e).lower()
 				if ip_conflict and attempt < 2:
 					continue
@@ -363,46 +375,55 @@ async def create_peer(
 					raise HTTPException(status_code=409, detail="Peer IP address conflict. Please retry.")
 				raise HTTPException(status_code=409, detail="Peer already exists or conflicts with existing data")
 			except Exception as e:
-				# Rollback: remove peer from WireGuard
+				# Rollback: remove peer from WireGuard (only if local)
 				_log.error("DB insert failed, rolling back WG peer: %s", e)
-				await run_wg_command("wg", "set", payload.interface, "peer", public_key, "remove")
+				if not is_remote:
+					await run_wg_command("wg", "set", payload.interface, "peer", public_key, "remove")
 				raise HTTPException(status_code=500, detail="Failed to store peer in database")
 	
-	# 6. Post-create synchronization with full rollback on failure
-	try:
-		await run_in_threadpool(
-			sync_interface_config,
-			WG_CONFIG_PATH,
-			payload.interface,
-			conn,
-			pepper=cfg.secret_key,
-		)
-		await apply_client_isolation_runtime(payload.interface, conn)
-		
-		# 7. Seed TSDB series so peer directories exist immediately after creation
+	# 6. Post-create synchronization
+	if is_remote:
+		# For remote peers: bump node config version so node picks up the change
 		try:
-			await run_in_threadpool(tsdb.append_point, tsdb_dir, peer_key=public_key, metric="rx_bytes", value=0)
-			await run_in_threadpool(tsdb.append_point, tsdb_dir, peer_key=public_key, metric="tx_bytes", value=0)
+			await run_in_threadpool(bump_node_config_version, conn, payload.node_id)
 		except Exception as exc:
-			_log.warning("Failed to seed TSDB for peer %s...: %s", public_key[:8], exc)
+			_log.warning("Failed to bump config version for node %s: %s", payload.node_id, exc)
+	else:
+		# For local peers: sync WG config and apply isolation rules
+		try:
+			await run_in_threadpool(
+				sync_interface_config,
+				WG_CONFIG_PATH,
+				payload.interface,
+				conn,
+				pepper=cfg.secret_key,
+			)
+			await apply_client_isolation_runtime(payload.interface, conn)
+			
+			# 7. Seed TSDB series so peer directories exist immediately after creation
+			try:
+				await run_in_threadpool(tsdb.append_point, tsdb_dir, peer_key=public_key, metric="rx_bytes", value=0)
+				await run_in_threadpool(tsdb.append_point, tsdb_dir, peer_key=public_key, metric="tx_bytes", value=0)
+			except Exception as exc:
+				_log.warning("Failed to seed TSDB for peer %s...: %s", public_key[:8], exc)
 		
 		# 8. Regenerate Unbound peer tags for per-peer blocklist filtering
-		try:
-			await run_in_threadpool(_regenerate_peer_tags, conn)
+			try:
+				await run_in_threadpool(_regenerate_peer_tags, conn)
+			except Exception as exc:
+				_log.exception("Failed to regenerate peer tags — DNS filtering may be stale")
+				# Continue - this is not fatal to peer creation
+			
 		except Exception as exc:
-			_log.exception("Failed to regenerate peer tags — DNS filtering may be stale")
-			# Continue - this is not fatal to peer creation
-		
-	except Exception as exc:
-		# Rollback: remove from WG and DB
-		_log.error("Post-create sync failed; rolling back peer %s: %s", public_key[:8], exc)
-		await run_wg_command("wg", "set", payload.interface, "peer", public_key, "remove")
-		if peer_id:
-			await run_in_threadpool(db_delete_peer, conn, peer_id)
-		raise HTTPException(
-			status_code=500,
-			detail="Peer created but config sync failed; rolled back",
-		)
+			# Rollback: remove from WG and DB
+			_log.error("Post-create sync failed; rolling back peer %s: %s", public_key[:8], exc)
+			await run_wg_command("wg", "set", payload.interface, "peer", public_key, "remove")
+			if peer_id:
+				await run_in_threadpool(db_delete_peer, conn, peer_id)
+			raise HTTPException(
+				status_code=500,
+				detail="Peer created but config sync failed; rolled back",
+			)
 	
 	peer = await run_in_threadpool(get_peer_by_public_key, conn, public_key)
 	_log.info("PEER_CREATED public_key=%s... interface=%s peer_address=%s", public_key[:8], payload.interface, peer_address)

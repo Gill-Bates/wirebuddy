@@ -73,6 +73,8 @@ from .api import dns as dns_api
 from .api import frontend_shared as frontend_ui
 from .api import speedtest as speedtest_api
 from .api import network_stats as network_stats_api
+from .api import nodes as nodes_api
+from .api import nodes_sync as nodes_sync_api
 from .db import tsdb
 from .dns import unbound
 from .dns import ingestion as dns_ingestion
@@ -1649,6 +1651,8 @@ def create_app() -> FastAPI:
 	app.include_router(speedtest_api.router, prefix="/api/wireguard")
 	app.include_router(network_stats_api.router, prefix="/api")
 	app.include_router(backup_api.router, prefix="/api")
+	app.include_router(nodes_api.router, prefix="/api/nodes")
+	app.include_router(nodes_sync_api.router, prefix="/api/nodes")
 	
 	# ─── FRONTEND ROUTES ─────────────────────────────────────
 	app.include_router(frontend_ui.router)

@@ -41,12 +41,14 @@ def create_peer(
 	dns_logging_enabled: bool = True,
 	blocklist_ids: list[str] | None = None,
 	client_isolation: bool = False,
+	node_id: str | None = None,
 ) -> int:
 	"""Create a new peer and return the peer ID.
 
 	blocklist_ids: JSON array of enabled blocklist IDs (e.g., ["ads", "porn"]).
 	               None means all blocklists enabled.
 	client_isolation: If True, peer cannot communicate with other peers (iptables isolation).
+	node_id: If set, peer is assigned to a remote node (not local WireGuard).
 	"""
 	now = utcnow()
 	blocklist_ids_json = json.dumps(blocklist_ids) if blocklist_ids is not None else None
@@ -60,9 +62,10 @@ def create_peer(
 			INSERT INTO peers (
 				public_key, private_key, preshared_key, name,
 				allowed_ips, endpoint, interface, peer_address, allowed_ips_mode,
-				use_adblocker, dns_logging_enabled, blocklist_ids, client_isolation, created_at, updated_at
+				use_adblocker, dns_logging_enabled, blocklist_ids, client_isolation,
+				node_id, created_at, updated_at
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			""",
 			(
 				public_key,
@@ -78,6 +81,7 @@ def create_peer(
 				int(dns_logging_enabled),
 				blocklist_ids_json,
 				int(client_isolation),
+				node_id,
 				now,
 				now,
 			),
@@ -99,6 +103,7 @@ def update_peer(
 	client_isolation: bool | None | UnsetType = UNSET,
 	private_key: str | None | UnsetType = UNSET,
 	preshared_key: str | None | UnsetType = UNSET,
+	node_id: str | None | UnsetType = UNSET,
 ) -> bool:
 	"""Update a peer by ID. Returns True if peer was found and updated.
 
@@ -163,6 +168,9 @@ def update_peer(
 				raise ValueError("client_isolation cannot be None")
 			updates.append("client_isolation = ?")
 			params.append(int(client_isolation))
+		if node_id is not UNSET:
+			updates.append("node_id = ?")
+			params.append(node_id)
 
 		if not updates:
 			row = conn.execute("SELECT 1 FROM peers WHERE id = ?", (peer_id,)).fetchone()
