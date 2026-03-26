@@ -27,7 +27,15 @@ WG_CONFIG_DIR = Path(os.environ.get("WG_CONFIG_PATH", "/etc/wireguard"))
 _MANAGED_HEADER = "# Managed by WireBuddy Node Daemon - do not edit manually"
 _INTERFACE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,14}$")
 _WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
-_DANGEROUS_SHELL = re.compile(r'[`$\\]|\.\.|\$\(|/etc/passwd|/etc/shadow')
+# Block shell metacharacters that enable command injection/chaining
+_DANGEROUS_SHELL = re.compile(r'[`$\\;|&<>]|\.\.|\$\(|/etc/passwd|/etc/shadow')
+# Validate endpoint format: host:port or [ipv6]:port
+_ENDPOINT_RE = re.compile(r'^([\w.-]+|\[[0-9a-fA-F:]+\]):\d+$')
+
+# Input size limits to prevent DoS via oversized config payloads
+_MAX_INTERFACES = 32
+_MAX_PEERS_PER_INTERFACE = 512
+_MAX_CSV_ITEMS = 64  # For allowed_ips, addresses, etc.
 
 
 def _run(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
@@ -89,6 +97,8 @@ def _normalize_csv(value: Any, *, field_name: str) -> list[str]:
 	items = [item.strip() for item in text.split(",") if item.strip()]
 	if not items:
 		raise ValueError(f"{field_name!r} must not be empty")
+	if len(items) > _MAX_CSV_ITEMS:
+		raise ValueError(f"{field_name!r} exceeds maximum of {_MAX_CSV_ITEMS} items")
 	return items
 
 
@@ -130,21 +140,56 @@ def _validate_port(value: Any, *, field_name: str) -> int:
 	return port
 
 
+def _validate_endpoint(value: Any, *, field_name: str) -> str:
+	"""Validate WireGuard endpoint format (host:port or [ipv6]:port)."""
+	text = _sanitize_config_value(field_name, value)
+	if not _ENDPOINT_RE.fullmatch(text):
+		raise ValueError(f"Invalid endpoint format for {field_name!r}: {text!r}")
+	# Extract and validate port
+	if text.startswith("["):
+		# IPv6: [host]:port
+		try:
+			_, port_str = text.rsplit("]:", 1)
+		except ValueError as exc:
+			raise ValueError(f"Malformed IPv6 endpoint for {field_name!r}: {text!r}") from exc
+	else:
+		# IPv4 or hostname: host:port
+		try:
+			_, port_str = text.rsplit(":", 1)
+		except ValueError as exc:
+			raise ValueError(f"Malformed endpoint for {field_name!r}: {text!r}") from exc
+	_validate_port(port_str, field_name=f"{field_name} port")
+	return text
+
+
 def _validate_hook(value: Any, *, field_name: str) -> str | None:
-	"""Validate PostUp/PostDown hook for restricted shell execution."""
+	"""Validate PostUp/PostDown hook for restricted shell execution.
+	
+	Security: Blocks shell metacharacters (;|&<>$) to prevent command injection.
+	Only allows specific whitelisted commands to minimize attack surface.
+	"""
 	if value in (None, ""):
 		return None
 	text = _sanitize_config_value(field_name, value)
 	if _DANGEROUS_SHELL.search(text):
-		raise ValueError(f"Unsafe {field_name} hook contains dangerous shell characters")
-	for cmd in text.split(";"):
-		cmd = cmd.strip()
-		if not cmd:
-			continue
-		if not cmd.startswith(("iptables ", "ip6tables ", "ip ", "sysctl ", "nft ")):
-			raise ValueError(
-				f"Unsafe {field_name} command: {cmd!r}. Only iptables/ip6tables/ip/sysctl/nft commands allowed."
-			)
+		raise ValueError(
+			f"Unsafe {field_name} hook contains dangerous shell characters "
+			f"(;|&<>$ etc). Only simple single commands are allowed."
+		)
+	
+	# Split on whitespace and validate each command independently
+	# (we already blocked ; so no command chaining possible)
+	parts = text.split()
+	if not parts:
+		return None
+	
+	cmd_name = parts[0]
+	if cmd_name not in ("iptables", "ip6tables", "ip", "sysctl", "nft"):
+		raise ValueError(
+			f"Unsafe {field_name} command: {cmd_name!r}. "
+			f"Only iptables/ip6tables/ip/sysctl/nft commands allowed."
+		)
+	
 	return text
 
 
@@ -265,6 +310,7 @@ def _runtime_tmp_dir() -> Path | None:
 	candidate = Path("/run")
 	if candidate.is_dir():
 		return candidate
+	_log.warning("Runtime dir /run not available, using %s for PSK tempfiles", WG_CONFIG_DIR)
 	return _get_config_dir()
 
 
@@ -301,8 +347,9 @@ def _remove_interface_config(name: str) -> None:
 
 def _get_running_interfaces() -> set[str]:
 	"""Return set of currently running WireGuard interfaces."""
-	code, stdout, _ = _run(["wg", "show", "interfaces"])
+	code, stdout, stderr = _run(["wg", "show", "interfaces"])
 	if code != 0:
+		_log.warning("Failed to query running WireGuard interfaces: %s", stderr.strip() or "unknown error")
 		return set()
 	return set(stdout.strip().split())
 
@@ -328,7 +375,14 @@ def apply_config(config: dict[str, Any]) -> str:
 
 	Returns the applied config_version.
 	"""
+	# Validate config structure
+	if not isinstance(config, dict):
+		raise ValueError("Config must be a dictionary")
+	
 	version = config.get("config_version", "")
+	if not isinstance(version, str):
+		raise ValueError(f"config_version must be string, got {type(version).__name__}")
+	
 	raw_interfaces = config.get("interfaces", [])
 	raw_peers = config.get("peers", [])
 	master_peer = config.get("master_peer")
@@ -336,14 +390,25 @@ def apply_config(config: dict[str, Any]) -> str:
 		raise ValueError("Invalid config payload: interfaces/peers must be lists")
 
 	interfaces = [_validate_interface_config(iface) for iface in raw_interfaces]
+	if len(interfaces) > _MAX_INTERFACES:
+		raise ValueError(f"Config exceeds maximum of {_MAX_INTERFACES} interfaces")
+	
 	desired_ifaces = {iface["name"] for iface in interfaces}
 	if len(desired_ifaces) != len(interfaces):
 		raise ValueError("Duplicate interface names in config payload")
 
 	peers = [_validate_peer_config(peer, desired_ifaces) for peer in raw_peers]
+	if len(peers) > _MAX_INTERFACES * _MAX_PEERS_PER_INTERFACE:
+		raise ValueError(f"Config exceeds maximum total peer count")
+	
 	peers_by_interface: dict[str, list[dict[str, Any]]] = {name: [] for name in desired_ifaces}
 	for peer in peers:
 		peers_by_interface[peer["interface"]].append(peer)
+	
+	# Validate per-interface peer limits
+	for iface_name, iface_peers in peers_by_interface.items():
+		if len(iface_peers) > _MAX_PEERS_PER_INTERFACE:
+			raise ValueError(f"Interface {iface_name} exceeds maximum of {_MAX_PEERS_PER_INTERFACE} peers")
 
 	# 1. Ensure interfaces are up
 	running = _get_running_interfaces()
@@ -384,21 +449,13 @@ def _configure_master_peer(master_peer: dict[str, Any]) -> None:
 	This allows the node to route DNS queries through the tunnel to the master's
 	Unbound DNS resolver.
 	"""
-	iface_name = master_peer.get("interface")
-	public_key = master_peer.get("public_key")
-	endpoint = master_peer.get("endpoint")
-	allowed_ips = master_peer.get("allowed_ips")
-
-	if not all([iface_name, public_key, endpoint, allowed_ips]):
-		_log.warning("Incomplete master_peer config, skipping DNS tunnel setup")
-		return
-
-	# Validate
-	if not _INTERFACE_RE.fullmatch(iface_name):
-		_log.error("Invalid interface name in master_peer: %s", iface_name)
-		return
-	if not _WG_KEY_RE.fullmatch(public_key):
-		_log.error("Invalid public key in master_peer")
+	try:
+		iface_name = _validate_interface_name(master_peer.get("interface"))
+		public_key = _validate_wg_key(master_peer.get("public_key"), field_name="master_peer.public_key")
+		endpoint = _validate_endpoint(master_peer.get("endpoint"), field_name="master_peer.endpoint")
+		allowed_ips = _validate_peer_allowed_ips(master_peer.get("allowed_ips"), field_name="master_peer.allowed_ips")
+	except (ValueError, KeyError) as exc:
+		_log.error("Invalid master_peer config: %s", exc)
 		return
 
 	# Add master as a peer
@@ -433,8 +490,11 @@ def _sync_peers_for_interface(iface_name: str, desired_peers: list[dict[str, Any
 	desired_keys: set[str] = set()
 	desired_map: dict[str, dict[str, Any]] = {}
 	for p in desired_peers:
-		desired_keys.add(p["public_key"])
-		desired_map[p["public_key"]] = p
+		key = p["public_key"]
+		if key in desired_map:
+			raise ValueError(f"Duplicate peer public key in config for {iface_name}: {key[:8]}...")
+		desired_keys.add(key)
+		desired_map[key] = p
 
 	# Remove peers that shouldn't be on this interface
 	for key in current_keys - desired_keys:

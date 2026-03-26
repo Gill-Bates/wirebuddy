@@ -37,6 +37,7 @@ _log = logging.getLogger(__name__)
 
 SYNC_INTERVAL = int(os.environ.get("WIREBUDDY_NODE_SYNC_INTERVAL", "30"))
 ENROLLMENT_RETRY_ATTEMPTS = max(1, int(os.environ.get("WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS", "3")))
+SESSION_PROPAGATION_DELAY = 0.5  # Delay after enrollment to ensure master has committed session secret
 DATA_DIR = Path("/app/data")
 STATE_FILE = DATA_DIR / "node_state.json"
 
@@ -80,6 +81,7 @@ def _parse_enrollment_token(token_string: str, verify_key: str | None = None) ->
 
 	# Token signature is verified by the master during enrollment anyway,
 	# local verification is an optional extra security layer for paranoid setups
+	_log.warning("Enrollment token verification disabled — token signature will only be checked by master")
 	return _decode_enrollment_token_payload(token_string)
 
 
@@ -134,7 +136,7 @@ def _clear_enrollment_state() -> None:
 
 def _resolve_tls_verify(state: dict[str, Any] | None) -> tuple[bool | str, str | None]:
 	"""Resolve TLS verification settings for master API calls."""
-	ca_file_raw = os.environ.pop("WIREBUDDY_MASTER_CA_FILE", None)
+	ca_file_raw = os.getenv("WIREBUDDY_MASTER_CA_FILE")
 	if not ca_file_raw and state is not None:
 		ca_file_raw = state.get("master_ca_file")
 
@@ -168,8 +170,8 @@ async def main() -> None:
 		_log.critical("%s", exc)
 		sys.exit(1)
 
-	token_str = os.environ.pop("WIREBUDDY_ENROLLMENT_TOKEN", None)
-	verify_key = os.environ.pop("WIREBUDDY_ENROLLMENT_VERIFY_KEY", None)
+	token_str = os.getenv("WIREBUDDY_ENROLLMENT_TOKEN")
+	verify_key = os.getenv("WIREBUDDY_ENROLLMENT_VERIFY_KEY")
 	payload: dict[str, Any] | None = None
 
 	if state is None:
@@ -219,10 +221,12 @@ async def main() -> None:
 				_log.critical("Failed to parse enrollment token: %s", exc)
 				sys.exit(1)
 
-	master_url = str((state or payload)["master_url"]).rstrip("/")
-	node_id = str((state or payload)["node_id"])
-	api_secret = str((state or payload)["api_secret"])
-	node_name = str((state or payload).get("node_name", "unknown"))
+	# Use persisted state if available, otherwise use enrollment token payload
+	source = state if state is not None else payload
+	master_url = str(source["master_url"]).rstrip("/")
+	node_id = str(source["node_id"])
+	api_secret = str(source["api_secret"])
+	node_name = str(source.get("node_name", "unknown"))
 	current_config_version = None if state is None else state.get("config_version")
 
 	_log.info("Node: id=%s, name=%s, master=%s", node_id, node_name, master_url)
@@ -271,6 +275,7 @@ async def main() -> None:
 		if state is None:
 			current_config_version = None
 			session_secret: str | None = None
+			enrolled = False
 			for attempt in range(1, ENROLLMENT_RETRY_ATTEMPTS + 1):
 				enroll_res = await _enroll(
 					client,
@@ -281,6 +286,7 @@ async def main() -> None:
 					cert_fingerprint,
 				)
 				if enroll_res.success:
+					enrolled = True
 					current_config_version = enroll_res.config_version
 					session_secret = enroll_res.session_secret
 					break
@@ -300,7 +306,7 @@ async def main() -> None:
 				except asyncio.TimeoutError:
 					pass
 
-			if current_config_version is None and not session_secret:
+			if not enrolled:
 				_log.critical("Enrollment failed — exiting")
 				sys.exit(1)
 
@@ -320,7 +326,7 @@ async def main() -> None:
 				_log.info("Switched to session secret (hash=%s...)", new_secret_hash[:8])
 				# Small delay to ensure master has fully committed the session secret
 				# before we attempt authenticated requests with it
-				await asyncio.sleep(0.5)
+				await asyncio.sleep(SESSION_PROPAGATION_DELAY)
 
 			current_config_version = current_config_version or None
 			node_state["config_version"] = current_config_version
@@ -397,6 +403,7 @@ async def main() -> None:
 		backoff = 1
 		try:
 			while not shutdown_event.is_set():
+				_log.debug("Sync loop: iteration start")
 				heartbeat_failed = False
 				config_failed = False
 				
@@ -407,6 +414,7 @@ async def main() -> None:
 					_log.info("Config push received via SSE — pulling config immediately")
 				
 				try:
+					_log.debug("Sync loop: sending heartbeat...")
 					await _push_heartbeat(
 						client,
 						master_url,
@@ -414,6 +422,7 @@ async def main() -> None:
 						api_secret,
 						cert_fingerprint,
 					)
+					_log.debug("Sync loop: heartbeat OK")
 				except httpx.HTTPStatusError as exc:
 					detail = _extract_error_detail(exc.response)
 					_log.warning("Heartbeat failed: HTTP %d (detail: %s)", exc.response.status_code, detail)
@@ -429,6 +438,7 @@ async def main() -> None:
 					# Always try to pull config, regardless of heartbeat status
 					# Config and heartbeat are separate concerns - a heartbeat failure
 					# shouldn't block getting the initial/updated configuration
+					_log.debug("Sync loop: pulling config...")
 					new_version = await _pull_config(
 						client,
 						master_url,
@@ -438,9 +448,12 @@ async def main() -> None:
 						cert_fingerprint,
 					)
 					if new_version is not None:
+						_log.debug("Sync loop: config updated to %s...", new_version[:16])
 						current_config_version = new_version
 						node_state["config_version"] = current_config_version
 						_save_state(node_state)
+					else:
+						_log.debug("Sync loop: config unchanged")
 
 				except httpx.HTTPStatusError as exc:
 					detail = _extract_error_detail(exc.response)
@@ -462,7 +475,8 @@ async def main() -> None:
 
 				# Wait for interval, SSE push event, or shutdown
 				wait_time = backoff if backoff > 1 else SYNC_INTERVAL
-				done, _ = await asyncio.wait(
+				_log.debug("Sync loop: waiting %ds (backoff=%d)", wait_time, backoff)
+				done, pending = await asyncio.wait(
 					[
 						asyncio.create_task(shutdown_event.wait()),
 						asyncio.create_task(config_changed_event.wait()),
@@ -470,15 +484,23 @@ async def main() -> None:
 					],
 					return_when=asyncio.FIRST_COMPLETED,
 				)
+				_log.debug("Sync loop: wait returned, %d done, %d pending", len(done), len(pending))
 				
-				# Cancel remaining tasks
-				for task in _:
+				# Cancel remaining tasks and await them to prevent warnings
+				for task in pending:
 					task.cancel()
+				if pending:
+					await asyncio.gather(*pending, return_exceptions=True)
 				
 				if shutdown_event.is_set():
+					_log.debug("Sync loop: shutdown requested")
 					break
 				# If config_changed_event is set, loop continues immediately
+				_log.debug("Sync loop: continuing iteration")
 
+		except Exception as exc:
+			_log.exception("Sync loop crashed with unexpected error: %s", exc)
+			raise
 		finally:
 			# Cancel SSE listener
 			sse_task.cancel()
@@ -525,7 +547,7 @@ async def _enroll(
 		)
 		if resp.status_code == 409:
 			_log.info("Node already enrolled (409), will fetch config in sync loop")
-			return EnrollResult(success=True, config_version="", session_secret=None)
+			return EnrollResult(success=True, config_version=None, session_secret=None)
 		resp.raise_for_status()
 		data = resp.json()
 		config = data.get("data", {})
@@ -608,6 +630,7 @@ async def _sse_listener(
 					# This ensures quick recovery when master comes back online
 					config_changed_event.set()
 					
+					event_type = None  # Track current event type across lines
 					async for line in response.aiter_lines():
 						if shutdown_event.is_set():
 							break
@@ -616,12 +639,14 @@ async def _sse_listener(
 						if not line or line.startswith(":"):
 							continue  # Comment or keepalive
 						
-						if line.startswith("event: config_changed"):
-							_log.info("Received config_changed event from master")
-							config_changed_event.set()
+						if line.startswith("event:"):
+							event_type = line[6:].strip()
 						elif line.startswith("data:"):
-							# Data line follows event line, already handled
-							pass
+							# Process data for the current event type
+							if event_type == "config_changed":
+								_log.info("Received config_changed event from master")
+								config_changed_event.set()
+							event_type = None  # Reset after processing
 						
 		except httpx.HTTPStatusError as exc:
 			if exc.response.status_code == 401:
@@ -681,7 +706,7 @@ async def _pull_config(
 	_log.info("Received config from master: peers=%d interfaces=%d", peer_count, len(config.get("interfaces", [])))
 	new_version = await asyncio.to_thread(apply_config, config)
 	_log.info("Applied new config (version=%s...)", new_version[:16] if new_version else "none")
-	return new_version or ""
+	return new_version
 
 
 def _get_uptime() -> float | None:

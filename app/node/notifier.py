@@ -9,6 +9,12 @@
 Uses Server-Sent Events (SSE) to notify nodes of configuration changes.
 Nodes subscribe via GET /api/nodes/events and receive events when their
 config_version changes.
+
+Delivery guarantees:
+- At-most-once delivery (best-effort)
+- Latest config always prioritized (old events dropped under backpressure)
+- Per-client isolation (no shared queue contention)
+- Keepalive comments every 25s to prevent proxy timeouts
 """
 
 from __future__ import annotations
@@ -27,6 +33,8 @@ _lock = asyncio.Lock()
 
 # Maximum queued events per client before backpressure/dropping
 _MAX_QUEUED_EVENTS = 64
+# SSE keepalive interval to prevent proxy timeouts
+_KEEPALIVE_INTERVAL = 25
 
 
 async def subscribe(node_id: str) -> AsyncGenerator[str, None]:
@@ -42,8 +50,16 @@ async def subscribe(node_id: str) -> AsyncGenerator[str, None]:
     
     try:
         while True:
-            event = await queue.get()
-            yield event
+            try:
+                # Wait for event with timeout to inject keepalive
+                event = await asyncio.wait_for(queue.get(), timeout=_KEEPALIVE_INTERVAL)
+                yield event
+            except asyncio.TimeoutError:
+                # Send keepalive comment to prevent proxy timeout
+                yield ": keepalive\n\n"
+    except asyncio.CancelledError:
+        _log.debug("SSE client cancelled for node %s", node_id)
+        raise
     finally:
         async with _lock:
             _node_queues[node_id].discard(queue)
@@ -61,12 +77,16 @@ async def notify_config_changed(node_id: str, config_version: str) -> int:
         queues = _node_queues.get(node_id, set()).copy()
     
     if not queues:
-        _log.info("No SSE clients connected for node %s (config_version=%s...) — node will sync on next poll",
+        _log.debug("No SSE clients connected for node %s (config_version=%s...) — node will sync on next poll",
                   node_id, config_version[:16] if config_version else "none")
         return 0
     
-    # SSE event format
-    event = f"event: config_changed\ndata: {config_version}\n\n"
+    # SSE event format with id for replay support
+    event = (
+        f"id: {config_version}\n"
+        f"event: config_changed\n"
+        f"data: {config_version}\n\n"
+    )
     
     notified = 0
     for queue in queues:
@@ -74,9 +94,19 @@ async def notify_config_changed(node_id: str, config_version: str) -> int:
             queue.put_nowait(event)
             notified += 1
         except asyncio.QueueFull:
-            _log.warning("Event queue full for node %s, dropping event", node_id)
+            # Drop oldest event to ensure newest config is always delivered
+            _log.warning("Event queue full for node %s, dropping oldest event to make room", node_id)
+            try:
+                queue.get_nowait()  # Drop oldest
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                queue.put_nowait(event)  # Insert newest
+                notified += 1
+            except asyncio.QueueFull:
+                _log.error("Failed to enqueue event for node %s even after dropping oldest", node_id)
     
-    _log.info("Notified %d SSE client(s) for node %s: config_version=%s...", 
+    _log.debug("Notified %d SSE client(s) for node %s: config_version=%s...", 
               notified, node_id, config_version[:16] if config_version else "none")
     return notified
 
