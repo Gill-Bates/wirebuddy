@@ -617,6 +617,22 @@ def nodes_page(
 				node_version = meta.get("version")
 			except (json.JSONDecodeError, TypeError):
 				pass
+		
+		# Convert last_seen datetime to formatted label (like peers page)
+		last_seen_epoch = 0
+		if n["last_seen"]:
+			try:
+				from datetime import datetime
+				if isinstance(n["last_seen"], datetime):
+					last_seen_epoch = int(n["last_seen"].timestamp())
+				elif isinstance(n["last_seen"], str):
+					# Parse ISO format datetime string
+					dt = datetime.fromisoformat(n["last_seen"].replace("Z", "+00:00"))
+					last_seen_epoch = int(dt.timestamp())
+			except (ValueError, TypeError, AttributeError):
+				pass
+		last_seen_label = format_last_seen_label(last_seen_epoch)
+		
 		nodes_data.append({
 			"id": n["id"],
 			"name": n["name"],
@@ -624,6 +640,8 @@ def nodes_page(
 			"wg_port": n["wg_port"],
 			"status": n["status"],
 			"last_seen": n["last_seen"],
+			"last_seen_text": last_seen_label.text,
+			"last_seen_class": last_seen_label.css_class,
 			"enrolled_at": n["enrolled_at"],
 			"created_at": n["created_at"],
 			"peer_count": peer_counts.get(n["id"], 0),

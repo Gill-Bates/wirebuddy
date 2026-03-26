@@ -172,8 +172,9 @@ def _get_master_url(conn: sqlite3.Connection) -> str:
 
 def _node_to_dict(row: sqlite3.Row, peer_count: int = 0) -> dict[str, Any]:
 	"""Convert a node Row to a serialisable dict (strip secret hash)."""
+	from datetime import datetime
 	from .frontend_pages import _resolve_node_geo_ip
-	from .frontend_shared import extract_geo_fields, lookup_ip_cached
+	from .frontend_shared import extract_geo_fields, format_last_seen_label, lookup_ip_cached
 	
 	resolved_geo_ip = _resolve_node_geo_ip(row["fqdn"])
 	geo_fields = extract_geo_fields(lookup_ip_cached(resolved_geo_ip)) if resolved_geo_ip else {
@@ -188,6 +189,19 @@ def _node_to_dict(row: sqlite3.Row, peer_count: int = 0) -> dict[str, Any]:
 	if isinstance(metadata, dict):
 		node_version = metadata.get("version")
 	
+	# Convert last_seen datetime to formatted label
+	last_seen_epoch = 0
+	if row["last_seen"]:
+		try:
+			if isinstance(row["last_seen"], datetime):
+				last_seen_epoch = int(row["last_seen"].timestamp())
+			elif isinstance(row["last_seen"], str):
+				dt = datetime.fromisoformat(row["last_seen"].replace("Z", "+00:00"))
+				last_seen_epoch = int(dt.timestamp())
+		except (ValueError, TypeError, AttributeError):
+			pass
+	last_seen_label = format_last_seen_label(last_seen_epoch)
+	
 	return {
 		"id": row["id"],
 		"name": row["name"],
@@ -195,6 +209,8 @@ def _node_to_dict(row: sqlite3.Row, peer_count: int = 0) -> dict[str, Any]:
 		"wg_port": row["wg_port"],
 		"status": row["status"],
 		"last_seen": row["last_seen"],
+		"last_seen_text": last_seen_label.text,
+		"last_seen_class": last_seen_label.css_class,
 		"enrolled_at": row["enrolled_at"],
 		"created_at": row["created_at"],
 		"config_version": row["config_version"],

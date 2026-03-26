@@ -182,18 +182,14 @@
                         </td>
                         <td data-label="Version">
                             {% if node.node_version %}
-                            <code class="small">{{ node.node_version }}</code>
+                            <code>{{ node.node_version }}</code>
                             {% else %}
                             <span class="text-muted">—</span>
                             {% endif %}
                         </td>
                         <td data-label="Peers">{{ node.peer_count }}</td>
-                        <td data-label="Last Seen">
-                            {% if node.last_seen %}
-                            <span class="wb-relative-time" data-utc="{{ node.last_seen }}">{{ node.last_seen }}</span>
-                            {% else %}
-                            <span class="text-muted">—</span>
-                            {% endif %}
+                        <td data-label="Last Seen" class="node-last-seen text-nowrap">
+                            <span class="{{ node.last_seen_class }}">{{ node.last_seen_text }}</span>
                         </td>
                         <td data-label="Actions" class="text-end node-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
@@ -704,7 +700,7 @@
                 const versionCell = row.querySelector('td[data-label="Version"]');
                 if (versionCell) {
                     if (node.node_version) {
-                        versionCell.innerHTML = `<code class="small">${node.node_version}</code>`;
+                        versionCell.innerHTML = `<code>${node.node_version}</code>`;
                     } else {
                         versionCell.innerHTML = '<span class="text-muted">—</span>';
                     }
@@ -712,21 +708,11 @@
 
                 // Update last seen
                 const lastSeenCell = row.querySelector('td[data-label="Last Seen"]');
-                if (lastSeenCell && node.last_seen) {
-                    const existingSpan = lastSeenCell.querySelector('.wb-relative-time');
-                    if (existingSpan) {
-                        existingSpan.dataset.utc = node.last_seen;
-                    } else {
-                        lastSeenCell.innerHTML = `<span class="wb-relative-time" data-utc="${node.last_seen}">${node.last_seen}</span>`;
-                    }
-                } else if (lastSeenCell && !node.last_seen) {
-                    lastSeenCell.innerHTML = '<span class="text-muted">—</span>';
+                if (lastSeenCell) {
+                    const text = node.last_seen_text || 'Never';
+                    const cssClass = node.last_seen_class || 'text-muted';
+                    lastSeenCell.innerHTML = `<span class="${cssClass}">${text}</span>`;
                 }
-            }
-
-            // Trigger relative time update if available
-            if (window.WBShared?.updateRelativeTimes) {
-                window.WBShared.updateRelativeTimes();
             }
         } catch (err) {
             // Silently ignore polling errors
