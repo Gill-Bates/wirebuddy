@@ -49,6 +49,15 @@ def _build_request_headers(api_secret: str, cert_fingerprint: str) -> dict[str, 
 	}
 
 
+def _extract_error_detail(response: httpx.Response) -> str:
+	"""Extract error detail from HTTP response for logging."""
+	try:
+		data = response.json()
+		return str(data.get("detail", ""))[:200]
+	except Exception:
+		return response.text[:200] if response.text else ""
+
+
 def _decode_enrollment_token_payload(token_string: str) -> dict[str, Any]:
 	"""Decode the token payload without verifying its HMAC signature."""
 	try:
@@ -306,7 +315,12 @@ async def main() -> None:
 				).hexdigest()
 				api_secret = session_secret
 				node_state["api_secret"] = api_secret
-				_log.info("Switched to session secret (enrollment token invalidated)")
+				# Log first 8 chars of the new secret hash for debugging
+				new_secret_hash = hashlib.sha256(api_secret.encode("utf-8")).hexdigest()
+				_log.info("Switched to session secret (hash=%s...)", new_secret_hash[:8])
+				# Small delay to ensure master has fully committed the session secret
+				# before we attempt authenticated requests with it
+				await asyncio.sleep(0.5)
 
 			current_config_version = current_config_version or None
 			node_state["config_version"] = current_config_version
@@ -337,6 +351,10 @@ async def main() -> None:
 				_save_state(node_state)
 			_log.info("Already enrolled, resuming sync loop")
 
+		# Debug: log which secret hash will be used for authentication
+		_log.debug("Using api_secret hash=%s... for sync requests",
+			hashlib.sha256(api_secret.encode("utf-8")).hexdigest()[:8])
+
 		# Sync loop
 		backoff = 1
 		while not shutdown_event.is_set():
@@ -350,6 +368,10 @@ async def main() -> None:
 					api_secret,
 					cert_fingerprint,
 				)
+			except httpx.HTTPStatusError as exc:
+				detail = _extract_error_detail(exc.response)
+				_log.warning("Heartbeat failed: %s (detail: %s)", exc, detail)
+				heartbeat_failed = True
 			except httpx.HTTPError as exc:
 				_log.warning("Heartbeat failed: %s", exc)
 				heartbeat_failed = True
@@ -373,6 +395,10 @@ async def main() -> None:
 						node_state["config_version"] = current_config_version
 						_save_state(node_state)
 
+			except httpx.HTTPStatusError as exc:
+				detail = _extract_error_detail(exc.response)
+				_log.warning("Config sync error: %s (detail: %s)", exc, detail)
+				config_failed = True
 			except httpx.HTTPError as exc:
 				_log.warning("Config sync error: %s", exc)
 				config_failed = True

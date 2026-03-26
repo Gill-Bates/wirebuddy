@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import typing
+
 from .db.sqlite_interfaces import (
 	list_interfaces,
 )
@@ -125,7 +127,6 @@ _WG_UP_TIMEOUT_SECONDS = 15.0
 _WG_DOWN_TIMEOUT_SECONDS = 15.0
 _WG_STARTUP_CONCURRENCY = 4  # Start up to 4 interfaces in parallel
 _TSDB_SAMPLE_INTERVAL_SECONDS = 30.0
-_PEER_CONNECTION_THRESHOLD = 180  # seconds - peer is "connected" if handshake < 3 min ago
 _BLOCKLIST_UPDATE_INTERVAL_SECONDS = 86400.0
 _TSDB_MAINTENANCE_INTERVAL_SECONDS = 21600
 _GEOIP_UPDATE_INTERVAL_SECONDS = 604800
@@ -138,10 +139,6 @@ _ADBLOCKER_TIMER_CHECK_INTERVAL_SECONDS = 15
 _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS = 2.0
 _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS = 300.0
 
-# Speedtest night window: run between 02:00 and 04:00 local time
-_SPEEDTEST_NIGHT_WINDOW_START_HOUR = 2
-_SPEEDTEST_NIGHT_WINDOW_END_HOUR = 4
-_SPEEDTEST_RETRY_DELAY_MINUTES = 30  # Retry delay if peers are active
 
 # Docker default bridge gateway ranges
 _DOCKER_BRIDGE_NETWORKS = (
@@ -305,7 +302,6 @@ async def _cleanup_stale_interfaces() -> list[str]:
 	return removed
 
 
-_PEER_STATE_MAX_SIZE = 100_000  # Evict oldest 10 % when full
 # NOTE: _peer_connection_state OrderedDict is only accessed from the single
 # event loop thread (in _sample_tsdb_metrics). Not thread-safe for concurrent access.
 
@@ -615,7 +611,7 @@ def _regenerate_peer_tags_sync(db_path: Path) -> int:
 		close_connection(conn)
 
 
-def _with_conn(db_path: Path, fn, *args, **kwargs):
+def _with_conn(db_path: Path, fn: typing.Callable, *args, **kwargs):
 	"""Run fn(conn, *args, **kwargs) with connect/close lifecycle.
 	
 	Eliminates boilerplate connect/try/finally/close_connection pattern.
@@ -627,7 +623,7 @@ def _with_conn(db_path: Path, fn, *args, **kwargs):
 		close_connection(conn)
 
 
-def _with_conn_or(db_path: Path, fn, *args, default=None, **kwargs):
+def _with_conn_or(db_path: Path, fn: typing.Callable, *args, default=None, **kwargs):
 	"""Like _with_conn but returns default on any exception.
 	
 	Useful for watchdog/readiness checks where DB errors should fail safe
@@ -869,8 +865,6 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 	6. TSDB fsync
 	7. SQLite checkpoint
 	"""
-	"""
-
 
 	# 1. Cancel DNS ingestion daemon (fastest to stop)
 	if ctx.dns_task and not ctx.dns_task.done():
@@ -1367,8 +1361,8 @@ def create_app() -> FastAPI:
 	app.include_router(speedtest_api.router, prefix="/api/wireguard")
 	app.include_router(network_stats_api.router, prefix="/api")
 	app.include_router(backup_api.router, prefix="/api")
-	app.include_router(nodes_api.router, prefix="/api/nodes")
 	app.include_router(nodes_sync_api.router, prefix="/api/nodes")
+	app.include_router(nodes_api.router, prefix="/api/nodes")
 	
 	# ─── FRONTEND ROUTES ─────────────────────────────────────
 	app.include_router(frontend_ui.router)
@@ -1427,7 +1421,7 @@ _SWAGGER_HTML = """
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>WireBuddy – API Docs</title>
+  <title>WireBuddy - API Docs</title>
   <!-- Pin exact version and use SRI to prevent CDN compromise / MITM attacks -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui.css"
         integrity="sha384-OiJUz2Or7cLjcY1Eaw2xhMeUY3z5Csh2+HG9WXElrCqx45ddJCnYXN0a/HQQsJtz"

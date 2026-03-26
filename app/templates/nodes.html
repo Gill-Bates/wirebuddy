@@ -38,10 +38,7 @@
     .nodes-primary-trigger .material-icons {
         pointer-events: none;
     }
-    .nodes-empty-state .material-icons {
-        font-size: 3rem;
-        opacity: 0.4;
-    }
+
     @media (max-width: 767.98px) {
         .nodes-table thead { display: none; }
         .nodes-table tbody tr {
@@ -162,10 +159,10 @@
             </table>
         </div>
         {% else %}
-        <div class="nodes-empty-state text-center py-5 text-muted">
-            <span class="material-icons" aria-hidden="true">hub</span>
-            <p class="mt-2 mb-1">No remote nodes configured yet.</p>
-            <p class="small mb-0">Click <strong>Add Node</strong> to register a remote VPN server.</p>
+        <div class="nodes-empty-state text-center py-5">
+            <span class="material-icons text-muted mb-3" style="font-size: 3rem;" aria-hidden="true">hub</span>
+            <h3 class="h5 mb-2">No remote nodes configured yet</h3>
+            <p class="text-muted mb-0">Click <strong>Add Node</strong> to register a remote VPN server.</p>
         </div>
         {% endif %}
     </div>

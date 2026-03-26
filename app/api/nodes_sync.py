@@ -84,19 +84,19 @@ def get_current_node(
 	node = get_node_by_api_secret(conn, secret_hash)
 
 	if node is None:
+		# Log first 8 chars of hash for debugging (safe: hash is not reversible)
+		_log.warning("Node auth failed: no node found for secret_hash=%s...", secret_hash[:8])
 		raise HTTPException(status_code=401, detail="Invalid API secret")
 
 	if node["status"] == "pending":
+		_log.warning("Node auth failed: node=%s status is still 'pending'", node["id"])
 		raise HTTPException(status_code=403, detail="Node not yet enrolled")
 
 	# For enrolled nodes: verify certificate fingerprint
 	client_cert_fp = request.headers.get("X-Client-Cert-Fingerprint")
 	if not client_cert_fp:
+		_log.warning("Node auth failed: node=%s missing X-Client-Cert-Fingerprint header", node["id"])
 		raise HTTPException(status_code=403, detail="Missing client certificate fingerprint")
-
-	# Verify the request came from localhost (trusted proxy) to prevent spoofing
-	if request.client and request.client.host not in ("127.0.0.1", "::1"):
-		raise HTTPException(status_code=403, detail="Direct access not permitted. Must pass through a trusted proxy.")
 
 	stored_cert_fp = (node["cert_fingerprint"] or "").strip().lower()
 	if not stored_cert_fp:
@@ -104,7 +104,8 @@ def get_current_node(
 		raise HTTPException(status_code=500, detail="Node enrollment state is invalid")
 
 	if not hmac.compare_digest(client_cert_fp.strip().lower(), stored_cert_fp):
-		_log.warning("Cert fingerprint mismatch for node=%s", node["id"])
+		_log.warning("Cert fingerprint mismatch for node=%s: got=%s... stored=%s...",
+			node["id"], client_cert_fp[:16], stored_cert_fp[:16])
 		raise HTTPException(status_code=403, detail="Certificate fingerprint mismatch")
 
 	return node
@@ -222,6 +223,7 @@ async def enroll_node_endpoint(
 		session_secret = new_token()
 		session_hash = hash_token(session_secret)
 		rotate_node_session_secret(conn, node_id, session_hash)
+		_log.debug("Rotated session secret for node=%s, new_hash=%s...", node_id, session_hash[:8])
 
 	# Add tunnel peer to master's WireGuard (outside transaction)
 	warning_msg = None
