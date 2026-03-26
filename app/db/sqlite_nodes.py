@@ -162,6 +162,23 @@ def update_node_api_secret(
 		return cur.rowcount > 0
 
 
+def set_node_tunnel_peer(
+	conn: sqlite3.Connection,
+	node_id: str,
+	tunnel_peer_id: int,
+) -> bool:
+	"""Store the peer ID that represents this node's tunnel to the master.
+
+	The tunnel peer allows the node to route DNS traffic to the master's Unbound.
+	"""
+	with transaction(conn, immediate=True):
+		cur = conn.execute(
+			"UPDATE nodes SET tunnel_peer_id = ? WHERE id = ?",
+			(tunnel_peer_id, node_id),
+		)
+		return cur.rowcount > 0
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Heartbeat & Status
 # ─────────────────────────────────────────────────────────────────────────────
