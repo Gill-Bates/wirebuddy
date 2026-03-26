@@ -1157,26 +1157,48 @@ async function collectPageMetrics(page, scope) {
             return style.overflowY === 'auto' || style.overflowY === 'scroll';
         };
 
+        const resolveTrailingVisibleContent = (container) => {
+            let current = container;
+            let lastVisibleChild = null;
+            let depth = 0;
+
+            while (current && depth < 6) {
+                const children = Array.from(current.children)
+                    .filter((child) => isVisible(child));
+
+                if (!children.length) break;
+
+                lastVisibleChild = children[children.length - 1];
+                if (children.length !== 1) break;
+
+                current = lastVisibleChild;
+                depth += 1;
+            }
+
+            return {
+                lastVisibleChild,
+                depth,
+            };
+        };
+
         // Generic scroll-bottom clearance check.
         const scrollBottomCrowding = contentElements
             .filter((el) => isScrollContainer(el))
             .map((container) => {
-                const children = Array.from(container.children)
-                    .filter((child) => isVisible(child));
+                const { lastVisibleChild, depth } = resolveTrailingVisibleContent(container);
+                if (!lastVisibleChild) return null;
 
-                if (!children.length) return null;
-
-                const lastChild = children[children.length - 1];
                 const containerRect = container.getBoundingClientRect();
-                const childRect = lastChild.getBoundingClientRect();
+                const childRect = lastVisibleChild.getBoundingClientRect();
                 const clearance = round(containerRect.bottom - childRect.bottom);
 
                 if (clearance >= constants.SCROLL_EDGE_CLEARANCE_MIN) return null;
 
                 return {
                     clearance,
+                    traversalDepth: depth,
                     container: rectInfo(container),
-                    lastChild: rectInfo(lastChild),
+                    lastChild: rectInfo(lastVisibleChild),
                 };
             })
             .filter(Boolean)
