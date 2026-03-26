@@ -39,7 +39,7 @@ from ..utils.crypto import hash_token
 from ..utils.deps import get_conn
 from ..utils.network import parse_ip_str
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
-from ..api.wireguard_utils import generate_keypair
+from ..api.wireguard_utils import generate_keypair, wg_set_peer_with_psk, run_wg_command
 from ..db.sqlite_runtime import transaction
 
 _log = logging.getLogger(__name__)
@@ -172,6 +172,7 @@ async def enroll_node_endpoint(
 
 	# Enroll atomically so partial interface/keypair creation cannot persist.
 	tunnel_peer_id = None
+	tunnel_info = None  # (interface, pubkey, address) for WG sync
 	with transaction(conn, immediate=True):
 		if not enroll_node(conn, node_id, fingerprint):
 			raise HTTPException(status_code=409, detail="Node already enrolled")
@@ -197,11 +198,26 @@ async def enroll_node_endpoint(
 					dns_logging_enabled=False,  # No DNS logging for node tunnel
 				)
 				set_node_tunnel_peer(conn, node_id, tunnel_peer_id)
+				tunnel_info = (first_iface_name, first_pubkey, tunnel_address)
 				_log.info("Created tunnel peer for node=%s, peer_id=%d, address=%s", node_id, tunnel_peer_id, tunnel_address)
 			else:
 				_log.warning("Could not allocate tunnel address for node=%s (pool exhausted?)", node_id)
 
 		bump_node_config_version(conn, node_id)
+
+	# Add tunnel peer to master's WireGuard (outside transaction)
+	if tunnel_info:
+		iface_name, pubkey, address = tunnel_info
+		code, _, stderr = await run_wg_command(
+			"wg", "set", iface_name,
+			"peer", pubkey,
+			"allowed-ips", address,
+		)
+		if code != 0:
+			_log.error("Failed to add tunnel peer to WireGuard: %s", stderr.strip())
+		else:
+			_log.info("Added tunnel peer to master WireGuard: interface=%s, pubkey=%s...", iface_name, pubkey[:8])
+
 	config = get_node_config(conn, node_id)
 
 	socket_ip = _get_socket_ip(request)

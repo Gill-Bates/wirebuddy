@@ -263,10 +263,22 @@ def get_node_config(
 	Returns a dict with interfaces (+ keypairs), assigned peers, and master_peer
 	for the Node→Master DNS tunnel.
 	"""
+	import ipaddress  # Local import to avoid circular imports
 	pepper = get_config().secret_key
 	node = get_node(conn, node_id)
 	if node is None:
 		return {}
+
+	# Get tunnel peer info first (needed for interface address)
+	tunnel_peer_id = node["tunnel_peer_id"] if "tunnel_peer_id" in node.keys() else None
+	tunnel_peer = None
+	tunnel_interface = None
+	if tunnel_peer_id:
+		tunnel_peer = conn.execute(
+			"SELECT * FROM peers WHERE id = ?", (tunnel_peer_id,)
+		).fetchone()
+		if tunnel_peer:
+			tunnel_interface = tunnel_peer["interface"]
 
 	# Node interfaces (keypairs)
 	ni_rows = conn.execute(
@@ -279,12 +291,29 @@ def get_node_config(
 		).fetchone()
 		if iface is None:
 			continue
+
+		# For the tunnel interface, use the tunnel_address instead of master's address
+		# This allows the node to route DNS to the master
+		interface_address = iface["address"]
+		interface_address6 = iface["address6"]
+		if tunnel_peer and ni["interface_name"] == tunnel_interface:
+			# Use tunnel_address for this interface
+			interface_address = tunnel_peer["peer_address"]
+			# peer_address may contain both v4 and v6, parse correctly
+			address_parts = [a.strip() for a in interface_address.split(",")]
+			if len(address_parts) >= 1:
+				interface_address = address_parts[0]  # First is IPv4
+			if len(address_parts) >= 2:
+				interface_address6 = address_parts[1]  # Second is IPv6
+			else:
+				interface_address6 = None
+
 		interfaces.append({
 			"name": ni["interface_name"],
 			"private_key": vault.decrypt_if_needed(ni["private_key"], pepper),
 			"public_key": ni["public_key"],
-			"address": iface["address"],
-			"address6": iface["address6"],
+			"address": interface_address,
+			"address6": interface_address6,
 			"listen_port": iface["listen_port"],
 			"dns": iface["dns"],
 			"post_up": iface["post_up"],
@@ -308,43 +337,37 @@ def get_node_config(
 
 	# Master peer info for Node→Master DNS tunnel
 	master_peer = None
-	tunnel_peer_id = node["tunnel_peer_id"] if "tunnel_peer_id" in node.keys() else None
-	if tunnel_peer_id:
-		tunnel_peer = conn.execute(
-			"SELECT * FROM peers WHERE id = ?", (tunnel_peer_id,)
+	if tunnel_peer:
+		# Get master interface info for this peer
+		master_iface = conn.execute(
+			"SELECT * FROM interfaces WHERE name = ?", (tunnel_peer["interface"],)
 		).fetchone()
-		if tunnel_peer:
-			# Get master interface info for this peer
-			master_iface = conn.execute(
-				"SELECT * FROM interfaces WHERE name = ?", (tunnel_peer["interface"],)
+		if master_iface:
+			# Get master endpoint from settings
+			endpoint_row = conn.execute(
+				"SELECT value FROM settings WHERE key = 'wg_endpoint'"
 			).fetchone()
-			if master_iface:
-				# Get master endpoint from settings
-				endpoint_row = conn.execute(
-					"SELECT value FROM settings WHERE key = 'wg_endpoint'"
-				).fetchone()
-				# Extract gateway IP from interface address (e.g., "10.13.13.1/24" → "10.13.13.1")
-				import ipaddress
+			# Extract gateway IP from interface address (e.g., "10.13.13.1/24" → "10.13.13.1")
+			try:
+				master_ip = str(ipaddress.ip_interface(master_iface["address"]).ip)
+			except ValueError:
+				master_ip = master_iface["address"].split("/")[0]
+			# AllowedIPs = just the master's gateway IP for DNS routing
+			allowed_ips = f"{master_ip}/32"
+			# Add IPv6 if available
+			if master_iface["address6"]:
 				try:
-					master_ip = str(ipaddress.ip_interface(master_iface["address"]).ip)
+					master_ip6 = str(ipaddress.ip_interface(master_iface["address6"]).ip)
+					allowed_ips += f", {master_ip6}/128"
 				except ValueError:
-					master_ip = master_iface["address"].split("/")[0]
-				# AllowedIPs = just the master's gateway IP for DNS routing
-				allowed_ips = f"{master_ip}/32"
-				# Add IPv6 if available
-				if master_iface["address6"]:
-					try:
-						master_ip6 = str(ipaddress.ip_interface(master_iface["address6"]).ip)
-						allowed_ips += f", {master_ip6}/128"
-					except ValueError:
-						pass
-				master_peer = {
-					"interface": tunnel_peer["interface"],
-					"public_key": master_iface["public_key"],
-					"endpoint": endpoint_row["value"] if endpoint_row else None,
-					"allowed_ips": allowed_ips,
-					"tunnel_address": tunnel_peer["peer_address"],  # Node's address on master
-				}
+					pass
+			master_peer = {
+				"interface": tunnel_peer["interface"],
+				"public_key": master_iface["public_key"],
+				"endpoint": endpoint_row["value"] if endpoint_row else None,
+				"allowed_ips": allowed_ips,
+				"tunnel_address": tunnel_peer["peer_address"],  # Node's address on master
+			}
 
 	return {
 		"config_version": node["config_version"],
