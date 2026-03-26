@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 import logging
 import os
 import re
@@ -76,6 +77,36 @@ _HOSTNAME_RE = re.compile(
 	r"|[a-fA-F0-9:]+(?:%[a-zA-Z0-9]+)?"  # IPv6 (simplified)
 	r")$"
 )
+
+
+@lru_cache(maxsize=1024)
+def _resolve_node_geo_ip(host_or_ip: str) -> str | None:
+	"""Resolve a node FQDN/IP to a concrete IP for GeoIP/ASN lookups."""
+	clean = str(host_or_ip or "").strip().strip("[]")
+	if not clean:
+		return None
+
+	try:
+		return str(ipaddress.ip_address(clean))
+	except ValueError:
+		pass
+
+	if _HOSTNAME_RE.fullmatch(clean) is None:
+		return None
+
+	try:
+		addrinfo = socket.getaddrinfo(clean, None, type=socket.SOCK_STREAM)
+	except OSError:
+		return None
+
+	for _family, _socktype, _proto, _canonname, sockaddr in addrinfo:
+		ip_text = str(sockaddr[0]).split("%", 1)[0]
+		try:
+			return str(ipaddress.ip_address(ip_text))
+		except ValueError:
+			continue
+
+	return None
 
 # Key packages to display in about page
 _KEY_PACKAGES = [
@@ -537,6 +568,12 @@ def nodes_page(
 	peer_counts = get_peers_count_by_node(conn)
 	nodes_data = []
 	for n in nodes:
+		resolved_geo_ip = _resolve_node_geo_ip(n["fqdn"])
+		geo_fields = extract_geo_fields(lookup_ip_cached(resolved_geo_ip)) if resolved_geo_ip else {
+			"country_code": None,
+			"city": None,
+			"as_org": None,
+		}
 		nodes_data.append({
 			"id": n["id"],
 			"name": n["name"],
@@ -547,6 +584,8 @@ def nodes_page(
 			"enrolled_at": n["enrolled_at"],
 			"created_at": n["created_at"],
 			"peer_count": peer_counts.get(n["id"], 0),
+			"geo_country_code": geo_fields["country_code"],
+			"geo_as_org": geo_fields["as_org"],
 		})
 	# Get default WireGuard port from first interface for pre-filling the Add Node modal
 	first_iface = conn.execute("SELECT listen_port FROM interfaces LIMIT 1").fetchone()

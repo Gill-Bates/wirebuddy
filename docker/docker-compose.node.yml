@@ -35,4 +35,4 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     volumes:
-      - ./data:/data  # Stores node certificate only
+      - ./data:/app/data  # Stores node certificate and state

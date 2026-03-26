@@ -1909,6 +1909,54 @@ async function collectPageMetrics(page, scope) {
             }).filter(Boolean);
         }
 
+        if (scope === 'users') {
+            const actionButtons = Array.from(contentRoot.querySelectorAll(
+                '.btn-edit-user, .btn-otp-settings, .btn-passkey-settings, .btn-delete-user, .btn-delete-passkey'
+            ))
+                .filter((el) => isVisible(el) && isInContentRoot(el))
+                .map((el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    const icon = el.querySelector('.material-icons');
+                    const iconStyle = icon ? window.getComputedStyle(icon) : null;
+                    return {
+                        ...rectInfo(el),
+                        width: round(rect.width),
+                        height: round(rect.height),
+                        borderRadius: round(parseFloat(style.borderTopLeftRadius || '0')),
+                        display: style.display,
+                        alignItems: style.alignItems,
+                        justifyContent: style.justifyContent,
+                        hasUsersActionClass: el.classList.contains('users-action-btn'),
+                        iconHasMdClass: Boolean(icon?.classList.contains('icon-md')),
+                        iconPointerEvents: iconStyle?.pointerEvents || null,
+                    };
+                });
+
+            const referenceButton = actionButtons[0] || null;
+            spacing.usersActionButtons = {
+                count: actionButtons.length,
+                missingClassCount: actionButtons.filter((button) => !button.hasUsersActionClass).length,
+                missingIconMdCount: actionButtons.filter((button) => !button.iconHasMdClass).length,
+                undersizedCount: actionButtons.filter(
+                    (button) => button.width < constants.CLICK_TARGET_MIN_SIZE_PX || button.height < constants.CLICK_TARGET_MIN_SIZE_PX
+                ).length,
+                alignmentMismatchCount: actionButtons.filter(
+                    (button) => button.display !== 'inline-flex' || button.alignItems !== 'center' || button.justifyContent !== 'center'
+                ).length,
+                iconPointerMismatchCount: actionButtons.filter((button) => button.iconPointerEvents !== 'none').length,
+                sizeMismatchCount: referenceButton
+                    ? actionButtons.filter(
+                        (button) => Math.abs(button.width - referenceButton.width) > 2 || Math.abs(button.height - referenceButton.height) > 2
+                    ).length
+                    : 0,
+                borderRadiusMismatchCount: referenceButton
+                    ? actionButtons.filter((button) => Math.abs(button.borderRadius - referenceButton.borderRadius) > 1).length
+                    : 0,
+                sample: actionButtons.slice(0, 10),
+            };
+        }
+
         // Peers page: Modal form validation (required field markers)
         if (scope === 'peers') {
             const addPeerModal = document.getElementById('addPeerModal');
@@ -3115,6 +3163,30 @@ function summarizeFindings(result) {
         );
         if (compactActionRowProblems.length) {
             pushWarning(`compactCardActionRows=${compactActionRowProblems.length}`);
+        }
+    }
+    if (result.name.includes('users') && result.metrics.spacing.usersActionButtons) {
+        const usersActionButtons = result.metrics.spacing.usersActionButtons;
+        if (usersActionButtons.missingClassCount) {
+            pushHard(`usersActionButtonsMissingClass=${usersActionButtons.missingClassCount}`);
+        }
+        if (usersActionButtons.undersizedCount) {
+            pushHard(`usersActionButtonsTooSmall=${usersActionButtons.undersizedCount}`);
+        }
+        if (usersActionButtons.alignmentMismatchCount) {
+            pushWarning(`usersActionButtonsAlignment=${usersActionButtons.alignmentMismatchCount}`);
+        }
+        if (usersActionButtons.sizeMismatchCount) {
+            pushWarning(`usersActionButtonsSizeMismatch=${usersActionButtons.sizeMismatchCount}`);
+        }
+        if (usersActionButtons.borderRadiusMismatchCount) {
+            pushWarning(`usersActionButtonsRadiusMismatch=${usersActionButtons.borderRadiusMismatchCount}`);
+        }
+        if (usersActionButtons.missingIconMdCount) {
+            pushWarning(`usersActionButtonsMissingIconMd=${usersActionButtons.missingIconMdCount}`);
+        }
+        if (usersActionButtons.iconPointerMismatchCount) {
+            pushHard(`usersActionButtonsIconPointer=${usersActionButtons.iconPointerMismatchCount}`);
         }
     }
     if (result.metrics.spacing.about?.updateValueStyleMismatches?.length) pushWarning(`aboutUpdateValueStyleMismatches=${result.metrics.spacing.about.updateValueStyleMismatches.length}`);

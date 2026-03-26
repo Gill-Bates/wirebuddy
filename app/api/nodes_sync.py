@@ -44,7 +44,10 @@ from ..db.sqlite_runtime import transaction
 _log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["nodes-sync"])
-_DEFAULT_TRUSTED_PROXY_CIDRS = "127.0.0.0/8,::1/128"
+
+# Default trusted proxy CIDRs: loopback + all RFC 1918 private networks + Docker defaults
+# This covers typical reverse proxy setups (Caddy, nginx, traefik) on same host or in Docker
+_DEFAULT_TRUSTED_PROXY_CIDRS = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
 
 
 def _load_trusted_proxy_networks() -> tuple[ipaddress._BaseNetwork, ...]:

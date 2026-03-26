@@ -34,7 +34,8 @@ from .wg_manager import apply_config, get_wg_dump, shutdown_all_interfaces
 _log = logging.getLogger(__name__)
 
 SYNC_INTERVAL = int(os.environ.get("WIREBUDDY_NODE_SYNC_INTERVAL", "30"))
-DATA_DIR = Path(os.environ.get("WIREBUDDY_DATA_DIR", "/data"))
+ENROLLMENT_RETRY_ATTEMPTS = max(1, int(os.environ.get("WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS", "3")))
+DATA_DIR = Path("/app/data")
 ENROLLED_FILE = DATA_DIR / ".enrolled"
 STATE_FILE = DATA_DIR / "node_state.json"
 
@@ -44,7 +45,6 @@ def _build_request_headers(api_secret: str, cert_fingerprint: str) -> dict[str, 
 	return {
 		"Authorization": f"Bearer {api_secret}",
 		"X-Client-Cert-Fingerprint": cert_fingerprint,
-		"Content-Type": "application/json",
 	}
 
 
@@ -63,15 +63,13 @@ def _decode_enrollment_token_payload(token_string: str) -> dict[str, Any]:
 	return payload
 
 
-def _parse_enrollment_token(token_string: str) -> dict[str, Any]:
+def _parse_enrollment_token(token_string: str, verify_key: str | None = None) -> dict[str, Any]:
 	"""Parse the enrollment token, verifying it when an HMAC key is provided."""
-	verify_key = os.environ.pop("WIREBUDDY_ENROLLMENT_VERIFY_KEY", None)
 	if verify_key:
 		return verify_enrollment_token(token_string, verify_key)
 
-	_log.warning(
-		"Enrollment token HMAC is not verified locally; set WIREBUDDY_ENROLLMENT_VERIFY_KEY to enforce signed token verification on bootstrap",
-	)
+	# Token signature is verified by the master during enrollment anyway,
+	# local verification is an optional extra security layer for paranoid setups
 	return _decode_enrollment_token_payload(token_string)
 
 
@@ -103,11 +101,9 @@ def _save_state(state: dict[str, Any]) -> None:
 	DATA_DIR.mkdir(parents=True, exist_ok=True)
 	tmp = STATE_FILE.with_suffix(".tmp")
 	try:
-		tmp.write_text(
-			json.dumps(state, separators=(",", ":"), sort_keys=True),
-			encoding="utf-8",
-		)
-		os.chmod(tmp, 0o600)
+		fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+		with os.fdopen(fd, "w", encoding="utf-8") as handle:
+			json.dump(state, handle, separators=(",", ":"), sort_keys=True)
 		os.replace(tmp, STATE_FILE)
 	except Exception:
 		tmp.unlink(missing_ok=True)
@@ -153,6 +149,7 @@ async def main() -> None:
 		sys.exit(1)
 
 	token_str = os.environ.pop("WIREBUDDY_ENROLLMENT_TOKEN", None)
+	verify_key = os.environ.pop("WIREBUDDY_ENROLLMENT_VERIFY_KEY", None)
 	payload: dict[str, Any] | None = None
 
 	if state is None:
@@ -165,7 +162,7 @@ async def main() -> None:
 				_log.critical("WIREBUDDY_ENROLLMENT_TOKEN is required for first bootstrap")
 			sys.exit(1)
 		try:
-			payload = _parse_enrollment_token(token_str)
+			payload = _parse_enrollment_token(token_str, verify_key)
 		except ValueError as exc:
 			_log.critical("Failed to parse enrollment token: %s", exc)
 			sys.exit(1)
@@ -200,7 +197,6 @@ async def main() -> None:
 		shutdown_event.set()
 
 	def _fallback_signal_handler(sig: int, _frame: object) -> None:
-		_log.info("Received signal %s, shutting down...", signal.Signals(sig).name)
 		loop.call_soon_threadsafe(shutdown_event.set)
 
 	for sig in (signal.SIGTERM, signal.SIGINT):
@@ -224,14 +220,34 @@ async def main() -> None:
 	) as client:
 		# Enrollment phase
 		if state is None:
-			current_config_version = await _enroll(
-				client,
-				master_url,
-				token_str,
-				cert_pem,
-				api_secret,
-				cert_fingerprint,
-			)
+			current_config_version = None
+			for attempt in range(1, ENROLLMENT_RETRY_ATTEMPTS + 1):
+				current_config_version = await _enroll(
+					client,
+					master_url,
+					token_str,
+					cert_pem,
+					api_secret,
+					cert_fingerprint,
+				)
+				if current_config_version is not None:
+					break
+				if attempt >= ENROLLMENT_RETRY_ATTEMPTS:
+					break
+
+				delay = min(2 ** (attempt - 1), 30)
+				_log.warning(
+					"Enrollment attempt %d/%d failed, retrying in %ds",
+					attempt,
+					ENROLLMENT_RETRY_ATTEMPTS,
+					delay,
+				)
+				try:
+					await asyncio.wait_for(shutdown_event.wait(), timeout=delay)
+					break
+				except asyncio.TimeoutError:
+					pass
+
 			if current_config_version is None:
 				_log.critical("Enrollment failed — exiting")
 				sys.exit(1)
@@ -358,7 +374,7 @@ async def _enroll(
 		_log.error("Enrollment HTTP error %d: %s", exc.response.status_code, exc.response.text[:200])
 		return None
 	except Exception as exc:
-		_log.error("Enrollment failed: %s", exc)
+		_log.exception("Enrollment failed: %s", exc)
 		return None
 
 
