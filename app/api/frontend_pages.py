@@ -548,12 +548,15 @@ def nodes_page(
 			"created_at": n["created_at"],
 			"peer_count": peer_counts.get(n["id"], 0),
 		})
+	# Get default WireGuard port from settings for pre-filling the Add Node modal
+	default_wg_port = get_setting(conn, "wg_port", "51820")
 	return templates.TemplateResponse(
 		request,
 		name="nodes.html",
 		context={
 			"user": user,
 			"nodes": nodes_data,
+			"default_wg_port": default_wg_port,
 			"csrf_token": get_csrf_token(request),
 		},
 	)

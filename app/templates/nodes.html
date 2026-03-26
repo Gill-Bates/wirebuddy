@@ -166,8 +166,9 @@
                     </div>
                     <div class="mb-3">
                         <label for="nodePort" class="form-label">WireGuard Port</label>
-                        <input type="number" class="form-control" id="nodePort" value="51820"
+                        <input type="number" class="form-control" id="nodePort" value="{{ default_wg_port }}"
                                min="1" max="65535" required>
+                        <small class="text-muted">UDP port for WireGuard (default from global settings)</small>
                     </div>
                 </div>
                 <!-- Step 2: Token Display -->
@@ -311,7 +312,7 @@
         document.getElementById('addNodeStep2').style.display = 'none';
         document.getElementById('nodeName').value = '';
         document.getElementById('nodeFqdn').value = '';
-        document.getElementById('nodePort').value = '51820';
+        document.getElementById('nodePort').value = '{{ default_wg_port }}';
         const btn = document.getElementById('addNodeSubmitBtn');
         btn.disabled = false;
         btn.textContent = 'Create Node';

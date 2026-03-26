@@ -67,6 +67,12 @@
                             <small class="text-muted">TCP port for the web interface</small>
                         </div>
                         <div class="mb-3">
+                            <label for="gui-external-port" class="form-label">External Port (Reverse Proxy)</label>
+                            <input type="number" class="form-control" id="gui-external-port" min="1" max="65535"
+                                placeholder="443"{% if not user['is_admin'] %} readonly{% endif %}>
+                            <small class="text-muted">External port for node enrollment (leave empty if not using a reverse proxy, use 443 for HTTPS standard port)</small>
+                        </div>
+                        <div class="mb-3">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="gui-localhost-only"{% if settings.gui_localhost_only %} checked{% endif %}{% if not user['is_admin'] %} disabled{% endif %}>
                                 <label class="form-check-label" for="gui-localhost-only">Only listen on

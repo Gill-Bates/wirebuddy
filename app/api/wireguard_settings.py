@@ -100,6 +100,7 @@ class WgSettingsPayload(BaseModel):
 	# the conversion to the '0'/'1' format required by SQLite.
 	wg_use_psk: Optional[bool] = Field(None, description="Enable PresharedKey")
 	gui_port: Optional[int] = Field(None, ge=1, le=65535, description="HTTP port for the web UI")
+	gui_external_port: Optional[int] = Field(None, ge=1, le=65535, description="External port for node enrollment (reverse proxy)")
 	gui_localhost_only: Optional[bool] = Field(None, description="Only listen on localhost")
 	enable_status_page: Optional[bool] = Field(None, description="Enable public internal status page")
 	enable_swagger: Optional[bool] = Field(None, description="Enable Swagger API documentation")

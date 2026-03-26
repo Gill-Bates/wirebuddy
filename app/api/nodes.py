@@ -141,7 +141,11 @@ def _format_host_for_url(host: str) -> str:
 
 
 def _get_master_url(conn: sqlite3.Connection) -> str:
-	"""Build the externally reachable master URL for node enrollment tokens."""
+	"""Build the externally reachable master URL for node enrollment tokens.
+
+	Uses gui_external_port if set (for reverse proxy setups), otherwise gui_port.
+	Omits port from URL if it's the HTTPS default (443).
+	"""
 	host = str(get_setting(conn, "wg_fqdn", "") or "").strip()
 	if not host or host == "vpn.example.com":
 		raise HTTPException(
@@ -149,12 +153,21 @@ def _get_master_url(conn: sqlite3.Connection) -> str:
 			detail="Server FQDN/IP not configured. Please set 'Server FQDN / IP' in Settings → WireGuard before creating node tokens.",
 		)
 
-	port_raw = str(get_setting(conn, "gui_port", "8000") or "8000").strip()
-	if not port_raw.isdigit() or not (1 <= int(port_raw) <= 65535):
-		_log.error("Invalid gui_port setting for node enrollment URL: %r", port_raw)
-		raise HTTPException(status_code=500, detail="Server GUI port setting is invalid")
+	# Prefer external port (reverse proxy), fall back to internal GUI port
+	external_port = str(get_setting(conn, "gui_external_port", "") or "").strip()
+	if external_port and external_port.isdigit() and 1 <= int(external_port) <= 65535:
+		port = int(external_port)
+	else:
+		port_raw = str(get_setting(conn, "gui_port", "8000") or "8000").strip()
+		if not port_raw.isdigit() or not (1 <= int(port_raw) <= 65535):
+			_log.error("Invalid gui_port setting for node enrollment URL: %r", port_raw)
+			raise HTTPException(status_code=500, detail="Server GUI port setting is invalid")
+		port = int(port_raw)
 
-	return f"https://{_format_host_for_url(host)}:{port_raw}"
+	# Omit port for HTTPS default
+	if port == 443:
+		return f"https://{_format_host_for_url(host)}"
+	return f"https://{_format_host_for_url(host)}:{port}"
 
 
 def _node_to_dict(row: sqlite3.Row, peer_count: int = 0) -> dict[str, Any]:
