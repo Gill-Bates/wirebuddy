@@ -71,6 +71,7 @@ const MODAL_BACKDROP_ALPHA_EXPECTED = 0.6;
 const MODAL_BACKDROP_ALPHA_TOLERANCE = 0.05;
 const FORM_SWITCH_MAX_HEIGHT_PX = 22;
 const FORM_SWITCH_HEIGHT_TOLERANCE_PX = 1;
+const FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX = 0.5;
 
 // =============================================================================
 // Peers Modal Design Rules
@@ -2532,6 +2533,43 @@ async function collectPageMetrics(page, scope) {
                 });
 
             spacing.dnsUnavailableStates = dnsUnavailableStates;
+
+            const logCardBody = document.querySelector('.log-card-body');
+            const logTableWrap = document.getElementById('log-table-wrap');
+            if (logCardBody && logTableWrap && isVisible(logCardBody) && isVisible(logTableWrap)) {
+                const bodyStyle = window.getComputedStyle(logCardBody);
+                const wrapStyle = window.getComputedStyle(logTableWrap);
+                const bodyRect = logCardBody.getBoundingClientRect();
+                const wrapRect = logTableWrap.getBoundingClientRect();
+                const bodyMinHeight = Number.parseFloat(bodyStyle.minHeight || '0');
+                const wrapMinHeight = Number.parseFloat(wrapStyle.minHeight || '0');
+                const bodyFlexGrow = Number.parseFloat(bodyStyle.flexGrow || '0');
+                const wrapFlexGrow = Number.parseFloat(wrapStyle.flexGrow || '0');
+                const rowCount = logTableWrap.querySelectorAll('#log-body > tr').length;
+
+                spacing.dnsLogScrollLayout = {
+                    body: rectInfo(logCardBody),
+                    wrap: rectInfo(logTableWrap),
+                    bodyMinHeight: round(bodyMinHeight),
+                    wrapMinHeight: round(wrapMinHeight),
+                    bodyFlexGrow: round(bodyFlexGrow),
+                    wrapFlexGrow: round(wrapFlexGrow),
+                    bodyOverflowX: bodyStyle.overflowX,
+                    bodyOverflowY: bodyStyle.overflowY,
+                    wrapOverflowY: wrapStyle.overflowY,
+                    bodyMinHeightAllowsShrink: bodyMinHeight <= constants.FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX,
+                    wrapMinHeightAllowsShrink: wrapMinHeight <= constants.FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX,
+                    bodyActsAsFlexChild: bodyFlexGrow > 0,
+                    wrapActsAsFlexChild: wrapFlexGrow > 0,
+                    bodyClipsOverflow: bodyStyle.overflowY === 'hidden' || bodyStyle.overflowY === 'clip',
+                    wrapScrollsInternally: wrapStyle.overflowY === 'auto' || wrapStyle.overflowY === 'scroll',
+                    wrapFitsBody: wrapRect.height <= bodyRect.height + 1,
+                    rowCount,
+                    clientHeight: round(logTableWrap.clientHeight),
+                    scrollHeight: round(logTableWrap.scrollHeight),
+                    scrollNeeded: logTableWrap.scrollHeight > logTableWrap.clientHeight + 1,
+                };
+            }
         }
 
         // Visual containment issues: detect rendering problems in rounded cards
@@ -2939,6 +2977,7 @@ async function collectPageMetrics(page, scope) {
             MODAL_BACKDROP_ALPHA_TOLERANCE,
             FORM_SWITCH_MAX_HEIGHT_PX,
             FORM_SWITCH_HEIGHT_TOLERANCE_PX,
+            FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX,
             INPUT_GROUP_HEIGHT_EXPECTED_PX,
             INPUT_GROUP_HEIGHT_TOLERANCE_PX,
             COMPACT_CARD_ACTION_MARGIN_TOP_MAX_PX,
@@ -3014,6 +3053,16 @@ function summarizeFindings(result) {
     }
     if (result.metrics.spacing.rowToRowGap !== undefined && !result.metrics.spacing.rowToRowGapInRange) {
         pushWarning(`rowToRowGapOutOfRange=${result.metrics.spacing.rowToRowGap}`);
+    }
+    if (result.name.includes('dns') && result.metrics.spacing.dnsLogScrollLayout) {
+        const dnsLogLayout = result.metrics.spacing.dnsLogScrollLayout;
+        if (!dnsLogLayout.bodyMinHeightAllowsShrink) pushHard('dnsLogBodyMinHeightNotZero');
+        if (!dnsLogLayout.wrapMinHeightAllowsShrink) pushHard('dnsLogWrapMinHeightNotZero');
+        if (!dnsLogLayout.wrapScrollsInternally) pushHard('dnsLogWrapNotScrollable');
+        if (!dnsLogLayout.bodyActsAsFlexChild) pushWarning('dnsLogBodyNotFlexing');
+        if (!dnsLogLayout.wrapActsAsFlexChild) pushWarning('dnsLogWrapNotFlexing');
+        if (!dnsLogLayout.bodyClipsOverflow) pushWarning('dnsLogBodyOverflowVisible');
+        if (!dnsLogLayout.wrapFitsBody) pushWarning('dnsLogWrapExceedsBody');
     }
     if (result.metrics.spacing.outlierVerticalGaps?.length) pushWarning(`outlierVerticalGaps=${result.metrics.spacing.outlierVerticalGaps.length}`);
     if (result.metrics.spacing.rowGutterMarginConflicts?.length) pushWarning(`rowGutterMarginConflicts=${result.metrics.spacing.rowGutterMarginConflicts.length}`);
@@ -3760,6 +3809,18 @@ async function main() {
             dashboardTopRowVariance: spacing.dashboardTopRowAlignment?.variance || 0,
             dnsUnavailableStates: spacing.dnsUnavailableStates?.length || 0,
             dnsUnavailableIncorrectSpacing: spacing.dnsUnavailableStates?.filter(s => !s.marginCompensatesGap || !s.visualGapExpected)?.length || 0,
+            dnsLogScrollLayout: spacing.dnsLogScrollLayout ? 1 : 0,
+            dnsLogScrollLayoutIssues: spacing.dnsLogScrollLayout
+                ? [
+                    !spacing.dnsLogScrollLayout.bodyMinHeightAllowsShrink,
+                    !spacing.dnsLogScrollLayout.wrapMinHeightAllowsShrink,
+                    !spacing.dnsLogScrollLayout.wrapScrollsInternally,
+                    !spacing.dnsLogScrollLayout.bodyActsAsFlexChild,
+                    !spacing.dnsLogScrollLayout.wrapActsAsFlexChild,
+                    !spacing.dnsLogScrollLayout.bodyClipsOverflow,
+                    !spacing.dnsLogScrollLayout.wrapFitsBody,
+                ].filter(Boolean).length
+                : 0,
             statusFlowNodes: spacing.statusFlow?.nodeCount || 0,
             statusFlowConnectors: spacing.statusFlow?.connectorCount || 0,
             statusFlowHeightVariance: spacing.statusFlow?.heightVariance || 0,

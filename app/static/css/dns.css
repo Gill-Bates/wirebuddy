@@ -351,6 +351,7 @@
     min-height: 0;
     max-height: 100%;
     overflow-y: auto;
+    padding-bottom: 1rem;
 }
 
 #trend-chart-wrap {

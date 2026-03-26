@@ -517,6 +517,33 @@
         return 1440;
     }
 
+    // Client-side cache for DNS trend data (5-minute TTL)
+    const TREND_CACHE_TTL_MS = 5 * 60 * 1000;
+    const TREND_CACHE_KEY = 'wb_dns_trend_cache';
+
+    function getTrendCache(cacheKey) {
+        try {
+            const raw = sessionStorage.getItem(TREND_CACHE_KEY);
+            if (!raw) return null;
+            const cache = JSON.parse(raw);
+            if (cache.key !== cacheKey) return null;
+            if (Date.now() - cache.ts > TREND_CACHE_TTL_MS) return null;
+            return cache.data;
+        } catch { return null; }
+    }
+
+    function setTrendCache(cacheKey, data) {
+        try {
+            sessionStorage.setItem(TREND_CACHE_KEY, JSON.stringify({
+                key: cacheKey, ts: Date.now(), data
+            }));
+        } catch { /* quota exceeded or private mode */ }
+    }
+
+    function clearTrendCache() {
+        try { sessionStorage.removeItem(TREND_CACHE_KEY); } catch {}
+    }
+
     async function loadTrend() {
         // Skip trend loading if ad-blocker is disabled (shows disabled state instead)
         if (!_adblockerEnabled) return;
@@ -526,16 +553,24 @@
             const bucketMinutes = Math.min(1440, Math.max(5, getTrendBucketMinutes()));
             const clientIps = getSelectedPeerClientIps();
             const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
-            let t;
-            try {
-                t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}${clientIpsParam}`);
-            } catch (err) {
-                // Fallback for strict query validation mismatches on older deployments.
-                if (err?.code === 'HTTP_422' && bucketMinutes !== 1440) {
-                    t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=1440${clientIpsParam}`);
-                } else {
-                    throw err;
+
+            // Build cache key from parameters
+            const cacheKey = `${bucketMinutes}|${clientIps || ''}`;
+            let t = getTrendCache(cacheKey);
+
+            if (!t) {
+                // No valid cache, fetch from API
+                try {
+                    t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}${clientIpsParam}`);
+                } catch (err) {
+                    // Fallback for strict query validation mismatches on older deployments.
+                    if (err?.code === 'HTTP_422' && bucketMinutes !== 1440) {
+                        t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=1440${clientIpsParam}`);
+                    } else {
+                        throw err;
+                    }
                 }
+                setTrendCache(cacheKey, t);
             }
             const labels = (t.labels || []).map(_fmtTrendLabel);
             const blocked = t.blocked || [];
@@ -1378,6 +1413,7 @@
             
             // If enabling, reload blocked sections (they were showing disabled state)
             if (data.enabled) {
+                clearTrendCache();  // Force fresh data after ad-blocker toggle
                 await Promise.allSettled([loadTopDomains(), loadTrend()]);
             }
             
