@@ -31,7 +31,7 @@ import httpx
 from ..utils.banner import print_banner_once
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
 from .cert import clear_node_cert, ensure_node_cert
-from .wg_manager import apply_config, get_wg_dump, shutdown_all_interfaces
+from .wg_manager import apply_config, shutdown_all_interfaces
 
 _log = logging.getLogger(__name__)
 
