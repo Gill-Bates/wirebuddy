@@ -123,6 +123,48 @@
         flex: 0 0 auto;
     }
 
+    .peer-node-select {
+        display: none;
+    }
+
+    .peer-node-picker .dropdown-toggle {
+        min-height: 44px;
+        width: 100%;
+        justify-content: space-between;
+        text-align: left;
+    }
+
+    .peer-node-picker .dropdown-toggle::after {
+        margin-left: 0.75rem;
+    }
+
+    .peer-node-picker-label,
+    .peer-node-option-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+    }
+
+    .peer-node-picker-text {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .peer-node-picker-menu {
+        width: 100%;
+        max-height: 18rem;
+        overflow-y: auto;
+    }
+
+    .peer-node-option {
+        display: flex;
+        align-items: center;
+        width: 100%;
+    }
+
     .peer-name-stack {
         display: flex;
         flex-direction: column;
@@ -857,12 +899,38 @@
                     {% if nodes %}
                     <div class="mb-2">
                         <label for="peer-node" class="form-label">Node</label>
-                        <select class="form-select" id="peer-node">
+                        <select class="form-select peer-node-select" id="peer-node">
                             <option value="">Local (this server)</option>
                             {% for n in nodes %}
-                            <option value="{{ n.id }}">{{ n.name }} ({% if n.geo_country_code %}{{ n.geo_country_code|flag_emoji }} {% endif %}{{ n.fqdn }})</option>
+                            <option value="{{ n.id }}">{{ n.name }} ({{ n.fqdn }})</option>
                             {% endfor %}
                         </select>
+                        <div class="dropdown peer-node-picker mt-2" data-target-select="peer-node">
+                            <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <span class="peer-node-picker-label">
+                                    <span class="peer-node-picker-text">Local (this server)</span>
+                                </span>
+                            </button>
+                            <div class="dropdown-menu peer-node-picker-menu">
+                                <button type="button" class="dropdown-item peer-node-option active" data-value="">
+                                    <span class="peer-node-option-label">
+                                        <span class="peer-node-picker-text">Local (this server)</span>
+                                    </span>
+                                </button>
+                                {% for n in nodes %}
+                                <button type="button" class="dropdown-item peer-node-option" data-value="{{ n.id }}">
+                                    <span class="peer-node-option-label">
+                                        {% if n.geo_country_code %}
+                                        <img class="peer-country-flag" alt="{{ n.geo_country_code|upper }} flag"
+                                             decoding="async"
+                                             src="/static/vendor/images/flags/{{ n.geo_country_code }}.svg">
+                                        {% endif %}
+                                        <span class="peer-node-picker-text">{{ n.name }} ({{ n.fqdn }})</span>
+                                    </span>
+                                </button>
+                                {% endfor %}
+                            </div>
+                        </div>
                         <small class="text-muted">Which server should handle this peer</small>
                     </div>
                     {% endif %}
@@ -1022,12 +1090,38 @@
                     {% if nodes %}
                     <div class="mb-2">
                         <label for="edit-peer-node" class="form-label">Node</label>
-                        <select class="form-select" id="edit-peer-node">
+                        <select class="form-select peer-node-select" id="edit-peer-node">
                             <option value="">Local (this server)</option>
                             {% for n in nodes %}
-                            <option value="{{ n.id }}">{{ n.name }} ({% if n.geo_country_code %}{{ n.geo_country_code|flag_emoji }} {% endif %}{{ n.fqdn }})</option>
+                            <option value="{{ n.id }}">{{ n.name }} ({{ n.fqdn }})</option>
                             {% endfor %}
                         </select>
+                        <div class="dropdown peer-node-picker mt-2" data-target-select="edit-peer-node">
+                            <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <span class="peer-node-picker-label">
+                                    <span class="peer-node-picker-text">Local (this server)</span>
+                                </span>
+                            </button>
+                            <div class="dropdown-menu peer-node-picker-menu">
+                                <button type="button" class="dropdown-item peer-node-option active" data-value="">
+                                    <span class="peer-node-option-label">
+                                        <span class="peer-node-picker-text">Local (this server)</span>
+                                    </span>
+                                </button>
+                                {% for n in nodes %}
+                                <button type="button" class="dropdown-item peer-node-option" data-value="{{ n.id }}">
+                                    <span class="peer-node-option-label">
+                                        {% if n.geo_country_code %}
+                                        <img class="peer-country-flag" alt="{{ n.geo_country_code|upper }} flag"
+                                             decoding="async"
+                                             src="/static/vendor/images/flags/{{ n.geo_country_code }}.svg">
+                                        {% endif %}
+                                        <span class="peer-node-picker-text">{{ n.name }} ({{ n.fqdn }})</span>
+                                    </span>
+                                </button>
+                                {% endfor %}
+                            </div>
+                        </div>
                         <small class="text-muted">Which server should handle this peer</small>
                     </div>
                     {% endif %}
@@ -1235,6 +1329,46 @@
         opt.selected = true;
         opt.textContent = text;
         select.appendChild(opt);
+    }
+
+    function syncNodePicker(selectId) {
+        const select = document.getElementById(selectId);
+        const picker = document.querySelector(`.peer-node-picker[data-target-select="${selectId}"]`);
+        if (!select || !picker) return;
+
+        const selectedValue = select.value || '';
+        const selectedOption = Array.from(picker.querySelectorAll('.peer-node-option')).find(
+            (option) => option.dataset.value === selectedValue
+        ) || picker.querySelector('.peer-node-option[data-value=""]');
+        const label = picker.querySelector('.peer-node-picker-label');
+
+        if (selectedOption && label) {
+            label.innerHTML = selectedOption.querySelector('.peer-node-option-label')?.innerHTML || selectedOption.innerHTML;
+        }
+
+        picker.querySelectorAll('.peer-node-option').forEach((option) => {
+            const active = option.dataset.value === selectedValue;
+            option.classList.toggle('active', active);
+            option.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
+    }
+
+    function initNodePickers() {
+        document.querySelectorAll('.peer-node-picker[data-target-select]').forEach((picker) => {
+            const selectId = picker.dataset.targetSelect || '';
+            const select = document.getElementById(selectId);
+            if (!select) return;
+
+            picker.querySelectorAll('.peer-node-option').forEach((option) => {
+                option.addEventListener('click', () => {
+                    select.value = option.dataset.value || '';
+                    syncNodePicker(selectId);
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                });
+            });
+
+            syncNodePicker(selectId);
+        });
     }
 
     function isValidIpv4(ip) {
@@ -1990,6 +2124,7 @@
             const editNodeSelect = document.getElementById('edit-peer-node');
             if (editNodeSelect) {
                 editNodeSelect.value = peer.node_id || '';
+                syncNodePicker('edit-peer-node');
             }
             // Set allowed IPs mode dropdown
             const mode = detectAllowedIpsMode(peer.allowed_ips);
@@ -2371,6 +2506,7 @@
     toggleAllowedIpsCustom('');
     toggleAllowedIpsCustom('edit-');
     initTooltips();
+    initNodePickers();
     // loadBlocklistRegistry is loaded on-demand in modal handlers
     loadPeerStats();
     startPeerStatsPolling();

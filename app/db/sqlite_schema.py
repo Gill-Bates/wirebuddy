@@ -350,6 +350,13 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 		conn.execute("ALTER TABLE peers ADD COLUMN node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL")
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_node_id ON peers(node_id)")
 
+	# Migration: Add tunnel_peer_id to nodes (Node→Master tunnel for DNS)
+	cursor = conn.execute("PRAGMA table_info(nodes)")
+	nodes_columns = {row[1] for row in cursor.fetchall()}
+	if "tunnel_peer_id" not in nodes_columns:
+		_log.info("Migrating nodes table: adding tunnel_peer_id for Node→Master DNS tunnel")
+		conn.execute("ALTER TABLE nodes ADD COLUMN tunnel_peer_id INTEGER REFERENCES peers(id) ON DELETE SET NULL")
+
 
 def ensure_default_admin(conn: sqlite3.Connection) -> None:
 	"""Create a default admin user if no users exist.

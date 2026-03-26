@@ -865,24 +865,6 @@ html body .my-4 {
     flex: 0 0 auto;
 }
 
-.geo-flag,
-.geo-flag-sm {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    line-height: 1;
-}
-
-.geo-flag {
-    font-size: 16px;
-}
-
-.geo-flag-sm {
-    font-size: 14px;
-}
-
-
 /* ---------- 27. Accessibility — Reduced Motion ---------- */
 
 /* Respect user's motion preferences for decorative animations.
