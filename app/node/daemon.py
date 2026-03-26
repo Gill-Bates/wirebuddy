@@ -263,7 +263,7 @@ async def main() -> None:
 			current_config_version = None
 			session_secret: str | None = None
 			for attempt in range(1, ENROLLMENT_RETRY_ATTEMPTS + 1):
-				current_config_version, session_secret = await _enroll(
+				enroll_res = await _enroll(
 					client,
 					master_url,
 					token_str,
@@ -271,7 +271,9 @@ async def main() -> None:
 					api_secret,
 					cert_fingerprint,
 				)
-				if current_config_version is not None:
+				if enroll_res.success:
+					current_config_version = enroll_res.config_version
+					session_secret = enroll_res.session_secret
 					break
 				if attempt >= ENROLLMENT_RETRY_ATTEMPTS:
 					break
@@ -289,7 +291,7 @@ async def main() -> None:
 				except asyncio.TimeoutError:
 					pass
 
-			if current_config_version is None:
+			if current_config_version is None and not session_secret:
 				_log.critical("Enrollment failed — exiting")
 				sys.exit(1)
 
@@ -338,6 +340,8 @@ async def main() -> None:
 		# Sync loop
 		backoff = 1
 		while not shutdown_event.is_set():
+			heartbeat_failed = False
+			config_failed = False
 			try:
 				await _push_heartbeat(
 					client,
@@ -348,32 +352,40 @@ async def main() -> None:
 				)
 			except httpx.HTTPError as exc:
 				_log.warning("Heartbeat failed: %s", exc)
+				heartbeat_failed = True
 			except Exception as exc:
 				_log.exception("Unexpected heartbeat failure: %s", exc)
+				heartbeat_failed = True
 
 			try:
-				# Pull config
-				new_version = await _pull_config(
-					client,
-					master_url,
-					node_id,
-					current_config_version,
-					api_secret,
-					cert_fingerprint,
-				)
-				if new_version:
-					current_config_version = new_version
-					node_state["config_version"] = current_config_version
-					_save_state(node_state)
-
-				backoff = 1  # Reset on success
+				if not heartbeat_failed:
+					# Pull config
+					new_version = await _pull_config(
+						client,
+						master_url,
+						node_id,
+						current_config_version,
+						api_secret,
+						cert_fingerprint,
+					)
+					if new_version is not None:
+						current_config_version = new_version
+						node_state["config_version"] = current_config_version
+						_save_state(node_state)
 
 			except httpx.HTTPError as exc:
-				_log.warning("Config sync error: %s (retrying in %ds)", exc, backoff)
-				backoff = min(backoff * 2, 300)
+				_log.warning("Config sync error: %s", exc)
+				config_failed = True
 			except Exception as exc:
 				_log.exception("Unexpected error while pulling config: %s", exc)
+				config_failed = True
+
+			if heartbeat_failed or config_failed:
 				backoff = min(backoff * 2, 300)
+				if config_failed:
+					_log.warning("Retrying config pull in %ds", backoff)
+			else:
+				backoff = 1  # Reset on success
 
 			# Wait for interval or shutdown
 			wait_time = backoff if backoff > 1 else SYNC_INTERVAL
@@ -392,6 +404,13 @@ async def main() -> None:
 	_log.info("Node daemon stopped")
 
 
+from typing import NamedTuple
+
+class EnrollResult(NamedTuple):
+	success: bool
+	config_version: str | None
+	session_secret: str | None
+
 async def _enroll(
 	client: httpx.AsyncClient,
 	master_url: str,
@@ -399,13 +418,11 @@ async def _enroll(
 	cert_pem: bytes,
 	api_secret: str,
 	cert_fingerprint: str,
-) -> tuple[str | None, str | None]:
+) -> EnrollResult:
 	"""Enroll with the master.
 
 	Returns:
-		(config_version, session_secret) on success.
-		("", None) if the node is already enrolled (409).
-		(None, None) on failure.
+		EnrollResult on success or if properly enrolled, or on failure.
 	"""
 	_log.info("Enrolling with master...")
 	try:
@@ -419,7 +436,7 @@ async def _enroll(
 		)
 		if resp.status_code == 409:
 			_log.info("Node already enrolled (409), will fetch config in sync loop")
-			return "", None
+			return EnrollResult(success=True, config_version="", session_secret=None)
 		resp.raise_for_status()
 		data = resp.json()
 		config = data.get("data", {})
@@ -429,13 +446,13 @@ async def _enroll(
 			version = await asyncio.to_thread(apply_config, config)
 		if session_secret:
 			_log.info("Received session secret from master (enrollment token is now invalidated)")
-		return version, session_secret
+		return EnrollResult(success=True, config_version=version, session_secret=session_secret)
 	except httpx.HTTPStatusError as exc:
 		_log.error("Enrollment HTTP error %d: %s", exc.response.status_code, exc.response.text[:200])
-		return None, None
+		return EnrollResult(success=False, config_version=None, session_secret=None)
 	except Exception as exc:
 		_log.exception("Enrollment failed: %s", exc)
-		return None, None
+		return EnrollResult(success=False, config_version=None, session_secret=None)
 
 
 async def _push_heartbeat(
@@ -446,7 +463,7 @@ async def _push_heartbeat(
 	cert_fingerprint: str,
 ) -> None:
 	"""Push heartbeat with WireGuard stats to master."""
-	uptime = await asyncio.to_thread(_get_uptime)
+	uptime = _get_uptime()
 	resp = await client.post(
 		f"{master_url}/api/nodes/heartbeat",
 		headers=_build_request_headers(api_secret, cert_fingerprint),
@@ -485,7 +502,7 @@ async def _pull_config(
 
 	new_version = await asyncio.to_thread(apply_config, config)
 	_log.info("Applied new config (version=%s...)", new_version[:16] if new_version else "none")
-	return new_version
+	return new_version or ""
 
 
 def _get_uptime() -> float | None:

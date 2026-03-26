@@ -102,15 +102,34 @@ def update_node(
 
 
 def delete_node(conn: sqlite3.Connection, node_id: str) -> bool:
-	"""Delete a node and unassign its peers (ON DELETE SET NULL).
+	"""Delete a node, its tunnel peer, and unassign regular peers.
+
+	The tunnel peer (created during enrollment for Node→Master DNS routing)
+	is deleted along with the node. Regular peers assigned to this node have
+	their node_id set to NULL (ON DELETE SET NULL).
 
 	Also removes node_interfaces rows (ON DELETE CASCADE).
 	Returns True if the node existed.
 	"""
 	with transaction(conn, immediate=True):
-		# Peers: node_id set to NULL via FK ON DELETE SET NULL
+		# Get tunnel_peer_id before deleting the node
+		row = conn.execute(
+			"SELECT tunnel_peer_id FROM nodes WHERE id = ?",
+			(node_id,),
+		).fetchone()
+		tunnel_peer_id = row["tunnel_peer_id"] if row else None
+
+		# Delete the node (peers.node_id set to NULL via FK ON DELETE SET NULL)
 		cur = conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
-		return cur.rowcount > 0
+		if cur.rowcount == 0:
+			return False
+
+		# Delete the tunnel peer if it exists
+		if tunnel_peer_id:
+			conn.execute("DELETE FROM peers WHERE id = ?", (tunnel_peer_id,))
+			_log.info("Deleted tunnel peer id=%d for node=%s", tunnel_peer_id, node_id)
+
+		return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -459,6 +478,18 @@ def get_node_interface_public_key(
 		(node_id, interface_name),
 	).fetchone()
 	return row["public_key"] if row else None
+
+
+def get_all_tunnel_peer_ids(conn: sqlite3.Connection) -> set[int]:
+	"""Return all peer IDs that serve as node tunnel peers.
+
+	These peers are auto-created during node enrollment and should not
+	be editable or deletable by users.
+	"""
+	rows = conn.execute(
+		"SELECT tunnel_peer_id FROM nodes WHERE tunnel_peer_id IS NOT NULL"
+	).fetchall()
+	return {r["tunnel_peer_id"] for r in rows}
 
 
 def get_peers_count_by_node(conn: sqlite3.Connection) -> dict[str | None, int]:

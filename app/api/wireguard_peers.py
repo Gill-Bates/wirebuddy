@@ -19,6 +19,7 @@ from ..db.sqlite_peers_mutations import (
 	delete_peer as db_delete_peer,
 	update_peer as db_update_peer,
 )
+from ..db.sqlite_nodes import get_all_tunnel_peer_ids
 from ..db.sqlite_runtime import (
 	UNSET,
 )
@@ -460,6 +461,14 @@ async def update_peer(
 	peer = await run_in_threadpool(get_peer_by_id, conn, peer_id)
 	if not peer:
 		raise HTTPException(status_code=404, detail="Peer not found")
+
+	# Protect node tunnel peers from modification
+	tunnel_peer_ids = await run_in_threadpool(get_all_tunnel_peer_ids, conn)
+	if peer_id in tunnel_peer_ids:
+		raise HTTPException(
+			status_code=403,
+			detail="Cannot modify node tunnel peer. This peer is managed by the node system.",
+		)
 	
 	public_key = peer["public_key"]
 	interface_name = peer["interface"]
@@ -639,6 +648,14 @@ async def delete_peer(
 	peer = await run_in_threadpool(get_peer_by_id, conn, peer_id)
 	if not peer:
 		raise HTTPException(status_code=404, detail="Peer not found")
+
+	# Protect node tunnel peers from deletion (delete the node instead)
+	tunnel_peer_ids = await run_in_threadpool(get_all_tunnel_peer_ids, conn)
+	if peer_id in tunnel_peer_ids:
+		raise HTTPException(
+			status_code=403,
+			detail="Cannot delete node tunnel peer. Delete the associated node instead.",
+		)
 	
 	public_key = peer["public_key"]
 	interface_name = peer["interface"]

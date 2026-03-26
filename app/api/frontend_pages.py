@@ -447,7 +447,17 @@ async def peers_page(
 		finally:
 			close_connection(thread_conn)
 
+	def _load_tunnel_peer_ids() -> set[int]:
+		"""Load all tunnel peer IDs (node system peers, not user-editable)."""
+		from ..db.sqlite_nodes import get_all_tunnel_peer_ids
+		thread_conn = connect(db_path)
+		try:
+			return get_all_tunnel_peer_ids(thread_conn)
+		finally:
+			close_connection(thread_conn)
+
 	peer_rows = await asyncio.to_thread(_load_all_peers)
+	tunnel_peer_ids = await asyncio.to_thread(_load_tunnel_peer_ids)
 	total_peers = len(peer_rows)
 	peers: list[dict] = []
 	now_epoch = int(time.time())
@@ -503,6 +513,9 @@ async def peers_page(
 			peer["last_client_country_code"] = geo_fields["country_code"]
 			peer["last_client_city"] = geo_fields["city"]
 			peer["last_client_as_org"] = geo_fields["as_org"]
+
+		# Mark node tunnel peers (system peers not editable by users)
+		peer["is_node_tunnel"] = peer["id"] in tunnel_peer_ids
 		peers.append(peer)
 
 	# Load nodes for the node selector in the Add Peer modal (admin only)

@@ -11,6 +11,16 @@
         --flag-gap: 0.35rem;
     }
 
+    /* Node tunnel peers (system peers, not user-editable) */
+    .peer-row-node-tunnel {
+        opacity: 0.65;
+        background-color: var(--bs-tertiary-bg);
+    }
+
+    .peer-row-node-tunnel:hover {
+        background-color: var(--bs-secondary-bg) !important;
+    }
+
     /* Table layout stability */
     .table {
         table-layout: fixed;
@@ -712,11 +722,15 @@
                         data-last-client-ip="{{ peer['last_client_ip'] or '' }}"
                         data-last-client-country="{{ peer['last_client_country_code'] or '' }}"
                         data-last-client-city="{{ peer['last_client_city'] or '' }}"
-                        data-last-client-as-org="{{ peer['last_client_as_org'] or '' }}">
+                        data-last-client-as-org="{{ peer['last_client_as_org'] or '' }}"
+                        {% if peer['is_node_tunnel'] %}data-node-tunnel="true" class="peer-row-node-tunnel"{% endif %}>
                         <td data-label="Name">
                             <div class="peer-name-stack">
                                 <div class="peer-name-main">
                                     <span class="peer-name-text">{{ peer['name'] or 'Unnamed' }}</span>
+                                    {% if peer['is_node_tunnel'] %}
+                                    <span class="badge bg-info-subtle text-info-emphasis">Node Tunnel</span>
+                                    {% endif %}
                                 </div>
                                 <div class="peer-name-meta d-lg-none">
                                     <span>{{ routing_label }}</span>
@@ -826,6 +840,22 @@
                                 </span>
                                 {% endif %}
                                 {% if user['is_admin'] %}
+                                {% if peer['is_node_tunnel'] %}
+                                <span class="d-inline-block" data-bs-toggle="tooltip"
+                                      data-bs-title="Node tunnel peers cannot be edited">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" disabled
+                                            style="pointer-events: none;">
+                                        <span class="material-icons" aria-hidden="true">edit</span>
+                                    </button>
+                                </span>
+                                <span class="d-inline-block" data-bs-toggle="tooltip"
+                                      data-bs-title="Delete the node to remove this peer">
+                                    <button type="button" class="btn btn-sm btn-outline-danger" disabled
+                                            style="pointer-events: none;">
+                                        <span class="material-icons" aria-hidden="true">delete</span>
+                                    </button>
+                                </span>
+                                {% else %}
                                 <button type="button" class="btn btn-sm btn-outline-secondary" data-action="edit-peer"
                                     data-peer-id="{{ peer['id'] }}" aria-label="Edit {{ peer['name'] or 'peer' }}"
                                     data-bs-toggle="tooltip" data-bs-title="Edit Peer">
@@ -836,6 +866,7 @@
                                     data-bs-toggle="tooltip" data-bs-title="Delete Peer">
                                     <span class="material-icons" aria-hidden="true">delete</span>
                                 </button>
+                                {% endif %}
                                 {% endif %}
                             </div>
                         </td>
