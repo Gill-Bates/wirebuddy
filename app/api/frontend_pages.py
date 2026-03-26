@@ -512,7 +512,21 @@ async def peers_page(
 			from ..db.sqlite_nodes import get_all_nodes as db_get_all_nodes
 			thread_conn = connect(db_path)
 			try:
-				return [{"id": n["id"], "name": n["name"], "fqdn": n["fqdn"]} for n in db_get_all_nodes(thread_conn)]
+				nodes = []
+				for n in db_get_all_nodes(thread_conn):
+					resolved_geo_ip = _resolve_node_geo_ip(n["fqdn"])
+					geo_fields = extract_geo_fields(lookup_ip_cached(resolved_geo_ip)) if resolved_geo_ip else {
+						"country_code": None,
+						"city": None,
+						"as_org": None,
+					}
+					nodes.append({
+						"id": n["id"],
+						"name": n["name"],
+						"fqdn": n["fqdn"],
+						"geo_country_code": geo_fields["country_code"],
+					})
+				return nodes
 			finally:
 				close_connection(thread_conn)
 		nodes_data = await asyncio.to_thread(_load_nodes)

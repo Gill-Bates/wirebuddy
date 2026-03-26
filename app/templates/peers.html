@@ -860,7 +860,7 @@
                         <select class="form-select" id="peer-node">
                             <option value="">Local (this server)</option>
                             {% for n in nodes %}
-                            <option value="{{ n.id }}">{{ n.name }} ({{ n.fqdn }})</option>
+                            <option value="{{ n.id }}">{{ n.name }} ({% if n.geo_country_code %}{{ n.geo_country_code|flag_emoji }} {% endif %}{{ n.fqdn }})</option>
                             {% endfor %}
                         </select>
                         <small class="text-muted">Which server should handle this peer</small>
@@ -1018,6 +1018,19 @@
                         <input type="text" class="form-control" id="edit-peer-name" maxlength="128" placeholder="e.g., John's iPhone" required>
                         <div class="invalid-feedback">Peer name is required</div>
                     </div>
+
+                    {% if nodes %}
+                    <div class="mb-2">
+                        <label for="edit-peer-node" class="form-label">Node</label>
+                        <select class="form-select" id="edit-peer-node">
+                            <option value="">Local (this server)</option>
+                            {% for n in nodes %}
+                            <option value="{{ n.id }}">{{ n.name }} ({% if n.geo_country_code %}{{ n.geo_country_code|flag_emoji }} {% endif %}{{ n.fqdn }})</option>
+                            {% endfor %}
+                        </select>
+                        <small class="text-muted">Which server should handle this peer</small>
+                    </div>
+                    {% endif %}
 
                     <!-- ROUTING -->
                     <h6 class="text-muted text-uppercase small mt-3 mb-2">Traffic Routing</h6>
@@ -1803,6 +1816,11 @@
             client_isolation: document.getElementById('edit-peer-client-isolation').checked,
         };
 
+        const editNodeSelect = document.getElementById('edit-peer-node');
+        if (editNodeSelect) {
+            data.node_id = editNodeSelect.value || null;
+        }
+
         // Show loading state
         submitBtn.disabled = true;
         submitText.classList.add('d-none');
@@ -1969,6 +1987,10 @@
 
             document.getElementById('edit-peer-id').value = peerId;
             document.getElementById('edit-peer-name').value = peer.name || '';
+            const editNodeSelect = document.getElementById('edit-peer-node');
+            if (editNodeSelect) {
+                editNodeSelect.value = peer.node_id || '';
+            }
             // Set allowed IPs mode dropdown
             const mode = detectAllowedIpsMode(peer.allowed_ips);
             document.getElementById('edit-peer-allowed-ips-mode').value = mode;

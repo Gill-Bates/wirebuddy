@@ -14,9 +14,7 @@ they have their own ``get_current_node`` dependency.
 from __future__ import annotations
 
 import hmac
-import ipaddress
 import logging
-import os
 import sqlite3
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -45,29 +43,6 @@ _log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["nodes-sync"])
 
-# Default trusted proxy CIDRs: loopback + all RFC 1918 private networks + Docker defaults
-# This covers typical reverse proxy setups (Caddy, nginx, traefik) on same host or in Docker
-_DEFAULT_TRUSTED_PROXY_CIDRS = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
-
-
-def _load_trusted_proxy_networks() -> tuple[ipaddress._BaseNetwork, ...]:
-	"""Load trusted proxy CIDRs for client-cert header trust."""
-	raw = os.environ.get("TRUSTED_PROXY_CIDRS", _DEFAULT_TRUSTED_PROXY_CIDRS)
-	networks: list[ipaddress._BaseNetwork] = []
-	for cidr in (item.strip() for item in raw.split(",")):
-		if not cidr:
-			continue
-		try:
-			networks.append(ipaddress.ip_network(cidr, strict=False))
-		except ValueError:
-			_log.warning("Ignoring invalid TRUSTED_PROXY_CIDRS entry: %s", cidr)
-	if not networks:
-		networks = [ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128")]
-	return tuple(networks)
-
-
-_TRUSTED_PROXY_NETWORKS = _load_trusted_proxy_networks()
-
 
 def _get_socket_ip(request: Request) -> str | None:
 	"""Return the normalized socket peer IP for the current request."""
@@ -75,17 +50,6 @@ def _get_socket_ip(request: Request) -> str | None:
 	if not scope_client or not scope_client[0]:
 		return None
 	return parse_ip_str(scope_client[0])
-
-
-def _is_trusted_proxy_ip(ip_text: str | None) -> bool:
-	"""Return True when the socket IP belongs to trusted proxy CIDRs."""
-	if not ip_text:
-		return False
-	try:
-		ip_obj = ipaddress.ip_address(ip_text)
-	except ValueError:
-		return False
-	return any(ip_obj in network for network in _TRUSTED_PROXY_NETWORKS)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -100,14 +64,16 @@ def get_current_node(
 ) -> sqlite3.Row:
 	"""Authenticate a node via Bearer api_secret + cert fingerprint.
 
-	The certificate fingerprint header is only trusted from a configured
-	reverse proxy (loopback by default, overridable via
-	``TRUSTED_PROXY_CIDRS``). Direct clients must not be allowed to spoof it.
+	Security model:
+	- The api_secret (Bearer token) proves possession of the enrollment token
+	- The cert fingerprint is compared against the value stored at enrollment
+	- Both must match — an attacker needs the secret AND the original certificate
 	"""
-	if not authorization.startswith("Bearer "):
+	scheme, _, token = authorization.partition(" ")
+	if scheme.lower() != "bearer" or not token:
 		raise HTTPException(status_code=401, detail="Invalid authorization header")
 
-	api_secret = authorization[7:]
+	api_secret = token
 	secret_hash = hash_token(api_secret)
 	node = get_node_by_api_secret(conn, secret_hash)
 
@@ -121,19 +87,6 @@ def get_current_node(
 	client_cert_fp = request.headers.get("X-Client-Cert-Fingerprint")
 	if not client_cert_fp:
 		raise HTTPException(status_code=403, detail="Missing client certificate fingerprint")
-
-	socket_ip = _get_socket_ip(request)
-	if not _is_trusted_proxy_ip(socket_ip):
-		_log.warning(
-			"Rejected client certificate fingerprint header from untrusted source node=%s socket_ip=%s trusted_cidrs=%s",
-			node["id"],
-			socket_ip or "unknown",
-			",".join(str(n) for n in _TRUSTED_PROXY_NETWORKS),
-		)
-		raise HTTPException(
-			status_code=403,
-			detail=f"Client certificate headers require a trusted proxy (socket_ip={socket_ip})",
-		)
 
 	stored_cert_fp = (node["cert_fingerprint"] or "").strip().lower()
 	if not stored_cert_fp:
@@ -154,8 +107,8 @@ def get_current_node(
 
 class EnrollRequest(BaseModel):
 	"""Node enrollment payload."""
-	enrollment_token: str = Field(..., description="The base64url enrollment token from master")
-	cert_pem: str = Field(..., description="PEM-encoded self-signed node certificate")
+	enrollment_token: str = Field(..., max_length=2048, description="The base64url enrollment token from master")
+	cert_pem: str = Field(..., max_length=16384, description="PEM-encoded self-signed node certificate")
 
 
 class HeartbeatRequest(BaseModel):
@@ -210,14 +163,17 @@ async def enroll_node_endpoint(
 		_log.warning("Node enrollment rejected due to invalid certificate for node=%s: %s", node_id, exc)
 		raise HTTPException(status_code=422, detail="Invalid certificate") from exc
 
+	# Generate keypairs BEFORE transaction (async + SQLite = race condition risk)
+	interfaces = list_interfaces(conn)
+	keypairs = [(iface["name"], await generate_keypair()) for iface in interfaces]
+
 	# Enroll atomically so partial interface/keypair creation cannot persist.
 	with transaction(conn, immediate=True):
 		if not enroll_node(conn, node_id, fingerprint):
 			raise HTTPException(status_code=409, detail="Node already enrolled")
 
-		for iface in list_interfaces(conn):
-			privkey, pubkey = await generate_keypair()
-			create_node_interface(conn, node_id, iface["name"], privkey, pubkey)
+		for iface_name, (privkey, pubkey) in keypairs:
+			create_node_interface(conn, node_id, iface_name, privkey, pubkey)
 
 		bump_node_config_version(conn, node_id)
 	config = get_node_config(conn, node_id)

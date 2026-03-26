@@ -156,6 +156,8 @@ async def main() -> None:
 		format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
 		datefmt="%Y-%m-%d %H:%M:%S",
 	)
+	for name in ("httpcore", "httpx", "hpack"):
+		logging.getLogger(name).setLevel(logging.WARNING)
 	_log.info("WireBuddy Node Daemon starting...")
 
 	DATA_DIR.mkdir(parents=True, exist_ok=True)

@@ -119,6 +119,7 @@ def _row_to_public(row: sqlite3.Row, enabled_blocklist_ids: list[str]) -> PeerPu
 		peer_address=row["peer_address"],
 		endpoint=row["endpoint"],
 		interface=row["interface"],
+		node_id=safe_row_get(row, "node_id"),
 		is_enabled=bool(row["is_enabled"]),
 		use_adblocker=bool(row["use_adblocker"]),
 		dns_logging_enabled=bool(safe_row_get(row, "dns_logging_enabled", True)),
@@ -464,6 +465,8 @@ async def update_peer(
 	interface_name = peer["interface"]
 	fields_set = payload.model_fields_set
 	enabled_blocklist_ids = await run_in_threadpool(get_enabled_blocklist_ids, conn)
+	old_node_id = safe_row_get(peer, "node_id")
+	old_is_remote = bool(old_node_id)
 
 	def _val_or_unset(field: str):
 		return getattr(payload, field) if field in fields_set else UNSET
@@ -471,6 +474,15 @@ async def update_peer(
 	blocklist_ids_update = UNSET
 	if "blocklist_ids" in fields_set:
 		blocklist_ids_update = filter_peer_blocklist_ids(payload.blocklist_ids, enabled_blocklist_ids)
+
+	node_id_update = _val_or_unset("node_id")
+	new_node_id = old_node_id if node_id_update is UNSET else node_id_update
+	new_is_remote = bool(new_node_id)
+	if "node_id" in fields_set and payload.node_id:
+		from ..db.sqlite_nodes import get_node as db_get_node
+		node = await run_in_threadpool(db_get_node, conn, payload.node_id)
+		if not node:
+			raise HTTPException(status_code=404, detail=f"Node '{payload.node_id}' not found")
 
 	await run_in_threadpool(
 		db_update_peer,
@@ -485,65 +497,106 @@ async def update_peer(
 		dns_logging_enabled=_val_or_unset("dns_logging_enabled"),
 		blocklist_ids=blocklist_ids_update,
 		client_isolation=_val_or_unset("client_isolation"),
+		node_id=node_id_update,
 	)
-	
-	# Runtime enable/disable support
-	if "is_enabled" in fields_set:
-		if not payload.is_enabled:
-			# Remove peer from runtime
-			code, _, stderr = await run_wg_command(
-				"wg", "set", interface_name,
-				"peer", public_key,
-				"remove",
-			)
+
+	updated = await run_in_threadpool(get_peer_by_id, conn, peer_id)
+	peer_enabled = bool(updated["is_enabled"])
+	peer_address = updated["peer_address"]
+
+	# Runtime enable/disable and local/remote migration support
+	if old_is_remote and not new_is_remote:
+		if peer_enabled and peer_address:
+			preshared_key = updated["preshared_key"] if "preshared_key" in updated.keys() else None
+			if preshared_key:
+				try:
+					psk_plain = vault_decrypt(preshared_key, cfg.secret_key)
+				except ValueError as e:
+					_log.error("KEY_MISMATCH: Cannot decrypt PSK for peer %s: %s", public_key[:8], e)
+					raise HTTPException(
+						status_code=503,
+						detail="Cannot decrypt peer configuration. WIREBUDDY_SECRET_KEY does not match the database encryption key.",
+					)
+				code, _, stderr = await wg_set_peer_with_psk(
+					interface_name,
+					public_key,
+					peer_address,
+					psk_plain,
+				)
+			else:
+				code, _, stderr = await run_wg_command(
+					"wg", "set", interface_name,
+					"peer", public_key,
+					"allowed-ips", peer_address,
+				)
 			if code != 0:
-				_log.warning("Failed to remove disabled peer from WG runtime: %s", stderr)
-		else:
-			# Re-add peer to runtime with current settings
-			peer_address = peer["peer_address"]
-			if peer_address:
-				preshared_key = peer["preshared_key"] if "preshared_key" in peer.keys() else None
-				if preshared_key:
-					from ..utils.vault import decrypt as vault_decrypt
-					try:
-						psk_plain = vault_decrypt(preshared_key, cfg.secret_key)
-					except ValueError as e:
-						_log.error("KEY_MISMATCH: Cannot decrypt PSK for peer %s: %s", public_key[:8], e)
-						raise HTTPException(
-							status_code=503,
-							detail="Cannot decrypt peer configuration. WIREBUDDY_SECRET_KEY does not match the database encryption key.",
-						)
-					code, _, stderr = await wg_set_peer_with_psk(
-						interface_name,
-						public_key,
-						peer_address,
-						psk_plain,
-					)
-				else:
-					code, _, stderr = await run_wg_command(
-						"wg", "set", interface_name,
-						"peer", public_key,
-						"allowed-ips", peer_address,
-					)
+				_log.warning("Failed to add migrated local peer to WG runtime: %s", stderr)
+	elif not old_is_remote and new_is_remote:
+		code, _, stderr = await run_wg_command(
+			"wg", "set", interface_name,
+			"peer", public_key,
+			"remove",
+		)
+		if code != 0:
+			_log.warning("Failed to remove migrated remote peer from WG runtime: %s", stderr)
+	elif not new_is_remote:
+		if "is_enabled" in fields_set:
+			if not payload.is_enabled:
+				code, _, stderr = await run_wg_command(
+					"wg", "set", interface_name,
+					"peer", public_key,
+					"remove",
+				)
 				if code != 0:
-					_log.warning("Failed to re-add enabled peer to WG runtime: %s", stderr)
-	elif "allowed_ips" in fields_set and payload.allowed_ips is not None:
-		# Keep server-side cryptokey routing strict: always peer_address on server.
-		# payload.allowed_ips is client-side policy and must not be pushed to server.
-		peer_address = peer["peer_address"]
-		if not peer_address:
-			_log.warning("Peer %s has no peer_address; skipped runtime allowed-ips repair", public_key[:8])
-		else:
-			code, _, stderr = await run_wg_command(
-				"wg", "set", interface_name,
-				"peer", public_key,
-				"allowed-ips", peer_address,
-			)
-			if code != 0:
-				_log.warning("Failed to update peer allowed-ips in WireGuard: %s", stderr)
-	
-	# Sync config file if peer routing/enabled state changed.
-	if any(k in fields_set for k in ("allowed_ips", "allowed_ips_mode", "is_enabled", "client_isolation")):
+					_log.warning("Failed to remove disabled peer from WG runtime: %s", stderr)
+			else:
+				if peer_address:
+					preshared_key = updated["preshared_key"] if "preshared_key" in updated.keys() else None
+					if preshared_key:
+						try:
+							psk_plain = vault_decrypt(preshared_key, cfg.secret_key)
+						except ValueError as e:
+							_log.error("KEY_MISMATCH: Cannot decrypt PSK for peer %s: %s", public_key[:8], e)
+							raise HTTPException(
+								status_code=503,
+								detail="Cannot decrypt peer configuration. WIREBUDDY_SECRET_KEY does not match the database encryption key.",
+							)
+						code, _, stderr = await wg_set_peer_with_psk(
+							interface_name,
+							public_key,
+							peer_address,
+							psk_plain,
+						)
+					else:
+						code, _, stderr = await run_wg_command(
+							"wg", "set", interface_name,
+							"peer", public_key,
+							"allowed-ips", peer_address,
+						)
+					if code != 0:
+						_log.warning("Failed to re-add enabled peer to WG runtime: %s", stderr)
+		elif "allowed_ips" in fields_set and payload.allowed_ips is not None:
+			# Keep server-side cryptokey routing strict: always peer_address on server.
+			# payload.allowed_ips is client-side policy and must not be pushed to server.
+			if not peer_address:
+				_log.warning("Peer %s has no peer_address; skipped runtime allowed-ips repair", public_key[:8])
+			else:
+				code, _, stderr = await run_wg_command(
+					"wg", "set", interface_name,
+					"peer", public_key,
+					"allowed-ips", peer_address,
+				)
+				if code != 0:
+					_log.warning("Failed to update peer allowed-ips in WireGuard: %s", stderr)
+
+	local_sync_needed = (
+		(old_is_remote != new_is_remote)
+		or (
+			not new_is_remote
+			and any(k in fields_set for k in ("allowed_ips", "allowed_ips_mode", "is_enabled", "client_isolation"))
+		)
+	)
+	if local_sync_needed:
 		await run_in_threadpool(
 			sync_interface_config,
 			WG_CONFIG_PATH,
@@ -552,6 +605,14 @@ async def update_peer(
 			pepper=cfg.secret_key,
 		)
 		await apply_client_isolation_runtime(interface_name, conn)
+
+	if "node_id" in fields_set or ("is_enabled" in fields_set and (old_is_remote or new_is_remote)):
+		from ..db.sqlite_nodes import bump_node_config_version
+		for node_id in {old_node_id, new_node_id} - {None}:
+			try:
+				await run_in_threadpool(bump_node_config_version, conn, node_id)
+			except Exception as exc:
+				_log.warning("Failed to bump config version for node %s: %s", node_id, exc)
 	
 	# Regenerate Unbound peer tags if blocklist settings changed
 	if "blocklist_ids" in fields_set or "use_adblocker" in fields_set:
@@ -559,8 +620,7 @@ async def update_peer(
 			await run_in_threadpool(_regenerate_peer_tags, conn)
 		except Exception as exc:
 			_log.exception("Failed to regenerate peer tags — DNS filtering may be stale")
-	
-	updated = await run_in_threadpool(get_peer_by_id, conn, peer_id)
+
 	_log.info("PEER_UPDATED id=%d public_key=%s...", peer_id, public_key[:8])
 	updated_data = _row_to_public(updated, enabled_blocklist_ids).model_dump(mode="json")
 	return ok_response(data=updated_data)
