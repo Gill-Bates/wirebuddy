@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from typing import AsyncIterator
+from typing import AsyncGenerator
 
 _log = logging.getLogger(__name__)
 
@@ -25,62 +25,69 @@ _log = logging.getLogger(__name__)
 _node_queues: dict[str, set[asyncio.Queue[str]]] = defaultdict(set)
 _lock = asyncio.Lock()
 
+# Maximum queued events per client before backpressure/dropping
+_MAX_QUEUED_EVENTS = 64
 
-async def subscribe(node_id: str) -> AsyncIterator[str]:
-	"""Subscribe to config change events for a node.
-	
-	Yields SSE-formatted event strings when config changes.
-	"""
-	queue: asyncio.Queue[str] = asyncio.Queue()
-	async with _lock:
-		_node_queues[node_id].add(queue)
-	_log.debug("Node %s subscribed to config events (clients=%d)", node_id, len(_node_queues[node_id]))
-	
-	try:
-		while True:
-			event = await queue.get()
-			yield event
-	finally:
-		async with _lock:
-			_node_queues[node_id].discard(queue)
-			if not _node_queues[node_id]:
-				del _node_queues[node_id]
-		_log.debug("Node %s unsubscribed from config events", node_id)
+
+async def subscribe(node_id: str) -> AsyncGenerator[str, None]:
+    """Subscribe to config change events for a node.
+    
+    Yields SSE-formatted event strings when config changes.
+    """
+    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=_MAX_QUEUED_EVENTS)
+    async with _lock:
+        _node_queues[node_id].add(queue)
+        client_count = len(_node_queues[node_id])
+    _log.debug("Node %s subscribed to config events (clients=%d)", node_id, client_count)
+    
+    try:
+        while True:
+            event = await queue.get()
+            yield event
+    finally:
+        async with _lock:
+            _node_queues[node_id].discard(queue)
+            if not _node_queues[node_id]:
+                del _node_queues[node_id]
+        _log.debug("Node %s unsubscribed from config events", node_id)
 
 
 async def notify_config_changed(node_id: str, config_version: str) -> int:
-	"""Notify all connected clients for a node that config has changed.
-	
-	Returns the number of clients notified.
-	"""
-	async with _lock:
-		queues = _node_queues.get(node_id, set()).copy()
-	
-	if not queues:
-		_log.debug("No SSE clients connected for node %s", node_id)
-		return 0
-	
-	# SSE event format
-	event = f"event: config_changed\ndata: {config_version}\n\n"
-	
-	notified = 0
-	for queue in queues:
-		try:
-			queue.put_nowait(event)
-			notified += 1
-		except asyncio.QueueFull:
-			_log.warning("Event queue full for node %s, dropping event", node_id)
-	
-	_log.info("Notified %d SSE client(s) for node %s: config_version=%s...", 
-			  notified, node_id, config_version[:16] if config_version else "none")
-	return notified
+    """Notify all connected clients for a node that config has changed.
+    
+    Returns the number of clients notified.
+    """
+    async with _lock:
+        queues = _node_queues.get(node_id, set()).copy()
+    
+    if not queues:
+        _log.debug("No SSE clients connected for node %s", node_id)
+        return 0
+    
+    # SSE event format
+    event = f"event: config_changed\ndata: {config_version}\n\n"
+    
+    notified = 0
+    for queue in queues:
+        try:
+            queue.put_nowait(event)
+            notified += 1
+        except asyncio.QueueFull:
+            _log.warning("Event queue full for node %s, dropping event", node_id)
+    
+    _log.info("Notified %d SSE client(s) for node %s: config_version=%s...", 
+              notified, node_id, config_version[:16] if config_version else "none")
+    return notified
 
 
-def get_connected_nodes() -> list[str]:
-	"""Return list of node IDs with active SSE connections."""
-	return list(_node_queues.keys())
+async def get_connected_nodes() -> list[str]:
+    """Return list of node IDs with active SSE connections."""
+    async with _lock:
+        return list(_node_queues.keys())
 
 
-def get_connection_count(node_id: str) -> int:
-	"""Return number of active SSE connections for a node."""
-	return len(_node_queues.get(node_id, set()))
+async def get_connection_count(node_id: str) -> int:
+    """Return number of active SSE connections for a node."""
+    async with _lock:
+        return len(_node_queues.get(node_id, set()))
+
