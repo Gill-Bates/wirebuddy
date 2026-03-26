@@ -194,7 +194,7 @@ async def _build_peer_config(
 		# Don't leak internal config details to client
 		raise HTTPException(status_code=422, detail="Invalid interface configuration")
 	
-		client_allowed_ips = allowed_ips_with_dns_routes(
+	client_allowed_ips = allowed_ips_with_dns_routes(
 		peer["allowed_ips"],
 		dns_servers,
 		use_adblocker,
