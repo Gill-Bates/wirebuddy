@@ -20,6 +20,20 @@ CERT_FILE = "node.crt"
 KEY_FILE = "node.key"
 
 
+def clear_node_cert(data_dir: Path) -> None:
+	"""Remove existing node certificate and key files.
+
+	Used when re-enrolling with a different enrollment token.
+	"""
+	cert_path = data_dir / CERT_FILE
+	key_path = data_dir / KEY_FILE
+
+	for path in (cert_path, key_path):
+		if path.exists():
+			path.unlink()
+			_log.info("Removed old certificate file: %s", path.name)
+
+
 def ensure_node_cert(data_dir: Path, node_id: str) -> tuple[bytes, bytes]:
 	"""Ensure a self-signed certificate exists for this node.
 

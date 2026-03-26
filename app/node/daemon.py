@@ -27,8 +27,9 @@ from typing import Any
 
 import httpx
 
+from ..utils.banner import print_banner_once
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
-from .cert import ensure_node_cert
+from .cert import clear_node_cert, ensure_node_cert
 from .wg_manager import apply_config, get_wg_dump, shutdown_all_interfaces
 
 _log = logging.getLogger(__name__)
@@ -110,6 +111,22 @@ def _save_state(state: dict[str, Any]) -> None:
 		raise
 
 
+def _clear_enrollment_state() -> None:
+	"""Clear all enrollment state for re-enrollment with a new token.
+
+	Removes node state, certificates, and legacy enrollment marker.
+	"""
+	if STATE_FILE.exists():
+		STATE_FILE.unlink()
+		_log.info("Removed old node state file")
+
+	if ENROLLED_FILE.exists():
+		ENROLLED_FILE.unlink()
+		_log.info("Removed legacy enrollment marker")
+
+	clear_node_cert(DATA_DIR)
+
+
 def _resolve_tls_verify(state: dict[str, Any] | None) -> tuple[bool | str, str | None]:
 	"""Resolve TLS verification settings for master API calls."""
 	ca_file_raw = os.environ.pop("WIREBUDDY_MASTER_CA_FILE", None)
@@ -133,6 +150,7 @@ def _write_legacy_enrollment_marker(node_id: str) -> None:
 
 async def main() -> None:
 	"""Entry point for the node daemon."""
+	print_banner_once()
 	logging.basicConfig(
 		level=os.environ.get("LOG_LEVEL", "INFO").upper(),
 		format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -168,7 +186,23 @@ async def main() -> None:
 			sys.exit(1)
 	else:
 		if token_str:
-			_log.info("Ignoring WIREBUDDY_ENROLLMENT_TOKEN because persisted node state already exists")
+			# Check if the new token has a different node_id (re-enrollment scenario)
+			try:
+				payload = _parse_enrollment_token(token_str, verify_key)
+				if payload["node_id"] != state["node_id"]:
+					_log.warning(
+						"Enrollment token has different node_id (%s vs %s), clearing old state for re-enrollment",
+						payload["node_id"],
+						state["node_id"],
+					)
+					_clear_enrollment_state()
+					state = None  # Force re-enrollment
+				else:
+					_log.info("Ignoring WIREBUDDY_ENROLLMENT_TOKEN because persisted node state already exists")
+					payload = None  # Not needed, using existing state
+			except ValueError as exc:
+				_log.critical("Failed to parse enrollment token: %s", exc)
+				sys.exit(1)
 
 	master_url = str((state or payload)["master_url"]).rstrip("/")
 	node_id = str((state or payload)["node_id"])

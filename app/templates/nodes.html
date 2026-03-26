@@ -123,7 +123,7 @@
                         <td data-label="Actions" class="text-end node-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
                                 <button type="button"
-                                        class="btn btn-sm btn-outline-primary node-action-btn"
+                                        class="btn btn-sm btn-outline-secondary node-action-btn"
                                         data-action="regenerate-token"
                                         data-node-id="{{ node.id }}"
                                         data-node-name="{{ node.name }}"
@@ -315,23 +315,31 @@
     const HOSTNAME_LABEL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
 
     function initTooltips(root = document) {
-        root.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
-            bootstrap.Tooltip.getOrCreateInstance(el);
+        if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+            return;
+        }
+
+        const scope = root && typeof root.querySelectorAll === 'function' ? root : document;
+        scope.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
+            new bootstrap.Tooltip(el, {
+                container: 'body',
+                trigger: 'hover focus',
+            });
         });
     }
 
     async function copyTextFromElement(elementId) {
         const text = document.getElementById(elementId)?.textContent?.trim() || '';
         if (!text) {
-            await wbAlert('No token available to copy.', 'warning');
+            wbToast('No token available to copy.', 'warning');
             return;
         }
 
         try {
             await navigator.clipboard.writeText(text);
-            await wbAlert('Token copied to clipboard.', 'success');
+            wbToast('Token copied to clipboard.', 'success');
         } catch (error) {
-            await wbAlert('Failed to copy token: ' + error.message, 'danger');
+            wbToast('Failed to copy token: ' + error.message, 'danger');
         }
     }
 
