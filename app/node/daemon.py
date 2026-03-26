@@ -526,12 +526,14 @@ async def _push_heartbeat(
 	cert_fingerprint: str,
 ) -> None:
 	"""Push heartbeat with WireGuard stats to master."""
+	from ..utils.version import get_version
 	uptime = _get_uptime()
 	resp = await client.post(
 		f"{master_url}/api/nodes/heartbeat",
 		headers=_build_request_headers(api_secret, cert_fingerprint),
 		json={
 			"uptime": uptime,
+			"version": get_version(),
 		},
 	)
 	resp.raise_for_status()
@@ -645,6 +647,8 @@ async def _pull_config(
 		# 304-equivalent: config unchanged
 		return None
 
+	peer_count = len(config.get("peers", []))
+	_log.info("Received config from master: peers=%d interfaces=%d", peer_count, len(config.get("interfaces", [])))
 	new_version = await asyncio.to_thread(apply_config, config)
 	_log.info("Applied new config (version=%s...)", new_version[:16] if new_version else "none")
 	return new_version or ""

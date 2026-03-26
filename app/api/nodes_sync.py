@@ -129,6 +129,7 @@ class HeartbeatRequest(BaseModel):
 
 	uptime: float | None = Field(None, description="System uptime in seconds")
 	interfaces_status: dict | None = Field(None, description="WG interface up/down status")
+	version: str | None = Field(None, max_length=32, description="WireBuddy version running on node")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -283,6 +284,8 @@ def heartbeat(
 		metadata["uptime"] = body.uptime
 	if body.interfaces_status is not None:
 		metadata["interfaces_status"] = body.interfaces_status
+	if body.version is not None:
+		metadata["version"] = body.version
 
 	update_node_heartbeat(conn, node_id, metadata=metadata or None)
 

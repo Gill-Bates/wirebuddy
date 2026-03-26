@@ -172,6 +172,22 @@ def _get_master_url(conn: sqlite3.Connection) -> str:
 
 def _node_to_dict(row: sqlite3.Row, peer_count: int = 0) -> dict[str, Any]:
 	"""Convert a node Row to a serialisable dict (strip secret hash)."""
+	from .frontend_pages import _resolve_node_geo_ip
+	from .frontend_shared import extract_geo_fields, lookup_ip_cached
+	
+	resolved_geo_ip = _resolve_node_geo_ip(row["fqdn"])
+	geo_fields = extract_geo_fields(lookup_ip_cached(resolved_geo_ip)) if resolved_geo_ip else {
+		"country_code": None,
+		"city": None,
+		"as_org": None,
+	}
+	
+	# Extract version from metadata
+	node_version = None
+	metadata = _parse_node_metadata(row["metadata"], node_id=row["id"])
+	if isinstance(metadata, dict):
+		node_version = metadata.get("version")
+	
 	return {
 		"id": row["id"],
 		"name": row["name"],
@@ -182,8 +198,12 @@ def _node_to_dict(row: sqlite3.Row, peer_count: int = 0) -> dict[str, Any]:
 		"enrolled_at": row["enrolled_at"],
 		"created_at": row["created_at"],
 		"config_version": row["config_version"],
-		"metadata": _parse_node_metadata(row["metadata"], node_id=row["id"]),
+		"metadata": metadata,
 		"peer_count": peer_count,
+		"geo_country_code": geo_fields["country_code"],
+		"geo_city": geo_fields["city"],
+		"geo_as_org": geo_fields["as_org"],
+		"node_version": node_version,
 	}
 
 

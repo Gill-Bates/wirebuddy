@@ -5,6 +5,12 @@
 
 {% block extra_css %}
 <style>
+    :root {
+        --flag-width: 16px;
+        --flag-height: 12px;
+        --flag-gap: 8px;
+    }
+
     .table td {
         vertical-align: middle;
     }
@@ -12,6 +18,56 @@
         min-width: 70px;
         text-align: center;
     }
+    
+    /* Node FQDN stacked layout (same style as peer-client-ip) */
+    .node-fqdn-stack {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.15;
+    }
+
+    .node-fqdn-main {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--flag-gap);
+        flex-wrap: wrap;
+    }
+
+    .node-fqdn-main code {
+        color: var(--bs-secondary-color);
+    }
+
+    .node-fqdn-meta {
+        font-size: .75rem;
+        color: var(--bs-secondary-color);
+        margin-left: calc(var(--flag-width) + var(--flag-gap));
+        margin-top: 0.25rem;
+        white-space: normal;
+    }
+
+    .node-fqdn-meta .node-meta-city,
+    .node-fqdn-meta .node-meta-provider {
+        display: block;
+    }
+
+    .node-fqdn-meta .node-meta-provider {
+        display: inline-block;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: bottom;
+    }
+
+    .node-country-flag {
+        width: var(--flag-width);
+        height: var(--flag-height);
+        border-radius: 2px;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, .15);
+        object-fit: cover;
+        flex: 0 0 auto;
+    }
+
     .enrollment-token-box {
         font-family: var(--bs-font-monospace);
         font-size: 0.75rem;
@@ -82,6 +138,7 @@
                         <th>FQDN / IP</th>
                         <th>Port</th>
                         <th>Status</th>
+                        <th>Version</th>
                         <th>Peers</th>
                         <th>Last Seen</th>
                         <th class="text-end" aria-hidden="true"></th>
@@ -91,10 +148,24 @@
                     {% for node in nodes %}
                     <tr id="node-row-{{ node.id }}">
                         <td data-label="Name"><strong>{{ node.name }}</strong></td>
-                        <td data-label="FQDN">
-                            <div>
-                                <div>{{ node.fqdn }}</div>
-                                {{ geo_badge(node.geo_country_code, None, node.geo_as_org, 'sm') }}
+                        <td data-label="FQDN" class="node-fqdn-cell">
+                            <div class="node-fqdn-stack">
+                                <div class="node-fqdn-main">
+                                    {% if node.geo_country_code %}
+                                    <img class="node-country-flag" alt="Country flag: {{ node.geo_country_code|upper }}" decoding="async" src="/static/vendor/images/flags/{{ node.geo_country_code }}.svg">
+                                    {% endif %}
+                                    <code>{{ node.fqdn }}</code>
+                                </div>
+                                {% if node.geo_city or node.geo_as_org %}
+                                <div class="node-fqdn-meta">
+                                    {% if node.geo_city %}
+                                    <span class="node-meta-city">{{ node.geo_city }}</span>
+                                    {% endif %}
+                                    {% if node.geo_as_org %}
+                                    <span class="node-meta-provider">{{ node.geo_as_org }}</span>
+                                    {% endif %}
+                                </div>
+                                {% endif %}
                             </div>
                         </td>
                         <td data-label="Port">{{ node.wg_port }}</td>
@@ -107,6 +178,13 @@
                             <span class="badge bg-danger node-status-badge">Offline</span>
                             {% else %}
                             <span class="badge bg-secondary node-status-badge">{{ node.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td data-label="Version">
+                            {% if node.node_version %}
+                            <code class="small">{{ node.node_version }}</code>
+                            {% else %}
+                            <span class="text-muted">—</span>
                             {% endif %}
                         </td>
                         <td data-label="Peers">{{ node.peer_count }}</td>
@@ -620,6 +698,16 @@
                 const peersCell = row.querySelector('td[data-label="Peers"]');
                 if (peersCell) {
                     peersCell.textContent = node.peer_count ?? '—';
+                }
+
+                // Update version
+                const versionCell = row.querySelector('td[data-label="Version"]');
+                if (versionCell) {
+                    if (node.node_version) {
+                        versionCell.innerHTML = `<code class="small">${node.node_version}</code>`;
+                    } else {
+                        versionCell.innerHTML = '<span class="text-muted">—</span>';
+                    }
                 }
 
                 // Update last seen

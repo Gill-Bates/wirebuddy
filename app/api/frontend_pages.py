@@ -608,6 +608,14 @@ def nodes_page(
 			"city": None,
 			"as_org": None,
 		}
+		# Parse metadata JSON for version
+		node_version = None
+		if n["metadata"]:
+			try:
+				meta = json.loads(n["metadata"]) if isinstance(n["metadata"], str) else n["metadata"]
+				node_version = meta.get("version")
+			except (json.JSONDecodeError, TypeError):
+				pass
 		nodes_data.append({
 			"id": n["id"],
 			"name": n["name"],
@@ -619,7 +627,9 @@ def nodes_page(
 			"created_at": n["created_at"],
 			"peer_count": peer_counts.get(n["id"], 0),
 			"geo_country_code": geo_fields["country_code"],
+			"geo_city": geo_fields["city"],
 			"geo_as_org": geo_fields["as_org"],
+			"node_version": node_version,
 		})
 	# Get default WireGuard port from first interface for pre-filling the Add Node modal
 	first_iface = conn.execute("SELECT listen_port FROM interfaces LIMIT 1").fetchone()
