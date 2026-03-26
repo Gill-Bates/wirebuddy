@@ -500,6 +500,8 @@
                 await wbAlert(data.detail || 'Failed to delete node', 'danger');
                 return;
             }
+            const data = await resp.json();
+            wbToast(data.message || `Node "${name}" deleted`, 'success');
             location.reload();
         } catch (err) {
             await wbAlert('Network error: ' + err.message, 'danger');

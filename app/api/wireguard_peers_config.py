@@ -250,7 +250,16 @@ async def get_peer_qrcode(
 		config_text = config.to_wg_config()
 		peer_name = peer["name"] or "Peer"
 
-		png_bytes = generate_qr_png(config_text, peer_name)
+		# Resolve node name for badge (remote peers only)
+		node_name = None
+		node_id = peer["node_id"] if "node_id" in peer.keys() else None
+		if node_id:
+			from ..db.sqlite_nodes import get_node as db_get_node
+			node = db_get_node(conn, node_id)
+			if node:
+				node_name = node["name"]
+
+		png_bytes = generate_qr_png(config_text, peer_name, node_name=node_name)
 
 		# Sanitize filename — restrict to ASCII-safe characters (\w is
 		# unicode-aware in Python 3 and would let through non-ASCII)

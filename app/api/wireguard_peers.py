@@ -642,8 +642,24 @@ async def delete_peer(
 	
 	public_key = peer["public_key"]
 	interface_name = peer["interface"]
+	is_remote = bool(safe_row_get(peer, "node_id"))
+
+	if is_remote:
+		# Remote peer: no local WG entry to remove — just delete from DB
+		# and bump the node config version so the node picks up the removal
+		old_node_id = peer["node_id"]
+		await run_in_threadpool(db_delete_peer, conn, peer_id)
+
+		try:
+			from ..db.sqlite_nodes import bump_node_config_version
+			await run_in_threadpool(bump_node_config_version, conn, old_node_id)
+		except Exception as exc:
+			_log.warning("Failed to bump config version for node %s after peer delete: %s", old_node_id, exc)
+
+		_log.info("PEER_DELETED (remote) id=%d public_key=%s... node=%s", peer_id, public_key[:8], old_node_id)
+		return
 	
-	# Remove from WireGuard (fail hard - don't create ghost peers)
+	# Local peer: remove from WireGuard (fail hard - don't create ghost peers)
 	code, _, stderr = await run_wg_command(
 		"wg", "set", interface_name,
 		"peer", public_key,
