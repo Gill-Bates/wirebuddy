@@ -280,10 +280,11 @@ def bump_node_config_version(
 	).fetchall()
 	payload = "|".join(r["public_key"] for r in rows) + "|" + now.isoformat()
 	version = hashlib.sha256(payload.encode()).hexdigest()
-	conn.execute(
-		"UPDATE nodes SET config_version = ? WHERE id = ?",
-		(version, node_id),
-	)
+	with transaction(conn, immediate=True):
+		conn.execute(
+			"UPDATE nodes SET config_version = ? WHERE id = ?",
+			(version, node_id),
+		)
 	return version
 
 

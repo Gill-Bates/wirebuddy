@@ -435,12 +435,12 @@ async def main() -> None:
 						node_id,
 						current_config_version,
 						api_secret,
-							cert_fingerprint,
-						)
-						if new_version is not None:
-							current_config_version = new_version
-							node_state["config_version"] = current_config_version
-							_save_state(node_state)
+						cert_fingerprint,
+					)
+					if new_version is not None:
+						current_config_version = new_version
+						node_state["config_version"] = current_config_version
+						_save_state(node_state)
 
 				except httpx.HTTPStatusError as exc:
 					detail = _extract_error_detail(exc.response)
