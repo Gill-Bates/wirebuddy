@@ -373,6 +373,11 @@ def get_node_config(
 			"allowed_ips": p["allowed_ips"],
 		})
 
+	_log.info(
+		"NODE_CONFIG built for node=%s: interfaces=%d peers=%d",
+		node_id, len(interfaces), len(peers),
+	)
+
 	# Master peer info for Node→Master DNS tunnel
 	master_peer = None
 	if tunnel_peer:

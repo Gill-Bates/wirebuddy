@@ -315,9 +315,15 @@ def get_config_endpoint(
 
 	# ETag-style: skip full payload if version matches
 	if version is not None and db_node["config_version"] is not None and version == str(db_node["config_version"]):
+		_log.debug("NODE_CONFIG_UNCHANGED node=%s version=%s", node_id, version[:16] if version else "none")
 		return ok_response(data=None, message="Config unchanged", config_version=db_node["config_version"])
 
 	config = get_node_config(conn, node["id"])
+	peer_count = len(config.get("peers", []))
+	_log.info(
+		"NODE_CONFIG_DELIVERED node=%s peers=%d version=%s",
+		node_id, peer_count, db_node["config_version"][:16] if db_node["config_version"] else "none",
+	)
 	return ok_response(data=config)
 
 

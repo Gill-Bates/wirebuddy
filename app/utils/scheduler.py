@@ -314,8 +314,8 @@ class Scheduler:
 					# Schedule next run from NOW (prevents drift)
 					next_run = now + _jittered_interval()
 					_log.debug(
-						"SCHEDULER job=%s completed, next run in %.0fs",
-						job.name, next_run - now,
+						"SCHEDULER job=%s completed (run #%d), next in %.0fs",
+						job.name, job.run_count, next_run - now,
 					)
 				else:
 					# Job failed – apply exponential backoff
@@ -359,7 +359,6 @@ class Scheduler:
 			job.last_success = now
 			job.last_attempt = now
 			job.run_count += 1
-			_log.debug("SCHEDULER job=%s completed (run #%d)", job.name, job.run_count)
 			return True
 		except asyncio.TimeoutError:
 			job.last_attempt = datetime.now(timezone.utc)

@@ -728,9 +728,6 @@
                             <div class="peer-name-stack">
                                 <div class="peer-name-main">
                                     <span class="peer-name-text">{{ peer['name'] or 'Unnamed' }}</span>
-                                    {% if peer['is_node_tunnel'] %}
-                                    <span class="badge bg-info-subtle text-info-emphasis">Node Tunnel</span>
-                                    {% endif %}
                                 </div>
                                 <div class="peer-name-meta d-lg-none">
                                     <span>{{ routing_label }}</span>
@@ -853,7 +850,7 @@
                                 </button>
                                 {% endif %}
                                 {% else %}
-                                <span class="text-muted small">Managed by node</span>
+                                <span class="text-muted small">Managed by wirebuddy</span>
                                 {% endif %}
                             </div>
                         </td>
