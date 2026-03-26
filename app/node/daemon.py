@@ -31,7 +31,7 @@ import httpx
 from ..utils.banner import print_banner_once
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
 from .cert import clear_node_cert, ensure_node_cert
-from .wg_manager import apply_config, shutdown_all_interfaces
+from .wg_manager import apply_config, has_running_interfaces, shutdown_all_interfaces
 
 _log = logging.getLogger(__name__)
 
@@ -350,6 +350,31 @@ async def main() -> None:
 			if state.get("master_ca_file") != master_ca_file:
 				_save_state(node_state)
 			_log.info("Already enrolled, resuming sync loop")
+			
+			# Check if we have a cached config but no running interfaces
+			# This can happen after container restart - state is preserved but WG is down
+			if current_config_version and not has_running_interfaces():
+				_log.warning("Cached config version exists but no WG interfaces running — forcing full config pull")
+				current_config_version = None
+			
+			# Initial config pull on resume (before entering loop)
+			# This ensures we have config even if heartbeat fails
+			if current_config_version is None:
+				_log.info("Pulling initial config...")
+				try:
+					current_config_version = await _pull_config(
+						client,
+						master_url,
+						node_id,
+						None,  # Force full pull (no ETag)
+						api_secret,
+						cert_fingerprint,
+					)
+					if current_config_version:
+						node_state["config_version"] = current_config_version
+						_save_state(node_state)
+				except Exception as exc:
+					_log.warning("Initial config pull failed: %s", exc)
 
 		# Debug: log which secret hash will be used for authentication
 		_log.debug("Using api_secret hash=%s... for sync requests",
@@ -401,14 +426,15 @@ async def main() -> None:
 					heartbeat_failed = True
 
 				try:
-					if not heartbeat_failed:
-						# Pull config (always pull if push was received, otherwise use ETag-style check)
-						new_version = await _pull_config(
-							client,
-							master_url,
-							node_id,
-							current_config_version,
-							api_secret,
+					# Always try to pull config, regardless of heartbeat status
+					# Config and heartbeat are separate concerns - a heartbeat failure
+					# shouldn't block getting the initial/updated configuration
+					new_version = await _pull_config(
+						client,
+						master_url,
+						node_id,
+						current_config_version,
+						api_secret,
 							cert_fingerprint,
 						)
 						if new_version is not None:

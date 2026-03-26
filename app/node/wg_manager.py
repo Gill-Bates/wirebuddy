@@ -307,6 +307,14 @@ def _get_running_interfaces() -> set[str]:
 	return set(stdout.strip().split())
 
 
+def has_running_interfaces() -> bool:
+	"""Check if any WireGuard interfaces are currently running.
+	
+	Used by daemon to detect if config needs to be re-applied after restart.
+	"""
+	return len(_get_running_interfaces()) > 0
+
+
 def apply_config(config: dict[str, Any]) -> str:
 	"""Apply a full configuration from the master.
 
