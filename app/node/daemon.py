@@ -454,7 +454,7 @@ async def main() -> None:
 					config_failed = True
 
 				if heartbeat_failed or config_failed:
-					backoff = min(backoff * 2, 300)
+					backoff = min(backoff * 2, 60)  # Cap at 60s, not 300s
 					if config_failed:
 						_log.warning("Retrying config pull in %ds", backoff)
 				else:
@@ -603,6 +603,10 @@ async def _sse_listener(
 					
 					_log.info("SSE event stream connected — config changes will be pushed instantly")
 					reconnect_delay = 1  # Reset on successful connection
+					
+					# Trigger immediate config pull when SSE reconnects
+					# This ensures quick recovery when master comes back online
+					config_changed_event.set()
 					
 					async for line in response.aiter_lines():
 						if shutdown_event.is_set():
