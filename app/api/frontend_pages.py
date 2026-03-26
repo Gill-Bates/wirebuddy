@@ -474,6 +474,18 @@ async def peers_page(
 			peer["last_client_as_org"] = geo_fields["as_org"]
 		peers.append(peer)
 
+	# Load nodes for the node selector in the Add Peer modal (admin only)
+	nodes_data = []
+	if user["is_admin"]:
+		def _load_nodes() -> list:
+			from ..db.sqlite_nodes import get_all_nodes as db_get_all_nodes
+			thread_conn = connect(db_path)
+			try:
+				return [{"id": n["id"], "name": n["name"], "fqdn": n["fqdn"]} for n in db_get_all_nodes(thread_conn)]
+			finally:
+				close_connection(thread_conn)
+		nodes_data = await asyncio.to_thread(_load_nodes)
+
 	return templates.TemplateResponse(
 		request,
 		name="peers.html",
@@ -481,6 +493,7 @@ async def peers_page(
 			"user": user,
 			"peers": peers,
 			"total_peers": total_peers,
+			"nodes": nodes_data,
 			"csrf_token": get_csrf_token(request),
 		},
 	)
@@ -506,6 +519,41 @@ def users_page(
 		context={
 			"user": user,
 			"users": users,
+			"csrf_token": get_csrf_token(request),
+		},
+	)
+
+
+@router.get("/ui/nodes", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_DEFAULT)
+def nodes_page(
+	request: Request,
+	user: sqlite3.Row = Depends(require_admin_or_redirect),
+	conn: sqlite3.Connection = Depends(get_conn),
+) -> Response:
+	"""Remote nodes management page (admin only)."""
+	from ..db.sqlite_nodes import get_all_nodes, get_peers_count_by_node
+	nodes = get_all_nodes(conn)
+	peer_counts = get_peers_count_by_node(conn)
+	nodes_data = []
+	for n in nodes:
+		nodes_data.append({
+			"id": n["id"],
+			"name": n["name"],
+			"fqdn": n["fqdn"],
+			"wg_port": n["wg_port"],
+			"status": n["status"],
+			"last_seen": n["last_seen"],
+			"enrolled_at": n["enrolled_at"],
+			"created_at": n["created_at"],
+			"peer_count": peer_counts.get(n["id"], 0),
+		})
+	return templates.TemplateResponse(
+		request,
+		name="nodes.html",
+		context={
+			"user": user,
+			"nodes": nodes_data,
 			"csrf_token": get_csrf_token(request),
 		},
 	)

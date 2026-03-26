@@ -610,3 +610,24 @@ async def run_scheduled_backup(ctx: main.LifespanContext) -> None:
 		)
 	except Exception as exc:
 		_log.error("SCHEDULED_BACKUP failed: %s", exc)
+
+
+async def monitor_node_health(ctx: main.LifespanContext) -> None:
+	"""Scheduled task: mark stale nodes as offline.
+
+	Runs every 60 seconds.  If a node hasn't sent a heartbeat within 90
+	seconds, its status is set to 'offline'.
+	"""
+	from ..db.sqlite_nodes import mark_stale_nodes_offline
+	from ..db.sqlite_runtime import connect, close_connection
+
+	try:
+		conn = connect(ctx.cfg.db_path)
+		try:
+			count = mark_stale_nodes_offline(conn, stale_seconds=90)
+			if count:
+				_log.info("NODE_HEALTH marked %d node(s) offline", count)
+		finally:
+			close_connection(conn)
+	except Exception as exc:
+		_log.warning("NODE_HEALTH monitor failed: %s", exc)

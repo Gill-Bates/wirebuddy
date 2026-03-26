@@ -844,6 +844,19 @@
                         </select>
                     </div>
 
+                    {% if nodes %}
+                    <div class="mb-2">
+                        <label for="peer-node" class="form-label">Node</label>
+                        <select class="form-select" id="peer-node">
+                            <option value="">Local (this server)</option>
+                            {% for n in nodes %}
+                            <option value="{{ n.id }}">{{ n.name }} ({{ n.fqdn }})</option>
+                            {% endfor %}
+                        </select>
+                        <small class="text-muted">Which server should handle this peer</small>
+                    </div>
+                    {% endif %}
+
                     <!-- ROUTING -->
                     <h6 class="text-muted text-uppercase small mt-3 mb-2">Traffic Routing</h6>
 
@@ -1700,6 +1713,12 @@
             blocklist_ids: getSelectedBlocklistIds('peer-blocklist-options'),
             client_isolation: document.getElementById('peer-client-isolation').checked,
         };
+
+        // Node assignment (optional)
+        const nodeSelect = document.getElementById('peer-node');
+        if (nodeSelect && nodeSelect.value) {
+            data.node_id = nodeSelect.value;
+        }
 
         if (!data.interface) {
             wbAlert('No active interface available', 'warning');

@@ -9,6 +9,7 @@
 ] %}
 {% if user and user['is_admin'] %}
     {% set nav_items = nav_items + [('/ui/users', 'people', 'Users', false)] %}
+    {% set nav_items = nav_items + [('/ui/nodes', 'hub', 'Nodes', false)] %}
 {% endif %}
 {% set nav_items = nav_items + [
     ('/ui/settings', 'settings', 'Settings', false),
