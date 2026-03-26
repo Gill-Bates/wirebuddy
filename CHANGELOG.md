@@ -1,8 +1,11 @@
 ## [1.4.0] - 2026-03-xx
 
+- ``New`` Multi-Node deployment architecture for deploying WireGuard servers across multiple geographic locations
+- ``New`` Node management UI with enrollment token generation and status monitoring
+- ``New`` Per-peer node assignment with automatic endpoint configuration
 - ``New`` DNS logging can be enabled or disabled for each peer
 - ``New`` Added the ``tzdata`` package to support time zones
-- ``Fix`  Python dependencies updated
+- ``Fix`` Python dependencies updated
 - ``Fix`` Fixed an issue with the test server selection for the speed test
 - ``Fix`` Improved caching behavior for graphs
 - ``Fix`` Several design improvements in the GUI

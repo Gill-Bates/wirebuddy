@@ -281,6 +281,7 @@ def get_node_config(
 	peers = []
 	for p in peer_rows:
 		peers.append({
+			"interface": p["interface"],
 			"public_key": p["public_key"],
 			"preshared_key": vault.decrypt_if_needed(p["preshared_key"], pepper) if p["preshared_key"] else None,
 			"peer_address": p["peer_address"],

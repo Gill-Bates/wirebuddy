@@ -236,6 +236,241 @@ GET /api/wireguard/peers/{peer_id}/qrcode
 
 Returns PNG image of QR code.
 
+## Nodes
+
+Node management endpoints for multi-node deployment. See [Multi-Node Deployment](../features/multi-node.md) for details.
+
+!!! warning "Admin Only"
+    All node endpoints require admin authentication.
+
+### List Nodes
+
+```
+GET /api/nodes
+```
+
+**Response:**
+
+```json
+{
+  "nodes": [
+    {
+      "id": "abc123def456",
+      "name": "Frankfurt",
+      "fqdn": "de.vpn.example.com",
+      "wg_port": 51820,
+      "status": "online",
+      "last_seen": "2026-03-26T10:30:00Z",
+      "enrolled_at": "2026-03-20T08:00:00Z",
+      "created_at": "2026-03-20T08:00:00Z",
+      "config_version": "3",
+      "peers_count": 15
+    }
+  ]
+}
+```
+
+**Status Values:**
+
+- `pending` - Node created, awaiting enrollment
+- `online` - Node enrolled and sending heartbeats
+- `offline` - Heartbeat missed (>90s)
+- `error` - Enrollment or sync error
+
+### Get Node
+
+```
+GET /api/nodes/{node_id}
+```
+
+**Response:**
+
+```json
+{
+  "id": "abc123def456",
+  "name": "Frankfurt",
+  "fqdn": "de.vpn.example.com",
+  "wg_port": 51820,
+  "status": "online",
+  "last_seen": "2026-03-26T10:30:00Z",
+  "enrolled_at": "2026-03-20T08:00:00Z",
+  "cert_fingerprint": "SHA256:ab1cd2ef3...",
+  "created_at": "2026-03-20T08:00:00Z",
+  "config_version": "3",
+  "metadata": null
+}
+```
+
+### Create Node
+
+```
+POST /api/nodes
+```
+
+**Request:**
+
+```json
+{
+  "name": "Frankfurt",
+  "fqdn": "de.vpn.example.com",
+  "wg_port": 51820
+}
+```
+
+**Response:**
+
+```json
+{
+  "node": {
+    "id": "abc123def456",
+    "name": "Frankfurt",
+    "fqdn": "de.vpn.example.com",
+    "wg_port": 51820,
+    "status": "pending",
+    "created_at": "2026-03-26T10:00:00Z"
+  },
+  "enrollment": {
+    "token": "eyJub2RlX2lkIjoiYWJjMTIz...LmFiYzEyMw",
+    "expires_at": "2026-03-27T10:00:00Z"
+  }
+}
+```
+
+!!! danger "Token Display"
+    The enrollment token is shown **only once**. Store it securely.
+
+### Update Node
+
+```
+PATCH /api/nodes/{node_id}
+```
+
+**Request:**
+
+```json
+{
+  "name": "Frankfurt DC2",
+  "fqdn": "de2.vpn.example.com",
+  "wg_port": 51821
+}
+```
+
+All fields are optional.
+
+### Delete Node
+
+```
+DELETE /api/nodes/{node_id}
+```
+
+!!! warning "Peer Assignment"
+    Peers assigned to the node will have their `node_id` unset (NULL). Update peer assignments before deletion.
+
+### Regenerate Enrollment Token
+
+```
+POST /api/nodes/{node_id}/token
+```
+
+Invalidates the old token and generates a new one. Use when a node needs to re-enroll.
+
+**Response:**
+
+```json
+{
+  "token": "eyJub2RlX2lkIjoiYWJjMTIz...LmFiYzEyMw",
+  "expires_at": "2026-03-27T10:00:00Z"
+}
+```
+
+### Node Enrollment (Node → Master)
+
+```
+POST /api/nodes/enroll
+```
+
+!!! info "Authentication"
+    Uses enrollment token in request body. Called by node daemon during initial setup.
+
+**Request:**
+
+```json
+{
+  "token": "eyJub2RlX2lkIjoiYWJjMTIz...",
+  "cert_fingerprint": "SHA256:ab1cd2ef3..."
+}
+```
+
+**Response:**
+
+```json
+{
+  "node_id": "abc123def456",
+  "api_secret": "generated_secret_for_future_auth"
+}
+```
+
+### Node Heartbeat (Node → Master)
+
+```
+POST /api/nodes/{node_id}/heartbeat
+```
+
+!!! info "Authentication"
+    Requires `Authorization: Bearer {api_secret}` header and `X-Client-Cert-Fingerprint` header.
+
+**Request:**
+
+```json
+{
+  "timestamp": "2026-03-26T10:30:00Z"
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "acknowledged"
+}
+```
+
+### Get Node Config (Node → Master)
+
+```
+GET /api/nodes/{node_id}/config
+```
+
+!!! info "Authentication"
+    Requires `Authorization: Bearer {api_secret}` header and `X-Client-Cert-Fingerprint` header.
+
+Node pulls configuration changes from master.
+
+**Response:**
+
+```json
+{
+  "config_version": "3",
+  "interfaces": [
+    {
+      "name": "wg0",
+      "address": "10.8.0.1/24",
+      "listen_port": 51820,
+      "private_key": "encrypted_private_key",
+      "public_key": "node_public_key",
+      "peers": [
+        {
+          "public_key": "peer_public_key",
+          "preshared_key": "peer_preshared_key",
+          "allowed_ips": "10.8.0.2/32",
+          "persistent_keepalive": 25
+        }
+      ]
+    }
+  ]
+}
+```
+
 ## DNS
 
 ### Get DNS Settings

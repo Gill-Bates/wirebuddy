@@ -38,6 +38,14 @@ WireBuddy is a powerful, user-friendly web interface for managing WireGuard VPN 
 
     [:octicons-arrow-right-24: WireGuard Features](features/wireguard.md)
 
+-   :material-earth:{ .lg .middle } **Multi-Node Deployment**
+
+    ---
+
+    Deploy WireGuard servers across multiple countries/regions with centralized management, automatic config sync, and per-peer node assignment.
+
+    [:octicons-arrow-right-24: Multi-Node Guide](features/multi-node.md)
+
 -   :material-dns:{ .lg .middle } **DNS Ad-Blocking**
 
     ---

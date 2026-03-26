@@ -110,6 +110,7 @@ nav:
     - Docker Setup: getting-started/docker.md
   - Features:
     - WireGuard Management: features/wireguard.md
+    - Multi-Node Deployment: features/multi-node.md
     - DNS Ad-Blocking: features/dns.md
     - Speed Test: features/speedtest.md
     - Monitoring & Analytics: features/monitoring.md

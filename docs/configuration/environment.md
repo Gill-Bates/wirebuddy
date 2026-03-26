@@ -89,6 +89,50 @@ Default: `1` (automatic for Docker)
 !!! tip
     Set to number of CPU cores for production: `WORKERS=$(nproc)`
 
+### SERVER_MODE
+
+Deployment mode for multi-node architecture.
+
+```bash
+SERVER_MODE=master
+```
+
+Options:
+
+- `master` - Full application with web UI, database, and API (default)
+- `node` - Lightweight WireGuard-only mode for remote nodes
+
+Default: `master`
+
+!!! info "Multi-Node Deployment"
+    See [Multi-Node Deployment](../features/multi-node.md) for complete setup guide.
+
+### WIREBUDDY_ENROLLMENT_TOKEN
+
+Node enrollment token (node mode only).
+
+```bash
+WIREBUDDY_ENROLLMENT_TOKEN=eyJub2RlX2lkIjoiYWJjZGVmIiwiZXhwIjoxNzQwMDAwMDAwfQ.a1b2c3d4...
+```
+
+**Required when `SERVER_MODE=node`**. Obtain this token from the master's Nodes page.
+
+!!! danger "Single-Use Token"
+    The token is invalidated after successful enrollment. Store securely.
+
+### WIREBUDDY_MASTER_URL
+
+Master server API URL (node mode only).
+
+```bash
+WIREBUDDY_MASTER_URL=https://master.example.com
+```
+
+**Required when `SERVER_MODE=node`**. Must be reachable from the node server.
+
+!!! tip "Firewall Configuration"
+    Ensure the node can reach the master's sync endpoints: `/api/nodes/enroll`, `/api/nodes/{id}/heartbeat`, `/api/nodes/{id}/config`
+
 ### WIREBUDDY_SKIP_NETWORK_CHECK
 
 Skip container network mode verification (CI/CD only).
