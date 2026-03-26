@@ -391,7 +391,7 @@ async def main() -> None:
 					)
 				except httpx.HTTPStatusError as exc:
 					detail = _extract_error_detail(exc.response)
-					_log.warning("Heartbeat failed: %s (detail: %s)", exc, detail)
+					_log.warning("Heartbeat failed: HTTP %d (detail: %s)", exc.response.status_code, detail)
 					heartbeat_failed = True
 				except httpx.HTTPError as exc:
 					_log.warning("Heartbeat failed: %s", exc)
@@ -418,7 +418,7 @@ async def main() -> None:
 
 				except httpx.HTTPStatusError as exc:
 					detail = _extract_error_detail(exc.response)
-					_log.warning("Config sync error: %s (detail: %s)", exc, detail)
+					_log.warning("Config sync error: HTTP %d (detail: %s)", exc.response.status_code, detail)
 					config_failed = True
 				except httpx.HTTPError as exc:
 					_log.warning("Config sync error: %s", exc)
@@ -593,9 +593,11 @@ async def _sse_listener(
 						
 		except httpx.HTTPStatusError as exc:
 			if exc.response.status_code == 401:
-				_log.error("SSE authentication failed — check api_secret")
+				detail = _extract_error_detail(exc.response)
+				_log.error("SSE authentication failed: %s", detail or "Invalid API secret")
 			else:
-				_log.warning("SSE HTTP error: %s", exc)
+				detail = _extract_error_detail(exc.response)
+				_log.warning("SSE HTTP error: %d (detail: %s)", exc.response.status_code, detail or "unknown")
 		except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
 			_log.warning("SSE connection error: %s", exc)
 		except asyncio.CancelledError:

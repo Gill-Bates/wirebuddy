@@ -630,11 +630,14 @@ async def update_peer(
 		await apply_client_isolation_runtime(interface_name, conn)
 
 	if "node_id" in fields_set or ("is_enabled" in fields_set and (old_is_remote or new_is_remote)):
-		for node_id in {old_node_id, new_node_id} - {None}:
+		nodes_to_notify = {old_node_id, new_node_id} - {None}
+		_log.info("PEER_NODE_CHANGE peer_id=%d old_node=%s new_node=%s notifying=%s",
+			peer_id, old_node_id, new_node_id, list(nodes_to_notify))
+		for nid in nodes_to_notify:
 			try:
-				await _bump_and_notify_node(conn, node_id)
+				await _bump_and_notify_node(conn, nid)
 			except Exception as exc:
-				_log.warning("Failed to bump/notify config for node %s: %s", node_id, exc)
+				_log.warning("Failed to bump/notify config for node %s: %s", nid, exc)
 	
 	# Regenerate Unbound peer tags if blocklist settings changed
 	if "blocklist_ids" in fields_set or "use_adblocker" in fields_set:

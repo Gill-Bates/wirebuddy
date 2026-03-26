@@ -295,6 +295,9 @@
 (function() {
     'use strict';
 
+    const POLL_INTERVAL_MS = 30000;
+    let pollTimer = null;
+
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
     const headers = {
         'Content-Type': 'application/json',
@@ -581,6 +584,91 @@
     });
 
     initTooltips();
+
+    // -- Auto-refresh polling logic --
+    function getStatusBadgeHtml(status) {
+        if (status === 'online') {
+            return '<span class="badge bg-success node-status-badge">Online</span>';
+        } else if (status === 'pending') {
+            return '<span class="badge bg-warning text-dark node-status-badge">Pending</span>';
+        } else if (status === 'offline') {
+            return '<span class="badge bg-danger node-status-badge">Offline</span>';
+        }
+        return `<span class="badge bg-secondary node-status-badge">${status || '—'}</span>`;
+    }
+
+    async function refreshNodes() {
+        if (!nodesTableBody) return;
+
+        try {
+            const resp = await fetch('/api/nodes', { headers: { 'X-CSRF-Token': csrfToken } });
+            if (!resp.ok) return;
+            const json = await resp.json();
+            const nodes = json.data || [];
+
+            for (const node of nodes) {
+                const row = document.getElementById(`node-row-${node.id}`);
+                if (!row) continue;
+
+                // Update status badge
+                const statusCell = row.querySelector('td[data-label="Status"]');
+                if (statusCell) {
+                    statusCell.innerHTML = getStatusBadgeHtml(node.status);
+                }
+
+                // Update peer count
+                const peersCell = row.querySelector('td[data-label="Peers"]');
+                if (peersCell) {
+                    peersCell.textContent = node.peer_count ?? '—';
+                }
+
+                // Update last seen
+                const lastSeenCell = row.querySelector('td[data-label="Last Seen"]');
+                if (lastSeenCell && node.last_seen) {
+                    const existingSpan = lastSeenCell.querySelector('.wb-relative-time');
+                    if (existingSpan) {
+                        existingSpan.dataset.utc = node.last_seen;
+                    } else {
+                        lastSeenCell.innerHTML = `<span class="wb-relative-time" data-utc="${node.last_seen}">${node.last_seen}</span>`;
+                    }
+                } else if (lastSeenCell && !node.last_seen) {
+                    lastSeenCell.innerHTML = '<span class="text-muted">—</span>';
+                }
+            }
+
+            // Trigger relative time update if available
+            if (window.WBShared?.updateRelativeTimes) {
+                window.WBShared.updateRelativeTimes();
+            }
+        } catch (err) {
+            // Silently ignore polling errors
+        }
+    }
+
+    function startPolling() {
+        stopPolling();
+        pollTimer = setInterval(refreshNodes, POLL_INTERVAL_MS);
+    }
+
+    function stopPolling() {
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+    }
+
+    // Pause polling when tab is hidden
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopPolling();
+        } else {
+            refreshNodes(); // Refresh immediately when tab becomes visible
+            startPolling();
+        }
+    });
+
+    // Start polling on page load
+    startPolling();
 })();
 </script>
 {% endblock %}

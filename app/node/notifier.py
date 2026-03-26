@@ -61,7 +61,8 @@ async def notify_config_changed(node_id: str, config_version: str) -> int:
         queues = _node_queues.get(node_id, set()).copy()
     
     if not queues:
-        _log.debug("No SSE clients connected for node %s", node_id)
+        _log.info("No SSE clients connected for node %s (config_version=%s...) — node will sync on next poll",
+                  node_id, config_version[:16] if config_version else "none")
         return 0
     
     # SSE event format
