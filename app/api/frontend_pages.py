@@ -548,8 +548,9 @@ def nodes_page(
 			"created_at": n["created_at"],
 			"peer_count": peer_counts.get(n["id"], 0),
 		})
-	# Get default WireGuard port from settings for pre-filling the Add Node modal
-	default_wg_port = get_setting(conn, "wg_port", "51820")
+	# Get default WireGuard port from first interface for pre-filling the Add Node modal
+	first_iface = conn.execute("SELECT listen_port FROM interfaces LIMIT 1").fetchone()
+	default_wg_port = first_iface["listen_port"] if first_iface else 51820
 	return templates.TemplateResponse(
 		request,
 		name="nodes.html",
