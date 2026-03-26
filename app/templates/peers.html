@@ -48,6 +48,14 @@
         white-space: nowrap;
     }
 
+    .peer-routing-badges {
+        display: inline-flex;
+        justify-content: flex-start;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+    }
+
     .peers-table td.peer-actions-cell .btn {
         min-width: 44px;
         min-height: 44px;
@@ -691,10 +699,12 @@
                             {% endif %}
                         </td>
                         <td data-label="Routing" class="peer-routing">
+                            <div class="peer-routing-badges">
                             <span class="badge bg-secondary">{{ routing_label }}</span>
                             {% if peer['client_isolation'] %}
-                            <span class="badge bg-secondary ms-1">Client Isolation</span>
+                            <span class="badge bg-secondary">Client Isolation</span>
                             {% endif %}
+                            </div>
                         </td>
                         <td data-label="Interface" class="peer-interface">{{ peer['interface'] }}</td>
                         <td data-label="Last Seen" class="peer-last-seen text-nowrap">
@@ -2176,7 +2186,10 @@
 
     function initTooltips() {
         document.querySelectorAll('#peers-table [data-bs-toggle="tooltip"]').forEach(el => {
-            tooltipInstances.push(new bootstrap.Tooltip(el));
+            tooltipInstances.push(new bootstrap.Tooltip(el, {
+                container: 'body',
+                trigger: 'hover focus',
+            }));
         });
     }
 

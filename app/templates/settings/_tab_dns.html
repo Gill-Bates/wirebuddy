@@ -40,7 +40,7 @@
                     <div class="blocklist-error text-danger d-none">Failed to load blocklists</div>
                 </div>
 
-                <div class="d-flex justify-content-end align-items-center mt-2">
+                <div class="d-flex justify-content-end align-items-center mt-1">
                     <button class="btn btn-sm btn-outline-secondary" id="btn-update-blocklist">
                         <span class="material-icons align-middle me-1" style="font-size: 16px;">cached</span>Update Blocklists
                     </button>
@@ -133,7 +133,7 @@
                                   placeholder="1.1.1.1@853#cloudflare-dns.com&#10;9.9.9.9@853#dns.quad9.net&#10;91.239.100.100@853#unicast.censurfridns.dk&#10;45.90.28.0@853#dns.nextdns.io&#10;194.242.2.2@853#dns.mullvad.net"
                                   {% if not user['is_admin'] %}readonly{% endif %}></textarea>
 
-                        <div class="d-flex flex-wrap gap-2 align-items-center justify-content-end mt-2">
+                        <div class="d-flex flex-wrap gap-2 align-items-center justify-content-end mt-1">
                             <span id="dns-validation-status"
                                   class="small"
                                   aria-live="polite"></span>

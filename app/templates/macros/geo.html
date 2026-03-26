@@ -13,11 +13,9 @@
 {% if country_code or city or as_org %}
 <div class="small text-muted d-flex align-items-center gap-2 mt-1">
     {% if country_code %}
-    <img alt="{{ country_code|upper }} flag"
-         src="/static/vendor/images/flags/{{ country_code }}.svg"
-         width="{{ '14' if flag_size == 'sm' else '16' }}"
-         height="{{ '10' if flag_size == 'sm' else '12' }}"
-         class="flag-icon{% if flag_size == 'sm' %} flag-icon-sm{% endif %}">
+    <span aria-label="{{ country_code|upper }} flag" class="geo-flag{% if flag_size == 'sm' %} geo-flag-sm{% endif %}">
+        {{ country_code|flag_emoji }}
+    </span>
     {% endif %}
     <span>
         {% if city %}{{ city }}{% endif %}

@@ -10,40 +10,42 @@
                         </h3>
                     </div>
                     <div class="card-body">
-                        <table class="table table-borderless mb-0">
-                            <tbody>
-                                <tr class="settings-storage-path-row">
-                                    <td colspan="2">
-                                        <div class="text-muted fw-normal settings-storage-path-label">Storage Path</div>
-                                        <span class="font-monospace wb-monospace-value small settings-storage-path" id="tsdb-path">&ndash;</span>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <th scope="row" class="text-muted fw-normal">Storage Size</th>
-                                    <td class="text-end">
-                                        <span class="font-monospace wb-monospace-value" id="tsdb-size">&ndash;</span>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <th scope="row" class="text-muted fw-normal">Peers Tracked</th>
-                                    <td class="text-end">
-                                        <span class="font-monospace wb-monospace-value" id="tsdb-peers">&ndash;</span>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <th scope="row" class="text-muted fw-normal">Data Files</th>
-                                    <td class="text-end">
-                                        <span class="font-monospace wb-monospace-value" id="tsdb-files">&ndash;</span>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <th scope="row" class="text-muted fw-normal">Compressed Archives</th>
-                                    <td class="text-end">
-                                        <span class="font-monospace wb-monospace-value" id="tsdb-archives">&ndash;</span>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
+                        <div class="table-responsive">
+                            <table class="table table-borderless mb-0">
+                                <tbody>
+                                    <tr class="settings-storage-path-row">
+                                        <td colspan="2">
+                                            <div class="text-muted fw-normal settings-storage-path-label">Storage Path</div>
+                                            <span class="font-monospace wb-monospace-value small settings-storage-path" id="tsdb-path">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row" class="text-muted fw-normal">Storage Size</th>
+                                        <td class="text-end">
+                                            <span class="font-monospace wb-monospace-value" id="tsdb-size">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row" class="text-muted fw-normal">Peers Tracked</th>
+                                        <td class="text-end">
+                                            <span class="font-monospace wb-monospace-value" id="tsdb-peers">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row" class="text-muted fw-normal">Data Files</th>
+                                        <td class="text-end">
+                                            <span class="font-monospace wb-monospace-value" id="tsdb-files">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row" class="text-muted fw-normal">Compressed Archives</th>
+                                        <td class="text-end">
+                                            <span class="font-monospace wb-monospace-value" id="tsdb-archives">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
 
                         <div class="metrics-footer mt-auto">
                             {% if user['is_admin'] %}
@@ -103,28 +105,30 @@
                         </h3>
                     </div>
                     <div class="card-body">
-                        <table class="table table-borderless mb-0">
-                            <tbody>
-                                <tr class="settings-storage-path-row">
-                                    <td colspan="2">
-                                        <div class="text-muted fw-normal settings-storage-path-label">Storage Path</div>
-                                        <span class="font-monospace wb-monospace-value small settings-storage-path" id="dns-metrics-path">&ndash;</span>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <th scope="row" class="text-muted fw-normal">Storage Size</th>
-                                    <td class="text-end">
-                                        <span class="font-monospace wb-monospace-value" id="dns-metrics-size">&ndash;</span>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <th scope="row" class="text-muted fw-normal">Log Files</th>
-                                    <td class="text-end">
-                                        <span class="font-monospace wb-monospace-value" id="dns-metrics-files">&ndash;</span>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
+                        <div class="table-responsive">
+                            <table class="table table-borderless mb-0">
+                                <tbody>
+                                    <tr class="settings-storage-path-row">
+                                        <td colspan="2">
+                                            <div class="text-muted fw-normal settings-storage-path-label">Storage Path</div>
+                                            <span class="font-monospace wb-monospace-value small settings-storage-path" id="dns-metrics-path">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row" class="text-muted fw-normal">Storage Size</th>
+                                        <td class="text-end">
+                                            <span class="font-monospace wb-monospace-value" id="dns-metrics-size">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row" class="text-muted fw-normal">Log Files</th>
+                                        <td class="text-end">
+                                            <span class="font-monospace wb-monospace-value" id="dns-metrics-files">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
 
                         <div class="metrics-footer mt-auto">
                             {% if user['is_admin'] %}
@@ -184,34 +188,36 @@
                         </h3>
                     </div>
                     <div class="card-body">
-                        <table class="table table-borderless mb-0">
-                            <tbody>
-                                <tr class="settings-storage-path-row">
-                                    <td colspan="2">
-                                        <div class="text-muted fw-normal settings-storage-path-label">Database Path</div>
-                                        <span class="font-monospace wb-monospace-value small settings-storage-path" id="peer-metrics-path">&ndash;</span>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <th scope="row" class="text-muted fw-normal">Storage Size</th>
-                                    <td class="text-end">
-                                        <span class="font-monospace wb-monospace-value" id="peer-metrics-size">&ndash;</span>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <th scope="row" class="text-muted fw-normal">Total Peers</th>
-                                    <td class="text-end">
-                                        <span class="font-monospace wb-monospace-value" id="peer-metrics-total">&ndash;</span>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <th scope="row" class="text-muted fw-normal">Peers with Handshake</th>
-                                    <td class="text-end">
-                                        <span class="font-monospace wb-monospace-value" id="peer-metrics-handshake">&ndash;</span>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
+                        <div class="table-responsive">
+                            <table class="table table-borderless mb-0">
+                                <tbody>
+                                    <tr class="settings-storage-path-row">
+                                        <td colspan="2">
+                                            <div class="text-muted fw-normal settings-storage-path-label">Database Path</div>
+                                            <span class="font-monospace wb-monospace-value small settings-storage-path" id="peer-metrics-path">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row" class="text-muted fw-normal">Storage Size</th>
+                                        <td class="text-end">
+                                            <span class="font-monospace wb-monospace-value" id="peer-metrics-size">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row" class="text-muted fw-normal">Total Peers</th>
+                                        <td class="text-end">
+                                            <span class="font-monospace wb-monospace-value" id="peer-metrics-total">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row" class="text-muted fw-normal">Peers with Handshake</th>
+                                        <td class="text-end">
+                                            <span class="font-monospace wb-monospace-value" id="peer-metrics-handshake">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
 
                         <div class="metrics-footer mt-auto">
                             <div class="metrics-delete">
@@ -240,28 +246,30 @@
                         </h3>
                     </div>
                     <div class="card-body">
-                        <table class="table table-borderless mb-0">
-                            <tbody>
-                                <tr class="settings-storage-path-row">
-                                    <td colspan="2">
-                                        <div class="text-muted fw-normal settings-storage-path-label">Storage Path</div>
-                                        <span class="font-monospace wb-monospace-value small settings-storage-path" id="speedtest-metrics-path">&ndash;</span>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <th scope="row" class="text-muted fw-normal">Storage Size</th>
-                                    <td class="text-end">
-                                        <span class="font-monospace wb-monospace-value" id="speedtest-metrics-size">&ndash;</span>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <th scope="row" class="text-muted fw-normal">Test Results</th>
-                                    <td class="text-end">
-                                        <span class="font-monospace wb-monospace-value" id="speedtest-metrics-records">&ndash;</span>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
+                        <div class="table-responsive">
+                            <table class="table table-borderless mb-0">
+                                <tbody>
+                                    <tr class="settings-storage-path-row">
+                                        <td colspan="2">
+                                            <div class="text-muted fw-normal settings-storage-path-label">Storage Path</div>
+                                            <span class="font-monospace wb-monospace-value small settings-storage-path" id="speedtest-metrics-path">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row" class="text-muted fw-normal">Storage Size</th>
+                                        <td class="text-end">
+                                            <span class="font-monospace wb-monospace-value" id="speedtest-metrics-size">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row" class="text-muted fw-normal">Test Results</th>
+                                        <td class="text-end">
+                                            <span class="font-monospace wb-monospace-value" id="speedtest-metrics-records">&ndash;</span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
 
                         <div class="metrics-footer mt-auto">
                             {% if user['is_admin'] %}

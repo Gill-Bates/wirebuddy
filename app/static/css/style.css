@@ -89,6 +89,7 @@ h1 {
 }
 
 /* Summary element focus indicator (used in details/summary) */
+summary:focus,
 summary:focus-visible {
     outline: 2px solid var(--wb-primary);
     outline-offset: 2px;
@@ -421,6 +422,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(var(--bs-primary-rgb), 0.3);
 }
 
+.btn.btn-primary:focus,
 .btn.btn-primary:focus-visible {
     outline: 2px solid var(--wb-primary);
     outline-offset: 2px;
@@ -445,6 +447,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(220, 53, 69, 0.3);
 }
 
+.btn.btn-danger:focus,
 .btn.btn-danger:focus-visible {
     outline: 2px solid var(--wb-danger);
     outline-offset: 2px;
@@ -469,6 +472,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(220, 53, 69, 0.25);
 }
 
+.btn.btn-outline-danger:focus,
 .btn.btn-outline-danger:focus-visible {
     outline: 2px solid var(--wb-danger);
     outline-offset: 2px;
@@ -488,6 +492,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     --bs-btn-focus-shadow-rgb: 108, 117, 125;
 }
 
+.btn.btn-secondary:focus,
 .btn.btn-secondary:focus-visible {
     outline: 2px solid #6c757d;
     outline-offset: 2px;
@@ -523,6 +528,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(var(--bs-primary-rgb), 0.15);
 }
 
+.btn.btn-outline-primary:focus,
 .btn.btn-outline-primary:focus-visible {
     outline: 2px solid var(--wb-primary);
     outline-offset: 2px;
@@ -546,6 +552,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
 }
 
+.btn.btn-outline-secondary:focus,
 .btn.btn-outline-secondary:focus-visible {
     outline: 2px solid #6c757d;
     outline-offset: 2px;
@@ -569,6 +576,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(13, 202, 240, 0.15);
 }
 
+.btn.btn-outline-info:focus,
 .btn.btn-outline-info:focus-visible {
     outline: 2px solid var(--wb-info);
     outline-offset: 2px;
@@ -592,6 +600,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(25, 135, 84, 0.15);
 }
 
+.btn.btn-outline-success:focus,
 .btn.btn-outline-success:focus-visible {
     outline: 2px solid var(--wb-success);
     outline-offset: 2px;
@@ -615,6 +624,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(255, 193, 7, 0.15);
 }
 
+.btn.btn-outline-warning:focus,
 .btn.btn-outline-warning:focus-visible {
     outline: 2px solid var(--wb-warning);
     outline-offset: 2px;
@@ -692,6 +702,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 1px 3px rgba(255, 193, 7, 0.15);
 }
 
+.btn.btn-warning:focus,
 .btn.btn-warning:focus-visible {
     outline: 2px solid var(--wb-warning);
     outline-offset: 2px;
@@ -711,6 +722,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
    ============================================================================= */
 
 /* ── Fix: btn-light focus-visible for light mode ────────────────────────── */
+.btn.btn-light:focus,
 .btn.btn-light:focus-visible {
     outline: 2px solid #6c757d;
     outline-offset: 2px;
@@ -738,6 +750,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 
+[data-bs-theme="dark"] .btn.btn-light:focus,
 [data-bs-theme="dark"] .btn.btn-light:focus-visible {
     outline: 2px solid var(--wb-border-strong);
     outline-offset: 2px;
@@ -745,12 +758,14 @@ html.login-page[data-bs-theme="dark"] .card .table,
 }
 
 /* ── Icon buttons focus indicator ───────────────────────────── */
+.btn-icon:focus,
 .btn-icon:focus-visible {
     outline: 2px solid var(--wb-primary);
     outline-offset: 2px;
 }
 
 /* ── Form range (sliders) focus indicator ───────────────────── */
+.form-range:focus,
 .form-range:focus-visible {
     outline: 2px solid var(--wb-primary);
     outline-offset: 2px;

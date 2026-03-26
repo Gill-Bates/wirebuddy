@@ -56,9 +56,21 @@ def _truncate_ip(value: str | None, length: int = 24) -> str:
     return value[:length]
 
 
+def _country_flag_emoji(value: str | None) -> str:
+    """Jinja2 filter: Convert a two-letter country code to a flag emoji."""
+    if not value:
+        return ""
+    code = value.strip().upper()
+    if len(code) != 2 or not code.isalpha():
+        return code
+    base = 0x1F1E6
+    return "".join(chr(base + ord(char) - ord("A")) for char in code)
+
+
 # Register Jinja2 filters
 templates.env.filters["wbr_ip"] = _wbr_ip
 templates.env.filters["truncate_ip"] = _truncate_ip
+templates.env.filters["flag_emoji"] = _country_flag_emoji
 
 __all__ = [
     "router",

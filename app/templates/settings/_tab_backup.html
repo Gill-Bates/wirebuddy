@@ -102,7 +102,7 @@
                                 <label for="backup-restore-file" class="form-label">Backup File</label>
                                 <div class="input-group input-group-sm">
                                     <input type="file" class="d-none" id="backup-restore-file" accept=".tar.gz,.gz"{% if not user['is_admin'] %} disabled{% endif %}>
-                                    <input type="text" class="form-control form-control-sm" id="backup-restore-filename" placeholder="No file selected" readonly>
+                                    <input type="text" class="form-control form-control-sm" id="backup-restore-filename" placeholder="No file selected" readonly aria-label="Selected backup file">
                                     <button class="btn btn-outline-secondary" type="button" id="btn-backup-browse"{% if not user['is_admin'] %} disabled{% endif %}>
                                         Choose File
                                     </button>

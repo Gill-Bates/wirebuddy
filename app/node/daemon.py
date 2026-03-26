@@ -186,15 +186,21 @@ async def main() -> None:
 			sys.exit(1)
 	else:
 		if token_str:
-			# Check if the new token has a different node_id (re-enrollment scenario)
+			# Check if the new token differs from stored state (re-enrollment scenario)
 			try:
 				payload = _parse_enrollment_token(token_str, verify_key)
+				needs_reenroll = False
+				reason = ""
+
 				if payload["node_id"] != state["node_id"]:
-					_log.warning(
-						"Enrollment token has different node_id (%s vs %s), clearing old state for re-enrollment",
-						payload["node_id"],
-						state["node_id"],
-					)
+					needs_reenroll = True
+					reason = f"node_id changed ({payload['node_id']} vs {state['node_id']})"
+				elif payload["api_secret"] != state["api_secret"]:
+					needs_reenroll = True
+					reason = "api_secret changed (token was regenerated)"
+
+				if needs_reenroll:
+					_log.warning("Enrollment token changed: %s — clearing old state for re-enrollment", reason)
 					_clear_enrollment_state()
 					state = None  # Force re-enrollment
 				else:
