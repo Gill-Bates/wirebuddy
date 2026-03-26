@@ -21,6 +21,29 @@ from .sqlite_runtime import transaction
 
 _log = logging.getLogger(__name__)
 
+# Input validation constants
+_MAX_METADATA_SIZE = 4096  # bytes
+_MAX_PORT = 65535
+_MIN_PORT = 1
+
+
+def _validate_fqdn(fqdn: str) -> None:
+	"""Validate FQDN format."""
+	if not fqdn or not fqdn.strip():
+		raise ValueError("FQDN cannot be empty")
+	if fqdn != fqdn.strip():
+		raise ValueError("FQDN contains leading/trailing whitespace")
+	if len(fqdn) > 253:
+		raise ValueError("FQDN exceeds maximum length (253)")
+	if any(ord(ch) < 32 or ord(ch) == 127 for ch in fqdn):
+		raise ValueError("FQDN contains control characters")
+
+
+def _validate_port(port: int) -> None:
+	"""Validate port is in valid range."""
+	if not (_MIN_PORT <= port <= _MAX_PORT):
+		raise ValueError(f"Port out of valid range: {port}")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Node CRUD
@@ -36,6 +59,8 @@ def create_node(
 	api_secret_hash: str,
 ) -> None:
 	"""Insert a new node record (status='pending')."""
+	_validate_fqdn(fqdn)
+	_validate_port(wg_port)
 	now = utcnow()
 	with transaction(conn, immediate=True):
 		conn.execute(
@@ -85,9 +110,11 @@ def update_node(
 		updates.append("name = ?")
 		params.append(name)
 	if fqdn is not None:
+		_validate_fqdn(fqdn)
 		updates.append("fqdn = ?")
 		params.append(fqdn)
 	if wg_port is not None:
+		_validate_port(wg_port)
 		updates.append("wg_port = ?")
 		params.append(wg_port)
 
@@ -167,12 +194,12 @@ def rotate_node_session_secret(
 	"""Replace the API secret hash after successful enrollment.
 
 	This invalidates the enrollment token's api_secret so the token
-	becomes single-use.  Does NOT change enrollment status.
+	becomes single-use. Only works on pending nodes to prevent race conditions.
 	Returns True if the row was updated.
 	"""
 	with transaction(conn, immediate=True):
 		cur = conn.execute(
-			"UPDATE nodes SET api_secret_hash = ? WHERE id = ?",
+			"UPDATE nodes SET api_secret_hash = ? WHERE id = ? AND status = 'pending'",
 			(api_secret_hash, node_id),
 		)
 		return cur.rowcount > 0
@@ -229,7 +256,11 @@ def update_node_heartbeat(
 ) -> bool:
 	"""Update node heartbeat timestamp and optional metadata JSON."""
 	now = utcnow()
-	meta_json = json.dumps(metadata) if metadata else None
+	meta_json = None
+	if metadata:
+		meta_json = json.dumps(metadata)
+		if len(meta_json) > _MAX_METADATA_SIZE:
+			raise ValueError(f"Metadata exceeds maximum size ({_MAX_METADATA_SIZE} bytes)")
 	with transaction(conn, immediate=True):
 		cur = conn.execute(
 			"UPDATE nodes SET last_seen = ?, metadata = COALESCE(?, metadata), status = 'online' WHERE id = ?",
@@ -270,15 +301,14 @@ def bump_node_config_version(
 ) -> str:
 	"""Compute and store a new config_version hash for the node.
 
-	The version is a SHA-256 hash of all peer public keys assigned to this
-	node, concatenated with a timestamp to guarantee uniqueness.
+	The version is a deterministic SHA-256 hash of all enabled peer public keys
+	assigned to this node. Timestamp is NOT included to ensure idempotency.
 	"""
-	now = utcnow()
 	rows = conn.execute(
 		"SELECT public_key FROM peers WHERE node_id = ? AND is_enabled = 1 ORDER BY public_key",
 		(node_id,),
 	).fetchall()
-	payload = "|".join(r["public_key"] for r in rows) + "|" + now.isoformat()
+	payload = "|".join(r["public_key"] for r in rows)
 	version = hashlib.sha256(payload.encode()).hexdigest()
 	with transaction(conn, immediate=True):
 		conn.execute(
@@ -301,15 +331,17 @@ def get_node_config(
 
 	Returns a dict with interfaces (+ keypairs), assigned peers, and master_peer
 	for the Node→Master DNS tunnel.
+	
+	Raises ValueError if node not found.
 	"""
 	import ipaddress  # Local import to avoid circular imports
 	pepper = get_config().secret_key
 	node = get_node(conn, node_id)
 	if node is None:
-		return {}
+		raise ValueError(f"Node not found: {node_id}")
 
 	# Get tunnel peer info first (needed for interface address)
-	tunnel_peer_id = node["tunnel_peer_id"] if "tunnel_peer_id" in node.keys() else None
+	tunnel_peer_id = node.get("tunnel_peer_id")
 	tunnel_peer = None
 	tunnel_interface = None
 	if tunnel_peer_id:
@@ -329,6 +361,7 @@ def get_node_config(
 			"SELECT * FROM interfaces WHERE name = ?", (ni["interface_name"],)
 		).fetchone()
 		if iface is None:
+			_log.warning("Orphaned node_interface: node=%s interface=%s", node_id, ni["interface_name"])
 			continue
 
 		# For the tunnel interface, use the tunnel_address instead of master's address
@@ -393,19 +426,27 @@ def get_node_config(
 			).fetchone()
 			master_fqdn = fqdn_row["value"].strip() if fqdn_row and fqdn_row["value"] else None
 			master_port = master_iface["listen_port"] or 51820
+			master_port = master_iface["listen_port"] or 51820
 			if master_fqdn:
 				# Wrap IPv6 in brackets for endpoint notation
-				try:
-					addr = ipaddress.ip_address(master_fqdn.strip("[]"))
-					if addr.version == 6:
-						master_endpoint = f"[{addr.compressed}]:{master_port}"
-					else:
-						master_endpoint = f"{addr.compressed}:{master_port}"
-				except ValueError:
-					master_endpoint = f"{master_fqdn}:{master_port}"
+				if master_fqdn.startswith("[") and master_fqdn.endswith("]"):
+					# IPv6 in brackets - strip carefully
+					addr_str = master_fqdn[1:-1]
+					addr = ipaddress.ip_address(addr_str)
+					master_endpoint = f"[{addr.compressed}]:{master_port}"
+				else:
+					try:
+						addr = ipaddress.ip_address(master_fqdn)
+						if addr.version == 6:
+							master_endpoint = f"[{addr.compressed}]:{master_port}"
+						else:
+							master_endpoint = f"{addr.compressed}:{master_port}"
+					except ValueError:
+						# Hostname
+						master_endpoint = f"{master_fqdn}:{master_port}"
 			else:
 				master_endpoint = None
-				_log.warning("wg_fqdn not configured — master_peer endpoint will be empty")
+				_log.warning("wg_fqdn not configured u2014 master_peer endpoint will be empty")
 
 			# Extract gateway IP from interface address (e.g., "10.13.13.1/24" → "10.13.13.1")
 			try:

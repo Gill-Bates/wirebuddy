@@ -69,21 +69,43 @@ class SystemStatusResponse(BaseModel):
 _UNBOUND_PATH = "/usr/sbin/unbound"
 _WG_PATH = "/usr/bin/wg"
 
-# Hostname/IP validation pattern for FQDN (RFC 1123 hostname or IPv4/IPv6)
-_HOSTNAME_RE = re.compile(
-	r"^(?:"
-	r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z]{2,63}"  # FQDN
-	r"|localhost"  # localhost
-	r"|(?:\d{1,3}\.){3}\d{1,3}"  # IPv4
-	r"|[a-fA-F0-9:]+(?:%[a-zA-Z0-9]+)?"  # IPv6 (simplified)
-	r")$"
+# FQDN validation pattern (RFC 1123 hostname)
+_FQDN_RE = re.compile(
+	r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z]{2,63}$"
 )
 
 
-@lru_cache(maxsize=1024)
+def _is_valid_hostname_or_ip(value: str) -> bool:
+	"""Validate hostname or IP address with proper parsing.
+	
+	More robust than regex-only validation, especially for IPv6.
+	"""
+	clean = str(value or "").strip()
+	if not clean:
+		return False
+	
+	# Check for localhost
+	if clean.lower() == "localhost":
+		return True
+	
+	# Try parsing as IP address (IPv4 or IPv6)
+	try:
+		ipaddress.ip_address(clean)
+		return True
+	except ValueError:
+		pass
+	
+	# Validate as FQDN using regex
+	return _FQDN_RE.match(clean) is not None
+
+
+@lru_cache(maxsize=256)
 def _resolve_node_geo_ip(host_or_ip: str) -> str | None:
 	"""Resolve a node FQDN/IP to a concrete IP for GeoIP/ASN lookups."""
-	clean = str(host_or_ip or "").strip().strip("[]")
+	clean = str(host_or_ip or "").strip()
+	# Strip IPv6 brackets safely (only if wrapped)
+	if clean.startswith("[") and clean.endswith("]"):
+		clean = clean[1:-1]
 	if not clean:
 		return None
 
@@ -92,7 +114,7 @@ def _resolve_node_geo_ip(host_or_ip: str) -> str | None:
 	except ValueError:
 		pass
 
-	if _HOSTNAME_RE.fullmatch(clean) is None:
+	if not _is_valid_hostname_or_ip(clean):
 		return None
 
 	try:
@@ -103,7 +125,11 @@ def _resolve_node_geo_ip(host_or_ip: str) -> str | None:
 	for _family, _socktype, _proto, _canonname, sockaddr in addrinfo:
 		ip_text = str(sockaddr[0]).split("%", 1)[0]
 		try:
-			return str(ipaddress.ip_address(ip_text))
+			ip = ipaddress.ip_address(ip_text)
+			# SSRF protection: block private/reserved ranges
+			if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+				return None
+			return str(ip)
 		except ValueError:
 			continue
 
@@ -232,11 +258,12 @@ def _render_changelog() -> str:
 		if cp.exists():
 			try:
 				raw = cp.read_text(encoding="utf-8")
-				rendered = _markdown.markdown(raw, extensions=["extra", "sane_lists", "md_in_html"])
+				rendered = _markdown.markdown(raw, extensions=["extra", "sane_lists"])
 				return nh3.clean(
 					rendered,
 					tags=_CHANGELOG_ALLOWED_TAGS,
 					attributes=_CHANGELOG_ALLOWED_ATTRS,
+					url_schemes={"http", "https", "mailto"},
 					strip_comments=True,
 				)
 			except (OSError, UnicodeDecodeError) as exc:
@@ -440,25 +467,21 @@ async def peers_page(
 	"""
 	db_path = request.app.state.db_path
 
-	def _load_all_peers() -> list[sqlite3.Row]:
-		"""Load all peer data in thread pool with dedicated connection."""
-		thread_conn = connect(db_path)
-		try:
-			return get_all_peers(thread_conn)
-		finally:
-			close_connection(thread_conn)
-
-	def _load_tunnel_peer_ids() -> set[int]:
-		"""Load all tunnel peer IDs (node system peers, not user-editable)."""
+	def _load_peers_data() -> tuple[list[sqlite3.Row], set[int]]:
+		"""Load all peer data and tunnel peer IDs with a single connection.
+		
+		Combines two queries to avoid redundant connection overhead.
+		"""
 		from ..db.sqlite_nodes import get_all_tunnel_peer_ids
 		thread_conn = connect(db_path)
 		try:
-			return get_all_tunnel_peer_ids(thread_conn)
+			peers = get_all_peers(thread_conn)
+			tunnel_ids = get_all_tunnel_peer_ids(thread_conn)
+			return peers, tunnel_ids
 		finally:
 			close_connection(thread_conn)
 
-	peer_rows = await asyncio.to_thread(_load_all_peers)
-	tunnel_peer_ids = await asyncio.to_thread(_load_tunnel_peer_ids)
+	peer_rows, tunnel_peer_ids = await asyncio.to_thread(_load_peers_data)
 	total_peers = len(peer_rows)
 	peers: list[dict] = []
 	now_epoch = int(time.time())
@@ -717,7 +740,7 @@ def traffic_page(
 
 @router.get("/ui/about", response_class=HTMLResponse)
 @limiter.limit(RATE_LIMIT_DEFAULT)
-def about_page(
+async def about_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
 ) -> Response:
@@ -726,8 +749,11 @@ def about_page(
 	Note: Data is cached via @lru_cache for performance. Cache persists until
 	server restart — runtime changes to requirements.txt, LICENSE, or CHANGELOG.md
 	won't be reflected without restart.
+	
+	First call (cache miss) runs blocking operations in thread pool to avoid
+	blocking the event loop.
 	"""
-	about_data = _get_about_data()
+	about_data = await asyncio.to_thread(_get_about_data)
 	return templates.TemplateResponse(
 		request,
 		name="about.html",
@@ -753,7 +779,7 @@ def settings_page(
 	raw_host = wg_fqdn.strip().strip("[]") if wg_fqdn else str(request.url.hostname or "localhost")
 	
 	# Validate hostname/IP to prevent URL injection attacks
-	if not _HOSTNAME_RE.match(raw_host):
+	if not _is_valid_hostname_or_ip(raw_host):
 		_log.warning("Invalid FQDN in settings: %r", raw_host[:50])
 		raw_host = "localhost"  # Fallback to safe default
 	
@@ -788,9 +814,10 @@ def acme_challenge(request: Request, token: str) -> PlainTextResponse:
 	Note: Sync handler so FastAPI runs it in threadpool (get_challenge_response
 	performs file I/O and should not block the event loop).
 	"""
+	# Always return 404 for invalid or missing tokens to prevent timing attacks
 	if not _ACME_TOKEN_RE.match(token):
 		_log.warning("ACME challenge: invalid token format (length=%d)", len(token))
-		return PlainTextResponse("Invalid token", status_code=400)
+		return PlainTextResponse("Challenge not found", status_code=404)
 
 	config = get_config()
 	certs_dir = get_certs_dir(config)

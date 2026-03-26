@@ -12,6 +12,7 @@ from ..db.sqlite_peers import (
 	get_peer_by_id,
 )
 
+import asyncio
 import logging
 import re
 import sqlite3
@@ -48,6 +49,37 @@ DUMP_PEER_RX = 5
 DUMP_PEER_TX = 6
 DUMP_PEER_KEEPALIVE = 7   # defined for documentation; not currently read
 DUMP_PEER_MIN_FIELDS = 7  # columns 0..6 are required; keepalive (7) is optional
+
+# Security limits
+_MAX_FILENAME_LENGTH = 64
+
+
+def _validate_port(port: int) -> None:
+	"""Validate port is in valid range."""
+	if not (1 <= port <= 65535):
+		raise ValueError(f"Port out of valid range: {port}")
+
+
+def _validate_hostname(hostname: str) -> None:
+	"""Validate hostname/FQDN format.
+	
+	Rejects:
+	- Empty strings
+	- Whitespace
+	- Control characters
+	- Invalid length
+	"""
+	if not hostname or not hostname.strip():
+		raise ValueError("Hostname cannot be empty")
+	if hostname != hostname.strip():
+		raise ValueError("Hostname contains leading/trailing whitespace")
+	if any(ord(ch) < 32 or ord(ch) == 127 for ch in hostname):
+		raise ValueError("Hostname contains control characters")
+	if len(hostname) > 253:
+		raise ValueError("Hostname exceeds maximum length (253)")
+	# Basic format check: should be alphanumeric with dots, hyphens
+	if not re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$', hostname):
+		raise ValueError(f"Invalid hostname format: {hostname}")
 
 
 async def _build_peer_config(
@@ -103,13 +135,25 @@ async def _build_peer_config(
 			)
 	
 	# Get server public key and endpoint — differs for node-assigned peers
-	node_id = peer["node_id"] if "node_id" in peer.keys() else None
+	node_id = peer.get("node_id")
 	if node_id:
 		# Peer runs on a remote node: use node's keypair and endpoint
 		from ..db.sqlite_nodes import get_node as db_get_node, get_node_interface_public_key
 		node = db_get_node(conn, node_id)
 		if not node:
 			raise HTTPException(status_code=404, detail="Assigned node not found")
+		
+		# Validate node endpoint components for security
+		try:
+			_validate_hostname(node['fqdn'])
+			_validate_port(int(node['wg_port']))
+		except ValueError as e:
+			_log.error("Invalid node endpoint for node_id=%s: %s", node_id, e)
+			raise HTTPException(
+				status_code=503,
+				detail="Node configuration error: invalid endpoint"
+			)
+		
 		node_pubkey = get_node_interface_public_key(conn, node_id, peer["interface"])
 		if not node_pubkey:
 			raise HTTPException(
@@ -146,15 +190,16 @@ async def _build_peer_config(
 			WG_DEFAULT_DNS,
 			peer_address=peer_address,
 		)
-	except InterfaceConfigError as exc:
-		raise HTTPException(status_code=422, detail=str(exc))
+	except InterfaceConfigError:
+		# Don't leak internal config details to client
+		raise HTTPException(status_code=422, detail="Invalid interface configuration")
 	
-	client_allowed_ips = allowed_ips_with_dns_routes(
+		client_allowed_ips = allowed_ips_with_dns_routes(
 		peer["allowed_ips"],
 		dns_servers,
 		use_adblocker,
 	)
-	
+
 	config = PeerConfig(
 		interface_name=peer["interface"],
 		private_key=private_key_plain.get_secret_value(),
@@ -176,7 +221,8 @@ async def get_peer_stats(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Get live statistics for a peer from WireGuard (admin only)."""
-	peer = get_peer_by_id(conn, peer_id)
+	# Use threadpool for blocking DB call
+	peer = await asyncio.to_thread(get_peer_by_id, conn, peer_id)
 	if not peer:
 		raise HTTPException(status_code=404, detail="Peer not found")
 	
@@ -266,11 +312,8 @@ async def get_peer_qrcode(
 		safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', peer['name'] or 'peer').lstrip('.')
 		if not safe_name:
 			safe_name = 'peer'
-
-		_log.info(
-			"QR_CODE_DISPLAYED peer_id=%s peer_name=%s interface=%s user=%s",
-			peer_id, peer['name'], peer['interface'], current_user['username'],
-		)
+		# Enforce maximum length to prevent header abuse
+		safe_name = safe_name[:_MAX_FILENAME_LENGTH]
 
 		result = Response(
 			content=png_bytes,
@@ -304,6 +347,8 @@ async def get_peer_config(
 	safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', peer['name'] or 'wg0').lstrip('.')
 	if not safe_name:
 		safe_name = 'wg0'
+	# Enforce maximum length to prevent header abuse
+	safe_name = safe_name[:_MAX_FILENAME_LENGTH]
 	
 	_log.info(
 		"CONFIG_DOWNLOADED peer_id=%s peer_name=%s interface=%s user=%s",

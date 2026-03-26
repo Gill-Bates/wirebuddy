@@ -27,8 +27,24 @@ WG_CONFIG_DIR = Path(os.environ.get("WG_CONFIG_PATH", "/etc/wireguard"))
 _MANAGED_HEADER = "# Managed by WireBuddy Node Daemon - do not edit manually"
 _INTERFACE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,14}$")
 _WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
-# Block shell metacharacters that enable command injection/chaining
-_DANGEROUS_SHELL = re.compile(r'[`$\\;|&<>]|\.\.|\$\(|/etc/passwd|/etc/shadow')
+# Block dangerous shell patterns while allowing semicolons for legitimate command chaining
+# Blocks: pipes (|), redirects (<>), command substitution (`$), single ampersand (&),
+# but allows && for conditional execution and ; for sequential execution
+_DANGEROUS_SHELL = re.compile(
+	r'`'  # backtick command substitution
+	r'|\$\('  # $(...) command substitution
+	r'|\$\{'  # ${...} variable expansion
+	r'|\|'  # pipes (data exfiltration risk)
+	r'|<|>'  # file redirection
+	r'|&(?!&)'  # single ampersand (background) but not && (conditional)
+	r'|\.\.'  # path traversal
+	r'|/etc/passwd|/etc/shadow'  # sensitive files
+)
+# Whitelist of allowed commands in PostUp/PostDown hooks
+_ALLOWED_HOOK_COMMANDS = {
+	"iptables", "ip6tables", "ip", "sysctl", "nft", "wg",
+	"echo", "true", "false", "resolvconf",
+}
 # Validate endpoint format: host:port or [ipv6]:port
 _ENDPOINT_RE = re.compile(r'^([\w.-]+|\[[0-9a-fA-F:]+\]):\d+$')
 
@@ -165,30 +181,42 @@ def _validate_endpoint(value: Any, *, field_name: str) -> str:
 def _validate_hook(value: Any, *, field_name: str) -> str | None:
 	"""Validate PostUp/PostDown hook for restricted shell execution.
 	
-	Security: Blocks shell metacharacters (;|&<>$) to prevent command injection.
-	Only allows specific whitelisted commands to minimize attack surface.
+	Security strategy:
+	- Allows semicolons for command chaining (needed for iptables rules)
+	- Blocks pipes, redirects, command substitution, backgrounding
+	- Whitelists only specific safe commands (iptables, ip, etc.)
+	- Each command in the chain is validated independently
 	"""
 	if value in (None, ""):
 		return None
 	text = _sanitize_config_value(field_name, value)
+	
+	# Check for dangerous shell patterns
 	if _DANGEROUS_SHELL.search(text):
 		raise ValueError(
-			f"Unsafe {field_name} hook contains dangerous shell characters "
-			f"(;|&<>$ etc). Only simple single commands are allowed."
+			f"Unsafe {field_name} hook contains dangerous shell characters. "
+			f"Blocked: pipes (|), redirects (<>), command substitution (`$), "
+			f"backgrounding (&), path traversal (..), variable expansion."
 		)
 	
-	# Split on whitespace and validate each command independently
-	# (we already blocked ; so no command chaining possible)
-	parts = text.split()
-	if not parts:
+	# Split by semicolon and validate each command
+	commands = [cmd.strip() for cmd in text.split(";") if cmd.strip()]
+	if not commands:
 		return None
 	
-	cmd_name = parts[0]
-	if cmd_name not in ("iptables", "ip6tables", "ip", "sysctl", "nft"):
-		raise ValueError(
-			f"Unsafe {field_name} command: {cmd_name!r}. "
-			f"Only iptables/ip6tables/ip/sysctl/nft commands allowed."
-		)
+	for cmd in commands:
+		# Split on whitespace to extract command name
+		parts = cmd.split()
+		if not parts:
+			continue
+		
+		cmd_name = parts[0]
+		if cmd_name not in _ALLOWED_HOOK_COMMANDS:
+			allowed = ", ".join(sorted(_ALLOWED_HOOK_COMMANDS))
+			raise ValueError(
+				f"Unsafe {field_name} command: {cmd_name!r}. "
+				f"Only these commands are whitelisted: {allowed}"
+			)
 	
 	return text
 
