@@ -28,15 +28,15 @@ _MANAGED_HEADER = "# Managed by WireBuddy Node Daemon - do not edit manually"
 _INTERFACE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,14}$")
 _WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
 # Block dangerous shell patterns while allowing semicolons for legitimate command chaining
-# Blocks: pipes (|), redirects (<>), command substitution (`$), single ampersand (&),
+# Blocks: pipes (|), redirects (<>), command substitution ($(...) or `...`), single ampersand (&),
 # but allows && for conditional execution and ; for sequential execution
 _DANGEROUS_SHELL = re.compile(
 	r'`'  # backtick command substitution
-	r'|\$\('  # $(...) command substitution
-	r'|\$\{'  # ${...} variable expansion
+	r'|[$][(]'  # $(...) command substitution
+	r'|[$][{]'  # ${...} variable expansion
 	r'|\|'  # pipes (data exfiltration risk)
 	r'|<|>'  # file redirection
-	r'|&(?!&)'  # single ampersand (background) but not && (conditional)
+	r'|(?<!&)&(?!&)'  # single ampersand not part of &&
 	r'|\.\.'  # path traversal
 	r'|/etc/passwd|/etc/shadow'  # sensitive files
 )

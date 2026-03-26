@@ -341,7 +341,7 @@ def get_node_config(
 		raise ValueError(f"Node not found: {node_id}")
 
 	# Get tunnel peer info first (needed for interface address)
-	tunnel_peer_id = node.get("tunnel_peer_id")
+	tunnel_peer_id = node["tunnel_peer_id"]
 	tunnel_peer = None
 	tunnel_interface = None
 	if tunnel_peer_id:
