@@ -135,7 +135,7 @@ async def _build_peer_config(
 			)
 	
 	# Get server public key and endpoint — differs for node-assigned peers
-	node_id = peer.get("node_id")
+	node_id = peer["node_id"]
 	if node_id:
 		# Peer runs on a remote node: use node's keypair and endpoint
 		from ..db.sqlite_nodes import get_node as db_get_node, get_node_interface_public_key
