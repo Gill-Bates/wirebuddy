@@ -175,6 +175,7 @@ def _node_to_dict(row: sqlite3.Row, peer_count: int = 0) -> dict[str, Any]:
 	from datetime import datetime
 	from .frontend_pages import _resolve_node_geo_ip
 	from .frontend_shared import extract_geo_fields, format_last_seen_label, lookup_ip_cached
+	from ..node import notifier as node_notifier
 	
 	resolved_geo_ip = _resolve_node_geo_ip(row["fqdn"])
 	geo_fields = extract_geo_fields(lookup_ip_cached(resolved_geo_ip)) if resolved_geo_ip else {
@@ -220,6 +221,7 @@ def _node_to_dict(row: sqlite3.Row, peer_count: int = 0) -> dict[str, Any]:
 		"geo_city": geo_fields["city"],
 		"geo_as_org": geo_fields["as_org"],
 		"node_version": node_version,
+		"sse_connected": node_notifier.is_node_connected_sync(row["id"]),
 	}
 
 
@@ -366,4 +368,44 @@ def regenerate_token(
 	return ok_response(
 		data={"enrollment_token": token},
 		message="New enrollment token generated. The node must re-enroll.",
+	)
+
+
+@router.post("/{node_id}/restart")
+async def restart_node(
+	node_id: str,
+	conn: sqlite3.Connection = Depends(get_conn),
+	user: sqlite3.Row = Depends(require_admin),
+) -> dict[str, Any]:
+	"""Request a remote node to restart gracefully.
+	
+	Sends a restart signal via SSE. The node daemon will shut down
+	gracefully and Docker/systemd will restart it.
+	"""
+	from ..node import notifier as node_notifier
+	
+	node = get_node(conn, node_id)
+	if not node:
+		raise HTTPException(status_code=404, detail="Node not found")
+	
+	if node["status"] != "online":
+		raise HTTPException(
+			status_code=400,
+			detail=f"Cannot restart node in '{node['status']}' status. Node must be online."
+		)
+	
+	notified = await node_notifier.notify_restart(node_id)
+	
+	if notified == 0:
+		raise HTTPException(
+			status_code=503,
+			detail="Node is not connected via SSE. Restart signal could not be delivered."
+		)
+	
+	_log.info("Restart signal sent to node: id=%s, name=%s (by user=%s)", 
+			 node_id, node["name"], user["username"])
+	
+	return ok_response(
+		message=f"Restart signal sent to node '{node['name']}'. The node will restart shortly.",
+		data={"notified_clients": notified},
 	)

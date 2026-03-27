@@ -229,7 +229,7 @@ const VIEW_DEFS = [
 ];
 
 /**
- * Expands view definitions into desktop/tablet/mobile × light/dark variants.
+ * Expands view definitions into desktop/large-desktop/tablet/mobile × light/dark variants.
  * @param {Array} viewDefs - Base view definitions
  * @returns {Array} Expanded view definitions with all variants
  */
@@ -237,6 +237,7 @@ function expandViewDefinitions(viewDefs) {
     return viewDefs.flatMap((def) =>
         THEMES.flatMap((theme) => [
             { ...def, name: `desktop-${def.name}-${theme}`, device: 'desktop', theme },
+            { ...def, name: `large-desktop-${def.name}-${theme}`, device: 'large-desktop', theme },
             { ...def, name: `tablet-${def.name}-${theme}`, device: 'tablet', theme },
             { ...def, name: `mobile-${def.name}-${theme}`, device: 'mobile', theme },
         ])
@@ -3692,6 +3693,10 @@ async function main() {
             viewport: { width: 1440, height: 1100 },
             storageState: authState,
         });
+        const largeDesktopContext = await browser.newContext({
+            viewport: { width: 1600, height: 1100 },
+            storageState: authState,
+        });
         const tabletContext = await browser.newContext({
             ...devices['iPad Pro 11'],
             storageState: authState,
@@ -3701,10 +3706,12 @@ async function main() {
             storageState: authState,
         });
         await installLayoutShiftObserver(desktopContext);
+        await installLayoutShiftObserver(largeDesktopContext);
         await installLayoutShiftObserver(tabletContext);
         await installLayoutShiftObserver(mobileContext);
 
         const desktopPage = await desktopContext.newPage();
+        const largeDesktopPage = await largeDesktopContext.newPage();
         const tabletPage = await tabletContext.newPage();
         const mobilePage = await mobileContext.newPage();
 
@@ -3715,6 +3722,8 @@ async function main() {
                 page = mobilePage;
             } else if (view.device === 'tablet') {
                 page = tabletPage;
+            } else if (view.device === 'large-desktop') {
+                page = largeDesktopPage;
             } else {
                 page = desktopPage;
             }
@@ -3749,6 +3758,8 @@ async function main() {
                 page = mobilePage;
             } else if (view.device === 'tablet') {
                 page = tabletPage;
+            } else if (view.device === 'large-desktop') {
+                page = largeDesktopPage;
             } else {
                 page = desktopPage;
             }

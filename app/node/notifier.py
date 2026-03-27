@@ -122,3 +122,50 @@ async def get_connection_count(node_id: str) -> int:
     async with _lock:
         return len(_node_queues.get(node_id, set()))
 
+
+def is_node_connected_sync(node_id: str) -> bool:
+    """Check if a node has active SSE connections (sync, lock-free read).
+    
+    Safe for read-only checks from synchronous code -- dict reads are
+    atomic in CPython due to the GIL.
+    """
+    return bool(_node_queues.get(node_id))
+
+
+async def notify_restart(node_id: str) -> int:
+    """Notify a node to restart/shutdown gracefully.
+    
+    The node daemon will exit and Docker/systemd will restart it.
+    Returns the number of clients notified.
+    """
+    async with _lock:
+        queues = _node_queues.get(node_id, set()).copy()
+    
+    if not queues:
+        _log.warning("No SSE clients connected for node %s — cannot send restart signal", node_id)
+        return 0
+    
+    event = (
+        f"event: restart_requested\n"
+        f"data: restart\n\n"
+    )
+    
+    notified = 0
+    for queue in queues:
+        try:
+            queue.put_nowait(event)
+            notified += 1
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                queue.put_nowait(event)
+                notified += 1
+            except asyncio.QueueFull:
+                _log.error("Failed to enqueue restart event for node %s", node_id)
+    
+    _log.info("Sent restart signal to %d SSE client(s) for node %s", notified, node_id)
+    return notified
+

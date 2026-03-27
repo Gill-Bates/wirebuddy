@@ -196,6 +196,19 @@
                             <div class="d-flex gap-1 justify-content-end">
                                 <button type="button"
                                         class="btn btn-sm btn-outline-secondary node-action-btn"
+                                        data-action="restart-node"
+                                        data-node-id="{{ node.id }}"
+                                        data-node-name="{{ node.name }}"
+                                        data-node-status="{{ node.status }}"
+                                        data-sse-connected="{{ 'true' if node.sse_connected else 'false' }}"
+                                        aria-label="Restart {{ node.name }}"
+                                        data-bs-toggle="tooltip"
+                                        data-bs-title="{% if node.status != 'online' %}Node is offline{% elif not node.sse_connected %}Node not connected via SSE{% else %}Restart Node{% endif %}"
+                                        {% if node.status != 'online' or not node.sse_connected %}disabled{% endif %}>
+                                    <span class="material-icons icon-md" aria-hidden="true">restart_alt</span>
+                                </button>
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-secondary node-action-btn"
                                         data-action="regenerate-token"
                                         data-node-id="{{ node.id }}"
                                         data-node-name="{{ node.name }}"
@@ -673,6 +686,25 @@
         }
     }
 
+    async function restartNode(id, name) {
+        if (!await wbConfirm(`Restart node "${name}"? The node will disconnect briefly and reconnect.`, 'warning')) return;
+
+        try {
+            const resp = await fetch(`/api/nodes/${id}/restart`, {
+                method: 'POST',
+                headers,
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                await wbAlert(data.detail || 'Failed to send restart signal', 'danger');
+                return;
+            }
+            wbToast(data.message || `Restart signal sent to "${name}"`, 'success');
+        } catch (err) {
+            await wbAlert('Network error: ' + err.message, 'danger');
+        }
+    }
+
     // ========================================================================
     // POLLING LOGIC
     // ========================================================================
@@ -749,6 +781,25 @@
                         span.className = node.last_seen_class || 'text-muted';
                         span.textContent = newText;
                         lastSeenCell.replaceChildren(span);
+                    }
+                }
+
+                // Update restart button disabled state based on node status and SSE connection
+                const restartBtn = row.querySelector('button[data-action="restart-node"]');
+                if (restartBtn) {
+                    const isOnline = node.status === 'online';
+                    const sseConnected = node.sse_connected === true;
+                    restartBtn.disabled = !isOnline || !sseConnected;
+                    restartBtn.dataset.nodeStatus = node.status || '';
+                    restartBtn.dataset.sseConnected = sseConnected ? 'true' : 'false';
+                    // Update tooltip based on reason for disabled state
+                    const tooltip = bootstrap.Tooltip.getInstance(restartBtn);
+                    if (tooltip) {
+                        let title = 'Restart Node';
+                        if (!isOnline) title = 'Node is offline';
+                        else if (!sseConnected) title = 'Node not connected via SSE';
+                        restartBtn.setAttribute('data-bs-title', title);
+                        tooltip.setContent({ '.tooltip-inner': title });
                     }
                 }
             }
@@ -830,6 +881,11 @@
 
         if (action === 'regenerate-token') {
             await regenerateToken(nodeId, nodeName);
+            return;
+        }
+
+        if (action === 'restart-node') {
+            await restartNode(nodeId, nodeName);
         }
     });
 

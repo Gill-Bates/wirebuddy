@@ -874,10 +874,16 @@
     // Initialize tooltips on desktop only (touch devices don't benefit)
     if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
         document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+            if (el.dataset.tooltipInitialized) return;
+            const existingInstance = bootstrap.Tooltip.getInstance(el);
+            if (existingInstance) {
+                existingInstance.dispose();
+            }
             new bootstrap.Tooltip(el, {
-                container: 'body',
+                container: document.body,
                 trigger: 'hover focus',
             });
+            el.dataset.tooltipInitialized = 'true';
         });
     }
 

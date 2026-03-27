@@ -599,6 +599,9 @@ async def _sse_listener(
 	
 	When a config_changed event is received, sets config_changed_event
 	to trigger an immediate config pull in the main sync loop.
+	
+	When a restart_requested event is received, sets shutdown_event
+	to trigger a graceful restart (Docker/systemd will restart the daemon).
 	"""
 	reconnect_delay = 1
 	max_reconnect_delay = 60
@@ -646,6 +649,10 @@ async def _sse_listener(
 							if event_type == "config_changed":
 								_log.info("Received config_changed event from master")
 								config_changed_event.set()
+							elif event_type == "restart_requested":
+								_log.warning("Received restart_requested event from master — initiating graceful shutdown")
+								shutdown_event.set()
+								return
 							event_type = None  # Reset after processing
 						
 		except httpx.HTTPStatusError as exc:
