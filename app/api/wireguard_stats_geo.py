@@ -433,8 +433,9 @@ async def get_peers_enriched(
 		result = await _build_peers_enriched(conn)
 		_peers_enriched_cache = (time.monotonic(), result)
 
-	# Flush pending DB updates in background (non-blocking)
-	asyncio.create_task(_flush_pending_db_updates(conn))
+	# Flush pending DB updates synchronously to ensure data persists for page reloads.
+	# This adds minimal latency (~1-5ms) but guarantees consistency.
+	await _flush_pending_db_updates(conn)
 
 	return ok_response(data={"peers": result})
 
