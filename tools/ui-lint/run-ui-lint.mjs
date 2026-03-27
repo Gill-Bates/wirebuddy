@@ -108,6 +108,12 @@ const FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX = 0.5;
 // - Status cell aligned with Name row (top-aligned, same grid row)
 // - VPN address and Client IP stacked vertically (each spans full width)
 // - VPN address allows wrapping for long IPv6 addresses
+//
+// Peers Desktop Layout Rules (>= 768px)
+// - Status <td> MUST be display:table-cell (NOT flex) — flex breaks vertical
+//   alignment of the entire table row. Badges use inline flow instead.
+// - Status badges must NOT overlap Action buttons horizontally.
+//   Column widths are controlled via <colgroup> percentages (table-layout:fixed).
 // =============================================================================
 
 // =============================================================================
@@ -937,6 +943,55 @@ async function collectPageMetrics(page, scope) {
         const tablesWithoutHeaders = Array.from(document.querySelectorAll('table'))
             .filter((table) => isVisible(table) && isInContentRoot(table) && !table.querySelector('th'))
             .map(rectInfo);
+
+        // =============================================================================
+        // Table Cell Overlap Detection
+        // Detects horizontal overlap between adjacent table cells (e.g. badges overlapping action buttons)
+        // =============================================================================
+        const tableCellOverlapIssues = Array.from(document.querySelectorAll('table'))
+            .filter((table) => isVisible(table) && isInContentRoot(table))
+            .flatMap((table) => {
+                const rows = Array.from(table.querySelectorAll('tbody tr'));
+                return rows.map((row) => {
+                    const cells = Array.from(row.children).filter((c) => c instanceof HTMLElement);
+                    if (cells.length < 2) return null;
+
+                    const overlaps = [];
+
+                    for (let i = 0; i < cells.length - 1; i++) {
+                        const a = cells[i];
+                        const b = cells[i + 1];
+
+                        if (!isVisible(a) || !isVisible(b)) continue;
+
+                        const rectA = a.getBoundingClientRect();
+                        const rectB = b.getBoundingClientRect();
+
+                        // Detect horizontal overlap (with small tolerance)
+                        if (rectA.right > rectB.left + 1) {
+                            overlaps.push({
+                                leftCell: {
+                                    index: i,
+                                    ...rectInfo(a),
+                                },
+                                rightCell: {
+                                    index: i + 1,
+                                    ...rectInfo(b),
+                                },
+                                overlapPx: round(rectA.right - rectB.left),
+                            });
+                        }
+                    }
+
+                    if (!overlaps.length) return null;
+
+                    return {
+                        table: rectInfo(table),
+                        row: rectInfo(row),
+                        overlaps,
+                    };
+                }).filter(Boolean);
+            }).slice(0, 20);
 
         // Detect tables overflowing containers without responsive wrapper
         const tablesWithoutResponsive = Array.from(document.querySelectorAll('table'))
@@ -1995,6 +2050,30 @@ async function collectPageMetrics(page, scope) {
                 editPeerModal: validatePeerModal(editPeerModal, 'editPeerModal'),
             };
 
+            // Desktop layout: Status cell must NOT use display:flex (breaks table-cell vertical alignment)
+            // Also check Status badges don't overlap Action buttons horizontally
+            if (window.innerWidth >= 768) {
+                const peerRows = Array.from(document.querySelectorAll('#peers-table tr[data-peer-id]'));
+                spacing.peersDesktopStatusCell = peerRows.slice(0, 5).map((row) => {
+                    const statusCell = row.querySelector('td[data-label="Status"]');
+                    const actionsCell = row.querySelector('td.peer-actions-cell');
+                    const display = statusCell ? window.getComputedStyle(statusCell).display : null;
+                    const statusRect = statusCell ? statusCell.getBoundingClientRect() : null;
+                    const actionsRect = actionsCell ? actionsCell.getBoundingClientRect() : null;
+                    const overlapsActions = (statusRect && actionsRect)
+                        ? statusRect.right > actionsRect.left + 2
+                        : false;
+                    return {
+                        peerId: row.dataset.peerId,
+                        statusDisplay: display,
+                        isTableCell: display === 'table-cell',
+                        overlapsActions,
+                        statusRight: statusRect ? Math.round(statusRect.right) : null,
+                        actionsLeft: actionsRect ? Math.round(actionsRect.left) : null,
+                    };
+                });
+            }
+
             // Mobile layout: badge visibility, last-seen merged into badge, client-ip placement
             if (window.innerWidth < 768) {
                 const peerRows = Array.from(document.querySelectorAll('#peers-table tr[data-peer-id]'));
@@ -2961,6 +3040,7 @@ async function collectPageMetrics(page, scope) {
             namelessButtons,
             headingSkips,
             tablesWithoutHeaders,
+            tableCellOverlapIssues,
             tablesWithoutResponsive,
             ghostScroll,
             ghostScrollContainers,
@@ -3065,6 +3145,7 @@ function summarizeFindings(result) {
     if (result.metrics.namelessButtons.length) pushHard(`namelessButtons=${result.metrics.namelessButtons.length}`);
     if (result.metrics.headingSkips.length) pushWarning(`headingSkips=${result.metrics.headingSkips.length}`);
     if (result.metrics.tablesWithoutHeaders.length) pushWarning(`tablesWithoutHeaders=${result.metrics.tablesWithoutHeaders.length}`);
+    if (result.metrics.tableCellOverlapIssues?.length) pushHard(`tableCellOverlaps=${result.metrics.tableCellOverlapIssues.length}`);
     if (result.metrics.tablesWithoutResponsive?.length) pushWarning(`tablesWithoutResponsive=${result.metrics.tablesWithoutResponsive.length}`);
     if (result.metrics.ghostScroll) pushWarning('ghostScrollDetected');
     if (result.metrics.ghostScrollContainers?.length) pushWarning(`ghostScrollContainers=${result.metrics.ghostScrollContainers.length}`);
@@ -3202,6 +3283,18 @@ function summarizeFindings(result) {
     }
     if (result.metrics.spacing.about?.topRowLayout && !result.metrics.spacing.about.topRowLayout.heightsMatch) {
         pushWarning(`aboutTopRowHeightMismatch=${result.metrics.spacing.about.topRowLayout.variance}px`);
+    }
+    // Peers desktop layout: Status cell must be table-cell (not flex) to avoid vertical misalignment
+    // Also detect Status badges overlapping Action buttons horizontally
+    if (result.metrics.spacing.peersDesktopStatusCell?.length) {
+        const flexCells = result.metrics.spacing.peersDesktopStatusCell.filter((r) => !r.isTableCell);
+        if (flexCells.length) {
+            pushHard(`peersStatusCellNotTableCell=${flexCells.map((c) => c.statusDisplay).join('+')}`);
+        }
+        const overlapCells = result.metrics.spacing.peersDesktopStatusCell.filter((r) => r.overlapsActions);
+        if (overlapCells.length) {
+            pushHard(`peersStatusOverlapsActions=${overlapCells.length}rows`);
+        }
     }
     // Peers mobile layout: both badges visible, last-seen merged into badge, stacked VPN/clientip
     if (result.metrics.spacing.peersMobileLayout?.length) {

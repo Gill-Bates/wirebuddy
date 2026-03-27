@@ -105,6 +105,7 @@
         .nodes-table tbody td {
             display: flex;
             justify-content: space-between;
+            align-items: flex-start;
             padding: 4px 0;
             border: none;
         }
@@ -195,7 +196,7 @@
                         <td data-label="Actions" class="text-end node-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
                                 <button type="button"
-                                        class="btn btn-sm btn-outline-secondary node-action-btn"
+                                        class="btn btn-sm btn-outline-secondary node-action-btn {% if node.status == 'online' and not node.sse_connected %}btn-outline-warning{% endif %}"
                                         data-action="restart-node"
                                         data-node-id="{{ node.id }}"
                                         data-node-name="{{ node.name }}"
@@ -203,8 +204,8 @@
                                         data-sse-connected="{{ 'true' if node.sse_connected else 'false' }}"
                                         aria-label="Restart {{ node.name }}"
                                         data-bs-toggle="tooltip"
-                                        data-bs-title="{% if node.status != 'online' %}Node is offline{% elif not node.sse_connected %}Node not connected via SSE{% else %}Restart Node{% endif %}"
-                                        {% if node.status != 'online' or not node.sse_connected %}disabled{% endif %}>
+                                        data-bs-title="{% if node.status != 'online' %}Node is offline{% elif not node.sse_connected %}⚠️ SSE not connected - restart may fail{% else %}Restart Node{% endif %}"
+                                        {% if node.status != 'online' %}disabled{% endif %}>
                                     <span class="material-icons icon-md" aria-hidden="true">restart_alt</span>
                                 </button>
                                 <button type="button"
@@ -271,8 +272,8 @@
                 <!-- Step 1: Form -->
                 <div id="addNodeStep1">
                     <div class="mb-3">
-                        <label for="nodeName" class="form-label">Node Name <span class="text-danger">*</span></label>
-                        <input type="text" class="form-control" id="nodeName" placeholder="e.g. Frankfurt" required
+                        <label for="addNodeName" class="form-label">Node Name <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="addNodeName" placeholder="e.g. Frankfurt" required
                                maxlength="64" autocomplete="off">
                         <small class="text-muted">A friendly name for this node location</small>
                     </div>
@@ -393,6 +394,7 @@
     let pollTimer = null;
     let pollFailureCount = 0;
     let nodeCreatedFlag = false;
+    let pollController = null;
 
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
     const headers = {
@@ -412,7 +414,7 @@
     const addNodeFqdnInput = document.getElementById('nodeFqdn');
     const editNodeFqdnInput = document.getElementById('editNodeFqdn');
     const addNodeSubmitBtn = document.getElementById('addNodeSubmitBtn');
-    const nodeNameInput = document.getElementById('nodeName');
+    const nodeNameInput = document.getElementById('addNodeName');
     const enrollmentTokenDisplay = document.getElementById('enrollmentTokenDisplay');
     const regenTokenDisplay = document.getElementById('regenTokenDisplay');
 
@@ -430,6 +432,7 @@
     function isValidIpv6(value) {
         const raw = value.replace(/^\[|\]$/g, '');
         if (!raw || raw.includes('[') || raw.includes(']')) return false;
+        if (raw.includes('%')) return false;
         
         // Use URL parsing for robust IPv6 validation
         try {
@@ -497,12 +500,13 @@
         
         if (isLoading) {
             button.disabled = true;
-            button.dataset.originalText = button.textContent;
+            if (!button.dataset.originalHtml) {
+                button.dataset.originalHtml = button.innerHTML;
+            }
             button.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>${loadingText}`;
         } else {
             button.disabled = false;
-            button.textContent = originalText || button.dataset.originalText || 'Submit';
-            delete button.dataset.originalText;
+            button.innerHTML = originalText ? originalText : (button.dataset.originalHtml || 'Submit');
         }
     }
 
@@ -524,16 +528,24 @@
             if (el.dataset.tooltipInitialized === 'true') {
                 return;
             }
+            //Verify element is properly connected to DOM
+            if (!el.isConnected || !el.getAttribute) {
+                return;
+            }
             // Dispose existing tooltip instance before creating a new one
             const existingInstance = bootstrap.Tooltip.getInstance(el);
             if (existingInstance) {
                 existingInstance.dispose();
             }
-            new bootstrap.Tooltip(el, {
-                container: document.body,
-                trigger: 'hover focus',
-            });
-            el.dataset.tooltipInitialized = 'true';
+            try {
+                new bootstrap.Tooltip(el, {
+                    container: document.body,
+                    trigger: 'hover focus',
+                });
+                el.dataset.tooltipInitialized = 'true';
+            } catch (err) {
+                console.error('Failed to initialize tooltip:', err, el);
+            }
         });
     }
 
@@ -582,31 +594,21 @@
         setButtonLoading(addNodeSubmitBtn, true, 'Creating...', 'Create Node');
 
         try {
-            const resp = await fetch('/api/nodes', {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({ name, fqdn, wg_port: port }),
-            });
-            const data = await resp.json();
-            if (!resp.ok) {
-                await wbAlert(data.detail || 'Failed to create node', 'danger');
-                setButtonLoading(addNodeSubmitBtn, false);
-                return;
-            }
+            const data = await api('POST', '/api/nodes', { name, fqdn, wg_port: port });
 
             // Show token step and set flag
             nodeCreatedFlag = true;
             document.getElementById('addNodeStep1').style.display = 'none';
             document.getElementById('addNodeStep2').style.display = 'block';
             if (enrollmentTokenDisplay) {
-                enrollmentTokenDisplay.textContent = data.data.enrollment_token;
+                enrollmentTokenDisplay.textContent = data.enrollment_token;
             }
             if (addNodeSubmitBtn) {
                 addNodeSubmitBtn.style.display = 'none';
             }
 
         } catch (err) {
-            await wbAlert('Network error: ' + err.message, 'danger');
+            await wbAlert(err.message || 'Failed to create node', 'danger');
             setButtonLoading(addNodeSubmitBtn, false);
         }
     }
@@ -627,19 +629,11 @@
         }
 
         try {
-            const resp = await fetch(`/api/nodes/${id}`, {
-                method: 'PATCH',
-                headers,
-                body: JSON.stringify({ name, fqdn, wg_port: port }),
-            });
-            if (!resp.ok) {
-                const data = await resp.json();
-                await wbAlert(data.detail || 'Failed to update node', 'danger');
-                return;
-            }
-            location.reload();
+            await api('PATCH', `/api/nodes/${id}`, { name, fqdn, wg_port: port });
+            refreshNodes();
+            bootstrap.Modal.getInstance(editNodeModalEl)?.hide();
         } catch (err) {
-            await wbAlert('Network error: ' + err.message, 'danger');
+            await wbAlert(err.message, 'danger');
         }
     }
 
@@ -647,20 +641,12 @@
         if (!await wbConfirm(`Delete node "${name}"? Assigned peers will be unassigned.`, 'danger')) return;
 
         try {
-            const resp = await fetch(`/api/nodes/${id}`, {
-                method: 'DELETE',
-                headers,
-            });
-            if (!resp.ok) {
-                const data = await resp.json();
-                await wbAlert(data.detail || 'Failed to delete node', 'danger');
-                return;
-            }
-            const data = await resp.json();
+            const data = await api('DELETE', `/api/nodes/${id}`);
             wbToast(data.message || `Node "${name}" deleted`, 'success');
-            location.reload();
+            const row = document.getElementById(`node-row-${id}`);
+            if (row) row.remove();
         } catch (err) {
-            await wbAlert('Network error: ' + err.message, 'danger');
+            await wbAlert(err.message, 'danger');
         }
     }
 
@@ -668,21 +654,13 @@
         if (!await wbConfirm(`Regenerate enrollment token for "${name}"? The node must re-enroll.`, 'warning')) return;
 
         try {
-            const resp = await fetch(`/api/nodes/${id}/token`, {
-                method: 'POST',
-                headers,
-            });
-            const data = await resp.json();
-            if (!resp.ok) {
-                await wbAlert(data.detail || 'Failed to regenerate token', 'danger');
-                return;
-            }
+            const data = await api('POST', `/api/nodes/${id}/token`);
             if (tokenModalEl && regenTokenDisplay) {
-                regenTokenDisplay.textContent = data.data.enrollment_token;
+                regenTokenDisplay.textContent = data.enrollment_token;
                 bootstrap.Modal.getOrCreateInstance(tokenModalEl).show();
             }
         } catch (err) {
-            await wbAlert('Network error: ' + err.message, 'danger');
+            await wbAlert(err.message, 'danger');
         }
     }
 
@@ -690,18 +668,10 @@
         if (!await wbConfirm(`Restart node "${name}"? The node will disconnect briefly and reconnect.`, 'warning')) return;
 
         try {
-            const resp = await fetch(`/api/nodes/${id}/restart`, {
-                method: 'POST',
-                headers,
-            });
-            const data = await resp.json();
-            if (!resp.ok) {
-                await wbAlert(data.detail || 'Failed to send restart signal', 'danger');
-                return;
-            }
+            const data = await api('POST', `/api/nodes/${id}/restart`);
             wbToast(data.message || `Restart signal sent to "${name}"`, 'success');
         } catch (err) {
-            await wbAlert('Network error: ' + err.message, 'danger');
+            await wbAlert(err.message, 'danger');
         }
     }
 
@@ -711,14 +681,11 @@
     async function refreshNodes() {
         if (!nodesTableBody) return;
 
+        pollController?.abort();
+        pollController = new AbortController();
+
         try {
-            const resp = await fetch('/api/nodes', { headers: { 'X-CSRF-Token': csrfToken } });
-            if (!resp.ok) {
-                pollFailureCount++;
-                return;
-            }
-            const json = await resp.json();
-            const nodes = json.data || [];
+            const nodes = await api('GET', '/api/nodes', null, { signal: pollController.signal });
 
             for (const node of nodes) {
                 const row = document.getElementById(`node-row-${node.id}`);
@@ -784,30 +751,45 @@
                     }
                 }
 
-                // Update restart button disabled state based on node status and SSE connection
+                // Update restart button state based on node status and SSE connection
                 const restartBtn = row.querySelector('button[data-action="restart-node"]');
                 if (restartBtn) {
                     const isOnline = node.status === 'online';
                     const sseConnected = node.sse_connected === true;
-                    restartBtn.disabled = !isOnline || !sseConnected;
+                    // Only disable if node is offline (not if SSE disconnected)
+                    restartBtn.disabled = !isOnline;
                     restartBtn.dataset.nodeStatus = node.status || '';
                     restartBtn.dataset.sseConnected = sseConnected ? 'true' : 'false';
-                    // Update tooltip based on reason for disabled state
-                    const tooltip = bootstrap.Tooltip.getInstance(restartBtn);
-                    if (tooltip) {
-                        let title = 'Restart Node';
-                        if (!isOnline) title = 'Node is offline';
-                        else if (!sseConnected) title = 'Node not connected via SSE';
+                    // Visual warning if SSE not connected
+                    restartBtn.classList.toggle('btn-outline-warning', isOnline && !sseConnected);
+                    restartBtn.classList.toggle('btn-outline-secondary', !isOnline || sseConnected);
+                    // Update tooltip title (only recreate if changed to reduce overhead)
+                    let title = 'Restart Node';
+                    if (!isOnline) title = 'Node is offline';
+                    else if (!sseConnected) title = '⚠️ SSE not connected - restart may fail';
+                    
+                    if (restartBtn.getAttribute('data-bs-title') !== title) {
                         restartBtn.setAttribute('data-bs-title', title);
-                        tooltip.setContent({ '.tooltip-inner': title });
+                        const tooltip = bootstrap.Tooltip.getInstance(restartBtn);
+                        if (tooltip) {
+                            tooltip.dispose();
+                            new bootstrap.Tooltip(restartBtn, { container: document.body, trigger: 'hover focus' });
+                        }
                     }
                 }
             }
             
             // Reset failure count on success
-            pollFailureCount = 0;
+            if (pollFailureCount >= MAX_POLL_FAILURES) {
+                pollFailureCount = 0;
+                startPolling(); // Restore normal interval
+            } else {
+                pollFailureCount = 0;
+            }
         } catch (err) {
+            if (err.code === 'ABORTED' || err.name === 'AbortError') return;
             pollFailureCount++;
+            if (pollFailureCount === MAX_POLL_FAILURES) startPolling(); // Backoff
         }
     }
 
@@ -900,9 +882,10 @@
         setButtonLoading(addNodeSubmitBtn, false);
         if (addNodeSubmitBtn) addNodeSubmitBtn.style.display = '';
         
-        // Reload page if a node was created (explicit state check)
+        // Refresh datatable instead of full reload if a node was created
         if (nodeCreatedFlag) {
-            location.reload();
+            nodeCreatedFlag = false;
+            refreshNodes();
         }
     });
 

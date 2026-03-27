@@ -129,7 +129,11 @@ def is_node_connected_sync(node_id: str) -> bool:
     Safe for read-only checks from synchronous code -- dict reads are
     atomic in CPython due to the GIL.
     """
-    return bool(_node_queues.get(node_id))
+    connected = bool(_node_queues.get(node_id))
+    if not connected and node_id:
+        _log.debug("Node %s has no active SSE connections (queues: %s)", 
+                  node_id, list(_node_queues.keys())[:5])
+    return connected
 
 
 async def notify_restart(node_id: str) -> int:

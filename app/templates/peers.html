@@ -58,6 +58,15 @@
         white-space: nowrap;
     }
 
+    /* Status badges: wrap instead of overflowing, vertical-align with table row */
+    .peers-table td[data-label="Status"] {
+        white-space: nowrap;
+    }
+
+    .peers-table td[data-label="Status"] .badge + .badge {
+        margin-left: 0.25rem;
+    }
+
     .peer-routing-badges {
         display: inline-flex;
         justify-content: flex-start;
@@ -731,6 +740,16 @@
         <div class="peers-scroll-container" id="peers-scroll-container">
         <div class="table-responsive">
             <table class="table table-hover align-middle mb-0 peers-table">
+                <colgroup>
+                    <col style="width: 15%"><!-- Name -->
+                    <col style="width: 14%"><!-- VPN Address -->
+                    <col class="peer-col-routing" style="width: 12%"><!-- Routing -->
+                    <col class="peer-col-interface" style="width: 8%"><!-- Interface -->
+                    <col style="width: 9%"><!-- Last Seen -->
+                    <col style="width: 16%"><!-- Client IP -->
+                    <col style="width: 13%"><!-- Status -->
+                    <col style="width: 13%"><!-- Actions -->
+                </colgroup>
                 <thead>
                     <tr>
                         <th>Name</th>
@@ -2390,16 +2409,22 @@
     function initTooltips() {
         document.querySelectorAll('#peers-table [data-bs-toggle="tooltip"]').forEach(el => {
             if (el.dataset.tooltipInitialized) return;
+            // Verify element is connected to DOM and valid
+            if (!el.isConnected || !el.getAttribute) return;
             // Dispose existing instance if any to avoid Popper.js conflicts
             const existingInstance = bootstrap.Tooltip.getInstance(el);
             if (existingInstance) {
                 existingInstance.dispose();
             }
-            tooltipInstances.push(new bootstrap.Tooltip(el, {
-                container: document.body,
-                trigger: 'hover focus',
-            }));
-            el.dataset.tooltipInitialized = 'true';
+            try {
+                tooltipInstances.push(new bootstrap.Tooltip(el, {
+                    container: document.body,
+                    trigger: 'hover focus',
+                }));
+                el.dataset.tooltipInitialized = 'true';
+            } catch (err) {
+                console.error('Failed to initialize tooltip:', err, el);
+            }
         });
     }
 

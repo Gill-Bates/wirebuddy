@@ -875,15 +875,20 @@
     if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
         document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
             if (el.dataset.tooltipInitialized) return;
+            if (!el.isConnected || !el.getAttribute) return;
             const existingInstance = bootstrap.Tooltip.getInstance(el);
             if (existingInstance) {
                 existingInstance.dispose();
             }
-            new bootstrap.Tooltip(el, {
-                container: document.body,
-                trigger: 'hover focus',
-            });
-            el.dataset.tooltipInitialized = 'true';
+            try {
+                new bootstrap.Tooltip(el, {
+                    container: document.body,
+                    trigger: 'hover focus',
+                });
+                el.dataset.tooltipInitialized = 'true';
+            } catch (err) {
+                console.error('Failed to initialize tooltip:', err, el);
+            }
         });
     }
 
