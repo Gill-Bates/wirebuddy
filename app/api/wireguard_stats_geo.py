@@ -66,11 +66,6 @@ _peers_enriched_lock = asyncio.Lock()
 _wg_dump_cache: tuple[float, list] | None = None
 _wg_dump_lock = asyncio.Lock()
 
-# Background write queue for DB persistence (avoids writes in read endpoints)
-_pending_db_updates: dict[str, tuple[str, int, str]] = {}  # pub_key -> (ip, handshake_ts, pub_key)
-_pending_transfer_updates: dict[str, tuple[int, int, int, int, str]] = {}  # pub_key -> transfer tuple
-_db_flush_lock = asyncio.Lock()
-
 
 class TsdbRetentionUpdate(BaseModel):
 	"""Request body for TSDB retention updates."""
@@ -157,33 +152,6 @@ async def _get_wg_dump_cached() -> list:
 
 async def _flush_pending_db_updates(conn: sqlite3.Connection) -> None:
 	"""Flush pending DB updates in background. Call periodically or after reads."""
-	global _pending_db_updates, _pending_transfer_updates
-	
-	async with _db_flush_lock:
-		if not _pending_db_updates and not _pending_transfer_updates:
-			return
-		
-		# Swap out pending updates atomically
-		last_seen_updates = list(_pending_db_updates.values())
-		transfer_updates = list(_pending_transfer_updates.values())
-		_pending_db_updates = {}
-		_pending_transfer_updates = {}
-	
-	if last_seen_updates:
-		try:
-			await run_in_threadpool(update_peers_last_seen_batch, conn, last_seen_updates)
-			_log.debug("PEERS_LAST_SEEN persisted %d peer(s)", len(last_seen_updates))
-		except Exception:
-			_log.warning("Failed to persist last-seen data", exc_info=True)
-	
-	if transfer_updates:
-		try:
-			await run_in_threadpool(update_cumulative_transfer_batch, conn, transfer_updates)
-			_log.debug("CUMULATIVE_TRANSFER persisted %d peer(s)", len(transfer_updates))
-		except Exception:
-			_log.warning("Failed to persist cumulative transfer", exc_info=True)
-
-
 @router.get("/stats/peer-locations")
 async def get_peer_locations(
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -202,10 +170,12 @@ async def get_peer_locations(
 
 	# Build peer name lookup and last-seen data from DB (async via threadpool)
 	all_db_peers = await run_in_threadpool(get_all_peers, conn)
+	tunnel_peer_ids = await run_in_threadpool(get_all_tunnel_peer_ids, conn)
 	peer_db_info: dict[str, dict] = {}
 	for p in all_db_peers:
 		if p["public_key"]:
 			peer_db_info[p["public_key"]] = {
+				"peer_id": p["id"],
 				"name": p["name"] or p["public_key"][:8],
 				"last_client_ip": p["last_client_ip"],
 				"last_handshake_at": p["last_handshake_at"] or 0,
@@ -225,9 +195,13 @@ async def get_peer_locations(
 		if peer.interface:
 			peer_db_info[peer.public_key]["interface"] = peer.interface
 
-	# 2. Collect unique IPs that need resolution (skip peers with no IP / handshake)
+	# 2. Collect unique IPs that need resolution (skip peers with no IP / handshake / node tunnels)
 	ip_to_peers: dict[str, list[tuple[str, dict]]] = {}
 	for pub_key, info in peer_db_info.items():
+		peer_id = info.get("peer_id")
+		if peer_id in tunnel_peer_ids:
+			_log.debug("PEER_LOC skip %s: node tunnel", pub_key[:8])
+			continue
 		ip_str = info.get("last_client_ip")
 		if not ip_str:
 			_log.debug("PEER_LOC skip %s: no IP", pub_key[:8])
@@ -282,7 +256,7 @@ async def get_peer_locations(
 
 
 async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
-	"""Build enriched peer payload. DB updates are queued for background flush."""
+	"""Build enriched peer payload and persist side-effect counters."""
 	rows = await run_in_threadpool(get_all_peers, conn)
 	tunnel_peer_ids = await run_in_threadpool(get_all_tunnel_peer_ids, conn)
 	peers_by_key: dict[str, dict] = {}
@@ -314,6 +288,7 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 
 	now = time.time()
 	threshold = CONNECTED_THRESHOLD_S
+	db_updates: list[tuple[str, int, str]] = []
 
 	# Use shared WG dump cache to avoid redundant parsing
 	wg_peers = await _get_wg_dump_cached()
@@ -335,11 +310,10 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 			if wg_peer.client_ip:
 				peer["endpoint_ip"] = wg_peer.client_ip
 
-			# Queue DB update for background flush (avoids writes in read endpoint)
 			if wg_peer.handshake_ts > stored_hs:
 				persist_ip = wg_peer.client_ip or stored_ip
 				if persist_ip:
-					_pending_db_updates[wg_peer.public_key] = (persist_ip, wg_peer.handshake_ts, wg_peer.public_key)
+					db_updates.append((persist_ip, wg_peer.handshake_ts, wg_peer.public_key))
 					db_handshakes[wg_peer.public_key] = wg_peer.handshake_ts
 					if not peer.get("endpoint_ip"):
 						peer["endpoint_ip"] = persist_ip
@@ -352,9 +326,18 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 		hs = int(peer.get("latest_handshake") or 0)
 		peer["connected"] = hs > 0 and (now - hs) < threshold
 
-	# Process cumulative transfer (queue updates for background flush)
+	# Persist last-seen updates
+	if db_updates:
+		try:
+			await run_in_threadpool(update_peers_last_seen_batch, conn, db_updates)
+			_log.debug("PEERS_LAST_SEEN persisted %d peer(s)", len(db_updates))
+		except Exception:
+			_log.warning("Failed to persist last-seen data", exc_info=True)
+
+	# Process cumulative transfer
 	try:
 		stored_transfer = await run_in_threadpool(get_cumulative_transfer, conn)
+		transfer_updates: list[tuple[int, int, int, int, str]] = []
 		for pub_key, peer in peers_by_key.items():
 			wg_rx = int(peer["transfer_rx"])
 			wg_tx = int(peer["transfer_tx"])
@@ -377,16 +360,19 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 			peer["transfer_rx"] = cum_rx + wg_rx
 			peer["transfer_tx"] = cum_tx + wg_tx
 
-			# Queue transfer update for background flush
 			if (
 				wg_rx != last_rx
 				or wg_tx != last_tx
 				or cum_rx != int(stored["cumulative_rx"])
 				or cum_tx != int(stored["cumulative_tx"])
 			):
-				_pending_transfer_updates[pub_key] = (cum_rx, cum_tx, wg_rx, wg_tx, pub_key)
+				transfer_updates.append((cum_rx, cum_tx, wg_rx, wg_tx, pub_key))
+
+		if transfer_updates:
+			await run_in_threadpool(update_cumulative_transfer_batch, conn, transfer_updates)
+			_log.debug("CUMULATIVE_TRANSFER persisted %d peer(s)", len(transfer_updates))
 	except Exception:
-		_log.warning("Failed to process cumulative transfer", exc_info=True)
+		_log.warning("Failed to update cumulative transfer", exc_info=True)
 
 	unique_ips = {
 		str(peer["endpoint_ip"])
@@ -432,10 +418,6 @@ async def get_peers_enriched(
 
 		result = await _build_peers_enriched(conn)
 		_peers_enriched_cache = (time.monotonic(), result)
-
-	# Flush pending DB updates synchronously to ensure data persists for page reloads.
-	# This adds minimal latency (~1-5ms) but guarantees consistency.
-	await _flush_pending_db_updates(conn)
 
 	return ok_response(data={"peers": result})
 
