@@ -12,6 +12,7 @@ interfaces and adds/removes peers.
 
 from __future__ import annotations
 
+import fcntl
 import ipaddress
 import logging
 import os
@@ -27,31 +28,28 @@ WG_CONFIG_DIR = Path(os.environ.get("WG_CONFIG_PATH", "/etc/wireguard"))
 _MANAGED_HEADER = "# Managed by WireBuddy Node Daemon - do not edit manually"
 _INTERFACE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,14}$")
 _WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
-# Block dangerous shell patterns while allowing semicolons for legitimate command chaining
-# Blocks: pipes (|), redirects (<>), command substitution ($(...) or `...`), single ampersand (&),
-# but allows && for conditional execution and ; for sequential execution
-_DANGEROUS_SHELL = re.compile(
-	r'`'  # backtick command substitution
-	r'|[$][(]'  # $(...) command substitution
-	r'|[$][{]'  # ${...} variable expansion
-	r'|\|'  # pipes (data exfiltration risk)
-	r'|<|>'  # file redirection
-	r'|(?<!&)&(?!&)'  # single ampersand not part of &&
-	r'|\.\.'  # path traversal
-	r'|/etc/passwd|/etc/shadow'  # sensitive files
+# Strict hostname: labels of alnum+hyphen, no leading/trailing hyphen, max 253 chars
+_HOSTNAME_RE = re.compile(
+	r'^(?=.{1,253}$)(?!-)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*'
+	r'[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$'
 )
-# Whitelist of allowed commands in PostUp/PostDown hooks
-_ALLOWED_HOOK_COMMANDS = {
-	"iptables", "ip6tables", "ip", "sysctl", "nft", "wg",
-	"echo", "true", "false", "resolvconf",
-}
-# Validate endpoint format: host:port or [ipv6]:port
-_ENDPOINT_RE = re.compile(r'^([\w.-]+|\[[0-9a-fA-F:]+\]):\d+$')
+_LOCK_PATH = Path("/run/wirebuddy_wg.lock")
 
 # Input size limits to prevent DoS via oversized config payloads
 _MAX_INTERFACES = 32
 _MAX_PEERS_PER_INTERFACE = 512
 _MAX_CSV_ITEMS = 64  # For allowed_ips, addresses, etc.
+
+
+# Tuned timeouts for different WireGuard operations
+_TIMEOUT_WG_SHOW = 5
+_TIMEOUT_WG_SET = 15
+_TIMEOUT_WG_QUICK = 30
+
+
+def _redact_keys(text: str) -> str:
+	"""Truncate WireGuard keys in error messages to first 8 chars."""
+	return _WG_KEY_RE.sub(lambda m: m.group()[:8] + "...", text)
 
 
 def _run(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
@@ -73,11 +71,12 @@ def _run(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
 
 
 def _run_checked(cmd: list[str], timeout: int = 30) -> tuple[str, str]:
-	"""Run a command and raise when it fails."""
+	"""Run a command and raise when it fails (keys redacted in errors)."""
 	code, stdout, stderr = _run(cmd, timeout=timeout)
 	if code != 0:
 		err = stderr.strip() or stdout.strip() or f"exit code {code}"
-		raise RuntimeError(f"Command failed ({' '.join(cmd)}): {err}")
+		redacted_cmd = _redact_keys(" ".join(cmd))
+		raise RuntimeError(f"Command failed ({redacted_cmd}): {_redact_keys(err)}")
 	return stdout, stderr
 
 
@@ -157,82 +156,52 @@ def _validate_port(value: Any, *, field_name: str) -> int:
 
 
 def _validate_endpoint(value: Any, *, field_name: str) -> str:
-	"""Validate WireGuard endpoint format (host:port or [ipv6]:port)."""
+	"""Validate WireGuard endpoint format (host:port or [ipv6]:port).
+
+	Host part is validated as an IP address (v4/v6) or strict hostname.
+	"""
 	text = _sanitize_config_value(field_name, value)
-	if not _ENDPOINT_RE.fullmatch(text):
-		raise ValueError(f"Invalid endpoint format for {field_name!r}: {text!r}")
-	# Extract and validate port
+
+	# Split host and port
 	if text.startswith("["):
-		# IPv6: [host]:port
+		# IPv6: [addr]:port
+		if "]:" not in text:
+			raise ValueError(f"Malformed IPv6 endpoint for {field_name!r}: {text!r}")
+		host_part, port_str = text.rsplit("]:", 1)
+		host_part = host_part[1:]  # strip leading [
 		try:
-			_, port_str = text.rsplit("]:", 1)
+			ipaddress.IPv6Address(host_part)
 		except ValueError as exc:
-			raise ValueError(f"Malformed IPv6 endpoint for {field_name!r}: {text!r}") from exc
+			raise ValueError(f"Invalid IPv6 address in endpoint for {field_name!r}: {text!r}") from exc
 	else:
-		# IPv4 or hostname: host:port
+		if ":" not in text:
+			raise ValueError(f"Malformed endpoint for {field_name!r}: {text!r}")
+		host_part, port_str = text.rsplit(":", 1)
+		# Try IPv4 first, then hostname
 		try:
-			_, port_str = text.rsplit(":", 1)
-		except ValueError as exc:
-			raise ValueError(f"Malformed endpoint for {field_name!r}: {text!r}") from exc
+			ipaddress.IPv4Address(host_part)
+		except ValueError:
+			if not _HOSTNAME_RE.fullmatch(host_part):
+				raise ValueError(f"Invalid host in endpoint for {field_name!r}: {host_part!r}")
+
 	_validate_port(port_str, field_name=f"{field_name} port")
 	return text
 
 
-def _validate_hook(value: Any, *, field_name: str) -> str | None:
-	"""Validate PostUp/PostDown hook for restricted shell execution.
-	
-	Security strategy:
-	- Allows semicolons for command chaining (needed for iptables rules)
-	- Blocks pipes, redirects, command substitution, backgrounding
-	- Whitelists only specific safe commands (iptables, ip, etc.)
-	- Each command in the chain is validated independently
-	"""
-	if value in (None, ""):
-		return None
-	text = _sanitize_config_value(field_name, value)
-	
-	# Check for dangerous shell patterns
-	if _DANGEROUS_SHELL.search(text):
-		raise ValueError(
-			f"Unsafe {field_name} hook contains dangerous shell characters. "
-			f"Blocked: pipes (|), redirects (<>), command substitution (`$), "
-			f"backgrounding (&), path traversal (..), variable expansion."
-		)
-	
-	# Split by semicolon and validate each command
-	commands = [cmd.strip() for cmd in text.split(";") if cmd.strip()]
-	if not commands:
-		return None
-	
-	for cmd in commands:
-		# Split on whitespace to extract command name
-		parts = cmd.split()
-		if not parts:
-			continue
-		
-		cmd_name = parts[0]
-		if cmd_name not in _ALLOWED_HOOK_COMMANDS:
-			allowed = ", ".join(sorted(_ALLOWED_HOOK_COMMANDS))
-			raise ValueError(
-				f"Unsafe {field_name} command: {cmd_name!r}. "
-				f"Only these commands are whitelisted: {allowed}"
-			)
-	
-	return text
-
-
 def _validate_interface_config(raw: dict[str, Any]) -> dict[str, Any]:
-	"""Validate and normalize a single interface config payload."""
+	"""Validate and normalize a single interface config payload.
+
+	Note: public_key and post_up/post_down from master are intentionally
+	ignored — the node generates its own NAT hooks and never needs the
+	master's public key for config rendering.
+	"""
 	name = _validate_interface_name(raw.get("name"))
 	return {
 		"name": name,
 		"private_key": _validate_wg_key(raw.get("private_key"), field_name="private_key"),
-		"public_key": _validate_wg_key(raw.get("public_key"), field_name="public_key"),
 		"address": _validate_interface_addresses(raw.get("address"), field_name="address"),
 		"address6": _validate_interface_addresses(raw.get("address6"), field_name="address6") if raw.get("address6") else None,
 		"listen_port": _validate_port(raw.get("listen_port"), field_name="listen_port"),
-		"post_up": _validate_hook(raw.get("post_up"), field_name="post_up"),
-		"post_down": _validate_hook(raw.get("post_down"), field_name="post_down"),
 	}
 
 
@@ -275,6 +244,49 @@ def _read_managed_config(path: Path) -> str | None:
 	return None
 
 
+def _get_default_route_iface() -> str | None:
+	"""Detect the default-route network interface via `ip route get`."""
+	try:
+		code, stdout, _ = _run(
+			["ip", "-4", "route", "get", "1.1.1.1"], timeout=_TIMEOUT_WG_SHOW,
+		)
+		if code == 0 and stdout.strip():
+			# "1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.2 uid 0"
+			parts = stdout.strip().split()
+			if "dev" in parts:
+				return parts[parts.index("dev") + 1]
+	except Exception:
+		_log.debug("Failed to detect default route interface", exc_info=True)
+	return None
+
+
+def _build_node_post_up(iface_name: str) -> str:
+	"""Build PostUp rules for a node: IP forwarding + NAT/MASQUERADE."""
+	phy = _get_default_route_iface() or "eth0"
+	return (
+		f"sysctl -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1; "
+		f"iptables -A FORWARD -i %i -j ACCEPT; "
+		f"iptables -A FORWARD -o %i -j ACCEPT; "
+		f"iptables -t nat -A POSTROUTING -o {phy} -j MASQUERADE; "
+		f"ip6tables -A FORWARD -i %i -j ACCEPT; "
+		f"ip6tables -A FORWARD -o %i -j ACCEPT; "
+		f"ip6tables -t nat -A POSTROUTING -o {phy} -j MASQUERADE"
+	)
+
+
+def _build_node_post_down(iface_name: str) -> str:
+	"""Build PostDown rules for a node: remove NAT/MASQUERADE."""
+	phy = _get_default_route_iface() or "eth0"
+	return (
+		f"iptables -D FORWARD -i %i -j ACCEPT; "
+		f"iptables -D FORWARD -o %i -j ACCEPT; "
+		f"iptables -t nat -D POSTROUTING -o {phy} -j MASQUERADE; "
+		f"ip6tables -D FORWARD -i %i -j ACCEPT; "
+		f"ip6tables -D FORWARD -o %i -j ACCEPT; "
+		f"ip6tables -t nat -D POSTROUTING -o {phy} -j MASQUERADE"
+	)
+
+
 def _render_interface_config(name: str, config: dict[str, Any]) -> str:
 	"""Render sanitized WireGuard interface config content."""
 	address_parts = [config["address"]]
@@ -288,10 +300,13 @@ def _render_interface_config(name: str, config: dict[str, Any]) -> str:
 		f"Address = {', '.join(address_parts)}",
 		f"ListenPort = {config['listen_port']}",
 	]
-	if config.get("post_up"):
-		lines.append(f"PostUp = {config['post_up']}")
-	if config.get("post_down"):
-		lines.append(f"PostDown = {config['post_down']}")
+
+	# Node: always generate own NAT rules (master PostUp/PostDown are ignored
+	# because they reference the master's physical interface, not the node's)
+	post_up = _build_node_post_up(name)
+	post_down = _build_node_post_down(name)
+	lines.append(f"PostUp = {post_up}")
+	lines.append(f"PostDown = {post_down}")
 	lines.append("")
 
 	return "\n".join(lines) + "\n"
@@ -375,7 +390,7 @@ def _remove_interface_config(name: str) -> None:
 
 def _get_running_interfaces() -> set[str]:
 	"""Return set of currently running WireGuard interfaces."""
-	code, stdout, stderr = _run(["wg", "show", "interfaces"])
+	code, stdout, stderr = _run(["wg", "show", "interfaces"], timeout=_TIMEOUT_WG_SHOW)
 	if code != 0:
 		_log.warning("Failed to query running WireGuard interfaces: %s", stderr.strip() or "unknown error")
 		return set()
@@ -403,6 +418,18 @@ def apply_config(config: dict[str, Any]) -> str:
 
 	Returns the applied config_version.
 	"""
+	# Serialize concurrent calls with a file lock
+	lock_fd = os.open(str(_LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o600)
+	try:
+		fcntl.flock(lock_fd, fcntl.LOCK_EX)
+		return _apply_config_locked(config)
+	finally:
+		fcntl.flock(lock_fd, fcntl.LOCK_UN)
+		os.close(lock_fd)
+
+
+def _apply_config_locked(config: dict[str, Any]) -> str:
+	"""Inner apply_config, called under file lock."""
 	# Validate config structure
 	if not isinstance(config, dict):
 		raise ValueError("Config must be a dictionary")
@@ -445,12 +472,14 @@ def apply_config(config: dict[str, Any]) -> str:
 		changed = _write_interface_config(name, iface)
 		if name not in running:
 			_log.info("Bringing up interface %s...", name)
-			_run_checked(["wg-quick", "up", name])
+			_run_checked(["wg-quick", "up", name], timeout=_TIMEOUT_WG_QUICK)
 			_log.info("Interface %s is up", name)
 		elif changed:
+			# wg syncconf only handles PrivateKey/ListenPort/peers;
+			# Address and PostUp/PostDown require full wg-quick cycle.
 			_log.info("Reloading interface %s (config changed)...", name)
-			_run_checked(["wg-quick", "down", name])
-			_run_checked(["wg-quick", "up", name])
+			_run_checked(["wg-quick", "down", name], timeout=_TIMEOUT_WG_QUICK)
+			_run_checked(["wg-quick", "up", name], timeout=_TIMEOUT_WG_QUICK)
 			_log.info("Interface %s reloaded", name)
 
 	# 2. Sync peers
@@ -465,7 +494,7 @@ def apply_config(config: dict[str, Any]) -> str:
 	for name in running - desired_ifaces:
 		if _is_managed_interface(name):
 			_log.info("Bringing down removed interface %s...", name)
-			_run_checked(["wg-quick", "down", name])
+			_run_checked(["wg-quick", "down", name], timeout=_TIMEOUT_WG_QUICK)
 			_remove_interface_config(name)
 
 	return version
@@ -494,9 +523,9 @@ def _configure_master_peer(master_peer: dict[str, Any]) -> None:
 		"endpoint", endpoint,
 		"persistent-keepalive", "25",
 	]
-	code, _, stderr = _run(cmd)
+	code, _, stderr = _run(cmd, timeout=_TIMEOUT_WG_SET)
 	if code != 0:
-		_log.error("Failed to configure master peer on %s: %s", iface_name, stderr.strip())
+		_log.error("Failed to configure master peer on %s: %s", iface_name, _redact_keys(stderr.strip()))
 		return
 
 	_log.info(
@@ -505,15 +534,31 @@ def _configure_master_peer(master_peer: dict[str, Any]) -> None:
 	)
 
 
-def _sync_peers_for_interface(iface_name: str, desired_peers: list[dict[str, Any]]) -> None:
-	"""Synchronise peers for a single interface (add/remove diff)."""
-	# Get current peers
-	code, stdout, stderr = _run(["wg", "show", iface_name, "peers"])
+def _get_current_peer_state(iface_name: str) -> dict[str, str]:
+	"""Return {public_key: allowed_ips} for all current peers on an interface."""
+	code, stdout, stderr = _run(
+		["wg", "show", iface_name, "dump"], timeout=_TIMEOUT_WG_SHOW,
+	)
 	if code != 0:
-		raise RuntimeError(f"Failed to list peers for {iface_name}: {stderr.strip() or 'unknown error'}")
-	current_keys: set[str] = set()
-	if stdout.strip():
-		current_keys = {line.strip() for line in stdout.strip().split("\n") if line.strip()}
+		raise RuntimeError(f"Failed to query peers for {iface_name}: {_redact_keys(stderr.strip() or 'unknown error')}")
+	state: dict[str, str] = {}
+	for line in stdout.strip().split("\n"):
+		parts = line.split("\t")
+		# dump format: iface\tprivkey\tpubkey\tlistenport\tfwmark (interface line)
+		# or: iface\tpubkey\tpsk\tendpoint\tallowed-ips\thandshake\trx\ttx\tkeepalive (peer line)
+		# Actually wg show <iface> dump has a different format:
+		# first line: privkey\tpubkey\tlistenport\tfwmark
+		# peer lines: pubkey\tpsk\tendpoint\tallowed-ips\thandshake\trx\ttx\tkeepalive
+		if len(parts) >= 4 and _WG_KEY_RE.fullmatch(parts[0]):
+			# peer line
+			state[parts[0]] = parts[3]  # allowed-ips
+	return state
+
+
+def _sync_peers_for_interface(iface_name: str, desired_peers: list[dict[str, Any]]) -> None:
+	"""Synchronise peers for a single interface (diff-based: skip unchanged)."""
+	current_state = _get_current_peer_state(iface_name)
+	current_keys = set(current_state)
 
 	desired_keys: set[str] = set()
 	desired_map: dict[str, dict[str, Any]] = {}
@@ -527,25 +572,37 @@ def _sync_peers_for_interface(iface_name: str, desired_peers: list[dict[str, Any
 	# Remove peers that shouldn't be on this interface
 	for key in current_keys - desired_keys:
 		_log.info("Removing peer %s... from %s", key[:8], iface_name)
-		_run_checked(["wg", "set", iface_name, "peer", key, "remove"])
+		_run_checked(["wg", "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
 
-	# Add/update desired peers
+	# Add/update desired peers (skip if allowed-ips unchanged and no PSK)
+	changed = 0
 	for key in desired_keys:
 		p = desired_map[key]
-		cmd = ["wg", "set", iface_name, "peer", key, "allowed-ips", p["peer_address"]]
+		# Normalise for comparison: wg dump uses comma-separated without spaces
+		desired_ips = p["peer_address"].replace(" ", "")
+		current_ips = current_state.get(key, "").replace(" ", "")
+
 		psk = p.get("preshared_key")
+		if key in current_keys and desired_ips == current_ips and not psk:
+			continue  # unchanged peer, skip
+
+		cmd = ["wg", "set", iface_name, "peer", key, "allowed-ips", p["peer_address"]]
 		if psk:
 			psk_path = _write_psk_tempfile(psk, iface_name)
 			try:
 				cmd.extend(["preshared-key", str(psk_path)])
-				_run_checked(cmd)
+				_run_checked(cmd, timeout=_TIMEOUT_WG_SET)
 			finally:
 				psk_path.unlink(missing_ok=True)
 		else:
-			_run_checked(cmd)
-		_log.debug("Synced peer %s on %s", key[:8], iface_name)
+			_run_checked(cmd, timeout=_TIMEOUT_WG_SET)
+		changed += 1
+		_log.debug("Synced peer %s (%s...) on %s", p.get("name") or key[:8], key[:8], iface_name)
 
-	_log.info("Synced %d peers for %s", len(desired_keys), iface_name)
+	_log.info(
+		"Peer sync for %s: %d desired, %d changed, %d removed",
+		iface_name, len(desired_keys), changed, len(current_keys - desired_keys),
+	)
 
 
 def shutdown_all_interfaces() -> None:
@@ -562,7 +619,7 @@ def get_wg_dump() -> dict:
 
 	Returns dict of {public_key: {endpoint, handshake, rx, tx}}.
 	"""
-	code, stdout, _ = _run(["wg", "show", "all", "dump"])
+	code, stdout, _ = _run(["wg", "show", "all", "dump"], timeout=_TIMEOUT_WG_SHOW)
 	if code != 0 or not stdout.strip():
 		return {}
 

@@ -26,17 +26,29 @@ _MAX_METADATA_SIZE = 4096  # bytes
 _MAX_PORT = 65535
 _MIN_PORT = 1
 
+# Node status constants
+STATUS_PENDING = "pending"
+STATUS_ONLINE = "online"
+STATUS_OFFLINE = "offline"
+
+# FQDN validation: RFC 1123 compliant hostname/domain
+_FQDN_RE = re.compile(
+	r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
+	r"(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*\.?$"
+)
+
 
 def _validate_fqdn(fqdn: str) -> None:
-	"""Validate FQDN format."""
-	if not fqdn or not fqdn.strip():
+	"""Validate FQDN format per RFC 1123.
+
+	Rejects: consecutive dots, leading/trailing hyphens, empty labels,
+	invalid characters, and domains exceeding 253 chars.
+	"""
+	fqdn = fqdn.strip()
+	if not fqdn:
 		raise ValueError("FQDN cannot be empty")
-	if fqdn != fqdn.strip():
-		raise ValueError("FQDN contains leading/trailing whitespace")
-	if len(fqdn) > 253:
-		raise ValueError("FQDN exceeds maximum length (253)")
-	if any(ord(ch) < 32 or ord(ch) == 127 for ch in fqdn):
-		raise ValueError("FQDN contains control characters")
+	if not _FQDN_RE.match(fqdn):
+		raise ValueError(f"Invalid FQDN: {fqdn!r}")
 
 
 def _validate_port(port: int) -> None:
@@ -66,9 +78,9 @@ def create_node(
 		conn.execute(
 			"""
 			INSERT INTO nodes (id, name, fqdn, wg_port, api_secret_hash, status, created_at)
-			VALUES (?, ?, ?, ?, ?, 'pending', ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
 			""",
-			(node_id, name, fqdn, wg_port, api_secret_hash, now),
+			(node_id, name, fqdn, wg_port, api_secret_hash, STATUS_PENDING, now),
 		)
 
 
@@ -119,7 +131,7 @@ def update_node(
 		params.append(wg_port)
 
 	if not updates:
-		return get_node(conn, node_id) is not None
+		return False  # No changes requested
 
 	params.append(node_id)
 	sql = f"UPDATE nodes SET {', '.join(updates)} WHERE id = ?"
@@ -139,24 +151,17 @@ def delete_node(conn: sqlite3.Connection, node_id: str) -> bool:
 	Returns True if the node existed.
 	"""
 	with transaction(conn, immediate=True):
-		# Get tunnel_peer_id before deleting the node
-		row = conn.execute(
-			"SELECT tunnel_peer_id FROM nodes WHERE id = ?",
+		# Delete tunnel peer first (by subquery) to avoid FK race
+		cur = conn.execute(
+			"DELETE FROM peers WHERE id IN (SELECT tunnel_peer_id FROM nodes WHERE id = ? AND tunnel_peer_id IS NOT NULL)",
 			(node_id,),
-		).fetchone()
-		tunnel_peer_id = row["tunnel_peer_id"] if row else None
+		)
+		if cur.rowcount > 0:
+			_log.info("Deleted tunnel peer for node=%s", node_id)
 
 		# Delete the node (peers.node_id set to NULL via FK ON DELETE SET NULL)
 		cur = conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
-		if cur.rowcount == 0:
-			return False
-
-		# Delete the tunnel peer if it exists
-		if tunnel_peer_id:
-			conn.execute("DELETE FROM peers WHERE id = ?", (tunnel_peer_id,))
-			_log.info("Deleted tunnel peer id=%d for node=%s", tunnel_peer_id, node_id)
-
-		return True
+		return cur.rowcount > 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -178,10 +183,10 @@ def enroll_node(
 		cur = conn.execute(
 			"""
 			UPDATE nodes
-			SET cert_fingerprint = ?, status = 'online', enrolled_at = ?, last_seen = ?
-			WHERE id = ? AND status = 'pending'
+			SET cert_fingerprint = ?, status = ?, enrolled_at = ?, last_seen = ?
+			WHERE id = ? AND status = ?
 			""",
-			(cert_fingerprint, now, now, node_id),
+			(cert_fingerprint, STATUS_ONLINE, now, now, node_id, STATUS_PENDING),
 		)
 		return cur.rowcount > 0
 
@@ -199,8 +204,8 @@ def rotate_node_session_secret(
 	"""
 	with transaction(conn, immediate=True):
 		cur = conn.execute(
-			"UPDATE nodes SET api_secret_hash = ? WHERE id = ? AND status = 'pending'",
-			(api_secret_hash, node_id),
+			"UPDATE nodes SET api_secret_hash = ? WHERE id = ? AND status = ?",
+			(api_secret_hash, node_id, STATUS_PENDING),
 		)
 		return cur.rowcount > 0
 
@@ -218,11 +223,11 @@ def update_node_api_secret(
 		cur = conn.execute(
 			"""
 			UPDATE nodes
-			SET api_secret_hash = ?, cert_fingerprint = NULL, status = 'pending',
+			SET api_secret_hash = ?, cert_fingerprint = NULL, status = ?,
 			    enrolled_at = NULL
 			WHERE id = ?
 			""",
-			(api_secret_hash, node_id),
+			(api_secret_hash, STATUS_PENDING, node_id),
 		)
 		return cur.rowcount > 0
 
@@ -258,13 +263,13 @@ def update_node_heartbeat(
 	now = utcnow()
 	meta_json = None
 	if metadata:
-		meta_json = json.dumps(metadata)
-		if len(meta_json) > _MAX_METADATA_SIZE:
+		meta_json = json.dumps(metadata, default=str)
+		if len(meta_json.encode("utf-8")) > _MAX_METADATA_SIZE:
 			raise ValueError(f"Metadata exceeds maximum size ({_MAX_METADATA_SIZE} bytes)")
 	with transaction(conn, immediate=True):
 		cur = conn.execute(
-			"UPDATE nodes SET last_seen = ?, metadata = COALESCE(?, metadata), status = 'online' WHERE id = ?",
-			(now, meta_json, node_id),
+			"UPDATE nodes SET last_seen = ?, metadata = COALESCE(?, metadata), status = ? WHERE id = ?",
+			(now, meta_json, STATUS_ONLINE, node_id),
 		)
 		return cur.rowcount > 0
 
@@ -282,8 +287,8 @@ def mark_stale_nodes_offline(
 	with transaction(conn, immediate=True):
 		cur = conn.execute(
 			"""
-			UPDATE nodes SET status = 'offline'
-			WHERE status = 'online' AND last_seen < ?
+			UPDATE nodes SET status = ?
+			WHERE status = ? AND last_seen < ?
 			""",
 			(cutoff,),
 		)
@@ -308,8 +313,11 @@ def bump_node_config_version(
 		"SELECT public_key FROM peers WHERE node_id = ? AND is_enabled = 1 ORDER BY public_key",
 		(node_id,),
 	).fetchall()
-	payload = "|".join(r["public_key"] for r in rows)
-	version = hashlib.sha256(payload.encode()).hexdigest()
+	payload = json.dumps(
+		[r["public_key"] for r in rows],
+		separators=(",", ":"),
+	)
+	version = hashlib.sha256(payload.encode("utf-8")).hexdigest()
 	with transaction(conn, immediate=True):
 		conn.execute(
 			"UPDATE nodes SET config_version = ? WHERE id = ?",
@@ -401,6 +409,7 @@ def get_node_config(
 	for p in peer_rows:
 		peers.append({
 			"interface": p["interface"],
+			"name": p["name"],
 			"public_key": p["public_key"],
 			"preshared_key": vault.decrypt_if_needed(p["preshared_key"], pepper) if p["preshared_key"] else None,
 			"peer_address": p["peer_address"],
@@ -426,27 +435,17 @@ def get_node_config(
 			).fetchone()
 			master_fqdn = fqdn_row["value"].strip() if fqdn_row and fqdn_row["value"] else None
 			master_port = master_iface["listen_port"] or 51820
-			master_port = master_iface["listen_port"] or 51820
 			if master_fqdn:
-				# Wrap IPv6 in brackets for endpoint notation
-				if master_fqdn.startswith("[") and master_fqdn.endswith("]"):
-					# IPv6 in brackets - strip carefully
-					addr_str = master_fqdn[1:-1]
-					addr = ipaddress.ip_address(addr_str)
-					master_endpoint = f"[{addr.compressed}]:{master_port}"
-				else:
-					try:
-						addr = ipaddress.ip_address(master_fqdn)
-						if addr.version == 6:
-							master_endpoint = f"[{addr.compressed}]:{master_port}"
-						else:
-							master_endpoint = f"{addr.compressed}:{master_port}"
-					except ValueError:
-						# Hostname
-						master_endpoint = f"{master_fqdn}:{master_port}"
+				# IPv6 addresses get brackets, hostnames stay as-is
+				try:
+					addr = ipaddress.ip_address(master_fqdn)
+					host = f"[{addr.compressed}]" if addr.version == 6 else addr.compressed
+				except ValueError:
+					host = master_fqdn  # Hostname
+				master_endpoint = f"{host}:{master_port}"
 			else:
 				master_endpoint = None
-				_log.warning("wg_fqdn not configured u2014 master_peer endpoint will be empty")
+				_log.warning("wg_fqdn not configured — master_peer endpoint will be empty")
 
 			# Extract gateway IP from interface address (e.g., "10.13.13.1/24" → "10.13.13.1")
 			try:
