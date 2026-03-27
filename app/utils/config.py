@@ -116,20 +116,26 @@ def load_config() -> Config:
 	if log_level not in allowed_levels:
 		log_level = "INFO"
 
-	# Secret key (required for production)
+	# Secret key (required for master mode, not for node mode)
 	secret_key = os.getenv("WIREBUDDY_SECRET_KEY", "")
+	server_mode = os.getenv("SERVER_MODE", "master").lower()
 	if not secret_key:
 		import sys
-		if "pytest" not in sys.modules and "PYTEST_CURRENT_TEST" not in os.environ:
+		if server_mode == "node":
+			# Nodes don't need secret_key - they use enrollment token
+			secret_key = "node-mode-no-secret-needed"
+			_log.debug("Node mode: secret key not required")
+		elif "pytest" not in sys.modules and "PYTEST_CURRENT_TEST" not in os.environ:
 			_log.critical(
 				"WIREBUDDY_SECRET_KEY is not set. "
 				"Refusing to start without a secret key. "
 				"Generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
 			)
 			raise SystemExit(1)
-		# Allow tests to run with a default
-		secret_key = "test-only-secret-do-not-use-in-production"
-		_log.debug("Using test-only secret key")
+		else:
+			# Allow tests to run with a default
+			secret_key = "test-only-secret-do-not-use-in-production"
+			_log.debug("Using test-only secret key")
 
 	return Config(
 		base_dir=base_dir,
