@@ -294,7 +294,7 @@
                             </div>
                         </td>
                         <td data-label="Port">{{ node.wg_port }}</td>
-                        <td data-label="Status" aria-live="polite" aria-atomic="true">
+                        <td data-label="Status" aria-live="polite" aria-atomic="true" aria-relevant="text">
                             {% if node.status == 'online' %}
                             <span class="badge bg-success node-status-badge">Online</span>
                             {% elif node.status == 'pending' %}
@@ -523,7 +523,8 @@
     let pollFailureCount = 0;
     let nodeCreatedFlag = false;
     let pollController = null;
-    const restartingNodes = new Map(); // node_id → phase ('sent' | 'offline')
+    let _pollSeq = 0; // Request versioning to guard against out-of-order responses
+    const restartingNodes = new Map(); // node_id → { phase: 'sent'|'offline', timeout: number }
 
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
     const headers = {
@@ -710,6 +711,9 @@
     }
 
     async function submitAddNode() {
+        // Guard against double-submit (Enter key can fire before button disables)
+        if (addNodeSubmitBtn?.disabled) return;
+
         const name = nodeNameInput?.value.trim();
         const fqdn = addNodeFqdnInput?.value.trim();
         const port = Number(document.getElementById('nodePort')?.value) || 51820;
@@ -818,9 +822,11 @@
             }
 
             // Track this node as restarting so polling doesn't overwrite the badge
-            restartingNodes.set(id, 'sent');
-            // Auto-clear after 2 minutes in case the node never comes back
-            setTimeout(() => restartingNodes.delete(id), 120000);
+            // Clear any existing timeout to prevent stale deletes on repeated restarts
+            const existing = restartingNodes.get(id);
+            if (existing?.timeout) clearTimeout(existing.timeout);
+            const timeout = setTimeout(() => restartingNodes.delete(id), 120000);
+            restartingNodes.set(id, { phase: 'sent', timeout });
 
             wbToast(`Restart signal sent to "${name}". Node will reconnect shortly.`, 'success');
         } catch (err) {
@@ -835,11 +841,15 @@
     async function refreshNodes() {
         if (!nodesTableBody) return;
 
+        const seq = ++_pollSeq; // Stamp this request to detect stale responses
         pollController?.abort();
         pollController = new AbortController();
 
         try {
             const nodes = await api('GET', '/api/nodes', null, { signal: pollController.signal });
+
+            // Ignore stale response if a newer request was issued
+            if (seq !== _pollSeq) return;
 
             for (const node of nodes) {
                 const row = document.getElementById(`node-row-${node.id}`);
@@ -854,13 +864,14 @@
                     // If this node is tracked as restarting, keep showing "Restarting"
                     // until the node goes offline then comes back online
                     if (restartingNodes.has(node.id)) {
-                        const phase = restartingNodes.get(node.id);
+                        const entry = restartingNodes.get(node.id);
                         if (node.status === 'offline') {
                             // Node went offline — restart in progress
-                            restartingNodes.set(node.id, 'offline');
+                            entry.phase = 'offline';
                             statusCell.replaceChildren(createStatusBadge('restarting'));
-                        } else if (node.status === 'online' && phase === 'offline') {
+                        } else if (node.status === 'online' && entry.phase === 'offline') {
                             // Node came back online after being offline — restart complete!
+                            if (entry.timeout) clearTimeout(entry.timeout);
                             restartingNodes.delete(node.id);
                             statusCell.replaceChildren(createStatusBadge(node.status));
                         }
@@ -943,8 +954,7 @@
                         restartBtn.setAttribute('data-bs-title', title);
                         const tooltip = bootstrap.Tooltip.getInstance(restartBtn);
                         if (tooltip) {
-                            tooltip.dispose();
-                            new bootstrap.Tooltip(restartBtn, { container: document.body, trigger: 'hover focus' });
+                            tooltip.setContent({ '.tooltip-inner': title });
                         }
                     }
                 }
@@ -1077,6 +1087,12 @@
             refreshNodes(); // Refresh immediately when tab becomes visible
             startPolling();
         }
+    });
+
+    // Cleanup on page unload (navigation, bfcache eviction)
+    window.addEventListener('pagehide', () => {
+        stopPolling();
+        pollController?.abort();
     });
 
     // ========================================================================

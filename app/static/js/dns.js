@@ -36,6 +36,17 @@ let _fadeAbort = null; // AbortController for peer filter fade animation
 let _pageAbort = new AbortController();  // Abort controller for page cleanup
 
 /**
+ * Extract raw client IP from a formatted 'PeerName (IP)' string.
+ * Returns the IP inside parentheses, or the original value if no parens found.
+ * The backend formats q.client as "PeerName (10.13.13.3)" or just "10.13.13.3".
+ */
+function _extractClientIp(clientStr) {
+    if (!clientStr) return '';
+    const match = clientStr.match(/\(([^)]+)\)$/);
+    return match ? match[1] : clientStr;
+}
+
+/**
  * Get comma-separated client IPs for the currently selected peer filter.
  * Returns empty string if "All Peers" is selected.
  */
@@ -110,7 +121,7 @@ function openLogActionMenu(q, clickEvent) {
     _logActionState = {
         domain: q.domain || '',
         client: q.client || '',
-        clientName: _peerMap[(q.client || '').toLowerCase()] || '',
+        clientName: _peerMap[_extractClientIp(q.client || '').toLowerCase()] || '',
         blocked,
     };
 
@@ -839,7 +850,7 @@ function renderLogs(append = false) {
         _filteredData = _logData.filter(q => {
             if (filter === 'blocked' && !q.blocked) return false;
             if (filter === 'allowed' && q.blocked) return false;
-            if (peerFilter !== 'all' && (q.client_name || peerMapSnapshot[(q.client || '').toLowerCase()] || '') !== peerFilter) return false;
+            if (peerFilter !== 'all' && (q.client_name || peerMapSnapshot[_extractClientIp(q.client).toLowerCase()] || '') !== peerFilter) return false;
             if (search && !(q.domain || '').toLowerCase().includes(search)) return false;
             return true;
         });
@@ -923,14 +934,14 @@ function renderLogs(append = false) {
         domainWrap.appendChild(domainText);
 
         // Add client/peer info below domain
-        const peerName = peerMapSnapshot[(q.client || '').toLowerCase()];
+        const peerName = peerMapSnapshot[_extractClientIp(q.client).toLowerCase()];
         const clientInfo = document.createElement('span');
         clientInfo.className = 'text-muted log-domain-client';
         if (!isAdmin) {
             // NOTE: Cosmetic masking only – backend should omit sensitive fields for non-admins
             clientInfo.textContent = `***** (*****)`;
         } else {
-            clientInfo.textContent = peerName ? `${peerName} (${q.client})` : (q.client || '');
+            clientInfo.textContent = peerName ? `${peerName} (${_extractClientIp(q.client)})` : (q.client || '');
         }
         domainWrap.appendChild(clientInfo);
         tdDomain.appendChild(domainWrap);
