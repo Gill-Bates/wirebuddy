@@ -25,6 +25,7 @@ from ..dns.unbound_config import write_local_data_overrides
 from ..dns import unbound_process as unbound
 from ..utils.conntrack import init_conntrack_accounting
 from ..utils.deps import get_conn, get_config
+from ..utils.rate_limit import limiter, RATE_LIMIT_CRITICAL
 from ..utils.vault import decrypt as vault_decrypt, encrypt as vault_encrypt
 from ..utils.version import check_for_updates
 from .auth import get_current_user, require_admin
@@ -372,6 +373,7 @@ async def update_wg_settings(
 
 
 @router.get("/settings/psk")
+@limiter.limit(RATE_LIMIT_CRITICAL)
 async def get_global_psk(
 	request: Request,
 	reveal: bool = Query(False),
@@ -380,13 +382,8 @@ async def get_global_psk(
 ):
 	"""Get the current global PresharedKey (masked or full).
 	
-	When reveal=True, rate limiting is enforced to prevent abuse.
+	Rate limited to prevent abuse of PSK reveal.
 	"""
-	if reveal:
-		# Rate limit PSK reveal to prevent silent exfiltration
-		from ..utils.rate_limit import limiter, RATE_LIMIT_CRITICAL
-		await limiter.check(request, RATE_LIMIT_CRITICAL)
-	
 	cfg = get_config(request)
 	enc_psk = get_setting(conn, "wg_global_psk")
 	if not enc_psk:

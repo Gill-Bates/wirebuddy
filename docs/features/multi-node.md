@@ -155,26 +155,53 @@ services:
 
 ### 3. Deploy Node Server
 
+#### Host Prerequisites
+
+Before deploying the node container, the host machine must have **IP forwarding enabled**:
+
+```bash
+# Enable immediately
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo sysctl -w net.ipv6.conf.all.forwarding=1
+
+# Persist across reboots
+echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.d/99-wireguard.conf
+echo "net.ipv6.conf.all.forwarding=1" | sudo tee -a /etc/sysctl.d/99-wireguard.conf
+sudo sysctl --system
+```
+
+!!! warning "Required for VPN Traffic"
+    Without IP forwarding, peers can connect but cannot route internet traffic through the node.
+
+#### Docker Compose
+
 Create a `docker-compose.yml` on the node machine:
 
 ```yaml
-# docker-compose.node.yml
-version: '3.8'
 services:
   wirebuddy-node:
     image: giiibates/wirebuddy:latest
-    container_name: wirebuddy-node-frankfurt
+    container_name: wirebuddy-node
+    restart: always
     network_mode: host
     cap_add:
       - NET_ADMIN
     environment:
-      - SERVER_MODE=node
-      - WIREBUDDY_ENROLLMENT_TOKEN=${ENROLLMENT_TOKEN}
-      - WIREBUDDY_MASTER_URL=https://master.example.com
-      - LOG_LEVEL=INFO
+      SERVER_MODE: node
+      WIREBUDDY_ENROLLMENT_TOKEN: "${WIREBUDDY_ENROLLMENT_TOKEN}"
+      LOG_LEVEL: INFO
+      TZ: ${TZ:-Etc/UTC}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    devices:
+      - /dev/net/tun:/dev/net/tun
     volumes:
-      - ./node-data:/app/data
-    restart: unless-stopped
+      - ./data:/app/data
 ```
 
 **Environment Variables:**
@@ -182,9 +209,12 @@ services:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `SERVER_MODE` | Yes | Must be `node` |
-| `WIREBUDDY_ENROLLMENT_TOKEN` | Yes | Token from master UI |
-| `WIREBUDDY_MASTER_URL` | Yes | Master API base URL |
+| `WIREBUDDY_ENROLLMENT_TOKEN` | Yes | Token from master UI (contains master URL) |
 | `LOG_LEVEL` | No | Logging verbosity (default: `INFO`) |
+| `TZ` | No | Timezone (default: `Etc/UTC`) |
+
+!!! info "Master URL in Token"
+    The master URL is embedded in the enrollment token — no separate `WIREBUDDY_MASTER_URL` variable needed.
 
 Start the node:
 
@@ -337,6 +367,36 @@ Remote peer statistics require out-of-band collection (future feature).
 
 ## Troubleshooting
 
+### Peers Connect But Cannot Browse Internet
+
+**Symptom:** VPN tunnel establishes (handshake OK) but no internet access through node.
+
+**Check IP forwarding:**
+
+```bash
+sysctl net.ipv4.ip_forward
+# Should show: net.ipv4.ip_forward = 1
+```
+
+If not enabled, see [Host Prerequisites](#host-prerequisites) above.
+
+**Check iptables FORWARD chain:**
+
+```bash
+docker exec wirebuddy-node iptables -L FORWARD -n -v --line-numbers
+```
+
+The WireGuard rules should be at positions 1 and 2:
+
+```
+num   pkts bytes target     prot opt in     out     source               destination
+1        0     0 ACCEPT     all  --  *      wg0     0.0.0.0/0            0.0.0.0/0
+2      193 12700 ACCEPT     all  --  wg0    *       0.0.0.0/0            0.0.0.0/0
+```
+
+!!! tip "UFW Users"
+    WireBuddy uses `-I FORWARD 1` to insert rules before UFW. No manual UFW configuration needed.
+
 ### Node Shows "Offline" in UI
 
 **Check node logs:**
@@ -375,6 +435,23 @@ docker logs wirebuddy-node-frankfurt --tail 50
 - Check peer's `node_id` assignment in UI
 - Verify node's FQDN is correct in Nodes page
 - Re-download peer config after fixing
+
+### DNS Not Working Through Node
+
+**Symptom:** Internet works with `9.9.9.9` but not with the default DNS (10.13.13.1).
+
+DNS queries are routed through the WireGuard tunnel to the master's Unbound resolver. Check the route:
+
+```bash
+docker exec wirebuddy-node ip route get 10.13.13.1
+# Should show: 10.13.13.1 dev wg0 ...
+```
+
+If it shows `via eth0`, the route is missing. This indicates a sync issue — restart the node:
+
+```bash
+docker restart wirebuddy-node
+```
 
 ### Config Changes Not Propagating
 

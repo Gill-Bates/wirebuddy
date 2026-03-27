@@ -266,12 +266,13 @@ def _build_node_post_up(iface_name: str) -> str:
 	return (
 		# sysctl may fail in unprivileged containers; use || true since
 		# host-level forwarding is often already enabled via docker --sysctl
+		# Use -I FORWARD 1 to INSERT at top of chain (before UFW rules)
 		f"sysctl -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1 || true; "
-		f"iptables -A FORWARD -i %i -j ACCEPT; "
-		f"iptables -A FORWARD -o %i -j ACCEPT; "
+		f"iptables -I FORWARD 1 -i %i -j ACCEPT; "
+		f"iptables -I FORWARD 1 -o %i -j ACCEPT; "
 		f"iptables -t nat -A POSTROUTING -o {phy} -j MASQUERADE; "
-		f"ip6tables -A FORWARD -i %i -j ACCEPT; "
-		f"ip6tables -A FORWARD -o %i -j ACCEPT; "
+		f"ip6tables -I FORWARD 1 -i %i -j ACCEPT; "
+		f"ip6tables -I FORWARD 1 -o %i -j ACCEPT; "
 		f"ip6tables -t nat -A POSTROUTING -o {phy} -j MASQUERADE"
 	)
 
@@ -502,6 +503,28 @@ def _apply_config_locked(config: dict[str, Any]) -> str:
 	return version
 
 
+def _ensure_routes_for_allowed_ips(iface_name: str, allowed_ips: str) -> None:
+	"""Add routes for allowed-ips to the WireGuard interface.
+
+	Unlike wg-quick, `wg set` doesn't create routes automatically.
+	We parse allowed-ips and add each as a route via the interface.
+	"""
+	for ip_str in allowed_ips.split(","):
+		ip_str = ip_str.strip()
+		if not ip_str:
+			continue
+		# Check if route already exists
+		code, stdout, _ = _run(["ip", "route", "get", ip_str.split("/")[0]], timeout=_TIMEOUT_WG_SHOW)
+		if code == 0 and f"dev {iface_name}" in stdout:
+			continue  # Route already points to wg interface
+		# Add/replace route
+		code, _, stderr = _run(["ip", "route", "replace", ip_str, "dev", iface_name], timeout=_TIMEOUT_WG_SET)
+		if code != 0:
+			_log.warning("Failed to add route %s dev %s: %s", ip_str, iface_name, stderr.strip())
+		else:
+			_log.debug("Added route %s dev %s", ip_str, iface_name)
+
+
 def _configure_master_peer(master_peer: dict[str, Any]) -> None:
 	"""Configure the master as a WireGuard peer for DNS routing.
 
@@ -529,6 +552,9 @@ def _configure_master_peer(master_peer: dict[str, Any]) -> None:
 	if code != 0:
 		_log.error("Failed to configure master peer on %s: %s", iface_name, _redact_keys(stderr.strip()))
 		return
+
+	# Add routes for master peer (wg set doesn't create routes like wg-quick)
+	_ensure_routes_for_allowed_ips(iface_name, allowed_ips)
 
 	_log.info(
 		"Configured master peer for DNS tunnel: iface=%s, endpoint=%s, allowed_ips=%s",
@@ -598,6 +624,8 @@ def _sync_peers_for_interface(iface_name: str, desired_peers: list[dict[str, Any
 				psk_path.unlink(missing_ok=True)
 		else:
 			_run_checked(cmd, timeout=_TIMEOUT_WG_SET)
+		# Add routes for peer (wg set doesn't create routes like wg-quick)
+		_ensure_routes_for_allowed_ips(iface_name, p["peer_address"])
 		changed += 1
 		_log.debug("Synced peer %s (%s...) on %s", p.get("name") or key[:8], key[:8], iface_name)
 

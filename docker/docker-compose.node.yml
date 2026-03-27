@@ -1,3 +1,15 @@
+# WireBuddy Node — Docker Compose
+#
+# IMPORTANT: Enable IP forwarding on the host FIRST:
+#   sudo sysctl -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1
+#
+# Workflow:
+#   1. Create node in master UI → copy enrollment token
+#   2. Set WIREBUDDY_ENROLLMENT_TOKEN in .env file
+#   3. docker compose up -d
+#
+# Node runs WireGuard only — no web UI, no database, no DNS.
+
 services:
   wirebuddy-node:
     image: giiibates/wirebuddy:latest
