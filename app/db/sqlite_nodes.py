@@ -291,7 +291,7 @@ def mark_stale_nodes_offline(
 			UPDATE nodes SET status = ?
 			WHERE status = ? AND last_seen < ?
 			""",
-			(cutoff,),
+			(STATUS_OFFLINE, STATUS_ONLINE, cutoff),
 		)
 		return cur.rowcount
 
@@ -310,16 +310,16 @@ def bump_node_config_version(
 	The version is a deterministic SHA-256 hash of all enabled peer public keys
 	assigned to this node. Timestamp is NOT included to ensure idempotency.
 	"""
-	rows = conn.execute(
-		"SELECT public_key FROM peers WHERE node_id = ? AND is_enabled = 1 ORDER BY public_key",
-		(node_id,),
-	).fetchall()
-	payload = json.dumps(
-		[r["public_key"] for r in rows],
-		separators=(",", ":"),
-	)
-	version = hashlib.sha256(payload.encode("utf-8")).hexdigest()
 	with transaction(conn, immediate=True):
+		rows = conn.execute(
+			"SELECT public_key FROM peers WHERE node_id = ? AND is_enabled = 1 ORDER BY public_key",
+			(node_id,),
+		).fetchall()
+		payload = json.dumps(
+			[r["public_key"] for r in rows],
+			separators=(",", ":"),
+		)
+		version = hashlib.sha256(payload.encode("utf-8")).hexdigest()
 		conn.execute(
 			"UPDATE nodes SET config_version = ? WHERE id = ?",
 			(version, node_id),
@@ -554,3 +554,90 @@ def get_peer_count_for_node(conn: sqlite3.Connection, node_id: str) -> int:
 		(node_id,),
 	).fetchone()
 	return int(row["cnt"] or 0) if row else 0
+
+
+def get_tunnel_peer_info(conn: sqlite3.Connection, tunnel_peer_id: int) -> dict | None:
+	"""Return tunnel peer's public_key and interface for WireGuard sync."""
+	row = conn.execute(
+		"SELECT public_key, interface FROM peers WHERE id = ?",
+		(tunnel_peer_id,),
+	).fetchone()
+	if not row:
+		return None
+	return {"public_key": row["public_key"], "interface": row["interface"]}
+
+
+def get_tunnel_peer_allowed_ips(conn: sqlite3.Connection, node_id: str) -> str | None:
+	"""Compute the complete allowed-ips for a node's tunnel peer.
+
+	Returns a comma-separated list of IPs including:
+	- The node's own tunnel address
+	- All peer addresses assigned to this node
+
+	This allows the master to accept DNS traffic from all peers connected
+	to the node, not just the node itself.
+	"""
+	node = get_node(conn, node_id)
+	if not node or not node["tunnel_peer_id"]:
+		return None
+
+	# Get node's own tunnel address
+	tunnel_peer = conn.execute(
+		"SELECT peer_address FROM peers WHERE id = ?",
+		(node["tunnel_peer_id"],),
+	).fetchone()
+	if not tunnel_peer:
+		return None
+
+	addresses = set()
+	# Add node's own address
+	for addr in tunnel_peer["peer_address"].split(","):
+		addr = addr.strip()
+		if addr:
+			addresses.add(addr)
+
+	# Add all peer addresses assigned to this node
+	peer_rows = conn.execute(
+		"SELECT peer_address FROM peers WHERE node_id = ? AND is_enabled = 1",
+		(node_id,),
+	).fetchall()
+	for row in peer_rows:
+		for addr in row["peer_address"].split(","):
+			addr = addr.strip()
+			if addr:
+				addresses.add(addr)
+
+	return ", ".join(sorted(addresses)) if addresses else None
+
+
+def update_tunnel_peer_allowed_ips(conn: sqlite3.Connection, node_id: str) -> bool:
+	"""Update the tunnel peer's allowed_ips to include all node peer addresses.
+
+	Should be called when:
+	- A peer is assigned to this node
+	- A peer is removed/reassigned from this node
+	- A peer's address changes
+
+	NOTE: Only `allowed_ips` is updated (what master accepts from this peer).
+	`peer_address` remains unchanged (the node's own tunnel address).
+
+	Returns True if the tunnel peer was updated.
+	"""
+	node = get_node(conn, node_id)
+	if not node or not node["tunnel_peer_id"]:
+		return False
+
+	new_allowed_ips = get_tunnel_peer_allowed_ips(conn, node_id)
+	if not new_allowed_ips:
+		return False
+
+	with transaction(conn, immediate=True):
+		conn.execute(
+			"UPDATE peers SET allowed_ips = ? WHERE id = ?",
+			(new_allowed_ips, node["tunnel_peer_id"]),
+		)
+	_log.info(
+		"Updated tunnel peer allowed_ips for node=%s: %s",
+		node_id, new_allowed_ips,
+	)
+	return True
