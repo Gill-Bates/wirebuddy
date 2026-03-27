@@ -551,11 +551,15 @@ async def peers_page(
 
 	# Load nodes for the node selector in the Add Peer modal (admin only)
 	nodes_data = []
+	local_fqdn = None
+	local_country_code = None
 	if user["is_admin"]:
-		def _load_nodes() -> list:
+		def _load_nodes() -> tuple[list, str | None, str | None]:
 			from ..db.sqlite_nodes import get_all_nodes as db_get_all_nodes
+			from ..db.sqlite_settings import get_setting
 			thread_conn = connect(db_path)
 			try:
+				# Load remote nodes
 				nodes = []
 				for n in db_get_all_nodes(thread_conn):
 					resolved_geo_ip = _resolve_node_geo_ip(n["fqdn"])
@@ -570,10 +574,18 @@ async def peers_page(
 						"fqdn": n["fqdn"],
 						"geo_country_code": geo_fields["country_code"],
 					})
-				return nodes
+				
+				# Load local server info
+				fqdn = get_setting(thread_conn, "wg_fqdn") or ""
+				fqdn = fqdn.strip()
+				resolved_local_ip = _resolve_node_geo_ip(fqdn) if fqdn else None
+				local_geo = extract_geo_fields(lookup_ip_cached(resolved_local_ip)) if resolved_local_ip else {
+					"country_code": None,
+				}
+				return nodes, fqdn or None, local_geo.get("country_code")
 			finally:
 				close_connection(thread_conn)
-		nodes_data = await asyncio.to_thread(_load_nodes)
+		nodes_data, local_fqdn, local_country_code = await asyncio.to_thread(_load_nodes)
 
 	return templates.TemplateResponse(
 		request,
@@ -583,6 +595,8 @@ async def peers_page(
 			"peers": peers,
 			"total_peers": total_peers,
 			"nodes": nodes_data,
+			"local_fqdn": local_fqdn,
+			"local_country_code": local_country_code,
 			"csrf_token": get_csrf_token(request),
 		},
 	)

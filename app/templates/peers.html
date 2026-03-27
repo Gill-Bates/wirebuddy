@@ -954,7 +954,7 @@
                     <div class="mb-2">
                         <label for="peer-node" class="form-label">Node</label>
                         <select class="form-select peer-node-select" id="peer-node">
-                            <option value="">Local (this server)</option>
+                            <option value="">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</option>
                             {% for n in nodes %}
                             <option value="{{ n.id }}">{{ n.name }} ({{ n.fqdn }})</option>
                             {% endfor %}
@@ -962,13 +962,23 @@
                         <div class="dropdown peer-node-picker mt-2" data-target-select="peer-node">
                             <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
                                 <span class="peer-node-picker-label">
-                                    <span class="peer-node-picker-text">Local (this server)</span>
+                                    {% if local_country_code %}
+                                    <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
+                                         decoding="async"
+                                         src="/static/vendor/images/flags/{{ local_country_code }}.svg">
+                                    {% endif %}
+                                    <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                 </span>
                             </button>
                             <div class="dropdown-menu peer-node-picker-menu">
                                 <button type="button" class="dropdown-item peer-node-option active" data-value="">
                                     <span class="peer-node-option-label">
-                                        <span class="peer-node-picker-text">Local (this server)</span>
+                                        {% if local_country_code %}
+                                        <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
+                                             decoding="async"
+                                             src="/static/vendor/images/flags/{{ local_country_code }}.svg">
+                                        {% endif %}
+                                        <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                     </span>
                                 </button>
                                 {% for n in nodes %}
@@ -1145,7 +1155,7 @@
                     <div class="mb-2">
                         <label for="edit-peer-node" class="form-label">Node</label>
                         <select class="form-select peer-node-select" id="edit-peer-node">
-                            <option value="">Local (this server)</option>
+                            <option value="">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</option>
                             {% for n in nodes %}
                             <option value="{{ n.id }}">{{ n.name }} ({{ n.fqdn }})</option>
                             {% endfor %}
@@ -1153,13 +1163,23 @@
                         <div class="dropdown peer-node-picker mt-2" data-target-select="edit-peer-node">
                             <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
                                 <span class="peer-node-picker-label">
-                                    <span class="peer-node-picker-text">Local (this server)</span>
+                                    {% if local_country_code %}
+                                    <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
+                                         decoding="async"
+                                         src="/static/vendor/images/flags/{{ local_country_code }}.svg">
+                                    {% endif %}
+                                    <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                 </span>
                             </button>
                             <div class="dropdown-menu peer-node-picker-menu">
                                 <button type="button" class="dropdown-item peer-node-option active" data-value="">
                                     <span class="peer-node-option-label">
-                                        <span class="peer-node-picker-text">Local (this server)</span>
+                                        {% if local_country_code %}
+                                        <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
+                                             decoding="async"
+                                             src="/static/vendor/images/flags/{{ local_country_code }}.svg">
+                                        {% endif %}
+                                        <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                     </span>
                                 </button>
                                 {% for n in nodes %}

@@ -110,7 +110,7 @@ function openLogActionMenu(q, clickEvent) {
     _logActionState = {
         domain: q.domain || '',
         client: q.client || '',
-        clientName: _peerMap[q.client] || '',
+        clientName: _peerMap[(q.client || '').toLowerCase()] || '',
         blocked,
     };
 
@@ -147,8 +147,13 @@ function openLogActionMenu(q, clickEvent) {
     menu.style.top = `${Math.max(MENU_VIEWPORT_MARGIN_PX, Math.min(y, viewportHeight - menuRect.height - MENU_VIEWPORT_MARGIN_PX))}px`;
     menu.style.visibility = '';  // Now make visible
 
+    // Accessibility: make menu focusable and focus it
+    menu.setAttribute('tabindex', '-1');
+    menu.focus();
+
     // Set ARIA expanded on the triggering row
-    const row = clickEvent.target.closest('tr');
+    const target = clickEvent.target instanceof Element ? clickEvent.target : null;
+    const row = target?.closest('tr');
     if (row) row.setAttribute('aria-expanded', 'true');
 }
 
@@ -257,11 +262,11 @@ async function loadTrend() {
         const clientIpsParam = clientIps ? `&client_ips=${clientIps}` : '';
         let t;
         try {
-            t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}${clientIpsParam}`);
+            t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}${clientIpsParam}`, null, { signal: _pageAbort.signal });
         } catch (err) {
             // Fallback for strict query validation mismatches on older deployments.
             if (err?.code === 'HTTP_422' && bucketMinutes !== 1440) {
-                t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=1440${clientIpsParam}`);
+                t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=1440${clientIpsParam}`, null, { signal: _pageAbort.signal });
             } else {
                 throw err;
             }
@@ -416,7 +421,7 @@ async function loadTrend() {
 
 async function loadStats() {
     try {
-        const s = await api('GET', '/api/dns/status');
+        const s = await api('GET', '/api/dns/status', null, { signal: _pageAbort.signal });
 
         // Update status using DOM APIs (safe from XSS)
         const statusEl = document.getElementById('stat-status');
@@ -483,7 +488,7 @@ async function loadTopDomains() {
     try {
         const clientIps = getSelectedPeerClientIps();
         const clientIpsParam = clientIps ? `&client_ips=${clientIps}` : '';
-        const data = await api('GET', `/api/dns/top-domains?limit=15${clientIpsParam}`);
+        const data = await api('GET', `/api/dns/top-domains?limit=15${clientIpsParam}`, null, { signal: _pageAbort.signal });
         const topQueried = data.top_queried || [];
         const topBlocked = data.top_blocked || [];
 
@@ -681,7 +686,7 @@ async function loadLogsOnly(showLoading = true) {
         if (showLoading) {
             showLogsLoadingState();
         }
-        const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}`);
+        const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}`, null, { signal: _pageAbort.signal });
         // IMPORTANT: Backend should omit client field for non-admins in the API response.
         // This client-side stripping is cosmetic only - data already sent over the wire.
         // Fix: GET /api/dns/logs should check user.is_admin before including client IPs.
@@ -689,8 +694,10 @@ async function loadLogsOnly(showLoading = true) {
             isAdmin ? q : { ...q, client: undefined }
         );
 
-        // Detect if data changed to avoid unnecessary re-renders
-        const dataChanged = JSON.stringify(newData) !== JSON.stringify(_logData);
+        // Detect if data changed using lightweight comparison (avoid O(n) JSON serialization)
+        const dataChanged = newData.length !== _logData.length ||
+            newData[0]?.timestamp !== _logData[0]?.timestamp ||
+            newData[newData.length - 1]?.timestamp !== _logData[_logData.length - 1]?.timestamp;
         if (!showLoading && !dataChanged) {
             // Data unchanged during poll - skip render
             return;
@@ -708,15 +715,20 @@ async function loadLogsOnly(showLoading = true) {
         _renderedCount = 0;
         renderLogs();
 
-        // Re-render additional batches to restore scroll depth
+        // Re-render additional batches to restore scroll depth (yield to avoid UI blocking)
         if (!showLoading && prevRendered > LOG_BATCH_SIZE) {
-            while (_renderedCount < Math.min(prevRendered, _filteredData.length)) {
-                renderLogs(true);
-            }
-            // Restore scroll position
-            if (logContainer) {
-                logContainer.scrollTop = scrollTop;
-            }
+            const restoreScrollAsync = async () => {
+                while (_renderedCount < Math.min(prevRendered, _filteredData.length)) {
+                    renderLogs(true);
+                    // Yield to allow UI updates
+                    await new Promise(r => requestAnimationFrame(r));
+                }
+                // Restore scroll position
+                if (logContainer) {
+                    logContainer.scrollTop = scrollTop;
+                }
+            };
+            void restoreScrollAsync();
         }
     } catch (e) {
         console.error('Failed to load logs:', e);
@@ -754,7 +766,7 @@ async function loadPeers() {
         return;
     }
     try {
-        const data = await api('GET', '/api/wireguard/stats/peers-enriched');
+        const data = await api('GET', '/api/wireguard/stats/peers-enriched', null, { signal: _pageAbort.signal });
         const peers = data.peers || [];
         const peerFilter = document.getElementById('peer-filter');
         if (!peerFilter) return; // Guard against null
@@ -771,10 +783,13 @@ async function loadPeers() {
         peerFilter.appendChild(allOpt);
 
         for (const peer of peers) {
+            // Skip node tunnel peers (inter-node connections)
+            if (peer.is_node_tunnel) continue;
+
             const name = peer.name || peer.public_key?.substring(0, 8) || 'Unknown';
             const addrParts = (peer.peer_address || '').split(',');
             for (const part of addrParts) {
-                const ip = part.trim().split('/')[0];
+                const ip = part.trim().split('/')[0].toLowerCase();
                 if (ip) newMap[ip] = name;
             }
 
@@ -808,6 +823,8 @@ function renderLogs(append = false) {
     const filter = filterEl.value;
     const peerFilter = peerFilterEl.value;
     const search = searchEl.value.toLowerCase();
+    // Snapshot peerMap to avoid race conditions with async loads
+    const peerMapSnapshot = _peerMap;
 
     // If not appending, reset and filter fresh
     if (!append) {
@@ -816,7 +833,7 @@ function renderLogs(append = false) {
         _filteredData = _logData.filter(q => {
             if (filter === 'blocked' && !q.blocked) return false;
             if (filter === 'allowed' && q.blocked) return false;
-            if (peerFilter !== 'all' && _peerMap[q.client] !== peerFilter) return false;
+            if (peerFilter !== 'all' && peerMapSnapshot[(q.client || '').toLowerCase()] !== peerFilter) return false;
             if (search && !(q.domain || '').toLowerCase().includes(search)) return false;
             return true;
         });
@@ -900,7 +917,7 @@ function renderLogs(append = false) {
         domainWrap.appendChild(domainText);
 
         // Add client/peer info below domain
-        const peerName = _peerMap[q.client];
+        const peerName = peerMapSnapshot[(q.client || '').toLowerCase()];
         const clientInfo = document.createElement('span');
         clientInfo.className = 'text-muted log-domain-client';
         if (!isAdmin) {
@@ -1019,7 +1036,7 @@ function updateCountdownDisplay() {
 
 async function loadAdblockerStatus() {
     try {
-        const data = await api('GET', '/api/dns/adblocker/status');
+        const data = await api('GET', '/api/dns/adblocker/status', null, { signal: _pageAbort.signal });
         updateAdblockerButton(data.enabled, data.disabled_until || 0);
     } catch (e) {
         console.error('Failed to load adblocker status:', e);
@@ -1161,7 +1178,8 @@ if (logContainer) {
 const logBody = document.getElementById('log-body');
 if (logBody) {
     logBody.addEventListener('click', (ev) => {
-        const row = ev.target.closest('tr.log-row-actionable');
+        const target = ev.target instanceof Element ? ev.target : null;
+        const row = target?.closest('tr.log-row-actionable');
         if (!row) return;
         const idx = parseInt(row.dataset.logIndex, 10);
         const q = _filteredData[idx];
@@ -1174,7 +1192,8 @@ if (logBody) {
 
     logBody.addEventListener('keydown', (ev) => {
         if (ev.key !== 'Enter' && ev.key !== ' ') return;
-        const row = ev.target.closest('tr.log-row-actionable');
+        const target = ev.target instanceof Element ? ev.target : null;
+        const row = target?.closest('tr.log-row-actionable');
         if (!row) return;
         const idx = parseInt(row.dataset.logIndex, 10);
         const q = _filteredData[idx];
@@ -1232,8 +1251,10 @@ if (peerFilterSelect) {
         void topQueriedCard.offsetHeight;
 
         // Fade out cards, re-render on transition complete
+        let transitionHandled = false;
         const handleTransitionEnd = () => {
-            if (signal.aborted) return;
+            if (transitionHandled || signal.aborted) return;
+            transitionHandled = true;
             if (_topDomainFadeTimeout) {
                 clearTimeout(_topDomainFadeTimeout);
                 _topDomainFadeTimeout = null;
