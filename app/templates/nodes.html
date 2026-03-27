@@ -112,6 +112,7 @@
             content: attr(data-label);
             font-weight: 600;
             margin-right: 8px;
+            min-width: 110px;
         }
     }
 </style>
@@ -169,7 +170,7 @@
                             </div>
                         </td>
                         <td data-label="Port">{{ node.wg_port }}</td>
-                        <td data-label="Status">
+                        <td data-label="Status" aria-live="polite" aria-atomic="true">
                             {% if node.status == 'online' %}
                             <span class="badge bg-success node-status-badge">Online</span>
                             {% elif node.status == 'pending' %}
@@ -369,14 +370,26 @@
 (function() {
     'use strict';
 
+    // ========================================================================
+    // CONSTANTS & STATE
+    // ========================================================================
     const POLL_INTERVAL_MS = 30000;
+    const MAX_POLL_FAILURES = 3;
+    const POLL_BACKOFF_MS = 60000;
+    
     let pollTimer = null;
+    let pollFailureCount = 0;
+    let nodeCreatedFlag = false;
 
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
     const headers = {
         'Content-Type': 'application/json',
         'X-CSRF-Token': csrfToken,
     };
+
+    // ========================================================================
+    // DOM ELEMENT CACHE
+    // ========================================================================
     const addNodeModalEl = document.getElementById('addNodeModal');
     const editNodeModalEl = document.getElementById('editNodeModal');
     const tokenModalEl = document.getElementById('tokenModal');
@@ -385,46 +398,16 @@
     const nodesTableBody = document.getElementById('nodesTableBody');
     const addNodeFqdnInput = document.getElementById('nodeFqdn');
     const editNodeFqdnInput = document.getElementById('editNodeFqdn');
+    const addNodeSubmitBtn = document.getElementById('addNodeSubmitBtn');
+    const nodeNameInput = document.getElementById('nodeName');
+    const enrollmentTokenDisplay = document.getElementById('enrollmentTokenDisplay');
+    const regenTokenDisplay = document.getElementById('regenTokenDisplay');
 
     const HOSTNAME_LABEL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
 
-    function initTooltips(root = document) {
-        if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
-            return;
-        }
-
-        const scope = root && typeof root.querySelectorAll === 'function' ? root : document;
-        scope.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
-            new bootstrap.Tooltip(el, {
-                container: 'body',
-                trigger: 'hover focus',
-            });
-        });
-    }
-
-    async function copyTextFromElement(elementId) {
-        const text = document.getElementById(elementId)?.textContent?.trim() || '';
-        if (!text) {
-            wbToast('No token available to copy.', 'warning');
-            return;
-        }
-
-        try {
-            await navigator.clipboard.writeText(text);
-            wbToast('Token copied to clipboard.', 'success');
-        } catch (error) {
-            wbToast('Failed to copy token: ' + error.message, 'danger');
-        }
-    }
-
-    function openEditNodeModal(id, name, fqdn, port) {
-        document.getElementById('editNodeId').value = id;
-        document.getElementById('editNodeName').value = name;
-        document.getElementById('editNodeFqdn').value = fqdn;
-        document.getElementById('editNodePort').value = port;
-        bootstrap.Modal.getOrCreateInstance(editNodeModalEl).show();
-    }
-
+    // ========================================================================
+    // VALIDATION
+    // ========================================================================
     function isValidIpv4(value) {
         const parts = value.split('.');
         if (parts.length !== 4) return false;
@@ -434,15 +417,20 @@
     function isValidIpv6(value) {
         const raw = value.replace(/^\[|\]$/g, '');
         if (!raw || raw.includes('[') || raw.includes(']')) return false;
-        const doubleColonCount = (raw.match(/::/g) || []).length;
-        if (doubleColonCount > 1 || !raw.includes(':')) return false;
-
-        const parts = raw.split(':');
-        return parts.length >= 3 && parts.every((part) => part === '' || /^[0-9A-Fa-f]{1,4}$/.test(part));
+        
+        // Use URL parsing for robust IPv6 validation
+        try {
+            const url = new URL(`http://[${raw}]`);
+            return !!url.hostname;
+        } catch {
+            return false;
+        }
     }
 
     function isValidHostname(value) {
-        if (!value || value.length > 253 || value.includes(':')) return false;
+        if (!value || value.length > 253) return false;
+        // Reject IPv6 addresses in hostname context
+        if (value.includes(':') && !isValidIpv6(value)) return false;
         if (value.includes('..') || value.startsWith('.') || value.endsWith('.')) return false;
         return value.split('.').every((label) => HOSTNAME_LABEL_RE.test(label));
     }
@@ -467,10 +455,107 @@
         return result.valid;
     }
 
+    // ========================================================================
+    // UI HELPERS
+    // ========================================================================
+    function createStatusBadge(status) {
+        const span = document.createElement('span');
+        span.classList.add('badge', 'node-status-badge');
+
+        if (status === 'online') {
+            span.classList.add('bg-success');
+            span.textContent = 'Online';
+        } else if (status === 'pending') {
+            span.classList.add('bg-warning', 'text-dark');
+            span.textContent = 'Pending';
+        } else if (status === 'offline') {
+            span.classList.add('bg-danger');
+            span.textContent = 'Offline';
+        } else {
+            span.classList.add('bg-secondary');
+            span.textContent = status || '—';
+        }
+        
+        return span;
+    }
+
+    function setButtonLoading(button, isLoading, loadingText = 'Loading...', originalText = null) {
+        if (!button) return;
+        
+        if (isLoading) {
+            button.disabled = true;
+            button.dataset.originalText = button.textContent;
+            button.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>${loadingText}`;
+        } else {
+            button.disabled = false;
+            button.textContent = originalText || button.dataset.originalText || 'Submit';
+            delete button.dataset.originalText;
+        }
+    }
+
+    function initTooltips(root = document) {
+        if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+            return;
+        }
+        if (typeof bootstrap === 'undefined' || !bootstrap.Tooltip) {
+            return;
+        }
+
+        const scope = root && typeof root.querySelectorAll === 'function' ? root : document;
+        scope.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
+            // Skip if element is not a valid DOM node
+            if (!el || !el.nodeName || typeof el.nodeName !== 'string') {
+                return;
+            }
+            // Skip already initialized tooltips
+            if (el.dataset.tooltipInitialized === 'true') {
+                return;
+            }
+            // Dispose existing tooltip instance before creating a new one
+            const existingInstance = bootstrap.Tooltip.getInstance(el);
+            if (existingInstance) {
+                existingInstance.dispose();
+            }
+            new bootstrap.Tooltip(el, {
+                container: document.body,
+                trigger: 'hover focus',
+            });
+            el.dataset.tooltipInitialized = 'true';
+        });
+    }
+
+    async function copyTextFromElement(elementId) {
+        const element = document.getElementById(elementId);
+        const text = element?.textContent?.trim() || '';
+        if (!text) {
+            wbToast('No token available to copy.', 'warning');
+            return;
+        }
+
+        try {
+            await navigator.clipboard.writeText(text);
+            wbToast('Token copied to clipboard.', 'success');
+        } catch (error) {
+            wbToast('Failed to copy token: ' + error.message, 'danger');
+        }
+    }
+
+    // ========================================================================
+    // MODAL ACTIONS
+    // ========================================================================
+    function openEditNodeModal(id, name, fqdn, port) {
+        if (!editNodeModalEl) return;
+        document.getElementById('editNodeId').value = id;
+        document.getElementById('editNodeName').value = name;
+        document.getElementById('editNodeFqdn').value = fqdn;
+        document.getElementById('editNodePort').value = port;
+        bootstrap.Modal.getOrCreateInstance(editNodeModalEl).show();
+    }
+
     async function submitAddNode() {
-        const name = document.getElementById('nodeName').value.trim();
-        const fqdn = document.getElementById('nodeFqdn').value.trim();
-        const port = parseInt(document.getElementById('nodePort').value) || 51820;
+        const name = nodeNameInput?.value.trim();
+        const fqdn = addNodeFqdnInput?.value.trim();
+        const port = Number(document.getElementById('nodePort')?.value) || 51820;
 
         if (!name || !fqdn) {
             await wbAlert('Name and FQDN are required.', 'warning');
@@ -481,9 +566,7 @@
             return;
         }
 
-        const btn = document.getElementById('addNodeSubmitBtn');
-        btn.disabled = true;
-        btn.textContent = 'Creating...';
+        setButtonLoading(addNodeSubmitBtn, true, 'Creating...', 'Create Node');
 
         try {
             const resp = await fetch('/api/nodes', {
@@ -494,46 +577,32 @@
             const data = await resp.json();
             if (!resp.ok) {
                 await wbAlert(data.detail || 'Failed to create node', 'danger');
-                btn.disabled = false;
-                btn.textContent = 'Create Node';
+                setButtonLoading(addNodeSubmitBtn, false);
                 return;
             }
 
-            // Show token step
+            // Show token step and set flag
+            nodeCreatedFlag = true;
             document.getElementById('addNodeStep1').style.display = 'none';
             document.getElementById('addNodeStep2').style.display = 'block';
-            document.getElementById('enrollmentTokenDisplay').textContent = data.data.enrollment_token;
-            btn.style.display = 'none';
+            if (enrollmentTokenDisplay) {
+                enrollmentTokenDisplay.textContent = data.data.enrollment_token;
+            }
+            if (addNodeSubmitBtn) {
+                addNodeSubmitBtn.style.display = 'none';
+            }
 
         } catch (err) {
             await wbAlert('Network error: ' + err.message, 'danger');
-            btn.disabled = false;
-            btn.textContent = 'Create Node';
+            setButtonLoading(addNodeSubmitBtn, false);
         }
     }
 
-    // Reset modal state when closed
-    addNodeModalEl?.addEventListener('hidden.bs.modal', function() {
-        document.getElementById('addNodeStep1').style.display = 'block';
-        document.getElementById('addNodeStep2').style.display = 'none';
-        document.getElementById('nodeName').value = '';
-        document.getElementById('nodeFqdn').value = '';
-        document.getElementById('nodePort').value = '{{ default_wg_port }}';
-        const btn = document.getElementById('addNodeSubmitBtn');
-        btn.disabled = false;
-        btn.textContent = 'Create Node';
-        btn.style.display = '';
-        // Reload page if a node was created
-        if (document.getElementById('enrollmentTokenDisplay').textContent) {
-            location.reload();
-        }
-    });
-
     async function submitEditNode() {
-        const id = document.getElementById('editNodeId').value;
-        const name = document.getElementById('editNodeName').value.trim();
-        const fqdn = document.getElementById('editNodeFqdn').value.trim();
-        const port = parseInt(document.getElementById('editNodePort').value) || 51820;
+        const id = document.getElementById('editNodeId')?.value;
+        const name = document.getElementById('editNodeName')?.value.trim();
+        const fqdn = editNodeFqdnInput?.value.trim();
+        const port = Number(document.getElementById('editNodePort')?.value) || 51820;
 
         if (!name || !fqdn) {
             await wbAlert('Name and FQDN are required.', 'warning');
@@ -595,13 +664,120 @@
                 await wbAlert(data.detail || 'Failed to regenerate token', 'danger');
                 return;
             }
-            document.getElementById('regenTokenDisplay').textContent = data.data.enrollment_token;
-            bootstrap.Modal.getOrCreateInstance(tokenModalEl).show();
+            if (tokenModalEl && regenTokenDisplay) {
+                regenTokenDisplay.textContent = data.data.enrollment_token;
+                bootstrap.Modal.getOrCreateInstance(tokenModalEl).show();
+            }
         } catch (err) {
             await wbAlert('Network error: ' + err.message, 'danger');
         }
     }
 
+    // ========================================================================
+    // POLLING LOGIC
+    // ========================================================================
+    async function refreshNodes() {
+        if (!nodesTableBody) return;
+
+        try {
+            const resp = await fetch('/api/nodes', { headers: { 'X-CSRF-Token': csrfToken } });
+            if (!resp.ok) {
+                pollFailureCount++;
+                return;
+            }
+            const json = await resp.json();
+            const nodes = json.data || [];
+
+            for (const node of nodes) {
+                const row = document.getElementById(`node-row-${node.id}`);
+                if (!row) continue;
+
+                // Update status badge (secure DOM manipulation)
+                const statusCell = row.querySelector('td[data-label="Status"]');
+                if (statusCell) {
+                    const currentBadge = statusCell.querySelector('.node-status-badge');
+                    const currentStatus = currentBadge?.textContent.trim();
+                    const newStatus = node.status === 'online' ? 'Online' : 
+                                     node.status === 'pending' ? 'Pending' : 
+                                     node.status === 'offline' ? 'Offline' : 
+                                     node.status || '—';
+                    
+                    // Only update if changed
+                    if (currentStatus !== newStatus) {
+                        statusCell.replaceChildren(createStatusBadge(node.status));
+                    }
+                }
+
+                // Update peer count
+                const peersCell = row.querySelector('td[data-label="Peers"]');
+                if (peersCell) {
+                    const newCount = node.peer_count ?? '—';
+                    if (peersCell.textContent !== String(newCount)) {
+                        peersCell.textContent = newCount;
+                    }
+                }
+
+                // Update version (secure DOM manipulation)
+                const versionCell = row.querySelector('td[data-label="Version"]');
+                if (versionCell) {
+                    const currentVersion = versionCell.querySelector('code')?.textContent || '';
+                    const newVersion = node.node_version || '';
+                    
+                    if (currentVersion !== newVersion) {
+                        if (node.node_version) {
+                            const code = document.createElement('code');
+                            code.textContent = node.node_version;
+                            versionCell.replaceChildren(code);
+                        } else {
+                            const span = document.createElement('span');
+                            span.className = 'text-muted';
+                            span.textContent = '—';
+                            versionCell.replaceChildren(span);
+                        }
+                    }
+                }
+
+                // Update last seen (secure DOM manipulation)
+                const lastSeenCell = row.querySelector('td[data-label="Last Seen"]');
+                if (lastSeenCell) {
+                    const currentSpan = lastSeenCell.querySelector('span');
+                    const currentText = currentSpan?.textContent || '';
+                    const newText = node.last_seen_text || 'Never';
+                    
+                    if (currentText !== newText) {
+                        const span = document.createElement('span');
+                        span.className = node.last_seen_class || 'text-muted';
+                        span.textContent = newText;
+                        lastSeenCell.replaceChildren(span);
+                    }
+                }
+            }
+            
+            // Reset failure count on success
+            pollFailureCount = 0;
+        } catch (err) {
+            pollFailureCount++;
+        }
+    }
+
+    function startPolling() {
+        stopPolling();
+        
+        // Use backoff if too many failures
+        const interval = pollFailureCount >= MAX_POLL_FAILURES ? POLL_BACKOFF_MS : POLL_INTERVAL_MS;
+        pollTimer = setInterval(refreshNodes, interval);
+    }
+
+    function stopPolling() {
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+    }
+
+    // ========================================================================
+    // EVENT LISTENERS
+    // ========================================================================
     addNodeForm?.addEventListener('submit', async (event) => {
         event.preventDefault();
         await submitAddNode();
@@ -642,7 +818,7 @@
                 nodeId,
                 nodeName,
                 button.dataset.nodeFqdn || '',
-                parseInt(button.dataset.nodePort || '51820', 10),
+                Number(button.dataset.nodePort) || 51820,
             );
             return;
         }
@@ -657,79 +833,31 @@
         }
     });
 
-    initTooltips();
-
-    // -- Auto-refresh polling logic --
-    function getStatusBadgeHtml(status) {
-        if (status === 'online') {
-            return '<span class="badge bg-success node-status-badge">Online</span>';
-        } else if (status === 'pending') {
-            return '<span class="badge bg-warning text-dark node-status-badge">Pending</span>';
-        } else if (status === 'offline') {
-            return '<span class="badge bg-danger node-status-badge">Offline</span>';
+    // Reset modal state when closed (with explicit state check)
+    addNodeModalEl?.addEventListener('hidden.bs.modal', function() {
+        document.getElementById('addNodeStep1').style.display = 'block';
+        document.getElementById('addNodeStep2').style.display = 'none';
+        if (nodeNameInput) nodeNameInput.value = '';
+        if (addNodeFqdnInput) addNodeFqdnInput.value = '';
+        const nodePortInput = document.getElementById('nodePort');
+        if (nodePortInput) nodePortInput.value = '{{ default_wg_port }}';
+        setButtonLoading(addNodeSubmitBtn, false);
+        if (addNodeSubmitBtn) addNodeSubmitBtn.style.display = '';
+        
+        // Reload page if a node was created (explicit state check)
+        if (nodeCreatedFlag) {
+            location.reload();
         }
-        return `<span class="badge bg-secondary node-status-badge">${status || '—'}</span>`;
-    }
+    });
 
-    async function refreshNodes() {
-        if (!nodesTableBody) return;
+    // Focus first input when modal opens
+    addNodeModalEl?.addEventListener('shown.bs.modal', () => {
+        nodeNameInput?.focus();
+    });
 
-        try {
-            const resp = await fetch('/api/nodes', { headers: { 'X-CSRF-Token': csrfToken } });
-            if (!resp.ok) return;
-            const json = await resp.json();
-            const nodes = json.data || [];
-
-            for (const node of nodes) {
-                const row = document.getElementById(`node-row-${node.id}`);
-                if (!row) continue;
-
-                // Update status badge
-                const statusCell = row.querySelector('td[data-label="Status"]');
-                if (statusCell) {
-                    statusCell.innerHTML = getStatusBadgeHtml(node.status);
-                }
-
-                // Update peer count
-                const peersCell = row.querySelector('td[data-label="Peers"]');
-                if (peersCell) {
-                    peersCell.textContent = node.peer_count ?? '—';
-                }
-
-                // Update version
-                const versionCell = row.querySelector('td[data-label="Version"]');
-                if (versionCell) {
-                    if (node.node_version) {
-                        versionCell.innerHTML = `<code>${node.node_version}</code>`;
-                    } else {
-                        versionCell.innerHTML = '<span class="text-muted">—</span>';
-                    }
-                }
-
-                // Update last seen
-                const lastSeenCell = row.querySelector('td[data-label="Last Seen"]');
-                if (lastSeenCell) {
-                    const text = node.last_seen_text || 'Never';
-                    const cssClass = node.last_seen_class || 'text-muted';
-                    lastSeenCell.innerHTML = `<span class="${cssClass}">${text}</span>`;
-                }
-            }
-        } catch (err) {
-            // Silently ignore polling errors
-        }
-    }
-
-    function startPolling() {
-        stopPolling();
-        pollTimer = setInterval(refreshNodes, POLL_INTERVAL_MS);
-    }
-
-    function stopPolling() {
-        if (pollTimer) {
-            clearInterval(pollTimer);
-            pollTimer = null;
-        }
-    }
+    editNodeModalEl?.addEventListener('shown.bs.modal', () => {
+        document.getElementById('editNodeName')?.focus();
+    });
 
     // Pause polling when tab is hidden
     document.addEventListener('visibilitychange', () => {
@@ -741,7 +869,10 @@
         }
     });
 
-    // Start polling on page load
+    // ========================================================================
+    // INITIALIZATION
+    // ========================================================================
+    initTooltips();
     startPolling();
 })();
 </script>
