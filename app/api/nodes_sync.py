@@ -124,12 +124,22 @@ class EnrollRequest(BaseModel):
 	cert_pem: str = Field(..., max_length=16384, description="PEM-encoded self-signed node certificate")
 
 
+class PeerStatEntry(BaseModel):
+	"""Single peer stat from a node's wg dump."""
+	public_key: str = Field(..., max_length=64)
+	endpoint: str | None = Field(None, max_length=256)
+	latest_handshake: int | None = None
+	transfer_rx: int = 0
+	transfer_tx: int = 0
+
+
 class HeartbeatRequest(BaseModel):
 	"""Node heartbeat payload."""
 
 	uptime: float | None = Field(None, description="System uptime in seconds")
 	interfaces_status: dict | None = Field(None, description="WG interface up/down status")
 	version: str | None = Field(None, max_length=32, description="WireBuddy version running on node")
+	peer_stats: list[PeerStatEntry] | None = Field(None, description="WireGuard peer stats from wg dump", max_length=1000)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -289,7 +299,29 @@ def heartbeat(
 
 	update_node_heartbeat(conn, node_id, metadata=metadata or None)
 
-	# TODO: Store wg_dump peer stats in TSDB (future enhancement)
+	# Persist peer stats from node's wg dump (makes remote peers visible in UI)
+	if body.peer_stats:
+		from ..db.sqlite_peers import update_peers_last_seen_batch
+		db_updates: list[tuple[str, int, str]] = []
+		for ps in body.peer_stats:
+			if not ps.latest_handshake or not ps.public_key:
+				continue
+			# Extract client IP from endpoint (ip:port or [ipv6]:port)
+			client_ip = ""
+			if ps.endpoint:
+				ep = ps.endpoint
+				if ep.startswith("["):
+					client_ip = ep[1:ep.rfind("]")]
+				elif ":" in ep:
+					client_ip = ep.rsplit(":", 1)[0]
+			if client_ip:
+				db_updates.append((client_ip, ps.latest_handshake, ps.public_key))
+		if db_updates:
+			try:
+				update_peers_last_seen_batch(conn, db_updates)
+				_log.debug("Persisted %d peer stats from node %s", len(db_updates), node_id)
+			except Exception:
+				_log.warning("Failed to persist peer stats from node %s", node_id, exc_info=True)
 
 	return ok_response(message="Heartbeat received")
 

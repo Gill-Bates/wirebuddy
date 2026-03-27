@@ -21,9 +21,8 @@
         background-color: var(--bs-secondary-bg) !important;
     }
 
-    /* Table layout stability */
+    /* Table layout */
     .table {
-        table-layout: fixed;
         width: 100%;
     }
 
@@ -56,6 +55,11 @@
     /* Keep action buttons on one line */
     .peers-table td.peer-actions-cell {
         white-space: nowrap;
+        min-width: 180px;
+    }
+
+    .peers-table td.peer-actions-cell .d-flex {
+        flex-wrap: nowrap;
     }
 
     /* Status badges: wrap instead of overflowing, vertical-align with table row */
@@ -251,10 +255,6 @@
         .peers-table th.peer-col-interface,
         .peers-table td.peer-interface {
             display: none;
-        }
-
-        .peers-table {
-            table-layout: auto;
         }
 
         /* VPN address: keep IPv4/IPv6 on single lines */
@@ -454,7 +454,6 @@
         }
 
         .peers-table {
-            table-layout: auto;
             font-size: 0.82rem;
         }
 
@@ -713,7 +712,7 @@
     <div class="card-body">
         <div class="peers-list-toolbar d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
             <small class="text-muted peers-count-label">
-                Showing <span id="peers-visible-count">{{ total_peers }}</span> of {{ total_peers }} peers
+                Showing <span id="peers-visible-count">{{ total_peers }}</span> of <span id="peers-total-count">{{ total_peers }}</span> peers
             </small>
             <div class="d-flex align-items-center gap-3">
                 <div class="form-check peers-hide-nodes-toggle">
@@ -740,16 +739,6 @@
         <div class="peers-scroll-container" id="peers-scroll-container">
         <div class="table-responsive">
             <table class="table table-hover align-middle mb-0 peers-table">
-                <colgroup>
-                    <col style="width: 15%"><!-- Name -->
-                    <col style="width: 14%"><!-- VPN Address -->
-                    <col class="peer-col-routing" style="width: 12%"><!-- Routing -->
-                    <col class="peer-col-interface" style="width: 8%"><!-- Interface -->
-                    <col style="width: 9%"><!-- Last Seen -->
-                    <col style="width: 16%"><!-- Client IP -->
-                    <col style="width: 13%"><!-- Status -->
-                    <col style="width: 13%"><!-- Actions -->
-                </colgroup>
                 <thead>
                     <tr>
                         <th>Name</th>
@@ -1379,6 +1368,150 @@
         setTimeout(() => window.location.reload(), delay);
     }
 
+    /**
+     * Parse peer_address "10.0.0.2/32,fd13:13:d::2/128" into {ipv4, ipv6}.
+     */
+    function extractPeerIps(peerAddress) {
+        let ipv4 = null, ipv6 = null;
+        if (!peerAddress) return { ipv4, ipv6 };
+        for (const part of String(peerAddress).split(',')) {
+            const addr = part.trim().split('/')[0];
+            if (!addr) continue;
+            if (addr.includes(':')) { if (!ipv6) ipv6 = addr; }
+            else { if (!ipv4) ipv4 = addr; }
+        }
+        return { ipv4, ipv6 };
+    }
+
+    /**
+     * Build a <tr> element for a peer from API data (PeerPublic shape).
+     */
+    function buildPeerRow(peer) {
+        const mode = peer.allowed_ips_mode || 'full';
+        const routingLabel = { full: 'Full Tunnel', split: 'Split Tunnel' }[mode] || 'Custom';
+        const { ipv4, ipv6 } = extractPeerIps(peer.peer_address);
+        const name = peer.name || 'Unnamed';
+        const iface = peer.interface || '';
+        const isNodeTunnel = !!peer.is_node_tunnel;
+
+        const tr = document.createElement('tr');
+        tr.dataset.peerId = peer.id;
+        tr.dataset.peerPublicKey = peer.public_key || '';
+        tr.dataset.lastHandshake = '';
+        tr.dataset.lastClientIp = '';
+        tr.dataset.lastClientCountry = '';
+        tr.dataset.lastClientCity = '';
+        tr.dataset.lastClientAsOrg = '';
+        if (isNodeTunnel) {
+            tr.dataset.nodeTunnel = 'true';
+            tr.classList.add('peer-row-node-tunnel');
+        }
+
+        // Name cell
+        const tdName = document.createElement('td');
+        tdName.dataset.label = 'Name';
+        tdName.innerHTML = `<div class="peer-name-stack"><div class="peer-name-main"><span class="peer-name-text"></span></div><div class="peer-name-meta d-lg-none"><span></span>${peer.client_isolation ? '<span>Client Isolation</span>' : ''}</div></div>`;
+        tdName.querySelector('.peer-name-text').textContent = name;
+        tdName.querySelector('.peer-name-meta span').textContent = routingLabel;
+
+        // VPN Address cell
+        const tdVpn = document.createElement('td');
+        tdVpn.dataset.label = 'VPN Address';
+        tdVpn.className = 'peer-vpn-address';
+        const vpnParts = [];
+        if (ipv4) vpnParts.push(`<code class="ipv6">${escapeHtml(ipv4)}</code>`);
+        if (ipv4 && ipv6) vpnParts.push('<br>');
+        if (ipv6) vpnParts.push(`<code class="ipv6">${escapeHtml(ipv6).replace(/:/g, ':\u200b')}</code>`);
+        tdVpn.innerHTML = vpnParts.join('') || '<code class="ipv6">\u2014</code>';
+
+        // Routing cell
+        const tdRouting = document.createElement('td');
+        tdRouting.dataset.label = 'Routing';
+        tdRouting.className = 'peer-routing';
+        tdRouting.innerHTML = `<div class="peer-routing-badges"><span class="badge bg-secondary"></span>${peer.client_isolation ? '<span class="badge bg-secondary">Client Isolation</span>' : ''}</div>`;
+        tdRouting.querySelector('.badge').textContent = routingLabel;
+
+        // Interface cell
+        const tdIface = document.createElement('td');
+        tdIface.dataset.label = 'Interface';
+        tdIface.className = 'peer-interface';
+        tdIface.textContent = iface;
+
+        // Last Seen cell
+        const tdLastSeen = document.createElement('td');
+        tdLastSeen.dataset.label = 'Last Seen';
+        tdLastSeen.className = 'peer-last-seen text-nowrap';
+        const lastSeenSpan = document.createElement('span');
+        lastSeenSpan.className = 'text-muted';
+        lastSeenSpan.textContent = 'Never';
+        tdLastSeen.appendChild(lastSeenSpan);
+
+        // Client IP cell
+        const tdClientIp = document.createElement('td');
+        tdClientIp.dataset.label = 'Client IP';
+        tdClientIp.className = 'peer-client-ip';
+        const dashSpan = document.createElement('span');
+        dashSpan.className = 'text-muted';
+        dashSpan.textContent = '\u2014';
+        tdClientIp.appendChild(dashSpan);
+
+        // Status cell
+        const tdStatus = document.createElement('td');
+        tdStatus.dataset.label = 'Status';
+        tdStatus.setAttribute('aria-label', `Status: ${peer.is_enabled ? 'Enabled' : 'Disabled'}`);
+        const connBadge = document.createElement('span');
+        connBadge.className = 'badge bg-secondary peer-connection-badge peer-connection-badge-mobile';
+        connBadge.setAttribute('role', 'status');
+        connBadge.textContent = 'Offline';
+        const enabledBadge = document.createElement('span');
+        enabledBadge.className = `badge ${peer.is_enabled ? 'bg-success' : 'bg-secondary'} peer-enabled-badge`;
+        enabledBadge.setAttribute('role', 'status');
+        enabledBadge.textContent = peer.is_enabled ? 'Enabled' : 'Disabled';
+        tdStatus.append(connBadge, enabledBadge);
+
+        // Actions cell
+        const tdActions = document.createElement('td');
+        tdActions.dataset.label = 'Actions';
+        tdActions.className = 'peer-actions-cell';
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'd-flex gap-1 justify-content-end';
+        if (isNodeTunnel) {
+            actionsDiv.innerHTML = '<span class="text-muted small">Managed by wirebuddy</span>';
+        } else if (isAdmin) {
+            actionsDiv.innerHTML = [
+                `<button type="button" class="btn btn-sm btn-outline-secondary" data-action="show-qr" data-peer-id="${peer.id}" aria-label="Show QR code" data-bs-toggle="tooltip" data-bs-title="Show QR Code"><span class="material-icons" aria-hidden="true">qr_code</span></button>`,
+                `<button type="button" class="btn btn-sm btn-outline-secondary" data-action="download-config" data-peer-id="${peer.id}" aria-label="Download config" data-bs-toggle="tooltip" data-bs-title="Download Config"><span class="material-icons" aria-hidden="true">download</span></button>`,
+                `<button type="button" class="btn btn-sm btn-outline-secondary" data-action="edit-peer" data-peer-id="${peer.id}" aria-label="Edit peer" data-bs-toggle="tooltip" data-bs-title="Edit Peer"><span class="material-icons" aria-hidden="true">edit</span></button>`,
+                `<button type="button" class="btn btn-sm btn-outline-danger" data-action="delete-peer" data-peer-id="${peer.id}" aria-label="Delete peer" data-bs-toggle="tooltip" data-bs-title="Delete Peer"><span class="material-icons" aria-hidden="true">delete</span></button>`,
+            ].join('');
+        }
+        tdActions.appendChild(actionsDiv);
+
+        tr.append(tdName, tdVpn, tdRouting, tdIface, tdLastSeen, tdClientIp, tdStatus, tdActions);
+        return tr;
+    }
+
+    function escapeHtml(str) {
+        const d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+
+    function updateTotalPeerCount(delta) {
+        const totalEl = document.getElementById('peers-total-count');
+        if (totalEl) {
+            const current = parseInt(totalEl.textContent, 10) || 0;
+            totalEl.textContent = String(Math.max(0, current + delta));
+        }
+        filterPeers(document.getElementById('peers-search-input')?.value || '');
+    }
+
+    function removeEmptyRow() {
+        const tbody = document.getElementById('peers-table');
+        const emptyRow = tbody?.querySelector('tr:not([data-peer-id])');
+        if (emptyRow) emptyRow.remove();
+    }
+
     function revokeQrBlobUrl() {
         if (qrBlobUrl) {
             URL.revokeObjectURL(qrBlobUrl);
@@ -1957,7 +2090,27 @@
             document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('addPeerModal')).hide();
             wbToast('Peer created successfully', 'success');
-            reloadSoon();
+
+            // Fetch the freshly created peer and insert into table
+            try {
+                const allPeers = await fetchPeersEnriched();
+                // Find the new peer (highest ID that matches our name)
+                const newPeer = allPeers
+                    .filter(p => p.name === data.name)
+                    .sort((a, b) => b.id - a.id)[0];
+                if (newPeer) {
+                    removeEmptyRow();
+                    const tbody = document.getElementById('peers-table');
+                    const row = buildPeerRow(newPeer);
+                    tbody.appendChild(row);
+                    updateTotalPeerCount(1);
+                    initTooltips();
+                } else {
+                    reloadSoon();
+                }
+            } catch {
+                reloadSoon();
+            }
         } catch (error) {
             wbAlert('Failed to create peer: ' + safeErrorMessage(error), 'danger');
         } finally {
@@ -2030,7 +2183,27 @@
             document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('editPeerModal')).hide();
             wbToast('Peer updated successfully', 'success');
-            reloadSoon();
+
+            // Rebuild the row in-place
+            try {
+                const allPeers = await fetchPeersEnriched();
+                const updatedPeer = allPeers.find(p => p.id === peerId);
+                if (updatedPeer) {
+                    const oldRow = document.querySelector(`#peers-table tr[data-peer-id="${peerId}"]`);
+                    if (oldRow) {
+                        const newRow = buildPeerRow(updatedPeer);
+                        oldRow.replaceWith(newRow);
+                        refreshPeerRows();
+                        initTooltips();
+                    } else {
+                        reloadSoon();
+                    }
+                } else {
+                    reloadSoon();
+                }
+            } catch {
+                reloadSoon();
+            }
         } catch (error) {
             wbAlert('Failed to update peer: ' + safeErrorMessage(error), 'danger');
         } finally {
@@ -2161,7 +2334,18 @@
         try {
             await api('DELETE', `/api/wireguard/peers/${peerId}`);
             wbToast('Peer deleted successfully', 'success');
-            reloadSoon();
+            const row = document.querySelector(`#peers-table tr[data-peer-id="${peerId}"]`);
+            if (row) {
+                // Dispose tooltips on this row before removing
+                row.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+                    const tip = bootstrap.Tooltip.getInstance(el);
+                    if (tip) tip.dispose();
+                });
+                row.remove();
+                updateTotalPeerCount(-1);
+            } else {
+                reloadSoon();
+            }
         } catch (error) {
             wbAlert('Failed to delete peer: ' + safeErrorMessage(error), 'danger');
         }

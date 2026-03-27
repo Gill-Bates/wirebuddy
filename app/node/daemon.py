@@ -31,7 +31,7 @@ import httpx
 from ..utils.banner import print_banner_once
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
 from .cert import clear_node_cert, ensure_node_cert
-from .wg_manager import apply_config, has_running_interfaces, shutdown_all_interfaces
+from .wg_manager import apply_config, get_wg_dump, has_running_interfaces, shutdown_all_interfaces
 
 _log = logging.getLogger(__name__)
 
@@ -576,12 +576,32 @@ async def _push_heartbeat(
 	"""Push heartbeat with WireGuard stats to master."""
 	from ..utils.version import get_version
 	uptime = _get_uptime()
+
+	# Collect live WireGuard peer stats for remote peer visibility
+	try:
+		wg_dump = await asyncio.to_thread(get_wg_dump)
+	except Exception as exc:
+		_log.debug("Failed to collect wg dump for heartbeat: %s", exc)
+		wg_dump = {}
+
+	# Convert to serialisable list: [{public_key, endpoint, latest_handshake, transfer_rx, transfer_tx}]
+	peer_stats = []
+	for pub_key, stats in wg_dump.items():
+		peer_stats.append({
+			"public_key": pub_key,
+			"endpoint": stats.get("endpoint"),
+			"latest_handshake": stats.get("latest_handshake"),
+			"transfer_rx": stats.get("transfer_rx", 0),
+			"transfer_tx": stats.get("transfer_tx", 0),
+		})
+
 	resp = await client.post(
 		f"{master_url}/api/nodes/heartbeat",
 		headers=_build_request_headers(api_secret, cert_fingerprint),
 		json={
 			"uptime": uptime,
 			"version": get_version(),
+			"peer_stats": peer_stats,
 		},
 	)
 	resp.raise_for_status()
