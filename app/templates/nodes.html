@@ -80,7 +80,9 @@
         padding: 12px;
     }
     .node-actions-cell .d-flex {
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
+        justify-content: flex-end;
+        gap: 4px;
     }
     .node-action-btn {
         min-width: 44px;
@@ -88,6 +90,12 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        flex: 0 0 auto;
+    }
+
+    .node-actions-cell {
+        white-space: nowrap;
+        min-width: 180px;
     }
     .node-action-btn .material-icons,
     .nodes-copy-btn .material-icons,
