@@ -12,6 +12,7 @@ traffic metadata (volumes, connection times, patterns) for all peers.
 
 from __future__ import annotations
 
+from ..db.sqlite_nodes import get_all_tunnel_peer_ids
 from ..db.sqlite_peers import (
 	get_all_peers,
 )
@@ -223,6 +224,10 @@ def _compute_traffic_stats(
 
     # Fetch all peers (blocking DB query)
     all_peers = list(get_all_peers(conn))
+    tunnel_peer_ids = get_all_tunnel_peer_ids(conn)
+    
+    # Filter out node tunnel peers (inter-node connections)
+    all_peers = [p for p in all_peers if p["id"] not in tunnel_peer_ids]
     
     # Sort by recent activity before truncating (most active peers first)
     # sqlite3.Row doesn't have .get(), so access column directly with fallback

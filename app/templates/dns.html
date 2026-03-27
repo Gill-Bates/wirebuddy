@@ -1041,6 +1041,9 @@
             peerFilter.appendChild(allOpt);
 
             for (const peer of peers) {
+                // Skip node tunnel peers (inter-node connections)
+                if (peer.is_node_tunnel) continue;
+
                 const name = peer.name || peer.public_key?.substring(0, 8) || 'Unknown';
                 const addrParts = (peer.peer_address || '').split(',');
                 for (const part of addrParts) {
