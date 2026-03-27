@@ -103,25 +103,140 @@
         pointer-events: none;
     }
 
+    @media (max-width: 991.98px) {
+        /* Hide Port column on tablet */
+        .nodes-table th:nth-child(3),
+        .nodes-table td[data-label="Port"] {
+            display: none;
+        }
+    }
+
+    /* Mobile-optimized nodes rows — card layout matching peers.html */
     @media (max-width: 767.98px) {
-        .nodes-table thead { display: none; }
-        .nodes-table tbody tr {
+        .table-responsive {
+            overflow-x: hidden;
+            overflow-y: visible;
+        }
+
+        .nodes-table {
+            font-size: 0.82rem;
+        }
+
+        .nodes-table thead {
+            display: none;
+        }
+
+        .nodes-table,
+        .nodes-table tbody,
+        .nodes-table tr,
+        .nodes-table td {
             display: block;
-            padding: 12px 0;
-            border-bottom: 1px solid var(--bs-border-color);
+            width: 100%;
         }
-        .nodes-table tbody td {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            padding: 4px 0;
-            border: none;
+
+        /* Card layout with CSS Grid areas */
+        .nodes-table tbody tr {
+            display: grid;
+            grid-template-areas:
+                "name      status"
+                "fqdn      fqdn"
+                "meta      meta"
+                "actions   actions";
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: start;
+            gap: 0.25rem 0.5rem;
+            border: 1px solid var(--bs-border-color);
+            border-radius: 0.5rem;
+            padding: 0.45rem 0.55rem;
+            margin-bottom: 0.45rem;
+            background: var(--bs-body-bg);
         }
-        .nodes-table tbody td::before {
-            content: attr(data-label);
+
+        .nodes-table td {
+            border: 0;
+            padding: 0;
+            min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        /* Hide data-label pseudo-elements */
+        .nodes-table td::before {
+            display: none;
+        }
+
+        /* Grid area assignments */
+        .nodes-table td[data-label="Name"] {
+            grid-area: name;
+            align-self: center;
             font-weight: 600;
-            margin-right: 8px;
-            min-width: 110px;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .nodes-table td[data-label="Status"] {
+            grid-area: status;
+            justify-self: end;
+            align-self: center;
+        }
+
+        .nodes-table td[data-label="FQDN"] {
+            grid-area: fqdn;
+        }
+
+        .nodes-table td[data-label="FQDN"] .node-fqdn-meta {
+            margin-left: 0;
+        }
+
+        /* Hide Port and Version columns on mobile, show as meta line */
+        .nodes-table td[data-label="Port"],
+        .nodes-table td[data-label="Version"] {
+            display: none !important;
+        }
+
+        /* Peers + Last Seen combined as meta line */
+        .nodes-table td[data-label="Peers"],
+        .nodes-table td[data-label="Last Seen"] {
+            display: none !important;
+        }
+
+        /* Meta row with version, peers, last seen (visible on mobile only) */
+        .node-mobile-meta {
+            grid-area: meta;
+            display: flex !important;
+            flex-wrap: wrap;
+            gap: 0.25rem 0.75rem;
+            font-size: 0.75rem;
+            color: var(--bs-secondary-color);
+        }
+
+        .node-mobile-meta span + span::before {
+            content: "·";
+            margin-right: 0.5rem;
+        }
+
+        /* Actions */
+        .nodes-table td[data-label="Actions"] {
+            grid-area: actions;
+            border-top: 1px solid var(--bs-border-color);
+            padding-top: 0.4rem !important;
+            margin-top: 0.2rem;
+        }
+
+        .node-actions-cell {
+            min-width: auto !important;
+        }
+
+        .node-actions-cell .d-flex {
+            justify-content: flex-end !important;
+        }
+
+        .node-action-btn {
+            min-width: 40px;
+            min-height: 40px;
+            padding: 0.3rem;
         }
     }
 </style>
@@ -200,6 +315,11 @@
                         <td data-label="Peers">{{ node.peer_count }}</td>
                         <td data-label="Last Seen" class="node-last-seen text-nowrap">
                             <span class="{{ node.last_seen_class }}">{{ node.last_seen_text }}</span>
+                        </td>
+                        <td class="node-mobile-meta d-none">
+                            {% if node.node_version %}<span>{{ node.node_version }}</span>{% endif %}
+                            <span>{{ node.peer_count }} Peer{{ 's' if node.peer_count != 1 else '' }}</span>
+                            <span>{{ node.last_seen_text }}</span>
                         </td>
                         <td data-label="Actions" class="text-end node-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
@@ -403,6 +523,7 @@
     let pollFailureCount = 0;
     let nodeCreatedFlag = false;
     let pollController = null;
+    const restartingNodes = new Map(); // node_id → phase ('sent' | 'offline')
 
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
     const headers = {
@@ -495,6 +616,9 @@
         } else if (status === 'offline') {
             span.classList.add('bg-danger');
             span.textContent = 'Offline';
+        } else if (status === 'restarting') {
+            span.classList.add('bg-info', 'text-dark');
+            span.textContent = 'Restarting…';
         } else {
             span.classList.add('bg-secondary');
             span.textContent = status || '—';
@@ -675,11 +799,33 @@
     async function restartNode(id, name) {
         if (!await wbConfirm(`Restart node "${name}"? The node will disconnect briefly and reconnect.`, 'warning')) return;
 
+        // Find the row and button for immediate UI feedback
+        const row = document.getElementById(`node-row-${id}`);
+        const restartBtn = row?.querySelector('button[data-action="restart-node"]');
+
         try {
-            const data = await api('POST', `/api/nodes/${id}/restart`);
-            wbToast(data.message || `Restart signal sent to "${name}"`, 'success');
+            await api('POST', `/api/nodes/${id}/restart`);
+
+            // Immediately update badge to "Restarting"
+            const statusCell = row?.querySelector('td[data-label="Status"]');
+            if (statusCell) {
+                statusCell.replaceChildren(createStatusBadge('restarting'));
+            }
+
+            // Disable the restart button while restarting
+            if (restartBtn) {
+                restartBtn.disabled = true;
+            }
+
+            // Track this node as restarting so polling doesn't overwrite the badge
+            restartingNodes.set(id, 'sent');
+            // Auto-clear after 2 minutes in case the node never comes back
+            setTimeout(() => restartingNodes.delete(id), 120000);
+
+            wbToast(`Restart signal sent to "${name}". Node will reconnect shortly.`, 'success');
         } catch (err) {
-            await wbAlert(err.message, 'danger');
+            // Show as toast instead of alert to avoid blocking reconnect modal
+            wbToast(err.message || `Failed to restart "${name}"`, 'danger');
         }
     }
 
@@ -704,14 +850,31 @@
                 if (statusCell) {
                     const currentBadge = statusCell.querySelector('.node-status-badge');
                     const currentStatus = currentBadge?.textContent.trim();
-                    const newStatus = node.status === 'online' ? 'Online' : 
-                                     node.status === 'pending' ? 'Pending' : 
-                                     node.status === 'offline' ? 'Offline' : 
-                                     node.status || '—';
-                    
-                    // Only update if changed
-                    if (currentStatus !== newStatus) {
-                        statusCell.replaceChildren(createStatusBadge(node.status));
+
+                    // If this node is tracked as restarting, keep showing "Restarting"
+                    // until the node goes offline then comes back online
+                    if (restartingNodes.has(node.id)) {
+                        const phase = restartingNodes.get(node.id);
+                        if (node.status === 'offline') {
+                            // Node went offline — restart in progress
+                            restartingNodes.set(node.id, 'offline');
+                            statusCell.replaceChildren(createStatusBadge('restarting'));
+                        } else if (node.status === 'online' && phase === 'offline') {
+                            // Node came back online after being offline — restart complete!
+                            restartingNodes.delete(node.id);
+                            statusCell.replaceChildren(createStatusBadge(node.status));
+                        }
+                        // phase === 'sent' && status === 'online': still shutting down, keep badge
+                    } else {
+                        const newStatus = node.status === 'online' ? 'Online' : 
+                                         node.status === 'pending' ? 'Pending' : 
+                                         node.status === 'offline' ? 'Offline' : 
+                                         node.status || '\u2014';
+                        
+                        // Only update if changed
+                        if (currentStatus !== newStatus) {
+                            statusCell.replaceChildren(createStatusBadge(node.status));
+                        }
                     }
                 }
 

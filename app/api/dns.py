@@ -79,9 +79,11 @@ from .wireguard_utils import (
 _log = logging.getLogger(__name__)
 _background_tasks: set[asyncio.Task[None]] = set()
 _DNS_STATUS_CACHE_TTL_SECONDS = 5.0
-_DNS_TREND_CACHE_TTL_SECONDS = 10.0
+_DNS_TREND_CACHE_TTL_SECONDS = 60.0
+_DNS_TREND_CACHE_STALE_TTL_SECONDS = 300.0  # Serve stale data up to 5min while recomputing
 _dns_status_cache: dict[str, tuple[float, dict]] = {}
 _dns_trend_cache: dict[tuple[str, int, int, str], tuple[float, dict]] = {}
+_dns_trend_lock = asyncio.Lock()  # Prevents thundering herd on trend computation
 _ALLOWED_DOT_PORTS = frozenset({853, 8853})
 _DOT_TEST_CONCURRENCY = 8
 
@@ -670,11 +672,42 @@ async def dns_trend(
 	
 	dns_key = str(dns_dir.resolve())
 	cache_key = (dns_key, hours, bucket_minutes, client_filter_key)
-	cache_entry = _dns_trend_cache.get(cache_key)
 	now_mono = time.monotonic()
+	cache_entry = _dns_trend_cache.get(cache_key)
+	
+	# Fast path: fresh cache hit
 	if cache_entry and (now_mono - cache_entry[0]) < _DNS_TREND_CACHE_TTL_SECONDS:
 		return ok_response(data=cache_entry[1])
+	
+	# Thundering-herd protection: if another request is already computing,
+	# serve stale data immediately instead of blocking on the lock.
+	if _dns_trend_lock.locked():
+		if cache_entry and (now_mono - cache_entry[0]) < _DNS_TREND_CACHE_STALE_TTL_SECONDS:
+			return ok_response(data=cache_entry[1])
+	
+	async with _dns_trend_lock:
+		# Re-check after acquiring lock (another request may have refreshed)
+		cache_entry = _dns_trend_cache.get(cache_key)
+		now_mono = time.monotonic()
+		if cache_entry and (now_mono - cache_entry[0]) < _DNS_TREND_CACHE_TTL_SECONDS:
+			return ok_response(data=cache_entry[1])
+		
+		data = await _compute_trend_data(dns_dir, hours, bucket_minutes, client_filter)
+		
+		if len(_dns_trend_cache) >= 128:
+			oldest_key = min(_dns_trend_cache.items(), key=lambda item: item[1][0])[0]
+			_dns_trend_cache.pop(oldest_key, None)
+		_dns_trend_cache[cache_key] = (time.monotonic(), data)
+		return ok_response(data=data)
 
+
+async def _compute_trend_data(
+	dns_dir: Path,
+	hours: int,
+	bucket_minutes: int,
+	client_filter: set[str] | None,
+) -> dict:
+	"""Heavy computation for trend data — runs under lock."""
 	now = datetime.now(timezone.utc)
 	since = now - timedelta(hours=hours)
 
@@ -732,7 +765,7 @@ async def dns_trend(
 		for b, t in zip(blocked, total)
 	]
 
-	data = {
+	return {
 		"hours": hours,
 		"bucket_minutes": bucket_minutes,
 		"labels": labels,
@@ -740,11 +773,6 @@ async def dns_trend(
 		"blocked": blocked,
 		"block_rate": block_rate,
 	}
-	if len(_dns_trend_cache) >= 128:
-		oldest_key = min(_dns_trend_cache.items(), key=lambda item: item[1][0])[0]
-		_dns_trend_cache.pop(oldest_key, None)
-	_dns_trend_cache[cache_key] = (now_mono, data)
-	return ok_response(data=data)
 
 
 # ---------------------------------------------------------------------------
@@ -1402,13 +1430,18 @@ async def dns_logs(
 	masked = "*****"
 
 	# Build peer IP→name mapping for client name resolution
+	# peer_address can be dual-stack: "10.13.13.2/32, fd13:13:13::2/128"
 	peer_ip_map: dict[str, str] = {}
 	for peer in get_all_peers(conn):
 		addr = peer["peer_address"]
 		name = peer["name"]
 		if addr and name:
-			# Strip CIDR suffix if present (e.g., 10.13.13.2/32 → 10.13.13.2)
-			peer_ip_map[addr.split("/")[0]] = name
+			for part in str(addr).split(","):
+				part = part.strip()
+				if not part:
+					continue
+				# Strip CIDR suffix (e.g., 10.13.13.2/32 → 10.13.13.2)
+				peer_ip_map[part.split("/")[0]] = name
 
 	def _format_client(client_ip: str) -> str:
 		"""Format client display: 'PeerName (IP)' or just 'IP'."""

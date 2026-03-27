@@ -250,6 +250,61 @@ def _find_peer_public_ip_for_vpn_ip(
 	return None
 
 
+def _find_node_outbound_ip(
+	conn: sqlite3.Connection,
+	interface_name: str,
+	vpn_ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> str | None:
+	"""If the peer at vpn_ip is assigned to a remote node, return the node's public IP.
+
+	The node's public IP is the last_client_ip of the node's tunnel peer on master,
+	which reflects the IP address the node connects from.
+	"""
+	try:
+		# Find the peer by matching VPN IP against peer_address in the given interface
+		rows = conn.execute(
+			"""
+			SELECT node_id, peer_address
+			FROM peers
+			WHERE interface = ?
+			  AND peer_address IS NOT NULL
+			  AND node_id IS NOT NULL
+			""",
+			(interface_name,),
+		).fetchall()
+	except sqlite3.Error:
+		return None
+
+	for row in rows:
+		for part in str(row["peer_address"] or "").split(","):
+			item = part.strip()
+			if not item:
+				continue
+			try:
+				if ipaddress.ip_interface(item).ip == vpn_ip:
+					# Found the peer's node_id — now look up tunnel peer's public IP
+					node_row = conn.execute(
+						"SELECT tunnel_peer_id FROM nodes WHERE id = ?",
+						(row["node_id"],),
+					).fetchone()
+					if not node_row or not node_row["tunnel_peer_id"]:
+						return None
+					tunnel = conn.execute(
+						"SELECT last_client_ip FROM peers WHERE id = ?",
+						(node_row["tunnel_peer_id"],),
+					).fetchone()
+					if not tunnel or not tunnel["last_client_ip"]:
+						return None
+					candidate = _normalize_ip(str(tunnel["last_client_ip"]).strip())
+					if candidate and not (candidate.is_private or candidate.is_loopback or candidate.is_link_local):
+						return str(candidate)
+					return None
+			except ValueError:
+				continue
+
+	return None
+
+
 def _resolve_public_client_ip(
 	conn: sqlite3.Connection,
 	client_ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
@@ -762,8 +817,16 @@ async def _is_unbound_running_safe() -> bool:
 async def _run_status_health_checks(
 	client_ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address,
 	matched_iface: sqlite3.Row | None,
+	conn: sqlite3.Connection | None = None,
 ) -> tuple[list[dict[str, str]], str | None]:
 	"""Compute status checks and outbound IP details."""
+	# Check if client is connected via a remote node — use node's public IP
+	node_outbound_ip: str | None = None
+	if matched_iface is not None and conn is not None:
+		node_outbound_ip = await asyncio.to_thread(
+			_find_node_outbound_ip, conn, matched_iface["name"], client_ip_obj,
+		)
+
 	last_speedtest, dns_running, dns_probe_result, leak_result, outbound_result = await asyncio.gather(
 		asyncio.to_thread(_latest_speedtest_check),
 		_is_unbound_running_safe(),
@@ -791,7 +854,13 @@ async def _run_status_health_checks(
 		leak_label = "WARN"
 	leak_health = {"state": leak_state, "label": leak_label, "detail": leak_detail}
 
-	outbound_ip, outbound_detail = outbound_result
+	# Use node outbound IP if the client is connected via a remote node,
+	# otherwise fall back to the master's outbound IP
+	if node_outbound_ip:
+		outbound_ip = node_outbound_ip
+		outbound_detail = "Detected via node endpoint"
+	else:
+		outbound_ip, outbound_detail = outbound_result
 	outbound_state = CheckState.OK if outbound_ip else CheckState.WARN
 	outbound_label = "OK" if outbound_ip else "WARN"
 
@@ -842,7 +911,7 @@ async def status_page(
 		client_geo_city = geo_fields["city"]
 		client_geo_as_org = geo_fields["as_org"]
 
-	checks, outbound_ip = await _run_status_health_checks(context.client_ip, context.matched_iface)
+	checks, outbound_ip = await _run_status_health_checks(context.client_ip, context.matched_iface, conn)
 
 	# Lookup GeoIP for outbound IP
 	outbound_geo_country_code: str | None = None

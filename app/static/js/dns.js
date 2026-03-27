@@ -33,7 +33,7 @@ let _logActionState = null; // Active row action context
 let _isInitialTopDomainsRender = true; // Skip fade on first render
 let _topDomainFadeTimeout = null; // Timeout handle for fade animation fallback
 let _fadeAbort = null; // AbortController for peer filter fade animation
-const _pageAbort = new AbortController();  // Abort controller for page cleanup
+let _pageAbort = new AbortController();  // Abort controller for page cleanup
 
 /**
  * Get comma-separated client IPs for the currently selected peer filter.
@@ -415,6 +415,9 @@ async function loadTrend() {
 
         document.getElementById('trend-meta').textContent = '';
     } catch (e) {
+        if (e.name !== 'AbortError') {
+            console.error('Trend load failed:', e);
+        }
         document.getElementById('trend-meta').textContent = 'Trend unavailable';
     }
 }
@@ -694,10 +697,13 @@ async function loadLogsOnly(showLoading = true) {
             isAdmin ? q : { ...q, client: undefined }
         );
 
-        // Detect if data changed using lightweight comparison (avoid O(n) JSON serialization)
-        const dataChanged = newData.length !== _logData.length ||
-            newData[0]?.timestamp !== _logData[0]?.timestamp ||
-            newData[newData.length - 1]?.timestamp !== _logData[_logData.length - 1]?.timestamp;
+        // Lightweight change detection using first/last + sample from middle
+        const sig = (arr) => {
+            if (!arr.length) return '';
+            const mid = Math.floor(arr.length / 2);
+            return `${arr.length}:${arr[0]?.timestamp}:${arr[mid]?.timestamp}:${arr.at(-1)?.timestamp}`;
+        };
+        const dataChanged = sig(newData) !== sig(_logData);
         if (!showLoading && !dataChanged) {
             // Data unchanged during poll - skip render
             return;
@@ -723,9 +729,9 @@ async function loadLogsOnly(showLoading = true) {
                     // Yield to allow UI updates
                     await new Promise(r => requestAnimationFrame(r));
                 }
-                // Restore scroll position
+                // Restore scroll position (clamped to prevent overshoot if dataset shrunk)
                 if (logContainer) {
-                    logContainer.scrollTop = scrollTop;
+                    logContainer.scrollTop = Math.min(scrollTop, logContainer.scrollHeight - logContainer.clientHeight);
                 }
             };
             void restoreScrollAsync();
@@ -833,7 +839,7 @@ function renderLogs(append = false) {
         _filteredData = _logData.filter(q => {
             if (filter === 'blocked' && !q.blocked) return false;
             if (filter === 'allowed' && q.blocked) return false;
-            if (peerFilter !== 'all' && peerMapSnapshot[(q.client || '').toLowerCase()] !== peerFilter) return false;
+            if (peerFilter !== 'all' && (q.client_name || peerMapSnapshot[(q.client || '').toLowerCase()] || '') !== peerFilter) return false;
             if (search && !(q.domain || '').toLowerCase().includes(search)) return false;
             return true;
         });

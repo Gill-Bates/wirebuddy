@@ -687,12 +687,18 @@ def _read_country_traffic_inputs_sync(db_path: Path) -> tuple[bool, dict[str, st
 			return False, {}
 
 		all_peers = get_all_peers(conn)
+		# peer_address can be dual-stack: "10.13.13.2/32, fd13:13:13::2/128"
 		peer_ip_map: dict[str, str] = {}
 		for peer in all_peers:
 			addr = peer["peer_address"]
 			name = peer["name"]
 			if addr and name:
-				peer_ip_map[addr.split("/")[0]] = name
+				for part in str(addr).split(","):
+					part = part.strip()
+					if not part:
+						continue
+					# Strip CIDR suffix (e.g., 10.13.13.2/32 → 10.13.13.2)
+					peer_ip_map[part.split("/")[0]] = name
 		return True, peer_ip_map
 	
 	return _with_conn(db_path, _load)
