@@ -1095,7 +1095,8 @@
 
             const nowSec = Math.floor(Date.now() / 1000);
             const activePeers = allPeers
-                .filter(p => Number(p.latest_handshake) > 0)
+                // Exclude node tunnel peers (inter-node connections) from Recent Peer Activity
+                .filter(p => Number(p.latest_handshake) > 0 && !p.is_node_tunnel)
                 .sort((a, b) => {
                     const ageA = Math.max(0, nowSec - Number(a.latest_handshake || 0));
                     const ageB = Math.max(0, nowSec - Number(b.latest_handshake || 0));

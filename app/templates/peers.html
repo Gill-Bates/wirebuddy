@@ -325,6 +325,19 @@
         max-width: 280px;
     }
 
+    /* Hide nodes toggle */
+    .peers-hide-nodes-toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.875rem;
+        white-space: nowrap;
+    }
+
+    .peers-hide-nodes-toggle .form-check-input {
+        margin-top: 0;
+    }
+
     .peers-search-wrapper .material-icons {
         position: absolute;
         left: 0.75rem;
@@ -681,7 +694,12 @@
             <small class="text-muted peers-count-label">
                 Showing <span id="peers-visible-count">{{ total_peers }}</span> of {{ total_peers }} peers
             </small>
-            <div class="peers-search-wrapper">
+            <div class="d-flex align-items-center gap-3">
+                <div class="form-check peers-hide-nodes-toggle">
+                    <input class="form-check-input" type="checkbox" id="peers-hide-nodes">
+                    <label class="form-check-label text-muted" for="peers-hide-nodes">Hide Nodes</label>
+                </div>
+                <div class="peers-search-wrapper">
                 <span class="material-icons" aria-hidden="true">search</span>
                 <input type="text" 
                     class="form-control form-control-sm peers-search-input" 
@@ -695,6 +713,7 @@
                     aria-label="Clear search">
                     <span class="material-icons" aria-hidden="true">close</span>
                 </button>
+                </div>
             </div>
         </div>
         <div class="peers-scroll-container" id="peers-scroll-container">
@@ -2396,16 +2415,40 @@
     const visibleCountEl = document.getElementById('peers-visible-count');
     const noResultsEl = document.getElementById('peers-no-results');
     const peersTableEl = document.getElementById('peers-table');
+    const hideNodesCheckbox = document.getElementById('peers-hide-nodes');
+    const HIDE_NODES_KEY = 'wb_peers_hide_nodes';
     let searchDebounceTimer = null;
+
+    // Restore "Hide Nodes" preference from localStorage
+    if (hideNodesCheckbox) {
+        const saved = localStorage.getItem(HIDE_NODES_KEY);
+        if (saved === 'true') {
+            hideNodesCheckbox.checked = true;
+        }
+        hideNodesCheckbox.addEventListener('change', () => {
+            localStorage.setItem(HIDE_NODES_KEY, hideNodesCheckbox.checked ? 'true' : 'false');
+            filterPeers(searchInput?.value || '');
+        });
+    }
 
     function filterPeers(query) {
         const searchTerm = (query || '').toLowerCase().trim();
+        const hideNodes = hideNodesCheckbox?.checked || false;
         let visibleCount = 0;
 
         // Make sure we have the latest rows
         refreshPeerRows();
 
         peerRows.forEach(row => {
+            // Check if this is a node tunnel peer
+            const isNodeTunnel = row.hasAttribute('data-node-tunnel');
+
+            // Hide node tunnel peers if "Hide Nodes" is checked
+            if (hideNodes && isNodeTunnel) {
+                row.classList.add('peer-row-hidden');
+                return;
+            }
+
             if (!searchTerm) {
                 row.classList.remove('peer-row-hidden');
                 visibleCount++;
@@ -2486,6 +2529,11 @@
                 searchInput.focus();
             }
         });
+    }
+
+    // Apply initial filter if "Hide Nodes" is restored from localStorage
+    if (hideNodesCheckbox?.checked) {
+        filterPeers('');
     }
 
     document.getElementById('peers-table')?.addEventListener('click', async (event) => {
