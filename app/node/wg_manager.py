@@ -264,7 +264,9 @@ def _build_node_post_up(iface_name: str) -> str:
 	"""Build PostUp rules for a node: IP forwarding + NAT/MASQUERADE."""
 	phy = _get_default_route_iface() or "eth0"
 	return (
-		f"sysctl -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1; "
+		# sysctl may fail in unprivileged containers; use || true since
+		# host-level forwarding is often already enabled via docker --sysctl
+		f"sysctl -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1 || true; "
 		f"iptables -A FORWARD -i %i -j ACCEPT; "
 		f"iptables -A FORWARD -o %i -j ACCEPT; "
 		f"iptables -t nat -A POSTROUTING -o {phy} -j MASQUERADE; "
