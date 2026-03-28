@@ -22,6 +22,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+__all__ = [
+	"apply_config",
+	"shutdown_all_interfaces",
+	"has_running_interfaces",
+	"get_wg_dump",
+]
+
 _log = logging.getLogger(__name__)
 
 WG_CONFIG_DIR = Path(os.environ.get("WG_CONFIG_PATH", "/etc/wireguard"))
@@ -182,7 +189,7 @@ def _validate_endpoint(value: Any, *, field_name: str) -> str:
 			ipaddress.IPv4Address(host_part)
 		except ValueError:
 			if not _HOSTNAME_RE.fullmatch(host_part):
-				raise ValueError(f"Invalid host in endpoint for {field_name!r}: {host_part!r}")
+				raise ValueError(f"Invalid host in endpoint for {field_name!r}: {host_part!r}") from None
 
 	_validate_port(port_str, field_name=f"{field_name} port")
 	return text
@@ -260,9 +267,15 @@ def _get_default_route_iface() -> str | None:
 	return None
 
 
-def _build_node_post_up(iface_name: str) -> str:
-	"""Build PostUp rules for a node: IP forwarding + NAT/MASQUERADE."""
+def _build_node_post_up(_iface_name: str) -> str:
+	"""Build PostUp rules for a node: IP forwarding + NAT/MASQUERADE.
+	
+	Note: _iface_name is unused - PostUp uses %i placeholder provided by wg-quick.
+	"""
 	phy = _get_default_route_iface() or "eth0"
+	# Validate physical interface name to prevent shell injection
+	if _INTERFACE_RE.fullmatch(phy) is None:
+		raise RuntimeError(f"Unsafe default route interface name: {phy!r}")
 	return (
 		# sysctl may fail in unprivileged containers; use || true since
 		# host-level forwarding is often already enabled via docker --sysctl
@@ -277,9 +290,15 @@ def _build_node_post_up(iface_name: str) -> str:
 	)
 
 
-def _build_node_post_down(iface_name: str) -> str:
-	"""Build PostDown rules for a node: remove NAT/MASQUERADE."""
+def _build_node_post_down(_iface_name: str) -> str:
+	"""Build PostDown rules for a node: remove NAT/MASQUERADE.
+	
+	Note: _iface_name is unused - PostDown uses %i placeholder provided by wg-quick.
+	"""
 	phy = _get_default_route_iface() or "eth0"
+	# Validate physical interface name to prevent shell injection
+	if _INTERFACE_RE.fullmatch(phy) is None:
+		raise RuntimeError(f"Unsafe default route interface name: {phy!r}")
 	return (
 		f"iptables -D FORWARD -i %i -j ACCEPT; "
 		f"iptables -D FORWARD -o %i -j ACCEPT; "
@@ -351,7 +370,7 @@ def _write_interface_config(name: str, config: dict[str, Any]) -> bool:
 	return True
 
 
-def _runtime_tmp_dir() -> Path | None:
+def _runtime_tmp_dir() -> Path:
 	"""Prefer a root-owned runtime directory for ephemeral key material."""
 	candidate = Path("/run")
 	if candidate.is_dir():
@@ -481,16 +500,34 @@ def _apply_config_locked(config: dict[str, Any]) -> str:
 			# wg syncconf only handles PrivateKey/ListenPort/peers;
 			# Address and PostUp/PostDown require full wg-quick cycle.
 			_log.info("Reloading interface %s (config changed)...", name)
-			_run_checked(["wg-quick", "down", name], timeout=_TIMEOUT_WG_QUICK)
-			_run_checked(["wg-quick", "up", name], timeout=_TIMEOUT_WG_QUICK)
-			_log.info("Interface %s reloaded", name)
+			conf_path = _get_interface_conf_path(name)
+			backup_content = conf_path.read_text(encoding="utf-8")  # backup before down
+			try:
+				_run_checked(["wg-quick", "down", name], timeout=_TIMEOUT_WG_QUICK)
+				_run_checked(["wg-quick", "up", name], timeout=_TIMEOUT_WG_QUICK)
+				_log.info("Interface %s reloaded", name)
+			except RuntimeError as exc:
+				_log.critical("Interface reload failed for %s: %s", name, exc)
+				_log.warning("Attempting to restore previous config for %s...", name)
+				try:
+					conf_path.write_text(backup_content, encoding="utf-8")
+					_run_checked(["wg-quick", "up", name], timeout=_TIMEOUT_WG_QUICK)
+					_log.warning("Successfully restored previous config for %s", name)
+				except Exception as restore_exc:
+					_log.critical(
+						"Failed to restore %s (interface offline): %s",
+						name, restore_exc,
+					)
+				raise  # re-raise original error
 
 	# 2. Sync peers
 	for iface_name in desired_ifaces:
 		_sync_peers_for_interface(iface_name, peers_by_interface.get(iface_name, []))
 
 	# 3. Configure master peer for DNS tunnel (Node→Master)
-	if master_peer:
+	if master_peer is not None:
+		if not isinstance(master_peer, dict):
+			raise ValueError("master_peer must be a dict or null")
 		_configure_master_peer(master_peer)
 
 	# 4. Bring down interfaces that are no longer in config
@@ -572,14 +609,13 @@ def _get_current_peer_state(iface_name: str) -> dict[str, str]:
 	state: dict[str, str] = {}
 	for line in stdout.strip().split("\n"):
 		parts = line.split("\t")
-		# dump format: iface\tprivkey\tpubkey\tlistenport\tfwmark (interface line)
-		# or: iface\tpubkey\tpsk\tendpoint\tallowed-ips\thandshake\trx\ttx\tkeepalive (peer line)
-		# Actually wg show <iface> dump has a different format:
-		# first line: privkey\tpubkey\tlistenport\tfwmark
-		# peer lines: pubkey\tpsk\tendpoint\tallowed-ips\thandshake\trx\ttx\tkeepalive
-		if len(parts) >= 4 and _WG_KEY_RE.fullmatch(parts[0]):
-			# peer line
-			state[parts[0]] = parts[3]  # allowed-ips
+		# wg show <iface> dump format:
+		# first line (interface): privkey \t pubkey \t listen-port \t fwmark  (4 fields)
+		# peer lines: pubkey \t psk \t endpoint \t allowed-ips \t handshake \t rx \t tx \t keepalive  (8 fields)
+		# CRITICAL: Must check len(parts) == 8 to skip interface line (which contains PRIVATE KEY)
+		if len(parts) == 8 and _WG_KEY_RE.fullmatch(parts[0]):
+			# peer line: parts[0]=pubkey, parts[3]=allowed-ips
+			state[parts[0]] = parts[3]
 	return state
 
 
@@ -602,7 +638,7 @@ def _sync_peers_for_interface(iface_name: str, desired_peers: list[dict[str, Any
 		_log.info("Removing peer %s... from %s", key[:8], iface_name)
 		_run_checked(["wg", "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
 
-	# Add/update desired peers (skip if allowed-ips unchanged and no PSK)
+	# Add/update desired peers (update if allowed-ips changed OR PSK changed)
 	changed = 0
 	for key in desired_keys:
 		p = desired_map[key]
@@ -611,8 +647,25 @@ def _sync_peers_for_interface(iface_name: str, desired_peers: list[dict[str, Any
 		current_ips = current_state.get(key, "").replace(" ", "")
 
 		psk = p.get("preshared_key")
-		if key in current_keys and desired_ips == current_ips and not psk:
-			continue  # unchanged peer, skip
+		# Skip only if peer exists, allowed-ips unchanged, and no PSK in config
+		# (we always update when PSK is present to ensure it's set/rotated,
+		# and when no PSK is desired we clear any previous PSK with /dev/null)
+		needs_update = (
+			key not in current_keys or  # new peer
+			desired_ips != current_ips or  # allowed-ips changed
+			psk  # PSK present → always update (set/rotate)
+		)
+		
+		if not needs_update:
+			# Peer exists, IPs unchanged, no PSK → but we still need to ensure
+			# any previous PSK is cleared. To be safe, always send preshared-key
+			# when transitioning to no-PSK state.
+			# Use /dev/null to explicitly remove any existing PSK.
+			cmd = ["wg", "set", iface_name, "peer", key, "preshared-key", "/dev/null"]
+			code, _, stderr = _run(cmd, timeout=_TIMEOUT_WG_SET)
+			if code != 0:
+				_log.warning("Failed to clear PSK for peer %s on %s: %s", key[:8], iface_name, stderr.strip())
+			continue
 
 		cmd = ["wg", "set", iface_name, "peer", key, "allowed-ips", p["peer_address"]]
 		if psk:
@@ -623,6 +676,8 @@ def _sync_peers_for_interface(iface_name: str, desired_peers: list[dict[str, Any
 			finally:
 				psk_path.unlink(missing_ok=True)
 		else:
+			# No PSK desired → explicitly clear any previous PSK
+			cmd.extend(["preshared-key", "/dev/null"])
 			_run_checked(cmd, timeout=_TIMEOUT_WG_SET)
 		# Add routes for peer (wg set doesn't create routes like wg-quick)
 		_ensure_routes_for_allowed_ips(iface_name, p["peer_address"])
@@ -644,7 +699,7 @@ def shutdown_all_interfaces() -> None:
 			_run(["wg-quick", "down", name])
 
 
-def get_wg_dump() -> dict:
+def get_wg_dump() -> dict[str, dict[str, Any]]:
 	"""Collect `wg show all dump` and return structured data.
 
 	Returns dict of {public_key: {endpoint, handshake, rx, tx}}.
@@ -653,7 +708,7 @@ def get_wg_dump() -> dict:
 	if code != 0 or not stdout.strip():
 		return {}
 
-	result: dict[str, dict] = {}
+	result: dict[str, dict[str, Any]] = {}
 	for line in stdout.strip().split("\n"):
 		parts = line.split("\t")
 		if len(parts) != 9:

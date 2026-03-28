@@ -1086,7 +1086,7 @@
             _filteredData = _logData.filter(q => {
                 if (filter === 'blocked' && !q.blocked) return false;
                 if (filter === 'allowed' && q.blocked) return false;
-                if (peerFilter !== 'all' && _peerMap[(q.client || '').toLowerCase()] !== peerFilter) return false;
+                if (peerFilter !== 'all' && (q.client_name || '') !== peerFilter) return false;
                 if (search && !(q.domain || '').toLowerCase().includes(search)) return false;
                 return true;
             });

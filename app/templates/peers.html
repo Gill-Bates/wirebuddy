@@ -79,12 +79,19 @@
         gap: 0.25rem;
     }
 
+    /* Compact action buttons for table rows (v1.3.3 style) */
     .peers-table td.peer-actions-cell .btn {
-        min-width: 44px;
-        min-height: 44px;
+        min-width: 0;
+        min-height: 0;
+        padding: 0.2rem 0.35rem;
         display: inline-flex;
         align-items: center;
         justify-content: center;
+    }
+
+    .peers-table td.peer-actions-cell .material-icons {
+        font-size: 18px;
+        pointer-events: none;
     }
 
     .peers-table td {
@@ -606,10 +613,11 @@
             flex-wrap: nowrap;
         }
 
+        /* Compact action buttons (mobile) */
         .peers-table td.peer-actions-cell .btn {
-            min-width: 40px;
-            min-height: 40px;
-            padding: 0.3rem;
+            min-width: 0;
+            min-height: 0;
+            padding: 0.2rem 0.35rem;
             display: inline-flex;
             align-items: center;
             justify-content: center;
@@ -617,6 +625,7 @@
 
         .peers-table td.peer-actions-cell .material-icons {
             font-size: 18px;
+            pointer-events: none;
         }
 
         .peers-table td code {

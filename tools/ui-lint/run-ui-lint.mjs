@@ -134,6 +134,21 @@ const FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX = 0.5;
 // =============================================================================
 
 // =============================================================================
+// Table Action Button Design Rules (peers, nodes, users)
+// =============================================================================
+// Action buttons inside table rows use COMPACT styling (v1.3.3 pattern):
+// - min-width: 0; min-height: 0; padding: 0.2rem 0.35rem;
+// - .material-icons: font-size: 18px; pointer-events: none;
+// - These are intentionally smaller than the 44px touch target recommendation
+//   because they are densely packed in a table row and typically used with
+//   mouse pointer (fine input), not touch. Larger buttons would cause
+//   excessive horizontal space consumption and clutter.
+// - The 44px click target rule (CLICK_TARGET_MIN_SIZE_PX) is already exempted
+//   for buttons via shouldSkipCompactControlClickTarget() — this is by design.
+// - Consistency: peers.html, nodes.html, users.html must all use same pattern.
+// =============================================================================
+
+// =============================================================================
 // Settings Backup Tab Design Rules
 // =============================================================================
 // Layout: Row with 3 cards (col-lg-4 each, all 3 cards in a single row on desktop)
@@ -3443,8 +3458,8 @@ function summarizeFindings(result) {
     if (result.metrics.spacing.nodesMobileLayout?.length) {
         const mobileIssues = result.metrics.spacing.nodesMobileLayout.filter(
             (r) => !r.theadHidden || !r.isGridLayout || !r.portHidden || !r.versionHidden ||
-                   !r.peersHidden || !r.lastSeenHidden || !r.mobileMetaVisible ||
-                   !r.statusAlignedWithName || !r.fqdnBelowName
+                !r.peersHidden || !r.lastSeenHidden || !r.mobileMetaVisible ||
+                !r.statusAlignedWithName || !r.fqdnBelowName
         );
         if (mobileIssues.length) {
             const reasons = new Set();
