@@ -117,6 +117,23 @@ const FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX = 0.5;
 // =============================================================================
 
 // =============================================================================
+// Nodes Mobile Layout Rules (< 768px)
+// =============================================================================
+// Grid layout: "name status" / "fqdn fqdn" / "meta meta" / "actions actions"
+// - thead hidden, rows display as grid cards
+// - Port, Version, Peers, Last Seen columns: display:none on mobile
+// - .node-mobile-meta: display:flex on mobile (replaces hidden columns)
+//   shows version + peer count + last seen as compact inline meta
+// - Status badge right-aligned on same row as Name
+// - FQDN cell spans full width below Name/Status
+// - Actions cell has border-top separator, right-aligned buttons
+//
+// Nodes Desktop Layout Rules (>= 768px)
+// - Standard table layout with all columns visible
+// - Status badges must NOT overlap Action buttons horizontally
+// =============================================================================
+
+// =============================================================================
 // Settings Backup Tab Design Rules
 // =============================================================================
 // Layout: Row with 3 cards (col-lg-4 each, all 3 cards in a single row on desktop)
@@ -221,6 +238,7 @@ const LOGIN_FAILURE_VIEW_DEFS = [
 const VIEW_DEFS = [
     { name: 'dashboard', url: '/ui/dashboard', scope: 'dashboard' },
     { name: 'peers', url: '/ui/peers', scope: 'peers' },
+    { name: 'nodes', url: '/ui/nodes', scope: 'nodes' },
     { name: 'users', url: '/ui/users', scope: 'users' },
     { name: 'dns', url: '/ui/dns', scope: 'dns' },
     { name: 'traffic', url: '/ui/traffic', scope: 'traffic' },
@@ -2228,6 +2246,101 @@ async function collectPageMetrics(page, scope) {
             };
         }
 
+        // =============================================================================
+        // Nodes page: Table responsiveness validation
+        // =============================================================================
+        // Desktop (>= 768px): Standard table layout with all columns visible
+        // Mobile (< 768px): CSS Grid card layout with:
+        //   - name/status in top row, fqdn spanning full width, meta line, actions
+        //   - thead hidden, Port/Version/Peers/LastSeen columns hidden
+        //   - .node-mobile-meta visible with version + peers + last seen
+        if (scope === 'nodes') {
+            const nodesTable = document.querySelector('.nodes-table');
+            const isMobile = window.innerWidth < 768;
+
+            // Mobile layout: grid card layout validation
+            if (isMobile && nodesTable) {
+                const nodeRows = Array.from(nodesTable.querySelectorAll('tbody tr[id^="node-row-"]'));
+                spacing.nodesMobileLayout = nodeRows.slice(0, 10).map((row) => {
+                    const nameCell = row.querySelector('td[data-label="Name"]');
+                    const statusCell = row.querySelector('td[data-label="Status"]');
+                    const fqdnCell = row.querySelector('td[data-label="FQDN"]');
+                    const portCell = row.querySelector('td[data-label="Port"]');
+                    const versionCell = row.querySelector('td[data-label="Version"]');
+                    const peersCell = row.querySelector('td[data-label="Peers"]');
+                    const lastSeenCell = row.querySelector('td[data-label="Last Seen"]');
+                    const mobileMeta = row.querySelector('.node-mobile-meta');
+                    const actionsCell = row.querySelector('td[data-label="Actions"]');
+
+                    const thead = nodesTable.querySelector('thead');
+                    const theadHidden = thead ? window.getComputedStyle(thead).display === 'none' : true;
+
+                    const portHidden = portCell ? window.getComputedStyle(portCell).display === 'none' : true;
+                    const versionHidden = versionCell ? window.getComputedStyle(versionCell).display === 'none' : true;
+                    const peersHidden = peersCell ? window.getComputedStyle(peersCell).display === 'none' : true;
+                    const lastSeenHidden = lastSeenCell ? window.getComputedStyle(lastSeenCell).display === 'none' : true;
+                    const mobileMetaVisible = mobileMeta ? window.getComputedStyle(mobileMeta).display !== 'none' : false;
+
+                    // Verify grid layout is applied
+                    const rowDisplay = window.getComputedStyle(row).display;
+                    const isGridLayout = rowDisplay === 'grid';
+
+                    // Check name and status are on the same row (aligned vertically)
+                    const nameRect = nameCell ? nameCell.getBoundingClientRect() : null;
+                    const statusRect = statusCell ? statusCell.getBoundingClientRect() : null;
+                    const statusAlignedWithName = (nameRect && statusRect)
+                        ? Math.abs(nameRect.top - statusRect.top) < 8
+                        : false;
+
+                    // Check fqdn spans full width below name
+                    const fqdnRect = fqdnCell ? fqdnCell.getBoundingClientRect() : null;
+                    const fqdnBelowName = (nameRect && fqdnRect)
+                        ? fqdnRect.top >= nameRect.bottom - 4
+                        : false;
+
+                    // Check actions cell has border-top separator
+                    const actionsStyle = actionsCell ? window.getComputedStyle(actionsCell) : null;
+                    const actionsBorderTop = actionsStyle
+                        ? Number.parseFloat(actionsStyle.borderTopWidth || '0') > 0
+                        : false;
+
+                    return {
+                        nodeId: row.id,
+                        theadHidden,
+                        isGridLayout,
+                        portHidden,
+                        versionHidden,
+                        peersHidden,
+                        lastSeenHidden,
+                        mobileMetaVisible,
+                        statusAlignedWithName,
+                        fqdnBelowName,
+                        actionsBorderTop,
+                    };
+                });
+            }
+
+            // Desktop layout: verify table structure
+            if (!isMobile && nodesTable) {
+                const nodeRows = Array.from(nodesTable.querySelectorAll('tbody tr[id^="node-row-"]'));
+                spacing.nodesDesktopLayout = nodeRows.slice(0, 5).map((row) => {
+                    const statusCell = row.querySelector('td[data-label="Status"]');
+                    const actionsCell = row.querySelector('td[data-label="Actions"]');
+                    const statusRect = statusCell ? statusCell.getBoundingClientRect() : null;
+                    const actionsRect = actionsCell ? actionsCell.getBoundingClientRect() : null;
+                    const overlapsActions = (statusRect && actionsRect)
+                        ? statusRect.right > actionsRect.left + 2
+                        : false;
+                    return {
+                        nodeId: row.id,
+                        overlapsActions,
+                        statusRight: statusRect ? Math.round(statusRect.right) : null,
+                        actionsLeft: actionsRect ? Math.round(actionsRect.left) : null,
+                    };
+                });
+            }
+        }
+
         // Status page: Network flow diagram validation
         if (scope === 'status') {
             const flowWrapper = document.querySelector('[data-ui-lint="status-flow"]') || document.querySelector('.flow-wrapper');
@@ -3324,6 +3437,36 @@ function summarizeFindings(result) {
         if (editModal?.found && !editModal.valid) {
             if (!editModal.hasRequiredAttr) pushHard('editPeerNameInputMissingRequired');
             if (!editModal.hasRequiredMarker) pushWarning('editPeerNameLabelMissingRequiredMarker');
+        }
+    }
+    // Nodes mobile layout: grid card structure, hidden desktop columns, visible mobile meta
+    if (result.metrics.spacing.nodesMobileLayout?.length) {
+        const mobileIssues = result.metrics.spacing.nodesMobileLayout.filter(
+            (r) => !r.theadHidden || !r.isGridLayout || !r.portHidden || !r.versionHidden ||
+                   !r.peersHidden || !r.lastSeenHidden || !r.mobileMetaVisible ||
+                   !r.statusAlignedWithName || !r.fqdnBelowName
+        );
+        if (mobileIssues.length) {
+            const reasons = new Set();
+            for (const issue of mobileIssues) {
+                if (!issue.theadHidden) reasons.add('theadVisible');
+                if (!issue.isGridLayout) reasons.add('notGridLayout');
+                if (!issue.portHidden) reasons.add('portVisible');
+                if (!issue.versionHidden) reasons.add('versionVisible');
+                if (!issue.peersHidden) reasons.add('peersVisible');
+                if (!issue.lastSeenHidden) reasons.add('lastSeenVisible');
+                if (!issue.mobileMetaVisible) reasons.add('mobileMetaHidden');
+                if (!issue.statusAlignedWithName) reasons.add('statusNotAlignedWithName');
+                if (!issue.fqdnBelowName) reasons.add('fqdnNotBelowName');
+            }
+            pushHard(`nodesMobileLayout=${[...reasons].join('+')}`);
+        }
+    }
+    // Nodes desktop layout: status badges must not overlap action buttons
+    if (result.metrics.spacing.nodesDesktopLayout?.length) {
+        const overlapRows = result.metrics.spacing.nodesDesktopLayout.filter((r) => r.overlapsActions);
+        if (overlapRows.length) {
+            pushHard(`nodesStatusOverlapsActions=${overlapRows.length}rows`);
         }
     }
     if (result.metrics.layoutShift.value > LAYOUT_SHIFT_THRESHOLD) pushHard(`layoutShift=${result.metrics.layoutShift.value.toFixed(4)}`);

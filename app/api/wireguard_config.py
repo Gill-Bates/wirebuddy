@@ -26,6 +26,7 @@ from ..db.sqlite_interfaces import (
 	get_interface,
 	list_interfaces,
 )
+from ..db.sqlite_nodes import get_all_tunnel_peer_ids
 from ..utils.network import allowed_ips_with_dns_routes
 from ..utils.vault import decrypt as vault_decrypt
 from .wireguard_isolation import build_client_isolation_post_rules, extract_peer_ips
@@ -142,9 +143,11 @@ def write_interface_config(
     # in the CLIENT config (PeerConfig) that peers download.
 
     # Query all peers (enabled + disabled) for this interface
+    # Fetch tunnel peer IDs so we can use expanded allowed_ips for them
+    tunnel_peer_ids = get_all_tunnel_peer_ids(conn)
     cur = conn.execute(
         """
-        SELECT public_key, preshared_key, peer_address, allowed_ips_mode, client_isolation, is_enabled
+        SELECT id, public_key, preshared_key, peer_address, allowed_ips, allowed_ips_mode, client_isolation, is_enabled
         FROM peers
         WHERE interface = ?
         ORDER BY is_enabled DESC, public_key
@@ -183,7 +186,13 @@ def write_interface_config(
             config_lines.append(f"PresharedKey = {psk_plain}")
             del psk_plain  # Minimize window for secret in memory
 
-        config_lines.append(f"AllowedIPs = {peer_row['peer_address']}")
+        # Tunnel peers need expanded allowed_ips (includes all client IPs
+        # assigned to the node) so master's WireGuard accepts DNS packets
+        # with original client source IPs forwarded through the node tunnel.
+        if peer_row["id"] in tunnel_peer_ids and peer_row["allowed_ips"]:
+            config_lines.append(f"AllowedIPs = {peer_row['allowed_ips']}")
+        else:
+            config_lines.append(f"AllowedIPs = {peer_row['peer_address']}")
 
     # Append dynamic client-isolation firewall rules.
     v4_subnet = None
