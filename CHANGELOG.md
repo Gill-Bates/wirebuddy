@@ -1,4 +1,4 @@
-## [1.4.0] - 2026-03-xx
+## [1.4.0] - 2026-03-30
 
 - ``New`` Node mode is here! 🎉 WIrebuddy can now run on multiple instances at the same time!
 - ``New`` DNS logging can be enabled or disabled for each peer

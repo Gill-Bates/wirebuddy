@@ -1823,13 +1823,35 @@ async function collectPageMetrics(page, scope) {
 
             // About page card layout validation (reference layout pattern)
             // Validates that cards in the same row have consistent heights (flexbox equal-height pattern)
+            const desktopTopRowLayoutActive = window.matchMedia('(min-width: 992px)').matches;
             const topRowCards = Array.from(document.querySelectorAll('.about-top-row .card'))
                 .filter((el) => isVisible(el));
-            const topRowHeights = topRowCards.map((card) => round(card.getBoundingClientRect().height));
-            const topRowMaxHeight = Math.max(...topRowHeights);
-            const topRowMinHeight = Math.min(...topRowHeights);
-            const topRowHeightVariance = topRowHeights.length > 1 ? topRowMaxHeight - topRowMinHeight : 0;
-            const topRowHeightsMatch = topRowHeightVariance <= constants.ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX;
+            const topRowPrimaryCards = Array.from(document.querySelectorAll('.about-top-row > [class*="col-"] > .card:first-child'))
+                .filter((el) => isVisible(el));
+            const topRowPrimaryHeights = topRowPrimaryCards.map((card) => round(card.getBoundingClientRect().height));
+            const topRowPrimaryMaxHeight = Math.max(...topRowPrimaryHeights);
+            const topRowPrimaryMinHeight = Math.min(...topRowPrimaryHeights);
+            const topRowHeightVariance = topRowPrimaryHeights.length > 1
+                ? topRowPrimaryMaxHeight - topRowPrimaryMinHeight
+                : 0;
+            const topRowHeightsMatch = !desktopTopRowLayoutActive
+                || topRowHeightVariance <= constants.ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX;
+            const topRowCompactCards = Array.from(document.querySelectorAll('.about-top-row > [class*="col-"] > .about-doc-card'))
+                .filter((el) => isVisible(el))
+                .map((card) => {
+                    const style = window.getComputedStyle(card);
+                    return {
+                        label: norm(card.textContent).slice(0, 80),
+                        height: round(card.getBoundingClientRect().height),
+                        flexGrow: Number.parseFloat(style.flexGrow || '0'),
+                    };
+                });
+            const compactCardsStayCompact = !desktopTopRowLayoutActive || !topRowCompactCards.length
+                ? true
+                : topRowCompactCards.every((card) =>
+                    card.flexGrow === 0
+                    && card.height < topRowPrimaryMinHeight - constants.ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX
+                );
             const mobileTopRowCards = topRowCards
                 .map((card) => ({
                     label: norm(card.querySelector('.card-header')?.textContent).slice(0, 80),
@@ -1872,11 +1894,16 @@ async function collectPageMetrics(page, scope) {
                 updateValueStyleMismatches,
                 // Reference layout metrics (About page is the reference for card grid layouts)
                 topRowLayout: {
+                    active: desktopTopRowLayoutActive,
                     cardCount: topRowCards.length,
-                    heights: topRowHeights,
+                    primaryCardCount: topRowPrimaryCards.length,
+                    heights: topRowPrimaryHeights,
                     heightsMatch: topRowHeightsMatch,
                     variance: topRowHeightVariance,
-                    pattern: 'equal-height-flexbox', // Documents the expected pattern
+                    compactCardCount: topRowCompactCards.length,
+                    compactCards: topRowCompactCards,
+                    compactCardsStayCompact,
+                    pattern: 'equal-height-primary-cards-with-compact-secondary-card',
                 },
                 mobileTopRowStack: {
                     active: window.matchMedia('(max-width: 991.98px)').matches,

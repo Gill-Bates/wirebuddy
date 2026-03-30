@@ -172,8 +172,14 @@ export function summarizeFindings(result) {
     if (result.metrics.spacing.about?.missingBoldUpdateLabels?.length) {
         pushHard(`aboutUpdateLabelsNotBold=${result.metrics.spacing.about.missingBoldUpdateLabels.join(',')}`);
     }
-    if (result.metrics.spacing.about?.topRowLayout && !result.metrics.spacing.about.topRowLayout.heightsMatch) {
-        pushWarning(`aboutTopRowHeightMismatch=${result.metrics.spacing.about.topRowLayout.variance}px`);
+    if (result.metrics.spacing.about?.topRowLayout?.active) {
+        const topRowLayout = result.metrics.spacing.about.topRowLayout;
+        if (!topRowLayout.heightsMatch) {
+            pushWarning(`aboutTopRowHeightMismatch=${topRowLayout.variance}px`);
+        }
+        if (!topRowLayout.compactCardsStayCompact) {
+            pushWarning(`aboutCompactCardExpanded=${topRowLayout.compactCardCount}`);
+        }
     }
     if (result.name.includes('mobile-about') && result.metrics.spacing.about?.mobileTopRowStack?.active) {
         const mobileTopRowStack = result.metrics.spacing.about.mobileTopRowStack;

@@ -71,7 +71,7 @@
 
             <!-- Card 2: Check for Updates -->
             <div class="col-12 col-lg-4 d-lg-flex flex-column gap-lg-3">
-                <div class="card d-flex flex-column">
+                <div class="card about-update-card d-flex flex-column">
                     <div class="card-header d-flex align-items-center justify-content-between">
                         <div>
                             <span class="material-icons me-2">system_update</span>
@@ -136,8 +136,8 @@
                 </div>
 
                 <!-- Documentation (stacked under updates) -->
-                <div class="card">
-                    <div class="card-body d-flex align-items-center justify-content-center py-3">
+                <div class="card about-doc-card">
+                    <div class="card-body d-flex align-items-center justify-content-center">
                         <a class="btn btn-outline-secondary w-100"
                            href="https://gill-bates.github.io/wirebuddy/"
                            target="_blank" rel="noopener noreferrer">
@@ -220,11 +220,16 @@
             display: flex;
         }
 
-        .about-top-row > .col-lg-4 > .card {
+        .about-top-row > .col-lg-4:not(:nth-child(2)) > .card,
+        .about-top-row > .col-lg-4:nth-child(2) > .about-update-card {
             flex: 1;
             display: flex;
             flex-direction: column;
             min-height: 0;
+        }
+
+        .about-top-row > .col-lg-4:nth-child(2) > .about-doc-card {
+            flex: 0 0 auto;
         }
 
         .about-deps-col .card-body {
@@ -249,6 +254,19 @@
     }
 
     @media (max-width: 991.98px) {
+        .about-doc-card {
+            margin-top: var(--wb-space-3);
+        }
+
+        .about-update-card .card-body {
+            padding-bottom: 0.5rem;
+        }
+
+        .about-doc-card .card-body {
+            padding-top: 0.5rem;
+            padding-bottom: 0.5rem;
+        }
+
         .about-deps-col .dependencies-scroll {
             max-height: 300px;
         }
