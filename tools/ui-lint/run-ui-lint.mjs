@@ -35,6 +35,7 @@ const RESULTS_DIR = SCRIPT_DIR;
 // Thresholds and timing constants
 const VERTICAL_GAP_MIN = 22;
 const VERTICAL_GAP_MAX = 26;
+const STACK_GAP_VARIANCE_TOLERANCE_PX = 2;
 const VISUAL_DRIFT_THRESHOLD = 0.0025;
 const SCREENSHOT_SETTLE_MS = 800;
 const TAB_SWITCH_SETTLE_MS = 700;
@@ -218,6 +219,7 @@ const CARD_BORDER_RADIUS_TOLERANCE_PX = 1;
 // - Bottom row: Full-width card
 // Other pages should follow this pattern for consistent card sizing.
 const ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX = 2;
+const ABOUT_MOBILE_STACK_GAP_VARIANCE_TOLERANCE_PX = 2;
 const ABOUT_APPLICATION_DETAILS_REQUIRED_ROWS = ['Version', 'Python', 'Timezone', 'WireGuard', 'Unbound'];
 const ABOUT_APPLICATION_DETAILS_FORBIDDEN_ROWS = ['Build'];
 const ABOUT_UPDATE_TABLE_LABELS = ['Current', 'Latest', 'Released'];
@@ -1672,6 +1674,61 @@ async function collectPageMetrics(page, scope) {
             }))
             .slice(0, 10);
 
+        spacing.mobileRowCardStackGaps = [];
+        if (window.matchMedia('(max-width: 991.98px)').matches) {
+            spacing.mobileRowCardStackGaps = Array.from(contentRoot.querySelectorAll('.row'))
+                .filter((row) => {
+                    const classes = Array.from(row.classList);
+                    return classes.some((c) => /^g[xy]?-[1-5]$/.test(c));
+                })
+                .map((row) => {
+                    const rowLabel = row.id
+                        || row.getAttribute('data-ui-lint')
+                        || Array.from(row.classList).join(' ')
+                        || 'row';
+                    const cards = Array.from(row.children)
+                        .filter((child) => hasBootstrapColClass(child) && isVisible(child))
+                        .flatMap((col) => Array.from(col.children)
+                            .filter((child) => child.classList?.contains('card') && isVisible(child))
+                            .map((card) => ({
+                                label: norm(card.querySelector('.card-header')?.textContent).slice(0, 80) || 'card',
+                                rect: card.getBoundingClientRect(),
+                            })))
+                        .sort((a, b) => {
+                            if (Math.abs(a.rect.top - b.rect.top) > 1) return a.rect.top - b.rect.top;
+                            return a.rect.left - b.rect.left;
+                        });
+
+                    const gaps = [];
+                    for (let index = 1; index < cards.length; index += 1) {
+                        const prev = cards[index - 1];
+                        const current = cards[index];
+                        if (Math.abs(prev.rect.left - current.rect.left) >= 4) continue;
+                        if (current.rect.top < prev.rect.bottom - 1) continue;
+                        gaps.push({
+                            from: prev.label,
+                            to: current.label,
+                            gap: round(current.rect.top - prev.rect.bottom),
+                        });
+                    }
+
+                    const gapValues = gaps.map((entry) => entry.gap);
+                    const gapVariance = gapValues.length > 1
+                        ? round(Math.max(...gapValues) - Math.min(...gapValues))
+                        : 0;
+
+                    return {
+                        row: rowLabel,
+                        cardCount: cards.length,
+                        gaps,
+                        gapVariance,
+                        gapsConsistent: gapVariance <= constants.STACK_GAP_VARIANCE_TOLERANCE_PX,
+                    };
+                })
+                .filter((entry) => entry.cardCount >= 3 && entry.gaps.length >= 2)
+                .slice(0, 20);
+        }
+
         const footer = document.querySelector('.wb-footer');
         const pageHasVerticalOverflow = Math.max(
             contentRoot.scrollHeight,
@@ -2237,7 +2294,35 @@ async function collectPageMetrics(page, scope) {
             const topRowMaxHeight = Math.max(...topRowHeights);
             const topRowMinHeight = Math.min(...topRowHeights);
             const topRowHeightVariance = topRowHeights.length > 1 ? topRowMaxHeight - topRowMinHeight : 0;
-            const topRowHeightsMatch = topRowHeightVariance <= 2; // 2px tolerance for rounding
+            const topRowHeightsMatch = topRowHeightVariance <= constants.ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX;
+            const mobileTopRowCards = topRowCards
+                .map((card) => ({
+                    label: norm(card.querySelector('.card-header')?.textContent).slice(0, 80),
+                    rect: card.getBoundingClientRect(),
+                }))
+                .sort((a, b) => {
+                    if (Math.abs(a.rect.top - b.rect.top) > 1) return a.rect.top - b.rect.top;
+                    return a.rect.left - b.rect.left;
+                });
+            const mobileTopRowStackGaps = [];
+            if (window.matchMedia('(max-width: 991.98px)').matches) {
+                for (let index = 1; index < mobileTopRowCards.length; index += 1) {
+                    const prev = mobileTopRowCards[index - 1];
+                    const current = mobileTopRowCards[index];
+                    if (Math.abs(prev.rect.left - current.rect.left) >= 4) continue;
+                    if (current.rect.top < prev.rect.bottom - 1) continue;
+                    mobileTopRowStackGaps.push({
+                        from: prev.label,
+                        to: current.label,
+                        gap: round(current.rect.top - prev.rect.bottom),
+                    });
+                }
+            }
+            const mobileTopRowGapValues = mobileTopRowStackGaps.map((entry) => entry.gap);
+            const mobileTopRowGapVariance = mobileTopRowGapValues.length > 1
+                ? round(Math.max(...mobileTopRowGapValues) - Math.min(...mobileTopRowGapValues))
+                : 0;
+            const mobileTopRowGapsConsistent = mobileTopRowGapVariance <= constants.ABOUT_MOBILE_STACK_GAP_VARIANCE_TOLERANCE_PX;
 
             spacing.about = {
                 changelogCardBottom: changelogCard ? round(changelogCard.getBoundingClientRect().bottom) : null,
@@ -2257,6 +2342,12 @@ async function collectPageMetrics(page, scope) {
                     heightsMatch: topRowHeightsMatch,
                     variance: topRowHeightVariance,
                     pattern: 'equal-height-flexbox', // Documents the expected pattern
+                },
+                mobileTopRowStack: {
+                    active: window.matchMedia('(max-width: 991.98px)').matches,
+                    gaps: mobileTopRowStackGaps,
+                    gapVariance: mobileTopRowGapVariance,
+                    gapsConsistent: mobileTopRowGapsConsistent,
                 },
             };
         }
@@ -3324,6 +3415,12 @@ function summarizeFindings(result) {
     }
     if (result.metrics.spacing.outlierVerticalGaps?.length) pushWarning(`outlierVerticalGaps=${result.metrics.spacing.outlierVerticalGaps.length}`);
     if (result.metrics.spacing.rowGutterMarginConflicts?.length) pushWarning(`rowGutterMarginConflicts=${result.metrics.spacing.rowGutterMarginConflicts.length}`);
+    if (result.name.includes('mobile-') && result.metrics.spacing.mobileRowCardStackGaps?.length) {
+        const inconsistentRows = result.metrics.spacing.mobileRowCardStackGaps.filter((entry) => !entry.gapsConsistent);
+        if (inconsistentRows.length) {
+            pushWarning(`mobileRowCardStackGapVariance=${inconsistentRows.length}`);
+        }
+    }
     if (result.name.includes('settings') && result.metrics.spacing.settingsTabColors?.length) {
         const tabColorProblems = result.metrics.spacing.settingsTabColors.filter(
             (entry) => entry.colorDelta != null && entry.colorDelta > SETTINGS_TAB_COLOR_DISTANCE_MAX
@@ -3411,6 +3508,12 @@ function summarizeFindings(result) {
     }
     if (result.metrics.spacing.about?.topRowLayout && !result.metrics.spacing.about.topRowLayout.heightsMatch) {
         pushWarning(`aboutTopRowHeightMismatch=${result.metrics.spacing.about.topRowLayout.variance}px`);
+    }
+    if (result.name.includes('mobile-about') && result.metrics.spacing.about?.mobileTopRowStack?.active) {
+        const mobileTopRowStack = result.metrics.spacing.about.mobileTopRowStack;
+        if (!mobileTopRowStack.gapsConsistent) {
+            pushWarning(`aboutMobileStackGapVariance=${mobileTopRowStack.gapVariance}px`);
+        }
     }
     // Peers desktop layout: Status cell must be table-cell (not flex) to avoid vertical misalignment
     // Also detect Status badges overlapping Action buttons horizontally
@@ -4124,6 +4227,8 @@ async function main() {
             sliderAlignment: spacing.sliderAlignment?.length || 0,
             sliderTickMisaligned: spacing.sliderAlignment?.filter((s) => s.tickMisaligned?.length)?.length || 0,
             sliderLabelOverlap: spacing.sliderAlignment?.filter((s) => s.labelOverlap?.length)?.length || 0,
+            mobileRowCardStackGapRows: spacing.mobileRowCardStackGaps?.length || 0,
+            mobileRowCardStackGapIssues: spacing.mobileRowCardStackGaps?.filter((entry) => !entry.gapsConsistent)?.length || 0,
             settingsTabColors: spacing.settingsTabColors?.length || 0,
             settingsTabActiveColorMismatch: spacing.settingsTabColors?.filter((entry) => entry.colorDelta != null && entry.colorDelta > SETTINGS_TAB_COLOR_DISTANCE_MAX)?.length || 0,
             logsPathLayout: spacing.logsPathLayout?.length || 0,
@@ -4155,6 +4260,8 @@ async function main() {
                     !spacing.dnsLogScrollLayout.wrapFitsBody,
                 ].filter(Boolean).length
                 : 0,
+            aboutMobileTopRowStackGaps: spacing.about?.mobileTopRowStack?.gaps?.length || 0,
+            aboutMobileTopRowGapVariance: spacing.about?.mobileTopRowStack?.gapVariance || 0,
             statusFlowNodes: spacing.statusFlow?.nodeCount || 0,
             statusFlowConnectors: spacing.statusFlow?.connectorCount || 0,
             statusFlowHeightVariance: spacing.statusFlow?.heightVariance || 0,

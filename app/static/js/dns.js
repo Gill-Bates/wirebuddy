@@ -16,7 +16,7 @@ let _adBlockerEnabled = dnsApp ? (dnsApp.dataset.enableBlocklist === 'true' || d
 // Named constants
 const LOG_BATCH_SIZE = 50;  // Items to render per batch
 const LOG_FETCH_LIMIT = 1000;  // Max items to fetch from API
-const SCROLL_THRESHOLD_PX = 100;  // Trigger infinite scroll when this close to bottom
+const SCROLL_THRESHOLD_PX = 150;  // Trigger infinite scroll when this close to bottom
 const SEARCH_DEBOUNCE_MS = 250;  // Debounce delay for search input
 const MENU_VIEWPORT_MARGIN_PX = 8;  // Minimum margin for context menu
 const FADE_FALLBACK_MS = 300;  // Fallback timeout for CSS transitions
@@ -29,6 +29,7 @@ let _filteredData = [];  // Filtered data for infinite scroll
 let _logsLoadInProgress = false;  // Guard against concurrent loadLogsOnly calls
 let _searchTimer = null;  // Debounce timer for search
 let _scrollRaf = null;  // RAF handle for scroll throttle
+let _logAutoFillQueued = false;  // Prevent stacked auto-fill checks
 let _logActionState = null; // Active row action context
 let _isInitialTopDomainsRender = true; // Skip fade on first render
 let _topDomainFadeTimeout = null; // Timeout handle for fade animation fallback
@@ -961,6 +962,7 @@ function renderLogs(append = false) {
 
     tbody.appendChild(frag);
     _renderedCount = endIdx;
+    queueLogAutoFill();
 }
 
 function debouncedRenderLogs() {
@@ -971,6 +973,26 @@ function debouncedRenderLogs() {
 function loadMoreLogs() {
     if (_renderedCount >= _filteredData.length) return;  // All rendered
     renderLogs(true);  // Append mode
+}
+
+function queueLogAutoFill() {
+    const logContainer = document.getElementById('log-table-wrap');
+    if (!logContainer || _logAutoFillQueued || _renderedCount >= _filteredData.length) return;
+    if (logContainer.scrollHeight > logContainer.clientHeight + 1) return;
+
+    _logAutoFillQueued = true;
+    requestAnimationFrame(() => {
+        _logAutoFillQueued = false;
+        const currentLogContainer = document.getElementById('log-table-wrap');
+        if (!currentLogContainer) return;
+
+        if (
+            currentLogContainer.scrollHeight <= currentLogContainer.clientHeight + 1 &&
+            _renderedCount < _filteredData.length
+        ) {
+            loadMoreLogs();
+        }
+    });
 }
 
 // Ad-Blocker dropdown state
@@ -1183,7 +1205,7 @@ if (logContainer) {
         if (_scrollRaf) return;
         _scrollRaf = requestAnimationFrame(() => {
             const scrollBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight;
-            if (scrollBottom < SCROLL_THRESHOLD_PX) {
+            if (scrollBottom < SCROLL_THRESHOLD_PX || logContainer.scrollHeight <= logContainer.clientHeight + 1) {
                 loadMoreLogs();
             }
             _scrollRaf = null;

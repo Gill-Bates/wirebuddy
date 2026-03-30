@@ -323,6 +323,7 @@
     let _logsLoadInProgress = false;  // Guard against concurrent loadLogsOnly calls
     let _searchTimer = null;  // Debounce timer for search
     let _scrollRaf = null;  // RAF handle for scroll throttle
+    let _logAutoFillQueued = false;  // Prevent stacked auto-fill checks
     let _logActionState = null; // Active row action context
 
     /**
@@ -1196,6 +1197,7 @@
 
         tbody.appendChild(frag);
         _renderedCount = endIdx;
+        queueLogAutoFill();
     }
 
     function debouncedRenderLogs() {
@@ -1210,6 +1212,26 @@
         _isLoadingMore = true;
         renderLogs(true);  // Append mode
         _isLoadingMore = false;
+    }
+
+    function queueLogAutoFill() {
+        const logContainer = document.getElementById('log-table-wrap');
+        if (!logContainer || _logAutoFillQueued || _renderedCount >= _filteredData.length) return;
+        if (logContainer.scrollHeight > logContainer.clientHeight + 1) return;
+
+        _logAutoFillQueued = true;
+        requestAnimationFrame(() => {
+            _logAutoFillQueued = false;
+            const currentLogContainer = document.getElementById('log-table-wrap');
+            if (!currentLogContainer) return;
+
+            if (
+                currentLogContainer.scrollHeight <= currentLogContainer.clientHeight + 1 &&
+                _renderedCount < _filteredData.length
+            ) {
+                loadMoreLogs();
+            }
+        });
     }
 
     // Blocked sections visibility (Top Blocked Domains + Blockrate Trend)
@@ -1514,7 +1536,7 @@
             if (_scrollRaf) return;
             _scrollRaf = requestAnimationFrame(() => {
                 const scrollBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight;
-                if (scrollBottom < 100) {  // Near bottom
+                if (scrollBottom < 150 || logContainer.scrollHeight <= logContainer.clientHeight + 1) {
                     loadMoreLogs();
                 }
                 _scrollRaf = null;
