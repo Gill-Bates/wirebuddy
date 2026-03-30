@@ -70,8 +70,11 @@ def _read_last_run(path: Path) -> float | None:
 			_log.warning("Ignoring suspicious last_run timestamp: %.2f", ts)
 			return None
 		return ts
+	except FileNotFoundError:
+		# Expected on fresh install - no previous speedtest run
+		return None
 	except (OSError, ValueError) as exc:
-		_log.debug("Failed to read last_run timestamp: %s", exc)
+		_log.debug("Speedtest cooldown file unreadable: %s", exc)
 		return None
 
 
