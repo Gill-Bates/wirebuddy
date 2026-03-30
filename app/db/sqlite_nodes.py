@@ -200,13 +200,13 @@ def rotate_node_session_secret(
 	"""Replace the API secret hash after successful enrollment.
 
 	This invalidates the enrollment token's api_secret so the token
-	becomes single-use. Only works on pending nodes to prevent race conditions.
+	becomes single-use. Works on any enrolled node (status != 'pending').
 	Returns True if the row was updated.
 	"""
 	with transaction(conn, immediate=True):
 		cur = conn.execute(
-			"UPDATE nodes SET api_secret_hash = ? WHERE id = ? AND status = ?",
-			(api_secret_hash, node_id, STATUS_PENDING),
+			"UPDATE nodes SET api_secret_hash = ? WHERE id = ?",
+			(api_secret_hash, node_id),
 		)
 		return cur.rowcount > 0
 

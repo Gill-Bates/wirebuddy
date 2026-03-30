@@ -121,7 +121,7 @@ function openLogActionMenu(q, clickEvent) {
 
     _logActionState = {
         domain: q.domain || '',
-        client: q.client || '',
+        client: _extractClientIp(q.client || ''),
         clientName: _peerMap[_extractClientIp(q.client || '').toLowerCase()] || '',
         blocked,
     };
@@ -701,7 +701,9 @@ async function loadLogsOnly(showLoading = true) {
         if (showLoading) {
             showLogsLoadingState();
         }
-        const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}`, null, { signal: _pageAbort.signal });
+        const clientIps = getSelectedPeerClientIps();
+        const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
+        const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}${clientIpsParam}`, null, { signal: _pageAbort.signal });
         // IMPORTANT: Backend should omit client field for non-admins in the API response.
         // This client-side stripping is cosmetic only - data already sent over the wire.
         // Fix: GET /api/dns/logs should check user.is_admin before including client IPs.
@@ -1254,9 +1256,6 @@ const peerFilterSelect = document.getElementById('peer-filter');
 if (peerFilterSelect) {
     // Load fresh data when peer filter changes - affects logs, trend, and top domains
     peerFilterSelect.addEventListener('change', async () => {
-        // Logs are filtered client-side, re-render immediately
-        renderLogs();
-
         // Cancel any stale animation from previous filter change
         if (_fadeAbort) _fadeAbort.abort();
         _fadeAbort = new AbortController();
@@ -1273,13 +1272,13 @@ if (peerFilterSelect) {
 
         if (!topQueriedCard || !topBlockedCard) {
             // No cards to fade, render immediately
-            await Promise.allSettled([loadTrend(), loadTopDomains()]);
+            await Promise.allSettled([loadLogsOnly(), loadTrend(), loadTopDomains()]);
             return;
         }
 
         // Skip fade effect on initial render - only fade when user actively changes filter
         if (_isInitialTopDomainsRender) {
-            await Promise.allSettled([loadTrend(), loadTopDomains()]);
+            await Promise.allSettled([loadLogsOnly(), loadTrend(), loadTopDomains()]);
             return;
         }
 
@@ -1298,7 +1297,7 @@ if (peerFilterSelect) {
                 clearTimeout(_topDomainFadeTimeout);
                 _topDomainFadeTimeout = null;
             }
-            Promise.allSettled([loadTrend(), loadTopDomains()]).then(() => {
+            Promise.allSettled([loadLogsOnly(), loadTrend(), loadTopDomains()]).then(() => {
                 if (signal.aborted) return;
                 requestAnimationFrame(() => {
                     topQueriedCard.classList.remove('top-domain-card-fading');

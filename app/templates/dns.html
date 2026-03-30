@@ -327,6 +327,16 @@
     let _logActionState = null; // Active row action context
 
     /**
+     * Extract raw client IP from a formatted "PeerName (IP)" string.
+     * Returns the IP inside parentheses, or the original value if no match exists.
+     */
+    function _extractClientIp(clientStr) {
+        if (!clientStr) return '';
+        const match = clientStr.match(/\(([^)]+)\)$/);
+        return match ? match[1] : clientStr;
+    }
+
+    /**
      * Get comma-separated client IPs for the currently selected peer filter.
      * Returns empty string if "All Peers" is selected.
      */
@@ -398,8 +408,8 @@
 
         _logActionState = {
             domain: q.domain || '',
-            client: q.client || '',
-            clientName: _peerMap[(q.client || '').toLowerCase()] || '',
+            client: _extractClientIp(q.client || ''),
+            clientName: _peerMap[_extractClientIp(q.client || '').toLowerCase()] || '',
             blocked,
         };
 
@@ -984,7 +994,9 @@
             if (showLoading) {
                 showLogsLoadingState();
             }
-            const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}`);
+            const clientIps = getSelectedPeerClientIps();
+            const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
+            const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}${clientIpsParam}`);
             _logData = data.queries || [];
             _renderedCount = 0;  // Reset for fresh render
             renderLogs();
@@ -1087,7 +1099,7 @@
             _filteredData = _logData.filter(q => {
                 if (filter === 'blocked' && !q.blocked) return false;
                 if (filter === 'allowed' && q.blocked) return false;
-                if (peerFilter !== 'all' && (q.client_name || '') !== peerFilter) return false;
+                if (peerFilter !== 'all' && (q.client_name || _peerMap[_extractClientIp(q.client || '').toLowerCase()] || '') !== peerFilter) return false;
                 if (search && !(q.domain || '').toLowerCase().includes(search)) return false;
                 return true;
             });
@@ -1171,13 +1183,13 @@
             }
 
             // Add client/peer info below domain
-            const peerName = _peerMap[(q.client || '').toLowerCase()];
+            const peerName = _peerMap[_extractClientIp(q.client || '').toLowerCase()];
             const clientInfo = document.createElement('span');
             clientInfo.className = 'text-muted log-domain-client';
             if (!isAdmin) {
                 clientInfo.textContent = `***** (*****)`;
             } else {
-                clientInfo.textContent = peerName ? `${peerName} (${q.client})` : (q.client || '');
+                clientInfo.textContent = peerName ? `${peerName} (${_extractClientIp(q.client)})` : (q.client || '');
             }
             domainWrap.appendChild(clientInfo);
             tdDomain.appendChild(domainWrap);
@@ -1583,10 +1595,7 @@
     if (peerFilterSelect) {
         // Load fresh data when peer filter changes - affects logs, trend, and top domains
         peerFilterSelect.addEventListener('change', async () => {
-            // Logs are filtered client-side, re-render immediately
-            renderLogs();
-            // Trend and top-domains need to re-fetch from API with new filter
-            await Promise.allSettled([loadTrend(), loadTopDomains()]);
+            await Promise.allSettled([loadLogsOnly(), loadTrend(), loadTopDomains()]);
         });
     }
 

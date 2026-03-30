@@ -6,6 +6,19 @@
 
 """WireBuddy – Lightweight WireGuard Management WebUI."""
 
-from .main import create_app
+from __future__ import annotations
+
+from typing import Any
 
 __all__ = ["create_app"]
+
+
+def create_app(*args: Any, **kwargs: Any):
+	"""Lazily import the FastAPI app factory.
+
+	This keeps lightweight modules importable in tests and utility scripts
+	without pulling in the full application dependency graph.
+	"""
+	from .main import create_app as _create_app
+
+	return _create_app(*args, **kwargs)

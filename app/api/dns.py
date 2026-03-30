@@ -67,6 +67,7 @@ from ..dns.custom_rules import (
 	parse_rules as parse_custom_rules,
 )
 from ..utils.deps import get_conn, get_dns_dir
+from ..utils.network import parse_ip_str
 from .auth import get_current_user, require_admin
 from .response import ok_response
 from .wireguard_utils import (
@@ -1414,6 +1415,7 @@ async def add_custom_rule_action(
 @router.get("/logs")
 async def dns_logs(
 	lines: int = 200,
+	client_ips: str | None = Query(None, description="Comma-separated client IPs to filter by"),
 	dns_dir: Path = Depends(get_dns_dir),
 	conn: sqlite3.Connection = Depends(get_conn),
 	user_row: sqlite3.Row = Depends(get_current_user),
@@ -1425,7 +1427,13 @@ async def dns_logs(
 	Client names are resolved from peer_address→name mapping.
 	"""
 	lines = min(max(lines, 10), 5000)
-	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, dns_dir, lines)
+	client_filter, _ = _parse_client_ip_filter(client_ips)
+	queries = await asyncio.to_thread(
+		dns_ingestion.read_recent_queries,
+		dns_dir,
+		lines,
+		client_filter,
+	)
 	is_admin = bool(user_row["is_admin"])
 	masked = "*****"
 
@@ -1441,24 +1449,32 @@ async def dns_logs(
 				if not part:
 					continue
 				# Strip CIDR suffix (e.g., 10.13.13.2/32 → 10.13.13.2)
-				peer_ip_map[part.split("/")[0]] = name
+				client_ip = parse_ip_str(part.split("/")[0].strip()) or part.split("/")[0].strip()
+				if client_ip:
+					peer_ip_map[client_ip] = name
+
+	def _normalize_client_ip(value: str) -> str:
+		"""Return canonical client IP text for matching/display."""
+		return parse_ip_str(value) or str(value or "").strip()
 
 	def _format_client(client_ip: str) -> str:
 		"""Format client display: 'PeerName (IP)' or just 'IP'."""
-		peer_name = peer_ip_map.get(client_ip)
+		normalized_ip = _normalize_client_ip(client_ip)
+		peer_name = peer_ip_map.get(normalized_ip)
 		if peer_name:
-			return f"{peer_name} ({client_ip})"
-		return client_ip
+			return f"{peer_name} ({normalized_ip})"
+		return normalized_ip
 
 	data = {
 		"queries": [
 			{
 				"timestamp": _format_tsdb_timestamp(str(q.get("ts", ""))),
 				"client": _format_client(str(q.get("client", ""))) if is_admin else masked,
-				"client_name": peer_ip_map.get(str(q.get("client", "")), "") if is_admin else masked,
+				"client_name": peer_ip_map.get(_normalize_client_ip(str(q.get("client", ""))), "") if is_admin else masked,
 				"domain": str(q.get("domain", "")),
 				"type": str(q.get("qtype", "")),
 				"blocked": bool(q.get("blocked", False)),
+				"custom_rule": bool(q.get("custom_rule", False)),
 			}
 			for q in queries  # read_recent_queries() already returns newest first
 			],

@@ -115,13 +115,16 @@ docker compose up -d
 ## Screenshots
 
 === "Dashboard"
-    ![Dashboard](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen1.png)
+    ![Dashboard](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_1.png)
     
 === "Peer Management"
-    ![Peers](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen2.png)
+    ![Peers](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_2.png)
     
 === "DNS Ad-Blocker"
-    ![DNS](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen3.png)
+    ![DNS](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_3.png)
+
+=== "Settings"
+    ![Settings](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_4.png)
 
 ## Why WireBuddy?
 

@@ -14,13 +14,14 @@ import logging
 import os
 import queue
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from .ingestion_parser import DnsQueryPoint, parse_unbound_line
 from .ingestion_retention import DEFAULT_DNS_LOG_RETENTION_DAYS, normalize_dns_log_retention_days
 from .ingestion_tailer import OffsetTracker
 from .unbound_blocklist import get_custom_rules_cache
+from ..utils.network import parse_ip_str
 
 _log = logging.getLogger(__name__)
 
@@ -323,23 +324,80 @@ def _read_tail_lines(path: Path, max_lines: int) -> list[str]:
 	return decoded
 
 
-def read_recent_queries(dns_dir: Path, max_queries: int = 5000) -> list[dict]:
+def _iter_lines_reverse(path: Path) -> Iterator[str]:
+	"""Yield file lines newest-first without loading the whole file into memory."""
+	with path.open("rb") as f:
+		f.seek(0, os.SEEK_END)
+		position = f.tell()
+		if position <= 0:
+			return
+
+		buffer = b""
+		chunk_size = 8192
+		while position > 0:
+			read_size = min(chunk_size, position)
+			position -= read_size
+			f.seek(position)
+			chunk = f.read(read_size)
+			if not chunk:
+				break
+
+			data = chunk + buffer
+			parts = data.split(b"\n")
+			buffer = parts[0]
+			for raw in reversed(parts[1:]):
+				if not raw:
+					continue
+				yield raw.decode("utf-8", errors="replace")
+
+		if buffer:
+			yield buffer.decode("utf-8", errors="replace")
+
+
+def _normalize_client_filter(client_filter: set[str] | None) -> set[str] | None:
+	"""Canonicalize filter IPs so IPv6 compression differences still match."""
+	if not client_filter:
+		return None
+	normalized = {
+		candidate
+		for candidate in (parse_ip_str(value) for value in client_filter)
+		if candidate
+	}
+	return normalized or None
+
+
+def _query_matches_client_filter(query: dict, client_filter: set[str]) -> bool:
+	"""Return True when a stored query belongs to one of the requested clients."""
+	client = parse_ip_str(str(query.get("client", "")).strip())
+	return bool(client and client in client_filter)
+
+
+def read_recent_queries(
+	dns_dir: Path,
+	max_queries: int = 5000,
+	client_filter: set[str] | None = None,
+) -> list[dict]:
 	"""Read recent DNS queries from DNS logs, newest first.
 	
 	Args:
 		dns_dir: DNS base directory
 		max_queries: Maximum number of queries to return
+		client_filter: Optional set of client IPs to filter by
 	
 	Returns:
 		List of query dicts with keys: ts, client, domain, qtype, rcode, blocked.
 		Order is timestamp-descending (newest first).
 	"""
+	if max_queries <= 0:
+		return []
+
 	queries_dir = dns_dir / 'queries'
 	if not queries_dir.exists():
 		return []
 	
 	queries: list[dict] = []
 	remaining = max_queries
+	normalized_filter = _normalize_client_filter(client_filter)
 	
 	# Get all day files sorted by date (newest first)
 	# Explicit key ensures correct ordering regardless of path structure (YYYY-MM-DD format)
@@ -350,17 +408,31 @@ def read_recent_queries(dns_dir: Path, max_queries: int = 5000) -> list[dict]:
 			break
 		
 		try:
-			tail_lines = _read_tail_lines(day_file, remaining)
-			# Parse in reverse order (newest first)
-			for line in reversed(tail_lines):
+			if normalized_filter is None:
+				tail_lines = _read_tail_lines(day_file, remaining)
+				# Parse in reverse order (newest first)
+				for line in reversed(tail_lines):
+					if remaining <= 0:
+						break
+					try:
+						query = json.loads(line)
+						queries.append(query)
+						remaining -= 1
+					except json.JSONDecodeError:
+						continue
+				continue
+
+			for line in _iter_lines_reverse(day_file):
 				if remaining <= 0:
 					break
 				try:
 					query = json.loads(line)
-					queries.append(query)
-					remaining -= 1
 				except json.JSONDecodeError:
 					continue
+				if not _query_matches_client_filter(query, normalized_filter):
+					continue
+				queries.append(query)
+				remaining -= 1
 		except Exception as e:
 			_log.warning("DNS_READ failed to read %s: %s", day_file, e)
 			continue
