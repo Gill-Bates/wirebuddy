@@ -441,14 +441,23 @@
             const payload = res?.data || res;
 
             const updatedName = editingInterfaceName;
+            const needsRestart = payload?.restart_required;
 
             document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('ifaceModal')).hide();
             void prepareCreateInterfaceModal();
 
-            wbToast(`Interface '${updatedName}' updated`, 'success');
-            if (payload?.restart_required) {
-                wbToast(`Interface '${updatedName}' is active. Restart to fully apply changes.`, 'warning');
+            if (needsRestart) {
+                // Auto-restart in background if interface is active
+                try {
+                    await api('POST', `/api/wireguard/interfaces/${encodeURIComponent(updatedName)}/restart`);
+                    wbToast(`Interface '${updatedName}' updated and restarted`, 'success');
+                } catch (err) {
+                    wbToast(`Interface '${updatedName}' updated`, 'success');
+                    wbToast(`Failed to restart interface: ${err.message}`, 'danger');
+                }
+            } else {
+                wbToast(`Interface '${updatedName}' updated`, 'success');
             }
             await refreshInterfaces();
         } catch (error) {

@@ -76,11 +76,11 @@ PersistentKeepalive = 25
 
 ### Preshared Keys
 
-Add post-quantum security layer:
+Post-quantum security is enabled by default:
 
 1. Open **Settings** → **WireGuard**
-2. Enable **Use PresharedKey**
-3. Save or generate the global preshared key
+2. **Use PresharedKey** is enabled by default
+3. Generate a global preshared key if not already set
 
 Newly created peer configs will include:
 

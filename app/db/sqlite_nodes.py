@@ -297,6 +297,55 @@ def mark_stale_nodes_offline(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SSE Connection Tracking (multi-worker safe)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def update_node_sse_connected(conn: sqlite3.Connection, node_id: str) -> None:
+	"""Record that a node connected via SSE. Thread/worker-safe via DB."""
+	now = utcnow()
+	with transaction(conn, immediate=True):
+		conn.execute(
+			"UPDATE nodes SET sse_connected_at = ? WHERE id = ?",
+			(now, node_id),
+		)
+
+
+def clear_node_sse_connected(conn: sqlite3.Connection, node_id: str) -> None:
+	"""Clear SSE connection timestamp when node disconnects."""
+	with transaction(conn, immediate=True):
+		conn.execute(
+			"UPDATE nodes SET sse_connected_at = NULL WHERE id = ?",
+			(node_id,),
+		)
+
+
+def is_node_sse_connected(conn: sqlite3.Connection, node_id: str, max_age_seconds: int = 45) -> bool:
+	"""Check if node has an active SSE connection (multi-worker safe).
+
+	A node is considered connected if sse_connected_at is within max_age_seconds.
+	Default 45s accounts for 25s keepalive interval + margin.
+	"""
+	from datetime import timedelta
+	cutoff = utcnow() - timedelta(seconds=max_age_seconds)
+	row = conn.execute(
+		"SELECT sse_connected_at FROM nodes WHERE id = ?",
+		(node_id,),
+	).fetchone()
+	if not row or not row["sse_connected_at"]:
+		return False
+	# Parse timestamp
+	ts = row["sse_connected_at"]
+	if isinstance(ts, str):
+		from datetime import datetime
+		try:
+			ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+		except ValueError:
+			return False
+	return ts >= cutoff
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Config Version
 # ─────────────────────────────────────────────────────────────────────────────
 

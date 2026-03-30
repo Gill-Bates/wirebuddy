@@ -803,7 +803,7 @@ def settings_page(
 		"enable_status_page": get_setting(conn, "enable_status_page") == "1",
 		"enable_swagger": get_setting(conn, "enable_swagger") == "1",
 		"gui_localhost_only": get_setting(conn, "gui_localhost_only") == "1",
-		"wg_use_psk": get_setting(conn, "wg_use_psk") == "1",
+		"wg_use_psk": get_setting(conn, "wg_use_psk", "1") == "1",  # Default: enabled
 		"traffic_analysis_enabled": get_setting(conn, "traffic_analysis_enabled") == "1",
 		"speedtest_enabled": get_speedtest_enabled(conn),
 		"status_page_url": f"https://{url_host}/status",

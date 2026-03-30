@@ -39,6 +39,7 @@ def insert_default_settings(conn: sqlite3.Connection) -> None:
 				("gui_port", "8000", now),
 				("wg_mtu", "1420", now),
 				("wg_persistent_keepalive", "25", now),
+				("wg_use_psk", "1", now),  # PresharedKey enabled by default
 				("traffic_analysis_enabled", "0", now),
 			],
 		)
@@ -269,7 +270,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				config_version TEXT,
 				metadata TEXT,
 				tunnel_peer_id INTEGER REFERENCES peers(id) ON DELETE SET NULL,
-				last_metric_seq INTEGER
+				last_metric_seq INTEGER,
+				sse_connected_at TIMESTAMP
 			)
 			"""
 		)
@@ -365,6 +367,13 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 	if "last_metric_seq" not in nodes_columns:
 		_log.info("Migrating nodes table: adding last_metric_seq for reliable metric delivery")
 		conn.execute("ALTER TABLE nodes ADD COLUMN last_metric_seq INTEGER")
+
+	# Migration: Add sse_connected_at to nodes (for multi-worker SSE tracking)
+	cursor = conn.execute("PRAGMA table_info(nodes)")
+	nodes_columns = {row[1] for row in cursor.fetchall()}
+	if "sse_connected_at" not in nodes_columns:
+		_log.info("Migrating nodes table: adding sse_connected_at for multi-worker SSE tracking")
+		conn.execute("ALTER TABLE nodes ADD COLUMN sse_connected_at TIMESTAMP")
 
 
 def ensure_default_admin(conn: sqlite3.Connection) -> None:

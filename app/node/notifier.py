@@ -124,16 +124,25 @@ async def get_connection_count(node_id: str) -> int:
 
 
 def is_node_connected_sync(node_id: str) -> bool:
-    """Check if a node has active SSE connections (sync, lock-free read).
+    """Check if a node has active SSE connections (multi-worker safe via DB).
     
-    Safe for read-only checks from synchronous code -- dict reads are
-    atomic in CPython due to the GIL.
+    Uses database timestamp instead of in-memory dict to work correctly
+    with multiple uvicorn workers.
     """
-    connected = bool(_node_queues.get(node_id))
-    if not connected and node_id:
-        _log.debug("Node %s has no active SSE connections (queues: %s)", 
-                  node_id, list(_node_queues.keys())[:5])
-    return connected
+    from ..db.sqlite_runtime import connect
+    from ..db.sqlite_nodes import is_node_sse_connected
+    from ..utils.config import get_config
+    
+    cfg = get_config()
+    try:
+        conn = connect(cfg.db_path)
+        connected = is_node_sse_connected(conn, node_id)
+        conn.close()
+        return connected
+    except Exception as exc:
+        _log.debug("Failed to check SSE status for node %s: %s", node_id, exc)
+        # Fall back to in-memory check (same-worker only)
+        return bool(_node_queues.get(node_id))
 
 
 async def notify_restart(node_id: str) -> int:

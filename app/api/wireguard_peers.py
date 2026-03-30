@@ -361,11 +361,11 @@ async def create_peer(
 	
 	# 3. Determine preshared key:
 	#    - Use payload.preshared_key if provided
-	#    - Else use global PSK if wg_use_psk is enabled
+	#    - Else use global PSK if wg_use_psk is enabled (default: enabled)
 	#    - Else no PSK (None)
 	preshared_key = payload.preshared_key
 	if not preshared_key:
-		use_psk_setting = get_setting(conn, "wg_use_psk", "false")
+		use_psk_setting = get_setting(conn, "wg_use_psk", "1")  # Default: enabled
 		if use_psk_setting and use_psk_setting.lower() in ("true", "1", "yes"):
 			global_psk_encrypted = get_setting(conn, "wg_global_psk")
 			if global_psk_encrypted:

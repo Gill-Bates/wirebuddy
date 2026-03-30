@@ -247,16 +247,16 @@ To override:
 
 ### Preshared Keys
 
-WireBuddy supports a global preshared key for new peers:
+WireBuddy uses preshared keys (PSK) by default for post-quantum security:
 
 1. Navigate to **Settings** → **WireGuard**
-2. Enable **Use PresharedKey**
-3. Save or generate the global preshared key
+2. **Use PresharedKey** is enabled by default
+3. Generate a global preshared key if not already set
 
-Newly created peers will include that preshared key in generated configs.
+Newly created peers will include the preshared key in generated configs.
 
-!!! info "When to Use PSK"
-    Preshared keys provide defense-in-depth against theoretical quantum computer attacks on Curve25519. Recommended for highly sensitive deployments.
+!!! info "Enabled by Default"
+    Preshared keys provide defense-in-depth against theoretical quantum computer attacks on Curve25519. WireBuddy enables this by default for maximum security.
 
 ## IPv6 Support
 

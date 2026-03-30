@@ -301,9 +301,11 @@ NEW_KEY=$(openssl rand -base64 32)
 
 ### Preshared Keys
 
-Add post-quantum security:
+Post-quantum security is enabled by default in WireBuddy:
 
-**Settings → WireGuard → Use PresharedKey**
+**Settings → WireGuard → Use PresharedKey** (enabled by default)
+
+Ensure a global preshared key is generated for maximum protection.
 
 ### Regular Key Rotation
 

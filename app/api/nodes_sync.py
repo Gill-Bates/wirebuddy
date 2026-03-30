@@ -19,6 +19,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 import typing
 
@@ -463,6 +464,7 @@ def get_config_endpoint(
 @router.get("/events")
 async def node_events(
 	node: sqlite3.Row = Depends(get_current_node),
+	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Server-Sent Events stream for real-time config change notifications.
 
@@ -477,14 +479,30 @@ async def node_events(
 	The node should pull the full config via GET /api/nodes/config after
 	receiving an event.
 	"""
+	from ..db.sqlite_nodes import update_node_sse_connected, clear_node_sse_connected
+	
 	node_id = node["id"]
 	_log.info("Node %s connected to SSE event stream", node_id)
 
 	async def event_generator():
-		# Send initial keepalive
-		yield ": keepalive\n\n"
-		async for event in node_notifier.subscribe(node_id):
-			yield event
+		try:
+			# Mark node as SSE-connected in DB (multi-worker safe)
+			await run_in_threadpool(update_node_sse_connected, conn, node_id)
+			
+			# Send initial keepalive
+			yield ": keepalive\n\n"
+			
+			async for event in node_notifier.subscribe(node_id):
+				# Update DB timestamp periodically (on keepalive events)
+				if event.startswith(":"):  # Keepalive comment
+					await run_in_threadpool(update_node_sse_connected, conn, node_id)
+				yield event
+		finally:
+			# Clear SSE connection status on disconnect
+			try:
+				await run_in_threadpool(clear_node_sse_connected, conn, node_id)
+			except Exception as exc:
+				_log.debug("Failed to clear SSE status for node %s: %s", node_id, exc)
 
 	return StreamingResponse(
 		event_generator(),
