@@ -14,12 +14,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 60  # Realistic timeout; raise if arm64 consistently exceeds
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Full history for robust changelog/release notes handling
 
       - name: Generate BUILD_INFO
         run: git rev-parse HEAD > BUILD_INFO
@@ -56,6 +56,15 @@ jobs:
             exit 1
           fi
           
+          # Validate tag matches VERSION on tag pushes
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [[ "$TAG_VERSION" != "$VERSION" ]]; then
+              echo "ERROR: Git tag (v${TAG_VERSION}) does not match VERSION file (${VERSION})"
+              exit 1
+            fi
+          fi
+          
           BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           TAG="v${VERSION}"
           
@@ -70,7 +79,8 @@ jobs:
             --platform linux/amd64 \
             --target runtime \
             --load \
-            --cache-from type=gha \
+            --cache-from type=gha,scope=amd64 \
+            --cache-to type=gha,mode=max,scope=amd64 \
             --build-arg "APP_VERSION=${{ steps.meta.outputs.tag }}" \
             --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
             --build-arg "VCS_REF=${{ github.sha }}" \
@@ -83,14 +93,18 @@ jobs:
           set -euo pipefail
           
           # Start container in background (no --rm so we can inspect logs on failure)
+          # Use dynamic port binding to avoid port collisions
           docker run -d --name wirebuddy-test \
-            -p 8000:8000 \
+            -p 127.0.0.1:0:8000 \
             -e WIREBUDDY_SECRET_KEY="ci-smoke-test-key-not-for-production" \
             -e WIREBUDDY_SKIP_NETWORK_CHECK="1" \
             wirebuddy:test
           
+          # Extract the actual bound port (robust parsing for IPv4 and IPv6)
+          PORT=$(docker port wirebuddy-test 8000/tcp | sed -E 's/.*:([0-9]+)$/\1/')
+          
           # Wait for startup with active polling (max 30s)
-          echo "Waiting for container to start..."
+          echo "Waiting for container to start on port $PORT..."
           for i in $(seq 1 30); do
             # Check if container is still running
             if ! docker ps -q -f name=wirebuddy-test | grep -q .; then
@@ -101,9 +115,9 @@ jobs:
               exit 1
             fi
             
-            # Try health check
-            if curl -fsS --retry-connrefused --retry 2 --retry-delay 1 \
-                http://localhost:8000/api/system/status > /dev/null 2>&1; then
+            # Try health check with explicit timeout
+            if curl -fsS --max-time 2 --retry-connrefused --retry 2 --retry-delay 1 \
+                http://127.0.0.1:${PORT}/api/system/status > /dev/null 2>&1; then
               echo "✓ Container ready after ${i}s"
               docker stop wirebuddy-test
               docker rm wirebuddy-test
@@ -152,8 +166,8 @@ jobs:
             --platform linux/arm64 \
             --target runtime \
             --load \
-            --cache-from type=gha,scope=arm64-scan \
-            --cache-to type=gha,mode=max,scope=arm64-scan \
+            --cache-from type=gha,scope=arm64 \
+            --cache-to type=gha,mode=max,scope=arm64 \
             --build-arg "APP_VERSION=${{ steps.meta.outputs.tag }}" \
             --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
             --build-arg "VCS_REF=${{ github.sha }}" \
@@ -189,12 +203,13 @@ jobs:
             echo "Manual build: NOT tagging as :latest"
           fi
           
-          # Build and push
+          # Build and push (use both arch caches)
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --target runtime \
-            --cache-from type=gha \
-            --cache-to type=gha,mode=max \
+            --cache-from type=gha,scope=amd64 \
+            --cache-from type=gha,scope=arm64 \
+            --cache-to type=gha,mode=max,scope=final \
             --build-arg "APP_VERSION=${{ steps.meta.outputs.tag }}" \
             --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
             --build-arg "VCS_REF=${{ github.sha }}" \
@@ -249,14 +264,20 @@ jobs:
           echo "Current tag: ${CURRENT_TAG}"
           echo "Keeping version tags: ${VERSIONED_TAGS}"
           
-          # Delete tags not in keep list
+          # Delete tags not in keep list (only touch version tags)
           echo -e "$ALL_TAGS" | while read -r TAG; do
             [ -z "$TAG" ] && continue
             
-            if [ "$TAG" = "latest" ] || [ "$TAG" = "$CURRENT_TAG" ] || echo "$VERSIONED_TAGS" | grep -qx "$TAG"; then
-              echo "Keeping: ${TAG}"
+            # Only manage version tags (v*.*.* format), never delete other tags
+            if ! echo "$TAG" | grep -qE '^v[0-9]'; then
+              echo "Skipping non-version tag: ${TAG}"
+              continue
+            fi
+            
+            if [ "$TAG" = "$CURRENT_TAG" ] || echo "$VERSIONED_TAGS" | grep -qx "$TAG"; then
+              echo "Keeping version tag: ${TAG}"
             else
-              echo "Deleting: ${TAG}"
+              echo "Deleting old version tag: ${TAG}"
               curl -s -X DELETE \
                 -H "Authorization: JWT ${TOKEN}" \
                 "https://hub.docker.com/v2/repositories/${REPO}/tags/${TAG}/" || \
@@ -294,6 +315,7 @@ jobs:
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
+        # GitHub Release pinning handled by Renovate with digest
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: ${{ steps.meta.outputs.tag }}
@@ -304,6 +326,7 @@ jobs:
       - name: Update Docker Hub description
         if: startsWith(github.ref, 'refs/tags/v')
         uses: peter-evans/dockerhub-description@v4
+        # DockerHub description update pinning handled by Renovate with digest
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
