@@ -266,7 +266,7 @@ async def _cleanup_stale_interfaces() -> list[str]:
 				continue  # Has config, not orphaned
 
 			# Orphaned interface: active but no config file
-			_log.warning(
+			_log.info(
 				"CLEANUP_STALE_INTERFACE name=%s (active in kernel but no config file)",
 				iface_name,
 			)

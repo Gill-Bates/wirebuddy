@@ -135,13 +135,24 @@ def _save_state(state: dict[str, Any]) -> None:
 def _clear_enrollment_state() -> None:
 	"""Clear all enrollment state for re-enrollment with a new token.
 
-	Removes node state and certificates.
+	Removes node state, certificates, and metrics queue.
 	"""
 	if STATE_FILE.exists():
 		STATE_FILE.unlink()
 		_log.info("Removed old node state file")
 
 	clear_node_cert(DATA_DIR)
+
+	# Clear metrics queue — old metrics are for a different master/context
+	queue_file = DATA_DIR / "metrics_queue.db"
+	cleared = False
+	for suffix in ("", "-wal", "-shm"):
+		f = queue_file.parent / (queue_file.name + suffix)
+		if f.exists():
+			f.unlink()
+			cleared = True
+	if cleared:
+		_log.info("Cleared old metrics queue")
 
 
 def _resolve_tls_verify(state: dict[str, Any] | None) -> tuple[bool | str, str | None]:
@@ -631,6 +642,12 @@ async def _enroll(
 		return EnrollResult(success=True, config_version=version, session_secret=session_secret)
 	except httpx.HTTPStatusError as exc:
 		_log.error("Enrollment HTTP error %d: %s", exc.response.status_code, exc.response.text[:200])
+		return EnrollResult(success=False, config_version=None, session_secret=None)
+	except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+		_log.error("Enrollment timeout: %s", type(exc).__name__)
+		return EnrollResult(success=False, config_version=None, session_secret=None)
+	except httpx.ConnectError as exc:
+		_log.error("Enrollment connection failed: master unreachable")
 		return EnrollResult(success=False, config_version=None, session_secret=None)
 	except Exception as exc:
 		_log.exception("Enrollment failed: %s", exc)
