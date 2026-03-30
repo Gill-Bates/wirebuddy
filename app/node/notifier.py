@@ -21,20 +21,41 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
 from typing import AsyncGenerator
 
 _log = logging.getLogger(__name__)
 
 # Per-node event queues: node_id -> set of asyncio.Queue
 # Each connected SSE client gets its own queue
-_node_queues: dict[str, set[asyncio.Queue[str]]] = defaultdict(set)
+_node_queues: dict[str, set[asyncio.Queue[str]]] = {}
 _lock = asyncio.Lock()
 
-# Maximum queued events per client before backpressure/dropping
-_MAX_QUEUED_EVENTS = 64
+# Queue size optimized for latest-wins: only the newest event matters
+# Larger queues would accumulate stale events that get dropped anyway
+_QUEUE_SIZE = 1
 # SSE keepalive interval to prevent proxy timeouts
 _KEEPALIVE_INTERVAL = 25
+
+
+def _enqueue_latest(queue: asyncio.Queue[str], event: str) -> bool:
+    """Enqueue event, replacing old event if queue is full (latest-wins).
+    
+    Returns True if event was enqueued, False on failure.
+    """
+    try:
+        queue.put_nowait(event)
+        return True
+    except asyncio.QueueFull:
+        # Latest-wins: drop old event and enqueue new one
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            queue.put_nowait(event)
+            return True
+        except asyncio.QueueFull:
+            return False
 
 
 async def subscribe(node_id: str) -> AsyncGenerator[str, None]:
@@ -42,9 +63,9 @@ async def subscribe(node_id: str) -> AsyncGenerator[str, None]:
     
     Yields SSE-formatted event strings when config changes.
     """
-    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=_MAX_QUEUED_EVENTS)
+    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=_QUEUE_SIZE)
     async with _lock:
-        _node_queues[node_id].add(queue)
+        _node_queues.setdefault(node_id, set()).add(queue)
         client_count = len(_node_queues[node_id])
     _log.debug("Node %s subscribed to config events (clients=%d)", node_id, client_count)
     
@@ -90,21 +111,10 @@ async def notify_config_changed(node_id: str, config_version: str) -> int:
     
     notified = 0
     for queue in queues:
-        try:
-            queue.put_nowait(event)
+        if _enqueue_latest(queue, event):
             notified += 1
-        except asyncio.QueueFull:
-            # Drop oldest event to ensure newest config is always delivered
-            _log.warning("Event queue full for node %s, dropping oldest event to make room", node_id)
-            try:
-                queue.get_nowait()  # Drop oldest
-            except asyncio.QueueEmpty:
-                pass
-            try:
-                queue.put_nowait(event)  # Insert newest
-                notified += 1
-            except asyncio.QueueFull:
-                _log.error("Failed to enqueue event for node %s even after dropping oldest", node_id)
+        else:
+            _log.error("Failed to enqueue config change for node %s (queue overflow)", node_id)
     
     _log.debug("Notified %d SSE client(s) for node %s: config_version=%s...", 
               notified, node_id, config_version[:16] if config_version else "none")
@@ -123,11 +133,39 @@ async def get_connection_count(node_id: str) -> int:
         return len(_node_queues.get(node_id, set()))
 
 
-def is_node_connected_sync(node_id: str) -> bool:
+async def is_node_connected(node_id: str) -> bool:
     """Check if a node has active SSE connections (multi-worker safe via DB).
     
     Uses database timestamp instead of in-memory dict to work correctly
-    with multiple uvicorn workers.
+    with multiple uvicorn workers. Runs DB query in threadpool to avoid
+    blocking the async event loop.
+    """
+    from ..db.sqlite_runtime import connect
+    from ..db.sqlite_nodes import is_node_sse_connected
+    from ..utils.config import get_config
+    
+    cfg = get_config()
+    try:
+        # Run blocking DB call in threadpool
+        def _check_db():
+            conn = connect(cfg.db_path)
+            try:
+                return is_node_sse_connected(conn, node_id)
+            finally:
+                conn.close()
+        
+        return await asyncio.to_thread(_check_db)
+    except Exception as exc:
+        _log.debug("Failed to check SSE status for node %s: %s", node_id, exc)
+        # Fall back to in-memory check (same-worker only)
+        async with _lock:
+            return bool(_node_queues.get(node_id))
+
+
+def is_node_connected_sync(node_id: str) -> bool:
+    """Synchronous version of is_node_connected() for non-async callers.
+    
+    WARNING: Blocks the calling thread. Prefer is_node_connected() in async code.
     """
     from ..db.sqlite_runtime import connect
     from ..db.sqlite_nodes import is_node_sse_connected
@@ -136,9 +174,10 @@ def is_node_connected_sync(node_id: str) -> bool:
     cfg = get_config()
     try:
         conn = connect(cfg.db_path)
-        connected = is_node_sse_connected(conn, node_id)
-        conn.close()
-        return connected
+        try:
+            return is_node_sse_connected(conn, node_id)
+        finally:
+            conn.close()
     except Exception as exc:
         _log.debug("Failed to check SSE status for node %s: %s", node_id, exc)
         # Fall back to in-memory check (same-worker only)
@@ -165,19 +204,10 @@ async def notify_restart(node_id: str) -> int:
     
     notified = 0
     for queue in queues:
-        try:
-            queue.put_nowait(event)
+        if _enqueue_latest(queue, event):
             notified += 1
-        except asyncio.QueueFull:
-            try:
-                queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-            try:
-                queue.put_nowait(event)
-                notified += 1
-            except asyncio.QueueFull:
-                _log.error("Failed to enqueue restart event for node %s", node_id)
+        else:
+            _log.error("Failed to enqueue restart event for node %s (queue overflow)", node_id)
     
     _log.info("Sent restart signal to %d SSE client(s) for node %s", notified, node_id)
     return notified
@@ -209,19 +239,10 @@ async def notify_node_removed(node_id: str) -> int:
     
     notified = 0
     for queue in queues:
-        try:
-            queue.put_nowait(event)
+        if _enqueue_latest(queue, event):
             notified += 1
-        except asyncio.QueueFull:
-            try:
-                queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-            try:
-                queue.put_nowait(event)
-                notified += 1
-            except asyncio.QueueFull:
-                _log.error("Failed to enqueue removal event for node %s", node_id)
+        else:
+            _log.error("Failed to enqueue removal event for node %s (queue overflow)", node_id)
     
     _log.info("Sent node_removed signal to %d SSE client(s) for node %s", notified, node_id)
     return notified

@@ -80,6 +80,22 @@ class SpeedtestSettingsPayload(BaseModel):
 		return v
 
 
+def _resolve_speedtest_servers(conn: sqlite3.Connection) -> list[str]:
+	"""Resolve speedtest server URLs based on current target setting.
+	
+	Returns list of server URLs for testing. If target='auto', returns all
+	configured servers for RTT-based selection. Otherwise returns single server.
+	"""
+	target = get_speedtest_target(conn)
+	if target == "auto":
+		return [s["url"] for s in SPEEDTEST_SERVER_LIST]
+	else:
+		server_info = SPEEDTEST_SERVER_MAP.get(target)
+		if not server_info:
+			raise ValueError(f"Unknown target: {target}")
+		return [server_info["url"]]
+
+
 @router.get("/speedtest/settings")
 async def get_speedtest_settings(
 	_: sqlite3.Row = Depends(get_current_user),
@@ -146,15 +162,10 @@ async def trigger_speedtest(
 		# Note: We don't check get_speedtest_enabled() here because that setting
 		# controls the *scheduler* only. Manual admin-triggered tests should always work.
 
-		target = get_speedtest_target(conn)
-		if target == "auto":
-			# Use all configured servers for RTT-based selection
-			servers = [s["url"] for s in SPEEDTEST_SERVER_LIST]
-		else:
-			server_info = SPEEDTEST_SERVER_MAP.get(target)
-			if not server_info:
-				raise HTTPException(status_code=422, detail=f"Unknown target: {target}") from None
-			servers = [server_info["url"]]
+		try:
+			servers = _resolve_speedtest_servers(conn)
+		except ValueError as exc:
+			raise HTTPException(status_code=422, detail=str(exc)) from None
 
 		tester = BandwidthTester(servers=servers)
 
@@ -180,8 +191,9 @@ async def trigger_speedtest(
 			_log.warning("SPEEDTEST_TSDB_WRITE_FAILED: %s", exc)
 			stored = False
 
+		# Avoid mutating external result object
 		if isinstance(result, dict):
-			result["stored"] = stored
+			result = {**result, "stored": stored}
 		else:
 			result = {"result": result, "stored": stored}
 		return ok_response(data=result)
@@ -217,27 +229,25 @@ async def trigger_speedtest_stream(
 		raise HTTPException(status_code=429, detail=str(exc)) from None
 
 	# Build server list
-	target = get_speedtest_target(conn)
-	if target == "auto":
-		# Use all configured servers for RTT-based selection
-		servers = [s["url"] for s in SPEEDTEST_SERVER_LIST]
-	else:
-		server_info = SPEEDTEST_SERVER_MAP.get(target)
-		if not server_info:
-			raise HTTPException(status_code=422, detail=f"Unknown target: {target}")
-		servers = [server_info["url"]]
+	try:
+		servers = _resolve_speedtest_servers(conn)
+	except ValueError as exc:
+		raise HTTPException(status_code=422, detail=str(exc))
 
 	async def event_generator():
 		"""Generate SSE events for speedtest progress."""
 		async with lease:
-			progress_queue: asyncio.Queue[ProgressEvent | None] = asyncio.Queue()
+			# Bounded queue to prevent memory growth if callback produces events faster than consumption
+			progress_queue: asyncio.Queue[ProgressEvent | None] = asyncio.Queue(maxsize=32)
+			loop = asyncio.get_running_loop()
 
 			def progress_callback(event: ProgressEvent) -> None:
 				"""Thread-safe callback to enqueue progress events."""
+				# Use call_soon_threadsafe since callback may be called from non-event-loop thread
 				try:
-					progress_queue.put_nowait(event)
-				except asyncio.QueueFull:
-					pass  # Drop event if queue is full (shouldn't happen)
+					loop.call_soon_threadsafe(progress_queue.put_nowait, event)
+				except Exception:
+					pass  # Drop event if queue is full or other error
 
 			tester = BandwidthTester(servers=servers, progress_callback=progress_callback)
 
@@ -253,10 +263,18 @@ async def trigger_speedtest_stream(
 			test_task = asyncio.create_task(run_test())
 			try:
 				while not test_task.done():
+					# Check if client disconnected
+					if await request.is_disconnected():
+						_log.debug("Client disconnected during speedtest stream")
+						test_task.cancel()
+						break
+					
 					try:
 						event = await asyncio.wait_for(progress_queue.get(), timeout=0.5)
 						if event is not None:
-							yield f"event: progress\ndata: {json.dumps(event)}\n\n"
+							# Serialize progress event (handle dataclass/dict)
+							event_data = event if isinstance(event, dict) else event.__dict__
+							yield f"event: progress\ndata: {json.dumps(event_data)}\n\n"
 					except asyncio.TimeoutError:
 						yield ": keepalive\n\n"
 
@@ -264,7 +282,8 @@ async def trigger_speedtest_stream(
 					try:
 						event = progress_queue.get_nowait()
 						if event is not None:
-							yield f"event: progress\ndata: {json.dumps(event)}\n\n"
+							event_data = event if isinstance(event, dict) else event.__dict__
+							yield f"event: progress\ndata: {json.dumps(event_data)}\n\n"
 					except asyncio.QueueEmpty:
 						break
 
@@ -283,8 +302,11 @@ async def trigger_speedtest_stream(
 					_log.warning("SPEEDTEST_TSDB_WRITE_FAILED: %s", exc)
 					stored = False
 
+				# Avoid mutating external result object
 				if isinstance(result, dict):
-					result["stored"] = stored
+					result = {**result, "stored": stored}
+				else:
+					result = {"result": result, "stored": stored}
 
 				if result.get("status") == "error":
 					yield f"event: error\ndata: {json.dumps(result)}\n\n"
@@ -338,15 +360,20 @@ async def get_speedtest_history(
 		retention_days = get_speedtest_retention_days(conn)
 		since = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
-	# Offload blocking I/O (file reads, parsing) to threadpool
+	# Fetch limit+1 to detect truncation accurately
 	points = await run_in_threadpool(
 		tsdb.query,
 		cfg.tsdb_dir,
 		peer_key=SPEEDTEST_TSDB_KEY,
 		metric=SPEEDTEST_TSDB_METRIC,
 		since=since,
-		limit=limit,
+		limit=limit + 1,
 	)
+
+	# Truncate to actual limit and detect if more data exists
+	truncated = len(points) > limit
+	if truncated:
+		points = points[:limit]
 
 	history = []
 	for pt in points:
@@ -358,7 +385,7 @@ async def get_speedtest_history(
 	return ok_response(data={
 		"history": history,
 		"limit": limit,
-		"truncated": len(points) == limit,
+		"truncated": truncated,
 	})
 
 
@@ -428,12 +455,12 @@ async def purge_speedtest_data(
 	except SpeedtestBusyError:
 		raise HTTPException(status_code=409, detail="Speed test already in progress") from None
 
-	try:
-		deleted_bytes = await run_in_threadpool(tsdb.purge_synthetic_data, cfg.tsdb_dir, SPEEDTEST_TSDB_KEY)
-	except OSError as exc:
-		_log.warning("Failed to delete speedtest data: %s", exc)
-		raise HTTPException(status_code=500, detail="Failed to delete speedtest data") from None
-	finally:
-		lease.release()
+	# Use async context manager for consistent lease handling
+	async with lease:
+		try:
+			deleted_bytes = await run_in_threadpool(tsdb.purge_synthetic_data, cfg.tsdb_dir, SPEEDTEST_TSDB_KEY)
+		except OSError as exc:
+			_log.warning("Failed to delete speedtest data: %s", exc)
+			raise HTTPException(status_code=500, detail="Failed to delete speedtest data") from None
 
 	return ok_response(message=f"Speedtest data deleted ({deleted_bytes} bytes)")

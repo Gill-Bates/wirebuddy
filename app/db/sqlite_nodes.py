@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..utils.config import get_config
@@ -58,6 +59,15 @@ def _validate_port(port: int) -> None:
 		raise ValueError(f"Port out of valid range: {port}")
 
 
+def _validate_name(name: str) -> None:
+	"""Validate node name is non-empty and properly formatted."""
+	name = name.strip()
+	if not name:
+		raise ValueError("Node name cannot be empty")
+	if len(name) > 63:
+		raise ValueError("Node name exceeds 63 characters")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Node CRUD
 # ─────────────────────────────────────────────────────────────────────────────
@@ -72,6 +82,7 @@ def create_node(
 	api_secret_hash: str,
 ) -> None:
 	"""Insert a new node record (status='pending')."""
+	_validate_name(name)
 	_validate_fqdn(fqdn)
 	_validate_port(wg_port)
 	now = utcnow()
@@ -120,6 +131,7 @@ def update_node(
 	params: list[Any] = []
 
 	if name is not None:
+		_validate_name(name)
 		updates.append("name = ?")
 		params.append(name)
 	if fqdn is not None:
@@ -152,13 +164,19 @@ def delete_node(conn: sqlite3.Connection, node_id: str) -> bool:
 	Returns True if the node existed.
 	"""
 	with transaction(conn, immediate=True):
-		# Delete tunnel peer first (by subquery) to avoid FK race
-		cur = conn.execute(
-			"DELETE FROM peers WHERE id IN (SELECT tunnel_peer_id FROM nodes WHERE id = ? AND tunnel_peer_id IS NOT NULL)",
+		# Fetch tunnel_peer_id first to avoid race with concurrent updates
+		row = conn.execute(
+			"SELECT tunnel_peer_id FROM nodes WHERE id = ?",
 			(node_id,),
-		)
-		if cur.rowcount > 0:
-			_log.info("Deleted tunnel peer for node=%s", node_id)
+		).fetchone()
+		
+		if row and row["tunnel_peer_id"]:
+			cur = conn.execute(
+				"DELETE FROM peers WHERE id = ?",
+				(row["tunnel_peer_id"],),
+			)
+			if cur.rowcount > 0:
+				_log.info("Deleted tunnel peer for node=%s", node_id)
 
 		# Delete the node (peers.node_id set to NULL via FK ON DELETE SET NULL)
 		cur = conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
@@ -205,8 +223,8 @@ def rotate_node_session_secret(
 	"""
 	with transaction(conn, immediate=True):
 		cur = conn.execute(
-			"UPDATE nodes SET api_secret_hash = ? WHERE id = ?",
-			(api_secret_hash, node_id),
+			"UPDATE nodes SET api_secret_hash = ? WHERE id = ? AND status != ?",
+			(api_secret_hash, node_id, STATUS_PENDING),
 		)
 		return cur.rowcount > 0
 
@@ -225,7 +243,7 @@ def update_node_api_secret(
 			"""
 			UPDATE nodes
 			SET api_secret_hash = ?, cert_fingerprint = NULL, status = ?,
-			    enrolled_at = NULL
+			    enrolled_at = NULL, last_seen = NULL, sse_connected_at = NULL
 			WHERE id = ?
 			""",
 			(api_secret_hash, STATUS_PENDING, node_id),
@@ -268,8 +286,15 @@ def update_node_heartbeat(
 		if len(meta_json.encode("utf-8")) > _MAX_METADATA_SIZE:
 			raise ValueError(f"Metadata exceeds maximum size ({_MAX_METADATA_SIZE} bytes)")
 	with transaction(conn, immediate=True):
+		# Only set status to 'online' if not in error state
 		cur = conn.execute(
-			"UPDATE nodes SET last_seen = ?, metadata = COALESCE(?, metadata), status = ? WHERE id = ?",
+			"""
+			UPDATE nodes
+			SET last_seen = ?,
+			    metadata = COALESCE(?, metadata),
+			    status = CASE WHEN status != 'error' THEN ? ELSE status END
+			WHERE id = ?
+			""",
 			(now, meta_json, STATUS_ONLINE, node_id),
 		)
 		return cur.rowcount > 0
@@ -283,7 +308,6 @@ def mark_stale_nodes_offline(
 
 	Returns the number of nodes marked offline.
 	"""
-	from datetime import timedelta
 	cutoff = utcnow() - timedelta(seconds=stale_seconds)
 	with transaction(conn, immediate=True):
 		cur = conn.execute(
@@ -326,7 +350,6 @@ def is_node_sse_connected(conn: sqlite3.Connection, node_id: str, max_age_second
 	A node is considered connected if sse_connected_at is within max_age_seconds.
 	Default 45s accounts for 25s keepalive interval + margin.
 	"""
-	from datetime import timedelta
 	cutoff = utcnow() - timedelta(seconds=max_age_seconds)
 	row = conn.execute(
 		"SELECT sse_connected_at FROM nodes WHERE id = ?",
@@ -337,11 +360,19 @@ def is_node_sse_connected(conn: sqlite3.Connection, node_id: str, max_age_second
 	# Parse timestamp
 	ts = row["sse_connected_at"]
 	if isinstance(ts, str):
-		from datetime import datetime
 		try:
 			ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+			# Ensure timezone-aware (assume UTC if naive)
+			if ts.tzinfo is None:
+				ts = ts.replace(tzinfo=timezone.utc)
 		except ValueError:
 			return False
+	elif isinstance(ts, datetime):
+		# Ensure timezone-aware (assume UTC if naive)
+		if ts.tzinfo is None:
+			ts = ts.replace(tzinfo=timezone.utc)
+	else:
+		return False
 	return ts >= cutoff
 
 
@@ -356,16 +387,31 @@ def bump_node_config_version(
 ) -> str:
 	"""Compute and store a new config_version hash for the node.
 
-	The version is a deterministic SHA-256 hash of all enabled peer public keys
-	assigned to this node. Timestamp is NOT included to ensure idempotency.
+	The version is a deterministic SHA-256 hash of the full peer configuration
+	assigned to this node (public_key, allowed_ips, preshared_key presence).
+	Timestamp is NOT included to ensure idempotency.
 	"""
 	with transaction(conn, immediate=True):
 		rows = conn.execute(
-			"SELECT public_key FROM peers WHERE node_id = ? AND is_enabled = 1 ORDER BY public_key",
+			"""
+			SELECT public_key, allowed_ips, preshared_key, interface
+			FROM peers
+			WHERE node_id = ? AND is_enabled = 1
+			ORDER BY public_key
+			""",
 			(node_id,),
 		).fetchall()
+		# Include full peer config (but not decrypted keys) for version hash
 		payload = json.dumps(
-			[r["public_key"] for r in rows],
+			[
+				{
+					"public_key": r["public_key"],
+					"allowed_ips": r["allowed_ips"],
+					"has_psk": bool(r["preshared_key"]),
+					"interface": r["interface"],
+				}
+				for r in rows
+			],
 			separators=(",", ":"),
 		)
 		version = hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -409,15 +455,19 @@ def get_node_config(
 		if tunnel_peer:
 			tunnel_interface = tunnel_peer["interface"]
 
+	# Preload all interfaces to avoid N+1 query pattern
+	interfaces_map = {
+		row["name"]: row
+		for row in conn.execute("SELECT * FROM interfaces").fetchall()
+	}
+
 	# Node interfaces (keypairs)
 	ni_rows = conn.execute(
 		"SELECT * FROM node_interfaces WHERE node_id = ?", (node_id,)
 	).fetchall()
 	interfaces = []
 	for ni in ni_rows:
-		iface = conn.execute(
-			"SELECT * FROM interfaces WHERE name = ?", (ni["interface_name"],)
-		).fetchone()
+		iface = interfaces_map.get(ni["interface_name"])
 		if iface is None:
 			_log.warning("Orphaned node_interface: node=%s interface=%s", node_id, ni["interface_name"])
 			continue

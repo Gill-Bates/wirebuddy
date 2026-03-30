@@ -323,6 +323,9 @@ async def main() -> None:
 					current_config_version = enroll_res.config_version
 					session_secret = enroll_res.session_secret
 					break
+				if enroll_res.fatal:
+					# Permanent error (token invalid, node deleted) — no point retrying
+					break
 				if attempt >= ENROLLMENT_RETRY_ATTEMPTS:
 					break
 
@@ -603,6 +606,7 @@ class EnrollResult(NamedTuple):
 	success: bool
 	config_version: str | None
 	session_secret: str | None
+	fatal: bool = False  # Permanent error — do not retry
 
 async def _enroll(
 	client: httpx.AsyncClient,
@@ -641,7 +645,17 @@ async def _enroll(
 			_log.info("Received session secret from master (enrollment token is now invalidated)")
 		return EnrollResult(success=True, config_version=version, session_secret=session_secret)
 	except httpx.HTTPStatusError as exc:
-		_log.error("Enrollment HTTP error %d: %s", exc.response.status_code, exc.response.text[:200])
+		status_code = exc.response.status_code
+		detail = _extract_error_detail(exc.response)
+		# 401 = invalid/expired token, 404 = node deleted on master — both permanent
+		if status_code in (401, 404):
+			_log.error(
+				"Enrollment rejected by master (HTTP %d): %s — enrollment token is invalid or expired",
+				status_code,
+				detail or "no details",
+			)
+			return EnrollResult(success=False, config_version=None, session_secret=None, fatal=True)
+		_log.error("Enrollment HTTP error %d: %s", status_code, detail or exc.response.text[:200])
 		return EnrollResult(success=False, config_version=None, session_secret=None)
 	except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.WriteTimeout) as exc:
 		_log.error("Enrollment timeout: %s", type(exc).__name__)

@@ -193,7 +193,7 @@ async def enroll_node_endpoint(
 	# The definitive serialised check is repeated inside the IMMEDIATE transaction.
 	node = get_node(conn, node_id)
 	if node is None:
-		raise HTTPException(status_code=404, detail="Node not found")
+		raise HTTPException(status_code=404, detail="Enrollment token invalid or node deleted")
 	if node["status"] != "pending":
 		raise HTTPException(status_code=409, detail="Node already enrolled")
 

@@ -3,6 +3,7 @@
 - ``New`` Node mode is here! 🎉 WIrebuddy can now run on multiple instances at the same time!
 - ``New`` DNS logging can be enabled or disabled for each peer
 - ``New`` Added the ``tzdata`` package to support time zones
+- ``New`` PSK is now enabled by default
 - ``Fix`` Python dependencies updated
 - ``Fix`` Fixed an issue with the test server selection for the speed test
 - ``Fix`` Improved caching behavior for graphs
