@@ -8,7 +8,7 @@
         <h2 class="page-title"><span class="material-icons me-2">info</span>About</h2>
     </div>
 
-    <div class="about-layout d-flex flex-column">
+    <div class="about-layout">
         <!-- Row 1: Three cards side by side -->
         <div class="row g-3 about-top-row">
             <!-- Card 1: Application Details -->
@@ -71,7 +71,7 @@
 
             <!-- Card 2: Check for Updates -->
             <div class="col-12 col-lg-4 d-lg-flex flex-column gap-lg-3">
-                <div class="card flex-grow-1 d-flex flex-column">
+                <div class="card d-flex flex-column">
                     <div class="card-header d-flex align-items-center justify-content-between">
                         <div>
                             <span class="material-icons me-2">system_update</span>
@@ -181,9 +181,9 @@
         </div>
 
         <!-- Row 2: Changelog (full width) -->
-        <div class="row g-3 about-changelog-row flex-grow-1">
-            <div class="col-12 d-flex about-changelog-col">
-                <div class="card flex-grow-1 d-flex flex-column card-fill">
+        <div class="row g-3 mt-0 about-changelog-row">
+            <div class="col-12 about-changelog-col">
+                <div class="card d-flex flex-column">
                     <div class="card-header d-flex align-items-center">
                         <span class="material-icons me-2">history</span>
                         <span class="fw-semibold">Changelog</span>
@@ -210,15 +210,6 @@
         --about-accent-text: rgb(var(--wb-accent-red-rgb));
     }
 
-    .about-layout {
-        flex: 1;
-        min-height: 0;
-    }
-
-    .about-top-row {
-        flex: 0 0 auto;
-    }
-
     /* Make all three top cards equal height on desktop */
     @media (min-width: 992px) {
         .about-top-row {
@@ -233,20 +224,7 @@
             flex: 1;
             display: flex;
             flex-direction: column;
-        }
-
-        /* Dependencies card: use position absolute to not affect row height */
-        .about-deps-col {
-            position: relative;
-        }
-
-        .about-deps-col > .card {
-            position: absolute;
-            top: 0;
-            left: calc(var(--bs-gutter-x) * 0.5);
-            right: calc(var(--bs-gutter-x) * 0.5);
-            bottom: 0;
-            overflow: hidden;
+            min-height: 0;
         }
 
         .about-deps-col .card-body {
@@ -264,17 +242,6 @@
         }
     }
 
-    .about-changelog-row {
-        flex: 1 1 auto;
-        min-height: 300px;
-    }
-
-    .about-changelog-col {
-        min-height: 0;
-        height: 100%;
-        flex-direction: column;
-    }
-
     .dependencies-scroll {
         flex: 1 1 auto;
         overflow-y: auto;
@@ -282,18 +249,6 @@
     }
 
     @media (max-width: 991.98px) {
-        .about-layout,
-        .about-changelog-row,
-        .about-changelog-col {
-            flex: 0 0 auto;
-            min-height: auto;
-        }
-
-        .about-changelog-col .card-fill {
-            height: auto;
-            max-height: none;
-        }
-
         .about-deps-col .dependencies-scroll {
             max-height: 300px;
         }
@@ -303,20 +258,6 @@
         flex: 1 1 auto;
         min-height: 0;
         overflow-y: auto;
-    }
-
-    .card-fill {
-        display: flex;
-        flex-direction: column;
-        height: 100%;
-        flex: 1 1 auto;
-        min-height: 0;
-        overflow: hidden;
-    }
-
-    .card-fill > :last-child {
-        border-bottom-left-radius: var(--bs-card-inner-border-radius);
-        border-bottom-right-radius: var(--bs-card-inner-border-radius);
     }
 
     .about-deps-col .card-body {

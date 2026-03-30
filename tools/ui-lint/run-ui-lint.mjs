@@ -7,9 +7,88 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import pixelmatch from 'pixelmatch';
-import { PNG } from 'pngjs';
 import { chromium, devices } from 'playwright';
+
+import {
+    ABOUT_APPLICATION_DETAILS_FORBIDDEN_ROWS,
+    ABOUT_APPLICATION_DETAILS_REQUIRED_ROWS,
+    ABOUT_MOBILE_STACK_GAP_VARIANCE_TOLERANCE_PX,
+    ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX,
+    ABOUT_UPDATE_TABLE_LABELS,
+    BADGE_FONT_SIZE_TOLERANCE_PX,
+    BADGE_FONT_WEIGHT_TOLERANCE,
+    BADGE_PADDING_TOLERANCE_PX,
+    BADGE_RADIUS_TOLERANCE_PX,
+    CARD_BORDER_RADIUS_EXPECTED_PX,
+    CARD_BORDER_RADIUS_TOLERANCE_PX,
+    CLICK_TARGET_MIN_SIZE_PX,
+    COMPACT_CARD_ACTION_BORDER_TOP_MAX_PX,
+    COMPACT_CARD_ACTION_MARGIN_TOP_MAX_PX,
+    COMPACT_CARD_ACTION_PADDING_TOP_MAX_PX,
+    COMPONENT_LAYOUT_SHIFT_SETTLE_MS,
+    COMPONENT_LAYOUT_SHIFT_THRESHOLD_PX,
+    DASHBOARD_TRANSFER_COLOR_DISTANCE_MIN,
+    DETAILS_EXPAND_SETTLE_MS,
+    FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX,
+    FOOTER_OVERLAP_TOLERANCE_PX,
+    FORM_SWITCH_HEIGHT_TOLERANCE_PX,
+    FORM_SWITCH_MAX_HEIGHT_PX,
+    FULL_MOTION_RESET_CSS,
+    GHOST_SCROLL_DELTA_MAX_PX,
+    GHOST_SCROLL_MIN_HEIGHT_PX,
+    INPUT_GROUP_HEIGHT_EXPECTED_PX,
+    INPUT_GROUP_HEIGHT_TOLERANCE_PX,
+    KPI_CARD_PADDING_EXPECTED,
+    KPI_CARD_PADDING_TOLERANCE,
+    KPI_CONTEXTUAL_ICON_CLASSES,
+    KPI_ICON_CENTER_TOLERANCE_PX,
+    KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX,
+    KPI_ROW_VARIANCE_MAX,
+    LOGIN_ERROR_SETTLE_MS,
+    LOGIN_LOCKOUT_RESET_MS,
+    LOGIN_TEST_STAGGER_MS,
+    LOGS_DELETE_HAIRLINE_TOLERANCE_PX,
+    MODAL_BACKDROP_ALPHA_EXPECTED,
+    MODAL_BACKDROP_ALPHA_TOLERANCE,
+    MODAL_BACKDROP_BLUR_EXPECTED_PX,
+    MODAL_BACKDROP_BLUR_TOLERANCE_PX,
+    MODAL_BACKDROP_SATURATE_EXPECTED,
+    MODAL_BACKDROP_SATURATE_TOLERANCE,
+    MONOSPACE_PADDING_TOLERANCE_PX,
+    MONOSPACE_RADIUS_TOLERANCE_PX,
+    OVERFLOW_TOLERANCE_PX,
+    SCROLL_EDGE_CLEARANCE_MIN,
+    SCREENSHOT_SETTLE_MS,
+    SETTINGS_TAB_COLOR_DISTANCE_MAX,
+    SLIDER_LABEL_HIDDEN_OPACITY_MAX,
+    SLIDER_TICK_ALIGNMENT_TOLERANCE_PX,
+    SLIDER_VISIBLE_LABEL_GAP_MIN_PX,
+    STACK_GAP_VARIANCE_TOLERANCE_PX,
+    STATUS_DETAIL_CARD_TITLES,
+    STATUS_FLOW_CONNECTOR_EXPECTATIONS,
+    STATUS_FLOW_NODE_EXPECTATIONS,
+    TAB_SWITCH_SETTLE_MS,
+    UI_EVAL_CONSTANTS,
+    VERTICAL_GAP_MAX,
+    VERTICAL_GAP_MIN,
+    VISUAL_DRIFT_THRESHOLD,
+    WCAG_CONTRAST,
+} from './lib/constants.mjs';
+import {
+    captureKpiCards,
+    captureStablePair,
+    collectConsoleAndNetwork,
+    diffScreenshots,
+    disableMotion,
+    ensureDir,
+    installLayoutShiftObserver,
+    login,
+    applyTheme,
+    resetLayoutShiftMetric,
+    sanitize,
+} from './lib/browser-utils.mjs';
+import { summarizeFindings, isExpectedStatusUnavailable } from './lib/findings.mjs';
+import { LOGIN_FAILURE_VIEWS, VIEWS } from './lib/views.mjs';
 
 const BASE_URL = process.env.UI_LINT_BASE_URL || 'http://localhost:8000';
 const USERNAME = process.env.UI_LINT_USERNAME;
@@ -31,550 +110,6 @@ const SCREENSHOT_DIR = path.resolve(
 );
 // Results JSON stays in tools/ui-lint/, not in temp
 const RESULTS_DIR = SCRIPT_DIR;
-
-// Thresholds and timing constants
-const VERTICAL_GAP_MIN = 22;
-const VERTICAL_GAP_MAX = 26;
-const STACK_GAP_VARIANCE_TOLERANCE_PX = 2;
-const VISUAL_DRIFT_THRESHOLD = 0.0025;
-const SCREENSHOT_SETTLE_MS = 800;
-const TAB_SWITCH_SETTLE_MS = 700;
-const DETAILS_EXPAND_SETTLE_MS = 300;
-// Increased tolerance to avoid false positives on tablet Safari
-const OVERFLOW_TOLERANCE_PX = 6;
-const FOOTER_OVERLAP_TOLERANCE_PX = 1;
-const SCROLL_EDGE_CLEARANCE_MIN = 12;
-const LAYOUT_SHIFT_THRESHOLD = 0.02;
-const COMPONENT_LAYOUT_SHIFT_THRESHOLD_PX = 2;
-// Charts and canvases can stabilize slower on tablets
-const COMPONENT_LAYOUT_SHIFT_SETTLE_MS = 800;
-const CLICK_TARGET_MIN_SIZE_PX = 44;
-const LOGIN_ERROR_SETTLE_MS = 120;
-const LOGIN_LOCKOUT_RESET_MS = 16000;
-// Auth rate limit is 5/minute. With 6 login-failure tests, we must stagger them.
-// Wait 12s between each test to stay under 5 attempts/minute (60s/5 = 12s minimum).
-const LOGIN_TEST_STAGGER_MS = 13000;
-const LOGS_DELETE_HAIRLINE_TOLERANCE_PX = 2;
-const BADGE_FONT_SIZE_TOLERANCE_PX = 0.5;
-const BADGE_FONT_WEIGHT_TOLERANCE = 50;
-const BADGE_RADIUS_TOLERANCE_PX = 1;
-const BADGE_PADDING_TOLERANCE_PX = 1;
-const MONOSPACE_RADIUS_TOLERANCE_PX = 1;
-const MONOSPACE_PADDING_TOLERANCE_PX = 1;
-const SLIDER_TICK_ALIGNMENT_TOLERANCE_PX = 3;
-const SLIDER_VISIBLE_LABEL_GAP_MIN_PX = 4;
-const SLIDER_LABEL_HIDDEN_OPACITY_MAX = 0.05;
-const MODAL_BACKDROP_BLUR_EXPECTED_PX = 8;
-const MODAL_BACKDROP_BLUR_TOLERANCE_PX = 0.25;
-const MODAL_BACKDROP_SATURATE_EXPECTED = 0.8;
-const MODAL_BACKDROP_SATURATE_TOLERANCE = 0.05;
-const MODAL_BACKDROP_ALPHA_EXPECTED = 0.6;
-const MODAL_BACKDROP_ALPHA_TOLERANCE = 0.05;
-const FORM_SWITCH_MAX_HEIGHT_PX = 22;
-const FORM_SWITCH_HEIGHT_TOLERANCE_PX = 1;
-const FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX = 0.5;
-
-// =============================================================================
-// Peers Modal Design Rules
-// =============================================================================
-// Add Peer Modal (#addPeerModal):
-// - Name field is REQUIRED (not optional) — enforced via:
-//   1. <span class="text-danger">*</span> marker after label text
-//   2. `required` HTML attribute on <input id="peer-name">
-//   3. `maxlength="128"` (backend max)
-//   4. Frontend JS validation before API call (shows alert + focuses field)
-//   5. Backend Pydantic model: `name: str = Field(..., min_length=1, max_length=128)`
-// - Routing Mode: dropdown with full/split/custom options
-// - Interface: required dropdown populated from active interfaces
-// - Use WireBuddy DNS: checkbox (default checked)
-// - Active Blocklists: shown only when DNS enabled
-// - Client Isolation: optional switch with help collapse
-//
-// Edit Peer Modal (#editPeerModal):
-// - Name field follows same required pattern as Add Peer
-// - Pre-populated with existing peer data
-//
-// Required Field Visual Convention:
-// - Label pattern: `<label>Field Name <span class="text-danger">*</span></label>`
-// - Required fields MUST have both visual marker AND `required` attribute
-//
-// =============================================================================
-// Peers Mobile Layout Rules (< 768px)
-// =============================================================================
-// Grid layout:  "name status" / "vpn vpn" / "clientip clientip" / "actions actions"
-// - Both badges visible: connection badge + enabled badge (flex row, right-aligned)
-// - Last-seen time merged INTO connection badge via .peer-badge-time span
-//   (e.g. "Offline · 3d ago"), hidden on desktop, shown on mobile
-// - Separate .peer-last-seen cell: display:none on mobile
-// - Status cell aligned with Name row (top-aligned, same grid row)
-// - VPN address and Client IP stacked vertically (each spans full width)
-// - VPN address allows wrapping for long IPv6 addresses
-//
-// Peers Desktop Layout Rules (>= 768px)
-// - Status <td> MUST be display:table-cell (NOT flex) — flex breaks vertical
-//   alignment of the entire table row. Badges use inline flow instead.
-// - Status badges must NOT overlap Action buttons horizontally.
-//   Column widths are controlled via <colgroup> percentages (table-layout:fixed).
-// =============================================================================
-
-// =============================================================================
-// Nodes Mobile Layout Rules (< 768px)
-// =============================================================================
-// Grid layout: "name status" / "fqdn fqdn" / "meta meta" / "actions actions"
-// - thead hidden, rows display as grid cards
-// - Port, Version, Peers, Last Seen columns: display:none on mobile
-// - .node-mobile-meta: display:flex on mobile (replaces hidden columns)
-//   shows version + peer count + last seen as compact inline meta
-// - Status badge right-aligned on same row as Name
-// - FQDN cell spans full width below Name/Status
-// - Actions cell has border-top separator, right-aligned buttons
-//
-// Nodes Desktop Layout Rules (>= 768px)
-// - Standard table layout with all columns visible
-// - Status badges must NOT overlap Action buttons horizontally
-// =============================================================================
-
-// =============================================================================
-// Table Action Button Design Rules (peers, nodes, users)
-// =============================================================================
-// Action buttons inside table rows use COMPACT styling (v1.3.3 pattern):
-// - min-width: 0; min-height: 0; padding: 0.2rem 0.35rem;
-// - .material-icons: font-size: 18px; pointer-events: none;
-// - These are intentionally smaller than the 44px touch target recommendation
-//   because they are densely packed in a table row and typically used with
-//   mouse pointer (fine input), not touch. Larger buttons would cause
-//   excessive horizontal space consumption and clutter.
-// - The 44px click target rule (CLICK_TARGET_MIN_SIZE_PX) is already exempted
-//   for buttons via shouldSkipCompactControlClickTarget() — this is by design.
-// - Consistency: peers.html, nodes.html, users.html must all use same pattern.
-// =============================================================================
-
-// =============================================================================
-// Settings Backup Tab Design Rules
-// =============================================================================
-// Layout: Row with 3 cards (col-lg-4 each, all 3 cards in a single row on desktop)
-//
-// Card 1: Download Backup
-// - Simple card with download button (.btn-primary.w-100)
-//
-// Card 2: Scheduled Backups
-// - Form switch for enabling daily backups
-// - Retention slider (.retention-scale) with 5 stops: 1d, 7d, 14d, 21d, 30d
-//   - Uses same slider component as Logs tab BUT with --rs-steps: 4 (not 5)
-//   - Hidden by default (d-none), shown when scheduled backups enabled
-//   - Badge (#backup-retention-value) shows current selection
-// - Disk warning alert (#backup-disk-warning):
-//   - .alert.alert-warning with material icon "warning"
-//   - Hidden by default (d-none), shown when disk_warning=true from API
-// - Stats section (#backup-scheduled-stats):
-//   - Hidden when scheduled backups disabled
-//   - Row with 2 columns: "Last Backup" (left) and "Stored Backups" (right, text-end)
-//   - Border-top separator row with "Backup Size" metric (flexbox justify-content-between)
-//   - Last Backup shows "No backups yet" when no backups exist
-//   - Backup Size formatted: B/KB/MB/GB
-//
-// Card 3: Restore (Danger Zone)
-// - .card.border-danger with .text-danger card header
-// - Custom file input: hidden native input + input-group with text display + "Choose File" button
-// - Restore button (#btn-backup-restore): .btn-danger, disabled when no file selected
-// - Disabled danger buttons MUST appear gray (not light red) per wb-ui-system.css
-// =============================================================================
-
-// Form Control Height validation (input-group consistency)
-// Current Bootstrap-based WireBuddy controls render at ~44px total height
-// for default-sized .form-control/.btn combinations in settings input groups.
-const INPUT_GROUP_HEIGHT_EXPECTED_PX = 44;
-const INPUT_GROUP_HEIGHT_TOLERANCE_PX = 2;
-const COMPACT_CARD_ACTION_MARGIN_TOP_MAX_PX = 10;
-const COMPACT_CARD_ACTION_PADDING_TOP_MAX_PX = 2;
-const COMPACT_CARD_ACTION_BORDER_TOP_MAX_PX = 0.5;
-
-// Ghost scroll container detection (scrollbar visible but minimal content overflow)
-// Catches cases like scrollHeight = clientHeight + 1–6px caused by thead/padding
-const GHOST_SCROLL_DELTA_MAX_PX = 8;
-const GHOST_SCROLL_MIN_HEIGHT_PX = 120;
-
-// KPI Card validation constants
-const KPI_CARD_PADDING_EXPECTED = 16; // px (1rem)
-const KPI_CARD_PADDING_TOLERANCE = 1;
-const KPI_ICON_MIN = 32;
-const KPI_ICON_MAX = 40;
-const KPI_VISUAL_DRIFT_THRESHOLD = 0.01;
-const KPI_HEIGHT_TOLERANCE_PX = 2;
-const KPI_ROW_VARIANCE_MAX = 3;
-const KPI_ICON_CENTER_TOLERANCE_PX = 4;
-const KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX = 12;
-const KPI_CONTEXTUAL_ICON_CLASSES = ['text-primary', 'text-success', 'text-info', 'text-danger', 'text-warning'];
-const SETTINGS_TAB_COLOR_DISTANCE_MAX = 12;
-const DASHBOARD_TRANSFER_COLOR_DISTANCE_MIN = 40;
-const KPI_CARD_REQUIRED_SCOPES = ['dashboard', 'dns'];
-
-// Card border-radius consistency (--wb-radius-lg: 12px)
-const CARD_BORDER_RADIUS_EXPECTED_PX = 12;
-const CARD_BORDER_RADIUS_TOLERANCE_PX = 1;
-
-// About page card layout (reference layout pattern)
-// The About page serves as the reference implementation for card grid layouts:
-// - Top row: 3 equal-height cards using flexbox (col-lg-4 + d-flex + flex-grow-1)
-// - Bottom row: Full-width card
-// Other pages should follow this pattern for consistent card sizing.
-const ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX = 2;
-const ABOUT_MOBILE_STACK_GAP_VARIANCE_TOLERANCE_PX = 2;
-const ABOUT_APPLICATION_DETAILS_REQUIRED_ROWS = ['Version', 'Python', 'Timezone', 'WireGuard', 'Unbound'];
-const ABOUT_APPLICATION_DETAILS_FORBIDDEN_ROWS = ['Build'];
-const ABOUT_UPDATE_TABLE_LABELS = ['Current', 'Latest', 'Released'];
-
-const THEMES = ['light', 'dark'];
-
-// WCAG 2.1 AA contrast requirements
-const WCAG_CONTRAST = {
-    NORMAL_AA: 4.5,
-    LARGE_AA: 3.0,
-    LARGE_TEXT_SIZE_PX: 24,
-    LARGE_TEXT_SIZE_BOLD_PX: 18.66,
-    BOLD_WEIGHT: 700,
-};
-
-const STATUS_FLOW_NODE_EXPECTATIONS = [
-    { key: 'client', label: 'Client', icon: 'devices' },
-    { key: 'wireguard', label: 'WireGuard', icon: 'vpn_lock' },
-    { key: 'internet', label: 'Internet', icon: 'public' },
-];
-
-const STATUS_FLOW_CONNECTOR_EXPECTATIONS = [
-    'client-wireguard',
-    'wireguard-internet',
-];
-const STATUS_DETAIL_CARD_TITLES = ['Public Client IP', 'Outbound IP'];
-
-const LOGIN_FAILURE_VIEW_DEFS = [
-    { name: 'login-error', url: '/login', scope: 'login' },
-];
-
-// View definitions (DRY: desktop, tablet, and mobile generated from base definitions)
-const VIEW_DEFS = [
-    { name: 'dashboard', url: '/ui/dashboard', scope: 'dashboard' },
-    { name: 'peers', url: '/ui/peers', scope: 'peers' },
-    { name: 'nodes', url: '/ui/nodes', scope: 'nodes' },
-    { name: 'users', url: '/ui/users', scope: 'users' },
-    { name: 'dns', url: '/ui/dns', scope: 'dns' },
-    { name: 'traffic', url: '/ui/traffic', scope: 'traffic' },
-    { name: 'status', url: '/status', scope: 'status' },
-    { name: 'about', url: '/ui/about', scope: 'about' },
-    { name: 'settings-general', url: '/ui/settings', scope: 'settings', tab: '#general-tab' },
-    { name: 'settings-wireguard', url: '/ui/settings', scope: 'settings', tab: '#wireguard-tab' },
-    { name: 'settings-dns', url: '/ui/settings', scope: 'settings', tab: '#dns-tab' },
-    { name: 'settings-letsencrypt', url: '/ui/settings', scope: 'settings', tab: '#letsencrypt-tab' },
-    { name: 'settings-logs', url: '/ui/settings', scope: 'settings', tab: '#logs-tab' },
-    { name: 'settings-backup', url: '/ui/settings', scope: 'settings', tab: '#backup-tab' },
-];
-
-/**
- * Expands view definitions into desktop/large-desktop/tablet/mobile × light/dark variants.
- * @param {Array} viewDefs - Base view definitions
- * @returns {Array} Expanded view definitions with all variants
- */
-function expandViewDefinitions(viewDefs) {
-    return viewDefs.flatMap((def) =>
-        THEMES.flatMap((theme) => [
-            { ...def, name: `desktop-${def.name}-${theme}`, device: 'desktop', theme },
-            { ...def, name: `large-desktop-${def.name}-${theme}`, device: 'large-desktop', theme },
-            { ...def, name: `tablet-${def.name}-${theme}`, device: 'tablet', theme },
-            { ...def, name: `mobile-${def.name}-${theme}`, device: 'mobile', theme },
-        ])
-    );
-}
-
-const VIEWS = expandViewDefinitions(VIEW_DEFS);
-const LOGIN_FAILURE_VIEWS = expandViewDefinitions(LOGIN_FAILURE_VIEW_DEFS);
-
-// Base motion reset CSS (generic)
-const MOTION_RESET_CSS = `
-  *, *::before, *::after {
-    animation: none !important;
-    transition: none !important;
-    scroll-behavior: auto !important;
-    caret-color: transparent !important;
-  }
-`;
-
-// Application-specific motion resets (WireBuddy)
-const APP_SPECIFIC_MOTION_RESET_CSS = `
-  .pulse-marker,
-  .leaflet-pane,
-  .leaflet-control-container,
-  #peer-map img,
-  #peer-map canvas {
-    animation: none !important;
-    transition: none !important;
-  }
-`;
-
-const FULL_MOTION_RESET_CSS = MOTION_RESET_CSS + APP_SPECIFIC_MOTION_RESET_CSS;
-
-function sanitize(name) {
-    return name.replace(/[^a-z0-9-_]+/g, '_').toLowerCase();
-}
-
-function ensureDir(dirPath) {
-    fs.mkdirSync(dirPath, { recursive: true });
-}
-
-async function installLayoutShiftObserver(context) {
-    await context.addInitScript(() => {
-        window.__uiLintLayoutShift = { value: 0, count: 0 };
-        if (!('PerformanceObserver' in window)) return;
-        try {
-            const observer = new PerformanceObserver((list) => {
-                for (const entry of list.getEntries()) {
-                    if (entry.hadRecentInput) continue;
-                    window.__uiLintLayoutShift.value += entry.value || 0;
-                    window.__uiLintLayoutShift.count += 1;
-                }
-            });
-            observer.observe({ type: 'layout-shift', buffered: true });
-        } catch {
-            // Ignore unsupported browsers.
-        }
-    });
-}
-
-async function disableMotion(page, viewName = 'unknown') {
-    await page.addStyleTag({ content: FULL_MOTION_RESET_CSS })
-        .catch((err) => console.warn(`[${viewName}] Failed to inject motion reset CSS: ${err.message}`));
-}
-
-async function resetLayoutShiftMetric(page) {
-    await page.evaluate(() => {
-        window.__uiLintLayoutShift = { value: 0, count: 0 };
-    }).catch(() => { });
-}
-
-async function login(page) {
-    await page.goto(`${BASE_URL}/login`, { waitUntil: 'networkidle', timeout: 10000 });
-    await disableMotion(page, 'login');
-
-    // Playwright's fill() automatically clears before filling
-    await page.fill('#username', USERNAME);
-    await page.fill('#password', PASSWORD);
-    await Promise.all([
-        page.waitForURL((url) => !url.toString().includes('/login'), { timeout: 10000 }),
-        page.click('#submit-btn'),
-    ]);
-
-    // Check only visible login errors. The app layout contains a hidden
-    // key-mismatch banner that should not fail the login flow.
-    const errorText = await page.locator('.alert-danger, .login-error, .error-message').evaluateAll((elements) => {
-        const isVisible = (el) => {
-            if (!el || !el.isConnected) return false;
-            if (el.closest('.d-none, [hidden], [aria-hidden="true"]')) return false;
-            const style = window.getComputedStyle(el);
-            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-            const rect = el.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0;
-        };
-
-        const visibleError = elements.find((el) => isVisible(el));
-        return visibleError ? (visibleError.textContent || '').trim() : '';
-    });
-    if (errorText) {
-        throw new Error(`Login failed: ${errorText}`);
-    }
-
-    await disableMotion(page, 'login');
-}
-
-async function applyTheme(page, theme, label = 'unknown') {
-    let sameOrigin = false;
-    try {
-        sameOrigin = page.url().startsWith(BASE_URL);
-    } catch (err) {
-        console.warn(`[${label}] Unable to verify origin: ${err.message}`);
-    }
-
-    if (!sameOrigin) {
-        await page.goto(`${BASE_URL}/login`, { waitUntil: 'domcontentloaded', timeout: 30000 })
-            .catch((err) => console.warn(`[${label}] Failed to bootstrap origin for theme setup: ${err.message}`));
-    }
-
-    await page.evaluate((nextTheme) => {
-        localStorage.setItem('theme', nextTheme);
-        document.documentElement.setAttribute('data-bs-theme', nextTheme);
-        if (typeof window.updateThemeIcon === 'function') {
-            window.updateThemeIcon(nextTheme);
-        }
-    }, theme).catch((err) => {
-        throw new Error(`[${label}] Failed to apply theme ${theme}: ${err.message}`);
-    });
-}
-
-function collectConsoleAndNetwork(page) {
-    const consoleEntries = [];
-    const pageErrors = [];
-    const requestFailures = [];
-    const badResponses = [];
-    const requests = [];
-
-    const onConsole = (msg) => {
-        if (['error', 'warning'].includes(msg.type())) {
-            consoleEntries.push({ type: msg.type(), text: msg.text() });
-        }
-    };
-    const onPageError = (err) => pageErrors.push(String(err?.message || err));
-    const onRequest = (req) => {
-        requests.push({
-            url: req.url(),
-            method: req.method(),
-            resourceType: req.resourceType(),
-        });
-    };
-    const onRequestFailed = (req) => requestFailures.push({ url: req.url(), error: req.failure()?.errorText || 'unknown' });
-    const onResponse = (res) => {
-        if (res.status() >= 400) {
-            badResponses.push({ url: res.url(), status: res.status() });
-        }
-    };
-
-    page.on('console', onConsole);
-    page.on('pageerror', onPageError);
-    page.on('request', onRequest);
-    page.on('requestfailed', onRequestFailed);
-    page.on('response', onResponse);
-
-    return () => {
-        page.off('console', onConsole);
-        page.off('pageerror', onPageError);
-        page.off('request', onRequest);
-        page.off('requestfailed', onRequestFailed);
-        page.off('response', onResponse);
-        return { consoleEntries, pageErrors, requestFailures, badResponses, requests };
-    };
-}
-
-async function captureStablePair(page, name) {
-    await disableMotion(page, name);
-    await page.waitForLoadState('networkidle', { timeout: 30000 })
-        .catch((err) => console.warn(`[${name}] waitForLoadState timed out: ${err.message}`));
-    // Note: waitForTimeout is flaky but needed for animations to settle after motion reset
-    await page.waitForTimeout(SCREENSHOT_SETTLE_MS);
-    const safeName = sanitize(name);
-    const shotA = path.join(SCREENSHOT_DIR, `${safeName}-a.png`);
-    const shotB = path.join(SCREENSHOT_DIR, `${safeName}-b.png`);
-    await page.screenshot({ path: shotA, fullPage: true, animations: 'disabled' });
-    await page.waitForTimeout(SCREENSHOT_SETTLE_MS);
-    await page.screenshot({ path: shotB, fullPage: true, animations: 'disabled' });
-    return { shotA, shotB };
-}
-
-/**
- * Compares two screenshots pixel-by-pixel using pixelmatch algorithm.
- * Detects visual regressions by measuring pixel differences between two PNG images.
- * 
- * @param {string} name - View name for output files (used for diff image naming)
- * @param {string} shotA - Absolute path to first PNG screenshot
- * @param {string} shotB - Absolute path to second PNG screenshot
- * @returns {Object} Diff metrics: { ratio: number (0-1), mismatched: number, total: number, sizeMismatch: boolean, diffPath: string }
- * @throws {Error} If PNG files cannot be read or dimensions mismatch severely
- */
-function diffScreenshots(name, shotA, shotB) {
-    // Intentional sync I/O: this runs in a single-shot CLI audit after screenshots are captured.
-    const img1 = PNG.sync.read(fs.readFileSync(shotA));
-    const img2 = PNG.sync.read(fs.readFileSync(shotB));
-    const sizeMismatch = img1.width !== img2.width || img1.height !== img2.height;
-    const width = Math.min(img1.width, img2.width);
-    const height = Math.min(img1.height, img2.height);
-    const pngA = new PNG({ width, height });
-    const pngB = new PNG({ width, height });
-    PNG.bitblt(img1, pngA, 0, 0, width, height, 0, 0);
-    PNG.bitblt(img2, pngB, 0, 0, width, height, 0, 0);
-    const diff = new PNG({ width, height });
-    const mismatchedPixels = pixelmatch(pngA.data, pngB.data, diff.data, width, height, { threshold: 0.1 });
-    const diffPath = path.join(SCREENSHOT_DIR, `${sanitize(name)}-diff.png`);
-    fs.writeFileSync(diffPath, PNG.sync.write(diff));
-    const totalPixels = width * height;
-    return {
-        mismatchedPixels,
-        totalPixels,
-        ratio: totalPixels > 0 ? mismatchedPixels / totalPixels : 0,
-        sizeMismatch,
-        dimensions: sizeMismatch ? { img1: { width: img1.width, height: img1.height }, img2: { width: img2.width, height: img2.height } } : null,
-        diffPath,
-    };
-}
-
-/**
- * Collects comprehensive page metrics including accessibility, layout, and styling issues.
- * 
- * @param {Page} page - Playwright page instance
- * @param {string} scope - View scope (e.g., 'dashboard', 'settings')
- * @returns {Promise<Object>} Metrics object containing all collected data
- */
-
-async function captureKpiCards(page, viewName) {
-    const cards = await page.$$('.wb-kpi-card');
-    const paths = [];
-
-    for (let i = 0; i < cards.length; i += 1) {
-        const card = cards[i];
-        const pathOut = path.join(
-            SCREENSHOT_DIR,
-            `${sanitize(viewName)}-kpi-${i}.png`
-        );
-
-        await card.screenshot({ path: pathOut });
-        paths.push(pathOut);
-    }
-
-    return paths;
-}
-
-/**
- * Compares KPI card screenshots between two sets.
- * @param {string} nameA - Name of first view
- * @param {Array<string>} setA - Paths to first set of KPI screenshots
- * @param {string} nameB - Name of second view
- * @param {Array<string>} setB - Paths to second set of KPI screenshots
- * @returns {Array<Object>} Comparison results with diff ratios per card
- */
-function diffKpiSets(nameA, setA, nameB, setB) {
-    const results = [];
-    const minSetLength = Math.min(setA.length, setB.length);
-
-    for (let i = 0; i < minSetLength; i += 1) {
-        // Intentional sync I/O: KPI diffs are small and executed in the same CLI-only post-processing step.
-        const img1 = PNG.sync.read(fs.readFileSync(setA[i]));
-        const img2 = PNG.sync.read(fs.readFileSync(setB[i]));
-
-        const width = Math.min(img1.width, img2.width);
-        const height = Math.min(img1.height, img2.height);
-
-        const pngA = new PNG({ width, height });
-        const pngB = new PNG({ width, height });
-
-        PNG.bitblt(img1, pngA, 0, 0, width, height, 0, 0);
-        PNG.bitblt(img2, pngB, 0, 0, width, height, 0, 0);
-
-        const diff = new PNG({ width, height });
-
-        const mismatched = pixelmatch(
-            pngA.data,
-            pngB.data,
-            diff.data,
-            width,
-            height,
-            { threshold: 0.1 }
-        );
-
-        const ratio = mismatched / (width * height);
-
-        results.push({
-            index: i,
-            ratio,
-        });
-    }
-
-    return results;
-}
 
 async function collectPageMetrics(page, scope) {
     return page.evaluate(async ({ scope, constants }) => {
@@ -3295,607 +2830,16 @@ async function collectPageMetrics(page, scope) {
             colorSchemeConsistency,
             deprecatedColorUsage,
         };
-    }, {
-        scope, constants: {
-            OVERFLOW_TOLERANCE_PX,
-            FOOTER_OVERLAP_TOLERANCE_PX,
-            VERTICAL_GAP_MIN,
-            VERTICAL_GAP_MAX,
-            SCROLL_EDGE_CLEARANCE_MIN,
-            GHOST_SCROLL_DELTA_MAX_PX,
-            GHOST_SCROLL_MIN_HEIGHT_PX,
-            COMPONENT_LAYOUT_SHIFT_THRESHOLD_PX,
-            COMPONENT_LAYOUT_SHIFT_SETTLE_MS,
-            CLICK_TARGET_MIN_SIZE_PX,
-            LOGS_DELETE_HAIRLINE_TOLERANCE_PX,
-            BADGE_FONT_SIZE_TOLERANCE_PX,
-            BADGE_FONT_WEIGHT_TOLERANCE,
-            BADGE_RADIUS_TOLERANCE_PX,
-            BADGE_PADDING_TOLERANCE_PX,
-            MONOSPACE_RADIUS_TOLERANCE_PX,
-            MONOSPACE_PADDING_TOLERANCE_PX,
-            SLIDER_TICK_ALIGNMENT_TOLERANCE_PX,
-            SLIDER_VISIBLE_LABEL_GAP_MIN_PX,
-            SLIDER_LABEL_HIDDEN_OPACITY_MAX,
-            MODAL_BACKDROP_BLUR_EXPECTED_PX,
-            MODAL_BACKDROP_BLUR_TOLERANCE_PX,
-            MODAL_BACKDROP_SATURATE_EXPECTED,
-            MODAL_BACKDROP_SATURATE_TOLERANCE,
-            MODAL_BACKDROP_ALPHA_EXPECTED,
-            MODAL_BACKDROP_ALPHA_TOLERANCE,
-            FORM_SWITCH_MAX_HEIGHT_PX,
-            FORM_SWITCH_HEIGHT_TOLERANCE_PX,
-            FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX,
-            INPUT_GROUP_HEIGHT_EXPECTED_PX,
-            INPUT_GROUP_HEIGHT_TOLERANCE_PX,
-            COMPACT_CARD_ACTION_MARGIN_TOP_MAX_PX,
-            COMPACT_CARD_ACTION_PADDING_TOP_MAX_PX,
-            COMPACT_CARD_ACTION_BORDER_TOP_MAX_PX,
-            CARD_BORDER_RADIUS_EXPECTED_PX,
-            CARD_BORDER_RADIUS_TOLERANCE_PX,
-            KPI_ICON_CENTER_TOLERANCE_PX,
-            KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX,
-            KPI_CONTEXTUAL_ICON_CLASSES,
-            DASHBOARD_TRANSFER_COLOR_DISTANCE_MIN,
-            ABOUT_APPLICATION_DETAILS_REQUIRED_ROWS,
-            ABOUT_APPLICATION_DETAILS_FORBIDDEN_ROWS,
-            ABOUT_UPDATE_TABLE_LABELS,
-            STATUS_FLOW_NODE_EXPECTATIONS,
-            STATUS_FLOW_CONNECTOR_EXPECTATIONS,
-            STATUS_DETAIL_CARD_TITLES,
-            WCAG_NORMAL_AA: WCAG_CONTRAST.NORMAL_AA,
-            WCAG_LARGE_AA: WCAG_CONTRAST.LARGE_AA,
-            WCAG_LARGE_TEXT_SIZE_PX: WCAG_CONTRAST.LARGE_TEXT_SIZE_PX,
-            WCAG_LARGE_TEXT_SIZE_BOLD_PX: WCAG_CONTRAST.LARGE_TEXT_SIZE_BOLD_PX,
-            WCAG_BOLD_WEIGHT: WCAG_CONTRAST.BOLD_WEIGHT,
-        }
-    });
-}
-
-function summarizeFindings(result) {
-    const hardFindings = [];
-    const warnings = [];
-    const pushHard = (value) => hardFindings.push(value);
-    const pushWarning = (value) => warnings.push(value);
-
-    if (result.metrics.duplicateIds.length) pushHard(`duplicateIds=${result.metrics.duplicateIds.length}`);
-    if (result.metrics.emptyAriaLabels.length) pushWarning(`emptyAriaLabels=${result.metrics.emptyAriaLabels.length}`);
-    if (result.metrics.unlabeledControls.length) pushHard(`unlabeledControls=${result.metrics.unlabeledControls.length}`);
-    if (result.metrics.namelessButtons.length) pushHard(`namelessButtons=${result.metrics.namelessButtons.length}`);
-    if (result.metrics.headingSkips.length) pushWarning(`headingSkips=${result.metrics.headingSkips.length}`);
-    if (result.metrics.tablesWithoutHeaders.length) pushWarning(`tablesWithoutHeaders=${result.metrics.tablesWithoutHeaders.length}`);
-    if (result.metrics.tableCellOverlapIssues?.length) pushHard(`tableCellOverlaps=${result.metrics.tableCellOverlapIssues.length}`);
-    if (result.metrics.tablesWithoutResponsive?.length) pushWarning(`tablesWithoutResponsive=${result.metrics.tablesWithoutResponsive.length}`);
-    if (result.metrics.ghostScroll) pushWarning('ghostScrollDetected');
-    if (result.metrics.ghostScrollContainers?.length) pushWarning(`ghostScrollContainers=${result.metrics.ghostScrollContainers.length}`);
-    if (result.metrics.horizontalOverflow.hasOverflow) pushHard('horizontalOverflow');
-    if (result.metrics.horizontalOverflow.hasOverflow && result.metrics.horizontalOverflow.offenders.length) {
-        pushHard(`overflowOffenders=${result.metrics.horizontalOverflow.offenders.length}`);
-    }
-    if (result.metrics.clippedButtons.length) pushWarning(`clippedButtons=${result.metrics.clippedButtons.length}`);
-    if (result.metrics.clickTargetsTooSmall?.length) pushHard(`clickTargetsTooSmall=${result.metrics.clickTargetsTooSmall.length}`);
-    if (result.metrics.iconButtonsTouchBlocked?.length) pushHard(`iconButtonsTouchBlocked=${result.metrics.iconButtonsTouchBlocked.length}`);
-    if (result.metrics.deprecatedButtonClasses?.length) pushHard(`deprecatedButtonClasses=${result.metrics.deprecatedButtonClasses.length}`);
-    if (result.metrics.hiddenInteractiveElements.length) pushHard(`hiddenInteractive=${result.metrics.hiddenInteractiveElements.length}`);
-    if (result.metrics.bootstrapGridIssues?.length) pushWarning(`bootstrapGridIssues=${result.metrics.bootstrapGridIssues.length}`);
-    if (result.metrics.bootstrapColumnsOutsideRows?.length) pushWarning(`bootstrapColumnsOutsideRows=${result.metrics.bootstrapColumnsOutsideRows.length}`);
-    if (result.metrics.breakpointDisplayConflicts?.length) pushWarning(`breakpointDisplayConflicts=${result.metrics.breakpointDisplayConflicts.length}`);
-    if (result.metrics.navbarCollapseIssues?.length) pushWarning(`navbarCollapseIssues=${result.metrics.navbarCollapseIssues.length}`);
-    if (result.metrics.focusOrderIssues?.length) pushWarning(`focusOrderIssues=${result.metrics.focusOrderIssues.length}`);
-    if (result.metrics.focusIndicatorMissing?.length) pushWarning(`focusIndicatorMissing=${result.metrics.focusIndicatorMissing.length}`);
-    if (result.metrics.scrollEdgeCrowding?.length) pushWarning(`scrollEdgeCrowding=${result.metrics.scrollEdgeCrowding.length}`);
-    if (result.metrics.scrollBottomCrowding?.length) pushWarning(`scrollBottomCrowding=${result.metrics.scrollBottomCrowding.length}`);
-    if (result.metrics.nestedScrollContainers?.length) pushWarning(`nestedScrollContainers=${result.metrics.nestedScrollContainers.length}`);
-    if (result.metrics.badgeStyleMismatches?.length) pushWarning(`badgeStyleMismatches=${result.metrics.badgeStyleMismatches.length}`);
-    if (result.metrics.monospaceToneMismatches?.length) pushWarning(`monospaceToneMismatches=${result.metrics.monospaceToneMismatches.length}`);
-    if (result.metrics.cardContainment.cardsPastFooter.length) pushWarning(`cardsPastFooter=${result.metrics.cardContainment.cardsPastFooter.length}`);
-    if (result.metrics.modalBackdrop) {
-        if (!result.metrics.modalBackdrop.blurMatchesReference) {
-            pushWarning(`modalBackdropBlur=${result.metrics.modalBackdrop.blurPx ?? 'missing'}`);
-        }
-        if (!result.metrics.modalBackdrop.saturateMatchesReference) {
-            pushWarning(`modalBackdropSaturate=${result.metrics.modalBackdrop.saturate ?? 'missing'}`);
-        }
-        if (!result.metrics.modalBackdrop.alphaMatchesReference) {
-            pushWarning(`modalBackdropAlpha=${result.metrics.modalBackdrop.alpha ?? 'missing'}`);
-        }
-    }
-    if (result.metrics.spacing.rowToRowGap !== undefined && !result.metrics.spacing.rowToRowGapInRange) {
-        pushWarning(`rowToRowGapOutOfRange=${result.metrics.spacing.rowToRowGap}`);
-    }
-    if (result.name.includes('dns') && result.metrics.spacing.dnsLogScrollLayout) {
-        const dnsLogLayout = result.metrics.spacing.dnsLogScrollLayout;
-        if (!dnsLogLayout.bodyMinHeightAllowsShrink) pushHard('dnsLogBodyMinHeightNotZero');
-        if (!dnsLogLayout.wrapMinHeightAllowsShrink) pushHard('dnsLogWrapMinHeightNotZero');
-        if (!dnsLogLayout.wrapScrollsInternally) pushHard('dnsLogWrapNotScrollable');
-        if (!dnsLogLayout.bodyActsAsFlexChild) pushWarning('dnsLogBodyNotFlexing');
-        if (!dnsLogLayout.wrapActsAsFlexChild) pushWarning('dnsLogWrapNotFlexing');
-        if (!dnsLogLayout.bodyClipsOverflow) pushWarning('dnsLogBodyOverflowVisible');
-        if (!dnsLogLayout.wrapFitsBody) pushWarning('dnsLogWrapExceedsBody');
-    }
-    if (result.metrics.spacing.outlierVerticalGaps?.length) pushWarning(`outlierVerticalGaps=${result.metrics.spacing.outlierVerticalGaps.length}`);
-    if (result.metrics.spacing.rowGutterMarginConflicts?.length) pushWarning(`rowGutterMarginConflicts=${result.metrics.spacing.rowGutterMarginConflicts.length}`);
-    if (result.name.includes('mobile-') && result.metrics.spacing.mobileRowCardStackGaps?.length) {
-        const inconsistentRows = result.metrics.spacing.mobileRowCardStackGaps.filter((entry) => !entry.gapsConsistent);
-        if (inconsistentRows.length) {
-            pushWarning(`mobileRowCardStackGapVariance=${inconsistentRows.length}`);
-        }
-    }
-    if (result.name.includes('settings') && result.metrics.spacing.settingsTabColors?.length) {
-        const tabColorProblems = result.metrics.spacing.settingsTabColors.filter(
-            (entry) => entry.colorDelta != null && entry.colorDelta > SETTINGS_TAB_COLOR_DISTANCE_MAX
-        );
-        if (tabColorProblems.length) {
-            pushWarning(`settingsTabActiveColorMismatch=${tabColorProblems.length}`);
-        }
-    }
-    if (result.name.includes('dashboard') && result.metrics.spacing.dashboardTopRowAlignment && !result.metrics.spacing.dashboardTopRowAlignment.aligned) {
-        pushWarning(`dashboardTopRowVariance=${result.metrics.spacing.dashboardTopRowAlignment.variance}`);
-    }
-    if (result.name.includes('mobile-dashboard') && result.metrics.spacing.dashboardMobileStackOrder) {
-        const order = result.metrics.spacing.dashboardMobileStackOrder;
-        if (!order.speedtestAboveMap || !order.mapAboveRecent) {
-            pushWarning('dashboardMobileStackOrder');
-        }
-    }
-    if (result.name.includes('desktop-settings-logs') && result.metrics.spacing.logsDeleteLayout) {
-        const logsDeleteLayout = result.metrics.spacing.logsDeleteLayout;
-        if (
-            logsDeleteLayout.deleteBlockCount !== logsDeleteLayout.cardCount ||
-            logsDeleteLayout.deleteInnerCount !== logsDeleteLayout.cardCount ||
-            logsDeleteLayout.hairlineCount !== logsDeleteLayout.cardCount
-        ) {
-            pushWarning(`logsDeleteStructureMismatch=${logsDeleteLayout.cardCount}`);
-        }
-        if (!logsDeleteLayout.hairlineAligned) {
-            pushWarning(`logsDeleteHairlineVariance=${logsDeleteLayout.hairlineVariance}`);
-        }
-    }
-    if (result.name.includes('settings-logs') && result.metrics.spacing.logsPathLayout?.length) {
-        const pathStyleProblems = result.metrics.spacing.logsPathLayout.filter(
-            (entry) => entry.whiteSpace !== 'nowrap' || entry.textOverflow !== 'ellipsis' || entry.overflowX !== 'hidden'
-        );
-        if (pathStyleProblems.length) {
-            pushWarning(`logsPathStyleMismatch=${pathStyleProblems.length}`);
-        }
-
-        const wrappedPaths = result.metrics.spacing.logsPathLayout.filter((entry) => entry.wraps);
-        if (wrappedPaths.length) {
-            pushWarning(`logsPathWrapped=${wrappedPaths.length}`);
-        }
-    }
-    if (result.name.includes('settings') && result.metrics.spacing.compactCardActionRows?.length) {
-        const compactActionRowProblems = result.metrics.spacing.compactCardActionRows.filter(
-            (entry) => !entry.isCompactMargin || !entry.isCompactPadding || !entry.isBorderless
-        );
-        if (compactActionRowProblems.length) {
-            pushWarning(`compactCardActionRows=${compactActionRowProblems.length}`);
-        }
-    }
-    if (result.name.includes('users') && result.metrics.spacing.usersActionButtons) {
-        const usersActionButtons = result.metrics.spacing.usersActionButtons;
-        if (usersActionButtons.missingClassCount) {
-            pushHard(`usersActionButtonsMissingClass=${usersActionButtons.missingClassCount}`);
-        }
-        if (usersActionButtons.undersizedCount) {
-            pushHard(`usersActionButtonsTooSmall=${usersActionButtons.undersizedCount}`);
-        }
-        if (usersActionButtons.alignmentMismatchCount) {
-            pushWarning(`usersActionButtonsAlignment=${usersActionButtons.alignmentMismatchCount}`);
-        }
-        if (usersActionButtons.sizeMismatchCount) {
-            pushWarning(`usersActionButtonsSizeMismatch=${usersActionButtons.sizeMismatchCount}`);
-        }
-        if (usersActionButtons.borderRadiusMismatchCount) {
-            pushWarning(`usersActionButtonsRadiusMismatch=${usersActionButtons.borderRadiusMismatchCount}`);
-        }
-        if (usersActionButtons.missingIconMdCount) {
-            pushWarning(`usersActionButtonsMissingIconMd=${usersActionButtons.missingIconMdCount}`);
-        }
-        if (usersActionButtons.iconPointerMismatchCount) {
-            pushHard(`usersActionButtonsIconPointer=${usersActionButtons.iconPointerMismatchCount}`);
-        }
-    }
-    if (result.metrics.spacing.about?.updateValueStyleMismatches?.length) pushWarning(`aboutUpdateValueStyleMismatches=${result.metrics.spacing.about.updateValueStyleMismatches.length}`);
-    if (result.metrics.spacing.about?.missingDetailsRows?.length) {
-        pushHard(`aboutDetailsMissing=${result.metrics.spacing.about.missingDetailsRows.join(',')}`);
-    }
-    if (result.metrics.spacing.about?.forbiddenDetailsRows?.length) {
-        pushHard(`aboutDetailsForbidden=${result.metrics.spacing.about.forbiddenDetailsRows.join(',')}`);
-    }
-    if (result.metrics.spacing.about?.missingBoldUpdateLabels?.length) {
-        pushHard(`aboutUpdateLabelsNotBold=${result.metrics.spacing.about.missingBoldUpdateLabels.join(',')}`);
-    }
-    if (result.metrics.spacing.about?.topRowLayout && !result.metrics.spacing.about.topRowLayout.heightsMatch) {
-        pushWarning(`aboutTopRowHeightMismatch=${result.metrics.spacing.about.topRowLayout.variance}px`);
-    }
-    if (result.name.includes('mobile-about') && result.metrics.spacing.about?.mobileTopRowStack?.active) {
-        const mobileTopRowStack = result.metrics.spacing.about.mobileTopRowStack;
-        if (!mobileTopRowStack.gapsConsistent) {
-            pushWarning(`aboutMobileStackGapVariance=${mobileTopRowStack.gapVariance}px`);
-        }
-    }
-    // Peers desktop layout: Status cell must be table-cell (not flex) to avoid vertical misalignment
-    // Also detect Status badges overlapping Action buttons horizontally
-    if (result.metrics.spacing.peersDesktopStatusCell?.length) {
-        const flexCells = result.metrics.spacing.peersDesktopStatusCell.filter((r) => !r.isTableCell);
-        if (flexCells.length) {
-            pushHard(`peersStatusCellNotTableCell=${flexCells.map((c) => c.statusDisplay).join('+')}`);
-        }
-        const overlapCells = result.metrics.spacing.peersDesktopStatusCell.filter((r) => r.overlapsActions);
-        if (overlapCells.length) {
-            pushHard(`peersStatusOverlapsActions=${overlapCells.length}rows`);
-        }
-    }
-    // Peers mobile layout: both badges visible, last-seen merged into badge, stacked VPN/clientip
-    if (result.metrics.spacing.peersMobileLayout?.length) {
-        const mobileIssues = result.metrics.spacing.peersMobileLayout.filter(
-            (r) => !r.connectionBadgeVisible || !r.enabledBadgeVisible || !r.lastSeenCellHidden || !r.statusAlignedWithName || !r.clientIpBelowVpn
-        );
-        if (mobileIssues.length) {
-            const reasons = new Set();
-            for (const issue of mobileIssues) {
-                if (!issue.connectionBadgeVisible) reasons.add('connectionBadgeHidden');
-                if (!issue.enabledBadgeVisible) reasons.add('enabledBadgeHidden');
-                if (!issue.lastSeenCellHidden) reasons.add('lastSeenCellVisible');
-                if (!issue.statusAlignedWithName) reasons.add('statusNotAlignedWithName');
-                if (!issue.clientIpBelowVpn) reasons.add('clientIpNotBelowVpn');
-            }
-            pushHard(`peersMobileLayout=${[...reasons].join('+')}`);
-        }
-    }
-    // Peers modal required field validation (Name field must have required attr + visual marker)
-    if (result.metrics.spacing.peersModalValidation) {
-        const addModal = result.metrics.spacing.peersModalValidation.addPeerModal;
-        if (addModal?.found && !addModal.valid) {
-            if (!addModal.hasRequiredAttr) pushHard('peerNameInputMissingRequired');
-            if (!addModal.hasRequiredMarker) pushWarning('peerNameLabelMissingRequiredMarker');
-        }
-        const editModal = result.metrics.spacing.peersModalValidation.editPeerModal;
-        if (editModal?.found && !editModal.valid) {
-            if (!editModal.hasRequiredAttr) pushHard('editPeerNameInputMissingRequired');
-            if (!editModal.hasRequiredMarker) pushWarning('editPeerNameLabelMissingRequiredMarker');
-        }
-    }
-    // Nodes mobile layout: grid card structure, hidden desktop columns, visible mobile meta
-    if (result.metrics.spacing.nodesMobileLayout?.length) {
-        const mobileIssues = result.metrics.spacing.nodesMobileLayout.filter(
-            (r) => !r.theadHidden || !r.isGridLayout || !r.portHidden || !r.versionHidden ||
-                !r.peersHidden || !r.lastSeenHidden || !r.mobileMetaVisible ||
-                !r.statusAlignedWithName || !r.fqdnBelowName
-        );
-        if (mobileIssues.length) {
-            const reasons = new Set();
-            for (const issue of mobileIssues) {
-                if (!issue.theadHidden) reasons.add('theadVisible');
-                if (!issue.isGridLayout) reasons.add('notGridLayout');
-                if (!issue.portHidden) reasons.add('portVisible');
-                if (!issue.versionHidden) reasons.add('versionVisible');
-                if (!issue.peersHidden) reasons.add('peersVisible');
-                if (!issue.lastSeenHidden) reasons.add('lastSeenVisible');
-                if (!issue.mobileMetaVisible) reasons.add('mobileMetaHidden');
-                if (!issue.statusAlignedWithName) reasons.add('statusNotAlignedWithName');
-                if (!issue.fqdnBelowName) reasons.add('fqdnNotBelowName');
-            }
-            pushHard(`nodesMobileLayout=${[...reasons].join('+')}`);
-        }
-    }
-    // Nodes desktop layout: status badges must not overlap action buttons
-    if (result.metrics.spacing.nodesDesktopLayout?.length) {
-        const overlapRows = result.metrics.spacing.nodesDesktopLayout.filter((r) => r.overlapsActions);
-        if (overlapRows.length) {
-            pushHard(`nodesStatusOverlapsActions=${overlapRows.length}rows`);
-        }
-    }
-    if (result.metrics.layoutShift.value > LAYOUT_SHIFT_THRESHOLD) pushHard(`layoutShift=${result.metrics.layoutShift.value.toFixed(4)}`);
-    if (result.metrics.componentLayoutShift?.length) pushHard(`componentLayoutShift=${result.metrics.componentLayoutShift.length}`);
-    if (result.metrics.contrastProblems.length) pushHard(`contrastProblems=${result.metrics.contrastProblems.length}`);
-    if (result.metrics.visualContainmentIssues?.length) pushWarning(`visualContainmentIssues=${result.metrics.visualContainmentIssues.length}`);
-    if (result.metrics.formSwitchMarginIssues?.length) pushWarning(`formSwitchMarginIssues=${result.metrics.formSwitchMarginIssues.length}`);
-    if (result.metrics.formSwitchProportionIssues?.length) pushHard(`formSwitchProportionIssues=${result.metrics.formSwitchProportionIssues.length}`);
-    if (result.metrics.formSwitchHeightIssues?.length) pushHard(`formSwitchHeightIssues=${result.metrics.formSwitchHeightIssues.length}`);
-    if (result.metrics.inputGroupHeightIssues?.length) pushHard(`inputGroupHeightIssues=${result.metrics.inputGroupHeightIssues.length}`);
-    if (result.diff.ratio > VISUAL_DRIFT_THRESHOLD) pushHard(`visualDrift=${result.diff.ratio.toFixed(4)}`);
-    if (result.network.consoleEntries.length) pushHard(`console=${result.network.consoleEntries.length}`);
-    if (result.network.pageErrors.length) pushHard(`pageErrors=${result.network.pageErrors.length}`);
-    if (result.network.requestFailures.length) pushHard(`failedRequests=${result.network.requestFailures.length}`);
-    if (result.network.badResponses.length) pushHard(`badResponses=${result.network.badResponses.length}`);
-    if (result.diff.sizeMismatch) pushHard('screenshotSizeMismatch');
-
-    const duplicateRequestMap = new Map();
-    for (const entry of result.network.requests || []) {
-        if (!entry?.url || entry.method !== 'GET') continue;
-        duplicateRequestMap.set(entry.url, (duplicateRequestMap.get(entry.url) || 0) + 1);
-    }
-    result.network.duplicateRequests = Array.from(duplicateRequestMap.entries())
-        .filter(([, count]) => count > 3)
-        .map(([url, count]) => ({ url, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 10);
-    if (result.network.duplicateRequests.length) pushWarning(`duplicateRequests=${result.network.duplicateRequests.length}`);
-
-    // KPI Card validation findings
-    if (result.metrics.spacing.kpiCards?.length) {
-        const paddingProblems = result.metrics.spacing.kpiCards.filter((card) =>
-            Math.abs(card.paddingTop - KPI_CARD_PADDING_EXPECTED) > KPI_CARD_PADDING_TOLERANCE ||
-            Math.abs(card.paddingBottom - KPI_CARD_PADDING_EXPECTED) > KPI_CARD_PADDING_TOLERANCE
-        );
-
-        if (paddingProblems.length) {
-            pushWarning(`kpiPaddingMismatch=${paddingProblems.length}`);
-        }
-
-        const iconProblems = result.metrics.spacing.kpiCards.filter((card) =>
-            card.iconSize &&
-            (card.iconSize < KPI_ICON_MIN || card.iconSize > KPI_ICON_MAX)
-        );
-
-        if (iconProblems.length) {
-            pushWarning(`kpiIconSizeMismatch=${iconProblems.length}`);
-        }
-    }
-
-    if (result.name.includes('dashboard') && result.metrics.spacing.dashboardKpiIcons?.length) {
-        const contextualColorProblems = result.metrics.spacing.dashboardKpiIcons.filter(
-            (card) => card.contextualClasses?.length
-        );
-        if (contextualColorProblems.length) {
-            pushWarning(`dashboardKpiContextualIconColor=${contextualColorProblems.length}`);
-        }
-
-        const neutralColorProblems = result.metrics.spacing.dashboardKpiIcons.filter(
-            (card) => card.iconColorDelta != null && card.iconColorDelta > KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX
-        );
-        if (neutralColorProblems.length) {
-            pushWarning(`dashboardKpiNeutralIconMismatch=${neutralColorProblems.length}`);
-        }
-
-        const verticalCenterProblems = result.metrics.spacing.dashboardKpiIcons.filter(
-            (card) => card.iconCenterDelta != null && card.iconCenterDelta > KPI_ICON_CENTER_TOLERANCE_PX
-        );
-        if (verticalCenterProblems.length) {
-            pushWarning(`dashboardKpiIconVerticalCenter=${verticalCenterProblems.length}`);
-        }
-    }
-
-    // Dashboard KPI card width variance
-    if (result.name.includes('dashboard') && result.metrics.spacing.kpiCards?.length) {
-        const widths = result.metrics.spacing.statCardWidths || [];
-        if (widths.length > 1) {
-            const variance = Math.max(...widths) - Math.min(...widths);
-            if (variance > 8) {
-                pushWarning(`kpiCardWidthVariance=${variance}`);
-            }
-        }
-    }
-
-    // KPI card height consistency
-    if (result.metrics.spacing.kpiHeights?.length) {
-        const variance = result.metrics.spacing.kpiHeightVariance || 0;
-
-        if (variance > KPI_ROW_VARIANCE_MAX) {
-            pushWarning(`kpiHeightVariance=${variance}`);
-        }
-
-        const uneven = result.metrics.spacing.kpiHeights.filter(
-            (h) => Math.abs(h - result.metrics.spacing.kpiHeights[0]) > KPI_HEIGHT_TOLERANCE_PX
-        );
-
-        if (uneven.length) {
-            pushWarning(`kpiHeightMismatch=${uneven.length}`);
-        }
-    }
-
-    // Desktop + Tablet KPI consistency check
-    if (!result.name.includes('mobile') && result.metrics.spacing.kpiHeights?.length >= 4) {
-        const firstRow = result.metrics.spacing.kpiHeights.slice(0, 4);
-        const variance = Math.max(...firstRow) - Math.min(...firstRow);
-
-        if (variance > KPI_ROW_VARIANCE_MAX) {
-            pushWarning(`kpiRowHeightVariance=${variance}`);
-        }
-    }
-
-    // Missing KPI class on stat cards
-    if (
-        KPI_CARD_REQUIRED_SCOPES.some((scope) => result.name.includes(scope)) &&
-        result.metrics.spacing.cardsMissingKpiClass?.length
-    ) {
-        pushWarning(
-            `cardsMissingKpiClass=${result.metrics.spacing.cardsMissingKpiClass.length}`
-        );
-    }
-
-    // Card border-radius consistency (should match --wb-radius-lg token)
-    if (result.metrics.spacing.cardBorderRadiusIssues?.length) {
-        pushWarning(`cardBorderRadiusMismatch=${result.metrics.spacing.cardBorderRadiusIssues.length}`);
-    }
-
-    // DNS page: Chart empty state spacing validation
-    if (result.name.includes('dns') && result.metrics.spacing.dnsUnavailableStates?.length) {
-        const states = result.metrics.spacing.dnsUnavailableStates;
-
-        for (const state of states) {
-            if (!state.hasSubText) {
-                pushWarning(`dnsUnavailableNoSubtext:${state.id || 'unknown'}`);
-                continue;
-            }
-
-            if (!state.hasSmallClass) {
-                pushHard(`dnsUnavailableMissingSmallClass:${state.id || 'unknown'}`);
-            }
-
-            if (!state.marginCompensatesGap) {
-                pushHard(`dnsUnavailableSpacingIncorrect:${state.id || 'unknown'} (gap=${state.gap}, marginTop=${state.marginTop})`);
-            }
-
-            if (!state.visualGapExpected) {
-                pushWarning(`dnsUnavailableVisualGap:${state.id || 'unknown'} (${state.visualGap}px)`);
-            }
-        }
-    }
-
-    // Slider tick alignment (settings-logs views)
-    if (result.name.includes('settings-logs') && result.metrics.spacing.sliderAlignment?.length) {
-        for (const slider of result.metrics.spacing.sliderAlignment) {
-            if (!slider.tickCountMatch) {
-                pushWarning(`sliderTickCount:${slider.sliderId}=${slider.tickCount}/${slider.expectedTickCount}`);
-            }
-            if (!slider.usesIndexVar) {
-                pushWarning(`sliderMissingIndexVar:${slider.sliderId}`);
-            }
-            if (slider.tickMisaligned.length) {
-                pushHard(`sliderTickMisaligned:${slider.sliderId}=${slider.tickMisaligned.length}`);
-            }
-            if (slider.labelMisaligned.length) {
-                pushWarning(`sliderLabelMisaligned:${slider.sliderId}=${slider.labelMisaligned.length}`);
-            }
-            if (slider.labelOverlap.length) {
-                pushHard(`sliderLabelOverlap:${slider.sliderId}=${slider.labelOverlap.length}`);
-            }
-        }
-    }
-
-    // Status page: Network flow diagram validation
-    if (result.name.includes('status') && result.metrics.spacing.statusFlow) {
-        const flow = result.metrics.spacing.statusFlow;
-
-        if (!flow.hasWrapper) {
-            pushHard('statusFlowWrapperMissing');
-        }
-        if (!flow.nodeCountMatch) {
-            pushHard(`statusFlowNodeCount=${flow.nodeCount}/${flow.expectedNodeCount}`);
-        }
-        if (!flow.connectorCountMatch) {
-            pushHard(`statusFlowConnectorCount=${flow.connectorCount}/${flow.expectedConnectorCount}`);
-        }
-        if (!flow.nodeOrderMatches) {
-            pushHard('statusFlowNodeOrderMismatch');
-        }
-        if (!flow.connectorOrderMatches) {
-            pushHard('statusFlowConnectorOrderMismatch');
-        }
-        if (!flow.allNodesHaveStructure) {
-            const incomplete = flow.nodes.filter(n => !n.hasIcon || !n.hasLabel || !n.hasMeta);
-            pushWarning(`statusFlowIncompleteNodes=${incomplete.length}`);
-        }
-        if (flow.labelMismatches.length) {
-            pushHard(`statusFlowLabelMismatch=${flow.labelMismatches.length}`);
-        }
-        if (flow.iconMismatches.length) {
-            pushHard(`statusFlowIconMismatch=${flow.iconMismatches.length}`);
-        }
-        if (flow.nodeStateConflicts.length) {
-            pushHard(`statusFlowStateConflict=${flow.nodeStateConflicts.length}`);
-        }
-        if (flow.nodeContentStateMismatches.length) {
-            pushHard(`statusFlowContentStateMismatch=${flow.nodeContentStateMismatches.length}`);
-        }
-        if (flow.heightVariance > flow.expectedHeightVarianceMax) {
-            pushWarning(`statusFlowHeightVariance=${flow.heightVariance}/${flow.expectedHeightVarianceMax}`);
-        }
-        if (flow.widthVariance > 24) {
-            pushWarning(`statusFlowWidthVariance=${flow.widthVariance}`);
-        }
-        if (flow.orientationIssues.length) {
-            pushHard(`statusFlowOrientation=${flow.orientationIssues.length}`);
-        }
-        if (flow.connectorOrientationIssues.length) {
-            pushHard(`statusFlowConnectorOrientation=${flow.connectorOrientationIssues.length}`);
-        }
-        if (flow.compactMobileLayout) {
-            if (flow.compactMobileIssues.nodes.length) {
-                pushWarning(`statusFlowCompactMobileNodes=${flow.compactMobileIssues.nodes.length}`);
-            }
-            if (flow.compactMobileIssues.connectors.length) {
-                pushWarning(`statusFlowCompactMobileConnectors=${flow.compactMobileIssues.connectors.length}`);
-            }
-        }
-    }
-
-    // Status page: Status check cards monospace validation
-    if (result.name.includes('status') && result.metrics.spacing.statusCheckMonospace) {
-        const checkMonospace = result.metrics.spacing.statusCheckMonospace;
-
-        if (!checkMonospace.allCorrect) {
-            const missingTitles = checkMonospace.missing.map(c => c.title).join(', ');
-            pushHard(`statusCheckMonospaceMissing: ${missingTitles}`);
-        }
-    }
-    if (result.name.includes('status') && result.metrics.spacing.statusDetailCards) {
-        const detailCards = result.metrics.spacing.statusDetailCards;
-        if (!detailCards.allPopulated) {
-            const emptyTitles = detailCards.empty.map((card) => card.title).join(', ');
-            pushHard(`statusDetailCardsEmpty=${emptyTitles}`);
-        }
-    }
-
-    if (result.name.includes('login-error')) {
-        const loginFailure = result.metrics.loginFailure || {};
-        const errorText = loginFailure.errorText || '';
-
-        // Rate limiting triggers a different error message - skip validation if rate limited
-        const isRateLimited = errorText.toLowerCase().includes('too many') || errorText.toLowerCase().includes('try again later');
-        if (isRateLimited) {
-            pushWarning('rateLimited');
-        } else {
-            // Alert is considered present if visible OR if error text is populated
-            // (visibility can be affected by motion reset CSS)
-            const alertPresent = loginFailure.alertVisible || errorText.length > 0;
-            if (!alertPresent) pushHard('loginErrorAlertMissing');
-            if (!loginFailure.passwordInvalidClass) pushHard('loginPasswordNotInvalid');
-            if (!loginFailure.passwordAriaInvalid) pushHard('loginPasswordAriaInvalidMissing');
-            if (!loginFailure.passwordBorderIsDangerLike) pushWarning('loginPasswordNotDangerStyled');
-            // Check for shake class - animation is disabled by motion reset CSS, so only check the class
-            if (!loginFailure.cardShakeClass) pushWarning('loginCardShakeClassMissing');
-        }
-    }
-
-    // Color scheme consistency (Dashboard: Speedtest vs Network Gauges)
-    if (result.metrics.colorSchemeConsistency?.length) {
-        for (const issue of result.metrics.colorSchemeConsistency) {
-            if (issue.type === 'downloadColorMismatch') {
-                pushWarning(`colorScheme:downloadMismatch:distance=${issue.distance}`);
-            } else if (issue.type === 'uploadColorMismatch') {
-                pushWarning(`colorScheme:uploadMismatch:distance=${issue.distance}`);
-            } else if (issue.type === 'transferColorsTooSimilar') {
-                pushWarning(`colorScheme:transferColorsTooSimilar:distance=${issue.distance}`);
-            } else if (issue.type === 'missingGaugeElements') {
-                pushWarning('colorScheme:missingElements');
-            }
-        }
-    }
-
-    // Deprecated color usage: ensure #ff6b6b is replaced with #ff6384
-    if (result.metrics.deprecatedColorUsage?.length) {
-        for (const issue of result.metrics.deprecatedColorUsage) {
-            pushHard(`deprecatedColor:${issue.property}:${issue.selector}:${issue.value}`);
-        }
-    }
-
-    return {
-        findings: [...hardFindings, ...warnings],
-        hardFindings,
-        warnings,
-    };
-}
-
-function isExpectedStatusUnavailable(view, response) {
-    if (view.scope !== 'status' || !response) return false;
-    try {
-        return new URL(response.url()).pathname === '/status' && response.status() === 404;
-    } catch {
-        return false;
-    }
+    }, { scope, constants: UI_EVAL_CONSTANTS });
 }
 
 async function auditView(page, view) {
     const detachNetwork = collectConsoleAndNetwork(page);
     let network = null;
     try {
-        await applyTheme(page, view.theme, view.name);
+        await applyTheme(page, { baseUrl: BASE_URL, theme: view.theme, label: view.name });
         const response = await page.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 30000 });
-        await disableMotion(page, view.name);
+        await disableMotion(page, FULL_MOTION_RESET_CSS, view.name);
         if (view.scope === 'about') {
             await page.evaluate(() => {
                 const details = document.querySelector('.about-changelog-col details');
@@ -3918,9 +2862,19 @@ async function auditView(page, view) {
         }
         await resetLayoutShiftMetric(page);
         await page.waitForTimeout(SCREENSHOT_SETTLE_MS);
-        const shots = await captureStablePair(page, view.name);
-        const kpiShots = await captureKpiCards(page, view.name);
-        const diff = diffScreenshots(view.name, shots.shotA, shots.shotB);
+        const shots = await captureStablePair(page, {
+            motionResetCss: FULL_MOTION_RESET_CSS,
+            name: view.name,
+            screenshotDir: SCREENSHOT_DIR,
+            screenshotSettleMs: SCREENSHOT_SETTLE_MS,
+        });
+        const kpiShots = await captureKpiCards(page, view.name, SCREENSHOT_DIR);
+        const diff = diffScreenshots({
+            name: view.name,
+            shotA: shots.shotA,
+            shotB: shots.shotB,
+            screenshotDir: SCREENSHOT_DIR,
+        });
         const metrics = await collectPageMetrics(page, view.scope);
         network = detachNetwork();
         const statusUnavailableExpected = isExpectedStatusUnavailable(view, response);
@@ -3961,8 +2915,8 @@ async function auditLoginFailureView(page, view) {
     let network = null;
     try {
         await page.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 10000 });
-        await disableMotion(page, view.name);
-        await applyTheme(page, view.theme, view.name);
+        await disableMotion(page, FULL_MOTION_RESET_CSS, view.name);
+        await applyTheme(page, { baseUrl: BASE_URL, theme: view.theme, label: view.name });
 
         const invalidPassword = `${PASSWORD}__ui_lint_invalid`;
         await page.fill('#username', USERNAME);
@@ -3985,9 +2939,19 @@ async function auditLoginFailureView(page, view) {
         await page.waitForTimeout(LOGIN_ERROR_SETTLE_MS);
 
         const metrics = await collectPageMetrics(page, view.scope);
-        const shots = await captureStablePair(page, view.name);
-        const kpiShots = await captureKpiCards(page, view.name);
-        const diff = diffScreenshots(view.name, shots.shotA, shots.shotB);
+        const shots = await captureStablePair(page, {
+            motionResetCss: FULL_MOTION_RESET_CSS,
+            name: view.name,
+            screenshotDir: SCREENSHOT_DIR,
+            screenshotSettleMs: SCREENSHOT_SETTLE_MS,
+        });
+        const kpiShots = await captureKpiCards(page, view.name, SCREENSHOT_DIR);
+        const diff = diffScreenshots({
+            name: view.name,
+            shotA: shots.shotA,
+            shotB: shots.shotB,
+            screenshotDir: SCREENSHOT_DIR,
+        });
         network = detachNetwork();
         network.consoleEntries = network.consoleEntries.filter((entry) =>
             !(loginResponse.status() === 401 && entry.text.includes('401 (Unauthorized)'))
@@ -4039,7 +3003,12 @@ async function main() {
     try {
         browser = await chromium.launch({ headless: true });
         const authContext = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
-        await login(await authContext.newPage());
+        await login(await authContext.newPage(), {
+            baseUrl: BASE_URL,
+            username: USERNAME,
+            password: PASSWORD,
+            motionResetCss: FULL_MOTION_RESET_CSS,
+        });
         const authState = await authContext.storageState();
         await authContext.close();
 

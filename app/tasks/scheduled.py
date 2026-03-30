@@ -161,76 +161,79 @@ async def sample_tsdb_metrics(ctx: main.LifespanContext) -> None:
 	from ..db import tsdb
 	from ..main import _load_peer_identity_map_sync
 	
-	peer_counters = await _get_wg_peer_counters()
-	if not peer_counters:
-		_log.debug("TSDB_SAMPLE no peers found or wg command failed")
-		return
+	try:
+		peer_counters = await _get_wg_peer_counters()
+		if not peer_counters:
+			_log.debug("TSDB_SAMPLE no peers found or wg command failed")
+			return
 
-	# Offload blocking TSDB writes to thread
-	def _write_tsdb_points():
-		points = 0
+		# Offload blocking TSDB writes to thread
+		def _write_tsdb_points():
+			points = 0
+			for public_key, (rx, tx, latest_handshake) in peer_counters.items():
+				tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="rx_bytes", value=rx)
+				tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="tx_bytes", value=tx)
+				points += 2
+				if latest_handshake > 0:
+					tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="latest_handshake", value=latest_handshake)
+					points += 1
+			return points
+
+		points = await asyncio.to_thread(_write_tsdb_points)
+		_log.debug("TSDB_SAMPLE peers=%d points=%d", len(peer_counters), points)
+
+		# Track connection state changes for logging (on event loop thread)
+		now = time.time()
+		state_changes: list[tuple[str, bool]] = []  # (public_key, is_now_connected)
+
 		for public_key, (rx, tx, latest_handshake) in peer_counters.items():
-			tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="rx_bytes", value=rx)
-			tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="tx_bytes", value=tx)
-			points += 2
 			if latest_handshake > 0:
-				tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="latest_handshake", value=latest_handshake)
-				points += 1
-		return points
+				# Detect connection state changes
+				is_connected = (now - latest_handshake) < _PEER_CONNECTION_THRESHOLD
+				was_connected = ctx.peer_connection_state.get(public_key, False)
 
-	points = await asyncio.to_thread(_write_tsdb_points)
-	_log.debug("TSDB_SAMPLE peers=%d points=%d", len(peer_counters), points)
-
-	# Track connection state changes for logging (on event loop thread)
-	now = time.time()
-	state_changes: list[tuple[str, bool]] = []  # (public_key, is_now_connected)
-
-	for public_key, (rx, tx, latest_handshake) in peer_counters.items():
-		if latest_handshake > 0:
-			# Detect connection state changes
-			is_connected = (now - latest_handshake) < _PEER_CONNECTION_THRESHOLD
-			was_connected = ctx.peer_connection_state.get(public_key, False)
-
-			# Log every active handshake at DEBUG level for visibility
-			if is_connected:
-				handshake_age = int(now - latest_handshake)
-				_log.debug(
-					"PEER_HANDSHAKE public_key=%s handshake_age=%ds rx=%d tx=%d",
-					public_key[:16], handshake_age, rx, tx,
-				)
-
-			if is_connected != was_connected:
-				# LRU eviction: prefer disconnected peers to avoid false reconnect logs.
-				if len(ctx.peer_connection_state) >= _PEER_STATE_MAX_SIZE:
-					evict = _evict_peer_state_entries(ctx.peer_connection_state)
-					_log.warning("PEER_STATE evicted %d oldest entries", evict)
-				ctx.peer_connection_state[public_key] = is_connected
-				ctx.peer_connection_state.move_to_end(public_key)
-				state_changes.append((public_key, is_connected))
-
-	# Log connection state changes with peer names
-	if state_changes:
-		public_keys = [public_key for public_key, _ in state_changes]
-		peer_identity_map = await asyncio.to_thread(
-			_load_peer_identity_map_sync,
-			ctx.cfg.db_path,
-			public_keys,
-		)
-		for public_key, is_connected in state_changes:
-			peer_identity = peer_identity_map.get(public_key)
-			if peer_identity:
-				peer_name, interface = peer_identity
+				# Log every active handshake at DEBUG level for visibility
 				if is_connected:
-					_log.info("PEER_CONNECTED name=%s interface=%s public_key=%s",
-						peer_name, interface, public_key[:16])
+					handshake_age = int(now - latest_handshake)
+					_log.debug(
+						"PEER_HANDSHAKE public_key=%s handshake_age=%ds rx=%d tx=%d",
+						public_key[:16], handshake_age, rx, tx,
+					)
+
+				if is_connected != was_connected:
+					# LRU eviction: prefer disconnected peers to avoid false reconnect logs.
+					if len(ctx.peer_connection_state) >= _PEER_STATE_MAX_SIZE:
+						evict = _evict_peer_state_entries(ctx.peer_connection_state)
+						_log.warning("PEER_STATE evicted %d oldest entries", evict)
+					ctx.peer_connection_state[public_key] = is_connected
+					ctx.peer_connection_state.move_to_end(public_key)
+					state_changes.append((public_key, is_connected))
+
+		# Log connection state changes with peer names
+		if state_changes:
+			public_keys = [public_key for public_key, _ in state_changes]
+			peer_identity_map = await asyncio.to_thread(
+				_load_peer_identity_map_sync,
+				ctx.cfg.db_path,
+				public_keys,
+			)
+			for public_key, is_connected in state_changes:
+				peer_identity = peer_identity_map.get(public_key)
+				if peer_identity:
+					peer_name, interface = peer_identity
+					if is_connected:
+						_log.info("PEER_CONNECTED name=%s interface=%s public_key=%s",
+							peer_name, interface, public_key[:16])
+					else:
+						_log.info("PEER_DISCONNECTED name=%s interface=%s public_key=%s",
+							peer_name, interface, public_key[:16])
 				else:
-					_log.info("PEER_DISCONNECTED name=%s interface=%s public_key=%s",
-						peer_name, interface, public_key[:16])
-			else:
-				if is_connected:
-					_log.info("PEER_CONNECTED public_key=%s (not in database)", public_key[:16])
-				else:
-					_log.info("PEER_DISCONNECTED public_key=%s (not in database)", public_key[:16])
+					if is_connected:
+						_log.info("PEER_CONNECTED public_key=%s (not in database)", public_key[:16])
+					else:
+						_log.info("PEER_DISCONNECTED public_key=%s (not in database)", public_key[:16])
+	except (OSError, RuntimeError, ValueError) as exc:
+		_log.error("TSDB_SAMPLE failed: %s", exc)
 
 
 async def sample_country_traffic(ctx: main.LifespanContext) -> None:
@@ -308,11 +311,14 @@ async def dns_watchdog(ctx: main.LifespanContext) -> None:
 	if not _unbound.is_unbound_installed():
 		return  # Skip if Unbound not installed
 	
-	# Pass async callable that re-evaluates the condition on each watchdog check
-	async def _should_run():
-		return await asyncio.to_thread(_should_unbound_run_sync, ctx.cfg.db_path)
-	
-	await _unbound.watchdog(_should_run)
+	try:
+		# Pass async callable that re-evaluates the condition on each watchdog check
+		async def _should_run():
+			return await asyncio.to_thread(_should_unbound_run_sync, ctx.cfg.db_path)
+		
+		await _unbound.watchdog(_should_run)
+	except (OSError, RuntimeError, ValueError) as exc:
+		_log.error("DNS_WATCHDOG failed: %s", exc)
 
 
 async def check_adblocker_timer(ctx: main.LifespanContext) -> None:
@@ -366,6 +372,9 @@ def _seconds_until_night_window() -> float:
 	The target window is 02:00-04:00 local time. If less than five minutes
 	remain in the current window, defer to the next night's window instead
 	of starting immediately.
+	
+	Note: Uses system DST rules via time.mktime(). DST transitions (forward/back)
+	may shift actual execution time by up to one hour.
 	"""
 	now_ts = time.time()
 	now_local = dt.fromtimestamp(now_ts)

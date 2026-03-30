@@ -197,7 +197,7 @@ async def _verify_host_network_mode() -> None:
 			stderr=asyncio.subprocess.DEVNULL,
 		)
 		stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-		if proc.returncode not in (0, None):
+		if proc.returncode != 0:
 			_log.warning("Could not verify network mode: 'ip route' exit code %s", proc.returncode)
 			return
 
@@ -634,8 +634,8 @@ def _with_conn_or(db_path: Path, fn: typing.Callable, *args, default=None, **kwa
 		return _with_conn(db_path, fn, *args, **kwargs)
 	except sqlite3.DatabaseError:
 		raise
-	except Exception:
-		_log.warning("%s failed, returning default", fn.__name__, exc_info=True)
+	except (OSError, RuntimeError, ValueError) as exc:
+		_log.warning("%s failed, returning default: %s", fn.__name__, exc)
 		return default
 
 
@@ -1174,6 +1174,17 @@ async def _phase_scheduler(ctx: LifespanContext) -> None:
 	scheduler.add("node-health", interval_seconds=60, func=_run_node_health, run_on_start=False, timeout=15.0)
 	await scheduler.start()
 
+async def _sleep_interruptible(seconds: float, chunk_size: float = 60.0) -> None:
+	"""Sleep for total seconds with periodic cancellation checks.
+	
+	Breaks long sleeps into chunks to enable responsive shutdown.
+	"""
+	remaining = seconds
+	while remaining > 0:
+		await asyncio.sleep(min(chunk_size, remaining))
+		remaining -= chunk_size
+
+
 async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 	from .dns import unbound
 	from .dns import ingestion as dns_ingestion
@@ -1185,7 +1196,7 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 	while True:
 		should_run = await asyncio.to_thread(_should_unbound_run_sync, ctx.cfg.db_path)
 		if not should_run:
-			await asyncio.sleep(30.0)
+			await _sleep_interruptible(30.0)
 			continue
 		for attempt in range(15):
 			if await unbound.is_running():
@@ -1221,15 +1232,16 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 			)
 			retry_count = 0
 			_log.warning("DNS_INGESTION stopped unexpectedly; restarting in 5s")
-			await asyncio.sleep(5.0)
+			await _sleep_interruptible(5.0)
 		except asyncio.CancelledError:
 			_log.info("DNS_INGESTION shutdown requested")
 			raise
 		except Exception as exc:
 			retry_count += 1
-			delay = min(_DNS_INGESTION_RESTART_BASE_DELAY_SECONDS ** retry_count, _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS)
+			# Exponential backoff: base_delay * (2 ** retry_count)
+			delay = min(2 ** retry_count * _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS, _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS)
 			_log.error("DNS_INGESTION crashed (retry #%d in %.0fs): %s", retry_count, delay, exc)
-			await asyncio.sleep(delay)
+			await _sleep_interruptible(delay)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
