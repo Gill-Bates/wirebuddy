@@ -9,7 +9,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import socket
 import logging
+import os
 import re
 import sqlite3
 import subprocess
@@ -66,15 +69,71 @@ class SystemStatusResponse(BaseModel):
 _UNBOUND_PATH = "/usr/sbin/unbound"
 _WG_PATH = "/usr/bin/wg"
 
-# Hostname/IP validation pattern for FQDN (RFC 1123 hostname or IPv4/IPv6)
-_HOSTNAME_RE = re.compile(
-	r"^(?:"
-	r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z]{2,63}"  # FQDN
-	r"|localhost"  # localhost
-	r"|(?:\d{1,3}\.){3}\d{1,3}"  # IPv4
-	r"|[a-fA-F0-9:]+(?:%[a-zA-Z0-9]+)?"  # IPv6 (simplified)
-	r")$"
+# FQDN validation pattern (RFC 1123 hostname)
+_FQDN_RE = re.compile(
+	r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z]{2,63}$"
 )
+
+
+def _is_valid_hostname_or_ip(value: str) -> bool:
+	"""Validate hostname or IP address with proper parsing.
+	
+	More robust than regex-only validation, especially for IPv6.
+	"""
+	clean = str(value or "").strip()
+	if not clean:
+		return False
+	
+	# Check for localhost
+	if clean.lower() == "localhost":
+		return True
+	
+	# Try parsing as IP address (IPv4 or IPv6)
+	try:
+		ipaddress.ip_address(clean)
+		return True
+	except ValueError:
+		pass
+	
+	# Validate as FQDN using regex
+	return _FQDN_RE.match(clean) is not None
+
+
+@lru_cache(maxsize=256)
+def _resolve_node_geo_ip(host_or_ip: str) -> str | None:
+	"""Resolve a node FQDN/IP to a concrete IP for GeoIP/ASN lookups."""
+	clean = str(host_or_ip or "").strip()
+	# Strip IPv6 brackets safely (only if wrapped)
+	if clean.startswith("[") and clean.endswith("]"):
+		clean = clean[1:-1]
+	if not clean:
+		return None
+
+	try:
+		return str(ipaddress.ip_address(clean))
+	except ValueError:
+		pass
+
+	if not _is_valid_hostname_or_ip(clean):
+		return None
+
+	try:
+		addrinfo = socket.getaddrinfo(clean, None, type=socket.SOCK_STREAM)
+	except OSError:
+		return None
+
+	for _family, _socktype, _proto, _canonname, sockaddr in addrinfo:
+		ip_text = str(sockaddr[0]).split("%", 1)[0]
+		try:
+			ip = ipaddress.ip_address(ip_text)
+			# SSRF protection: block private/reserved ranges
+			if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+				return None
+			return str(ip)
+		except ValueError:
+			continue
+
+	return None
 
 # Key packages to display in about page
 _KEY_PACKAGES = [
@@ -199,11 +258,12 @@ def _render_changelog() -> str:
 		if cp.exists():
 			try:
 				raw = cp.read_text(encoding="utf-8")
-				rendered = _markdown.markdown(raw, extensions=["extra", "sane_lists", "md_in_html"])
+				rendered = _markdown.markdown(raw, extensions=["extra", "sane_lists"])
 				return nh3.clean(
 					rendered,
 					tags=_CHANGELOG_ALLOWED_TAGS,
 					attributes=_CHANGELOG_ALLOWED_ATTRS,
+					url_schemes={"http", "https", "mailto"},
 					strip_comments=True,
 				)
 			except (OSError, UnicodeDecodeError) as exc:
@@ -213,6 +273,33 @@ def _render_changelog() -> str:
 				_log.warning("Failed to render changelog: %s", exc)
 				return "<p>Failed to render changelog.</p>"
 	return "<p>Changelog not found.</p>"
+
+
+def _get_configured_timezone() -> str:
+	"""Return the configured local timezone label for display."""
+	get_config()  # Ensure settings.env is loaded before reading env vars.
+
+	tz_name = os.getenv("TZ", "").strip()
+	if tz_name:
+		return tz_name
+
+	tz_file = Path("/etc/timezone")
+	try:
+		tz_text = tz_file.read_text(encoding="utf-8").strip()
+		if tz_text:
+			return tz_text
+	except OSError:
+		pass
+
+	try:
+		localtime_path = Path("/etc/localtime").resolve()
+		zoneinfo_root = Path("/usr/share/zoneinfo")
+		if zoneinfo_root in localtime_path.parents:
+			return str(localtime_path.relative_to(zoneinfo_root))
+	except OSError:
+		pass
+
+	return "System local time"
 
 
 @lru_cache(maxsize=1)
@@ -225,6 +312,7 @@ def _get_about_data() -> dict:
 		"version": VERSION,
 		"build_info": BUILD_INFO,
 		"python_version": python_version,
+		"timezone": _get_configured_timezone(),
 		"wireguard_version": _get_system_tool_version(_WG_PATH, r"v([\d.]+)"),
 		"unbound_version": _get_system_tool_version(_UNBOUND_PATH, r"(\d+\.\d+(?:\.\d+)?)"),
 		"dependencies": _resolve_dependencies(requirements_versions),
@@ -379,15 +467,21 @@ async def peers_page(
 	"""
 	db_path = request.app.state.db_path
 
-	def _load_all_peers() -> list[sqlite3.Row]:
-		"""Load all peer data in thread pool with dedicated connection."""
+	def _load_peers_data() -> tuple[list[sqlite3.Row], set[int]]:
+		"""Load all peer data and tunnel peer IDs with a single connection.
+		
+		Combines two queries to avoid redundant connection overhead.
+		"""
+		from ..db.sqlite_nodes import get_all_tunnel_peer_ids
 		thread_conn = connect(db_path)
 		try:
-			return get_all_peers(thread_conn)
+			peers = get_all_peers(thread_conn)
+			tunnel_ids = get_all_tunnel_peer_ids(thread_conn)
+			return peers, tunnel_ids
 		finally:
 			close_connection(thread_conn)
 
-	peer_rows = await asyncio.to_thread(_load_all_peers)
+	peer_rows, tunnel_peer_ids = await asyncio.to_thread(_load_peers_data)
 	total_peers = len(peer_rows)
 	peers: list[dict] = []
 	now_epoch = int(time.time())
@@ -443,7 +537,55 @@ async def peers_page(
 			peer["last_client_country_code"] = geo_fields["country_code"]
 			peer["last_client_city"] = geo_fields["city"]
 			peer["last_client_as_org"] = geo_fields["as_org"]
+
+		# Mark node tunnel peers (system peers not editable by users)
+		peer["is_node_tunnel"] = peer["id"] in tunnel_peer_ids
 		peers.append(peer)
+
+	# Sort peers: regular peers first (alphabetically), then node tunnel peers
+	peers.sort(key=lambda p: (
+		p["is_node_tunnel"],  # False (regular) before True (tunnel)
+		p.get("interface", ""),
+		p.get("name", "").lower(),
+	))
+
+	# Load nodes for the node selector in the Add Peer modal (admin only)
+	nodes_data = []
+	local_fqdn = None
+	local_country_code = None
+	if user["is_admin"]:
+		def _load_nodes() -> tuple[list, str | None, str | None]:
+			from ..db.sqlite_nodes import get_all_nodes as db_get_all_nodes
+			from ..db.sqlite_settings import get_setting
+			thread_conn = connect(db_path)
+			try:
+				# Load remote nodes
+				nodes = []
+				for n in db_get_all_nodes(thread_conn):
+					resolved_geo_ip = _resolve_node_geo_ip(n["fqdn"])
+					geo_fields = extract_geo_fields(lookup_ip_cached(resolved_geo_ip)) if resolved_geo_ip else {
+						"country_code": None,
+						"city": None,
+						"as_org": None,
+					}
+					nodes.append({
+						"id": n["id"],
+						"name": n["name"],
+						"fqdn": n["fqdn"],
+						"geo_country_code": geo_fields["country_code"],
+					})
+				
+				# Load local server info
+				fqdn = get_setting(thread_conn, "wg_fqdn") or ""
+				fqdn = fqdn.strip()
+				resolved_local_ip = _resolve_node_geo_ip(fqdn) if fqdn else None
+				local_geo = extract_geo_fields(lookup_ip_cached(resolved_local_ip)) if resolved_local_ip else {
+					"country_code": None,
+				}
+				return nodes, fqdn or None, local_geo.get("country_code")
+			finally:
+				close_connection(thread_conn)
+		nodes_data, local_fqdn, local_country_code = await asyncio.to_thread(_load_nodes)
 
 	return templates.TemplateResponse(
 		request,
@@ -452,6 +594,9 @@ async def peers_page(
 			"user": user,
 			"peers": peers,
 			"total_peers": total_peers,
+			"nodes": nodes_data,
+			"local_fqdn": local_fqdn,
+			"local_country_code": local_country_code,
 			"csrf_token": get_csrf_token(request),
 		},
 	)
@@ -477,6 +622,81 @@ def users_page(
 		context={
 			"user": user,
 			"users": users,
+			"csrf_token": get_csrf_token(request),
+		},
+	)
+
+
+@router.get("/ui/nodes", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_DEFAULT)
+def nodes_page(
+	request: Request,
+	user: sqlite3.Row = Depends(require_admin_or_redirect),
+	conn: sqlite3.Connection = Depends(get_conn),
+) -> Response:
+	"""Remote nodes management page (admin only)."""
+	from ..db.sqlite_nodes import get_all_nodes, get_peers_count_by_node
+	nodes = get_all_nodes(conn)
+	peer_counts = get_peers_count_by_node(conn)
+	nodes_data = []
+	for n in nodes:
+		resolved_geo_ip = _resolve_node_geo_ip(n["fqdn"])
+		geo_fields = extract_geo_fields(lookup_ip_cached(resolved_geo_ip)) if resolved_geo_ip else {
+			"country_code": None,
+			"city": None,
+			"as_org": None,
+		}
+		# Parse metadata JSON for version
+		node_version = None
+		if n["metadata"]:
+			try:
+				meta = json.loads(n["metadata"]) if isinstance(n["metadata"], str) else n["metadata"]
+				node_version = meta.get("version")
+			except (json.JSONDecodeError, TypeError):
+				pass
+		
+		# Convert last_seen datetime to formatted label (like peers page)
+		last_seen_epoch = 0
+		if n["last_seen"]:
+			try:
+				from datetime import datetime
+				if isinstance(n["last_seen"], datetime):
+					last_seen_epoch = int(n["last_seen"].timestamp())
+				elif isinstance(n["last_seen"], str):
+					# Parse ISO format datetime string
+					dt = datetime.fromisoformat(n["last_seen"].replace("Z", "+00:00"))
+					last_seen_epoch = int(dt.timestamp())
+			except (ValueError, TypeError, AttributeError):
+				pass
+		last_seen_label = format_last_seen_label(last_seen_epoch)
+		
+		nodes_data.append({
+			"id": n["id"],
+			"name": n["name"],
+			"fqdn": n["fqdn"],
+			"wg_port": n["wg_port"],
+			"status": n["status"],
+			"last_seen": n["last_seen"],
+			"last_seen_text": last_seen_label.text,
+			"last_seen_class": last_seen_label.css_class,
+			"enrolled_at": n["enrolled_at"],
+			"created_at": n["created_at"],
+			"peer_count": peer_counts.get(n["id"], 0),
+			"geo_country_code": geo_fields["country_code"],
+			"geo_city": geo_fields["city"],
+			"geo_as_org": geo_fields["as_org"],
+			"node_version": node_version,
+		})
+	# Get default WireGuard port from first interface for pre-filling the Add Node modal
+	first_iface = conn.execute("SELECT listen_port FROM interfaces LIMIT 1").fetchone()
+	default_wg_port = first_iface["listen_port"] if first_iface else 51820
+	return templates.TemplateResponse(
+		request,
+		name="nodes.html",
+		context={
+			"user": user,
+			"nodes": nodes_data,
+			"default_wg_port": default_wg_port,
 			"csrf_token": get_csrf_token(request),
 		},
 	)
@@ -534,7 +754,7 @@ def traffic_page(
 
 @router.get("/ui/about", response_class=HTMLResponse)
 @limiter.limit(RATE_LIMIT_DEFAULT)
-def about_page(
+async def about_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
 ) -> Response:
@@ -543,8 +763,11 @@ def about_page(
 	Note: Data is cached via @lru_cache for performance. Cache persists until
 	server restart — runtime changes to requirements.txt, LICENSE, or CHANGELOG.md
 	won't be reflected without restart.
+	
+	First call (cache miss) runs blocking operations in thread pool to avoid
+	blocking the event loop.
 	"""
-	about_data = _get_about_data()
+	about_data = await asyncio.to_thread(_get_about_data)
 	return templates.TemplateResponse(
 		request,
 		name="about.html",
@@ -570,7 +793,7 @@ def settings_page(
 	raw_host = wg_fqdn.strip().strip("[]") if wg_fqdn else str(request.url.hostname or "localhost")
 	
 	# Validate hostname/IP to prevent URL injection attacks
-	if not _HOSTNAME_RE.match(raw_host):
+	if not _is_valid_hostname_or_ip(raw_host):
 		_log.warning("Invalid FQDN in settings: %r", raw_host[:50])
 		raw_host = "localhost"  # Fallback to safe default
 	
@@ -580,7 +803,7 @@ def settings_page(
 		"enable_status_page": get_setting(conn, "enable_status_page") == "1",
 		"enable_swagger": get_setting(conn, "enable_swagger") == "1",
 		"gui_localhost_only": get_setting(conn, "gui_localhost_only") == "1",
-		"wg_use_psk": get_setting(conn, "wg_use_psk") == "1",
+		"wg_use_psk": get_setting(conn, "wg_use_psk", "1") == "1",  # Default: enabled
 		"traffic_analysis_enabled": get_setting(conn, "traffic_analysis_enabled") == "1",
 		"speedtest_enabled": get_speedtest_enabled(conn),
 		"status_page_url": f"https://{url_host}/status",
@@ -605,9 +828,10 @@ def acme_challenge(request: Request, token: str) -> PlainTextResponse:
 	Note: Sync handler so FastAPI runs it in threadpool (get_challenge_response
 	performs file I/O and should not block the event loop).
 	"""
+	# Always return 404 for invalid or missing tokens to prevent timing attacks
 	if not _ACME_TOKEN_RE.match(token):
 		_log.warning("ACME challenge: invalid token format (length=%d)", len(token))
-		return PlainTextResponse("Invalid token", status_code=400)
+		return PlainTextResponse("Challenge not found", status_code=404)
 
 	config = get_config()
 	certs_dir = get_certs_dir(config)

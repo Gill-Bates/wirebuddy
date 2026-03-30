@@ -14,13 +14,14 @@ import logging
 import os
 import queue
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from .ingestion_parser import DnsQueryPoint, parse_unbound_line
 from .ingestion_retention import DEFAULT_DNS_LOG_RETENTION_DAYS, normalize_dns_log_retention_days
 from .ingestion_tailer import OffsetTracker
 from .unbound_blocklist import get_custom_rules_cache
+from ..utils.network import parse_ip_str
 
 _log = logging.getLogger(__name__)
 
@@ -43,6 +44,12 @@ class DnsTsdbWriter:
 	- Flushes on batch size or time interval
 	- fsync for durability before offset commit
 	- Graceful shutdown support
+	- Per-peer DNS logging control
+	
+	Notes:
+	- NOT thread-safe: assumes single writer execution (sequential to_thread calls)
+	- Lossy under pressure: oldest entries dropped when batch exceeds MAX_BATCH_SIZE
+	- Lossy on persistent failure: batch dropped after MAX_FLUSH_RETRIES consecutive failures
 	"""
 	
 	def __init__(
@@ -52,6 +59,7 @@ class DnsTsdbWriter:
 		retention_days_func: Callable[[], int] | None,
 		offset_tracker: OffsetTracker,
 		stop_event: asyncio.Event,
+		dns_logging_disabled_ips_func: Callable[[], set[str]] | None = None,
 	):
 		self.dns_dir = dns_dir
 		self.blocked_domains_func = blocked_domains_func
@@ -66,6 +74,8 @@ class DnsTsdbWriter:
 		self._log_retention_days: int = DEFAULT_DNS_LOG_RETENTION_DAYS
 		self._last_settings_refresh: float = 0.0
 		self._consecutive_flush_failures: int = 0
+		self._dns_logging_disabled_ips_func = dns_logging_disabled_ips_func
+		self._dns_logging_disabled_ips: set[str] = set()
 	
 	async def run(self, q: queue.Queue[str]) -> None:
 		"""Run writer loop until stopped."""
@@ -114,6 +124,11 @@ class DnsTsdbWriter:
 				self._log_retention_days = normalize_dns_log_retention_days(self.retention_days_func())
 			except Exception as e:
 				_log.warning("DNS_WRITER failed to refresh retention: %s", e)
+		if self._dns_logging_disabled_ips_func is not None:
+			try:
+				self._dns_logging_disabled_ips = self._dns_logging_disabled_ips_func()
+			except Exception as e:
+				_log.warning("DNS_WRITER failed to refresh logging-disabled IPs: %s", e)
 		self._last_settings_refresh = now
 
 	def _drain_and_process(self, q: queue.Queue[str]) -> bool:
@@ -127,13 +142,18 @@ class DnsTsdbWriter:
 				break
 			self._process_line(line)
 			processed = True
+		# Periodically save offset even when lines are skipped (no flush)
+		if processed:
+			self.tracker.save_if_needed(force=False)
 		return processed
 
 	def _process_line(self, line: str) -> None:
 		"""Parse and add line to batch (called from thread worker)."""
 
-		# "Keine Logs": parse but do not persist.
+		# "Keine Logs": parse but do not persist, but still advance offset.
+		# force=True ensures offset is persisted immediately to avoid re-reading on restart.
 		if self._log_retention_days == 0:
+			self.tracker.save_if_needed(force=True)
 			return
 		
 		point = parse_unbound_line(
@@ -148,7 +168,12 @@ class DnsTsdbWriter:
 		
 		# Only persist reply lines (skip queries)
 		# Replies have rcode and represent actual DNS resolutions
-		if not point.rcode:
+		# Note: rcode=0 means NOERROR, which is valid - check for None explicitly
+		if point.rcode is None:
+			return
+		
+		# Skip logging for peers with DNS logging disabled
+		if point.client in self._dns_logging_disabled_ips:
 			return
 		
 		self.batch.append(point)
@@ -156,13 +181,18 @@ class DnsTsdbWriter:
 		# Memory safety: drop oldest entries if batch grows too large
 		if len(self.batch) > MAX_BATCH_SIZE:
 			drop_count = len(self.batch) - MAX_BATCH_SIZE
-			self.batch = self.batch[drop_count:]
+			del self.batch[:drop_count]  # O(n) in-place delete, more efficient than slice copy
 			_log.warning("DNS_WRITER dropped %d oldest entries (batch overflow)", drop_count)
 	
 	def _should_flush(self) -> bool:
 		"""Check if batch should be flushed."""
 		if not self.batch:
 			return False
+		
+		# Throttle retries on consecutive failures to prevent busy loop
+		if self._consecutive_flush_failures > 0:
+			if time.monotonic() - self.last_flush < FLUSH_INTERVAL:
+				return False
 		
 		if len(self.batch) >= BATCH_SIZE:
 			return True
@@ -214,21 +244,29 @@ class DnsTsdbWriter:
 			_log.debug("DNS_WRITER flushed %d queries in %.3fs (%d days)", count, elapsed, len(by_day))
 			self.batch.clear()
 			self._consecutive_flush_failures = 0
+			# Update flush timer only on success
+			self.last_flush = time.monotonic()
 		except Exception:
 			self._consecutive_flush_failures += 1
 			if self._consecutive_flush_failures >= MAX_FLUSH_RETRIES:
 				_log.error("DNS_WRITER flush failed %d times, dropping %d points", MAX_FLUSH_RETRIES, count)
 				self.batch.clear()
 				self._consecutive_flush_failures = 0
+				# Still save offset to prevent re-reading dropped data on restart
+				try:
+					self.tracker.save_if_needed(force=True)
+				except Exception:
+					_log.warning("DNS_WRITER failed to save offset after dropping batch")
 			else:
 				_log.exception("DNS_WRITER flush failed, retaining %d points for retry (%d/%d)", count, self._consecutive_flush_failures, MAX_FLUSH_RETRIES)
-		finally:
+			# Update last_flush on failure too, to enable throttled retries
 			self.last_flush = time.monotonic()
 	
 	def _write_day_file(self, date_str: str, points: list[dict]) -> None:
 		"""Append points to day-specific JSONL file with fsync.
 		
 		Note: O(n) in number of points per batch, but append-only (no rewrite).
+		Assumes single-writer process (no file locking).
 		"""
 		day_dir = self.dns_dir / 'queries'
 		day_dir.mkdir(parents=True, exist_ok=True)
@@ -237,7 +275,8 @@ class DnsTsdbWriter:
 		
 		with day_file.open('a', encoding='utf-8') as f:
 			for point in points:
-				f.write(json.dumps(point) + '\n')
+				# Compact JSON format saves ~10% disk space
+				f.write(json.dumps(point, separators=(',', ':')) + '\n')
 			f.flush()
 			os.fsync(f.fileno())  # Ensure data on disk before offset update
 
@@ -285,43 +324,115 @@ def _read_tail_lines(path: Path, max_lines: int) -> list[str]:
 	return decoded
 
 
-def read_recent_queries(dns_dir: Path, max_queries: int = 5000) -> list[dict]:
+def _iter_lines_reverse(path: Path) -> Iterator[str]:
+	"""Yield file lines newest-first without loading the whole file into memory."""
+	with path.open("rb") as f:
+		f.seek(0, os.SEEK_END)
+		position = f.tell()
+		if position <= 0:
+			return
+
+		buffer = b""
+		chunk_size = 8192
+		while position > 0:
+			read_size = min(chunk_size, position)
+			position -= read_size
+			f.seek(position)
+			chunk = f.read(read_size)
+			if not chunk:
+				break
+
+			data = chunk + buffer
+			parts = data.split(b"\n")
+			buffer = parts[0]
+			for raw in reversed(parts[1:]):
+				if not raw:
+					continue
+				yield raw.decode("utf-8", errors="replace")
+
+		if buffer:
+			yield buffer.decode("utf-8", errors="replace")
+
+
+def _normalize_client_filter(client_filter: set[str] | None) -> set[str] | None:
+	"""Canonicalize filter IPs so IPv6 compression differences still match."""
+	if not client_filter:
+		return None
+	normalized = {
+		candidate
+		for candidate in (parse_ip_str(value) for value in client_filter)
+		if candidate
+	}
+	return normalized or None
+
+
+def _query_matches_client_filter(query: dict, client_filter: set[str]) -> bool:
+	"""Return True when a stored query belongs to one of the requested clients."""
+	client = parse_ip_str(str(query.get("client", "")).strip())
+	return bool(client and client in client_filter)
+
+
+def read_recent_queries(
+	dns_dir: Path,
+	max_queries: int = 5000,
+	client_filter: set[str] | None = None,
+) -> list[dict]:
 	"""Read recent DNS queries from DNS logs, newest first.
 	
 	Args:
 		dns_dir: DNS base directory
 		max_queries: Maximum number of queries to return
+		client_filter: Optional set of client IPs to filter by
 	
 	Returns:
 		List of query dicts with keys: ts, client, domain, qtype, rcode, blocked.
 		Order is timestamp-descending (newest first).
 	"""
+	if max_queries <= 0:
+		return []
+
 	queries_dir = dns_dir / 'queries'
 	if not queries_dir.exists():
 		return []
 	
 	queries: list[dict] = []
 	remaining = max_queries
+	normalized_filter = _normalize_client_filter(client_filter)
 	
 	# Get all day files sorted by date (newest first)
-	day_files = sorted(queries_dir.glob('*.jsonl'), reverse=True)
+	# Explicit key ensures correct ordering regardless of path structure (YYYY-MM-DD format)
+	day_files = sorted(queries_dir.glob('*.jsonl'), key=lambda p: p.stem, reverse=True)
 	
 	for day_file in day_files:
 		if remaining <= 0:
 			break
 		
 		try:
-			tail_lines = _read_tail_lines(day_file, remaining)
-			# Parse in reverse order (newest first)
-			for line in reversed(tail_lines):
+			if normalized_filter is None:
+				tail_lines = _read_tail_lines(day_file, remaining)
+				# Parse in reverse order (newest first)
+				for line in reversed(tail_lines):
+					if remaining <= 0:
+						break
+					try:
+						query = json.loads(line)
+						queries.append(query)
+						remaining -= 1
+					except json.JSONDecodeError:
+						continue
+				continue
+
+			for line in _iter_lines_reverse(day_file):
 				if remaining <= 0:
 					break
 				try:
 					query = json.loads(line)
-					queries.append(query)
-					remaining -= 1
 				except json.JSONDecodeError:
 					continue
+				if not _query_matches_client_filter(query, normalized_filter):
+					continue
+				queries.append(query)
+				remaining -= 1
 		except Exception as e:
 			_log.warning("DNS_READ failed to read %s: %s", day_file, e)
 			continue

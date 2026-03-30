@@ -1,5 +1,17 @@
 vpn.example.com {
 
+    # SSE endpoint: disable buffering for real-time event streaming
+    @sse path /api/nodes/events
+    reverse_proxy @sse localhost:8000 {
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-Port 443
+        header_up X-Forwarded-Host {host}
+        flush_interval -1
+        transport http {
+            keepalive 30s
+        }
+    }
+
     reverse_proxy localhost:8000 {
         header_up X-Forwarded-Proto https
         header_up X-Forwarded-Port 443

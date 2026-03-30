@@ -11,9 +11,18 @@
         --flag-gap: 0.35rem;
     }
 
-    /* Table layout stability */
+    /* Node tunnel peers (system peers, not user-editable) */
+    .peer-row-node-tunnel {
+        opacity: 0.65;
+        background-color: var(--bs-tertiary-bg);
+    }
+
+    .peer-row-node-tunnel:hover {
+        background-color: var(--bs-secondary-bg) !important;
+    }
+
+    /* Table layout */
     .table {
-        table-layout: fixed;
         width: 100%;
     }
 
@@ -46,6 +55,43 @@
     /* Keep action buttons on one line */
     .peers-table td.peer-actions-cell {
         white-space: nowrap;
+        min-width: 180px;
+    }
+
+    .peers-table td.peer-actions-cell .d-flex {
+        flex-wrap: nowrap;
+    }
+
+    /* Status badges: wrap instead of overflowing, vertical-align with table row */
+    .peers-table td[data-label="Status"] {
+        white-space: nowrap;
+    }
+
+    .peers-table td[data-label="Status"] .badge + .badge {
+        margin-left: 0.25rem;
+    }
+
+    .peer-routing-badges {
+        display: inline-flex;
+        justify-content: flex-start;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+    }
+
+    /* Compact action buttons for table rows (v1.3.3 style) */
+    .peers-table td.peer-actions-cell .btn {
+        min-width: 0;
+        min-height: 0;
+        padding: 0.2rem 0.35rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .peers-table td.peer-actions-cell .material-icons {
+        font-size: 18px;
+        pointer-events: none;
     }
 
     .peers-table td {
@@ -107,27 +153,86 @@
         flex: 0 0 auto;
     }
 
-    /* Peer active status pulse indicator */
-    @keyframes peer-pulse-active {
-        0% {
-            transform: scale(1);
-            opacity: 1;
-        }
-        50% {
-            transform: scale(1.4);
-            opacity: 0.5;
-        }
-        100% {
-            transform: scale(1);
-            opacity: 1;
-        }
+    .peer-node-select {
+        display: none;
     }
 
-    .peer-status-indicator {
-        background-color: var(--wb-primary, #88171a) !important;
-        color: #fff !important;
-        font-family: 'Roboto Flex', system-ui, -apple-system, 'Segoe UI', sans-serif;
-        font-variant-numeric: normal;
+    .peer-node-picker .dropdown-toggle {
+        min-height: 44px;
+        width: 100%;
+        justify-content: space-between;
+        text-align: left;
+    }
+
+    .peer-node-picker .dropdown-toggle::after {
+        margin-left: 0.75rem;
+    }
+
+    .peer-node-picker-label,
+    .peer-node-option-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+    }
+
+    .peer-node-picker-text {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .peer-node-picker-menu {
+        width: 100%;
+        max-height: 18rem;
+        overflow-y: auto;
+    }
+
+    .peer-node-option {
+        display: flex;
+        align-items: center;
+        width: 100%;
+    }
+
+    .peer-name-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+        min-width: 0;
+    }
+
+    .peer-name-main {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+        flex-wrap: wrap;
+    }
+
+    .peer-name-text {
+        font-weight: 600;
+        min-width: 0;
+    }
+
+    .peer-name-meta {
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 0.25rem 0.5rem;
+        font-size: 0.75rem;
+        color: var(--bs-secondary-color);
+        font-weight: 400;
+        white-space: nowrap;
+    }
+
+    .peer-name-meta span + span::before {
+        content: "·";
+        margin-right: 0.5rem;
+    }
+
+    /* Last-seen time inside connection badge (mobile only) */
+    .peer-badge-time {
+        display: none;
     }
 
     /* Support for reduced motion preferences */
@@ -135,6 +240,18 @@
         *, *::before, *::after {
             animation-duration: 0.001ms !important;
             animation-iteration-count: 1 !important;
+        }
+    }
+
+    /* Large desktop (1200px-1399px): hide Routing column to prevent overlap */
+    @media (min-width: 992px) and (max-width: 1399.98px) {
+        .peers-table th.peer-col-routing,
+        .peers-table td.peer-routing {
+            display: none;
+        }
+
+        .peer-name-meta {
+            display: flex;
         }
     }
 
@@ -147,21 +264,13 @@
             display: none;
         }
 
-        .peers-table {
-            table-layout: auto;
-        }
-
-        /* Stabilize VPN address on iPad */
+        /* VPN address: keep IPv4/IPv6 on single lines */
         .peers-table td[data-label="VPN Address"] code {
             white-space: nowrap;
         }
 
-        /* Stack Status and Routing mode badges vertically on tablet */
-        .peers-table td[data-label="Status"] {
+        .peer-name-meta {
             display: flex;
-            flex-direction: column;
-            gap: 0.35rem;
-            align-items: flex-end;
         }
     }
 
@@ -242,6 +351,19 @@
     .peers-search-wrapper {
         position: relative;
         max-width: 280px;
+    }
+
+    /* Hide nodes toggle */
+    .peers-hide-nodes-toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.875rem;
+        white-space: nowrap;
+    }
+
+    .peers-hide-nodes-toggle .form-check-input {
+        margin-top: 0;
     }
 
     .peers-search-wrapper .material-icons {
@@ -339,7 +461,6 @@
         }
 
         .peers-table {
-            table-layout: auto;
             font-size: 0.82rem;
         }
 
@@ -360,16 +481,27 @@
             display: grid;
             grid-template-areas:
                 "name      status"
-                "vpn       lastseen"
+                "vpn       vpn"
                 "clientip  clientip"
                 "actions   actions";
-            grid-template-columns: 1fr auto;
-            gap: 0.2rem 0.6rem;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: start;
+            gap: 0.25rem 0.5rem;
             border: 1px solid var(--bs-border-color);
             border-radius: 0.5rem;
-            padding: 0.5rem 0.65rem;
+            padding: 0.45rem 0.55rem;
             margin-bottom: 0.45rem;
             background: var(--bs-body-bg);
+        }
+
+        /* Show last-seen time inside connection badge on mobile */
+        .peer-badge-time {
+            display: inline;
+        }
+
+        /* Hide separate last-seen cell (time is in the badge now) */
+        .peers-table td.peer-last-seen {
+            display: none !important;
         }
 
         .peers-table td {
@@ -388,14 +520,41 @@
         /* Grid area assignments */
         .peers-table td[data-label="Name"] {
             grid-area: name;
-            align-self: center;
+            align-self: start;
             font-weight: 500;
+            min-width: 0;
+        }
+
+        .peers-table td[data-label="Name"] .peer-name-text {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            display: block;
         }
 
         .peers-table td[data-label="Status"] {
             grid-area: status;
-            align-self: center;
-            text-align: right;
+            justify-self: end;
+            align-self: start;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+            justify-content: flex-end;
+            flex-shrink: 0;
+        }
+
+        .peers-table td[data-label="Status"] .peer-enabled-badge {
+            display: inline-flex;
+        }
+
+        .peers-table td[data-label="Status"] .peer-connection-badge-mobile {
+            display: inline-flex;
+        }
+
+        .peers-table td[data-label="Status"] .badge {
+            white-space: nowrap;
+            font-size: 0.7rem;
+            padding: 0.25em 0.5em;
         }
 
         .peers-table td[data-label="VPN Address"] {
@@ -403,16 +562,17 @@
             align-self: center;
         }
 
-        .peers-table td.peer-last-seen {
-            grid-area: lastseen;
-            align-self: center;
-            text-align: right;
-            font-size: 0.78rem;
-            white-space: nowrap;
-        }
+        /* Hairline removed — VPN and Client IP are stacked now */
 
         .peers-table td.peer-client-ip {
             grid-area: clientip;
+            align-self: center;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            margin-top: 0.35rem;
+            padding-top: 0.35rem;
+            border-top: 1px solid var(--bs-border-color-translucent);
         }
 
         /* Collapse client-ip row automatically if no stack exists */
@@ -435,9 +595,11 @@
         .peers-table td.peer-actions-cell {
             grid-area: actions;
             border-top: 1px solid var(--bs-border-color);
-            padding-top: 0.35rem;
-            margin-top: 0.1rem;
+            padding-top: 0.4rem;
+            margin-top: 0.2rem;
             white-space: normal;
+            display: flex;
+            justify-content: flex-end;
         }
 
         .peers-table td.peer-actions-cell::before {
@@ -445,11 +607,13 @@
         }
 
         .peers-table td.peer-actions-cell .d-flex.gap-1 {
-            justify-content: flex-end;
+            justify-content: flex-end !important;
+            margin-left: auto;
             gap: 0.35rem !important;
             flex-wrap: nowrap;
         }
 
+        /* Compact action buttons (mobile) */
         .peers-table td.peer-actions-cell .btn {
             min-width: 0;
             min-height: 0;
@@ -461,6 +625,7 @@
 
         .peers-table td.peer-actions-cell .material-icons {
             font-size: 18px;
+            pointer-events: none;
         }
 
         .peers-table td code {
@@ -468,19 +633,25 @@
             word-break: break-all;
         }
 
+        /* VPN address: allow wrapping for long IPv6 */
+        .peers-table td[data-label="VPN Address"] code {
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+
         .peer-client-ip-meta {
             display: block;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            word-break: normal;
-            max-width: none;
+            white-space: normal;
             margin-left: 0;
         }
 
         .peer-client-ip-meta .peer-meta-city,
         .peer-client-ip-meta .peer-meta-provider {
             display: inline;
+        }
+
+        .peer-client-ip-meta .peer-meta-city + .peer-meta-provider {
+            margin-left: 0.25em;
         }
 
         .peer-client-ip-meta .peer-meta-provider {
@@ -519,34 +690,15 @@
         }
     }
 
-    /* Very narrow screens (< 400px): status under name */
+    /* Narrow and tiny screens now use same stacked layout */
     @media (max-width: 399.98px) {
         .peers-table tr[data-peer-id] {
             grid-template-areas:
                 "name     status"
-                "vpn      lastseen"
+                "vpn      vpn"
                 "clientip clientip"
                 "actions  actions";
             grid-template-columns: minmax(0, 1fr) auto;
-        }
-    }
-
-    /* Tiny screens (< 320px): stack everything */
-    @media (max-width: 319.98px) {
-        .peers-table tr[data-peer-id] {
-            grid-template-areas:
-                "name"
-                "status"
-                "vpn"
-                "lastseen"
-                "clientip"
-                "actions";
-            grid-template-columns: 1fr;
-        }
-
-        .peers-table td[data-label="Status"],
-        .peers-table td.peer-last-seen {
-            text-align: left;
         }
     }
 
@@ -569,9 +721,14 @@
     <div class="card-body">
         <div class="peers-list-toolbar d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
             <small class="text-muted peers-count-label">
-                Showing <span id="peers-visible-count">{{ total_peers }}</span> of {{ total_peers }} peers
+                Showing <span id="peers-visible-count">{{ total_peers }}</span> of <span id="peers-total-count">{{ total_peers }}</span> peers
             </small>
-            <div class="peers-search-wrapper">
+            <div class="d-flex align-items-center gap-3">
+                <div class="form-check peers-hide-nodes-toggle">
+                    <input class="form-check-input" type="checkbox" id="peers-hide-nodes">
+                    <label class="form-check-label text-muted" for="peers-hide-nodes">Hide Nodes</label>
+                </div>
+                <div class="peers-search-wrapper">
                 <span class="material-icons" aria-hidden="true">search</span>
                 <input type="text" 
                     class="form-control form-control-sm peers-search-input" 
@@ -585,11 +742,12 @@
                     aria-label="Clear search">
                     <span class="material-icons" aria-hidden="true">close</span>
                 </button>
+                </div>
             </div>
         </div>
         <div class="peers-scroll-container" id="peers-scroll-container">
         <div class="table-responsive">
-            <table class="table table-hover mb-0 peers-table">
+            <table class="table table-hover align-middle mb-0 peers-table">
                 <thead>
                     <tr>
                         <th>Name</th>
@@ -598,7 +756,7 @@
                         <th class="peer-col-interface">Interface</th>
                         <th>Last Seen</th>
                         <th>Client&nbsp;IP</th>
-                        <th>Status</th>
+                        <th class="text-nowrap">Status</th>
                         <th></th>
                     </tr>
                 </thead>
@@ -612,10 +770,20 @@
                         data-last-client-ip="{{ peer['last_client_ip'] or '' }}"
                         data-last-client-country="{{ peer['last_client_country_code'] or '' }}"
                         data-last-client-city="{{ peer['last_client_city'] or '' }}"
-                        data-last-client-as-org="{{ peer['last_client_as_org'] or '' }}">
+                        data-last-client-as-org="{{ peer['last_client_as_org'] or '' }}"
+                        {% if peer['is_node_tunnel'] %}data-node-tunnel="true" class="peer-row-node-tunnel"{% endif %}>
                         <td data-label="Name">
-                            {{ peer['name'] or 'Unnamed' }}
-                            <span class="badge bg-secondary d-inline-block d-md-none ms-1">{{ routing_label }}</span>
+                            <div class="peer-name-stack">
+                                <div class="peer-name-main">
+                                    <span class="peer-name-text">{{ peer['name'] or 'Unnamed' }}</span>
+                                </div>
+                                <div class="peer-name-meta d-lg-none">
+                                    <span>{{ routing_label }}</span>
+                                    {% if peer['client_isolation'] %}
+                                    <span>Client Isolation</span>
+                                    {% endif %}
+                                </div>
+                            </div>
                         </td>
                         <td data-label="VPN Address" class="peer-vpn-address">
                             {% if peer['peer_ipv4'] %}
@@ -632,15 +800,16 @@
                             {% endif %}
                         </td>
                         <td data-label="Routing" class="peer-routing">
+                            <div class="peer-routing-badges">
                             <span class="badge bg-secondary">{{ routing_label }}</span>
+                            {% if peer['client_isolation'] %}
+                            <span class="badge bg-secondary">Client Isolation</span>
+                            {% endif %}
+                            </div>
                         </td>
                         <td data-label="Interface" class="peer-interface">{{ peer['interface'] }}</td>
-                        <td data-label="Last Seen" class="peer-last-seen">
-                            {% if peer['last_seen_active'] %}
-                            <span class="badge peer-status-indicator">Online</span>
-                            {% else %}
+                        <td data-label="Last Seen" class="peer-last-seen text-nowrap">
                             <span class="{{ peer['last_seen_class'] }}">{{ peer['last_seen_text'] }}</span>
-                            {% endif %}
                         </td>
                         <td data-label="Client IP" class="peer-client-ip">
                             {% if peer['last_client_ip_display'] %}
@@ -670,15 +839,20 @@
                         </td>
                         <td data-label="Status"
                             aria-label="Status: {{ 'Enabled' if peer['is_enabled'] else 'Disabled' }}">
-                            {% if peer['is_enabled'] %}
-                            <span class="badge bg-success" role="status">Enabled</span>
+                            {% if peer['last_seen_active'] %}
+                            <span class="badge bg-success peer-connection-badge peer-connection-badge-mobile" role="status">Online</span>
                             {% else %}
-                            <span class="badge bg-secondary" role="status">Disabled</span>
+                            <span class="badge bg-secondary peer-connection-badge peer-connection-badge-mobile" role="status">Offline{% if peer['last_seen_text'] and peer['last_seen_text'] != 'Never' %}<span class="peer-badge-time"> · {{ peer['last_seen_text'] }}</span>{% endif %}</span>
                             {% endif %}
-                            <span class="badge bg-secondary d-none d-md-inline-block d-lg-none">{{ routing_label }}</span>
+                            {% if peer['is_enabled'] %}
+                            <span class="badge bg-success peer-enabled-badge" role="status">Enabled</span>
+                            {% else %}
+                            <span class="badge bg-secondary peer-enabled-badge" role="status">Disabled</span>
+                            {% endif %}
                         </td>
                         <td data-label="Actions" class="peer-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
+                                {% if not peer['is_node_tunnel'] %}
                                 {% if user['is_admin'] %}
                                 <button type="button" class="btn btn-sm btn-outline-secondary" data-action="show-qr"
                                     data-peer-id="{{ peer['id'] }}"
@@ -723,6 +897,9 @@
                                     <span class="material-icons" aria-hidden="true">delete</span>
                                 </button>
                                 {% endif %}
+                                {% else %}
+                                <span class="text-muted small">Managed by wirebuddy</span>
+                                {% endif %}
                             </div>
                         </td>
                     </tr>
@@ -759,6 +936,9 @@
                 <div class="modal-body">
                     <p class="visually-hidden" id="addPeerModalDesc">Create a peer and configure routing, DNS and
                         blocklists.</p>
+
+                    <!-- BASICS -->
+                    <h6 class="text-muted text-uppercase small mb-2">Basics</h6>
                     
                     <!-- Warning: Server FQDN not configured -->
                     <div id="peer-fqdn-warning" class="alert alert-warning d-none" role="alert">
@@ -767,12 +947,71 @@
                         Otherwise, the peer configuration will contain a placeholder address.
                     </div>
                     
-                    <div class="mb-3">
-                        <label for="peer-name" class="form-label">Name <span class="text-danger">*</span></label>
+                    <div class="mb-2">
+                        <label for="peer-name" class="form-label">Device Name <span class="text-danger">*</span></label>
                         <input type="text" class="form-control" id="peer-name" maxlength="128" placeholder="e.g., John's iPhone" required>
                         <div class="invalid-feedback">Peer name is required</div>
                     </div>
-                    <div class="mb-3">
+                    <div class="mb-2">
+                        <label for="peer-interface" class="form-label">Interface</label>
+                        <select class="form-select" id="peer-interface" required>
+                            <option value="" disabled selected>Loading...</option>
+                        </select>
+                    </div>
+
+                    {% if nodes %}
+                    <div class="mb-2">
+                        <label for="peer-node" class="form-label">Node</label>
+                        <select class="form-select peer-node-select" id="peer-node">
+                            <option value="">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</option>
+                            {% for n in nodes %}
+                            <option value="{{ n.id }}">{{ n.name }} ({{ n.fqdn }})</option>
+                            {% endfor %}
+                        </select>
+                        <div class="dropdown peer-node-picker mt-2" data-target-select="peer-node">
+                            <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <span class="peer-node-picker-label">
+                                    {% if local_country_code %}
+                                    <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
+                                         decoding="async"
+                                         src="/static/vendor/images/flags/{{ local_country_code }}.svg">
+                                    {% endif %}
+                                    <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
+                                </span>
+                            </button>
+                            <div class="dropdown-menu peer-node-picker-menu">
+                                <button type="button" class="dropdown-item peer-node-option active" data-value="">
+                                    <span class="peer-node-option-label">
+                                        {% if local_country_code %}
+                                        <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
+                                             decoding="async"
+                                             src="/static/vendor/images/flags/{{ local_country_code }}.svg">
+                                        {% endif %}
+                                        <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
+                                    </span>
+                                </button>
+                                {% for n in nodes %}
+                                <button type="button" class="dropdown-item peer-node-option" data-value="{{ n.id }}">
+                                    <span class="peer-node-option-label">
+                                        {% if n.geo_country_code %}
+                                        <img class="peer-country-flag" alt="{{ n.geo_country_code|upper }} flag"
+                                             decoding="async"
+                                             src="/static/vendor/images/flags/{{ n.geo_country_code }}.svg">
+                                        {% endif %}
+                                        <span class="peer-node-picker-text">{{ n.name }} ({{ n.fqdn }})</span>
+                                    </span>
+                                </button>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        <small class="text-muted">Which server should handle this peer</small>
+                    </div>
+                    {% endif %}
+
+                    <!-- ROUTING -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">Traffic Routing</h6>
+
+                    <div class="mb-2">
                         <label for="peer-allowed-ips-mode" class="form-label">
                             Routing Mode
                             <a class="text-muted ms-1" data-bs-toggle="collapse" href="#routingModeHelp" role="button"
@@ -783,49 +1022,62 @@
                         </label>
                         <div class="collapse mb-2" id="routingModeHelp">
                             <div class="card card-body small bg-body-secondary">
-                                <strong>Full Tunnel:</strong> All client network traffic is routed through the VPN.
+                                <strong>Recommended:</strong> All traffic goes through the VPN.<br>
                                 The client uses the VPN IP for all connections.<br>
-                                <strong>Split Tunnel:</strong> Only VPN network traffic is routed. Local network
-                                connections (e.g., printers, NAS) remain directly accessible.<br>
-                                <strong>Custom:</strong> Define custom CIDR ranges to be routed through the VPN.
+                                <strong>Local access:</strong> Keep access to local network devices.<br>
+                                <strong>Advanced:</strong> Define custom CIDR ranges.
                             </div>
                         </div>
                         <select class="form-select" id="peer-allowed-ips-mode">
-                            <option value="full" selected>Full Tunnel (all traffic through VPN)</option>
-                            <option value="split">Split Tunnel (0.0.0.0/1 + 128.0.0.0/1)</option>
-                            <option value="custom">Custom</option>
+                            <option value="full" selected>Recommended (all traffic through VPN)</option>
+                            <option value="split">Local network access</option>
+                            <option value="custom">Advanced (custom routes)</option>
                         </select>
                         <small class="text-muted" id="allowed-ips-hint">Routes all IPv4 and IPv6 traffic through
                             VPN</small>
                     </div>
-                    <div class="mb-3 d-none" id="peer-allowed-ips-custom-wrapper">
+                    <div class="mb-2 d-none" id="peer-allowed-ips-custom-wrapper">
                         <label for="peer-allowed-ips-custom" class="form-label">Custom Allowed IPs</label>
                         <input type="text" class="form-control" id="peer-allowed-ips-custom"
                             placeholder="e.g., 10.0.0.0/24, 192.168.1.0/24">
                         <small class="text-muted">Comma-separated CIDR ranges</small>
                     </div>
-                    <div class="mb-3">
-                        <label for="peer-interface" class="form-label">Interface</label>
-                        <select class="form-select" id="peer-interface" required>
-                            <option value="" disabled selected>Loading...</option>
-                        </select>
-                    </div>
-                    <div class="mb-3">
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" id="peer-use-adblocker" checked>
-                            <label class="form-check-label" for="peer-use-adblocker">
-                                Use WireBuddy DNS
-                            </label>
+
+                    <!-- DNS & FILTERING -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">DNS & Filtering</h6>
+
+                    <!-- DNS Settings Group -->
+                    <div class="mb-2 p-3 border rounded" style="background-color: var(--bs-body-bg);">
+                        <div class="mb-2">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="peer-use-adblocker" checked>
+                                <label class="form-check-label" for="peer-use-adblocker">
+                                    Use Ad-blocking DNS (WireBuddy)
+                                </label>
+                            </div>
+                            <small class="text-muted d-none" id="peer-fallback-dns-hint">Uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)</small>
                         </div>
-                        <small class="text-muted d-none" id="peer-fallback-dns-hint">Uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)</small>
-                    </div>
-                    <div class="mb-3" id="peer-blocklist-section">
-                        <label class="form-label">Active Blocklists</label>
-                        <div id="peer-blocklist-options" class="row gy-1 gx-2">
-                            <!-- Populated dynamically -->
+                        <div class="mb-2" id="peer-blocklist-section">
+                            <label class="form-label">Active Blocklists</label>
+                            <div id="peer-blocklist-options" class="row gy-1 gx-2">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
+                        <div class="mb-0" id="peer-dns-logging-wrapper">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="peer-dns-logging" checked>
+                                <label class="form-check-label" for="peer-dns-logging">
+                                    DNS Logging
+                                </label>
+                            </div>
+                            <small class="text-muted">Log DNS queries for this device</small>
                         </div>
                     </div>
-                    <div class="mb-3">
+
+                    <!-- SECURITY -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">Security</h6>
+
+                    <div class="mb-0">
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="peer-client-isolation">
                             <label class="form-check-label" for="peer-client-isolation">
@@ -837,7 +1089,6 @@
                                 </a>
                             </label>
                         </div>
-                        <small class="text-muted">Prevents communication with other VPN peers</small>
                         <div class="collapse mt-2" id="clientIsolationHelp">
                             <div class="card card-body small bg-body-secondary">
                                 <strong>What is Client Isolation?</strong><br>
@@ -853,8 +1104,8 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="submit" class="btn btn-primary" id="add-peer-submit-btn">
-                        <span class="submit-text">Create Peer</span>
                         <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                        <span class="submit-text">Create Device</span>
                     </button>
                 </div>
             </form>
@@ -899,12 +1150,69 @@
                 <div class="modal-body">
                     <p class="visually-hidden" id="editPeerModalDesc">Update peer settings, routing and DNS behavior.
                     </p>
-                    <div class="mb-3">
-                        <label for="edit-peer-name" class="form-label">Name <span class="text-danger">*</span></label>
+
+                    <!-- BASICS -->
+                    <h6 class="text-muted text-uppercase small mb-2">Basics</h6>
+
+                    <div class="mb-2">
+                        <label for="edit-peer-name" class="form-label">Device Name <span class="text-danger">*</span></label>
                         <input type="text" class="form-control" id="edit-peer-name" maxlength="128" placeholder="e.g., John's iPhone" required>
                         <div class="invalid-feedback">Peer name is required</div>
                     </div>
-                    <div class="mb-3">
+
+                    {% if nodes %}
+                    <div class="mb-2">
+                        <label for="edit-peer-node" class="form-label">Node</label>
+                        <select class="form-select peer-node-select" id="edit-peer-node">
+                            <option value="">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</option>
+                            {% for n in nodes %}
+                            <option value="{{ n.id }}">{{ n.name }} ({{ n.fqdn }})</option>
+                            {% endfor %}
+                        </select>
+                        <div class="dropdown peer-node-picker mt-2" data-target-select="edit-peer-node">
+                            <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <span class="peer-node-picker-label">
+                                    {% if local_country_code %}
+                                    <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
+                                         decoding="async"
+                                         src="/static/vendor/images/flags/{{ local_country_code }}.svg">
+                                    {% endif %}
+                                    <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
+                                </span>
+                            </button>
+                            <div class="dropdown-menu peer-node-picker-menu">
+                                <button type="button" class="dropdown-item peer-node-option active" data-value="">
+                                    <span class="peer-node-option-label">
+                                        {% if local_country_code %}
+                                        <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
+                                             decoding="async"
+                                             src="/static/vendor/images/flags/{{ local_country_code }}.svg">
+                                        {% endif %}
+                                        <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
+                                    </span>
+                                </button>
+                                {% for n in nodes %}
+                                <button type="button" class="dropdown-item peer-node-option" data-value="{{ n.id }}">
+                                    <span class="peer-node-option-label">
+                                        {% if n.geo_country_code %}
+                                        <img class="peer-country-flag" alt="{{ n.geo_country_code|upper }} flag"
+                                             decoding="async"
+                                             src="/static/vendor/images/flags/{{ n.geo_country_code }}.svg">
+                                        {% endif %}
+                                        <span class="peer-node-picker-text">{{ n.name }} ({{ n.fqdn }})</span>
+                                    </span>
+                                </button>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        <small class="text-muted">Which server should handle this peer</small>
+                    </div>
+                    {% endif %}
+
+                    <!-- ROUTING -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">Traffic Routing</h6>
+
+                    <div class="mb-2">
                         <label for="edit-peer-allowed-ips-mode" class="form-label">
                             Routing Mode
                             <a class="text-muted ms-1" data-bs-toggle="collapse" href="#editRoutingModeHelp"
@@ -915,43 +1223,62 @@
                         </label>
                         <div class="collapse mb-2" id="editRoutingModeHelp">
                             <div class="card card-body small bg-body-secondary">
-                                <strong>Full Tunnel:</strong> All client network traffic is routed through the VPN.
+                                <strong>Recommended:</strong> All traffic goes through the VPN.<br>
                                 The client uses the VPN IP for all connections.<br>
-                                <strong>Split Tunnel:</strong> Only VPN network traffic is routed. Local network
-                                connections (e.g., printers, NAS) remain directly accessible.<br>
-                                <strong>Custom:</strong> Define custom CIDR ranges to be routed through the VPN.
+                                <strong>Local access:</strong> Keep access to local network devices.<br>
+                                <strong>Advanced:</strong> Define custom CIDR ranges.
                             </div>
                         </div>
                         <select class="form-select" id="edit-peer-allowed-ips-mode">
-                            <option value="full">Full Tunnel (all traffic through VPN)</option>
-                            <option value="split">Split Tunnel (0.0.0.0/1 + 128.0.0.0/1)</option>
-                            <option value="custom">Custom</option>
+                            <option value="full">Recommended (all traffic through VPN)</option>
+                            <option value="split">Local network access</option>
+                            <option value="custom">Advanced (custom routes)</option>
                         </select>
                         <small class="text-muted" id="edit-allowed-ips-hint">Routes all IPv4 and IPv6 traffic through
                             VPN</small>
                     </div>
-                    <div class="mb-3 d-none" id="edit-peer-allowed-ips-custom-wrapper">
+                    <div class="mb-2 d-none" id="edit-peer-allowed-ips-custom-wrapper">
                         <label for="edit-peer-allowed-ips-custom" class="form-label">Custom Allowed IPs</label>
                         <input type="text" class="form-control" id="edit-peer-allowed-ips-custom"
                             placeholder="e.g., 10.0.0.0/24, 192.168.1.0/24">
                         <small class="text-muted">Comma-separated CIDR ranges</small>
                     </div>
-                    <div class="mb-3">
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" id="edit-peer-use-adblocker" checked>
-                            <label class="form-check-label" for="edit-peer-use-adblocker">
-                                Use WireBuddy DNS
-                            </label>
+
+                    <!-- DNS & FILTERING -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">DNS & Filtering</h6>
+
+                    <!-- DNS Settings Group -->
+                    <div class="mb-2 p-3 border rounded" style="background-color: var(--bs-body-bg);">
+                        <div class="mb-2">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="edit-peer-use-adblocker" checked>
+                                <label class="form-check-label" for="edit-peer-use-adblocker">
+                                    Use Ad-blocking DNS (WireBuddy)
+                                </label>
+                            </div>
+                            <small class="text-muted d-none" id="edit-peer-fallback-dns-hint">Uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)</small>
                         </div>
-                        <small class="text-muted d-none" id="edit-peer-fallback-dns-hint">Uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)</small>
-                    </div>
-                    <div class="mb-3" id="edit-peer-blocklist-section">
-                        <label class="form-label">Active Blocklists</label>
-                        <div id="edit-peer-blocklist-options" class="row gy-1 gx-2">
-                            <!-- Populated dynamically -->
+                        <div class="mb-2" id="edit-peer-blocklist-section">
+                            <label class="form-label">Active Blocklists</label>
+                            <div id="edit-peer-blocklist-options" class="row gy-1 gx-2">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
+                        <div class="mb-0" id="edit-peer-dns-logging-wrapper">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="edit-peer-dns-logging" checked>
+                                <label class="form-check-label" for="edit-peer-dns-logging">
+                                    DNS Logging
+                                </label>
+                            </div>
+                            <small class="text-muted">Log DNS queries for this device</small>
                         </div>
                     </div>
-                    <div class="mb-3">
+
+                    <!-- SECURITY -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">Security</h6>
+
+                    <div class="mb-2">
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="edit-peer-client-isolation">
                             <label class="form-check-label" for="edit-peer-client-isolation">
@@ -963,7 +1290,7 @@
                                 </a>
                             </label>
                         </div>
-                        <small class="text-muted">Prevents communication with other VPN peers</small>
+                        <small class="text-muted">Prevents access to other VPN devices</small>
                         <div class="collapse mt-2" id="editClientIsolationHelp">
                             <div class="card card-body small bg-body-secondary">
                                 <strong>What is Client Isolation?</strong><br>
@@ -975,7 +1302,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="mb-3">
+                    <div class="mb-0">
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="edit-peer-enabled" checked>
                             <label class="form-check-label" for="edit-peer-enabled">Enabled</label>
@@ -985,8 +1312,8 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="submit" class="btn btn-primary" id="edit-peer-submit-btn">
-                        <span class="submit-text">Save Changes</span>
                         <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                        <span class="submit-text">Save Changes</span>
                     </button>
                 </div>
             </form>
@@ -1018,7 +1345,7 @@
     // Blocklist registry (loaded from API)
     let blocklistRegistry = [];
 
-    const PEER_STATS_INTERVAL_MS = 45000;
+    const PEER_STATS_INTERVAL_MS = 30000;
     const MAX_LAST_SEEN_CACHE = 500;
     const QR_FETCH_TIMEOUT_MS = 15000;
     const BLOB_REVOKE_DELAY_MS = 10000;
@@ -1070,6 +1397,150 @@
         setTimeout(() => window.location.reload(), delay);
     }
 
+    /**
+     * Parse peer_address "10.0.0.2/32,fd13:13:d::2/128" into {ipv4, ipv6}.
+     */
+    function extractPeerIps(peerAddress) {
+        let ipv4 = null, ipv6 = null;
+        if (!peerAddress) return { ipv4, ipv6 };
+        for (const part of String(peerAddress).split(',')) {
+            const addr = part.trim().split('/')[0];
+            if (!addr) continue;
+            if (addr.includes(':')) { if (!ipv6) ipv6 = addr; }
+            else { if (!ipv4) ipv4 = addr; }
+        }
+        return { ipv4, ipv6 };
+    }
+
+    /**
+     * Build a <tr> element for a peer from API data (PeerPublic shape).
+     */
+    function buildPeerRow(peer) {
+        const mode = peer.allowed_ips_mode || 'full';
+        const routingLabel = { full: 'Full Tunnel', split: 'Split Tunnel' }[mode] || 'Custom';
+        const { ipv4, ipv6 } = extractPeerIps(peer.peer_address);
+        const name = peer.name || 'Unnamed';
+        const iface = peer.interface || '';
+        const isNodeTunnel = !!peer.is_node_tunnel;
+
+        const tr = document.createElement('tr');
+        tr.dataset.peerId = peer.id;
+        tr.dataset.peerPublicKey = peer.public_key || '';
+        tr.dataset.lastHandshake = '';
+        tr.dataset.lastClientIp = '';
+        tr.dataset.lastClientCountry = '';
+        tr.dataset.lastClientCity = '';
+        tr.dataset.lastClientAsOrg = '';
+        if (isNodeTunnel) {
+            tr.dataset.nodeTunnel = 'true';
+            tr.classList.add('peer-row-node-tunnel');
+        }
+
+        // Name cell
+        const tdName = document.createElement('td');
+        tdName.dataset.label = 'Name';
+        tdName.innerHTML = `<div class="peer-name-stack"><div class="peer-name-main"><span class="peer-name-text"></span></div><div class="peer-name-meta d-lg-none"><span></span>${peer.client_isolation ? '<span>Client Isolation</span>' : ''}</div></div>`;
+        tdName.querySelector('.peer-name-text').textContent = name;
+        tdName.querySelector('.peer-name-meta span').textContent = routingLabel;
+
+        // VPN Address cell
+        const tdVpn = document.createElement('td');
+        tdVpn.dataset.label = 'VPN Address';
+        tdVpn.className = 'peer-vpn-address';
+        const vpnParts = [];
+        if (ipv4) vpnParts.push(`<code class="ipv6">${escapeHtml(ipv4)}</code>`);
+        if (ipv4 && ipv6) vpnParts.push('<br>');
+        if (ipv6) vpnParts.push(`<code class="ipv6">${escapeHtml(ipv6).replace(/:/g, ':\u200b')}</code>`);
+        tdVpn.innerHTML = vpnParts.join('') || '<code class="ipv6">\u2014</code>';
+
+        // Routing cell
+        const tdRouting = document.createElement('td');
+        tdRouting.dataset.label = 'Routing';
+        tdRouting.className = 'peer-routing';
+        tdRouting.innerHTML = `<div class="peer-routing-badges"><span class="badge bg-secondary"></span>${peer.client_isolation ? '<span class="badge bg-secondary">Client Isolation</span>' : ''}</div>`;
+        tdRouting.querySelector('.badge').textContent = routingLabel;
+
+        // Interface cell
+        const tdIface = document.createElement('td');
+        tdIface.dataset.label = 'Interface';
+        tdIface.className = 'peer-interface';
+        tdIface.textContent = iface;
+
+        // Last Seen cell
+        const tdLastSeen = document.createElement('td');
+        tdLastSeen.dataset.label = 'Last Seen';
+        tdLastSeen.className = 'peer-last-seen text-nowrap';
+        const lastSeenSpan = document.createElement('span');
+        lastSeenSpan.className = 'text-muted';
+        lastSeenSpan.textContent = 'Never';
+        tdLastSeen.appendChild(lastSeenSpan);
+
+        // Client IP cell
+        const tdClientIp = document.createElement('td');
+        tdClientIp.dataset.label = 'Client IP';
+        tdClientIp.className = 'peer-client-ip';
+        const dashSpan = document.createElement('span');
+        dashSpan.className = 'text-muted';
+        dashSpan.textContent = '\u2014';
+        tdClientIp.appendChild(dashSpan);
+
+        // Status cell
+        const tdStatus = document.createElement('td');
+        tdStatus.dataset.label = 'Status';
+        tdStatus.setAttribute('aria-label', `Status: ${peer.is_enabled ? 'Enabled' : 'Disabled'}`);
+        const connBadge = document.createElement('span');
+        connBadge.className = 'badge bg-secondary peer-connection-badge peer-connection-badge-mobile';
+        connBadge.setAttribute('role', 'status');
+        connBadge.textContent = 'Offline';
+        const enabledBadge = document.createElement('span');
+        enabledBadge.className = `badge ${peer.is_enabled ? 'bg-success' : 'bg-secondary'} peer-enabled-badge`;
+        enabledBadge.setAttribute('role', 'status');
+        enabledBadge.textContent = peer.is_enabled ? 'Enabled' : 'Disabled';
+        tdStatus.append(connBadge, enabledBadge);
+
+        // Actions cell
+        const tdActions = document.createElement('td');
+        tdActions.dataset.label = 'Actions';
+        tdActions.className = 'peer-actions-cell';
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'd-flex gap-1 justify-content-end';
+        if (isNodeTunnel) {
+            actionsDiv.innerHTML = '<span class="text-muted small">Managed by wirebuddy</span>';
+        } else if (isAdmin) {
+            actionsDiv.innerHTML = [
+                `<button type="button" class="btn btn-sm btn-outline-secondary" data-action="show-qr" data-peer-id="${peer.id}" aria-label="Show QR code" data-bs-toggle="tooltip" data-bs-title="Show QR Code"><span class="material-icons" aria-hidden="true">qr_code</span></button>`,
+                `<button type="button" class="btn btn-sm btn-outline-secondary" data-action="download-config" data-peer-id="${peer.id}" aria-label="Download config" data-bs-toggle="tooltip" data-bs-title="Download Config"><span class="material-icons" aria-hidden="true">download</span></button>`,
+                `<button type="button" class="btn btn-sm btn-outline-secondary" data-action="edit-peer" data-peer-id="${peer.id}" aria-label="Edit peer" data-bs-toggle="tooltip" data-bs-title="Edit Peer"><span class="material-icons" aria-hidden="true">edit</span></button>`,
+                `<button type="button" class="btn btn-sm btn-outline-danger" data-action="delete-peer" data-peer-id="${peer.id}" aria-label="Delete peer" data-bs-toggle="tooltip" data-bs-title="Delete Peer"><span class="material-icons" aria-hidden="true">delete</span></button>`,
+            ].join('');
+        }
+        tdActions.appendChild(actionsDiv);
+
+        tr.append(tdName, tdVpn, tdRouting, tdIface, tdLastSeen, tdClientIp, tdStatus, tdActions);
+        return tr;
+    }
+
+    function escapeHtml(str) {
+        const d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+
+    function updateTotalPeerCount(delta) {
+        const totalEl = document.getElementById('peers-total-count');
+        if (totalEl) {
+            const current = parseInt(totalEl.textContent, 10) || 0;
+            totalEl.textContent = String(Math.max(0, current + delta));
+        }
+        filterPeers(document.getElementById('peers-search-input')?.value || '');
+    }
+
+    function removeEmptyRow() {
+        const tbody = document.getElementById('peers-table');
+        const emptyRow = tbody?.querySelector('tr:not([data-peer-id])');
+        if (emptyRow) emptyRow.remove();
+    }
+
     function revokeQrBlobUrl() {
         if (qrBlobUrl) {
             URL.revokeObjectURL(qrBlobUrl);
@@ -1085,6 +1556,46 @@
         opt.selected = true;
         opt.textContent = text;
         select.appendChild(opt);
+    }
+
+    function syncNodePicker(selectId) {
+        const select = document.getElementById(selectId);
+        const picker = document.querySelector(`.peer-node-picker[data-target-select="${selectId}"]`);
+        if (!select || !picker) return;
+
+        const selectedValue = select.value || '';
+        const selectedOption = Array.from(picker.querySelectorAll('.peer-node-option')).find(
+            (option) => option.dataset.value === selectedValue
+        ) || picker.querySelector('.peer-node-option[data-value=""]');
+        const label = picker.querySelector('.peer-node-picker-label');
+
+        if (selectedOption && label) {
+            label.innerHTML = selectedOption.querySelector('.peer-node-option-label')?.innerHTML || selectedOption.innerHTML;
+        }
+
+        picker.querySelectorAll('.peer-node-option').forEach((option) => {
+            const active = option.dataset.value === selectedValue;
+            option.classList.toggle('active', active);
+            option.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
+    }
+
+    function initNodePickers() {
+        document.querySelectorAll('.peer-node-picker[data-target-select]').forEach((picker) => {
+            const selectId = picker.dataset.targetSelect || '';
+            const select = document.getElementById(selectId);
+            if (!select) return;
+
+            picker.querySelectorAll('.peer-node-option').forEach((option) => {
+                option.addEventListener('click', () => {
+                    select.value = option.dataset.value || '';
+                    syncNodePicker(selectId);
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                });
+            });
+
+            syncNodePicker(selectId);
+        });
     }
 
     function isValidIpv4(ip) {
@@ -1307,12 +1818,13 @@
             checkbox.checked = allSelected || (Array.isArray(selectedIds) && selectedIds.includes(source.id));
 
             const label = document.createElement('label');
-            label.className = 'form-check-label';
+            label.className = 'form-check-label d-inline-flex align-items-center flex-wrap';
             label.htmlFor = checkbox.id;
             label.title = source.description || '';
 
             // Main label text
-            const labelText = document.createTextNode(source.name);
+            const labelText = document.createElement('span');
+            labelText.textContent = source.name;
             label.appendChild(labelText);
 
             // Add level badge if available
@@ -1327,9 +1839,8 @@
             if (levelBadgeLabel) {
                 const badge = document.createElement('span');
                 badge.className = 'badge text-bg-secondary ms-1';
-                badge.style.fontSize = '0.65rem';
+                badge.style.cssText = 'font-size: 0.65rem; line-height: 1.2; vertical-align: middle;';
                 badge.textContent = levelBadgeLabel;
-                label.appendChild(document.createTextNode(' '));
                 label.appendChild(badge);
             }
 
@@ -1363,6 +1874,9 @@
         return allChecked ? null : selected;
     }
 
+    // Cache for global DNS logging state (updated when modals open)
+    let _globalDnsLoggingEnabled = { add: true, edit: true };
+
     // Toggle blocklist section visibility based on use_adblocker checkbox
     function toggleBlocklistSection(checkboxId, sectionId) {
         const checkbox = document.getElementById(checkboxId);
@@ -1370,12 +1884,42 @@
         // Derive fallback hint ID from checkbox ID (peer-use-adblocker → peer-fallback-dns-hint)
         const hintId = checkboxId.replace('use-adblocker', 'fallback-dns-hint');
         const hint = document.getElementById(hintId);
+        // Derive DNS logging wrapper ID (peer-use-adblocker → peer-dns-logging-wrapper)
+        const dnsLoggingWrapperId = checkboxId.replace('use-adblocker', 'dns-logging-wrapper');
+        const dnsLoggingWrapper = document.getElementById(dnsLoggingWrapperId);
+        
+        const isAdblockingEnabled = checkbox?.checked ?? true;
+        // Determine which modal we're in (add or edit)
+        const isEditModal = checkboxId.startsWith('edit-');
+        const globalDnsLogging = isEditModal ? _globalDnsLoggingEnabled.edit : _globalDnsLoggingEnabled.add;
+        
         if (checkbox && section) {
-            section.style.display = checkbox.checked ? 'block' : 'none';
+            section.style.display = isAdblockingEnabled ? 'block' : 'none';
         }
         if (hint) {
-            hint.classList.toggle('d-none', checkbox?.checked ?? true);
+            hint.classList.toggle('d-none', isAdblockingEnabled);
         }
+        // Show DNS logging only if BOTH adblocking is enabled AND global DNS logging is enabled
+        if (dnsLoggingWrapper) {
+            dnsLoggingWrapper.style.display = (isAdblockingEnabled && globalDnsLogging) ? 'block' : 'none';
+        }
+    }
+
+    function toggleDnsLoggingControl(wrapperId, enabled, updateCache = false) {
+        const wrapper = document.getElementById(wrapperId);
+        if (!wrapper) return;
+        
+        // Update cache if requested (when modal opens)
+        if (updateCache) {
+            const isEditModal = wrapperId.startsWith('edit-');
+            if (isEditModal) {
+                _globalDnsLoggingEnabled.edit = enabled;
+            } else {
+                _globalDnsLoggingEnabled.add = enabled;
+            }
+        }
+        
+        wrapper.style.display = enabled ? 'block' : 'none';
     }
 
     function toggleAllowedIpsCustom(prefix = '') {
@@ -1438,7 +1982,7 @@
         const submitSpinner = submitBtn?.querySelector('.spinner-border');
         if (submitBtn && submitText && submitSpinner) {
             submitBtn.disabled = false;
-            submitText.textContent = 'Create Peer';
+            submitText.textContent = 'Create Device';
             submitText.classList.remove('d-none');
             submitSpinner.classList.add('d-none');
         }
@@ -1459,6 +2003,17 @@
         } catch (e) {
             if (e?.name === 'AbortError') return;
             console.warn('Could not check WireGuard settings:', e);
+        }
+
+        // Reflect global DNS logging setting in peer-specific controls
+        try {
+            const dnsConfig = await api('GET', '/api/dns/config', null, { signal });
+            if (signal.aborted) return;
+            toggleDnsLoggingControl('peer-dns-logging-wrapper', dnsConfig?.enable_logging !== false, true);
+        } catch (e) {
+            if (e?.name === 'AbortError') return;
+            console.warn('Could not check DNS config:', e);
+            toggleDnsLoggingControl('peer-dns-logging-wrapper', true, true);
         }
 
         // Ensure latest blocklist registry is loaded before rendering options
@@ -1538,9 +2093,16 @@
             allowed_ips_mode: allowedIpsMode,
             interface: document.getElementById('peer-interface').value,
             use_adblocker: document.getElementById('peer-use-adblocker').checked,
+            dns_logging_enabled: document.getElementById('peer-dns-logging').checked,
             blocklist_ids: getSelectedBlocklistIds('peer-blocklist-options'),
             client_isolation: document.getElementById('peer-client-isolation').checked,
         };
+
+        // Node assignment (optional)
+        const nodeSelect = document.getElementById('peer-node');
+        if (nodeSelect && nodeSelect.value) {
+            data.node_id = nodeSelect.value;
+        }
 
         if (!data.interface) {
             wbAlert('No active interface available', 'warning');
@@ -1557,13 +2119,33 @@
             document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('addPeerModal')).hide();
             wbToast('Peer created successfully', 'success');
-            reloadSoon();
+
+            // Fetch the freshly created peer and insert into table
+            try {
+                const allPeers = await fetchPeersEnriched();
+                // Find the new peer (highest ID that matches our name)
+                const newPeer = allPeers
+                    .filter(p => p.name === data.name)
+                    .sort((a, b) => b.id - a.id)[0];
+                if (newPeer) {
+                    removeEmptyRow();
+                    const tbody = document.getElementById('peers-table');
+                    const row = buildPeerRow(newPeer);
+                    tbody.appendChild(row);
+                    updateTotalPeerCount(1);
+                    initTooltips();
+                } else {
+                    reloadSoon();
+                }
+            } catch {
+                reloadSoon();
+            }
         } catch (error) {
             wbAlert('Failed to create peer: ' + safeErrorMessage(error), 'danger');
         } finally {
             // Reset button state
             submitBtn.disabled = false;
-            submitText.textContent = 'Create Peer';
+            submitText.textContent = 'Create Device';
             submitText.classList.remove('d-none');
             submitSpinner.classList.add('d-none');
         }
@@ -1610,9 +2192,15 @@
             allowed_ips_mode: allowedIpsMode,
             is_enabled: isEnabled,
             use_adblocker: useAdblocker,
+            dns_logging_enabled: document.getElementById('edit-peer-dns-logging').checked,
             blocklist_ids: getSelectedBlocklistIds('edit-peer-blocklist-options'),
             client_isolation: document.getElementById('edit-peer-client-isolation').checked,
         };
+
+        const editNodeSelect = document.getElementById('edit-peer-node');
+        if (editNodeSelect) {
+            data.node_id = editNodeSelect.value || null;
+        }
 
         // Show loading state
         submitBtn.disabled = true;
@@ -1624,7 +2212,27 @@
             document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('editPeerModal')).hide();
             wbToast('Peer updated successfully', 'success');
-            reloadSoon();
+
+            // Rebuild the row in-place
+            try {
+                const allPeers = await fetchPeersEnriched();
+                const updatedPeer = allPeers.find(p => p.id === peerId);
+                if (updatedPeer) {
+                    const oldRow = document.querySelector(`#peers-table tr[data-peer-id="${peerId}"]`);
+                    if (oldRow) {
+                        const newRow = buildPeerRow(updatedPeer);
+                        oldRow.replaceWith(newRow);
+                        refreshPeerRows();
+                        initTooltips();
+                    } else {
+                        reloadSoon();
+                    }
+                } else {
+                    reloadSoon();
+                }
+            } catch {
+                reloadSoon();
+            }
         } catch (error) {
             wbAlert('Failed to update peer: ' + safeErrorMessage(error), 'danger');
         } finally {
@@ -1755,7 +2363,18 @@
         try {
             await api('DELETE', `/api/wireguard/peers/${peerId}`);
             wbToast('Peer deleted successfully', 'success');
-            reloadSoon();
+            const row = document.querySelector(`#peers-table tr[data-peer-id="${peerId}"]`);
+            if (row) {
+                // Dispose tooltips on this row before removing
+                row.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+                    const tip = bootstrap.Tooltip.getInstance(el);
+                    if (tip) tip.dispose();
+                });
+                row.remove();
+                updateTotalPeerCount(-1);
+            } else {
+                reloadSoon();
+            }
         } catch (error) {
             wbAlert('Failed to delete peer: ' + safeErrorMessage(error), 'danger');
         }
@@ -1773,10 +2392,18 @@
 
         // Load current peer data
         try {
-            const peer = await api('GET', `/api/wireguard/peers/${peerId}`);
+            const [peer, dnsConfig] = await Promise.all([
+                api('GET', `/api/wireguard/peers/${peerId}`),
+                api('GET', '/api/dns/config'),
+            ]);
 
             document.getElementById('edit-peer-id').value = peerId;
             document.getElementById('edit-peer-name').value = peer.name || '';
+            const editNodeSelect = document.getElementById('edit-peer-node');
+            if (editNodeSelect) {
+                editNodeSelect.value = peer.node_id || '';
+                syncNodePicker('edit-peer-node');
+            }
             // Set allowed IPs mode dropdown
             const mode = detectAllowedIpsMode(peer.allowed_ips);
             document.getElementById('edit-peer-allowed-ips-mode').value = mode;
@@ -1788,8 +2415,10 @@
             toggleAllowedIpsCustom('edit-');
 
             document.getElementById('edit-peer-use-adblocker').checked = peer.use_adblocker !== false;
+            document.getElementById('edit-peer-dns-logging').checked = peer.dns_logging_enabled !== false;
             document.getElementById('edit-peer-enabled').checked = peer.is_enabled;
             document.getElementById('edit-peer-client-isolation').checked = peer.client_isolation === true;
+            toggleDnsLoggingControl('edit-peer-dns-logging-wrapper', dnsConfig?.enable_logging !== false, true);
 
             // Ensure latest blocklist registry is loaded before rendering options
             await loadBlocklistRegistry();
@@ -1843,6 +2472,7 @@
             const stats = byId.get(peerId) || (peerPublicKey ? byPublicKey.get(peerPublicKey) : null) || {};
 
             const lastSeenCell = row.querySelector('.peer-last-seen');
+            const connectionBadges = row.querySelectorAll('.peer-connection-badge-mobile');
             const clientIpCell = row.querySelector('.peer-client-ip');
             const persistedHandshake = toEpochSeconds(row.dataset.lastHandshake);
             const persistedEndpointIp = String(row.dataset.lastClientIp || '').trim();
@@ -1850,21 +2480,29 @@
             const persistedCity = String(row.dataset.lastClientCity || '').trim() || null;
             const persistedAsOrg = String(row.dataset.lastClientAsOrg || '').trim() || null;
 
+            const setConnectionStatus = (active = false, lastSeenText = '') => {
+                if (!connectionBadges.length) return;
+                connectionBadges.forEach((badge) => {
+                    const label = active ? 'Online' : 'Offline';
+                    badge.classList.toggle('bg-success', active);
+                    badge.classList.toggle('bg-secondary', !active);
+                    badge.textContent = label;
+                    if (!active && lastSeenText && lastSeenText !== 'Never') {
+                        const timeSpan = document.createElement('span');
+                        timeSpan.className = 'peer-badge-time';
+                        timeSpan.textContent = ` · ${lastSeenText}`;
+                        badge.appendChild(timeSpan);
+                    }
+                });
+            };
+
             const setLastSeen = (text, cls, active = false) => {
                 lastSeenCell.textContent = '';
-                if (active) {
-                    // Show Online badge for active connections (matches Dashboard style)
-                    const badge = document.createElement('span');
-                    badge.className = 'badge peer-status-indicator';
-                    badge.textContent = 'Online';
-                    lastSeenCell.appendChild(badge);
-                } else {
-                    // Show time text for inactive connections
-                    const span = document.createElement('span');
-                    span.className = cls;
-                    span.textContent = text;
-                    lastSeenCell.appendChild(span);
-                }
+                setConnectionStatus(active, text);
+                const span = document.createElement('span');
+                span.className = cls;
+                span.textContent = text;
+                lastSeenCell.appendChild(span);
             };
 
             const liveHandshake = toEpochSeconds(stats.latest_handshake);
@@ -1983,7 +2621,23 @@
 
     function initTooltips() {
         document.querySelectorAll('#peers-table [data-bs-toggle="tooltip"]').forEach(el => {
-            tooltipInstances.push(new bootstrap.Tooltip(el));
+            if (el.dataset.tooltipInitialized) return;
+            // Verify element is connected to DOM and valid
+            if (!el.isConnected || !el.getAttribute) return;
+            // Dispose existing instance if any to avoid Popper.js conflicts
+            const existingInstance = bootstrap.Tooltip.getInstance(el);
+            if (existingInstance) {
+                existingInstance.dispose();
+            }
+            try {
+                tooltipInstances.push(new bootstrap.Tooltip(el, {
+                    container: document.body,
+                    trigger: 'hover focus',
+                }));
+                el.dataset.tooltipInitialized = 'true';
+            } catch (err) {
+                console.error('Failed to initialize tooltip:', err, el);
+            }
         });
     }
 
@@ -2018,16 +2672,40 @@
     const visibleCountEl = document.getElementById('peers-visible-count');
     const noResultsEl = document.getElementById('peers-no-results');
     const peersTableEl = document.getElementById('peers-table');
+    const hideNodesCheckbox = document.getElementById('peers-hide-nodes');
+    const HIDE_NODES_KEY = 'wb_peers_hide_nodes';
     let searchDebounceTimer = null;
+
+    // Restore "Hide Nodes" preference from localStorage
+    if (hideNodesCheckbox) {
+        const saved = localStorage.getItem(HIDE_NODES_KEY);
+        if (saved === 'true') {
+            hideNodesCheckbox.checked = true;
+        }
+        hideNodesCheckbox.addEventListener('change', () => {
+            localStorage.setItem(HIDE_NODES_KEY, hideNodesCheckbox.checked ? 'true' : 'false');
+            filterPeers(searchInput?.value || '');
+        });
+    }
 
     function filterPeers(query) {
         const searchTerm = (query || '').toLowerCase().trim();
+        const hideNodes = hideNodesCheckbox?.checked || false;
         let visibleCount = 0;
 
         // Make sure we have the latest rows
         refreshPeerRows();
 
         peerRows.forEach(row => {
+            // Check if this is a node tunnel peer
+            const isNodeTunnel = row.hasAttribute('data-node-tunnel');
+
+            // Hide node tunnel peers if "Hide Nodes" is checked
+            if (hideNodes && isNodeTunnel) {
+                row.classList.add('peer-row-hidden');
+                return;
+            }
+
             if (!searchTerm) {
                 row.classList.remove('peer-row-hidden');
                 visibleCount++;
@@ -2110,6 +2788,11 @@
         });
     }
 
+    // Apply initial filter if "Hide Nodes" is restored from localStorage
+    if (hideNodesCheckbox?.checked) {
+        filterPeers('');
+    }
+
     document.getElementById('peers-table')?.addEventListener('click', async (event) => {
         const button = event.target.closest('button[data-action][data-peer-id]');
         if (!button || button.disabled) return;
@@ -2143,6 +2826,7 @@
     toggleAllowedIpsCustom('');
     toggleAllowedIpsCustom('edit-');
     initTooltips();
+    initNodePickers();
     // loadBlocklistRegistry is loaded on-demand in modal handlers
     loadPeerStats();
     startPeerStatsPolling();

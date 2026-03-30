@@ -267,6 +267,7 @@
         min-height: 0;
         overflow-y: auto;
         overflow-x: hidden;
+        padding-bottom: 1rem;
     }
 
     #recent-peers {
@@ -605,11 +606,11 @@
                     <div class="card-body">
                         <div class="d-flex align-items-center">
                             <div class="flex-shrink-0">
-                                <span class="material-icons wb-kpi-icon" aria-hidden="true">router</span>
+                                <span class="material-icons wb-kpi-icon" aria-hidden="true">hub</span>
                             </div>
                             <div class="flex-grow-1 ms-3">
-                                <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-interfaces">Interfaces</div>
-                                <p class="h3 mb-0 wb-kpi-value" id="interfaces-count" aria-labelledby="label-interfaces" aria-live="polite">-</p>
+                                <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-nodes">Nodes</div>
+                                <p class="h3 mb-0 wb-kpi-value" id="nodes-count" aria-labelledby="label-nodes" aria-live="polite">-</p>
                             </div>
                         </div>
                     </div>
@@ -794,6 +795,7 @@
 <script src="/static/vendor/chart.umd.min.js"></script>
 <script>
     const DEBUG = false;
+    const isAdmin = {{ 'true' if user['is_admin'] else 'false' }};
     const CONNECTED_THRESHOLD_SEC = 180;
     const AUTO_REFRESH_MS = 30000;
     const API_TIMEOUT_MS = 25000;
@@ -822,7 +824,7 @@
     let tileLoadedSinceSwitch = false;
     let lastVisibleRefresh = 0;
 
-    const interfacesCountEl = document.getElementById('interfaces-count');
+    const nodesCountEl = document.getElementById('nodes-count');
     const peersCountEl = document.getElementById('peers-count');
     const peersCountLabelEl = document.getElementById('peers-count-label');
     const totalRxEl = document.getElementById('total-rx');
@@ -902,9 +904,10 @@
         upEl.textContent = `↑ ${uploadMbit.toFixed(1)} Mbit/s`;
     }
 
-    function unwrapInterfaces(payload) {
-        if (Array.isArray(payload?.interfaces)) return payload.interfaces;
-        if (Array.isArray(payload?.data?.interfaces)) return payload.data.interfaces;
+    function unwrapNodes(payload) {
+        if (Array.isArray(payload?.nodes)) return payload.nodes;
+        if (Array.isArray(payload?.data?.nodes)) return payload.data.nodes;
+        if (Array.isArray(payload?.data)) return payload.data;
         return [];
     }
 
@@ -923,13 +926,23 @@
     function getRelativeTimeInfo(epochSeconds) {
         const sec = Number(epochSeconds || 0);
         if (!Number.isFinite(sec) || sec <= 0) {
-            return { className: 'badge bg-secondary', text: 'Offline' };
+            return { className: 'badge bg-secondary', text: 'Offline', timeText: '' };
         }
         const diffSec = Math.max(0, Math.floor(Date.now() / 1000) - sec);
         if (diffSec < CONNECTED_THRESHOLD_SEC) {
-            return { className: 'badge badge-online', text: 'Online' };
+            return { className: 'badge badge-online', text: 'Online', timeText: '' };
         }
-        return { className: 'badge bg-secondary', text: 'Offline' };
+        // Offline — compute relative time
+        const diffMins = Math.floor(diffSec / 60);
+        let timeText = '';
+        if (diffMins < 60) {
+            timeText = `${diffMins}m ago`;
+        } else if (diffMins < 1440) {
+            timeText = `${Math.floor(diffMins / 60)}h ago`;
+        } else {
+            timeText = `${Math.floor(diffMins / 1440)}d ago`;
+        }
+        return { className: 'badge bg-secondary', text: 'Offline', timeText };
     }
 
     function createCountryFlagElement(countryCode) {
@@ -1045,13 +1058,15 @@
 
     async function refreshStats(signal) {
         try {
-            const [interfacesRes, enrichedRes] = await Promise.all([
-                api(
-                    'GET',
-                    '/api/wireguard/interfaces',
-                    null,
-                    { signal, timeoutMs: API_TIMEOUT_MS },
-                ),
+            const [nodesRes, enrichedRes] = await Promise.all([
+                isAdmin
+                    ? api(
+                        'GET',
+                        '/api/nodes',
+                        null,
+                        { signal, timeoutMs: API_TIMEOUT_MS },
+                    )
+                    : Promise.resolve(null),
                 api(
                     'GET',
                     '/api/wireguard/stats/peers-enriched',
@@ -1059,10 +1074,14 @@
                     { signal, timeoutMs: API_TIMEOUT_MS },
                 ),
             ]);
-            const interfaces = unwrapInterfaces(interfacesRes);
-            const activeCount = interfaces.filter(i => i.is_active).length;
-            if (interfacesCountEl) {
-                interfacesCountEl.textContent = `${activeCount}/${interfaces.length}`;
+            if (nodesCountEl) {
+                if (isAdmin) {
+                    const nodes = unwrapNodes(nodesRes);
+                    const onlineCount = nodes.filter(node => node?.status === 'online').length;
+                    nodesCountEl.textContent = `${onlineCount}/${nodes.length}`;
+                } else {
+                    nodesCountEl.textContent = '–';
+                }
             }
 
             const allPeers = unwrapPeers(enrichedRes);
@@ -1084,7 +1103,8 @@
 
             const nowSec = Math.floor(Date.now() / 1000);
             const activePeers = allPeers
-                .filter(p => Number(p.latest_handshake) > 0)
+                // Exclude node tunnel peers (inter-node connections) from Recent Peer Activity
+                .filter(p => Number(p.latest_handshake) > 0 && !p.is_node_tunnel)
                 .sort((a, b) => {
                     const ageA = Math.max(0, nowSec - Number(a.latest_handshake || 0));
                     const ageB = Math.max(0, nowSec - Number(b.latest_handshake || 0));
@@ -1198,6 +1218,12 @@
                 const badge = document.createElement('span');
                 badge.className = relative.className;
                 badge.textContent = relative.text;
+                // Append time info for offline peers (e.g., "Offline · 2h ago")
+                if (relative.timeText) {
+                    const timeSpan = document.createElement('span');
+                    timeSpan.textContent = ` · ${relative.timeText}`;
+                    badge.appendChild(timeSpan);
+                }
                 headerLine.appendChild(badge);
 
                 const name = document.createElement('strong');

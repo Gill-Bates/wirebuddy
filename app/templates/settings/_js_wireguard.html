@@ -18,6 +18,11 @@
             if (guiPortInput && settings.gui_port) {
                 guiPortInput.value = settings.gui_port;
             }
+
+            const guiExternalPortInput = document.getElementById('gui-external-port');
+            if (guiExternalPortInput && settings.gui_external_port) {
+                guiExternalPortInput.value = settings.gui_external_port;
+            }
             
             const mtuInput = document.getElementById('wg-mtu');
             if (mtuInput && settings.wg_mtu !== null && settings.wg_mtu !== undefined && settings.wg_mtu !== '') {
@@ -296,6 +301,7 @@
         
         const fqdnInput = document.getElementById('wg-fqdn');
         const guiPortInput = document.getElementById('gui-port');
+        const guiExternalPortInput = document.getElementById('gui-external-port');
         const mtuInput = document.getElementById('wg-mtu');
         const keepaliveInput = document.getElementById('wg-keepalive');
         
@@ -311,6 +317,15 @@
                 return false;
             }
             payload.gui_port = guiPortResult.value;
+        }
+
+        if (guiExternalPortInput && includeField('gui_external_port')) {
+            const guiExternalPortResult = parseOptionalInt(guiExternalPortInput.value, 1, 65535, 'External Port (Reverse Proxy)');
+            if (!guiExternalPortResult.valid) {
+                wbToast(guiExternalPortResult.message, 'warning');
+                return false;
+            }
+            payload.gui_external_port = guiExternalPortResult.value;
         }
 
         if (mtuInput && includeField('wg_mtu')) {

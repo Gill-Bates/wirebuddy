@@ -33,7 +33,7 @@ Include token in `Authorization` header:
 
 ```bash
 curl -H "Authorization: Bearer wb_YOUR_TOKEN_HERE" \
-  https://vpn.example.com/api/peers
+  https://vpn.example.com/api/wireguard/peers
 ```
 
 ### Query Parameter (Not Recommended)
@@ -41,7 +41,7 @@ curl -H "Authorization: Bearer wb_YOUR_TOKEN_HERE" \
 Alternatively, pass as query parameter:
 
 ```bash
-curl https://vpn.example.com/api/peers?token=wb_YOUR_TOKEN_HERE
+curl https://vpn.example.com/api/wireguard/peers?token=wb_YOUR_TOKEN_HERE
 ```
 
 !!! warning

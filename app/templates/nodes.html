@@ -1,0 +1,1365 @@
+{% extends "base.html" %}
+{% from "macros/geo.html" import geo_badge %}
+
+{% block title %}Nodes – WireBuddy{% endblock %}
+
+{% block extra_css %}
+<style>
+    :root {
+        --flag-width: 16px;
+        --flag-height: 12px;
+        --flag-gap: 8px;
+    }
+
+    .table td {
+        vertical-align: middle;
+    }
+    .node-status-badge {
+        min-width: 70px;
+        text-align: center;
+    }
+    
+    /* Node FQDN stacked layout (same style as peer-client-ip) */
+    .node-fqdn-stack {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.15;
+    }
+
+    .node-fqdn-main {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--flag-gap);
+        flex-wrap: wrap;
+    }
+
+    .node-fqdn-main code {
+        color: var(--bs-secondary-color);
+    }
+
+    .node-fqdn-meta {
+        font-size: .75rem;
+        color: var(--bs-secondary-color);
+        margin-left: calc(var(--flag-width) + var(--flag-gap));
+        margin-top: 0.25rem;
+        white-space: normal;
+    }
+
+    .node-fqdn-meta .node-meta-city,
+    .node-fqdn-meta .node-meta-provider {
+        display: block;
+    }
+
+    .node-fqdn-meta .node-meta-provider {
+        display: inline-block;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: bottom;
+    }
+
+    .node-country-flag {
+        width: var(--flag-width);
+        height: var(--flag-height);
+        border-radius: 2px;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, .15);
+        object-fit: cover;
+        flex: 0 0 auto;
+    }
+
+    .enrollment-token-box {
+        font-family: var(--bs-font-monospace);
+        font-size: 0.75rem;
+        word-break: break-all;
+        max-height: 120px;
+        overflow-y: auto;
+        background: var(--bs-body-bg);
+        border: 1px solid var(--bs-border-color);
+        border-radius: 6px;
+        padding: 12px;
+    }
+    .node-actions-cell .d-flex {
+        flex-wrap: nowrap;
+        justify-content: flex-end;
+        gap: 4px;
+    }
+    /* Compact action buttons for table rows (v1.3.3 style) */
+    .node-action-btn {
+        min-width: 0;
+        min-height: 0;
+        padding: 0.2rem 0.35rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+    }
+
+    .node-action-btn .material-icons {
+        font-size: 18px;
+        pointer-events: none;
+    }
+
+    .node-actions-cell {
+        white-space: nowrap;
+        min-width: 180px;
+    }
+    .nodes-copy-btn .material-icons,
+    .nodes-primary-trigger .material-icons {
+        pointer-events: none;
+    }
+
+    @media (max-width: 991.98px) {
+        /* Hide Port column on tablet */
+        .nodes-table th:nth-child(3),
+        .nodes-table td[data-label="Port"] {
+            display: none;
+        }
+    }
+
+    /* Mobile-optimized nodes rows — card layout matching peers.html */
+    @media (max-width: 767.98px) {
+        .table-responsive {
+            overflow-x: hidden;
+            overflow-y: visible;
+        }
+
+        .nodes-table {
+            font-size: 0.82rem;
+        }
+
+        .nodes-table thead {
+            display: none;
+        }
+
+        .nodes-table,
+        .nodes-table tbody,
+        .nodes-table tr,
+        .nodes-table td {
+            display: block;
+            width: 100%;
+        }
+
+        /* Card layout with CSS Grid areas */
+        .nodes-table tbody tr {
+            display: grid;
+            grid-template-areas:
+                "name      status"
+                "fqdn      fqdn"
+                "meta      meta"
+                "actions   actions";
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: start;
+            gap: 0.25rem 0.5rem;
+            border: 1px solid var(--bs-border-color);
+            border-radius: 0.5rem;
+            padding: 0.45rem 0.55rem;
+            margin-bottom: 0.45rem;
+            background: var(--bs-body-bg);
+        }
+
+        .nodes-table td {
+            border: 0;
+            padding: 0;
+            min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        /* Hide data-label pseudo-elements */
+        .nodes-table td::before {
+            display: none;
+        }
+
+        /* Grid area assignments */
+        .nodes-table td[data-label="Name"] {
+            grid-area: name;
+            align-self: center;
+            font-weight: 600;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .nodes-table td[data-label="Status"] {
+            grid-area: status;
+            justify-self: end;
+            align-self: center;
+        }
+
+        .nodes-table td[data-label="FQDN"] {
+            grid-area: fqdn;
+        }
+
+        .nodes-table td[data-label="FQDN"] .node-fqdn-meta {
+            margin-left: 0;
+        }
+
+        /* Hide Port and Version columns on mobile, show as meta line */
+        .nodes-table td[data-label="Port"],
+        .nodes-table td[data-label="Version"] {
+            display: none !important;
+        }
+
+        /* Peers + Last Seen combined as meta line */
+        .nodes-table td[data-label="Peers"],
+        .nodes-table td[data-label="Last Seen"] {
+            display: none !important;
+        }
+
+        /* Meta row with version, peers, last seen (visible on mobile only) */
+        .node-mobile-meta {
+            grid-area: meta;
+            display: flex !important;
+            flex-wrap: wrap;
+            gap: 0.25rem 0.75rem;
+            font-size: 0.75rem;
+            color: var(--bs-secondary-color);
+        }
+
+        .node-mobile-meta span + span::before {
+            content: "·";
+            margin-right: 0.5rem;
+        }
+
+        /* Actions */
+        .nodes-table td[data-label="Actions"] {
+            grid-area: actions;
+            border-top: 1px solid var(--bs-border-color);
+            padding-top: 0.4rem !important;
+            margin-top: 0.2rem;
+        }
+
+        .node-actions-cell {
+            min-width: auto !important;
+        }
+
+        .node-actions-cell .d-flex {
+            justify-content: flex-end !important;
+        }
+
+        .node-action-btn {
+            min-width: 0;
+            min-height: 0;
+            padding: 0.2rem 0.35rem;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid wb-page">
+<div class="wb-page-header flex-wrap gap-2">
+    <h2 class="page-title"><span class="material-icons me-2">hub</span>Remote Nodes</h2>
+    <button type="button" class="btn btn-primary nodes-primary-trigger" data-bs-toggle="modal" data-bs-target="#addNodeModal">
+        <span class="material-icons me-2">add_circle</span>
+        Add Node
+    </button>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        {% if nodes %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 nodes-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>FQDN / IP</th>
+                        <th>Port</th>
+                        <th>Status</th>
+                        <th>Version</th>
+                        <th>Peers</th>
+                        <th>Last Seen</th>
+                        <th class="text-end" aria-hidden="true"></th>
+                    </tr>
+                </thead>
+                <tbody id="nodesTableBody">
+                    {% for node in nodes %}
+                    <tr id="node-row-{{ node.id }}">
+                        <td data-label="Name"><strong>{{ node.name }}</strong></td>
+                        <td data-label="FQDN" class="node-fqdn-cell">
+                            <div class="node-fqdn-stack">
+                                <div class="node-fqdn-main">
+                                    {% if node.geo_country_code %}
+                                    <img class="node-country-flag" alt="Country flag: {{ node.geo_country_code|upper }}" decoding="async" src="/static/vendor/images/flags/{{ node.geo_country_code }}.svg">
+                                    {% endif %}
+                                    <code>{{ node.fqdn }}</code>
+                                </div>
+                                {% if node.geo_city or node.geo_as_org %}
+                                <div class="node-fqdn-meta">
+                                    {% if node.geo_city %}
+                                    <span class="node-meta-city">{{ node.geo_city }}</span>
+                                    {% endif %}
+                                    {% if node.geo_as_org %}
+                                    <span class="node-meta-provider">{{ node.geo_as_org }}</span>
+                                    {% endif %}
+                                </div>
+                                {% endif %}
+                            </div>
+                        </td>
+                        <td data-label="Port">{{ node.wg_port }}</td>
+                        <td data-label="Status" aria-live="polite" aria-atomic="true" aria-relevant="text">
+                            {% if node.status == 'online' %}
+                            <span class="badge bg-success node-status-badge">Online</span>
+                            {% elif node.status == 'pending' %}
+                            <span class="badge bg-warning text-dark node-status-badge">Pending</span>
+                            {% elif node.status == 'offline' %}
+                            <span class="badge bg-danger node-status-badge">Offline</span>
+                            {% else %}
+                            <span class="badge bg-secondary node-status-badge">{{ node.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td data-label="Version">
+                            {% if node.node_version %}
+                            <code>{{ node.node_version }}</code>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td data-label="Peers">{{ node.peer_count }}</td>
+                        <td data-label="Last Seen" class="node-last-seen text-nowrap">
+                            <span class="{{ node.last_seen_class }}">{{ node.last_seen_text }}</span>
+                        </td>
+                        <td class="node-mobile-meta d-none">
+                            {% if node.node_version %}<span>{{ node.node_version }}</span>{% endif %}
+                            <span>{{ node.peer_count }} Peer{{ 's' if node.peer_count != 1 else '' }}</span>
+                            <span>{{ node.last_seen_text }}</span>
+                        </td>
+                        <td data-label="Actions" class="text-end node-actions-cell">
+                            <div class="d-flex gap-1 justify-content-end">
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-secondary node-action-btn {% if node.status == 'online' and not node.sse_connected %}btn-outline-warning{% endif %}"
+                                        data-action="restart-node"
+                                        data-node-id="{{ node.id }}"
+                                        data-node-name="{{ node.name }}"
+                                        data-node-status="{{ node.status }}"
+                                        data-sse-connected="{{ 'true' if node.sse_connected else 'false' }}"
+                                        aria-label="Restart {{ node.name }}"
+                                        data-bs-toggle="tooltip"
+                                        data-bs-title="{% if node.status != 'online' %}Node is offline{% elif not node.sse_connected %}⚠️ SSE not connected - restart may fail{% else %}Restart Node{% endif %}"
+                                        {% if node.status != 'online' %}disabled{% endif %}>
+                                    <span class="material-icons icon-md" aria-hidden="true">restart_alt</span>
+                                </button>
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-secondary node-action-btn"
+                                        data-action="regenerate-token"
+                                        data-node-id="{{ node.id }}"
+                                        data-node-name="{{ node.name }}"
+                                        aria-label="Regenerate token for {{ node.name }}"
+                                        data-bs-toggle="tooltip"
+                                        data-bs-title="Regenerate Token">
+                                    <span class="material-icons icon-md" aria-hidden="true">vpn_key</span>
+                                </button>
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-secondary node-action-btn"
+                                        data-action="edit-node"
+                                        data-node-id="{{ node.id }}"
+                                        data-node-name="{{ node.name }}"
+                                        data-node-fqdn="{{ node.fqdn }}"
+                                        data-node-port="{{ node.wg_port }}"
+                                        aria-label="Edit {{ node.name }}"
+                                        data-bs-toggle="tooltip"
+                                        data-bs-title="Edit Node">
+                                    <span class="material-icons icon-md" aria-hidden="true">edit</span>
+                                </button>
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-danger node-action-btn"
+                                        data-action="delete-node"
+                                        data-node-id="{{ node.id }}"
+                                        data-node-name="{{ node.name }}"
+                                        aria-label="Delete {{ node.name }}"
+                                        data-bs-toggle="tooltip"
+                                        data-bs-title="Delete Node">
+                                    <span class="material-icons icon-md" aria-hidden="true">delete</span>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="nodes-empty-state text-center py-5">
+            <span class="material-icons text-muted mb-3" style="font-size: 3rem;" aria-hidden="true">hub</span>
+            <h3 class="h5 mb-2">No remote nodes configured yet</h3>
+            <p class="text-muted mb-0">Click <strong>Add Node</strong> to register a remote VPN server.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Add Node Modal -->
+<div class="modal fade" id="addNodeModal" tabindex="-1" aria-labelledby="addNodeModalLabel" aria-modal="true" role="dialog">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="addNodeModalLabel">
+                    <span class="material-icons me-2 align-middle text-primary">add_circle</span>Add Remote Node
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form id="addNodeForm" novalidate>
+            <div class="modal-body">
+                <!-- Step 1: Form -->
+                <div id="addNodeStep1">
+                    <div class="mb-3">
+                        <label for="addNodeName" class="form-label">Node Name <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="addNodeName" placeholder="e.g. Frankfurt" required
+                               maxlength="64" autocomplete="off">
+                        <small class="text-muted">A friendly name for this node location</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="nodeFqdn" class="form-label">FQDN / IP Address <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="nodeFqdn" placeholder="e.g. de.vpn.example.com"
+                               required maxlength="253" autocomplete="off">
+                        <small class="text-muted">Public address where clients will connect</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="nodePort" class="form-label">WireGuard Port <span class="text-danger">*</span></label>
+                        <input type="number" class="form-control" id="nodePort" value="{{ default_wg_port }}"
+                               min="1" max="65535" required>
+                        <small class="text-muted">UDP port for WireGuard (default from global settings)</small>
+                    </div>
+                </div>
+                <!-- Step 2: Token Display -->
+                <div id="addNodeStep2" style="display: none;">
+                    <div class="alert alert-success mb-3">
+                        <span class="material-icons align-middle me-1">check_circle</span>
+                        Node created successfully!
+                    </div>
+                    <p class="mb-2"><strong>Enrollment Token</strong></p>
+                    <p class="text-muted small mb-2">Copy this token and set it as <code>WIREBUDDY_ENROLLMENT_TOKEN</code> in your node's environment. This token will <strong>not</strong> be shown again.</p>
+                    <div class="enrollment-token-box" id="enrollmentTokenDisplay"></div>
+                    <button type="button" class="btn btn-sm btn-outline-secondary mt-2 nodes-copy-btn" id="copyEnrollmentTokenBtn" aria-label="Copy token">
+                        <span class="material-icons me-1 icon-sm" aria-hidden="true">content_copy</span>Copy
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="submit" class="btn btn-primary" id="addNodeSubmitBtn">
+                    Create Node
+                </button>
+            </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Node Modal -->
+<div class="modal fade" id="editNodeModal" tabindex="-1" aria-labelledby="editNodeModalLabel" aria-modal="true" role="dialog">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="editNodeModalLabel">
+                    <span class="material-icons me-2 align-middle">edit</span>Edit Node
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form id="editNodeForm" novalidate>
+            <div class="modal-body">
+                <input type="hidden" id="editNodeId">
+                <div class="mb-3">
+                    <label for="editNodeName" class="form-label">Node Name <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control" id="editNodeName" maxlength="64" required autocomplete="off">
+                </div>
+                <div class="mb-3">
+                    <label for="editNodeFqdn" class="form-label">FQDN / IP Address <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control" id="editNodeFqdn" maxlength="253" required autocomplete="off">
+                </div>
+                <div class="mb-3">
+                    <label for="editNodePort" class="form-label">WireGuard Port <span class="text-danger">*</span></label>
+                    <input type="number" class="form-control" id="editNodePort" min="1" max="65535" required>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save</button>
+            </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Token Display Modal (for regeneration) -->
+<div class="modal fade" id="tokenModal" tabindex="-1" aria-labelledby="tokenModalLabel" aria-modal="true" role="dialog">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="tokenModalLabel">
+                    <span class="material-icons me-2 align-middle text-warning">vpn_key</span>New Enrollment Token
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-warning mb-3">
+                    <span class="material-icons align-middle me-1">warning</span>
+                    The node must re-enroll with this new token. The old token is invalidated.
+                </div>
+                <div class="enrollment-token-box" id="regenTokenDisplay"></div>
+                <button type="button" class="btn btn-sm btn-outline-secondary mt-2 nodes-copy-btn" id="copyRegeneratedTokenBtn" aria-label="Copy token">
+                    <span class="material-icons me-1 icon-sm" aria-hidden="true">content_copy</span>Copy
+                </button>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+</div><!-- /.wb-page -->
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function() {
+    'use strict';
+
+    // ========================================================================
+    // CONSTANTS & STATE
+    // ========================================================================
+    const POLL_INTERVAL_MS = 30000;
+    const MAX_POLL_FAILURES = 3;
+    const POLL_BACKOFF_MS = 60000;
+    
+    let pollTimer = null;
+    let pollFailureCount = 0;
+    let nodeCreatedFlag = false;
+    let pollController = null;
+    let _pollSeq = 0; // Request versioning to guard against out-of-order responses
+    const restartingNodes = new Map(); // node_id → { phase: 'sent'|'offline', timeout: number }
+
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    const headers = {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken,
+    };
+
+    // ========================================================================
+    // DOM ELEMENT CACHE
+    // ========================================================================
+    const addNodeModalEl = document.getElementById('addNodeModal');
+    const editNodeModalEl = document.getElementById('editNodeModal');
+    const tokenModalEl = document.getElementById('tokenModal');
+    const addNodeForm = document.getElementById('addNodeForm');
+    const editNodeForm = document.getElementById('editNodeForm');
+    const nodesTableBody = document.getElementById('nodesTableBody');
+    const addNodeFqdnInput = document.getElementById('nodeFqdn');
+    const editNodeFqdnInput = document.getElementById('editNodeFqdn');
+    const addNodeSubmitBtn = document.getElementById('addNodeSubmitBtn');
+    const nodeNameInput = document.getElementById('addNodeName');
+    const enrollmentTokenDisplay = document.getElementById('enrollmentTokenDisplay');
+    const regenTokenDisplay = document.getElementById('regenTokenDisplay');
+
+    const HOSTNAME_LABEL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+
+    // ========================================================================
+    // VALIDATION
+    // ========================================================================
+    function isValidIpv4(value) {
+        const parts = value.split('.');
+        if (parts.length !== 4) return false;
+        return parts.every((part) => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+    }
+
+    function isValidIpv6(value) {
+        const raw = value.replace(/^\[|\]$/g, '');
+        if (!raw || raw.includes('[') || raw.includes(']')) return false;
+        if (raw.includes('%')) return false;
+        
+        // Use URL parsing for robust IPv6 validation
+        try {
+            const url = new URL(`http://[${raw}]`);
+            return !!url.hostname;
+        } catch {
+            return false;
+        }
+    }
+
+    function isValidHostname(value) {
+        if (!value || value.length > 253) return false;
+        // Reject IPv6 addresses in hostname context
+        if (value.includes(':') && !isValidIpv6(value)) return false;
+        if (value.includes('..') || value.startsWith('.') || value.endsWith('.')) return false;
+        return value.split('.').every((label) => HOSTNAME_LABEL_RE.test(label));
+    }
+
+    function validateNodeAddressValue(value) {
+        const trimmed = value.trim();
+        if (!trimmed) {
+            return { valid: false, message: 'FQDN / IP Address is required.' };
+        }
+        if (isValidIpv4(trimmed) || isValidIpv6(trimmed) || isValidHostname(trimmed)) {
+            return { valid: true, message: '' };
+        }
+        return {
+            valid: false,
+            message: 'Enter a valid FQDN, IPv4, or IPv6 address without a port.',
+        };
+    }
+
+    function validateNodeAddressField(input) {
+        const result = validateNodeAddressValue(input.value);
+        input.setCustomValidity(result.message);
+        return result.valid;
+    }
+
+    // ========================================================================
+    // UI HELPERS
+    // ========================================================================
+    function createStatusBadge(status) {
+        const span = document.createElement('span');
+        span.classList.add('badge', 'node-status-badge');
+
+        if (status === 'online') {
+            span.classList.add('bg-success');
+            span.textContent = 'Online';
+        } else if (status === 'pending') {
+            span.classList.add('bg-warning', 'text-dark');
+            span.textContent = 'Pending';
+        } else if (status === 'offline') {
+            span.classList.add('bg-danger');
+            span.textContent = 'Offline';
+        } else if (status === 'restarting') {
+            span.classList.add('bg-secondary');
+            span.textContent = 'Restarting…';
+        } else {
+            span.classList.add('bg-secondary');
+            span.textContent = status || '—';
+        }
+        
+        return span;
+    }
+
+    function setButtonLoading(button, isLoading, loadingText = 'Loading...', originalText = null) {
+        if (!button) return;
+        
+        if (isLoading) {
+            button.disabled = true;
+            if (!button.dataset.originalHtml) {
+                button.dataset.originalHtml = button.innerHTML;
+            }
+            button.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>${loadingText}`;
+        } else {
+            button.disabled = false;
+            button.innerHTML = originalText ? originalText : (button.dataset.originalHtml || 'Submit');
+        }
+    }
+
+    function initTooltips(root = document) {
+        if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+            return;
+        }
+        if (typeof bootstrap === 'undefined' || !bootstrap.Tooltip) {
+            return;
+        }
+
+        const scope = root && typeof root.querySelectorAll === 'function' ? root : document;
+        scope.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
+            // Skip if element is not a valid DOM node
+            if (!el || !el.nodeName || typeof el.nodeName !== 'string') {
+                return;
+            }
+            // Skip already initialized tooltips
+            if (el.dataset.tooltipInitialized === 'true') {
+                return;
+            }
+            //Verify element is properly connected to DOM
+            if (!el.isConnected || !el.getAttribute) {
+                return;
+            }
+            // Dispose existing tooltip instance before creating a new one
+            const existingInstance = bootstrap.Tooltip.getInstance(el);
+            if (existingInstance) {
+                existingInstance.dispose();
+            }
+            try {
+                new bootstrap.Tooltip(el, {
+                    container: document.body,
+                    trigger: 'hover focus',
+                });
+                el.dataset.tooltipInitialized = 'true';
+            } catch (err) {
+                console.error('Failed to initialize tooltip:', err, el);
+            }
+        });
+    }
+
+    /**
+     * Programmatically build a node table row (mirrors Jinja template structure).
+     * Used when adding new nodes without full page reload.
+     */
+    function buildNodeRow(node) {
+        const tr = document.createElement('tr');
+        tr.id = `node-row-${node.id}`;
+
+        // Name cell
+        const tdName = document.createElement('td');
+        tdName.setAttribute('data-label', 'Name');
+        const strong = document.createElement('strong');
+        strong.textContent = node.name;
+        tdName.appendChild(strong);
+
+        // FQDN cell with optional geo info
+        const tdFqdn = document.createElement('td');
+        tdFqdn.setAttribute('data-label', 'FQDN');
+        tdFqdn.className = 'node-fqdn-cell';
+        const fqdnStack = document.createElement('div');
+        fqdnStack.className = 'node-fqdn-stack';
+        const fqdnMain = document.createElement('div');
+        fqdnMain.className = 'node-fqdn-main';
+        if (node.geo_country_code) {
+            const flag = document.createElement('img');
+            flag.className = 'node-country-flag';
+            flag.alt = `Country flag: ${node.geo_country_code.toUpperCase()}`;
+            flag.decoding = 'async';
+            flag.src = `/static/vendor/images/flags/${node.geo_country_code}.svg`;
+            fqdnMain.appendChild(flag);
+        }
+        const fqdnCode = document.createElement('code');
+        fqdnCode.textContent = node.fqdn;
+        fqdnMain.appendChild(fqdnCode);
+        fqdnStack.appendChild(fqdnMain);
+        if (node.geo_city || node.geo_as_org) {
+            const fqdnMeta = document.createElement('div');
+            fqdnMeta.className = 'node-fqdn-meta';
+            if (node.geo_city) {
+                const citySpan = document.createElement('span');
+                citySpan.className = 'node-meta-city';
+                citySpan.textContent = node.geo_city;
+                fqdnMeta.appendChild(citySpan);
+            }
+            if (node.geo_as_org) {
+                const provSpan = document.createElement('span');
+                provSpan.className = 'node-meta-provider';
+                provSpan.textContent = node.geo_as_org;
+                fqdnMeta.appendChild(provSpan);
+            }
+            fqdnStack.appendChild(fqdnMeta);
+        }
+        tdFqdn.appendChild(fqdnStack);
+
+        // Port cell
+        const tdPort = document.createElement('td');
+        tdPort.setAttribute('data-label', 'Port');
+        tdPort.textContent = node.wg_port;
+
+        // Status cell
+        const tdStatus = document.createElement('td');
+        tdStatus.setAttribute('data-label', 'Status');
+        tdStatus.setAttribute('aria-live', 'polite');
+        tdStatus.setAttribute('aria-atomic', 'true');
+        tdStatus.setAttribute('aria-relevant', 'text');
+        tdStatus.appendChild(createStatusBadge(node.status || 'pending'));
+
+        // Version cell
+        const tdVersion = document.createElement('td');
+        tdVersion.setAttribute('data-label', 'Version');
+        if (node.node_version) {
+            const vCode = document.createElement('code');
+            vCode.textContent = node.node_version;
+            tdVersion.appendChild(vCode);
+        } else {
+            const vSpan = document.createElement('span');
+            vSpan.className = 'text-muted';
+            vSpan.textContent = '—';
+            tdVersion.appendChild(vSpan);
+        }
+
+        // Peers cell
+        const tdPeers = document.createElement('td');
+        tdPeers.setAttribute('data-label', 'Peers');
+        tdPeers.textContent = node.peer_count ?? 0;
+
+        // Last Seen cell
+        const tdLastSeen = document.createElement('td');
+        tdLastSeen.setAttribute('data-label', 'Last Seen');
+        tdLastSeen.className = 'node-last-seen text-nowrap';
+        const lastSeenSpan = document.createElement('span');
+        lastSeenSpan.className = node.last_seen_class || 'text-muted';
+        lastSeenSpan.textContent = node.last_seen_text || 'Never';
+        tdLastSeen.appendChild(lastSeenSpan);
+
+        // Mobile meta cell (hidden on desktop)
+        const tdMobileMeta = document.createElement('td');
+        tdMobileMeta.className = 'node-mobile-meta d-none';
+        if (node.node_version) {
+            const vSpan = document.createElement('span');
+            vSpan.textContent = node.node_version;
+            tdMobileMeta.appendChild(vSpan);
+        }
+        const peerSpan = document.createElement('span');
+        const peerCount = node.peer_count ?? 0;
+        peerSpan.textContent = `${peerCount} Peer${peerCount !== 1 ? 's' : ''}`;
+        tdMobileMeta.appendChild(peerSpan);
+        const lastSeenMobileSpan = document.createElement('span');
+        lastSeenMobileSpan.textContent = node.last_seen_text || 'Never';
+        tdMobileMeta.appendChild(lastSeenMobileSpan);
+
+        // Actions cell
+        const tdActions = document.createElement('td');
+        tdActions.setAttribute('data-label', 'Actions');
+        tdActions.className = 'text-end node-actions-cell';
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'd-flex gap-1 justify-content-end';
+
+        const isOnline = node.status === 'online';
+        const sseConnected = node.sse_connected === true;
+
+        // Restart button
+        const restartBtn = document.createElement('button');
+        restartBtn.type = 'button';
+        restartBtn.className = `btn btn-sm btn-outline-secondary node-action-btn${isOnline && !sseConnected ? ' btn-outline-warning' : ''}`;
+        restartBtn.dataset.action = 'restart-node';
+        restartBtn.dataset.nodeId = node.id;
+        restartBtn.dataset.nodeName = node.name;
+        restartBtn.dataset.nodeStatus = node.status || '';
+        restartBtn.dataset.sseConnected = sseConnected ? 'true' : 'false';
+        restartBtn.setAttribute('aria-label', `Restart ${node.name}`);
+        restartBtn.setAttribute('data-bs-toggle', 'tooltip');
+        let restartTitle = 'Restart Node';
+        if (!isOnline) restartTitle = 'Node is offline';
+        else if (!sseConnected) restartTitle = '⚠️ SSE not connected - restart may fail';
+        restartBtn.setAttribute('data-bs-title', restartTitle);
+        if (!isOnline) restartBtn.disabled = true;
+        const restartIcon = document.createElement('span');
+        restartIcon.className = 'material-icons icon-md';
+        restartIcon.setAttribute('aria-hidden', 'true');
+        restartIcon.textContent = 'restart_alt';
+        restartBtn.appendChild(restartIcon);
+
+        // Regenerate token button
+        const regenBtn = document.createElement('button');
+        regenBtn.type = 'button';
+        regenBtn.className = 'btn btn-sm btn-outline-secondary node-action-btn';
+        regenBtn.dataset.action = 'regenerate-token';
+        regenBtn.dataset.nodeId = node.id;
+        regenBtn.dataset.nodeName = node.name;
+        regenBtn.setAttribute('aria-label', `Regenerate token for ${node.name}`);
+        regenBtn.setAttribute('data-bs-toggle', 'tooltip');
+        regenBtn.setAttribute('data-bs-title', 'Regenerate Token');
+        const regenIcon = document.createElement('span');
+        regenIcon.className = 'material-icons icon-md';
+        regenIcon.setAttribute('aria-hidden', 'true');
+        regenIcon.textContent = 'vpn_key';
+        regenBtn.appendChild(regenIcon);
+
+        // Edit button
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'btn btn-sm btn-outline-secondary node-action-btn';
+        editBtn.dataset.action = 'edit-node';
+        editBtn.dataset.nodeId = node.id;
+        editBtn.dataset.nodeName = node.name;
+        editBtn.dataset.nodeFqdn = node.fqdn;
+        editBtn.dataset.nodePort = node.wg_port;
+        editBtn.setAttribute('aria-label', `Edit ${node.name}`);
+        editBtn.setAttribute('data-bs-toggle', 'tooltip');
+        editBtn.setAttribute('data-bs-title', 'Edit Node');
+        const editIcon = document.createElement('span');
+        editIcon.className = 'material-icons icon-md';
+        editIcon.setAttribute('aria-hidden', 'true');
+        editIcon.textContent = 'edit';
+        editBtn.appendChild(editIcon);
+
+        // Delete button
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'btn btn-sm btn-outline-danger node-action-btn';
+        deleteBtn.dataset.action = 'delete-node';
+        deleteBtn.dataset.nodeId = node.id;
+        deleteBtn.dataset.nodeName = node.name;
+        deleteBtn.setAttribute('aria-label', `Delete ${node.name}`);
+        deleteBtn.setAttribute('data-bs-toggle', 'tooltip');
+        deleteBtn.setAttribute('data-bs-title', 'Delete Node');
+        const deleteIcon = document.createElement('span');
+        deleteIcon.className = 'material-icons icon-md';
+        deleteIcon.setAttribute('aria-hidden', 'true');
+        deleteIcon.textContent = 'delete';
+        deleteBtn.appendChild(deleteIcon);
+
+        actionsDiv.append(restartBtn, regenBtn, editBtn, deleteBtn);
+        tdActions.appendChild(actionsDiv);
+
+        tr.append(tdName, tdFqdn, tdPort, tdStatus, tdVersion, tdPeers, tdLastSeen, tdMobileMeta, tdActions);
+        return tr;
+    }
+
+    /**
+     * Ensure the nodes table exists (replacing empty state if needed).
+     * Returns the tbody element or null if creation failed.
+     */
+    function ensureTableExists() {
+        // Already have a tbody?
+        let tbody = document.getElementById('nodesTableBody');
+        if (tbody) return tbody;
+
+        // Remove empty state and create table structure
+        const cardBody = document.querySelector('.card-body');
+        if (!cardBody) return null;
+
+        const emptyState = cardBody.querySelector('.nodes-empty-state');
+        if (emptyState) emptyState.remove();
+
+        const tableResponsive = document.createElement('div');
+        tableResponsive.className = 'table-responsive';
+
+        const table = document.createElement('table');
+        table.className = 'table table-hover mb-0 nodes-table';
+
+        const thead = document.createElement('thead');
+        thead.innerHTML = `<tr>
+            <th>Name</th>
+            <th>FQDN / IP</th>
+            <th>Port</th>
+            <th>Status</th>
+            <th>Version</th>
+            <th>Peers</th>
+            <th>Last Seen</th>
+            <th class="text-end" aria-hidden="true"></th>
+        </tr>`;
+
+        tbody = document.createElement('tbody');
+        tbody.id = 'nodesTableBody';
+
+        table.append(thead, tbody);
+        tableResponsive.appendChild(table);
+        cardBody.appendChild(tableResponsive);
+
+        return tbody;
+    }
+
+    async function copyTextFromElement(elementId) {
+        const element = document.getElementById(elementId);
+        const text = element?.textContent?.trim() || '';
+        if (!text) {
+            wbToast('No token available to copy.', 'warning');
+            return;
+        }
+
+        try {
+            await navigator.clipboard.writeText(text);
+            wbToast('Token copied to clipboard.', 'success');
+        } catch (error) {
+            wbToast('Failed to copy token: ' + error.message, 'danger');
+        }
+    }
+
+    // ========================================================================
+    // MODAL ACTIONS
+    // ========================================================================
+    function openEditNodeModal(id, name, fqdn, port) {
+        if (!editNodeModalEl) return;
+        document.getElementById('editNodeId').value = id;
+        document.getElementById('editNodeName').value = name;
+        document.getElementById('editNodeFqdn').value = fqdn;
+        document.getElementById('editNodePort').value = port;
+        bootstrap.Modal.getOrCreateInstance(editNodeModalEl).show();
+    }
+
+    async function submitAddNode() {
+        // Guard against double-submit (Enter key can fire before button disables)
+        if (addNodeSubmitBtn?.disabled) return;
+
+        const name = nodeNameInput?.value.trim();
+        const fqdn = addNodeFqdnInput?.value.trim();
+        const port = Number(document.getElementById('nodePort')?.value) || 51820;
+
+        if (!name || !fqdn) {
+            await wbAlert('Name and FQDN are required.', 'warning');
+            return;
+        }
+        if (!validateNodeAddressField(addNodeFqdnInput)) {
+            addNodeFqdnInput.reportValidity();
+            return;
+        }
+
+        setButtonLoading(addNodeSubmitBtn, true, 'Creating...', 'Create Node');
+
+        try {
+            const data = await api('POST', '/api/nodes', { name, fqdn, wg_port: port });
+
+            // Show token step and set flag
+            nodeCreatedFlag = true;
+            wbToast('Node created successfully', 'success');
+            document.getElementById('addNodeStep1').style.display = 'none';
+            document.getElementById('addNodeStep2').style.display = 'block';
+            if (enrollmentTokenDisplay) {
+                enrollmentTokenDisplay.textContent = data.enrollment_token;
+            }
+            if (addNodeSubmitBtn) {
+                addNodeSubmitBtn.style.display = 'none';
+            }
+
+        } catch (err) {
+            await wbAlert(err.message || 'Failed to create node', 'danger');
+            setButtonLoading(addNodeSubmitBtn, false);
+        }
+    }
+
+    async function submitEditNode() {
+        const id = document.getElementById('editNodeId')?.value;
+        const name = document.getElementById('editNodeName')?.value.trim();
+        const fqdn = editNodeFqdnInput?.value.trim();
+        const port = Number(document.getElementById('editNodePort')?.value) || 51820;
+
+        if (!name || !fqdn) {
+            await wbAlert('Name and FQDN are required.', 'warning');
+            return;
+        }
+        if (!validateNodeAddressField(editNodeFqdnInput)) {
+            editNodeFqdnInput.reportValidity();
+            return;
+        }
+
+        try {
+            await api('PATCH', `/api/nodes/${id}`, { name, fqdn, wg_port: port });
+            refreshNodes();
+            bootstrap.Modal.getInstance(editNodeModalEl)?.hide();
+        } catch (err) {
+            await wbAlert(err.message, 'danger');
+        }
+    }
+
+    async function deleteNode(id, name) {
+        if (!await wbConfirm(`Delete node "${name}"? Assigned peers will be unassigned.`, 'danger')) return;
+
+        try {
+            const data = await api('DELETE', `/api/nodes/${id}`);
+            wbToast(data.message || `Node "${name}" deleted`, 'success');
+            const row = document.getElementById(`node-row-${id}`);
+            if (row) row.remove();
+        } catch (err) {
+            await wbAlert(err.message, 'danger');
+        }
+    }
+
+    async function regenerateToken(id, name) {
+        if (!await wbConfirm(`Regenerate enrollment token for "${name}"? The node must re-enroll.`, 'warning')) return;
+
+        try {
+            const data = await api('POST', `/api/nodes/${id}/token`);
+            if (tokenModalEl && regenTokenDisplay) {
+                regenTokenDisplay.textContent = data.enrollment_token;
+                bootstrap.Modal.getOrCreateInstance(tokenModalEl).show();
+            }
+        } catch (err) {
+            await wbAlert(err.message, 'danger');
+        }
+    }
+
+    async function restartNode(id, name) {
+        if (!await wbConfirm(`Restart node "${name}"? The node will disconnect briefly and reconnect.`, 'warning')) return;
+
+        // Find the row and button for immediate UI feedback
+        const row = document.getElementById(`node-row-${id}`);
+        const restartBtn = row?.querySelector('button[data-action="restart-node"]');
+
+        try {
+            await api('POST', `/api/nodes/${id}/restart`);
+
+            // Immediately update badge to "Restarting"
+            const statusCell = row?.querySelector('td[data-label="Status"]');
+            if (statusCell) {
+                statusCell.replaceChildren(createStatusBadge('restarting'));
+            }
+
+            // Disable the restart button while restarting
+            if (restartBtn) {
+                restartBtn.disabled = true;
+            }
+
+            // Track this node as restarting so polling doesn't overwrite the badge
+            // Clear any existing timeout to prevent stale deletes on repeated restarts
+            const existing = restartingNodes.get(id);
+            if (existing?.timeout) clearTimeout(existing.timeout);
+            const timeout = setTimeout(() => restartingNodes.delete(id), 120000);
+            restartingNodes.set(id, { phase: 'sent', timeout });
+
+            wbToast(`Node restart initiated. "${name}" will reconnect shortly.`, 'success');
+        } catch (err) {
+            // Show as toast instead of alert to avoid blocking reconnect modal
+            wbToast(err.message || `Failed to restart "${name}"`, 'danger');
+        }
+    }
+
+    // ========================================================================
+    // POLLING LOGIC
+    // ========================================================================
+    async function refreshNodes() {
+        // Ensure table exists (handles case when first node is added)
+        const tbody = ensureTableExists();
+        if (!tbody) return;
+
+        const seq = ++_pollSeq; // Stamp this request to detect stale responses
+        pollController?.abort();
+        pollController = new AbortController();
+
+        try {
+            const nodes = await api('GET', '/api/nodes', null, { signal: pollController.signal });
+
+            // Ignore stale response if a newer request was issued
+            if (seq !== _pollSeq) return;
+
+            for (const node of nodes) {
+                let row = document.getElementById(`node-row-${node.id}`);
+                
+                // Handle NEW nodes: build row and insert into table
+                if (!row) {
+                    row = buildNodeRow(node);
+                    tbody.appendChild(row);
+                    initTooltips(row);
+                    continue; // Skip update logic for newly created row
+                }
+
+                // Update status badge (secure DOM manipulation)
+                const statusCell = row.querySelector('td[data-label="Status"]');
+                if (statusCell) {
+                    const currentBadge = statusCell.querySelector('.node-status-badge');
+                    const currentStatus = currentBadge?.textContent.trim();
+
+                    // If this node is tracked as restarting, keep showing "Restarting"
+                    // until the node goes offline then comes back online
+                    if (restartingNodes.has(node.id)) {
+                        const entry = restartingNodes.get(node.id);
+                        if (node.status === 'offline') {
+                            // Node went offline — restart in progress
+                            entry.phase = 'offline';
+                            statusCell.replaceChildren(createStatusBadge('restarting'));
+                        } else if (node.status === 'online' && entry.phase === 'offline') {
+                            // Node came back online after being offline — restart complete!
+                            if (entry.timeout) clearTimeout(entry.timeout);
+                            restartingNodes.delete(node.id);
+                            statusCell.replaceChildren(createStatusBadge(node.status));
+                        }
+                        // phase === 'sent' && status === 'online': still shutting down, keep badge
+                    } else {
+                        const newStatus = node.status === 'online' ? 'Online' : 
+                                         node.status === 'pending' ? 'Pending' : 
+                                         node.status === 'offline' ? 'Offline' : 
+                                         node.status || '\u2014';
+                        
+                        // Only update if changed
+                        if (currentStatus !== newStatus) {
+                            statusCell.replaceChildren(createStatusBadge(node.status));
+                        }
+                    }
+                }
+
+                // Update peer count
+                const peersCell = row.querySelector('td[data-label="Peers"]');
+                if (peersCell) {
+                    const newCount = node.peer_count ?? '—';
+                    if (peersCell.textContent !== String(newCount)) {
+                        peersCell.textContent = newCount;
+                    }
+                }
+
+                // Update version (secure DOM manipulation)
+                const versionCell = row.querySelector('td[data-label="Version"]');
+                if (versionCell) {
+                    const currentVersion = versionCell.querySelector('code')?.textContent || '';
+                    const newVersion = node.node_version || '';
+                    
+                    if (currentVersion !== newVersion) {
+                        if (node.node_version) {
+                            const code = document.createElement('code');
+                            code.textContent = node.node_version;
+                            versionCell.replaceChildren(code);
+                        } else {
+                            const span = document.createElement('span');
+                            span.className = 'text-muted';
+                            span.textContent = '—';
+                            versionCell.replaceChildren(span);
+                        }
+                    }
+                }
+
+                // Update last seen (secure DOM manipulation)
+                const lastSeenCell = row.querySelector('td[data-label="Last Seen"]');
+                if (lastSeenCell) {
+                    const currentSpan = lastSeenCell.querySelector('span');
+                    const currentText = currentSpan?.textContent || '';
+                    const newText = node.last_seen_text || 'Never';
+                    
+                    if (currentText !== newText) {
+                        const span = document.createElement('span');
+                        span.className = node.last_seen_class || 'text-muted';
+                        span.textContent = newText;
+                        lastSeenCell.replaceChildren(span);
+                    }
+                }
+
+                // Update restart button state based on node status and SSE connection
+                const restartBtn = row.querySelector('button[data-action="restart-node"]');
+                if (restartBtn) {
+                    const isOnline = node.status === 'online';
+                    const sseConnected = node.sse_connected === true;
+                    // Only disable if node is offline (not if SSE disconnected)
+                    restartBtn.disabled = !isOnline;
+                    restartBtn.dataset.nodeStatus = node.status || '';
+                    restartBtn.dataset.sseConnected = sseConnected ? 'true' : 'false';
+                    // Visual warning if SSE not connected
+                    restartBtn.classList.toggle('btn-outline-warning', isOnline && !sseConnected);
+                    restartBtn.classList.toggle('btn-outline-secondary', !isOnline || sseConnected);
+                    // Update tooltip title (only recreate if changed to reduce overhead)
+                    let title = 'Restart Node';
+                    if (!isOnline) title = 'Node is offline';
+                    else if (!sseConnected) title = '⚠️ SSE not connected - restart may fail';
+                    
+                    if (restartBtn.getAttribute('data-bs-title') !== title) {
+                        restartBtn.setAttribute('data-bs-title', title);
+                        const tooltip = bootstrap.Tooltip.getInstance(restartBtn);
+                        if (tooltip) {
+                            tooltip.setContent({ '.tooltip-inner': title });
+                        }
+                    }
+                }
+            }
+            
+            // Reset failure count on success
+            if (pollFailureCount >= MAX_POLL_FAILURES) {
+                pollFailureCount = 0;
+                startPolling(); // Restore normal interval
+            } else {
+                pollFailureCount = 0;
+            }
+        } catch (err) {
+            if (err.code === 'ABORTED' || err.name === 'AbortError') return;
+            pollFailureCount++;
+            if (pollFailureCount === MAX_POLL_FAILURES) startPolling(); // Backoff
+        }
+    }
+
+    function startPolling() {
+        stopPolling();
+        
+        // Use backoff if too many failures
+        const interval = pollFailureCount >= MAX_POLL_FAILURES ? POLL_BACKOFF_MS : POLL_INTERVAL_MS;
+        pollTimer = setInterval(refreshNodes, interval);
+    }
+
+    function stopPolling() {
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+    }
+
+    // ========================================================================
+    // EVENT LISTENERS
+    // ========================================================================
+    addNodeForm?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        await submitAddNode();
+    });
+
+    editNodeForm?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        await submitEditNode();
+    });
+
+    document.getElementById('copyEnrollmentTokenBtn')?.addEventListener('click', async () => {
+        await copyTextFromElement('enrollmentTokenDisplay');
+    });
+
+    document.getElementById('copyRegeneratedTokenBtn')?.addEventListener('click', async () => {
+        await copyTextFromElement('regenTokenDisplay');
+    });
+
+    [addNodeFqdnInput, editNodeFqdnInput].forEach((input) => {
+        input?.addEventListener('input', () => {
+            validateNodeAddressField(input);
+        });
+        input?.addEventListener('blur', () => {
+            validateNodeAddressField(input);
+        });
+    });
+
+    nodesTableBody?.addEventListener('click', async (event) => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) return;
+
+        const action = button.dataset.action;
+        const nodeId = button.dataset.nodeId || '';
+        const nodeName = button.dataset.nodeName || 'node';
+
+        if (action === 'edit-node') {
+            openEditNodeModal(
+                nodeId,
+                nodeName,
+                button.dataset.nodeFqdn || '',
+                Number(button.dataset.nodePort) || 51820,
+            );
+            return;
+        }
+
+        if (action === 'delete-node') {
+            await deleteNode(nodeId, nodeName);
+            return;
+        }
+
+        if (action === 'regenerate-token') {
+            await regenerateToken(nodeId, nodeName);
+            return;
+        }
+
+        if (action === 'restart-node') {
+            await restartNode(nodeId, nodeName);
+        }
+    });
+
+    // Reset modal state when closed (with explicit state check)
+    addNodeModalEl?.addEventListener('hidden.bs.modal', function() {
+        document.getElementById('addNodeStep1').style.display = 'block';
+        document.getElementById('addNodeStep2').style.display = 'none';
+        if (nodeNameInput) nodeNameInput.value = '';
+        if (addNodeFqdnInput) addNodeFqdnInput.value = '';
+        const nodePortInput = document.getElementById('nodePort');
+        if (nodePortInput) nodePortInput.value = '{{ default_wg_port }}';
+        setButtonLoading(addNodeSubmitBtn, false);
+        if (addNodeSubmitBtn) addNodeSubmitBtn.style.display = '';
+        
+        // Refresh datatable instead of full reload if a node was created
+        if (nodeCreatedFlag) {
+            nodeCreatedFlag = false;
+            refreshNodes();
+        }
+    });
+
+    // Focus first input when modal opens
+    addNodeModalEl?.addEventListener('shown.bs.modal', () => {
+        nodeNameInput?.focus();
+    });
+
+    editNodeModalEl?.addEventListener('shown.bs.modal', () => {
+        document.getElementById('editNodeName')?.focus();
+    });
+
+    // Pause polling when tab is hidden
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopPolling();
+        } else {
+            refreshNodes(); // Refresh immediately when tab becomes visible
+            startPolling();
+        }
+    });
+
+    // Cleanup on page unload (navigation, bfcache eviction)
+    window.addEventListener('pagehide', () => {
+        stopPolling();
+        pollController?.abort();
+    });
+
+    // ========================================================================
+    // INITIALIZATION
+    // ========================================================================
+    initTooltips();
+    startPolling();
+})();
+</script>
+{% endblock %}

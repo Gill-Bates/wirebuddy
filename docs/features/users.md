@@ -202,7 +202,7 @@ Include token in `Authorization` header:
 
 ```bash
 curl -H "Authorization: Bearer your_token_here" \
-  https://vpn.example.com/api/peers
+  https://vpn.example.com/api/wireguard/peers
 ```
 
 ### Revoking Tokens

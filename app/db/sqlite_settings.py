@@ -177,6 +177,7 @@ _GLOBAL_SETTINGS_RECOVERY_KEYS = [
 	"wg_persistent_keepalive",
 	"wg_use_psk",
 	"gui_port",
+	"gui_external_port",
 	"gui_localhost_only",
 	"enable_status_page",
 	"enable_swagger",
@@ -197,7 +198,7 @@ def _normalize_recovery_value(key: str, value: str) -> str | None:
 			return "0"
 		return None
 
-	if key in {"wg_port", "gui_port"}:
+	if key in {"wg_port", "gui_port", "gui_external_port"}:
 		if not text.isdigit():
 			return None
 		port = int(text)

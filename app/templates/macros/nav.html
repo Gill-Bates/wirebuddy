@@ -1,5 +1,12 @@
-{% macro nav_item(path, icon, label) %}
+{% macro nav_item(path, icon, label, external=false) %}
+{% if external %}
+<a class="nav-link" href="{{ path }}" target="_blank" rel="noopener noreferrer">
+    <span class="material-icons">{{ icon }}</span>{{ label }}
+    <span class="material-icons" style="font-size: 14px; margin-left: 4px; opacity: 0.6;">open_in_new</span>
+</a>
+{% else %}
 <a class="nav-link {% if request.url.path.startswith(path) %}active{% endif %}" href="{{ path }}">
     <span class="material-icons">{{ icon }}</span>{{ label }}
 </a>
+{% endif %}
 {% endmacro %}

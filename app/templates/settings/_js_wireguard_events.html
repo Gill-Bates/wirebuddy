@@ -173,6 +173,7 @@
     // Add auto-save listeners to WG settings inputs
     const wgFqdn = document.getElementById('wg-fqdn');
     const guiPort = document.getElementById('gui-port');
+    const guiExternalPort = document.getElementById('gui-external-port');
     const guiLocalhostOnly = document.getElementById('gui-localhost-only');
     const wgMtu = document.getElementById('wg-mtu');
     const wgKeepalive = document.getElementById('wg-keepalive');
@@ -189,6 +190,11 @@
         guiPort.addEventListener('change', () => {
             updateStatusPageUrlPreview();
             updateSwaggerUrlPreview();
+            saveWgSettingsDebounced();
+        });
+    }
+    if (guiExternalPort) {
+        guiExternalPort.addEventListener('change', () => {
             saveWgSettingsDebounced();
         });
     }

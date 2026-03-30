@@ -261,7 +261,7 @@ def create_peer(name: str, ip: str) -> Peer:
 ```javascript
 const fetchPeers = async () => {
     try {
-        const response = await fetch('/api/peers');
+        const response = await fetch('/api/wireguard/peers');
         const data = await response.json();
         return data;
     } catch (error) {
@@ -303,27 +303,28 @@ def admin_token(client):
 def test_create_peer(client, admin_token):
     """Test peer creation."""
     response = client.post(
-        "/api/peers",
+        "/api/wireguard/peers",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "name": "Test Peer",
             "interface": "wg0",
-            "ip": "10.8.0.100"
+            "allowed_ips": "0.0.0.0/0, ::/0",
+            "allowed_ips_mode": "full"
         }
     )
     
     assert response.status_code == 201
     data = response.json()
-    assert data["name"] == "Test Peer"
-    assert data["ip"] == "10.8.0.100"
+    assert data["data"]["name"] == "Test Peer"
+    assert data["data"]["interface"] == "wg0"
 
 def test_create_peer_duplicate(client, admin_token):
     """Test duplicate peer creation fails."""
     # Create first peer
-    client.post("/api/peers", headers={"Authorization": f"Bearer {admin_token}"}, json={...})
+    client.post("/api/wireguard/peers", headers={"Authorization": f"Bearer {admin_token}"}, json={...})
     
     # Attempt duplicate
-    response = client.post("/api/peers", headers={"Authorization": f"Bearer {admin_token}"}, json={...})
+    response = client.post("/api/wireguard/peers", headers={"Authorization": f"Bearer {admin_token}"}, json={...})
     assert response.status_code == 409
 ```
 

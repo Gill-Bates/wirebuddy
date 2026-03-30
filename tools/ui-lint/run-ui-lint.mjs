@@ -7,9 +7,88 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import pixelmatch from 'pixelmatch';
-import { PNG } from 'pngjs';
 import { chromium, devices } from 'playwright';
+
+import {
+    ABOUT_APPLICATION_DETAILS_FORBIDDEN_ROWS,
+    ABOUT_APPLICATION_DETAILS_REQUIRED_ROWS,
+    ABOUT_MOBILE_STACK_GAP_VARIANCE_TOLERANCE_PX,
+    ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX,
+    ABOUT_UPDATE_TABLE_LABELS,
+    BADGE_FONT_SIZE_TOLERANCE_PX,
+    BADGE_FONT_WEIGHT_TOLERANCE,
+    BADGE_PADDING_TOLERANCE_PX,
+    BADGE_RADIUS_TOLERANCE_PX,
+    CARD_BORDER_RADIUS_EXPECTED_PX,
+    CARD_BORDER_RADIUS_TOLERANCE_PX,
+    CLICK_TARGET_MIN_SIZE_PX,
+    COMPACT_CARD_ACTION_BORDER_TOP_MAX_PX,
+    COMPACT_CARD_ACTION_MARGIN_TOP_MAX_PX,
+    COMPACT_CARD_ACTION_PADDING_TOP_MAX_PX,
+    COMPONENT_LAYOUT_SHIFT_SETTLE_MS,
+    COMPONENT_LAYOUT_SHIFT_THRESHOLD_PX,
+    DASHBOARD_TRANSFER_COLOR_DISTANCE_MIN,
+    DETAILS_EXPAND_SETTLE_MS,
+    FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX,
+    FOOTER_OVERLAP_TOLERANCE_PX,
+    FORM_SWITCH_HEIGHT_TOLERANCE_PX,
+    FORM_SWITCH_MAX_HEIGHT_PX,
+    FULL_MOTION_RESET_CSS,
+    GHOST_SCROLL_DELTA_MAX_PX,
+    GHOST_SCROLL_MIN_HEIGHT_PX,
+    INPUT_GROUP_HEIGHT_EXPECTED_PX,
+    INPUT_GROUP_HEIGHT_TOLERANCE_PX,
+    KPI_CARD_PADDING_EXPECTED,
+    KPI_CARD_PADDING_TOLERANCE,
+    KPI_CONTEXTUAL_ICON_CLASSES,
+    KPI_ICON_CENTER_TOLERANCE_PX,
+    KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX,
+    KPI_ROW_VARIANCE_MAX,
+    LOGIN_ERROR_SETTLE_MS,
+    LOGIN_LOCKOUT_RESET_MS,
+    LOGIN_TEST_STAGGER_MS,
+    LOGS_DELETE_HAIRLINE_TOLERANCE_PX,
+    MODAL_BACKDROP_ALPHA_EXPECTED,
+    MODAL_BACKDROP_ALPHA_TOLERANCE,
+    MODAL_BACKDROP_BLUR_EXPECTED_PX,
+    MODAL_BACKDROP_BLUR_TOLERANCE_PX,
+    MODAL_BACKDROP_SATURATE_EXPECTED,
+    MODAL_BACKDROP_SATURATE_TOLERANCE,
+    MONOSPACE_PADDING_TOLERANCE_PX,
+    MONOSPACE_RADIUS_TOLERANCE_PX,
+    OVERFLOW_TOLERANCE_PX,
+    SCROLL_EDGE_CLEARANCE_MIN,
+    SCREENSHOT_SETTLE_MS,
+    SETTINGS_TAB_COLOR_DISTANCE_MAX,
+    SLIDER_LABEL_HIDDEN_OPACITY_MAX,
+    SLIDER_TICK_ALIGNMENT_TOLERANCE_PX,
+    SLIDER_VISIBLE_LABEL_GAP_MIN_PX,
+    STACK_GAP_VARIANCE_TOLERANCE_PX,
+    STATUS_DETAIL_CARD_TITLES,
+    STATUS_FLOW_CONNECTOR_EXPECTATIONS,
+    STATUS_FLOW_NODE_EXPECTATIONS,
+    TAB_SWITCH_SETTLE_MS,
+    UI_EVAL_CONSTANTS,
+    VERTICAL_GAP_MAX,
+    VERTICAL_GAP_MIN,
+    VISUAL_DRIFT_THRESHOLD,
+    WCAG_CONTRAST,
+} from './lib/constants.mjs';
+import {
+    captureKpiCards,
+    captureStablePair,
+    collectConsoleAndNetwork,
+    diffScreenshots,
+    disableMotion,
+    ensureDir,
+    installLayoutShiftObserver,
+    login,
+    applyTheme,
+    resetLayoutShiftMetric,
+    sanitize,
+} from './lib/browser-utils.mjs';
+import { summarizeFindings, isExpectedStatusUnavailable } from './lib/findings.mjs';
+import { LOGIN_FAILURE_VIEWS, VIEWS } from './lib/views.mjs';
 
 const BASE_URL = process.env.UI_LINT_BASE_URL || 'http://localhost:8000';
 const USERNAME = process.env.UI_LINT_USERNAME;
@@ -31,459 +110,6 @@ const SCREENSHOT_DIR = path.resolve(
 );
 // Results JSON stays in tools/ui-lint/, not in temp
 const RESULTS_DIR = SCRIPT_DIR;
-
-// Thresholds and timing constants
-const VERTICAL_GAP_MIN = 22;
-const VERTICAL_GAP_MAX = 26;
-const VISUAL_DRIFT_THRESHOLD = 0.0025;
-const SCREENSHOT_SETTLE_MS = 800;
-const TAB_SWITCH_SETTLE_MS = 700;
-const DETAILS_EXPAND_SETTLE_MS = 300;
-// Increased tolerance to avoid false positives on tablet Safari
-const OVERFLOW_TOLERANCE_PX = 6;
-const FOOTER_OVERLAP_TOLERANCE_PX = 1;
-const SCROLL_EDGE_CLEARANCE_MIN = 12;
-const LAYOUT_SHIFT_THRESHOLD = 0.02;
-const COMPONENT_LAYOUT_SHIFT_THRESHOLD_PX = 2;
-// Charts and canvases can stabilize slower on tablets
-const COMPONENT_LAYOUT_SHIFT_SETTLE_MS = 800;
-const CLICK_TARGET_MIN_SIZE_PX = 44;
-const LOGIN_ERROR_SETTLE_MS = 120;
-const LOGIN_LOCKOUT_RESET_MS = 16000;
-// Auth rate limit is 5/minute. With 6 login-failure tests, we must stagger them.
-// Wait 12s between each test to stay under 5 attempts/minute (60s/5 = 12s minimum).
-const LOGIN_TEST_STAGGER_MS = 13000;
-const LOGS_DELETE_HAIRLINE_TOLERANCE_PX = 2;
-const BADGE_FONT_SIZE_TOLERANCE_PX = 0.5;
-const BADGE_FONT_WEIGHT_TOLERANCE = 50;
-const BADGE_RADIUS_TOLERANCE_PX = 1;
-const BADGE_PADDING_TOLERANCE_PX = 1;
-const MONOSPACE_RADIUS_TOLERANCE_PX = 1;
-const MONOSPACE_PADDING_TOLERANCE_PX = 1;
-const SLIDER_TICK_ALIGNMENT_TOLERANCE_PX = 3;
-const SLIDER_VISIBLE_LABEL_GAP_MIN_PX = 4;
-const SLIDER_LABEL_HIDDEN_OPACITY_MAX = 0.05;
-const MODAL_BACKDROP_BLUR_EXPECTED_PX = 8;
-const MODAL_BACKDROP_BLUR_TOLERANCE_PX = 0.25;
-const MODAL_BACKDROP_SATURATE_EXPECTED = 0.8;
-const MODAL_BACKDROP_SATURATE_TOLERANCE = 0.05;
-const MODAL_BACKDROP_ALPHA_EXPECTED = 0.6;
-const MODAL_BACKDROP_ALPHA_TOLERANCE = 0.05;
-const FORM_SWITCH_MAX_HEIGHT_PX = 22;
-const FORM_SWITCH_HEIGHT_TOLERANCE_PX = 1;
-
-// =============================================================================
-// Peers Modal Design Rules
-// =============================================================================
-// Add Peer Modal (#addPeerModal):
-// - Name field is REQUIRED (not optional) — enforced via:
-//   1. <span class="text-danger">*</span> marker after label text
-//   2. `required` HTML attribute on <input id="peer-name">
-//   3. `maxlength="128"` (backend max)
-//   4. Frontend JS validation before API call (shows alert + focuses field)
-//   5. Backend Pydantic model: `name: str = Field(..., min_length=1, max_length=128)`
-// - Routing Mode: dropdown with full/split/custom options
-// - Interface: required dropdown populated from active interfaces
-// - Use WireBuddy DNS: checkbox (default checked)
-// - Active Blocklists: shown only when DNS enabled
-// - Client Isolation: optional switch with help collapse
-//
-// Edit Peer Modal (#editPeerModal):
-// - Name field follows same required pattern as Add Peer
-// - Pre-populated with existing peer data
-//
-// Required Field Visual Convention:
-// - Label pattern: `<label>Field Name <span class="text-danger">*</span></label>`
-// - Required fields MUST have both visual marker AND `required` attribute
-// =============================================================================
-
-// Form Control Height validation (input-group consistency)
-// Current Bootstrap-based WireBuddy controls render at ~44px total height
-// for default-sized .form-control/.btn combinations in settings input groups.
-const INPUT_GROUP_HEIGHT_EXPECTED_PX = 44;
-const INPUT_GROUP_HEIGHT_TOLERANCE_PX = 2;
-const COMPACT_CARD_ACTION_MARGIN_TOP_MAX_PX = 10;
-const COMPACT_CARD_ACTION_PADDING_TOP_MAX_PX = 2;
-const COMPACT_CARD_ACTION_BORDER_TOP_MAX_PX = 0.5;
-
-// Ghost scroll container detection (scrollbar visible but minimal content overflow)
-// Catches cases like scrollHeight = clientHeight + 1–6px caused by thead/padding
-const GHOST_SCROLL_DELTA_MAX_PX = 8;
-const GHOST_SCROLL_MIN_HEIGHT_PX = 120;
-
-// KPI Card validation constants
-const KPI_CARD_PADDING_EXPECTED = 16; // px (1rem)
-const KPI_CARD_PADDING_TOLERANCE = 1;
-const KPI_ICON_MIN = 32;
-const KPI_ICON_MAX = 40;
-const KPI_VISUAL_DRIFT_THRESHOLD = 0.01;
-const KPI_HEIGHT_TOLERANCE_PX = 2;
-const KPI_ROW_VARIANCE_MAX = 3;
-const KPI_ICON_CENTER_TOLERANCE_PX = 4;
-const KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX = 12;
-const KPI_CONTEXTUAL_ICON_CLASSES = ['text-primary', 'text-success', 'text-info', 'text-danger', 'text-warning'];
-const SETTINGS_TAB_COLOR_DISTANCE_MAX = 12;
-const DASHBOARD_TRANSFER_COLOR_DISTANCE_MIN = 40;
-const KPI_CARD_REQUIRED_SCOPES = ['dashboard', 'dns'];
-
-// Card border-radius consistency (--wb-radius-lg: 12px)
-const CARD_BORDER_RADIUS_EXPECTED_PX = 12;
-const CARD_BORDER_RADIUS_TOLERANCE_PX = 1;
-
-// About page card layout (reference layout pattern)
-// The About page serves as the reference implementation for card grid layouts:
-// - Top row: 3 equal-height cards using flexbox (col-lg-4 + d-flex + flex-grow-1)
-// - Bottom row: Full-width card
-// Other pages should follow this pattern for consistent card sizing.
-const ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX = 2;
-
-const THEMES = ['light', 'dark'];
-
-// WCAG 2.1 AA contrast requirements
-const WCAG_CONTRAST = {
-    NORMAL_AA: 4.5,
-    LARGE_AA: 3.0,
-    LARGE_TEXT_SIZE_PX: 24,
-    LARGE_TEXT_SIZE_BOLD_PX: 18.66,
-    BOLD_WEIGHT: 700,
-};
-
-const STATUS_FLOW_NODE_EXPECTATIONS = [
-    { key: 'client', label: 'Client', icon: 'devices' },
-    { key: 'wireguard', label: 'WireGuard', icon: 'vpn_lock' },
-    { key: 'internet', label: 'Internet', icon: 'public' },
-];
-
-const STATUS_FLOW_CONNECTOR_EXPECTATIONS = [
-    'client-wireguard',
-    'wireguard-internet',
-];
-
-const LOGIN_FAILURE_VIEW_DEFS = [
-    { name: 'login-error', url: '/login', scope: 'login' },
-];
-
-// View definitions (DRY: desktop, tablet, and mobile generated from base definitions)
-const VIEW_DEFS = [
-    { name: 'dashboard', url: '/ui/dashboard', scope: 'dashboard' },
-    { name: 'peers', url: '/ui/peers', scope: 'peers' },
-    { name: 'users', url: '/ui/users', scope: 'users' },
-    { name: 'dns', url: '/ui/dns', scope: 'dns' },
-    { name: 'traffic', url: '/ui/traffic', scope: 'traffic' },
-    { name: 'status', url: '/status', scope: 'status' },
-    { name: 'about', url: '/ui/about', scope: 'about' },
-    { name: 'settings-general', url: '/ui/settings', scope: 'settings', tab: '#general-tab' },
-    { name: 'settings-wireguard', url: '/ui/settings', scope: 'settings', tab: '#wireguard-tab' },
-    { name: 'settings-dns', url: '/ui/settings', scope: 'settings', tab: '#dns-tab' },
-    { name: 'settings-letsencrypt', url: '/ui/settings', scope: 'settings', tab: '#letsencrypt-tab' },
-    { name: 'settings-logs', url: '/ui/settings', scope: 'settings', tab: '#logs-tab' },
-];
-
-/**
- * Expands view definitions into desktop/tablet/mobile × light/dark variants.
- * @param {Array} viewDefs - Base view definitions
- * @returns {Array} Expanded view definitions with all variants
- */
-function expandViewDefinitions(viewDefs) {
-    return viewDefs.flatMap((def) =>
-        THEMES.flatMap((theme) => [
-            { ...def, name: `desktop-${def.name}-${theme}`, device: 'desktop', theme },
-            { ...def, name: `tablet-${def.name}-${theme}`, device: 'tablet', theme },
-            { ...def, name: `mobile-${def.name}-${theme}`, device: 'mobile', theme },
-        ])
-    );
-}
-
-const VIEWS = expandViewDefinitions(VIEW_DEFS);
-const LOGIN_FAILURE_VIEWS = expandViewDefinitions(LOGIN_FAILURE_VIEW_DEFS);
-
-// Base motion reset CSS (generic)
-const MOTION_RESET_CSS = `
-  *, *::before, *::after {
-    animation: none !important;
-    transition: none !important;
-    scroll-behavior: auto !important;
-    caret-color: transparent !important;
-  }
-`;
-
-// Application-specific motion resets (WireBuddy)
-const APP_SPECIFIC_MOTION_RESET_CSS = `
-  .pulse-marker,
-  .leaflet-pane,
-  .leaflet-control-container,
-  #peer-map img,
-  #peer-map canvas {
-    animation: none !important;
-    transition: none !important;
-  }
-`;
-
-const FULL_MOTION_RESET_CSS = MOTION_RESET_CSS + APP_SPECIFIC_MOTION_RESET_CSS;
-
-function sanitize(name) {
-    return name.replace(/[^a-z0-9-_]+/g, '_').toLowerCase();
-}
-
-function ensureDir(dirPath) {
-    fs.mkdirSync(dirPath, { recursive: true });
-}
-
-async function installLayoutShiftObserver(context) {
-    await context.addInitScript(() => {
-        window.__uiLintLayoutShift = { value: 0, count: 0 };
-        if (!('PerformanceObserver' in window)) return;
-        try {
-            const observer = new PerformanceObserver((list) => {
-                for (const entry of list.getEntries()) {
-                    if (entry.hadRecentInput) continue;
-                    window.__uiLintLayoutShift.value += entry.value || 0;
-                    window.__uiLintLayoutShift.count += 1;
-                }
-            });
-            observer.observe({ type: 'layout-shift', buffered: true });
-        } catch {
-            // Ignore unsupported browsers.
-        }
-    });
-}
-
-async function disableMotion(page, viewName = 'unknown') {
-    await page.addStyleTag({ content: FULL_MOTION_RESET_CSS })
-        .catch((err) => console.warn(`[${viewName}] Failed to inject motion reset CSS: ${err.message}`));
-}
-
-async function resetLayoutShiftMetric(page) {
-    await page.evaluate(() => {
-        window.__uiLintLayoutShift = { value: 0, count: 0 };
-    }).catch(() => { });
-}
-
-async function login(page) {
-    await page.goto(`${BASE_URL}/login`, { waitUntil: 'networkidle', timeout: 10000 });
-    await disableMotion(page, 'login');
-
-    // Playwright's fill() automatically clears before filling
-    await page.fill('#username', USERNAME);
-    await page.fill('#password', PASSWORD);
-    await Promise.all([
-        page.waitForURL((url) => !url.toString().includes('/login'), { timeout: 10000 }),
-        page.click('#submit-btn'),
-    ]);
-
-    // Check only visible login errors. The app layout contains a hidden
-    // key-mismatch banner that should not fail the login flow.
-    const errorText = await page.locator('.alert-danger, .login-error, .error-message').evaluateAll((elements) => {
-        const isVisible = (el) => {
-            if (!el || !el.isConnected) return false;
-            if (el.closest('.d-none, [hidden], [aria-hidden="true"]')) return false;
-            const style = window.getComputedStyle(el);
-            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-            const rect = el.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0;
-        };
-
-        const visibleError = elements.find((el) => isVisible(el));
-        return visibleError ? (visibleError.textContent || '').trim() : '';
-    });
-    if (errorText) {
-        throw new Error(`Login failed: ${errorText}`);
-    }
-
-    await disableMotion(page, 'login');
-}
-
-async function applyTheme(page, theme, label = 'unknown') {
-    let sameOrigin = false;
-    try {
-        sameOrigin = page.url().startsWith(BASE_URL);
-    } catch (err) {
-        console.warn(`[${label}] Unable to verify origin: ${err.message}`);
-    }
-
-    if (!sameOrigin) {
-        await page.goto(`${BASE_URL}/login`, { waitUntil: 'domcontentloaded', timeout: 30000 })
-            .catch((err) => console.warn(`[${label}] Failed to bootstrap origin for theme setup: ${err.message}`));
-    }
-
-    await page.evaluate((nextTheme) => {
-        localStorage.setItem('theme', nextTheme);
-        document.documentElement.setAttribute('data-bs-theme', nextTheme);
-        if (typeof window.updateThemeIcon === 'function') {
-            window.updateThemeIcon(nextTheme);
-        }
-    }, theme).catch((err) => {
-        throw new Error(`[${label}] Failed to apply theme ${theme}: ${err.message}`);
-    });
-}
-
-function collectConsoleAndNetwork(page) {
-    const consoleEntries = [];
-    const pageErrors = [];
-    const requestFailures = [];
-    const badResponses = [];
-    const requests = [];
-
-    const onConsole = (msg) => {
-        if (['error', 'warning'].includes(msg.type())) {
-            consoleEntries.push({ type: msg.type(), text: msg.text() });
-        }
-    };
-    const onPageError = (err) => pageErrors.push(String(err?.message || err));
-    const onRequest = (req) => {
-        requests.push({
-            url: req.url(),
-            method: req.method(),
-            resourceType: req.resourceType(),
-        });
-    };
-    const onRequestFailed = (req) => requestFailures.push({ url: req.url(), error: req.failure()?.errorText || 'unknown' });
-    const onResponse = (res) => {
-        if (res.status() >= 400) {
-            badResponses.push({ url: res.url(), status: res.status() });
-        }
-    };
-
-    page.on('console', onConsole);
-    page.on('pageerror', onPageError);
-    page.on('request', onRequest);
-    page.on('requestfailed', onRequestFailed);
-    page.on('response', onResponse);
-
-    return () => {
-        page.off('console', onConsole);
-        page.off('pageerror', onPageError);
-        page.off('request', onRequest);
-        page.off('requestfailed', onRequestFailed);
-        page.off('response', onResponse);
-        return { consoleEntries, pageErrors, requestFailures, badResponses, requests };
-    };
-}
-
-async function captureStablePair(page, name) {
-    await disableMotion(page, name);
-    await page.waitForLoadState('networkidle', { timeout: 30000 })
-        .catch((err) => console.warn(`[${name}] waitForLoadState timed out: ${err.message}`));
-    // Note: waitForTimeout is flaky but needed for animations to settle after motion reset
-    await page.waitForTimeout(SCREENSHOT_SETTLE_MS);
-    const safeName = sanitize(name);
-    const shotA = path.join(SCREENSHOT_DIR, `${safeName}-a.png`);
-    const shotB = path.join(SCREENSHOT_DIR, `${safeName}-b.png`);
-    await page.screenshot({ path: shotA, fullPage: true, animations: 'disabled' });
-    await page.waitForTimeout(SCREENSHOT_SETTLE_MS);
-    await page.screenshot({ path: shotB, fullPage: true, animations: 'disabled' });
-    return { shotA, shotB };
-}
-
-/**
- * Compares two screenshots pixel-by-pixel using pixelmatch algorithm.
- * Detects visual regressions by measuring pixel differences between two PNG images.
- * 
- * @param {string} name - View name for output files (used for diff image naming)
- * @param {string} shotA - Absolute path to first PNG screenshot
- * @param {string} shotB - Absolute path to second PNG screenshot
- * @returns {Object} Diff metrics: { ratio: number (0-1), mismatched: number, total: number, sizeMismatch: boolean, diffPath: string }
- * @throws {Error} If PNG files cannot be read or dimensions mismatch severely
- */
-function diffScreenshots(name, shotA, shotB) {
-    // Intentional sync I/O: this runs in a single-shot CLI audit after screenshots are captured.
-    const img1 = PNG.sync.read(fs.readFileSync(shotA));
-    const img2 = PNG.sync.read(fs.readFileSync(shotB));
-    const sizeMismatch = img1.width !== img2.width || img1.height !== img2.height;
-    const width = Math.min(img1.width, img2.width);
-    const height = Math.min(img1.height, img2.height);
-    const pngA = new PNG({ width, height });
-    const pngB = new PNG({ width, height });
-    PNG.bitblt(img1, pngA, 0, 0, width, height, 0, 0);
-    PNG.bitblt(img2, pngB, 0, 0, width, height, 0, 0);
-    const diff = new PNG({ width, height });
-    const mismatchedPixels = pixelmatch(pngA.data, pngB.data, diff.data, width, height, { threshold: 0.1 });
-    const diffPath = path.join(SCREENSHOT_DIR, `${sanitize(name)}-diff.png`);
-    fs.writeFileSync(diffPath, PNG.sync.write(diff));
-    const totalPixels = width * height;
-    return {
-        mismatchedPixels,
-        totalPixels,
-        ratio: totalPixels > 0 ? mismatchedPixels / totalPixels : 0,
-        sizeMismatch,
-        dimensions: sizeMismatch ? { img1: { width: img1.width, height: img1.height }, img2: { width: img2.width, height: img2.height } } : null,
-        diffPath,
-    };
-}
-
-/**
- * Collects comprehensive page metrics including accessibility, layout, and styling issues.
- * 
- * @param {Page} page - Playwright page instance
- * @param {string} scope - View scope (e.g., 'dashboard', 'settings')
- * @returns {Promise<Object>} Metrics object containing all collected data
- */
-
-async function captureKpiCards(page, viewName) {
-    const cards = await page.$$('.wb-kpi-card');
-    const paths = [];
-
-    for (let i = 0; i < cards.length; i += 1) {
-        const card = cards[i];
-        const pathOut = path.join(
-            SCREENSHOT_DIR,
-            `${sanitize(viewName)}-kpi-${i}.png`
-        );
-
-        await card.screenshot({ path: pathOut });
-        paths.push(pathOut);
-    }
-
-    return paths;
-}
-
-/**
- * Compares KPI card screenshots between two sets.
- * @param {string} nameA - Name of first view
- * @param {Array<string>} setA - Paths to first set of KPI screenshots
- * @param {string} nameB - Name of second view
- * @param {Array<string>} setB - Paths to second set of KPI screenshots
- * @returns {Array<Object>} Comparison results with diff ratios per card
- */
-function diffKpiSets(nameA, setA, nameB, setB) {
-    const results = [];
-    const minSetLength = Math.min(setA.length, setB.length);
-
-    for (let i = 0; i < minSetLength; i += 1) {
-        // Intentional sync I/O: KPI diffs are small and executed in the same CLI-only post-processing step.
-        const img1 = PNG.sync.read(fs.readFileSync(setA[i]));
-        const img2 = PNG.sync.read(fs.readFileSync(setB[i]));
-
-        const width = Math.min(img1.width, img2.width);
-        const height = Math.min(img1.height, img2.height);
-
-        const pngA = new PNG({ width, height });
-        const pngB = new PNG({ width, height });
-
-        PNG.bitblt(img1, pngA, 0, 0, width, height, 0, 0);
-        PNG.bitblt(img2, pngB, 0, 0, width, height, 0, 0);
-
-        const diff = new PNG({ width, height });
-
-        const mismatched = pixelmatch(
-            pngA.data,
-            pngB.data,
-            diff.data,
-            width,
-            height,
-            { threshold: 0.1 }
-        );
-
-        const ratio = mismatched / (width * height);
-
-        results.push({
-            index: i,
-            ratio,
-        });
-    }
-
-    return results;
-}
 
 async function collectPageMetrics(page, scope) {
     return page.evaluate(async ({ scope, constants }) => {
@@ -888,6 +514,55 @@ async function collectPageMetrics(page, scope) {
             .filter((table) => isVisible(table) && isInContentRoot(table) && !table.querySelector('th'))
             .map(rectInfo);
 
+        // =============================================================================
+        // Table Cell Overlap Detection
+        // Detects horizontal overlap between adjacent table cells (e.g. badges overlapping action buttons)
+        // =============================================================================
+        const tableCellOverlapIssues = Array.from(document.querySelectorAll('table'))
+            .filter((table) => isVisible(table) && isInContentRoot(table))
+            .flatMap((table) => {
+                const rows = Array.from(table.querySelectorAll('tbody tr'));
+                return rows.map((row) => {
+                    const cells = Array.from(row.children).filter((c) => c instanceof HTMLElement);
+                    if (cells.length < 2) return null;
+
+                    const overlaps = [];
+
+                    for (let i = 0; i < cells.length - 1; i++) {
+                        const a = cells[i];
+                        const b = cells[i + 1];
+
+                        if (!isVisible(a) || !isVisible(b)) continue;
+
+                        const rectA = a.getBoundingClientRect();
+                        const rectB = b.getBoundingClientRect();
+
+                        // Detect horizontal overlap (with small tolerance)
+                        if (rectA.right > rectB.left + 1) {
+                            overlaps.push({
+                                leftCell: {
+                                    index: i,
+                                    ...rectInfo(a),
+                                },
+                                rightCell: {
+                                    index: i + 1,
+                                    ...rectInfo(b),
+                                },
+                                overlapPx: round(rectA.right - rectB.left),
+                            });
+                        }
+                    }
+
+                    if (!overlaps.length) return null;
+
+                    return {
+                        table: rectInfo(table),
+                        row: rectInfo(row),
+                        overlaps,
+                    };
+                }).filter(Boolean);
+            }).slice(0, 20);
+
         // Detect tables overflowing containers without responsive wrapper
         const tablesWithoutResponsive = Array.from(document.querySelectorAll('table'))
             .filter((table) => {
@@ -1109,26 +784,48 @@ async function collectPageMetrics(page, scope) {
             return style.overflowY === 'auto' || style.overflowY === 'scroll';
         };
 
+        const resolveTrailingVisibleContent = (container) => {
+            let current = container;
+            let lastVisibleChild = null;
+            let depth = 0;
+
+            while (current && depth < 6) {
+                const children = Array.from(current.children)
+                    .filter((child) => isVisible(child));
+
+                if (!children.length) break;
+
+                lastVisibleChild = children[children.length - 1];
+                if (children.length !== 1) break;
+
+                current = lastVisibleChild;
+                depth += 1;
+            }
+
+            return {
+                lastVisibleChild,
+                depth,
+            };
+        };
+
         // Generic scroll-bottom clearance check.
         const scrollBottomCrowding = contentElements
             .filter((el) => isScrollContainer(el))
             .map((container) => {
-                const children = Array.from(container.children)
-                    .filter((child) => isVisible(child));
+                const { lastVisibleChild, depth } = resolveTrailingVisibleContent(container);
+                if (!lastVisibleChild) return null;
 
-                if (!children.length) return null;
-
-                const lastChild = children[children.length - 1];
                 const containerRect = container.getBoundingClientRect();
-                const childRect = lastChild.getBoundingClientRect();
+                const childRect = lastVisibleChild.getBoundingClientRect();
                 const clearance = round(containerRect.bottom - childRect.bottom);
 
                 if (clearance >= constants.SCROLL_EDGE_CLEARANCE_MIN) return null;
 
                 return {
                     clearance,
+                    traversalDepth: depth,
                     container: rectInfo(container),
-                    lastChild: rectInfo(lastChild),
+                    lastChild: rectInfo(lastVisibleChild),
                 };
             })
             .filter(Boolean)
@@ -1512,6 +1209,61 @@ async function collectPageMetrics(page, scope) {
             }))
             .slice(0, 10);
 
+        spacing.mobileRowCardStackGaps = [];
+        if (window.matchMedia('(max-width: 991.98px)').matches) {
+            spacing.mobileRowCardStackGaps = Array.from(contentRoot.querySelectorAll('.row'))
+                .filter((row) => {
+                    const classes = Array.from(row.classList);
+                    return classes.some((c) => /^g[xy]?-[1-5]$/.test(c));
+                })
+                .map((row) => {
+                    const rowLabel = row.id
+                        || row.getAttribute('data-ui-lint')
+                        || Array.from(row.classList).join(' ')
+                        || 'row';
+                    const cards = Array.from(row.children)
+                        .filter((child) => hasBootstrapColClass(child) && isVisible(child))
+                        .flatMap((col) => Array.from(col.children)
+                            .filter((child) => child.classList?.contains('card') && isVisible(child))
+                            .map((card) => ({
+                                label: norm(card.querySelector('.card-header')?.textContent).slice(0, 80) || 'card',
+                                rect: card.getBoundingClientRect(),
+                            })))
+                        .sort((a, b) => {
+                            if (Math.abs(a.rect.top - b.rect.top) > 1) return a.rect.top - b.rect.top;
+                            return a.rect.left - b.rect.left;
+                        });
+
+                    const gaps = [];
+                    for (let index = 1; index < cards.length; index += 1) {
+                        const prev = cards[index - 1];
+                        const current = cards[index];
+                        if (Math.abs(prev.rect.left - current.rect.left) >= 4) continue;
+                        if (current.rect.top < prev.rect.bottom - 1) continue;
+                        gaps.push({
+                            from: prev.label,
+                            to: current.label,
+                            gap: round(current.rect.top - prev.rect.bottom),
+                        });
+                    }
+
+                    const gapValues = gaps.map((entry) => entry.gap);
+                    const gapVariance = gapValues.length > 1
+                        ? round(Math.max(...gapValues) - Math.min(...gapValues))
+                        : 0;
+
+                    return {
+                        row: rowLabel,
+                        cardCount: cards.length,
+                        gaps,
+                        gapVariance,
+                        gapsConsistent: gapVariance <= constants.STACK_GAP_VARIANCE_TOLERANCE_PX,
+                    };
+                })
+                .filter((entry) => entry.cardCount >= 3 && entry.gaps.length >= 2)
+                .slice(0, 20);
+        }
+
         const footer = document.querySelector('.wb-footer');
         const pageHasVerticalOverflow = Math.max(
             contentRoot.scrollHeight,
@@ -1838,6 +1590,54 @@ async function collectPageMetrics(page, scope) {
             }).filter(Boolean);
         }
 
+        if (scope === 'users') {
+            const actionButtons = Array.from(contentRoot.querySelectorAll(
+                '.btn-edit-user, .btn-otp-settings, .btn-passkey-settings, .btn-delete-user, .btn-delete-passkey'
+            ))
+                .filter((el) => isVisible(el) && isInContentRoot(el))
+                .map((el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    const icon = el.querySelector('.material-icons');
+                    const iconStyle = icon ? window.getComputedStyle(icon) : null;
+                    return {
+                        ...rectInfo(el),
+                        width: round(rect.width),
+                        height: round(rect.height),
+                        borderRadius: round(parseFloat(style.borderTopLeftRadius || '0')),
+                        display: style.display,
+                        alignItems: style.alignItems,
+                        justifyContent: style.justifyContent,
+                        hasUsersActionClass: el.classList.contains('users-action-btn'),
+                        iconHasMdClass: Boolean(icon?.classList.contains('icon-md')),
+                        iconPointerEvents: iconStyle?.pointerEvents || null,
+                    };
+                });
+
+            const referenceButton = actionButtons[0] || null;
+            spacing.usersActionButtons = {
+                count: actionButtons.length,
+                missingClassCount: actionButtons.filter((button) => !button.hasUsersActionClass).length,
+                missingIconMdCount: actionButtons.filter((button) => !button.iconHasMdClass).length,
+                undersizedCount: actionButtons.filter(
+                    (button) => button.width < constants.CLICK_TARGET_MIN_SIZE_PX || button.height < constants.CLICK_TARGET_MIN_SIZE_PX
+                ).length,
+                alignmentMismatchCount: actionButtons.filter(
+                    (button) => button.display !== 'inline-flex' || button.alignItems !== 'center' || button.justifyContent !== 'center'
+                ).length,
+                iconPointerMismatchCount: actionButtons.filter((button) => button.iconPointerEvents !== 'none').length,
+                sizeMismatchCount: referenceButton
+                    ? actionButtons.filter(
+                        (button) => Math.abs(button.width - referenceButton.width) > 2 || Math.abs(button.height - referenceButton.height) > 2
+                    ).length
+                    : 0,
+                borderRadiusMismatchCount: referenceButton
+                    ? actionButtons.filter((button) => Math.abs(button.borderRadius - referenceButton.borderRadius) > 1).length
+                    : 0,
+                sample: actionButtons.slice(0, 10),
+            };
+        }
+
         // Peers page: Modal form validation (required field markers)
         if (scope === 'peers') {
             const addPeerModal = document.getElementById('addPeerModal');
@@ -1874,12 +1674,94 @@ async function collectPageMetrics(page, scope) {
                 addPeerModal: validatePeerModal(addPeerModal, 'addPeerModal'),
                 editPeerModal: validatePeerModal(editPeerModal, 'editPeerModal'),
             };
+
+            // Desktop layout: Status cell must NOT use display:flex (breaks table-cell vertical alignment)
+            // Also check Status badges don't overlap Action buttons horizontally
+            if (window.innerWidth >= 768) {
+                const peerRows = Array.from(document.querySelectorAll('#peers-table tr[data-peer-id]'));
+                spacing.peersDesktopStatusCell = peerRows.slice(0, 5).map((row) => {
+                    const statusCell = row.querySelector('td[data-label="Status"]');
+                    const actionsCell = row.querySelector('td.peer-actions-cell');
+                    const display = statusCell ? window.getComputedStyle(statusCell).display : null;
+                    const statusRect = statusCell ? statusCell.getBoundingClientRect() : null;
+                    const actionsRect = actionsCell ? actionsCell.getBoundingClientRect() : null;
+                    const overlapsActions = (statusRect && actionsRect)
+                        ? statusRect.right > actionsRect.left + 2
+                        : false;
+                    return {
+                        peerId: row.dataset.peerId,
+                        statusDisplay: display,
+                        isTableCell: display === 'table-cell',
+                        overlapsActions,
+                        statusRight: statusRect ? Math.round(statusRect.right) : null,
+                        actionsLeft: actionsRect ? Math.round(actionsRect.left) : null,
+                    };
+                });
+            }
+
+            // Mobile layout: badge visibility, last-seen merged into badge, client-ip placement
+            if (window.innerWidth < 768) {
+                const peerRows = Array.from(document.querySelectorAll('#peers-table tr[data-peer-id]'));
+                spacing.peersMobileLayout = peerRows.slice(0, 10).map((row) => {
+                    const peerId = row.dataset.peerId;
+                    const statusCell = row.querySelector('td[data-label="Status"]');
+                    const connectionBadge = statusCell?.querySelector('.peer-connection-badge-mobile');
+                    const enabledBadge = statusCell?.querySelector('.peer-enabled-badge');
+                    const lastSeenCell = row.querySelector('.peer-last-seen');
+                    const clientIpCell = row.querySelector('.peer-client-ip');
+                    const vpnCell = row.querySelector('td[data-label="VPN Address"]');
+                    const nameCell = row.querySelector('td[data-label="Name"]');
+
+                    const connVisible = connectionBadge ? window.getComputedStyle(connectionBadge).display !== 'none' : false;
+                    const enabledVisible = enabledBadge ? window.getComputedStyle(enabledBadge).display !== 'none' : false;
+                    const lastSeenHidden = lastSeenCell ? window.getComputedStyle(lastSeenCell).display === 'none' : true;
+                    const badgeTimeSpan = connectionBadge?.querySelector('.peer-badge-time');
+                    const badgeTimeVisible = badgeTimeSpan ? window.getComputedStyle(badgeTimeSpan).display !== 'none' : false;
+
+                    // Check status badges are right-aligned at the same vertical level as name
+                    const nameRect = nameCell ? nameCell.getBoundingClientRect() : null;
+                    const statusRect = statusCell ? statusCell.getBoundingClientRect() : null;
+                    const statusAlignedWithName = (nameRect && statusRect)
+                        ? Math.abs(nameRect.top - statusRect.top) < 8
+                        : false;
+
+                    // Check client-ip is below VPN address (stacked layout)
+                    const vpnRect = vpnCell ? vpnCell.getBoundingClientRect() : null;
+                    const clientIpRect = clientIpCell ? clientIpCell.getBoundingClientRect() : null;
+                    const clientIpStyle = clientIpCell ? window.getComputedStyle(clientIpCell) : null;
+                    const clientIpVisible = clientIpStyle ? clientIpStyle.display !== 'none' : false;
+                    const clientIpBelowVpn = (vpnRect && clientIpRect && clientIpVisible)
+                        ? clientIpRect.top >= vpnRect.bottom - 4
+                        : true; // pass if client-ip is hidden (empty)
+
+                    return {
+                        peerId,
+                        connectionBadgeVisible: connVisible,
+                        enabledBadgeVisible: enabledVisible,
+                        lastSeenCellHidden: lastSeenHidden,
+                        badgeTimeVisible,
+                        statusAlignedWithName,
+                        clientIpBelowVpn,
+                    };
+                });
+            }
         }
 
         if (scope === 'about') {
             const changelogCard = document.querySelector('.about-changelog-col .card');
             const changelogBody = document.querySelector('.about-changelog-col .card-body');
             const depsCard = document.querySelector('.about-deps-col .card');
+            const aboutDetailsCard = Array.from(document.querySelectorAll('.about-top-row .card'))
+                .find((card) => norm(card.querySelector('.card-header')?.textContent).includes('Application Details'));
+            const aboutDetailsRows = aboutDetailsCard
+                ? Array.from(aboutDetailsCard.querySelectorAll('tbody tr'))
+                    .map((row) => norm(row.querySelector('td:first-child')?.textContent))
+                    .filter(Boolean)
+                : [];
+            const missingDetailsRows = constants.ABOUT_APPLICATION_DETAILS_REQUIRED_ROWS
+                .filter((label) => !aboutDetailsRows.includes(label));
+            const forbiddenDetailsRows = aboutDetailsRows
+                .filter((label) => constants.ABOUT_APPLICATION_DETAILS_FORBIDDEN_ROWS.includes(label));
             const aboutReferenceValue = document.querySelector('.about-reference-value');
             const aboutReferenceStyle = aboutReferenceValue ? window.getComputedStyle(aboutReferenceValue) : null;
             const aboutReferenceMetrics = aboutReferenceStyle ? {
@@ -1887,6 +1769,19 @@ async function collectPageMetrics(page, scope) {
                 fontSize: Number.parseFloat(aboutReferenceStyle.fontSize || '0'),
                 backgroundColor: normalizeColor(aboutReferenceStyle.backgroundColor),
             } : null;
+            const updateLabelRows = Array.from(document.querySelectorAll('#update-check-result tbody tr'))
+                .map((row) => {
+                    const labelCell = row.querySelector('td:first-child');
+                    const labelText = norm(labelCell?.textContent);
+                    const labelStrong = labelCell?.querySelector('strong');
+                    return {
+                        label: labelText,
+                        hasStrong: Boolean(labelStrong && norm(labelStrong.textContent) === labelText),
+                    };
+                })
+                .filter((row) => row.label);
+            const missingBoldUpdateLabels = constants.ABOUT_UPDATE_TABLE_LABELS
+                .filter((label) => updateLabelRows.some((row) => row.label === label && !row.hasStrong));
             const updateValueStyleMismatches = aboutReferenceMetrics
                 ? Array.from(document.querySelectorAll('.about-update-value'))
                     .filter((el) => isVisible(el))
@@ -1928,13 +1823,63 @@ async function collectPageMetrics(page, scope) {
 
             // About page card layout validation (reference layout pattern)
             // Validates that cards in the same row have consistent heights (flexbox equal-height pattern)
+            const desktopTopRowLayoutActive = window.matchMedia('(min-width: 992px)').matches;
             const topRowCards = Array.from(document.querySelectorAll('.about-top-row .card'))
                 .filter((el) => isVisible(el));
-            const topRowHeights = topRowCards.map((card) => round(card.getBoundingClientRect().height));
-            const topRowMaxHeight = Math.max(...topRowHeights);
-            const topRowMinHeight = Math.min(...topRowHeights);
-            const topRowHeightVariance = topRowHeights.length > 1 ? topRowMaxHeight - topRowMinHeight : 0;
-            const topRowHeightsMatch = topRowHeightVariance <= 2; // 2px tolerance for rounding
+            const topRowPrimaryCards = Array.from(document.querySelectorAll('.about-top-row > [class*="col-"] > .card:first-child'))
+                .filter((el) => isVisible(el));
+            const topRowPrimaryHeights = topRowPrimaryCards.map((card) => round(card.getBoundingClientRect().height));
+            const topRowPrimaryMaxHeight = Math.max(...topRowPrimaryHeights);
+            const topRowPrimaryMinHeight = Math.min(...topRowPrimaryHeights);
+            const topRowHeightVariance = topRowPrimaryHeights.length > 1
+                ? topRowPrimaryMaxHeight - topRowPrimaryMinHeight
+                : 0;
+            const topRowHeightsMatch = !desktopTopRowLayoutActive
+                || topRowHeightVariance <= constants.ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX;
+            const topRowCompactCards = Array.from(document.querySelectorAll('.about-top-row > [class*="col-"] > .about-doc-card'))
+                .filter((el) => isVisible(el))
+                .map((card) => {
+                    const style = window.getComputedStyle(card);
+                    return {
+                        label: norm(card.textContent).slice(0, 80),
+                        height: round(card.getBoundingClientRect().height),
+                        flexGrow: Number.parseFloat(style.flexGrow || '0'),
+                    };
+                });
+            const compactCardsStayCompact = !desktopTopRowLayoutActive || !topRowCompactCards.length
+                ? true
+                : topRowCompactCards.every((card) =>
+                    card.flexGrow === 0
+                    && card.height < topRowPrimaryMinHeight - constants.ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX
+                );
+            const mobileTopRowCards = topRowCards
+                .map((card) => ({
+                    label: norm(card.querySelector('.card-header')?.textContent).slice(0, 80),
+                    rect: card.getBoundingClientRect(),
+                }))
+                .sort((a, b) => {
+                    if (Math.abs(a.rect.top - b.rect.top) > 1) return a.rect.top - b.rect.top;
+                    return a.rect.left - b.rect.left;
+                });
+            const mobileTopRowStackGaps = [];
+            if (window.matchMedia('(max-width: 991.98px)').matches) {
+                for (let index = 1; index < mobileTopRowCards.length; index += 1) {
+                    const prev = mobileTopRowCards[index - 1];
+                    const current = mobileTopRowCards[index];
+                    if (Math.abs(prev.rect.left - current.rect.left) >= 4) continue;
+                    if (current.rect.top < prev.rect.bottom - 1) continue;
+                    mobileTopRowStackGaps.push({
+                        from: prev.label,
+                        to: current.label,
+                        gap: round(current.rect.top - prev.rect.bottom),
+                    });
+                }
+            }
+            const mobileTopRowGapValues = mobileTopRowStackGaps.map((entry) => entry.gap);
+            const mobileTopRowGapVariance = mobileTopRowGapValues.length > 1
+                ? round(Math.max(...mobileTopRowGapValues) - Math.min(...mobileTopRowGapValues))
+                : 0;
+            const mobileTopRowGapsConsistent = mobileTopRowGapVariance <= constants.ABOUT_MOBILE_STACK_GAP_VARIANCE_TOLERANCE_PX;
 
             spacing.about = {
                 changelogCardBottom: changelogCard ? round(changelogCard.getBoundingClientRect().bottom) : null,
@@ -1942,16 +1887,126 @@ async function collectPageMetrics(page, scope) {
                 changelogBodyClientHeight: changelogBody?.clientHeight ?? null,
                 depsCardBottom: depsCard ? round(depsCard.getBoundingClientRect().bottom) : null,
                 footerTop: footer ? round(footer.getBoundingClientRect().top) : null,
+                detailsRows: aboutDetailsRows,
+                missingDetailsRows,
+                forbiddenDetailsRows,
+                missingBoldUpdateLabels,
                 updateValueStyleMismatches,
                 // Reference layout metrics (About page is the reference for card grid layouts)
                 topRowLayout: {
+                    active: desktopTopRowLayoutActive,
                     cardCount: topRowCards.length,
-                    heights: topRowHeights,
+                    primaryCardCount: topRowPrimaryCards.length,
+                    heights: topRowPrimaryHeights,
                     heightsMatch: topRowHeightsMatch,
                     variance: topRowHeightVariance,
-                    pattern: 'equal-height-flexbox', // Documents the expected pattern
+                    compactCardCount: topRowCompactCards.length,
+                    compactCards: topRowCompactCards,
+                    compactCardsStayCompact,
+                    pattern: 'equal-height-primary-cards-with-compact-secondary-card',
+                },
+                mobileTopRowStack: {
+                    active: window.matchMedia('(max-width: 991.98px)').matches,
+                    gaps: mobileTopRowStackGaps,
+                    gapVariance: mobileTopRowGapVariance,
+                    gapsConsistent: mobileTopRowGapsConsistent,
                 },
             };
+        }
+
+        // =============================================================================
+        // Nodes page: Table responsiveness validation
+        // =============================================================================
+        // Desktop (>= 768px): Standard table layout with all columns visible
+        // Mobile (< 768px): CSS Grid card layout with:
+        //   - name/status in top row, fqdn spanning full width, meta line, actions
+        //   - thead hidden, Port/Version/Peers/LastSeen columns hidden
+        //   - .node-mobile-meta visible with version + peers + last seen
+        if (scope === 'nodes') {
+            const nodesTable = document.querySelector('.nodes-table');
+            const isMobile = window.innerWidth < 768;
+
+            // Mobile layout: grid card layout validation
+            if (isMobile && nodesTable) {
+                const nodeRows = Array.from(nodesTable.querySelectorAll('tbody tr[id^="node-row-"]'));
+                spacing.nodesMobileLayout = nodeRows.slice(0, 10).map((row) => {
+                    const nameCell = row.querySelector('td[data-label="Name"]');
+                    const statusCell = row.querySelector('td[data-label="Status"]');
+                    const fqdnCell = row.querySelector('td[data-label="FQDN"]');
+                    const portCell = row.querySelector('td[data-label="Port"]');
+                    const versionCell = row.querySelector('td[data-label="Version"]');
+                    const peersCell = row.querySelector('td[data-label="Peers"]');
+                    const lastSeenCell = row.querySelector('td[data-label="Last Seen"]');
+                    const mobileMeta = row.querySelector('.node-mobile-meta');
+                    const actionsCell = row.querySelector('td[data-label="Actions"]');
+
+                    const thead = nodesTable.querySelector('thead');
+                    const theadHidden = thead ? window.getComputedStyle(thead).display === 'none' : true;
+
+                    const portHidden = portCell ? window.getComputedStyle(portCell).display === 'none' : true;
+                    const versionHidden = versionCell ? window.getComputedStyle(versionCell).display === 'none' : true;
+                    const peersHidden = peersCell ? window.getComputedStyle(peersCell).display === 'none' : true;
+                    const lastSeenHidden = lastSeenCell ? window.getComputedStyle(lastSeenCell).display === 'none' : true;
+                    const mobileMetaVisible = mobileMeta ? window.getComputedStyle(mobileMeta).display !== 'none' : false;
+
+                    // Verify grid layout is applied
+                    const rowDisplay = window.getComputedStyle(row).display;
+                    const isGridLayout = rowDisplay === 'grid';
+
+                    // Check name and status are on the same row (aligned vertically)
+                    const nameRect = nameCell ? nameCell.getBoundingClientRect() : null;
+                    const statusRect = statusCell ? statusCell.getBoundingClientRect() : null;
+                    const statusAlignedWithName = (nameRect && statusRect)
+                        ? Math.abs(nameRect.top - statusRect.top) < 8
+                        : false;
+
+                    // Check fqdn spans full width below name
+                    const fqdnRect = fqdnCell ? fqdnCell.getBoundingClientRect() : null;
+                    const fqdnBelowName = (nameRect && fqdnRect)
+                        ? fqdnRect.top >= nameRect.bottom - 4
+                        : false;
+
+                    // Check actions cell has border-top separator
+                    const actionsStyle = actionsCell ? window.getComputedStyle(actionsCell) : null;
+                    const actionsBorderTop = actionsStyle
+                        ? Number.parseFloat(actionsStyle.borderTopWidth || '0') > 0
+                        : false;
+
+                    return {
+                        nodeId: row.id,
+                        theadHidden,
+                        isGridLayout,
+                        portHidden,
+                        versionHidden,
+                        peersHidden,
+                        lastSeenHidden,
+                        mobileMetaVisible,
+                        statusAlignedWithName,
+                        fqdnBelowName,
+                        actionsBorderTop,
+                    };
+                });
+            }
+
+            // Desktop layout: verify table structure
+            if (!isMobile && nodesTable) {
+                const nodeRows = Array.from(nodesTable.querySelectorAll('tbody tr[id^="node-row-"]'));
+                spacing.nodesDesktopLayout = nodeRows.slice(0, 5).map((row) => {
+                    const statusCell = row.querySelector('td[data-label="Status"]');
+                    const actionsCell = row.querySelector('td[data-label="Actions"]');
+                    const statusRect = statusCell ? statusCell.getBoundingClientRect() : null;
+                    const actionsRect = actionsCell ? actionsCell.getBoundingClientRect() : null;
+                    const overlapsActions = (statusRect && actionsRect)
+                        ? statusRect.right > actionsRect.left + 2
+                        : false;
+                    return {
+                        nodeId: row.id,
+                        overlapsActions,
+                        statusRight: statusRect ? Math.round(statusRect.right) : null,
+                        actionsLeft: actionsRect ? Math.round(actionsRect.left) : null,
+                    };
+                });
+            }
         }
 
         // Status page: Network flow diagram validation
@@ -1964,12 +2019,16 @@ async function collectPageMetrics(page, scope) {
             const flowWrapperRect = flowWrapper ? flowWrapper.getBoundingClientRect() : null;
             // Use Bootstrap breakpoint detection instead of raw width
             const desktopLayout = window.matchMedia('(min-width: 992px)').matches;
+            const compactMobileLayout = window.matchMedia('(max-width: 575.98px)').matches;
 
             const flowNodeMetrics = flowNodes.map((node) => {
                 const icon = node.querySelector('.material-icons.flow-icon');
                 const label = node.querySelector('.flow-label');
                 const meta = node.querySelector('.flow-meta');
                 const style = window.getComputedStyle(node);
+                const iconStyle = icon ? window.getComputedStyle(icon) : null;
+                const labelStyle = label ? window.getComputedStyle(label) : null;
+                const metaStyle = meta ? window.getComputedStyle(meta) : null;
                 const rect = node.getBoundingClientRect();
                 const nodeKey = node.getAttribute('data-flow-node') || null;
                 const iconName = norm(icon?.textContent);
@@ -1986,6 +2045,9 @@ async function collectPageMetrics(page, scope) {
                     borderWidth: Number.parseFloat(style.borderTopWidth || '0'),
                     borderRadius: Number.parseFloat(style.borderTopLeftRadius || '0'),
                     padding: Number.parseFloat(style.padding || '0'),
+                    iconFontSize: Number.parseFloat(iconStyle?.fontSize || '0'),
+                    labelFontSize: Number.parseFloat(labelStyle?.fontSize || '0'),
+                    metaFontSize: Number.parseFloat(metaStyle?.fontSize || '0'),
                     hasActiveClass: node.classList.contains('flow-node-active'),
                     hasInactiveClass: node.classList.contains('flow-node-inactive'),
                     hasIcon: Boolean(icon),
@@ -2026,12 +2088,14 @@ async function collectPageMetrics(page, scope) {
             const flowWidthVariance = flowNodeMetrics.length > 1
                 ? Math.max(...flowNodeMetrics.map((node) => node.width)) - Math.min(...flowNodeMetrics.map((node) => node.width))
                 : 0;
+            const flowPopulatedMetaCount = flowNodeMetrics.filter((node) => node.metaText).length;
             const orderedNodeKeys = flowNodeMetrics.map((node) => node.key);
             const orderedConnectorKeys = flowConnectorMetrics.map((connector) => connector.key);
             const expectedNodeKeys = constants.STATUS_FLOW_NODE_EXPECTATIONS.map((node) => node.key);
             const expectedConnectorKeys = constants.STATUS_FLOW_CONNECTOR_EXPECTATIONS;
             const expectedNodeLabels = new Map(constants.STATUS_FLOW_NODE_EXPECTATIONS.map((node) => [node.key, node.label]));
             const expectedNodeIcons = new Map(constants.STATUS_FLOW_NODE_EXPECTATIONS.map((node) => [node.key, node.icon]));
+            const expectedHeightVarianceMax = flowPopulatedMetaCount > 0 && flowPopulatedMetaCount < flowNodeMetrics.length ? 24 : 5;
             const labelMismatches = flowNodeMetrics
                 .filter((node) => node.key && expectedNodeLabels.has(node.key))
                 .filter((node) => node.labelText !== expectedNodeLabels.get(node.key))
@@ -2043,6 +2107,17 @@ async function collectPageMetrics(page, scope) {
             const nodeStateConflicts = flowNodeMetrics
                 .filter((node) => node.hasActiveClass === node.hasInactiveClass)
                 .map((node) => ({ key: node.key, active: node.hasActiveClass, inactive: node.hasInactiveClass }));
+            const nodeContentStateMismatches = flowNodeMetrics
+                .filter((node) => {
+                    const hasContent = Boolean(node.metaText);
+                    return hasContent ? !node.hasActiveClass || node.hasInactiveClass : !node.hasInactiveClass || node.hasActiveClass;
+                })
+                .map((node) => ({
+                    key: node.key,
+                    metaText: node.metaText,
+                    active: node.hasActiveClass,
+                    inactive: node.hasInactiveClass,
+                }));
             const expectedOrientation = desktopLayout ? 'horizontal' : 'vertical';
             const orientationIssues = [];
 
@@ -2073,6 +2148,21 @@ async function collectPageMetrics(page, scope) {
                 lineHeight: connector.lineHeight,
                 expectedOrientation,
             }));
+            const compactMobileIssues = compactMobileLayout
+                ? {
+                    nodes: flowNodeMetrics.filter((node) =>
+                        node.padding > 11
+                        || node.borderRadius > 11
+                        || node.iconFontSize > 19.5
+                        || node.labelFontSize > 12.5
+                        || (node.metaText && node.metaFontSize > 11.8)
+                    ),
+                    connectors: flowConnectorMetrics.filter((connector) =>
+                        connector.height > 18
+                        || (connector.lineWidth || 0) > 2.5
+                    ),
+                }
+                : { nodes: [], connectors: [] };
 
             spacing.statusFlow = {
                 hasWrapper: Boolean(flowWrapper),
@@ -2091,13 +2181,38 @@ async function collectPageMetrics(page, scope) {
                 connectors: flowConnectorMetrics,
                 heightVariance: round(flowHeightVariance),
                 widthVariance: round(flowWidthVariance),
+                populatedMetaCount: flowPopulatedMetaCount,
+                expectedHeightVarianceMax,
                 allNodesHaveStructure: flowNodeMetrics.every(n => n.hasIcon && n.hasLabel && n.hasMeta),
                 labelMismatches,
                 iconMismatches,
                 nodeStateConflicts,
+                nodeContentStateMismatches,
                 orientationIssues,
                 connectorOrientationIssues,
+                compactMobileLayout,
+                compactMobileIssues,
             };
+
+            const statusDetailCards = Array.from(document.querySelectorAll('.card'))
+                .map((card) => {
+                    const title = card.querySelector('.h6, h3');
+                    const titleText = title ? norm(title.textContent) : null;
+                    if (!titleText || !constants.STATUS_DETAIL_CARD_TITLES.includes(titleText)) {
+                        return null;
+                    }
+
+                    const value = card.querySelector('.font-monospace');
+                    const valueText = norm(value?.textContent);
+
+                    return {
+                        title: titleText,
+                        hasValue: Boolean(value && valueText),
+                        valueText,
+                    };
+                })
+                .filter(Boolean);
+            const emptyStatusDetailCards = statusDetailCards.filter((card) => !card.hasValue);
 
             // Status page: Status check cards monospace validation
             // "Last Speedtest" uses inline <span class="font-monospace"> children,
@@ -2132,6 +2247,11 @@ async function collectPageMetrics(page, scope) {
                 cards: statusCheckCards,
                 missing: statusCheckMonospaceMissing,
                 allCorrect: statusCheckMonospaceMissing.length === 0,
+            };
+            spacing.statusDetailCards = {
+                cards: statusDetailCards,
+                empty: emptyStatusDetailCards,
+                allPopulated: emptyStatusDetailCards.length === 0,
             };
         }
 
@@ -2322,6 +2442,43 @@ async function collectPageMetrics(page, scope) {
                 });
 
             spacing.dnsUnavailableStates = dnsUnavailableStates;
+
+            const logCardBody = document.querySelector('.log-card-body');
+            const logTableWrap = document.getElementById('log-table-wrap');
+            if (logCardBody && logTableWrap && isVisible(logCardBody) && isVisible(logTableWrap)) {
+                const bodyStyle = window.getComputedStyle(logCardBody);
+                const wrapStyle = window.getComputedStyle(logTableWrap);
+                const bodyRect = logCardBody.getBoundingClientRect();
+                const wrapRect = logTableWrap.getBoundingClientRect();
+                const bodyMinHeight = Number.parseFloat(bodyStyle.minHeight || '0');
+                const wrapMinHeight = Number.parseFloat(wrapStyle.minHeight || '0');
+                const bodyFlexGrow = Number.parseFloat(bodyStyle.flexGrow || '0');
+                const wrapFlexGrow = Number.parseFloat(wrapStyle.flexGrow || '0');
+                const rowCount = logTableWrap.querySelectorAll('#log-body > tr').length;
+
+                spacing.dnsLogScrollLayout = {
+                    body: rectInfo(logCardBody),
+                    wrap: rectInfo(logTableWrap),
+                    bodyMinHeight: round(bodyMinHeight),
+                    wrapMinHeight: round(wrapMinHeight),
+                    bodyFlexGrow: round(bodyFlexGrow),
+                    wrapFlexGrow: round(wrapFlexGrow),
+                    bodyOverflowX: bodyStyle.overflowX,
+                    bodyOverflowY: bodyStyle.overflowY,
+                    wrapOverflowY: wrapStyle.overflowY,
+                    bodyMinHeightAllowsShrink: bodyMinHeight <= constants.FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX,
+                    wrapMinHeightAllowsShrink: wrapMinHeight <= constants.FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX,
+                    bodyActsAsFlexChild: bodyFlexGrow > 0,
+                    wrapActsAsFlexChild: wrapFlexGrow > 0,
+                    bodyClipsOverflow: bodyStyle.overflowY === 'hidden' || bodyStyle.overflowY === 'clip',
+                    wrapScrollsInternally: wrapStyle.overflowY === 'auto' || wrapStyle.overflowY === 'scroll',
+                    wrapFitsBody: wrapRect.height <= bodyRect.height + 1,
+                    rowCount,
+                    clientHeight: round(logTableWrap.clientHeight),
+                    scrollHeight: round(logTableWrap.scrollHeight),
+                    scrollNeeded: logTableWrap.scrollHeight > logTableWrap.clientHeight + 1,
+                };
+            }
         }
 
         // Visual containment issues: detect rendering problems in rounded cards
@@ -2664,6 +2821,7 @@ async function collectPageMetrics(page, scope) {
             namelessButtons,
             headingSkips,
             tablesWithoutHeaders,
+            tableCellOverlapIssues,
             tablesWithoutResponsive,
             ghostScroll,
             ghostScrollContainers,
@@ -2699,469 +2857,16 @@ async function collectPageMetrics(page, scope) {
             colorSchemeConsistency,
             deprecatedColorUsage,
         };
-    }, {
-        scope, constants: {
-            OVERFLOW_TOLERANCE_PX,
-            FOOTER_OVERLAP_TOLERANCE_PX,
-            VERTICAL_GAP_MIN,
-            VERTICAL_GAP_MAX,
-            SCROLL_EDGE_CLEARANCE_MIN,
-            GHOST_SCROLL_DELTA_MAX_PX,
-            GHOST_SCROLL_MIN_HEIGHT_PX,
-            COMPONENT_LAYOUT_SHIFT_THRESHOLD_PX,
-            COMPONENT_LAYOUT_SHIFT_SETTLE_MS,
-            CLICK_TARGET_MIN_SIZE_PX,
-            LOGS_DELETE_HAIRLINE_TOLERANCE_PX,
-            BADGE_FONT_SIZE_TOLERANCE_PX,
-            BADGE_FONT_WEIGHT_TOLERANCE,
-            BADGE_RADIUS_TOLERANCE_PX,
-            BADGE_PADDING_TOLERANCE_PX,
-            MONOSPACE_RADIUS_TOLERANCE_PX,
-            MONOSPACE_PADDING_TOLERANCE_PX,
-            SLIDER_TICK_ALIGNMENT_TOLERANCE_PX,
-            SLIDER_VISIBLE_LABEL_GAP_MIN_PX,
-            SLIDER_LABEL_HIDDEN_OPACITY_MAX,
-            MODAL_BACKDROP_BLUR_EXPECTED_PX,
-            MODAL_BACKDROP_BLUR_TOLERANCE_PX,
-            MODAL_BACKDROP_SATURATE_EXPECTED,
-            MODAL_BACKDROP_SATURATE_TOLERANCE,
-            MODAL_BACKDROP_ALPHA_EXPECTED,
-            MODAL_BACKDROP_ALPHA_TOLERANCE,
-            FORM_SWITCH_MAX_HEIGHT_PX,
-            FORM_SWITCH_HEIGHT_TOLERANCE_PX,
-            INPUT_GROUP_HEIGHT_EXPECTED_PX,
-            INPUT_GROUP_HEIGHT_TOLERANCE_PX,
-            COMPACT_CARD_ACTION_MARGIN_TOP_MAX_PX,
-            COMPACT_CARD_ACTION_PADDING_TOP_MAX_PX,
-            COMPACT_CARD_ACTION_BORDER_TOP_MAX_PX,
-            CARD_BORDER_RADIUS_EXPECTED_PX,
-            CARD_BORDER_RADIUS_TOLERANCE_PX,
-            KPI_ICON_CENTER_TOLERANCE_PX,
-            KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX,
-            KPI_CONTEXTUAL_ICON_CLASSES,
-            DASHBOARD_TRANSFER_COLOR_DISTANCE_MIN,
-            STATUS_FLOW_NODE_EXPECTATIONS,
-            STATUS_FLOW_CONNECTOR_EXPECTATIONS,
-            WCAG_NORMAL_AA: WCAG_CONTRAST.NORMAL_AA,
-            WCAG_LARGE_AA: WCAG_CONTRAST.LARGE_AA,
-            WCAG_LARGE_TEXT_SIZE_PX: WCAG_CONTRAST.LARGE_TEXT_SIZE_PX,
-            WCAG_LARGE_TEXT_SIZE_BOLD_PX: WCAG_CONTRAST.LARGE_TEXT_SIZE_BOLD_PX,
-            WCAG_BOLD_WEIGHT: WCAG_CONTRAST.BOLD_WEIGHT,
-        }
-    });
-}
-
-function summarizeFindings(result) {
-    const hardFindings = [];
-    const warnings = [];
-    const pushHard = (value) => hardFindings.push(value);
-    const pushWarning = (value) => warnings.push(value);
-
-    if (result.metrics.duplicateIds.length) pushHard(`duplicateIds=${result.metrics.duplicateIds.length}`);
-    if (result.metrics.emptyAriaLabels.length) pushWarning(`emptyAriaLabels=${result.metrics.emptyAriaLabels.length}`);
-    if (result.metrics.unlabeledControls.length) pushHard(`unlabeledControls=${result.metrics.unlabeledControls.length}`);
-    if (result.metrics.namelessButtons.length) pushHard(`namelessButtons=${result.metrics.namelessButtons.length}`);
-    if (result.metrics.headingSkips.length) pushWarning(`headingSkips=${result.metrics.headingSkips.length}`);
-    if (result.metrics.tablesWithoutHeaders.length) pushWarning(`tablesWithoutHeaders=${result.metrics.tablesWithoutHeaders.length}`);
-    if (result.metrics.tablesWithoutResponsive?.length) pushWarning(`tablesWithoutResponsive=${result.metrics.tablesWithoutResponsive.length}`);
-    if (result.metrics.ghostScroll) pushWarning('ghostScrollDetected');
-    if (result.metrics.ghostScrollContainers?.length) pushWarning(`ghostScrollContainers=${result.metrics.ghostScrollContainers.length}`);
-    if (result.metrics.horizontalOverflow.hasOverflow) pushHard('horizontalOverflow');
-    if (result.metrics.horizontalOverflow.hasOverflow && result.metrics.horizontalOverflow.offenders.length) {
-        pushHard(`overflowOffenders=${result.metrics.horizontalOverflow.offenders.length}`);
-    }
-    if (result.metrics.clippedButtons.length) pushWarning(`clippedButtons=${result.metrics.clippedButtons.length}`);
-    if (result.metrics.clickTargetsTooSmall?.length) pushHard(`clickTargetsTooSmall=${result.metrics.clickTargetsTooSmall.length}`);
-    if (result.metrics.iconButtonsTouchBlocked?.length) pushHard(`iconButtonsTouchBlocked=${result.metrics.iconButtonsTouchBlocked.length}`);
-    if (result.metrics.deprecatedButtonClasses?.length) pushHard(`deprecatedButtonClasses=${result.metrics.deprecatedButtonClasses.length}`);
-    if (result.metrics.hiddenInteractiveElements.length) pushHard(`hiddenInteractive=${result.metrics.hiddenInteractiveElements.length}`);
-    if (result.metrics.bootstrapGridIssues?.length) pushWarning(`bootstrapGridIssues=${result.metrics.bootstrapGridIssues.length}`);
-    if (result.metrics.bootstrapColumnsOutsideRows?.length) pushWarning(`bootstrapColumnsOutsideRows=${result.metrics.bootstrapColumnsOutsideRows.length}`);
-    if (result.metrics.breakpointDisplayConflicts?.length) pushWarning(`breakpointDisplayConflicts=${result.metrics.breakpointDisplayConflicts.length}`);
-    if (result.metrics.navbarCollapseIssues?.length) pushWarning(`navbarCollapseIssues=${result.metrics.navbarCollapseIssues.length}`);
-    if (result.metrics.focusOrderIssues?.length) pushWarning(`focusOrderIssues=${result.metrics.focusOrderIssues.length}`);
-    if (result.metrics.focusIndicatorMissing?.length) pushWarning(`focusIndicatorMissing=${result.metrics.focusIndicatorMissing.length}`);
-    if (result.metrics.scrollEdgeCrowding?.length) pushWarning(`scrollEdgeCrowding=${result.metrics.scrollEdgeCrowding.length}`);
-    if (result.metrics.scrollBottomCrowding?.length) pushWarning(`scrollBottomCrowding=${result.metrics.scrollBottomCrowding.length}`);
-    if (result.metrics.nestedScrollContainers?.length) pushWarning(`nestedScrollContainers=${result.metrics.nestedScrollContainers.length}`);
-    if (result.metrics.badgeStyleMismatches?.length) pushWarning(`badgeStyleMismatches=${result.metrics.badgeStyleMismatches.length}`);
-    if (result.metrics.monospaceToneMismatches?.length) pushWarning(`monospaceToneMismatches=${result.metrics.monospaceToneMismatches.length}`);
-    if (result.metrics.cardContainment.cardsPastFooter.length) pushWarning(`cardsPastFooter=${result.metrics.cardContainment.cardsPastFooter.length}`);
-    if (result.metrics.modalBackdrop) {
-        if (!result.metrics.modalBackdrop.blurMatchesReference) {
-            pushWarning(`modalBackdropBlur=${result.metrics.modalBackdrop.blurPx ?? 'missing'}`);
-        }
-        if (!result.metrics.modalBackdrop.saturateMatchesReference) {
-            pushWarning(`modalBackdropSaturate=${result.metrics.modalBackdrop.saturate ?? 'missing'}`);
-        }
-        if (!result.metrics.modalBackdrop.alphaMatchesReference) {
-            pushWarning(`modalBackdropAlpha=${result.metrics.modalBackdrop.alpha ?? 'missing'}`);
-        }
-    }
-    if (result.metrics.spacing.rowToRowGap !== undefined && !result.metrics.spacing.rowToRowGapInRange) {
-        pushWarning(`rowToRowGapOutOfRange=${result.metrics.spacing.rowToRowGap}`);
-    }
-    if (result.metrics.spacing.outlierVerticalGaps?.length) pushWarning(`outlierVerticalGaps=${result.metrics.spacing.outlierVerticalGaps.length}`);
-    if (result.metrics.spacing.rowGutterMarginConflicts?.length) pushWarning(`rowGutterMarginConflicts=${result.metrics.spacing.rowGutterMarginConflicts.length}`);
-    if (result.name.includes('settings') && result.metrics.spacing.settingsTabColors?.length) {
-        const tabColorProblems = result.metrics.spacing.settingsTabColors.filter(
-            (entry) => entry.colorDelta != null && entry.colorDelta > SETTINGS_TAB_COLOR_DISTANCE_MAX
-        );
-        if (tabColorProblems.length) {
-            pushWarning(`settingsTabActiveColorMismatch=${tabColorProblems.length}`);
-        }
-    }
-    if (result.name.includes('dashboard') && result.metrics.spacing.dashboardTopRowAlignment && !result.metrics.spacing.dashboardTopRowAlignment.aligned) {
-        pushWarning(`dashboardTopRowVariance=${result.metrics.spacing.dashboardTopRowAlignment.variance}`);
-    }
-    if (result.name.includes('mobile-dashboard') && result.metrics.spacing.dashboardMobileStackOrder) {
-        const order = result.metrics.spacing.dashboardMobileStackOrder;
-        if (!order.speedtestAboveMap || !order.mapAboveRecent) {
-            pushWarning('dashboardMobileStackOrder');
-        }
-    }
-    if (result.name.includes('desktop-settings-logs') && result.metrics.spacing.logsDeleteLayout) {
-        const logsDeleteLayout = result.metrics.spacing.logsDeleteLayout;
-        if (
-            logsDeleteLayout.deleteBlockCount !== logsDeleteLayout.cardCount ||
-            logsDeleteLayout.deleteInnerCount !== logsDeleteLayout.cardCount ||
-            logsDeleteLayout.hairlineCount !== logsDeleteLayout.cardCount
-        ) {
-            pushWarning(`logsDeleteStructureMismatch=${logsDeleteLayout.cardCount}`);
-        }
-        if (!logsDeleteLayout.hairlineAligned) {
-            pushWarning(`logsDeleteHairlineVariance=${logsDeleteLayout.hairlineVariance}`);
-        }
-    }
-    if (result.name.includes('settings-logs') && result.metrics.spacing.logsPathLayout?.length) {
-        const pathStyleProblems = result.metrics.spacing.logsPathLayout.filter(
-            (entry) => entry.whiteSpace !== 'nowrap' || entry.textOverflow !== 'ellipsis' || entry.overflowX !== 'hidden'
-        );
-        if (pathStyleProblems.length) {
-            pushWarning(`logsPathStyleMismatch=${pathStyleProblems.length}`);
-        }
-
-        const wrappedPaths = result.metrics.spacing.logsPathLayout.filter((entry) => entry.wraps);
-        if (wrappedPaths.length) {
-            pushWarning(`logsPathWrapped=${wrappedPaths.length}`);
-        }
-    }
-    if (result.name.includes('settings') && result.metrics.spacing.compactCardActionRows?.length) {
-        const compactActionRowProblems = result.metrics.spacing.compactCardActionRows.filter(
-            (entry) => !entry.isCompactMargin || !entry.isCompactPadding || !entry.isBorderless
-        );
-        if (compactActionRowProblems.length) {
-            pushWarning(`compactCardActionRows=${compactActionRowProblems.length}`);
-        }
-    }
-    if (result.metrics.spacing.about?.updateValueStyleMismatches?.length) pushWarning(`aboutUpdateValueStyleMismatches=${result.metrics.spacing.about.updateValueStyleMismatches.length}`);
-    if (result.metrics.spacing.about?.topRowLayout && !result.metrics.spacing.about.topRowLayout.heightsMatch) {
-        pushWarning(`aboutTopRowHeightMismatch=${result.metrics.spacing.about.topRowLayout.variance}px`);
-    }
-    // Peers modal required field validation (Name field must have required attr + visual marker)
-    if (result.metrics.spacing.peersModalValidation) {
-        const addModal = result.metrics.spacing.peersModalValidation.addPeerModal;
-        if (addModal?.found && !addModal.valid) {
-            if (!addModal.hasRequiredAttr) pushHard('peerNameInputMissingRequired');
-            if (!addModal.hasRequiredMarker) pushWarning('peerNameLabelMissingRequiredMarker');
-        }
-        const editModal = result.metrics.spacing.peersModalValidation.editPeerModal;
-        if (editModal?.found && !editModal.valid) {
-            if (!editModal.hasRequiredAttr) pushHard('editPeerNameInputMissingRequired');
-            if (!editModal.hasRequiredMarker) pushWarning('editPeerNameLabelMissingRequiredMarker');
-        }
-    }
-    if (result.metrics.layoutShift.value > LAYOUT_SHIFT_THRESHOLD) pushHard(`layoutShift=${result.metrics.layoutShift.value.toFixed(4)}`);
-    if (result.metrics.componentLayoutShift?.length) pushHard(`componentLayoutShift=${result.metrics.componentLayoutShift.length}`);
-    if (result.metrics.contrastProblems.length) pushHard(`contrastProblems=${result.metrics.contrastProblems.length}`);
-    if (result.metrics.visualContainmentIssues?.length) pushWarning(`visualContainmentIssues=${result.metrics.visualContainmentIssues.length}`);
-    if (result.metrics.formSwitchMarginIssues?.length) pushWarning(`formSwitchMarginIssues=${result.metrics.formSwitchMarginIssues.length}`);
-    if (result.metrics.formSwitchProportionIssues?.length) pushHard(`formSwitchProportionIssues=${result.metrics.formSwitchProportionIssues.length}`);
-    if (result.metrics.formSwitchHeightIssues?.length) pushHard(`formSwitchHeightIssues=${result.metrics.formSwitchHeightIssues.length}`);
-    if (result.metrics.inputGroupHeightIssues?.length) pushHard(`inputGroupHeightIssues=${result.metrics.inputGroupHeightIssues.length}`);
-    if (result.diff.ratio > VISUAL_DRIFT_THRESHOLD) pushHard(`visualDrift=${result.diff.ratio.toFixed(4)}`);
-    if (result.network.consoleEntries.length) pushHard(`console=${result.network.consoleEntries.length}`);
-    if (result.network.pageErrors.length) pushHard(`pageErrors=${result.network.pageErrors.length}`);
-    if (result.network.requestFailures.length) pushHard(`failedRequests=${result.network.requestFailures.length}`);
-    if (result.network.badResponses.length) pushHard(`badResponses=${result.network.badResponses.length}`);
-    if (result.diff.sizeMismatch) pushHard('screenshotSizeMismatch');
-
-    const duplicateRequestMap = new Map();
-    for (const entry of result.network.requests || []) {
-        if (!entry?.url || entry.method !== 'GET') continue;
-        duplicateRequestMap.set(entry.url, (duplicateRequestMap.get(entry.url) || 0) + 1);
-    }
-    result.network.duplicateRequests = Array.from(duplicateRequestMap.entries())
-        .filter(([, count]) => count > 3)
-        .map(([url, count]) => ({ url, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 10);
-    if (result.network.duplicateRequests.length) pushWarning(`duplicateRequests=${result.network.duplicateRequests.length}`);
-
-    // KPI Card validation findings
-    if (result.metrics.spacing.kpiCards?.length) {
-        const paddingProblems = result.metrics.spacing.kpiCards.filter((card) =>
-            Math.abs(card.paddingTop - KPI_CARD_PADDING_EXPECTED) > KPI_CARD_PADDING_TOLERANCE ||
-            Math.abs(card.paddingBottom - KPI_CARD_PADDING_EXPECTED) > KPI_CARD_PADDING_TOLERANCE
-        );
-
-        if (paddingProblems.length) {
-            pushWarning(`kpiPaddingMismatch=${paddingProblems.length}`);
-        }
-
-        const iconProblems = result.metrics.spacing.kpiCards.filter((card) =>
-            card.iconSize &&
-            (card.iconSize < KPI_ICON_MIN || card.iconSize > KPI_ICON_MAX)
-        );
-
-        if (iconProblems.length) {
-            pushWarning(`kpiIconSizeMismatch=${iconProblems.length}`);
-        }
-    }
-
-    if (result.name.includes('dashboard') && result.metrics.spacing.dashboardKpiIcons?.length) {
-        const contextualColorProblems = result.metrics.spacing.dashboardKpiIcons.filter(
-            (card) => card.contextualClasses?.length
-        );
-        if (contextualColorProblems.length) {
-            pushWarning(`dashboardKpiContextualIconColor=${contextualColorProblems.length}`);
-        }
-
-        const neutralColorProblems = result.metrics.spacing.dashboardKpiIcons.filter(
-            (card) => card.iconColorDelta != null && card.iconColorDelta > KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX
-        );
-        if (neutralColorProblems.length) {
-            pushWarning(`dashboardKpiNeutralIconMismatch=${neutralColorProblems.length}`);
-        }
-
-        const verticalCenterProblems = result.metrics.spacing.dashboardKpiIcons.filter(
-            (card) => card.iconCenterDelta != null && card.iconCenterDelta > KPI_ICON_CENTER_TOLERANCE_PX
-        );
-        if (verticalCenterProblems.length) {
-            pushWarning(`dashboardKpiIconVerticalCenter=${verticalCenterProblems.length}`);
-        }
-    }
-
-    // Dashboard KPI card width variance
-    if (result.name.includes('dashboard') && result.metrics.spacing.kpiCards?.length) {
-        const widths = result.metrics.spacing.statCardWidths || [];
-        if (widths.length > 1) {
-            const variance = Math.max(...widths) - Math.min(...widths);
-            if (variance > 8) {
-                pushWarning(`kpiCardWidthVariance=${variance}`);
-            }
-        }
-    }
-
-    // KPI card height consistency
-    if (result.metrics.spacing.kpiHeights?.length) {
-        const variance = result.metrics.spacing.kpiHeightVariance || 0;
-
-        if (variance > KPI_ROW_VARIANCE_MAX) {
-            pushWarning(`kpiHeightVariance=${variance}`);
-        }
-
-        const uneven = result.metrics.spacing.kpiHeights.filter(
-            (h) => Math.abs(h - result.metrics.spacing.kpiHeights[0]) > KPI_HEIGHT_TOLERANCE_PX
-        );
-
-        if (uneven.length) {
-            pushWarning(`kpiHeightMismatch=${uneven.length}`);
-        }
-    }
-
-    // Desktop + Tablet KPI consistency check
-    if (!result.name.includes('mobile') && result.metrics.spacing.kpiHeights?.length >= 4) {
-        const firstRow = result.metrics.spacing.kpiHeights.slice(0, 4);
-        const variance = Math.max(...firstRow) - Math.min(...firstRow);
-
-        if (variance > KPI_ROW_VARIANCE_MAX) {
-            pushWarning(`kpiRowHeightVariance=${variance}`);
-        }
-    }
-
-    // Missing KPI class on stat cards
-    if (
-        KPI_CARD_REQUIRED_SCOPES.some((scope) => result.name.includes(scope)) &&
-        result.metrics.spacing.cardsMissingKpiClass?.length
-    ) {
-        pushWarning(
-            `cardsMissingKpiClass=${result.metrics.spacing.cardsMissingKpiClass.length}`
-        );
-    }
-
-    // Card border-radius consistency (should match --wb-radius-lg token)
-    if (result.metrics.spacing.cardBorderRadiusIssues?.length) {
-        pushWarning(`cardBorderRadiusMismatch=${result.metrics.spacing.cardBorderRadiusIssues.length}`);
-    }
-
-    // DNS page: Chart empty state spacing validation
-    if (result.name.includes('dns') && result.metrics.spacing.dnsUnavailableStates?.length) {
-        const states = result.metrics.spacing.dnsUnavailableStates;
-
-        for (const state of states) {
-            if (!state.hasSubText) {
-                pushWarning(`dnsUnavailableNoSubtext:${state.id || 'unknown'}`);
-                continue;
-            }
-
-            if (!state.hasSmallClass) {
-                pushHard(`dnsUnavailableMissingSmallClass:${state.id || 'unknown'}`);
-            }
-
-            if (!state.marginCompensatesGap) {
-                pushHard(`dnsUnavailableSpacingIncorrect:${state.id || 'unknown'} (gap=${state.gap}, marginTop=${state.marginTop})`);
-            }
-
-            if (!state.visualGapExpected) {
-                pushWarning(`dnsUnavailableVisualGap:${state.id || 'unknown'} (${state.visualGap}px)`);
-            }
-        }
-    }
-
-    // Slider tick alignment (settings-logs views)
-    if (result.name.includes('settings-logs') && result.metrics.spacing.sliderAlignment?.length) {
-        for (const slider of result.metrics.spacing.sliderAlignment) {
-            if (!slider.tickCountMatch) {
-                pushWarning(`sliderTickCount:${slider.sliderId}=${slider.tickCount}/${slider.expectedTickCount}`);
-            }
-            if (!slider.usesIndexVar) {
-                pushWarning(`sliderMissingIndexVar:${slider.sliderId}`);
-            }
-            if (slider.tickMisaligned.length) {
-                pushHard(`sliderTickMisaligned:${slider.sliderId}=${slider.tickMisaligned.length}`);
-            }
-            if (slider.labelMisaligned.length) {
-                pushWarning(`sliderLabelMisaligned:${slider.sliderId}=${slider.labelMisaligned.length}`);
-            }
-            if (slider.labelOverlap.length) {
-                pushHard(`sliderLabelOverlap:${slider.sliderId}=${slider.labelOverlap.length}`);
-            }
-        }
-    }
-
-    // Status page: Network flow diagram validation
-    if (result.name.includes('status') && result.metrics.spacing.statusFlow) {
-        const flow = result.metrics.spacing.statusFlow;
-
-        if (!flow.hasWrapper) {
-            pushHard('statusFlowWrapperMissing');
-        }
-        if (!flow.nodeCountMatch) {
-            pushHard(`statusFlowNodeCount=${flow.nodeCount}/${flow.expectedNodeCount}`);
-        }
-        if (!flow.connectorCountMatch) {
-            pushHard(`statusFlowConnectorCount=${flow.connectorCount}/${flow.expectedConnectorCount}`);
-        }
-        if (!flow.nodeOrderMatches) {
-            pushHard('statusFlowNodeOrderMismatch');
-        }
-        if (!flow.connectorOrderMatches) {
-            pushHard('statusFlowConnectorOrderMismatch');
-        }
-        if (!flow.allNodesHaveStructure) {
-            const incomplete = flow.nodes.filter(n => !n.hasIcon || !n.hasLabel || !n.hasMeta);
-            pushWarning(`statusFlowIncompleteNodes=${incomplete.length}`);
-        }
-        if (flow.labelMismatches.length) {
-            pushHard(`statusFlowLabelMismatch=${flow.labelMismatches.length}`);
-        }
-        if (flow.iconMismatches.length) {
-            pushHard(`statusFlowIconMismatch=${flow.iconMismatches.length}`);
-        }
-        if (flow.nodeStateConflicts.length) {
-            pushHard(`statusFlowStateConflict=${flow.nodeStateConflicts.length}`);
-        }
-        if (flow.heightVariance > 5) {
-            pushWarning(`statusFlowHeightVariance=${flow.heightVariance}`);
-        }
-        if (flow.widthVariance > 24) {
-            pushWarning(`statusFlowWidthVariance=${flow.widthVariance}`);
-        }
-        if (flow.orientationIssues.length) {
-            pushHard(`statusFlowOrientation=${flow.orientationIssues.length}`);
-        }
-        if (flow.connectorOrientationIssues.length) {
-            pushHard(`statusFlowConnectorOrientation=${flow.connectorOrientationIssues.length}`);
-        }
-    }
-
-    // Status page: Status check cards monospace validation
-    if (result.name.includes('status') && result.metrics.spacing.statusCheckMonospace) {
-        const checkMonospace = result.metrics.spacing.statusCheckMonospace;
-
-        if (!checkMonospace.allCorrect) {
-            const missingTitles = checkMonospace.missing.map(c => c.title).join(', ');
-            pushHard(`statusCheckMonospaceMissing: ${missingTitles}`);
-        }
-    }
-
-    if (result.name.includes('login-error')) {
-        const loginFailure = result.metrics.loginFailure || {};
-        const errorText = loginFailure.errorText || '';
-
-        // Rate limiting triggers a different error message - skip validation if rate limited
-        const isRateLimited = errorText.toLowerCase().includes('too many') || errorText.toLowerCase().includes('try again later');
-        if (isRateLimited) {
-            pushWarning('rateLimited');
-        } else {
-            // Alert is considered present if visible OR if error text is populated
-            // (visibility can be affected by motion reset CSS)
-            const alertPresent = loginFailure.alertVisible || errorText.length > 0;
-            if (!alertPresent) pushHard('loginErrorAlertMissing');
-            if (!loginFailure.passwordInvalidClass) pushHard('loginPasswordNotInvalid');
-            if (!loginFailure.passwordAriaInvalid) pushHard('loginPasswordAriaInvalidMissing');
-            if (!loginFailure.passwordBorderIsDangerLike) pushWarning('loginPasswordNotDangerStyled');
-            // Check for shake class - animation is disabled by motion reset CSS, so only check the class
-            if (!loginFailure.cardShakeClass) pushWarning('loginCardShakeClassMissing');
-        }
-    }
-
-    // Color scheme consistency (Dashboard: Speedtest vs Network Gauges)
-    if (result.metrics.colorSchemeConsistency?.length) {
-        for (const issue of result.metrics.colorSchemeConsistency) {
-            if (issue.type === 'downloadColorMismatch') {
-                pushWarning(`colorScheme:downloadMismatch:distance=${issue.distance}`);
-            } else if (issue.type === 'uploadColorMismatch') {
-                pushWarning(`colorScheme:uploadMismatch:distance=${issue.distance}`);
-            } else if (issue.type === 'transferColorsTooSimilar') {
-                pushWarning(`colorScheme:transferColorsTooSimilar:distance=${issue.distance}`);
-            } else if (issue.type === 'missingGaugeElements') {
-                pushWarning('colorScheme:missingElements');
-            }
-        }
-    }
-
-    // Deprecated color usage: ensure #ff6b6b is replaced with #ff6384
-    if (result.metrics.deprecatedColorUsage?.length) {
-        for (const issue of result.metrics.deprecatedColorUsage) {
-            pushHard(`deprecatedColor:${issue.property}:${issue.selector}:${issue.value}`);
-        }
-    }
-
-    return {
-        findings: [...hardFindings, ...warnings],
-        hardFindings,
-        warnings,
-    };
-}
-
-function isExpectedStatusUnavailable(view, response) {
-    if (view.scope !== 'status' || !response) return false;
-    try {
-        return new URL(response.url()).pathname === '/status' && response.status() === 404;
-    } catch {
-        return false;
-    }
+    }, { scope, constants: UI_EVAL_CONSTANTS });
 }
 
 async function auditView(page, view) {
     const detachNetwork = collectConsoleAndNetwork(page);
     let network = null;
     try {
-        await applyTheme(page, view.theme, view.name);
+        await applyTheme(page, { baseUrl: BASE_URL, theme: view.theme, label: view.name });
         const response = await page.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 30000 });
-        await disableMotion(page, view.name);
+        await disableMotion(page, FULL_MOTION_RESET_CSS, view.name);
         if (view.scope === 'about') {
             await page.evaluate(() => {
                 const details = document.querySelector('.about-changelog-col details');
@@ -3184,9 +2889,19 @@ async function auditView(page, view) {
         }
         await resetLayoutShiftMetric(page);
         await page.waitForTimeout(SCREENSHOT_SETTLE_MS);
-        const shots = await captureStablePair(page, view.name);
-        const kpiShots = await captureKpiCards(page, view.name);
-        const diff = diffScreenshots(view.name, shots.shotA, shots.shotB);
+        const shots = await captureStablePair(page, {
+            motionResetCss: FULL_MOTION_RESET_CSS,
+            name: view.name,
+            screenshotDir: SCREENSHOT_DIR,
+            screenshotSettleMs: SCREENSHOT_SETTLE_MS,
+        });
+        const kpiShots = await captureKpiCards(page, view.name, SCREENSHOT_DIR);
+        const diff = diffScreenshots({
+            name: view.name,
+            shotA: shots.shotA,
+            shotB: shots.shotB,
+            screenshotDir: SCREENSHOT_DIR,
+        });
         const metrics = await collectPageMetrics(page, view.scope);
         network = detachNetwork();
         const statusUnavailableExpected = isExpectedStatusUnavailable(view, response);
@@ -3227,8 +2942,8 @@ async function auditLoginFailureView(page, view) {
     let network = null;
     try {
         await page.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 10000 });
-        await disableMotion(page, view.name);
-        await applyTheme(page, view.theme, view.name);
+        await disableMotion(page, FULL_MOTION_RESET_CSS, view.name);
+        await applyTheme(page, { baseUrl: BASE_URL, theme: view.theme, label: view.name });
 
         const invalidPassword = `${PASSWORD}__ui_lint_invalid`;
         await page.fill('#username', USERNAME);
@@ -3251,9 +2966,19 @@ async function auditLoginFailureView(page, view) {
         await page.waitForTimeout(LOGIN_ERROR_SETTLE_MS);
 
         const metrics = await collectPageMetrics(page, view.scope);
-        const shots = await captureStablePair(page, view.name);
-        const kpiShots = await captureKpiCards(page, view.name);
-        const diff = diffScreenshots(view.name, shots.shotA, shots.shotB);
+        const shots = await captureStablePair(page, {
+            motionResetCss: FULL_MOTION_RESET_CSS,
+            name: view.name,
+            screenshotDir: SCREENSHOT_DIR,
+            screenshotSettleMs: SCREENSHOT_SETTLE_MS,
+        });
+        const kpiShots = await captureKpiCards(page, view.name, SCREENSHOT_DIR);
+        const diff = diffScreenshots({
+            name: view.name,
+            shotA: shots.shotA,
+            shotB: shots.shotB,
+            screenshotDir: SCREENSHOT_DIR,
+        });
         network = detachNetwork();
         network.consoleEntries = network.consoleEntries.filter((entry) =>
             !(loginResponse.status() === 401 && entry.text.includes('401 (Unauthorized)'))
@@ -3305,12 +3030,21 @@ async function main() {
     try {
         browser = await chromium.launch({ headless: true });
         const authContext = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
-        await login(await authContext.newPage());
+        await login(await authContext.newPage(), {
+            baseUrl: BASE_URL,
+            username: USERNAME,
+            password: PASSWORD,
+            motionResetCss: FULL_MOTION_RESET_CSS,
+        });
         const authState = await authContext.storageState();
         await authContext.close();
 
         const desktopContext = await browser.newContext({
             viewport: { width: 1440, height: 1100 },
+            storageState: authState,
+        });
+        const largeDesktopContext = await browser.newContext({
+            viewport: { width: 1600, height: 1100 },
             storageState: authState,
         });
         const tabletContext = await browser.newContext({
@@ -3322,10 +3056,12 @@ async function main() {
             storageState: authState,
         });
         await installLayoutShiftObserver(desktopContext);
+        await installLayoutShiftObserver(largeDesktopContext);
         await installLayoutShiftObserver(tabletContext);
         await installLayoutShiftObserver(mobileContext);
 
         const desktopPage = await desktopContext.newPage();
+        const largeDesktopPage = await largeDesktopContext.newPage();
         const tabletPage = await tabletContext.newPage();
         const mobilePage = await mobileContext.newPage();
 
@@ -3336,6 +3072,8 @@ async function main() {
                 page = mobilePage;
             } else if (view.device === 'tablet') {
                 page = tabletPage;
+            } else if (view.device === 'large-desktop') {
+                page = largeDesktopPage;
             } else {
                 page = desktopPage;
             }
@@ -3370,6 +3108,8 @@ async function main() {
                 page = mobilePage;
             } else if (view.device === 'tablet') {
                 page = tabletPage;
+            } else if (view.device === 'large-desktop') {
+                page = largeDesktopPage;
             } else {
                 page = desktopPage;
             }
@@ -3483,6 +3223,8 @@ async function main() {
             sliderAlignment: spacing.sliderAlignment?.length || 0,
             sliderTickMisaligned: spacing.sliderAlignment?.filter((s) => s.tickMisaligned?.length)?.length || 0,
             sliderLabelOverlap: spacing.sliderAlignment?.filter((s) => s.labelOverlap?.length)?.length || 0,
+            mobileRowCardStackGapRows: spacing.mobileRowCardStackGaps?.length || 0,
+            mobileRowCardStackGapIssues: spacing.mobileRowCardStackGaps?.filter((entry) => !entry.gapsConsistent)?.length || 0,
             settingsTabColors: spacing.settingsTabColors?.length || 0,
             settingsTabActiveColorMismatch: spacing.settingsTabColors?.filter((entry) => entry.colorDelta != null && entry.colorDelta > SETTINGS_TAB_COLOR_DISTANCE_MAX)?.length || 0,
             logsPathLayout: spacing.logsPathLayout?.length || 0,
@@ -3502,6 +3244,20 @@ async function main() {
             dashboardTopRowVariance: spacing.dashboardTopRowAlignment?.variance || 0,
             dnsUnavailableStates: spacing.dnsUnavailableStates?.length || 0,
             dnsUnavailableIncorrectSpacing: spacing.dnsUnavailableStates?.filter(s => !s.marginCompensatesGap || !s.visualGapExpected)?.length || 0,
+            dnsLogScrollLayout: spacing.dnsLogScrollLayout ? 1 : 0,
+            dnsLogScrollLayoutIssues: spacing.dnsLogScrollLayout
+                ? [
+                    !spacing.dnsLogScrollLayout.bodyMinHeightAllowsShrink,
+                    !spacing.dnsLogScrollLayout.wrapMinHeightAllowsShrink,
+                    !spacing.dnsLogScrollLayout.wrapScrollsInternally,
+                    !spacing.dnsLogScrollLayout.bodyActsAsFlexChild,
+                    !spacing.dnsLogScrollLayout.wrapActsAsFlexChild,
+                    !spacing.dnsLogScrollLayout.bodyClipsOverflow,
+                    !spacing.dnsLogScrollLayout.wrapFitsBody,
+                ].filter(Boolean).length
+                : 0,
+            aboutMobileTopRowStackGaps: spacing.about?.mobileTopRowStack?.gaps?.length || 0,
+            aboutMobileTopRowGapVariance: spacing.about?.mobileTopRowStack?.gapVariance || 0,
             statusFlowNodes: spacing.statusFlow?.nodeCount || 0,
             statusFlowConnectors: spacing.statusFlow?.connectorCount || 0,
             statusFlowHeightVariance: spacing.statusFlow?.heightVariance || 0,

@@ -67,6 +67,7 @@ from ..dns.custom_rules import (
 	parse_rules as parse_custom_rules,
 )
 from ..utils.deps import get_conn, get_dns_dir
+from ..utils.network import parse_ip_str
 from .auth import get_current_user, require_admin
 from .response import ok_response
 from .wireguard_utils import (
@@ -79,9 +80,11 @@ from .wireguard_utils import (
 _log = logging.getLogger(__name__)
 _background_tasks: set[asyncio.Task[None]] = set()
 _DNS_STATUS_CACHE_TTL_SECONDS = 5.0
-_DNS_TREND_CACHE_TTL_SECONDS = 10.0
+_DNS_TREND_CACHE_TTL_SECONDS = 60.0
+_DNS_TREND_CACHE_STALE_TTL_SECONDS = 300.0  # Serve stale data up to 5min while recomputing
 _dns_status_cache: dict[str, tuple[float, dict]] = {}
 _dns_trend_cache: dict[tuple[str, int, int, str], tuple[float, dict]] = {}
+_dns_trend_lock = asyncio.Lock()  # Prevents thundering herd on trend computation
 _ALLOWED_DOT_PORTS = frozenset({853, 8853})
 _DOT_TEST_CONCURRENCY = 8
 
@@ -670,11 +673,42 @@ async def dns_trend(
 	
 	dns_key = str(dns_dir.resolve())
 	cache_key = (dns_key, hours, bucket_minutes, client_filter_key)
-	cache_entry = _dns_trend_cache.get(cache_key)
 	now_mono = time.monotonic()
+	cache_entry = _dns_trend_cache.get(cache_key)
+	
+	# Fast path: fresh cache hit
 	if cache_entry and (now_mono - cache_entry[0]) < _DNS_TREND_CACHE_TTL_SECONDS:
 		return ok_response(data=cache_entry[1])
+	
+	# Thundering-herd protection: if another request is already computing,
+	# serve stale data immediately instead of blocking on the lock.
+	if _dns_trend_lock.locked():
+		if cache_entry and (now_mono - cache_entry[0]) < _DNS_TREND_CACHE_STALE_TTL_SECONDS:
+			return ok_response(data=cache_entry[1])
+	
+	async with _dns_trend_lock:
+		# Re-check after acquiring lock (another request may have refreshed)
+		cache_entry = _dns_trend_cache.get(cache_key)
+		now_mono = time.monotonic()
+		if cache_entry and (now_mono - cache_entry[0]) < _DNS_TREND_CACHE_TTL_SECONDS:
+			return ok_response(data=cache_entry[1])
+		
+		data = await _compute_trend_data(dns_dir, hours, bucket_minutes, client_filter)
+		
+		if len(_dns_trend_cache) >= 128:
+			oldest_key = min(_dns_trend_cache.items(), key=lambda item: item[1][0])[0]
+			_dns_trend_cache.pop(oldest_key, None)
+		_dns_trend_cache[cache_key] = (time.monotonic(), data)
+		return ok_response(data=data)
 
+
+async def _compute_trend_data(
+	dns_dir: Path,
+	hours: int,
+	bucket_minutes: int,
+	client_filter: set[str] | None,
+) -> dict:
+	"""Heavy computation for trend data — runs under lock."""
 	now = datetime.now(timezone.utc)
 	since = now - timedelta(hours=hours)
 
@@ -732,7 +766,7 @@ async def dns_trend(
 		for b, t in zip(blocked, total)
 	]
 
-	data = {
+	return {
 		"hours": hours,
 		"bucket_minutes": bucket_minutes,
 		"labels": labels,
@@ -740,11 +774,6 @@ async def dns_trend(
 		"blocked": blocked,
 		"block_rate": block_rate,
 	}
-	if len(_dns_trend_cache) >= 128:
-		oldest_key = min(_dns_trend_cache.items(), key=lambda item: item[1][0])[0]
-		_dns_trend_cache.pop(oldest_key, None)
-	_dns_trend_cache[cache_key] = (now_mono, data)
-	return ok_response(data=data)
 
 
 # ---------------------------------------------------------------------------
@@ -1386,6 +1415,7 @@ async def add_custom_rule_action(
 @router.get("/logs")
 async def dns_logs(
 	lines: int = 200,
+	client_ips: str | None = Query(None, description="Comma-separated client IPs to filter by"),
 	dns_dir: Path = Depends(get_dns_dir),
 	conn: sqlite3.Connection = Depends(get_conn),
 	user_row: sqlite3.Row = Depends(get_current_user),
@@ -1397,35 +1427,54 @@ async def dns_logs(
 	Client names are resolved from peer_address→name mapping.
 	"""
 	lines = min(max(lines, 10), 5000)
-	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, dns_dir, lines)
+	client_filter, _ = _parse_client_ip_filter(client_ips)
+	queries = await asyncio.to_thread(
+		dns_ingestion.read_recent_queries,
+		dns_dir,
+		lines,
+		client_filter,
+	)
 	is_admin = bool(user_row["is_admin"])
 	masked = "*****"
 
 	# Build peer IP→name mapping for client name resolution
+	# peer_address can be dual-stack: "10.13.13.2/32, fd13:13:13::2/128"
 	peer_ip_map: dict[str, str] = {}
 	for peer in get_all_peers(conn):
 		addr = peer["peer_address"]
 		name = peer["name"]
 		if addr and name:
-			# Strip CIDR suffix if present (e.g., 10.13.13.2/32 → 10.13.13.2)
-			peer_ip_map[addr.split("/")[0]] = name
+			for part in str(addr).split(","):
+				part = part.strip()
+				if not part:
+					continue
+				# Strip CIDR suffix (e.g., 10.13.13.2/32 → 10.13.13.2)
+				client_ip = parse_ip_str(part.split("/")[0].strip()) or part.split("/")[0].strip()
+				if client_ip:
+					peer_ip_map[client_ip] = name
+
+	def _normalize_client_ip(value: str) -> str:
+		"""Return canonical client IP text for matching/display."""
+		return parse_ip_str(value) or str(value or "").strip()
 
 	def _format_client(client_ip: str) -> str:
 		"""Format client display: 'PeerName (IP)' or just 'IP'."""
-		peer_name = peer_ip_map.get(client_ip)
+		normalized_ip = _normalize_client_ip(client_ip)
+		peer_name = peer_ip_map.get(normalized_ip)
 		if peer_name:
-			return f"{peer_name} ({client_ip})"
-		return client_ip
+			return f"{peer_name} ({normalized_ip})"
+		return normalized_ip
 
 	data = {
 		"queries": [
 			{
 				"timestamp": _format_tsdb_timestamp(str(q.get("ts", ""))),
 				"client": _format_client(str(q.get("client", ""))) if is_admin else masked,
-				"client_name": peer_ip_map.get(str(q.get("client", "")), "") if is_admin else masked,
+				"client_name": peer_ip_map.get(_normalize_client_ip(str(q.get("client", ""))), "") if is_admin else masked,
 				"domain": str(q.get("domain", "")),
 				"type": str(q.get("qtype", "")),
 				"blocked": bool(q.get("blocked", False)),
+				"custom_rule": bool(q.get("custom_rule", False)),
 			}
 			for q in queries  # read_recent_queries() already returns newest first
 			],

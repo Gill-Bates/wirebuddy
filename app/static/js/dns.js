@@ -16,7 +16,7 @@ let _adBlockerEnabled = dnsApp ? (dnsApp.dataset.enableBlocklist === 'true' || d
 // Named constants
 const LOG_BATCH_SIZE = 50;  // Items to render per batch
 const LOG_FETCH_LIMIT = 1000;  // Max items to fetch from API
-const SCROLL_THRESHOLD_PX = 100;  // Trigger infinite scroll when this close to bottom
+const SCROLL_THRESHOLD_PX = 150;  // Trigger infinite scroll when this close to bottom
 const SEARCH_DEBOUNCE_MS = 250;  // Debounce delay for search input
 const MENU_VIEWPORT_MARGIN_PX = 8;  // Minimum margin for context menu
 const FADE_FALLBACK_MS = 300;  // Fallback timeout for CSS transitions
@@ -29,11 +29,23 @@ let _filteredData = [];  // Filtered data for infinite scroll
 let _logsLoadInProgress = false;  // Guard against concurrent loadLogsOnly calls
 let _searchTimer = null;  // Debounce timer for search
 let _scrollRaf = null;  // RAF handle for scroll throttle
+let _logAutoFillQueued = false;  // Prevent stacked auto-fill checks
 let _logActionState = null; // Active row action context
 let _isInitialTopDomainsRender = true; // Skip fade on first render
 let _topDomainFadeTimeout = null; // Timeout handle for fade animation fallback
 let _fadeAbort = null; // AbortController for peer filter fade animation
-const _pageAbort = new AbortController();  // Abort controller for page cleanup
+let _pageAbort = new AbortController();  // Abort controller for page cleanup
+
+/**
+ * Extract raw client IP from a formatted 'PeerName (IP)' string.
+ * Returns the IP inside parentheses, or the original value if no parens found.
+ * The backend formats q.client as "PeerName (10.13.13.3)" or just "10.13.13.3".
+ */
+function _extractClientIp(clientStr) {
+    if (!clientStr) return '';
+    const match = clientStr.match(/\(([^)]+)\)$/);
+    return match ? match[1] : clientStr;
+}
 
 /**
  * Get comma-separated client IPs for the currently selected peer filter.
@@ -109,8 +121,8 @@ function openLogActionMenu(q, clickEvent) {
 
     _logActionState = {
         domain: q.domain || '',
-        client: q.client || '',
-        clientName: _peerMap[q.client] || '',
+        client: _extractClientIp(q.client || ''),
+        clientName: _peerMap[_extractClientIp(q.client || '').toLowerCase()] || '',
         blocked,
     };
 
@@ -147,8 +159,13 @@ function openLogActionMenu(q, clickEvent) {
     menu.style.top = `${Math.max(MENU_VIEWPORT_MARGIN_PX, Math.min(y, viewportHeight - menuRect.height - MENU_VIEWPORT_MARGIN_PX))}px`;
     menu.style.visibility = '';  // Now make visible
 
+    // Accessibility: make menu focusable and focus it
+    menu.setAttribute('tabindex', '-1');
+    menu.focus();
+
     // Set ARIA expanded on the triggering row
-    const row = clickEvent.target.closest('tr');
+    const target = clickEvent.target instanceof Element ? clickEvent.target : null;
+    const row = target?.closest('tr');
     if (row) row.setAttribute('aria-expanded', 'true');
 }
 
@@ -257,11 +274,11 @@ async function loadTrend() {
         const clientIpsParam = clientIps ? `&client_ips=${clientIps}` : '';
         let t;
         try {
-            t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}${clientIpsParam}`);
+            t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}${clientIpsParam}`, null, { signal: _pageAbort.signal });
         } catch (err) {
             // Fallback for strict query validation mismatches on older deployments.
             if (err?.code === 'HTTP_422' && bucketMinutes !== 1440) {
-                t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=1440${clientIpsParam}`);
+                t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=1440${clientIpsParam}`, null, { signal: _pageAbort.signal });
             } else {
                 throw err;
             }
@@ -410,13 +427,16 @@ async function loadTrend() {
 
         document.getElementById('trend-meta').textContent = '';
     } catch (e) {
+        if (e.name !== 'AbortError') {
+            console.error('Trend load failed:', e);
+        }
         document.getElementById('trend-meta').textContent = 'Trend unavailable';
     }
 }
 
 async function loadStats() {
     try {
-        const s = await api('GET', '/api/dns/status');
+        const s = await api('GET', '/api/dns/status', null, { signal: _pageAbort.signal });
 
         // Update status using DOM APIs (safe from XSS)
         const statusEl = document.getElementById('stat-status');
@@ -483,7 +503,7 @@ async function loadTopDomains() {
     try {
         const clientIps = getSelectedPeerClientIps();
         const clientIpsParam = clientIps ? `&client_ips=${clientIps}` : '';
-        const data = await api('GET', `/api/dns/top-domains?limit=15${clientIpsParam}`);
+        const data = await api('GET', `/api/dns/top-domains?limit=15${clientIpsParam}`, null, { signal: _pageAbort.signal });
         const topQueried = data.top_queried || [];
         const topBlocked = data.top_blocked || [];
 
@@ -681,7 +701,9 @@ async function loadLogsOnly(showLoading = true) {
         if (showLoading) {
             showLogsLoadingState();
         }
-        const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}`);
+        const clientIps = getSelectedPeerClientIps();
+        const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
+        const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}${clientIpsParam}`, null, { signal: _pageAbort.signal });
         // IMPORTANT: Backend should omit client field for non-admins in the API response.
         // This client-side stripping is cosmetic only - data already sent over the wire.
         // Fix: GET /api/dns/logs should check user.is_admin before including client IPs.
@@ -689,8 +711,13 @@ async function loadLogsOnly(showLoading = true) {
             isAdmin ? q : { ...q, client: undefined }
         );
 
-        // Detect if data changed to avoid unnecessary re-renders
-        const dataChanged = JSON.stringify(newData) !== JSON.stringify(_logData);
+        // Lightweight change detection using first/last + sample from middle
+        const sig = (arr) => {
+            if (!arr.length) return '';
+            const mid = Math.floor(arr.length / 2);
+            return `${arr.length}:${arr[0]?.timestamp}:${arr[mid]?.timestamp}:${arr.at(-1)?.timestamp}`;
+        };
+        const dataChanged = sig(newData) !== sig(_logData);
         if (!showLoading && !dataChanged) {
             // Data unchanged during poll - skip render
             return;
@@ -708,15 +735,20 @@ async function loadLogsOnly(showLoading = true) {
         _renderedCount = 0;
         renderLogs();
 
-        // Re-render additional batches to restore scroll depth
+        // Re-render additional batches to restore scroll depth (yield to avoid UI blocking)
         if (!showLoading && prevRendered > LOG_BATCH_SIZE) {
-            while (_renderedCount < Math.min(prevRendered, _filteredData.length)) {
-                renderLogs(true);
-            }
-            // Restore scroll position
-            if (logContainer) {
-                logContainer.scrollTop = scrollTop;
-            }
+            const restoreScrollAsync = async () => {
+                while (_renderedCount < Math.min(prevRendered, _filteredData.length)) {
+                    renderLogs(true);
+                    // Yield to allow UI updates
+                    await new Promise(r => requestAnimationFrame(r));
+                }
+                // Restore scroll position (clamped to prevent overshoot if dataset shrunk)
+                if (logContainer) {
+                    logContainer.scrollTop = Math.min(scrollTop, logContainer.scrollHeight - logContainer.clientHeight);
+                }
+            };
+            void restoreScrollAsync();
         }
     } catch (e) {
         console.error('Failed to load logs:', e);
@@ -754,7 +786,7 @@ async function loadPeers() {
         return;
     }
     try {
-        const data = await api('GET', '/api/wireguard/stats/peers-enriched');
+        const data = await api('GET', '/api/wireguard/stats/peers-enriched', null, { signal: _pageAbort.signal });
         const peers = data.peers || [];
         const peerFilter = document.getElementById('peer-filter');
         if (!peerFilter) return; // Guard against null
@@ -771,10 +803,13 @@ async function loadPeers() {
         peerFilter.appendChild(allOpt);
 
         for (const peer of peers) {
+            // Skip node tunnel peers (inter-node connections)
+            if (peer.is_node_tunnel) continue;
+
             const name = peer.name || peer.public_key?.substring(0, 8) || 'Unknown';
             const addrParts = (peer.peer_address || '').split(',');
             for (const part of addrParts) {
-                const ip = part.trim().split('/')[0];
+                const ip = part.trim().split('/')[0].toLowerCase();
                 if (ip) newMap[ip] = name;
             }
 
@@ -808,6 +843,8 @@ function renderLogs(append = false) {
     const filter = filterEl.value;
     const peerFilter = peerFilterEl.value;
     const search = searchEl.value.toLowerCase();
+    // Snapshot peerMap to avoid race conditions with async loads
+    const peerMapSnapshot = _peerMap;
 
     // If not appending, reset and filter fresh
     if (!append) {
@@ -816,7 +853,7 @@ function renderLogs(append = false) {
         _filteredData = _logData.filter(q => {
             if (filter === 'blocked' && !q.blocked) return false;
             if (filter === 'allowed' && q.blocked) return false;
-            if (peerFilter !== 'all' && _peerMap[q.client] !== peerFilter) return false;
+            if (peerFilter !== 'all' && (q.client_name || peerMapSnapshot[_extractClientIp(q.client).toLowerCase()] || '') !== peerFilter) return false;
             if (search && !(q.domain || '').toLowerCase().includes(search)) return false;
             return true;
         });
@@ -900,14 +937,14 @@ function renderLogs(append = false) {
         domainWrap.appendChild(domainText);
 
         // Add client/peer info below domain
-        const peerName = _peerMap[q.client];
+        const peerName = peerMapSnapshot[_extractClientIp(q.client).toLowerCase()];
         const clientInfo = document.createElement('span');
         clientInfo.className = 'text-muted log-domain-client';
         if (!isAdmin) {
             // NOTE: Cosmetic masking only – backend should omit sensitive fields for non-admins
             clientInfo.textContent = `***** (*****)`;
         } else {
-            clientInfo.textContent = peerName ? `${peerName} (${q.client})` : (q.client || '');
+            clientInfo.textContent = peerName ? `${peerName} (${_extractClientIp(q.client)})` : (q.client || '');
         }
         domainWrap.appendChild(clientInfo);
         tdDomain.appendChild(domainWrap);
@@ -927,6 +964,7 @@ function renderLogs(append = false) {
 
     tbody.appendChild(frag);
     _renderedCount = endIdx;
+    queueLogAutoFill();
 }
 
 function debouncedRenderLogs() {
@@ -937,6 +975,26 @@ function debouncedRenderLogs() {
 function loadMoreLogs() {
     if (_renderedCount >= _filteredData.length) return;  // All rendered
     renderLogs(true);  // Append mode
+}
+
+function queueLogAutoFill() {
+    const logContainer = document.getElementById('log-table-wrap');
+    if (!logContainer || _logAutoFillQueued || _renderedCount >= _filteredData.length) return;
+    if (logContainer.scrollHeight > logContainer.clientHeight + 1) return;
+
+    _logAutoFillQueued = true;
+    requestAnimationFrame(() => {
+        _logAutoFillQueued = false;
+        const currentLogContainer = document.getElementById('log-table-wrap');
+        if (!currentLogContainer) return;
+
+        if (
+            currentLogContainer.scrollHeight <= currentLogContainer.clientHeight + 1 &&
+            _renderedCount < _filteredData.length
+        ) {
+            loadMoreLogs();
+        }
+    });
 }
 
 // Ad-Blocker dropdown state
@@ -1019,7 +1077,7 @@ function updateCountdownDisplay() {
 
 async function loadAdblockerStatus() {
     try {
-        const data = await api('GET', '/api/dns/adblocker/status');
+        const data = await api('GET', '/api/dns/adblocker/status', null, { signal: _pageAbort.signal });
         updateAdblockerButton(data.enabled, data.disabled_until || 0);
     } catch (e) {
         console.error('Failed to load adblocker status:', e);
@@ -1149,7 +1207,7 @@ if (logContainer) {
         if (_scrollRaf) return;
         _scrollRaf = requestAnimationFrame(() => {
             const scrollBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight;
-            if (scrollBottom < SCROLL_THRESHOLD_PX) {
+            if (scrollBottom < SCROLL_THRESHOLD_PX || logContainer.scrollHeight <= logContainer.clientHeight + 1) {
                 loadMoreLogs();
             }
             _scrollRaf = null;
@@ -1161,7 +1219,8 @@ if (logContainer) {
 const logBody = document.getElementById('log-body');
 if (logBody) {
     logBody.addEventListener('click', (ev) => {
-        const row = ev.target.closest('tr.log-row-actionable');
+        const target = ev.target instanceof Element ? ev.target : null;
+        const row = target?.closest('tr.log-row-actionable');
         if (!row) return;
         const idx = parseInt(row.dataset.logIndex, 10);
         const q = _filteredData[idx];
@@ -1174,7 +1233,8 @@ if (logBody) {
 
     logBody.addEventListener('keydown', (ev) => {
         if (ev.key !== 'Enter' && ev.key !== ' ') return;
-        const row = ev.target.closest('tr.log-row-actionable');
+        const target = ev.target instanceof Element ? ev.target : null;
+        const row = target?.closest('tr.log-row-actionable');
         if (!row) return;
         const idx = parseInt(row.dataset.logIndex, 10);
         const q = _filteredData[idx];
@@ -1196,9 +1256,6 @@ const peerFilterSelect = document.getElementById('peer-filter');
 if (peerFilterSelect) {
     // Load fresh data when peer filter changes - affects logs, trend, and top domains
     peerFilterSelect.addEventListener('change', async () => {
-        // Logs are filtered client-side, re-render immediately
-        renderLogs();
-
         // Cancel any stale animation from previous filter change
         if (_fadeAbort) _fadeAbort.abort();
         _fadeAbort = new AbortController();
@@ -1215,13 +1272,13 @@ if (peerFilterSelect) {
 
         if (!topQueriedCard || !topBlockedCard) {
             // No cards to fade, render immediately
-            await Promise.allSettled([loadTrend(), loadTopDomains()]);
+            await Promise.allSettled([loadLogsOnly(), loadTrend(), loadTopDomains()]);
             return;
         }
 
         // Skip fade effect on initial render - only fade when user actively changes filter
         if (_isInitialTopDomainsRender) {
-            await Promise.allSettled([loadTrend(), loadTopDomains()]);
+            await Promise.allSettled([loadLogsOnly(), loadTrend(), loadTopDomains()]);
             return;
         }
 
@@ -1232,13 +1289,15 @@ if (peerFilterSelect) {
         void topQueriedCard.offsetHeight;
 
         // Fade out cards, re-render on transition complete
+        let transitionHandled = false;
         const handleTransitionEnd = () => {
-            if (signal.aborted) return;
+            if (transitionHandled || signal.aborted) return;
+            transitionHandled = true;
             if (_topDomainFadeTimeout) {
                 clearTimeout(_topDomainFadeTimeout);
                 _topDomainFadeTimeout = null;
             }
-            Promise.allSettled([loadTrend(), loadTopDomains()]).then(() => {
+            Promise.allSettled([loadLogsOnly(), loadTrend(), loadTopDomains()]).then(() => {
                 if (signal.aborted) return;
                 requestAnimationFrame(() => {
                     topQueriedCard.classList.remove('top-domain-card-fading');

@@ -1,0 +1,387 @@
+    // ─── BACKUP MANAGEMENT ─────────────────────────────────────────────────────
+
+    // Backup retention days mapping (slider index → days)
+    const BACKUP_RETENTION_DAYS = [1, 7, 14, 21, 30];
+    const BACKUP_RETENTION_LABELS = ['1 Day', '7 Days', '14 Days', '21 Days', '30 Days'];
+
+    // Format bytes to human-readable string
+    function formatBackupSize(bytes) {
+        if (bytes === 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+        const value = bytes / Math.pow(1024, i);
+        return value.toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
+    }
+
+    // Helper: Parse API error response
+    async function parseBackupApiError(resp) {
+        const error = await resp.json().catch(() => ({}));
+        return error.detail || 'Unknown error';
+    }
+
+    function updateBackupRetentionBadge(sliderValue) {
+        const badge = document.getElementById('backup-retention-value');
+        if (badge) {
+            badge.textContent = BACKUP_RETENTION_LABELS[sliderValue] || '30 Days';
+        }
+    }
+
+    function updateRestoreButtonState() {
+        const fileInput = document.getElementById('backup-restore-file');
+        const restoreBtn = document.getElementById('btn-backup-restore');
+        if (!fileInput || !restoreBtn || !isAdmin) return;
+        restoreBtn.disabled = fileInput.files.length === 0;
+    }
+
+    // Load backup settings and status
+    async function loadBackupSettings() {
+        if (!isAdmin) return;
+        
+        try {
+            const data = await api('GET', '/api/backup/settings');
+            
+            // Update UI with null checks
+            const scheduledEl = document.getElementById('backup-scheduled-enabled');
+            const countEl = document.getElementById('backup-count');
+            const lastAtEl = document.getElementById('backup-last-at');
+            const statsEl = document.getElementById('backup-scheduled-stats');
+            const retentionSection = document.getElementById('backup-retention-section');
+            const retentionSlider = document.getElementById('backup-retention-slider');
+            const sizeEl = document.getElementById('backup-size');
+            const diskWarningEl = document.getElementById('backup-disk-warning');
+            
+            if (scheduledEl) scheduledEl.checked = data.scheduled_enabled;
+            if (countEl) countEl.textContent = data.backup_count.toString();
+            
+            // Set retention slider value
+            if (retentionSlider && data.retention_days !== undefined) {
+                const sliderIndex = BACKUP_RETENTION_DAYS.indexOf(data.retention_days);
+                retentionSlider.value = sliderIndex >= 0 ? sliderIndex : 4; // Default to 30 days
+                updateBackupRetentionBadge(retentionSlider.value);
+            }
+            
+            // Show/hide retention slider and stats section based on scheduled status
+            if (retentionSection) {
+                retentionSection.classList.toggle('d-none', !data.scheduled_enabled);
+            }
+            if (statsEl) {
+                statsEl.classList.toggle('d-none', !data.scheduled_enabled);
+            }
+            
+            // Update backup size
+            if (sizeEl && data.backup_size_bytes !== undefined) {
+                sizeEl.textContent = formatBackupSize(data.backup_size_bytes);
+            }
+            
+            // Show/hide disk warning
+            if (diskWarningEl) {
+                diskWarningEl.classList.toggle('d-none', !data.disk_warning);
+            }
+            
+            if (lastAtEl) {
+                if (data.last_backup_at && data.backup_count > 0) {
+                    const date = new Date(data.last_backup_at);
+                    lastAtEl.textContent = date.toLocaleString();
+                } else {
+                    lastAtEl.textContent = 'No backups yet';
+                }
+            }
+        } catch (err) {
+            console.error('Failed to load backup settings:', err);
+        }
+    }
+
+    // Toggle scheduled backups
+    async function toggleScheduledBackup(enabled) {
+        if (!isAdmin) return;
+        
+        // Immediately show/hide retention slider and stats section for responsiveness
+        const retentionSection = document.getElementById('backup-retention-section');
+        const statsEl = document.getElementById('backup-scheduled-stats');
+        if (retentionSection) {
+            retentionSection.classList.toggle('d-none', !enabled);
+        }
+        if (statsEl) {
+            statsEl.classList.toggle('d-none', !enabled);
+        }
+        
+        try {
+            await api('PATCH', '/api/backup/settings', { scheduled_enabled: enabled });
+            
+            // Reload settings to confirm change
+            await loadBackupSettings();
+            
+            // Show toast
+            wbToast(enabled ? 'Scheduled backups enabled' : 'Scheduled backups disabled', 'success');
+        } catch (err) {
+            console.error('Failed to toggle scheduled backup:', err);
+            // Revert checkbox state on error
+            const checkbox = document.getElementById('backup-scheduled-enabled');
+            if (checkbox) checkbox.checked = !enabled;
+            // Revert visibility on error
+            if (retentionSection) {
+                retentionSection.classList.toggle('d-none', enabled);
+            }
+            if (statsEl) {
+                statsEl.classList.toggle('d-none', enabled);
+            }
+            wbToast('Failed to update backup settings: ' + err.message, 'danger');
+        }
+    }
+
+    // Update backup retention period
+    async function updateBackupRetention(sliderValue) {
+        if (!isAdmin) return;
+        
+        const days = BACKUP_RETENTION_DAYS[sliderValue] || 30;
+        updateBackupRetentionBadge(sliderValue);
+        
+        try {
+            const result = await api('PATCH', '/api/backup/settings', { retention_days: days });
+            
+            // Check if old backups were deleted
+            if (result?.deleted_backups > 0) {
+                wbToast(`Retention set to ${BACKUP_RETENTION_LABELS[sliderValue]} — ${result.deleted_backups} old backup(s) removed`, 'success');
+            } else {
+                wbToast(`Backup retention set to ${BACKUP_RETENTION_LABELS[sliderValue]}`, 'success');
+            }
+            
+            // Reload to update backup count and size
+            await loadBackupSettings();
+        } catch (err) {
+            console.error('Failed to update backup retention:', err);
+            wbToast('Failed to update backup retention: ' + err.message, 'danger');
+            // Reload to revert slider
+            await loadBackupSettings();
+        }
+    }
+
+    // Download backup
+    async function downloadBackup() {
+        if (!isAdmin) return;
+        
+        const btn = document.getElementById('btn-backup-download');
+        if (!btn) return;
+        const originalHtml = btn.innerHTML;
+        
+        try {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-1" role="status"></span>Creating...';
+            
+            const resp = await fetch('/api/backup/download', {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': getCsrfToken() },
+                credentials: 'same-origin'
+            });
+            
+            if (!resp.ok) {
+                throw new Error(await parseBackupApiError(resp));
+            }
+            
+            // Get filename from Content-Disposition header
+            const disposition = resp.headers.get('Content-Disposition');
+            let filename = 'wirebuddy_backup.tar.gz';
+            if (disposition) {
+                const match = disposition.match(/filename="?([^";]+)"?/);
+                if (match) filename = match[1].trim();
+            }
+            
+            // Download the file
+            const blob = await resp.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            
+            // Reload settings to update last backup time
+            await loadBackupSettings();
+        } catch (err) {
+            console.error('Failed to download backup:', err);
+            wbToast('Failed to create backup: ' + err.message, 'danger');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
+    }
+
+    // Restore backup
+    async function restoreBackup() {
+        if (!isAdmin) return;
+        
+        const fileInput = document.getElementById('backup-restore-file');
+        if (!fileInput) return;
+        const file = fileInput.files[0];
+        
+        if (!file) {
+            wbToast('Please select a backup file first.', 'warning');
+            return;
+        }
+        
+        // Validate file extension
+        if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.gz')) {
+            wbToast('Invalid file type. Please select a .tar.gz backup file.', 'warning');
+            return;
+        }
+        
+        const btn = document.getElementById('btn-backup-restore');
+        if (!btn) return;
+        const originalHtml = btn.innerHTML;
+        
+        try {
+            // Step 1: Validate backup file HMAC before asking for password
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle" role="status"></span> Validating...';
+            
+            const validateFormData = new FormData();
+            validateFormData.append('file', file);
+            
+            const validateResp = await fetch('/api/backup/validate', {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': getCsrfToken() },
+                credentials: 'same-origin',
+                body: validateFormData
+            });
+            
+            if (!validateResp.ok) {
+                throw new Error(await parseBackupApiError(validateResp));
+            }
+            
+            // Reset button before showing modal
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+            updateRestoreButtonState();
+            
+            // Step 2: Confirm with password prompt (only if validation passed)
+            const password = await wbPrompt(
+                'Backup is valid. This will overwrite all configuration and restart the application. Enter your admin password to confirm:',
+                { inputType: 'password', placeholder: 'Admin password', title: 'Confirm Restore' }
+            );
+            
+            if (!password) return;
+            
+            // Step 3: Perform actual restore
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle" role="status"></span> Restoring...';
+            
+            const restoreFormData = new FormData();
+            restoreFormData.append('file', file);
+            restoreFormData.append('password', password);
+            
+            const resp = await fetch('/api/backup/restore', {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': getCsrfToken() },
+                credentials: 'same-origin',
+                body: restoreFormData
+            });
+            
+            if (!resp.ok) {
+                throw new Error(await parseBackupApiError(resp));
+            }
+            
+            const result = await resp.json();
+
+            fileInput.value = '';
+            updateRestoreButtonState();
+            
+            // Show success message and wait for restart
+            wbAlert(result.message + ' The page will reload automatically.', 'success');
+            
+            // Wait a moment then start checking for server restart
+            setTimeout(pollForRestart, 2000);
+            
+        } catch (err) {
+            console.error('Failed to restore backup:', err);
+            wbToast('Failed to restore backup: ' + err.message, 'danger');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+            updateRestoreButtonState();
+        }
+    }
+
+    // Poll for server restart after restore
+    function pollForRestart() {
+        let stopped = false;
+        
+        const checkInterval = setInterval(async () => {
+            if (stopped) return;
+            try {
+                const resp = await fetch('/health', { cache: 'no-store' });
+                if (resp.ok) {
+                    stopped = true;
+                    clearInterval(checkInterval);
+                    window.location.reload();
+                }
+            } catch (e) {
+                // Server not ready yet, keep polling
+            }
+        }, 1000);
+        
+        // Give up after 60 seconds
+        setTimeout(() => {
+            if (!stopped) {
+                stopped = true;
+                clearInterval(checkInterval);
+                wbAlert('Server restart took too long. Please refresh the page manually.', 'warning');
+            }
+        }, 60000);
+    }
+
+    // Bind backup event listeners
+    function bindBackupListeners() {
+        const scheduledCheckbox = document.getElementById('backup-scheduled-enabled');
+        if (scheduledCheckbox) {
+            scheduledCheckbox.addEventListener('change', (e) => {
+                toggleScheduledBackup(e.target.checked);
+            });
+        }
+        
+        const retentionSlider = document.getElementById('backup-retention-slider');
+        if (retentionSlider) {
+            // Update badge on input (while dragging)
+            retentionSlider.addEventListener('input', (e) => {
+                updateBackupRetentionBadge(e.target.value);
+            });
+            // Save on change (when released)
+            retentionSlider.addEventListener('change', (e) => {
+                updateBackupRetention(parseInt(e.target.value, 10));
+            });
+        }
+        
+        const downloadBtn = document.getElementById('btn-backup-download');
+        if (downloadBtn) {
+            downloadBtn.addEventListener('click', downloadBackup);
+        }
+        
+        const restoreBtn = document.getElementById('btn-backup-restore');
+        if (restoreBtn) {
+            restoreBtn.addEventListener('click', restoreBackup);
+        }
+
+        const restoreFileInput = document.getElementById('backup-restore-file');
+        const browseBtn = document.getElementById('btn-backup-browse');
+        const filenameDisplay = document.getElementById('backup-restore-filename');
+
+        if (browseBtn && restoreFileInput) {
+            browseBtn.addEventListener('click', () => restoreFileInput.click());
+        }
+
+        if (restoreFileInput) {
+            restoreFileInput.addEventListener('change', () => {
+                if (filenameDisplay) {
+                    filenameDisplay.value = restoreFileInput.files[0]?.name || '';
+                }
+                updateRestoreButtonState();
+            });
+        }
+
+        updateRestoreButtonState();
+    }
+
+    // Initialize backup functionality
+    bindBackupListeners();
+    loadBackupSettings();

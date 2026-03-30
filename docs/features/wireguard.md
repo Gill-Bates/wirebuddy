@@ -84,21 +84,21 @@ Peers represent individual clients (laptops, phones, etc.) connecting to your VP
 
 | Setting | Required | Description |
 |---------|----------|-------------|
-| **Name** | Yes | Descriptive name for the peer |
+| **Device Name** | Yes | Descriptive label for the client device |
 | **Interface** | Yes | Which WireGuard interface to use |
-| **IP Address** | Yes | Static IP within interface subnet |
-| **IPv6 Address** | No | Optional IPv6 address |
+| **Routing Mode** | Yes | `Recommended`, `Local network access`, or `Advanced` |
 | **Public Key** | No | Auto-generated if not provided |
-| **Preshared Key** | No | Additional encryption layer |
-| **Persistent Keepalive** | No | Seconds between keepalive packets (25 recommended for NAT) |
-| **Use WireBuddy DNS** | No | Route DNS through WireBuddy's resolver for ad-blocking. When disabled, uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9) |
+| **Use Ad-blocking DNS (WireBuddy)** | No | Route DNS through WireBuddy's resolver. When disabled, clients use Cloudflare (1.1.1.1) and Quad9 (9.9.9.9) |
+| **Active Blocklists** | No | Optional per-peer subset of the globally enabled blocklists |
 | **Client Isolation** | No | Prevent peer from communicating with other VPN peers |
+
+Peer VPN addresses are allocated automatically from the selected interface.
 
 ### Routing Modes
 
 WireBuddy offers three routing presets:
 
-=== "Full Tunnel"
+=== "Recommended"
     **Routes all traffic through VPN**
     
     - Allowed IPs: `0.0.0.0/0, ::/0`
@@ -110,19 +110,15 @@ WireBuddy offers three routing presets:
     AllowedIPs = 0.0.0.0/0, ::/0
     ```
 
-=== "Isolated"
-    **Only VPN internal traffic**
-    
-    - Allowed IPs: VPN subnet only (e.g., `10.8.0.0/24`)
-    - DNS: Optional
-    - Use case: Simple peer-to-peer VPN access
+=== "Local Network Access"
+    **Keep access to local devices while internet traffic still uses the VPN**
     
     ```ini
     [Peer]
-    AllowedIPs = 10.8.0.0/24
+    AllowedIPs = 0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1
     ```
 
-=== "Custom"
+=== "Advanced"
     **Specify custom routes**
     
     - Allowed IPs: Manually defined
@@ -136,7 +132,7 @@ WireBuddy offers three routing presets:
 
 ### Client Configuration
 
-After creating a peer, WireBuddy provides multiple options:
+After creating a peer, WireBuddy provides these actions in the peer list:
 
 #### QR Code
 
@@ -164,12 +160,6 @@ Best for: Windows, macOS, Linux desktop
     PersistentKeepalive = 25
     ```
 
-#### Copy Config
-
-Click **Copy Config** to copy configuration text to clipboard.
-
-Best for: Quick sharing via secure channels
-
 ### Peer Status
 
 Monitor peer status in the **Peers** page:
@@ -177,15 +167,14 @@ Monitor peer status in the **Peers** page:
 | Status | Indicator | Description |
 |--------|-----------|-------------|
 | **Connected** | 🟢 Green | Recent handshake (< 3 minutes) |
-| **Idle** | 🟡 Yellow | No recent handshake but configured |
+| **Idle** | Neutral text | No recent handshake but configured |
 | **Disabled** | ⚪ Gray | Peer manually disabled |
-| **Error** | 🔴 Red | Configuration issue |
 
 **Handshake Information:**
 
 - **Last Seen:** Time since last WireGuard handshake
-- **Transfer:** Total sent/received bytes
-- **Endpoint:** Client's public IP and port
+- **Client IP:** Last observed client IP, country flag, city, and ASN when available
+- **Routing:** Current routing preset badge in the peer list
 
 ### Peer Actions
 
@@ -196,17 +185,6 @@ Available actions for each peer:
 - **Show QR:** Display QR code for mobile setup
 - **Download Config:** Get configuration file
 - **Delete:** Permanently remove peer
-
-## Bulk Operations
-
-WireBuddy supports bulk peer management:
-
-1. Select multiple peers using checkboxes
-2. Choose action from dropdown:
-   - Enable selected
-   - Disable selected
-   - Delete selected
-3. Confirm action
 
 ## Traffic Statistics
 
@@ -232,16 +210,15 @@ Navigate to **Traffic** for historical analytics:
 
 ### Peer-to-Peer Communication
 
-Enable peers to communicate with each other:
+Peers can communicate with each other by default on the same WireGuard interface.
 
-1. Navigate to Settings → Interfaces
-2. Edit your interface
-3. Set **Allowed IPs** to include VPN subnet
-4. Configure firewall rules:
-   ```bash
-   # Allow forwarding between peers
-   iptables -A FORWARD -i wg0 -o wg0 -j ACCEPT
-   ```
+To isolate a device from other VPN devices:
+
+1. Navigate to **Peers**
+2. Click **Edit Peer**
+3. Enable **Client Isolation**
+
+This keeps internet access and server access available while blocking peer-to-peer traffic for that device.
 
 ### NAT and Port Forwarding
 
@@ -270,14 +247,16 @@ To override:
 
 ### Preshared Keys
 
-Add an additional layer of post-quantum cryptography:
+WireBuddy uses preshared keys (PSK) by default for post-quantum security:
 
-1. Edit peer
-2. Click **Generate Preshared Key**
-3. The key is automatically added to both client and server configs
+1. Navigate to **Settings** → **WireGuard**
+2. **Use PresharedKey** is enabled by default
+3. Generate a global preshared key if not already set
 
-!!! info "When to Use PSK"
-    Preshared keys provide defense-in-depth against theoretical quantum computer attacks on Curve25519. Recommended for highly sensitive deployments.
+Newly created peers will include the preshared key in generated configs.
+
+!!! info "Enabled by Default"
+    Preshared keys provide defense-in-depth against theoretical quantum computer attacks on Curve25519. WireBuddy enables this by default for maximum security.
 
 ## IPv6 Support
 

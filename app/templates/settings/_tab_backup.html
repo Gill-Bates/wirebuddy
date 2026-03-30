@@ -1,0 +1,123 @@
+    <div class="tab-pane fade" id="backup-pane" role="tabpanel" aria-labelledby="backup-tab">
+        <div class="row g-3">
+
+            <!-- Download Backup -->
+            <div class="col-lg-4">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <h3 class="h5 mb-0">
+                            Download Backup
+                        </h3>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-3">
+                            Creates a full snapshot of the database, DNS settings, certificates and traffic data as a signed <code>.tar.gz</code> archive.
+                        </p>
+
+                        <button class="btn btn-primary w-100" id="btn-backup-download"{% if not user['is_admin'] %} disabled{% endif %}
+                            title="Create and download configuration backup">
+                            Create &amp; Download Backup
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Scheduled Backups -->
+            <div class="col-lg-4">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <h3 class="h5 mb-0">
+                            Scheduled Backups
+                        </h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-check form-switch mb-3">
+                            <input class="form-check-input" type="checkbox" id="backup-scheduled-enabled"{% if not user['is_admin'] %} disabled{% endif %}>
+                            <label class="form-check-label" for="backup-scheduled-enabled">Daily Backups (03:00 local time)</label>
+                        </div>
+
+                        <div class="mb-3 retention-scale d-none" id="backup-retention-section" style="--rs-steps: 4">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label for="backup-retention-slider" class="form-label mb-0">Retention Period</label>
+                                <span class="badge text-bg-secondary" id="backup-retention-value">30 Days</span>
+                            </div>
+                            <input type="range" class="form-range retention-slider" id="backup-retention-slider" min="0" max="4" step="1" value="4"{% if not user['is_admin'] %} disabled{% endif %}>
+                            <div class="retention-ticks" aria-hidden="true">
+                                <span class="retention-tick" style="--i:0"></span>
+                                <span class="retention-tick" style="--i:1"></span>
+                                <span class="retention-tick" style="--i:2"></span>
+                                <span class="retention-tick" style="--i:3"></span>
+                                <span class="retention-tick" style="--i:4"></span>
+                            </div>
+                            <div class="retention-labels" aria-hidden="true">
+                                <span class="retention-label" style="--i:0">1d</span>
+                                <span class="retention-label" style="--i:1">7d</span>
+                                <span class="retention-label" style="--i:2">14d</span>
+                                <span class="retention-label" style="--i:3">21d</span>
+                                <span class="retention-label" style="--i:4">30d</span>
+                            </div>
+                        </div>
+
+                        <div class="alert alert-warning small py-2 mb-3 d-none" id="backup-disk-warning">
+                            <span class="material-icons align-middle me-1" style="font-size: 1rem;">warning</span>
+                            Low disk space. Backups may fail.
+                        </div>
+
+                        <div class="row g-2 d-none" id="backup-scheduled-stats">
+                            <div class="col-6">
+                                <div class="text-muted small">Last Backup</div>
+                                <div class="fw-semibold font-monospace text-nowrap" id="backup-last-at">No backups yet</div>
+                            </div>
+                            <div class="col-6 text-end">
+                                <div class="text-muted small">Stored Backups</div>
+                                <div class="fw-semibold font-monospace" id="backup-count">0</div>
+                            </div>
+                            <div class="col-12 mt-2 pt-2 border-top">
+                                <div class="d-flex justify-content-between">
+                                    <span class="text-muted small">Total Backup Size</span>
+                                    <span class="fw-semibold font-monospace" id="backup-size">0 B</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Restore (Danger Zone) -->
+            <div class="col-lg-4">
+                <div class="card border-danger h-100">
+                    <div class="card-header">
+                        <h3 class="h5 mb-0 text-danger">
+                            Restore (Danger Zone)
+                        </h3>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-3">
+                            Uploading a backup will <strong>overwrite all current configuration</strong> and restart the application.
+                            Only backups created by this WireBuddy instance are accepted (HMAC verified).
+                        </p>
+
+                        <div class="row g-3 align-items-end">
+                            <div class="col-12">
+                                <label for="backup-restore-file" class="form-label">Backup File</label>
+                                <div class="input-group input-group-sm">
+                                    <input type="file" class="d-none" id="backup-restore-file" accept=".tar.gz,.gz"{% if not user['is_admin'] %} disabled{% endif %}>
+                                    <input type="text" class="form-control form-control-sm" id="backup-restore-filename" placeholder="No file selected" readonly aria-label="Selected backup file">
+                                    <button class="btn btn-outline-secondary" type="button" id="btn-backup-browse"{% if not user['is_admin'] %} disabled{% endif %}>
+                                        Choose File
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="col-12">
+                                <button class="btn btn-sm btn-danger w-100" type="button" id="btn-backup-restore"{% if not user['is_admin'] %} disabled{% endif %}
+                                    title="Restore configuration from backup" disabled>
+                                    Restore Backup
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>

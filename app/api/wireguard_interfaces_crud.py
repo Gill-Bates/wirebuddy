@@ -480,6 +480,24 @@ async def create_interface(
 	if dns_warning:
 		data["warning"] = dns_warning
 
+	# Auto-generate keypairs for all enrolled nodes on the new interface
+	# so that peers can be assigned to these nodes immediately.
+	try:
+		from ..db.sqlite_nodes import get_all_nodes, create_node_interface, bump_node_config_version
+		from ..node import notifier as node_notifier
+		enrolled_nodes = [n for n in get_all_nodes(conn) if n["status"] in ("online", "offline")]
+		for node in enrolled_nodes:
+			node_priv, node_pub = await generate_keypair()
+			create_node_interface(conn, node["id"], payload.name, node_priv, node_pub)
+			new_version = bump_node_config_version(conn, node["id"])
+			await node_notifier.notify_config_changed(node["id"], new_version)
+			_log.info(
+				"INTERFACE_CREATE auto-generated keypair for node=%s interface=%s",
+				node["name"], payload.name,
+			)
+	except Exception as exc:
+		_log.warning("Failed to auto-generate node keypairs for new interface %s: %s", payload.name, exc)
+
 	return ok_response(data=data)
 
 

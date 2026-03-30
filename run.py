@@ -84,6 +84,14 @@ _UVICORN_LOG_CONFIG: dict = {
 
 
 def main():
+	server_mode = os.environ.get("SERVER_MODE", "master").lower()
+
+	if server_mode == "node":
+		# Node mode: run minimal daemon, no web server
+		from app.node.daemon import run as run_node_daemon
+		run_node_daemon()
+		return
+
 	cfg = load_config()
 
 	level = cfg.log_level.upper()

@@ -50,7 +50,7 @@ https://vpn.example.com/api
 ### List Interfaces
 
 ```
-GET /api/interfaces
+GET /api/wireguard/interfaces
 ```
 
 **Response:**
@@ -73,13 +73,13 @@ GET /api/interfaces
 ### Get Interface
 
 ```
-GET /api/interfaces/{name}
+GET /api/wireguard/interfaces/{name}
 ```
 
 ### Create Interface
 
 ```
-POST /api/interfaces
+POST /api/wireguard/interfaces
 ```
 
 **Request:**
@@ -96,25 +96,25 @@ POST /api/interfaces
 ### Update Interface
 
 ```
-PUT /api/interfaces/{name}
+PUT /api/wireguard/interfaces/{name}
 ```
 
 ### Delete Interface
 
 ```
-DELETE /api/interfaces/{name}
+DELETE /api/wireguard/interfaces/{name}
 ```
 
 ### Start Interface
 
 ```
-POST /api/interfaces/{name}/start
+POST /api/wireguard/interfaces/{name}/start
 ```
 
 ### Stop Interface
 
 ```
-POST /api/interfaces/{name}/stop
+POST /api/wireguard/interfaces/{name}/stop
 ```
 
 ## Peers
@@ -122,51 +122,50 @@ POST /api/interfaces/{name}/stop
 ### List Peers
 
 ```
-GET /api/peers
+GET /api/wireguard/peers
 ```
 
 **Query Parameters:**
 
 - `interface` - Filter by interface name
-- `status` - Filter by status (active, inactive, disabled)
-- `limit` - Results per page (default: 50)
-- `offset` - Pagination offset
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "data": {
-    "peers": [
-      {
-        "id": "123e4567-e89b-12d3-a456-426614174000",
-        "name": "John's iPhone",
-        "interface": "wg0",
-        "ip": "10.8.0.2",
-        "status": "connected",
-        "last_handshake": "2026-03-15T14:30:00Z",
-        "transfer_tx": 1048576000,
-        "transfer_rx": 524288000
-      }
-    ],
-    "total": 12,
-    "limit": 50,
-    "offset": 0
-  }
+  "data": [
+    {
+      "id": 12,
+      "public_key": "base64publickey=",
+      "name": "John's iPhone",
+      "allowed_ips": "0.0.0.0/0, ::/0",
+      "allowed_ips_mode": "full",
+      "client_isolation": false,
+      "peer_address": "10.13.13.2/32, fd13:13:13::2/128",
+      "endpoint": null,
+      "interface": "wg0",
+      "is_enabled": true,
+      "use_adblocker": true,
+      "dns_logging_enabled": true,
+      "blocklist_ids": ["ads", "adguard"],
+      "created_at": "2026-03-23T12:00:00Z",
+      "updated_at": "2026-03-23T12:00:00Z"
+    }
+  ]
 }
 ```
 
 ### Get Peer
 
 ```
-GET /api/peers/{id}
+GET /api/wireguard/peers/{peer_id}
 ```
 
 ### Create Peer
 
 ```
-POST /api/peers
+POST /api/wireguard/peers
 ```
 
 **Request:**
@@ -175,28 +174,43 @@ POST /api/peers
 {
   "name": "New Peer",
   "interface": "wg0",
-  "ip": "10.8.0.10",
-  "routing_mode": "full_tunnel",
-  "persistent_keepalive": 25
+  "allowed_ips": "0.0.0.0/0, ::/0",
+  "allowed_ips_mode": "full",
+  "use_adblocker": true,
+  "dns_logging_enabled": true,
+  "blocklist_ids": ["ads", "adguard"],
+  "client_isolation": false
 }
 ```
+
+WireBuddy allocates `peer_address` automatically from the selected interface.
 
 ### Update Peer
 
 ```
-PUT /api/peers/{id}
+PATCH /api/wireguard/peers/{peer_id}
+```
+
+The update endpoint accepts partial payloads. Example:
+
+```json
+{
+  "allowed_ips_mode": "split",
+  "use_adblocker": false,
+  "client_isolation": true
+}
 ```
 
 ### Delete Peer
 
 ```
-DELETE /api/peers/{id}
+DELETE /api/wireguard/peers/{peer_id}
 ```
 
 ### Get Peer Config
 
 ```
-GET /api/peers/{id}/config
+GET /api/wireguard/peers/{peer_id}/config
 ```
 
 **Response:**
@@ -217,10 +231,245 @@ PersistentKeepalive = 25
 ### Generate QR Code
 
 ```
-GET /api/peers/{id}/qrcode
+GET /api/wireguard/peers/{peer_id}/qrcode
 ```
 
 Returns PNG image of QR code.
+
+## Nodes
+
+Node management endpoints for multi-node deployment. See [Multi-Node Deployment](../features/multi-node.md) for details.
+
+!!! warning "Admin Only"
+    All node endpoints require admin authentication.
+
+### List Nodes
+
+```
+GET /api/nodes
+```
+
+**Response:**
+
+```json
+{
+  "nodes": [
+    {
+      "id": "abc123def456",
+      "name": "Frankfurt",
+      "fqdn": "de.vpn.example.com",
+      "wg_port": 51820,
+      "status": "online",
+      "last_seen": "2026-03-26T10:30:00Z",
+      "enrolled_at": "2026-03-20T08:00:00Z",
+      "created_at": "2026-03-20T08:00:00Z",
+      "config_version": "3",
+      "peers_count": 15
+    }
+  ]
+}
+```
+
+**Status Values:**
+
+- `pending` - Node created, awaiting enrollment
+- `online` - Node enrolled and sending heartbeats
+- `offline` - Heartbeat missed (>90s)
+- `error` - Enrollment or sync error
+
+### Get Node
+
+```
+GET /api/nodes/{node_id}
+```
+
+**Response:**
+
+```json
+{
+  "id": "abc123def456",
+  "name": "Frankfurt",
+  "fqdn": "de.vpn.example.com",
+  "wg_port": 51820,
+  "status": "online",
+  "last_seen": "2026-03-26T10:30:00Z",
+  "enrolled_at": "2026-03-20T08:00:00Z",
+  "cert_fingerprint": "SHA256:ab1cd2ef3...",
+  "created_at": "2026-03-20T08:00:00Z",
+  "config_version": "3",
+  "metadata": null
+}
+```
+
+### Create Node
+
+```
+POST /api/nodes
+```
+
+**Request:**
+
+```json
+{
+  "name": "Frankfurt",
+  "fqdn": "de.vpn.example.com",
+  "wg_port": 51820
+}
+```
+
+**Response:**
+
+```json
+{
+  "node": {
+    "id": "abc123def456",
+    "name": "Frankfurt",
+    "fqdn": "de.vpn.example.com",
+    "wg_port": 51820,
+    "status": "pending",
+    "created_at": "2026-03-26T10:00:00Z"
+  },
+  "enrollment": {
+    "token": "eyJub2RlX2lkIjoiYWJjMTIz...LmFiYzEyMw",
+    "expires_at": "2026-03-27T10:00:00Z"
+  }
+}
+```
+
+!!! danger "Token Display"
+    The enrollment token is shown **only once**. Store it securely.
+
+### Update Node
+
+```
+PATCH /api/nodes/{node_id}
+```
+
+**Request:**
+
+```json
+{
+  "name": "Frankfurt DC2",
+  "fqdn": "de2.vpn.example.com",
+  "wg_port": 51821
+}
+```
+
+All fields are optional.
+
+### Delete Node
+
+```
+DELETE /api/nodes/{node_id}
+```
+
+!!! warning "Peer Assignment"
+    Peers assigned to the node will have their `node_id` unset (NULL). Update peer assignments before deletion.
+
+### Regenerate Enrollment Token
+
+```
+POST /api/nodes/{node_id}/token
+```
+
+Invalidates the old token and generates a new one. Use when a node needs to re-enroll.
+
+**Response:**
+
+```json
+{
+  "token": "eyJub2RlX2lkIjoiYWJjMTIz...LmFiYzEyMw",
+  "expires_at": "2026-03-27T10:00:00Z"
+}
+```
+
+### Node Enrollment (Node → Master)
+
+```
+POST /api/nodes/enroll
+```
+
+!!! info "Authentication"
+    Uses enrollment token in request body. Called by node daemon during initial setup.
+
+**Request:**
+
+```json
+{
+  "token": "eyJub2RlX2lkIjoiYWJjMTIz...",
+  "cert_fingerprint": "SHA256:ab1cd2ef3..."
+}
+```
+
+**Response:**
+
+```json
+{
+  "node_id": "abc123def456",
+  "api_secret": "generated_secret_for_future_auth"
+}
+```
+
+### Node Heartbeat (Node → Master)
+
+```
+POST /api/nodes/{node_id}/heartbeat
+```
+
+!!! info "Authentication"
+    Requires `Authorization: Bearer {api_secret}` header and `X-Client-Cert-Fingerprint` header.
+
+**Request:**
+
+```json
+{
+  "timestamp": "2026-03-26T10:30:00Z"
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "acknowledged"
+}
+```
+
+### Get Node Config (Node → Master)
+
+```
+GET /api/nodes/{node_id}/config
+```
+
+!!! info "Authentication"
+    Requires `Authorization: Bearer {api_secret}` header and `X-Client-Cert-Fingerprint` header.
+
+Node pulls configuration changes from master.
+
+**Response:**
+
+```json
+{
+  "config_version": "3",
+  "interfaces": [
+    {
+      "name": "wg0",
+      "address": "10.8.0.1/24",
+      "listen_port": 51820,
+      "private_key": "encrypted_private_key",
+      "public_key": "node_public_key",
+      "peers": [
+        {
+          "public_key": "peer_public_key",
+          "preshared_key": "peer_preshared_key",
+          "allowed_ips": "10.8.0.2/32",
+          "persistent_keepalive": 25
+        }
+      ]
+    }
+  ]
+}
+```
 
 ## DNS
 
@@ -369,6 +618,113 @@ GET /api/settings
 
 ```
 PUT /api/settings
+```
+
+## Speed Test
+
+See [Speed Test Feature](../features/speedtest.md) for detailed documentation.
+
+### Get Settings
+
+```
+GET /api/wireguard/speedtest/settings
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "enabled": true,
+    "target": "auto",
+    "servers": [
+      {"id": "tele2", "name": "Tele2 (Europe)", "url": "http://speedtest.tele2.net/1GB.zip"},
+      {"id": "cachefly", "name": "CacheFly (CDN)", "url": "http://cachefly.cachefly.net/100mb.test"},
+      {"id": "thinkbroadband", "name": "ThinkBroadband (UK)", "url": "http://ipv4.download.thinkbroadband.com/100MB.zip"}
+    ]
+  }
+}
+```
+
+### Update Settings (Admin Only)
+
+```
+PATCH /api/wireguard/speedtest/settings
+```
+
+**Request:**
+
+```json
+{
+  "enabled": true,
+  "target": "auto"
+}
+```
+
+### Run Speed Test (Admin Only)
+
+```
+POST /api/wireguard/speedtest/run
+```
+
+Returns immediately. Test runs in background.
+
+### Run Speed Test with Streaming Progress (Admin Only)
+
+```
+GET /api/wireguard/speedtest/run/stream
+```
+
+Returns Server-Sent Events (SSE) stream with progress updates.
+
+**Response (SSE):**
+
+```
+data: {"phase": "server_selection", "progress": 0.05, "message": "Selecting download server..."}
+
+data: {"phase": "testing", "progress": 0.5, "message": "Run 2/3: DL 245.3 / UL 48.2 Mbit/s"}
+
+data: {"phase": "complete", "progress": 1.0, "message": "Complete: DL 248.5 / UL 47.8 Mbit/s"}
+
+data: {"type": "result", "status": "ok", "download_mbit": 248.5, "upload_mbit": 47.8, "rtt_ms": 28.5, "jitter_ms": 12.3}
+```
+
+### Get History
+
+```
+GET /api/wireguard/speedtest/history
+```
+
+**Query Parameters:**
+
+- `range` - Time range: `6h`, `24h`, `7d`, `30d`, `90d`, `180d`, `y1`
+- `limit` - Max results (default: 500, max: 5000)
+
+### Get Storage Stats
+
+```
+GET /api/wireguard/speedtest/storage
+```
+
+### Update Retention (Admin Only)
+
+```
+PATCH /api/wireguard/speedtest/storage/retention
+```
+
+**Request:**
+
+```json
+{
+  "retention_days": 90
+}
+```
+
+### Purge Data (Admin Only)
+
+```
+DELETE /api/wireguard/speedtest/storage
 ```
 
 ## Rate Limits

@@ -8,11 +8,11 @@
         <h2 class="page-title"><span class="material-icons me-2">info</span>About</h2>
     </div>
 
-    <div class="about-layout d-flex flex-column gap-3">
+    <div class="about-layout">
         <!-- Row 1: Three cards side by side -->
         <div class="row g-3 about-top-row">
             <!-- Card 1: Application Details -->
-            <div class="col-12 col-lg-4 d-flex">
+            <div class="col-12 col-lg-4 d-lg-flex">
                 <div class="card flex-grow-1 d-flex flex-column">
                     <div class="card-header d-flex align-items-center">
                         <span class="material-icons me-2">code</span>
@@ -32,12 +32,12 @@
                                     <td><code class="about-meta-value about-meta-value-mono about-reference-value">{{ version }}</code></td>
                                 </tr>
                                 <tr>
-                                    <td class="ps-0"><strong>Build</strong></td>
-                                    <td><code class="about-meta-value about-meta-value-mono">{{ build_info[:7] if build_info != 'dev' else 'dev' }}</code></td>
-                                </tr>
-                                <tr>
                                     <td class="ps-0"><strong>Python</strong></td>
                                     <td><code class="about-meta-value about-meta-value-mono">{{ python_version }}</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="ps-0"><strong>Timezone</strong></td>
+                                    <td><code class="about-meta-value about-meta-value-mono">{{ timezone }}</code></td>
                                 </tr>
                                 <tr>
                                     <td class="ps-0"><strong>WireGuard</strong></td>
@@ -70,8 +70,8 @@
             </div>
 
             <!-- Card 2: Check for Updates -->
-            <div class="col-12 col-lg-4 d-flex">
-                <div class="card flex-grow-1 d-flex flex-column">
+            <div class="col-12 col-lg-4 d-lg-flex flex-column gap-lg-3">
+                <div class="card about-update-card d-flex flex-column">
                     <div class="card-header d-flex align-items-center justify-content-between">
                         <div>
                             <span class="material-icons me-2">system_update</span>
@@ -101,19 +101,19 @@
                                 </thead>
                                 <tbody>
                                     <tr>
-                                        <td class="ps-0" style="width: 50%;">Current</td>
+                                        <td class="ps-0" style="width: 50%;"><strong>Current</strong></td>
                                         <td class="text-end">
                                             <code class="about-meta-value about-meta-value-mono about-update-value" id="update-current-version">–</code>
                                         </td>
                                     </tr>
                                     <tr>
-                                        <td class="ps-0">Latest</td>
+                                        <td class="ps-0"><strong>Latest</strong></td>
                                         <td class="text-end">
                                             <code class="about-meta-value about-meta-value-mono about-update-value" id="update-latest-version">–</code>
                                         </td>
                                     </tr>
                                     <tr id="update-published-row" class="d-none">
-                                        <td class="ps-0">Released</td>
+                                        <td class="ps-0"><strong>Released</strong></td>
                                         <td class="text-end">
                                             <code class="about-meta-value about-meta-value-mono about-update-value" id="update-published-at">–</code>
                                         </td>
@@ -134,10 +134,23 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Documentation (stacked under updates) -->
+                <div class="card about-doc-card">
+                    <div class="card-body d-flex align-items-center justify-content-center">
+                        <a class="btn btn-outline-secondary w-100"
+                           href="https://gill-bates.github.io/wirebuddy/"
+                           target="_blank" rel="noopener noreferrer">
+                            <span class="material-icons align-middle me-1" style="font-size: 18px;">description</span>
+                            Documentation
+                            <span class="material-icons align-middle ms-1" style="font-size: 14px; opacity: 0.6;">open_in_new</span>
+                        </a>
+                    </div>
+                </div>
             </div>
 
             <!-- Card 3: Dependencies -->
-            <div class="col-12 col-lg-4 d-flex about-deps-col">
+            <div class="col-12 col-lg-4 d-lg-flex about-deps-col">
                 <div class="card flex-grow-1 d-flex flex-column">
                     <div class="card-header d-flex align-items-center">
                         <span class="material-icons me-2">inventory_2</span>
@@ -168,9 +181,9 @@
         </div>
 
         <!-- Row 2: Changelog (full width) -->
-        <div class="row g-3 about-changelog-row flex-grow-1">
-            <div class="col-12 d-flex about-changelog-col">
-                <div class="card flex-grow-1 d-flex flex-column card-fill">
+        <div class="row g-3 mt-0 about-changelog-row">
+            <div class="col-12 about-changelog-col">
+                <div class="card d-flex flex-column">
                     <div class="card-header d-flex align-items-center">
                         <span class="material-icons me-2">history</span>
                         <span class="fw-semibold">Changelog</span>
@@ -197,15 +210,6 @@
         --about-accent-text: rgb(var(--wb-accent-red-rgb));
     }
 
-    .about-layout {
-        flex: 1;
-        min-height: 0;
-    }
-
-    .about-top-row {
-        flex: 0 0 auto;
-    }
-
     /* Make all three top cards equal height on desktop */
     @media (min-width: 992px) {
         .about-top-row {
@@ -216,24 +220,16 @@
             display: flex;
         }
 
-        .about-top-row > .col-lg-4 > .card {
+        .about-top-row > .col-lg-4:not(:nth-child(2)) > .card,
+        .about-top-row > .col-lg-4:nth-child(2) > .about-update-card {
             flex: 1;
             display: flex;
             flex-direction: column;
+            min-height: 0;
         }
 
-        /* Dependencies card: use position absolute to not affect row height */
-        .about-deps-col {
-            position: relative;
-        }
-
-        .about-deps-col > .card {
-            position: absolute;
-            top: 0;
-            left: calc(var(--bs-gutter-x) * 0.5);
-            right: calc(var(--bs-gutter-x) * 0.5);
-            bottom: 0;
-            overflow: hidden;
+        .about-top-row > .col-lg-4:nth-child(2) > .about-doc-card {
+            flex: 0 0 auto;
         }
 
         .about-deps-col .card-body {
@@ -251,17 +247,6 @@
         }
     }
 
-    .about-changelog-row {
-        flex: 1 1 auto;
-        min-height: 300px;
-    }
-
-    .about-changelog-col {
-        min-height: 0;
-        height: 100%;
-        flex-direction: column;
-    }
-
     .dependencies-scroll {
         flex: 1 1 auto;
         overflow-y: auto;
@@ -269,16 +254,17 @@
     }
 
     @media (max-width: 991.98px) {
-        .about-layout,
-        .about-changelog-row,
-        .about-changelog-col {
-            flex: 0 0 auto;
-            min-height: auto;
+        .about-doc-card {
+            margin-top: var(--wb-space-3);
         }
 
-        .about-changelog-col .card-fill {
-            height: auto;
-            max-height: none;
+        .about-update-card .card-body {
+            padding-bottom: 0.5rem;
+        }
+
+        .about-doc-card .card-body {
+            padding-top: 0.5rem;
+            padding-bottom: 0.5rem;
         }
 
         .about-deps-col .dependencies-scroll {
@@ -290,20 +276,6 @@
         flex: 1 1 auto;
         min-height: 0;
         overflow-y: auto;
-    }
-
-    .card-fill {
-        display: flex;
-        flex-direction: column;
-        height: 100%;
-        flex: 1 1 auto;
-        min-height: 0;
-        overflow: hidden;
-    }
-
-    .card-fill > :last-child {
-        border-bottom-left-radius: var(--bs-card-inner-border-radius);
-        border-bottom-right-radius: var(--bs-card-inner-border-radius);
     }
 
     .about-deps-col .card-body {
@@ -436,7 +408,7 @@
 <script>
 (function() {
     // -------------------- Update Check --------------------
-    async function checkForUpdates(force = false) {
+    async function checkForUpdates(force = false, isManualCheck = false) {
         const loadingEl = document.getElementById('update-check-loading');
         const resultEl = document.getElementById('update-check-result');
         const statusBadge = document.getElementById('update-status-badge');
@@ -505,10 +477,20 @@
                 availableSectionEl.classList.add('d-none');
             }
             
-            // Show error if any
+            // Show error if any (but only for manual checks or critical errors)
             if (res.error) {
-                errorEl.classList.remove('d-none');
-                errorTextEl.textContent = res.error;
+                // Filter out non-critical network errors on auto-check
+                const isNetworkError = res.error.includes('Network error') || 
+                                      res.error.includes('Connection timeout') ||
+                                      res.error.includes('No address associated');
+                
+                if (isManualCheck || !isNetworkError) {
+                    errorEl.classList.remove('d-none');
+                    errorTextEl.textContent = res.error;
+                } else {
+                    errorEl.classList.add('d-none');
+                    // Silently log for debugging but don't show to user
+                }
             } else {
                 errorEl.classList.add('d-none');
             }
@@ -517,8 +499,14 @@
             loadingEl.classList.add('d-none');
             resultEl.classList.remove('d-none');
             statusBadge.replaceChildren();
-            errorEl.classList.remove('d-none');
-            errorTextEl.textContent = 'Failed to check for updates: ' + (error.message || error);
+            
+            // Only show fetch errors on manual check
+            if (isManualCheck) {
+                errorEl.classList.remove('d-none');
+                errorTextEl.textContent = 'Failed to check for updates: ' + (error.message || error);
+            } else {
+                errorEl.classList.add('d-none');
+            }
         } finally {
             if (checkBtn) checkBtn.disabled = false;
         }
@@ -551,10 +539,10 @@
     // Initialize
     const checkBtn = document.getElementById('btn-check-updates');
     const isAdmin = checkBtn?.dataset?.isAdmin === 'true';
-    checkBtn?.addEventListener('click', () => checkForUpdates(isAdmin));
+    checkBtn?.addEventListener('click', () => checkForUpdates(isAdmin, true));
     
-    // Auto-check on page load
-    checkForUpdates(false);
+    // Auto-check on page load (silent network errors)
+    checkForUpdates(false, false);
 })();
 </script>
 {% endblock extra_js %}

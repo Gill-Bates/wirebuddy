@@ -25,6 +25,7 @@ from ..dns.unbound_config import write_local_data_overrides
 from ..dns import unbound_process as unbound
 from ..utils.conntrack import init_conntrack_accounting
 from ..utils.deps import get_conn, get_config
+from ..utils.rate_limit import limiter, RATE_LIMIT_CRITICAL
 from ..utils.vault import decrypt as vault_decrypt, encrypt as vault_encrypt
 from ..utils.version import check_for_updates
 from .auth import get_current_user, require_admin
@@ -100,6 +101,7 @@ class WgSettingsPayload(BaseModel):
 	# the conversion to the '0'/'1' format required by SQLite.
 	wg_use_psk: Optional[bool] = Field(None, description="Enable PresharedKey")
 	gui_port: Optional[int] = Field(None, ge=1, le=65535, description="HTTP port for the web UI")
+	gui_external_port: Optional[int] = Field(None, ge=1, le=65535, description="External port for node enrollment (reverse proxy)")
 	gui_localhost_only: Optional[bool] = Field(None, description="Only listen on localhost")
 	enable_status_page: Optional[bool] = Field(None, description="Enable public internal status page")
 	enable_swagger: Optional[bool] = Field(None, description="Enable Swagger API documentation")
@@ -371,6 +373,7 @@ async def update_wg_settings(
 
 
 @router.get("/settings/psk")
+@limiter.limit(RATE_LIMIT_CRITICAL)
 async def get_global_psk(
 	request: Request,
 	reveal: bool = Query(False),
@@ -379,13 +382,8 @@ async def get_global_psk(
 ):
 	"""Get the current global PresharedKey (masked or full).
 	
-	When reveal=True, rate limiting is enforced to prevent abuse.
+	Rate limited to prevent abuse of PSK reveal.
 	"""
-	if reveal:
-		# Rate limit PSK reveal to prevent silent exfiltration
-		from ..utils.rate_limit import limiter, RATE_LIMIT_CRITICAL
-		await limiter.check(request, RATE_LIMIT_CRITICAL)
-	
 	cfg = get_config(request)
 	enc_psk = get_setting(conn, "wg_global_psk")
 	if not enc_psk:

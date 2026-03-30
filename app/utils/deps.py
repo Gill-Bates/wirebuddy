@@ -16,12 +16,19 @@ from ..db.sqlite_runtime import (
 from collections.abc import Generator
 from pathlib import Path
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 
 
 def get_conn(request: Request) -> Generator:
-	"""Yield a per-request SQLite connection."""
+	"""Yield a per-request SQLite connection.
+
+	Returns *503 Service Unavailable* while a backup restore is in progress
+	(``app.state.maintenance`` flag) to prevent queries against a database
+	that is about to be replaced.
+	"""
+	if getattr(request.app.state, "maintenance", False):
+		raise HTTPException(status_code=503, detail="Service restarting — backup restore in progress")
 	conn = connect(request.app.state.db_path)
 	try:
 		yield conn

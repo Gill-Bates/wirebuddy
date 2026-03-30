@@ -39,6 +39,7 @@ def insert_default_settings(conn: sqlite3.Connection) -> None:
 				("gui_port", "8000", now),
 				("wg_mtu", "1420", now),
 				("wg_persistent_keepalive", "25", now),
+				("wg_use_psk", "1", now),  # PresharedKey enabled by default
 				("traffic_analysis_enabled", "0", now),
 			],
 		)
@@ -95,7 +96,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
 			"""
 		)
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_passkeys_user_id ON passkeys(user_id)")
-		conn.execute("CREATE INDEX IF NOT EXISTS idx_passkeys_credential_id ON passkeys(credential_id)")
 
 		# Passkey challenges (ephemeral, supports multi-worker deployments)
 		conn.execute(
@@ -171,7 +171,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				endpoint TEXT,
 				interface TEXT NOT NULL DEFAULT 'wg0',
 				is_enabled INTEGER NOT NULL DEFAULT 1,
-					use_adblocker INTEGER NOT NULL DEFAULT 1,
+				use_adblocker INTEGER NOT NULL DEFAULT 1,
+				dns_logging_enabled INTEGER NOT NULL DEFAULT 1,
 				blocklist_ids TEXT,
 				last_client_ip TEXT,
 				last_handshake_at INTEGER,
@@ -179,6 +180,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				cumulative_tx INTEGER NOT NULL DEFAULT 0,
 				last_wg_rx INTEGER NOT NULL DEFAULT 0,
 				last_wg_tx INTEGER NOT NULL DEFAULT 0,
+				node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
 				created_at timestamp NOT NULL,
 				updated_at timestamp NOT NULL
 			)
@@ -186,6 +188,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 		)
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_interface ON peers(interface)")
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_peer_address ON peers(peer_address)")
+		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_node_id ON peers(node_id)")
 		# Enforce uniqueness for assigned peer VPN address per interface.
 		# Safe rollout: if legacy duplicates exist, keep startup running and warn.
 		duplicate = conn.execute(
@@ -247,6 +250,102 @@ def init_schema(conn: sqlite3.Connection) -> None:
 			)
 			"""
 		)
+
+		# Remote nodes (Master-Node architecture)
+		conn.execute(
+			"""
+			CREATE TABLE IF NOT EXISTS nodes (
+				id TEXT PRIMARY KEY,
+				name TEXT NOT NULL UNIQUE,
+				fqdn TEXT NOT NULL,
+				wg_port INTEGER NOT NULL DEFAULT 51820,
+				api_secret_hash TEXT NOT NULL,
+				cert_fingerprint TEXT,
+				status TEXT NOT NULL DEFAULT 'pending'
+					CHECK (status IN ('pending', 'online', 'offline', 'error')),
+				last_seen timestamp,
+				enrolled_at timestamp,
+				created_at timestamp NOT NULL,
+				config_version TEXT,
+				metadata TEXT,
+				tunnel_peer_id INTEGER REFERENCES peers(id) ON DELETE SET NULL,
+				last_metric_seq INTEGER,
+				sse_connected_at TIMESTAMP
+			)
+			"""
+		)
+		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status)")
+		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_last_seen ON nodes(last_seen)")
+
+		# Per-node WireGuard interface keypairs
+		conn.execute(
+			"""
+			CREATE TABLE IF NOT EXISTS node_interfaces (
+				node_id TEXT NOT NULL,
+				interface_name TEXT NOT NULL,
+				private_key TEXT NOT NULL,
+				public_key TEXT NOT NULL,
+				created_at timestamp NOT NULL,
+				PRIMARY KEY (node_id, interface_name),
+				FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+			)
+			"""
+		)
+
+	# Run migrations for existing databases (must be inside transaction)
+	with transaction(conn, immediate=True):
+		_run_migrations(conn)
+
+
+def _get_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+	"""Get set of column names for a table."""
+	return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+	"""Apply schema migrations for existing databases.
+	
+	These migrations handle columns/tables added after initial release.
+	Safe to run multiple times (idempotent).
+	
+	NOTE: Must be called within a transaction for atomicity.
+	"""
+	# Get existing columns in peers table
+	existing_columns = _get_columns(conn, "peers")
+	
+	# Migration: Add dns_logging_enabled column (added in v1.4.0)
+	if "dns_logging_enabled" not in existing_columns:
+		_log.info("Migrating peers table: adding dns_logging_enabled column")
+		conn.execute("ALTER TABLE peers ADD COLUMN dns_logging_enabled INTEGER NOT NULL DEFAULT 1")
+
+	# Migration: Master-Node architecture — add node_id to peers
+	# NOTE: nodes and node_interfaces tables are created by init_schema() with CREATE TABLE IF NOT EXISTS
+	if "node_id" not in existing_columns:
+		_log.info("Migrating peers table: adding node_id column for Master-Node architecture")
+		conn.execute("ALTER TABLE peers ADD COLUMN node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL")
+		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_node_id ON peers(node_id)")
+
+	# Migration: Add tunnel_peer_id to nodes (Node→Master tunnel for DNS)
+	nodes_columns = _get_columns(conn, "nodes")
+	if "tunnel_peer_id" not in nodes_columns:
+		_log.info("Migrating nodes table: adding tunnel_peer_id for Node→Master DNS tunnel")
+		conn.execute("ALTER TABLE nodes ADD COLUMN tunnel_peer_id INTEGER REFERENCES peers(id) ON DELETE SET NULL")
+
+	# Migration: Add last_metric_seq to nodes (for reliable metric delivery idempotency)
+	if "last_metric_seq" not in nodes_columns:
+		_log.info("Migrating nodes table: adding last_metric_seq for reliable metric delivery")
+		conn.execute("ALTER TABLE nodes ADD COLUMN last_metric_seq INTEGER")
+
+	# Migration: Add sse_connected_at to nodes (for multi-worker SSE tracking)
+	if "sse_connected_at" not in nodes_columns:
+		_log.info("Migrating nodes table: adding sse_connected_at for multi-worker SSE tracking")
+		conn.execute("ALTER TABLE nodes ADD COLUMN sse_connected_at TIMESTAMP")
+
+	# Migration: Add name UNIQUE constraint to nodes (idempotent — fails silently if already exists)
+	try:
+		conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_name_unique ON nodes(name)")
+	except sqlite3.OperationalError:
+		pass  # Index may already exist if this is a fresh schema
 
 
 def ensure_default_admin(conn: sqlite3.Connection) -> None:

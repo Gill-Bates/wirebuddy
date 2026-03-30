@@ -45,8 +45,7 @@ def _evict_peer_state_entries(peer_connection_state) -> int:
 		if not is_connected
 	]
 	for public_key in disconnected_keys[:evict_target]:
-		if public_key in peer_connection_state:
-			del peer_connection_state[public_key]
+		if peer_connection_state.pop(public_key, None) is not None:
 			evicted += 1
 
 	while evicted < evict_target and peer_connection_state:
@@ -60,6 +59,17 @@ def _local_wall_clock_timestamp(day: date, hour: int) -> float:
 	"""Return the local timestamp for a wall-clock hour using system DST rules."""
 	wall_time = dt(day.year, day.month, day.day, hour, 0, 0)
 	return time.mktime(wall_time.timetuple())
+
+
+async def _sleep_interruptible(seconds: float, chunk_size: float = 60.0) -> None:
+	"""Sleep for total seconds, checking cancellation every chunk_size seconds.
+	
+	Useful for long sleeps that should be responsive to task cancellation.
+	"""
+	remaining = seconds
+	while remaining > 0:
+		await asyncio.sleep(min(chunk_size, remaining))
+		remaining -= chunk_size
 
 
 async def update_blocklists(ctx: main.LifespanContext) -> None:
@@ -85,7 +95,7 @@ async def update_blocklists(ctx: main.LifespanContext) -> None:
 		# Use restart instead of reload - reload crashes with large blocklists
 		await _unbound.restart()
 		_log.info("BLOCKLIST_UPDATE %s", msg)
-	except Exception as exc:
+	except (OSError, RuntimeError, ValueError) as exc:
 		_log.error("BLOCKLIST_UPDATE failed: %s", exc)
 
 
@@ -100,8 +110,17 @@ async def maintain_tsdb(ctx: main.LifespanContext) -> None:
 	)
 	
 	try:
-		tsdb_retention_days = await asyncio.to_thread(_read_tsdb_retention_days_sync, ctx.cfg.db_path)
-		speedtest_retention_days = await asyncio.to_thread(_read_speedtest_retention_days_sync, ctx.cfg.db_path)
+		# Batch all retention config reads in a single thread hop
+		def _read_all_retention():
+			return (
+				_read_tsdb_retention_days_sync(ctx.cfg.db_path),
+				_read_speedtest_retention_days_sync(ctx.cfg.db_path),
+				_read_dns_retention_days_sync(ctx.cfg.db_path),
+			)
+		
+		tsdb_retention_days, speedtest_retention_days, dns_retention_days = await asyncio.to_thread(
+			_read_all_retention
+		)
 		
 		# Build synthetic key retention mapping
 		# network_stats uses 7 days to support 1h sparkline history with headroom
@@ -118,7 +137,6 @@ async def maintain_tsdb(ctx: main.LifespanContext) -> None:
 			tsdb_retention_days,
 			synthetic_retention,
 		)
-		dns_retention_days = await asyncio.to_thread(_read_dns_retention_days_sync, ctx.cfg.db_path)
 		dns_retention = await asyncio.to_thread(
 			dns_ingestion.enforce_dns_log_retention,
 			ctx.cfg.dns_dir,
@@ -134,119 +152,88 @@ async def maintain_tsdb(ctx: main.LifespanContext) -> None:
 			dns_retention_days,
 			speedtest_retention_days,
 		)
-	except Exception as exc:
+	except (OSError, RuntimeError, ValueError) as exc:
 		_log.error("TSDB_MAINTENANCE failed: %s", exc)
 
 
 async def sample_tsdb_metrics(ctx: main.LifespanContext) -> None:
 	"""Scheduled task: sample WireGuard transfer counters into TSDB."""
 	from ..db import tsdb
-	from ..main import (
-		_communicate_with_timeout,
-		_parse_wg_dump_counters,
-		_load_peer_identity_map_sync,
-	)
+	from ..main import _load_peer_identity_map_sync
 	
 	try:
-		proc = await asyncio.create_subprocess_exec(
-			"wg", "show", "all", "dump",
-			stdout=asyncio.subprocess.PIPE,
-			stderr=asyncio.subprocess.PIPE,
-		)
-		stdout_raw, stderr_raw = await _communicate_with_timeout(
-			proc,
-			timeout_seconds=_WG_CHECK_TIMEOUT_SECONDS,
-		)
-	except asyncio.TimeoutError:
-		_log.warning("TSDB_SAMPLE timed out while executing 'wg show all dump'")
-		return
-	except FileNotFoundError:
-		_log.warning("TSDB_SAMPLE skipped: 'wg' binary not found")
-		return
-	except Exception as exc:
-		_log.warning("TSDB_SAMPLE failed to execute wg dump: %s", exc)
-		return
+		peer_counters = await _get_wg_peer_counters()
+		if not peer_counters:
+			_log.debug("TSDB_SAMPLE no peers found or wg command failed")
+			return
 
-	if proc.returncode != 0:
-		stderr = (stderr_raw or b"").decode("utf-8", errors="replace").strip()
-		_log.info("TSDB_SAMPLE wg dump returned code=%s: %s", proc.returncode, stderr)
-		return
+		# Offload blocking TSDB writes to thread
+		def _write_tsdb_points():
+			points = 0
+			for public_key, (rx, tx, latest_handshake) in peer_counters.items():
+				tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="rx_bytes", value=rx)
+				tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="tx_bytes", value=tx)
+				points += 2
+				if latest_handshake > 0:
+					tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="latest_handshake", value=latest_handshake)
+					points += 1
+			return points
 
-	stdout = (stdout_raw or b"").decode("utf-8", errors="replace")
-	if not stdout.strip():
-		_log.debug("TSDB_SAMPLE wg dump returned empty output (no active interfaces?)")
-		return
+		points = await asyncio.to_thread(_write_tsdb_points)
+		_log.debug("TSDB_SAMPLE peers=%d points=%d", len(peer_counters), points)
 
-	peer_counters = _parse_wg_dump_counters(stdout)
-	if not peer_counters:
-		_log.debug("TSDB_SAMPLE no peers found in wg dump output")
-		return
+		# Track connection state changes for logging (on event loop thread)
+		now = time.time()
+		state_changes: list[tuple[str, bool]] = []  # (public_key, is_now_connected)
 
-	# Offload blocking TSDB writes to thread
-	def _write_tsdb_points():
-		points = 0
 		for public_key, (rx, tx, latest_handshake) in peer_counters.items():
-			tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="rx_bytes", value=rx)
-			tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="tx_bytes", value=tx)
-			points += 2
 			if latest_handshake > 0:
-				tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="latest_handshake", value=latest_handshake)
-				points += 1
-		return points
+				# Detect connection state changes
+				is_connected = (now - latest_handshake) < _PEER_CONNECTION_THRESHOLD
+				was_connected = ctx.peer_connection_state.get(public_key, False)
 
-	points = await asyncio.to_thread(_write_tsdb_points)
-	_log.debug("TSDB_SAMPLE peers=%d points=%d", len(peer_counters), points)
-
-	# Track connection state changes for logging (on event loop thread)
-	now = time.time()
-	state_changes: list[tuple[str, bool]] = []  # (public_key, is_now_connected)
-
-	for public_key, (rx, tx, latest_handshake) in peer_counters.items():
-		if latest_handshake > 0:
-			# Detect connection state changes
-			is_connected = (now - latest_handshake) < _PEER_CONNECTION_THRESHOLD
-			was_connected = ctx.peer_connection_state.get(public_key, False)
-
-			# Log every active handshake at DEBUG level for visibility
-			if is_connected:
-				handshake_age = int(now - latest_handshake)
-				_log.debug(
-					"PEER_HANDSHAKE public_key=%s handshake_age=%ds rx=%d tx=%d",
-					public_key[:16], handshake_age, rx, tx,
-				)
-
-			if is_connected != was_connected:
-				# LRU eviction: prefer disconnected peers to avoid false reconnect logs.
-				if len(ctx.peer_connection_state) >= _PEER_STATE_MAX_SIZE:
-					evict = _evict_peer_state_entries(ctx.peer_connection_state)
-					_log.warning("PEER_STATE evicted %d oldest entries", evict)
-				ctx.peer_connection_state[public_key] = is_connected
-				ctx.peer_connection_state.move_to_end(public_key)
-				state_changes.append((public_key, is_connected))
-
-	# Log connection state changes with peer names
-	if state_changes:
-		public_keys = [public_key for public_key, _ in state_changes]
-		peer_identity_map = await asyncio.to_thread(
-			_load_peer_identity_map_sync,
-			ctx.cfg.db_path,
-			public_keys,
-		)
-		for public_key, is_connected in state_changes:
-			peer_identity = peer_identity_map.get(public_key)
-			if peer_identity:
-				peer_name, interface = peer_identity
+				# Log every active handshake at DEBUG level for visibility
 				if is_connected:
-					_log.info("PEER_CONNECTED name=%s interface=%s public_key=%s",
-						peer_name, interface, public_key[:16])
+					handshake_age = int(now - latest_handshake)
+					_log.debug(
+						"PEER_HANDSHAKE public_key=%s handshake_age=%ds rx=%d tx=%d",
+						public_key[:16], handshake_age, rx, tx,
+					)
+
+				if is_connected != was_connected:
+					# LRU eviction: prefer disconnected peers to avoid false reconnect logs.
+					if len(ctx.peer_connection_state) >= _PEER_STATE_MAX_SIZE:
+						evict = _evict_peer_state_entries(ctx.peer_connection_state)
+						_log.warning("PEER_STATE evicted %d oldest entries", evict)
+					ctx.peer_connection_state[public_key] = is_connected
+					ctx.peer_connection_state.move_to_end(public_key)
+					state_changes.append((public_key, is_connected))
+
+		# Log connection state changes with peer names
+		if state_changes:
+			public_keys = [public_key for public_key, _ in state_changes]
+			peer_identity_map = await asyncio.to_thread(
+				_load_peer_identity_map_sync,
+				ctx.cfg.db_path,
+				public_keys,
+			)
+			for public_key, is_connected in state_changes:
+				peer_identity = peer_identity_map.get(public_key)
+				if peer_identity:
+					peer_name, interface = peer_identity
+					if is_connected:
+						_log.info("PEER_CONNECTED name=%s interface=%s public_key=%s",
+							peer_name, interface, public_key[:16])
+					else:
+						_log.info("PEER_DISCONNECTED name=%s interface=%s public_key=%s",
+							peer_name, interface, public_key[:16])
 				else:
-					_log.info("PEER_DISCONNECTED name=%s interface=%s public_key=%s",
-						peer_name, interface, public_key[:16])
-			else:
-				if is_connected:
-					_log.info("PEER_CONNECTED public_key=%s (not in database)", public_key[:16])
-				else:
-					_log.info("PEER_DISCONNECTED public_key=%s (not in database)", public_key[:16])
+					if is_connected:
+						_log.info("PEER_CONNECTED public_key=%s (not in database)", public_key[:16])
+					else:
+						_log.info("PEER_DISCONNECTED public_key=%s (not in database)", public_key[:16])
+	except (OSError, RuntimeError, ValueError) as exc:
+		_log.error("TSDB_SAMPLE failed: %s", exc)
 
 
 async def sample_country_traffic(ctx: main.LifespanContext) -> None:
@@ -300,7 +287,7 @@ async def sample_country_traffic(ctx: main.LifespanContext) -> None:
 				"ASN_TRAFFIC asns=%d",
 				len(asn_deltas),
 			)
-	except Exception as exc:
+	except (OSError, RuntimeError, ValueError) as exc:
 		_log.warning("COUNTRY_TRAFFIC sample failed: %s", exc)
 
 
@@ -312,7 +299,7 @@ async def update_geoip(ctx: main.LifespanContext) -> None:
 		_log.info("GEOIP_UPDATE city=%s asn=%s", result["city"], result["asn"])
 		# Pre-load readers so first request is instant
 		eager_init()
-	except Exception as exc:
+	except (OSError, RuntimeError, ValueError) as exc:
 		_log.error("GEOIP_UPDATE failed: %s", exc)
 
 
@@ -324,11 +311,14 @@ async def dns_watchdog(ctx: main.LifespanContext) -> None:
 	if not _unbound.is_unbound_installed():
 		return  # Skip if Unbound not installed
 	
-	# Pass async callable that re-evaluates the condition on each watchdog check
-	async def _should_run():
-		return await asyncio.to_thread(_should_unbound_run_sync, ctx.cfg.db_path)
-	
-	await _unbound.watchdog(_should_run)
+	try:
+		# Pass async callable that re-evaluates the condition on each watchdog check
+		async def _should_run():
+			return await asyncio.to_thread(_should_unbound_run_sync, ctx.cfg.db_path)
+		
+		await _unbound.watchdog(_should_run)
+	except (OSError, RuntimeError, ValueError) as exc:
+		_log.error("DNS_WATCHDOG failed: %s", exc)
 
 
 async def check_adblocker_timer(ctx: main.LifespanContext) -> None:
@@ -340,8 +330,40 @@ async def check_adblocker_timer(ctx: main.LifespanContext) -> None:
 		if re_enabled:
 			_log.info("ADBLOCKER_TIMER timer expired, re-enabling ad-blocker")
 			await _reload_unbound_for_adblocker_async(ctx.cfg.db_path)
-	except Exception as exc:
+	except (OSError, RuntimeError, ValueError) as exc:
 		_log.warning("ADBLOCKER_TIMER check failed: %s", exc)
+
+
+def get_speedtest_initial_delay(tsdb_dir) -> tuple[float, float | None, bool]:
+	"""Calculate speedtest initial delay with missed-run detection.
+	
+	Reads the last run timestamp and calculates the delay to the next
+	night window. If the last run was >36h ago, this indicates missed tests.
+	
+	Args:
+		tsdb_dir: Path to TSDB directory containing .speedtest.last_run
+	
+	Returns:
+		Tuple of (delay_seconds, hours_since_last_run, is_overdue).
+		hours_since_last_run is None if no previous run recorded.
+		is_overdue is True if last run was >36h ago (missed at least one night).
+	"""
+	from pathlib import Path
+	from ..speedtest.guard import _cooldown_path, _read_last_run
+	
+	delay = _seconds_until_night_window()
+	
+	# Read last run timestamp
+	last_run_ts = _read_last_run(_cooldown_path(Path(tsdb_dir)))
+	now = time.time()
+	
+	if last_run_ts is None:
+		return delay, None, True  # No previous run = overdue
+	
+	hours_since_last = (now - last_run_ts) / 3600
+	is_overdue = hours_since_last > 36  # >36h means at least one night missed
+	
+	return delay, hours_since_last, is_overdue
 
 
 def _seconds_until_night_window() -> float:
@@ -350,6 +372,9 @@ def _seconds_until_night_window() -> float:
 	The target window is 02:00-04:00 local time. If less than five minutes
 	remain in the current window, defer to the next night's window instead
 	of starting immediately.
+	
+	Note: Uses system DST rules via time.mktime(). DST transitions (forward/back)
+	may shift actual execution time by up to one hour.
 	"""
 	now_ts = time.time()
 	now_local = dt.fromtimestamp(now_ts)
@@ -390,8 +415,13 @@ def _seconds_until_night_window() -> float:
 	return max(0.0, (next_start - now_ts) + jitter_seconds)
 
 
-async def _has_active_peers() -> bool:
-	"""Check if any WireGuard peers are currently connected."""
+async def _get_wg_peer_counters() -> dict[str, tuple[int, int, float]] | None:
+	"""Get WireGuard peer counters via 'wg show all dump'.
+	
+	Returns:
+		Dict mapping public_key -> (rx_bytes, tx_bytes, latest_handshake_ts).
+		Returns None on error or if no peers.
+	"""
 	from ..main import _communicate_with_timeout, _parse_wg_dump_counters
 	
 	try:
@@ -400,40 +430,45 @@ async def _has_active_peers() -> bool:
 			stdout=asyncio.subprocess.PIPE,
 			stderr=asyncio.subprocess.PIPE,
 		)
-		stdout_raw, _ = await _communicate_with_timeout(
+		stdout_raw, stderr_raw = await _communicate_with_timeout(
 			proc,
 			timeout_seconds=_WG_CHECK_TIMEOUT_SECONDS,
 		)
 		if proc.returncode != 0:
-			return False
+			return None
 		
 		stdout = (stdout_raw or b"").decode("utf-8", errors="replace")
 		if not stdout.strip():
-			return False
+			return None
 		
-		peer_counters = _parse_wg_dump_counters(stdout)
-		now = time.time()
-		
-		for public_key, (rx, tx, latest_handshake) in peer_counters.items():
-			if latest_handshake > 0:
-				if (now - latest_handshake) < _PEER_CONNECTION_THRESHOLD:
-					_log.debug(
-						"SPEEDTEST_CHECK active peer detected: %s (handshake %ds ago)",
-						public_key[:16], int(now - latest_handshake)
-					)
-					return True
-		return False
+		return _parse_wg_dump_counters(stdout)
 	except asyncio.CancelledError:
 		raise
-	except (asyncio.TimeoutError, FileNotFoundError, OSError, ValueError) as exc:
-		_log.warning("SPEEDTEST_CHECK peer check failed: %s", exc)
-		return False  # Assume no peers on operational error; proceed with test
+	except (asyncio.TimeoutError, FileNotFoundError, OSError, ValueError):
+		return None
+
+
+async def _has_active_peers() -> bool:
+	"""Check if any WireGuard peers are currently connected."""
+	peer_counters = await _get_wg_peer_counters()
+	if not peer_counters:
+		return False
+	
+	now = time.time()
+	for public_key, (rx, tx, latest_handshake) in peer_counters.items():
+		if latest_handshake > 0 and (now - latest_handshake) < _PEER_CONNECTION_THRESHOLD:
+			_log.debug(
+				"SPEEDTEST_CHECK active peer detected: %s (handshake %ds ago)",
+				public_key[:16], int(now - latest_handshake)
+			)
+			return True
+	return False
 
 
 async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 	"""Scheduled task: run bandwidth measurement if enabled."""
 	from ..db import tsdb
-	from ..db.sqlite_settings import get_speedtest_enabled, get_speedtest_target, SPEEDTEST_SERVER_MAP
+	from ..db.sqlite_settings import get_speedtest_enabled, get_speedtest_target, SPEEDTEST_SERVER_MAP, SPEEDTEST_SERVER_LIST
 	from ..db.sqlite_runtime import connect, close_connection
 	from ..speedtest import (
 		DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
@@ -472,7 +507,7 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 				"SPEEDTEST_SCHEDULED waiting %.0f seconds for night window (02:00-04:00)",
 				wait_seconds
 			)
-			await asyncio.sleep(wait_seconds)
+			await _sleep_interruptible(wait_seconds)
 			settings = await _refresh_speedtest_settings("disabled during wait")
 			if settings is None:
 				return
@@ -501,11 +536,16 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 			)
 			return
 
-		servers = None
-		if target != "auto":
+		if target == "auto":
+			# Use all configured servers for RTT-based selection
+			servers = [s["url"] for s in SPEEDTEST_SERVER_LIST]
+		else:
 			server_info = SPEEDTEST_SERVER_MAP.get(target)
 			if server_info:
 				servers = [server_info["url"]]
+			else:
+				# Fallback to all servers if unknown target
+				servers = [s["url"] for s in SPEEDTEST_SERVER_LIST]
 
 		try:
 			lease = acquire_speedtest_run_lease(
@@ -554,7 +594,9 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 			)
 		else:
 			_log.warning("SPEEDTEST_SCHEDULED status=%s server=%s", result.get("status"), result.get("server"))
-	except Exception as exc:
+	except asyncio.CancelledError:
+		raise
+	except (OSError, RuntimeError, ValueError) as exc:
 		_log.error("SPEEDTEST_SCHEDULED failed: %s", exc)
 
 
@@ -570,5 +612,62 @@ async def sample_network_stats(ctx: main.LifespanContext) -> None:
 		points = await asyncio.to_thread(do_sample, ctx.cfg.tsdb_dir)
 		if points > 0:
 			_log.debug("NETWORK_STATS_SAMPLE interfaces=%d", points)
-	except Exception as exc:
+	except (OSError, RuntimeError, ValueError) as exc:
 		_log.warning("NETWORK_STATS_SAMPLE failed: %s", exc)
+
+
+async def run_scheduled_backup(ctx: main.LifespanContext) -> None:
+	"""Scheduled task: create nightly backup if enabled.
+	
+	Runs once per day (at night) and:
+	- Creates a backup archive in data/backup/
+	- Removes backups older than 30 days
+	"""
+	from ..api.backup import is_scheduled_backup_enabled, run_scheduled_backup as do_backup
+	
+	try:
+		# Check if scheduled backups are enabled
+		enabled = await asyncio.to_thread(is_scheduled_backup_enabled, ctx.cfg.db_path)
+		if not enabled:
+			_log.debug("SCHEDULED_BACKUP skipped: disabled")
+			return
+		
+		_log.info("SCHEDULED_BACKUP starting nightly backup")
+		result = await asyncio.to_thread(
+			do_backup,
+			ctx.cfg.data_dir,
+			ctx.cfg.db_path,
+		)
+		
+		_log.info(
+			"SCHEDULED_BACKUP completed: %s (%d bytes), deleted %d old backups",
+			result.get("filename"),
+			result.get("size_bytes", 0),
+			result.get("deleted_old_backups", 0),
+		)
+	except (OSError, RuntimeError, ValueError) as exc:
+		_log.error("SCHEDULED_BACKUP failed: %s", exc)
+
+
+async def monitor_node_health(ctx: main.LifespanContext) -> None:
+	"""Scheduled task: mark stale nodes as offline.
+
+	Runs every 60 seconds.  If a node hasn't sent a heartbeat within 90
+	seconds, its status is set to 'offline'.
+	"""
+	from ..db.sqlite_nodes import mark_stale_nodes_offline
+	from ..db.sqlite_runtime import connect, close_connection
+
+	try:
+		def _mark_stale():
+			conn = connect(ctx.cfg.db_path)
+			try:
+				return mark_stale_nodes_offline(conn, stale_seconds=90)
+			finally:
+				close_connection(conn)
+		
+		count = await asyncio.to_thread(_mark_stale)
+		if count:
+			_log.info("NODE_HEALTH marked %d node(s) offline", count)
+	except (OSError, ValueError, RuntimeError) as exc:
+		_log.warning("NODE_HEALTH monitor failed: %s", exc)

@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import typing
+
 from .db.sqlite_interfaces import (
 	list_interfaces,
 )
@@ -65,6 +67,7 @@ from .utils.version import VERSION
 
 from .api import acme as acme_api
 from .api import auth as auth_api
+from .api import backup as backup_api
 from .api import passkeys as passkeys_api
 from .api import users as users_api
 from .api import wireguard as wireguard_api
@@ -72,6 +75,8 @@ from .api import dns as dns_api
 from .api import frontend_shared as frontend_ui
 from .api import speedtest as speedtest_api
 from .api import network_stats as network_stats_api
+from .api import nodes as nodes_api
+from .api import nodes_sync as nodes_sync_api
 from .db import tsdb
 from .dns import unbound
 from .dns import ingestion as dns_ingestion
@@ -122,7 +127,6 @@ _WG_UP_TIMEOUT_SECONDS = 15.0
 _WG_DOWN_TIMEOUT_SECONDS = 15.0
 _WG_STARTUP_CONCURRENCY = 4  # Start up to 4 interfaces in parallel
 _TSDB_SAMPLE_INTERVAL_SECONDS = 30.0
-_PEER_CONNECTION_THRESHOLD = 180  # seconds - peer is "connected" if handshake < 3 min ago
 _BLOCKLIST_UPDATE_INTERVAL_SECONDS = 86400.0
 _TSDB_MAINTENANCE_INTERVAL_SECONDS = 21600
 _GEOIP_UPDATE_INTERVAL_SECONDS = 604800
@@ -135,10 +139,6 @@ _ADBLOCKER_TIMER_CHECK_INTERVAL_SECONDS = 15
 _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS = 2.0
 _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS = 300.0
 
-# Speedtest night window: run between 02:00 and 04:00 local time
-_SPEEDTEST_NIGHT_WINDOW_START_HOUR = 2
-_SPEEDTEST_NIGHT_WINDOW_END_HOUR = 4
-_SPEEDTEST_RETRY_DELAY_MINUTES = 30  # Retry delay if peers are active
 
 # Docker default bridge gateway ranges
 _DOCKER_BRIDGE_NETWORKS = (
@@ -149,6 +149,24 @@ _DOCKER_BRIDGE_NETWORKS = (
 	ipaddress.ip_network("172.24.0.0/14"),
 	ipaddress.ip_network("172.28.0.0/14"),
 )
+
+_BACKUP_INTERVAL_SECONDS = 86400  # 24 h (runs nightly)
+_BACKUP_NIGHT_HOUR = 3  # Run backups at 03:00 local time
+
+def _seconds_until_backup_time(tz: str = "UTC") -> float:
+	"""Calculate seconds until next 03:00 in given timezone (default UTC)."""
+	from datetime import datetime, timedelta, timezone
+	try:
+		from zoneinfo import ZoneInfo
+		tzinfo = ZoneInfo(tz)
+	except Exception:
+		tzinfo = timezone.utc
+
+	now = datetime.now(tzinfo)
+	target = now.replace(hour=_BACKUP_NIGHT_HOUR, minute=0, second=0, microsecond=0)
+	if now >= target:
+		target += timedelta(days=1)
+	return max(0.0, (target - now).total_seconds())
 
 
 async def _verify_host_network_mode() -> None:
@@ -179,7 +197,7 @@ async def _verify_host_network_mode() -> None:
 			stderr=asyncio.subprocess.DEVNULL,
 		)
 		stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-		if proc.returncode not in (0, None):
+		if proc.returncode != 0:
 			_log.warning("Could not verify network mode: 'ip route' exit code %s", proc.returncode)
 			return
 
@@ -248,26 +266,11 @@ async def _cleanup_stale_interfaces() -> list[str]:
 				continue  # Has config, not orphaned
 
 			# Orphaned interface: active but no config file
-			_log.warning(
+			_log.info(
 				"CLEANUP_STALE_INTERFACE name=%s (active in kernel but no config file)",
 				iface_name,
 			)
 			try:
-				# Bring interface down using ip commands (wg-quick needs config file)
-				down_proc = await asyncio.create_subprocess_exec(
-					"ip", "link", "set", iface_name, "down",
-					stdout=asyncio.subprocess.DEVNULL,
-					stderr=asyncio.subprocess.PIPE,
-				)
-				_, stderr = await asyncio.wait_for(down_proc.communicate(), timeout=5)
-				if down_proc.returncode != 0:
-					_log.warning(
-						"Failed to set stale interface %s down: %s",
-						iface_name,
-						stderr.decode("utf-8", errors="replace"),
-					)
-					continue
-
 				# Delete the interface
 				del_proc = await asyncio.create_subprocess_exec(
 					"ip", "link", "delete", iface_name,
@@ -299,7 +302,6 @@ async def _cleanup_stale_interfaces() -> list[str]:
 	return removed
 
 
-_PEER_STATE_MAX_SIZE = 100_000  # Evict oldest 10 % when full
 # NOTE: _peer_connection_state OrderedDict is only accessed from the single
 # event loop thread (in _sample_tsdb_metrics). Not thread-safe for concurrent access.
 
@@ -360,14 +362,14 @@ class _ColoredFormatter(_HumanizedFormatter):
 	"""Custom formatter that adds color to log levels in TTY."""
 
 	def format(self, record: logging.LogRecord) -> str:
-		# Clone record to avoid mutating shared state (bug #5 from review)
-		record = logging.makeLogRecord(record.__dict__)
-		# Call parent to prepare record (avoid duplicate logic)
+		record = _prepare_log_record(record)
 		if record.levelname in _LOG_COLORS:
+			record = logging.makeLogRecord(record.__dict__)
 			record.levelname = f"{_LOG_COLORS[record.levelname]}{record.levelname:<8}{_RESET}"
 		else:
+			record = logging.makeLogRecord(record.__dict__)
 			record.levelname = f"{record.levelname:<8}"
-		return super().format(record)
+		return super(_HumanizedFormatter, self).format(record)
 
 
 async def _communicate_with_timeout(
@@ -609,7 +611,7 @@ def _regenerate_peer_tags_sync(db_path: Path) -> int:
 		close_connection(conn)
 
 
-def _with_conn(db_path: Path, fn, *args, **kwargs):
+def _with_conn(db_path: Path, fn: typing.Callable, *args, **kwargs):
 	"""Run fn(conn, *args, **kwargs) with connect/close lifecycle.
 	
 	Eliminates boilerplate connect/try/finally/close_connection pattern.
@@ -621,16 +623,19 @@ def _with_conn(db_path: Path, fn, *args, **kwargs):
 		close_connection(conn)
 
 
-def _with_conn_or(db_path: Path, fn, *args, default=None, **kwargs):
+def _with_conn_or(db_path: Path, fn: typing.Callable, *args, default=None, **kwargs):
 	"""Like _with_conn but returns default on any exception.
 	
 	Useful for watchdog/readiness checks where DB errors should fail safe
 	instead of crashing.
 	"""
+	import sqlite3
 	try:
 		return _with_conn(db_path, fn, *args, **kwargs)
-	except Exception:
-		_log.warning("%s failed, returning default", fn.__name__, exc_info=True)
+	except sqlite3.DatabaseError:
+		raise
+	except (OSError, RuntimeError, ValueError) as exc:
+		_log.warning("%s failed, returning default: %s", fn.__name__, exc)
 		return default
 
 
@@ -682,12 +687,18 @@ def _read_country_traffic_inputs_sync(db_path: Path) -> tuple[bool, dict[str, st
 			return False, {}
 
 		all_peers = get_all_peers(conn)
+		# peer_address can be dual-stack: "10.13.13.2/32, fd13:13:13::2/128"
 		peer_ip_map: dict[str, str] = {}
 		for peer in all_peers:
 			addr = peer["peer_address"]
 			name = peer["name"]
 			if addr and name:
-				peer_ip_map[addr.split("/")[0]] = name
+				for part in str(addr).split(","):
+					part = part.strip()
+					if not part:
+						continue
+					# Strip CIDR suffix (e.g., 10.13.13.2/32 → 10.13.13.2)
+					peer_ip_map[part.split("/")[0]] = name
 		return True, peer_ip_map
 	
 	return _with_conn(db_path, _load)
@@ -725,16 +736,12 @@ def _check_adblocker_timer_sync(db_path: Path) -> bool:
 
 		if disabled_until > 0 and disabled_until <= now and not enabled:
 			# Timer expired and blocklist is still disabled - need to re-enable
-			conn.execute("BEGIN IMMEDIATE")
-			try:
+			from .db.sqlite_runtime import transaction
+			with transaction(conn, immediate=True):
 				set_dns_blocklist_enabled(conn, True)
 				clear_blocklist_disabled_until(conn)
 				regenerate_all_peer_tags(conn)
-				conn.commit()
-				return True
-			except Exception:
-				conn.rollback()
-				raise
+			return True
 		return False
 	finally:
 		close_connection(conn)
@@ -864,7 +871,6 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 	6. TSDB fsync
 	7. SQLite checkpoint
 	"""
-	from .dns import unbound as _unbound
 
 	# 1. Cancel DNS ingestion daemon (fastest to stop)
 	if ctx.dns_task and not ctx.dns_task.done():
@@ -877,10 +883,10 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 		await ctx.scheduler.stop_graceful(timeout=5.0)
 
 	# 3. Stop Unbound DNS
-	if ctx.is_leader and _unbound.is_unbound_installed():
+	if ctx.is_leader and unbound.is_unbound_installed():
 		try:
-			if await _unbound.is_running():
-				ok, msg = await _unbound.stop()
+			if await unbound.is_running():
+				ok, msg = await unbound.stop()
 				if ok:
 					_log.info("Unbound DNS stopped")
 				else:
@@ -947,556 +953,338 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 	_log.info("WireBuddy shutdown complete")
 
 
+
+async def _phase_bootstrap(ctx: LifespanContext) -> None:
+	cfg, app = ctx.cfg, ctx.app
+	is_leader, interfaces_to_start, key_mismatch = await asyncio.to_thread(_bootstrap_sync, cfg)
+	ctx.is_leader = is_leader
+	ctx.interfaces_to_start = interfaces_to_start
+	app.state.key_mismatch = key_mismatch
+	if key_mismatch:
+		_log.critical("Aborting startup: WIREBUDDY_SECRET_KEY does not match database encryption key")
+		await _do_shutdown(ctx)
+		# Clean exit without stack trace - os._exit bypasses exception handling
+		import sys
+		print(
+			"\n"
+			"╔══════════════════════════════════════════════════════════════════════╗\n"
+			"║  FATAL: WIREBUDDY_SECRET_KEY mismatch                                ║\n"
+			"║                                                                      ║\n"
+			"║  The configured secret key does not match the key used to encrypt   ║\n"
+			"║  this database. Continuing would cause data corruption.             ║\n"
+			"║                                                                      ║\n"
+			"║  Solutions:                                                          ║\n"
+			"║  1. Set the correct WIREBUDDY_SECRET_KEY in docker-compose.yml      ║\n"
+			"║  2. Or delete data/wirebuddy.db to start fresh (loses all data)     ║\n"
+			"╚══════════════════════════════════════════════════════════════════════╝\n",
+			file=sys.stderr,
+			flush=True,
+		)
+		import os
+		os._exit(1)
+	from .db import tsdb
+	tsdb.init_tsdb(cfg.tsdb_dir)
+	if ctx.is_leader:
+		_log.info("GeoIP init scheduled in background (startup is non-blocking)")
+
+async def _phase_dns_config(ctx: LifespanContext) -> None:
+	from .dns import unbound
+	if not ctx.is_leader or not unbound.is_unbound_installed():
+		return
+	try:
+		dns_data = await asyncio.to_thread(_load_dns_startup_data_sync, ctx.cfg.db_path)
+		ctx.dns_service_enabled = bool(dns_data.get("dns_service_enabled", True))
+		listen_addrs_ipv4, listen_addrs_ipv6 = [], []
+		interfaces = dns_data.get("interfaces", [])
+		for iface in interfaces:
+			addr4 = _get_addr_field(iface, "address")
+			if addr4 and addr4.split("/")[0] not in listen_addrs_ipv4:
+				listen_addrs_ipv4.append(addr4.split("/")[0])
+			addr6 = _get_addr_field(iface, "address6")
+			if addr6 and addr6.split("/")[0] not in listen_addrs_ipv6:
+				listen_addrs_ipv6.append(addr6.split("/")[0])
+		if not listen_addrs_ipv4:
+			_log.info("DNS init skipped: no WireGuard interfaces configured yet")
+		else:
+			await asyncio.to_thread(
+				unbound.write_config,
+				enable_logging=bool(dns_data.get("enable_logging", True)),
+				enable_blocklist=bool(dns_data.get("enable_blocklist", True)),
+				upstream_dns=dns_data.get("upstream_dns", []),
+				enable_dnssec=bool(dns_data.get("enable_dnssec", True)),
+				listen_addrs_ipv4=listen_addrs_ipv4,
+				listen_addrs_ipv6=listen_addrs_ipv6 if listen_addrs_ipv6 else None,
+			)
+			await asyncio.to_thread(unbound.write_local_data_overrides, interfaces, dns_data.get("wg_fqdn"))
+			peer_count = await asyncio.to_thread(_regenerate_peer_tags_sync, ctx.cfg.db_path)
+			_log.debug("DNS peer tags regenerated for %d peers", peer_count)
+			dns_retention_days = _safe_int(dns_data.get("dns_retention_days"), DEFAULT_DNS_LOG_RETENTION_DAYS)
+			from .dns import ingestion as dns_ingestion
+			await asyncio.to_thread(dns_ingestion.enforce_dns_log_retention, ctx.cfg.dns_dir, dns_retention_days)
+			_log.info("DNS config written (IPv4: %s, IPv6: %s)", ", ".join(listen_addrs_ipv4) if listen_addrs_ipv4 else "none", ", ".join(listen_addrs_ipv6) if listen_addrs_ipv6 else "none")
+			from .dns.unbound_blocklist import check_and_reset_stale_blocklist
+			if check_and_reset_stale_blocklist():
+				_log.info("Blocklist reset due to tag migration - triggering immediate update")
+				try:
+					bl_urls, bl_custom_rules = await asyncio.to_thread(_load_blocklist_update_inputs_sync, ctx.cfg.db_path)
+					_, msg = await unbound.update_blocklists(bl_urls, custom_rules_text=bl_custom_rules)
+					_log.info("BLOCKLIST_MIGRATION %s", msg)
+				except Exception as exc:
+					_log.warning("BLOCKLIST_MIGRATION update failed: %s", exc)
+			ctx.dns_config_ready = True
+	except FileNotFoundError as exc:
+		_log.warning("DNS init skipped: unbound tools not found! Use Docker Image for full experience! (%s)", exc)
+	except Exception:
+		_log.exception("DNS config failed")
+
+async def _phase_wireguard_start(ctx: LifespanContext) -> None:
+	if not ctx.is_leader:
+		return
+	removed_stale = await _cleanup_stale_interfaces()
+	if removed_stale:
+		_log.info("Cleaned up %d stale interface(s): %s", len(removed_stale), removed_stale)
+	if not ctx.interfaces_to_start:
+		return
+	async def _start_one(iface_name: str) -> str | None:
+		try:
+			check_proc = await asyncio.create_subprocess_exec("wg", "show", iface_name, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+			await _communicate_with_timeout(check_proc, timeout_seconds=_WG_CHECK_TIMEOUT_SECONDS)
+			if check_proc.returncode == 0:
+				_log.info("WireGuard interface %s already running", iface_name)
+				return None
+			proc = await asyncio.create_subprocess_exec("wg-quick", "up", iface_name, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+			_, stderr = await _communicate_with_timeout(proc, timeout_seconds=_WG_UP_TIMEOUT_SECONDS)
+			if proc.returncode == 0:
+				_log.info("WireGuard interface %s started", iface_name)
+				return iface_name
+			else:
+				_log.warning("Failed to start interface %s: %s", iface_name, stderr.decode("utf-8", errors="replace"))
+				return None
+		except asyncio.TimeoutError:
+			_log.warning("Timeout while starting/checking interface %s", iface_name)
+			return None
+		except Exception as e:
+			_log.warning("Failed to start interface %s: %s", iface_name, e)
+			return None
+	sem = asyncio.Semaphore(_WG_STARTUP_CONCURRENCY)
+	async def _start_guarded(iface_name: str) -> str | None:
+		async with sem:
+			return await _start_one(iface_name)
+	results = await asyncio.gather(*[_start_guarded(name) for name in ctx.interfaces_to_start])
+	ctx.started_interfaces = [r for r in results if r]
+
+async def _phase_dns_start(ctx: LifespanContext) -> None:
+	from .dns import unbound
+	if ctx.is_leader and unbound.is_unbound_installed() and ctx.dns_config_ready:
+		try:
+			unbound_running = await unbound.is_running()
+			if ctx.dns_service_enabled:
+				if not unbound_running:
+					ok, msg = await unbound.start()
+					if ok:
+						_log.info("Unbound DNS started")
+						await asyncio.sleep(2)
+					else:
+						_log.warning("Failed to start Unbound: %s", msg)
+			else:
+				if unbound_running:
+					ok, msg = await unbound.stop()
+					if ok:
+						_log.info("Unbound DNS kept stopped (persisted user preference)")
+					else:
+						_log.warning("Failed to keep Unbound stopped on startup: %s", msg)
+				else:
+					_log.info("Unbound autostart disabled; resolver remains stopped")
+		except Exception:
+			_log.exception("DNS start failed")
+
+async def _phase_scheduler(ctx: LifespanContext) -> None:
+	if not ctx.is_leader:
+		return
+	scheduler = Scheduler()
+	ctx.scheduler = scheduler
+	ctx.app.state.scheduler = scheduler
+	from .dns import unbound
+	from .tasks import scheduled as scheduled_tasks
+	import os
+	unbound_installed = unbound.is_unbound_installed()
+	blocklist_enabled_startup = unbound_installed and await asyncio.to_thread(_read_blocklist_enabled_sync, ctx.cfg.db_path)
+	blocklist_interval_seconds = 86400.0
+	blocklist_jitter_pct = 0.1
+	blocklist_run_on_start = False
+	if blocklist_enabled_startup:
+		try:
+			blocklist_run_on_start = unbound.get_blocklist_count() <= 0
+		except Exception:
+			_log.warning("BLOCKLIST_STARTUP could not inspect local blocklist; scheduling startup update")
+			blocklist_run_on_start = True
+		if blocklist_run_on_start:
+			_log.info("BLOCKLIST_STARTUP no cached blocklist found - scheduling immediate update")
+		else:
+			min_delay_h = (blocklist_interval_seconds * (1.0 - blocklist_jitter_pct)) / 3600.0
+			max_delay_h = (blocklist_interval_seconds * (1.0 + blocklist_jitter_pct)) / 3600.0
+			_log.info("BLOCKLIST_STARTUP cached blocklist found - deferring first update to %.1f-%.1f hours (interval=24h, jitter=±10%%)", min_delay_h, max_delay_h)
+	else:
+		if unbound_installed:
+			_log.info("BLOCKLIST_STARTUP skipped: ad-blocker is disabled")
+		else:
+			_log.info("BLOCKLIST_STARTUP skipped: Unbound not installed")
+	if unbound_installed:
+		blocklist_initial_delay = 15.0 if blocklist_run_on_start else 0.0
+		async def _update_blocklists() -> None:
+			await scheduled_tasks.update_blocklists(ctx)
+		scheduler.add("blocklist-update", interval_seconds=blocklist_interval_seconds, func=_update_blocklists, run_on_start=blocklist_run_on_start, initial_delay=blocklist_initial_delay, jitter_pct=blocklist_jitter_pct)
+	async def _maintain_tsdb() -> None:
+		await scheduled_tasks.maintain_tsdb(ctx)
+	scheduler.add("tsdb-maintenance", interval_seconds=21600, func=_maintain_tsdb, run_on_start=True, initial_delay=30.0)
+	async def _sample_tsdb_metrics() -> None:
+		await scheduled_tasks.sample_tsdb_metrics(ctx)
+	scheduler.add("tsdb-sample", interval_seconds=30.0, func=_sample_tsdb_metrics, run_on_start=True, initial_delay=10.0)
+	try:
+		from .utils.conntrack import init_conntrack_accounting
+		await asyncio.to_thread(init_conntrack_accounting)
+	except Exception as exc:
+		_log.warning("COUNTRY_TRAFFIC could not enable conntrack accounting: %s", exc)
+	async def _sample_country_traffic() -> None:
+		await scheduled_tasks.sample_country_traffic(ctx)
+	scheduler.add("country-traffic", interval_seconds=30.0, func=_sample_country_traffic, run_on_start=True, initial_delay=15.0)
+	async def _sample_network_stats() -> None:
+		await scheduled_tasks.sample_network_stats(ctx)
+	scheduler.add("network-stats", interval_seconds=30, func=_sample_network_stats, run_on_start=True, initial_delay=12.0)
+	async def _update_geoip() -> None:
+		await scheduled_tasks.update_geoip(ctx)
+	scheduler.add("geoip-update", interval_seconds=604800, func=_update_geoip, run_on_start=True, initial_delay=20.0)
+	from .tasks.maintenance import sqlite_maintenance, sqlite_integrity_check, tsdb_retention_cleanup, cleanup_stale_sessions
+	scheduler.add("sqlite-maintenance", interval_seconds=21600, func=sqlite_maintenance, run_on_start=True, initial_delay=60.0, timeout=60.0)
+	scheduler.add("sqlite-integrity", interval_seconds=604800, func=sqlite_integrity_check, run_on_start=False, timeout=300.0)
+	scheduler.add("tsdb-retention", interval_seconds=86400, func=tsdb_retention_cleanup, run_on_start=True, initial_delay=90.0, timeout=120.0)
+	scheduler.add("session-cleanup", interval_seconds=3600, func=cleanup_stale_sessions, run_on_start=True, initial_delay=120.0, timeout=30.0)
+	if unbound_installed:
+		async def _dns_watchdog() -> None:
+			await scheduled_tasks.dns_watchdog(ctx)
+		scheduler.add("dns-watchdog", interval_seconds=30, func=_dns_watchdog, run_on_start=True, initial_delay=60.0, timeout=30.0)
+		async def _check_adblocker_timer() -> None:
+			await scheduled_tasks.check_adblocker_timer(ctx)
+		scheduler.add("adblocker-timer-check", interval_seconds=15, func=_check_adblocker_timer, run_on_start=False, timeout=30.0)
+	initial_speedtest_delay, hours_since_last, speedtest_overdue = scheduled_tasks.get_speedtest_initial_delay(ctx.cfg.tsdb_dir)
+	if hours_since_last is not None:
+		if speedtest_overdue:
+			_log.warning("SPEEDTEST_SCHEDULER last run was %.1f hours ago (>36h) - missed tests detected!", hours_since_last)
+		else:
+			_log.info("SPEEDTEST_SCHEDULER last run was %.1f hours ago", hours_since_last)
+	else:
+		_log.info("SPEEDTEST_SCHEDULER no previous run recorded")
+	if initial_speedtest_delay > 0:
+		from datetime import datetime as dt, timedelta
+		scheduled_time = dt.now() + timedelta(seconds=initial_speedtest_delay)
+		_log.info("SPEEDTEST_SCHEDULER first run in %.1f hours (at ~%s)", initial_speedtest_delay / 3600, scheduled_time.strftime("%H:%M"))
+	async def _run_scheduled_speedtest() -> None:
+		await scheduled_tasks.run_scheduled_speedtest(ctx)
+	scheduler.add("speedtest", interval_seconds=86400, func=_run_scheduled_speedtest, run_on_start=True, initial_delay=initial_speedtest_delay, timeout=7500.0, jitter_pct=0.05)
+	initial_backup_delay = _seconds_until_backup_time(os.environ.get("TZ", "UTC"))
+	_log.info("SCHEDULED_BACKUP first run in %.1f hours (at ~%02d:00)", initial_backup_delay / 3600, _BACKUP_NIGHT_HOUR)
+	async def _run_scheduled_backup() -> None:
+		await scheduled_tasks.run_scheduled_backup(ctx)
+	scheduler.add("scheduled-backup", interval_seconds=86400, func=_run_scheduled_backup, run_on_start=True, initial_delay=initial_backup_delay, timeout=300.0, jitter_pct=0.05)
+	async def _run_node_health() -> None:
+		await scheduled_tasks.monitor_node_health(ctx)
+	scheduler.add("node-health", interval_seconds=60, func=_run_node_health, run_on_start=False, timeout=15.0)
+	await scheduler.start()
+
+async def _sleep_interruptible(seconds: float, chunk_size: float = 60.0) -> None:
+	"""Sleep for total seconds with periodic cancellation checks.
+	
+	Breaks long sleeps into chunks to enable responsive shutdown.
+	"""
+	remaining = seconds
+	while remaining > 0:
+		await asyncio.sleep(min(chunk_size, remaining))
+		remaining -= chunk_size
+
+
+async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
+	from .dns import unbound
+	from .dns import ingestion as dns_ingestion
+	if not unbound.is_unbound_installed():
+		_log.info("DNS_INGESTION skipped: Unbound not installed")
+		return
+	retry_count = 0
+	dns_retention_days_cache = DEFAULT_DNS_LOG_RETENTION_DAYS
+	while True:
+		should_run = await asyncio.to_thread(_should_unbound_run_sync, ctx.cfg.db_path)
+		if not should_run:
+			await _sleep_interruptible(30.0)
+			continue
+		for attempt in range(15):
+			if await unbound.is_running():
+				break
+			delay = min(2.0 ** attempt, 30.0)
+			_log.debug("DNS_INGESTION waiting for Unbound (attempt %d, retry in %.0fs)", attempt + 1, delay)
+			await asyncio.sleep(delay)
+		else:
+			_log.warning("DNS_INGESTION Unbound not ready after probes; starting ingestion anyway")
+		def _current_dns_retention_days() -> int:
+			return dns_retention_days_cache
+		try:
+			dns_retention_days_cache = await asyncio.to_thread(_read_dns_retention_days_sync, ctx.cfg.db_path)
+			offset_path = ctx.cfg.data_dir / "dns" / "dns_tail.offset"
+			offset_path.parent.mkdir(parents=True, exist_ok=True)
+			legacy_offset_path = ctx.cfg.data_dir / "runtime" / "dns_tail.offset"
+			if not offset_path.exists() and legacy_offset_path.exists():
+				try:
+					offset_path.write_text(legacy_offset_path.read_text(encoding="utf-8"), encoding="utf-8")
+					legacy_offset_path.unlink(missing_ok=True)
+					legacy_runtime_dir = legacy_offset_path.parent
+					if legacy_runtime_dir.exists() and not any(legacy_runtime_dir.iterdir()):
+						legacy_runtime_dir.rmdir()
+					_log.info("DNS_INGESTION migrated offset file from %s to %s", legacy_offset_path, offset_path)
+				except Exception as exc:
+					_log.warning("DNS_INGESTION failed to migrate legacy offset file: %s", exc)
+			await dns_ingestion.run_dns_ingestion(
+				log_path=unbound.QUERY_LOG,
+				offset_path=offset_path,
+				dns_dir=ctx.cfg.dns_dir,
+				blocked_domains_func=unbound.get_blocked_domains,
+				retention_days_func=_current_dns_retention_days,
+			)
+			retry_count = 0
+			_log.warning("DNS_INGESTION stopped unexpectedly; restarting in 5s")
+			await _sleep_interruptible(5.0)
+		except asyncio.CancelledError:
+			_log.info("DNS_INGESTION shutdown requested")
+			raise
+		except Exception as exc:
+			retry_count += 1
+			# Exponential backoff: base_delay * (2 ** retry_count)
+			delay = min(2 ** retry_count * _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS, _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS)
+			_log.error("DNS_INGESTION crashed (retry #%d in %.0fs): %s", retry_count, delay, exc)
+			await _sleep_interruptible(delay)
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-	"""Application lifespan manager.
-	
-	Organized into discrete phases:
-	1. Bootstrap - DB, schema, leader lock, TSDB
-	2. DNS config - write Unbound configuration
-	3. WireGuard - start interfaces
-	4. DNS start - start Unbound resolver
-	5. Scheduler - register and start background tasks
-	6. DNS ingestion - start query log daemon
-	
-	See also: LifespanContext, _do_shutdown()
-	"""
-	# Verify host network mode before any initialization
+	"""Application lifespan manager."""
+	import os
 	await _verify_host_network_mode()
-
 	cfg = app.state.cfg
-	
-	# Create context to track state across phases
 	ctx = LifespanContext(
 		cfg=cfg,
 		app=app,
 		peer_connection_state=app.state.peer_connection_state,
 	)
-	
-	# CRITICAL: Wrap ALL post-bootstrap code in try/finally to ensure
-	# leader lock is released even if startup fails after acquisition (bug #6)
 	try:
-		# ─── BOOTSTRAP ───────────────────────────────────────────
-		is_leader, interfaces_to_start, key_mismatch = await asyncio.to_thread(_bootstrap_sync, cfg)
-		ctx.is_leader = is_leader
-		ctx.interfaces_to_start = interfaces_to_start
-		app.state.key_mismatch = key_mismatch
-		
-		# CRITICAL: Abort if encryption key doesn't match database
-		if key_mismatch:
-			_log.critical("Aborting startup: WIREBUDDY_SECRET_KEY does not match database encryption key")
-			raise StartupFatalError("Encryption key mismatch")
-		
-		# Initialize TSDB (idempotent, safe for multi-worker)
-		tsdb.init_tsdb(cfg.tsdb_dir)
-		
-		# ─── GeoIP databases ──────────────────────────────────────
-		# Do not block startup on network-bound GeoIP checks/downloads.
-		# GeoIP sync runs as scheduler background task (run_on_start + periodic).
-		if ctx.is_leader:
-			_log.info("GeoIP init scheduled in background (startup is non-blocking)")
-		
-		# Prepare Unbound DNS config - leader only
-		# NOTE: Config is written BEFORE WireGuard starts, but Unbound is started
-		# AFTER WireGuard to ensure interface IPs exist for binding.
-		from .dns import unbound as _unbound
-		if ctx.is_leader and _unbound.is_unbound_installed():
-			try:
-				# Always write WireBuddy config (overwrites Debian default)
-				# Bind Unbound ONLY to WireGuard interface IPs to avoid conflicts
-				# with host DNS resolver when using network_mode: host.
-				# Do NOT include 127.0.0.1 - host may already have DNS on localhost.
-				dns_retention_days = DEFAULT_DNS_LOG_RETENTION_DAYS
-				listen_addrs_ipv4: list[str] = []
-				listen_addrs_ipv6: list[str] = []
-				dns_data = await asyncio.to_thread(_load_dns_startup_data_sync, cfg.db_path)
-				dns_retention_days = _safe_int(dns_data.get("dns_retention_days"), DEFAULT_DNS_LOG_RETENTION_DAYS)
-				ctx.dns_service_enabled = bool(dns_data.get("dns_service_enabled", True))
-				interfaces = dns_data.get("interfaces", [])
-
-				# Extract WireGuard interface IPs (strip CIDR notation)
-				for iface in interfaces:
-					addr4 = _get_addr_field(iface, "address")
-					if addr4:
-						ip4 = addr4.split("/")[0]
-						if ip4 not in listen_addrs_ipv4:
-							listen_addrs_ipv4.append(ip4)
-					addr6 = _get_addr_field(iface, "address6")
-					if addr6:
-						ip6 = addr6.split("/")[0]
-						if ip6 not in listen_addrs_ipv6:
-							listen_addrs_ipv6.append(ip6)
-
-				# Skip DNS initialization if no WireGuard interfaces exist
-				# (Unbound needs interface IPs to bind to)
-				if not listen_addrs_ipv4:
-					_log.info("DNS init skipped: no WireGuard interfaces configured yet")
-				else:
-					await asyncio.to_thread(
-						_unbound.write_config,
-						enable_logging=bool(dns_data.get("enable_logging", True)),
-						enable_blocklist=bool(dns_data.get("enable_blocklist", True)),
-						upstream_dns=dns_data.get("upstream_dns", []),
-						enable_dnssec=bool(dns_data.get("enable_dnssec", True)),
-						listen_addrs_ipv4=listen_addrs_ipv4,
-						listen_addrs_ipv6=listen_addrs_ipv6 if listen_addrs_ipv6 else None,
-					)
-					# Generate split-DNS local-data (wg_fqdn -> interface IPs)
-					await asyncio.to_thread(
-						_unbound.write_local_data_overrides,
-						interfaces,
-						dns_data.get("wg_fqdn"),
-					)
-					
-					# Regenerate peer tags for ad-blocking
-					peer_count = await asyncio.to_thread(
-						_regenerate_peer_tags_sync,
-						cfg.db_path,
-					)
-					_log.debug("DNS peer tags regenerated for %d peers", peer_count)
-
-					await asyncio.to_thread(
-						dns_ingestion.enforce_dns_log_retention,
-						cfg.dns_dir,
-						dns_retention_days,
-					)
-					_log.info(
-						"DNS config written (IPv4: %s, IPv6: %s)",
-						", ".join(listen_addrs_ipv4) if listen_addrs_ipv4 else "none",
-						", ".join(listen_addrs_ipv6) if listen_addrs_ipv6 else "none",
-					)
-
-					# Check for stale blocklist tags (e.g., after registry changes like easylist→hagezi)
-					# This must run BEFORE Unbound starts to avoid config errors
-					from .dns.unbound_blocklist import check_and_reset_stale_blocklist
-					if check_and_reset_stale_blocklist():
-						_log.info("Blocklist reset due to tag migration - triggering immediate update")
-						try:
-							bl_urls, bl_custom_rules = await asyncio.to_thread(
-								_load_blocklist_update_inputs_sync,
-								cfg.db_path,
-							)
-							count, msg = await _unbound.update_blocklists(bl_urls, custom_rules_text=bl_custom_rules)
-							_log.info("BLOCKLIST_MIGRATION %s", msg)
-						except Exception as exc:
-							_log.warning("BLOCKLIST_MIGRATION update failed: %s", exc)
-
-					ctx.dns_config_ready = True
-			except FileNotFoundError as exc:
-				_log.warning("DNS init skipped: unbound tools not found! Use Docker Image for full experience! (%s)", exc)
-			except Exception:
-				# Issue #10: use exception() so stack trace is always captured for
-				# non-obvious errors (corrupted DB, key mismatch, permission failures).
-				_log.exception("DNS config failed")
-		
-		# These are interfaces active in the kernel but without a config file,
-		# typically left over after clearing the data directory in host network mode.
-		if ctx.is_leader:
-			removed_stale = await _cleanup_stale_interfaces()
-			if removed_stale:
-				_log.info("Cleaned up %d stale interface(s): %s", len(removed_stale), removed_stale)
-
-		# Auto-start WireGuard interfaces (leader only)
-		# Runs BEFORE Unbound so that interface IPs exist for DNS binding.
-		# NOTE: DNS is not set in server-side configs, so wg-quick does not
-		# rewrite /etc/resolv.conf. Unbound is started separately after WG.
-		# KNOWN LIMITATION (Issue #17):
-		# started_interfaces only tracks interfaces THIS process brought up.
-		# If the leader crashes and a new worker becomes leader, old interfaces
-		# remain active with no process tracking them for shutdown.
-		# This is intentional to avoid bringing down interfaces we didn't create.
-		if ctx.is_leader and ctx.interfaces_to_start:
-			async def _start_one(iface_name: str) -> str | None:
-				"""Start a single interface. Returns interface name if started, None otherwise."""
-				try:
-					# Check if interface is already up
-					check_proc = await asyncio.create_subprocess_exec(
-						"wg", "show", iface_name,
-						stdout=asyncio.subprocess.DEVNULL,
-						stderr=asyncio.subprocess.DEVNULL,
-					)
-					await _communicate_with_timeout(
-						check_proc,
-						timeout_seconds=_WG_CHECK_TIMEOUT_SECONDS,
-					)
-					
-					if check_proc.returncode == 0:
-						_log.info("WireGuard interface %s already running", iface_name)
-						# Issue #17: do NOT return name here - we only track what we started
-						return None
-
-					# Start the interface
-					proc = await asyncio.create_subprocess_exec(
-						"wg-quick", "up", iface_name,
-						stdout=asyncio.subprocess.PIPE,
-						stderr=asyncio.subprocess.PIPE,
-					)
-					_, stderr = await _communicate_with_timeout(
-						proc,
-						timeout_seconds=_WG_UP_TIMEOUT_SECONDS,
-					)
-					if proc.returncode == 0:
-						_log.info("WireGuard interface %s started", iface_name)
-						return iface_name
-					else:
-						_log.warning("Failed to start interface %s: %s", iface_name, stderr.decode("utf-8", errors="replace"))
-						return None
-				except asyncio.TimeoutError:
-					_log.warning("Timeout while starting/checking interface %s", iface_name)
-					return None
-				except Exception as e:
-					_log.warning("Failed to start interface %s: %s", iface_name, e)
-					return None
-			
-			# Start interfaces with bounded concurrency to avoid overwhelming the system
-			sem = asyncio.Semaphore(_WG_STARTUP_CONCURRENCY)
-			
-			async def _start_guarded(iface_name: str) -> str | None:
-				"""Start interface with semaphore guard."""
-				async with sem:
-					return await _start_one(iface_name)
-			
-			results = await asyncio.gather(*[_start_guarded(name) for name in ctx.interfaces_to_start])
-			ctx.started_interfaces = [r for r in results if r]
-
-		# ─── START UNBOUND DNS ─────────────────────────────────── (leader only)
-		# Runs AFTER WireGuard interfaces are up to ensure bind addresses exist.
-		# DNS config was written earlier, now we just start the resolver.
-		if ctx.is_leader and _unbound.is_unbound_installed() and ctx.dns_config_ready:
-			try:
-				unbound_running = await _unbound.is_running()
-				if ctx.dns_service_enabled:
-					if not unbound_running:
-						# Respect persisted user choice: start resolver after container restart
-						# unless it was explicitly stopped by the user.
-						ok, msg = await _unbound.start()
-						if ok:
-							_log.info("Unbound DNS started")
-							# Give Unbound a moment to establish upstream TLS connections
-							await asyncio.sleep(2)
-						else:
-							_log.warning("Failed to start Unbound: %s", msg)
-				else:
-					# Persisted manual stop: keep resolver down across restarts.
-					if unbound_running:
-						ok, msg = await _unbound.stop()
-						if ok:
-							_log.info("Unbound DNS kept stopped (persisted user preference)")
-						else:
-							_log.warning("Failed to keep Unbound stopped on startup: %s", msg)
-					else:
-						_log.info("Unbound autostart disabled; resolver remains stopped")
-			except Exception:
-				_log.exception("DNS start failed")
-
-		scheduler: Scheduler | None = None
-		if ctx.is_leader:
-			scheduler = Scheduler()
-			unbound_installed = _unbound.is_unbound_installed()
-
-			# Reuse existing blocklist after container restart.
-			# Only do an immediate startup download if there is no local blocklist yet.
-			# Skip all blocklist scheduling if blocklist is disabled.
-			blocklist_enabled_startup = unbound_installed and await asyncio.to_thread(
-				_read_blocklist_enabled_sync,
-				cfg.db_path,
-			)
-			blocklist_interval_seconds = _BLOCKLIST_UPDATE_INTERVAL_SECONDS
-			blocklist_jitter_pct = 0.1
-			blocklist_run_on_start = False
-			if blocklist_enabled_startup:
-				try:
-					blocklist_run_on_start = _unbound.get_blocklist_count() <= 0
-				except Exception:
-					_log.warning("BLOCKLIST_STARTUP could not inspect local blocklist; scheduling startup update")
-					blocklist_run_on_start = True
-				if blocklist_run_on_start:
-					_log.info("BLOCKLIST_STARTUP no cached blocklist found - scheduling immediate update")
-				else:
-					min_delay_h = (blocklist_interval_seconds * (1.0 - blocklist_jitter_pct)) / 3600.0
-					max_delay_h = (blocklist_interval_seconds * (1.0 + blocklist_jitter_pct)) / 3600.0
-					_log.info(
-						"BLOCKLIST_STARTUP cached blocklist found - deferring first update to %.1f-%.1f hours (interval=24h, jitter=±10%%)",
-						min_delay_h,
-						max_delay_h,
-					)
-			else:
-				if unbound_installed:
-					_log.info("BLOCKLIST_STARTUP skipped: ad-blocker is disabled")
-				else:
-					_log.info("BLOCKLIST_STARTUP skipped: Unbound not installed")
-
-			if unbound_installed:
-				blocklist_initial_delay = 15.0 if blocklist_run_on_start else 0.0
-				async def _update_blocklists() -> None:
-					await scheduled_tasks.update_blocklists(ctx)
-				scheduler.add(
-					"blocklist-update",
-					interval_seconds=blocklist_interval_seconds,
-					func=_update_blocklists,
-					run_on_start=blocklist_run_on_start,
-					initial_delay=blocklist_initial_delay,  # Delay only applies when run_on_start=True
-					jitter_pct=blocklist_jitter_pct,  # ±10% jitter (±2.4h) to distribute load across instances
-				)
-			async def _maintain_tsdb() -> None:
-				await scheduled_tasks.maintain_tsdb(ctx)
-			scheduler.add(
-				"tsdb-maintenance",
-				interval_seconds=_TSDB_MAINTENANCE_INTERVAL_SECONDS,  # 6 h
-				func=_maintain_tsdb,
-				run_on_start=True,
-				initial_delay=30.0,
-			)
-			async def _sample_tsdb_metrics() -> None:
-				await scheduled_tasks.sample_tsdb_metrics(ctx)
-			scheduler.add(
-				"tsdb-sample",
-				interval_seconds=_TSDB_SAMPLE_INTERVAL_SECONDS,
-				func=_sample_tsdb_metrics,
-				run_on_start=True,
-				initial_delay=10.0,
-			)
-
-			# ─── COUNTRY TRAFFIC (CONNTRACK) ──────────────────────────────
-			from .utils.conntrack import init_conntrack_accounting, sample_country_traffic
-			from .utils.conntrack import ASN_TRAFFIC_KEY, ASN_TRAFFIC_METRIC
-			from .api.wireguard_stats_country import GEO_TRAFFIC_KEY, GEO_TRAFFIC_METRIC
-
-			# Enable byte accounting in the kernel conntrack table.
-			# This is a no-op if already enabled or if /proc isn't writable.
-			try:
-				await asyncio.to_thread(init_conntrack_accounting)
-			except Exception as exc:
-				_log.warning("COUNTRY_TRAFFIC could not enable conntrack accounting: %s", exc)
-
-			async def _sample_country_traffic() -> None:
-				await scheduled_tasks.sample_country_traffic(ctx)
-			scheduler.add(
-				"country-traffic",
-				interval_seconds=_TSDB_SAMPLE_INTERVAL_SECONDS,
-				func=_sample_country_traffic,
-				run_on_start=True,
-				initial_delay=15.0,  # after tsdb-sample (10 s) to stagger I/O
-			)
-
-			# ─── NETWORK STATS (SPARKLINE HISTORY) ────────────────────────
-			async def _sample_network_stats() -> None:
-				await scheduled_tasks.sample_network_stats(ctx)
-			scheduler.add(
-				"network-stats",
-				interval_seconds=30,  # 30 seconds for ~120 points/hour sparkline
-				func=_sample_network_stats,
-				run_on_start=True,
-				initial_delay=12.0,  # after tsdb-sample (10 s) to stagger I/O
-			)
-
-			async def _update_geoip() -> None:
-				await scheduled_tasks.update_geoip(ctx)
-			scheduler.add(
-				"geoip-update",
-				interval_seconds=_GEOIP_UPDATE_INTERVAL_SECONDS,  # 7 days
-				func=_update_geoip,
-				run_on_start=True,   # first check runs in background after startup
-				initial_delay=20.0,  # wait for WireGuard + Unbound + DNS to be ready
-			)
-			
-			# ─── DATABASE MAINTENANCE TASKS ───────────────────────────────
-			# Periodic maintenance for SQLite and TSDB health
-			from .tasks.maintenance import (
-				sqlite_maintenance,
-				sqlite_integrity_check,
-				tsdb_retention_cleanup,
-				cleanup_stale_sessions,
-			)
-			
-			scheduler.add(
-				"sqlite-maintenance",
-				interval_seconds=_SQLITE_MAINTENANCE_INTERVAL_SECONDS,  # 6 hours
-				func=sqlite_maintenance,
-				run_on_start=True,
-				initial_delay=60.0,  # Let app fully start first
-				timeout=60.0,
-			)
-			
-			scheduler.add(
-				"sqlite-integrity",
-				interval_seconds=_SQLITE_INTEGRITY_INTERVAL_SECONDS,  # 7 days (weekly)
-				func=sqlite_integrity_check,
-				run_on_start=False,  # Skip on every startup, only run weekly
-				timeout=300.0,
-			)
-			
-			scheduler.add(
-				"tsdb-retention",
-				interval_seconds=_TSDB_RETENTION_INTERVAL_SECONDS,  # 24 hours (daily)
-				func=tsdb_retention_cleanup,
-				run_on_start=True,
-				initial_delay=90.0,
-				timeout=120.0,
-			)
-			
-			scheduler.add(
-				"session-cleanup",
-				interval_seconds=_SESSION_CLEANUP_INTERVAL_SECONDS,  # 1 hour
-				func=cleanup_stale_sessions,
-				run_on_start=True,
-				initial_delay=120.0,
-				timeout=30.0,
-			)
-			
-			# ─── DNS WATCHDOG ─────────────────────────────────────────────
-			# Periodically check if Unbound is running and restart if crashed
-			if unbound_installed:
-				async def _dns_watchdog() -> None:
-					await scheduled_tasks.dns_watchdog(ctx)
-				scheduler.add(
-					"dns-watchdog",
-					interval_seconds=_DNS_WATCHDOG_INTERVAL_SECONDS,  # Check every 30 seconds
-					func=_dns_watchdog,
-					run_on_start=True,  # Run first check after initial_delay
-					initial_delay=60.0,  # Wait for initial startup to complete
-					timeout=30.0,
-				)
-
-			# ─── ADBLOCKER TIMER CHECK ────────────────────────────────────
-			# Periodically check if timed disable has expired and re-enable adblocker
-			if unbound_installed:
-				async def _check_adblocker_timer() -> None:
-					await scheduled_tasks.check_adblocker_timer(ctx)
-				scheduler.add(
-					"adblocker-timer-check",
-					interval_seconds=_ADBLOCKER_TIMER_CHECK_INTERVAL_SECONDS,  # Check every 15 seconds
-					func=_check_adblocker_timer,
-					run_on_start=False,  # No need to run immediately on start
-					timeout=30.0,
-				)
-
-			# ─── SPEEDTEST (BANDWIDTH MEASUREMENT) ───────────────────────
-			_SPEEDTEST_INTERVAL_SECONDS = 86400  # 24 h (runs nightly)
-
-			# Calculate initial delay to reach the next night window (includes random jitter)
-			initial_speedtest_delay = scheduled_tasks._seconds_until_night_window()
-			if initial_speedtest_delay > 0:
-				from datetime import datetime as dt, timedelta
-				scheduled_time = dt.now() + timedelta(seconds=initial_speedtest_delay)
-				_log.info(
-					"SPEEDTEST_SCHEDULER first run in %.1f hours (at ~%s)",
-					initial_speedtest_delay / 3600,
-					scheduled_time.strftime("%H:%M"),
-				)
-
-			async def _run_scheduled_speedtest() -> None:
-				await scheduled_tasks.run_scheduled_speedtest(ctx)
-			scheduler.add(
-				"speedtest",
-				interval_seconds=_SPEEDTEST_INTERVAL_SECONDS,  # 24 h
-				func=_run_scheduled_speedtest,
-				run_on_start=True,  # First run after initial_delay
-				initial_delay=initial_speedtest_delay,  # Seconds until night window (0 if already there)
-				timeout=7500.0,  # ~2h max (includes potential deferrals for active peers)
-				jitter_pct=0.05,  # Reduced jitter since we manage timing ourselves
-			)
-
-			await scheduler.start()
-			
-			# ─── DNS INGESTION DAEMON ─────────────────────────────────────
-			# This is a long-running daemon task, not a periodic job.
-			# Runs forever, managed separately from scheduler.
-			async def _run_dns_ingestion() -> None:
-				"""Daemon task: ingest DNS queries from Unbound log to TSDB."""
-				# Skip entirely if Unbound is not installed
-				if not _unbound.is_unbound_installed():
-					_log.info("DNS_INGESTION skipped: Unbound not installed")
-					return
-				
-				retry_count = 0
-				dns_retention_days_cache = DEFAULT_DNS_LOG_RETENTION_DAYS
-				while True:
-					# Skip if no WireGuard interfaces configured (Unbound won't be running)
-					should_run = await asyncio.to_thread(_should_unbound_run_sync, cfg.db_path)
-					if not should_run:
-						await asyncio.sleep(30.0)  # Check again in 30s
-						continue
-					
-					# Wait for Unbound to be ready using a readiness probe instead of a
-					# fixed sleep (issue #9: 25 s was fragile on slow/fast systems).
-					for attempt in range(15):
-						if await _unbound.is_running():
-							break
-						delay = min(2.0 ** attempt, 30.0)  # exponential back-off, cap 30 s
-						_log.debug("DNS_INGESTION waiting for Unbound (attempt %d, retry in %.0fs)", attempt + 1, delay)
-						await asyncio.sleep(delay)
-					else:
-						_log.warning("DNS_INGESTION Unbound not ready after probes; starting ingestion anyway")
-
-					def _current_dns_retention_days() -> int:
-						return dns_retention_days_cache
-					
-					try:
-						dns_retention_days_cache = await asyncio.to_thread(
-							_read_dns_retention_days_sync,
-							cfg.db_path,
-						)
-						offset_path = cfg.data_dir / "dns" / "dns_tail.offset"
-						offset_path.parent.mkdir(parents=True, exist_ok=True)
-
-						# Backward compatibility: migrate legacy offset path if it exists.
-						legacy_offset_path = cfg.data_dir / "runtime" / "dns_tail.offset"
-						if not offset_path.exists() and legacy_offset_path.exists():
-							try:
-								offset_path.write_text(legacy_offset_path.read_text(encoding="utf-8"), encoding="utf-8")
-								legacy_offset_path.unlink(missing_ok=True)
-								legacy_runtime_dir = legacy_offset_path.parent
-								if legacy_runtime_dir.exists() and not any(legacy_runtime_dir.iterdir()):
-									legacy_runtime_dir.rmdir()
-								_log.info("DNS_INGESTION migrated offset file from %s to %s", legacy_offset_path, offset_path)
-							except Exception as exc:
-								_log.warning("DNS_INGESTION failed to migrate legacy offset file: %s", exc)
-
-						await dns_ingestion.run_dns_ingestion(
-							log_path=unbound.QUERY_LOG,
-							offset_path=offset_path,
-							dns_dir=cfg.dns_dir,
-							blocked_domains_func=unbound.get_blocked_domains,
-							retention_days_func=_current_dns_retention_days,
-						)
-						retry_count = 0
-						_log.warning("DNS_INGESTION stopped unexpectedly; restarting in 5s")
-						await asyncio.sleep(5.0)
-					except asyncio.CancelledError:
-						_log.info("DNS_INGESTION shutdown requested")
-						raise
-					except Exception as exc:
-						retry_count += 1
-						delay = min(
-							_DNS_INGESTION_RESTART_BASE_DELAY_SECONDS ** retry_count,
-							_DNS_INGESTION_RESTART_MAX_DELAY_SECONDS,
-						)
-						_log.error(
-							"DNS_INGESTION crashed (retry #%d in %.0fs): %s",
-							retry_count,
-							delay,
-							exc,
-						)
-						await asyncio.sleep(delay)
-			
-			ctx.dns_task = asyncio.create_task(_run_dns_ingestion())
-			app.state.dns_task = ctx.dns_task
-
-		# Store context in app.state for debugging/introspection
-		ctx.scheduler = scheduler
-		app.state.scheduler = scheduler
+		await _phase_bootstrap(ctx)
+		await _phase_dns_config(ctx)
+		await _phase_wireguard_start(ctx)
+		await _phase_dns_start(ctx)
+		await _phase_scheduler(ctx)
+		ctx.dns_task = asyncio.create_task(_phase_dns_ingestion(ctx))
+		app.state.dns_task = ctx.dns_task
 		app.state.is_leader = ctx.is_leader
 		app.state.started_interfaces = ctx.started_interfaces
-
 		_log.info("WireBuddy started successfully (leader=%s, pid=%d)", ctx.is_leader, os.getpid())
-
-		# ─── YIELD (app serving) ────────────────────────────────
 		yield
 	finally:
-		# Cleanup always runs: normal shutdown, SIGTERM/SIGINT, or startup failure
 		await _do_shutdown(ctx)
-
 
 def create_app() -> FastAPI:
 	"""Application factory for WireBuddy."""
@@ -1546,7 +1334,9 @@ def create_app() -> FastAPI:
 		view_rate_limit = getattr(request.state, "view_rate_limit", None)
 		if limiter_instance is not None and view_rate_limit is not None:
 			try:
-				response = limiter_instance._inject_headers(response, view_rate_limit)
+				retry_after = getattr(exc, "retry_after", 60)
+				response.headers["Retry-After"] = str(retry_after)
+				response.headers["X-RateLimit-Limit"] = str(getattr(exc, "limit", ""))
 			except Exception as header_exc:
 				_log.debug("Rate limit header injection failed: %s", header_exc)
 
@@ -1562,7 +1352,8 @@ def create_app() -> FastAPI:
 		return JSONResponse(content={"status": "ok", "version": VERSION})
 
 	@app.get("/ready", include_in_schema=False)
-	async def readiness() -> JSONResponse:
+	@limiter.limit("30/minute")
+	async def readiness(request: Request) -> JSONResponse:
 		"""Readiness probe that verifies database connectivity.
 		
 		Use this for Kubernetes/Docker readiness probes instead of /health.
@@ -1611,6 +1402,9 @@ def create_app() -> FastAPI:
 	app.include_router(acme_api.router, prefix="/api/acme")
 	app.include_router(speedtest_api.router, prefix="/api/wireguard")
 	app.include_router(network_stats_api.router, prefix="/api")
+	app.include_router(backup_api.router, prefix="/api")
+	app.include_router(nodes_sync_api.router, prefix="/api/nodes")
+	app.include_router(nodes_api.router, prefix="/api/nodes")
 	
 	# ─── FRONTEND ROUTES ─────────────────────────────────────
 	app.include_router(frontend_ui.router)
@@ -1669,7 +1463,7 @@ _SWAGGER_HTML = """
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>WireBuddy – API Docs</title>
+  <title>WireBuddy - API Docs</title>
   <!-- Pin exact version and use SRI to prevent CDN compromise / MITM attacks -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui.css"
         integrity="sha384-OiJUz2Or7cLjcY1Eaw2xhMeUY3z5Csh2+HG9WXElrCqx45ddJCnYXN0a/HQQsJtz"

@@ -99,7 +99,7 @@ async function startPasskeyLogin() {
     hideError();
     const originalHtml = passkeyBtn.innerHTML;
     passkeyBtn.disabled = true;
-    passkeyBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Authenticating...';
+    passkeyBtn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-2"></span>Authenticating...';
 
     try {
         // 1. Get authentication options from server

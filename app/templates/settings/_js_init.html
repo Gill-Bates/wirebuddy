@@ -39,7 +39,7 @@
     // Initialize tabs with URL hash support
     async function initTabs() {
         const hash = window.location.hash.replace('#', '');
-        const validTabs = ['general', 'wireguard', 'letsencrypt', 'dns', 'logs'];
+        const validTabs = ['general', 'wireguard', 'letsencrypt', 'dns', 'logs', 'backup'];
 
         if (hash && validTabs.includes(hash)) {
             const tabBtn = document.getElementById(`${hash}-tab`);

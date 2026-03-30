@@ -26,7 +26,7 @@ import os
 import random
 import statistics
 import time
-from typing import Any, AsyncIterator, Callable, TypedDict
+from typing import Any, AsyncGenerator, AsyncIterator, Callable, TypedDict
 from urllib.parse import urlparse
 
 import httpx
@@ -56,9 +56,11 @@ DEFAULT_SERVERS = [
 # Fixed upload test targets. These are intentionally not user-configurable.
 # The endpoints below are public throwaway/speedtest upload sinks intended for
 # high-volume POST traffic rather than generic echo services.
+# Each target specifies its HTTP method: POST (default) or PUT (e.g., Tele2).
+# probe_url is used for RTT measurement (GET-able path, since upload endpoints reject GET).
 DEFAULT_UPLOAD_TARGETS = [
-	{"name": "Tele2 (Anycast Europe)", "url": "http://speedtest.tele2.net/upload.php"},
-	{"name": "Serverius (Netherlands)", "url": "http://speedtest.serverius.net/upload"},
+	{"name": "Serverius (Netherlands)", "url": "http://speedtest.serverius.net/upload", "method": "POST", "probe_url": "http://speedtest.serverius.net/"},
+	{"name": "Tele2 (Anycast Europe)", "url": "http://speedtest.tele2.net/upload.php", "method": "PUT", "probe_url": "http://speedtest.tele2.net/100KB.zip"},
 ]
 
 # Browser-like User-Agent to avoid bot detection
@@ -78,6 +80,8 @@ _UPLOAD_PAYLOAD_VARIANTS = 4  # Rotate payloads to reduce repeated-block bias
 _DEFAULT_CHUNK_SIZE = 262_144  # 256 KB - better throughput for Gbit+ connections
 _REQUEST_TIMEOUT_BUFFER_SECONDS = 10.0
 _BUSY_CHECK_PROBE_BUDGET_SECONDS = 0.5
+_CONNECT_TIMEOUT_SECONDS = 5.0  # TCP+TLS connection timeout
+_BUSY_CHECK_START_TIMEOUT_SECONDS = 8.0  # Must exceed connect timeout + response time
 
 
 class SpeedtestTarget(TypedDict, total=False):
@@ -126,6 +130,15 @@ class BandwidthTester:
 			raise ValueError("chunk_size must be >= 1024")
 
 		self.servers = servers or list(DEFAULT_SERVERS)
+		# Validate server URLs
+		for url in self.servers:
+			if not url or not isinstance(url, str):
+				raise ValueError(f"Invalid server URL: {url!r}")
+			parsed = urlparse(url)
+			if parsed.scheme not in ("http", "https"):
+				raise ValueError(f"Server URL must use http:// or https://: {url}")
+			if not parsed.netloc:
+				raise ValueError(f"Server URL missing hostname: {url}")
 		self.upload_targets = [dict(target) for target in DEFAULT_UPLOAD_TARGETS]
 		self.streams = streams
 		self.test_duration = test_duration
@@ -159,22 +172,49 @@ class BandwidthTester:
 				_log.debug("Progress callback failed: %s", exc)
 
 	@staticmethod
+	def _target_label(target: SpeedtestTarget) -> str:
+		"""Return a human-readable label for a download/upload target."""
+		return target.get("name") or target.get("url") or "unknown"
+
+	@staticmethod
+	def _is_dynamic_endpoint(url: str) -> bool:
+		"""Detect dynamic endpoints that don't support Range requests.
+		
+		Dynamic endpoints (PHP scripts, query-string-driven generators) typically
+		return 404 or ignore Range headers when probed with GET + Range: bytes=0-0.
+		For these, we probe the origin instead of the full path.
+		"""
+		parsed = urlparse(url)
+		# Query parameters indicate a dynamic endpoint
+		if parsed.query:
+			return True
+		# Common script extensions that generate content dynamically
+		path_lower = parsed.path.lower()
+		dynamic_extensions = (".php", ".asp", ".aspx", ".jsp", ".cgi", ".pl")
+		return any(path_lower.endswith(ext) for ext in dynamic_extensions)
+
+	@staticmethod
 	def _origin(url: str) -> str:
 		"""Extract origin (scheme + netloc) from URL."""
 		p = urlparse(url)
 		return f"{p.scheme}://{p.netloc}"
 
-	@staticmethod
-	def _target_label(target: SpeedtestTarget) -> str:
-		"""Return a human-readable label for a download/upload target."""
-		return target.get("name") or target.get("url") or "unknown"
-
 	def _target_probe_url(self, target: SpeedtestTarget) -> str:
-		"""Return the URL used for RTT probing for a target."""
+		"""Return the URL used for RTT probing for a target.
+
+		For static files (CDN-hosted .zip, .bin, .test), probes the full URL so
+		CDN routing for the specific content path is measured.
+		
+		For dynamic endpoints (PHP scripts, query-string URLs), probes the origin
+		only, since these don't support Range requests on the actual endpoint.
+		"""
 		probe_url = str(target.get("probe_url") or "").strip()
 		if probe_url:
 			return probe_url
-		return self._origin(str(target.get("url") or ""))
+		url = str(target.get("url") or "")
+		if self._is_dynamic_endpoint(url):
+			return self._origin(url)
+		return url
 
 	def _busy_check_load_duration(self) -> float:
 		"""Keep synthetic load active long enough for RTT probing to overlap."""
@@ -222,33 +262,21 @@ class BandwidthTester:
 			)
 		return is_busy
 
-	@staticmethod
-	def _is_ip_url(url: str) -> bool:
-		"""Return True when the URL host is an IP literal.
-
-		HTTPS targets with IP literals typically cannot be certificate-verified
-		against the host, so they need a separate unverified client.
-		"""
-		try:
-			parsed = urlparse(url)
-			if not parsed.hostname:
-				return False
-			ipaddress.ip_address(parsed.hostname)
-			return True
-		except ValueError:
-			return False
 
 	async def measure_rtt(
 		self, client: httpx.AsyncClient, url: str
 	) -> RTTResult | None:
 		"""Measure round-trip time to server.
+
+		Probes the exact URL (not just the origin) so CDN routing for the content
+		path is reflected in the result. Uses GET with Range: bytes=0-0 instead of
+		HEAD because some CDNs/load balancers disconnect on HEAD without a response.
 		
-		Uses GET with Range header instead of HEAD because some CDNs/load balancers
-		don't properly support HEAD requests and disconnect without response.
-		Range: bytes=0-0 fetches only 1 byte, minimizing bandwidth while ensuring
-		the server actually processes the request.
+		For 206 responses the 1-byte body is fully drained, allowing connection
+		reuse across samples (stable jitter). For 200 responses (server ignores
+		Range) the connection is closed early; those servers contribute a slightly
+		higher first-probe cost but are still usable for server selection.
 		"""
-		origin = self._origin(url)
 		samples: list[float] = []
 		failures = 0
 
@@ -258,27 +286,31 @@ class BandwidthTester:
 				# Use GET with Range instead of HEAD for better compatibility
 				# Some servers (e.g., Hetzner) disconnect on HEAD without response
 				headers = {"Range": "bytes=0-0"}
-				async with client.stream("GET", origin, headers=headers) as response:
+				async with client.stream("GET", url, headers=headers) as response:
 					if response.status_code >= 400:
 						failures += 1
-						_log.debug("RTT probe HTTP error for %s: %s", origin, response.status_code)
+						_log.debug("RTT probe HTTP error for %s: %s", url, response.status_code)
 						continue
 					async for _chunk in response.aiter_bytes(1):
 						break
 					if response.status_code != 206:
+					# Range header was ignored (200 OK with full body) — close early
+					# to prevent httpx from draining the entire response, which would
+					# block this probe and skew RTT. The context manager will no-op
+					# since we already closed it.
 						await response.aclose()
 				samples.append(time.perf_counter() - start)
 			except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.TimeoutException) as exc:
 				failures += 1
-				_log.debug("RTT probe failed for %s: %s", origin, exc)
+				_log.debug("RTT probe failed for %s: %s", url, exc)
 			except Exception as exc:
 				failures += 1
-				_log.debug("RTT probe failed for %s: %s", origin, exc, exc_info=True)
+				_log.debug("RTT probe failed for %s: %s", url, exc, exc_info=True)
 
 		if not samples:
 			_log.warning(
 				"RTT measurement failed for %s (%d/%d probes failed)",
-				origin, failures, self.rtt_samples
+				url, failures, self.rtt_samples
 			)
 			return None
 
@@ -309,9 +341,11 @@ class BandwidthTester:
 		min_successes = max(2, (self.rtt_samples + 1) // 2)
 
 		# Probe all candidate targets in parallel.
+		# Use unverified_client for all speedtest probes - we only measure bandwidth,
+		# not transferring sensitive data, so expired/invalid certs shouldn't block tests.
 		tasks = [
 			self.measure_rtt(
-				unverified_client if self._is_ip_url(self._target_probe_url(target)) else verified_client,
+				unverified_client,
 				self._target_probe_url(target),
 			)
 			for target in targets
@@ -405,15 +439,17 @@ class BandwidthTester:
 		
 		Re-requests the file if stream ends before duration expires,
 		ensuring accurate measurements even with smaller test files.
+		
+		Uses wall-clock time (not active stream time) to match upload worker
+		behavior and avoid inflating download speeds relative to upload.
 		"""
 		total = 0
 		start = time.perf_counter()
-		active_elapsed = 0.0
 		download_timeout = httpx.Timeout(
-			connect=5.0,
+			connect=_CONNECT_TIMEOUT_SECONDS,
 			read=duration + _REQUEST_TIMEOUT_BUFFER_SECONDS,
-			write=5.0,
-			pool=5.0,
+			write=_CONNECT_TIMEOUT_SECONDS,
+			pool=_CONNECT_TIMEOUT_SECONDS,
 		)
 
 		while time.perf_counter() - start < duration:
@@ -428,14 +464,12 @@ class BandwidthTester:
 						_log.warning("Download worker HTTP error: %s %s", r.status_code, url)
 						break
 
-					stream_start = time.perf_counter()
 					async for chunk in r.aiter_bytes(self.chunk_size):
 						if started_event is not None and not started_event.is_set():
 							started_event.set()
 						total += len(chunk)
 						if time.perf_counter() - start >= duration:
 							break
-					active_elapsed += time.perf_counter() - stream_start
 			except (httpx.HTTPError, OSError, asyncio.TimeoutError) as exc:
 				if started_event is not None and not started_event.is_set():
 					started_event.set()
@@ -444,12 +478,12 @@ class BandwidthTester:
 
 		if started_event is not None and not started_event.is_set():
 			started_event.set()
-		elapsed = active_elapsed
+		elapsed = time.perf_counter() - start
 		throughput_mbit = (total * 8 / elapsed / 1_000_000) if total > 0 and elapsed > 0 else 0.0
 		_log.debug("Download worker: %d bytes in %.2fs (%.1f Mbit/s)", total, elapsed, throughput_mbit)
 		return (total, elapsed)
 
-	async def _upload_stream(self, duration: float) -> AsyncIterator[bytes]:
+	async def _upload_stream(self, duration: float) -> AsyncGenerator[bytes, None]:
 		"""Yield upload chunks until duration expires."""
 		start = time.perf_counter()
 		for payload in itertools.cycle(self._upload_payloads):
@@ -463,11 +497,15 @@ class BandwidthTester:
 		upload_url: str,
 		duration: float,
 		started_event: asyncio.Event | None = None,
+		method: str = "POST",
 	) -> tuple[int, float]:
 		"""Upload worker using streaming (chunked transfer encoding).
 		
-		Single POST with async generator eliminates RTT overhead per chunk,
+		Single request with async generator eliminates RTT overhead per chunk,
 		resulting in accurate bandwidth measurement regardless of latency.
+		
+		Args:
+			method: HTTP method - "POST" (default) or "PUT" (e.g., Tele2).
 		"""
 		total = 0
 		start = time.perf_counter()
@@ -485,12 +523,13 @@ class BandwidthTester:
 		try:
 			# Use dedicated timeout: total duration + buffer for connection/response
 			upload_timeout = httpx.Timeout(
-				connect=5.0,
+				connect=_CONNECT_TIMEOUT_SECONDS,
 				read=duration + _REQUEST_TIMEOUT_BUFFER_SECONDS,
 				write=duration + _REQUEST_TIMEOUT_BUFFER_SECONDS,
-				pool=5.0,
+				pool=_CONNECT_TIMEOUT_SECONDS,
 			)
-			response = await client.post(
+			response = await client.request(
+				method,
 				upload_url,
 				content=counting_stream(),
 				headers={"Content-Type": "application/octet-stream"},
@@ -521,10 +560,10 @@ class BandwidthTester:
 		]
 		await asyncio.gather(*tasks)
 
-	async def upload_warmup(self, client: httpx.AsyncClient, upload_url: str) -> None:
+	async def upload_warmup(self, client: httpx.AsyncClient, upload_url: str, method: str = "POST") -> None:
 		"""Warm up upload connections (TCP slow start affects upload too)."""
 		tasks = [
-			self._upload_worker(client, upload_url, self.warmup_duration)
+			self._upload_worker(client, upload_url, self.warmup_duration, method=method)
 			for _ in range(self.streams)
 		]
 		await asyncio.gather(*tasks)
@@ -565,7 +604,8 @@ class BandwidthTester:
 			self._download_worker(client, url, load_duration, started_event=load_started)
 		)
 		try:
-			await asyncio.wait_for(load_started.wait(), timeout=min(2.0, self.busy_check_duration))
+			# Timeout must exceed connect timeout (5s) + initial response time
+			await asyncio.wait_for(load_started.wait(), timeout=_BUSY_CHECK_START_TIMEOUT_SECONDS)
 		except asyncio.TimeoutError:
 			task.cancel()
 			try:
@@ -577,7 +617,9 @@ class BandwidthTester:
 		loaded = await self.measure_rtt(client, url)
 		try:
 			await task
-		except asyncio.CancelledError:
+		except BaseException:
+			# Catch all exceptions including CancelledError (BaseException in 3.9+)
+			# Worker errors are already logged internally
 			pass
 
 		if loaded is None:
@@ -592,7 +634,7 @@ class BandwidthTester:
 		)
 
 	async def upload_busy_check(
-		self, client: httpx.AsyncClient, upload_url: str
+		self, client: httpx.AsyncClient, upload_url: str, method: str = "POST"
 	) -> bool:
 		"""Check if upload path is busy/congested.
 		
@@ -614,11 +656,12 @@ class BandwidthTester:
 		load_duration = self._busy_check_load_duration()
 		task = asyncio.create_task(
 			self._upload_worker(
-				client, upload_url, load_duration, started_event=load_started
+				client, upload_url, load_duration, started_event=load_started, method=method
 			)
 		)
 		try:
-			await asyncio.wait_for(load_started.wait(), timeout=min(2.0, self.busy_check_duration))
+			# Timeout must exceed connect timeout (5s) + initial response time
+			await asyncio.wait_for(load_started.wait(), timeout=_BUSY_CHECK_START_TIMEOUT_SECONDS)
 		except asyncio.TimeoutError:
 			task.cancel()
 			try:
@@ -634,7 +677,9 @@ class BandwidthTester:
 		# Wait for upload task to complete
 		try:
 			await task
-		except asyncio.CancelledError:
+		except BaseException:
+			# Catch all exceptions including CancelledError (BaseException in 3.9+)
+			# Worker errors are already logged internally
 			pass
 
 		if loaded is None:
@@ -658,9 +703,9 @@ class BandwidthTester:
 		results = await asyncio.gather(*tasks)
 		return self._calculate_throughput(results, label="Download")
 
-	async def upload_test(self, client: httpx.AsyncClient, upload_url: str) -> float:
+	async def upload_test(self, client: httpx.AsyncClient, upload_url: str, method: str = "POST") -> float:
 		tasks = [
-			self._upload_worker(client, upload_url, self.test_duration)
+			self._upload_worker(client, upload_url, self.test_duration, method=method)
 			for _ in range(self.streams)
 		]
 		results = await asyncio.gather(*tasks)
@@ -686,26 +731,19 @@ class BandwidthTester:
 		}
 
 		# Disable HTTP/2 - some speed test servers have issues with it.
-		# Use verified TLS by default; only IP-literal HTTPS URLs fall back to an
-		# unverified client because certificates typically won't match the IP host.
+		# Use verify=False for all speedtest traffic - we're only measuring bandwidth,
+		# not handling sensitive data, so expired/self-signed certs shouldn't block tests.
 		async with httpx.AsyncClient(
-			timeout=timeout,
-			limits=limits,
-			http2=False,
-			verify=True,
-			follow_redirects=True,
-			headers=headers,
-		) as verified_client, httpx.AsyncClient(
 			timeout=timeout,
 			limits=limits,
 			http2=False,
 			verify=False,
 			follow_redirects=True,
 			headers=headers,
-		) as unverified_client:
+		) as client:
 			# Phase 1: Select download server (0-5%)
 			self._emit_progress("server_selection", 0.02, "Selecting download server...")
-			server, rtt, jitter = await self.select_server(verified_client, unverified_client)
+			server, rtt, jitter = await self.select_server(client, client)
 			self._emit_progress(
 				"server_selection", 0.05,
 				f"Download server: {server}",
@@ -715,12 +753,11 @@ class BandwidthTester:
 			# Phase 2: Select upload server (5-10%)
 			self._emit_progress("server_selection", 0.07, "Selecting upload server...")
 			upload_target, upload_rtt, upload_jitter = await self.select_upload_target(
-				verified_client,
-				unverified_client,
+				client,
+				client,
 			)
 			upload_url = str(upload_target["url"])
-			download_client = unverified_client if self._is_ip_url(server) else verified_client
-			upload_client = unverified_client if self._is_ip_url(upload_url) else verified_client
+			upload_method = str(upload_target.get("method", "POST")).upper()
 			self._emit_progress(
 				"server_selection", 0.10,
 				f"Upload server: {self._target_label(upload_target)}",
@@ -738,9 +775,9 @@ class BandwidthTester:
 
 			# Phase 3: Busy check (10-20%)
 			self._emit_progress("busy_check", 0.12, "Checking download path congestion...")
-			download_busy = await self.download_busy_check(download_client, server)
+			download_busy = await self.download_busy_check(client, server)
 			self._emit_progress("busy_check", 0.16, "Checking upload path congestion...")
-			upload_busy = await self.upload_busy_check(upload_client, upload_url)
+			upload_busy = await self.upload_busy_check(client, upload_url, upload_method)
 
 			if download_busy or upload_busy:
 				busy_direction = (
@@ -769,8 +806,8 @@ class BandwidthTester:
 			# Phase 4: Warmup (20-30%)
 			self._emit_progress("warmup", 0.22, "Warming up download and upload connections...")
 			await asyncio.gather(
-				self.warmup(download_client, server),
-				self.upload_warmup(upload_client, upload_url),
+				self.warmup(client, server),
+				self.upload_warmup(client, upload_url, upload_method),
 			)
 			self._emit_progress("warmup", 0.30, "Warmup complete")
 
@@ -790,27 +827,27 @@ class BandwidthTester:
 					f"Run {i + 1}/{self.runs}: Testing download – {server}",
 					{"run": i + 1, "total_runs": self.runs, "phase": "download"}
 				)
-				dl = await self.download_test(download_client, server)
+			dl = await self.download_test(client, server)
 
-				# Upload test
-				upload_server_label = self._target_label(upload_target)
-				self._emit_progress(
-					"testing", run_base + (run_progress_share * 0.5),
-					f"Run {i + 1}/{self.runs}: Testing upload – {upload_server_label}",
-					{"run": i + 1, "total_runs": self.runs, "phase": "upload"}
-				)
-				ul = await self.upload_test(upload_client, upload_url)
+			# Upload test
+			upload_server_label = self._target_label(upload_target)
+			self._emit_progress(
+				"testing", run_base + (run_progress_share * 0.5),
+				f"Run {i + 1}/{self.runs}: Testing upload – {upload_server_label}",
+				{"run": i + 1, "total_runs": self.runs, "phase": "upload"}
+			)
+			ul = await self.upload_test(client, upload_url, upload_method)
 
-				# Exclude failed runs (0.0) from median calculation to avoid skewing results
-				if dl > 0:
-					dl_runs.append(dl)
-				else:
-					_log.warning("Run %d: download test failed, excluding from results", i + 1)
+			# Exclude failed runs (0.0) from median calculation to avoid skewing results
+			if dl > 0:
+				dl_runs.append(dl)
+			else:
+				_log.warning("Run %d: download test failed, excluding from results", i + 1)
 
-				if ul > 0:
-					ul_runs.append(ul)
-				else:
-					_log.warning("Run %d: upload test failed, excluding from results", i + 1)
+			if ul > 0:
+				ul_runs.append(ul)
+			else:
+				_log.warning("Run %d: upload test failed, excluding from results", i + 1)
 
 				run_end_progress = run_base + run_progress_share
 				self._emit_progress(

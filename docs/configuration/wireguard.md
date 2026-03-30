@@ -76,13 +76,17 @@ PersistentKeepalive = 25
 
 ### Preshared Keys
 
-Add post-quantum security layer:
+Post-quantum security is enabled by default:
 
-1. Generate PSK: `wg genpsk`
-2. Add to peer config:
-   ```
-   PresharedKey = <generated-psk>
-   ```
+1. Open **Settings** → **WireGuard**
+2. **Use PresharedKey** is enabled by default
+3. Generate a global preshared key if not already set
+
+Newly created peer configs will include:
+
+```
+PresharedKey = <generated-psk>
+```
 
 ## Firewall Rules
 

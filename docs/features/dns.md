@@ -71,6 +71,17 @@ WireBuddy includes four curated blocklists:
 ??? info "Blocklist Update Schedule"
     WireBuddy automatically updates blocklists weekly. Force update anytime via the **Update Blocklists** button.
 
+### Per-Peer DNS Query Logging
+
+Control DNS query logging for individual peers:
+
+**Peers → Edit Peer → DNS Settings**
+
+- **Enabled (default):** DNS queries from this peer appear in the DNS log
+- **Disabled:** DNS queries are resolved but not logged
+
+This is useful for privacy-sensitive devices or to reduce log volume for high-traffic peers.
+
 ### Per-Peer Blocklist Selection
 
 Assign different blocklist combinations to individual peers:

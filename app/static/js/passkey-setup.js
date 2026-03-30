@@ -75,7 +75,7 @@
         if (loading) {
             btnText.textContent = '';
             const spinner = document.createElement('span');
-            spinner.className = 'spinner-border spinner-border-sm me-1';
+            spinner.className = 'spinner-border spinner-border-sm align-middle me-1';
             spinner.setAttribute('role', 'status');
             spinner.setAttribute('aria-hidden', 'true');
             const label = document.createElement('span');

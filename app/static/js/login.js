@@ -107,7 +107,7 @@ function setBusy(buttonEl, busyText) {
 
     buttonEl.disabled = true;
     const spinner = document.createElement('span');
-    spinner.className = 'spinner-border spinner-border-sm me-2';
+    spinner.className = 'spinner-border spinner-border-sm align-middle me-2';
     spinner.setAttribute('aria-hidden', 'true');
     buttonEl.replaceChildren(spinner, document.createTextNode(busyText));
     buttonEl.setAttribute('aria-busy', 'true');

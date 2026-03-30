@@ -226,6 +226,14 @@ small {
     margin-right: 0;
 }
 
+/* Disabled danger buttons should appear gray, not light red */
+.btn-danger:disabled,
+.btn-danger.disabled {
+    --bs-btn-disabled-color: #fff;
+    --bs-btn-disabled-bg: var(--bs-secondary);
+    --bs-btn-disabled-border-color: var(--bs-secondary);
+}
+
 /* Checkbox and switch touch target improvement (44px minimum) */
 .form-check-input {
     width: 1.25em;
@@ -856,7 +864,6 @@ html body .my-4 {
     height: 10px;
     flex: 0 0 auto;
 }
-
 
 /* ---------- 27. Accessibility — Reduced Motion ---------- */
 

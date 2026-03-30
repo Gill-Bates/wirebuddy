@@ -323,7 +323,18 @@
     let _logsLoadInProgress = false;  // Guard against concurrent loadLogsOnly calls
     let _searchTimer = null;  // Debounce timer for search
     let _scrollRaf = null;  // RAF handle for scroll throttle
+    let _logAutoFillQueued = false;  // Prevent stacked auto-fill checks
     let _logActionState = null; // Active row action context
+
+    /**
+     * Extract raw client IP from a formatted "PeerName (IP)" string.
+     * Returns the IP inside parentheses, or the original value if no match exists.
+     */
+    function _extractClientIp(clientStr) {
+        if (!clientStr) return '';
+        const match = clientStr.match(/\(([^)]+)\)$/);
+        return match ? match[1] : clientStr;
+    }
 
     /**
      * Get comma-separated client IPs for the currently selected peer filter.
@@ -397,8 +408,8 @@
 
         _logActionState = {
             domain: q.domain || '',
-            client: q.client || '',
-            clientName: _peerMap[q.client] || '',
+            client: _extractClientIp(q.client || ''),
+            clientName: _peerMap[_extractClientIp(q.client || '').toLowerCase()] || '',
             blocked,
         };
 
@@ -517,6 +528,33 @@
         return 1440;
     }
 
+    // Client-side cache for DNS trend data (5-minute TTL)
+    const TREND_CACHE_TTL_MS = 5 * 60 * 1000;
+    const TREND_CACHE_KEY = 'wb_dns_trend_cache';
+
+    function getTrendCache(cacheKey) {
+        try {
+            const raw = sessionStorage.getItem(TREND_CACHE_KEY);
+            if (!raw) return null;
+            const cache = JSON.parse(raw);
+            if (cache.key !== cacheKey) return null;
+            if (Date.now() - cache.ts > TREND_CACHE_TTL_MS) return null;
+            return cache.data;
+        } catch { return null; }
+    }
+
+    function setTrendCache(cacheKey, data) {
+        try {
+            sessionStorage.setItem(TREND_CACHE_KEY, JSON.stringify({
+                key: cacheKey, ts: Date.now(), data
+            }));
+        } catch { /* quota exceeded or private mode */ }
+    }
+
+    function clearTrendCache() {
+        try { sessionStorage.removeItem(TREND_CACHE_KEY); } catch {}
+    }
+
     async function loadTrend() {
         // Skip trend loading if ad-blocker is disabled (shows disabled state instead)
         if (!_adblockerEnabled) return;
@@ -526,16 +564,24 @@
             const bucketMinutes = Math.min(1440, Math.max(5, getTrendBucketMinutes()));
             const clientIps = getSelectedPeerClientIps();
             const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
-            let t;
-            try {
-                t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}${clientIpsParam}`);
-            } catch (err) {
-                // Fallback for strict query validation mismatches on older deployments.
-                if (err?.code === 'HTTP_422' && bucketMinutes !== 1440) {
-                    t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=1440${clientIpsParam}`);
-                } else {
-                    throw err;
+
+            // Build cache key from parameters
+            const cacheKey = `${bucketMinutes}|${clientIps || ''}`;
+            let t = getTrendCache(cacheKey);
+
+            if (!t) {
+                // No valid cache, fetch from API
+                try {
+                    t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}${clientIpsParam}`);
+                } catch (err) {
+                    // Fallback for strict query validation mismatches on older deployments.
+                    if (err?.code === 'HTTP_422' && bucketMinutes !== 1440) {
+                        t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=1440${clientIpsParam}`);
+                    } else {
+                        throw err;
+                    }
                 }
+                setTrendCache(cacheKey, t);
             }
             const labels = (t.labels || []).map(_fmtTrendLabel);
             const blocked = t.blocked || [];
@@ -948,7 +994,9 @@
             if (showLoading) {
                 showLogsLoadingState();
             }
-            const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}`);
+            const clientIps = getSelectedPeerClientIps();
+            const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
+            const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}${clientIpsParam}`);
             _logData = data.queries || [];
             _renderedCount = 0;  // Reset for fresh render
             renderLogs();
@@ -1006,10 +1054,13 @@
             peerFilter.appendChild(allOpt);
 
             for (const peer of peers) {
+                // Skip node tunnel peers (inter-node connections)
+                if (peer.is_node_tunnel) continue;
+
                 const name = peer.name || peer.public_key?.substring(0, 8) || 'Unknown';
                 const addrParts = (peer.peer_address || '').split(',');
                 for (const part of addrParts) {
-                    const ip = part.trim().split('/')[0];
+                    const ip = part.trim().split('/')[0].toLowerCase();
                     if (ip) _peerMap[ip] = name;
                 }
 
@@ -1048,7 +1099,7 @@
             _filteredData = _logData.filter(q => {
                 if (filter === 'blocked' && !q.blocked) return false;
                 if (filter === 'allowed' && q.blocked) return false;
-                if (peerFilter !== 'all' && _peerMap[q.client] !== peerFilter) return false;
+                if (peerFilter !== 'all' && (q.client_name || _peerMap[_extractClientIp(q.client || '').toLowerCase()] || '') !== peerFilter) return false;
                 if (search && !(q.domain || '').toLowerCase().includes(search)) return false;
                 return true;
             });
@@ -1132,13 +1183,13 @@
             }
 
             // Add client/peer info below domain
-            const peerName = _peerMap[q.client];
+            const peerName = _peerMap[_extractClientIp(q.client || '').toLowerCase()];
             const clientInfo = document.createElement('span');
             clientInfo.className = 'text-muted log-domain-client';
             if (!isAdmin) {
                 clientInfo.textContent = `***** (*****)`;
             } else {
-                clientInfo.textContent = peerName ? `${peerName} (${q.client})` : (q.client || '');
+                clientInfo.textContent = peerName ? `${peerName} (${_extractClientIp(q.client)})` : (q.client || '');
             }
             domainWrap.appendChild(clientInfo);
             tdDomain.appendChild(domainWrap);
@@ -1158,6 +1209,7 @@
 
         tbody.appendChild(frag);
         _renderedCount = endIdx;
+        queueLogAutoFill();
     }
 
     function debouncedRenderLogs() {
@@ -1172,6 +1224,26 @@
         _isLoadingMore = true;
         renderLogs(true);  // Append mode
         _isLoadingMore = false;
+    }
+
+    function queueLogAutoFill() {
+        const logContainer = document.getElementById('log-table-wrap');
+        if (!logContainer || _logAutoFillQueued || _renderedCount >= _filteredData.length) return;
+        if (logContainer.scrollHeight > logContainer.clientHeight + 1) return;
+
+        _logAutoFillQueued = true;
+        requestAnimationFrame(() => {
+            _logAutoFillQueued = false;
+            const currentLogContainer = document.getElementById('log-table-wrap');
+            if (!currentLogContainer) return;
+
+            if (
+                currentLogContainer.scrollHeight <= currentLogContainer.clientHeight + 1 &&
+                _renderedCount < _filteredData.length
+            ) {
+                loadMoreLogs();
+            }
+        });
     }
 
     // Blocked sections visibility (Top Blocked Domains + Blockrate Trend)
@@ -1378,6 +1450,7 @@
             
             // If enabling, reload blocked sections (they were showing disabled state)
             if (data.enabled) {
+                clearTrendCache();  // Force fresh data after ad-blocker toggle
                 await Promise.allSettled([loadTopDomains(), loadTrend()]);
             }
             
@@ -1475,7 +1548,7 @@
             if (_scrollRaf) return;
             _scrollRaf = requestAnimationFrame(() => {
                 const scrollBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight;
-                if (scrollBottom < 100) {  // Near bottom
+                if (scrollBottom < 150 || logContainer.scrollHeight <= logContainer.clientHeight + 1) {
                     loadMoreLogs();
                 }
                 _scrollRaf = null;
@@ -1522,10 +1595,7 @@
     if (peerFilterSelect) {
         // Load fresh data when peer filter changes - affects logs, trend, and top domains
         peerFilterSelect.addEventListener('change', async () => {
-            // Logs are filtered client-side, re-render immediately
-            renderLogs();
-            // Trend and top-domains need to re-fetch from API with new filter
-            await Promise.allSettled([loadTrend(), loadTopDomains()]);
+            await Promise.allSettled([loadLogsOnly(), loadTrend(), loadTopDomains()]);
         });
     }
 

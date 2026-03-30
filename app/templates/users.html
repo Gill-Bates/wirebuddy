@@ -25,6 +25,26 @@
         white-space: nowrap;
     }
 
+    .users-table td.user-actions-cell .d-flex {
+        flex-wrap: wrap;
+    }
+
+    /* Compact action buttons for table rows (v1.3.3 style) */
+    .users-action-btn {
+        min-width: 0;
+        min-height: 0;
+        padding: 0.2rem 0.35rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+
+    .users-action-btn .material-icons {
+        font-size: 18px;
+        pointer-events: none;
+    }
+
     .users-table .user-identity {
         display: inline-flex;
         align-items: center;
@@ -33,14 +53,9 @@
         flex-wrap: wrap;
     }
 
-    /* Button icon alignment */
     .btn .material-icons {
         vertical-align: middle;
         line-height: 1;
-    }
-
-    .btn-sm .material-icons {
-        font-size: 18px;
     }
 
     /* Last Login structure (all viewports) */
@@ -140,10 +155,6 @@
         .users-table td.user-actions-cell .d-flex {
             display: inline-flex;
             gap: 0.35rem;
-        }
-
-        .users-table td.user-actions-cell .btn {
-            padding: 0.2rem 0.35rem;
         }
     }
 
@@ -264,34 +275,34 @@
                         <td data-label="Created">{{ u['created_at'].strftime('%Y-%m-%d') }}</td>
                         <td data-label="Actions" class="user-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
-                                <button type="button" class="btn btn-sm btn-outline-secondary btn-edit-user"
+                                <button type="button" class="btn btn-sm btn-outline-secondary btn-edit-user users-action-btn"
                                     data-user-id="{{ u['id'] }}"
                                     data-username="{{ u['username'] }}"
                                     data-bs-toggle="tooltip" data-bs-title="Edit User">
-                                    <span class="material-icons" aria-hidden="true">edit</span>
+                                    <span class="material-icons icon-md" aria-hidden="true">edit</span>
                                 </button>
-                                <button type="button" class="btn btn-sm btn-outline-secondary btn-otp-settings"
+                                <button type="button" class="btn btn-sm btn-outline-secondary btn-otp-settings users-action-btn"
                                     id="otp-settings-btn-{{ u['id'] }}"
                                     data-user-id="{{ u['id'] }}"
                                     data-username="{{ u['username'] }}"
                                     data-otp-enabled="{{ 'true' if u['otp_enabled'] else 'false' }}"
                                     data-otp-secret="{{ 'true' if u['otp_secret'] else 'false' }}"
                                     data-bs-toggle="tooltip" data-bs-title="OTP Settings">
-                                    <span class="material-icons" aria-hidden="true">security</span>
+                                    <span class="material-icons icon-md" aria-hidden="true">security</span>
                                 </button>
-                                <button type="button" class="btn btn-sm btn-outline-secondary btn-passkey-settings"
+                                <button type="button" class="btn btn-sm btn-outline-secondary btn-passkey-settings users-action-btn"
                                     id="passkey-settings-btn-{{ u['id'] }}"
                                     data-user-id="{{ u['id'] }}"
                                     data-username="{{ u['username'] }}"
                                     data-bs-toggle="tooltip" data-bs-title="Passkey Settings">
-                                    <span class="material-icons" aria-hidden="true">fingerprint</span>
+                                    <span class="material-icons icon-md" aria-hidden="true">fingerprint</span>
                                 </button>
                                 {% if u['id'] != user['id'] %}
-                                <button type="button" class="btn btn-sm btn-outline-danger btn-delete-user"
+                                <button type="button" class="btn btn-sm btn-outline-danger btn-delete-user users-action-btn"
                                     data-user-id="{{ u['id'] }}"
                                     data-username="{{ u['username'] }}"
                                     data-bs-toggle="tooltip" data-bs-title="Delete User">
-                                    <span class="material-icons" aria-hidden="true">delete</span>
+                                    <span class="material-icons icon-md" aria-hidden="true">delete</span>
                                 </button>
                                 {% endif %}
                             </div>
@@ -690,6 +701,8 @@
         }
         
         submitBtn.disabled = true;
+        const originalText = submitBtn.innerHTML;
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-1" aria-label="Processing"></span> Changing...';
         try {
             const data = { new_password: newPassword };
             if (isSelf) {
@@ -717,7 +730,10 @@
         } catch (error) {
             wbAlert('Failed to change password: ' + error.message, 'danger');
         } finally {
-            if (!isSelf) submitBtn.disabled = false;
+            if (!isSelf) {
+                submitBtn.innerHTML = originalText;
+                submitBtn.disabled = false;
+            }
         }
     });
 
@@ -866,7 +882,21 @@
     // Initialize tooltips on desktop only (touch devices don't benefit)
     if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
         document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
-            new bootstrap.Tooltip(el, { trigger: 'hover focus' });
+            if (el.dataset.tooltipInitialized) return;
+            if (!el.isConnected || !el.getAttribute) return;
+            const existingInstance = bootstrap.Tooltip.getInstance(el);
+            if (existingInstance) {
+                existingInstance.dispose();
+            }
+            try {
+                new bootstrap.Tooltip(el, {
+                    container: document.body,
+                    trigger: 'hover focus',
+                });
+                el.dataset.tooltipInitialized = 'true';
+            } catch (err) {
+                console.error('Failed to initialize tooltip:', err, el);
+            }
         });
     }
 
@@ -1186,9 +1216,9 @@
                             </div>
                         </div>
                         ${isCurrentUser ? `
-                            <button type="button" class="btn btn-sm btn-outline-danger btn-delete-passkey" 
+                            <button type="button" class="btn btn-sm btn-outline-danger btn-delete-passkey users-action-btn"
                                 data-passkey-id="${pk.id}" title="Delete passkey">
-                                <span class="material-icons" style="font-size: 18px;">delete</span>
+                                <span class="material-icons icon-md" aria-hidden="true">delete</span>
                             </button>
                         ` : ''}
                     `;
@@ -1232,7 +1262,7 @@
         
         btn.disabled = true;
         btn.setAttribute('aria-busy', 'true');
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Registering...';
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-1"></span> Registering...';
         
         // Create AbortController for timeout
         const abortController = new AbortController();

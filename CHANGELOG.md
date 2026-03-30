@@ -1,18 +1,27 @@
-## [1.3.3] - 2026-03-23
+## [1.4.0] - 2026-03-30
 
-- ``New`` The dashboard now also displays the network load for each interface
-- ``Fix`` Design optimized for iPad display
+- ``New`` Node mode is here! 🎉 WIrebuddy can now run on multiple instances at the same time!
+- ``New`` DNS logging can be enabled or disabled for each peer
+- ``New`` Added the ``tzdata`` package to support time zones
+- ``New`` PSK is now enabled by default
+- ``Fix`` Python dependencies updated
 - ``Fix`` Fixed an issue with the test server selection for the speed test
-- ``Fix`` The DNS ad blocker could be launched even if Unbound wasn't installed
-- ``Fix`` The changes to the downstream and upstream values were not saved
-- ``Fix`` In some cases, the peer name was not displayed in the DNS logs
-- ``Fix`` If a DNS blocklist has been disabled, the filter has not been updated
+- ``Fix`` Improved caching behavior for graphs
 - ``Fix`` Several design improvements in the GUI
 
 
 <details markdown="1">
 <summary>Previous versions...</summary>
 
+## [1.3.3] - 2026-03-23
+
+- ``New`` The dashboard now also displays the network load for each interface
+- ``Fix`` Design optimized for iPad display
+- ``Fix`` The DNS ad blocker could be launched even if Unbound wasn't installed
+- ``Fix`` The changes to the downstream and upstream values were not saved
+- ``Fix`` In some cases, the peer name was not displayed in the DNS logs
+- ``Fix`` If a DNS blocklist has been disabled, the filter has not been updated
+- ``Fix`` Several design improvements in the GUI
 
 ## [1.3.2] - 2026-03-16
 

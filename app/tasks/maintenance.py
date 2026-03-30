@@ -27,6 +27,10 @@ __all__ = [
 ]
 
 
+# SQLite busy timeout in seconds - how long to wait for a database lock
+_SQLITE_BUSY_TIMEOUT_SECONDS = 10.0
+
+
 async def sqlite_maintenance() -> None:
 	"""Periodic SQLite maintenance: WAL checkpoint, analyze, optimize.
 	
@@ -45,7 +49,7 @@ async def sqlite_maintenance() -> None:
 		return
 	
 	try:
-		async with aiosqlite.connect(db_path) as db:
+		async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
 			# Force WAL checkpoint to prevent unbounded WAL growth
 			# TRUNCATE mode: checkpoints and truncates WAL file to 0 bytes
 			await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -76,7 +80,7 @@ async def sqlite_integrity_check() -> None:
 		return
 	
 	try:
-		async with aiosqlite.connect(db_path) as db:
+		async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
 			cursor = await db.execute("PRAGMA integrity_check")
 			result = await cursor.fetchone()
 			
@@ -185,7 +189,7 @@ async def cleanup_stale_sessions() -> None:
 		return
 	
 	try:
-		async with aiosqlite.connect(db_path) as db:
+		async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
 			# Delete expired auth tokens
 			cursor = await db.execute(
 				"DELETE FROM auth_tokens WHERE expires_at < ?",

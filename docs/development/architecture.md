@@ -53,6 +53,49 @@ graph TB
     G --> L
 ```
 
+## Multi-Node Architecture
+
+WireBuddy supports deploying multiple WireGuard nodes across different geographic locations while maintaining centralized management. See [Multi-Node Deployment](../features/multi-node.md) for details.
+
+```mermaid
+graph TB
+    subgraph "Master Server"
+        M[WireBuddy Master]
+        DB[(Database)]
+        UI[Web UI]
+    end
+    
+    subgraph "Node Servers"
+        N1[Node 1<br/>Frankfurt]
+        N2[Node 2<br/>New York]
+        N3[Node 3<br/>Tokyo]
+    end
+    
+    Admin[Admin] --> UI
+    UI --> M
+    M --> DB
+    
+    N1 -.Config Sync.-> M
+    N2 -.Config Sync.-> M
+    N3 -.Config Sync.-> M
+    
+    C1[Clients EU] --> N1
+    C2[Clients US] --> N2
+    C3[Clients Asia] --> N3
+    
+    style M fill:#4CAF50
+    style N1 fill:#2196F3
+    style N2 fill:#2196F3
+    style N3 fill:#2196F3
+```
+
+**Key Components:**
+
+- **Master**: Full application with web UI, API, and database
+- **Nodes**: Lightweight WireGuard-only servers with sync daemon
+- **Sync Protocol**: HTTPS with mutual certificate authentication
+- **Config Distribution**: Pull-based model with version tracking
+
 ## Technology Stack
 
 | Component | Technology | Purpose |

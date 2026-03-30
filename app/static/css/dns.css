@@ -262,8 +262,10 @@
 }
 
 .log-card-body {
+    flex: 1 1 0;
     min-height: 0;
     position: relative;
+    overflow: hidden;
 }
 
 /* Removed - log-search is now in card header */
@@ -345,8 +347,13 @@
 }
 
 #log-table-wrap {
-    max-height: 340px;
-    overflow-y: auto;
+    flex: 1 1 0;
+    min-height: 0;
+    max-height: 100%;
+    overflow-x: auto;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 1rem;
 }
 
 #trend-chart-wrap {
@@ -395,9 +402,6 @@
         max-height: 120px;
     }
 
-    #log-table-wrap {
-        max-height: 660px;
-    }
 }
 
 .dns-ctrl-btn {
@@ -488,8 +492,9 @@
     }
 
     #log-table-wrap {
-        max-height: 460px;
-        overflow-x: hidden;
+        max-height: 60vh;
+        overflow-x: auto;
+        overflow-y: auto !important;
     }
 
     .log-table {

@@ -38,6 +38,14 @@ WireBuddy is a powerful, user-friendly web interface for managing WireGuard VPN 
 
     [:octicons-arrow-right-24: WireGuard Features](features/wireguard.md)
 
+-   :material-earth:{ .lg .middle } **Multi-Node Deployment**
+
+    ---
+
+    Deploy WireGuard servers across multiple countries/regions with centralized management, automatic config sync, and per-peer node assignment.
+
+    [:octicons-arrow-right-24: Multi-Node Guide](features/multi-node.md)
+
 -   :material-dns:{ .lg .middle } **DNS Ad-Blocking**
 
     ---
@@ -107,13 +115,16 @@ docker compose up -d
 ## Screenshots
 
 === "Dashboard"
-    ![Dashboard](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen1.png)
+    ![Dashboard](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_1.png)
     
 === "Peer Management"
-    ![Peers](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen2.png)
+    ![Peers](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_2.png)
     
 === "DNS Ad-Blocker"
-    ![DNS](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen3.png)
+    ![DNS](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_3.png)
+
+=== "Settings"
+    ![Settings](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_4.png)
 
 ## Why WireBuddy?
 
