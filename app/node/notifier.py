@@ -173,3 +173,47 @@ async def notify_restart(node_id: str) -> int:
     _log.info("Sent restart signal to %d SSE client(s) for node %s", notified, node_id)
     return notified
 
+
+async def notify_node_removed(node_id: str) -> int:
+    """Notify a node that it has been removed from management.
+    
+    The node daemon will clear its persisted state and exit cleanly.
+    Exit code signals Docker/systemd to NOT auto-restart.
+    
+    Returns the number of clients notified.
+    """
+    async with _lock:
+        queues = _node_queues.get(node_id, set()).copy()
+    
+    if not queues:
+        _log.warning(
+            "No SSE clients connected for node %s — cannot send removal signal. "
+            "Node will detect removal on next heartbeat (401) and clean up.",
+            node_id
+        )
+        return 0
+    
+    event = (
+        f"event: node_removed\n"
+        f"data: removed\n\n"
+    )
+    
+    notified = 0
+    for queue in queues:
+        try:
+            queue.put_nowait(event)
+            notified += 1
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                queue.put_nowait(event)
+                notified += 1
+            except asyncio.QueueFull:
+                _log.error("Failed to enqueue removal event for node %s", node_id)
+    
+    _log.info("Sent node_removed signal to %d SSE client(s) for node %s", notified, node_id)
+    return notified
+

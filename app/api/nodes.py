@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ..api.auth import require_admin
 from ..api.response import ok_response
+from ..node.notifier import notify_node_removed
 from ..db.sqlite_nodes import (
 	create_node,
 	delete_node,
@@ -318,7 +319,7 @@ def update_node_endpoint(
 
 
 @router.delete("/{node_id}")
-def delete_node_endpoint(
+async def delete_node_endpoint(
 	node_id: str,
 	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_admin),
@@ -329,6 +330,12 @@ def delete_node_endpoint(
 		raise HTTPException(status_code=404, detail="Node not found")
 
 	assigned_peer_count = get_peer_count_for_node(conn, node_id)
+
+	# Send removal signal to node before deleting (must happen while SSE auth still works)
+	notified = await notify_node_removed(node_id)
+	if notified > 0:
+		_log.info("Sent removal signal to %d SSE client(s) for node %s", notified, node_id)
+
 	if not delete_node(conn, node_id):
 		raise HTTPException(status_code=404, detail="Node not found")
 	_log.info("Node deleted: id=%s (by user=%s)", node_id, user["username"])

@@ -963,8 +963,25 @@ async def _phase_bootstrap(ctx: LifespanContext) -> None:
 	if key_mismatch:
 		_log.critical("Aborting startup: WIREBUDDY_SECRET_KEY does not match database encryption key")
 		await _do_shutdown(ctx)
+		# Clean exit without stack trace - os._exit bypasses exception handling
 		import sys
-		sys.exit(1)
+		print(
+			"\n"
+			"╔══════════════════════════════════════════════════════════════════════╗\n"
+			"║  FATAL: WIREBUDDY_SECRET_KEY mismatch                                ║\n"
+			"║                                                                      ║\n"
+			"║  The configured secret key does not match the key used to encrypt   ║\n"
+			"║  this database. Continuing would cause data corruption.             ║\n"
+			"║                                                                      ║\n"
+			"║  Solutions:                                                          ║\n"
+			"║  1. Set the correct WIREBUDDY_SECRET_KEY in docker-compose.yml      ║\n"
+			"║  2. Or delete data/wirebuddy.db to start fresh (loses all data)     ║\n"
+			"╚══════════════════════════════════════════════════════════════════════╝\n",
+			file=sys.stderr,
+			flush=True,
+		)
+		import os
+		os._exit(1)
 	from .db import tsdb
 	tsdb.init_tsdb(cfg.tsdb_dir)
 	if ctx.is_leader:

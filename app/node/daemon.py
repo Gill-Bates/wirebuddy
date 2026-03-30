@@ -411,6 +411,7 @@ async def main() -> None:
 
 		# Start SSE listener for instant push notifications
 		config_changed_event = asyncio.Event()
+		node_removed_event = asyncio.Event()  # Set when 401 auth failures indicate node removal
 		sse_task = asyncio.create_task(
 			_sse_listener(
 				master_url,
@@ -419,17 +420,26 @@ async def main() -> None:
 				tls_verify,
 				config_changed_event,
 				shutdown_event,
+				node_removed_event,
 			)
 		)
 
 		# Sync loop
 		backoff = 1
+		consecutive_401_failures = 0  # Track auth failures to detect removal
 		last_saved_state = dict(node_state)  # Track for write guard
 		try:
 			while not shutdown_event.is_set():
+				# Check if node was removed (via SSE 401 or explicit event)
+				if node_removed_event.is_set():
+					_log.warning("Node removal detected (authentication failure) — clearing state")
+					_clear_enrollment_state()
+					break
+				
 				_log.debug("Sync loop: iteration start")
 				heartbeat_failed = False
 				config_failed = False
+				auth_failed = False  # Track 401 errors specifically
 				
 				# Check if SSE triggered a config change
 				config_push_received = config_changed_event.is_set()
@@ -468,10 +478,20 @@ async def main() -> None:
 						wg_dump,  # Pass pre-sampled dump (avoid double syscall)
 					)
 					_log.debug("Sync loop: heartbeat OK")
+					consecutive_401_failures = 0  # Reset on success
 				except httpx.HTTPStatusError as exc:
 					detail = _extract_error_detail(exc.response)
 					_log.warning("Heartbeat failed: HTTP %d (detail: %s)", exc.response.status_code, detail)
 					heartbeat_failed = True
+					if exc.response.status_code == 401:
+						auth_failed = True
+						consecutive_401_failures += 1
+						if consecutive_401_failures >= 3:
+							_log.error(
+								"Multiple consecutive 401 errors (%d) — node likely removed from master",
+								consecutive_401_failures
+							)
+							node_removed_event.set()
 				except httpx.HTTPError as exc:
 					_log.warning("Heartbeat failed: %s", exc)
 					heartbeat_failed = True
@@ -704,6 +724,7 @@ async def _sse_listener(
 	tls_verify: bool | str,
 	config_changed_event: asyncio.Event,
 	shutdown_event: asyncio.Event,
+	node_removed_event: asyncio.Event,
 ) -> None:
 	"""Listen for Server-Sent Events from master for instant config push.
 	
@@ -713,10 +734,14 @@ async def _sse_listener(
 	When a restart_requested event is received, sets shutdown_event
 	to trigger a graceful restart (Docker/systemd will restart the daemon).
 	
+	When a node_removed event is received, clears enrollment state and
+	sets shutdown_event to trigger a clean exit.
+	
 	Uses a persistent client to avoid TLS handshake overhead on reconnect.
 	"""
 	reconnect_delay = 1
 	max_reconnect_delay = 60
+	consecutive_401_count = 0  # Track auth failures
 	
 	# Create client outside loop to reuse connections and avoid TLS overhead
 	async with httpx.AsyncClient(
@@ -741,6 +766,7 @@ async def _sse_listener(
 					
 					_log.info("SSE event stream connected — config changes will be pushed instantly")
 					reconnect_delay = 1  # Reset on successful connection
+					consecutive_401_count = 0  # Reset on successful connection
 					
 					# Trigger immediate config pull when SSE reconnects
 					# This ensures quick recovery when master comes back online
@@ -766,12 +792,23 @@ async def _sse_listener(
 								_log.warning("Received restart_requested event from master — initiating graceful shutdown")
 								shutdown_event.set()
 								return
+							elif event_type == "node_removed":
+								_log.warning("Received node_removed event from master — clearing state and exiting")
+								# Clear enrollment state so node doesn't keep trying to reconnect
+								_clear_enrollment_state()
+								shutdown_event.set()
+								return
 							event_type = None  # Reset after processing
 						
 			except httpx.HTTPStatusError as exc:
 				if exc.response.status_code == 401:
+					consecutive_401_count += 1
 					detail = _extract_error_detail(exc.response)
-					_log.error("SSE authentication failed: %s", detail or "Invalid API secret")
+					_log.error("SSE authentication failed: %s (consecutive: %d)", detail or "Invalid API secret", consecutive_401_count)
+					if consecutive_401_count >= 3:
+						_log.error("Multiple SSE auth failures — node likely removed from master")
+						node_removed_event.set()
+						return
 				else:
 					detail = _extract_error_detail(exc.response)
 					_log.warning("SSE HTTP error: %d (detail: %s)", exc.response.status_code, detail or "unknown")
