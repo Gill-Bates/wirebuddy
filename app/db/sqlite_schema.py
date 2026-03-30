@@ -267,7 +267,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				enrolled_at timestamp,
 				created_at timestamp NOT NULL,
 				config_version TEXT,
-				metadata TEXT
+				metadata TEXT,
+				tunnel_peer_id INTEGER REFERENCES peers(id) ON DELETE SET NULL,
+				last_metric_seq INTEGER
 			)
 			"""
 		)
@@ -356,6 +358,13 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 	if "tunnel_peer_id" not in nodes_columns:
 		_log.info("Migrating nodes table: adding tunnel_peer_id for Node→Master DNS tunnel")
 		conn.execute("ALTER TABLE nodes ADD COLUMN tunnel_peer_id INTEGER REFERENCES peers(id) ON DELETE SET NULL")
+
+	# Migration: Add last_metric_seq to nodes (for reliable metric delivery idempotency)
+	cursor = conn.execute("PRAGMA table_info(nodes)")
+	nodes_columns = {row[1] for row in cursor.fetchall()}
+	if "last_metric_seq" not in nodes_columns:
+		_log.info("Migrating nodes table: adding last_metric_seq for reliable metric delivery")
+		conn.execute("ALTER TABLE nodes ADD COLUMN last_metric_seq INTEGER")
 
 
 def ensure_default_admin(conn: sqlite3.Connection) -> None:

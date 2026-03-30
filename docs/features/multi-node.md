@@ -359,11 +359,53 @@ This ensures:
 !!! note "Internet Traffic"
     Only DNS traffic is tunnelled to the master. Regular internet traffic exits directly through the node's outbound connection.
 
-### Metrics & Logs
+### Metrics & Reliable Delivery
 
-Nodes **do not collect metrics** or DNS logs. All telemetry happens on the master (for master's local peers only).
+Nodes collect WireGuard peer statistics (rx/tx bytes, handshakes) and deliver them to the master using a **reliable queue** with **at-least-once delivery** guarantees.
 
-Remote peer statistics require out-of-band collection (future feature).
+#### Architecture
+
+```mermaid
+sequenceDiagram
+    participant WG as WireGuard
+    participant Q as Local Queue<br/>(SQLite)
+    participant N as Node Daemon
+    participant M as Master API
+
+    loop Every 30s
+        WG->>N: wg show dump
+        N->>Q: Enqueue metrics (seq 1,2,3...)
+        N->>M: POST /heartbeat + batch (seq_from=1, seq_to=3)
+        M->>M: Write to TSDB (skip duplicates via last_metric_seq)
+        M-->>N: Response: acked_seq=3
+        N->>Q: DELETE WHERE seq <= 3
+    end
+```
+
+#### Delivery Guarantees
+
+| Guarantee | How |
+|-----------|-----|
+| **At-least-once** | Metrics remain in local queue until master ACKs |
+| **Idempotency** | Master tracks `last_metric_seq` per node, skips duplicates |
+| **Crash-safe** | SQLite WAL mode survives node/master restarts |
+| **Offline-tolerant** | Queue grows up to 10,000 metrics during disconnection |
+
+#### Queue Configuration
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| `MAX_QUEUE_SIZE` | 10,000 | Oldest metrics dropped on overflow |
+| `MAX_BATCH_SIZE` | 500 | Metrics per heartbeat |
+| Database | `data/metrics_queue.db` | SQLite with WAL mode |
+
+#### Metric Types
+
+- **`peer_traffic`**: `rx_bytes`, `tx_bytes` per peer (cumulative counters)
+- **`peer_handshake`**: `latest_handshake`, `endpoint` per peer
+
+!!! info "TSDB Integration"
+    Metrics from nodes are written to the master's TSDB under the peer's public key, appearing alongside local peer metrics in the dashboard traffic charts.
 
 ## Troubleshooting
 
@@ -466,6 +508,40 @@ docker restart wirebuddy-node
 - Restart node: `docker restart wirebuddy-node-frankfurt`
 - Node will fetch latest config on startup
 
+### Node Metrics Not Appearing in Dashboard
+
+**Symptom:** Remote peers show "Last seen" but no traffic data in charts.
+
+**Check node logs for ACK:**
+
+```bash
+docker logs wirebuddy-node --tail 100 | grep -i ack
+```
+
+Expected: `ACK received: deleted X metrics (up to seq Y)`
+
+**If no ACK:**
+
+- Master endpoint may be timing out
+- Check disk space on node (`data/metrics_queue.db` grows during disconnection)
+
+**Check queue stats:**
+
+```bash
+docker exec wirebuddy-node python -c "
+from pathlib import Path
+from app.node.metrics_queue import init_queue, get_queue_stats, close_queue
+conn = init_queue(Path('/app/data'))
+print(get_queue_stats(conn))
+close_queue(conn)
+"
+```
+
+**Force flush:**
+
+- Restart node to trigger immediate heartbeat + ACK
+- Check master TSDB for peer data: `ls data/tsdb/peers/`
+
 ## API Reference
 
 ### Admin Endpoints (Master)
@@ -515,7 +591,7 @@ See [API Reference](../api/endpoints.md) for full documentation.
 Features planned for future releases:
 
 - [ ] Node-to-master VPN tunnel with automatic setup
-- [ ] Remote peer metrics collection (agent on nodes)
+- [x] ~~Remote peer metrics collection (agent on nodes)~~ *Implemented via reliable queue*
 - [ ] Health checks with automatic failover
 - [ ] DNS resolver on nodes (optional)
 - [ ] Multi-master with Raft consensus

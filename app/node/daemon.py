@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import signal
 import sys
 from pathlib import Path
@@ -314,9 +315,10 @@ async def main() -> None:
 				if attempt >= ENROLLMENT_RETRY_ATTEMPTS:
 					break
 
-				delay = min(2 ** (attempt - 1), 30)
+				# Exponential backoff with jitter to avoid thundering herd
+				delay = min(2 ** (attempt - 1), 30) * random.uniform(0.8, 1.2)
 				_log.warning(
-					"Enrollment attempt %d/%d failed, retrying in %ds",
+					"Enrollment attempt %d/%d failed, retrying in %.1fs",
 					attempt,
 					ENROLLMENT_RETRY_ATTEMPTS,
 					delay,
@@ -422,6 +424,7 @@ async def main() -> None:
 
 		# Sync loop
 		backoff = 1
+		last_saved_state = dict(node_state)  # Track for write guard
 		try:
 			while not shutdown_event.is_set():
 				_log.debug("Sync loop: iteration start")
@@ -434,7 +437,8 @@ async def main() -> None:
 					config_changed_event.clear()
 					_log.info("Config push received via SSE — pulling config immediately")
 				
-				# Sample WireGuard stats and enqueue locally (before heartbeat)
+				# Sample WireGuard stats ONCE per iteration (avoid double syscalls)
+				wg_dump: dict[str, Any] = {}
 				try:
 					wg_dump = await asyncio.to_thread(get_wg_dump)
 					if wg_dump:
@@ -461,6 +465,7 @@ async def main() -> None:
 						api_secret,
 						cert_fingerprint,
 						metrics_queue_conn,
+						wg_dump,  # Pass pre-sampled dump (avoid double syscall)
 					)
 					_log.debug("Sync loop: heartbeat OK")
 				except httpx.HTTPStatusError as exc:
@@ -491,7 +496,10 @@ async def main() -> None:
 						_log.debug("Sync loop: config updated to %s...", new_version[:16])
 						current_config_version = new_version
 						node_state["config_version"] = current_config_version
-						_save_state(node_state)
+						# Write guard: only save if state actually changed
+						if node_state != last_saved_state:
+							_save_state(node_state)
+							last_saved_state = dict(node_state)
 					else:
 						_log.debug("Sync loop: config unchanged")
 
@@ -507,9 +515,10 @@ async def main() -> None:
 					config_failed = True
 
 				if heartbeat_failed or config_failed:
-					backoff = min(backoff * 2, 60)  # Cap at 60s, not 300s
+					# Exponential backoff with jitter
+					backoff = min(backoff * 2, 60) * random.uniform(0.8, 1.2)
 					if config_failed:
-						_log.warning("Retrying config pull in %ds", backoff)
+						_log.warning("Retrying config pull in %.1fs", backoff)
 				else:
 					backoff = 1  # Reset on success
 
@@ -615,6 +624,7 @@ async def _push_heartbeat(
 	api_secret: str,
 	cert_fingerprint: str,
 	metrics_queue_conn: "sqlite3.Connection",
+	wg_dump: dict[str, Any] | None = None,
 ) -> None:
 	"""Push heartbeat with queued metrics to master.
 	
@@ -622,6 +632,10 @@ async def _push_heartbeat(
 	1. Get pending metrics batch from local queue
 	2. Send to master with sequence numbers
 	3. Delete only metrics that master ACKed
+	
+	Args:
+		wg_dump: Pre-sampled WireGuard dump (avoids double syscall if caller
+		         already sampled). If None, will sample fresh.
 	"""
 	import sqlite3
 	from ..utils.version import get_version
@@ -640,13 +654,13 @@ async def _push_heartbeat(
 			metrics_batch["seq_to"],
 		)
 
-	# Also send live peer stats for immediate visibility (handshakes, endpoints)
-	# These are separate from the queued traffic metrics
-	try:
-		wg_dump = await asyncio.to_thread(get_wg_dump)
-	except Exception as exc:
-		_log.debug("Failed to collect wg dump for heartbeat: %s", exc)
-		wg_dump = {}
+	# Use pre-sampled WG dump or sample fresh if not provided
+	if wg_dump is None:
+		try:
+			wg_dump = await asyncio.to_thread(get_wg_dump)
+		except Exception as exc:
+			_log.debug("Failed to collect wg dump for heartbeat: %s", exc)
+			wg_dump = {}
 
 	peer_stats = [
 		{
@@ -698,17 +712,20 @@ async def _sse_listener(
 	
 	When a restart_requested event is received, sets shutdown_event
 	to trigger a graceful restart (Docker/systemd will restart the daemon).
+	
+	Uses a persistent client to avoid TLS handshake overhead on reconnect.
 	"""
 	reconnect_delay = 1
 	max_reconnect_delay = 60
 	
-	while not shutdown_event.is_set():
-		try:
-			_log.info("Connecting to master SSE event stream...")
-			async with httpx.AsyncClient(
-				timeout=None,  # SSE connections are long-lived
-				verify=tls_verify,
-			) as sse_client:
+	# Create client outside loop to reuse connections and avoid TLS overhead
+	async with httpx.AsyncClient(
+		timeout=None,  # SSE connections are long-lived
+		verify=tls_verify,
+	) as sse_client:
+		while not shutdown_event.is_set():
+			try:
+				_log.info("Connecting to master SSE event stream...")
 				async with sse_client.stream(
 					"GET",
 					f"{master_url}/api/nodes/events",
@@ -751,32 +768,34 @@ async def _sse_listener(
 								return
 							event_type = None  # Reset after processing
 						
-		except httpx.HTTPStatusError as exc:
-			if exc.response.status_code == 401:
-				detail = _extract_error_detail(exc.response)
-				_log.error("SSE authentication failed: %s", detail or "Invalid API secret")
-			else:
-				detail = _extract_error_detail(exc.response)
-				_log.warning("SSE HTTP error: %d (detail: %s)", exc.response.status_code, detail or "unknown")
-		except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
-			_log.warning("SSE connection error: %s", exc)
-		except asyncio.CancelledError:
-			_log.debug("SSE listener cancelled")
-			return
-		except Exception as exc:
-			_log.exception("Unexpected SSE error: %s", exc)
-		
-		if shutdown_event.is_set():
-			break
-		
-		_log.info("SSE reconnecting in %ds...", reconnect_delay)
-		try:
-			await asyncio.wait_for(shutdown_event.wait(), timeout=reconnect_delay)
-			break  # Shutdown requested
-		except asyncio.TimeoutError:
-			pass
-		
-		reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+			except httpx.HTTPStatusError as exc:
+				if exc.response.status_code == 401:
+					detail = _extract_error_detail(exc.response)
+					_log.error("SSE authentication failed: %s", detail or "Invalid API secret")
+				else:
+					detail = _extract_error_detail(exc.response)
+					_log.warning("SSE HTTP error: %d (detail: %s)", exc.response.status_code, detail or "unknown")
+			except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
+				_log.warning("SSE connection error: %s", exc)
+			except asyncio.CancelledError:
+				_log.debug("SSE listener cancelled")
+				return
+			except Exception as exc:
+				_log.exception("Unexpected SSE error: %s", exc)
+			
+			if shutdown_event.is_set():
+				break
+			
+			# Exponential backoff with jitter
+			jittered_delay = reconnect_delay * random.uniform(0.8, 1.2)
+			_log.info("SSE reconnecting in %.1fs...", jittered_delay)
+			try:
+				await asyncio.wait_for(shutdown_event.wait(), timeout=jittered_delay)
+				break  # Shutdown requested
+			except asyncio.TimeoutError:
+				pass
+			
+			reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
 
 
 async def _pull_config(

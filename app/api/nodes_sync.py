@@ -299,13 +299,37 @@ async def enroll_node_endpoint(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _get_node_last_seq(conn: sqlite3.Connection, node_id: str) -> int | None:
+	"""Get the last processed metric sequence for a node (idempotency)."""
+	row = conn.execute(
+		"SELECT last_metric_seq FROM nodes WHERE id = ?", (node_id,)
+	).fetchone()
+	return row["last_metric_seq"] if row and row["last_metric_seq"] else None
+
+
+def _set_node_last_seq(conn: sqlite3.Connection, node_id: str, seq: int) -> None:
+	"""Update the last processed metric sequence for a node."""
+	conn.execute(
+		"UPDATE nodes SET last_metric_seq = ? WHERE id = ?",
+		(seq, node_id)
+	)
+	conn.commit()
+
+
 @router.post("/heartbeat")
 def heartbeat(
 	body: HeartbeatRequest,
 	node: sqlite3.Row = Depends(get_current_node),
 	conn: sqlite3.Connection = Depends(get_conn),
+	tsdb_dir: Path = Depends(get_tsdb_dir),
 ):
-	"""Receive heartbeat with metrics from a remote node."""
+	"""Receive heartbeat with metrics from a remote node.
+	
+	Implements reliable at-least-once delivery:
+	- Accepts batched metrics with sequence numbers
+	- Skips already-processed sequences (idempotency)
+	- Returns acked_seq to confirm receipt
+	"""
 	node_id = node["id"]
 
 	metadata = {}
@@ -342,7 +366,62 @@ def heartbeat(
 			except Exception:
 				_log.warning("Failed to persist peer stats from node %s", node_id, exc_info=True)
 
-	return ok_response(message="Heartbeat received")
+	# Process queued metrics batch (reliable delivery with idempotency)
+	acked_seq: int | None = None
+	if body.metrics_batch and body.metrics_batch.metrics:
+		batch = body.metrics_batch
+		last_seq = _get_node_last_seq(conn, node_id)
+		
+		# Filter out already-processed metrics (idempotency)
+		new_metrics = [
+			m for m in batch.metrics
+			if last_seq is None or m.seq > last_seq
+		]
+		
+		skipped = len(batch.metrics) - len(new_metrics)
+		if skipped > 0:
+			_log.debug(
+				"Node %s: skipped %d already-processed metrics (last_seq=%s)",
+				node_id, skipped, last_seq
+			)
+		
+		# Write new metrics to TSDB
+		if new_metrics:
+			try:
+				points_written = 0
+				for m in new_metrics:
+					if m.type == "peer_traffic":
+						public_key = m.data.get("public_key")
+						rx_bytes = m.data.get("rx_bytes", 0)
+						tx_bytes = m.data.get("tx_bytes", 0)
+						if public_key and (rx_bytes > 0 or tx_bytes > 0):
+							tsdb.append_point(tsdb_dir, peer_key=public_key, metric="rx_bytes", value=rx_bytes)
+							tsdb.append_point(tsdb_dir, peer_key=public_key, metric="tx_bytes", value=tx_bytes)
+							points_written += 2
+					elif m.type == "peer_handshake":
+						public_key = m.data.get("public_key")
+						latest_handshake = m.data.get("latest_handshake")
+						if public_key and latest_handshake:
+							tsdb.append_point(tsdb_dir, peer_key=public_key, metric="latest_handshake", value=latest_handshake)
+							points_written += 1
+				
+				_log.debug(
+					"Node %s: wrote %d TSDB points from %d metrics (seq %s-%s)",
+					node_id, points_written, len(new_metrics),
+					new_metrics[0].seq, new_metrics[-1].seq
+				)
+			except Exception:
+				_log.warning("Failed to write TSDB metrics from node %s", node_id, exc_info=True)
+		
+		# Update last processed sequence (ACK)
+		if batch.seq_to is not None:
+			_set_node_last_seq(conn, node_id, batch.seq_to)
+			acked_seq = batch.seq_to
+
+	return ok_response(
+		data={"acked_seq": acked_seq},
+		message="Heartbeat received"
+	)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

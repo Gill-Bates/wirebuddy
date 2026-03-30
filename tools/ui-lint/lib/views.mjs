@@ -37,5 +37,16 @@ export function expandViewDefinitions(viewDefs) {
     );
 }
 
+function expandLoginFailureViewDefinitions(viewDefs) {
+    // Keep login-error coverage within the auth limiter budget:
+    // one real login plus these four invalid attempts still stays at 5/minute.
+    return viewDefs.flatMap((def) =>
+        THEMES.flatMap((theme) => [
+            { ...def, name: `desktop-${def.name}-${theme}`, device: 'desktop', theme },
+            { ...def, name: `mobile-${def.name}-${theme}`, device: 'mobile', theme },
+        ])
+    );
+}
+
 export const VIEWS = expandViewDefinitions(VIEW_DEFS);
-export const LOGIN_FAILURE_VIEWS = expandViewDefinitions(LOGIN_FAILURE_VIEW_DEFS);
+export const LOGIN_FAILURE_VIEWS = expandLoginFailureViewDefinitions(LOGIN_FAILURE_VIEW_DEFS);
