@@ -1,3 +1,8 @@
+//
+// tools/ui-lint/lib/browser-utils.mjs
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
 import fs from 'node:fs';
 import path from 'node:path';
 

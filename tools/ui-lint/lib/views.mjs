@@ -1,3 +1,8 @@
+//
+// tools/ui-lint/lib/views.mjs
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
 import { THEMES } from './constants.mjs';
 
 export const LOGIN_FAILURE_VIEW_DEFS = [

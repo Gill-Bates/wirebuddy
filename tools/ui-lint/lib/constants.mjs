@@ -1,3 +1,8 @@
+//
+// tools/ui-lint/lib/constants.mjs
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
 // Shared constants for the UI lint tool.
 
 export const VERTICAL_GAP_MIN = 22;

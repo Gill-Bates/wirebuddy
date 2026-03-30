@@ -37,10 +37,13 @@ from ..db.sqlite_nodes import (
 )
 from ..db.sqlite_peers import allocate_peer_ip
 from ..db.sqlite_peers_mutations import create_peer
+from pathlib import Path
+
 from ..utils.config import get_config
 from ..utils.crypto import hash_token, new_token
-from ..utils.deps import get_conn
+from ..utils.deps import get_conn, get_tsdb_dir
 from ..utils.network import parse_ip_str
+from ..db import tsdb
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
 from ..api.wireguard_utils import generate_keypair, run_wg_command
 from ..db.sqlite_runtime import transaction
@@ -133,6 +136,21 @@ class PeerStatEntry(BaseModel):
 	transfer_tx: int = 0
 
 
+class MetricEntry(BaseModel):
+	"""Single metric from node's queue."""
+	seq: int = Field(..., ge=1, description="Sequence number")
+	ts: str = Field(..., max_length=64, description="ISO 8601 timestamp")
+	type: str = Field(..., max_length=32, description="Metric type: peer_traffic | peer_handshake")
+	data: dict = Field(..., description="Metric payload")
+
+
+class MetricsBatch(BaseModel):
+	"""Batch of metrics from node's queue."""
+	seq_from: int | None = Field(None, description="First sequence in batch")
+	seq_to: int | None = Field(None, description="Last sequence in batch")
+	metrics: list[MetricEntry] = Field(default_factory=list, max_length=500)
+
+
 class HeartbeatRequest(BaseModel):
 	"""Node heartbeat payload."""
 
@@ -140,6 +158,7 @@ class HeartbeatRequest(BaseModel):
 	interfaces_status: dict | None = Field(None, description="WG interface up/down status")
 	version: str | None = Field(None, max_length=32, description="WireBuddy version running on node")
 	peer_stats: list[PeerStatEntry] | None = Field(None, description="WireGuard peer stats from wg dump", max_length=1000)
+	metrics_batch: MetricsBatch | None = Field(None, description="Queued metrics batch for reliable delivery")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

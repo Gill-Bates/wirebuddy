@@ -31,6 +31,15 @@ import httpx
 from ..utils.banner import print_banner_once
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
 from .cert import clear_node_cert, ensure_node_cert
+from .metrics_queue import (
+	init_queue,
+	close_queue,
+	enqueue_peer_traffic,
+	get_pending_batch,
+	ack_up_to_seq,
+	serialize_batch_for_api,
+	get_queue_stats,
+)
 from .wg_manager import apply_config, get_wg_dump, has_running_interfaces, shutdown_all_interfaces
 
 _log = logging.getLogger(__name__)
@@ -267,6 +276,18 @@ async def main() -> None:
 		"node_name": node_name,
 	}
 
+	# Initialize metrics queue for reliable delivery
+	metrics_queue_conn = init_queue(DATA_DIR)
+	queue_stats = get_queue_stats(metrics_queue_conn)
+	if queue_stats["pending"] > 0:
+		_log.info(
+			"Metrics queue: %d pending metrics (seq %s-%s, oldest: %s)",
+			queue_stats["pending"],
+			queue_stats["min_seq"],
+			queue_stats["max_seq"],
+			queue_stats["oldest_ts"],
+		)
+
 	async with httpx.AsyncClient(
 		timeout=30.0,
 		verify=tls_verify,
@@ -413,6 +434,24 @@ async def main() -> None:
 					config_changed_event.clear()
 					_log.info("Config push received via SSE — pulling config immediately")
 				
+				# Sample WireGuard stats and enqueue locally (before heartbeat)
+				try:
+					wg_dump = await asyncio.to_thread(get_wg_dump)
+					if wg_dump:
+						peer_stats = [
+							{
+								"public_key": pub_key,
+								"endpoint": stats.get("endpoint"),
+								"latest_handshake": stats.get("latest_handshake"),
+								"transfer_rx": stats.get("transfer_rx", 0),
+								"transfer_tx": stats.get("transfer_tx", 0),
+							}
+							for pub_key, stats in wg_dump.items()
+						]
+						await asyncio.to_thread(enqueue_peer_traffic, metrics_queue_conn, peer_stats)
+				except Exception as exc:
+					_log.debug("Failed to sample/enqueue WG metrics: %s", exc)
+				
 				try:
 					_log.debug("Sync loop: sending heartbeat...")
 					await _push_heartbeat(
@@ -421,6 +460,7 @@ async def main() -> None:
 						node_id,
 						api_secret,
 						cert_fingerprint,
+						metrics_queue_conn,
 					)
 					_log.debug("Sync loop: heartbeat OK")
 				except httpx.HTTPStatusError as exc:
@@ -510,6 +550,8 @@ async def main() -> None:
 				pass
 
 	# Graceful shutdown
+	_log.info("Closing metrics queue...")
+	close_queue(metrics_queue_conn)
 	_log.info("Shutting down WireGuard interfaces...")
 	await asyncio.to_thread(shutdown_all_interfaces)
 	_log.info("Node daemon stopped")
@@ -572,28 +614,50 @@ async def _push_heartbeat(
 	node_id: str,
 	api_secret: str,
 	cert_fingerprint: str,
+	metrics_queue_conn: "sqlite3.Connection",
 ) -> None:
-	"""Push heartbeat with WireGuard stats to master."""
+	"""Push heartbeat with queued metrics to master.
+	
+	Implements reliable at-least-once delivery:
+	1. Get pending metrics batch from local queue
+	2. Send to master with sequence numbers
+	3. Delete only metrics that master ACKed
+	"""
+	import sqlite3
 	from ..utils.version import get_version
 	uptime = _get_uptime()
 
-	# Collect live WireGuard peer stats for remote peer visibility
+	# Get pending metrics batch from queue
+	pending_batch = await asyncio.to_thread(get_pending_batch, metrics_queue_conn)
+	metrics_batch = serialize_batch_for_api(pending_batch)
+	
+	pending_count = len(pending_batch)
+	if pending_count > 0:
+		_log.debug(
+			"Heartbeat: sending %d metrics (seq %s-%s)",
+			pending_count,
+			metrics_batch["seq_from"],
+			metrics_batch["seq_to"],
+		)
+
+	# Also send live peer stats for immediate visibility (handshakes, endpoints)
+	# These are separate from the queued traffic metrics
 	try:
 		wg_dump = await asyncio.to_thread(get_wg_dump)
 	except Exception as exc:
 		_log.debug("Failed to collect wg dump for heartbeat: %s", exc)
 		wg_dump = {}
 
-	# Convert to serialisable list: [{public_key, endpoint, latest_handshake, transfer_rx, transfer_tx}]
-	peer_stats = []
-	for pub_key, stats in wg_dump.items():
-		peer_stats.append({
+	peer_stats = [
+		{
 			"public_key": pub_key,
 			"endpoint": stats.get("endpoint"),
 			"latest_handshake": stats.get("latest_handshake"),
 			"transfer_rx": stats.get("transfer_rx", 0),
 			"transfer_tx": stats.get("transfer_tx", 0),
-		})
+		}
+		for pub_key, stats in wg_dump.items()
+	]
 
 	resp = await client.post(
 		f"{master_url}/api/nodes/heartbeat",
@@ -602,9 +666,21 @@ async def _push_heartbeat(
 			"uptime": uptime,
 			"version": get_version(),
 			"peer_stats": peer_stats,
+			"metrics_batch": metrics_batch,
 		},
 	)
 	resp.raise_for_status()
+	
+	# Handle ACK: delete confirmed metrics from local queue
+	try:
+		data = resp.json()
+		acked_seq = data.get("data", {}).get("acked_seq")
+		if acked_seq is not None:
+			deleted = await asyncio.to_thread(ack_up_to_seq, metrics_queue_conn, acked_seq)
+			if deleted > 0:
+				_log.debug("Heartbeat ACK: master confirmed %d metrics (up to seq %d)", deleted, acked_seq)
+	except Exception as exc:
+		_log.warning("Failed to process heartbeat ACK: %s", exc)
 
 
 async def _sse_listener(

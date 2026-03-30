@@ -1,3 +1,8 @@
+//
+// tools/ui-lint/lib/findings.mjs
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
 import {
     ABOUT_MOBILE_STACK_GAP_VARIANCE_TOLERANCE_PX,
     CLICK_TARGET_MIN_SIZE_PX,
