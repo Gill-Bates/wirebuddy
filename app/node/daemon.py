@@ -617,7 +617,7 @@ async def _enroll(
 	Returns:
 		EnrollResult on success or if properly enrolled, or on failure.
 	"""
-	_log.info("Enrolling with master...")
+	_log.info("Enrolling with master at %s ...", master_url)
 	try:
 		resp = await client.post(
 			f"{master_url}/api/nodes/enroll",

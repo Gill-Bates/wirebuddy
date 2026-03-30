@@ -26,6 +26,17 @@ Requirements
 * ``nf_conntrack`` kernel module (loaded automatically by iptables/NAT)
 * ``nf_conntrack_acct=1`` for byte counters (enabled at init)
 * ``NET_ADMIN`` capability (already present in Docker compose)
+
+Limitations
+~~~~~~~~~~~
+* **Connection key collisions**: Connections are tracked by 5-tuple
+  (proto, src, sport, dst, dport). This can produce incorrect deltas if:
+  - Multiple clients share the same tuple via NAT
+  - Port reuse occurs over time
+  - ICMP traffic (no ports) collides
+
+* **Lost deltas on teardown**: Connections that disappear between samples
+  lose their final delta. This affects short-lived flows (DNS, HTTP bursts).
 """
 
 from __future__ import annotations
@@ -78,12 +89,14 @@ ASN_TRAFFIC_KEY = "__asn_traffic__"
 ASN_TRAFFIC_METRIC = "snapshot"
 
 # ---------------------------------------------------------------------------
-# Pre-compiled regexes (#8 — compile once, not per-line)
+# Pre-compiled regexes
 # ---------------------------------------------------------------------------
 
 # Single-pass key=value parser — extracts all fields in one scan
 _RE_KEYVAL = re.compile(r"(\w+)=(\S+)")
-_RE_PROTO = re.compile(r"\b(tcp|udp|sctp|dccp|icmp|icmpv6)\b", re.I)
+
+# Known protocols (first token in conntrack line)
+_KNOWN_PROTOS = frozenset({"tcp", "udp", "sctp", "dccp", "icmp", "icmpv6"})
 
 # ---------------------------------------------------------------------------
 # Module state
@@ -100,6 +113,7 @@ _acct_warned = False   # log "accounting disabled" only once per process
 # Subnet cache — protected by its own lock to avoid blocking _ct_lock during I/O
 _wg_lock = threading.Lock()
 _wg_subnets_cache: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+_wg_gateway_ips_cache: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
 _wg_subnets_ts = 0.0
 
 _WG_SUBNET_TTL = 60.0  # re-detect subnets every 60 s
@@ -142,25 +156,34 @@ def init_conntrack_accounting() -> bool:
 # WireGuard subnet detection
 # ---------------------------------------------------------------------------
 
-def _get_wireguard_subnets() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
-	"""Detect IP subnets on active WireGuard interfaces.
+def _get_wireguard_subnets() -> tuple[
+	list[ipaddress.IPv4Network | ipaddress.IPv6Network],
+	set[ipaddress.IPv4Address | ipaddress.IPv6Address],
+]:
+	"""Detect IP subnets and gateway IPs on active WireGuard interfaces.
 
 	Tries three methods in order:
 	1. ``ip -j addr show type wireguard`` (kernel WireGuard, modern iproute2)
 	2. ``wg show interfaces`` + ``ip addr show dev <iface>`` (text fallback)
 	3. SQLite database (always works — covers userspace WireGuard / Docker)
 
+	Returns:
+		Tuple of (subnets, gateway_ips). Gateway IPs are the server's own
+		addresses on the WireGuard interfaces — these should be excluded
+		from peer traffic counting.
+
 	Result is cached for ``_WG_SUBNET_TTL`` seconds and protected by
 	``_wg_lock``.
 	"""
-	global _wg_subnets_cache, _wg_subnets_ts
+	global _wg_subnets_cache, _wg_gateway_ips_cache, _wg_subnets_ts
 
 	now = time.monotonic()
 	with _wg_lock:
 		if _wg_subnets_cache and (now - _wg_subnets_ts) < _WG_SUBNET_TTL:
-			return list(_wg_subnets_cache)
+			return list(_wg_subnets_cache), set(_wg_gateway_ips_cache)
 
 		subnets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+		gateway_ips: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
 
 		# Method 1: JSON output (iproute2 ≥ 4.14, kernel WireGuard only)
 		try:
@@ -177,6 +200,7 @@ def _get_wireguard_subnets() -> list[ipaddress.IPv4Network | ipaddress.IPv6Netwo
 							if local and prefixlen is not None:
 								try:
 									subnets.append(ipaddress.ip_network(f"{local}/{prefixlen}", strict=False))
+									gateway_ips.add(ipaddress.ip_address(local))
 								except ValueError:
 									pass
 			else:
@@ -185,8 +209,12 @@ def _get_wireguard_subnets() -> list[ipaddress.IPv4Network | ipaddress.IPv6Netwo
 					result.returncode,
 					(result.stderr or "").strip(),
 				)
-		except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
-			pass
+		except FileNotFoundError:
+			_log.debug("COUNTRY_TRAFFIC 'ip' command not found")
+		except subprocess.TimeoutExpired:
+			_log.debug("COUNTRY_TRAFFIC 'ip -j addr show' timed out")
+		except json.JSONDecodeError as exc:
+			_log.debug("COUNTRY_TRAFFIC 'ip -j addr show' returned invalid JSON: %s", exc)
 
 		# Method 2: text fallback — get interface names, then addresses
 		if not subnets:
@@ -204,7 +232,11 @@ def _get_wireguard_subnets() -> list[ipaddress.IPv4Network | ipaddress.IPv6Netwo
 						if addr_result.returncode == 0:
 							for m in re.finditer(r"inet6?\s+(\S+)", addr_result.stdout):
 								try:
-									subnets.append(ipaddress.ip_network(m.group(1), strict=False))
+									addr_str = m.group(1)
+									subnets.append(ipaddress.ip_network(addr_str, strict=False))
+									# Extract gateway IP (without prefix)
+									ip_part = addr_str.split("/")[0]
+									gateway_ips.add(ipaddress.ip_address(ip_part))
 								except ValueError:
 									pass
 						else:
@@ -229,7 +261,7 @@ def _get_wireguard_subnets() -> list[ipaddress.IPv4Network | ipaddress.IPv6Netwo
 		# may not be available or may return empty results.
 		if not subnets:
 			try:
-				subnets = _get_subnets_from_db()
+				subnets, gateway_ips = _get_subnets_from_db()
 				if subnets:
 					_log.debug(
 						"COUNTRY_TRAFFIC subnet detection via DB fallback: %s",
@@ -239,24 +271,30 @@ def _get_wireguard_subnets() -> list[ipaddress.IPv4Network | ipaddress.IPv6Netwo
 				_log.debug("COUNTRY_TRAFFIC DB subnet fallback failed: %s", exc)
 
 		_wg_subnets_cache = subnets
+		_wg_gateway_ips_cache = gateway_ips
 		_wg_subnets_ts = now
-		return list(subnets)
+		return list(subnets), set(gateway_ips)
 
 
-def _get_subnets_from_db() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+def _get_subnets_from_db() -> tuple[
+	list[ipaddress.IPv4Network | ipaddress.IPv6Network],
+	set[ipaddress.IPv4Address | ipaddress.IPv6Address],
+]:
 	"""Read WireGuard interface addresses from the SQLite database.
 
-	Returns a list of IP networks derived from the ``address`` and
-	``address6`` columns of the ``interfaces`` table.
+	Returns:
+		Tuple of (subnets, gateway_ips) derived from the ``address`` and
+		``address6`` columns of the ``interfaces`` table.
 	"""
 	import sqlite3
 	from .config import get_config
 
 	cfg = get_config()
 	if not cfg.db_path.exists():
-		return []
+		return [], set()
 
 	subnets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+	gateway_ips: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
 	try:
 		with sqlite3.connect(str(cfg.db_path), timeout=3) as conn:
 			conn.row_factory = sqlite3.Row
@@ -277,13 +315,16 @@ def _get_subnets_from_db() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network
 									net,
 								)
 							subnets.append(net)
+							# Extract gateway IP (without prefix)
+							ip_part = addr.split("/")[0]
+							gateway_ips.add(ipaddress.ip_address(ip_part))
 						except ValueError:
 							pass
 	except (sqlite3.Error, OSError) as exc:
 		_log.debug("COUNTRY_TRAFFIC DB query failed: %s", exc)
-		return []
+		return [], set()
 
-	return subnets
+	return subnets, gateway_ips
 
 
 # ---------------------------------------------------------------------------
@@ -291,10 +332,19 @@ def _get_subnets_from_db() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network
 # ---------------------------------------------------------------------------
 
 def _read_conntrack_lines() -> list[str]:
-	"""Read conntrack entries from /proc or the conntrack tool."""
+	"""Read conntrack entries from /proc or the conntrack tool.
+
+	Streams /proc/net/nf_conntrack to avoid memory spikes on large systems.
+	"""
+	lines: list[str] = []
+
 	# Primary: /proc pseudo-file (no extra package needed)
 	try:
-		lines = _CONNTRACK_PROC.read_text().splitlines()
+		with _CONNTRACK_PROC.open() as f:
+			for line in f:
+				stripped = line.rstrip("\n")
+				if stripped:
+					lines.append(stripped)
 		if lines:
 			return lines
 	except (OSError, PermissionError) as exc:
@@ -313,8 +363,10 @@ def _read_conntrack_lines() -> list[str]:
 			result.returncode,
 			(result.stderr or "").strip(),
 		)
-	except (FileNotFoundError, subprocess.TimeoutExpired):
-		pass
+	except FileNotFoundError:
+		_log.debug("COUNTRY_TRAFFIC conntrack tool not found")
+	except subprocess.TimeoutExpired:
+		_log.debug("COUNTRY_TRAFFIC conntrack command timed out")
 
 	return []
 
@@ -325,6 +377,15 @@ def _parse_line(line: str) -> dict[str, Any] | None:
 	Extracts the two direction blocks (original + reply) using a single-pass
 	key=value parser instead of 5 separate regex scans.
 	"""
+	# Extract protocol from first token (faster than regex)
+	tokens = line.split(None, 3)  # Split into max 4 parts
+	proto = "other"
+	for tok in tokens[:3]:  # Protocol is in first 3 tokens
+		tok_lower = tok.lower()
+		if tok_lower in _KNOWN_PROTOS:
+			proto = tok_lower
+			break
+
 	# Single scan: extract all key=value pairs
 	kv_pairs = _RE_KEYVAL.findall(line)
 	
@@ -351,9 +412,6 @@ def _parse_line(line: str) -> dict[str, Any] | None:
 	if len(srcs) < 2 or len(dsts) < 2 or len(bytes_vals) < 2:
 		return None
 
-	proto_m = _RE_PROTO.search(line)
-	proto = proto_m.group(1).lower() if proto_m else "other"
-
 	try:
 		return {
 			"proto": proto,
@@ -368,39 +426,63 @@ def _parse_line(line: str) -> dict[str, Any] | None:
 		return None
 
 
-def _aggregate_traffic_by_country(
+def _aggregate_traffic(
 	deltas: list[tuple[str, str, int, int]],
 	peer_ip_map: dict[str, str] | None,
-) -> dict[str, dict[str, Any]]:
-	"""Aggregate traffic deltas by destination country.
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+	"""Aggregate traffic deltas by destination country and ASN in a single pass.
+
+	Caches GeoIP and ASN lookups per destination IP to avoid redundant lookups
+	when the same IP appears multiple times.
 
 	Args:
 		deltas: List of (dst_ip, src_ip, delta_tx, delta_rx) tuples.
 		peer_ip_map: Optional mapping from WireGuard IP to peer name.
 
 	Returns:
-		Dict mapping country code to {"rx", "tx", "peers", "by_peer"}.
+		Tuple of (country_agg, asn_agg).
 	"""
 	country_agg: dict[str, dict[str, Any]] = {}
+	asn_agg: dict[str, dict[str, Any]] = {}
+
+	# Per-sample caches to avoid redundant lookups
+	geo_cache: dict[str, str] = {}  # dst_ip → country_code
+	asn_cache: dict[str, tuple[str, str]] = {}  # dst_ip → (asn_key, asn_name)
 
 	for dst_ip, src_ip, delta_tx, delta_rx in deltas:
 		peer_name = peer_ip_map.get(src_ip) if peer_ip_map else None
 
-		# Country lookup
-		try:
-			geo = geolocate_ip(dst_ip)
-			cc = (geo.get("country") if geo else None) or "XX"
-		except Exception:
-			_log.debug("COUNTRY_TRAFFIC GeoIP lookup failed for %s", dst_ip, exc_info=True)
-			cc = "XX"
+		# Country lookup (cached)
+		if dst_ip in geo_cache:
+			cc = geo_cache[dst_ip]
+		else:
+			try:
+				geo = geolocate_ip(dst_ip)
+				cc = (geo.get("country") if geo else None) or "XX"
+			except Exception:
+				_log.debug("COUNTRY_TRAFFIC GeoIP lookup failed for %s", dst_ip, exc_info=True)
+				cc = "XX"
+			geo_cache[dst_ip] = cc
 
+		# ASN lookup (cached)
+		if dst_ip in asn_cache:
+			asn_key, asn_name = asn_cache[dst_ip]
+		else:
+			try:
+				asn_num, asn_org = lookup_asn(dst_ip)
+				asn_key = str(asn_num) if asn_num else "0"
+				asn_name = asn_org or "Unknown"
+			except Exception:
+				_log.debug("ASN_TRAFFIC ASN lookup failed for %s", dst_ip, exc_info=True)
+				asn_key = "0"
+				asn_name = "Unknown"
+			asn_cache[dst_ip] = (asn_key, asn_name)
+
+		# Aggregate by country
 		if cc not in country_agg:
 			country_agg[cc] = {"rx": 0, "tx": 0, "peers": set(), "by_peer": {}}
-
 		country_agg[cc]["rx"] += delta_rx
 		country_agg[cc]["tx"] += delta_tx
-
-		# Per-peer traffic attribution
 		if peer_name:
 			country_agg[cc]["peers"].add(peer_name)
 			if peer_name not in country_agg[cc]["by_peer"]:
@@ -408,44 +490,11 @@ def _aggregate_traffic_by_country(
 			country_agg[cc]["by_peer"][peer_name]["rx"] += delta_rx
 			country_agg[cc]["by_peer"][peer_name]["tx"] += delta_tx
 
-	return country_agg
-
-
-def _aggregate_traffic_by_asn(
-	deltas: list[tuple[str, str, int, int]],
-	peer_ip_map: dict[str, str] | None,
-) -> dict[str, dict[str, Any]]:
-	"""Aggregate traffic deltas by destination ASN.
-
-	Args:
-		deltas: List of (dst_ip, src_ip, delta_tx, delta_rx) tuples.
-		peer_ip_map: Optional mapping from WireGuard IP to peer name.
-
-	Returns:
-		Dict mapping ASN number (as string) to {"rx", "tx", "name", "peers", "by_peer"}.
-	"""
-	asn_agg: dict[str, dict[str, Any]] = {}
-
-	for dst_ip, src_ip, delta_tx, delta_rx in deltas:
-		peer_name = peer_ip_map.get(src_ip) if peer_ip_map else None
-
-		# ASN lookup
-		try:
-			asn_num, asn_org = lookup_asn(dst_ip)
-			asn_key = str(asn_num) if asn_num else "0"
-			asn_name = asn_org or "Unknown"
-		except Exception:
-			_log.debug("ASN_TRAFFIC ASN lookup failed for %s", dst_ip, exc_info=True)
-			asn_key = "0"
-			asn_name = "Unknown"
-
+		# Aggregate by ASN
 		if asn_key not in asn_agg:
 			asn_agg[asn_key] = {"rx": 0, "tx": 0, "name": asn_name, "peers": set(), "by_peer": {}}
-
 		asn_agg[asn_key]["rx"] += delta_rx
 		asn_agg[asn_key]["tx"] += delta_tx
-
-		# Per-peer traffic attribution
 		if peer_name:
 			asn_agg[asn_key]["peers"].add(peer_name)
 			if peer_name not in asn_agg[asn_key]["by_peer"]:
@@ -453,7 +502,7 @@ def _aggregate_traffic_by_asn(
 			asn_agg[asn_key]["by_peer"][peer_name]["rx"] += delta_rx
 			asn_agg[asn_key]["by_peer"][peer_name]["tx"] += delta_tx
 
-	return asn_agg
+	return country_agg, asn_agg
 
 
 def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -465,13 +514,16 @@ def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 	"""
 	if not ip.is_global:
 		return False
-	
+
 	# Fast path: IPv6 has no exclusions
 	if isinstance(ip, ipaddress.IPv6Address):
 		return True
-	
-	# IPv4: check exclusions
-	return not any(ip in net for net in _EXTRA_NON_PUBLIC_V4)
+
+	# IPv4: check exclusions (explicit loop avoids generator overhead)
+	for net in _EXTRA_NON_PUBLIC_V4:
+		if ip in net:
+			return False
+	return True
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +580,7 @@ def sample_country_traffic(
 
 	# Subnet detection uses its own lock; must happen *before* _ct_lock
 	# to keep lock ordering consistent and avoid holding _ct_lock during I/O.
-	subnets = _get_wireguard_subnets()
+	subnets, gateway_ips = _get_wireguard_subnets()
 	if not subnets:
 		_log.debug("COUNTRY_TRAFFIC no WireGuard subnets detected")
 		return {}, {}
@@ -557,6 +609,9 @@ def sample_country_traffic(
 				continue
 
 			if not any(src_addr in net for net in subnets):
+				continue
+			# Exclude server's own gateway IPs (e.g. 10.0.0.1) — only count peer traffic
+			if src_addr in gateway_ips:
 				continue
 			if not _is_public_ip(dst_addr):
 				continue
@@ -600,18 +655,19 @@ def sample_country_traffic(
 
 	# GeoIP + ASN aggregation intentionally outside _ct_lock
 	# to minimize lock hold time during potentially expensive lookups.
-	country_agg = _aggregate_traffic_by_country(deltas, peer_ip_map)
-	asn_agg = _aggregate_traffic_by_asn(deltas, peer_ip_map)
+	# Uses per-sample caching to avoid redundant lookups for same destination IP.
+	country_agg, asn_agg = _aggregate_traffic(deltas, peer_ip_map)
 
 	# Convert sets to sorted lists for JSON serialisation (outside lock)
+	# Also sort by_peer keys for consistent ordering in TSDB comparisons
 	country_result = {
 		cc: {
 			"rx": info["rx"],
 			"tx": info["tx"],
 			"peers": sorted(info["peers"]),
-			"by_peer": info["by_peer"],
+			"by_peer": dict(sorted(info["by_peer"].items())),
 		}
-		for cc, info in country_agg.items()
+		for cc, info in sorted(country_agg.items())
 	}
 
 	asn_result = {
@@ -620,9 +676,9 @@ def sample_country_traffic(
 			"tx": info["tx"],
 			"name": info["name"],
 			"peers": sorted(info["peers"]),
-			"by_peer": info["by_peer"],
+			"by_peer": dict(sorted(info["by_peer"].items())),
 		}
-		for asn_key, info in asn_agg.items()
+		for asn_key, info in sorted(asn_agg.items())
 	}
 
 	return country_result, asn_result
@@ -634,7 +690,7 @@ def reset_state() -> None:
 	Acquires both locks in consistent order to prevent race conditions.
 	Intended for testing or startup paths where sampling is not running concurrently.
 	"""
-	global _ct_initialized, _ct_prev, _wg_subnets_cache, _wg_subnets_ts, _acct_warned
+	global _ct_initialized, _ct_prev, _wg_subnets_cache, _wg_gateway_ips_cache, _wg_subnets_ts, _acct_warned
 
 	# Acquire both locks in consistent order (wg_lock → ct_lock)
 	with _wg_lock:
@@ -643,4 +699,5 @@ def reset_state() -> None:
 			_ct_initialized = False
 			_acct_warned = False
 			_wg_subnets_cache = []
+			_wg_gateway_ips_cache = set()
 			_wg_subnets_ts = 0.0
