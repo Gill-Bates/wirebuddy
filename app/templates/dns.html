@@ -14,11 +14,22 @@
 <div class="wb-page-header flex-wrap gap-2 dns-header">
     <h2 class="page-title"><span class="material-icons me-2">dns</span>DNS Ad-Blocker</h2>
     <div class="d-flex gap-2 align-items-center flex-wrap dns-toolbar">
-        <!-- Global Peer Filter -->
-        <label class="visually-hidden" for="peer-filter">Filter by peer</label>
-        <select id="peer-filter" class="form-select form-select-sm" aria-label="Filter by peer">
-            <option value="all">All Peers</option>
-        </select>
+        <div class="dns-quickfilters">
+            <!-- Global Peer Filter -->
+            <label class="visually-hidden" for="peer-filter">Filter by peer</label>
+            <select id="peer-filter" class="form-select form-select-sm dns-peer-filter-select" aria-label="Filter by peer">
+                <option value="all">All Peers</option>
+            </select>
+            <!-- Time Range Filter -->
+            <label class="visually-hidden" for="dns-range">Select time range</label>
+            <select id="dns-range" class="form-select form-select-sm dns-range-select" aria-label="Select time range">
+                <option value="7d" selected>7 d</option>
+                <option value="30d">30 d</option>
+                <option value="90d">90 d</option>
+                <option value="180d">180 d</option>
+                <option value="y1">1 y</option>
+            </select>
+        </div>
         <!-- Ad-Blocker Toggle -->
         <div class="dropdown adblocker-dropdown" id="adblocker-dropdown-wrap">
             <button class="btn btn-sm dropdown-toggle {% if dns_unavailable %}btn-adblocker-disabled{% elif enable_blocklist %}btn-adblocker-enabled{% else %}btn-adblocker-disabled{% endif %}" type="button" id="adblocker-btn" data-bs-toggle="dropdown" aria-expanded="false"{% if not user['is_admin'] or dns_unavailable %} disabled{% endif %}{% if dns_unavailable %} title="Unbound not installed"{% endif %}>
@@ -179,12 +190,11 @@
             </div>
             <div class="col-12">
                 <div class="card h-100">
-                    <div class="card-header d-flex justify-content-between align-items-center">
+                    <div class="card-header">
                         <h3 class="h5 mb-0 dns-card-title">
                             <span class="material-icons">show_chart</span>
                             Blockrate Trend
                         </h3>
-                        <span class="badge bg-secondary">30 Days</span>
                     </div>
                     <div class="card-body">
                         <span class="visually-hidden" id="trend-meta" aria-live="polite">Loading…</span>
@@ -210,48 +220,43 @@
             </div>
         </div>
     </div>
-    <div class="col-12 col-lg-6">
-        <div class="card h-100 d-flex flex-column">
+    <div class="col-12 col-lg-6 d-flex">
+        <div class="card d-flex flex-column h-100 flex-grow-1">
             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <h3 class="h5 mb-0 dns-card-title">
                     <span class="material-icons">receipt_long</span>
                     Query Log
                 </h3>
-                <div class="d-flex gap-2 align-items-center flex-wrap">
+                <div class="dns-log-filters">
                     <label class="visually-hidden" for="log-filter">Filter query log entries</label>
-                    <select id="log-filter" class="form-select form-select-sm" style="width: auto;" aria-label="Filter query log entries">
+                    <select id="log-filter" class="form-select form-select-sm" aria-label="Filter query log entries">
                         <option value="all">All</option>
                         <option value="blocked">Blocked only</option>
                         <option value="allowed">Allowed only</option>
                     </select>
                     <label class="visually-hidden" for="log-search">Search query log domains</label>
-                    <input type="search" id="log-search" class="form-control form-control-sm" placeholder="Filter domain…" style="width: 150px;" aria-label="Search query log domains">
+                    <input type="search" id="log-search" class="form-control form-control-sm" placeholder="Filter domain…" aria-label="Search query log domains">
                 </div>
             </div>
             <div class="card-body p-0 flex-grow-1 d-flex flex-column log-card-body position-relative">
-                <!-- Pull-to-refresh indicator (mobile only) -->
-                <div id="log-pull-refresh" class="pull-to-refresh-indicator d-sm-none">
-                    <span class="material-icons pull-arrow text-muted">arrow_downward</span>
-                    <span class="pull-text text-muted ms-2 small">Pull to refresh</span>
-                </div>
                 <div class="table-responsive flex-grow-1" id="log-table-wrap">
                     <table class="table table-hover log-table mb-0">
-                        <thead class="sticky-top bg-body">
-                            <tr>
-                                <th class="log-col-time">Time</th>
-                                <th class="log-col-domain">Domain</th>
-                                <th class="log-col-type">Type</th>
-                            </tr>
-                        </thead>
-                        <tbody id="log-body">
-                            <tr class="log-empty-row">
-                                <td colspan="3" class="py-5">
-                                    <div class="d-flex justify-content-center align-items-center">
-                                        <div class="spinner-border text-primary" role="status" aria-label="Loading"></div>
-                                    </div>
-                                </td>
-                            </tr>
-                        </tbody>
+                    <thead class="sticky-top bg-body">
+                        <tr>
+                            <th class="log-col-time">Time</th>
+                            <th class="log-col-domain">Domain</th>
+                            <th class="log-col-type">Type</th>
+                        </tr>
+                    </thead>
+                    <tbody id="log-body">
+                        <tr class="log-empty-row">
+                            <td colspan="3" class="py-5">
+                                <div class="d-flex justify-content-center align-items-center">
+                                    <div class="spinner-border text-primary" role="status" aria-label="Loading"></div>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
                     </table>
                 </div>
                 <div id="log-action-menu" class="dropdown-menu"></div>
@@ -289,6 +294,7 @@
 {% endblock %}
 
 {% block extra_js %}
+<script src="/static/js/dashboard_traffic_shared.js"></script>
 <script src="/static/vendor/chart.umd.min.js"></script>
 <script>
     // User permission check
@@ -555,28 +561,46 @@
         try { sessionStorage.removeItem(TREND_CACHE_KEY); } catch {}
     }
 
+    /**
+     * Get hours for current time range selection.
+     * Uses shared parseTimeRangeToHours for consistency across pages.
+     */
+    function getSelectedRangeHours() {
+        const rangeEl = document.getElementById('dns-range');
+        const value = rangeEl?.value || '7d';
+        // Use shared function for consistency with other pages (Dashboard, Traffic)
+        return window.WBShared?.parseTimeRangeToHours?.(value) ?? 168;
+    }
+
     async function loadTrend() {
+        // Skip trend loading if DNS is unavailable; preserve unavailable state.
+        if (_dnsUnavailable) return;
+
         // Skip trend loading if ad-blocker is disabled (shows disabled state instead)
         if (!_adblockerEnabled) return;
 
         try {
-            // 30 days = 720 hours, bucket size adapts to viewport
-            const bucketMinutes = Math.min(1440, Math.max(5, getTrendBucketMinutes()));
+            const rangeHours = getSelectedRangeHours();
+            // Bucket size adapts to viewport and range
+            const baseBucket = getTrendBucketMinutes();
+            // Scale bucket size with range (larger ranges need bigger buckets)
+            const rangeMultiplier = Math.max(1, Math.ceil(rangeHours / 720));
+            const bucketMinutes = Math.min(1440 * rangeMultiplier, Math.max(5, baseBucket * rangeMultiplier));
             const clientIps = getSelectedPeerClientIps();
             const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
 
             // Build cache key from parameters
-            const cacheKey = `${bucketMinutes}|${clientIps || ''}`;
+            const cacheKey = `${rangeHours}|${bucketMinutes}|${clientIps || ''}`;
             let t = getTrendCache(cacheKey);
 
             if (!t) {
                 // No valid cache, fetch from API
                 try {
-                    t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}${clientIpsParam}`);
+                    t = await api('GET', `/api/dns/trend?hours=${rangeHours}&bucket_minutes=${bucketMinutes}${clientIpsParam}`);
                 } catch (err) {
                     // Fallback for strict query validation mismatches on older deployments.
                     if (err?.code === 'HTTP_422' && bucketMinutes !== 1440) {
-                        t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=1440${clientIpsParam}`);
+                        t = await api('GET', `/api/dns/trend?hours=${rangeHours}&bucket_minutes=1440${clientIpsParam}`);
                     } else {
                         throw err;
                     }
@@ -591,6 +615,15 @@
             const loadingEl = document.getElementById('trend-loading');
             const trendWrap = document.getElementById('trend-chart-wrap');
             const emptyEl = document.getElementById('trend-empty');
+            const unavailableEl = document.getElementById('trend-unavailable');
+
+            if (_dnsUnavailable) {
+                loadingEl.classList.add('d-none');
+                trendWrap.classList.add('d-none');
+                emptyEl.classList.add('d-none');
+                unavailableEl.classList.remove('d-none');
+                return;
+            }
 
             const hasData = labels.length > 0 && total.some(v => v > 0);
             if (!hasData) {
@@ -737,8 +770,11 @@
 
     async function loadStats() {
         try {
+            const rangeHours = getSelectedRangeHours();
+            const clientIps = getSelectedPeerClientIps();
+            const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
             const [s, config] = await Promise.all([
-                api('GET', '/api/dns/status'),
+                api('GET', `/api/dns/status?hours=${rangeHours}${clientIpsParam}`),
                 api('GET', '/api/dns/config'),
             ]);
 
@@ -795,10 +831,14 @@
     }
 
     async function loadTopDomains() {
+        // Skip if DNS is unavailable; preserve unavailable state.
+        if (_dnsUnavailable) return;
+
         try {
+            const rangeHours = getSelectedRangeHours();
             const clientIps = getSelectedPeerClientIps();
             const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
-            const data = await api('GET', `/api/dns/top-domains?limit=15${clientIpsParam}`);
+            const data = await api('GET', `/api/dns/top-domains?limit=15&hours=${rangeHours}${clientIpsParam}`);
             const topQueried = data.top_queried || [];
             const topBlocked = data.top_blocked || [];
 
@@ -897,6 +937,15 @@
         const disabledEl = document.getElementById(disabledId);
         const unavailableEl = document.getElementById(unavailableId);
 
+        if (_dnsUnavailable) {
+            if (loadingEl) loadingEl.classList.add('d-none');
+            if (contentEl) contentEl.classList.add('d-none');
+            if (emptyEl) emptyEl.classList.add('d-none');
+            if (disabledEl) disabledEl.classList.add('d-none');
+            if (unavailableEl) unavailableEl.classList.remove('d-none');
+            return;
+        }
+
         if (loadingEl) loadingEl.classList.add('d-none');
         if (disabledEl) disabledEl.classList.add('d-none');
         if (unavailableEl) unavailableEl.classList.add('d-none');
@@ -988,6 +1037,9 @@
     }
 
     async function loadLogsOnly(showLoading = true) {
+        // Skip if DNS is unavailable; preserve unavailable state.
+        if (_dnsUnavailable) return;
+
         if (_logsLoadInProgress) return;
         _logsLoadInProgress = true;
         try {
@@ -1249,6 +1301,10 @@
     // Blocked sections visibility (Top Blocked Domains + Blockrate Trend)
     let _adblockerEnabled = {{ enable_blocklist | tojson }};  // Initial state from server
 
+    function hasVisibleState(...elements) {
+        return elements.some(el => el && !el.classList.contains('d-none'));
+    }
+
     function updateBlockedSectionsVisibility(enabled) {
         _adblockerEnabled = enabled;  // Cache state for other functions
 
@@ -1267,18 +1323,29 @@
         const trendUnavailable = document.getElementById('trend-unavailable');
 
         if (enabled) {
-            // Hide disabled state, show loading state (data will populate shortly)
+            // Preserve already loaded chart/empty states; only show loading while data is unresolved.
+            const blockedResolved = hasVisibleState(blockedContent, blockedEmpty);
+            const trendResolved = hasVisibleState(trendChart, trendEmpty);
+
             if (blockedDisabled) blockedDisabled.classList.add('d-none');
             if (blockedUnavailable) blockedUnavailable.classList.add('d-none');
-            if (blockedContent) blockedContent.classList.add('d-none');
-            if (blockedEmpty) blockedEmpty.classList.add('d-none');
-            if (blockedLoading) blockedLoading.classList.remove('d-none');
+            if (blockedResolved) {
+                if (blockedLoading) blockedLoading.classList.add('d-none');
+            } else {
+                if (blockedContent) blockedContent.classList.add('d-none');
+                if (blockedEmpty) blockedEmpty.classList.add('d-none');
+                if (blockedLoading) blockedLoading.classList.remove('d-none');
+            }
 
             if (trendDisabled) trendDisabled.classList.add('d-none');
             if (trendUnavailable) trendUnavailable.classList.add('d-none');
-            if (trendChart) trendChart.classList.add('d-none');
-            if (trendEmpty) trendEmpty.classList.add('d-none');
-            if (trendLoading) trendLoading.classList.remove('d-none');
+            if (trendResolved) {
+                if (trendLoading) trendLoading.classList.add('d-none');
+            } else {
+                if (trendChart) trendChart.classList.add('d-none');
+                if (trendEmpty) trendEmpty.classList.add('d-none');
+                if (trendLoading) trendLoading.classList.remove('d-none');
+            }
         } else {
             // Hide all states, show disabled state
             if (blockedLoading) blockedLoading.classList.add('d-none');
@@ -1323,6 +1390,7 @@
 
         // Query Log
         const logUnavailable = document.getElementById('log-unavailable');
+        const logCardBody = logUnavailable?.parentElement;
 
         if (unavailable) {
             // Hide all states, show unavailable state for all sections
@@ -1343,12 +1411,14 @@
             if (trendDisabled) trendDisabled.classList.add('d-none');
             if (trendUnavailable) trendUnavailable.classList.remove('d-none');
 
+            if (logCardBody) logCardBody.classList.add('dns-log-unavailable');
             if (logUnavailable) logUnavailable.classList.remove('d-none');
         } else {
             // Hide unavailable states
             if (queriedUnavailable) queriedUnavailable.classList.add('d-none');
             if (blockedUnavailable) blockedUnavailable.classList.add('d-none');
             if (trendUnavailable) trendUnavailable.classList.add('d-none');
+            if (logCardBody) logCardBody.classList.remove('dns-log-unavailable');
             if (logUnavailable) logUnavailable.classList.add('d-none');
         }
     }
@@ -1593,9 +1663,19 @@
 
     const peerFilterSelect = document.getElementById('peer-filter');
     if (peerFilterSelect) {
-        // Load fresh data when peer filter changes - affects logs, trend, and top domains
+        // Load fresh data when peer filter changes - affects stats, logs, trend, and top domains
         peerFilterSelect.addEventListener('change', async () => {
-            await Promise.allSettled([loadLogsOnly(), loadTrend(), loadTopDomains()]);
+            clearTrendCache();
+            await Promise.allSettled([loadStats(), loadLogsOnly(), loadTrend(), loadTopDomains()]);
+        });
+    }
+
+    const dnsRangeSelect = document.getElementById('dns-range');
+    if (dnsRangeSelect) {
+        // Reload all range-aware DNS sections when time range changes
+        dnsRangeSelect.addEventListener('change', async () => {
+            clearTrendCache();
+            await Promise.allSettled([loadStats(), loadTopDomains(), loadTrend()]);
         });
     }
 
@@ -1605,100 +1685,6 @@
         logSearchInput.addEventListener('input', debouncedRenderLogs);
     }
 
-    // Pull-to-refresh for mobile
-    const pullRefreshIndicator = document.getElementById('log-pull-refresh');
-    const logTableWrap = document.getElementById('log-table-wrap');
-    
-    if (pullRefreshIndicator && logTableWrap && 'ontouchstart' in window) {
-        let touchStartY = 0;
-        let touchCurrentY = 0;
-        let isPulling = false;
-        let isRefreshing = false;
-        const PULL_THRESHOLD = 60;
-        
-        logTableWrap.addEventListener('touchstart', (e) => {
-            // Only allow pull-to-refresh when scrolled to top
-            if (logTableWrap.scrollTop === 0 && !isRefreshing) {
-                touchStartY = e.touches[0].clientY;
-                isPulling = true;
-            }
-        }, { passive: true });
-        
-        logTableWrap.addEventListener('touchmove', (e) => {
-            if (!isPulling || isRefreshing) return;
-            
-            touchCurrentY = e.touches[0].clientY;
-            const pullDistance = touchCurrentY - touchStartY;
-            
-            // Only show indicator when pulling down
-            if (pullDistance > 0 && logTableWrap.scrollTop === 0) {
-                pullRefreshIndicator.style.height = `${Math.min(pullDistance * 0.5, 50)}px`;
-                pullRefreshIndicator.classList.add('pulling');
-                
-                if (pullDistance >= PULL_THRESHOLD) {
-                    pullRefreshIndicator.classList.add('ready');
-                    pullRefreshIndicator.querySelector('.pull-text').textContent = 'Release to refresh';
-                } else {
-                    pullRefreshIndicator.classList.remove('ready');
-                    pullRefreshIndicator.querySelector('.pull-text').textContent = 'Pull to refresh';
-                }
-            }
-        }, { passive: true });
-        
-        logTableWrap.addEventListener('touchend', async () => {
-            if (!isPulling || isRefreshing) return;
-            
-            const pullDistance = touchCurrentY - touchStartY;
-            
-            if (pullDistance >= PULL_THRESHOLD && logTableWrap.scrollTop === 0) {
-                // Trigger refresh
-                isRefreshing = true;
-                pullRefreshIndicator.classList.remove('ready');
-                pullRefreshIndicator.classList.add('refreshing');
-                clearNode(pullRefreshIndicator);
-                
-                const spinner = document.createElement('div');
-                spinner.className = 'spinner-border spinner-border-sm text-primary';
-                spinner.setAttribute('role', 'status');
-                spinner.setAttribute('aria-label', 'Refreshing');
-                
-                const text = document.createElement('span');
-                text.className = 'text-muted ms-2 small';
-                text.textContent = 'Refreshing...';
-                
-                pullRefreshIndicator.appendChild(spinner);
-                pullRefreshIndicator.appendChild(text);
-                
-                try {
-                    await loadLogsOnly(false);
-                } finally {
-                    // Reset indicator
-                    isRefreshing = false;
-                    pullRefreshIndicator.classList.remove('pulling', 'refreshing');
-                    pullRefreshIndicator.style.height = '0';
-                    clearNode(pullRefreshIndicator);
-                    
-                    const arrow = document.createElement('span');
-                    arrow.className = 'material-icons pull-arrow text-muted';
-                    arrow.textContent = 'arrow_downward';
-                    const pullText = document.createElement('span');
-                    pullText.className = 'pull-text text-muted ms-2 small';
-                    pullText.textContent = 'Pull to refresh';
-                    
-                    pullRefreshIndicator.appendChild(arrow);
-                    pullRefreshIndicator.appendChild(pullText);
-                }
-            } else {
-                // Reset without refresh
-                pullRefreshIndicator.classList.remove('pulling', 'ready');
-                pullRefreshIndicator.style.height = '0';
-            }
-            
-            isPulling = false;
-            touchStartY = 0;
-            touchCurrentY = 0;
-        }, { passive: true });
-    }
 
     // Initial load - wait for completion before starting polling to avoid race conditions
     (async () => {

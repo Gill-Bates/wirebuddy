@@ -24,8 +24,8 @@
     <meta name="csrf-token" content="{{ csrf_token | e }}">
     <title>{% block title %}WireBuddy{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="/static/img/wirebuddy_1c.svg">
-    <!-- Preload critical font to prevent FOIT -->
-    <link rel="preload" href="/static/vendor/fonts/MaterialIcons.ttf" as="font" type="font/ttf" crossorigin>
+    <!-- Preload optimized Material Icons woff2 to prevent FOIT -->
+    <link rel="preload" href="/static/vendor/fonts/MaterialIcons.woff2" as="font" type="font/woff2" crossorigin>
     <!-- Theme Script in <head> prevents FOUC -->
     <script src="/static/js/theme.js"></script>
     <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
@@ -38,11 +38,10 @@
             --wb-z-toast: 1090;
         }
 
-        /* Center modals vertically (except scrollable modals) */
+        /* Center modals vertically (except scrollable modals) - safer than flex */
         .modal:not(.modal-dialog-scrollable) .modal-dialog {
-            display: flex;
-            align-items: center;
-            min-height: calc(100% - var(--bs-modal-margin) * 2);
+            margin-top: auto;
+            margin-bottom: auto;
         }
 
         /* Global spinner styling */
@@ -106,19 +105,28 @@
         .wb-onboarding-icon {
             font-size: 28px;
         }
+
+        /* Key Mismatch Banner - sticky to prevent layout shift */
+        #keyMismatchBanner {
+            position: sticky;
+            top: 0;
+            z-index: var(--wb-z-banner);
+        }
     </style>
     {% block extra_css %}{% endblock %}
 </head>
 
 <body>
     <!-- Key Mismatch Warning Banner -->
-    <div id="keyMismatchBanner" class="alert alert-danger mb-0 rounded-0 py-2 d-none" role="alert">
+    {% if key_mismatch %}
+    <div id="keyMismatchBanner" class="alert alert-danger mb-0 rounded-0 py-2" role="alert">
         <div class="container-fluid d-flex align-items-center justify-content-center gap-2">
             <span class="material-icons text-danger">error</span>
             <strong>Critical:</strong> WIREBUDDY_SECRET_KEY does not match the database encryption key. 
             WireGuard configurations cannot be decrypted. Please restart with the correct key.
         </div>
     </div>
+    {% endif %}
 
     <!-- Navbar -->
     <nav class="navbar navbar-expand-lg navbar-dark" aria-label="Top navigation bar">
@@ -129,7 +137,7 @@
             <!-- Always-visible right-side actions (outside collapse) -->
             <div class="d-flex align-items-center gap-2 ms-auto order-lg-last navbar-controls">
                 {% if user %}
-                <div class="d-flex align-items-center gap-2 navbar-actions" aria-label="User actions">
+                <div class="d-flex align-items-center gap-2 navbar-actions" role="group" aria-label="User actions">
                     <span class="text-white navbar-user-label d-none d-lg-inline">{{ user['username'] | e }}</span>
                     <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn" id="themeToggle"
                         aria-label="Toggle theme">
@@ -382,8 +390,10 @@
                 navbarCollapse.addEventListener('show.bs.collapse', () => {
                     navbarCollapse.classList.add('wb-nav-opening');
                     navbarCollapse.classList.remove('wb-nav-closing');
+                    // Scroll to top only on mobile to ensure navbar is visible
+                    // Skip smooth behavior to avoid UX friction on quick navigation
                     if (window.matchMedia('(max-width: 991.98px)').matches) {
-                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                        window.scrollTo({ top: 0, behavior: 'instant' });
                     }
                 });
 
@@ -409,7 +419,7 @@
                         }
 
                         event.preventDefault();
-                        _pendingNavUrl = link.href;
+                        _pendingNavUrl = href; // Use relative URL to avoid origin issues
                         bsCollapse.hide();
                     });
                 });
@@ -425,26 +435,6 @@
                     document.activeElement.blur();
                 }
             }, true); // Use capture phase to ensure we run before Bootstrap
-
-            // Key Mismatch Banner Check (non-blocking)
-            async function checkKeyMismatch() {
-                try {
-                    if (typeof api === 'function') {
-                        const data = await api('GET', '/api/system/status');
-                        if (data && data.key_mismatch) {
-                            const banner = document.getElementById('keyMismatchBanner');
-                            if (banner) {
-                                banner.classList.remove('d-none');
-                            }
-                        }
-                    }
-                } catch (e) {
-                    console.warn('[WB] System status check failed:', e?.message || e);
-                }
-            }
-
-            // Start async check without blocking UI setup
-            checkKeyMismatch();
         });
     </script>
 

@@ -57,6 +57,7 @@
 {% endblock %}
 
 {% block extra_js %}
+<script src="/static/js/dashboard_traffic_shared.js"></script>
 <script>
 (async function () {
     const isAdmin = {{ 'true' if user['is_admin'] else 'false' }};

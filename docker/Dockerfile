@@ -39,6 +39,7 @@ RUN apt-get update && \
         ca-certificates \
         sqlite3 \
         tzdata \
+        librespeed-cli \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -60,11 +61,40 @@ COPY CHANGELOG.md .
 # automatically downloaded on first startup and updated weekly at runtime.
 # No need to bake them into the image.
 
-# Download country flag SVGs (4×3) from lipis/flag-icons for local serving
-RUN mkdir -p /app/app/static/vendor/images/flags && \
-    curl -sL https://github.com/lipis/flag-icons/archive/refs/heads/main.tar.gz | \
-    tar -xz --strip-components=3 -C /app/app/static/vendor/images/flags flag-icons-main/flags/4x3/ && \
-    echo "Downloaded $(ls /app/app/static/vendor/images/flags/*.svg 2>/dev/null | wc -l) flag SVGs"
+# Download vendor assets (flags + fonts) for local serving
+RUN set -eux; \
+    FONT_CSS_UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36'; \
+    mkdir -p /app/app/static/vendor/images/flags \
+             /app/app/static/vendor/fonts; \
+    \
+    # Flags (lipis/flag-icons)
+    curl -fsSL https://github.com/lipis/flag-icons/archive/refs/heads/main.tar.gz \
+    | tar -xz --strip-components=3 \
+        -C /app/app/static/vendor/images/flags \
+        flag-icons-main/flags/4x3/; \
+    echo "Downloaded $(ls /app/app/static/vendor/images/flags/*.svg | wc -l) flag SVGs"; \
+    \
+    # Fonts: resolve current WOFF2 asset URLs from Google Fonts CSS at build time
+    MATERIAL_ICONS_URL="$(curl -fsSL -A "$FONT_CSS_UA" 'https://fonts.googleapis.com/icon?family=Material+Icons' \
+        | sed -n 's/.*url(\(https:[^)]*\.woff2\)).*/\1/p' \
+        | head -n1)"; \
+    ROBOTO_FLEX_URL="$(curl -fsSL -A "$FONT_CSS_UA" 'https://fonts.googleapis.com/css2?family=Roboto+Flex:opsz,wght@8..144,100..1000&display=swap' \
+        | sed -n 's/.*url(\(https:[^)]*\.woff2\)).*/\1/p' \
+        | tail -n1)"; \
+    NOTO_SERIF_URL="$(curl -fsSL -A "$FONT_CSS_UA" 'https://fonts.googleapis.com/css2?family=Noto+Serif:wght@400&display=swap' \
+        | sed -n 's/.*url(\(https:[^)]*\.woff2\)).*/\1/p' \
+        | tail -n1)"; \
+    test -n "$MATERIAL_ICONS_URL"; \
+    test -n "$ROBOTO_FLEX_URL"; \
+    test -n "$NOTO_SERIF_URL"; \
+    curl -fsSL -o /app/app/static/vendor/fonts/MaterialIcons.woff2 "$MATERIAL_ICONS_URL"; \
+    curl -fsSL -o /app/app/static/vendor/fonts/RobotoFlex.woff2 "$ROBOTO_FLEX_URL"; \
+    curl -fsSL -o /app/app/static/vendor/fonts/NotoSerif.woff2 "$NOTO_SERIF_URL"; \
+    \
+    echo "Downloaded fonts: \
+MaterialIcons=$(stat -c%s /app/app/static/vendor/fonts/MaterialIcons.woff2)B, \
+RobotoFlex=$(stat -c%s /app/app/static/vendor/fonts/RobotoFlex.woff2)B, \
+NotoSerif=$(stat -c%s /app/app/static/vendor/fonts/NotoSerif.woff2)B"
 
 # Create data and log directories + DNSSEC root key
 # Note: Container runs as root for WireGuard/iptables commands
@@ -89,8 +119,9 @@ EXPOSE 53/tcp
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/api/system/status || exit 1
 
-# Configurable worker count (2 for resilience, SQLite/TSDB are multi-process safe)
-ENV UVICORN_WORKERS=2
+# Web UI runs single-worker only. Values >1 are normalized to 1 in the entrypoint.
+ENV UVICORN_WORKERS=1
+ENV UVICORN_GRACEFUL_SHUTDOWN_TIMEOUT=8
 
 # Timezone (default: UTC). Override with TZ=America/New_York etc.
 # See: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones

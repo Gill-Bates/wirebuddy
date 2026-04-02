@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import logging
@@ -27,9 +28,11 @@ from ..db.sqlite_nodes import (
 	delete_node,
 	get_all_nodes,
 	get_node,
+	get_node_by_fqdn,
 	get_node_by_name,
 	get_peer_count_for_node,
 	get_peers_count_by_node,
+	set_node_pending_command,
 	update_node,
 	update_node_api_secret,
 )
@@ -192,13 +195,21 @@ def _node_to_dict(row: sqlite3.Row, peer_count: int = 0) -> dict[str, Any]:
 		node_version = metadata.get("version")
 	
 	# Convert last_seen datetime to formatted label
+	# Bug fix: naive datetimes (no tz suffix) are assumed to be UTC to avoid
+	# local-time misinterpretation on servers not running UTC.
 	last_seen_epoch = 0
 	if row["last_seen"]:
 		try:
+			from datetime import timezone as _tz
 			if isinstance(row["last_seen"], datetime):
-				last_seen_epoch = int(row["last_seen"].timestamp())
+				ls = row["last_seen"]
+				if ls.tzinfo is None:
+					ls = ls.replace(tzinfo=_tz.utc)
+				last_seen_epoch = int(ls.timestamp())
 			elif isinstance(row["last_seen"], str):
 				dt = datetime.fromisoformat(row["last_seen"].replace("Z", "+00:00"))
+				if dt.tzinfo is None:
+					dt = dt.replace(tzinfo=_tz.utc)
 				last_seen_epoch = int(dt.timestamp())
 		except (ValueError, TypeError, AttributeError):
 			pass
@@ -242,6 +253,10 @@ def create_node_endpoint(
 	if get_node_by_name(conn, body.name):
 		raise HTTPException(status_code=409, detail=f"Node name '{body.name}' already exists")
 
+	# Validate unique FQDN
+	if get_node_by_fqdn(conn, body.fqdn):
+		raise HTTPException(status_code=409, detail=f"Node FQDN '{body.fqdn}' already exists")
+
 	cfg = get_config()
 	node_id = uuid.uuid4().hex
 	master_url = _get_master_url(conn)
@@ -254,7 +269,11 @@ def create_node_endpoint(
 	)
 	secret_hash = hash_token(api_secret)
 
-	create_node(conn, node_id, body.name, body.fqdn, body.wg_port, secret_hash)
+	try:
+		create_node(conn, node_id, body.name, body.fqdn, body.wg_port, secret_hash)
+	except sqlite3.IntegrityError:
+		# DB-level UNIQUE constraint: catches races that slip past the app-level checks above
+		raise HTTPException(status_code=409, detail="A node with that name or FQDN already exists")
 	_log.info("Node created: name=%s, id=%s (by user=%s)", body.name, node_id, user["username"])
 
 	return ok_response(
@@ -303,7 +322,8 @@ def update_node_endpoint(
 	if not get_node(conn, node_id):
 		raise HTTPException(status_code=404, detail="Node not found")
 
-	updates = body.model_dump(exclude_none=True)
+	# exclude_unset distinguishes "not sent" from "sent as null"
+	updates = body.model_dump(exclude_unset=True)
 	if not updates:
 		raise HTTPException(status_code=422, detail="No fields to update")
 
@@ -313,7 +333,17 @@ def update_node_endpoint(
 		if existing and existing["id"] != node_id:
 			raise HTTPException(status_code=409, detail=f"Node name '{body.name}' already exists")
 
-	update_node(conn, node_id, **updates)
+	# Validate unique FQDN if changing
+	if body.fqdn is not None:
+		existing = get_node_by_fqdn(conn, body.fqdn)
+		if existing and existing["id"] != node_id:
+			raise HTTPException(status_code=409, detail=f"Node FQDN '{body.fqdn}' already exists")
+
+	try:
+		update_node(conn, node_id, **updates)
+	except sqlite3.IntegrityError:
+		# DB-level UNIQUE constraint: catches races that slip past the app-level checks above
+		raise HTTPException(status_code=409, detail="A node with that name or FQDN already exists")
 	_log.info("Node updated: id=%s (by user=%s)", node_id, user["username"])
 	return ok_response(message="Node updated")
 
@@ -325,18 +355,20 @@ async def delete_node_endpoint(
 	user: sqlite3.Row = Depends(require_admin),
 ) -> dict[str, Any]:
 	"""Delete a node. Assigned peers are unassigned (node_id set to NULL)."""
-	node = get_node(conn, node_id)
+	node = await asyncio.to_thread(get_node, conn, node_id)
 	if not node:
 		raise HTTPException(status_code=404, detail="Node not found")
 
-	assigned_peer_count = get_peer_count_for_node(conn, node_id)
+	# Pre-read count before the await below; used only for the response message.
+	# Slight staleness is acceptable — the design requires SSE notify before DB delete.
+	assigned_peer_count = await asyncio.to_thread(get_peer_count_for_node, conn, node_id)
 
 	# Send removal signal to node before deleting (must happen while SSE auth still works)
 	notified = await notify_node_removed(node_id)
 	if notified > 0:
 		_log.info("Sent removal signal to %d SSE client(s) for node %s", notified, node_id)
 
-	if not delete_node(conn, node_id):
+	if not await asyncio.to_thread(delete_node, conn, node_id):
 		raise HTTPException(status_code=404, detail="Node not found")
 	_log.info("Node deleted: id=%s (by user=%s)", node_id, user["username"])
 	message = "Node deleted."
@@ -391,7 +423,7 @@ async def restart_node(
 	"""
 	from ..node import notifier as node_notifier
 	
-	node = get_node(conn, node_id)
+	node = await asyncio.to_thread(get_node, conn, node_id)
 	if not node:
 		raise HTTPException(status_code=404, detail="Node not found")
 	
@@ -404,10 +436,19 @@ async def restart_node(
 	notified = await node_notifier.notify_restart(node_id)
 	
 	if notified == 0:
-		raise HTTPException(
-			status_code=503,
-			detail="Node is not connected via SSE. Restart signal could not be delivered."
+		# Node SSE stream is on a different worker or disconnected —
+		# store as DB pending command. The node daemon will pick it up
+		# on the next SSE reconnect or keepalive (~25 s).
+		_log.info(
+			"notify_restart: no in-memory queue for node=%s, falling back to DB pending command",
+			node_id,
 		)
+		stored = await asyncio.to_thread(set_node_pending_command, conn, node_id, "restart")
+		if not stored:
+			raise HTTPException(
+				status_code=503,
+				detail="Node is not connected via SSE. Restart signal could not be delivered.",
+			)
 	
 	_log.info("Restart signal sent to node: id=%s, name=%s (by user=%s)", 
 			 node_id, node["name"], user["username"])
@@ -415,4 +456,138 @@ async def restart_node(
 	return ok_response(
 		message=f"Restart signal sent to node '{node['name']}'. The node will restart shortly.",
 		data={"notified_clients": notified},
+	)
+
+
+@router.post("/{node_id}/speedtest")
+async def trigger_node_speedtest(
+	node_id: str,
+	conn: sqlite3.Connection = Depends(get_conn),
+	user: sqlite3.Row = Depends(require_admin),
+) -> dict[str, Any]:
+	"""Request a remote node to run an immediate speedtest.
+	
+	Sends a speedtest signal via SSE. The node daemon will run a speedtest
+	and submit the results to the master.
+	"""
+	from ..node import notifier as node_notifier
+	
+	node = await asyncio.to_thread(get_node, conn, node_id)
+	if not node:
+		raise HTTPException(status_code=404, detail="Node not found")
+	
+	if node["status"] != "online":
+		raise HTTPException(
+			status_code=400,
+			detail=f"Cannot run speedtest on node in '{node['status']}' status. Node must be online."
+		)
+	
+	notified = await node_notifier.notify_run_speedtest(node_id)
+	
+	if notified == 0:
+		# Node SSE stream is on a different worker — store as DB pending command.
+		# The node daemon will pick it up on the next SSE keepalive (~25 s).
+		_log.info(
+			"notify_run_speedtest: no in-memory queue for node=%s, falling back to DB pending command",
+			node_id,
+		)
+		stored = await asyncio.to_thread(set_node_pending_command, conn, node_id, "speedtest")
+		if not stored:
+			raise HTTPException(
+				status_code=503,
+				detail="Node is not connected via SSE. Speedtest signal could not be delivered.",
+			)
+	
+	_log.info("Speedtest signal sent to node: id=%s, name=%s (by user=%s)", 
+			 node_id, node["name"], user["username"])
+	
+	return ok_response(
+		message=f"Speedtest signal sent to node '{node['name']}'. Results will appear shortly.",
+		data={"notified_clients": notified},
+	)
+
+
+@router.get("/{node_id}/speedtest/stream")
+async def stream_node_speedtest_progress(
+	node_id: str,
+	request: Request,
+	conn: sqlite3.Connection = Depends(get_conn),
+	user: sqlite3.Row = Depends(require_admin),
+):
+	"""Stream speedtest progress updates from a remote node via SSE.
+	
+	This endpoint allows the frontend to receive real-time progress updates
+	while a speedtest is running on the node.
+	
+	Events:
+	- event: progress (phase, progress 0-1, message, detail)
+	- event: complete (when test finishes)
+	- event: timeout (if no updates received for 150s)
+	"""
+	import asyncio
+	import json
+	from ..api import nodes_sync
+	
+	node = await asyncio.to_thread(get_node, conn, node_id)
+	if not node:
+		raise HTTPException(status_code=404, detail="Node not found")
+	
+	async def event_generator():
+		"""Generate SSE events for node speedtest progress."""
+		progress_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=32)
+		
+		# Register this queue to receive progress updates
+		async with nodes_sync._progress_lock:
+			if node_id not in nodes_sync._node_speedtest_progress:
+				nodes_sync._node_speedtest_progress[node_id] = {
+					"progress": None,
+					"timestamp": 0,
+					"queues": [],
+				}
+			nodes_sync._node_speedtest_progress[node_id]["queues"].append(progress_queue)
+		
+		try:
+			# Send initial progress if available
+			async with nodes_sync._progress_lock:
+				if nodes_sync._node_speedtest_progress[node_id]["progress"]:
+					initial = nodes_sync._node_speedtest_progress[node_id]["progress"]
+					yield f"event: progress\\ndata: {json.dumps(initial)}\\n\\n"
+			
+			# Stream progress updates
+			timeout_seconds = 150  # Timeout if no updates for 150s
+			while True:
+				if await request.is_disconnected():
+					break
+				
+				try:
+					progress = await asyncio.wait_for(progress_queue.get(), timeout=timeout_seconds)
+					yield f"event: progress\\ndata: {json.dumps(progress)}\\n\\n"
+					
+					# If progress is 100%, send complete event
+					if progress.get("progress", 0) >= 1.0:
+						yield f"event: complete\\ndata: {{}}\\n\\n"
+						break
+				except asyncio.TimeoutError:
+					# No updates received within timeout
+					yield f"event: timeout\\ndata: {{\"message\": \"No progress updates received\"}}\\n\\n"
+					break
+		finally:
+			# Unregister queue
+			async with nodes_sync._progress_lock:
+				if node_id in nodes_sync._node_speedtest_progress:
+					try:
+						nodes_sync._node_speedtest_progress[node_id]["queues"].remove(progress_queue)
+					except ValueError:
+						pass
+					# Cleanup if no more clients
+					if not nodes_sync._node_speedtest_progress[node_id]["queues"]:
+						del nodes_sync._node_speedtest_progress[node_id]
+	
+	return StreamingResponse(
+		event_generator(),
+		media_type="text/event-stream",
+		headers={
+			"Cache-Control": "no-cache",
+			"X-Accel-Buffering": "no",
+		},
 	)

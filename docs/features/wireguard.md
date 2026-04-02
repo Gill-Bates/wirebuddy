@@ -186,6 +186,36 @@ Available actions for each peer:
 - **Download Config:** Get configuration file
 - **Delete:** Permanently remove peer
 
+### Search and Filter Peers
+
+WireBuddy provides multiple ways to search and filter peers for easier management:
+
+**Quick Search:**
+
+1. Navigate to **Peers**
+2. Use the search box to filter by:
+   - Device name
+   - IP address (VPN or client IP)
+   - Status (Connected, Idle, Disabled)
+   - Interface name
+   - Country/ASN (when available)
+
+**Advanced Filtering:**
+
+Filter peers by:
+
+- **Status:** Connected, Idle, or Disabled
+- **Interface:** Show peers from specific WireGuard interface
+- **Routing Mode:** Filter by Recommended, Local Network, or Advanced
+- **Client Isolation:** Show only isolated peers
+
+**Use Cases:**
+
+- Find inactive devices to disable
+- Quickly locate a specific client device
+- Review all peers using a particular DNS blocklist
+- Monitor peers from a specific geographic region
+
 ## Traffic Statistics
 
 ### Real-Time Monitoring

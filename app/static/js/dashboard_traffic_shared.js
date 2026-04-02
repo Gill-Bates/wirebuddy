@@ -42,7 +42,7 @@
      */
     function isAbortError(err) {
         if (err?.name === 'AbortError') return true;
-        if (err instanceof DOMException && err.code === DOMException.ABORT_ERR) return true;
+        if (err instanceof DOMException && err.name === 'AbortError') return true;
         if (err?.code === 'ABORTED') return true; // App-specific api() abort code
         return false;
     }
@@ -51,6 +51,29 @@
         if (unit === 'B') return 0;
         if (unit === 'KB') return 1;
         return 1; // MB, GB, TB, PB, EB
+    }
+
+    const SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
+
+    function formatScaledSize(value, startUnitIndex) {
+        if (!Number.isFinite(value) || value === 0) return '0 B';
+
+        let unitIndex = startUnitIndex;
+        let scaledValue = value;
+
+        while (unitIndex < SIZE_UNITS.length - 1 && scaledValue >= 1024) {
+            scaledValue /= 1024;
+            unitIndex += 1;
+        }
+
+        while (unitIndex > 0 && scaledValue > 0 && scaledValue < 1) {
+            scaledValue *= 1024;
+            unitIndex -= 1;
+        }
+
+        const unit = SIZE_UNITS[unitIndex];
+        const decimals = getDecimals(unit);
+        return Number(scaledValue.toFixed(decimals)) + ' ' + unit;
     }
 
     /**
@@ -66,16 +89,7 @@
             console.warn('formatBytes: negative value', bytes);
             return '0 B';
         }
-        if (!Number.isFinite(bytes) || bytes === 0) return '0 B';
-        const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
-        let i = 0;
-        let value = bytes;
-        while (i < sizes.length - 1 && value >= 1024) {
-            value /= 1024;
-            i++;
-        }
-        const decimals = getDecimals(sizes[i]);
-        return Number(value.toFixed(decimals)) + ' ' + sizes[i];
+        return formatScaledSize(bytes, 0);
     }
 
     /**
@@ -94,16 +108,31 @@
             return '0 B';
         }
 
-        // Convert input value to bytes
+        // Convert input value to bytes (case-insensitive unit matching)
         const unitToExp = { B: 0, KB: 1, MB: 2, GB: 3, TB: 4, PB: 5, EB: 6 };
-        const exp = unitToExp[unit];
+        const normalizedUnit = String(unit).toUpperCase();
+        const exp = unitToExp[normalizedUnit];
         if (exp === undefined) {
             console.warn('formatTrafficMetric: unknown unit', unit);
             return '0 B';
         }
 
-        const bytes = parsed * Math.pow(1024, exp);
-        return formatBytes(bytes);
+        return formatScaledSize(parsed, exp);
+    }
+
+    function formatBandwidthMetric(valueMbit, gbitDigits = 1, mbitDigits = gbitDigits) {
+        const numericValue = Number(valueMbit);
+        if (!Number.isFinite(numericValue)) return '–';
+        const normalizedGbitDigits = Math.max(Number(gbitDigits) || 0, 0);
+        const normalizedMbitDigits = Math.max(
+            mbitDigits === undefined ? normalizedGbitDigits : (Number(mbitDigits) || 0),
+            0,
+        );
+
+        if (numericValue >= 1000) {
+            return `${(numericValue / 1000).toFixed(normalizedGbitDigits)} Gbit/s`;
+        }
+        return `${numericValue.toFixed(normalizedMbitDigits)} Mbit/s`;
     }
 
     /**
@@ -117,6 +146,10 @@
      * @property {() => void} [onRecovered]
      */
 
+    // Constants for RefreshScheduler
+    const MIN_RETRY_DELAY_MS = 50;
+    const BACKOFF_RETRY_DELAY_MS = 1000;
+
     /**
      * Refresh orchestration with cancellation and exponential backoff.
      */
@@ -128,12 +161,6 @@
             const refreshFn = opts?.refreshFn;
             if (typeof refreshFn !== 'function') {
                 throw new Error('RefreshScheduler requires refreshFn(signal)');
-            }
-
-            // Validate that refreshFn accepts signal parameter (by checking function.length)
-            // This is a hint only - doesn't guarantee the signal is actually used
-            if (refreshFn.length === 0) {
-                console.warn('RefreshScheduler: refreshFn ignores signal parameter — abort will be ineffective');
             }
 
             this.autoRefreshMs = Number(opts?.autoRefreshMs) > 0 ? Number(opts.autoRefreshMs) : 30000;
@@ -151,6 +178,7 @@
             this.currentRefreshInterval = this.autoRefreshMs;
             this._destroyed = false;
             this._pendingRetryTimer = null;
+            this._timerId = 0; // Generation token to prevent timer race conditions
         }
 
         get isActive() {
@@ -177,10 +205,18 @@
             if (this._destroyed) return;
             this.stop();
             const ms = Number(intervalMs) > 0 ? Number(intervalMs) : this.currentRefreshInterval;
+
+            // Increment timer generation to prevent race conditions
+            this._timerId = (this._timerId || 0) + 1;
+            const timerId = this._timerId;
+
             this.autoRefreshTimer = setTimeout(() => {
+                // Check if this timer is still valid (not superseded by stop/start)
+                if (this._destroyed || timerId !== this._timerId) return;
+
                 this.refresh().finally(() => {
-                    // Schedule next refresh only if not destroyed and timer still active
-                    if (!this._destroyed && this.autoRefreshTimer !== null) {
+                    // Schedule next refresh only if not destroyed and timer still valid
+                    if (!this._destroyed && timerId === this._timerId && this.autoRefreshTimer !== null) {
                         this.start(ms);
                     }
                 });
@@ -235,7 +271,10 @@
             if (this._destroyed) return;
             if (this.isRefreshing) {
                 this.pendingRefresh = true;
-                this.abortActive();
+                // Only abort if not already aborted
+                if (this.activeRefreshController && !this.activeRefreshController.signal.aborted) {
+                    this.activeRefreshController.abort();
+                }
                 return;
             }
 
@@ -255,16 +294,22 @@
                     allFailed = true;
                 }
             } finally {
+                // Early exit if destroyed to prevent callbacks
+                if (this._destroyed) {
+                    this.isRefreshing = false;
+                    if (this.activeRefreshController === controller) this.activeRefreshController = null;
+                    return;
+                }
+
                 if (this.activeRefreshController === controller) this.activeRefreshController = null;
                 this.isRefreshing = false;
-                if (this._destroyed) return;
 
                 if (allFailed) {
                     this.consecutiveFailures = Math.min(this.consecutiveFailures + 1, 100);
-                    // Standard exponential backoff: 1st failure → 2x, 2nd → 4x, 3rd → 8x
-                    // (removed -1 so first failure triggers backoff immediately)
+                    // Exponential backoff with jitter to prevent thundering herd
+                    const jitter = Math.random() * 0.2 + 0.9; // 0.9–1.1
                     const backoffMs = Math.min(
-                        this.autoRefreshMs * Math.pow(2, this.consecutiveFailures),
+                        this.autoRefreshMs * Math.pow(2, this.consecutiveFailures) * jitter,
                         this.maxBackoffMs,
                     );
                     if (backoffMs !== this.currentRefreshInterval) {
@@ -289,8 +334,8 @@
                 if (this.pendingRefresh) {
                     this.pendingRefresh = false;
                     const retryDelayMs = Math.max(
-                        50,
-                        this.currentRefreshInterval > this.autoRefreshMs ? 1000 : 50,
+                        MIN_RETRY_DELAY_MS,
+                        this.currentRefreshInterval > this.autoRefreshMs ? BACKOFF_RETRY_DELAY_MS : MIN_RETRY_DELAY_MS,
                     );
                     // Track timeout to clear in destroy()
                     this._pendingRetryTimer = setTimeout(() => {
@@ -323,6 +368,27 @@
         return wrapper;
     }
 
+    /**
+     * Convert time range filter value (e.g., "7d", "30d", "y1") to hours.
+     * Supports: 6h, 24h, 7d, 30d, 90d, 180d, y1 (1 year).
+     * Used by DNS trend chart and potentially other pages.
+     * @param {string} value - The range filter value
+     * @param {number} [defaultHours=168] - Fallback value (default: 7 days)
+     * @returns {number} Hours corresponding to the range value
+     */
+    function parseTimeRangeToHours(value, defaultHours = 168) {
+        const rangeMap = {
+            '6h': 6,
+            '24h': 24,
+            '7d': 168,
+            '30d': 720,
+            '90d': 2160,
+            '180d': 4320,
+            'y1': 8760,
+        };
+        return rangeMap[value] ?? defaultHours;
+    }
+
     Object.freeze(RefreshScheduler.prototype);
     window.WBShared = Object.freeze({
         createDebugLogger,
@@ -330,6 +396,8 @@
         isAbortError,
         formatBytes,
         formatTrafficMetric,
+        formatBandwidthMetric,
+        parseTimeRangeToHours,
         RefreshScheduler,
         chartEmptyState,
         // Note: getDecimals removed from exports (internal implementation detail)

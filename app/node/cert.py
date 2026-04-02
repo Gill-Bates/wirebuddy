@@ -29,7 +29,8 @@ def clear_node_cert(data_dir: Path) -> None:
 	key_path = data_dir / KEY_FILE
 
 	for path in (cert_path, key_path):
-		if path.exists():
+		# Only unlink regular files (not symlinks or directories for safety)
+		if path.is_file():
 			path.unlink()
 			_log.info("Removed old certificate file: %s", path.name)
 
@@ -45,20 +46,34 @@ def ensure_node_cert(data_dir: Path, node_id: str) -> tuple[bytes, bytes]:
 	cert_path = data_dir / CERT_FILE
 	key_path = data_dir / KEY_FILE
 
-	if cert_path.exists() and key_path.exists():
+	# Attempt to read existing cert/key directly (avoid TOCTOU race)
+	try:
 		cert_pem = cert_path.read_bytes()
 		key_pem = key_path.read_bytes()
 		fp = get_cert_fingerprint(cert_pem)
 		_log.info("Using existing node certificate (fingerprint=%s...)", fp[:16])
 		return cert_pem, key_pem
+	except FileNotFoundError:
+		# One or both files missing, regenerate
+		if cert_path.exists() or key_path.exists():
+			_log.warning("Incomplete certificate state detected, regenerating both cert and key")
+			# Clean up partial state
+			cert_path.unlink(missing_ok=True)
+			key_path.unlink(missing_ok=True)
+	except Exception as exc:
+		# Corrupted files or permission issues
+		_log.warning("Failed to read existing certificate (%s), regenerating", exc)
+		cert_path.unlink(missing_ok=True)
+		key_path.unlink(missing_ok=True)
 
 	_log.info("Generating new self-signed node certificate...")
 	cert_pem, key_pem = generate_node_cert(node_id)
 
-	data_dir.mkdir(parents=True, exist_ok=True)
+	# Create data directory with restrictive permissions (0o700)
+	data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
 	# Atomic write with restrictive permissions
-	_write_file(cert_path, cert_pem, mode=0o644)
+	_write_file(cert_path, cert_pem, mode=0o600)  # Stricter: keep cert private too
 	_write_file(key_path, key_pem, mode=0o600)
 
 	fp = get_cert_fingerprint(cert_pem)
@@ -67,12 +82,21 @@ def ensure_node_cert(data_dir: Path, node_id: str) -> tuple[bytes, bytes]:
 
 
 def _write_file(path: Path, data: bytes, mode: int = 0o600) -> None:
-	"""Write data to file atomically with specified permissions."""
-	tmp = path.with_suffix(".tmp")
+	"""Write data to file atomically with specified permissions.
+	
+	Uses fsync for durability and unique temp filename to avoid collisions.
+	"""
+	# Use PID in temp filename to avoid collisions from concurrent writers
+	tmp = path.with_suffix(f".{os.getpid()}.tmp")
 	try:
-		tmp.write_bytes(data)
+		# Write with fsync for durability
+		with open(tmp, "wb") as f:
+			f.write(data)
+			f.flush()
+			os.fsync(f.fileno())
 		os.chmod(tmp, mode)
 		os.replace(tmp, path)
-	except BaseException:
+	except Exception:
+		# Don't catch SystemExit/KeyboardInterrupt (was BaseException)
 		tmp.unlink(missing_ok=True)
 		raise

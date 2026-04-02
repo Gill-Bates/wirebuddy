@@ -44,7 +44,7 @@
     }
 
     .dashboard-traffic-metric .dashboard-metric-unit {
-        margin-left: 0.5rem;
+        margin-left: 0;
     }
 
     .dashboard-kpi-subtext {
@@ -329,7 +329,7 @@
 
         .dashboard-traffic-metric .dashboard-metric-unit {
             display: inline;
-            margin-left: 0.35rem;
+            margin-left: 0;
             font-size: 0.875rem;
             color: var(--bs-secondary-color);
             white-space: nowrap;
@@ -709,13 +709,19 @@
                     <span class="material-icons align-middle me-1" aria-hidden="true">speed</span>
                     Speedtest
                 </h3>
-                <select id="speedtest-range" class="form-select form-select-sm" style="width: auto;" aria-label="Select time range">
-                    <option value="7d" selected>7 d</option>
-                    <option value="30d">30 d</option>
-                    <option value="90d">90 d</option>
-                    <option value="180d">180 d</option>
-                    <option value="y1">1 y</option>
-                </select>
+                <div class="d-flex gap-2 align-items-center">
+                    <select id="speedtest-node" class="form-select form-select-sm" style="width: auto; max-width: 130px;" aria-label="Filter by node">
+                        <option value="" selected>Master</option>
+                        <option value="all">All Nodes</option>
+                    </select>
+                    <select id="speedtest-range" class="form-select form-select-sm" style="width: auto;" aria-label="Select time range">
+                        <option value="7d" selected>7 d</option>
+                        <option value="30d">30 d</option>
+                        <option value="90d">90 d</option>
+                        <option value="180d">180 d</option>
+                        <option value="y1">1 y</option>
+                    </select>
+                </div>
             </div>
             <div class="card-body">
                 <div style="position: relative; height: 220px;">
@@ -856,6 +862,15 @@
         const decimals = (unit === 'MB' || unit === 'GB') ? 1 : 2;
         return Number((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + unit;
     });
+    const formatBandwidthMetric = window.WBShared?.formatBandwidthMetric
+        || ((valueMbit, gbitDigits = 1, mbitDigits = gbitDigits) => {
+            const numericValue = Number(valueMbit);
+            if (!Number.isFinite(numericValue)) return '–';
+            if (numericValue >= 1000) {
+                return `${(numericValue / 1000).toFixed(gbitDigits)} Gbit/s`;
+            }
+            return `${numericValue.toFixed(mbitDigits)} Mbit/s`;
+        });
 
     function setTrafficMetric(el, bytes, direction) {
         if (!el) return;
@@ -900,11 +915,13 @@
             return;
         }
 
-        downEl.textContent = `↓ ${downloadMbit.toFixed(1)} Mbit/s`;
-        upEl.textContent = `↑ ${uploadMbit.toFixed(1)} Mbit/s`;
+        downEl.textContent = `↓ ${formatBandwidthMetric(downloadMbit, 1)}`;
+        upEl.textContent = `↑ ${formatBandwidthMetric(uploadMbit, 1)}`;
     }
 
     function unwrapNodes(payload) {
+        // api() already unwraps envelope and returns data directly
+        if (Array.isArray(payload)) return payload;
         if (Array.isArray(payload?.nodes)) return payload.nodes;
         if (Array.isArray(payload?.data?.nodes)) return payload.data.nodes;
         if (Array.isArray(payload?.data)) return payload.data;
@@ -1736,6 +1753,8 @@
 
     // Listen for range selector changes
     const speedtestRange = document.getElementById('speedtest-range');
+    const speedtestNode = document.getElementById('speedtest-node');
+    
     if (speedtestRange) {
         speedtestRange.addEventListener('change', () => {
             refreshSpeedtestChart(new AbortController().signal).catch(e => {
@@ -1743,6 +1762,43 @@
             });
         });
     }
+    
+    // Listen for node selector changes
+    if (speedtestNode) {
+        speedtestNode.addEventListener('change', () => {
+            refreshSpeedtestChart(new AbortController().signal).catch(e => {
+                console.error('Failed to refresh speedtest chart:', e);
+            });
+        });
+    }
+    
+    // Populate node selector from API
+    async function loadSpeedtestNodes() {
+        try {
+            const res = await api('GET', '/api/wireguard/speedtest/nodes', null, { timeoutMs: 10000 });
+            const data = res.data || res;
+            const nodes = data.nodes || [];
+            
+            // Add remote node options if they exist
+            const remoteNodes = nodes.filter(n => n.node_id !== null);
+            if (remoteNodes.length > 0 && speedtestNode) {
+                // Keep existing static options (Master, All Nodes), add nodes dynamically
+                remoteNodes.forEach(n => {
+                    const opt = document.createElement('option');
+                    opt.value = n.node_id;
+                    opt.textContent = n.name;
+                    speedtestNode.appendChild(opt);
+                });
+            }
+            // Note: Keep dropdown visible even with no remote nodes - Master filter is still valid
+        } catch (e) {
+            console.debug('Failed to load speedtest nodes:', e);
+            // Keep dropdown visible with default options on error
+        }
+    }
+    
+    // Load nodes on page load
+    loadSpeedtestNodes();
 
     function getChartColors() {
         // Use same color scheme as network gauges for visual consistency
@@ -1756,6 +1812,103 @@
             ulBg: document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'rgba(110, 223, 246, 0.12)' : 'rgba(13, 202, 240, 0.12)',
             rttColor: 'rgba(255, 193, 7, 0.85)',
         };
+    }
+
+    function getNodeSeriesColor(index) {
+        const palette = [
+            '#ff6384',
+            '#0dcaf0',
+            '#20c997',
+            '#ffc107',
+            '#6f42c1',
+            '#fd7e14',
+            '#198754',
+            '#d63384',
+        ];
+        return palette[index % palette.length];
+    }
+
+    function withAlpha(hexColor, alpha) {
+        const hex = hexColor.replace('#', '');
+        if (hex.length !== 6) return hexColor;
+        const red = parseInt(hex.slice(0, 2), 16);
+        const green = parseInt(hex.slice(2, 4), 16);
+        const blue = parseInt(hex.slice(4, 6), 16);
+        return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+    }
+
+    function buildAllNodeDatasets(okHistory) {
+        const labels = [];
+        const labelIndex = new Map();
+        const nodeDownload = new Map();
+        const nodeUpload = new Map();
+
+        okHistory.forEach((entry) => {
+            const nodeName = entry.node_name || 'Unknown Node';
+            const timestamp = entry.ts;
+            if (!labelIndex.has(timestamp)) {
+                labelIndex.set(timestamp, labels.length);
+                labels.push(timestamp);
+            }
+            if (!nodeDownload.has(nodeName)) {
+                nodeDownload.set(nodeName, new Array(labels.length).fill(null));
+                nodeUpload.set(nodeName, new Array(labels.length).fill(null));
+            }
+            const dlSeries = nodeDownload.get(nodeName);
+            const ulSeries = nodeUpload.get(nodeName);
+            while (dlSeries.length < labels.length) {
+                dlSeries.push(null);
+                ulSeries.push(null);
+            }
+            dlSeries[labelIndex.get(timestamp)] = Number(entry.download_mbit || 0);
+            ulSeries[labelIndex.get(timestamp)] = Number(entry.upload_mbit || 0);
+        });
+
+        for (const nodeName of nodeDownload.keys()) {
+            const dlSeries = nodeDownload.get(nodeName);
+            const ulSeries = nodeUpload.get(nodeName);
+            while (dlSeries.length < labels.length) {
+                dlSeries.push(null);
+                ulSeries.push(null);
+            }
+        }
+
+        const datasets = [];
+        let colorIndex = 0;
+        for (const [nodeName, dlData] of nodeDownload.entries()) {
+            const ulData = nodeUpload.get(nodeName);
+            const color = getNodeSeriesColor(colorIndex);
+            // Download: solid line
+            datasets.push({
+                label: `${nodeName} (DL)`,
+                data: dlData,
+                borderColor: color,
+                backgroundColor: withAlpha(color, 0.14),
+                fill: false,
+                tension: 0.25,
+                pointRadius: 3,
+                pointHoverRadius: 4,
+                spanGaps: true,
+                yAxisID: 'y',
+            });
+            // Upload: dashed line, same color
+            datasets.push({
+                label: `${nodeName} (UL)`,
+                data: ulData,
+                borderColor: color,
+                backgroundColor: 'transparent',
+                borderDash: [5, 3],
+                fill: false,
+                tension: 0.25,
+                pointRadius: 2,
+                pointHoverRadius: 3,
+                spanGaps: true,
+                yAxisID: 'y',
+            });
+            colorIndex++;
+        }
+
+        return { labels, datasets };
     }
 
     function initSpeedtestChart() {
@@ -1802,6 +1955,12 @@
                         bodyFont: { size: window.innerWidth < 768 ? 11 : 12 },
                         callbacks: {
                             labelColor: function(ctx) {
+                                if (speedtestNode?.value === 'all') {
+                                    return {
+                                        borderColor: ctx.dataset.borderColor,
+                                        backgroundColor: ctx.dataset.borderColor,
+                                    };
+                                }
                                 const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--wb-accent-red').trim() || '#ff6384';
                                 
                                 if (ctx.dataset.label?.includes('RTT')) {
@@ -1823,13 +1982,19 @@
                                 };
                             },
                             label: function(ctx) {
+                                if (speedtestNode?.value === 'all') {
+                                    return `${ctx.dataset.label}: ${formatBandwidthMetric(ctx.parsed.y, 2)}`;
+                                }
                                 if (ctx.dataset.label?.includes('RTT')) {
                                     return `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(2) ?? '–'} ms`;
                                 }
-                                return `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(2) ?? '–'} Mbit/s`;
+                                return `${ctx.dataset.label}: ${formatBandwidthMetric(ctx.parsed.y, 2)}`;
                             },
                             afterBody: function(items) {
                                 // Show server info from hidden data
+                                if (speedtestNode?.value === 'all') {
+                                    return '';
+                                }
                                 const idx = items[0]?.dataIndex;
                                 if (idx != null && window._speedtestServers && window._speedtestServers[idx]) {
                                     return ['', `Server: ${window._speedtestServers[idx]}`];
@@ -1868,7 +2033,12 @@
     async function refreshSpeedtestChart(signal) {
         try {
             const range = speedtestRange?.value || '7d';
-            const res = await api('GET', `/api/wireguard/speedtest/history?range_key=${range}`, null, { signal, timeoutMs: API_TIMEOUT_MS });
+            const nodeId = speedtestNode?.value || '';
+            let url = `/api/wireguard/speedtest/history?range_key=${range}`;
+            if (nodeId) {
+                url += `&node_id=${encodeURIComponent(nodeId)}`;
+            }
+            const res = await api('GET', url, null, { signal, timeoutMs: API_TIMEOUT_MS });
             const data = res.data || res;
             const history = data.history || [];
 
@@ -1899,54 +2069,78 @@
                 return true;
             }
 
-            const labels = okHistory.map(h => {
-                const d = new Date(h.ts);
-                return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-                    + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-            });
+            okHistory.sort((left, right) => new Date(left.ts) - new Date(right.ts));
 
-            // Store server names for tooltip
-            window._speedtestServers = okHistory.map(h => {
-                try { return new URL(h.server).hostname; } catch { return h.server || '–'; }
-            });
+            const showAllNodes = nodeId === 'all';
+            let labels = [];
+            let datasets = [];
 
-            const colors = getChartColors();
+            if (showAllNodes) {
+                const allNodeChart = buildAllNodeDatasets(okHistory);
+                labels = allNodeChart.labels.map((ts) => {
+                    const d = new Date(ts);
+                    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+                        + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                });
+                datasets = allNodeChart.datasets;
+                window._speedtestServers = [];
+            } else {
+                labels = okHistory.map(h => {
+                    const d = new Date(h.ts);
+                    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+                        + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                });
 
-            const datasets = [
-                {
-                    label: 'Download',
-                    data: okHistory.map(h => h.download_mbit || 0),
-                    borderColor: colors.dlColor,
-                    backgroundColor: colors.dlBg,
-                    fill: true,
-                    tension: 0.3,
-                    pointRadius: 3,
-                    yAxisID: 'y',
-                },
-                {
-                    label: 'Upload',
-                    data: okHistory.map(h => h.upload_mbit || 0),
-                    borderColor: colors.ulColor,
-                    backgroundColor: colors.ulBg,
-                    fill: true,
-                    tension: 0.3,
-                    pointRadius: 3,
-                    yAxisID: 'y',
-                },
-                {
-                    label: 'RTT',
-                    data: okHistory.map(h => h.rtt_ms || 0),
-                    borderColor: colors.rttColor,
-                    backgroundColor: 'transparent',
-                    borderDash: [4, 4],
-                    tension: 0.3,
-                    pointRadius: 2,
-                    yAxisID: 'y1',
-                },
-            ];
+                // Store server names for tooltip
+                window._speedtestServers = okHistory.map(h => h.server || '–');
+
+                const colors = getChartColors();
+
+                datasets = [
+                    {
+                        label: 'Download',
+                        data: okHistory.map(h => h.download_mbit || 0),
+                        borderColor: colors.dlColor,
+                        backgroundColor: colors.dlBg,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 3,
+                        yAxisID: 'y',
+                    },
+                    {
+                        label: 'Upload',
+                        data: okHistory.map(h => h.upload_mbit || 0),
+                        borderColor: colors.ulColor,
+                        backgroundColor: colors.ulBg,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 3,
+                        yAxisID: 'y',
+                    },
+                    {
+                        label: 'RTT',
+                        data: okHistory.map(h => h.rtt_ms || 0),
+                        borderColor: colors.rttColor,
+                        backgroundColor: 'transparent',
+                        borderDash: [4, 4],
+                        tension: 0.3,
+                        pointRadius: 2,
+                        yAxisID: 'y1',
+                    },
+                ];
+            }
 
             speedtestChart.data.labels = labels;
             speedtestChart.data.datasets = datasets;
+            if (speedtestChart.options.plugins?.legend) {
+                speedtestChart.options.plugins.legend.display = showAllNodes;
+            }
+            if (speedtestChart.options.scales?.y?.title) {
+                speedtestChart.options.scales.y.title.text = 'Mbit/s';
+            }
+            if (speedtestChart.options.scales?.y1) {
+                speedtestChart.options.scales.y1.display = !showAllNodes;
+            }
             speedtestChart.update();
 
             // Update KPI card

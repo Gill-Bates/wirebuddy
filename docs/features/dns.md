@@ -280,6 +280,33 @@ The dashboard shows:
 - **Trend Chart:** Queries over time with block rate
 - **Top Domains:** Most queried and most blocked domains
 
+Trend data uses dual storage:
+
+- **JSONL query logs:** Raw DNS events for the query log UI and debugging
+- **TSDB aggregates:** Pre-aggregated minute buckets for fast trend rendering
+
+This keeps writes simple and durable while avoiding expensive full-log scans for the chart.
+
+### Time Range Filter
+
+The DNS trend chart supports multiple time ranges:
+
+| Range | Description |
+|-------|-------------|
+| **7 d** | Last 7 days (default) |
+| **30 d** | Last 30 days |
+| **90 d** | Last 90 days |
+| **180 d** | Last 180 days |
+| **1 y** | Last year (365 days) |
+
+The chart automatically adjusts data granularity based on the selected range to ensure optimal readability:
+
+- **7-30 days:** Hourly or 12-24h buckets depending on viewport
+- **90-180 days:** Daily buckets
+- **1 year:** Weekly buckets
+
+For unfiltered chart requests, WireBuddy reads pre-aggregated buckets from the TSDB. If you apply a client filter, WireBuddy falls back to raw JSONL logs because the TSDB stores global aggregates only.
+
 ### Client Filtering
 
 Select specific peers to view their individual DNS statistics:
@@ -287,6 +314,12 @@ Select specific peers to view their individual DNS statistics:
 - Filter chart data by client
 - View per-client top domains
 - Identify which peers generate the most queries
+
+!!! info
+    Client-filtered trend views are computed from raw query logs. Unfiltered trend views use the TSDB-backed fast path.
+
+!!! tip "Combined Filtering"
+    Time range and client filters can be used together for granular analysis. For example, view the last 30 days of queries from a specific device.
 
 ## Troubleshooting
 

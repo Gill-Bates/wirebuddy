@@ -28,6 +28,7 @@ export function summarizeFindings(result) {
     const warnings = [];
     const pushHard = (value) => hardFindings.push(value);
     const pushWarning = (value) => warnings.push(value);
+    const statusUnavailable = Boolean(result.statusUnavailableExpected);
 
     if (result.metrics.duplicateIds.length) pushHard(`duplicateIds=${result.metrics.duplicateIds.length}`);
     if (result.metrics.emptyAriaLabels.length) pushWarning(`emptyAriaLabels=${result.metrics.emptyAriaLabels.length}`);
@@ -57,10 +58,30 @@ export function summarizeFindings(result) {
     if (result.metrics.scrollEdgeCrowding?.length) pushWarning(`scrollEdgeCrowding=${result.metrics.scrollEdgeCrowding.length}`);
     if (result.metrics.scrollBottomCrowding?.length) pushWarning(`scrollBottomCrowding=${result.metrics.scrollBottomCrowding.length}`);
     if (result.metrics.nestedScrollContainers?.length) pushWarning(`nestedScrollContainers=${result.metrics.nestedScrollContainers.length}`);
+    if (result.metrics.flexScrollTraps?.length) {
+        const isMobile = result.name.includes('mobile-');
+        const severity = isMobile ? 'hard' : 'warning';
+        const message = `flexScrollTraps=${result.metrics.flexScrollTraps.length}`;
+        if (severity === 'hard') {
+            pushHard(message);
+        } else {
+            pushWarning(message);
+        }
+    }
+    if (result.metrics.doubleScrollRisk) {
+        const isMobile = result.name.includes('mobile-');
+        const severity = isMobile ? 'hard' : 'warning';
+        const message = `doubleScroll=${result.metrics.doubleScrollRisk.innerScrollCount}`;
+        if (severity === 'hard') {
+            pushHard(message);
+        } else {
+            pushWarning(message);
+        }
+    }
     if (result.metrics.badgeStyleMismatches?.length) pushWarning(`badgeStyleMismatches=${result.metrics.badgeStyleMismatches.length}`);
     if (result.metrics.monospaceToneMismatches?.length) pushWarning(`monospaceToneMismatches=${result.metrics.monospaceToneMismatches.length}`);
     if (result.metrics.cardContainment.cardsPastFooter.length) pushWarning(`cardsPastFooter=${result.metrics.cardContainment.cardsPastFooter.length}`);
-    if (result.metrics.modalBackdrop) {
+    if (result.metrics.modalBackdrop && !statusUnavailable) {
         if (!result.metrics.modalBackdrop.blurMatchesReference) {
             pushWarning(`modalBackdropBlur=${result.metrics.modalBackdrop.blurPx ?? 'missing'}`);
         }
@@ -79,13 +100,43 @@ export function summarizeFindings(result) {
         if (!dnsLogLayout.bodyMinHeightAllowsShrink) pushHard('dnsLogBodyMinHeightNotZero');
         if (!dnsLogLayout.wrapMinHeightAllowsShrink) pushHard('dnsLogWrapMinHeightNotZero');
         if (!dnsLogLayout.wrapScrollsInternally) pushHard('dnsLogWrapNotScrollable');
+        if (dnsLogLayout.wrapViewportCollapsedWithRows) pushHard('dnsLogWrapCollapsedWithRows');
+        if (dnsLogLayout.rowsStartBelowViewport) pushHard('dnsLogRowsOutsideViewport');
         if (!dnsLogLayout.bodyActsAsFlexChild) pushWarning('dnsLogBodyNotFlexing');
         if (!dnsLogLayout.wrapActsAsFlexChild) pushWarning('dnsLogWrapNotFlexing');
-        if (!dnsLogLayout.bodyClipsOverflow) pushWarning('dnsLogBodyOverflowVisible');
+        if (!dnsLogLayout.bodyOverflowModeSupported) pushWarning('dnsLogBodyOverflowMismatch');
         if (!dnsLogLayout.wrapFitsBody) pushWarning('dnsLogWrapExceedsBody');
     }
+    // DNS desktop column height alignment (Query Log ↔ Blockrate Trend)
+    if (result.name.includes('desktop-dns') && result.metrics.spacing.dnsDesktopColumnAlignment) {
+        const colAlign = result.metrics.spacing.dnsDesktopColumnAlignment;
+        if (!colAlign.aligned) {
+            pushHard(`dnsDesktopColumnVariance=${colAlign.variance}px`);
+        }
+        // Structural checks: missing d-flex on column or h-100/flex-grow on card
+        if (!colAlign.rightColHasDFlex) pushWarning('dnsQueryLogColMissingDFlex');
+        if (!colAlign.rightCardHasH100) pushWarning('dnsQueryLogCardMissingH100');
+        if (!colAlign.rightCardHasFlexGrow) pushWarning('dnsQueryLogCardMissingFlexGrow');
+    }
+    if (result.name.includes('mobile-dns') && result.metrics.spacing.dnsMobileQuickfilters) {
+        const dnsMobileQuickfilters = result.metrics.spacing.dnsMobileQuickfilters;
+        if (!dnsMobileQuickfilters.sameRow) {
+            pushHard(`dnsMobileQuickfiltersWrapped=${dnsMobileQuickfilters.topDelta}/${dnsMobileQuickfilters.bottomDelta}`);
+        }
+        if (!dnsMobileQuickfilters.equalWidth) {
+            pushWarning(`dnsMobileQuickfiltersWidthMismatch=${dnsMobileQuickfilters.widthDelta}px`);
+        }
+    }
+    if (result.name.includes('mobile-dns') && result.metrics.spacing.dnsMobileLogFilters) {
+        const dnsMobileLogFilters = result.metrics.spacing.dnsMobileLogFilters;
+        if (!dnsMobileLogFilters.sameRow) {
+            pushHard(`dnsMobileLogFiltersWrapped=${dnsMobileLogFilters.topDelta}/${dnsMobileLogFilters.bottomDelta}`);
+        }
+        if (!dnsMobileLogFilters.equalWidth) {
+            pushHard(`dnsMobileLogFiltersWidthMismatch=${dnsMobileLogFilters.widthDelta}px`);
+        }
+    }
     if (result.metrics.spacing.outlierVerticalGaps?.length) pushWarning(`outlierVerticalGaps=${result.metrics.spacing.outlierVerticalGaps.length}`);
-    if (result.metrics.spacing.rowGutterMarginConflicts?.length) pushWarning(`rowGutterMarginConflicts=${result.metrics.spacing.rowGutterMarginConflicts.length}`);
     if (result.name.includes('mobile-') && result.metrics.spacing.mobileRowCardStackGaps?.length) {
         const inconsistentRows = result.metrics.spacing.mobileRowCardStackGaps.filter((entry) => !entry.gapsConsistent);
         if (inconsistentRows.length) {
@@ -182,8 +233,8 @@ export function summarizeFindings(result) {
         if (!topRowLayout.heightsMatch) {
             pushWarning(`aboutTopRowHeightMismatch=${topRowLayout.variance}px`);
         }
-        if (!topRowLayout.compactCardsStayCompact) {
-            pushWarning(`aboutCompactCardExpanded=${topRowLayout.compactCardCount}`);
+        if (!topRowLayout.fillerCardsFillSpace) {
+            pushWarning(`aboutFillerCardNotGrowing=${topRowLayout.fillerCardCount}`);
         }
     }
     if (result.name.includes('mobile-about') && result.metrics.spacing.about?.mobileTopRowStack?.active) {
@@ -258,7 +309,19 @@ export function summarizeFindings(result) {
             pushHard(`nodesStatusOverlapsActions=${overlapRows.length}rows`);
         }
     }
-    if (result.metrics.layoutShift.value > LAYOUT_SHIFT_THRESHOLD) pushHard(`layoutShift=${result.metrics.layoutShift.value.toFixed(4)}`);
+    if (result.metrics.spacing.nodesDesktopTableWrapper?.hasHorizontalScroll) {
+        pushHard(`nodesDesktopHorizontalScroll=${result.metrics.spacing.nodesDesktopTableWrapper.scrollWidth}-${result.metrics.spacing.nodesDesktopTableWrapper.clientWidth}`);
+    }
+    if (result.metrics.spacing.nodesDynamicBehavior?.available) {
+        const dynamic = result.metrics.spacing.nodesDynamicBehavior;
+        if (dynamic.statusRefresh?.attempted && !dynamic.statusRefresh.passed) {
+            pushHard(`nodesStatusAutoRefresh=${dynamic.statusRefresh.reason || 'failed'}`);
+        }
+        if (dynamic.speedtestLock?.attempted && !dynamic.speedtestLock.passed) {
+            pushHard(`nodesSpeedtestLock=${dynamic.speedtestLock.reason || 'failed'}`);
+        }
+    }
+    if (!statusUnavailable && result.metrics.layoutShift.value > LAYOUT_SHIFT_THRESHOLD) pushHard(`layoutShift=${result.metrics.layoutShift.value.toFixed(4)}`);
     if (result.metrics.componentLayoutShift?.length) pushHard(`componentLayoutShift=${result.metrics.componentLayoutShift.length}`);
     if (result.metrics.contrastProblems.length) pushHard(`contrastProblems=${result.metrics.contrastProblems.length}`);
     if (result.metrics.visualContainmentIssues?.length) pushWarning(`visualContainmentIssues=${result.metrics.visualContainmentIssues.length}`);
@@ -417,7 +480,7 @@ export function summarizeFindings(result) {
         }
     }
 
-    if (result.name.includes('status') && result.metrics.spacing.statusFlow) {
+    if (result.name.includes('status') && result.metrics.spacing.statusFlow && !statusUnavailable) {
         const flow = result.metrics.spacing.statusFlow;
 
         if (!flow.hasWrapper) {

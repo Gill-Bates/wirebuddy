@@ -16,6 +16,7 @@ let _adBlockerEnabled = dnsApp ? (dnsApp.dataset.enableBlocklist === 'true' || d
 // Named constants
 const LOG_BATCH_SIZE = 50;  // Items to render per batch
 const LOG_FETCH_LIMIT = 1000;  // Max items to fetch from API
+const MAX_RENDERED_ROWS = 200;  // Max DOM rows (virtual scrolling light)
 const SCROLL_THRESHOLD_PX = 150;  // Trigger infinite scroll when this close to bottom
 const SEARCH_DEBOUNCE_MS = 250;  // Debounce delay for search input
 const MENU_VIEWPORT_MARGIN_PX = 8;  // Minimum margin for context menu
@@ -26,6 +27,7 @@ let _peerMap = {};
 let _trendChart = null;
 let _renderedCount = 0;  // How many items currently rendered
 let _filteredData = [];  // Filtered data for infinite scroll
+let _lastFilterKey = '';  // Cache key for filter state
 let _logsLoadInProgress = false;  // Guard against concurrent loadLogsOnly calls
 let _searchTimer = null;  // Debounce timer for search
 let _scrollRaf = null;  // RAF handle for scroll throttle
@@ -707,9 +709,12 @@ async function loadLogsOnly(showLoading = true) {
         // IMPORTANT: Backend should omit client field for non-admins in the API response.
         // This client-side stripping is cosmetic only - data already sent over the wire.
         // Fix: GET /api/dns/logs should check user.is_admin before including client IPs.
-        const newData = (data.queries || []).map(q =>
-            isAdmin ? q : { ...q, client: undefined }
-        );
+        // PERF: Preprocess client IP to avoid repeated regex/toLowerCase in render
+        const newData = (data.queries || []).map(q => {
+            const base = isAdmin ? q : { ...q, client: undefined };
+            base._clientIp = _extractClientIp(q.client || '').toLowerCase();
+            return base;
+        });
 
         // Lightweight change detection using first/last + sample from middle
         const sig = (arr) => {
@@ -849,14 +854,19 @@ function renderLogs(append = false) {
     // If not appending, reset and filter fresh
     if (!append) {
         _renderedCount = 0;
-        // Always create a copy to avoid reference issues
-        _filteredData = _logData.filter(q => {
-            if (filter === 'blocked' && !q.blocked) return false;
-            if (filter === 'allowed' && q.blocked) return false;
-            if (peerFilter !== 'all' && (q.client_name || peerMapSnapshot[_extractClientIp(q.client).toLowerCase()] || '') !== peerFilter) return false;
-            if (search && !(q.domain || '').toLowerCase().includes(search)) return false;
-            return true;
-        });
+        // PERF: Only recompute filter if inputs changed
+        const filterKey = `${filter}|${peerFilter}|${search}`;
+        if (filterKey !== _lastFilterKey) {
+            _filteredData = _logData.filter(q => {
+                if (filter === 'blocked' && !q.blocked) return false;
+                if (filter === 'allowed' && q.blocked) return false;
+                // PERF: Use preprocessed _clientIp instead of runtime extraction
+                if (peerFilter !== 'all' && (q.client_name || peerMapSnapshot[q._clientIp] || '') !== peerFilter) return false;
+                if (search && !(q.domain || '').toLowerCase().includes(search)) return false;
+                return true;
+            });
+            _lastFilterKey = filterKey;
+        }
         clearNode(tbody);
 
         // Update screen reader announcement with result count
@@ -937,7 +947,8 @@ function renderLogs(append = false) {
         domainWrap.appendChild(domainText);
 
         // Add client/peer info below domain
-        const peerName = peerMapSnapshot[_extractClientIp(q.client).toLowerCase()];
+        // PERF: Use preprocessed _clientIp instead of runtime extraction
+        const peerName = peerMapSnapshot[q._clientIp];
         const clientInfo = document.createElement('span');
         clientInfo.className = 'text-muted log-domain-client';
         if (!isAdmin) {
@@ -964,6 +975,12 @@ function renderLogs(append = false) {
 
     tbody.appendChild(frag);
     _renderedCount = endIdx;
+
+    // PERF: Limit DOM size by removing old rows (virtual scrolling light)
+    while (tbody.children.length > MAX_RENDERED_ROWS) {
+        tbody.removeChild(tbody.firstChild);
+    }
+
     queueLogAutoFill();
 }
 
@@ -981,6 +998,8 @@ function queueLogAutoFill() {
     const logContainer = document.getElementById('log-table-wrap');
     if (!logContainer || _logAutoFillQueued || _renderedCount >= _filteredData.length) return;
     if (logContainer.scrollHeight > logContainer.clientHeight + 1) return;
+    // PERF: Prevent autofill loops when DOM is already large
+    if (_renderedCount > MAX_RENDERED_ROWS) return;
 
     _logAutoFillQueued = true;
     requestAnimationFrame(() => {
@@ -1123,7 +1142,7 @@ let _lastSlowPoll = 0;
 const SLOW_POLL_INTERVAL = 60000;
 
 const _refreshScheduler = new window.WBShared.RefreshScheduler({
-    autoRefreshMs: 15000,
+    autoRefreshMs: 30000,  // PERF: Reduced from 15s to 30s - less CPU/network usage
     maxBackoffMs: 300000,
     refreshFn: async () => {
         // Promise.allSettled never rejects - check results instead
@@ -1324,87 +1343,6 @@ if (logSearchInput) {
     logSearchInput.addEventListener('input', debouncedRenderLogs);
 }
 
-// Pull-to-refresh for mobile
-const pullRefreshIndicator = document.getElementById('log-pull-refresh');
-const logTableWrap = document.getElementById('log-table-wrap');
-
-if (pullRefreshIndicator && logTableWrap && 'ontouchstart' in window) {
-    let touchStartY = 0;
-    let touchCurrentY = 0;
-    let isPulling = false;
-    let isRefreshing = false;
-    const PULL_THRESHOLD = 60;
-
-    logTableWrap.addEventListener('touchstart', (e) => {
-        // Only allow pull-to-refresh when scrolled to top
-        if (logTableWrap.scrollTop === 0 && !isRefreshing) {
-            touchStartY = e.touches[0].clientY;
-            isPulling = true;
-        }
-    }, { passive: true });
-
-    logTableWrap.addEventListener('touchmove', (e) => {
-        if (!isPulling || isRefreshing) return;
-
-        touchCurrentY = e.touches[0].clientY;
-        const pullDistance = touchCurrentY - touchStartY;
-
-        // Only show indicator when pulling down
-        if (pullDistance > 0 && logTableWrap.scrollTop === 0) {
-            pullRefreshIndicator.style.height = `${Math.min(pullDistance * 0.5, 50)}px`;
-            pullRefreshIndicator.classList.add('pulling');
-
-            if (pullDistance >= PULL_THRESHOLD) {
-                pullRefreshIndicator.classList.add('ready');
-                const pullText = pullRefreshIndicator.querySelector('.pull-text');
-                if (pullText) pullText.textContent = 'Release to refresh';
-            } else {
-                pullRefreshIndicator.classList.remove('ready');
-                const pullText = pullRefreshIndicator.querySelector('.pull-text');
-                if (pullText) pullText.textContent = 'Pull to refresh';
-            }
-        }
-    }, { passive: true });
-
-    logTableWrap.addEventListener('touchend', async () => {
-        if (!isPulling || isRefreshing) return;
-
-        const pullDistance = touchCurrentY - touchStartY;
-
-        if (pullDistance >= PULL_THRESHOLD && logTableWrap.scrollTop === 0) {
-            // Trigger refresh
-            isRefreshing = true;
-            pullRefreshIndicator.classList.remove('ready');
-            pullRefreshIndicator.classList.add('refreshing');
-            const pt1 = pullRefreshIndicator.querySelector('.pull-text');
-            if (pt1) pt1.textContent = 'Refreshing...';
-            const arr1 = pullRefreshIndicator.querySelector('.pull-arrow');
-            if (arr1) arr1.textContent = 'autorenew';
-
-            try {
-                await loadLogsOnly(false);
-            } finally {
-                // Reset indicator
-                isRefreshing = false;
-                pullRefreshIndicator.classList.remove('pulling', 'refreshing');
-                pullRefreshIndicator.style.height = '0';
-
-                const pt2 = pullRefreshIndicator.querySelector('.pull-text');
-                if (pt2) pt2.textContent = 'Pull to refresh';
-                const arr2 = pullRefreshIndicator.querySelector('.pull-arrow');
-                if (arr2) arr2.textContent = 'arrow_downward';
-            }
-        } else {
-            // Reset without refresh
-            pullRefreshIndicator.classList.remove('pulling', 'ready');
-            pullRefreshIndicator.style.height = '0';
-        }
-
-        isPulling = false;
-        touchStartY = 0;
-        touchCurrentY = 0;
-    }, { passive: true });
-}
 
 // Initial load
 (async () => {

@@ -106,33 +106,32 @@
                             <input class="form-check-input" type="checkbox" id="speedtest-enabled"{% if settings.speedtest_enabled %} checked{% endif %}{% if not user['is_admin'] %} disabled{% endif %}>
                             <label class="form-check-label" for="speedtest-enabled">Scheduled</label>
                         </div>
-                        <div class="row g-3">
-                            <div class="col-md-6">
-                                <label for="speedtest-target" class="form-label">Target Server</label>
-                                <select class="form-select" id="speedtest-target"{% if not user['is_admin'] %} disabled{% endif %}>
-                                    <option value="auto">Automatic (RTT-based)</option>
-                                </select>
-                                <small class="text-muted">Automatic selects the server with lowest latency</small>
-                            </div>
-                        </div>
+                        <small class="text-muted d-block mb-3">Server is automatically selected by lowest latency (<a href="https://github.com/librespeed/speedtest" target="_blank" rel="noopener noreferrer">LibreSpeed</a>)</small>
                         <div id="speedtest-result" class="mt-3 d-none">
                             <hr class="my-3">
                             <div class="row g-3">
-                                <div class="col-6 col-md-3">
+                                <div class="col-6 col-lg-auto">
                                     <div class="text-muted small">Download</div>
                                     <div class="fw-semibold" id="speedtest-result-dl">&ndash;</div>
                                 </div>
-                                <div class="col-6 col-md-3">
+                                <div class="col-6 col-lg-auto">
                                     <div class="text-muted small">Upload</div>
                                     <div class="fw-semibold" id="speedtest-result-ul">&ndash;</div>
                                 </div>
-                                <div class="col-6 col-md-3">
+                                <div class="col-6 col-lg-auto">
                                     <div class="text-muted small">RTT</div>
                                     <div class="fw-semibold" id="speedtest-result-rtt">&ndash;</div>
                                 </div>
-                                <div class="col-6 col-md-3">
+                                <div class="col-6 col-lg">
                                     <div class="text-muted small">Server</div>
                                     <div class="fw-semibold speedtest-result-server" id="speedtest-result-server" title="">&ndash;</div>
+                                </div>
+                                <div class="col-12 col-lg-auto">
+                                    <div class="text-muted small d-flex align-items-center gap-1 flex-wrap">
+                                        <span>Measured</span>
+                                        <span class="d-inline d-lg-none" id="speedtest-result-date-inline"></span>
+                                    </div>
+                                    <div class="fw-semibold" id="speedtest-result-date">&ndash;</div>
                                 </div>
                             </div>
                         </div>

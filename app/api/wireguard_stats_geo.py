@@ -461,7 +461,7 @@ async def reset_tsdb(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Reset/delete all TSDB data (admin only)."""
-	deleted = await run_in_threadpool(tsdb.reset_all, tsdb_dir)
+	deleted = await run_in_threadpool(tsdb.reset_all, tsdb_dir, force=True)
 	return ok_response(
 		message=f"TSDB reset: {deleted} peer directories deleted",
 		data={"deleted": deleted},

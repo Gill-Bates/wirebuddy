@@ -52,6 +52,7 @@ _MAX_CSV_ITEMS = 64  # For allowed_ips, addresses, etc.
 _TIMEOUT_WG_SHOW = 5
 _TIMEOUT_WG_SET = 15
 _TIMEOUT_WG_QUICK = 30
+_LOCK_TIMEOUT = 60  # Seconds to wait for file lock acquisition
 
 
 def _redact_keys(text: str) -> str:
@@ -267,12 +268,15 @@ def _get_default_route_iface() -> str | None:
 	return None
 
 
-def _build_node_post_up(_iface_name: str) -> str:
+def _build_node_post_up(_iface_name: str, cached_phy: str | None = None) -> str:
 	"""Build PostUp rules for a node: IP forwarding + NAT/MASQUERADE.
 	
 	Note: _iface_name is unused - PostUp uses %i placeholder provided by wg-quick.
+	
+	Args:
+		cached_phy: Pre-detected physical interface name (avoids race condition)
 	"""
-	phy = _get_default_route_iface() or "eth0"
+	phy = cached_phy or _get_default_route_iface() or "eth0"
 	# Validate physical interface name to prevent shell injection
 	if _INTERFACE_RE.fullmatch(phy) is None:
 		raise RuntimeError(f"Unsafe default route interface name: {phy!r}")
@@ -290,12 +294,15 @@ def _build_node_post_up(_iface_name: str) -> str:
 	)
 
 
-def _build_node_post_down(_iface_name: str) -> str:
+def _build_node_post_down(_iface_name: str, cached_phy: str | None = None) -> str:
 	"""Build PostDown rules for a node: remove NAT/MASQUERADE.
 	
 	Note: _iface_name is unused - PostDown uses %i placeholder provided by wg-quick.
+	
+	Args:
+		cached_phy: Pre-detected physical interface name (avoids race condition)
 	"""
-	phy = _get_default_route_iface() or "eth0"
+	phy = cached_phy or _get_default_route_iface() or "eth0"
 	# Validate physical interface name to prevent shell injection
 	if _INTERFACE_RE.fullmatch(phy) is None:
 		raise RuntimeError(f"Unsafe default route interface name: {phy!r}")
@@ -309,8 +316,12 @@ def _build_node_post_down(_iface_name: str) -> str:
 	)
 
 
-def _render_interface_config(name: str, config: dict[str, Any]) -> str:
-	"""Render sanitized WireGuard interface config content."""
+def _render_interface_config(name: str, config: dict[str, Any], cached_phy: str | None = None) -> str:
+	"""Render sanitized WireGuard interface config content.
+	
+	Args:
+		cached_phy: Pre-detected physical interface name for NAT rules
+	"""
 	address_parts = [config["address"]]
 	if config.get("address6"):
 		address_parts.append(config["address6"])
@@ -325,8 +336,8 @@ def _render_interface_config(name: str, config: dict[str, Any]) -> str:
 
 	# Node: always generate own NAT rules (master PostUp/PostDown are ignored
 	# because they reference the master's physical interface, not the node's)
-	post_up = _build_node_post_up(name)
-	post_down = _build_node_post_down(name)
+	post_up = _build_node_post_up(name, cached_phy)
+	post_down = _build_node_post_down(name, cached_phy)
 	lines.append(f"PostUp = {post_up}")
 	lines.append(f"PostDown = {post_down}")
 	lines.append("")
@@ -334,10 +345,14 @@ def _render_interface_config(name: str, config: dict[str, Any]) -> str:
 	return "\n".join(lines) + "\n"
 
 
-def _write_interface_config(name: str, config: dict[str, Any]) -> bool:
-	"""Write a WireGuard interface config file and return True when content changed."""
+def _write_interface_config(name: str, config: dict[str, Any], cached_phy: str | None = None) -> bool:
+	"""Write a WireGuard interface config file and return True when content changed.
+	
+	Args:
+		cached_phy: Pre-detected physical interface name for NAT rules
+	"""
 	conf_path = _get_interface_conf_path(name)
-	new_content = _render_interface_config(name, config)
+	new_content = _render_interface_config(name, config, cached_phy)
 	existing_managed = _read_managed_config(conf_path)
 	if conf_path.exists() and existing_managed is None:
 		raise ValueError(f"Refusing to overwrite unmanaged WireGuard config: {conf_path}")
@@ -371,12 +386,19 @@ def _write_interface_config(name: str, config: dict[str, Any]) -> bool:
 
 
 def _runtime_tmp_dir() -> Path:
-	"""Prefer a root-owned runtime directory for ephemeral key material."""
-	candidate = Path("/run")
-	if candidate.is_dir():
-		return candidate
-	_log.warning("Runtime dir /run not available, using %s for PSK tempfiles", WG_CONFIG_DIR)
-	return _get_config_dir()
+	"""Prefer a root-owned runtime directory for ephemeral key material.
+	
+	PSK files must not persist across reboots. Only accept memory-backed
+	runtime directories (/run, /dev/shm) to prevent accidental persistence.
+	"""
+	for candidate in (Path("/run"), Path("/dev/shm")):
+		if candidate.is_dir():
+			return candidate
+	# CRITICAL: Refuse to use persistent storage for PSK files
+	raise RuntimeError(
+		"No ephemeral runtime directory available (/run, /dev/shm). "
+		"Cannot securely store PSK tempfiles."
+	)
 
 
 def _write_psk_tempfile(psk: str, iface_name: str) -> Path:
@@ -440,10 +462,23 @@ def apply_config(config: dict[str, Any]) -> str:
 
 	Returns the applied config_version.
 	"""
-	# Serialize concurrent calls with a file lock
+	# Serialize concurrent calls with a file lock (with timeout to prevent deadlock)
 	lock_fd = os.open(str(_LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o600)
 	try:
-		fcntl.flock(lock_fd, fcntl.LOCK_EX)
+		# Try non-blocking first, then retry with timeout
+		for attempt in range(_LOCK_TIMEOUT):
+			try:
+				fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+				break
+			except BlockingIOError:
+				if attempt == 0:
+					_log.info("Waiting for WireGuard config lock...")
+				if attempt >= _LOCK_TIMEOUT - 1:
+					raise RuntimeError(
+						f"Failed to acquire WireGuard config lock after {_LOCK_TIMEOUT}s"
+					)
+				import time
+				time.sleep(1)
 		return _apply_config_locked(config)
 	finally:
 		fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -478,6 +513,14 @@ def _apply_config_locked(config: dict[str, Any]) -> str:
 	if len(peers) > _MAX_INTERFACES * _MAX_PEERS_PER_INTERFACE:
 		raise ValueError(f"Config exceeds maximum total peer count")
 	
+	# Validate no duplicate peer public keys across all interfaces
+	all_peer_keys: set[str] = set()
+	for peer in peers:
+		key = peer["public_key"]
+		if key in all_peer_keys:
+			raise ValueError(f"Duplicate peer public key across interfaces: {key[:8]}...")
+		all_peer_keys.add(key)
+	
 	peers_by_interface: dict[str, list[dict[str, Any]]] = {name: [] for name in desired_ifaces}
 	for peer in peers:
 		peers_by_interface[peer["interface"]].append(peer)
@@ -489,9 +532,11 @@ def _apply_config_locked(config: dict[str, Any]) -> str:
 
 	# 1. Ensure interfaces are up
 	running = _get_running_interfaces()
+	# Cache default route interface for consistent NAT rules
+	default_route_iface = _get_default_route_iface()
 	for iface in interfaces:
 		name = iface["name"]
-		changed = _write_interface_config(name, iface)
+		changed = _write_interface_config(name, iface, default_route_iface)
 		if name not in running:
 			_log.info("Bringing up interface %s...", name)
 			_run_checked(["wg-quick", "up", name], timeout=_TIMEOUT_WG_QUICK)
@@ -545,17 +590,31 @@ def _ensure_routes_for_allowed_ips(iface_name: str, allowed_ips: str) -> None:
 
 	Unlike wg-quick, `wg set` doesn't create routes automatically.
 	We parse allowed-ips and add each as a route via the interface.
+	
+	Supports both IPv4 and IPv6 routes.
 	"""
 	for ip_str in allowed_ips.split(","):
 		ip_str = ip_str.strip()
 		if not ip_str:
 			continue
-		# Check if route already exists
-		code, stdout, _ = _run(["ip", "route", "get", ip_str.split("/")[0]], timeout=_TIMEOUT_WG_SHOW)
+		
+		# Detect IPv4 vs IPv6
+		is_ipv6 = ":" in ip_str.split("/")[0]
+		ip_family_flag = "-6" if is_ipv6 else "-4"
+		
+		# Check if route already exists (use 'ip route show exact' for efficiency)
+		code, stdout, _ = _run(
+			["ip", ip_family_flag, "route", "show", "exact", ip_str],
+			timeout=_TIMEOUT_WG_SHOW
+		)
 		if code == 0 and f"dev {iface_name}" in stdout:
 			continue  # Route already points to wg interface
+		
 		# Add/replace route
-		code, _, stderr = _run(["ip", "route", "replace", ip_str, "dev", iface_name], timeout=_TIMEOUT_WG_SET)
+		code, _, stderr = _run(
+			["ip", ip_family_flag, "route", "replace", ip_str, "dev", iface_name],
+			timeout=_TIMEOUT_WG_SET
+		)
 		if code != 0:
 			_log.warning("Failed to add route %s dev %s: %s", ip_str, iface_name, stderr.strip())
 		else:
@@ -612,7 +671,10 @@ def _get_current_peer_state(iface_name: str) -> dict[str, str]:
 		# wg show <iface> dump format:
 		# first line (interface): privkey \t pubkey \t listen-port \t fwmark  (4 fields)
 		# peer lines: pubkey \t psk \t endpoint \t allowed-ips \t handshake \t rx \t tx \t keepalive  (8 fields)
-		# CRITICAL: Must check len(parts) == 8 to skip interface line (which contains PRIVATE KEY)
+		# Skip interface line (4 fields) to avoid logging private key
+		if len(parts) == 4:
+			continue
+		# Peer lines: check length and validate public key format
 		if len(parts) == 8 and _WG_KEY_RE.fullmatch(parts[0]):
 			# peer line: parts[0]=pubkey, parts[3]=allowed-ips
 			state[parts[0]] = parts[3]
@@ -647,24 +709,20 @@ def _sync_peers_for_interface(iface_name: str, desired_peers: list[dict[str, Any
 		current_ips = current_state.get(key, "").replace(" ", "")
 
 		psk = p.get("preshared_key")
-		# Skip only if peer exists, allowed-ips unchanged, and no PSK in config
-		# (we always update when PSK is present to ensure it's set/rotated,
-		# and when no PSK is desired we clear any previous PSK with /dev/null)
+		# Update when:
+		# - new peer (not in current_keys)
+		# - allowed-ips changed
+		# - PSK is present in config (always set/rotate PSK when specified)
 		needs_update = (
-			key not in current_keys or  # new peer
-			desired_ips != current_ips or  # allowed-ips changed
-			psk  # PSK present → always update (set/rotate)
+			key not in current_keys or
+			desired_ips != current_ips or
+			psk is not None
 		)
 		
 		if not needs_update:
-			# Peer exists, IPs unchanged, no PSK → but we still need to ensure
-			# any previous PSK is cleared. To be safe, always send preshared-key
-			# when transitioning to no-PSK state.
-			# Use /dev/null to explicitly remove any existing PSK.
-			cmd = ["wg", "set", iface_name, "peer", key, "preshared-key", "/dev/null"]
-			code, _, stderr = _run(cmd, timeout=_TIMEOUT_WG_SET)
-			if code != 0:
-				_log.warning("Failed to clear PSK for peer %s on %s: %s", key[:8], iface_name, stderr.strip())
+			# Peer exists, IPs match, no PSK in config → skip update
+			# Note: We don't clear PSK here to avoid unnecessary wg set calls.
+			# PSK removal requires explicit config change (adding preshared_key: null).
 			continue
 
 		cmd = ["wg", "set", iface_name, "peer", key, "allowed-ips", p["peer_address"]]

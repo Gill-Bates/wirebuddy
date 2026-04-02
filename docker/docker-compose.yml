@@ -3,6 +3,7 @@ services:
     image: giiibates/wirebuddy:latest
     container_name: wirebuddy
     restart: always
+    stop_grace_period: 20s
     network_mode: host
     cap_add:
       - NET_ADMIN

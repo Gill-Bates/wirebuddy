@@ -12,12 +12,12 @@ from .guard import (
 	SpeedtestCooldownError,
 	acquire_speedtest_run_lease,
 )
-from .tester import BandwidthTester, ProgressCallback, ProgressEvent
+from .tester import ProgressCallback, ProgressEvent, run_speedtest
 
 __all__ = [
-	"BandwidthTester",
 	"ProgressCallback",
 	"ProgressEvent",
+	"run_speedtest",
 	"DEFAULT_SPEEDTEST_COOLDOWN_SECONDS",
 	"SpeedtestBusyError",
 	"SpeedtestCooldownError",

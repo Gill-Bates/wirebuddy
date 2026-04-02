@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,8 +40,10 @@ def parse_unbound_line(
 ) -> DnsQueryPoint | None:
 	"""Fast parser for Unbound log lines.
 	
-	Format: [epoch] unbound[pid:tid] query: 10.0.0.5 example.com. A IN
-	        [epoch] unbound[pid:tid] reply: 10.0.0.5 example.com. A IN NOERROR 0.05 0 124
+	Format: [epoch] unbound[pid:tid] reply: 10.0.0.5 example.com. A IN NOERROR 0.05 0 124
+	
+	Note: Only reply lines are processed to avoid double-counting.
+	Query lines are logged before the actual lookup, replies contain the result.
 	
 	Args:
 		line: Raw log line.
@@ -53,11 +56,12 @@ def parse_unbound_line(
 		2. Exact blocked domains set
 		3. Wildcard/regex block rules
 	
-	Returns None for unparseable lines or status messages.
+	Returns None for unparseable lines, query lines, or status messages.
 	"""
 	try:
-		# Fast path: check for query/reply markers
-		if " query: " not in line and " reply: " not in line:
+		# Only process reply lines to avoid double-counting
+		# Query lines are logged before lookup, reply lines contain the result
+		if " reply: " not in line:
 			return None
 		
 		# Extract timestamp (seconds since epoch)
@@ -73,17 +77,10 @@ def parse_unbound_line(
 		except (ValueError, OSError):
 			return None
 		
-		# Split on query: or reply:
-		if " query: " in line:
-			is_reply = False
-			_, payload = line.split(" query: ", 1)
-		else:
-			is_reply = True
-			_, payload = line.split(" reply: ", 1)
-		
-		# Parse payload: <client> <domain>. <qtype> IN [<rcode> ...]
+		# Parse reply payload: <client> <domain>. <qtype> IN <rcode> ...
+		_, payload = line.split(" reply: ", 1)
 		parts = payload.split()
-		if len(parts) < 4:  # Need at least: client domain qtype IN
+		if len(parts) < 5:  # Need at least: client domain qtype IN rcode
 			return None
 		
 		client = parts[0]
@@ -95,16 +92,14 @@ def parse_unbound_line(
 		if not _is_ip_like(client):
 			return None
 		
-		# Extract response code from reply lines
+		# Extract response code from reply (after "IN")
 		rcode = ""
-		if is_reply and len(parts) >= 5:
-			# Find "IN" marker and take next part as rcode
-			try:
-				in_idx = parts.index("IN")
-				if in_idx + 1 < len(parts):
-					rcode = parts[in_idx + 1]
-			except ValueError:
-				pass
+		try:
+			in_idx = parts.index("IN")
+			if in_idx + 1 < len(parts):
+				rcode = parts[in_idx + 1]
+		except ValueError:
+			pass
 		
 		# === Block/Allow Priority Logic ===
 		# Priority 1: Allow rules (absolute whitelist override)
@@ -153,65 +148,18 @@ def parse_unbound_line(
 
 
 def _is_ip_like(s: str) -> bool:
-	"""Fast check if string looks like IPv4 or IPv6 address.
+	"""Check if string is a valid IPv4 or IPv6 address.
 	
-	Accepts:
-	- IPv4: 192.168.1.1
-	- IPv6: ::1, fe80::1, 2001:db8::1
-	
-	Rejects:
-	- IP:port (contains port)
-	- Partial IPv4 like 1.2.3
-	- Zone IDs (fe80::1%eth0)
-	- Invalid structures (::::::::::)
+	Uses stdlib ipaddress for correctness and maintainability.
+	Slightly slower than manual parsing but handles all edge cases.
 	"""
 	if not s:
 		return False
-	
-	# Reject if contains port separator or zone ID
-	if s.startswith('[') or '%' in s:
+	try:
+		ipaddress.ip_address(s)
+		return True
+	except ValueError:
 		return False
-	
-	# IPv4: must have exactly 3 dots
-	if '.' in s and ':' not in s:
-		parts = s.split('.')
-		if len(parts) != 4:
-			return False
-		for p in parts:
-			if not p.isdigit():
-				return False
-			if not 0 <= int(p) <= 255:
-				return False
-		return True
-	
-	# IPv6: structural validation
-	if ':' in s:
-		# Must have 2-7 colons (8 groups with :: allowed)
-		colon_count = s.count(':')
-		if colon_count < 2 or colon_count > 7:
-			return False
-		
-		# Check for valid :: usage (only one allowed)
-		if '::' in s:
-			if s.count('::') > 1:
-				return False
-		else:
-			# Without ::, must have exactly 7 colons
-			if colon_count != 7:
-				return False
-		
-		# Validate each group is valid hex (0-4 chars)
-		groups = s.split(':')
-		for g in groups:
-			if g == '':
-				continue  # Empty from ::
-			if len(g) > 4:
-				return False
-			if not all(c in '0123456789abcdefABCDEF' for c in g):
-				return False
-		return True
-	
-	return False
 
 
 def _is_domain_blocked(domain: str, blocked_domains: set[str]) -> bool:

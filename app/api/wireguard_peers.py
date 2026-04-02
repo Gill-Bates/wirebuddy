@@ -219,6 +219,17 @@ async def _sync_tunnel_peer_allowed_ips(conn: sqlite3.Connection, node_id: str) 
 		)
 
 
+async def _sync_master_path_then_notify_node(conn: sqlite3.Connection, node_id: str) -> None:
+	"""Prepare the master-side tunnel path before activating config on the node.
+
+	For remote peers, the master must already accept the peer source IPs on the
+	node tunnel before the node starts serving those peers. Otherwise early DNS
+	queries can time out until the tunnel peer catches up.
+	"""
+	await _sync_tunnel_peer_allowed_ips(conn, node_id)
+	await _bump_and_notify_node(conn, node_id)
+
+
 def _extract_peer_client_scopes(peer_address: str | None) -> set[str]:
 	"""Extract canonical client scopes from a peer address field."""
 	if not peer_address:
@@ -484,9 +495,7 @@ async def create_peer(
 	if is_remote:
 		# For remote peers: bump node config version and notify via SSE
 		try:
-			await _bump_and_notify_node(conn, payload.node_id)
-			# Update master's tunnel peer to accept traffic from this new peer
-			await _sync_tunnel_peer_allowed_ips(conn, payload.node_id)
+			await _sync_master_path_then_notify_node(conn, payload.node_id)
 		except Exception as exc:
 			_log.warning("Failed to bump/notify config for node %s: %s", payload.node_id, exc)
 	else:
@@ -679,9 +688,7 @@ async def update_peer(
 			peer_id, old_node_id, new_node_id, list(nodes_to_notify))
 		for nid in nodes_to_notify:
 			try:
-				await _bump_and_notify_node(conn, nid)
-				# Update master's tunnel peer to include/exclude this peer's address
-				await _sync_tunnel_peer_allowed_ips(conn, nid)
+				await _sync_master_path_then_notify_node(conn, nid)
 			except Exception as exc:
 				_log.warning("Failed to bump/notify config for node %s: %s", nid, exc)
 	
@@ -730,9 +737,7 @@ async def delete_peer(
 		await run_in_threadpool(db_delete_peer, conn, peer_id)
 
 		try:
-			await _bump_and_notify_node(conn, old_node_id)
-			# Update master's tunnel peer to remove this peer's address
-			await _sync_tunnel_peer_allowed_ips(conn, old_node_id)
+			await _sync_master_path_then_notify_node(conn, old_node_id)
 		except Exception as exc:
 			_log.warning("Failed to bump/notify config for node %s after peer delete: %s", old_node_id, exc)
 
@@ -770,8 +775,8 @@ async def delete_peer(
 	)
 	await apply_client_isolation_runtime(interface_name, conn)
 	
-	# Delete TSDB data
-	await run_in_threadpool(tsdb.delete_peer_data, tsdb_dir, public_key)
+	# Delete TSDB data (peer already removed, safe to force deletion)
+	await run_in_threadpool(tsdb.delete_peer_data, tsdb_dir, public_key, force=True)
 	
 	# Regenerate Unbound peer tags
 	try:

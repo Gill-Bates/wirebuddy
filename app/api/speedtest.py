@@ -13,23 +13,20 @@ import json
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from ..db.sqlite_runtime import transaction
+from ..db.sqlite_runtime import close_connection, connect, transaction
 from ..db.sqlite_settings import (
-	SPEEDTEST_SERVER_LIST,
-	SPEEDTEST_SERVER_MAP,
 	SPEEDTEST_RETENTION_OPTIONS,
 	get_speedtest_enabled,
-	get_speedtest_target,
 	get_speedtest_retention_days,
 	set_speedtest_enabled,
-	set_speedtest_target,
+	set_speedtest_last_run_at,
 	set_speedtest_retention_days,
 )
 from ..speedtest import (
@@ -52,6 +49,7 @@ SPEEDTEST_TSDB_METRIC = "speedtest_result"
 SPEEDTEST_RUN_TIMEOUT_SECONDS = 120
 SPEEDTEST_HISTORY_DEFAULT_LIMIT = 500
 SPEEDTEST_HISTORY_MAX_LIMIT = 5000
+SPEEDTEST_PROGRESS_QUEUE_SIZE = 32  # SSE progress event queue capacity
 
 # Time range mapping for history queries
 SPEEDTEST_RANGE_TO_HOURS = {
@@ -67,33 +65,6 @@ SPEEDTEST_RANGE_TO_HOURS = {
 class SpeedtestSettingsPayload(BaseModel):
 	"""Payload for updating speedtest settings."""
 	enabled: Optional[bool] = None
-	target: Optional[str] = Field(None, max_length=64)
-
-	@field_validator("target")
-	@classmethod
-	def validate_target(cls, v: Optional[str]) -> Optional[str]:
-		if v is None:
-			return v
-		v = v.strip().lower()
-		if v != "auto" and v not in SPEEDTEST_SERVER_MAP:
-			raise ValueError(f"Unknown target: {v}. Must be 'auto' or one of: {', '.join(SPEEDTEST_SERVER_MAP)}")
-		return v
-
-
-def _resolve_speedtest_servers(conn: sqlite3.Connection) -> list[str]:
-	"""Resolve speedtest server URLs based on current target setting.
-	
-	Returns list of server URLs for testing. If target='auto', returns all
-	configured servers for RTT-based selection. Otherwise returns single server.
-	"""
-	target = get_speedtest_target(conn)
-	if target == "auto":
-		return [s["url"] for s in SPEEDTEST_SERVER_LIST]
-	else:
-		server_info = SPEEDTEST_SERVER_MAP.get(target)
-		if not server_info:
-			raise ValueError(f"Unknown target: {target}")
-		return [server_info["url"]]
 
 
 @router.get("/speedtest/settings")
@@ -104,8 +75,6 @@ async def get_speedtest_settings(
 	"""Get speedtest configuration."""
 	return ok_response(data={
 		"enabled": get_speedtest_enabled(conn),
-		"target": get_speedtest_target(conn),
-		"servers": SPEEDTEST_SERVER_LIST,
 	})
 
 
@@ -120,12 +89,9 @@ async def update_speedtest_settings(
 		with transaction(conn, immediate=True):
 			if payload.enabled is not None:
 				set_speedtest_enabled(conn, payload.enabled)
-			if payload.target is not None:
-				set_speedtest_target(conn, payload.target)
 			# Read response data inside transaction to avoid TOCTOU
 			result = {
 				"enabled": get_speedtest_enabled(conn),
-				"target": get_speedtest_target(conn),
 			}
 	except ValueError as exc:
 		raise HTTPException(status_code=422, detail=str(exc)) from None
@@ -136,15 +102,40 @@ async def update_speedtest_settings(
 	return ok_response(data=result)
 
 
+def _wrap_result(result: dict | Any, stored: bool) -> dict:
+	"""Wrap speedtest result with storage status.
+	
+	Args:
+		result: Test result (dict or other type)
+		stored: Whether result was persisted to TSDB
+	
+	Returns:
+		Dict with result and stored flag
+	"""
+	if isinstance(result, dict):
+		return {**result, "stored": stored}
+	return {"result": result, "stored": stored}
+
+
+async def _persist_last_run_to_db(db_path) -> None:
+	"""Persist the latest completed local speedtest run in SQLite."""
+	def _write() -> None:
+		conn = connect(db_path)
+		try:
+			set_speedtest_last_run_at(conn)
+		finally:
+			close_connection(conn)
+
+	await run_in_threadpool(_write)
+
+
 @router.post("/speedtest/run")
 async def trigger_speedtest(
 	request: Request,
 	_: sqlite3.Row = Depends(require_admin),
-	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Trigger an immediate speed test (admin only)."""
-	# Lazy import to avoid circular dependency with speedtest.tester
-	from ..speedtest.tester import BandwidthTester
+	from ..speedtest.tester import run_speedtest
 	from ..db import tsdb
 
 	cfg = get_config(request)
@@ -161,49 +152,44 @@ async def trigger_speedtest(
 	async with lease:
 		# Note: We don't check get_speedtest_enabled() here because that setting
 		# controls the *scheduler* only. Manual admin-triggered tests should always work.
-
+		started_run = False
 		try:
-			servers = _resolve_speedtest_servers(conn)
-		except ValueError as exc:
-			raise HTTPException(status_code=422, detail=str(exc)) from None
+			try:
+				started_run = True
+				result = await asyncio.wait_for(run_speedtest(), timeout=SPEEDTEST_RUN_TIMEOUT_SECONDS)
+			except asyncio.TimeoutError:
+				_log.error("SPEEDTEST_TIMEOUT: test exceeded %ss", SPEEDTEST_RUN_TIMEOUT_SECONDS)
+				raise HTTPException(status_code=504, detail="Speed test timed out") from None
+			except Exception:
+				_log.exception("SPEEDTEST_RUN_FAILED")
+				raise HTTPException(status_code=500, detail="Speed test failed") from None
 
-		tester = BandwidthTester(servers=servers)
+			stored = True
+			try:
+				await run_in_threadpool(
+					tsdb.append_point,
+					cfg.tsdb_dir,
+					peer_key=SPEEDTEST_TSDB_KEY,
+					metric=SPEEDTEST_TSDB_METRIC,
+					value=result,
+				)
+			except Exception as exc:
+				_log.warning("SPEEDTEST_TSDB_WRITE_FAILED: %s", exc)
+				stored = False
 
-		try:
-			result = await asyncio.wait_for(tester.run(), timeout=SPEEDTEST_RUN_TIMEOUT_SECONDS)
-		except asyncio.TimeoutError:
-			_log.error("SPEEDTEST_TIMEOUT: test exceeded %ss", SPEEDTEST_RUN_TIMEOUT_SECONDS)
-			raise HTTPException(status_code=504, detail="Speed test timed out") from None
-		except Exception:
-			_log.exception("SPEEDTEST_RUN_FAILED")
-			raise HTTPException(status_code=500, detail="Speed test failed") from None
-
-		stored = True
-		try:
-			await run_in_threadpool(
-				tsdb.append_point,
-				cfg.tsdb_dir,
-				peer_key=SPEEDTEST_TSDB_KEY,
-				metric=SPEEDTEST_TSDB_METRIC,
-				value=result,
-			)
-		except Exception as exc:
-			_log.warning("SPEEDTEST_TSDB_WRITE_FAILED: %s", exc)
-			stored = False
-
-		# Avoid mutating external result object
-		if isinstance(result, dict):
-			result = {**result, "stored": stored}
-		else:
-			result = {"result": result, "stored": stored}
-		return ok_response(data=result)
+			return ok_response(data=_wrap_result(result, stored))
+		finally:
+			if started_run:
+				try:
+					await _persist_last_run_to_db(cfg.db_path)
+				except Exception as exc:
+					_log.warning("SPEEDTEST_LAST_RUN_DB_WRITE_FAILED: %s", exc)
 
 
 @router.get("/speedtest/run/stream")
 async def trigger_speedtest_stream(
 	request: Request,
 	_: sqlite3.Row = Depends(require_admin),
-	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Trigger a speed test with real-time progress via Server-Sent Events.
 	
@@ -214,7 +200,7 @@ async def trigger_speedtest_stream(
 	
 	Each progress event contains: phase, progress (0-1), message, detail (optional)
 	"""
-	from ..speedtest.tester import BandwidthTester, ProgressEvent
+	from ..speedtest.tester import run_speedtest, ProgressEvent
 	from ..db import tsdb
 
 	cfg = get_config(request)
@@ -228,32 +214,41 @@ async def trigger_speedtest_stream(
 	except SpeedtestCooldownError as exc:
 		raise HTTPException(status_code=429, detail=str(exc)) from None
 
-	# Build server list
-	try:
-		servers = _resolve_speedtest_servers(conn)
-	except ValueError as exc:
-		raise HTTPException(status_code=422, detail=str(exc))
-
 	async def event_generator():
 		"""Generate SSE events for speedtest progress."""
 		async with lease:
+			started_run = False
 			# Bounded queue to prevent memory growth if callback produces events faster than consumption
-			progress_queue: asyncio.Queue[ProgressEvent | None] = asyncio.Queue(maxsize=32)
+			progress_queue: asyncio.Queue[ProgressEvent | None] = asyncio.Queue(maxsize=SPEEDTEST_PROGRESS_QUEUE_SIZE)
 			loop = asyncio.get_running_loop()
+
+			def _safe_put(event: ProgressEvent) -> None:
+				"""Drop oldest event if queue full (preserves latest state)."""
+				while True:
+					try:
+						progress_queue.put_nowait(event)
+						return
+					except asyncio.QueueFull:
+						try:
+							progress_queue.get_nowait()  # Make space
+						except asyncio.QueueEmpty:
+							return  # Give up if queue was emptied by consumer
 
 			def progress_callback(event: ProgressEvent) -> None:
 				"""Thread-safe callback to enqueue progress events."""
-				# Use call_soon_threadsafe since callback may be called from non-event-loop thread
 				try:
-					loop.call_soon_threadsafe(progress_queue.put_nowait, event)
+					loop.call_soon_threadsafe(_safe_put, event)
 				except Exception:
-					pass  # Drop event if queue is full or other error
-
-			tester = BandwidthTester(servers=servers, progress_callback=progress_callback)
+					pass  # Scheduling failure (e.g., loop closed)
 
 			async def run_test():
 				try:
-					return await asyncio.wait_for(tester.run(), timeout=SPEEDTEST_RUN_TIMEOUT_SECONDS)
+					nonlocal started_run
+					started_run = True
+					return await asyncio.wait_for(
+						run_speedtest(progress_callback=progress_callback),
+						timeout=SPEEDTEST_RUN_TIMEOUT_SECONDS,
+					)
 				except asyncio.TimeoutError:
 					return {"status": "error", "reason": f"Timeout after {SPEEDTEST_RUN_TIMEOUT_SECONDS}s"}
 				except Exception as exc:
@@ -274,44 +269,65 @@ async def trigger_speedtest_stream(
 						if event is not None:
 							# Serialize progress event (handle dataclass/dict)
 							event_data = event if isinstance(event, dict) else event.__dict__
-							yield f"event: progress\ndata: {json.dumps(event_data)}\n\n"
+							try:
+								yield f"event: progress\ndata: {json.dumps(event_data)}\n\n"
+							except RuntimeError:
+								# Response already closed (race with disconnect)
+								break
 					except asyncio.TimeoutError:
-						yield ": keepalive\n\n"
+						try:
+							yield ": keepalive\n\n"
+						except RuntimeError:
+							break
 
 				while not progress_queue.empty():
 					try:
 						event = progress_queue.get_nowait()
 						if event is not None:
 							event_data = event if isinstance(event, dict) else event.__dict__
-							yield f"event: progress\ndata: {json.dumps(event_data)}\n\n"
+							try:
+								yield f"event: progress\ndata: {json.dumps(event_data)}\n\n"
+							except RuntimeError:
+								return  # Client disconnected
 					except asyncio.QueueEmpty:
 						break
 
-				result = await test_task
-
-				stored = True
 				try:
-					await run_in_threadpool(
-						tsdb.append_point,
-						cfg.tsdb_dir,
-						peer_key=SPEEDTEST_TSDB_KEY,
-						metric=SPEEDTEST_TSDB_METRIC,
-						value=result,
-					)
-				except Exception as exc:
-					_log.warning("SPEEDTEST_TSDB_WRITE_FAILED: %s", exc)
-					stored = False
+					result = await test_task
+				except asyncio.CancelledError:
+					# Client disconnected mid-test → exit gracefully
+					return
 
-				# Avoid mutating external result object
-				if isinstance(result, dict):
-					result = {**result, "stored": stored}
-				else:
-					result = {"result": result, "stored": stored}
-
-				if result.get("status") == "error":
-					yield f"event: error\ndata: {json.dumps(result)}\n\n"
-				else:
-					yield f"event: result\ndata: {json.dumps(result)}\n\n"
+				# Only persist successful results to TSDB (avoid polluting history with error results)
+				stored = False
+				# Type guard: ensure result is a dict before accessing .get()
+				if not isinstance(result, dict):
+					_log.warning("SPEEDTEST_UNEXPECTED_RESULT_TYPE: %s", type(result))
+					result = {"status": "error", "reason": "Invalid result type"}
+				
+				is_error = result.get("status") == "error"
+				
+				if not is_error:
+					stored = True
+					try:
+						await run_in_threadpool(
+							tsdb.append_point,
+							cfg.tsdb_dir,
+							peer_key=SPEEDTEST_TSDB_KEY,
+							metric=SPEEDTEST_TSDB_METRIC,
+							value=result,
+						)
+					except Exception as exc:
+						_log.warning("SPEEDTEST_TSDB_WRITE_FAILED: %s", exc)
+						stored = False
+				
+				# Send final result to client
+				result_wrapped = {"stored": stored, **result}
+				try:
+					yield f"event: result\ndata: {json.dumps(result_wrapped)}\n\n"
+				except RuntimeError:
+					# Response closed before final result sent
+					return
 			finally:
 				if not test_task.done():
 					test_task.cancel()
@@ -319,6 +335,11 @@ async def trigger_speedtest_stream(
 						await test_task
 					except asyncio.CancelledError:
 						pass
+				if started_run:
+					try:
+						await _persist_last_run_to_db(cfg.db_path)
+					except Exception as exc:
+						_log.warning("SPEEDTEST_LAST_RUN_DB_WRITE_FAILED: %s", exc)
 
 	return StreamingResponse(
 		event_generator(),
@@ -326,6 +347,7 @@ async def trigger_speedtest_stream(
 		headers={
 			"Cache-Control": "no-cache",
 			"Connection": "keep-alive",
+			"Content-Type": "text/event-stream; charset=utf-8",
 			"X-Accel-Buffering": "no",  # Disable nginx buffering
 		},
 	)
@@ -336,6 +358,7 @@ async def get_speedtest_history(
 	request: Request,
 	range_key: Optional[str] = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
 	limit: int = Query(SPEEDTEST_HISTORY_DEFAULT_LIMIT, ge=1, le=SPEEDTEST_HISTORY_MAX_LIMIT),
+	node_id: Optional[str] = Query(None, max_length=64, description="Filter by node ID (null=master only, 'all'=all remote nodes)"),
 	_: sqlite3.Row = Depends(get_current_user),
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
@@ -344,9 +367,11 @@ async def get_speedtest_history(
 	Args:
 		range_key: Time range preset (6h, 24h, 7d, 30d, 90d, 180d, y1)
 		limit: Maximum number of points to return
+		node_id: Filter results — null or empty = master only, 'all' = all remote nodes (master excluded), otherwise specific node
 	
 	Returns:
 		List of speedtest results with timestamps
+		Note: 'truncated' flag may be approximate when filtering by node_id due to fetch heuristics
 	"""
 	from ..db import tsdb
 
@@ -360,23 +385,50 @@ async def get_speedtest_history(
 		retention_days = get_speedtest_retention_days(conn)
 		since = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
-	# Fetch limit+1 to detect truncation accurately
+	# Fetch more points when filtering to ensure we have enough after filter
+	# Note: This is a heuristic - truncated flag may be approximate with node filtering
+	MAX_FETCH_LIMIT = 10000
+	if node_id and node_id.lower() != "all":
+		fetch_limit = min((limit + 1) * 3, MAX_FETCH_LIMIT)
+	else:
+		fetch_limit = limit + 1
+	
 	points = await run_in_threadpool(
 		tsdb.query,
 		cfg.tsdb_dir,
 		peer_key=SPEEDTEST_TSDB_KEY,
 		metric=SPEEDTEST_TSDB_METRIC,
 		since=since,
-		limit=limit + 1,
+		limit=fetch_limit,
 	)
 
+	# Filter by node_id
+	filtered_points = []
+	for pt in points:
+		if not isinstance(pt.value, dict):
+			continue
+		pt_node_id = pt.value.get("node_id")  # None = master
+		
+		if node_id is None or node_id == "":
+			# Master only (no node_id in record)
+			if pt_node_id is None:
+				filtered_points.append(pt)
+		elif node_id.lower() == "all":
+			# All remote nodes — explicitly exclude master (pt_node_id is None)
+			if pt_node_id is not None:
+				filtered_points.append(pt)
+		else:
+			# Specific node
+			if pt_node_id == node_id:
+				filtered_points.append(pt)
+	
 	# Truncate to actual limit and detect if more data exists
-	truncated = len(points) > limit
+	truncated = len(filtered_points) > limit
 	if truncated:
-		points = points[:limit]
+		filtered_points = filtered_points[:limit]
 
 	history = []
-	for pt in points:
+	for pt in filtered_points:
 		# Shallow copy to avoid mutating original MetricPoint.value
 		entry = dict(pt.value) if isinstance(pt.value, dict) else {}
 		entry["ts"] = pt.ts.isoformat()
@@ -387,6 +439,74 @@ async def get_speedtest_history(
 		"limit": limit,
 		"truncated": truncated,
 	})
+
+
+@router.get("/speedtest/nodes")
+async def get_speedtest_nodes(
+	request: Request,
+	_: sqlite3.Row = Depends(get_current_user),
+	conn: sqlite3.Connection = Depends(get_conn),
+):
+	"""Get list of nodes with their most recent speedtest result.
+	
+	Returns:
+		- List of nodes with their last speedtest metrics for the filter dropdown and badges
+	"""
+	from ..db import tsdb
+	from ..db.sqlite_nodes import get_all_nodes
+	
+	cfg = get_config(request)
+	
+	# Get all nodes from DB
+	nodes = await run_in_threadpool(get_all_nodes, conn)
+	
+	# Get recent speedtest history (last 90 days should be enough to find each node's latest)
+	since = datetime.now(timezone.utc) - timedelta(days=90)
+	points = await run_in_threadpool(
+		tsdb.query,
+		cfg.tsdb_dir,
+		peer_key=SPEEDTEST_TSDB_KEY,
+		metric=SPEEDTEST_TSDB_METRIC,
+		since=since,
+		limit=2000,  # Should be enough to cover all nodes
+	)
+	
+	# Build a map of node_id -> latest speedtest
+	# Always overwrite to keep the last (newest) result, not the first (oldest)
+	latest_by_node: dict[str | None, dict] = {}  # None = master
+	for pt in points:
+		if not isinstance(pt.value, dict):
+			continue
+		node_id = pt.value.get("node_id")  # None = master
+		latest_by_node[node_id] = {
+			"ts": pt.ts.isoformat(),
+			**pt.value,
+		}
+	
+	# Build result list, starting with master
+	result = []
+	
+	# Master entry
+	master_last = latest_by_node.get(None)
+	result.append({
+		"node_id": None,
+		"name": "Master",
+		"status": "online",
+		"last_speedtest": master_last,
+	})
+	
+	# Node entries
+	for n in nodes:
+		node_id = n["id"]
+		node_last = latest_by_node.get(node_id)
+		result.append({
+			"node_id": node_id,
+			"name": n["name"],
+			"status": n["status"],
+			"last_speedtest": node_last,
+		})
+	
+	return ok_response(data={"nodes": result})
 
 
 class SpeedtestRetentionPayload(BaseModel):
@@ -458,7 +578,9 @@ async def purge_speedtest_data(
 	# Use async context manager for consistent lease handling
 	async with lease:
 		try:
-			deleted_bytes = await run_in_threadpool(tsdb.purge_synthetic_data, cfg.tsdb_dir, SPEEDTEST_TSDB_KEY)
+			deleted_bytes = await run_in_threadpool(
+				tsdb.purge_synthetic_data, cfg.tsdb_dir, SPEEDTEST_TSDB_KEY, force=True
+			)
 		except OSError as exc:
 			_log.warning("Failed to delete speedtest data: %s", exc)
 			raise HTTPException(status_code=500, detail="Failed to delete speedtest data") from None

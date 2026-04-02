@@ -361,6 +361,17 @@ class DNSQueryLogger:
         pass
 ```
 
+WireBuddy uses dual storage for DNS telemetry:
+
+- **JSONL files:** append-only raw query logs for the log UI, audits, and debugging
+- **TSDB series:** write-time minute aggregates for trend charts and other read-heavy views
+  - `queries_total` — integer counter per minute bucket
+  - `queries_blocked` — integer counter per minute bucket
+
+Separate counters (vs. pre-computed ratios) are more precise and flexible for UI aggregation.
+
+This split keeps the ingestion path robust while making long-range trend queries cheap.
+
 ## Metrics Collection
 
 ### Conntrack Monitoring

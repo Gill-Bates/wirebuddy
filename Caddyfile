@@ -1,33 +1,36 @@
 vpn.example.com {
 
-    # SSE endpoint: disable buffering for real-time event streaming
-    @sse path /api/nodes/events
-    reverse_proxy @sse localhost:8000 {
+    # Common proxy settings (reused)
+    (proxy_common) {
         header_up X-Forwarded-Proto https
         header_up X-Forwarded-Port 443
         header_up X-Forwarded-Host {host}
-        flush_interval -1
+
         transport http {
             keepalive 30s
         }
     }
 
+    # SSE endpoint: disable buffering for real-time event streaming
+    @sse path /api/nodes/events
+    reverse_proxy @sse localhost:8000 {
+        import proxy_common
+        flush_interval -1
+    }
+
+    # Default reverse proxy
     reverse_proxy localhost:8000 {
-        header_up X-Forwarded-Proto https
-        header_up X-Forwarded-Port 443
-        header_up X-Forwarded-Host {host}
+        import proxy_common
+    }
 
-            transport http {
-                keepalive 30s
-            }
-        }
-
+    # Compression
     encode gzip
 
-    # Cache static assets (fonts, CSS, JS, images) for 1 year
+    # Cache static assets (1 year)
     @static path /static/*
     header @static Cache-Control "public, max-age=31536000, immutable"
 
+    # Security headers
     header {
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
         X-Content-Type-Options nosniff
@@ -37,10 +40,12 @@ vpn.example.com {
         -X-Powered-By
     }
 
+    # Request body limit
     request_body {
         max_size 100MB
     }
 
+    # Logging
     log {
         output file /var/log/caddy/access.log {
             roll_size 10mb

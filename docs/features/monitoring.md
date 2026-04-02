@@ -36,13 +36,25 @@ View detailed statistics for each peer:
 
 ### Time Range Selection
 
-Select custom date ranges:
+Select time ranges for traffic analysis:
 
-- Last hour
-- Last 24 hours
-- Last 7 days
-- Last 30 days
-- Custom range
+| Range | Description |
+|-------|-------------|
+| **6 h** | Last 6 hours |
+| **24 h** | Last 24 hours (default) |
+| **7 d** | Last 7 days |
+| **30 d** | Last 30 days |
+| **90 d** | Last 90 days |
+| **180 d** | Last 180 days |
+| **1 y** | Last year |
+
+These ranges are available on:
+
+- **Traffic page:** Per-peer traffic analysis
+- **Dashboard charts:** Speedtest and network metrics
+
+!!! tip "Data Granularity"
+    Charts automatically adjust data point density based on the selected range and viewport size to ensure optimal performance and readability.
 
 ### Export Data
 
@@ -71,6 +83,8 @@ WireBuddy uses an embedded time-series database for metrics storage.
 ### Storage Location
 
 Metrics are stored in `data/tsdb/` directory.
+
+This also includes aggregated DNS trend metrics written by the DNS ingestion pipeline. Raw DNS query logs remain in the separate `data/dns/queries/` JSONL store.
 
 ### Maintenance
 

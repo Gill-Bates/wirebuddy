@@ -13,15 +13,19 @@ they have their own ``get_current_node`` dependency.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
+import ipaddress
 import logging
 import sqlite3
+import time
+from collections import deque
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
-import typing
 
 from ..api.response import ok_response
 from ..db.sqlite_interfaces import list_interfaces
@@ -38,6 +42,7 @@ from ..db.sqlite_nodes import (
 )
 from ..db.sqlite_peers import allocate_peer_ip
 from ..db.sqlite_peers_mutations import create_peer
+from ..db.sqlite_runtime import connect, close_connection, transaction
 from pathlib import Path
 
 from ..utils.config import get_config
@@ -47,13 +52,33 @@ from ..utils.network import parse_ip_str
 from ..db import tsdb
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
 from ..api.wireguard_utils import generate_keypair, run_wg_command
-from ..db.sqlite_runtime import transaction
 from ..utils.rate_limit import limiter
 from ..node import notifier as node_notifier
 
 _log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["nodes-sync"])
+
+# Allowed commands for SSE command validation (prevents injection)
+_ALLOWED_SSE_COMMANDS = frozenset({"config_changed", "restart", "speedtest"})
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Node Speedtest Progress Store
+# ─────────────────────────────────────────────────────────────────────────────
+
+# In-memory store for node speedtest progress
+# Structure: {node_id: {"progress": {...}, "timestamp": float, "queues": [asyncio.Queue, ...]}}
+_node_speedtest_progress: dict[str, dict[str, Any]] = {}
+_progress_lock = asyncio.Lock()
+
+# Maps DB pending command names to the SSE event type the node daemon expects.
+# Defaults to "{cmd}_requested" for any command not listed here.
+_PENDING_CMD_EVENT_TYPE: dict[str, str] = {
+	"config_changed": "config_changed",
+    "speedtest": "run_speedtest",      # node daemon listens for "run_speedtest"
+    "restart": "restart_requested",
+    "removed": "node_removed",
+}
 
 
 def _get_socket_ip(request: Request) -> str | None:
@@ -62,6 +87,41 @@ def _get_socket_ip(request: Request) -> str | None:
 	if not scope_client or not scope_client[0]:
 		return None
 	return parse_ip_str(scope_client[0])
+
+
+def _parse_endpoint_ip(endpoint: str) -> str:
+	"""Extract IP address from WireGuard endpoint string.
+	
+	Handles formats:
+	- [ipv6]:port → ipv6
+	- ipv4:port → ipv4
+	- bare IP (no port) → IP
+	
+	Returns empty string if parsing fails.
+	"""
+	if not endpoint:
+		return ""
+	
+	# IPv6 with brackets: [addr]:port
+	if endpoint.startswith("["):
+		bracket_end = endpoint.rfind("]")
+		if bracket_end > 0:
+			return endpoint[1:bracket_end]
+		return ""
+	
+	# Try to detect IPv4:port vs bare IP
+	last_colon = endpoint.rfind(":")
+	if last_colon > 0:
+		# Check if part before colon is a valid IP
+		candidate = endpoint[:last_colon]
+		try:
+			ipaddress.ip_address(candidate)
+			return candidate
+		except ValueError:
+			pass
+	
+	# No port or parsing failed - return as-is (bare IP)
+	return endpoint
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -350,14 +410,8 @@ def heartbeat(
 		for ps in body.peer_stats:
 			if not ps.latest_handshake or not ps.public_key:
 				continue
-			# Extract client IP from endpoint (ip:port or [ipv6]:port)
-			client_ip = ""
-			if ps.endpoint:
-				ep = ps.endpoint
-				if ep.startswith("["):
-					client_ip = ep[1:ep.rfind("]")]
-				elif ":" in ep:
-					client_ip = ep.rsplit(":", 1)[0]
+			# Extract client IP from endpoint using robust parsing
+			client_ip = _parse_endpoint_ip(ps.endpoint or "")
 			if client_ip:
 				db_updates.append((client_ip, ps.latest_handshake, ps.public_key))
 		if db_updates:
@@ -413,8 +467,13 @@ def heartbeat(
 				)
 			except Exception:
 				_log.warning("Failed to write TSDB metrics from node %s", node_id, exc_info=True)
+				# Do NOT ack - node will retry on next heartbeat
+				return ok_response(
+					data={"acked_seq": acked_seq},
+					message="Heartbeat received (metrics write failed)"
+				)
 		
-		# Update last processed sequence (ACK)
+		# Update last processed sequence (ACK) only after successful TSDB write
 		if batch.seq_to is not None:
 			_set_node_last_seq(conn, node_id, batch.seq_to)
 			acked_seq = batch.seq_to
@@ -463,6 +522,7 @@ def get_config_endpoint(
 
 @router.get("/events")
 async def node_events(
+	request: Request,
 	node: sqlite3.Row = Depends(get_current_node),
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
@@ -479,28 +539,85 @@ async def node_events(
 	The node should pull the full config via GET /api/nodes/config after
 	receiving an event.
 	"""
-	from ..db.sqlite_nodes import update_node_sse_connected, clear_node_sse_connected
+	from ..db.sqlite_nodes import (
+		update_node_sse_connected,
+		clear_node_sse_connected,
+		get_and_clear_node_pending_command,
+	)
 	
 	node_id = node["id"]
+	db_path = request.app.state.db_path
+	shutdown_event = getattr(request.app.state, "shutdown_signal_event", None)
 	_log.info("Node %s connected to SSE event stream", node_id)
+
+	async def check_pending_command() -> str | None:
+		"""Check DB for pending command (multi-worker safe, short-lived connection)."""
+		def _check():
+			thread_conn = connect(db_path)
+			try:
+				return get_and_clear_node_pending_command(thread_conn, node_id)
+			finally:
+				close_connection(thread_conn)
+		return await run_in_threadpool(_check)
 
 	async def event_generator():
 		try:
-			# Mark node as SSE-connected in DB (multi-worker safe)
-			await run_in_threadpool(update_node_sse_connected, conn, node_id)
+			close_event = "event: close\ndata: server_shutdown\n\n"
+			# Mark node as SSE-connected (short-lived connection)
+			def _mark_connected():
+				thread_conn = connect(db_path)
+				try:
+					update_node_sse_connected(thread_conn, node_id)
+				finally:
+					close_connection(thread_conn)
+			
+			await run_in_threadpool(_mark_connected)
+			
+			# Check for any command that was queued while we were connecting
+			pending_cmd = await check_pending_command()
+			if pending_cmd and pending_cmd in _ALLOWED_SSE_COMMANDS:
+				event_type = _PENDING_CMD_EVENT_TYPE.get(pending_cmd, f"{pending_cmd}_requested")
+				_log.info("Node %s has pending command from DB: %s → event: %s", node_id, pending_cmd, event_type)
+				yield f"event: {event_type}\ndata: {pending_cmd}\n\n"
+			elif pending_cmd:
+				_log.warning("Node %s: unknown pending command %r (ignored)", node_id, pending_cmd)
 			
 			# Send initial keepalive
 			yield ": keepalive\n\n"
 			
-			async for event in node_notifier.subscribe(node_id):
-				# Update DB timestamp periodically (on keepalive events)
+			async for event in node_notifier.subscribe(node_id, shutdown_event=shutdown_event):
+				if shutdown_event is not None and shutdown_event.is_set():
+					_log.debug("SSE shutdown for node %s", node_id)
+					yield close_event
+					break
+				if await request.is_disconnected():
+					break
+				# On keepalive events, also check DB for pending commands
 				if event.startswith(":"):  # Keepalive comment
-					await run_in_threadpool(update_node_sse_connected, conn, node_id)
+					await run_in_threadpool(_mark_connected)
+					# Check for commands from other workers (multi-worker safe)
+					pending_cmd = await check_pending_command()
+					if pending_cmd and pending_cmd in _ALLOWED_SSE_COMMANDS:
+						event_type = _PENDING_CMD_EVENT_TYPE.get(pending_cmd, f"{pending_cmd}_requested")
+						_log.info("Node %s received command from DB: %s → event: %s", node_id, pending_cmd, event_type)
+						yield f"event: {event_type}\ndata: {pending_cmd}\n\n"
+					elif pending_cmd:
+						_log.warning("Node %s: unknown pending command %r (ignored)", node_id, pending_cmd)
+				if event.startswith("event: close\n"):
+					yield event
+					break
 				yield event
 		finally:
-			# Clear SSE connection status on disconnect
+			# Clear SSE connection status on disconnect (short-lived connection)
 			try:
-				await run_in_threadpool(clear_node_sse_connected, conn, node_id)
+				def _clear_connected():
+					thread_conn = connect(db_path)
+					try:
+						clear_node_sse_connected(thread_conn, node_id)
+					finally:
+						close_connection(thread_conn)
+				
+				await run_in_threadpool(_clear_connected)
 			except Exception as exc:
 				_log.debug("Failed to clear SSE status for node %s: %s", node_id, exc)
 
@@ -513,3 +630,129 @@ async def node_events(
 			"X-Accel-Buffering": "no",  # Disable nginx buffering
 		},
 	)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Node Speedtest Submission
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class SpeedtestProgressEvent(BaseModel):
+	"""Speedtest progress event submitted by a node."""
+	phase: str = Field(..., max_length=64, description="Current test phase")
+	progress: float = Field(..., ge=0, le=1, description="Progress fraction (0-1)")
+	message: str = Field("", max_length=256, description="Progress message")
+	detail: str | None = Field(None, max_length=512, description="Optional detail")
+
+
+@router.post("/speedtest/progress")
+async def submit_node_speedtest_progress(
+	body: SpeedtestProgressEvent,
+	node: sqlite3.Row = Depends(get_current_node),
+):
+	"""Receive speedtest progress update from a node and broadcast to SSE clients."""
+	node_id = node["id"]
+	
+	event_data = {
+		"phase": body.phase,
+		"progress": body.progress,
+		"message": body.message,
+	}
+	if body.detail:
+		event_data["detail"] = body.detail
+	
+	async with _progress_lock:
+		if node_id not in _node_speedtest_progress:
+			_node_speedtest_progress[node_id] = {
+				"progress": event_data,
+				"timestamp": time.time(),
+				"queues": [],
+			}
+		else:
+			_node_speedtest_progress[node_id]["progress"] = event_data
+			_node_speedtest_progress[node_id]["timestamp"] = time.time()
+			
+		# Broadcast to all waiting SSE clients
+		for queue in _node_speedtest_progress[node_id]["queues"]:
+			try:
+				queue.put_nowait(event_data)
+			except asyncio.QueueFull:
+				pass  # Drop event if queue is full
+	
+	return ok_response(message="Progress update received")
+
+
+class SpeedtestSubmission(BaseModel):
+	"""Speedtest result submitted by a node."""
+	status: str = Field(..., max_length=16, description="Result status: ok | error")
+	server: str | None = Field(None, max_length=256, description="Speedtest server name")
+	download_mbit: float | None = Field(None, ge=0, le=100000, description="Download speed in Mbit/s")
+	upload_mbit: float | None = Field(None, ge=0, le=100000, description="Upload speed in Mbit/s")
+	rtt_ms: float | None = Field(None, ge=0, le=10000, description="Round-trip time in ms")
+	jitter_ms: float | None = Field(None, ge=0, le=10000, description="Jitter in ms")
+	reason: str | None = Field(None, max_length=512, description="Error reason if status=error")
+
+
+@router.post("/speedtest")
+def submit_node_speedtest(
+	body: SpeedtestSubmission,
+	node: sqlite3.Row = Depends(get_current_node),
+	tsdb_dir: Path = Depends(get_tsdb_dir),
+):
+	"""Receive speedtest result from a node and persist to TSDB.
+	
+	The result is tagged with node_id to distinguish from master speedtests.
+	"""
+	from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
+	
+	node_id = node["id"]
+	node_name = node["name"]
+	
+	# Only persist successful results (don't pollute TSDB with errors)
+	if body.status != "ok":
+		_log.warning(
+			"NODE_SPEEDTEST node=%s name=%s status=error reason=%s",
+			node_id, node_name, body.reason or "unknown"
+		)
+		return ok_response(message="Speedtest error recorded (not persisted to history)")
+	
+	# Build result payload with node_id tag
+	result = {
+		"status": "ok",
+		"node_id": node_id,
+		"node_name": node_name,
+	}
+	
+	if body.download_mbit is not None:
+		result["download_mbit"] = round(body.download_mbit, 2)
+	if body.upload_mbit is not None:
+		result["upload_mbit"] = round(body.upload_mbit, 2)
+	if body.rtt_ms is not None:
+		result["rtt_ms"] = round(body.rtt_ms, 2)
+	if body.jitter_ms is not None:
+		result["jitter_ms"] = round(body.jitter_ms, 2)
+	if body.server:
+		result["server"] = body.server
+	
+	_log.info(
+		"NODE_SPEEDTEST node=%s name=%s dl=%.2f ul=%.2f rtt=%.2fms",
+		node_id,
+		node_name,
+		body.download_mbit or 0,
+		body.upload_mbit or 0,
+		body.rtt_ms or 0,
+	)
+	
+	# Persist to TSDB
+	try:
+		tsdb.append_point(
+			tsdb_dir,
+			peer_key=SPEEDTEST_TSDB_KEY,
+			metric=SPEEDTEST_TSDB_METRIC,
+			value=result,
+		)
+	except Exception as exc:
+		_log.error("Failed to persist node speedtest: %s", exc)
+		raise HTTPException(status_code=500, detail="Failed to persist speedtest result") from None
+	
+	return ok_response(message="Speedtest result received")

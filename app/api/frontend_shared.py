@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from ..utils.formatting import format_bandwidth_mbit
 from ..utils.geoip import lookup_ip
 from ..utils.version import BUILD_INFO, VERSION
 from .auth import get_current_user_optional
@@ -36,10 +37,35 @@ CONNECTED_THRESHOLD_S: int = 180
 router = APIRouter(tags=["frontend"])
 
 _templates_path = Path(__file__).parent.parent / "templates"
-templates = Jinja2Templates(directory=str(_templates_path))
+_jinja_templates = Jinja2Templates(directory=str(_templates_path))
 
-templates.env.globals["VERSION"] = VERSION
-templates.env.globals["BUILD_INFO"] = BUILD_INFO
+_jinja_templates.env.globals["VERSION"] = VERSION
+_jinja_templates.env.globals["BUILD_INFO"] = BUILD_INFO
+
+
+class _ContextAwareTemplates:
+	"""Wrapper around Jinja2Templates that automatically adds request.app.state to context."""
+	
+	def __init__(self, jinja: Jinja2Templates):
+		self._jinja = jinja
+		self.env = jinja.env  # Expose env for filters/globals
+	
+	def TemplateResponse(
+		self,
+		request: Request,
+		name: str,
+		context: dict[str, Any] | None = None,
+		**kwargs: Any,
+	) -> Any:
+		"""Render template with automatic key_mismatch injection from app state."""
+		ctx = context or {}
+		# Add key_mismatch from app state (for Critical banner in base.html)
+		if not ctx.get("key_mismatch"):
+			ctx["key_mismatch"] = getattr(request.app.state, "key_mismatch", False)
+		return self._jinja.TemplateResponse(request, name, ctx, **kwargs)
+
+
+templates = _ContextAwareTemplates(_jinja_templates)
 
 
 def _wbr_ip(value: str | None) -> str:
@@ -57,8 +83,9 @@ def _truncate_ip(value: str | None, length: int = 24) -> str:
 
 
 # Register Jinja2 filters
-templates.env.filters["wbr_ip"] = _wbr_ip
-templates.env.filters["truncate_ip"] = _truncate_ip
+_jinja_templates.env.filters["wbr_ip"] = _wbr_ip
+_jinja_templates.env.filters["truncate_ip"] = _truncate_ip
+_jinja_templates.env.filters["format_bandwidth_mbit"] = format_bandwidth_mbit
 
 __all__ = [
     "router",

@@ -885,6 +885,97 @@ async function collectPageMetrics(page, scope) {
             .filter(Boolean)
             .slice(0, 20);
 
+        // =============================================================================
+        // Flex Scroll Trap Detection
+        // Detects flex children with overflow that cannot scroll due to missing min-height: 0
+        // =============================================================================
+        const flexScrollTraps = contentElements
+            .filter((el) => isVisible(el) && isInContentRoot(el))
+            .filter((el) => {
+                const style = window.getComputedStyle(el);
+                const parent = el.parentElement;
+                if (!parent) return false;
+
+                const parentStyle = window.getComputedStyle(parent);
+
+                // Must be flex child
+                const isFlexChild =
+                    parentStyle.display.includes('flex');
+
+                if (!isFlexChild) return false;
+
+                // Must be scroll container
+                const hasScrollableOverflow =
+                    style.overflowY === 'auto' || style.overflowY === 'scroll';
+
+                if (!hasScrollableOverflow) return false;
+
+                // Has actual overflow
+                const hasOverflow = el.scrollHeight > el.clientHeight + 2;
+                if (!hasOverflow) return false;
+
+                // Check min-height issue
+                const minHeight = style.minHeight;
+                const hasMinHeightZero =
+                    minHeight === '0px' || minHeight === '0';
+
+                return !hasMinHeightZero;
+            })
+            .slice(0, 20)
+            .map((el) => {
+                const style = window.getComputedStyle(el);
+                const parent = el.parentElement;
+                const parentStyle = parent ? window.getComputedStyle(parent) : null;
+
+                return {
+                    ...rectInfo(el),
+                    overflowY: style.overflowY,
+                    scrollHeight: el.scrollHeight,
+                    clientHeight: el.clientHeight,
+                    minHeight: style.minHeight,
+                    parentDisplay: parentStyle?.display || null,
+                    issue: 'flex-child-missing-min-height-0',
+                    recommendation: 'Add min-height: 0 to enable scrolling inside flex container',
+                };
+            });
+
+        // =============================================================================
+        // Double Scroll Detection (page scroll + inner scroll containers)
+        // iOS UX anti-pattern: competing scroll contexts confuse users
+        // =============================================================================
+        const pageScrollable =
+            doc.scrollHeight > window.innerHeight + constants.OVERFLOW_TOLERANCE_PX;
+
+        const innerScrollContainers = contentElements
+            .filter((el) => {
+                if (!isVisible(el) || !isInContentRoot(el)) return false;
+                const style = window.getComputedStyle(el);
+                const hasScroll =
+                    (style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+                    el.scrollHeight > el.clientHeight + 2;
+
+                // Ignore tiny or intentional scroll areas
+                if (!hasScroll) return false;
+                if (el.clientHeight < constants.GHOST_SCROLL_MIN_HEIGHT_PX) return false;
+
+                return true;
+            })
+            .slice(0, 20)
+            .map((el) => ({
+                ...rectInfo(el),
+                scrollHeight: el.scrollHeight,
+                clientHeight: el.clientHeight,
+                overflowY: window.getComputedStyle(el).overflowY,
+            }));
+
+        const doubleScrollRisk = pageScrollable && innerScrollContainers.length > 0
+            ? {
+                pageScrollable,
+                innerScrollCount: innerScrollContainers.length,
+                containers: innerScrollContainers,
+            }
+            : null;
+
         const referenceBadge = document.createElement('span');
         referenceBadge.className = 'badge bg-secondary';
         referenceBadge.textContent = 'Reference';
@@ -1193,21 +1284,6 @@ async function collectPageMetrics(page, scope) {
         const cardContainment = {
             cardsPastFooter: [],
         };
-
-        // Anti-pattern: .row.g-*.mt-0 breaks Bootstrap's negative gutter margin compensation
-        // This causes doubled vertical gaps between rows (e.g., 48px instead of 24px)
-        spacing.rowGutterMarginConflicts = Array.from(contentRoot.querySelectorAll('.row'))
-            .filter((row) => {
-                const classes = Array.from(row.classList);
-                const hasGutter = classes.some((c) => /^g[xy]?-[1-5]$/.test(c));
-                const hasMt0 = classes.includes('mt-0');
-                return hasGutter && hasMt0;
-            })
-            .map((row) => ({
-                ...rectInfo(row),
-                classList: Array.from(row.classList).join(' '),
-            }))
-            .slice(0, 10);
 
         spacing.mobileRowCardStackGaps = [];
         if (window.matchMedia('(max-width: 991.98px)').matches) {
@@ -1836,7 +1912,7 @@ async function collectPageMetrics(page, scope) {
                 : 0;
             const topRowHeightsMatch = !desktopTopRowLayoutActive
                 || topRowHeightVariance <= constants.ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX;
-            const topRowCompactCards = Array.from(document.querySelectorAll('.about-top-row > [class*="col-"] > .about-doc-card'))
+            const topRowFillerCards = Array.from(document.querySelectorAll('.about-top-row > [class*="col-"] > .about-doc-card'))
                 .filter((el) => isVisible(el))
                 .map((card) => {
                     const style = window.getComputedStyle(card);
@@ -1846,12 +1922,10 @@ async function collectPageMetrics(page, scope) {
                         flexGrow: Number.parseFloat(style.flexGrow || '0'),
                     };
                 });
-            const compactCardsStayCompact = !desktopTopRowLayoutActive || !topRowCompactCards.length
+            // Filler cards should have flexGrow >= 1 to fill remaining space in their column
+            const fillerCardsFillSpace = !desktopTopRowLayoutActive || !topRowFillerCards.length
                 ? true
-                : topRowCompactCards.every((card) =>
-                    card.flexGrow === 0
-                    && card.height < topRowPrimaryMinHeight - constants.ABOUT_TOP_ROW_HEIGHT_TOLERANCE_PX
-                );
+                : topRowFillerCards.every((card) => card.flexGrow >= 1);
             const mobileTopRowCards = topRowCards
                 .map((card) => ({
                     label: norm(card.querySelector('.card-header')?.textContent).slice(0, 80),
@@ -1900,10 +1974,10 @@ async function collectPageMetrics(page, scope) {
                     heights: topRowPrimaryHeights,
                     heightsMatch: topRowHeightsMatch,
                     variance: topRowHeightVariance,
-                    compactCardCount: topRowCompactCards.length,
-                    compactCards: topRowCompactCards,
-                    compactCardsStayCompact,
-                    pattern: 'equal-height-primary-cards-with-compact-secondary-card',
+                    fillerCardCount: topRowFillerCards.length,
+                    fillerCards: topRowFillerCards,
+                    fillerCardsFillSpace,
+                    pattern: 'equal-height-columns-with-filler-card',
                 },
                 mobileTopRowStack: {
                     active: window.matchMedia('(max-width: 991.98px)').matches,
@@ -1921,7 +1995,7 @@ async function collectPageMetrics(page, scope) {
         // Mobile (< 768px): CSS Grid card layout with:
         //   - name/status in top row, fqdn spanning full width, meta line, actions
         //   - thead hidden, Port/Version/Peers/LastSeen columns hidden
-        //   - .node-mobile-meta visible with version + peers + last seen
+        //   - .node-mobile-meta visible with version + port + peers + last seen
         if (scope === 'nodes') {
             const nodesTable = document.querySelector('.nodes-table');
             const isMobile = window.innerWidth < 768;
@@ -1991,6 +2065,14 @@ async function collectPageMetrics(page, scope) {
             // Desktop layout: verify table structure
             if (!isMobile && nodesTable) {
                 const nodeRows = Array.from(nodesTable.querySelectorAll('tbody tr[id^="node-row-"]'));
+                const responsiveWrap = nodesTable.closest('.table-responsive');
+                spacing.nodesDesktopTableWrapper = responsiveWrap ? {
+                    hasHorizontalScroll: responsiveWrap.scrollWidth > responsiveWrap.clientWidth + 2,
+                    scrollWidth: Math.round(responsiveWrap.scrollWidth),
+                    clientWidth: Math.round(responsiveWrap.clientWidth),
+                    overflowX: window.getComputedStyle(responsiveWrap).overflowX,
+                    wrapper: rectInfo(responsiveWrap),
+                } : null;
                 spacing.nodesDesktopLayout = nodeRows.slice(0, 5).map((row) => {
                     const statusCell = row.querySelector('td[data-label="Status"]');
                     const actionsCell = row.querySelector('td[data-label="Actions"]');
@@ -2443,11 +2525,76 @@ async function collectPageMetrics(page, scope) {
 
             spacing.dnsUnavailableStates = dnsUnavailableStates;
 
+            if (window.matchMedia('(max-width: 575.98px)').matches) {
+                const quickfilters = document.querySelector('.dns-quickfilters');
+                const peerFilter = document.getElementById('peer-filter');
+                const rangeFilter = document.getElementById('dns-range');
+
+                if (
+                    quickfilters
+                    && peerFilter
+                    && rangeFilter
+                    && isVisible(quickfilters)
+                    && isVisible(peerFilter)
+                    && isVisible(rangeFilter)
+                ) {
+                    const peerRect = peerFilter.getBoundingClientRect();
+                    const rangeRect = rangeFilter.getBoundingClientRect();
+                    const topDelta = round(Math.abs(peerRect.top - rangeRect.top));
+                    const bottomDelta = round(Math.abs(peerRect.bottom - rangeRect.bottom));
+                    const sameRow = topDelta <= 4 && bottomDelta <= 4;
+                    const widthDelta = round(Math.abs(peerRect.width - rangeRect.width));
+                    const equalWidth = widthDelta <= 2;
+
+                    spacing.dnsMobileQuickfilters = {
+                        quickfilters: rectInfo(quickfilters),
+                        peerFilter: rectInfo(peerFilter),
+                        rangeFilter: rectInfo(rangeFilter),
+                        topDelta,
+                        bottomDelta,
+                        sameRow,
+                        widthDelta,
+                        equalWidth,
+                    };
+                }
+
+                // Check log filters are in same row
+                const logFilter = document.getElementById('log-filter');
+                const logSearch = document.getElementById('log-search');
+
+                if (
+                    logFilter
+                    && logSearch
+                    && isVisible(logFilter)
+                    && isVisible(logSearch)
+                ) {
+                    const logFilterRect = logFilter.getBoundingClientRect();
+                    const logSearchRect = logSearch.getBoundingClientRect();
+                    const logTopDelta = round(Math.abs(logFilterRect.top - logSearchRect.top));
+                    const logBottomDelta = round(Math.abs(logFilterRect.bottom - logSearchRect.bottom));
+                    const logSameRow = logTopDelta <= 4 && logBottomDelta <= 4;
+                    const widthDelta = round(Math.abs(logFilterRect.width - logSearchRect.width));
+                    const equalWidth = widthDelta <= 2;
+
+                    spacing.dnsMobileLogFilters = {
+                        logFilter: rectInfo(logFilter),
+                        logSearch: rectInfo(logSearch),
+                        topDelta: logTopDelta,
+                        bottomDelta: logBottomDelta,
+                        sameRow: logSameRow,
+                        widthDelta,
+                        equalWidth,
+                    };
+                }
+            }
+
             const logCardBody = document.querySelector('.log-card-body');
             const logTableWrap = document.getElementById('log-table-wrap');
             if (logCardBody && logTableWrap && isVisible(logCardBody) && isVisible(logTableWrap)) {
                 const bodyStyle = window.getComputedStyle(logCardBody);
                 const wrapStyle = window.getComputedStyle(logTableWrap);
+                const logUnavailable = document.getElementById('log-unavailable');
+                const unavailableStyle = logUnavailable ? window.getComputedStyle(logUnavailable) : null;
                 const bodyRect = logCardBody.getBoundingClientRect();
                 const wrapRect = logTableWrap.getBoundingClientRect();
                 const bodyMinHeight = Number.parseFloat(bodyStyle.minHeight || '0');
@@ -2455,10 +2602,28 @@ async function collectPageMetrics(page, scope) {
                 const bodyFlexGrow = Number.parseFloat(bodyStyle.flexGrow || '0');
                 const wrapFlexGrow = Number.parseFloat(wrapStyle.flexGrow || '0');
                 const rowCount = logTableWrap.querySelectorAll('#log-body > tr').length;
+                const firstRow = logTableWrap.querySelector('#log-body > tr');
+                const firstRowRect = firstRow ? firstRow.getBoundingClientRect() : null;
+                const wrapClientHeight = logTableWrap.clientHeight;
+                const wrapScrollHeight = logTableWrap.scrollHeight;
+                const rowsStartBelowViewport = Boolean(firstRowRect && firstRowRect.top > wrapRect.bottom + 1);
+                const wrapViewportCollapsedWithRows = rowCount > 0
+                    && wrapClientHeight < constants.GHOST_SCROLL_MIN_HEIGHT_PX
+                    && wrapScrollHeight > wrapClientHeight + 1;
+                const bodyClipsOverflow = bodyStyle.overflowY === 'hidden' || bodyStyle.overflowY === 'clip';
+                const bodyAllowsUnavailableOverlay = Boolean(
+                    logUnavailable
+                    && unavailableStyle
+                    && bodyStyle.overflowY === 'visible'
+                    && unavailableStyle.position === 'absolute'
+                    && unavailableStyle.top === '0px'
+                    && unavailableStyle.left === '0px'
+                );
 
                 spacing.dnsLogScrollLayout = {
                     body: rectInfo(logCardBody),
                     wrap: rectInfo(logTableWrap),
+                    firstRow: firstRow ? rectInfo(firstRow) : null,
                     bodyMinHeight: round(bodyMinHeight),
                     wrapMinHeight: round(wrapMinHeight),
                     bodyFlexGrow: round(bodyFlexGrow),
@@ -2470,14 +2635,59 @@ async function collectPageMetrics(page, scope) {
                     wrapMinHeightAllowsShrink: wrapMinHeight <= constants.FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX,
                     bodyActsAsFlexChild: bodyFlexGrow > 0,
                     wrapActsAsFlexChild: wrapFlexGrow > 0,
-                    bodyClipsOverflow: bodyStyle.overflowY === 'hidden' || bodyStyle.overflowY === 'clip',
+                    bodyClipsOverflow,
+                    bodyAllowsUnavailableOverlay,
+                    bodyOverflowModeSupported: bodyClipsOverflow || bodyAllowsUnavailableOverlay,
                     wrapScrollsInternally: wrapStyle.overflowY === 'auto' || wrapStyle.overflowY === 'scroll',
                     wrapFitsBody: wrapRect.height <= bodyRect.height + 1,
                     rowCount,
-                    clientHeight: round(logTableWrap.clientHeight),
-                    scrollHeight: round(logTableWrap.scrollHeight),
-                    scrollNeeded: logTableWrap.scrollHeight > logTableWrap.clientHeight + 1,
+                    clientHeight: round(wrapClientHeight),
+                    scrollHeight: round(wrapScrollHeight),
+                    scrollNeeded: wrapScrollHeight > wrapClientHeight + 1,
+                    wrapViewportCollapsedWithRows,
+                    rowsStartBelowViewport,
                 };
+            }
+
+            // DNS desktop column height alignment (Query Log ↔ Blockrate Trend)
+            // Both columns should have equal height when flexbox is working correctly
+            if (window.matchMedia('(min-width: 992px)').matches) {
+                const mainGridCols = Array.from(document.querySelectorAll('.wb-main-grid > .col-lg-6'))
+                    .filter((el) => isVisible(el));
+                if (mainGridCols.length === 2) {
+                    const heights = mainGridCols.map((col) => round(col.getBoundingClientRect().height));
+                    const colStyles = mainGridCols.map((col) => {
+                        const style = window.getComputedStyle(col);
+                        return {
+                            display: style.display,
+                            hasDFlex: col.classList.contains('d-flex'),
+                        };
+                    });
+                    const cards = mainGridCols.map((col) => col.querySelector('.card'));
+                    const cardStyles = cards.map((card) => {
+                        if (!card) return null;
+                        const style = window.getComputedStyle(card);
+                        return {
+                            hasH100: card.classList.contains('h-100'),
+                            hasFlexGrow1: card.classList.contains('flex-grow-1'),
+                            flexGrow: Number.parseFloat(style.flexGrow || '0'),
+                        };
+                    });
+                    spacing.dnsDesktopColumnAlignment = {
+                        heights,
+                        variance: round(Math.abs(heights[0] - heights[1])),
+                        aligned: Math.abs(heights[0] - heights[1]) <= 4,
+                        colStyles,
+                        cardStyles,
+                        // Structural requirements for flex height propagation
+                        leftColHasDFlex: colStyles[0]?.hasDFlex ?? false,
+                        rightColHasDFlex: colStyles[1]?.hasDFlex ?? false,
+                        leftCardHasH100: cardStyles[0]?.hasH100 ?? false,
+                        rightCardHasH100: cardStyles[1]?.hasH100 ?? false,
+                        leftCardHasFlexGrow: (cardStyles[0]?.flexGrow ?? 0) > 0,
+                        rightCardHasFlexGrow: (cardStyles[1]?.flexGrow ?? 0) > 0,
+                    };
+                }
             }
         }
 
@@ -2825,6 +3035,7 @@ async function collectPageMetrics(page, scope) {
             tablesWithoutResponsive,
             ghostScroll,
             ghostScrollContainers,
+            doubleScrollRisk,
             horizontalOverflow,
             clippedButtons,
             clickTargetsTooSmall,
@@ -2840,6 +3051,7 @@ async function collectPageMetrics(page, scope) {
             scrollEdgeCrowding,
             scrollBottomCrowding,
             nestedScrollContainers,
+            flexScrollTraps,
             badgeStyleMismatches,
             monospaceToneMismatches,
             layoutShift,
@@ -2858,6 +3070,286 @@ async function collectPageMetrics(page, scope) {
             deprecatedColorUsage,
         };
     }, { scope, constants: UI_EVAL_CONSTANTS });
+}
+
+async function runNodesDynamicChecks(page, view) {
+    const result = {
+        available: false,
+        rowCount: 0,
+        statusRefresh: { attempted: false, passed: false, reason: 'not-run' },
+        speedtestLock: { attempted: false, passed: false, reason: 'not-run' },
+    };
+
+    const testPage = await page.context().newPage();
+
+    const getPathname = (url) => {
+        try {
+            return new URL(url).pathname;
+        } catch {
+            return '';
+        }
+    };
+
+    const statusLabel = (status) => {
+        if (status === 'online') return 'Online';
+        if (status === 'pending') return 'Pending';
+        if (status === 'offline') return 'Offline';
+        if (status === 'restarting') return 'Restarting…';
+        return status || '—';
+    };
+
+    try {
+        await testPage.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 30000 });
+        await disableMotion(testPage, FULL_MOTION_RESET_CSS, `${view.name}-nodes-dynamic`);
+        await testPage.waitForTimeout(SCREENSHOT_SETTLE_MS);
+
+        const initialState = await testPage.evaluate(() => {
+            const rows = Array.from(document.querySelectorAll('.nodes-table tbody tr[id^="node-row-"]'));
+            return {
+                rowCount: rows.length,
+                nodes: rows.map((row) => {
+                    const speedtestButton = row.querySelector('button[data-action="run-speedtest"]');
+                    const statusBadge = row.querySelector('td[data-label="Status"] .node-status-badge');
+                    return {
+                        nodeId: row.id.replace(/^node-row-/, ''),
+                        statusRaw: row.dataset.nodeStatus || speedtestButton?.dataset.nodeStatus || '',
+                        statusText: statusBadge?.textContent?.trim() || '',
+                        lastSpeedtestTs: row.dataset.lastSpeedtestTs || '',
+                        speedtestButton: speedtestButton ? {
+                            disabled: speedtestButton.disabled,
+                            title: speedtestButton.getAttribute('data-bs-title') || '',
+                        } : null,
+                    };
+                }),
+            };
+        });
+
+        result.rowCount = initialState.rowCount;
+        if (!initialState.rowCount) {
+            result.statusRefresh.reason = 'noRows';
+            result.speedtestLock.reason = 'noRows';
+            return result;
+        }
+
+        result.available = true;
+
+        const speedtestCandidate = initialState.nodes.find((node) => node.speedtestButton && node.statusRaw === 'online');
+        if (speedtestCandidate) {
+            result.speedtestLock.attempted = true;
+
+            let historyMode = 'locked';
+            const completionTs = new Date(Date.now() + 60_000).toISOString();
+            const speedtestPath = `/api/nodes/${speedtestCandidate.nodeId}/speedtest`;
+            const speedtestNodesPath = '/api/wireguard/speedtest/nodes';
+
+            const speedtestStartHandler = async (route) => {
+                if (route.request().method() !== 'POST' || getPathname(route.request().url()) !== speedtestPath) {
+                    await route.continue();
+                    return;
+                }
+
+                await route.fulfill({
+                    status: 200,
+                    contentType: 'application/json',
+                    body: JSON.stringify({ status: 'ok', data: {} }),
+                });
+            };
+
+            const speedtestHistoryHandler = async (route) => {
+                if (route.request().method() !== 'GET' || getPathname(route.request().url()) !== speedtestNodesPath) {
+                    await route.continue();
+                    return;
+                }
+
+                const response = await route.fetch();
+                const payload = await response.json();
+                const data = payload && typeof payload === 'object' ? payload.data || {} : {};
+                const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+                const mutatedNodes = nodes.map((entry) => {
+                    if (String(entry?.node_id || '') !== speedtestCandidate.nodeId) return entry;
+                    const lastSpeedtest = historyMode === 'complete'
+                        ? {
+                            ...(entry.last_speedtest || {}),
+                            ts: completionTs,
+                            node_id: speedtestCandidate.nodeId,
+                            status: 'ok',
+                            download_mbit: 100,
+                            upload_mbit: 50,
+                        }
+                        : (speedtestCandidate.lastSpeedtestTs
+                            ? { ...(entry.last_speedtest || {}), ts: speedtestCandidate.lastSpeedtestTs }
+                            : null);
+                    return {
+                        ...entry,
+                        status: 'online',
+                        last_speedtest: lastSpeedtest,
+                    };
+                });
+
+                await route.fulfill({
+                    response,
+                    contentType: 'application/json',
+                    body: JSON.stringify({
+                        ...payload,
+                        data: {
+                            ...data,
+                            nodes: mutatedNodes,
+                        },
+                    }),
+                });
+            };
+
+            await testPage.route(`**${speedtestPath}`, speedtestStartHandler);
+            await testPage.route(`**${speedtestNodesPath}`, speedtestHistoryHandler);
+
+            try {
+                const startResponsePromise = testPage.waitForResponse((response) =>
+                    response.request().method() === 'POST' && getPathname(response.url()) === speedtestPath,
+                    { timeout: 5000 }
+                ).catch(() => null);
+
+                const firstHistoryPromise = testPage.waitForResponse((response) =>
+                    response.request().method() === 'GET' && getPathname(response.url()) === speedtestNodesPath,
+                    { timeout: 5000 }
+                ).catch(() => null);
+
+                await testPage.click(`#node-row-${speedtestCandidate.nodeId} button[data-action="run-speedtest"]`);
+                await Promise.all([startResponsePromise, firstHistoryPromise]);
+
+                const lockedApplied = await testPage.waitForFunction((nodeId) => {
+                    const button = document.querySelector(`#node-row-${CSS.escape(nodeId)} button[data-action="run-speedtest"]`);
+                    return Boolean(
+                        button
+                        && button.disabled
+                        && button.classList.contains('btn-secondary')
+                        && button.getAttribute('aria-busy') === 'true'
+                    );
+                }, speedtestCandidate.nodeId, { timeout: 5000 }).then(() => true).catch(() => false);
+
+                historyMode = 'complete';
+                const secondHistoryPromise = testPage.waitForResponse((response) =>
+                    response.request().method() === 'GET' && getPathname(response.url()) === speedtestNodesPath,
+                    { timeout: 5000 }
+                ).catch(() => null);
+
+                await testPage.evaluate(() => {
+                    document.dispatchEvent(new Event('visibilitychange'));
+                });
+                await secondHistoryPromise;
+
+                const unlockedAfterCompletion = await testPage.waitForFunction((nodeId) => {
+                    const button = document.querySelector(`#node-row-${CSS.escape(nodeId)} button[data-action="run-speedtest"]`);
+                    return Boolean(
+                        button
+                        && !button.disabled
+                        && button.classList.contains('btn-outline-secondary')
+                        && button.getAttribute('aria-busy') === 'false'
+                    );
+                }, speedtestCandidate.nodeId, { timeout: 5000 }).then(() => true).catch(() => false);
+
+                const speedtestSnapshot = await testPage.evaluate((nodeId) => {
+                    const button = document.querySelector(`#node-row-${CSS.escape(nodeId)} button[data-action="run-speedtest"]`);
+                    return button ? {
+                        disabled: button.disabled,
+                        title: button.getAttribute('data-bs-title') || '',
+                        ariaBusy: button.getAttribute('aria-busy') || '',
+                        className: button.className,
+                    } : null;
+                }, speedtestCandidate.nodeId);
+
+                result.speedtestLock = {
+                    attempted: true,
+                    passed: lockedApplied && unlockedAfterCompletion,
+                    reason: !lockedApplied
+                        ? 'lockNotApplied'
+                        : !unlockedAfterCompletion
+                            ? 'lockNotReleased'
+                            : 'ok',
+                    nodeId: speedtestCandidate.nodeId,
+                    lockedApplied,
+                    unlockedAfterCompletion,
+                    snapshot: speedtestSnapshot,
+                };
+            } finally {
+                await testPage.unroute(`**${speedtestPath}`, speedtestStartHandler);
+                await testPage.unroute(`**${speedtestNodesPath}`, speedtestHistoryHandler);
+            }
+        } else {
+            result.speedtestLock.reason = 'noOnlineRow';
+        }
+
+        const statusCandidate = initialState.nodes[0];
+        if (statusCandidate) {
+            result.statusRefresh.attempted = true;
+
+            const desiredStatus = statusCandidate.statusRaw === 'online' ? 'offline' : 'online';
+            const expectedLabel = statusLabel(desiredStatus);
+            const nodesHandler = async (route) => {
+                if (route.request().method() !== 'GET' || getPathname(route.request().url()) !== '/api/nodes') {
+                    await route.continue();
+                    return;
+                }
+
+                const response = await route.fetch();
+                const payload = await response.json();
+                const data = Array.isArray(payload?.data) ? payload.data : [];
+                const mutatedNodes = data.map((node) => {
+                    if (String(node?.id || '') !== statusCandidate.nodeId) return node;
+                    return { ...node, status: desiredStatus };
+                });
+
+                await route.fulfill({
+                    response,
+                    contentType: 'application/json',
+                    body: JSON.stringify({ ...payload, data: mutatedNodes }),
+                });
+            };
+
+            await testPage.route('**/api/nodes', nodesHandler);
+
+            try {
+                const refreshResponsePromise = testPage.waitForResponse((response) =>
+                    response.request().method() === 'GET' && getPathname(response.url()) === '/api/nodes',
+                    { timeout: 5000 }
+                ).catch(() => null);
+
+                await testPage.evaluate(() => {
+                    document.dispatchEvent(new Event('visibilitychange'));
+                });
+                await refreshResponsePromise;
+
+                const badgeUpdated = await testPage.waitForFunction(({ nodeId, expectedText }) => {
+                    const badge = document.querySelector(`#node-row-${CSS.escape(nodeId)} td[data-label="Status"] .node-status-badge`);
+                    return badge?.textContent?.trim() === expectedText;
+                }, { nodeId: statusCandidate.nodeId, expectedText: expectedLabel }, { timeout: 5000 }).then(() => true).catch(() => false);
+
+                const statusSnapshot = await testPage.evaluate((nodeId) => {
+                    const row = document.getElementById(`node-row-${nodeId}`);
+                    const badge = row?.querySelector('td[data-label="Status"] .node-status-badge');
+                    return {
+                        rowStatus: row?.dataset.nodeStatus || '',
+                        badgeText: badge?.textContent?.trim() || '',
+                        badgeClass: badge?.className || '',
+                    };
+                }, statusCandidate.nodeId);
+
+                result.statusRefresh = {
+                    attempted: true,
+                    passed: badgeUpdated,
+                    reason: badgeUpdated ? 'ok' : 'badgeNotUpdated',
+                    nodeId: statusCandidate.nodeId,
+                    expectedLabel,
+                    snapshot: statusSnapshot,
+                };
+            } finally {
+                await testPage.unroute('**/api/nodes', nodesHandler);
+            }
+        }
+
+        return result;
+    } finally {
+        await testPage.close().catch(() => { });
+    }
 }
 
 async function auditView(page, view) {
@@ -2903,13 +3395,17 @@ async function auditView(page, view) {
             screenshotDir: SCREENSHOT_DIR,
         });
         const metrics = await collectPageMetrics(page, view.scope);
+        if (view.scope === 'nodes') {
+            metrics.spacing.nodesDynamicBehavior = await runNodesDynamicChecks(page, view);
+        }
         network = detachNetwork();
         const statusUnavailableExpected = isExpectedStatusUnavailable(view, response);
         network.requestFailures = network.requestFailures.filter((entry) => entry.error !== 'net::ERR_ABORTED');
         if (statusUnavailableExpected) {
             network.consoleEntries = network.consoleEntries.filter((entry) => {
                 const text = String(entry.text || '');
-                return !(text.includes('/status') && text.includes('404'));
+                return !(text.includes('/status') && text.includes('404'))
+                    && text !== 'Failed to load resource: the server responded with a status of 404 (Not Found)';
             });
             network.badResponses = network.badResponses.filter((entry) => {
                 try {
@@ -3212,6 +3708,7 @@ async function main() {
             scrollBottomCrowding: metrics.scrollBottomCrowding?.length || 0,
             ghostScrollContainers: metrics.ghostScrollContainers?.length || 0,
             nestedScrollContainers: metrics.nestedScrollContainers?.length || 0,
+            flexScrollTraps: metrics.flexScrollTraps?.length || 0,
             badgeStyleMismatches: metrics.badgeStyleMismatches?.length || 0,
             monospaceToneMismatches: metrics.monospaceToneMismatches?.length || 0,
             modalBackdropBlur: metrics.modalBackdrop?.blurPx ?? null,
@@ -3244,18 +3741,29 @@ async function main() {
             dashboardTopRowVariance: spacing.dashboardTopRowAlignment?.variance || 0,
             dnsUnavailableStates: spacing.dnsUnavailableStates?.length || 0,
             dnsUnavailableIncorrectSpacing: spacing.dnsUnavailableStates?.filter(s => !s.marginCompensatesGap || !s.visualGapExpected)?.length || 0,
+            dnsMobileQuickfilters: spacing.dnsMobileQuickfilters ? 1 : 0,
+            dnsMobileQuickfiltersWrapped: spacing.dnsMobileQuickfilters && !spacing.dnsMobileQuickfilters.sameRow ? 1 : 0,
+            dnsMobileQuickfiltersWidthMismatch: spacing.dnsMobileQuickfilters && !spacing.dnsMobileQuickfilters.equalWidth ? 1 : 0,
+            dnsMobileLogFilters: spacing.dnsMobileLogFilters ? 1 : 0,
+            dnsMobileLogFiltersWrapped: spacing.dnsMobileLogFilters && !spacing.dnsMobileLogFilters.sameRow ? 1 : 0,
+            dnsMobileLogFiltersWidthMismatch: spacing.dnsMobileLogFilters && !spacing.dnsMobileLogFilters.equalWidth ? 1 : 0,
             dnsLogScrollLayout: spacing.dnsLogScrollLayout ? 1 : 0,
             dnsLogScrollLayoutIssues: spacing.dnsLogScrollLayout
                 ? [
                     !spacing.dnsLogScrollLayout.bodyMinHeightAllowsShrink,
                     !spacing.dnsLogScrollLayout.wrapMinHeightAllowsShrink,
                     !spacing.dnsLogScrollLayout.wrapScrollsInternally,
+                    spacing.dnsLogScrollLayout.wrapViewportCollapsedWithRows,
+                    spacing.dnsLogScrollLayout.rowsStartBelowViewport,
                     !spacing.dnsLogScrollLayout.bodyActsAsFlexChild,
                     !spacing.dnsLogScrollLayout.wrapActsAsFlexChild,
-                    !spacing.dnsLogScrollLayout.bodyClipsOverflow,
+                    !spacing.dnsLogScrollLayout.bodyOverflowModeSupported,
                     !spacing.dnsLogScrollLayout.wrapFitsBody,
                 ].filter(Boolean).length
                 : 0,
+            dnsDesktopColumnAlignment: spacing.dnsDesktopColumnAlignment ? 1 : 0,
+            dnsDesktopColumnVariance: spacing.dnsDesktopColumnAlignment?.variance || 0,
+            dnsDesktopColumnAligned: spacing.dnsDesktopColumnAlignment?.aligned ? 1 : 0,
             aboutMobileTopRowStackGaps: spacing.about?.mobileTopRowStack?.gaps?.length || 0,
             aboutMobileTopRowGapVariance: spacing.about?.mobileTopRowStack?.gapVariance || 0,
             statusFlowNodes: spacing.statusFlow?.nodeCount || 0,

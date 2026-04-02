@@ -92,20 +92,25 @@ MAX_SERIES_FILE_BYTES = 8 * 1024 * 1024  # 8 MiB per active JSONL file
 MAX_ROTATED_ARCHIVES = 6  # Keep latest N compressed rotations per series
 FSYNC_BATCH_SIZE = 10  # Fsync every N appends (durability vs performance tradeoff)
 FSYNC_BATCH_INTERVAL = 5.0  # Or fsync after N seconds, whichever comes first
+MAX_VALUE_SIZE = 1024 * 1024  # 1 MiB per data point (DoS prevention)
+MAX_METRIC_NAME_LENGTH = 64  # Prevent excessively long metric names
+_RESERVED_METRIC_NAMES = frozenset(["prune", "lock", "tmp", "gz"])  # Reserved for internal files
 
 # Synthetic peer keys used for aggregated traffic statistics
-SYNTHETIC_KEYS = frozenset(["__geo_traffic__", "__asn_traffic__", "__speedtest__", "__network_stats__"])
+SYNTHETIC_KEYS = frozenset(["__geo_traffic__", "__asn_traffic__", "__speedtest__", "__network_stats__", "__dns_stats__"])
 
 _PEERS_DIRNAME = "peers"
 _TRAFFIC_DIRNAME = "traffic"
 _NETWORK_DIRNAME = "network"
 _SPEEDTEST_DIRNAME = "speedtest"
+_DNS_DIRNAME = "dns"
 _LEGACY_TRAFFIC_DIRS = ("geo_traffic", "asn_traffic")
 _SYNTHETIC_DIR_MAP = {
 	"__speedtest__": _SPEEDTEST_DIRNAME,
 	"__network_stats__": _NETWORK_DIRNAME,
 	"__geo_traffic__": f"{_TRAFFIC_DIRNAME}/geo_traffic",
 	"__asn_traffic__": f"{_TRAFFIC_DIRNAME}/asn_traffic",
+	"__dns_stats__": _DNS_DIRNAME,
 }
 
 
@@ -213,10 +218,20 @@ def _series_path(tsdb_dir: Path, peer_key: str, metric: str) -> Path:
 	"""
 	if not metric or not metric.strip():
 		raise ValueError("Metric name cannot be empty")
+	# Enforce length limit
+	if len(metric) > MAX_METRIC_NAME_LENGTH:
+		raise ValueError(
+			f"Metric name exceeds maximum length of {MAX_METRIC_NAME_LENGTH}: {metric}"
+		)
 	# Enforce strict metric name format to prevent silent collisions
 	if not re.fullmatch(r"[A-Za-z0-9_-]+", metric):
 		raise ValueError(
 			f"Invalid metric name '{metric}': only alphanumeric, underscore, and hyphen allowed"
+		)
+	# Check reserved names
+	if metric.lower() in _RESERVED_METRIC_NAMES:
+		raise ValueError(
+			f"Metric name '{metric}' is reserved for internal use"
 		)
 	
 	if peer_key in SYNTHETIC_KEYS:
@@ -381,8 +396,12 @@ class _FileLock:
 			key = str(self._series_path)
 			with _recovered_series_lock:
 				if key not in _recovered_series:
+					# Evict oldest entry if at capacity (bounded LRU)
+					if len(_recovered_series) >= _MAX_RECOVERY_ENTRIES:
+						_recovered_series.popitem(last=False)
 					_recover_uncompressed_rotations(self._series_path)
-					_recovered_series.add(key)
+					_recovered_series[key] = True
+					_recovered_series.move_to_end(key)
 		
 		return self
 
@@ -414,25 +433,19 @@ def _should_prune(series_path: Path) -> bool:
 	
 	Uses a file-based marker for cross-process safety with multiple workers.
 	FIX: Correctly handles first-run case when marker doesn't exist.
+	FIX: Relies only on fstat(fd) for consistency once locked.
 	"""
 	marker = _prune_marker_path(series_path)
 	now = time.time()
 	
 	try:
-		# Fast path: check marker age without locking
-		marker_existed = marker.exists()
-		if marker_existed:
-			last_prune = marker.stat().st_mtime
-			if now - last_prune < PRUNE_INTERVAL_SECONDS:
-				return False
-		
 		# Touch the marker file atomically to claim this prune slot
 		marker.parent.mkdir(parents=True, exist_ok=True)
 		fd = os.open(str(marker), os.O_CREAT | os.O_WRONLY)
 		try:
 			# Try to get exclusive lock without blocking
 			fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-			# Always double-check after acquiring lock to handle race conditions
+			# Once locked, rely only on fstat for consistency
 			try:
 				last_prune = os.fstat(fd).st_mtime
 				if now - last_prune < PRUNE_INTERVAL_SECONDS:
@@ -673,10 +686,11 @@ def init_tsdb(tsdb_dir: Path) -> None:
 	(tsdb_dir / _TRAFFIC_DIRNAME).mkdir(parents=True, exist_ok=True)
 	(tsdb_dir / _NETWORK_DIRNAME).mkdir(parents=True, exist_ok=True)
 	(tsdb_dir / _SPEEDTEST_DIRNAME).mkdir(parents=True, exist_ok=True)
+	(tsdb_dir / _DNS_DIRNAME).mkdir(parents=True, exist_ok=True)
 	_migrate_legacy_layout(tsdb_dir)
 
 
-def purge_tsdb(tsdb_dir: Path) -> None:
+def purge_tsdb(tsdb_dir: Path, *, force: bool = False) -> None:
 	"""Completely remove all TSDB data.
 	
 	WARNING: This does NOT acquire locks. Concurrent writes will crash or corrupt data.
@@ -687,7 +701,20 @@ def purge_tsdb(tsdb_dir: Path) -> None:
 	
 	For safe peer deletion during normal operation, use delete_peer_data() and ensure
 	no active writes for that peer.
+	
+	Args:
+		tsdb_dir: Path to TSDB directory.
+		force: Must be True to confirm intention. Prevents accidental calls.
+	
+	Raises:
+		RuntimeError: If force is not True.
 	"""
+	if not force:
+		raise RuntimeError(
+			"purge_tsdb() requires force=True to confirm this dangerous operation. "
+			"Ensure all TSDB operations are stopped before calling."
+		)
+	
 	if not tsdb_dir.exists():
 		return
 	
@@ -710,7 +737,7 @@ def purge_tsdb(tsdb_dir: Path) -> None:
 	init_tsdb(tsdb_dir)
 
 
-def delete_peer_data(tsdb_dir: Path, peer_key: str) -> None:
+def delete_peer_data(tsdb_dir: Path, peer_key: str, *, force: bool = False) -> None:
 	"""Delete all time-series data for a specific peer.
 	
 	WARNING: This does NOT acquire locks. Concurrent writes for this peer will crash.
@@ -720,7 +747,21 @@ def delete_peer_data(tsdb_dir: Path, peer_key: str) -> None:
 	  - During controlled maintenance operations
 	
 	The caller MUST ensure no append_point() calls are in-flight for this peer_key.
+	
+	Args:
+		tsdb_dir: Path to TSDB directory.
+		peer_key: WireGuard peer public key.
+		force: Must be True to confirm intention. Prevents accidental calls.
+	
+	Raises:
+		RuntimeError: If force is not True.
 	"""
+	if not force:
+		raise RuntimeError(
+			"delete_peer_data() requires force=True to confirm this dangerous operation. "
+			"Ensure the peer is inactive and no metrics collection is running."
+		)
+	
 	dir_name = _peer_dir_name(peer_key)
 	tdir = tsdb_dir / _PEERS_DIRNAME / dir_name
 	if not tdir.exists():
@@ -749,7 +790,9 @@ _fsync_batch_state: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _fsync_batch_lock = threading.Lock()
 
 # Recovery tracking to avoid redundant uncompressed rotation recovery per series
-_recovered_series: set[str] = set()
+# FIX: Bounded LRU to prevent unbounded memory growth in long-running systems
+_MAX_RECOVERY_ENTRIES = 2000
+_recovered_series: OrderedDict[str, bool] = OrderedDict()
 _recovered_series_lock = threading.Lock()
 
 
@@ -807,6 +850,9 @@ def append_point(
 		retention_days: How many days to retain data.
 		at: Optional timestamp; defaults to now (UTC).
 		sync: If True, force immediate fsync (default: batched for performance).
+	
+	Raises:
+		ValueError: If value serialization exceeds MAX_VALUE_SIZE.
 	"""
 	retention_days = _validate_retention(retention_days)
 	
@@ -817,24 +863,36 @@ def append_point(
 			raise ValueError("Naive timestamp is not allowed in TSDB")
 		at = ensure_utc(at)
 
+	# Validate value size to prevent DoS attacks
+	try:
+		line = json.dumps({"ts": at.isoformat(), "value": value}, ensure_ascii=False)
+	except (TypeError, ValueError) as e:
+		raise ValueError(f"Value is not JSON-serializable: {e}") from e
+	if len(line) > MAX_VALUE_SIZE:
+		raise ValueError(
+			f"Serialized value size ({len(line)} bytes) exceeds maximum {MAX_VALUE_SIZE} bytes"
+		)
+
 	p = _series_path(tsdb_dir, peer_key, metric)
 
 	with _FileLock(p):
 		p.parent.mkdir(parents=True, exist_ok=True)
+		
+		# FIX: Prune first to avoid unnecessary rotation of mostly-old data
+		# Rate-limited pruning: check timing with file-based marker for cross-process safety
+		if _should_prune(p):
+			_prune_series_locked(p, retention_days)
+		
 		with p.open("a", encoding="utf-8") as f:
-			line = json.dumps({"ts": at.isoformat(), "value": value}, ensure_ascii=False)
 			f.write(line + "\n")
 			# Batched fsync for performance - only sync when batch size/interval reached
 			# or when explicitly requested
 			if sync or _should_fsync_batch(p):
 				f.flush()
 				os.fsync(f.fileno())
+		
+		# Rotate after write (not before prune)
 		_rotate_series_locked(p)
-
-		# Rate-limited pruning: check timing without random gate
-		# Uses file-based marker for cross-process safety
-		if _should_prune(p):
-			_prune_series_locked(p, retention_days)
 
 
 def _prune_series_locked(series_path: Path, retention_days: int) -> None:
@@ -914,6 +972,13 @@ def query(
 
 	Returns:
 		List of MetricPoint objects, sorted chronologically.
+	
+	Performance Note:
+		This function performs a full scan and sort (O(n log n)) of matching data.
+		For very large datasets (millions of points), consider:
+		- Using time filters (since/until) to reduce scan size
+		- Keeping limit reasonable (< 10,000 points)
+		- Using aggregation at write time for high-frequency metrics
 	"""
 	p = _series_path(tsdb_dir, peer_key, metric)
 	if (not p.exists()) and (len(_rotated_archives(p)) == 0):
@@ -1142,13 +1207,27 @@ def get_synthetic_storage_stats(tsdb_dir: Path, peer_key: str) -> dict[str, Any]
 	}
 
 
-def purge_synthetic_data(tsdb_dir: Path, peer_key: str) -> int:
+def purge_synthetic_data(tsdb_dir: Path, peer_key: str, *, force: bool = False) -> int:
 	"""Delete all files for a synthetic key bucket and return deleted bytes.
 	
 	WARNING: This does NOT acquire per-series locks. Ensure no concurrent
 	writes are in-flight for this peer_key before calling. Typically safe for
 	__speedtest__ (API layer manages concurrency) but use with caution.
+	
+	Args:
+		tsdb_dir: Path to TSDB directory.
+		peer_key: Synthetic peer key (e.g., '__speedtest__').
+		force: Must be True to confirm intention. Prevents accidental calls.
+	
+	Raises:
+		RuntimeError: If force is not True.
 	"""
+	if not force:
+		raise RuntimeError(
+			"purge_synthetic_data() requires force=True to confirm this dangerous operation. "
+			"Ensure no writes are in-flight for this synthetic key."
+		)
+	
 	dir_path = _synthetic_dir_path(tsdb_dir, peer_key)
 	if not dir_path.exists():
 		return 0
@@ -1169,12 +1248,25 @@ def purge_synthetic_data(tsdb_dir: Path, peer_key: str) -> int:
 	return deleted_bytes
 
 
-def reset_all(tsdb_dir: Path) -> int:
+def reset_all(tsdb_dir: Path, *, force: bool = False) -> int:
 	"""Delete all TSDB data.
+	
+	Args:
+		tsdb_dir: Path to TSDB directory.
+		force: Must be True to confirm intention. Prevents accidental calls.
 	
 	Returns:
 		Number of peer directories deleted.
+	
+	Raises:
+		RuntimeError: If force is not True.
 	"""
+	if not force:
+		raise RuntimeError(
+			"reset_all() requires force=True to confirm this dangerous operation. "
+			"This will delete ALL TSDB data."
+		)
+	
 	if not tsdb_dir.exists():
 		return 0
 	

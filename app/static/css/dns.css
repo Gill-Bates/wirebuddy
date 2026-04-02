@@ -10,6 +10,17 @@
     justify-content: flex-end;
 }
 
+.dns-quickfilters {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+}
+
+/* Stabilize grid children to prevent flex collapse */
+.wb-main-grid>div {
+    min-height: 0;
+}
+
 /* Global peer filter in header */
 #peer-filter {
     min-width: 140px;
@@ -17,16 +28,42 @@
     max-width: 200px;
 }
 
-/* Query Log card header filters */
-#log-filter {
-    min-width: 120px;
+.dns-range-select {
+    min-width: 80px;
+    width: auto;
 }
 
-#log-search {
-    min-width: 120px;
+/* Flexbox fix for DNS cards - prevent collapse */
+#dns-app .card {
+    min-height: 0;
 }
 
-/* Ad-Blocker dropdown button styles */
+/* Query Log card header filters - equal width distribution */
+.dns-log-filters {
+    min-width: 0;
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: nowrap;
+    align-items: center;
+    max-width: 320px;
+}
+
+/* Ensure inputs don't overflow grid cells */
+.dns-log-filters>select {
+    flex: 0 0 auto;
+    width: 90px;
+    max-width: 100px;
+}
+
+.dns-log-filters>input {
+    flex: 0 1 160px;
+    min-width: 120px;
+    max-width: 200px;
+}
+
+/* ==========================================================================
+   Ad-Blocker Button States (DRY pattern with CSS custom properties)
+   ========================================================================== */
 .adblocker-dropdown .btn {
     min-width: 180px;
     font-weight: 500;
@@ -34,44 +71,28 @@
 }
 
 .adblocker-dropdown .btn.btn-adblocker-enabled {
-    background-color: var(--bs-success);
-    border-color: var(--bs-success);
-    color: #fff;
+    --btn-color: var(--bs-success);
     padding-left: 0.5rem;
     padding-right: 0.5rem;
 }
 
-.adblocker-dropdown .btn.btn-adblocker-enabled:hover,
-.adblocker-dropdown .btn.btn-adblocker-enabled:focus {
-    background-color: var(--bs-success);
-    border-color: var(--bs-success);
-    filter: brightness(0.9);
-}
-
-.adblocker-dropdown .btn.btn-adblocker-enabled:focus-visible {
-    background-color: var(--bs-success);
-    border-color: var(--bs-success);
-    outline: 2px solid var(--bs-success);
-    outline-offset: 2px;
-}
-
 .adblocker-dropdown .btn.btn-adblocker-disabled {
-    background-color: var(--bs-danger);
-    border-color: var(--bs-danger);
+    --btn-color: var(--bs-danger);
+}
+
+.adblocker-dropdown .btn[class*="btn-adblocker-"] {
+    background-color: var(--btn-color);
+    border-color: var(--btn-color);
     color: #fff;
 }
 
-.adblocker-dropdown .btn.btn-adblocker-disabled:hover,
-.adblocker-dropdown .btn.btn-adblocker-disabled:focus {
-    background-color: var(--bs-danger);
-    border-color: var(--bs-danger);
+.adblocker-dropdown .btn[class*="btn-adblocker-"]:hover,
+.adblocker-dropdown .btn[class*="btn-adblocker-"]:focus {
     filter: brightness(0.9);
 }
 
-.adblocker-dropdown .btn.btn-adblocker-disabled:focus-visible {
-    background-color: var(--bs-danger);
-    border-color: var(--bs-danger);
-    outline: 2px solid var(--bs-danger);
+.adblocker-dropdown .btn[class*="btn-adblocker-"]:focus-visible {
+    outline: 2px solid var(--btn-color);
     outline-offset: 2px;
 }
 
@@ -97,8 +118,25 @@
     z-index: 1200;
 }
 
+/* ==========================================================================
+   Typography Scale (DNS page)
+   Use these instead of magic numbers for consistent sizing
+   ========================================================================== */
+:root {
+    --dns-font-2xs: 0.65rem;
+    /* tiny labels, badges */
+    --dns-font-xs: 0.72rem;
+    /* stat labels, legends */
+    --dns-font-sm: 0.8rem;
+    /* secondary text, time */
+    --dns-font-base: 0.85rem;
+    /* body text, table */
+    --dns-font-lg: 1.3rem;
+    /* stat values */
+}
+
 .dns-stat-label {
-    font-size: 0.72rem;
+    font-size: var(--dns-font-xs);
     font-weight: 700;
     letter-spacing: 0.02em;
     text-transform: uppercase;
@@ -106,7 +144,7 @@
 }
 
 .dns-stat-value {
-    font-size: 1.3rem;
+    font-size: var(--dns-font-lg);
     font-weight: 600;
     line-height: 1.1;
 }
@@ -126,6 +164,7 @@
     align-items: center;
     gap: 0.5rem;
     font-weight: 700;
+    flex-shrink: 0;
 }
 
 .dns-card-title .material-icons {
@@ -137,7 +176,7 @@
 .log-table {
     width: 100%;
     table-layout: auto;
-    font-size: 0.85rem;
+    font-size: var(--dns-font-base);
 }
 
 .log-table td {
@@ -172,11 +211,11 @@
 }
 
 .log-time-date {
-    font-size: 0.8rem;
+    font-size: var(--dns-font-sm);
 }
 
 .log-time-clock {
-    font-size: 0.75rem;
+    font-size: calc(var(--dns-font-sm) - 0.05rem);
     opacity: 0.75;
 }
 
@@ -198,12 +237,12 @@
 .log-domain {
     font-family: 'Roboto Flex', sans-serif;
     font-stretch: 75%;
-    font-size: 0.8rem;
+    font-size: var(--dns-font-sm);
     overflow-wrap: anywhere;
 }
 
 .log-domain-client {
-    font-size: 0.75rem;
+    font-size: calc(var(--dns-font-sm) - 0.05rem);
     opacity: 0.75;
 }
 
@@ -212,7 +251,9 @@
 .top-domain-bar {
     height: 6px;
     border-radius: 3px;
-    transition: width 0.4s ease;
+    /* Use transform for better performance than width animation */
+    transform-origin: left center;
+    transition: transform 0.4s ease;
 }
 
 .top-domain-bar-track {
@@ -233,7 +274,7 @@
 }
 
 .top-domain-name {
-    font-size: 0.85rem;
+    font-size: var(--dns-font-base);
     flex: 1 1 auto;
     min-width: 0;
 }
@@ -244,12 +285,12 @@
 }
 
 .top-domain-stats {
-    font-size: 0.8rem;
+    font-size: var(--dns-font-sm);
     font-weight: 600;
 }
 
 .top-domain-percent {
-    font-size: 0.65rem;
+    font-size: var(--dns-font-2xs);
 }
 
 .log-row-actionable {
@@ -262,10 +303,29 @@
 }
 
 .log-card-body {
-    flex: 1 1 0;
+    flex: 1 1 auto;
+    height: 100%;
     min-height: 0;
+    /* verhindert flex collapse auf iOS */
     position: relative;
-    overflow: hidden;
+    /* allow unavailable/overlay states to escape clipping when needed */
+    overflow: visible;
+    display: flex;
+    flex-direction: column;
+}
+
+.log-card-body.dns-log-unavailable #log-table-wrap,
+.log-card-body.dns-log-unavailable #log-action-menu {
+    display: none;
+}
+
+.log-card-body.dns-log-unavailable #log-unavailable {
+    position: static !important;
+    inset: auto !important;
+    z-index: auto !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 12rem;
 }
 
 /* Removed - log-search is now in card header */
@@ -275,6 +335,8 @@
     display: flex;
     align-items: stretch;
     overflow: hidden;
+    /* Fade animation for peer filter change */
+    transition: opacity 0.2s ease;
 }
 
 .top-domain-content {
@@ -294,12 +356,8 @@
     flex-shrink: 0;
 }
 
-#top-queried-chart-wrap {
-    width: 100%;
-    height: 100%;
-    max-height: 280px;
-}
-
+/* Chart wrapper shared styles */
+#top-queried-chart-wrap,
 #top-blocked-chart-wrap {
     width: 100%;
     height: 100%;
@@ -314,7 +372,7 @@
     width: 100%;
     max-height: 100px;
     overflow-y: auto;
-    font-size: 0.72rem;
+    font-size: var(--dns-font-xs);
     padding: 0 4px;
 }
 
@@ -342,16 +400,17 @@
 
 .custom-chart-legend .badge {
     flex-shrink: 0;
-    font-size: 0.6rem;
+    font-size: calc(var(--dns-font-2xs) - 0.05rem);
     padding: 1px 4px;
 }
 
 #log-table-wrap {
-    flex: 1 1 0;
+    flex: 1 1 auto;
     min-height: 0;
-    max-height: 100%;
-    overflow-x: auto;
-    overflow-y: auto !important;
+    /* CRITICAL: verhindert iOS collapse */
+    display: block;
+    overflow: auto;
+    overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
     padding-bottom: 1rem;
 }
@@ -366,6 +425,14 @@
 }
 
 @media (min-width: 992px) {
+    .log-card-body {
+        flex: 1 1 0;
+    }
+
+    #log-table-wrap {
+        flex: 1 1 0;
+    }
+
     .log-filters-container {
         flex-wrap: nowrap !important;
     }
@@ -440,6 +507,10 @@
         justify-content: flex-end;
     }
 
+    .dns-quickfilters {
+        gap: 0.35rem;
+    }
+
     .dns-toolbar>button,
     .dns-toolbar>#dns-controls {
         width: auto;
@@ -471,9 +542,47 @@
     .dns-header+.mb-4 {
         margin-bottom: 0.75rem !important;
     }
+
+    /* -------------------------------------------------------------------------
+       Query Log Card Container (tablet + mobile)
+       BUG: Below lg breakpoint, columns stack as col-12. h-100 on the card
+            creates a circular height dependency (100% of auto = undefined).
+            iOS Safari / WebKit collapses the card-body to 0 and clips it.
+       FIX: Use auto height with min-height; ensure flex children can shrink.
+       ------------------------------------------------------------------------- */
+    .wb-main-grid .col-12.col-lg-6>.card.h-100.d-flex.flex-column {
+        height: auto;
+        min-height: 300px;
+        min-height: min(300px, 50dvh);
+    }
+
+    .log-card-body {
+        min-height: 0;
+    }
+
+    #log-table-wrap {
+        min-height: 0;
+    }
 }
 
 @media (max-width: 767.98px) {
+
+    .log-card-body {
+        /* dvh fallback for iOS Safari dynamic address bar */
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .log-card-body.dns-log-unavailable {
+        height: auto;
+        min-height: 0;
+    }
+
+    .log-card-body.dns-log-unavailable #log-unavailable {
+        min-height: 10rem;
+    }
+
     .top-domain-content {
         gap: 0.5rem;
     }
@@ -492,12 +601,16 @@
     }
 
     #log-table-wrap {
-        max-height: 60vh;
-        overflow-x: auto;
-        overflow-y: auto !important;
+        flex: none;
+        /* dvh = dynamic viewport height for iOS address bar */
+        height: 60vh;
+        height: 60dvh;
+        min-height: 0;
     }
 
     .log-table {
+        /* Explicit table display to prevent mobile CSS from breaking layout */
+        display: table;
         min-width: 100%;
         width: 100%;
         font-size: 0.78rem;
@@ -606,74 +719,67 @@
 
 }
 
-/* Pull-to-refresh indicator for mobile */
-.pull-to-refresh-indicator {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 0;
-    overflow: hidden;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--bs-tertiary-bg);
-    transition: height 0.2s ease;
-    z-index: 10;
-}
-
-.pull-to-refresh-indicator.pulling {
-    height: 50px;
-}
-
-.pull-to-refresh-indicator.refreshing {
-    height: 50px;
-}
-
-.pull-to-refresh-indicator .spinner-border {
-    width: 1.25rem;
-    height: 1.25rem;
-}
-
-.pull-to-refresh-indicator .pull-arrow {
-    transition: transform 0.2s ease;
-}
-
-.pull-to-refresh-indicator.ready .pull-arrow {
-    transform: rotate(180deg);
-}
-
 @media (max-width: 575.98px) {
 
-    /* Stack filters vertically on mobile for better usability */
+    /* Mirror Traffic page layout: header column, controls row */
     .dns-header {
         flex-direction: column;
         align-items: stretch !important;
     }
 
     .dns-toolbar {
+        display: flex !important;
+        flex-wrap: wrap;
+        align-items: center;
         width: 100%;
-        flex-direction: column;
         gap: 0.5rem !important;
     }
 
-    /* Full width peer filter on mobile */
-    #peer-filter {
+    /* Mirror Traffic mobile controls: keep both selects on one row */
+    .dns-quickfilters {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        gap: 0.5rem;
+    }
+
+    .dns-quickfilters>.visually-hidden {
+        display: none !important;
+    }
+
+    .dns-quickfilters>select {
+        flex: 1 1 0;
+        min-width: 0;
+    }
+
+    /* Remove fixed width constraints on mobile */
+    #peer-filter,
+    .dns-range-select {
         width: 100% !important;
+        flex: 1 1 0;
         min-width: 0;
         max-width: none;
     }
 
-    /* Query Log card header filters stack on mobile */
-    #log-filter,
-    #log-search {
-        width: 100% !important;
+    /* Query Log card header filters: keep both controls on one row with equal width */
+    .dns-log-filters {
+        width: 100%;
+        max-width: none;
+        gap: 0.5rem;
+        flex-wrap: nowrap;
+    }
+
+    .dns-log-filters>select,
+    .dns-log-filters>input {
+        flex: 1 1 0;
+        width: auto;
         min-width: 0;
         max-width: none;
     }
 
-    /* Full width Ad-Blocker button on mobile */
+    /* Ad-Blocker button forces new row */
     .adblocker-dropdown {
+        flex: 0 0 100%;
         width: 100%;
     }
 
@@ -699,18 +805,13 @@
     }
 }
 
-/* Fade animations for top domains (peer filter change) */
-.top-domain-card-body {
-    transition: opacity 0.2s ease;
-}
-
 .top-domain-card-fading {
     opacity: 0;
 }
 
 /* Custom Rule Badge */
 .dns-badge-custom-rule {
-    font-size: 0.65rem;
+    font-size: var(--dns-font-2xs);
     font-weight: 500;
     padding: 0.15em 0.45em;
     vertical-align: middle;
@@ -723,3 +824,61 @@
 [data-bs-theme="dark"] .dns-badge-custom-rule {
     background-color: #9b59b6;
 }
+
+/* ==========================================================================
+   iOS Safari Workarounds (Query Log Table)
+   
+   Keep the real scroll container on #log-table-wrap for reliable
+   height calculation on iOS Safari.
+   
+   DETECTION: -webkit-touch-callout is iOS-only (not macOS Safari)
+   ========================================================================== */
+@supports (-webkit-touch-callout: none) {
+    @media (max-width: 991.98px) {
+        .log-card-body {
+            min-height: 280px !important;
+            height: auto;
+            -webkit-box-flex: 1;
+            -webkit-flex: 1 1 auto;
+            flex: 1 1 auto;
+        }
+
+        #log-table-wrap {
+            flex: none;
+            height: 50vh !important;
+            height: 50dvh !important;
+            min-height: 0 !important;
+            overflow-y: auto !important;
+        }
+
+        .log-table {
+            display: table !important;
+            width: 100% !important;
+        }
+
+        .log-table tbody tr {
+            display: table-row !important;
+            height: auto !important;
+            visibility: visible !important;
+        }
+
+        .log-table td {
+            display: table-cell !important;
+        }
+    }
+
+    #log-table-wrap {
+        touch-action: pan-y;
+        -webkit-overflow-scrolling: touch;
+    }
+}
+
+/* Ensure .table-responsive works correctly when used as scroll container */
+#log-table-wrap.table-responsive {
+    display: block;
+}
+
+/* ==========================================================================
+   Flex + Scroll Fix - Removed conflicting min-height: 0 rules
+   Tables need explicit min-height > 0 to prevent iOS Safari collapse
+   ========================================================================== */

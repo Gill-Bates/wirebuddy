@@ -144,9 +144,12 @@ services:
 1. Navigate to **Nodes** in the sidebar (admin-only)
 2. Click **Add Node**
 3. Fill out the form:
-   - **Name**: Display name (e.g., "Frankfurt", "NYC-01")
-   - **FQDN/IP**: Public address where clients will connect (e.g., `de.vpn.example.com`)
+   - **Name**: Display name (e.g., "Frankfurt", "NYC-01") — must be unique
+   - **FQDN/IP**: Public address where clients will connect (e.g., `de.vpn.example.com`) — must be unique
    - **WireGuard Port**: Node's WireGuard listen port (default: `51820`)
+
+!!! warning "Uniqueness Constraints"
+    Both **Name** and **FQDN** must be unique across all nodes. Duplicate values will be rejected with a 409 Conflict error.
 
 4. Click **Create** → enrollment token is displayed
 

@@ -99,9 +99,10 @@ def load_config() -> Config:
 	tsdb_dir = (data_dir / "tsdb").resolve()
 	dns_dir = (data_dir / "dns").resolve()
 
-	# Self-healing: Ensure directories exist
+	# Self-healing: Ensure core directories exist
+	# Note: dns_dir is created on-demand only when Unbound is installed
 	try:
-		for d in (data_dir, tsdb_dir, dns_dir):
+		for d in (data_dir, tsdb_dir):
 			if d.exists() and not d.is_dir():
 				_log.critical("Path exists but is not a directory: %s", d)
 				raise SystemExit(1)

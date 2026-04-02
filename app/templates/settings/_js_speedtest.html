@@ -13,30 +13,32 @@
                 enabledToggle.style.transition = '';
             }
 
-            // Populate server dropdown
-            const targetSelect = document.getElementById('speedtest-target');
-            if (targetSelect && data.servers) {
-                // Keep the auto option, add server options
-                const existingOpts = targetSelect.querySelectorAll('option:not([value="auto"])');
-                existingOpts.forEach(o => o.remove());
-                data.servers.forEach(s => {
-                    const opt = document.createElement('option');
-                    opt.value = s.id;
-                    opt.textContent = s.name;
-                    targetSelect.appendChild(opt);
-                });
-                targetSelect.value = data.target || 'auto';
-            }
-
             // Bind event listeners
             if (isAdmin) {
                 enabledToggle?.addEventListener('change', () => saveSpeedtestSettings());
-                targetSelect?.addEventListener('change', () => saveSpeedtestSettings());
 
                 document.getElementById('btn-speedtest-run')?.addEventListener('click', runSpeedtest);
             }
+            
+            // Load last speedtest result
+            await loadLastSpeedtest();
         } catch (e) {
             console.error('Failed to load speedtest settings:', e.message);
+        }
+    }
+
+    async function loadLastSpeedtest() {
+        try {
+            const res = await api('GET', '/api/wireguard/speedtest/history?limit=1');
+            const data = res.data || res;
+            
+            if (data.history && data.history.length > 0) {
+                const lastResult = data.history[0];
+                showSpeedtestResult(lastResult);
+            }
+        } catch (e) {
+            // Silently fail if no history exists yet
+            console.debug('No speedtest history available:', e.message);
         }
     }
 
@@ -47,18 +49,10 @@
         const enabledToggle = document.getElementById('speedtest-enabled');
         if (enabledToggle) payload.enabled = enabledToggle.checked;
 
-        const targetSelect = document.getElementById('speedtest-target');
-        if (targetSelect) payload.target = targetSelect.value;
-
         try {
             await api('PATCH', '/api/wireguard/speedtest/settings', payload);
-            // Only show enabled/disabled if that's what changed
-            if (payload.enabled !== undefined && Object.keys(payload).length === 1) {
-                const status = payload.enabled ? 'enabled' : 'disabled';
-                wbToast(`Speedtest ${status}`, 'success');
-            } else {
-                wbToast('Speedtest settings saved', 'success');
-            }
+            const status = payload.enabled ? 'enabled' : 'disabled';
+            wbToast(`Speedtest ${status}`, 'success');
         } catch (e) {
             wbToast('Failed to save speedtest settings: ' + e.message, 'danger');
         }
@@ -189,6 +183,41 @@
         }
     }
 
+    const formatBandwidthMetric = window.WBShared?.formatBandwidthMetric
+        || ((valueMbit, gbitDigits = 2, mbitDigits = gbitDigits) => {
+            const numericValue = Number(valueMbit);
+            if (!Number.isFinite(numericValue)) return '–';
+            if (numericValue >= 1000) {
+                return `${(numericValue / 1000).toFixed(gbitDigits)} Gbit/s`;
+            }
+            return `${numericValue.toFixed(mbitDigits)} Mbit/s`;
+        });
+
+    function formatSpeedtestMeasuredLabel(timestamp) {
+        const date = new Date(timestamp);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+
+        if (diffMins < 1) {
+            return 'Just now';
+        }
+        if (diffMins < 60) {
+            return `${diffMins} min ago`;
+        }
+        if (diffMins < 1440) {
+            const hours = Math.floor(diffMins / 60);
+            return `${hours}h ago`;
+        }
+
+        return date.toLocaleString(undefined, {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+    }
+
     function showSpeedtestResult(data) {
         const resultEl = document.getElementById('speedtest-result');
         if (!resultEl) return;
@@ -198,18 +227,27 @@
         const ulEl = document.getElementById('speedtest-result-ul');
         const rttEl = document.getElementById('speedtest-result-rtt');
         const serverEl = document.getElementById('speedtest-result-server');
+        const dateEl = document.getElementById('speedtest-result-date');
+        const inlineDateEl = document.getElementById('speedtest-result-date-inline');
 
-        if (dlEl) dlEl.textContent = data.download_mbit != null ? `${data.download_mbit.toFixed(2)} Mbit/s` : '–';
-        if (ulEl) ulEl.textContent = data.upload_mbit != null ? `${data.upload_mbit.toFixed(2)} Mbit/s` : '–';
+        if (dlEl) dlEl.textContent = formatBandwidthMetric(data.download_mbit, 2);
+        if (ulEl) ulEl.textContent = formatBandwidthMetric(data.upload_mbit, 2);
         if (rttEl) rttEl.textContent = data.rtt_ms != null ? `${data.rtt_ms.toFixed(2)} ms (±${(data.jitter_ms || 0).toFixed(2)})` : '–';
         if (serverEl) {
+            serverEl.textContent = data.server || '–';
+            serverEl.title = data.server || '';
+        }
+        if (inlineDateEl) inlineDateEl.textContent = '';
+        if (dateEl && data.ts) {
             try {
-                const url = new URL(data.server || '');
-                serverEl.textContent = url.hostname;
-                serverEl.title = data.server || '';
-            } catch {
-                serverEl.textContent = data.server || '–';
-                serverEl.title = data.server || '';
+                const date = new Date(data.ts);
+                const label = formatSpeedtestMeasuredLabel(data.ts);
+                dateEl.textContent = label;
+                if (inlineDateEl) inlineDateEl.textContent = `(${label})`;
+                dateEl.title = date.toLocaleString();
+            } catch (e) {
+                dateEl.textContent = '–';
+                if (inlineDateEl) inlineDateEl.textContent = '';
             }
         }
     }

@@ -336,6 +336,10 @@ POST /api/nodes
 }
 ```
 
+**Error Responses:**
+
+- `409 Conflict` — Name or FQDN already exists
+
 !!! danger "Token Display"
     The enrollment token is shown **only once**. Store it securely.
 
@@ -356,6 +360,11 @@ PATCH /api/nodes/{node_id}
 ```
 
 All fields are optional.
+
+**Error Responses:**
+
+- `404 Not Found` — Node does not exist
+- `409 Conflict` — Name or FQDN already exists (on another node)
 
 ### Delete Node
 
@@ -503,6 +512,42 @@ GET /api/dns/queries
 
 ```
 GET /api/dns/stats
+```
+
+### Get DNS Trend Data
+
+```
+GET /api/dns/trend
+```
+
+**Query Parameters:**
+
+- `hours` - Time window in hours (1-8760, default: 24)
+  - Examples: 168 (7d), 720 (30d), 2160 (90d), 4320 (180d), 8760 (1y)
+- `bucket_minutes` - Data aggregation bucket size in minutes (5-10080, default: 60)
+  - Auto-scaled based on time range for optimal performance
+- `client_ips` - Optional comma-separated list of client IPs to filter by
+
+**Implementation details:**
+
+- Unfiltered requests use pre-aggregated DNS buckets from the TSDB
+- Client-filtered requests are computed from raw JSONL query logs
+- If no TSDB DNS data exists yet, the endpoint falls back to JSONL aggregation
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "data": {
+    "hours": 168,
+    "bucket_minutes": 1440,
+    "labels": ["2026-03-25T00:00:00+00:00", "2026-03-26T00:00:00+00:00"],
+    "total": [1234, 2345],
+    "blocked": [123, 234],
+    "block_rate": [10.0, 10.0]
+  }
+}
 ```
 
 ### Update Blocklists

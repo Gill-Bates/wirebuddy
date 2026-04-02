@@ -72,11 +72,19 @@ class OffsetTracker:
 			return
 		
 		try:
-			self.offset_path.parent.mkdir(parents=True, exist_ok=True)
+			parent = self.offset_path.parent
+			parent.mkdir(parents=True, exist_ok=True)
 			data = {'inode': self.state.inode, 'offset': self.state.offset}
+			content = json.dumps(data)
 			tmp_path = self.offset_path.with_suffix('.tmp')
-			tmp_path.write_text(json.dumps(data), encoding='utf-8')
-			tmp_path.replace(self.offset_path)
+			tmp_path.write_text(content, encoding='utf-8')
+			try:
+				tmp_path.replace(self.offset_path)
+			except OSError:
+				# Fallback: atomic replace can fail on some filesystems (overlayfs, Docker volumes).
+				# Write directly instead.
+				self.offset_path.write_text(content, encoding='utf-8')
+				tmp_path.unlink(missing_ok=True)
 			self.dirty = False
 			self.last_save = now
 			_log.debug("DNS_TAIL saved offset: inode=%d offset=%d", self.state.inode, self.state.offset)
@@ -90,8 +98,8 @@ class UnboundLogTailer:
 	Features:
 	- Detects logrotate via inode change
 	- Persistent offset for crash recovery
-	- Backpressure-aware (drops on queue full)
-	- Thread-safe queue access via call_soon_threadsafe
+	- Backpressure-aware (blocks when queue is full)
+	- Thread-safe queue access (runs in thread pool)
 	- Chunk-limited reads to prevent OOM
 	"""
 	
@@ -154,7 +162,7 @@ class UnboundLogTailer:
 		
 		# Read new lines (chunk-limited to prevent OOM)
 		lines_read = 0
-		lines_dropped = 0
+		blocked_time = 0.0
 		
 		try:
 			with self.log_path.open('r', encoding='utf-8', errors='replace') as f:
@@ -166,12 +174,14 @@ class UnboundLogTailer:
 					if not line:
 						break  # EOF
 					
-					# Thread-safe queue put (stdlib queue.Queue is thread-safe)
-					try:
-						q.put_nowait(line)
-						lines_read += 1
-					except queue.Full:
-						lines_dropped += 1
+					# Blocking put: prefer stalling over dropping data
+					# Runs in thread pool, so blocking is safe here
+					start = time.monotonic()
+					q.put(line)
+					delay = time.monotonic() - start
+					if delay > 0.01:
+						blocked_time += delay
+					lines_read += 1
 				else:
 					# Chunk limit reached (loop completed without break)
 					_log.debug("DNS_TAIL chunk limit reached, will continue next cycle")
@@ -183,8 +193,8 @@ class UnboundLogTailer:
 			return
 		
 		if lines_read > 0:
-			_log.debug("DNS_TAIL read %d lines (dropped %d)", lines_read, lines_dropped)
+			_log.debug("DNS_TAIL read %d lines", lines_read)
 		
-		# Warn on any drops (simple and reliable)
-		if lines_dropped > 0:
-			_log.warning("DNS_TAIL backpressure: dropped %d of %d lines", lines_dropped, lines_read + lines_dropped)
+		# Log backpressure for observability (queue was full, we blocked)
+		if blocked_time > 0.1:
+			_log.warning("DNS_TAIL backpressure: blocked %.2fs while enqueuing %d lines", blocked_time, lines_read)

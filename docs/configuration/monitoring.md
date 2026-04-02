@@ -80,6 +80,55 @@ Historical data is aggregated for efficiency:
 | Last 30 days | 1 hour |
 | Last 90 days | 1 day |
 
+### Metrics Management
+
+#### Backup Metrics
+
+**Settings → Metrics → Backup Metrics**
+
+Export collected traffic and statistics:
+
+1. Click **Backup**
+2. Select date range (default: all available data)
+3. Choose format: JSON or CSV
+4. Download the backup file
+
+Backups include:
+
+- Peer traffic history
+- Interface statistics
+- Timestamps and metadata
+- Optional compression
+
+#### Delete Metrics
+
+**Settings → Metrics → Delete Metrics**
+
+Remove metrics data for specific ranges:
+
+1. Click **Delete**
+2. Select date range to delete
+3. Choose level:
+   - **Granular Delete:** Remove only specific time periods
+   - **Full Delete:** Clear all data for selected interface or peer
+4. Confirm deletion
+
+**Use Cases:**
+
+- Free disk space by removing old data
+- Delete metrics for a test peer
+- Clear anomalous data before archiving
+- Comply with data retention policies
+
+#### Archive Strategy
+
+Recommended workflow:
+
+1. Every 90 days: **Backup** complete metrics
+2. Archive to external storage
+3. **Delete** oldest metrics to maintain 90-day retention
+4. Adjust retention policy in **Metrics Settings**
+
 ## Conntrack Configuration
 
 ### Enable Accounting

@@ -31,6 +31,24 @@ _FONT_PATH = _APP_DIR / "static" / "vendor" / "fonts" / "RobotoFlex.woff2"
 # Layout tunables
 _LOGO_SCALE = 0.6  # Logo width relative to QR code width
 _MAX_LABEL_LEN = 32  # Truncate peer names beyond this to avoid canvas overflow
+_BADGE_PAD_X = 22
+_BADGE_PAD_Y = 10
+_BADGE_SECTION_SPACING = 18
+
+
+def _load_font(size: int, variation_name: Optional[str] = None) -> ImageFont.ImageFont:
+	"""Load the bundled font with an optional variation, with Pillow fallbacks."""
+	try:
+		font = ImageFont.truetype(str(_FONT_PATH), size)
+		if variation_name and hasattr(font, "set_variation_by_name"):
+			font.set_variation_by_name(variation_name)
+		return font
+	except (AttributeError, OSError, ValueError):
+		try:
+			return ImageFont.load_default(size=size)
+		except TypeError:
+			# Pillow < 10.0 does not accept a size argument
+			return ImageFont.load_default()
 
 
 def _draw_node_badge(
@@ -44,28 +62,39 @@ def _draw_node_badge(
 
 	Returns the total height consumed (badge + padding).
 	"""
-	badge_text = f"  {node_name}  "
+	badge_text = node_name
 	text_bbox = font.getbbox(badge_text)
 	text_w = text_bbox[2] - text_bbox[0]
 	text_h = text_bbox[3] - text_bbox[1]
 
-	pad_x = 16
-	pad_y = 8
+	pad_x = _BADGE_PAD_X
+	pad_y = _BADGE_PAD_Y
 	badge_w = text_w + pad_x * 2
 	badge_h = text_h + pad_y * 2
-	radius = badge_h // 2
+	radius = badge_h // 4
 
 	x0 = (canvas_w - badge_w) // 2
 	y0 = y
 	x1 = x0 + badge_w
 	y1 = y0 + badge_h
 
-	# Pill background
-	draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, fill="#1a73e8")
-	# Badge text centred inside pill
-	tx = x0 + (badge_w - text_w) // 2
-	ty = y0 + (badge_h - text_h) // 2
-	draw.text((tx, ty), badge_text, fill="white", font=font)
+	# Badge background
+	draw.rounded_rectangle(
+		[x0, y0, x1, y1],
+		radius=radius,
+		fill="#000000",
+	)
+
+	# Center text using anchor-based alignment for more consistent vertical centering.
+	cx = (x0 + x1) // 2
+	cy = (y0 + y1) // 2
+	draw.text(
+		(cx, cy),
+		badge_text,
+		fill="white",
+		font=font,
+		anchor="mm",
+	)
 
 	return badge_h
 
@@ -124,20 +153,10 @@ def generate_qr_png(
 
 	# --- load font (optional – graceful fallback) ---
 	font_size = max(20, qr_w // 18)
-	try:
-		font = ImageFont.truetype(str(_FONT_PATH), font_size)
-	except (OSError, ValueError):
-		try:
-			font = ImageFont.load_default(size=font_size)
-		except TypeError:
-			# Pillow < 10.0 does not accept a size argument
-			font = ImageFont.load_default()
+	font = _load_font(font_size)
 
 	badge_font_size = max(16, font_size * 3 // 4)
-	try:
-		badge_font = ImageFont.truetype(str(_FONT_PATH), badge_font_size)
-	except (OSError, ValueError):
-		badge_font = font
+	badge_font = _load_font(badge_font_size, variation_name="Bold")
 
 	# --- measure text ---
 	text_bbox = font.getbbox(peer_name)
@@ -147,10 +166,10 @@ def generate_qr_png(
 	# Pre-measure badge height
 	badge_section_h = 0
 	if node_name:
-		badge_text = f"  {node_name}  "
+		badge_text = node_name
 		b_bbox = badge_font.getbbox(badge_text)
 		b_text_h = b_bbox[3] - b_bbox[1]
-		badge_section_h = b_text_h + 16 + 12  # pad_y*2 + spacing below badge
+		badge_section_h = b_text_h + (_BADGE_PAD_Y * 2) + _BADGE_SECTION_SPACING
 
 	# --- compose final image ---
 	padding = 16
@@ -177,7 +196,7 @@ def generate_qr_png(
 	# Draw node badge below logo (if applicable)
 	if node_name:
 		badge_h = _draw_node_badge(draw, badge_font, node_name, canvas_w, y_cursor)
-		y_cursor += badge_h + 12  # spacing between badge and peer name
+		y_cursor += badge_h + _BADGE_SECTION_SPACING
 
 	# Draw peer name centred below badge/logo
 	text_x = (canvas_w - text_w) // 2

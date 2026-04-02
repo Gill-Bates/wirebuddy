@@ -35,6 +35,10 @@
 
     .node-fqdn-main code {
         color: var(--bs-secondary-color);
+        /* Prevent horizontal overflow for long domains (UI-Lint compliance) */
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        max-width: 100%;
     }
 
     .node-fqdn-meta {
@@ -84,10 +88,17 @@
         justify-content: flex-end;
         gap: 4px;
     }
+    
+    .node-actions-cell {
+        white-space: nowrap;
+        /* Ensure enough space for 5 buttons (5 × 38px + 4 × 4px gap = 206px) */
+        min-width: 210px;
+    }
     /* Compact action buttons for table rows (v1.3.3 style) */
     .node-action-btn {
-        min-width: 0;
-        min-height: 0;
+        /* Accessibility: 38px touch target (UI-Lint CLICK_TARGET_MIN_SIZE_PX) */
+        min-width: 38px;
+        min-height: 38px;
         padding: 0.2rem 0.35rem;
         display: inline-flex;
         align-items: center;
@@ -100,10 +111,17 @@
         pointer-events: none;
     }
 
-    .node-actions-cell {
-        white-space: nowrap;
-        min-width: 180px;
+    @media (min-width: 768px) and (max-width: 1799.98px) {
+        .node-actions-cell {
+            white-space: normal;
+            min-width: 122px;
+        }
+
+        .node-actions-cell .d-flex {
+            flex-wrap: wrap;
+        }
     }
+
     .nodes-copy-btn .material-icons,
     .nodes-primary-trigger .material-icons {
         pointer-events: none;
@@ -111,7 +129,7 @@
 
     @media (max-width: 991.98px) {
         /* Hide Port column on tablet */
-        .nodes-table th:nth-child(3),
+        .nodes-table th[data-label="Port"],
         .nodes-table td[data-label="Port"] {
             display: none;
         }
@@ -119,8 +137,9 @@
 
     /* Mobile-optimized nodes rows — card layout matching peers.html */
     @media (max-width: 767.98px) {
+        /* UI-Lint: overflow-x auto (not hidden) to detect real layout issues */
         .table-responsive {
-            overflow-x: hidden;
+            overflow-x: auto;
             overflow-y: visible;
         }
 
@@ -147,6 +166,7 @@
                 "name      status"
                 "fqdn      fqdn"
                 "meta      meta"
+                "speedtest speedtest"
                 "actions   actions";
             grid-template-columns: minmax(0, 1fr) auto;
             align-items: start;
@@ -208,7 +228,7 @@
             display: none !important;
         }
 
-        /* Meta row with version, peers, last seen (visible on mobile only) */
+        /* Meta row with version, port, peers, last seen (visible on mobile only) */
         .node-mobile-meta {
             grid-area: meta;
             display: flex !important;
@@ -218,9 +238,20 @@
             color: var(--bs-secondary-color);
         }
 
+        .node-mobile-meta-version,
+        .node-mobile-meta-port {
+            font-family: var(--bs-font-monospace);
+            white-space: nowrap;
+        }
+
         .node-mobile-meta span + span::before {
             content: "·";
             margin-right: 0.5rem;
+        }
+
+        .nodes-table td[data-label="Speedtest"] {
+            grid-area: speedtest;
+            margin-top: 0.15rem;
         }
 
         /* Actions */
@@ -240,8 +271,9 @@
         }
 
         .node-action-btn {
-            min-width: 0;
-            min-height: 0;
+            /* Maintain 38px touch targets on mobile (UI-Lint compliance) */
+            min-width: 38px;
+            min-height: 38px;
             padding: 0.2rem 0.35rem;
         }
     }
@@ -267,17 +299,18 @@
                     <tr>
                         <th>Name</th>
                         <th>FQDN / IP</th>
-                        <th>Port</th>
+                        <th data-label="Port">Port</th>
                         <th>Status</th>
                         <th>Version</th>
                         <th>Peers</th>
+                        <th>Speedtest</th>
                         <th>Last Seen</th>
                         <th class="text-end" aria-hidden="true"></th>
                     </tr>
                 </thead>
                 <tbody id="nodesTableBody">
                     {% for node in nodes %}
-                    <tr id="node-row-{{ node.id }}">
+                    <tr id="node-row-{{ node.id }}" data-last-speedtest-ts="{{ node.last_speedtest.ts if node.last_speedtest else '' }}" data-node-status="{{ node.status }}">
                         <td data-label="Name"><strong>{{ node.name }}</strong></td>
                         <td data-label="FQDN" class="node-fqdn-cell">
                             <div class="node-fqdn-stack">
@@ -299,7 +332,7 @@
                                 {% endif %}
                             </div>
                         </td>
-                        <td data-label="Port">{{ node.wg_port }}</td>
+                        <td data-label="Port"><code>{{ node.wg_port }}/udp</code></td>
                         <td data-label="Status" aria-live="polite" aria-atomic="true" aria-relevant="text">
                             {% if node.status == 'online' %}
                             <span class="badge bg-success node-status-badge">Online</span>
@@ -319,28 +352,60 @@
                             {% endif %}
                         </td>
                         <td data-label="Peers">{{ node.peer_count }}</td>
+                        <td data-label="Speedtest" class="node-speedtest-cell">
+                            {% if node.last_speedtest and node.last_speedtest.status == 'ok' %}
+                            <div class="d-flex gap-1 flex-wrap">
+                                {% if node.last_speedtest.download_mbit %}
+                                {% set dl = node.last_speedtest.download_mbit %}
+                                <span class="badge bg-secondary" title="Download" data-bs-toggle="tooltip">
+                                    ↓ {{ dl|format_bandwidth_mbit(1, 0) }}
+                                </span>
+                                {% endif %}
+                                {% if node.last_speedtest.upload_mbit %}
+                                {% set ul = node.last_speedtest.upload_mbit %}
+                                <span class="badge bg-secondary" title="Upload" data-bs-toggle="tooltip">
+                                    ↑ {{ ul|format_bandwidth_mbit(1, 0) }}
+                                </span>
+                                {% endif %}
+                            </div>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
                         <td data-label="Last Seen" class="node-last-seen text-nowrap">
                             <span class="{{ node.last_seen_class }}">{{ node.last_seen_text }}</span>
                         </td>
                         <td class="node-mobile-meta d-none">
-                            {% if node.node_version %}<span>{{ node.node_version }}</span>{% endif %}
+                            {% if node.node_version %}<span class="node-mobile-meta-version">v{{ node.node_version }}</span>{% endif %}
+                            {% if node.wg_port %}<span class="node-mobile-meta-port">{{ node.wg_port }}/udp</span>{% endif %}
                             <span>{{ node.peer_count }} Peer{{ 's' if node.peer_count != 1 else '' }}</span>
                             <span>{{ node.last_seen_text }}</span>
                         </td>
                         <td data-label="Actions" class="text-end node-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
                                 <button type="button"
-                                        class="btn btn-sm btn-outline-secondary node-action-btn {% if node.status == 'online' and not node.sse_connected %}btn-outline-warning{% endif %}"
+                                        class="btn btn-sm btn-outline-secondary node-action-btn"
                                         data-action="restart-node"
                                         data-node-id="{{ node.id }}"
                                         data-node-name="{{ node.name }}"
                                         data-node-status="{{ node.status }}"
-                                        data-sse-connected="{{ 'true' if node.sse_connected else 'false' }}"
                                         aria-label="Restart {{ node.name }}"
                                         data-bs-toggle="tooltip"
-                                        data-bs-title="{% if node.status != 'online' %}Node is offline{% elif not node.sse_connected %}⚠️ SSE not connected - restart may fail{% else %}Restart Node{% endif %}"
+                                        data-bs-title="{% if node.status != 'online' %}Node is offline{% else %}Restart Node{% endif %}"
                                         {% if node.status != 'online' %}disabled{% endif %}>
                                     <span class="material-icons icon-md" aria-hidden="true">restart_alt</span>
+                                </button>
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-secondary node-action-btn"
+                                        data-action="run-speedtest"
+                                        data-node-id="{{ node.id }}"
+                                        data-node-name="{{ node.name }}"
+                                        data-node-status="{{ node.status }}"
+                                        aria-label="Run speedtest on {{ node.name }}"
+                                        data-bs-toggle="tooltip"
+                                        data-bs-title="{% if node.status != 'online' %}Node is offline{% else %}Run Speedtest{% endif %}"
+                                        {% if node.status != 'online' %}disabled{% endif %}>
+                                    <span class="material-icons icon-md" aria-hidden="true">speed</span>
                                 </button>
                                 <button type="button"
                                         class="btn btn-sm btn-outline-secondary node-action-btn"
@@ -524,13 +589,18 @@
     const POLL_INTERVAL_MS = 30000;
     const MAX_POLL_FAILURES = 3;
     const POLL_BACKOFF_MS = 60000;
+    const SPEEDTEST_STATE_STORAGE_KEY = 'wb_nodes_active_speedtests';
+    const SPEEDTEST_LOCK_TIMEOUT_MS = 180000;
+    const SPEEDTEST_STATUS_POLL_MS = 5000;
     
     let pollTimer = null;
+    let speedtestStatusTimer = null;
     let pollFailureCount = 0;
     let nodeCreatedFlag = false;
     let pollController = null;
     let _pollSeq = 0; // Request versioning to guard against out-of-order responses
     const restartingNodes = new Map(); // node_id → { phase: 'sent'|'offline', timeout: number }
+    const activeSpeedtests = new Map(); // node_id → { nodeName, baselineTs, startedAt, phase }
 
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
     const headers = {
@@ -634,6 +704,37 @@
         return span;
     }
 
+    function syncNodeStatusCell(row, node) {
+        if (!row || !node) return;
+
+        const nodeId = String(node.id || '');
+        const statusCell = row.querySelector('td[data-label="Status"]');
+        if (!statusCell) return;
+
+        const rawStatus = node.status || '';
+        row.dataset.nodeStatus = rawStatus;
+
+        let effectiveStatus = rawStatus;
+        const restartEntry = restartingNodes.get(nodeId);
+        if (restartEntry) {
+            if (rawStatus === 'offline') {
+                restartEntry.phase = 'offline';
+                effectiveStatus = 'restarting';
+            } else if (rawStatus === 'online' && restartEntry.phase === 'offline') {
+                if (restartEntry.timeout) clearTimeout(restartEntry.timeout);
+                restartingNodes.delete(nodeId);
+                effectiveStatus = 'online';
+            } else {
+                effectiveStatus = 'restarting';
+            }
+        }
+
+        if (statusCell.dataset.status !== effectiveStatus) {
+            statusCell.replaceChildren(createStatusBadge(effectiveStatus));
+            statusCell.dataset.status = effectiveStatus;
+        }
+    }
+
     function setButtonLoading(button, isLoading, loadingText = 'Loading...', originalText = null) {
         if (!button) return;
         
@@ -647,6 +748,223 @@
             button.disabled = false;
             button.innerHTML = originalText ? originalText : (button.dataset.originalHtml || 'Submit');
         }
+    }
+
+    function normalizeSpeedtestTimestamp(value) {
+        if (typeof value !== 'string') return '';
+        const trimmed = value.trim();
+        if (!trimmed) return '';
+        const parsed = Date.parse(trimmed);
+        return Number.isFinite(parsed) ? trimmed : '';
+    }
+
+    function persistActiveSpeedtests() {
+        try {
+            if (!activeSpeedtests.size) {
+                localStorage.removeItem(SPEEDTEST_STATE_STORAGE_KEY);
+                return;
+            }
+
+            const serialized = {};
+            for (const [nodeId, entry] of activeSpeedtests.entries()) {
+                serialized[nodeId] = {
+                    nodeName: entry.nodeName || 'node',
+                    baselineTs: entry.baselineTs || '',
+                    startedAt: entry.startedAt,
+                    phase: entry.phase === 'starting' ? 'starting' : 'running',
+                };
+            }
+            localStorage.setItem(SPEEDTEST_STATE_STORAGE_KEY, JSON.stringify(serialized));
+        } catch (_) {
+            // Ignore storage failures and keep the in-memory lock.
+        }
+    }
+
+    function loadActiveSpeedtests() {
+        let raw = '';
+        try {
+            raw = localStorage.getItem(SPEEDTEST_STATE_STORAGE_KEY) || '';
+        } catch (_) {
+            return;
+        }
+
+        if (!raw) return;
+
+        try {
+            const parsed = JSON.parse(raw);
+            const now = Date.now();
+            for (const [nodeId, entry] of Object.entries(parsed || {})) {
+                const startedAt = Number(entry?.startedAt);
+                if (!nodeId || !Number.isFinite(startedAt)) continue;
+                if (now - startedAt > SPEEDTEST_LOCK_TIMEOUT_MS) continue;
+
+                activeSpeedtests.set(String(nodeId), {
+                    nodeName: typeof entry?.nodeName === 'string' ? entry.nodeName : 'node',
+                    baselineTs: normalizeSpeedtestTimestamp(entry?.baselineTs || ''),
+                    startedAt,
+                    phase: entry?.phase === 'starting' ? 'starting' : 'running',
+                });
+            }
+            persistActiveSpeedtests();
+        } catch (_) {
+            try {
+                localStorage.removeItem(SPEEDTEST_STATE_STORAGE_KEY);
+            } catch (_) {
+                // Ignore storage cleanup failures.
+            }
+        }
+    }
+
+    function setActiveSpeedtest(nodeId, entry) {
+        activeSpeedtests.set(String(nodeId), {
+            nodeName: entry.nodeName || 'node',
+            baselineTs: normalizeSpeedtestTimestamp(entry.baselineTs || ''),
+            startedAt: Number(entry.startedAt) || Date.now(),
+            phase: entry.phase === 'starting' ? 'starting' : 'running',
+        });
+        persistActiveSpeedtests();
+    }
+
+    function clearActiveSpeedtest(nodeId) {
+        activeSpeedtests.delete(String(nodeId));
+        persistActiveSpeedtests();
+    }
+
+    function updateTooltipTitle(button, title) {
+        if (!button) return;
+        if (button.getAttribute('data-bs-title') === title) return;
+        button.setAttribute('data-bs-title', title);
+        const tooltip = bootstrap.Tooltip.getInstance(button);
+        if (tooltip) {
+            tooltip.setContent({ '.tooltip-inner': title });
+        }
+    }
+
+    function applySpeedtestButtonState(button, isOnline, activeEntry = null) {
+        if (!button) return;
+
+        const locked = Boolean(activeEntry);
+        const title = !isOnline
+            ? 'Node is offline'
+            : locked && activeEntry?.phase === 'starting'
+                ? 'Starting Speedtest…'
+                : locked
+                    ? 'Speedtest running'
+                    : 'Run Speedtest';
+
+        button.disabled = !isOnline || locked;
+        button.classList.toggle('btn-secondary', locked);
+        button.classList.toggle('btn-outline-secondary', !locked);
+        button.setAttribute('aria-busy', locked ? 'true' : 'false');
+        updateTooltipTitle(button, title);
+    }
+
+    function syncSpeedtestButtonForRow(row, nodeStatus = null) {
+        if (!row) return;
+        const button = row.querySelector('button[data-action="run-speedtest"]');
+        if (!button) return;
+
+        const resolvedStatus = nodeStatus || button.dataset.nodeStatus || '';
+        const entry = activeSpeedtests.get(String(button.dataset.nodeId || '')) || null;
+        applySpeedtestButtonState(button, resolvedStatus === 'online', entry);
+    }
+
+    function hasSpeedtestCompleted(entry, latestTs) {
+        const normalizedLatest = normalizeSpeedtestTimestamp(latestTs);
+        if (!normalizedLatest) return false;
+
+        if (entry.baselineTs) {
+            return normalizedLatest !== entry.baselineTs;
+        }
+
+        const latestMs = Date.parse(normalizedLatest);
+        return Number.isFinite(latestMs) && latestMs >= entry.startedAt - 5000;
+    }
+
+    async function fetchLatestSpeedtestByNode() {
+        const payload = await api('GET', '/api/wireguard/speedtest/nodes');
+        const nodes = Array.isArray(payload?.nodes) ? payload.nodes : [];
+        const latestByNode = new Map();
+
+        for (const node of nodes) {
+            if (!node?.node_id) continue;
+            latestByNode.set(String(node.node_id), node.last_speedtest || null);
+        }
+
+        return latestByNode;
+    }
+
+    async function checkActiveSpeedtests() {
+        if (!activeSpeedtests.size) {
+            stopSpeedtestStatusPolling();
+            return;
+        }
+
+        let latestByNode;
+        try {
+            latestByNode = await fetchLatestSpeedtestByNode();
+        } catch (_) {
+            return;
+        }
+
+        const now = Date.now();
+        for (const [nodeId, entry] of [...activeSpeedtests.entries()]) {
+            const row = document.getElementById(`node-row-${nodeId}`);
+            if (!row) {
+                clearActiveSpeedtest(nodeId);
+                continue;
+            }
+
+            const latestSpeedtest = latestByNode.get(nodeId) || null;
+            const latestTs = normalizeSpeedtestTimestamp(latestSpeedtest?.ts || '');
+
+            if (latestTs) {
+                row.dataset.lastSpeedtestTs = latestTs;
+            }
+
+            if (hasSpeedtestCompleted(entry, latestTs)) {
+                clearActiveSpeedtest(nodeId);
+                syncSpeedtestButtonForRow(row);
+                continue;
+            }
+
+            if (now - entry.startedAt > SPEEDTEST_LOCK_TIMEOUT_MS) {
+                clearActiveSpeedtest(nodeId);
+                syncSpeedtestButtonForRow(row);
+                wbToast(`Speedtest on "${entry.nodeName}" timed out or returned no result. Button re-enabled.`, 'warning');
+                continue;
+            }
+
+            if (entry.phase !== 'running') {
+                activeSpeedtests.set(nodeId, { ...entry, phase: 'running' });
+                persistActiveSpeedtests();
+            }
+            syncSpeedtestButtonForRow(row);
+        }
+
+        if (!activeSpeedtests.size) {
+            stopSpeedtestStatusPolling();
+        }
+    }
+
+    function ensureSpeedtestStatusPolling() {
+        if (!activeSpeedtests.size || document.hidden) return;
+        if (speedtestStatusTimer) return;
+        speedtestStatusTimer = setInterval(() => {
+            void checkActiveSpeedtests();
+        }, SPEEDTEST_STATUS_POLL_MS);
+    }
+
+    function stopSpeedtestStatusPolling() {
+        if (!speedtestStatusTimer) return;
+        clearInterval(speedtestStatusTimer);
+        speedtestStatusTimer = null;
+    }
+
+    function syncAllSpeedtestButtons() {
+        document.querySelectorAll('#nodesTableBody tr[id^="node-row-"]').forEach((row) => {
+            syncSpeedtestButtonForRow(row);
+        });
     }
 
     function initTooltips(root = document) {
@@ -692,9 +1010,41 @@
      * Programmatically build a node table row (mirrors Jinja template structure).
      * Used when adding new nodes without full page reload.
      */
+    function syncNodeMobileMetaCell(cell, node) {
+        if (!cell) return;
+
+        const fragments = [];
+        if (node.node_version) {
+            const versionSpan = document.createElement('span');
+            versionSpan.className = 'node-mobile-meta-version';
+            versionSpan.textContent = `v${node.node_version}`;
+            fragments.push(versionSpan);
+        }
+
+        if (node.wg_port) {
+            const portSpan = document.createElement('span');
+            portSpan.className = 'node-mobile-meta-port';
+            portSpan.textContent = `${node.wg_port}/udp`;
+            fragments.push(portSpan);
+        }
+
+        const peerSpan = document.createElement('span');
+        const peerCount = node.peer_count ?? 0;
+        peerSpan.textContent = `${peerCount} Peer${peerCount !== 1 ? 's' : ''}`;
+        fragments.push(peerSpan);
+
+        const lastSeenSpan = document.createElement('span');
+        lastSeenSpan.textContent = node.last_seen_text || 'Never';
+        fragments.push(lastSeenSpan);
+
+        cell.replaceChildren(...fragments);
+    }
+
     function buildNodeRow(node) {
         const tr = document.createElement('tr');
         tr.id = `node-row-${node.id}`;
+        tr.dataset.lastSpeedtestTs = normalizeSpeedtestTimestamp(node.last_speedtest?.ts || '');
+        tr.dataset.nodeStatus = node.status || '';
 
         // Name cell
         const tdName = document.createElement('td');
@@ -745,7 +1095,7 @@
         // Port cell
         const tdPort = document.createElement('td');
         tdPort.setAttribute('data-label', 'Port');
-        tdPort.textContent = node.wg_port;
+        tdPort.innerHTML = '<code>' + node.wg_port + '/udp</code>';
 
         // Status cell
         const tdStatus = document.createElement('td');
@@ -786,18 +1136,7 @@
         // Mobile meta cell (hidden on desktop)
         const tdMobileMeta = document.createElement('td');
         tdMobileMeta.className = 'node-mobile-meta d-none';
-        if (node.node_version) {
-            const vSpan = document.createElement('span');
-            vSpan.textContent = node.node_version;
-            tdMobileMeta.appendChild(vSpan);
-        }
-        const peerSpan = document.createElement('span');
-        const peerCount = node.peer_count ?? 0;
-        peerSpan.textContent = `${peerCount} Peer${peerCount !== 1 ? 's' : ''}`;
-        tdMobileMeta.appendChild(peerSpan);
-        const lastSeenMobileSpan = document.createElement('span');
-        lastSeenMobileSpan.textContent = node.last_seen_text || 'Never';
-        tdMobileMeta.appendChild(lastSeenMobileSpan);
+        syncNodeMobileMetaCell(tdMobileMeta, node);
 
         // Actions cell
         const tdActions = document.createElement('td');
@@ -807,29 +1146,42 @@
         actionsDiv.className = 'd-flex gap-1 justify-content-end';
 
         const isOnline = node.status === 'online';
-        const sseConnected = node.sse_connected === true;
 
         // Restart button
         const restartBtn = document.createElement('button');
         restartBtn.type = 'button';
-        restartBtn.className = `btn btn-sm btn-outline-secondary node-action-btn${isOnline && !sseConnected ? ' btn-outline-warning' : ''}`;
+        restartBtn.className = 'btn btn-sm btn-outline-secondary node-action-btn';
         restartBtn.dataset.action = 'restart-node';
         restartBtn.dataset.nodeId = node.id;
         restartBtn.dataset.nodeName = node.name;
         restartBtn.dataset.nodeStatus = node.status || '';
-        restartBtn.dataset.sseConnected = sseConnected ? 'true' : 'false';
         restartBtn.setAttribute('aria-label', `Restart ${node.name}`);
         restartBtn.setAttribute('data-bs-toggle', 'tooltip');
-        let restartTitle = 'Restart Node';
-        if (!isOnline) restartTitle = 'Node is offline';
-        else if (!sseConnected) restartTitle = '⚠️ SSE not connected - restart may fail';
-        restartBtn.setAttribute('data-bs-title', restartTitle);
+        restartBtn.setAttribute('data-bs-title', isOnline ? 'Restart Node' : 'Node is offline');
         if (!isOnline) restartBtn.disabled = true;
         const restartIcon = document.createElement('span');
         restartIcon.className = 'material-icons icon-md';
         restartIcon.setAttribute('aria-hidden', 'true');
         restartIcon.textContent = 'restart_alt';
         restartBtn.appendChild(restartIcon);
+
+        // Speedtest button
+        const speedtestBtn = document.createElement('button');
+        speedtestBtn.type = 'button';
+        speedtestBtn.className = 'btn btn-sm btn-outline-secondary node-action-btn';
+        speedtestBtn.dataset.action = 'run-speedtest';
+        speedtestBtn.dataset.nodeId = node.id;
+        speedtestBtn.dataset.nodeName = node.name;
+        speedtestBtn.dataset.nodeStatus = node.status || '';
+        speedtestBtn.setAttribute('aria-label', `Run speedtest on ${node.name}`);
+        speedtestBtn.setAttribute('data-bs-toggle', 'tooltip');
+        speedtestBtn.setAttribute('data-bs-title', isOnline ? 'Run Speedtest' : 'Node is offline');
+        const speedtestIcon = document.createElement('span');
+        speedtestIcon.className = 'material-icons icon-md';
+        speedtestIcon.setAttribute('aria-hidden', 'true');
+        speedtestIcon.textContent = 'speed';
+        speedtestBtn.appendChild(speedtestIcon);
+        applySpeedtestButtonState(speedtestBtn, isOnline, activeSpeedtests.get(String(node.id)) || null);
 
         // Regenerate token button
         const regenBtn = document.createElement('button');
@@ -881,7 +1233,7 @@
         deleteIcon.textContent = 'delete';
         deleteBtn.appendChild(deleteIcon);
 
-        actionsDiv.append(restartBtn, regenBtn, editBtn, deleteBtn);
+        actionsDiv.append(restartBtn, speedtestBtn, regenBtn, editBtn, deleteBtn);
         tdActions.appendChild(actionsDiv);
 
         tr.append(tdName, tdFqdn, tdPort, tdStatus, tdVersion, tdPeers, tdLastSeen, tdMobileMeta, tdActions);
@@ -914,10 +1266,11 @@
         thead.innerHTML = `<tr>
             <th>Name</th>
             <th>FQDN / IP</th>
-            <th>Port</th>
+            <th data-label="Port">Port</th>
             <th>Status</th>
             <th>Version</th>
             <th>Peers</th>
+            <th>Speedtest</th>
             <th>Last Seen</th>
             <th class="text-end" aria-hidden="true"></th>
         </tr>`;
@@ -1052,10 +1405,13 @@
     }
 
     async function restartNode(id, name) {
+        const nodeId = String(id || '');
+        if (!nodeId) return;
+
         if (!await wbConfirm(`Restart node "${name}"? The node will disconnect briefly and reconnect.`, 'warning')) return;
 
         // Find the row and button for immediate UI feedback
-        const row = document.getElementById(`node-row-${id}`);
+        const row = document.getElementById(`node-row-${nodeId}`);
         const restartBtn = row?.querySelector('button[data-action="restart-node"]');
 
         try {
@@ -1074,15 +1430,49 @@
 
             // Track this node as restarting so polling doesn't overwrite the badge
             // Clear any existing timeout to prevent stale deletes on repeated restarts
-            const existing = restartingNodes.get(id);
+            const existing = restartingNodes.get(nodeId);
             if (existing?.timeout) clearTimeout(existing.timeout);
-            const timeout = setTimeout(() => restartingNodes.delete(id), 120000);
-            restartingNodes.set(id, { phase: 'sent', timeout });
+            const timeout = setTimeout(() => restartingNodes.delete(nodeId), 120000);
+            restartingNodes.set(nodeId, { phase: 'sent', timeout });
 
             wbToast(`Node restart initiated. "${name}" will reconnect shortly.`, 'success');
         } catch (err) {
             // Show as toast instead of alert to avoid blocking reconnect modal
             wbToast(err.message || `Failed to restart "${name}"`, 'danger');
+        }
+    }
+
+    async function runNodeSpeedtest(id, name) {
+        const nodeId = String(id || '');
+        if (!nodeId || activeSpeedtests.has(nodeId)) return;
+
+        const row = document.getElementById(`node-row-${nodeId}`);
+        const speedtestBtn = row?.querySelector('button[data-action="run-speedtest"]');
+        const baselineTs = normalizeSpeedtestTimestamp(row?.dataset.lastSpeedtestTs || '');
+
+        setActiveSpeedtest(nodeId, {
+            nodeName: name,
+            baselineTs,
+            startedAt: Date.now(),
+            phase: 'starting',
+        });
+        syncSpeedtestButtonForRow(row, speedtestBtn?.dataset.nodeStatus || 'online');
+
+        try {
+            await api('POST', `/api/nodes/${nodeId}/speedtest`);
+            setActiveSpeedtest(nodeId, {
+                nodeName: name,
+                baselineTs,
+                startedAt: Date.now(),
+                phase: 'running',
+            });
+            ensureSpeedtestStatusPolling();
+            void checkActiveSpeedtests();
+            wbToast(`Speedtest triggered on "${name}". Results will appear on the Speedtest page.`, 'success');
+        } catch (err) {
+            clearActiveSpeedtest(nodeId);
+            syncSpeedtestButtonForRow(row, speedtestBtn?.dataset.nodeStatus || 'online');
+            wbToast(err.message || `Failed to trigger speedtest on "${name}"`, 'danger');
         }
     }
 
@@ -1105,7 +1495,8 @@
             if (seq !== _pollSeq) return;
 
             for (const node of nodes) {
-                let row = document.getElementById(`node-row-${node.id}`);
+                const nodeId = String(node.id || '');
+                let row = document.getElementById(`node-row-${nodeId}`);
                 
                 // Handle NEW nodes: build row and insert into table
                 if (!row) {
@@ -1116,38 +1507,7 @@
                 }
 
                 // Update status badge (secure DOM manipulation)
-                const statusCell = row.querySelector('td[data-label="Status"]');
-                if (statusCell) {
-                    const currentBadge = statusCell.querySelector('.node-status-badge');
-                    const currentStatus = currentBadge?.textContent.trim();
-
-                    // If this node is tracked as restarting, keep showing "Restarting"
-                    // until the node goes offline then comes back online
-                    if (restartingNodes.has(node.id)) {
-                        const entry = restartingNodes.get(node.id);
-                        if (node.status === 'offline') {
-                            // Node went offline — restart in progress
-                            entry.phase = 'offline';
-                            statusCell.replaceChildren(createStatusBadge('restarting'));
-                        } else if (node.status === 'online' && entry.phase === 'offline') {
-                            // Node came back online after being offline — restart complete!
-                            if (entry.timeout) clearTimeout(entry.timeout);
-                            restartingNodes.delete(node.id);
-                            statusCell.replaceChildren(createStatusBadge(node.status));
-                        }
-                        // phase === 'sent' && status === 'online': still shutting down, keep badge
-                    } else {
-                        const newStatus = node.status === 'online' ? 'Online' : 
-                                         node.status === 'pending' ? 'Pending' : 
-                                         node.status === 'offline' ? 'Offline' : 
-                                         node.status || '\u2014';
-                        
-                        // Only update if changed
-                        if (currentStatus !== newStatus) {
-                            statusCell.replaceChildren(createStatusBadge(node.status));
-                        }
-                    }
-                }
+                syncNodeStatusCell(row, node);
 
                 // Update peer count
                 const peersCell = row.querySelector('td[data-label="Peers"]');
@@ -1193,22 +1553,16 @@
                     }
                 }
 
-                // Update restart button state based on node status and SSE connection
+                syncNodeMobileMetaCell(row.querySelector('.node-mobile-meta'), node);
+
+                // Update restart button state based on node status
                 const restartBtn = row.querySelector('button[data-action="restart-node"]');
                 if (restartBtn) {
                     const isOnline = node.status === 'online';
-                    const sseConnected = node.sse_connected === true;
-                    // Only disable if node is offline (not if SSE disconnected)
                     restartBtn.disabled = !isOnline;
                     restartBtn.dataset.nodeStatus = node.status || '';
-                    restartBtn.dataset.sseConnected = sseConnected ? 'true' : 'false';
-                    // Visual warning if SSE not connected
-                    restartBtn.classList.toggle('btn-outline-warning', isOnline && !sseConnected);
-                    restartBtn.classList.toggle('btn-outline-secondary', !isOnline || sseConnected);
                     // Update tooltip title (only recreate if changed to reduce overhead)
-                    let title = 'Restart Node';
-                    if (!isOnline) title = 'Node is offline';
-                    else if (!sseConnected) title = '⚠️ SSE not connected - restart may fail';
+                    const title = isOnline ? 'Restart Node' : 'Node is offline';
                     
                     if (restartBtn.getAttribute('data-bs-title') !== title) {
                         restartBtn.setAttribute('data-bs-title', title);
@@ -1217,6 +1571,12 @@
                             tooltip.setContent({ '.tooltip-inner': title });
                         }
                     }
+                }
+
+                const speedtestBtn = row.querySelector('button[data-action="run-speedtest"]');
+                if (speedtestBtn) {
+                    speedtestBtn.dataset.nodeStatus = node.status || '';
+                    syncSpeedtestButtonForRow(row, node.status || '');
                 }
             }
             
@@ -1281,7 +1641,7 @@
 
     nodesTableBody?.addEventListener('click', async (event) => {
         const button = event.target.closest('button[data-action]');
-        if (!button) return;
+        if (!button || button.disabled) return;
 
         const action = button.dataset.action;
         const nodeId = button.dataset.nodeId || '';
@@ -1309,6 +1669,11 @@
 
         if (action === 'restart-node') {
             await restartNode(nodeId, nodeName);
+            return;
+        }
+
+        if (action === 'run-speedtest') {
+            await runNodeSpeedtest(nodeId, nodeName);
         }
     });
 
@@ -1343,23 +1708,32 @@
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
             stopPolling();
+            stopSpeedtestStatusPolling();
         } else {
             refreshNodes(); // Refresh immediately when tab becomes visible
             startPolling();
+            ensureSpeedtestStatusPolling();
+            void checkActiveSpeedtests();
         }
     });
 
     // Cleanup on page unload (navigation, bfcache eviction)
     window.addEventListener('pagehide', () => {
         stopPolling();
+        stopSpeedtestStatusPolling();
         pollController?.abort();
     });
 
     // ========================================================================
     // INITIALIZATION
     // ========================================================================
+    loadActiveSpeedtests();
+    syncAllSpeedtestButtons();
     initTooltips();
+    void refreshNodes();
     startPolling();
+    ensureSpeedtestStatusPolling();
+    void checkActiveSpeedtests();
 })();
 </script>
 {% endblock %}

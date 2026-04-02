@@ -1,0 +1,89 @@
+{
+    "extends": [
+        "config:best-practices"
+    ],
+    "timezone": "Europe/Berlin",
+    "schedule": [
+        "before 6am on Monday"
+    ],
+    "labels": [
+        "dependencies",
+        "renovate"
+    ],
+    "rebaseWhen": "behind-base-branch",
+    "commitMessagePrefix": "chore(deps):",
+    "prConcurrentLimit": 3,
+    "prCreationLimit": 2,
+    "docker": {
+        "enabled": true
+    },
+    "packageRules": [
+        {
+            "description": "GitHub Actions: auto-merge minor/patch with digest pinning",
+            "matchManagers": [
+                "github-actions"
+            ],
+            "groupName": "github-actions",
+            "automerge": true,
+            "automergeType": "pr",
+            "automergeStrategy": "squash",
+            "matchUpdateTypes": [
+                "minor",
+                "patch"
+            ],
+            "minimumReleaseAge": "3 days",
+            "pinDigests": true
+        },
+        {
+            "description": "Docker images: pin digests for reproducibility",
+            "matchManagers": [
+                "dockerfile"
+            ],
+            "groupName": "docker-images",
+            "automerge": false,
+            "pinDigests": true,
+            "labels": [
+                "docker"
+            ]
+        },
+        {
+            "description": "Python dependencies: group and review",
+            "matchManagers": [
+                "pip_requirements"
+            ],
+            "groupName": "python-dependencies",
+            "automerge": false,
+            "labels": [
+                "python"
+            ]
+        },
+        {
+            "description": "Trivy security scanner: keep updated always",
+            "matchPackageNames": [
+                "aquasecurity/trivy-action"
+            ],
+            "automerge": true,
+            "minimumReleaseAge": "1 day",
+            "schedule": [
+                "at any time"
+            ]
+        },
+        {
+            "description": "Major version updates: require explicit review",
+            "matchUpdateTypes": [
+                "major"
+            ],
+            "automerge": false,
+            "labels": [
+                "breaking-change"
+            ]
+        }
+    ],
+    "vulnerabilityAlerts": {
+        "enabled": true,
+        "labels": [
+            "security",
+            "critical"
+        ]
+    }
+}

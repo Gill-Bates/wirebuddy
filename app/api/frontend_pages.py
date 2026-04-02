@@ -57,7 +57,44 @@ _APP_ROOT = Path("/app")
 _ACME_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
 
 # Semaphore to limit concurrent geo-IP lookups (prevents thread pool exhaustion)
-_GEO_LOOKUP_SEMAPHORE = asyncio.Semaphore(20)
+# Lazy initialized to avoid event loop binding issues in Python < 3.10
+_GEO_LOOKUP_SEMAPHORE: asyncio.Semaphore | None = None
+_GEO_SEMAPHORE_LOCK: asyncio.Lock | None = None
+
+# Configuration constants
+_GEO_SEMAPHORE_LIMIT = 20  # Max concurrent GeoIP lookups
+_GEO_LOOKUP_BATCH_SIZE = 100  # Batch size for geo-IP lookups
+_SUBPROCESS_TIMEOUT = 5  # Timeout for system tool version checks (seconds)
+
+
+async def _get_geo_semaphore() -> asyncio.Semaphore:
+	"""Get or create the geo-IP lookup semaphore (lazy initialization).
+	
+	Thread-safe double-checked locking to prevent race conditions.
+	"""
+	global _GEO_LOOKUP_SEMAPHORE, _GEO_SEMAPHORE_LOCK
+	
+	if _GEO_LOOKUP_SEMAPHORE is None:
+		# Initialize lock if needed
+		if _GEO_SEMAPHORE_LOCK is None:
+			_GEO_SEMAPHORE_LOCK = asyncio.Lock()
+		
+		async with _GEO_SEMAPHORE_LOCK:
+			# Double-check inside lock
+			if _GEO_LOOKUP_SEMAPHORE is None:
+				_GEO_LOOKUP_SEMAPHORE = asyncio.Semaphore(_GEO_SEMAPHORE_LIMIT)
+	
+	return _GEO_LOOKUP_SEMAPHORE
+
+
+def _get_geo_for_ip(ip: str | None) -> dict[str, str | None]:
+	"""Get GeoIP fields for an IP address (reusable helper).
+	
+	Returns dict with country_code, city, as_org (all may be None).
+	"""
+	if not ip:
+		return {"country_code": None, "city": None, "as_org": None}
+	return extract_geo_fields(lookup_ip_cached(ip))
 
 
 class SystemStatusResponse(BaseModel):
@@ -101,7 +138,12 @@ def _is_valid_hostname_or_ip(value: str) -> bool:
 
 @lru_cache(maxsize=256)
 def _resolve_node_geo_ip(host_or_ip: str) -> str | None:
-	"""Resolve a node FQDN/IP to a concrete IP for GeoIP/ASN lookups."""
+	"""Resolve a node FQDN/IP to a concrete IP for GeoIP/ASN lookups.
+	
+	Security: Resolution happens once and is cached. Result is only used
+	for GeoIP lookups, not for network calls. If reused for network calls,
+	be aware of DNS rebinding attacks (attacker could change DNS after lookup).
+	"""
 	clean = str(host_or_ip or "").strip()
 	# Strip IPv6 brackets safely (only if wrapped)
 	if clean.startswith("[") and clean.endswith("]"):
@@ -223,7 +265,8 @@ def _get_system_tool_version(cmd_path: str, version_pattern: str) -> str:
 			[cmd_path, "-V" if "unbound" in cmd_path else "--version"],
 			capture_output=True,
 			text=True,
-			timeout=5,
+			timeout=_SUBPROCESS_TIMEOUT,
+			check=False,  # Don't raise on non-zero exit (explicit)
 		)
 		output = (result.stdout or result.stderr or "").strip()
 		if result.returncode == 0 and output:
@@ -339,12 +382,14 @@ def get_system_status(request: Request) -> SystemStatusResponse:
 	"""Get system status including key mismatch warning.
 	
 	Restricted to loopback addresses only (localhost health checks).
-	Returns key_mismatch=False for non-loopback clients to avoid leaking
-	internal configuration state.
+	Returns 403 for non-loopback clients to avoid leaking internal state.
 	"""
+	from fastapi import HTTPException
+	
 	if not _is_loopback_request(request):
-		# Don't leak internal state to external clients
-		return SystemStatusResponse(key_mismatch=False)
+		# Security: Only allow localhost access to prevent info disclosure
+		raise HTTPException(status_code=403, detail="Access denied: localhost only")
+	
 	key_mismatch = getattr(request.app.state, "key_mismatch", False)
 	return SystemStatusResponse(key_mismatch=key_mismatch)
 
@@ -450,10 +495,6 @@ def dashboard(
 	)
 
 
-# Batch size for geo-IP lookups to limit memory pressure from coroutine objects
-_GEO_LOOKUP_BATCH_SIZE = 100
-
-
 @router.get("/ui/peers", response_class=HTMLResponse)
 @limiter.limit(RATE_LIMIT_HEAVY)  # Expensive: DB query + geo-IP lookups
 async def peers_page(
@@ -467,21 +508,24 @@ async def peers_page(
 	"""
 	db_path = request.app.state.db_path
 
-	def _load_peers_data() -> tuple[list[sqlite3.Row], set[int]]:
-		"""Load all peer data and tunnel peer IDs with a single connection.
+	def _load_peers_data() -> tuple[list[sqlite3.Row], set[int], dict[str, str]]:
+		"""Load all peer data, tunnel peer IDs, and node names with a single connection.
 		
-		Combines two queries to avoid redundant connection overhead.
+		Combines queries to avoid redundant connection overhead.
+		Returns (peers, tunnel_ids, node_id_to_name_map).
 		"""
-		from ..db.sqlite_nodes import get_all_tunnel_peer_ids
+		from ..db.sqlite_nodes import get_all_tunnel_peer_ids, get_all_nodes
 		thread_conn = connect(db_path)
 		try:
 			peers = get_all_peers(thread_conn)
 			tunnel_ids = get_all_tunnel_peer_ids(thread_conn)
-			return peers, tunnel_ids
+			nodes = get_all_nodes(thread_conn)
+			node_map = {n["id"]: n["name"] for n in nodes}
+			return peers, tunnel_ids, node_map
 		finally:
 			close_connection(thread_conn)
 
-	peer_rows, tunnel_peer_ids = await asyncio.to_thread(_load_peers_data)
+	peer_rows, tunnel_peer_ids, node_id_to_name = await asyncio.to_thread(_load_peers_data)
 	total_peers = len(peer_rows)
 	peers: list[dict] = []
 	now_epoch = int(time.time())
@@ -494,7 +538,7 @@ async def peers_page(
 	if unique_client_ips:
 		# Use semaphore to limit concurrent geo-IP lookups (prevents thread pool exhaustion)
 		async def _bounded_lookup(ip: str) -> dict | None:
-			async with _GEO_LOOKUP_SEMAPHORE:
+			async with (await _get_geo_semaphore()):
 				return await asyncio.to_thread(lookup_ip_cached, ip)
 		
 		# Process in batches to limit memory pressure from coroutine objects
@@ -540,6 +584,9 @@ async def peers_page(
 
 		# Mark node tunnel peers (system peers not editable by users)
 		peer["is_node_tunnel"] = peer["id"] in tunnel_peer_ids
+		
+		# Add node name for display (None = Master)
+		peer["node_name"] = node_id_to_name.get(peer.get("node_id")) if peer.get("node_id") else None
 		peers.append(peer)
 
 	# Sort peers: regular peers first (alphabetically), then node tunnel peers
@@ -563,11 +610,7 @@ async def peers_page(
 				nodes = []
 				for n in db_get_all_nodes(thread_conn):
 					resolved_geo_ip = _resolve_node_geo_ip(n["fqdn"])
-					geo_fields = extract_geo_fields(lookup_ip_cached(resolved_geo_ip)) if resolved_geo_ip else {
-						"country_code": None,
-						"city": None,
-						"as_org": None,
-					}
+					geo_fields = _get_geo_for_ip(resolved_geo_ip)
 					nodes.append({
 						"id": n["id"],
 						"name": n["name"],
@@ -579,9 +622,7 @@ async def peers_page(
 				fqdn = get_setting(thread_conn, "wg_fqdn") or ""
 				fqdn = fqdn.strip()
 				resolved_local_ip = _resolve_node_geo_ip(fqdn) if fqdn else None
-				local_geo = extract_geo_fields(lookup_ip_cached(resolved_local_ip)) if resolved_local_ip else {
-					"country_code": None,
-				}
+				local_geo = _get_geo_for_ip(resolved_local_ip)
 				return nodes, fqdn or None, local_geo.get("country_code")
 			finally:
 				close_connection(thread_conn)
@@ -635,40 +676,81 @@ def nodes_page(
 	conn: sqlite3.Connection = Depends(get_conn),
 ) -> Response:
 	"""Remote nodes management page (admin only)."""
-	from ..db.sqlite_nodes import get_all_nodes, get_peers_count_by_node
+	from datetime import datetime, timedelta, timezone
+	from ..db.sqlite_nodes import get_all_nodes, get_peers_count_by_node, is_node_sse_connected
+	from ..db import tsdb
+	from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
+	
+	cfg = get_config()
 	nodes = get_all_nodes(conn)
 	peer_counts = get_peers_count_by_node(conn)
+	
+	# Fetch recent speedtest results for all nodes
+	speedtest_by_node: dict[str | None, dict] = {}  # node_id -> last result
+	try:
+		since = datetime.now(timezone.utc) - timedelta(days=90)
+		points = tsdb.query(
+			cfg.tsdb_dir,
+			peer_key=SPEEDTEST_TSDB_KEY,
+			metric=SPEEDTEST_TSDB_METRIC,
+			since=since,
+			limit=2000,
+		)
+		for pt in points:
+			if isinstance(pt.value, dict):
+				node_id = pt.value.get("node_id")  # None = master
+				# Always overwrite to keep the last (newest) result, not the first (oldest)
+				speedtest_by_node[node_id] = {
+					"ts": pt.ts.isoformat(),
+					**pt.value,
+				}
+	except Exception as exc:
+		_log.debug("Failed to load speedtest data for nodes: %s", exc)
+	
+	# Batch resolve GeoIP for all nodes (performance optimization)
+	unique_node_ips = []
+	node_ip_map = {}  # node_id -> resolved_ip
+	for n in nodes:
+		resolved_ip = _resolve_node_geo_ip(n["fqdn"])
+		if resolved_ip:
+			node_ip_map[n["id"]] = resolved_ip
+			if resolved_ip not in unique_node_ips:
+				unique_node_ips.append(resolved_ip)
+	
+	# Batch lookup GeoIP data
+	geo_cache = {}
+	for ip in unique_node_ips:
+		geo_cache[ip] = lookup_ip_cached(ip)
+	
 	nodes_data = []
 	for n in nodes:
-		resolved_geo_ip = _resolve_node_geo_ip(n["fqdn"])
-		geo_fields = extract_geo_fields(lookup_ip_cached(resolved_geo_ip)) if resolved_geo_ip else {
-			"country_code": None,
-			"city": None,
-			"as_org": None,
-		}
+		resolved_ip = node_ip_map.get(n["id"])
+		geo_fields = _get_geo_for_ip(resolved_ip) if resolved_ip else _get_geo_for_ip(None)
 		# Parse metadata JSON for version
 		node_version = None
 		if n["metadata"]:
 			try:
 				meta = json.loads(n["metadata"]) if isinstance(n["metadata"], str) else n["metadata"]
 				node_version = meta.get("version")
-			except (json.JSONDecodeError, TypeError):
-				pass
+			except (json.JSONDecodeError, TypeError) as exc:
+				_log.debug("Failed to parse metadata for node %s: %s", n.get("id"), exc)
 		
 		# Convert last_seen datetime to formatted label (like peers page)
 		last_seen_epoch = 0
 		if n["last_seen"]:
 			try:
-				from datetime import datetime
 				if isinstance(n["last_seen"], datetime):
 					last_seen_epoch = int(n["last_seen"].timestamp())
 				elif isinstance(n["last_seen"], str):
 					# Parse ISO format datetime string
 					dt = datetime.fromisoformat(n["last_seen"].replace("Z", "+00:00"))
 					last_seen_epoch = int(dt.timestamp())
-			except (ValueError, TypeError, AttributeError):
-				pass
+			except (ValueError, TypeError, AttributeError) as exc:
+				_log.debug("Failed to parse last_seen for node %s: %s", n.get("id"), exc)
 		last_seen_label = format_last_seen_label(last_seen_epoch)
+		
+		# Get last speedtest for this node
+		last_speedtest = speedtest_by_node.get(n["id"])
 		
 		nodes_data.append({
 			"id": n["id"],
@@ -686,6 +768,8 @@ def nodes_page(
 			"geo_city": geo_fields["city"],
 			"geo_as_org": geo_fields["as_org"],
 			"node_version": node_version,
+			"last_speedtest": last_speedtest,
+			"sse_connected": is_node_sse_connected(conn, n["id"]) if n["status"] == "online" else False,
 		})
 	# Get default WireGuard port from first interface for pre-filling the Add Node modal
 	first_iface = conn.execute("SELECT listen_port FROM interfaces LIMIT 1").fetchone()
@@ -789,8 +873,9 @@ def settings_page(
 	"""Settings page."""
 	# Load toggle states server-side to avoid visual jump on page load
 	# Calculate URLs server-side to prevent flickering
+	# Security: Use configured FQDN only, never trust request.url.hostname (Host header injection)
 	wg_fqdn = get_setting(conn, "wg_fqdn") or ""
-	raw_host = wg_fqdn.strip().strip("[]") if wg_fqdn else str(request.url.hostname or "localhost")
+	raw_host = wg_fqdn.strip().strip("[]") if wg_fqdn else "localhost"
 	
 	# Validate hostname/IP to prevent URL injection attacks
 	if not _is_valid_hostname_or_ip(raw_host):

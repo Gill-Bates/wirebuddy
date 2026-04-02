@@ -10,9 +10,13 @@ edit_uri: edit/main/docs/
 docs_dir: .
 site_dir: ../site
 
+# SEO and canonical URL configuration
+use_directory_urls: true
+
 theme:
   name: material
   language: en
+  favicon: assets/favicon.png
   palette:
     # Light mode
     - scheme: default
@@ -36,8 +40,10 @@ theme:
     - navigation.tracking
     - navigation.tabs
     - navigation.sections
+    - navigation.expand
     - navigation.top
     - navigation.footer
+    - navigation.prune
     - search.suggest
     - search.highlight
     - search.share
@@ -52,8 +58,12 @@ theme:
 plugins:
   - search:
       lang: en
+      separator: '[\s\-\.]+'
   - minify:
       minify_html: true
+  - git-revision-date-localized:
+      enable_creation_date: true
+      type: timeago
 
 markdown_extensions:
   - abbr
@@ -92,6 +102,8 @@ markdown_extensions:
   - pymdownx.tilde
 
 extra:
+  homepage: https://gill-bates.github.io/wirebuddy/
+  generator: false
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/Gill-Bates
@@ -100,6 +112,9 @@ extra:
 
 extra_css:
   - stylesheets/extra.css
+
+extra_javascript:
+  - https://unpkg.com/mermaid@10/dist/mermaid.min.js
 
 nav:
   - Home: index.md
@@ -140,7 +155,5 @@ nav:
     - Architecture: development/architecture.md
     - Contributing: development/contributing.md
   - Troubleshooting: troubleshooting.md
-  - Changelog: changelog.md
-  - License: license.md
 
 copyright: Copyright &copy; 2026 Gill-Bates | Licensed under AGPL-3.0

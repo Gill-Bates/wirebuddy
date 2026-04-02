@@ -23,6 +23,10 @@ data_local/
 *.db
 *.mmdb
 
+# Vendor Assets (downloaded during Docker build)
+app/static/vendor/fonts/
+app/static/vendor/images/flags/
+
 # IDE
 .idea/
 
@@ -31,13 +35,12 @@ data_local/
 Thumbs.db
 
 # Docker
-BUILD_INFO
+BUILD_INFO*
 
 # Environment (keep settings.env as template)
 .env
 
 # Linting
-tools/ui-lint/node_modules
 tools/ui-lint/ui-lint-summary.json
 
 # Documentation

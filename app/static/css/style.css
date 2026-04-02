@@ -1041,7 +1041,8 @@ html.login-page[data-bs-theme="dark"] .card .table,
     /* Prevent flex overflow bugs */
     padding: var(--wb-space-3);
     padding-bottom: calc(var(--wb-space-3) + var(--wb-footer-height));
-    overflow-y: auto;
+    /* Page-level scrolling only (no double-scroll) */
+    overflow: visible;
 }
 
 /* -----------------------------------------------------------------------------

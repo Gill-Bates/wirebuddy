@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ipaddress
 from contextlib import closing
+from datetime import datetime
 import json
 import logging
 import re
@@ -20,10 +21,13 @@ from urllib.parse import urlparse
 
 from ..utils import vault
 from ..utils.config import get_config
-from ..utils.time import utcnow
+from ..utils.time import ensure_utc, parse_utc, utcnow
 from .sqlite_runtime import transaction
 
 _log = logging.getLogger(__name__)
+
+# Maximum JSON payload size to prevent DB bloat / DoS
+_MAX_JSON_SETTING_LENGTH = 65_536
 
 __all__ = [
 	"get_setting",
@@ -63,12 +67,10 @@ __all__ = [
 	"MAX_CUSTOM_RULES_LENGTH",
 	"DEFAULT_DNS_UPSTREAM_SERVERS",
 	"DEFAULT_DNS_CUSTOM_RULES",
-	"SPEEDTEST_SERVER_LIST",
-	"SPEEDTEST_SERVER_MAP",
 	"get_speedtest_enabled",
 	"set_speedtest_enabled",
-	"get_speedtest_target",
-	"set_speedtest_target",
+	"get_speedtest_last_run_at",
+	"set_speedtest_last_run_at",
 ]
 
 # Constant for key validation
@@ -96,7 +98,7 @@ def validate_secret_key(conn: sqlite3.Connection, pepper: str) -> bool:
 	Returns:
 		True if key is valid, False if there's a mismatch.
 	"""
-	from ..utils.vault import encrypt as vault_encrypt, decrypt as vault_decrypt
+	from ..utils.vault import decrypt as vault_decrypt
 	
 	stored_token = get_setting(conn, _KEY_VALIDATION_TOKEN_KEY)
 	
@@ -115,8 +117,8 @@ def validate_secret_key(conn: sqlite3.Connection, pepper: str) -> bool:
 			return False
 
 		# First run - create and store validation token
-		encrypted_token = vault_encrypt(_KEY_VALIDATION_PLAINTEXT, pepper)
-		set_setting(conn, _KEY_VALIDATION_TOKEN_KEY, encrypted_token)
+		# Note: set_setting auto-encrypts since _KEY_VALIDATION_TOKEN_KEY is in _SECRET_SETTING_KEYS
+		set_setting(conn, _KEY_VALIDATION_TOKEN_KEY, _KEY_VALIDATION_PLAINTEXT)
 		_log.debug("KEY_VALIDATION: Created new validation token (fresh DB)")
 		return True
 	
@@ -148,11 +150,16 @@ def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) 
 
 
 def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
-	"""Set a setting value."""
+	"""Set a setting value.
+	
+	Note: Requires conn.row_factory = sqlite3.Row for get_setting to work correctly.
+	"""
 	now = utcnow()
 	stored_value = value
 	if key in _SECRET_SETTING_KEYS:
-		stored_value = vault.encrypt_if_needed(value, get_config().secret_key) or ""
+		# Always encrypt secrets (not idempotent - caller must provide plaintext)
+		cfg = get_config()
+		stored_value = vault.encrypt(value, cfg.secret_key)
 	with transaction(conn):
 		conn.execute(
 			"""
@@ -223,11 +230,34 @@ def _normalize_recovery_value(key: str, value: str) -> str | None:
 		# Allow hostnames and literal IPs; reject whitespace/control characters.
 		if any(ch.isspace() for ch in text):
 			return None
-		if re.fullmatch(r"[A-Za-z0-9.:\-\[\]]{1,253}", text) is None:
+		# Try parsing as IP address first
+		try:
+			ipaddress.ip_address(text.strip("[]"))
+			return text  # Valid IP literal
+		except ValueError:
+			pass  # Not an IP, try hostname validation
+		# Validate as hostname (FQDN)
+		if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", text):
+			return None
+		labels = text.strip(".").split(".")
+		if any((not label) or len(label) > 63 or label.startswith("-") or label.endswith("-") for label in labels):
 			return None
 		return text
 
 	return text
+
+
+def _verify_recovery_db_schema(db_path: Path) -> bool:
+	"""Verify that a recovery candidate has the expected schema."""
+	try:
+		with closing(sqlite3.connect(str(db_path))) as test_conn:
+			row = test_conn.execute(
+				"SELECT name FROM sqlite_master WHERE type='table' AND name='settings'"
+			).fetchone()
+			return row is not None
+	except Exception:
+		_log.debug("Schema verification failed for %s", db_path, exc_info=True)
+		return False
 
 
 def _is_recovery_candidate_allowed(
@@ -298,9 +328,13 @@ def recover_missing_global_settings(
 			continue
 		if not resolved.exists() or not resolved.is_file():
 			continue
+		# Verify schema before trusting the DB
+		if not _verify_recovery_db_schema(resolved):
+			_log.debug("Skipping recovery candidate with invalid schema: %s", resolved)
+			continue
 
 		try:
-			recovered_keys: set[str] = set()
+			recovered_keys: dict[str, str] = {}
 			with closing(sqlite3.connect(str(resolved))) as src:
 				src.row_factory = sqlite3.Row
 				for key in tuple(missing_keys):
@@ -312,10 +346,13 @@ def recover_missing_global_settings(
 					if normalized is None:
 						_log.warning("Skipping invalid recovered value for %s from %s", key, resolved)
 						continue
-					set_setting(conn, key, normalized)
-					recovered_keys.add(key)
+					recovered_keys[key] = normalized
+			# Apply all recovered values in a single transaction
 			if recovered_keys:
-				missing_keys -= recovered_keys
+				with transaction(conn):
+					for key, normalized in recovered_keys.items():
+						set_setting(conn, key, normalized)
+				missing_keys -= set(recovered_keys.keys())
 				updated += len(recovered_keys)
 		except Exception:
 			_log.debug("Failed reading recovery DB candidate: %s", resolved, exc_info=True)
@@ -347,6 +384,22 @@ DEFAULT_DNS_UPSTREAM_SERVERS = [
 ]
 
 
+def _parse_retention_days(
+	raw: str | None,
+	options: tuple[int, ...],
+	default: int,
+) -> int:
+	"""Parse and validate retention period.
+	
+	Returns the parsed value if it's in the allowed options, otherwise the default.
+	"""
+	try:
+		parsed = int(str(raw).strip())
+	except (TypeError, ValueError):
+		return default
+	return parsed if parsed in options else default
+
+
 def _setting_is_truthy(value: Any, default: bool = False) -> bool:
 	"""Parse boolean-ish setting values from strings."""
 	if value is None:
@@ -363,8 +416,8 @@ def get_enabled_blocklists(conn: sqlite3.Connection) -> list[str]:
 			if isinstance(parsed, list):
 				return [str(item).strip() for item in parsed if str(item).strip()]
 		except Exception:
-			_log.debug("Failed to parse dns_blocklists setting", exc_info=True)
-	# Return default blocklists if not set
+			_log.warning("Invalid dns_blocklists setting, using defaults")
+	# Return default blocklists if not set or invalid
 	from ..dns import constants as dns_constants
 
 	return dns_constants.DEFAULT_BLOCKLISTS
@@ -385,7 +438,10 @@ def set_enabled_blocklists(conn: sqlite3.Connection, urls: list[str]) -> None:
 		if parsed.scheme != "https" or not parsed.hostname:
 			raise ValueError(f"urls[{idx}] must be a valid HTTPS URL")
 		normalized.append(value)
-	set_setting(conn, "dns_blocklists", json.dumps(normalized))
+	json_str = json.dumps(normalized)
+	if len(json_str) > _MAX_JSON_SETTING_LENGTH:
+		raise ValueError(f"Blocklist JSON payload exceeds {_MAX_JSON_SETTING_LENGTH} bytes")
+	set_setting(conn, "dns_blocklists", json_str)
 
 
 def get_dns_upstream_servers(conn: sqlite3.Connection) -> list[str]:
@@ -438,9 +494,15 @@ def set_dns_upstream_servers(conn: sqlite3.Connection, servers: list[str]) -> No
 		if any((not label) or len(label) > 63 or label.startswith("-") or label.endswith("-") for label in labels):
 			raise ValueError(f"Invalid upstream hostname: {value}")
 
+		# Preserve IPv6 brackets
+		if ":" in ip_part:
+			ip_part = f"[{ip_part}]"
 		normalized.append(f"{ip_part}@{port}#{host}")
 
-	set_setting(conn, "dns_upstream_servers", json.dumps(normalized))
+	json_str = json.dumps(normalized)
+	if len(json_str) > _MAX_JSON_SETTING_LENGTH:
+		raise ValueError(f"DNS upstream JSON payload exceeds {_MAX_JSON_SETTING_LENGTH} bytes")
+	set_setting(conn, "dns_upstream_servers", json_str)
 
 
 def get_dns_log_retention_days(conn: sqlite3.Connection) -> int:
@@ -455,11 +517,7 @@ def get_dns_log_retention_days(conn: sqlite3.Connection) -> int:
 	- 365
 	"""
 	raw = get_setting(conn, "dns_log_retention_days", str(DEFAULT_DNS_LOG_RETENTION_DAYS))
-	try:
-		parsed = int(str(raw).strip())
-	except (TypeError, ValueError):
-		return DEFAULT_DNS_LOG_RETENTION_DAYS
-	return parsed if parsed in DNS_LOG_RETENTION_OPTIONS else DEFAULT_DNS_LOG_RETENTION_DAYS
+	return _parse_retention_days(raw, DNS_LOG_RETENTION_OPTIONS, DEFAULT_DNS_LOG_RETENTION_DAYS)
 
 
 def set_dns_log_retention_days(conn: sqlite3.Connection, days: int) -> None:
@@ -475,11 +533,7 @@ def get_tsdb_retention_days(conn: sqlite3.Connection) -> int:
 	Allowed values: 7, 30, 90, 180, 365
 	"""
 	raw = get_setting(conn, "tsdb_retention_days", str(DEFAULT_TSDB_RETENTION_DAYS))
-	try:
-		parsed = int(str(raw).strip())
-	except (TypeError, ValueError):
-		return DEFAULT_TSDB_RETENTION_DAYS
-	return parsed if parsed in TSDB_RETENTION_OPTIONS else DEFAULT_TSDB_RETENTION_DAYS
+	return _parse_retention_days(raw, TSDB_RETENTION_OPTIONS, DEFAULT_TSDB_RETENTION_DAYS)
 
 
 def set_tsdb_retention_days(conn: sqlite3.Connection, days: int) -> None:
@@ -496,11 +550,7 @@ def get_speedtest_retention_days(conn: sqlite3.Connection) -> int:
 	Default is 365 days since speedtest data is sparse.
 	"""
 	raw = get_setting(conn, "speedtest_retention_days", str(DEFAULT_SPEEDTEST_RETENTION_DAYS))
-	try:
-		parsed = int(str(raw).strip())
-	except (TypeError, ValueError):
-		return DEFAULT_SPEEDTEST_RETENTION_DAYS
-	return parsed if parsed in SPEEDTEST_RETENTION_OPTIONS else DEFAULT_SPEEDTEST_RETENTION_DAYS
+	return _parse_retention_days(raw, SPEEDTEST_RETENTION_OPTIONS, DEFAULT_SPEEDTEST_RETENTION_DAYS)
 
 
 def set_speedtest_retention_days(conn: sqlite3.Connection, days: int) -> None:
@@ -622,18 +672,6 @@ def set_dns_custom_rules(conn: sqlite3.Connection, rules_text: str) -> None:
 # Speedtest / Bandwidth Measurement
 # ---------------------------------------------------------------------------
 
-_SPEEDTEST_SERVERS = [
-	{"id": "hetzner", "name": "Hetzner", "url": "https://speed.hetzner.de/100MB.bin"},
-	{"id": "ovh", "name": "OVH", "url": "http://proof.ovh.net/files/100Mb.dat"},
-	{"id": "cachefly", "name": "CacheFly", "url": "http://cachefly.cachefly.net/100mb.test"},
-	{"id": "cloudflare", "name": "Cloudflare", "url": "https://speed.cloudflare.com/__down"},
-	{"id": "wtnet", "name": "wilhelm.tel (Hamburg)", "url": "https://speedtest.wtnet.de/backend/garbage.php?ckSize=100"},
-]
-
-SPEEDTEST_SERVER_MAP: dict[str, dict[str, str]] = {s["id"]: s for s in _SPEEDTEST_SERVERS}
-SPEEDTEST_SERVER_LIST: list[dict[str, str]] = list(_SPEEDTEST_SERVERS)
-
-
 def get_speedtest_enabled(conn: sqlite3.Connection) -> bool:
 	"""Return True if scheduled speed tests are enabled."""
 	return get_setting(conn, "speedtest_enabled", "0") == "1"
@@ -643,15 +681,18 @@ def set_speedtest_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
 	set_setting(conn, "speedtest_enabled", "1" if enabled else "0")
 
 
-def get_speedtest_target(conn: sqlite3.Connection) -> str:
-	"""Return the speed test target id (or 'auto' for RTT-based selection)."""
-	return get_setting(conn, "speedtest_target", "auto") or "auto"
+def get_speedtest_last_run_at(conn: sqlite3.Connection) -> datetime | None:
+	"""Return the last completed local speedtest run timestamp in UTC."""
+	raw = get_setting(conn, "speedtest_last_run_at", None)
+	return parse_utc(raw) if raw else None
 
 
-def set_speedtest_target(conn: sqlite3.Connection, target: str) -> None:
-	if target != "auto" and target not in SPEEDTEST_SERVER_MAP:
-		raise ValueError(f"Unknown speedtest target: {target}")
-	set_setting(conn, "speedtest_target", target)
+def set_speedtest_last_run_at(conn: sqlite3.Connection, when: datetime | None = None) -> None:
+	"""Persist the last completed local speedtest run timestamp in UTC."""
+	value = ensure_utc(when) if when is not None else utcnow()
+	if value is None:
+		value = utcnow()
+	set_setting(conn, "speedtest_last_run_at", value.isoformat())
 
 
 

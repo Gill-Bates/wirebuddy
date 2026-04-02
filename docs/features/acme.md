@@ -79,6 +79,9 @@ If using a reverse proxy, ensure `.well-known/acme-challenge` passes through:
     ```
     
     Caddy handles ACME automatically. Disable WireBuddy ACME if using Caddy's.
+    
+    !!! info "Full Production Configuration"
+        For the complete Caddyfile with SSE support, security headers, and caching, see [Installation Guide](../getting-started/installation.md#reverse-proxy).
 
 === "Nginx"
     ```nginx
@@ -271,6 +274,9 @@ vpn.example.com {
 ```
 
 Run Caddy - it will automatically request and renew certificates.
+
+!!! info "Production Deployment"
+    For production use with SSE support, security headers, and optimized caching, see the [full Caddyfile example](../getting-started/installation.md#reverse-proxy) in the installation guide.
 
 ## Best Practices
 

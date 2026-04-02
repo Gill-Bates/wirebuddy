@@ -1,5 +1,24 @@
+/* ==========================================================================
+   Status Page - Flow Visualization Component
+   ========================================================================== */
+
+/* ── Design Tokens ──────────────────────────────────────────────────────── */
+:root {
+    --flow-connector-size: 72px;
+    /* Width of connector between nodes */
+    --flow-connector-sm: 38px;
+    /* Tablet vertical connector height */
+    --flow-connector-xs: 16px;
+    /* Mobile vertical connector height */
+    --flow-line-thickness: 4px;
+    /* Connector line thickness */
+    --flow-line-thickness-sm: 2px;
+    /* Mobile line thickness */
+}
+
+/* ── Navbar Actions ─────────────────────────────────────────────────────── */
 .status-navbar-actions {
-    gap: 0.45rem;
+    gap: var(--wb-space-1, 0.45rem);
 }
 
 .status-navbar-actions .status-icon-btn {
@@ -18,7 +37,7 @@
 
 @media (max-width: 575.98px) {
     .status-navbar-actions {
-        gap: 0.25rem;
+        gap: var(--wb-space-1, 0.25rem);
     }
 
     .status-navbar-actions .status-icon-btn {
@@ -27,13 +46,16 @@
     }
 }
 
+/* ── Flow Layout ────────────────────────────────────────────────────────── */
 .flow-wrapper {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 72px minmax(0, 1.1fr) 72px minmax(0, 1fr);
+    grid-template-columns:
+        minmax(0, 1fr) var(--flow-connector-size) minmax(0, 1.1fr) var(--flow-connector-size) minmax(0, 1fr);
     align-items: center;
     gap: var(--wb-space-3, 24px);
 }
 
+/* ── Flow Node ──────────────────────────────────────────────────────────── */
 .flow-node {
     min-width: 0;
     position: relative;
@@ -44,8 +66,10 @@
     border-radius: 14px;
     padding: 1rem 0.9rem;
     text-align: center;
+    /* Shadow adds depth but has paint cost; kept minimal */
     box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
-    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    /* Only transform and box-shadow for performance (border-color causes repaint) */
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .flow-node:hover {
@@ -53,6 +77,7 @@
     box-shadow: 0 16px 32px rgba(15, 23, 42, 0.1);
 }
 
+/* Subtle top highlight for depth (light mode only, minimal visual impact) */
 .flow-node::before {
     content: "";
     position: absolute;
@@ -151,6 +176,7 @@
     color: var(--bs-secondary-color);
 }
 
+/* ── Flow Connector ─────────────────────────────────────────────────────── */
 .flow-connector {
     display: flex;
     align-items: center;
@@ -160,9 +186,9 @@
 
 .flow-line {
     position: relative;
-    height: 4px;
+    height: var(--flow-line-thickness);
     width: 100%;
-    max-width: 72px;
+    max-width: var(--flow-connector-size);
     border-radius: 999px;
     background: linear-gradient(90deg,
             rgba(var(--bs-success-rgb), 0.08),
@@ -170,6 +196,7 @@
             rgba(var(--bs-success-rgb), 0.08));
     background-size: 200% 100%;
     animation: flow 1.6s linear infinite;
+    /* will-change hints browser to optimize; removed on inactive/reduced-motion */
     will-change: background-position;
     box-shadow: 0 0 0 1px rgba(var(--bs-success-rgb), 0.08);
 }
@@ -187,6 +214,7 @@
     transform: translateY(-50%) rotate(45deg);
 }
 
+/* Inactive state: no animation, muted colors */
 .flow-line-inactive {
     background: linear-gradient(90deg,
             rgba(var(--bs-secondary-rgb), 0.08),
@@ -195,7 +223,6 @@
     opacity: 0.75;
     animation: none;
     will-change: auto;
-    /* reset: no animation on inactive lines */
     box-shadow: 0 0 0 1px rgba(var(--bs-secondary-rgb), 0.12);
 }
 
@@ -223,6 +250,9 @@
     }
 }
 
+/* ── Tablet & Touch Landscape ───────────────────────────────────────────── */
+/* Touch devices in landscape often have limited vertical space;
+   this converts the horizontal flow to vertical for better UX */
 @media (max-width: 991.98px),
 ((hover: none) and (pointer: coarse) and (orientation: landscape)) {
     .flow-wrapper {
@@ -237,14 +267,12 @@
 
     .flow-connector {
         width: 100%;
-        height: 38px;
-        /* explicit height required for child's percentage height */
+        height: var(--flow-connector-sm);
     }
 
     .flow-line {
-        width: 4px;
+        width: var(--flow-line-thickness);
         height: 100%;
-        /* resolves against parent's explicit height */
         max-width: none;
         background: linear-gradient(180deg,
                 rgba(var(--bs-success-rgb), 0.08),
@@ -262,35 +290,32 @@
         transform: translateX(50%) rotate(135deg);
     }
 
+    /* Vertical inactive gradient */
     .flow-line-inactive {
         background: linear-gradient(180deg,
                 rgba(var(--bs-secondary-rgb), 0.08),
                 rgba(var(--bs-secondary-rgb), 0.55),
                 rgba(var(--bs-secondary-rgb), 0.08));
-        opacity: 0.75;
-        animation: none;
-        will-change: auto;
-        /* consistent with desktop */
     }
 }
 
+/* ── Mobile: Compact Horizontal Layout ──────────────────────────────────── */
 @media (max-width: 575.98px) {
     .status-main .card-body {
         padding: 0.65rem;
     }
 
+    /* Keep grid but switch nodes to inline-flex for horizontal compact view */
     .flow-wrapper {
-        display: flex;
-        flex-direction: column;
-        align-items: stretch;
-        gap: 0.5rem;
+        grid-template-columns: 1fr;
+        gap: var(--wb-space-1, 0.5rem);
     }
 
     .flow-node {
         display: flex;
         align-items: center;
         justify-content: flex-start;
-        gap: 0.5rem;
+        gap: var(--wb-space-1, 0.5rem);
         padding: 0.5rem 0.65rem;
         text-align: left;
         border-radius: 10px;
@@ -317,11 +342,11 @@
     }
 
     .flow-connector {
-        height: 16px;
+        height: var(--flow-connector-xs);
     }
 
     .flow-line {
-        width: 2px;
+        width: var(--flow-line-thickness-sm);
     }
 
     .flow-line::after {
@@ -331,6 +356,7 @@
     }
 }
 
+/* ── Accessibility: Reduced Motion ──────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
     .flow-node {
         transition: none;
@@ -343,6 +369,5 @@
     .flow-line {
         animation: none;
         will-change: auto;
-        /* reset: respect user motion preferences */
     }
 }

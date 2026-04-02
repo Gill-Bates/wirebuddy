@@ -41,13 +41,34 @@ fi
 # Allow environment override
 HOST="${WIREBUDDY_HOST:-$HOST}"
 PORT="${WIREBUDDY_PORT:-$PORT}"
+WORKERS_RAW="${UVICORN_WORKERS:-1}"
+GRACEFUL_SHUTDOWN_TIMEOUT="${UVICORN_GRACEFUL_SHUTDOWN_TIMEOUT:-8}"
 
-echo "Starting WireBuddy on ${HOST}:${PORT}"
+case "$WORKERS_RAW" in
+    ''|*[!0-9]*)
+        echo "Invalid UVICORN_WORKERS='$WORKERS_RAW' - forcing 1" >&2
+        WORKERS="1"
+        ;;
+    0)
+        echo "UVICORN_WORKERS must be >= 1 - forcing 1" >&2
+        WORKERS="1"
+        ;;
+    1)
+        WORKERS="1"
+        ;;
+    *)
+        echo "UVICORN_WORKERS=$WORKERS_RAW requested, but WireBuddy web mode is single-worker only - forcing 1" >&2
+        WORKERS="1"
+        ;;
+esac
+
+echo "Starting WireBuddy on ${HOST}:${PORT} with ${WORKERS} worker"
 
 exec uvicorn app:create_app \
     --host "$HOST" \
     --port "$PORT" \
     --factory \
-    --workers "${UVICORN_WORKERS:-2}" \
+    --workers "$WORKERS" \
+    --timeout-graceful-shutdown "$GRACEFUL_SHUTDOWN_TIMEOUT" \
     --proxy-headers \
     --forwarded-allow-ips="${FORWARDED_ALLOW_IPS:-127.0.0.1}"

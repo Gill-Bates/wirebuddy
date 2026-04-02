@@ -1,61 +1,45 @@
 # Speed Test
 
-WireBuddy includes a built-in bandwidth speed test for measuring your VPN connection's download and upload performance.
+WireBuddy includes an integrated bandwidth speed test powered by [librespeed-cli](https://github.com/librespeed/speedtest-cli) for measuring your server's download and upload performance.
 
 ## Overview
 
 The speed test provides:
 
 - **Download speed:** Multi-stream download measurement in Mbit/s
-- **Upload speed:** Multi-stream upload measurement in Mbit/s  
-- **RTT latency:** Round-trip time to selected server in milliseconds
+- **Upload speed:** Multi-stream upload measurement in Mbit/s
+- **RTT latency:** Round-trip time to server in milliseconds
 - **Jitter:** Network stability measurement in milliseconds
-- **Automatic server selection:** Chooses the fastest server based on RTT probing
-- **Congestion detection:** Skips tests when network is already busy
+- **Automatic server selection:** librespeed-cli picks the nearest server by ping RTT
 
 ## How It Works
 
-### Test Phases
+WireBuddy executes `librespeed-cli --json` as a subprocess and parses the structured JSON output. The CLI handles server selection, download/upload measurement, and latency probing internally.
 
-1. **Server Selection:** Probes multiple download servers and selects the one with lowest RTT
-2. **Upload Target Selection:** Probes upload endpoints and selects the best one
-3. **Congestion Check:** Measures RTT before and during synthetic load to detect existing congestion
-4. **Warmup:** Establishes connections and fills TCP buffers (2 seconds)
-5. **Download Test:** Multi-stream download measurement (3 runs × 6 seconds each)
-6. **Upload Test:** Multi-stream upload measurement (3 runs × 6 seconds each)
-7. **Results:** Reports median values from all runs
+**Progress Phases (time-based estimation):**
+1. **Server selection** (10-30%) — Selecting nearest server by ping RTT
+2. **Download test** (30-65%) — Multi-stream download measurement
+3. **Upload test** (65-95%) — Multi-stream upload measurement
+4. **Complete** (100%) — Results parsed and displayed
+
+> **Note:** Progress percentages are time-based estimates since `librespeed-cli --json` 
+> provides output only after completion. The actual test phases may complete faster or
+> slower depending on network conditions.
+
+### Default Parameters
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `--concurrent` | 4 | Parallel streams for link saturation |
+| `--duration` | 8 s | Per-direction measurement window |
+| `--upload-size` | 4096 KiB | Upload payload size (default 1 MiB is too small) |
+| `--secure` | yes | Forces HTTPS to avoid ISP caching/proxies |
+| `--no-icmp` | yes | Avoids ICMP issues in containers |
+| `--timeout` | 30 s | HTTP timeout (allows slow TLS handshakes) |
 
 ### Server Selection
 
-Download servers are probed using HTTP GET with `Range: bytes=0-0` header to measure RTT without downloading the full file:
-
-| Server | Location | File Size |
-|--------|----------|-----------|
-| speedtest.tele2.net | Anycast Europe | 1 GB |
-| cachefly.cachefly.net | CDN (global) | 100 MB |
-| ipv4.download.thinkbroadband.com | UK | 100 MB |
-
-The server with the lowest RTT and highest probe success rate is selected automatically.
-
-### Upload Targets
-
-Upload tests use dedicated speedtest upload endpoints:
-
-| Server | Location | Method |
-|--------|----------|--------|
-| speedtest.serverius.net | Netherlands | POST |
-| speedtest.tele2.net | Anycast Europe | PUT |
-
-### Congestion Detection
-
-Before running the actual test, WireBuddy checks if the network is already congested:
-
-1. Measures idle RTT (baseline)
-2. Starts synthetic download/upload load
-3. Measures RTT under load
-4. If RTT increases > 4× or jitter exceeds thresholds, test is skipped
-
-This prevents inaccurate results when other devices are using bandwidth.
+librespeed-cli automatically selects the LibreSpeed server with the lowest ping RTT from its [public server list](https://github.com/librespeed/speedtest-cli/wiki/Servers). This ensures measurements reflect realistic performance from the server's location.
 
 ## Configuration
 
@@ -65,76 +49,88 @@ This prevents inaccurate results when other devices are using bandwidth.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Enable Speed Test | Enable/disable the feature | Enabled |
-| Target Server | `auto` or specific server | `auto` |
+| Scheduled | Enable/disable nightly speed tests | Disabled |
 
-### Server Options
+Server selection is automatic — no manual configuration needed.
 
-- **auto:** Automatically select fastest server (recommended)
-- **tele2:** Force Tele2 Anycast Europe
-- **cachefly:** Force CacheFly CDN
-- **thinkbroadband:** Force ThinkBroadband UK
+## Scheduled Tests
+
+When enabled, WireBuddy runs a speed test automatically every night:
+
+- **Window:** 02:00 – 04:00 local time
+- **Peer deferral:** If WireGuard peers are actively connected, the test is deferred (up to 4 retries, 30 min apart)
+- **Cooldown:** 30 seconds between tests
 
 ## Running a Speed Test
 
 ### Via Web UI
 
-1. Navigate to the Dashboard
-2. Click the **Speed Test** button
-3. Wait for results (typically 30-60 seconds)
-
-Progress is shown in real-time via Server-Sent Events (SSE).
+1. Navigate to **Settings → General → Speed Test**
+2. Click **Run Now**
+3. Watch time-based progress via SSE streaming:
+   - Progress bar moves through estimated phases
+   - Final results appear when test completes
+4. Results are stored and available in the history chart
 
 ### Via API
 
-**Trigger test (returns immediately, runs in background):**
+**Trigger test:**
 
 ```bash
 curl -X POST https://vpn.example.com/api/wireguard/speedtest/run \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
-**Trigger test with streaming progress:**
+**Trigger test with streaming progress (SSE):**
 
 ```bash
 curl -N https://vpn.example.com/api/wireguard/speedtest/run/stream \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
-**Response (SSE stream):**
+**SSE events:**
 
 ```
-data: {"phase": "server_selection", "progress": 0.05, "message": "Download server: http://cachefly.cachefly.net/100mb.test"}
+event: progress
+data: {"phase": "init", "progress": 0.0, "message": "Starting librespeed-cli…"}
 
-data: {"phase": "testing", "progress": 0.5, "message": "Run 1/3: DL 245.3 / UL 48.2 Mbit/s"}
+event: progress
+data: {"phase": "testing", "progress": 0.1, "message": "Running speed test…"}
 
-data: {"phase": "complete", "progress": 1.0, "message": "Complete: DL 248.5 / UL 47.8 Mbit/s"}
-
-data: {"type": "result", "download_mbit": 248.5, "upload_mbit": 47.8, "rtt_ms": 28.5, "jitter_ms": 12.3}
+event: result
+data: {"status": "ok", "server": "Nuremberg, Germany (Hetzner)", "download_mbit": 248.5, "upload_mbit": 47.8, "rtt_ms": 23.1, "jitter_ms": 1.6}
 ```
 
 ### Cooldown
 
-A 60-second cooldown prevents rapid consecutive tests. Attempting to run during cooldown returns:
-
-```json
-{
-  "error": "Too Many Requests",
-  "message": "Speed test cooldown active. Try again in 45 seconds.",
-  "retry_after": 45
-}
-```
+A 30-second cooldown prevents rapid consecutive tests. Attempting to run during cooldown returns HTTP 429.
 
 ## History & Storage
 
 ### Viewing History
 
-**Navigate to:** Dashboard → Speed Test History
+**Navigate to:** Dashboard → Speedtest chart
+
+The dashboard speedtest chart includes:
+
+- **Time range filter:** Select from 7d, 30d, 90d, 180d, or 1y
+- **Node filter:** View results from Master or All Nodes
+- **Multi-node view:** When "All Nodes" is selected, each node is shown with separate download (solid line) and upload (dashed line) series
+
+**Available time ranges:**
+
+| Range | Description |
+|-------|-------------|
+| **7 d** | Last 7 days (default) |
+| **30 d** | Last 30 days |
+| **90 d** | Last 90 days |
+| **180 d** | Last 180 days |
+| **1 y** | Last year |
 
 Or via API:
 
 ```bash
-curl https://vpn.example.com/api/wireguard/speedtest/history?range=7d \
+curl https://vpn.example.com/api/wireguard/speedtest/history?range_key=7d \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
@@ -142,11 +138,11 @@ curl https://vpn.example.com/api/wireguard/speedtest/history?range=7d \
 
 ### Data Retention
 
-**Navigate to:** Settings → General → Speed Test Storage
+Configure via the storage/retention API endpoint.
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Retention Period | How long to keep results | 90 days |
+| Retention options | 0 (unlimited), 7, 30, 90, 180, 365 days |
+|---|---|
+| **Default** | 365 days |
 
 ### Storage Management
 
@@ -164,67 +160,31 @@ curl -X DELETE https://vpn.example.com/api/wireguard/speedtest/storage \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
-## Status Page Integration
-
-When enabled, the [Status Page](../configuration/status-page.md) shows a "Last Speedtest" health check:
-
-| State | Condition |
-|-------|-----------|
-| OK | Test completed successfully within last 24 hours |
-| WARN | Last test > 24 hours ago |
-| ERROR | Last test failed |
-| N/A | Speed test disabled or no results |
-
-## Technical Details
-
-### Test Parameters
-
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| Streams | 4 | Concurrent connections per test |
-| Test Duration | 6 seconds | Per-run measurement window |
-| Warmup | 2 seconds | TCP slow-start ramp-up |
-| Runs | 3 | Number of runs (median used) |
-| RTT Samples | 8 | Probes per server selection |
-| Chunk Size | 256 KB | Download/upload chunk size |
-
-### Measured Values
-
-- **Download/Upload:** Calculated as `(total_bytes × 8) / elapsed_seconds / 1,000,000` → Mbit/s
-- **RTT:** Median of 8 samples using HTTP GET with Range header
-- **Jitter:** Standard deviation of RTT samples
-
-### Busy Detection Thresholds
-
-| Metric | Threshold | Meaning |
-|--------|-----------|---------|
-| RTT Factor | > 4× | RTT under load vs idle |
-| Jitter Factor | > 3× | Jitter increase |
-| Absolute Jitter | > 50ms | Loaded jitter threshold |
-
 ## Troubleshooting
 
-### "Network busy, skipping measurement"
+### "librespeed-cli not found"
 
-The congestion detector found existing network activity. Wait for other downloads to complete and retry.
+Ensure `librespeed-cli` is installed:
 
-### "Load generation never started"
+```bash
+apt-get install librespeed-cli
+```
 
-Download or upload worker failed to establish connection within timeout. Check:
+Or verify the binary is in `$PATH`:
 
-- Network connectivity
-- Firewall rules (outbound HTTP/HTTPS)
-- DNS resolution
+```bash
+which librespeed-cli
+```
 
 ### Low or inconsistent results
 
 - **Bufferbloat:** Consumer routers often have poor QoS, causing variable results
 - **ISP throttling:** Some ISPs throttle speedtest traffic
-- **Server distance:** Try different servers via Settings
+- **Container networking:** If running in Docker, ensure the container has direct network access (host networking recommended)
 
-### "All RTT probes failed"
+### Test fails with timeout
 
-Server may be temporarily unavailable. The test will try alternative servers automatically.
+Check outbound HTTPS connectivity from the server. LibreSpeed servers use HTTPS (`--secure` flag).
 
 ## API Reference
 

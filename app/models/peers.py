@@ -8,12 +8,13 @@
 
 from __future__ import annotations
 
+import base64
 import ipaddress
 import re
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 __all__ = [
 	"PeerCreate",
@@ -27,6 +28,7 @@ _INTERFACE_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]{0,14}")
 _WG_KEY_RE = re.compile(r"[A-Za-z0-9+/]{43}=")
 _BLOCKLIST_ID_RE = re.compile(r"[a-z0-9_-]{1,64}")
 _HOST_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_NODE_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 
 def _validate_interface_name(value: str) -> str:
@@ -40,8 +42,12 @@ def _validate_wg_key(value: Optional[str]) -> Optional[str]:
 	if value is None:
 		return value
 	value = value.strip()
-	if not _WG_KEY_RE.fullmatch(value):
-		raise ValueError("Invalid WireGuard key format (must be 44-char base64)")
+	try:
+		decoded = base64.b64decode(value, validate=True)
+	except Exception:
+		raise ValueError("Invalid WireGuard key format (must be valid base64)")
+	if len(decoded) != 32:
+		raise ValueError("WireGuard key must decode to exactly 32 bytes")
 	return value
 
 
@@ -49,7 +55,8 @@ def _normalize_csv(value: str, *, field_name: str) -> list[str]:
 	items = [item.strip() for item in value.split(",") if item.strip()]
 	if not items:
 		raise ValueError(f"{field_name} must not be empty")
-	return items
+	# Remove duplicates while preserving order
+	return list(dict.fromkeys(items))
 
 
 def _validate_cidr_list(value: str, *, field_name: str) -> str:
@@ -85,12 +92,16 @@ def _validate_ip_list(value: str, *, field_name: str) -> str:
 def _validate_hostname(host: str) -> str:
 	if len(host) > 253:
 		raise ValueError("Host is too long")
+	# Reject numeric-only hostnames that look like invalid IPs
+	if host.replace(".", "").isdigit():
+		raise ValueError("Invalid IP address (numeric hostname rejected)")
 	labels = host.split(".")
 	if any(not label for label in labels):
 		raise ValueError("Host contains an empty label")
 	if not all(_HOST_LABEL_RE.fullmatch(label) for label in labels):
 		raise ValueError("Host contains invalid characters")
-	return host
+	# Normalize to lowercase
+	return host.lower()
 
 
 def _validate_endpoint_value(value: Optional[str]) -> Optional[str]:
@@ -137,7 +148,17 @@ def _validate_blocklist_ids(value: Optional[list[str]]) -> Optional[list[str]]:
 		if not _BLOCKLIST_ID_RE.fullmatch(candidate):
 			raise ValueError(f"Invalid blocklist ID: {item!r}")
 		validated.append(candidate)
-	return validated
+	# Remove duplicates while preserving order
+	return list(dict.fromkeys(validated))
+
+
+def _validate_node_id(value: Optional[str]) -> Optional[str]:
+	if value is None:
+		return value
+	value = value.strip()
+	if not _NODE_ID_RE.fullmatch(value):
+		raise ValueError("node_id must be a 32-character hexadecimal string")
+	return value
 
 
 class PeerCreate(BaseModel):
@@ -150,7 +171,7 @@ class PeerCreate(BaseModel):
 		description="Block peer-to-peer communication via server-side firewall rules",
 	)
 	endpoint: Optional[str] = Field(None, max_length=256)
-	interface: str = Field(default="wg0", max_length=32)
+	interface: str = Field(default="wg0", max_length=15)
 	node_id: Optional[str] = Field(
 		None,
 		max_length=64,
@@ -198,10 +219,33 @@ class PeerCreate(BaseModel):
 	def blocklist_ids_valid(cls, v: Optional[list[str]]) -> Optional[list[str]]:
 		return _validate_blocklist_ids(v)
 
+	@field_validator("node_id")
+	@classmethod
+	def node_id_valid(cls, v: Optional[str]) -> Optional[str]:
+		return _validate_node_id(v)
+
 	@field_validator("public_key", "private_key", "preshared_key")
 	@classmethod
 	def validate_key(cls, v: Optional[str]) -> Optional[str]:
 		return _validate_wg_key(v)
+
+	@model_validator(mode="after")
+	def validate_key_consistency(self):
+		"""Ensure key fields are used consistently."""
+		if self.public_key and self.private_key:
+			raise ValueError("Provide either public_key or private_key, not both")
+		return self
+
+	@model_validator(mode="after")
+	def validate_allowed_ips_mode_consistency(self):
+		"""Validate allowed_ips matches allowed_ips_mode."""
+		if self.allowed_ips_mode == "full":
+			# Full tunnel should route all traffic
+			expected = {"0.0.0.0/0", "::/0"}
+			actual = {ip.strip() for ip in self.allowed_ips.split(",")}
+			if not actual.issuperset(expected):
+				raise ValueError("allowed_ips_mode='full' requires both 0.0.0.0/0 and ::/0 in allowed_ips")
+		return self
 
 
 class PeerUpdate(BaseModel):
@@ -230,9 +274,12 @@ class PeerUpdate(BaseModel):
 	@field_validator("name")
 	@classmethod
 	def name_not_blank_if_provided(cls, v: Optional[str]) -> Optional[str]:
-		if v is not None and not v.strip():
+		if v is None:
+			return v
+		v = v.strip()
+		if not v:
 			raise ValueError("Peer name cannot be blank")
-		return v.strip() if v else v
+		return v
 
 	@field_validator("allowed_ips")
 	@classmethod
@@ -250,6 +297,11 @@ class PeerUpdate(BaseModel):
 	@classmethod
 	def blocklist_ids_valid(cls, v: Optional[list[str]]) -> Optional[list[str]]:
 		return _validate_blocklist_ids(v)
+
+	@field_validator("node_id")
+	@classmethod
+	def node_id_valid(cls, v: Optional[str]) -> Optional[str]:
+		return _validate_node_id(v)
 
 
 class PeerPublic(BaseModel):
@@ -373,3 +425,8 @@ class PeerStats(BaseModel):
 	transfer_rx: int = Field(default=0, ge=0)  # bytes received
 	transfer_tx: int = Field(default=0, ge=0)  # bytes transmitted
 	allowed_ips: Optional[str] = None
+
+	@field_validator("endpoint")
+	@classmethod
+	def endpoint_valid(cls, v: Optional[str]) -> Optional[str]:
+		return _validate_endpoint_value(v)

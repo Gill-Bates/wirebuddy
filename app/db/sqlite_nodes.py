@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import logging
 import re
@@ -40,15 +41,22 @@ _FQDN_RE = re.compile(
 )
 
 
-def _validate_fqdn(fqdn: str) -> None:
-	"""Validate FQDN format per RFC 1123.
+def _validate_fqdn_or_ip(fqdn: str) -> None:
+	"""Validate FQDN or IP address (v4 / bracketed v6).
 
-	Rejects: consecutive dots, leading/trailing hyphens, empty labels,
-	invalid characters, and domains exceeding 253 chars.
+	Accepts: RFC 1123 hostnames, IPv4 addresses, and bracketed IPv6 addresses
+	(e.g., ``[::1]`` as stored by the API layer).
+	Rejects: invalid hostnames, malformed IPs, empty values.
 	"""
 	fqdn = fqdn.strip()
 	if not fqdn:
 		raise ValueError("FQDN cannot be empty")
+	# Accept bare or bracketed IP addresses
+	try:
+		ipaddress.ip_address(fqdn.strip("[]"))
+		return  # Valid IPv4 or IPv6
+	except ValueError:
+		pass
 	if not _FQDN_RE.match(fqdn):
 		raise ValueError(f"Invalid FQDN: {fqdn!r}")
 
@@ -83,7 +91,7 @@ def create_node(
 ) -> None:
 	"""Insert a new node record (status='pending')."""
 	_validate_name(name)
-	_validate_fqdn(fqdn)
+	_validate_fqdn_or_ip(fqdn)
 	_validate_port(wg_port)
 	now = utcnow()
 	with transaction(conn, immediate=True):
@@ -104,6 +112,11 @@ def get_node(conn: sqlite3.Connection, node_id: str) -> sqlite3.Row | None:
 def get_node_by_name(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
 	"""Fetch a single node by display name."""
 	return conn.execute("SELECT * FROM nodes WHERE name = ?", (name,)).fetchone()
+
+
+def get_node_by_fqdn(conn: sqlite3.Connection, fqdn: str) -> sqlite3.Row | None:
+	"""Fetch a single node by FQDN."""
+	return conn.execute("SELECT * FROM nodes WHERE fqdn = ?", (fqdn,)).fetchone()
 
 
 def get_all_nodes(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -135,7 +148,7 @@ def update_node(
 		updates.append("name = ?")
 		params.append(name)
 	if fqdn is not None:
-		_validate_fqdn(fqdn)
+		_validate_fqdn_or_ip(fqdn)
 		updates.append("fqdn = ?")
 		params.append(fqdn)
 	if wg_port is not None:
@@ -281,7 +294,7 @@ def update_node_heartbeat(
 	"""Update node heartbeat timestamp and optional metadata JSON."""
 	now = utcnow()
 	meta_json = None
-	if metadata:
+	if metadata is not None:
 		meta_json = json.dumps(metadata, default=str)
 		if len(meta_json.encode("utf-8")) > _MAX_METADATA_SIZE:
 			raise ValueError(f"Metadata exceeds maximum size ({_MAX_METADATA_SIZE} bytes)")
@@ -374,6 +387,70 @@ def is_node_sse_connected(conn: sqlite3.Connection, node_id: str, max_age_second
 	else:
 		return False
 	return ts >= cutoff
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pending Commands (Multi-Worker Safe)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Valid commands for node control
+VALID_NODE_COMMANDS = frozenset({"config_changed", "restart", "shutdown", "removed", "speedtest"})
+
+
+def set_node_pending_command(conn: sqlite3.Connection, node_id: str, command: str) -> bool:
+	"""Set a pending command for a node (multi-worker safe).
+	
+	Returns True if command was set, False if node doesn't exist.
+	
+	Raises:
+		ValueError: If command is not in VALID_NODE_COMMANDS.
+	"""
+	if command not in VALID_NODE_COMMANDS:
+		raise ValueError(f"Invalid node command: {command!r}. Valid: {sorted(VALID_NODE_COMMANDS)}")
+	
+	with transaction(conn, immediate=True):
+		result = conn.execute(
+			"UPDATE nodes SET pending_command = ? WHERE id = ?",
+			(command, node_id),
+		)
+		return result.rowcount > 0
+
+
+def get_and_clear_node_pending_command(conn: sqlite3.Connection, node_id: str) -> str | None:
+	"""Atomically get and clear any pending command for a node.
+	
+	Returns the command string if one was pending, None otherwise.
+	Uses SELECT-then-UPDATE within a transaction to ensure atomicity
+	across multiple workers.
+	"""
+	with transaction(conn, immediate=True):
+		# SELECT first to get the current value
+		row = conn.execute(
+			"SELECT pending_command FROM nodes WHERE id = ?",
+			(node_id,),
+		).fetchone()
+		
+		if not row or not row["pending_command"]:
+			return None
+		
+		command = row["pending_command"]
+		
+		# Clear the command
+		conn.execute(
+			"UPDATE nodes SET pending_command = NULL WHERE id = ?",
+			(node_id,),
+		)
+		
+		return command
+
+
+def clear_node_pending_command(conn: sqlite3.Connection, node_id: str) -> None:
+	"""Clear any pending command for a node without returning it."""
+	with transaction(conn, immediate=True):
+		conn.execute(
+			"UPDATE nodes SET pending_command = NULL WHERE id = ?",
+			(node_id,),
+		)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -722,19 +799,47 @@ def update_tunnel_peer_allowed_ips(conn: sqlite3.Connection, node_id: str) -> bo
 
 	Returns True if the tunnel peer was updated.
 	"""
-	node = get_node(conn, node_id)
-	if not node or not node["tunnel_peer_id"]:
-		return False
-
-	new_allowed_ips = get_tunnel_peer_allowed_ips(conn, node_id)
-	if not new_allowed_ips:
-		return False
-
 	with transaction(conn, immediate=True):
+		# Read, compute, and write inside one transaction to avoid stale data
+		# from concurrent peer assignment changes.
+		node = conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+		if not node or not node["tunnel_peer_id"]:
+			return False
+
+		tunnel_peer_id = node["tunnel_peer_id"]
+
+		# Collect all addresses: node's tunnel address + all assigned peer addresses
+		tunnel_peer = conn.execute(
+			"SELECT peer_address FROM peers WHERE id = ?", (tunnel_peer_id,)
+		).fetchone()
+		if not tunnel_peer:
+			return False
+
+		addresses: set[str] = set()
+		for addr in tunnel_peer["peer_address"].split(","):
+			addr = addr.strip()
+			if addr:
+				addresses.add(addr)
+
+		peer_rows = conn.execute(
+			"SELECT peer_address FROM peers WHERE node_id = ? AND is_enabled = 1",
+			(node_id,),
+		).fetchall()
+		for row in peer_rows:
+			for addr in row["peer_address"].split(","):
+				addr = addr.strip()
+				if addr:
+					addresses.add(addr)
+
+		if not addresses:
+			return False
+
+		new_allowed_ips = ", ".join(sorted(addresses))
 		conn.execute(
 			"UPDATE peers SET allowed_ips = ? WHERE id = ?",
-			(new_allowed_ips, node["tunnel_peer_id"]),
+			(new_allowed_ips, tunnel_peer_id),
 		)
+
 	_log.info(
 		"Updated tunnel peer allowed_ips for node=%s: %s",
 		node_id, new_allowed_ips,

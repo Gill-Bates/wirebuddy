@@ -8,8 +8,11 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 __all__ = [
 	"DNS_LOG_RETENTION_OPTIONS",
@@ -20,6 +23,8 @@ __all__ = [
 
 DNS_LOG_RETENTION_OPTIONS = {0, 7, 30, 90, 180, 365}
 DEFAULT_DNS_LOG_RETENTION_DAYS = 30
+# Safety limit to prevent runaway deletion on corrupted setups
+MAX_DELETE_PER_RUN = 10_000
 
 
 def normalize_dns_log_retention_days(value: int | str | None) -> int:
@@ -42,7 +47,11 @@ def _extract_day_prefix(name: str) -> date | None:
 
 
 def enforce_dns_log_retention(dns_dir: Path, retention_days: int) -> dict[str, int]:
-	"""Apply DNS query retention by deleting stale day files from DNS logs."""
+	"""Apply DNS query retention by deleting stale day files from DNS logs.
+	
+	Note: TSDB retention is handled automatically via tsdb.append_point() during writes.
+	This function only manages JSONL raw log files.
+	"""
 	queries_dir = dns_dir / "queries"
 	retention_days = normalize_dns_log_retention_days(retention_days)
 	if not queries_dir.exists():
@@ -54,7 +63,12 @@ def enforce_dns_log_retention(dns_dir: Path, retention_days: int) -> dict[str, i
 
 	deleted = 0
 	remaining = 0
-	for path in sorted(queries_dir.iterdir()):
+	# No sorted() - iteration order doesn't matter for delete, saves RAM
+	for path in queries_dir.iterdir():
+		# Safety limit: prevent runaway deletion on corrupted setups
+		if deleted >= MAX_DELETE_PER_RUN:
+			_log.warning("DNS_RETENTION hit safety limit (%d deletes), stopping", MAX_DELETE_PER_RUN)
+			break
 		if not path.is_file():
 			continue
 		if path.suffix != ".jsonl":
@@ -70,7 +84,8 @@ def enforce_dns_log_retention(dns_dir: Path, retention_days: int) -> dict[str, i
 		try:
 			path.unlink(missing_ok=True)
 			deleted += 1
-		except OSError:
+		except OSError as e:
+			_log.warning("DNS_RETENTION delete failed for %s: %s", path.name, e)
 			remaining += 1
 
 	return {"deleted_files": deleted, "remaining_files": remaining}

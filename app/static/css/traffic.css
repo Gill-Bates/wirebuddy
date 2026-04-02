@@ -1,5 +1,25 @@
-/* Traffic Page Styles */
+/* ==========================================================================
+   Traffic Page Styles
+   ========================================================================== */
 
+/* ── Design Tokens ──────────────────────────────────────────────────────── */
+:root {
+    /* Height scale for chart/table containers */
+    --traffic-h-lg: 400px;
+    /* Desktop chart/table height */
+    --traffic-h-md: 300px;
+    /* Tablet height */
+    --traffic-h-sm: 260px;
+    /* Mobile height */
+
+    /* Traffic direction colors (theme-aware) */
+    --traffic-rx: #10b981;
+    /* Download: emerald green */
+    --traffic-tx: #f59e0b;
+    /* Upload: amber orange */
+}
+
+/* ── Header & Controls ──────────────────────────────────────────────────── */
 .traffic-header {
     display: flex;
     justify-content: space-between;
@@ -24,37 +44,40 @@
     min-width: 80px;
 }
 
+/* ── Chart Container ────────────────────────────────────────────────────── */
 .traffic-chart-canvas-wrap {
     position: relative;
-    height: 400px;
+    height: var(--traffic-h-lg);
     transition: opacity 0.2s ease;
+    /* Keep hidden to clip chart edge artifacts; tooltips use portal/fixed positioning */
     overflow: hidden;
     border-radius: var(--wb-radius-md, 10px);
-}
-
-.traffic-loading-height,
-#traffic-empty-state {
-    min-height: 400px;
-}
-
-.traffic-loading-min-height,
-#country-traffic-empty,
-#asn-traffic-empty,
-#country-traffic-content,
-#asn-traffic-content {
-    min-height: 400px;
 }
 
 .traffic-chart-fading {
     opacity: 0;
 }
 
-/* ── Country & ASN traffic styles ───────────────────────── */
+/* ── Height Utilities ───────────────────────────────────────────────────── */
+/* Fixed height (for loading skeletons that must match chart exactly) */
+.traffic-loading-height {
+    height: var(--traffic-h-lg);
+}
+
+/* Min-height (for empty states, content areas) */
+.traffic-loading-min-height,
+.traffic-empty-state {
+    min-height: var(--traffic-h-lg);
+}
+
+/* ── Country & ASN Traffic Tables ───────────────────────────────────────── */
 .traffic-table-wrap {
-    max-height: 400px;
+    max-height: var(--traffic-h-lg);
     overflow-y: auto;
     border-radius: var(--wb-radius-md, 10px);
-    /* Minimum clearance between content and scrollbar per UI-Lint SCROLL_EDGE_CLEARANCE_MIN */
+    /* Prevent layout shift when scrollbar appears/disappears */
+    scrollbar-gutter: stable;
+    /* Minimum clearance between content and scrollbar (UI-Lint SCROLL_EDGE_CLEARANCE_MIN) */
     padding-right: 12px;
 }
 
@@ -64,6 +87,7 @@
     border-radius: 2px;
     object-fit: cover;
     vertical-align: middle;
+    /* Subtle border effect; kept minimal for large table performance */
     box-shadow: 0 0 0 1px rgba(0, 0, 0, .08);
 }
 
@@ -94,15 +118,13 @@
 }
 
 .traffic-bar-rx {
-    background: #10b981;
+    background: var(--traffic-rx);
 }
 
-/* emerald green for download */
 .traffic-bar-tx {
-    background: #f59e0b;
+    background: var(--traffic-tx);
 }
 
-/* amber orange for upload */
 .traffic-row td {
     vertical-align: middle;
 }
@@ -178,25 +200,29 @@
     white-space: nowrap;
 }
 
-.rxtx-arrow,
+/* Traffic direction arrows (unified naming) */
 .traffic-arrow {
     font-size: 12px;
     line-height: 1;
     flex-shrink: 0;
 }
 
-.rxtx-arrow.rx-arrow,
-.traffic-arrow.traffic-arrow-rx {
-    color: #10b981;
+/* Legacy alias for backward compatibility */
+.rxtx-arrow {
+    font-size: 12px;
+    line-height: 1;
+    flex-shrink: 0;
 }
 
-/* emerald green for download */
-.rxtx-arrow.tx-arrow,
-.traffic-arrow.traffic-arrow-tx {
-    color: #f59e0b;
+.traffic-arrow-rx,
+.rx-arrow {
+    color: var(--traffic-rx);
 }
 
-/* amber orange for upload */
+.traffic-arrow-tx,
+.tx-arrow {
+    color: var(--traffic-tx);
+}
 
 @media (max-width: 575.98px) {
 
@@ -230,25 +256,25 @@
     }
 
     .traffic-chart-canvas-wrap {
-        height: 260px;
+        height: var(--traffic-h-sm);
     }
 
-    .traffic-loading-height,
-    #traffic-empty-state {
-        min-height: 260px;
-    }
-
-    .traffic-table-wrap {
-        max-height: 300px;
-        /* padding-right inherited from base rule (12px) */
+    .traffic-loading-height {
+        height: var(--traffic-h-sm);
     }
 
     .traffic-loading-min-height,
-    #country-traffic-empty,
-    #asn-traffic-empty,
-    #country-traffic-content,
-    #asn-traffic-content {
-        min-height: 300px;
+    .traffic-empty-state {
+        min-height: var(--traffic-h-sm);
+    }
+
+    .traffic-table-wrap {
+        max-height: var(--traffic-h-md);
+        /* padding-right inherited from base rule (12px) */
+    }
+
+    .traffic-content-area {
+        min-height: var(--traffic-h-md);
     }
 
     /* Mobile: show combined column, hide separate RX/TX */
@@ -261,7 +287,8 @@
         display: none;
     }
 
-    /* Mobile: hide ASN column, show inline ASN */
+    /* Mobile: hide ASN column, show inline ASN
+       TODO: Replace #asn-traffic-table with .traffic-table--asn class in HTML */
     #asn-traffic-table .traffic-col-asn {
         display: none;
     }
@@ -272,6 +299,7 @@
 
     /* Condensed text for traffic tables */
     .traffic-table-wrap table {
+        /* font-stretch has limited browser support but degrades gracefully */
         font-stretch: 87.5%;
         font-size: 0.8rem;
     }
@@ -282,20 +310,21 @@
         height: 15px;
     }
 
-    /* Remove min-width constraints on mobile to prevent overflow */
-    #country-traffic-table th,
-    #country-traffic-table td,
-    #asn-traffic-table th,
-    #asn-traffic-table td {
+    /* Remove min-width constraints on mobile to prevent overflow.
+       !important needed to override inline Bootstrap col utilities. */
+    .traffic-table-wrap th,
+    .traffic-table-wrap td {
         min-width: unset !important;
     }
 
-    /* Allow text wrapping on mobile */
+    /* Allow text wrapping on mobile.
+       !important needed to override Bootstrap .text-nowrap utility. */
     .traffic-table-wrap .text-nowrap {
         white-space: normal !important;
     }
 
-    /* Limit long provider/country names to 2 lines with ellipsis */
+    /* Limit long provider/country names to 2 lines with ellipsis.
+       -webkit-line-clamp required for cross-browser support (spec still draft). */
     .traffic-table-wrap td .fw-medium {
         display: -webkit-box;
         -webkit-line-clamp: 2;
@@ -313,12 +342,12 @@
 
 }
 
-/* Extra small screens: further optimize for 320-360px devices */
+/* Extra small screens: optimize for 320-360px devices */
 @media (max-width: 360px) {
 
     /* Reduce flag column width to save space */
-    #country-traffic-table th:first-child,
-    #country-traffic-table td:first-child {
+    .traffic-table-wrap th:first-child,
+    .traffic-table-wrap td:first-child {
         width: 28px;
     }
 
@@ -335,19 +364,14 @@
     }
 }
 
-/* Utility classes */
-.traffic-loading-height {
-    height: 400px;
-}
-
-.traffic-loading-min-height {
-    min-height: 200px;
-}
+/* ── Utility Classes ────────────────────────────────────────────────────── */
+/* Note: .traffic-loading-height and .traffic-loading-min-height defined above */
 
 .traffic-flag-col {
     width: 36px;
 }
 
+/* Column width utilities - use sparingly, prefer flex/grid for complex layouts */
 .traffic-col-70 {
     min-width: 70px;
 }
@@ -358,5 +382,5 @@
 
 .traffic-fallback-icon {
     font-size: 18px;
-    color: #adb5bd;
+    color: var(--bs-secondary-color, #adb5bd);
 }

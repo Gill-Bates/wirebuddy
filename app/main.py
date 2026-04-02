@@ -26,7 +26,6 @@ from .db.sqlite_runtime import (
 	close_connection,
 	connect,
 )
-from .db.sqlite_leader import try_acquire_leader_lock, release_leader_lock
 from .db.sqlite_schema import ensure_default_admin, init_schema, insert_default_settings
 from .db.sqlite_settings import (
 	DEFAULT_DNS_LOG_RETENTION_DAYS,
@@ -50,6 +49,7 @@ import ipaddress
 import logging
 import os
 import re
+import signal
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -99,7 +99,6 @@ class LifespanContext:
 	"""
 	cfg: Config
 	app: FastAPI
-	is_leader: bool = False
 	interfaces_to_start: list[str] = field(default_factory=list)
 	started_interfaces: list[str] = field(default_factory=list)
 	peer_connection_state: collections.OrderedDict = field(default_factory=collections.OrderedDict)
@@ -140,6 +139,54 @@ _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS = 2.0
 _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS = 300.0
 
 
+def _install_shutdown_signal_handlers(
+	loop: asyncio.AbstractEventLoop,
+	shutdown_event: asyncio.Event,
+) -> list[tuple[int, object]]:
+	"""Install signal handlers that also notify long-lived app connections.
+
+	The wrapper preserves Uvicorn's existing SIGTERM/SIGINT handlers and only
+	adds a side effect: setting ``shutdown_event`` as soon as the process is
+	signalled. This lets streaming responses terminate before Uvicorn enters the
+	application shutdown phase.
+	"""
+	installed: list[tuple[int, object]] = []
+
+	for sig in (signal.SIGTERM, signal.SIGINT):
+		try:
+			previous_handler = signal.getsignal(sig)
+		except Exception:
+			continue
+
+		def _handler(signum: int, frame: object, *, _previous=previous_handler) -> None:
+			loop.call_soon_threadsafe(shutdown_event.set)
+			if _previous in (None, signal.SIG_DFL, signal.SIG_IGN):
+				return
+			if _previous is signal.default_int_handler:
+				_previous(signum, frame)
+				return
+			if callable(_previous):
+				_previous(signum, frame)
+
+		try:
+			signal.signal(sig, _handler)
+		except (ValueError, RuntimeError) as exc:
+			_log.debug("Could not install shutdown signal hook for %s: %s", sig, exc)
+			continue
+		installed.append((sig, previous_handler))
+
+	return installed
+
+
+def _restore_signal_handlers(previous_handlers: list[tuple[int, object]]) -> None:
+	"""Restore signal handlers replaced by _install_shutdown_signal_handlers."""
+	for sig, previous_handler in previous_handlers:
+		try:
+			signal.signal(sig, previous_handler)
+		except (ValueError, RuntimeError):
+			continue
+
+
 # Docker default bridge gateway ranges
 _DOCKER_BRIDGE_NETWORKS = (
 	ipaddress.ip_network("172.17.0.0/16"),
@@ -159,7 +206,8 @@ def _seconds_until_backup_time(tz: str = "UTC") -> float:
 	try:
 		from zoneinfo import ZoneInfo
 		tzinfo = ZoneInfo(tz)
-	except Exception:
+	except Exception as exc:
+		_log.warning("Invalid timezone %r for scheduled backup; falling back to UTC: %s", tz, exc)
 		tzinfo = timezone.utc
 
 	now = datetime.now(tzinfo)
@@ -219,7 +267,7 @@ async def _verify_host_network_mode() -> None:
 					"WireBuddy requires Docker host networking mode. "
 					"Set 'network_mode: host' in your Docker configuration and try again."
 				)
-				sys.exit(1)
+				raise SystemExit(1)
 
 	except FileNotFoundError:
 		_log.warning("'ip' command not found, cannot verify network mode")
@@ -285,7 +333,7 @@ async def _cleanup_stale_interfaces() -> list[str]:
 					_log.warning(
 						"Failed to delete stale interface %s: %s",
 						iface_name,
-						stderr.decode("utf-8", errors="replace"),
+						_decode_subprocess_output(stderr),
 					)
 			except asyncio.TimeoutError:
 				_log.warning("Timeout cleaning up stale interface %s", iface_name)
@@ -353,8 +401,11 @@ def _prepare_log_record(record: logging.LogRecord) -> logging.LogRecord:
 class _HumanizedFormatter(logging.Formatter):
 	"""Formatter that normalizes noisy third-party log messages."""
 
+	def _prepare(self, record: logging.LogRecord) -> logging.LogRecord:
+		return _prepare_log_record(record)
+
 	def format(self, record: logging.LogRecord) -> str:
-		record = _prepare_log_record(record)
+		record = self._prepare(record)
 		return super().format(record)
 
 
@@ -362,14 +413,14 @@ class _ColoredFormatter(_HumanizedFormatter):
 	"""Custom formatter that adds color to log levels in TTY."""
 
 	def format(self, record: logging.LogRecord) -> str:
-		record = _prepare_log_record(record)
+		record = self._prepare(record)
 		if record.levelname in _LOG_COLORS:
 			record = logging.makeLogRecord(record.__dict__)
 			record.levelname = f"{_LOG_COLORS[record.levelname]}{record.levelname:<8}{_RESET}"
 		else:
 			record = logging.makeLogRecord(record.__dict__)
 			record.levelname = f"{record.levelname:<8}"
-		return super(_HumanizedFormatter, self).format(record)
+		return super().format(record)
 
 
 async def _communicate_with_timeout(
@@ -395,6 +446,13 @@ async def _communicate_with_timeout(
 				proc.kill()  # SIGKILL – last resort
 				await proc.communicate()
 		raise
+
+
+def _decode_subprocess_output(data: bytes | None) -> str:
+	"""Decode subprocess output safely for logs."""
+	if not data:
+		return ""
+	return data.decode("utf-8", errors="replace")
 
 
 def _safe_int(value: str | None, default: int = 0) -> int:
@@ -463,14 +521,13 @@ def _get_addr_field(iface: object, key: str) -> str | None:
 	return getattr(iface, key, None)
 
 
-def _bootstrap_sync(cfg: Config) -> tuple[bool, list[str], bool]:
+def _bootstrap_sync(cfg: Config) -> tuple[list[str], bool]:
 	"""Run startup DB/bootstrap work synchronously (for asyncio.to_thread).
 	
 	Returns:
-		Tuple of (is_leader, interfaces_to_start, key_mismatch).
+		Tuple of (interfaces_to_start, key_mismatch).
 	"""
 	conn = connect(cfg.db_path)
-	is_leader = False
 	interfaces_to_start: list[str] = []
 	key_mismatch = False
 	try:
@@ -484,18 +541,12 @@ def _bootstrap_sync(cfg: Config) -> tuple[bool, list[str], bool]:
 				"Please set the correct WIREBUDDY_SECRET_KEY environment variable."
 			)
 			# CRITICAL: Do not continue with wrong key — prevents data corruption
-			return is_leader, interfaces_to_start, key_mismatch
+			return interfaces_to_start, key_mismatch
 
 		# Insert default settings AFTER key validation (to avoid validation token conflicts)
 		insert_default_settings(conn)
 
-		# Acquire leader lock first so one worker performs migration checks/logging.
-		is_leader = try_acquire_leader_lock(conn)
-		if is_leader:
-			_log.info("This worker acquired leader lock (pid=%d)", os.getpid())
-			migration.run_pending_migrations(conn)
-		else:
-			_log.info("Another worker is leader, skipping init tasks (pid=%d)", os.getpid())
+		migration.run_pending_migrations(conn)
 
 		ensure_default_admin(conn)
 
@@ -513,36 +564,35 @@ def _bootstrap_sync(cfg: Config) -> tuple[bool, list[str], bool]:
 				recovered,
 			)
 
-		if is_leader:
-			# Regenerate WireGuard configs from database (persistence across restarts)
-			from .api.wireguard_config import regenerate_all_configs
-			regen_result = regenerate_all_configs(WG_CONFIG_PATH, conn, pepper=cfg.secret_key)
-			if regen_result.succeeded:
-				_log.info("WireGuard configs regenerated: %d interfaces", len(regen_result.succeeded))
-			if regen_result.failed:
-				_log.warning(
-					"WireGuard config regeneration failed for %d interfaces: %s",
-					len(regen_result.failed),
-					list(regen_result.failed.keys()),
-				)
-			if regen_result.key_mismatch:
-				key_mismatch = True
-				_log.critical(
-					"KEY_MISMATCH_DETECTED: WIREBUDDY_SECRET_KEY does not match the key used to encrypt this database. "
-					"WireGuard configs cannot be decrypted. Please set the correct WIREBUDDY_SECRET_KEY environment variable."
-				)
+		# Regenerate WireGuard configs from database (persistence across restarts)
+		from .api.wireguard_config import regenerate_all_configs
+		regen_result = regenerate_all_configs(WG_CONFIG_PATH, conn, pepper=cfg.secret_key)
+		if regen_result.succeeded:
+			_log.info("WireGuard configs regenerated: %d interfaces", len(regen_result.succeeded))
+		if regen_result.failed:
+			_log.warning(
+				"WireGuard config regeneration failed for %d interfaces: %s",
+				len(regen_result.failed),
+				list(regen_result.failed.keys()),
+			)
+		if regen_result.key_mismatch:
+			key_mismatch = True
+			_log.critical(
+				"KEY_MISMATCH_DETECTED: WIREBUDDY_SECRET_KEY does not match the key used to encrypt this database. "
+				"WireGuard configs cannot be decrypted. Please set the correct WIREBUDDY_SECRET_KEY environment variable."
+			)
 
-			for iface in list_interfaces(conn):
-				if iface["is_enabled"]:
-					name = iface["name"]
-					if _IFACE_NAME_RE.match(name):
-						interfaces_to_start.append(name)
-					else:
-						_log.warning("Skipping interface with invalid name: %r", name)
+		for iface in list_interfaces(conn):
+			if iface["is_enabled"]:
+				name = iface["name"]
+				if _IFACE_NAME_RE.match(name):
+					interfaces_to_start.append(name)
+				else:
+					_log.warning("Skipping interface with invalid name: %r", name)
 	finally:
 		close_connection(conn)
 
-	return is_leader, interfaces_to_start, key_mismatch
+	return interfaces_to_start, key_mismatch
 
 
 def _load_dns_startup_data_sync(db_path: Path) -> dict[str, object]:
@@ -796,21 +846,24 @@ async def _reload_unbound_for_adblocker_async(db_path: Path) -> None:
 		await _unbound.reload_config()
 	except Exception:
 		_log.warning("ADBLOCKER_TIMER failed to reload Unbound", exc_info=True)
-
-
-def _release_leader_lock_sync(db_path: Path) -> None:
-	"""Release leader lock synchronously."""
-	conn = connect(db_path)
-	try:
-		release_leader_lock(conn)
-	finally:
-		close_connection(conn)
-
-
 def _sqlite_shutdown_sync(db_path: Path) -> tuple[dict[str, int | str | None], int]:
 	"""Run SQLite checkpoint + connection close synchronously."""
-	checkpoint = checkpoint_wal(db_path, mode="TRUNCATE")
 	closed_connections = close_all_connections()
+	checkpoint: dict[str, int | str | None] = {
+		"mode": "TRUNCATE",
+		"busy": -1,
+		"log_frames": -1,
+		"checkpointed_frames": -1,
+		"attempts": 0,
+	}
+
+	for attempt in range(1, 11):
+		checkpoint = checkpoint_wal(db_path, mode="TRUNCATE")
+		checkpoint["attempts"] = attempt
+		if int(checkpoint.get("busy", -1)) == 0:
+			break
+		time.sleep(0.2)
+
 	return checkpoint, closed_connections
 
 
@@ -865,25 +918,49 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 	This function handles all cleanup:
 	1. DNS ingestion daemon
 	2. Scheduler
-	3. Unbound DNS
-	4. WireGuard interfaces
-	5. Leader lock release
+	3. SQLite checkpoint
+	4. Unbound DNS
+	5. WireGuard interfaces
 	6. TSDB fsync
-	7. SQLite checkpoint
 	"""
 
 	# 1. Cancel DNS ingestion daemon (fastest to stop)
 	if ctx.dns_task and not ctx.dns_task.done():
 		ctx.dns_task.cancel()
-		await asyncio.gather(ctx.dns_task, return_exceptions=True)
+		try:
+			await asyncio.wait_for(ctx.dns_task, timeout=5.0)
+		except (asyncio.CancelledError, asyncio.TimeoutError):
+			pass
 		_log.info("DNS_INGESTION stopped")
+
+	# 1b. Cancel DNS API background tasks (rebuild worker, etc.)
+	try:
+		from .api import dns as dns_api
+		await dns_api.shutdown_dns_tasks()
+	except Exception as exc:
+		_log.warning("DNS API tasks shutdown failed: %s", exc)
 
 	# 2. Scheduler
 	if ctx.scheduler:
 		await ctx.scheduler.stop_graceful(timeout=5.0)
 
-	# 3. Stop Unbound DNS
-	if ctx.is_leader and unbound.is_unbound_installed():
+	# 3. SQLite WAL checkpoint + close all connections before longer teardown.
+	checkpoint, closed_connections = await asyncio.to_thread(
+		_sqlite_shutdown_sync,
+		ctx.cfg.db_path,
+	)
+	_log.info(
+		"SQLITE_SHUTDOWN connections_closed=%d checkpoint_mode=%s busy=%s log_frames=%s checkpointed_frames=%s attempts=%s",
+		closed_connections,
+		checkpoint.get("mode"),
+		checkpoint.get("busy"),
+		checkpoint.get("log_frames"),
+		checkpoint.get("checkpointed_frames"),
+		checkpoint.get("attempts"),
+	)
+
+	# 4. Stop Unbound DNS
+	if unbound.is_unbound_installed():
 		try:
 			if await unbound.is_running():
 				ok, msg = await unbound.stop()
@@ -894,8 +971,8 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 		except Exception as exc:
 			_log.warning("Unbound shutdown failed: %s", exc)
 
-	# 4. Bring down WireGuard interfaces we started
-	if ctx.is_leader and ctx.started_interfaces:
+	# 5. Bring down WireGuard interfaces we started
+	if ctx.started_interfaces:
 		for iface_name in ctx.started_interfaces:
 			try:
 				proc = await asyncio.create_subprocess_exec(
@@ -910,18 +987,11 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 				if proc.returncode == 0:
 					_log.info("WireGuard interface %s stopped", iface_name)
 				else:
-					_log.warning("Failed to stop interface %s: %s", iface_name, stderr.decode("utf-8", errors="replace"))
+					_log.warning("Failed to stop interface %s: %s", iface_name, _decode_subprocess_output(stderr))
 			except asyncio.TimeoutError:
 				_log.warning("Timeout while stopping interface %s", iface_name)
 			except Exception as e:
 				_log.warning("Failed to stop interface %s: %s", iface_name, e)
-
-	# 5. Release leader lock
-	if ctx.is_leader:
-		try:
-			await asyncio.to_thread(_release_leader_lock_sync, ctx.cfg.db_path)
-		except Exception:
-			_log.exception("Failed to release leader lock")
 
 	# 6. TSDB fsync
 	try:
@@ -936,35 +1006,19 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 		)
 	except Exception as exc:
 		_log.warning("TSDB_SHUTDOWN failed: %s", exc)
-
-	# 7. SQLite WAL checkpoint + close all connections
-	checkpoint, closed_connections = await asyncio.to_thread(
-		_sqlite_shutdown_sync,
-		ctx.cfg.db_path,
-	)
-	_log.info(
-		"SQLITE_SHUTDOWN connections_closed=%d checkpoint_mode=%s busy=%s log_frames=%s checkpointed_frames=%s",
-		closed_connections,
-		checkpoint.get("mode"),
-		checkpoint.get("busy"),
-		checkpoint.get("log_frames"),
-		checkpoint.get("checkpointed_frames"),
-	)
 	_log.info("WireBuddy shutdown complete")
 
 
 
 async def _phase_bootstrap(ctx: LifespanContext) -> None:
 	cfg, app = ctx.cfg, ctx.app
-	is_leader, interfaces_to_start, key_mismatch = await asyncio.to_thread(_bootstrap_sync, cfg)
-	ctx.is_leader = is_leader
+	interfaces_to_start, key_mismatch = await asyncio.to_thread(_bootstrap_sync, cfg)
 	ctx.interfaces_to_start = interfaces_to_start
 	app.state.key_mismatch = key_mismatch
 	if key_mismatch:
 		_log.critical("Aborting startup: WIREBUDDY_SECRET_KEY does not match database encryption key")
 		await _do_shutdown(ctx)
-		# Clean exit without stack trace - os._exit bypasses exception handling
-		import sys
+		# Clean exit via SystemExit instead of os._exit to allow cleanup/logging
 		print(
 			"\n"
 			"╔══════════════════════════════════════════════════════════════════════╗\n"
@@ -980,16 +1034,14 @@ async def _phase_bootstrap(ctx: LifespanContext) -> None:
 			file=sys.stderr,
 			flush=True,
 		)
-		import os
-		os._exit(1)
+		raise SystemExit(1)
 	from .db import tsdb
 	tsdb.init_tsdb(cfg.tsdb_dir)
-	if ctx.is_leader:
-		_log.info("GeoIP init scheduled in background (startup is non-blocking)")
+	_log.info("GeoIP init scheduled in background (startup is non-blocking)")
 
 async def _phase_dns_config(ctx: LifespanContext) -> None:
 	from .dns import unbound
-	if not ctx.is_leader or not unbound.is_unbound_installed():
+	if not unbound.is_unbound_installed():
 		return
 	try:
 		dns_data = await asyncio.to_thread(_load_dns_startup_data_sync, ctx.cfg.db_path)
@@ -1038,8 +1090,6 @@ async def _phase_dns_config(ctx: LifespanContext) -> None:
 		_log.exception("DNS config failed")
 
 async def _phase_wireguard_start(ctx: LifespanContext) -> None:
-	if not ctx.is_leader:
-		return
 	removed_stale = await _cleanup_stale_interfaces()
 	if removed_stale:
 		_log.info("Cleaned up %d stale interface(s): %s", len(removed_stale), removed_stale)
@@ -1058,7 +1108,7 @@ async def _phase_wireguard_start(ctx: LifespanContext) -> None:
 				_log.info("WireGuard interface %s started", iface_name)
 				return iface_name
 			else:
-				_log.warning("Failed to start interface %s: %s", iface_name, stderr.decode("utf-8", errors="replace"))
+				_log.warning("Failed to start interface %s: %s", iface_name, _decode_subprocess_output(stderr))
 				return None
 		except asyncio.TimeoutError:
 			_log.warning("Timeout while starting/checking interface %s", iface_name)
@@ -1075,7 +1125,7 @@ async def _phase_wireguard_start(ctx: LifespanContext) -> None:
 
 async def _phase_dns_start(ctx: LifespanContext) -> None:
 	from .dns import unbound
-	if ctx.is_leader and unbound.is_unbound_installed() and ctx.dns_config_ready:
+	if unbound.is_unbound_installed() and ctx.dns_config_ready:
 		try:
 			unbound_running = await unbound.is_running()
 			if ctx.dns_service_enabled:
@@ -1099,8 +1149,6 @@ async def _phase_dns_start(ctx: LifespanContext) -> None:
 			_log.exception("DNS start failed")
 
 async def _phase_scheduler(ctx: LifespanContext) -> None:
-	if not ctx.is_leader:
-		return
 	scheduler = Scheduler()
 	ctx.scheduler = scheduler
 	ctx.app.state.scheduler = scheduler
@@ -1166,7 +1214,7 @@ async def _phase_scheduler(ctx: LifespanContext) -> None:
 		async def _check_adblocker_timer() -> None:
 			await scheduled_tasks.check_adblocker_timer(ctx)
 		scheduler.add("adblocker-timer-check", interval_seconds=15, func=_check_adblocker_timer, run_on_start=False, timeout=30.0)
-	initial_speedtest_delay, hours_since_last, speedtest_overdue = scheduled_tasks.get_speedtest_initial_delay(ctx.cfg.tsdb_dir)
+	initial_speedtest_delay, hours_since_last, speedtest_overdue = scheduled_tasks.get_speedtest_initial_delay(ctx.cfg.db_path, ctx.cfg.tsdb_dir)
 	if hours_since_last is not None:
 		if speedtest_overdue:
 			_log.warning("SPEEDTEST_SCHEDULER last run was %.1f hours ago (>36h) - missed tests detected!", hours_since_last)
@@ -1180,7 +1228,7 @@ async def _phase_scheduler(ctx: LifespanContext) -> None:
 		_log.info("SPEEDTEST_SCHEDULER first run in %.1f hours (at ~%s)", initial_speedtest_delay / 3600, scheduled_time.strftime("%H:%M"))
 	async def _run_scheduled_speedtest() -> None:
 		await scheduled_tasks.run_scheduled_speedtest(ctx)
-	scheduler.add("speedtest", interval_seconds=86400, func=_run_scheduled_speedtest, run_on_start=True, initial_delay=initial_speedtest_delay, timeout=7500.0, jitter_pct=0.05)
+	scheduler.add("speedtest", interval_seconds=86400, func=_run_scheduled_speedtest, run_on_start=True, initial_delay=initial_speedtest_delay, timeout=7500.0, jitter_pct=0.0)
 	initial_backup_delay = _seconds_until_backup_time(os.environ.get("TZ", "UTC"))
 	_log.info("SCHEDULED_BACKUP first run in %.1f hours (at ~%02d:00)", initial_backup_delay / 3600, _BACKUP_NIGHT_HOUR)
 	async def _run_scheduled_backup() -> None:
@@ -1246,6 +1294,7 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 				dns_dir=ctx.cfg.dns_dir,
 				blocked_domains_func=unbound.get_blocked_domains,
 				retention_days_func=_current_dns_retention_days,
+				tsdb_dir=ctx.cfg.tsdb_dir,
 			)
 			retry_count = 0
 			_log.warning("DNS_INGESTION stopped unexpectedly; restarting in 5s")
@@ -1255,8 +1304,13 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 			raise
 		except Exception as exc:
 			retry_count += 1
-			# Exponential backoff: base_delay * (2 ** retry_count)
-			delay = min(2 ** retry_count * _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS, _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS)
+			# Exponential backoff with jitter to prevent thundering herd
+			import random
+			jitter = random.uniform(0.8, 1.2)
+			delay = min(
+				(2 ** retry_count * _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS * jitter),
+				_DNS_INGESTION_RESTART_MAX_DELAY_SECONDS
+			)
 			_log.error("DNS_INGESTION crashed (retry #%d in %.0fs): %s", retry_count, delay, exc)
 			await _sleep_interruptible(delay)
 
@@ -1265,6 +1319,10 @@ async def _lifespan(app: FastAPI):
 	"""Application lifespan manager."""
 	import os
 	await _verify_host_network_mode()
+	loop = asyncio.get_running_loop()
+	shutdown_signal_event = asyncio.Event()
+	app.state.shutdown_signal_event = shutdown_signal_event
+	previous_signal_handlers = _install_shutdown_signal_handlers(loop, shutdown_signal_event)
 	cfg = app.state.cfg
 	ctx = LifespanContext(
 		cfg=cfg,
@@ -1277,13 +1335,16 @@ async def _lifespan(app: FastAPI):
 		await _phase_wireguard_start(ctx)
 		await _phase_dns_start(ctx)
 		await _phase_scheduler(ctx)
-		ctx.dns_task = asyncio.create_task(_phase_dns_ingestion(ctx))
-		app.state.dns_task = ctx.dns_task
-		app.state.is_leader = ctx.is_leader
+		# Create DNS ingestion task with defensive handling
+		dns_task = asyncio.create_task(_phase_dns_ingestion(ctx))
+		ctx.dns_task = dns_task
+		app.state.dns_task = dns_task
 		app.state.started_interfaces = ctx.started_interfaces
-		_log.info("WireBuddy started successfully (leader=%s, pid=%d)", ctx.is_leader, os.getpid())
+		_log.info("WireBuddy started successfully (pid=%d)", os.getpid())
 		yield
 	finally:
+		shutdown_signal_event.set()
+		_restore_signal_handlers(previous_signal_handlers)
 		await _do_shutdown(ctx)
 
 def create_app() -> FastAPI:
@@ -1309,6 +1370,7 @@ def create_app() -> FastAPI:
 	app.state.tsdb_dir = cfg.tsdb_dir
 	app.state.dns_dir = cfg.dns_dir
 	app.state.peer_connection_state = collections.OrderedDict()
+	app.state.shutdown_signal_event = None
 	app.state.key_mismatch = False  # Set to True if SECRET_KEY doesn't match DB encryption
 	
 	# ─── MIDDLEWARE ──────────────────────────────────────────

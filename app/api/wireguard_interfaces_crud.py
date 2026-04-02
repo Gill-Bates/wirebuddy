@@ -784,7 +784,7 @@ async def delete_interface(
 		for peer in peers:
 			public_key = peer["public_key"]
 			try:
-				await run_in_threadpool(tsdb.delete_peer_data, tsdb_dir, public_key)
+				await run_in_threadpool(tsdb.delete_peer_data, tsdb_dir, public_key, force=True)
 			except Exception:
 				_log.exception("Failed to delete TSDB data for peer %s...", public_key[:8])
 

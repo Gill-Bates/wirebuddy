@@ -3,6 +3,17 @@
 {% block title %}Peers – WireBuddy{% endblock %}
 
 {% block extra_css %}
+<script>
+    (function () {
+        try {
+            if (window.localStorage.getItem('wb_peers_hide_nodes') === 'true') {
+                document.documentElement.classList.add('wb-peers-hide-nodes');
+            }
+        } catch (_) {
+            // Ignore storage access failures and fall back to the default visible state.
+        }
+    })();
+</script>
 <style>
     /* CSS variables for reusable dimensions */
     :root {
@@ -19,6 +30,10 @@
 
     .peer-row-node-tunnel:hover {
         background-color: var(--bs-secondary-bg) !important;
+    }
+
+    html.wb-peers-hide-nodes .peers-table tr[data-node-tunnel="true"] {
+        display: none;
     }
 
     /* Table layout */
@@ -55,7 +70,8 @@
     /* Keep action buttons on one line */
     .peers-table td.peer-actions-cell {
         white-space: nowrap;
-        min-width: 180px;
+        /* UI-Lint: 5 buttons × 38px + 4 gaps × 4px = 206px minimum */
+        min-width: 210px;
     }
 
     .peers-table td.peer-actions-cell .d-flex {
@@ -81,8 +97,9 @@
 
     /* Compact action buttons for table rows (v1.3.3 style) */
     .peers-table td.peer-actions-cell .btn {
-        min-width: 0;
-        min-height: 0;
+        /* Accessibility: 38px touch target (UI-Lint CLICK_TARGET_MIN_SIZE_PX) */
+        min-width: 38px;
+        min-height: 38px;
         padding: 0.2rem 0.35rem;
         display: inline-flex;
         align-items: center;
@@ -243,15 +260,10 @@
         }
     }
 
-    /* Large desktop (1200px-1399px): hide Routing column to prevent overlap */
+    /* Large desktop (1200px-1399px): allow routing badges to wrap */
     @media (min-width: 992px) and (max-width: 1399.98px) {
-        .peers-table th.peer-col-routing,
-        .peers-table td.peer-routing {
-            display: none;
-        }
-
-        .peer-name-meta {
-            display: flex;
+        .peer-routing-badges {
+            max-width: 140px;
         }
     }
 
@@ -404,29 +416,23 @@
         font-size: 16px;
     }
 
-    /* Scrollable peers container */
+    /* Peers container: page-level scrolling only (no inner scroll) */
     .peers-scroll-container {
-        max-height: 65vh;
-        overflow-y: auto;
+        max-height: none;
+        overflow: visible;
         overflow-x: hidden;
     }
 
-    .peers-scroll-container::-webkit-scrollbar {
-        width: 8px;
-    }
-
-    .peers-scroll-container::-webkit-scrollbar-track {
-        background: var(--bs-secondary-bg);
-        border-radius: 4px;
-    }
-
-    .peers-scroll-container::-webkit-scrollbar-thumb {
-        background: var(--bs-border-color);
-        border-radius: 4px;
-    }
-
-    .peers-scroll-container::-webkit-scrollbar-thumb:hover {
-        background: var(--bs-secondary-color);
+    /* Sticky table header (desktop only, page scroll) */
+    @media (min-width: 768px) {
+        .peers-table thead th {
+            position: sticky;
+            top: 0;
+            z-index: 5;
+            background: var(--bs-body-bg);
+            background-clip: padding-box;
+            box-shadow: 0 1px 0 var(--bs-border-color);
+        }
     }
 
     .peer-row-hidden {
@@ -441,11 +447,6 @@
 
     /* Mobile-optimized peers rows */
     @media (max-width: 767.98px) {
-        .table-responsive {
-            overflow-x: hidden;
-            overflow-y: visible;
-        }
-
         .peers-list-toolbar {
             flex-direction: column;
             align-items: stretch !important;
@@ -457,7 +458,7 @@
         }
 
         .peers-scroll-container {
-            max-height: 60vh;
+            max-height: none;
         }
 
         .peers-table {
@@ -560,6 +561,10 @@
         .peers-table td[data-label="VPN Address"] {
             grid-area: vpn;
             align-self: center;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            white-space: nowrap;
         }
 
         /* Hairline removed — VPN and Client IP are stacked now */
@@ -567,7 +572,7 @@
         .peers-table td.peer-client-ip {
             grid-area: clientip;
             align-self: center;
-            display: flex;
+            display: flex !important; /* Override d-none d-xl-table-cell for mobile grid layout */
             flex-direction: column;
             justify-content: center;
             margin-top: 0.35rem;
@@ -615,8 +620,9 @@
 
         /* Compact action buttons (mobile) */
         .peers-table td.peer-actions-cell .btn {
-            min-width: 0;
-            min-height: 0;
+            /* Maintain 38px touch targets on mobile (UI-Lint compliance) */
+            min-width: 38px;
+            min-height: 38px;
             padding: 0.2rem 0.35rem;
             display: inline-flex;
             align-items: center;
@@ -633,10 +639,15 @@
             word-break: break-all;
         }
 
-        /* VPN address: allow wrapping for long IPv6 */
+        /* VPN address: keep IPv4 and IPv6 on one line in mobile cards */
+        .peers-table td[data-label="VPN Address"] br {
+            display: none;
+        }
+
         .peers-table td[data-label="VPN Address"] code {
-            white-space: normal;
-            overflow-wrap: anywhere;
+            white-space: nowrap;
+            word-break: normal;
+            overflow-wrap: normal;
         }
 
         .peer-client-ip-meta {
@@ -746,7 +757,6 @@
             </div>
         </div>
         <div class="peers-scroll-container" id="peers-scroll-container">
-        <div class="table-responsive">
             <table class="table table-hover align-middle mb-0 peers-table">
                 <thead>
                     <tr>
@@ -754,8 +764,8 @@
                         <th>VPN Address</th>
                         <th class="peer-col-routing">Routing</th>
                         <th class="peer-col-interface">Interface</th>
-                        <th>Last Seen</th>
-                        <th>Client&nbsp;IP</th>
+                        <th class="d-none d-xl-table-cell">Last Seen</th>
+                        <th class="d-none d-xl-table-cell">Client&nbsp;IP</th>
                         <th class="text-nowrap">Status</th>
                         <th></th>
                     </tr>
@@ -778,6 +788,9 @@
                                     <span class="peer-name-text">{{ peer['name'] or 'Unnamed' }}</span>
                                 </div>
                                 <div class="peer-name-meta d-lg-none">
+                                    {% if peer['node_name'] %}
+                                    <span>{{ peer['node_name'] }}</span>
+                                    {% endif %}
                                     <span>{{ routing_label }}</span>
                                     {% if peer['client_isolation'] %}
                                     <span>Client Isolation</span>
@@ -801,6 +814,9 @@
                         </td>
                         <td data-label="Routing" class="peer-routing">
                             <div class="peer-routing-badges">
+                            {% if peer['node_name'] %}
+                            <span class="badge bg-secondary">{{ peer['node_name'] }}</span>
+                            {% endif %}
                             <span class="badge bg-secondary">{{ routing_label }}</span>
                             {% if peer['client_isolation'] %}
                             <span class="badge bg-secondary">Client Isolation</span>
@@ -808,10 +824,10 @@
                             </div>
                         </td>
                         <td data-label="Interface" class="peer-interface">{{ peer['interface'] }}</td>
-                        <td data-label="Last Seen" class="peer-last-seen text-nowrap">
+                        <td data-label="Last Seen" class="d-none d-xl-table-cell peer-last-seen text-nowrap">
                             <span class="{{ peer['last_seen_class'] }}">{{ peer['last_seen_text'] }}</span>
                         </td>
-                        <td data-label="Client IP" class="peer-client-ip">
+                        <td data-label="Client IP" class="d-none d-xl-table-cell peer-client-ip">
                             {% if peer['last_client_ip_display'] %}
                             <div class="peer-client-ip-stack">
                                 <div class="peer-client-ip-main">
@@ -912,7 +928,6 @@
                     {% endfor %}
                 </tbody>
             </table>
-        </div>
         <div class="peers-no-results d-none" id="peers-no-results">
             <span class="material-icons mb-2" style="font-size: 2.5rem;">search_off</span>
             <div>No peers match your search</div>
@@ -2673,17 +2688,24 @@
     const noResultsEl = document.getElementById('peers-no-results');
     const peersTableEl = document.getElementById('peers-table');
     const hideNodesCheckbox = document.getElementById('peers-hide-nodes');
+    const rootEl = document.documentElement;
     const HIDE_NODES_KEY = 'wb_peers_hide_nodes';
     let searchDebounceTimer = null;
 
+    function syncHideNodesRootClass(enabled) {
+        rootEl?.classList.toggle('wb-peers-hide-nodes', Boolean(enabled));
+    }
+
     // Restore "Hide Nodes" preference from localStorage
     if (hideNodesCheckbox) {
-        const saved = localStorage.getItem(HIDE_NODES_KEY);
-        if (saved === 'true') {
-            hideNodesCheckbox.checked = true;
-        }
+        hideNodesCheckbox.checked = rootEl?.classList.contains('wb-peers-hide-nodes') || false;
         hideNodesCheckbox.addEventListener('change', () => {
-            localStorage.setItem(HIDE_NODES_KEY, hideNodesCheckbox.checked ? 'true' : 'false');
+            syncHideNodesRootClass(hideNodesCheckbox.checked);
+            try {
+                localStorage.setItem(HIDE_NODES_KEY, hideNodesCheckbox.checked ? 'true' : 'false');
+            } catch (_) {
+                // Ignore storage access failures; the in-memory state still updates the UI.
+            }
             filterPeers(searchInput?.value || '');
         });
     }
@@ -2741,12 +2763,13 @@
 
         // Show/hide no results message
         if (noResultsEl && peersTableEl) {
+            const peersTableWrap = peersTableEl.closest('table');
             if (visibleCount === 0 && peerRows.length > 0) {
                 noResultsEl.classList.remove('d-none');
-                peersTableEl.closest('.table-responsive')?.classList.add('d-none');
+                peersTableWrap?.classList.add('d-none');
             } else {
                 noResultsEl.classList.add('d-none');
-                peersTableEl.closest('.table-responsive')?.classList.remove('d-none');
+                peersTableWrap?.classList.remove('d-none');
             }
         }
 

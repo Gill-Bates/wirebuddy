@@ -138,6 +138,52 @@ Apply rules to specific clients using IP/CIDR scope:
 
 Custom rules text is limited to 100 KB.
 
+## Dual-Stack Configuration
+
+### IPv4 and IPv6 Support
+
+WireBuddy's DNS resolver (Unbound) is fully dual-stack capable, supporting both IPv4 and IPv6 queries.
+
+### Upstream Server Configuration
+
+Specify both IPv4 and IPv6 upstream servers:
+
+```
+1.1.1.1@853#cloudflare-dns.com
+2606:4700:4700::1111@853#cloudflare-dns.com
+```
+
+### Interface Dual-Stack
+
+Configure WireGuard interfaces with both IPv4 and IPv6:
+
+**Settings → Interfaces → [Interface Name]**
+
+```
+Address: 10.8.0.1/24
+IPv6 Address: fd42::1/64
+DNS Servers: <IPv4> and <IPv6> addresses
+```
+
+### Client Dual-Stack
+
+Peers can use both IPv4 and IPv6:
+
+```ini
+[Peer]
+AllowedIPs = 0.0.0.0/0, ::/0
+Address = 10.8.0.2/32, fd42::2/128
+```
+
+### Dual-Stack Resolution
+
+The DNS resolver handles:
+
+- IPv4 (A) record queries over IPv6 upstreams
+- IPv6 (AAAA) record queries over IPv4 upstreams
+- Happy eyeballs (RFC 8305) for client connections
+- Fallback to IPv4 if IPv6 is unavailable
+
 ## DNSSEC Configuration
 
 ### Enable DNSSEC
@@ -193,11 +239,26 @@ Immediately delete all stored DNS query data.
 
 ### Storage Location
 
-Query logs are stored in JSONL format:
+DNS data uses dual storage:
+
+- **Raw query logs** in JSONL format for the log viewer and troubleshooting
+- **Trend aggregates** in the TSDB for fast chart rendering
+
+Raw query logs are stored at:
 
 ```
 /app/data/dns/queries/
 ```
+
+Aggregated DNS trend metrics are stored under the TSDB root in the `dns/` series directory:
+
+- `queries_total.jsonl` — total DNS queries per minute bucket
+- `queries_blocked.jsonl` — blocked DNS queries per minute bucket
+
+The UI computes block rate from these raw counters, which is more precise than storing pre-computed ratios.
+
+!!! note
+    The DNS trend chart prefers TSDB aggregates and only falls back to JSONL scans when filtered by client or when no TSDB data exists yet.
 
 ## Ad-Blocker Mode
 

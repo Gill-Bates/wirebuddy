@@ -19,7 +19,7 @@
                         <span class="fw-semibold">Application Details</span>
                     </div>
                     <div class="card-body">
-                        <table class="table table-sm table-borderless mb-3">
+                        <table class="table table-sm table-borderless mb-0">
                             <thead class="visually-hidden">
                                 <tr>
                                     <th scope="col">Property</th>
@@ -51,17 +51,20 @@
                         </table>
 
                         <!-- Author -->
-                        <div class="pt-3 border-top author-section d-none d-lg-block">
-                            <h3 class="h6 text-muted mb-2">Author</h3>
-                            <div class="d-flex align-items-center">
-                                <span class="material-icons me-2 about-accent-icon">person</span>
-                                <div>
-                                    <strong>Gill-Bates</strong>
-                                    <br>
-                                    <a href="https://github.com/Gill-Bates/wirebuddy" target="_blank" rel="noopener"
-                                        class="text-decoration-none small">
-                                        https://github.com/Gill-Bates/wirebuddy
-                                    </a>
+                        <div class="author-section d-none d-lg-block">
+                            <div class="about-divider"></div>
+                            <div class="pt-3">
+                                <h3 class="h6 text-muted mb-2">Author</h3>
+                                <div class="d-flex align-items-center">
+                                    <span class="material-icons me-2 about-accent-icon">person</span>
+                                    <div>
+                                        <strong>Gill-Bates</strong>
+                                        <br>
+                                        <a href="https://github.com/Gill-Bates/wirebuddy" target="_blank" rel="noopener"
+                                            class="text-decoration-none small">
+                                            https://github.com/Gill-Bates/wirebuddy
+                                        </a>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -222,14 +225,14 @@
 
         .about-top-row > .col-lg-4:not(:nth-child(2)) > .card,
         .about-top-row > .col-lg-4:nth-child(2) > .about-update-card {
-            flex: 1;
+            flex: 0 0 auto;
             display: flex;
             flex-direction: column;
             min-height: 0;
         }
 
         .about-top-row > .col-lg-4:nth-child(2) > .about-doc-card {
-            flex: 0 0 auto;
+            flex: 1 1 auto;
         }
 
         .about-deps-col .card-body {
@@ -253,13 +256,14 @@
         padding: 0.5rem 1rem 0.75rem;
     }
 
+    /* Reduce bottom padding to avoid gap after last table row */
+    .about-update-card .card-body {
+        padding-bottom: 0.5rem;
+    }
+
     @media (max-width: 991.98px) {
         .about-doc-card {
             margin-top: var(--wb-space-3);
-        }
-
-        .about-update-card .card-body {
-            padding-bottom: 0.5rem;
         }
 
         .about-doc-card .card-body {
@@ -288,10 +292,19 @@
 
     .about-changelog-col .card-body {
         min-height: 0;
+        max-height: min(34rem, 60vh);
+        overflow-y: auto;
+        scrollbar-gutter: stable;
     }
 
     .about-accent-icon {
         color: var(--about-accent-text);
+    }
+
+    .about-divider {
+        height: 1px;
+        background-color: var(--bs-border-color);
+        margin: 1rem 0;
     }
 
     /* Changelog markdown styling */
@@ -331,6 +344,23 @@
         margin-top: 1rem;
         border-top: 1px solid var(--bs-border-color);
         padding-top: 0.75rem;
+    }
+
+    .changelog-content details[open] {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    .changelog-details-body {
+        min-height: 0;
+    }
+
+    .changelog-content details[open] .changelog-details-body {
+        overflow-y: auto;
+        max-height: min(24rem, 40vh);
+        padding-right: 0.25rem;
+        scrollbar-gutter: stable;
     }
 
     .changelog-content summary {
@@ -536,10 +566,41 @@
         container.appendChild(alert);
     }
 
+    function initChangelogDetailsScroll() {
+        document.querySelectorAll('.changelog-content details').forEach((details) => {
+            const summary = details.querySelector('summary');
+            if (!summary) return;
+
+            let body = details.querySelector('.changelog-details-body');
+            if (!body) {
+                body = document.createElement('div');
+                body.className = 'changelog-details-body';
+
+                let node = summary.nextSibling;
+                while (node) {
+                    const next = node.nextSibling;
+                    body.appendChild(node);
+                    node = next;
+                }
+
+                if (body.childNodes.length) {
+                    details.appendChild(body);
+                }
+            }
+
+            details.addEventListener('toggle', () => {
+                if (details.open && body) {
+                    body.scrollTop = 0;
+                }
+            });
+        });
+    }
+
     // Initialize
     const checkBtn = document.getElementById('btn-check-updates');
     const isAdmin = checkBtn?.dataset?.isAdmin === 'true';
     checkBtn?.addEventListener('click', () => checkForUpdates(isAdmin, true));
+    initChangelogDetailsScroll();
     
     // Auto-check on page load (silent network errors)
     checkForUpdates(false, false);

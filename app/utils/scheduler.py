@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import random
 from dataclasses import dataclass
@@ -39,7 +40,7 @@ class _Job:
 	"""A scheduled repeating job (internal implementation detail)."""
 	name: str
 	interval_seconds: float
-	func: Callable[[], Awaitable[None]]
+	func: Callable[[], object]
 	run_on_start: bool = False
 	initial_delay: float = 0.0
 	timeout: float | None = None  # Per-job execution timeout (None = no limit)
@@ -77,7 +78,7 @@ class Scheduler:
 		self,
 		name: str,
 		interval_seconds: float,
-		func: Callable[[], Awaitable[None]],
+		func: Callable[[], object],
 		*,
 		run_on_start: bool = False,
 		initial_delay: float = 0.0,
@@ -89,21 +90,19 @@ class Scheduler:
 		Args:
 			name: Unique identifier for the job
 			interval_seconds: Seconds between executions (minimum 1.0)
-			func: Async callable to execute
+			func: Callable that must return an awaitable when invoked
 			run_on_start: Execute once immediately on start (after initial_delay)
-			initial_delay: Seconds to wait before first execution (requires run_on_start=True)
+			initial_delay: Seconds to wait before first execution
 			timeout: Per-execution timeout in seconds (None = no limit)
 			jitter_pct: Random jitter as percentage of interval (0.0 to 0.5, e.g. 0.1 = ±10%)
 		
 		Raises:
 			RuntimeError: If scheduler is already running
-			ValueError: If name is duplicate, interval is invalid, or initial_delay without run_on_start
-			TypeError: If func is not an async callable
+			ValueError: If name is duplicate or interval/timing inputs are invalid
+			TypeError: If func is not callable
 		"""
 		if not callable(func):
 			raise TypeError(f"func must be callable, got {type(func).__name__}")
-		if not asyncio.iscoroutinefunction(func):
-			raise TypeError(f"func must be an async function, got {type(func).__name__}")
 		
 		if self._started:
 			raise RuntimeError(f"Cannot add job {name!r} while scheduler is running")
@@ -118,9 +117,6 @@ class Scheduler:
 		
 		if initial_delay < 0:
 			raise ValueError(f"initial_delay must be ≥ 0, got {initial_delay}")
-		
-		if initial_delay > 0 and not run_on_start:
-			raise ValueError("initial_delay requires run_on_start=True")
 		
 		if not 0.0 <= jitter_pct <= 0.5:
 			raise ValueError(f"jitter_pct must be between 0.0 and 0.5, got {jitter_pct}")
@@ -167,7 +163,11 @@ class Scheduler:
 		
 		for job in self._jobs.values():
 			self._tasks[job.name] = asyncio.create_task(self._run_loop(job))
-			_log.debug("SCHEDULER job=%s interval=%ds started", job.name, job.interval_seconds)
+			_log.debug("SCHEDULER job=%s interval=%.1fs started", job.name, job.interval_seconds)
+
+	async def _await_cancelled_tasks(self, tasks: list[asyncio.Task]) -> None:
+		"""Drain cancelled tasks to avoid pending-task warnings."""
+		await asyncio.gather(*tasks, return_exceptions=True)
 
 	def stop(self) -> None:
 		"""Cancel all running jobs immediately (non-graceful).
@@ -185,11 +185,21 @@ class Scheduler:
 		
 		if self._stop_event is not None:
 			self._stop_event.set()
-		
+
+		cancelled_tasks: list[asyncio.Task] = []
 		for name, task in self._tasks.items():
 			if not task.done():
 				task.cancel()
+				cancelled_tasks.append(task)
 				_log.info("SCHEDULER job=%s stopped", name)
+
+		if cancelled_tasks:
+			try:
+				loop = asyncio.get_running_loop()
+			except RuntimeError:
+				loop = None
+			if loop is not None:
+				loop.create_task(self._await_cancelled_tasks(cancelled_tasks))
 		
 		self._tasks.clear()
 		self._stop_event = None
@@ -232,9 +242,10 @@ class Scheduler:
 
 	async def _run_loop(self, job: _Job) -> None:
 		"""Internal loop that executes a job at its interval with retry/backoff."""
-		# Defense: _stop_event should always be set by start(), but assert for safety
-		assert self._stop_event is not None, "Bug: _run_loop called without start()"
-		stop_event = self._stop_event  # Local reference to avoid repeated None-checks
+		stop_event = self._stop_event
+		if stop_event is None:
+			_log.debug("SCHEDULER job=%s exiting before start completed", job.name)
+			return
 		loop = asyncio.get_running_loop()
 		
 		def _jittered_interval() -> float:
@@ -247,7 +258,8 @@ class Scheduler:
 		consecutive_failures = 0
 		max_backoff = 300  # 5 minutes
 		initial_interval = _jittered_interval()
-		next_run = loop.time() + initial_interval
+		first_interval = job.initial_delay if job.initial_delay > 0 and not job.run_on_start else initial_interval
+		next_run = loop.time() + first_interval
 		
 		try:
 			# Initial execution if requested
@@ -284,7 +296,7 @@ class Scheduler:
 				# No run_on_start: log when first execution is scheduled
 				_log.info(
 					"SCHEDULER job=%s first run scheduled in %.0fs (%.1fh)",
-					job.name, initial_interval, initial_interval / 3600,
+					job.name, first_interval, first_interval / 3600,
 				)
 
 			while self._started and not stop_event.is_set():
@@ -328,18 +340,30 @@ class Scheduler:
 					# Schedule next attempt after backoff
 					# Keep original rhythm by computing next regular slot after backoff
 					backoff_until = now + backoff
-					while next_run < backoff_until:
-						next_run += job.interval_seconds
+					if next_run < backoff_until:
+						skips = max(1, int((backoff_until - next_run) / job.interval_seconds) + 1)
+						next_run += skips * job.interval_seconds
 					
 					if job.jitter_pct > 0:
 						jitter_range = job.interval_seconds * job.jitter_pct
-						next_run += random.uniform(-jitter_range, jitter_range)
-					next_run = max(now + _MIN_INTERVAL, next_run)
+						jitter = random.uniform(-jitter_range, jitter_range)
+						next_run = max(now + _MIN_INTERVAL, next_run + jitter)
+					else:
+						next_run = max(now + _MIN_INTERVAL, next_run)
 		
 		except asyncio.CancelledError:
 			_log.debug("SCHEDULER job=%s cancelled", job.name)
 		except Exception:
 			_log.exception("SCHEDULER job=%s fatal error in run loop", job.name)
+
+	def _create_job_awaitable(self, job: _Job) -> Awaitable[None]:
+		"""Invoke a job and validate that it returned an awaitable."""
+		result = job.func()
+		if not inspect.isawaitable(result):
+			raise TypeError(
+				f"Job {job.name!r} must return an awaitable, got {type(result).__name__}"
+			)
+		return result
 
 	async def _execute(self, job: _Job) -> bool:
 		"""Execute a single job with error handling and optional timeout.
@@ -349,17 +373,21 @@ class Scheduler:
 		"""
 		try:
 			_log.debug("SCHEDULER job=%s executing", job.name)
-			
+			awaitable = self._create_job_awaitable(job)
+
 			if job.timeout is not None:
-				await asyncio.wait_for(job.func(), timeout=job.timeout)
+				await asyncio.wait_for(awaitable, timeout=job.timeout)
 			else:
-				await job.func()
+				await awaitable
 			
 			now = datetime.now(timezone.utc)
 			job.last_success = now
 			job.last_attempt = now
 			job.run_count += 1
 			return True
+		except asyncio.CancelledError:
+			job.last_attempt = datetime.now(timezone.utc)
+			raise
 		except asyncio.TimeoutError:
 			job.last_attempt = datetime.now(timezone.utc)
 			job.fail_count += 1
@@ -383,7 +411,7 @@ class Scheduler:
 				"interval_seconds": job.interval_seconds,
 				"last_success": job.last_success.isoformat() if job.last_success else None,
 				"last_attempt": job.last_attempt.isoformat() if job.last_attempt else None,
-				"is_running": job.name in self._tasks and not self._tasks[job.name].done(),
+				"is_running": (task := self._tasks.get(job.name)) is not None and not task.done(),
 				"run_count": job.run_count,
 				"fail_count": job.fail_count,
 			}

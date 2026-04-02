@@ -191,8 +191,8 @@ small {
 /* Icon-only buttons */
 .btn-icon {
     padding: 0.3rem 0.5rem;
-    min-width: 44px;
-    min-height: 44px;
+    min-width: 38px;
+    min-height: 38px;
     display: inline-flex;
     align-items: center;
     justify-content: center;

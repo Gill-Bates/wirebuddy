@@ -88,7 +88,7 @@ jobs:
             -f docker/Dockerfile \
             .
 
-      - name: Smoke test
+      - name: Smoke test (Master mode)
         run: |
           set -euo pipefail
           
@@ -118,7 +118,7 @@ jobs:
             # Try health check with explicit timeout
             if curl -fsS --max-time 2 --retry-connrefused --retry 2 --retry-delay 1 \
                 http://127.0.0.1:${PORT}/api/system/status > /dev/null 2>&1; then
-              echo "✓ Container ready after ${i}s"
+              echo "✓ Master mode: Container ready after ${i}s"
               docker stop wirebuddy-test
               docker rm wirebuddy-test
               exit 0
@@ -135,6 +135,35 @@ jobs:
           docker stop wirebuddy-test 2>/dev/null || true
           docker rm -f wirebuddy-test 2>/dev/null || true
           exit 1
+
+      - name: Smoke test (Node mode)
+        run: |
+          set -euo pipefail
+          
+          # Test 1: Verify node daemon module can be imported (catches syntax errors)
+          echo "Testing node daemon module import..."
+          docker run --rm wirebuddy:test \
+            python -c "from app.node.daemon import run, main; print('✓ Node daemon module imports OK')"
+          
+          # Test 2: Run node mode without enrollment token — should exit with code 1
+          # This validates the startup path executes without crashes
+          echo "Testing node mode startup (expecting graceful exit)..."
+          EXIT_CODE=0
+          LOGS=$(docker run --rm \
+            -e SERVER_MODE=node \
+            -e LOG_LEVEL=DEBUG \
+            wirebuddy:test 2>&1) || EXIT_CODE=$?
+          
+          # Verify expected behavior: exit 1 with "WIREBUDDY_ENROLLMENT_TOKEN is required"
+          if [ $EXIT_CODE -eq 1 ] && echo "$LOGS" | grep -q "WIREBUDDY_ENROLLMENT_TOKEN is required"; then
+            echo "✓ Node mode: Startup path OK (expected exit: missing enrollment token)"
+          else
+            echo "✗ Node mode: Unexpected behavior"
+            echo "=== Exit code: $EXIT_CODE (expected: 1) ==="
+            echo "=== Logs ==="
+            echo "$LOGS"
+            exit 1
+          fi
 
       - name: Trivy scan Python dependencies (requirements.txt)
         uses: aquasecurity/trivy-action@0.35.0

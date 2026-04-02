@@ -240,17 +240,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
 			"""
 		)
 
-		# App lock table for leader election (multi-worker safety)
-		conn.execute(
-			"""
-			CREATE TABLE IF NOT EXISTS app_lock (
-				id INTEGER PRIMARY KEY CHECK (id = 1),
-				pid INTEGER NOT NULL,
-				acquired_at timestamp NOT NULL
-			)
-			"""
-		)
-
 		# Remote nodes (Master-Node architecture)
 		conn.execute(
 			"""
@@ -266,11 +255,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				last_seen timestamp,
 				enrolled_at timestamp,
 				created_at timestamp NOT NULL,
-				config_version TEXT,
+							config_version TEXT,
 				metadata TEXT,
 				tunnel_peer_id INTEGER REFERENCES peers(id) ON DELETE SET NULL,
 				last_metric_seq INTEGER,
-				sse_connected_at TIMESTAMP
+				sse_connected_at TIMESTAMP,
+				pending_command TEXT
 			)
 			"""
 		)
@@ -341,9 +331,20 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 		_log.info("Migrating nodes table: adding sse_connected_at for multi-worker SSE tracking")
 		conn.execute("ALTER TABLE nodes ADD COLUMN sse_connected_at TIMESTAMP")
 
+	# Migration: Add pending_command to nodes (for multi-worker command delivery)
+	if "pending_command" not in nodes_columns:
+		_log.info("Migrating nodes table: adding pending_command for multi-worker command delivery")
+		conn.execute("ALTER TABLE nodes ADD COLUMN pending_command TEXT")
+
 	# Migration: Add name UNIQUE constraint to nodes (idempotent — fails silently if already exists)
 	try:
 		conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_name_unique ON nodes(name)")
+	except sqlite3.OperationalError:
+		pass  # Index may already exist if this is a fresh schema
+
+	# Migration: Add FQDN UNIQUE constraint to nodes
+	try:
+		conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_fqdn_unique ON nodes(fqdn)")
 	except sqlite3.OperationalError:
 		pass  # Index may already exist if this is a fresh schema
 

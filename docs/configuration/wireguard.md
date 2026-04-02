@@ -2,6 +2,48 @@
 
 Advanced WireGuard configuration options in WireBuddy.
 
+## Bridge Mode
+
+### Enable Bridge Mode
+
+**Settings → Network Settings → Bridge Mode**
+
+Bridge mode allows WireBuddy to function as a network bridge, connecting VPN clients to your local network instead of routing through the server.
+
+**Typical Uses:**
+
+- Remote site-to-site VPN connections
+- Local network access for remote workers
+- IoT device bridging
+- Non-standard network topologies
+
+### Bridge Mode with Alternative Port
+
+When running multiple services on the same server, WireBuddy can use an alternative port:
+
+**Settings → General → Alternative WireGuard Port**
+
+Configuration:
+
+1. Keep **Bridge Mode** enabled
+2. Set **Alternative Port** (default: 51820)
+3. Example: `51821` for multiple instances
+4. Ensure port is open in firewall:
+
+```bash
+sudo ufw allow 51821/udp comment 'WireGuard Alternative'
+```
+
+**Limitations:**
+
+- Bridge mode disables some routing features
+- DNS may need manual configuration
+- MTU optimization becomes manual
+- PostUp/PostDown commands must be adjusted
+
+!!! warning "Bridge Mode Considerations"
+    Bridge mode enables transparent network bridging but limits firewall and NAT capabilities. Use standard routing mode unless bridging is specifically required for your network topology.
+
 ## Interface Configuration
 
 ### PostUp / PostDown Commands

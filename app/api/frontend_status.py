@@ -34,6 +34,7 @@ from ..dns import ingestion as dns_ingestion
 from ..dns import unbound
 from ..utils.config import get_config
 from ..utils.deps import get_conn
+from ..utils.formatting import format_optional_bandwidth_mbit
 from ..utils.network import parse_ip
 from ..utils.rate_limit import RATE_LIMIT_DEFAULT, limiter
 from .auth import _get_client_ip, get_current_user_optional
@@ -622,7 +623,6 @@ def _format_speedtest_server(value: object) -> str:
 		pass
 	return text
 
-
 def _latest_speedtest_check() -> dict[str, str]:
 	"""Build a health-card payload from the latest stored speedtest result."""
 	from .speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
@@ -662,10 +662,12 @@ def _latest_speedtest_check() -> dict[str, str]:
 		upload = data.get("upload_mbit")
 		rtt = data.get("rtt_ms")
 		mono_parts: list[str] = []
-		if isinstance(download, (int, float)):
-			mono_parts.append(f"{download:.2f} Mbit/s down")
-		if isinstance(upload, (int, float)):
-			mono_parts.append(f"{upload:.2f} Mbit/s up")
+		download_label = format_optional_bandwidth_mbit(download, gbit_digits=2, mbit_digits=2)
+		upload_label = format_optional_bandwidth_mbit(upload, gbit_digits=2, mbit_digits=2)
+		if download_label:
+			mono_parts.append(f"{download_label} down")
+		if upload_label:
+			mono_parts.append(f"{upload_label} up")
 		if isinstance(rtt, (int, float)):
 			mono_parts.append(f"{rtt:.2f} ms RTT")
 		mono_parts.append(str(html_escape(server_label)))

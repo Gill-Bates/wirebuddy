@@ -76,18 +76,18 @@ Options:
 
 Default: `0.0.0.0`
 
-### WORKERS
+### UVICORN_WORKERS
 
 Number of Uvicorn worker processes.
 
 ```bash
-WORKERS=4
+UVICORN_WORKERS=1
 ```
 
-Default: `1` (automatic for Docker)
+Default: `1`
 
-!!! tip
-    Set to number of CPU cores for production: `WORKERS=$(nproc)`
+WireBuddy web mode is single-worker only. Values greater than `1` are not
+supported and are forced back to `1` by the Docker entrypoint.
 
 ### SERVER_MODE
 

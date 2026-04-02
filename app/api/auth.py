@@ -6,13 +6,11 @@
 
 """Authentication API routes and dependencies.
 
-WARNING: This module uses in-memory caches (_mfa_challenge_cache,
-_recovery_download_cache) that are per-process. Running with multiple
-Uvicorn workers (--workers N where N > 1) will cause intermittent MFA
-failures as challenges stored by one worker won't be visible to others.
+WireBuddy web mode runs single-worker only.
 
-For production with >1 worker, migrate caches to a shared store (Redis,
-database table) or enforce --workers 1 as a hard requirement.
+This module keeps MFA and recovery-download state in per-process memory.
+Starting Uvicorn with ``--workers > 1`` would make these caches diverge and
+cause intermittent authentication failures.
 """
 
 from __future__ import annotations

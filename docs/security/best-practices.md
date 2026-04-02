@@ -78,12 +78,70 @@ Expiration: 90 days (optional, for compliance)
 
 === "Caddy (Automatic HTTPS)"
     ```caddyfile
+    # Production-ready Caddyfile (included in repository)
     vpn.example.com {
-        reverse_proxy localhost:8000
+
+        # Common proxy settings (reused)
+        (proxy_common) {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-Port 443
+            header_up X-Forwarded-Host {host}
+
+            transport http {
+                keepalive 30s
+            }
+        }
+
+        # SSE endpoint: disable buffering for real-time event streaming
+        @sse path /api/nodes/events
+        reverse_proxy @sse localhost:8000 {
+            import proxy_common
+            flush_interval -1
+        }
+
+        # Default reverse proxy
+        reverse_proxy localhost:8000 {
+            import proxy_common
+        }
+
+        # Compression
+        encode gzip
+
+        # Cache static assets (1 year)
+        @static path /static/*
+        header @static Cache-Control "public, max-age=31536000, immutable"
+
+        # Security headers
+        header {
+            Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+            X-Content-Type-Options nosniff
+            X-Frame-Options SAMEORIGIN
+            Referrer-Policy strict-origin-when-cross-origin
+            -Server
+            -X-Powered-By
+        }
+
+        # Request body limit
+        request_body {
+            max_size 100MB
+        }
+
+        # Logging
+        log {
+            output file /var/log/caddy/access.log {
+                roll_size 10mb
+            }
+        }
     }
     ```
     
-    Caddy handles SSL automatically.
+    Caddy handles SSL automatically. The configuration above includes:
+    
+    - **SSE support** for real-time node events (`flush_interval -1`)
+    - **Security headers** (HSTS, X-Frame-Options, CSP)
+    - **Static asset caching** for optimal performance
+    - **Request body limits** (100MB for backups)
+    - **Access logging** with automatic rotation
 
 === "Nginx + Certbot"
     ```nginx
@@ -91,18 +149,59 @@ Expiration: 90 days (optional, for compliance)
         listen 443 ssl http2;
         server_name vpn.example.com;
         
+        # SSL Configuration
         ssl_certificate /etc/letsencrypt/live/vpn.example.com/fullchain.pem;
         ssl_certificate_key /etc/letsencrypt/live/vpn.example.com/privkey.pem;
-        sl_protocols TLSv1.2 TLSv1.3;
+        ssl_protocols TLSv1.2 TLSv1.3;
         ssl_ciphers HIGH:!aNULL:!MD5;
         
+        # Security Headers
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options SAMEORIGIN always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
+        
+        # Request body limit
+        client_max_body_size 100M;
+        
+        # SSE endpoint: disable buffering for real-time events
+        location /api/nodes/events {
+            proxy_pass http://localhost:8000;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_http_version 1.1;
+            proxy_set_header Connection '';
+            proxy_buffering off;
+            proxy_cache off;
+            chunked_transfer_encoding off;
+        }
+        
+        # Static assets: aggressive caching
+        location /static/ {
+            proxy_pass http://localhost:8000;
+            proxy_set_header Host $host;
+            add_header Cache-Control "public, max-age=31536000, immutable";
+        }
+        
+        # Default location
         location / {
             proxy_pass http://localhost:8000;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
         }
+    }
+    
+    # WebSocket/SSE upgrade support
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        '' close;
     }
     ```
 

@@ -1,6 +1,5 @@
 # Git
 .git/
-.gitignore
 
 # Python
 .venv/
@@ -14,6 +13,10 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# Vendor Assets (built inside image)
+app/static/vendor/fonts/
+app/static/vendor/images/flags/
+
 # IDE
 .vscode/
 .idea/
@@ -21,8 +24,8 @@ __pycache__/
 *.swo
 
 # Environment & secrets
-.env*
-settings*.env
+.env
+.env.*
 
 # Local data
 data/
@@ -33,6 +36,7 @@ data/
 *.md
 !CHANGELOG.md
 docs/
+tools/
 
 # Build artifacts
 dist/

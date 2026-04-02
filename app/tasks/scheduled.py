@@ -19,7 +19,7 @@ import asyncio
 import logging
 import random
 import time
-from datetime import date, datetime as dt, timedelta
+from datetime import date, datetime as dt, timedelta, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -32,12 +32,23 @@ _PEER_CONNECTION_THRESHOLD = 180  # seconds
 _SPEEDTEST_NIGHT_WINDOW_START_HOUR = 2
 _SPEEDTEST_NIGHT_WINDOW_END_HOUR = 4
 _SPEEDTEST_RETRY_DELAY_MINUTES = 30
+_SPEEDTEST_MIN_RUNTIME_SECONDS = 300.0
+_SPEEDTEST_EXECUTION_TIMEOUT_SECONDS = 600.0
 _WG_CHECK_TIMEOUT_SECONDS = 5.0
 _PEER_STATE_MAX_SIZE = 100_000
 
 
 def _evict_peer_state_entries(peer_connection_state) -> int:
-	"""Evict oldest peer state entries, preferring disconnected peers."""
+	"""Evict oldest peer state entries, preferring disconnected peers.
+	
+	Requires peer_connection_state to support OrderedDict interface
+	(move_to_end, popitem with last= parameter).
+	"""
+	# Defensive check for OrderedDict interface
+	if not hasattr(peer_connection_state, "move_to_end"):
+		_log.warning("peer_connection_state does not support move_to_end (not an OrderedDict)")
+		return 0
+	
 	evict_target = _PEER_STATE_MAX_SIZE // 10
 	evicted = 0
 	disconnected_keys = [
@@ -49,7 +60,10 @@ def _evict_peer_state_entries(peer_connection_state) -> int:
 			evicted += 1
 
 	while evicted < evict_target and peer_connection_state:
-		peer_connection_state.popitem(last=False)
+		try:
+			peer_connection_state.popitem(last=False)
+		except KeyError:
+			break
 		evicted += 1
 
 	return evicted
@@ -68,8 +82,9 @@ async def _sleep_interruptible(seconds: float, chunk_size: float = 60.0) -> None
 	"""
 	remaining = seconds
 	while remaining > 0:
-		await asyncio.sleep(min(chunk_size, remaining))
-		remaining -= chunk_size
+		sleep_time = min(chunk_size, remaining)
+		await asyncio.sleep(sleep_time)
+		remaining -= sleep_time
 
 
 async def update_blocklists(ctx: main.LifespanContext) -> None:
@@ -142,6 +157,8 @@ async def maintain_tsdb(ctx: main.LifespanContext) -> None:
 			ctx.cfg.dns_dir,
 			dns_retention_days,
 		)
+		stats = stats or {}
+		dns_retention = dns_retention or {}
 		_log.info(
 			"TSDB_MAINTENANCE series=%d rotated=%d pruned=%d dns_deleted=%d dns_remaining=%d dns_days=%d speedtest_days=%d",
 			stats.get("series", 0),
@@ -189,15 +206,15 @@ async def sample_tsdb_metrics(ctx: main.LifespanContext) -> None:
 		for public_key, (rx, tx, latest_handshake) in peer_counters.items():
 			if latest_handshake > 0:
 				# Detect connection state changes
-				is_connected = (now - latest_handshake) < _PEER_CONNECTION_THRESHOLD
+				handshake_age = max(0.0, now - latest_handshake)
+				is_connected = handshake_age < _PEER_CONNECTION_THRESHOLD
 				was_connected = ctx.peer_connection_state.get(public_key, False)
 
 				# Log every active handshake at DEBUG level for visibility
 				if is_connected:
-					handshake_age = int(now - latest_handshake)
 					_log.debug(
 						"PEER_HANDSHAKE public_key=%s handshake_age=%ds rx=%d tx=%d",
-						public_key[:16], handshake_age, rx, tx,
+						public_key[:16], int(handshake_age), rx, tx,
 					)
 
 				if is_connected != was_connected:
@@ -334,13 +351,14 @@ async def check_adblocker_timer(ctx: main.LifespanContext) -> None:
 		_log.warning("ADBLOCKER_TIMER check failed: %s", exc)
 
 
-def get_speedtest_initial_delay(tsdb_dir) -> tuple[float, float | None, bool]:
+def get_speedtest_initial_delay(db_path, tsdb_dir) -> tuple[float, float | None, bool]:
 	"""Calculate speedtest initial delay with missed-run detection.
 	
 	Reads the last run timestamp and calculates the delay to the next
 	night window. If the last run was >36h ago, this indicates missed tests.
 	
 	Args:
+		db_path: Path to the SQLite database containing speedtest scheduler metadata.
 		tsdb_dir: Path to TSDB directory containing .speedtest.last_run
 	
 	Returns:
@@ -348,13 +366,37 @@ def get_speedtest_initial_delay(tsdb_dir) -> tuple[float, float | None, bool]:
 		hours_since_last_run is None if no previous run recorded.
 		is_overdue is True if last run was >36h ago (missed at least one night).
 	"""
+	from ..db.sqlite_runtime import close_connection, connect
+	from ..db.sqlite_settings import get_speedtest_last_run_at, set_speedtest_last_run_at
 	from pathlib import Path
 	from ..speedtest.guard import _cooldown_path, _read_last_run
 	
 	delay = _seconds_until_night_window()
-	
-	# Read last run timestamp
-	last_run_ts = _read_last_run(_cooldown_path(Path(tsdb_dir)))
+
+	def _read_last_run_from_db() -> float | None:
+		conn = connect(db_path)
+		try:
+			stored = get_speedtest_last_run_at(conn)
+			return stored.timestamp() if stored is not None else None
+		finally:
+			close_connection(conn)
+
+	def _migrate_last_run_to_db(last_run_ts: float) -> None:
+		conn = connect(db_path)
+		try:
+			set_speedtest_last_run_at(conn, dt.fromtimestamp(last_run_ts, timezone.utc))
+		finally:
+			close_connection(conn)
+
+	# Primary source is the database; legacy file remains as fallback for cooldown guard migration.
+	last_run_ts = _read_last_run_from_db()
+	if last_run_ts is None:
+		last_run_ts = _read_last_run(_cooldown_path(Path(tsdb_dir)))
+		if last_run_ts is not None:
+			try:
+				_migrate_last_run_to_db(last_run_ts)
+			except Exception as exc:
+				_log.debug("SPEEDTEST_SCHEDULER could not migrate last-run timestamp to database: %s", exc)
 	now = time.time()
 	
 	if last_run_ts is None:
@@ -381,22 +423,21 @@ def _seconds_until_night_window() -> float:
 	today = now_local.date()
 	start_today = _local_wall_clock_timestamp(today, _SPEEDTEST_NIGHT_WINDOW_START_HOUR)
 	end_today = _local_wall_clock_timestamp(today, _SPEEDTEST_NIGHT_WINDOW_END_HOUR)
-	min_test_runtime_seconds = 300.0
 
 	# Currently within night window.
 	if start_today <= now_ts < end_today:
 		remaining = max(0.0, end_today - now_ts)
-		if remaining <= min_test_runtime_seconds:
+		if remaining <= _SPEEDTEST_MIN_RUNTIME_SECONDS:
 			next_day = today + timedelta(days=1)
 			next_start = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_START_HOUR)
 			next_end = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_END_HOUR)
 			window_duration_seconds = max(0.0, next_end - next_start)
-			jitter_cap = max(0.0, window_duration_seconds - min_test_runtime_seconds)
+			jitter_cap = max(0.0, window_duration_seconds - _SPEEDTEST_MIN_RUNTIME_SECONDS)
 			jitter_seconds = random.uniform(0.0, jitter_cap) if jitter_cap > 0 else 0.0
 			return max(0.0, (next_start - now_ts) + jitter_seconds)
 
 		# Stay within the current window and leave at least 5 minutes for the test.
-		max_jitter = max(0.0, remaining - min_test_runtime_seconds)
+		max_jitter = max(0.0, remaining - _SPEEDTEST_MIN_RUNTIME_SECONDS)
 		return random.uniform(0.0, min(600.0, max_jitter))
 
 	# Calculate next window start in local wall-clock time.
@@ -409,10 +450,37 @@ def _seconds_until_night_window() -> float:
 		next_end = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_END_HOUR)
 
 	window_duration_seconds = max(0.0, next_end - next_start)
-	jitter_cap = max(0.0, window_duration_seconds - min_test_runtime_seconds)
+	jitter_cap = max(0.0, window_duration_seconds - _SPEEDTEST_MIN_RUNTIME_SECONDS)
 	jitter_seconds = random.uniform(0.0, jitter_cap) if jitter_cap > 0 else 0.0
 
 	return max(0.0, (next_start - now_ts) + jitter_seconds)
+
+
+def _speedtest_window_state(now_ts: float | None = None) -> tuple[str, float]:
+	"""Return the current speedtest window state and remaining/wait seconds.
+
+	Returns:
+		("before", wait_seconds): before 02:00 local time.
+		("inside", remaining_seconds): inside the 02:00-04:00 window with enough runtime left.
+		("closing", remaining_seconds): inside the window but with <=5 minutes remaining.
+		("after", 0.0): after the nightly window.
+	"""
+	current_ts = time.time() if now_ts is None else now_ts
+	now_local = dt.fromtimestamp(current_ts)
+	today = now_local.date()
+	start_today = _local_wall_clock_timestamp(today, _SPEEDTEST_NIGHT_WINDOW_START_HOUR)
+	end_today = _local_wall_clock_timestamp(today, _SPEEDTEST_NIGHT_WINDOW_END_HOUR)
+
+	if current_ts < start_today:
+		return "before", max(0.0, start_today - current_ts)
+
+	if current_ts < end_today:
+		remaining = max(0.0, end_today - current_ts)
+		if remaining <= _SPEEDTEST_MIN_RUNTIME_SECONDS:
+			return "closing", remaining
+		return "inside", remaining
+
+	return "after", 0.0
 
 
 async def _get_wg_peer_counters() -> dict[str, tuple[int, int, float]] | None:
@@ -430,21 +498,33 @@ async def _get_wg_peer_counters() -> dict[str, tuple[int, int, float]] | None:
 			stdout=asyncio.subprocess.PIPE,
 			stderr=asyncio.subprocess.PIPE,
 		)
-		stdout_raw, stderr_raw = await _communicate_with_timeout(
-			proc,
-			timeout_seconds=_WG_CHECK_TIMEOUT_SECONDS,
-		)
+		try:
+			stdout_raw, stderr_raw = await _communicate_with_timeout(
+				proc,
+				timeout_seconds=_WG_CHECK_TIMEOUT_SECONDS,
+			)
+		except asyncio.TimeoutError:
+			# Ensure subprocess is killed and reaped on timeout
+			proc.kill()
+			await proc.communicate()
+			_log.debug("WG_COUNTERS timeout after %ds", _WG_CHECK_TIMEOUT_SECONDS)
+			return None
 		if proc.returncode != 0:
 			return None
 		
 		stdout = (stdout_raw or b"").decode("utf-8", errors="replace")
 		if not stdout.strip():
 			return None
-		
-		return _parse_wg_dump_counters(stdout)
+
+		try:
+			return _parse_wg_dump_counters(stdout)
+		except Exception as exc:
+			_log.debug("WG_COUNTERS parse failed: %s", exc)
+			return None
 	except asyncio.CancelledError:
 		raise
-	except (asyncio.TimeoutError, FileNotFoundError, OSError, ValueError):
+	except (FileNotFoundError, OSError, ValueError) as exc:
+		_log.debug("WG_COUNTERS failed: %s", exc)
 		return None
 
 
@@ -456,10 +536,11 @@ async def _has_active_peers() -> bool:
 	
 	now = time.time()
 	for public_key, (rx, tx, latest_handshake) in peer_counters.items():
-		if latest_handshake > 0 and (now - latest_handshake) < _PEER_CONNECTION_THRESHOLD:
+		age = max(0.0, now - latest_handshake)
+		if latest_handshake > 0 and age < _PEER_CONNECTION_THRESHOLD:
 			_log.debug(
 				"SPEEDTEST_CHECK active peer detected: %s (handshake %ds ago)",
-				public_key[:16], int(now - latest_handshake)
+				public_key[:16], int(age)
 			)
 			return True
 	return False
@@ -468,7 +549,7 @@ async def _has_active_peers() -> bool:
 async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 	"""Scheduled task: run bandwidth measurement if enabled."""
 	from ..db import tsdb
-	from ..db.sqlite_settings import get_speedtest_enabled, get_speedtest_target, SPEEDTEST_SERVER_MAP, SPEEDTEST_SERVER_LIST
+	from ..db.sqlite_settings import get_speedtest_enabled, set_speedtest_last_run_at
 	from ..db.sqlite_runtime import connect, close_connection
 	from ..speedtest import (
 		DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
@@ -476,42 +557,50 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 		SpeedtestCooldownError,
 		acquire_speedtest_run_lease,
 	)
-	from ..speedtest.tester import BandwidthTester
+	from ..speedtest.tester import run_speedtest
 	from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
 	
 	try:
 		# Offload blocking SQLite calls to thread
-		def _read_speedtest_settings():
+		def _read_speedtest_enabled():
 			conn = connect(ctx.cfg.db_path)
 			try:
-				return get_speedtest_enabled(conn), get_speedtest_target(conn)
+				return get_speedtest_enabled(conn)
 			finally:
 				close_connection(conn)
 
-		async def _refresh_speedtest_settings(skip_reason: str) -> tuple[bool, str] | None:
-			enabled, target = await asyncio.to_thread(_read_speedtest_settings)
+		async def _check_enabled(skip_reason: str) -> bool:
+			enabled = await asyncio.to_thread(_read_speedtest_enabled)
 			if not enabled:
 				_log.info("SPEEDTEST_SCHEDULED skipped: %s", skip_reason)
-				return None
-			return enabled, target
+			return enabled
 		
-		settings = await _refresh_speedtest_settings("disabled")
-		if settings is None:
+		if not await _check_enabled("disabled"):
 			return
-		_, target = settings
 
-		# Wait until night window if not already there
-		wait_seconds = _seconds_until_night_window()
-		if wait_seconds > 0:
+		# Only wait when the scheduler fired slightly before the nightly window.
+		# If we already drifted past the window, run immediately instead of sleeping
+		# nearly a full day and getting cancelled by the scheduler timeout.
+		window_state, window_seconds = _speedtest_window_state()
+		if window_state == "before":
 			_log.info(
 				"SPEEDTEST_SCHEDULED waiting %.0f seconds for night window (02:00-04:00)",
-				wait_seconds
+				window_seconds
 			)
-			await _sleep_interruptible(wait_seconds)
-			settings = await _refresh_speedtest_settings("disabled during wait")
-			if settings is None:
+			await _sleep_interruptible(window_seconds)
+			if not await _check_enabled("disabled during wait"):
 				return
-			_, target = settings
+			window_state, window_seconds = _speedtest_window_state()
+
+		if window_state == "closing":
+			_log.warning(
+				"SPEEDTEST_SCHEDULED starting with only %.0f seconds left in the preferred night window",
+				window_seconds,
+			)
+		elif window_state == "after":
+			_log.warning(
+				"SPEEDTEST_SCHEDULED triggered outside the preferred 02:00-04:00 window; running immediately"
+			)
 
 		# Check for active peers; if any, defer the test
 		max_retries = 4  # Max ~2 hours of deferral within the window
@@ -523,11 +612,15 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 				"retrying in %d minutes",
 				attempt + 1, max_retries, _SPEEDTEST_RETRY_DELAY_MINUTES
 			)
-			await asyncio.sleep(_SPEEDTEST_RETRY_DELAY_MINUTES * 60)
-			settings = await _refresh_speedtest_settings("disabled during peer deferral")
-			if settings is None:
+			# Stop retrying once the preferred window has closed.
+			window_state, _ = _speedtest_window_state()
+			if window_state != "inside":
+				_log.info("SPEEDTEST_SCHEDULED window closed, stopping retries")
 				return
-			_, target = settings
+			# Use interruptible sleep to handle cancellation gracefully
+			await _sleep_interruptible(_SPEEDTEST_RETRY_DELAY_MINUTES * 60)
+			if not await _check_enabled("disabled during peer deferral"):
+				return
 		else:
 			# All retries exhausted, peers still active
 			_log.warning(
@@ -535,17 +628,6 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 				max_retries
 			)
 			return
-
-		if target == "auto":
-			# Use all configured servers for RTT-based selection
-			servers = [s["url"] for s in SPEEDTEST_SERVER_LIST]
-		else:
-			server_info = SPEEDTEST_SERVER_MAP.get(target)
-			if server_info:
-				servers = [server_info["url"]]
-			else:
-				# Fallback to all servers if unknown target
-				servers = [s["url"] for s in SPEEDTEST_SERVER_LIST]
 
 		try:
 			lease = acquire_speedtest_run_lease(
@@ -559,30 +641,49 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 			_log.info("SPEEDTEST_SCHEDULED skipped: cooldown active (%s)", exc)
 			return
 
-		with lease:
+		async with lease:
 			_log.info("SPEEDTEST_SCHEDULED starting bandwidth measurement")
-			tester = BandwidthTester(servers=servers)
+			started_run = False
 			try:
-				result = await tester.run()
-			except asyncio.CancelledError:
-				raise
-			except Exception as exc:
-				result = {
-					"status": "error",
-					"reason": f"{type(exc).__name__}: {exc}",
-					"server": servers[0] if servers else None,
-				}
-				_log.warning("SPEEDTEST_SCHEDULED test execution failed: %s", exc)
+				try:
+					started_run = True
+					result = await asyncio.wait_for(
+						run_speedtest(),
+						timeout=_SPEEDTEST_EXECUTION_TIMEOUT_SECONDS,
+					)
+				except asyncio.TimeoutError:
+					result = {
+						"status": "error",
+						"reason": f"Timeout after {_SPEEDTEST_EXECUTION_TIMEOUT_SECONDS:.0f}s",
+					}
+					_log.warning(
+						"SPEEDTEST_SCHEDULED test execution timed out after %.0fs",
+						_SPEEDTEST_EXECUTION_TIMEOUT_SECONDS,
+					)
+				except asyncio.CancelledError:
+					raise
+				except Exception as exc:
+					result = {
+						"status": "error",
+						"reason": f"{type(exc).__name__}: {exc}",
+					}
+					_log.warning("SPEEDTEST_SCHEDULED test execution failed: %s", exc)
 
-			# Keep the run lease until the result is persisted to avoid interleaved
-			# scheduled/manual speedtest writes.
-			await asyncio.to_thread(
-				tsdb.append_point,
-				ctx.cfg.tsdb_dir,
-				peer_key=SPEEDTEST_TSDB_KEY,
-				metric=SPEEDTEST_TSDB_METRIC,
-				value=result,
-			)
+				# Keep the run lease until the result is persisted to avoid interleaved
+				# scheduled/manual speedtest writes.
+				await asyncio.to_thread(
+					tsdb.append_point,
+					ctx.cfg.tsdb_dir,
+					peer_key=SPEEDTEST_TSDB_KEY,
+					metric=SPEEDTEST_TSDB_METRIC,
+					value=result,
+				)
+			finally:
+				if started_run:
+					try:
+						await asyncio.to_thread(_persist_last_run_to_db, ctx.cfg.db_path)
+					except Exception as exc:
+						_log.warning("SPEEDTEST_LAST_RUN_DB_WRITE_FAILED: %s", exc)
 
 		if result.get("status") == "ok":
 			_log.info(
@@ -598,6 +699,17 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
 		raise
 	except (OSError, RuntimeError, ValueError) as exc:
 		_log.error("SPEEDTEST_SCHEDULED failed: %s", exc)
+
+
+def _persist_last_run_to_db(db_path) -> None:
+	"""Persist the latest local speedtest run timestamp via SQLite helper."""
+	from ..db.sqlite_settings import set_speedtest_last_run_at
+	from ..db.sqlite_runtime import close_connection, connect
+	conn = connect(db_path)
+	try:
+		set_speedtest_last_run_at(conn)
+	finally:
+		close_connection(conn)
 
 
 async def sample_network_stats(ctx: main.LifespanContext) -> None:

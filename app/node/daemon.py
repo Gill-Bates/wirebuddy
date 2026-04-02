@@ -23,7 +23,10 @@ import logging
 import os
 import random
 import signal
+import ssl
 import sys
+import time
+from datetime import datetime as dt, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -48,8 +51,18 @@ _log = logging.getLogger(__name__)
 SYNC_INTERVAL = int(os.environ.get("WIREBUDDY_NODE_SYNC_INTERVAL", "30"))
 ENROLLMENT_RETRY_ATTEMPTS = max(1, int(os.environ.get("WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS", "3")))
 SESSION_PROPAGATION_DELAY = 0.5  # Delay after enrollment to ensure master has committed session secret
+
+# Speedtest scheduler constants (same window as master)
+_SPEEDTEST_NIGHT_WINDOW_START_HOUR = 2
+_SPEEDTEST_NIGHT_WINDOW_END_HOUR = 4
+_SPEEDTEST_RUN_TIMEOUT_SECONDS = 120
+_SPEEDTEST_LAST_RUN_FILE = "speedtest_last_run"
 DATA_DIR = Path("/app/data")
 STATE_FILE = DATA_DIR / "node_state.json"
+
+# Failure detection thresholds
+_MAX_AUTH_FAILURES = 3  # Consecutive 401 errors before assuming node removal
+_MAX_RECONNECT_DELAY = 60  # Maximum SSE reconnection delay in seconds
 
 
 def _build_request_headers(api_secret: str, cert_fingerprint: str) -> dict[str, str]:
@@ -61,12 +74,34 @@ def _build_request_headers(api_secret: str, cert_fingerprint: str) -> dict[str, 
 
 
 def _extract_error_detail(response: httpx.Response) -> str:
-	"""Extract error detail from HTTP response for logging."""
+	"""Extract error detail from HTTP response for logging.
+	
+	Safely handles both complete and streaming responses.
+	"""
+	# Check if response is from a streaming context (not yet read)
+	# Streaming responses raise ResponseNotRead when accessing content
 	try:
+		# First, check if we can access the content
+		if hasattr(response, '_content') and response._content is None:
+			# Response hasn't been read yet (streaming response)
+			return ""
+		
+		# Try to parse JSON error detail
 		data = response.json()
 		return str(data.get("detail", ""))[:200]
+	except (ValueError, KeyError, AttributeError):
+		# JSON parsing failed, try text
+		try:
+			return response.text[:200] if response.text else ""
+		except httpx.ResponseNotRead:
+			# Streaming response - cannot read body
+			return ""
+	except httpx.ResponseNotRead:
+		# Cannot access streaming response body
+		return ""
 	except Exception:
-		return response.text[:200] if response.text else ""
+		# Any other error - return empty
+		return ""
 
 
 def _decode_enrollment_token_payload(token_string: str) -> dict[str, Any]:
@@ -126,6 +161,8 @@ def _save_state(state: dict[str, Any]) -> None:
 		fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 		with os.fdopen(fd, "w", encoding="utf-8") as handle:
 			json.dump(state, handle, separators=(",", ":"), sort_keys=True)
+			handle.flush()
+			os.fsync(handle.fileno())
 		os.replace(tmp, STATE_FILE)
 	except Exception:
 		tmp.unlink(missing_ok=True)
@@ -155,20 +192,295 @@ def _clear_enrollment_state() -> None:
 		_log.info("Cleared old metrics queue")
 
 
-def _resolve_tls_verify(state: dict[str, Any] | None) -> tuple[bool | str, str | None]:
-	"""Resolve TLS verification settings for master API calls."""
+def _resolve_tls_verify(state: dict[str, Any] | None) -> tuple[ssl.SSLContext | bool, str | None]:
+	"""Resolve TLS verification settings for master API calls.
+	
+	Returns an SSLContext with TLS 1.2 minimum enforced to prevent
+	downgrade attacks. If a custom CA file is configured, it will be
+	loaded into the context.
+	"""
 	ca_file_raw = os.getenv("WIREBUDDY_MASTER_CA_FILE")
 	if not ca_file_raw and state is not None:
 		ca_file_raw = state.get("master_ca_file")
 
-	if not ca_file_raw:
-		return True, None
+	return _create_ssl_context(ca_file_raw)
 
-	ca_path = Path(str(ca_file_raw)).expanduser()
+
+def _create_ssl_context(ca_file: str | None = None) -> tuple[ssl.SSLContext, str | None]:
+	"""Create a fresh SSLContext with TLS 1.2 minimum.
+	
+	Creates a new context instance to avoid sharing contexts between
+	httpx clients (contexts may have internal state).
+	"""
+	# Create SSL context with TLS 1.2 minimum (prevents downgrade attacks)
+	ssl_ctx = ssl.create_default_context()
+	ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+	
+	if not ca_file:
+		# Use system CA certificates with TLS 1.2+ enforced
+		return ssl_ctx, None
+
+	ca_path = Path(str(ca_file)).expanduser()
 	if not ca_path.exists() or not ca_path.is_file():
 		raise RuntimeError(f"Configured master CA file does not exist: {ca_path}")
 
-	return str(ca_path), str(ca_path)
+	# Load custom CA certificate
+	ssl_ctx.load_verify_locations(cafile=str(ca_path))
+	return ssl_ctx, str(ca_path)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Daily Speedtest Scheduler
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _local_wall_clock_timestamp(day, hour: int) -> float:
+	"""Return the local timestamp for a wall-clock hour using system DST rules."""
+	wall_time = dt(day.year, day.month, day.day, hour, 0, 0)
+	return time.mktime(wall_time.timetuple())
+
+
+def _seconds_until_night_window() -> float:
+	"""Calculate seconds until a jittered start time in the local night window.
+	
+	The target window is 02:00-04:00 local time.
+	"""
+	now_ts = time.time()
+	now_local = dt.fromtimestamp(now_ts)
+	today = now_local.date()
+	start_today = _local_wall_clock_timestamp(today, _SPEEDTEST_NIGHT_WINDOW_START_HOUR)
+	end_today = _local_wall_clock_timestamp(today, _SPEEDTEST_NIGHT_WINDOW_END_HOUR)
+	min_test_runtime_seconds = 300.0
+
+	# Currently within night window
+	if start_today <= now_ts < end_today:
+		remaining = max(0.0, end_today - now_ts)
+		if remaining <= min_test_runtime_seconds:
+			next_day = today + timedelta(days=1)
+			next_start = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_START_HOUR)
+			next_end = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_END_HOUR)
+			window_duration_seconds = max(0.0, next_end - next_start)
+			jitter_cap = max(0.0, window_duration_seconds - min_test_runtime_seconds)
+			jitter_seconds = random.uniform(0.0, jitter_cap) if jitter_cap > 0 else 0.0
+			return max(0.0, (next_start - now_ts) + jitter_seconds)
+		max_jitter = max(0.0, remaining - min_test_runtime_seconds)
+		return random.uniform(0.0, min(600.0, max_jitter))
+
+	# Calculate next window start
+	if now_ts < start_today:
+		next_start = start_today
+		next_end = end_today
+	else:
+		next_day = today + timedelta(days=1)
+		next_start = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_START_HOUR)
+		next_end = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_END_HOUR)
+
+	window_duration_seconds = max(0.0, next_end - next_start)
+	jitter_cap = max(0.0, window_duration_seconds - min_test_runtime_seconds)
+	jitter_seconds = random.uniform(0.0, jitter_cap) if jitter_cap > 0 else 0.0
+
+	return max(0.0, (next_start - now_ts) + jitter_seconds)
+
+
+def _read_last_speedtest_run() -> float | None:
+	"""Read the timestamp of the last speedtest run."""
+	path = DATA_DIR / _SPEEDTEST_LAST_RUN_FILE
+	if not path.exists():
+		return None
+	try:
+		return float(path.read_text().strip())
+	except (ValueError, OSError):
+		return None
+
+
+def _write_last_speedtest_run(ts: float) -> None:
+	"""Write the timestamp of the last speedtest run."""
+	path = DATA_DIR / _SPEEDTEST_LAST_RUN_FILE
+	try:
+		path.write_text(str(ts))
+	except OSError as exc:
+		_log.warning("Failed to write speedtest last run timestamp: %s", exc)
+
+
+async def _send_speedtest_progress(
+	client: httpx.AsyncClient,
+	master_url: str,
+	api_secret: str,
+	cert_fingerprint: str,
+	event: dict,
+) -> None:
+	"""Send speedtest progress update to master (best-effort, no retry)."""
+	try:
+		await client.post(
+			f"{master_url}/api/nodes/speedtest/progress",
+			headers=_build_request_headers(api_secret, cert_fingerprint),
+			json={
+				"phase": event.get("phase", ""),
+				"progress": event.get("progress", 0),
+				"message": event.get("message", ""),
+				"detail": event.get("detail"),
+			},
+			timeout=5.0,  # Short timeout for progress updates
+		)
+	except Exception as exc:
+		_log.debug("Failed to send speedtest progress to master: %s", exc)
+
+
+async def _run_node_speedtest(
+	client: httpx.AsyncClient,
+	master_url: str,
+	api_secret: str,
+	cert_fingerprint: str,
+) -> bool:
+	"""Run a speedtest and submit results to master.
+	
+	Sends progress updates to master during the test for real-time UI feedback.
+	
+	Returns True if successful, False otherwise.
+	"""
+	from ..speedtest.tester import run_speedtest
+	
+	_log.info("NODE_SPEEDTEST starting bandwidth measurement")
+	
+	# Progress callback to send updates to master
+	def progress_callback(event: dict) -> None:
+		"""Send progress update to master (non-blocking)."""
+		try:
+			asyncio.create_task(_send_speedtest_progress(client, master_url, api_secret, cert_fingerprint, event))
+		except Exception as exc:
+			_log.debug("Failed to send speedtest progress: %s", exc)
+	
+	try:
+		result = await asyncio.wait_for(
+			run_speedtest(progress_callback=progress_callback),
+			timeout=_SPEEDTEST_RUN_TIMEOUT_SECONDS
+		)
+	except asyncio.TimeoutError:
+		_log.error("NODE_SPEEDTEST timeout after %ds", _SPEEDTEST_RUN_TIMEOUT_SECONDS)
+		result = {"status": "error", "reason": f"Timeout after {_SPEEDTEST_RUN_TIMEOUT_SECONDS}s"}
+	except Exception as exc:
+		_log.error("NODE_SPEEDTEST failed: %s", exc)
+		result = {"status": "error", "reason": str(exc)}
+	
+	# Submit result to master
+	try:
+		resp = await client.post(
+			f"{master_url}/api/nodes/speedtest",
+			headers=_build_request_headers(api_secret, cert_fingerprint),
+			json=result,
+		)
+		resp.raise_for_status()
+		_log.info(
+			"NODE_SPEEDTEST submitted to master: status=%s dl=%.2f ul=%.2f",
+			result.get("status"),
+			result.get("download_mbit", 0),
+			result.get("upload_mbit", 0),
+		)
+		return True
+	except httpx.HTTPError as exc:
+		_log.warning("NODE_SPEEDTEST failed to submit to master: %s", exc)
+		return False
+
+
+async def _speedtest_scheduler(
+	client: httpx.AsyncClient,
+	master_url: str,
+	api_secret: str,
+	cert_fingerprint: str,
+	shutdown_event: asyncio.Event,
+) -> None:
+	"""Background task that runs daily speedtests during the night window.
+	
+	Runs once per day, during 02:00-04:00 local time with jitter to avoid
+	all nodes running simultaneously.
+	"""
+	while not shutdown_event.is_set():
+		try:
+			# Check if we already ran a test today
+			last_run = _read_last_speedtest_run()
+			now = time.time()
+			if last_run and (now - last_run) < 20 * 3600:  # Less than 20 hours ago
+				# Already ran recently, wait until next day
+				wait_seconds = _seconds_until_night_window()
+				_log.debug("NODE_SPEEDTEST already ran %.1fh ago, next in %.0fs", (now - last_run) / 3600, wait_seconds)
+			else:
+				wait_seconds = _seconds_until_night_window()
+				hours_since_last = (now - last_run) / 3600 if last_run else None
+				_log.info(
+					"NODE_SPEEDTEST scheduled in %.0f seconds (last run: %s)",
+					wait_seconds,
+					f"{hours_since_last:.1f}h ago" if hours_since_last else "never",
+				)
+			
+			# Wait for the night window, checking for shutdown periodically
+			remaining = wait_seconds
+			while remaining > 0 and not shutdown_event.is_set():
+				sleep_chunk = min(60.0, remaining)
+				try:
+					await asyncio.wait_for(shutdown_event.wait(), timeout=sleep_chunk)
+					return  # Shutdown requested
+				except asyncio.TimeoutError:
+					remaining -= sleep_chunk
+			
+			if shutdown_event.is_set():
+				return
+			
+			# Run the speedtest
+			success = await _run_node_speedtest(client, master_url, api_secret, cert_fingerprint)
+			if success:
+				_write_last_speedtest_run(time.time())
+			
+			# Wait at least 20 hours before next potential run
+			await asyncio.sleep(60)  # Brief sleep before rechecking
+			
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			_log.warning("NODE_SPEEDTEST scheduler error: %s", exc)
+			# Wait a bit before retrying
+			try:
+				await asyncio.wait_for(shutdown_event.wait(), timeout=300)
+				return
+			except asyncio.TimeoutError:
+				pass
+
+
+async def _speedtest_on_demand_handler(
+	client: httpx.AsyncClient,
+	master_url: str,
+	api_secret: str,
+	cert_fingerprint: str,
+	speedtest_requested_event: asyncio.Event,
+	shutdown_event: asyncio.Event,
+) -> None:
+	"""Background task that runs speedtests when requested via SSE.
+	
+	Waits for speedtest_requested_event to be set, then runs a speedtest
+	and clears the event. Can run multiple tests if event is set again.
+	"""
+	while not shutdown_event.is_set():
+		try:
+			# Wait for a speedtest request or shutdown
+			await asyncio.wait(
+				[
+					asyncio.create_task(speedtest_requested_event.wait()),
+					asyncio.create_task(shutdown_event.wait()),
+				],
+				return_when=asyncio.FIRST_COMPLETED,
+			)
+			
+			if shutdown_event.is_set():
+				return
+			
+			if speedtest_requested_event.is_set():
+				speedtest_requested_event.clear()
+				_log.info("NODE_SPEEDTEST on-demand request received from master")
+				await _run_node_speedtest(client, master_url, api_secret, cert_fingerprint)
+		except asyncio.CancelledError:
+			return
+		except Exception as exc:
+			_log.warning("NODE_SPEEDTEST on-demand handler error: %s", exc)
+			await asyncio.sleep(5)  # Brief delay before continuing
 
 
 async def main() -> None:
@@ -222,14 +534,13 @@ async def main() -> None:
 				if payload["node_id"] != state["node_id"]:
 					needs_reenroll = True
 					reason = f"node_id changed ({payload['node_id']} vs {state['node_id']})"
-				elif not stored_hash:
-					# No enrollment hash stored — force re-enrollment to
-					# establish session secret rotation.
-					needs_reenroll = True
-					reason = "no enrollment hash in state (clean re-enrollment required)"
-				elif token_secret_hash != stored_hash:
+				elif token_secret_hash != stored_hash and stored_hash:
+					# Token secret changed AND we have a stored hash to compare against
 					needs_reenroll = True
 					reason = "enrollment token was regenerated"
+				# Note: Missing stored_hash is NOT a trigger for re-enrollment anymore.
+				# If we have valid persisted state, keep using it. Old nodes may not have
+				# this field, and that's fine — only force re-enrollment on actual token change.
 
 				if needs_reenroll:
 					_log.warning("Enrollment token changed: %s — clearing old state for re-enrollment", reason)
@@ -344,9 +655,9 @@ async def main() -> None:
 					pass
 
 			if not enrolled:
-				_log.critical("Enrollment failed — exiting")
+				# No cached state (we're in enrollment phase where state is None) and enrollment failed — fatal
+				_log.critical("Enrollment failed and no cached state available — exiting")
 				sys.exit(1)
-
 			# Replace the enrollment api_secret with the session secret
 			# returned by the master.  This makes the enrollment token
 			# worthless — an attacker who captured it cannot authenticate.
@@ -426,15 +737,41 @@ async def main() -> None:
 		# Start SSE listener for instant push notifications
 		config_changed_event = asyncio.Event()
 		node_removed_event = asyncio.Event()  # Set when 401 auth failures indicate node removal
+		speedtest_requested_event = asyncio.Event()  # Set when master requests on-demand speedtest
 		sse_task = asyncio.create_task(
 			_sse_listener(
 				master_url,
 				api_secret,
 				cert_fingerprint,
 				tls_verify,
+				master_ca_file,
 				config_changed_event,
 				shutdown_event,
 				node_removed_event,
+				speedtest_requested_event,
+			)
+		)
+		
+		# Start daily speedtest scheduler
+		speedtest_task = asyncio.create_task(
+			_speedtest_scheduler(
+				client,
+				master_url,
+				api_secret,
+				cert_fingerprint,
+				shutdown_event,
+			)
+		)
+		
+		# Start on-demand speedtest handler (triggered via SSE from master)
+		speedtest_on_demand_task = asyncio.create_task(
+			_speedtest_on_demand_handler(
+				client,
+				master_url,
+				api_secret,
+				cert_fingerprint,
+				speedtest_requested_event,
+				shutdown_event,
 			)
 		)
 
@@ -462,23 +799,12 @@ async def main() -> None:
 					_log.info("Config push received via SSE — pulling config immediately")
 				
 				# Sample WireGuard stats ONCE per iteration (avoid double syscalls)
+				# Note: Heartbeat will handle both queue delivery and live peer_stats submission
 				wg_dump: dict[str, Any] = {}
 				try:
 					wg_dump = await asyncio.to_thread(get_wg_dump)
-					if wg_dump:
-						peer_stats = [
-							{
-								"public_key": pub_key,
-								"endpoint": stats.get("endpoint"),
-								"latest_handshake": stats.get("latest_handshake"),
-								"transfer_rx": stats.get("transfer_rx", 0),
-								"transfer_tx": stats.get("transfer_tx", 0),
-							}
-							for pub_key, stats in wg_dump.items()
-						]
-						await asyncio.to_thread(enqueue_peer_traffic, metrics_queue_conn, peer_stats)
 				except Exception as exc:
-					_log.debug("Failed to sample/enqueue WG metrics: %s", exc)
+					_log.debug("Failed to sample WG metrics: %s", exc)
 				
 				try:
 					_log.debug("Sync loop: sending heartbeat...")
@@ -500,12 +826,14 @@ async def main() -> None:
 					if exc.response.status_code == 401:
 						auth_failed = True
 						consecutive_401_failures += 1
-						if consecutive_401_failures >= 3:
+						if consecutive_401_failures >= _MAX_AUTH_FAILURES:
 							_log.error(
 								"Multiple consecutive 401 errors (%d) — node likely removed from master",
 								consecutive_401_failures
 							)
 							node_removed_event.set()
+					else:
+						consecutive_401_failures = 0  # Reset on non-auth errors
 				except httpx.HTTPError as exc:
 					_log.warning("Heartbeat failed: %s", exc)
 					heartbeat_failed = True
@@ -550,30 +878,24 @@ async def main() -> None:
 
 				if heartbeat_failed or config_failed:
 					# Exponential backoff with jitter
-					backoff = min(backoff * 2, 60) * random.uniform(0.8, 1.2)
+					backoff = min(backoff * 2, 60)
+					wait_time = backoff * random.uniform(0.8, 1.2)
 					if config_failed:
-						_log.warning("Retrying config pull in %.1fs", backoff)
+						_log.warning("Retrying config pull in %.1fs", wait_time)
 				else:
 					backoff = 1  # Reset on success
-
-				# Wait for interval, SSE push event, or shutdown
-				wait_time = backoff if backoff > 1 else SYNC_INTERVAL
-				_log.debug("Sync loop: waiting %ds (backoff=%d)", wait_time, backoff)
-				done, pending = await asyncio.wait(
-					[
-						asyncio.create_task(shutdown_event.wait()),
-						asyncio.create_task(config_changed_event.wait()),
-						asyncio.create_task(asyncio.sleep(wait_time)),
-					],
-					return_when=asyncio.FIRST_COMPLETED,
-				)
-				_log.debug("Sync loop: wait returned, %d done, %d pending", len(done), len(pending))
+					wait_time = SYNC_INTERVAL
 				
-				# Cancel remaining tasks and await them to prevent warnings
-				for task in pending:
-					task.cancel()
-				if pending:
-					await asyncio.gather(*pending, return_exceptions=True)
+				_log.debug("Sync loop: waiting %.1fs (backoff=%d)", wait_time, backoff)
+				
+				# Wait for interval with interruptible check for events
+				while wait_time > 0 and not shutdown_event.is_set() and not config_changed_event.is_set():
+					sleep_chunk = min(1.0, wait_time)
+					try:
+						await asyncio.wait_for(shutdown_event.wait(), timeout=sleep_chunk)
+						break  # Shutdown requested
+					except asyncio.TimeoutError:
+						wait_time -= sleep_chunk
 				
 				if shutdown_event.is_set():
 					_log.debug("Sync loop: shutdown requested")
@@ -585,12 +907,28 @@ async def main() -> None:
 			_log.exception("Sync loop crashed with unexpected error: %s", exc)
 			raise
 		finally:
-			# Cancel SSE listener
+			# Cancel SSE listener and speedtest tasks
 			sse_task.cancel()
+			speedtest_task.cancel()
+			speedtest_on_demand_task.cancel()
 			try:
 				await sse_task
 			except asyncio.CancelledError:
 				pass
+			except Exception as exc:
+				_log.error("SSE listener task crashed: %s", exc, exc_info=True)
+			try:
+				await speedtest_task
+			except asyncio.CancelledError:
+				pass
+			except Exception as exc:
+				_log.error("Speedtest scheduler task crashed: %s", exc, exc_info=True)
+			try:
+				await speedtest_on_demand_task
+			except asyncio.CancelledError:
+				pass
+			except Exception as exc:
+				_log.error("On-demand speedtest task crashed: %s", exc, exc_info=True)
 
 	# Graceful shutdown
 	_log.info("Closing metrics queue...")
@@ -688,7 +1026,6 @@ async def _push_heartbeat(
 		wg_dump: Pre-sampled WireGuard dump (avoids double syscall if caller
 		         already sampled). If None, will sample fresh.
 	"""
-	import sqlite3
 	from ..utils.version import get_version
 	uptime = _get_uptime()
 
@@ -753,9 +1090,11 @@ async def _sse_listener(
 	api_secret: str,
 	cert_fingerprint: str,
 	tls_verify: bool | str,
+	master_ca_file: str | None,
 	config_changed_event: asyncio.Event,
 	shutdown_event: asyncio.Event,
 	node_removed_event: asyncio.Event,
+	speedtest_requested_event: asyncio.Event,
 ) -> None:
 	"""Listen for Server-Sent Events from master for instant config push.
 	
@@ -768,102 +1107,124 @@ async def _sse_listener(
 	When a node_removed event is received, clears enrollment state and
 	sets shutdown_event to trigger a clean exit.
 	
+	When a run_speedtest event is received, sets speedtest_requested_event
+	to trigger an immediate speedtest.
+	
+	Args:
+		master_ca_file: CA file path (if custom CA configured) for creating fresh SSL context
+		tls_verify: TLS verification mode (passed for type compatibility, but fresh context is created)
+	
 	Uses a persistent client to avoid TLS handshake overhead on reconnect.
 	"""
+	_log.debug("SSE listener task started")
 	reconnect_delay = 1
-	max_reconnect_delay = 60
 	consecutive_401_count = 0  # Track auth failures
 	
-	# Create client outside loop to reuse connections and avoid TLS overhead
-	async with httpx.AsyncClient(
-		timeout=None,  # SSE connections are long-lived
-		verify=tls_verify,
-	) as sse_client:
-		while not shutdown_event.is_set():
-			try:
-				_log.info("Connecting to master SSE event stream...")
-				async with sse_client.stream(
-					"GET",
-					f"{master_url}/api/nodes/events",
-					headers=_build_request_headers(api_secret, cert_fingerprint),
-				) as response:
-					if response.status_code != 200:
-						_log.warning("SSE connection failed: HTTP %d", response.status_code)
-						raise httpx.HTTPStatusError(
-							f"SSE failed with {response.status_code}",
-							request=response.request,
-							response=response,
-						)
-					
-					_log.info("SSE event stream connected — config changes will be pushed instantly")
-					reconnect_delay = 1  # Reset on successful connection
-					consecutive_401_count = 0  # Reset on successful connection
-					
-					# Trigger immediate config pull when SSE reconnects
-					# This ensures quick recovery when master comes back online
-					config_changed_event.set()
-					
-					event_type = None  # Track current event type across lines
-					async for line in response.aiter_lines():
-						if shutdown_event.is_set():
-							break
+	try:
+		# Create fresh SSL context for this client (avoid sharing state)
+		sse_tls_context, _ = _create_ssl_context(master_ca_file)
+		
+		# Create client outside loop to reuse connections and avoid TLS overhead
+		async with httpx.AsyncClient(
+			timeout=None,  # SSE connections are long-lived
+			verify=sse_tls_context,  # Use fresh context
+		) as sse_client:
+			while not shutdown_event.is_set():
+				try:
+					_log.info("Connecting to master SSE event stream...")
+					async with sse_client.stream(
+						"GET",
+						f"{master_url}/api/nodes/events",
+						headers=_build_request_headers(api_secret, cert_fingerprint),
+					) as response:
+						if response.status_code != 200:
+							_log.warning("SSE connection failed: HTTP %d", response.status_code)
+							raise httpx.HTTPStatusError(
+								f"SSE failed with {response.status_code}",
+								request=response.request,
+								response=response,
+							)
 						
-						line = line.strip()
-						if not line or line.startswith(":"):
-							continue  # Comment or keepalive
+						_log.info("SSE event stream connected — config changes will be pushed instantly")
+						reconnect_delay = 1  # Reset on successful connection
+						consecutive_401_count = 0  # Reset on successful connection
 						
-						if line.startswith("event:"):
-							event_type = line[6:].strip()
-						elif line.startswith("data:"):
-							# Process data for the current event type
-							if event_type == "config_changed":
-								_log.info("Received config_changed event from master")
-								config_changed_event.set()
-							elif event_type == "restart_requested":
-								_log.warning("Received restart_requested event from master — initiating graceful shutdown")
-								shutdown_event.set()
-								return
-							elif event_type == "node_removed":
-								_log.warning("Received node_removed event from master — clearing state and exiting")
-								# Clear enrollment state so node doesn't keep trying to reconnect
-								_clear_enrollment_state()
-								shutdown_event.set()
-								return
-							event_type = None  # Reset after processing
+						# Trigger immediate config pull when SSE reconnects
+						# This ensures quick recovery when master comes back online
+						config_changed_event.set()
 						
-			except httpx.HTTPStatusError as exc:
-				if exc.response.status_code == 401:
-					consecutive_401_count += 1
-					detail = _extract_error_detail(exc.response)
-					_log.error("SSE authentication failed: %s (consecutive: %d)", detail or "Invalid API secret", consecutive_401_count)
-					if consecutive_401_count >= 3:
-						_log.error("Multiple SSE auth failures — node likely removed from master")
-						node_removed_event.set()
-						return
-				else:
-					detail = _extract_error_detail(exc.response)
-					_log.warning("SSE HTTP error: %d (detail: %s)", exc.response.status_code, detail or "unknown")
-			except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
-				_log.warning("SSE connection error: %s", exc)
-			except asyncio.CancelledError:
-				_log.debug("SSE listener cancelled")
-				return
-			except Exception as exc:
-				_log.exception("Unexpected SSE error: %s", exc)
-			
-			if shutdown_event.is_set():
-				break
-			
-			# Exponential backoff with jitter
-			jittered_delay = reconnect_delay * random.uniform(0.8, 1.2)
-			_log.info("SSE reconnecting in %.1fs...", jittered_delay)
-			try:
-				await asyncio.wait_for(shutdown_event.wait(), timeout=jittered_delay)
-				break  # Shutdown requested
-			except asyncio.TimeoutError:
-				pass
-			
-			reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+						event_type = None  # Track current event type across lines
+						async for line in response.aiter_lines():
+							if shutdown_event.is_set():
+								break
+							
+							line = line.strip()
+							if not line or line.startswith(":"):
+								continue  # Comment or keepalive
+							
+							if line.startswith("event:"):
+								event_type = line[6:].strip()
+							elif line.startswith("data:"):
+								# Process data for the current event type
+								if event_type == "config_changed":
+									_log.info("Received config_changed event from master")
+									config_changed_event.set()
+								elif event_type == "restart_requested":
+									_log.warning("Received restart_requested event from master — initiating graceful shutdown")
+									shutdown_event.set()
+									return
+								elif event_type == "node_removed":
+									_log.warning("Received node_removed event from master — clearing state and exiting")
+									# Clear enrollment state so node doesn't keep trying to reconnect
+									_clear_enrollment_state()
+									shutdown_event.set()
+									return
+								elif event_type == "run_speedtest":
+									_log.info("Received run_speedtest event from master — triggering on-demand speedtest")
+									speedtest_requested_event.set()
+								event_type = None  # Reset after processing
+						
+				except httpx.HTTPStatusError as exc:
+					if exc.response.status_code == 401:
+						consecutive_401_count += 1
+						detail = _extract_error_detail(exc.response)
+						detail_msg = f": {detail}" if detail else ""
+						_log.error("SSE authentication failed (consecutive: %d)%s", consecutive_401_count, detail_msg)
+						if consecutive_401_count >= _MAX_AUTH_FAILURES:
+							_log.error("Multiple SSE auth failures — node likely removed from master")
+							node_removed_event.set()
+							return
+					else:
+						consecutive_401_count = 0  # Reset on non-auth errors
+						detail = _extract_error_detail(exc.response)
+						detail_msg = f" - {detail}" if detail else ""
+						_log.warning("SSE HTTP error: %d%s", exc.response.status_code, detail_msg)
+				except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
+					_log.warning("SSE connection error: %s", exc)
+				except asyncio.CancelledError:
+					_log.debug("SSE listener cancelled")
+					return
+				except Exception as exc:
+					_log.exception("Unexpected SSE error: %s", exc)
+				
+				if shutdown_event.is_set():
+					break
+				
+				# Exponential backoff with jitter
+				jittered_delay = reconnect_delay * random.uniform(0.8, 1.2)
+				_log.info("SSE reconnecting in %.1fs...", jittered_delay)
+				try:
+					await asyncio.wait_for(shutdown_event.wait(), timeout=jittered_delay)
+					break  # Shutdown requested
+				except asyncio.TimeoutError:
+					pass
+				
+				reconnect_delay = min(reconnect_delay * 2, _MAX_RECONNECT_DELAY)
+	except Exception as exc:
+		_log.exception("SSE listener task failed with unexpected error: %s", exc)
+		raise
+	finally:
+		_log.debug("SSE listener task stopped")
 
 
 async def _pull_config(
