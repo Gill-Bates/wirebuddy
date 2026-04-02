@@ -139,8 +139,8 @@ jobs:
           
           # Test 1: Verify node daemon module can be imported (catches syntax errors)
           echo "Testing node daemon module import..."
-          docker run --rm wirebuddy:test \
-            python -c "from app.node.daemon import run, main; print('✓ Node daemon module imports OK')"
+          docker run --rm --entrypoint python wirebuddy:test \
+            -c "from app.node.daemon import run, main; print('✓ Node daemon module imports OK')"
           
           # Test 2: Run node mode without enrollment token — should exit with code 1
           # This validates the startup path executes without crashes
