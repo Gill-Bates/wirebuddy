@@ -149,6 +149,7 @@ jobs:
           LOGS=$(docker run --rm \
             -e SERVER_MODE=node \
             -e LOG_LEVEL=DEBUG \
+            -e WIREBUDDY_SECRET_KEY="ci-node-test-key" \
             wirebuddy:test 2>&1) || EXIT_CODE=$?
           
           # Verify expected behavior: exit 1 with "WIREBUDDY_ENROLLMENT_TOKEN is required"
