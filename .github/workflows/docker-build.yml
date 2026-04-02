@@ -100,11 +100,8 @@ jobs:
             -e WIREBUDDY_SKIP_NETWORK_CHECK="1" \
             wirebuddy:test
           
-          # Extract the actual bound port (robust parsing for IPv4 and IPv6)
-          PORT=$(docker port wirebuddy-test 8000/tcp | sed -E 's/.*:([0-9]+)$/\1/')
-          
           # Wait for startup with active polling (max 30s)
-          echo "Waiting for container to start on port $PORT..."
+          echo "Waiting for container to start..."
           for i in $(seq 1 30); do
             # Check if container is still running
             if ! docker ps -q -f name=wirebuddy-test | grep -q .; then
@@ -115,9 +112,9 @@ jobs:
               exit 1
             fi
             
-            # Try health check with explicit timeout
-            if curl -fsS --max-time 2 --retry-connrefused --retry 2 --retry-delay 1 \
-                http://127.0.0.1:${PORT}/api/system/status > /dev/null 2>&1; then
+            # Health check from inside container (avoids host header validation issues)
+            if docker exec wirebuddy-test curl -fsS --max-time 2 \
+                http://127.0.0.1:8000/api/system/status > /dev/null 2>&1; then
               echo "✓ Master mode: Container ready after ${i}s"
               docker stop wirebuddy-test
               docker rm wirebuddy-test
