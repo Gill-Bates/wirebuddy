@@ -719,7 +719,10 @@ async def main() -> None:
 			# Check if we have a cached config but no running interfaces
 			# This can happen after container restart - state is preserved but WG is down
 			if current_config_version and not has_running_interfaces():
-			_log.info("Cached config version exists but no WG interfaces running — forcing full config pull")
+				_log.info("Cached config version exists but no WG interfaces running — forcing full config pull")
+				current_config_version = None
+
+			# Initial config pull on resume (before entering loop)
 			# This ensures we have config even if heartbeat fails
 			if current_config_version is None:
 				_log.info("Pulling initial config...")
