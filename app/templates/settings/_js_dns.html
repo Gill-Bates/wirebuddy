@@ -65,7 +65,7 @@
                 const sourceId = `blocklist-${simpleHash(source.url)}-${i}`;
                 const dataUrl = esc(source.url).replace(/"/g, '&quot;');
                 html += `
-                    <article class="blocklist-item">
+                    <article class="blocklist-item${source.enabled ? ' enabled' : ''}">
                         <div class="blocklist-row">
                             <div class="flex-grow-1">
                                 <label class="blocklist-title" for="${sourceId}">
@@ -138,6 +138,13 @@
                     updEl.textContent = '–';
                 }
             }
+
+            // Auto-poll while rebuild is in progress so "Pending" badges update
+            if (rebuildInProgress) {
+                scheduleRebuildPoll();
+            } else {
+                cancelRebuildPoll();
+            }
         } catch (error) {
             document.getElementById('blocklist-sources').innerHTML =
                 `<div class="text-danger py-2">Failed to load blocklists: ${error.message}</div>`;
@@ -151,8 +158,37 @@
         }
     }
 
+    // Rebuild polling: re-check blocklist sources while rebuild is in progress
+    let _rebuildPollTimer = null;
+    let _rebuildPollCount = 0;
+    const _REBUILD_POLL_INTERVAL = 5000;   // 5 seconds
+    const _REBUILD_POLL_MAX = 24;          // max 2 minutes
+
+    function scheduleRebuildPoll() {
+        if (_rebuildPollTimer) return; // already polling
+        _rebuildPollCount = 0;
+        _rebuildPollTimer = setInterval(async () => {
+            _rebuildPollCount++;
+            if (_rebuildPollCount >= _REBUILD_POLL_MAX) {
+                cancelRebuildPoll();
+                return;
+            }
+            await loadBlocklistSources();
+        }, _REBUILD_POLL_INTERVAL);
+    }
+
+    function cancelRebuildPoll() {
+        if (_rebuildPollTimer) {
+            clearInterval(_rebuildPollTimer);
+            _rebuildPollTimer = null;
+        }
+        _rebuildPollCount = 0;
+    }
+
     // Track last toggled blocklist for better toast messages
     let lastToggledBlocklist = null;
+    let _blocklistSaving = false;
+    let _blocklistSavePending = false;
 
     function bindBlocklistSourceListeners() {
         document.querySelectorAll('#blocklist-sources input[type="checkbox"][data-url]').forEach(cb => {
@@ -180,6 +216,13 @@
     }
 
     async function saveBlocklists() {
+        // Re-entrancy guard: if a save is already in-flight, queue another
+        if (_blocklistSaving) {
+            _blocklistSavePending = true;
+            return;
+        }
+        _blocklistSaving = true;
+
         const checkboxes = document.querySelectorAll('#blocklist-sources input[type="checkbox"]');
         const enabledUrls = Array.from(checkboxes)
             .filter(cb => cb.checked)
@@ -202,6 +245,12 @@
             setTimeout(() => loadBlocklistSources(), 2000);
         } catch (error) {
             wbToast('Failed to save blocklists: ' + error.message, 'danger');
+        } finally {
+            _blocklistSaving = false;
+            if (_blocklistSavePending) {
+                _blocklistSavePending = false;
+                setTimeout(() => saveBlocklists(), 50);
+            }
         }
     }
 
@@ -209,7 +258,7 @@
         try {
             const res = await api('POST', '/api/dns/blocklist/update');
             wbToast(res?.message || 'Blocklist update started', 'success');
-            // Refresh after a short delay to show updated state
+            // Refresh after a short delay, then continue polling
             setTimeout(() => loadBlocklistSources(), 2000);
         } catch (e) {
             wbToast('Update failed: ' + e.message, 'danger');

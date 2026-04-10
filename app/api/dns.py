@@ -210,14 +210,15 @@ def _regenerate_peer_tags_for_blocklist(conn: sqlite3.Connection) -> None:
 	_log.debug("DNS peer tags regenerated for %d peers", len(peer_list))
 
 
-def _regenerate_peer_tags_safe(db_path: str) -> None:
+def _regenerate_peer_tags_safe(db_path: str | Path) -> None:
 	"""Thread-safe wrapper for peer tags regeneration.
 	
 	Creates its own DB connection for use in asyncio.to_thread(),
 	since SQLite connections are not thread-safe by default.
 	"""
 	from ..db.sqlite_runtime import close_connection, connect
-	conn = connect(db_path)
+	# connect() expects Path (uses db_path.parent), so ensure conversion
+	conn = connect(Path(db_path) if isinstance(db_path, str) else db_path)
 	try:
 		_regenerate_peer_tags_for_blocklist(conn)
 	finally:

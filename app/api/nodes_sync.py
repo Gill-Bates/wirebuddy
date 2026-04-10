@@ -677,7 +677,15 @@ async def submit_node_speedtest_progress(
 			try:
 				queue.put_nowait(event_data)
 			except asyncio.QueueFull:
-				pass  # Drop event if queue is full
+				# Keep latest progress by dropping the oldest buffered event.
+				try:
+					queue.get_nowait()
+				except asyncio.QueueEmpty:
+					continue
+				try:
+					queue.put_nowait(event_data)
+				except asyncio.QueueFull:
+					continue
 	
 	return ok_response(message="Progress update received")
 

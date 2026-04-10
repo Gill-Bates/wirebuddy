@@ -16,6 +16,7 @@ making them independently testable without running the full application.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import random
 import time
@@ -38,7 +39,7 @@ _WG_CHECK_TIMEOUT_SECONDS = 5.0
 _PEER_STATE_MAX_SIZE = 100_000
 
 
-def _evict_peer_state_entries(peer_connection_state) -> int:
+def _evict_peer_state_entries(peer_connection_state: collections.OrderedDict[str, bool]) -> int:
 	"""Evict oldest peer state entries, preferring disconnected peers.
 	
 	Requires peer_connection_state to support OrderedDict interface
@@ -49,7 +50,7 @@ def _evict_peer_state_entries(peer_connection_state) -> int:
 		_log.warning("peer_connection_state does not support move_to_end (not an OrderedDict)")
 		return 0
 	
-	evict_target = _PEER_STATE_MAX_SIZE // 10
+	evict_target = max(1, _PEER_STATE_MAX_SIZE // 10)
 	evicted = 0
 	disconnected_keys = [
 		public_key for public_key, is_connected in peer_connection_state.items()
@@ -180,8 +181,11 @@ async def sample_tsdb_metrics(ctx: main.LifespanContext) -> None:
 	
 	try:
 		peer_counters = await _get_wg_peer_counters()
+		if peer_counters is None:
+			_log.debug("TSDB_SAMPLE skipped: wg counter collection failed")
+			return
 		if not peer_counters:
-			_log.debug("TSDB_SAMPLE no peers found or wg command failed")
+			_log.debug("TSDB_SAMPLE skipped: no WireGuard peers reported")
 			return
 
 		# Offload blocking TSDB writes to thread
@@ -351,7 +355,7 @@ async def check_adblocker_timer(ctx: main.LifespanContext) -> None:
 		_log.warning("ADBLOCKER_TIMER check failed: %s", exc)
 
 
-def get_speedtest_initial_delay(db_path, tsdb_dir) -> tuple[float, float | None, bool]:
+async def get_speedtest_initial_delay(db_path, tsdb_dir) -> tuple[float, float | None, bool]:
 	"""Calculate speedtest initial delay with missed-run detection.
 	
 	Reads the last run timestamp and calculates the delay to the next
@@ -381,20 +385,29 @@ def get_speedtest_initial_delay(db_path, tsdb_dir) -> tuple[float, float | None,
 		finally:
 			close_connection(conn)
 
-	def _migrate_last_run_to_db(last_run_ts: float) -> None:
+	def _migrate_last_run_to_db(last_run_ts: float) -> bool:
 		conn = connect(db_path)
 		try:
+			# Avoid overwriting a newer value that may have been written by
+			# another worker between file read and migration.
+			stored = get_speedtest_last_run_at(conn)
+			if stored is not None:
+				return False
 			set_speedtest_last_run_at(conn, dt.fromtimestamp(last_run_ts, timezone.utc))
+			return True
 		finally:
 			close_connection(conn)
 
 	# Primary source is the database; legacy file remains as fallback for cooldown guard migration.
-	last_run_ts = _read_last_run_from_db()
+	last_run_ts = await asyncio.to_thread(_read_last_run_from_db)
 	if last_run_ts is None:
 		last_run_ts = _read_last_run(_cooldown_path(Path(tsdb_dir)))
 		if last_run_ts is not None:
 			try:
-				_migrate_last_run_to_db(last_run_ts)
+				migrated = await asyncio.to_thread(_migrate_last_run_to_db, last_run_ts)
+				if migrated:
+					_log.info("SPEEDTEST_SCHEDULER migrated last-run timestamp from file to database")
+				last_run_ts = await asyncio.to_thread(_read_last_run_from_db)
 			except Exception as exc:
 				_log.debug("SPEEDTEST_SCHEDULER could not migrate last-run timestamp to database: %s", exc)
 	now = time.time()
@@ -488,7 +501,8 @@ async def _get_wg_peer_counters() -> dict[str, tuple[int, int, float]] | None:
 	
 	Returns:
 		Dict mapping public_key -> (rx_bytes, tx_bytes, latest_handshake_ts).
-		Returns None on error or if no peers.
+		Returns an empty dict when wg reports no peers.
+		Returns None on command/timeout/parse error.
 	"""
 	from ..main import _communicate_with_timeout, _parse_wg_dump_counters
 	
@@ -506,24 +520,40 @@ async def _get_wg_peer_counters() -> dict[str, tuple[int, int, float]] | None:
 		except asyncio.TimeoutError:
 			# Ensure subprocess is killed and reaped on timeout
 			proc.kill()
-			await proc.communicate()
+			try:
+				await asyncio.wait_for(proc.communicate(), timeout=1.0)
+			except asyncio.TimeoutError:
+				_log.error("WG_COUNTERS process did not terminate after SIGKILL")
 			_log.debug("WG_COUNTERS timeout after %ds", _WG_CHECK_TIMEOUT_SECONDS)
 			return None
 		if proc.returncode != 0:
+			stderr_text = (stderr_raw or b"").decode("utf-8", errors="replace").strip()
+			if stderr_text:
+				_log.debug("WG_COUNTERS command failed: returncode=%d stderr=%s", proc.returncode, stderr_text[:200])
+			else:
+				_log.debug("WG_COUNTERS command failed: returncode=%d", proc.returncode)
 			return None
 		
 		stdout = (stdout_raw or b"").decode("utf-8", errors="replace")
 		if not stdout.strip():
-			return None
+			_log.debug("WG_COUNTERS command returned empty output")
+			return {}
 
 		try:
 			return _parse_wg_dump_counters(stdout)
 		except Exception as exc:
-			_log.debug("WG_COUNTERS parse failed: %s", exc)
+			preview = stdout.strip().splitlines()[0][:160] if stdout.strip() else ""
+			if preview:
+				_log.debug("WG_COUNTERS parse failed: %s (first line: %s)", exc, preview)
+			else:
+				_log.debug("WG_COUNTERS parse failed: %s", exc)
 			return None
 	except asyncio.CancelledError:
 		raise
-	except (FileNotFoundError, OSError, ValueError) as exc:
+	except FileNotFoundError:
+		_log.debug("WG_COUNTERS failed: 'wg' binary not found")
+		return None
+	except (OSError, ValueError) as exc:
 		_log.debug("WG_COUNTERS failed: %s", exc)
 		return None
 
@@ -547,7 +577,13 @@ async def _has_active_peers() -> bool:
 
 
 async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
-	"""Scheduled task: run bandwidth measurement if enabled."""
+	"""Scheduled task: run bandwidth measurement if enabled.
+
+	Waits for the nightly window (02:00-04:00 local time), defers if peers
+	are active, and executes the speedtest with timeout protection.
+
+	Persists the result to TSDB and updates the last-run timestamp.
+	"""
 	from ..db import tsdb
 	from ..db.sqlite_settings import get_speedtest_enabled, set_speedtest_last_run_at
 	from ..db.sqlite_runtime import connect, close_connection

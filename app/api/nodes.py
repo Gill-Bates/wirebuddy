@@ -17,7 +17,8 @@ import sqlite3
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from ..api.auth import require_admin
@@ -48,6 +49,9 @@ _HOSTNAME_RE = re.compile(
 	r"^(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)*"
 	r"(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)$"
 )
+_NODE_STATUS_ONLINE = "online"
+_PENDING_COMMAND_RESTART = "restart"
+_PENDING_COMMAND_SPEEDTEST = "speedtest"
 
 router = APIRouter(tags=["nodes"])
 
@@ -122,19 +126,42 @@ class NodeUpdate(_NodePayloadBase):
 def _parse_node_metadata(value: Any, *, node_id: str) -> Any:
 	"""Return parsed node metadata when stored as JSON text."""
 	if value is None or value == "":
-		return None
+		return {}
 	if not isinstance(value, str):
 		return value
 	try:
 		return json.loads(value)
 	except json.JSONDecodeError:
-		_log.warning("Node %s has invalid metadata JSON; returning raw value", node_id)
-		return value
+		_log.warning("Node %s has invalid metadata JSON; returning empty dict", node_id)
+		return {}
 
 
 def _format_host_for_url(host: str) -> str:
 	"""Normalize a host for URL usage, adding IPv6 brackets when needed."""
-	clean = host.strip().strip("[]")
+	clean = host.strip()
+	clean = re.sub(r"^https?://", "", clean, flags=re.IGNORECASE)
+	clean = clean.rstrip("/")
+
+	# Bracketed IPv6 with optional port: [::1] or [::1]:8443
+	if clean.startswith("["):
+		end = clean.find("]")
+		if end > 0:
+			inner = clean[1:end]
+			rest = clean[end + 1 :].strip()
+			if rest and re.fullmatch(r":\d{1,5}", rest):
+				# Drop user-supplied port; _get_master_url defines the canonical port
+				rest = ""
+			if rest:
+				raise ValueError("Invalid bracketed IPv6 host")
+			clean = inner
+
+	# Unbracketed host: strip optional :port only for hostnames/IPv4
+	if clean.count(":") <= 1 and ":" in clean:
+		host_part, port_part = clean.rsplit(":", 1)
+		if port_part.isdigit():
+			clean = host_part
+
+	clean = clean.strip().strip("[]")
 	if not clean:
 		raise ValueError("Host is empty")
 	try:
@@ -142,6 +169,52 @@ def _format_host_for_url(host: str) -> str:
 	except ValueError:
 		return clean
 	return f"[{addr.compressed}]" if addr.version == 6 else str(addr)
+
+
+async def _send_node_command(
+	*,
+	node_id: str,
+	command: str,
+	notify_func,
+	conn: sqlite3.Connection,
+	user: sqlite3.Row,
+	action_label: str,
+	success_message: str,
+) -> dict[str, Any]:
+	"""Send a node command via in-memory SSE or DB pending-command fallback."""
+	node = await asyncio.to_thread(get_node, conn, node_id)
+	if not node:
+		raise HTTPException(status_code=404, detail="Node not found")
+
+	if node["status"] != _NODE_STATUS_ONLINE:
+		raise HTTPException(
+			status_code=400,
+			detail=f"Cannot {action_label.lower()} node in '{node['status']}' status. Node must be online.",
+		)
+
+	notified = await notify_func(node_id)
+
+	if notified == 0:
+		_log.info(
+			"notify_%s: no in-memory queue for node=%s, falling back to DB pending command",
+			command,
+			node_id,
+		)
+		try:
+			stored = await asyncio.to_thread(set_node_pending_command, conn, node_id, command)
+		except Exception as exc:
+			_log.error("Failed to queue pending command '%s' for node=%s: %s", command, node_id, exc)
+			raise HTTPException(status_code=500, detail=f"Failed to queue {action_label.lower()} command") from None
+
+		if not stored:
+			_log.error("set_node_pending_command returned false for node=%s command=%s", node_id, command)
+			raise HTTPException(status_code=500, detail=f"Failed to queue {action_label.lower()} command")
+
+	_log.info("%s signal sent to node: id=%s, name=%s (by user=%s)", action_label, node_id, node["name"], user["username"])
+	return ok_response(
+		message=success_message.format(node_name=node["name"]),
+		data={"notified_clients": notified},
+	)
 
 
 def _get_master_url(conn: sqlite3.Connection) -> str:
@@ -422,40 +495,15 @@ async def restart_node(
 	gracefully and Docker/systemd will restart it.
 	"""
 	from ..node import notifier as node_notifier
-	
-	node = await asyncio.to_thread(get_node, conn, node_id)
-	if not node:
-		raise HTTPException(status_code=404, detail="Node not found")
-	
-	if node["status"] != "online":
-		raise HTTPException(
-			status_code=400,
-			detail=f"Cannot restart node in '{node['status']}' status. Node must be online."
-		)
-	
-	notified = await node_notifier.notify_restart(node_id)
-	
-	if notified == 0:
-		# Node SSE stream is on a different worker or disconnected —
-		# store as DB pending command. The node daemon will pick it up
-		# on the next SSE reconnect or keepalive (~25 s).
-		_log.info(
-			"notify_restart: no in-memory queue for node=%s, falling back to DB pending command",
-			node_id,
-		)
-		stored = await asyncio.to_thread(set_node_pending_command, conn, node_id, "restart")
-		if not stored:
-			raise HTTPException(
-				status_code=503,
-				detail="Node is not connected via SSE. Restart signal could not be delivered.",
-			)
-	
-	_log.info("Restart signal sent to node: id=%s, name=%s (by user=%s)", 
-			 node_id, node["name"], user["username"])
-	
-	return ok_response(
-		message=f"Restart signal sent to node '{node['name']}'. The node will restart shortly.",
-		data={"notified_clients": notified},
+
+	return await _send_node_command(
+		node_id=node_id,
+		command=_PENDING_COMMAND_RESTART,
+		notify_func=node_notifier.notify_restart,
+		conn=conn,
+		user=user,
+		action_label="Restart",
+		success_message="Restart signal sent to node '{node_name}'. The node will restart shortly.",
 	)
 
 
@@ -471,39 +519,15 @@ async def trigger_node_speedtest(
 	and submit the results to the master.
 	"""
 	from ..node import notifier as node_notifier
-	
-	node = await asyncio.to_thread(get_node, conn, node_id)
-	if not node:
-		raise HTTPException(status_code=404, detail="Node not found")
-	
-	if node["status"] != "online":
-		raise HTTPException(
-			status_code=400,
-			detail=f"Cannot run speedtest on node in '{node['status']}' status. Node must be online."
-		)
-	
-	notified = await node_notifier.notify_run_speedtest(node_id)
-	
-	if notified == 0:
-		# Node SSE stream is on a different worker — store as DB pending command.
-		# The node daemon will pick it up on the next SSE keepalive (~25 s).
-		_log.info(
-			"notify_run_speedtest: no in-memory queue for node=%s, falling back to DB pending command",
-			node_id,
-		)
-		stored = await asyncio.to_thread(set_node_pending_command, conn, node_id, "speedtest")
-		if not stored:
-			raise HTTPException(
-				status_code=503,
-				detail="Node is not connected via SSE. Speedtest signal could not be delivered.",
-			)
-	
-	_log.info("Speedtest signal sent to node: id=%s, name=%s (by user=%s)", 
-			 node_id, node["name"], user["username"])
-	
-	return ok_response(
-		message=f"Speedtest signal sent to node '{node['name']}'. Results will appear shortly.",
-		data={"notified_clients": notified},
+
+	return await _send_node_command(
+		node_id=node_id,
+		command=_PENDING_COMMAND_SPEEDTEST,
+		notify_func=node_notifier.notify_run_speedtest,
+		conn=conn,
+		user=user,
+		action_label="Speedtest",
+		success_message="Speedtest signal sent to node '{node_name}'. Results will appear shortly.",
 	)
 
 
@@ -551,7 +575,7 @@ async def stream_node_speedtest_progress(
 			async with nodes_sync._progress_lock:
 				if nodes_sync._node_speedtest_progress[node_id]["progress"]:
 					initial = nodes_sync._node_speedtest_progress[node_id]["progress"]
-					yield f"event: progress\\ndata: {json.dumps(initial)}\\n\\n"
+					yield f"event: progress\ndata: {json.dumps(initial)}\n\n"
 			
 			# Stream progress updates
 			timeout_seconds = 150  # Timeout if no updates for 150s
@@ -561,26 +585,27 @@ async def stream_node_speedtest_progress(
 				
 				try:
 					progress = await asyncio.wait_for(progress_queue.get(), timeout=timeout_seconds)
-					yield f"event: progress\\ndata: {json.dumps(progress)}\\n\\n"
+					yield f"event: progress\ndata: {json.dumps(progress)}\n\n"
 					
 					# If progress is 100%, send complete event
 					if progress.get("progress", 0) >= 1.0:
-						yield f"event: complete\\ndata: {{}}\\n\\n"
+						yield f"event: complete\ndata: {{}}\n\n"
 						break
 				except asyncio.TimeoutError:
 					# No updates received within timeout
-					yield f"event: timeout\\ndata: {{\"message\": \"No progress updates received\"}}\\n\\n"
+					yield f"event: timeout\ndata: {{\"message\": \"No progress updates received\"}}\n\n"
 					break
 		finally:
 			# Unregister queue
 			async with nodes_sync._progress_lock:
-				if node_id in nodes_sync._node_speedtest_progress:
+				state = nodes_sync._node_speedtest_progress.get(node_id)
+				if state is not None:
 					try:
-						nodes_sync._node_speedtest_progress[node_id]["queues"].remove(progress_queue)
+						state["queues"].remove(progress_queue)
 					except ValueError:
 						pass
-					# Cleanup if no more clients
-					if not nodes_sync._node_speedtest_progress[node_id]["queues"]:
+					# Cleanup only if this exact state object is still current and empty.
+					if not state["queues"] and nodes_sync._node_speedtest_progress.get(node_id) is state:
 						del nodes_sync._node_speedtest_progress[node_id]
 	
 	return StreamingResponse(

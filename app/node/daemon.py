@@ -49,6 +49,7 @@ from .wg_manager import apply_config, get_wg_dump, has_running_interfaces, shutd
 _log = logging.getLogger(__name__)
 
 SYNC_INTERVAL = int(os.environ.get("WIREBUDDY_NODE_SYNC_INTERVAL", "30"))
+SYNC_INTERVAL_FAST = int(os.environ.get("WIREBUDDY_NODE_SYNC_INTERVAL_FAST", "5"))
 ENROLLMENT_RETRY_ATTEMPTS = max(1, int(os.environ.get("WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS", "3")))
 SESSION_PROPAGATION_DELAY = 0.5  # Delay after enrollment to ensure master has committed session secret
 
@@ -78,29 +79,22 @@ def _extract_error_detail(response: httpx.Response) -> str:
 	
 	Safely handles both complete and streaming responses.
 	"""
-	# Check if response is from a streaming context (not yet read)
-	# Streaming responses raise ResponseNotRead when accessing content
 	try:
-		# First, check if we can access the content
-		if hasattr(response, '_content') and response._content is None:
-			# Response hasn't been read yet (streaming response)
-			return ""
-		
-		# Try to parse JSON error detail
 		data = response.json()
-		return str(data.get("detail", ""))[:200]
-	except (ValueError, KeyError, AttributeError):
-		# JSON parsing failed, try text
-		try:
-			return response.text[:200] if response.text else ""
-		except httpx.ResponseNotRead:
-			# Streaming response - cannot read body
-			return ""
+		if isinstance(data, dict):
+			detail = data.get("detail", "")
+			return str(detail)[:200]
 	except httpx.ResponseNotRead:
-		# Cannot access streaming response body
 		return ""
 	except Exception:
-		# Any other error - return empty
+		pass
+
+	try:
+		text = response.text
+		return text[:200] if text else ""
+	except httpx.ResponseNotRead:
+		return ""
+	except Exception:
 		return ""
 
 
@@ -123,6 +117,10 @@ def _parse_enrollment_token(token_string: str, verify_key: str | None = None) ->
 	"""Parse the enrollment token, verifying it when an HMAC key is provided."""
 	if verify_key:
 		return verify_enrollment_token(token_string, verify_key)
+
+	env_name = os.getenv("WIREBUDDY_ENV", "").strip().lower()
+	if env_name in {"prod", "production"}:
+		raise ValueError("WIREBUDDY_ENROLLMENT_VERIFY_KEY is required in production")
 
 	# Token signature is verified by the master during enrollment anyway,
 	# local verification is an optional extra security layer for paranoid setups
@@ -346,7 +344,18 @@ async def _run_node_speedtest(
 	def progress_callback(event: dict) -> None:
 		"""Send progress update to master (non-blocking)."""
 		try:
-			asyncio.create_task(_send_speedtest_progress(client, master_url, api_secret, cert_fingerprint, event))
+			task = asyncio.create_task(
+				_send_speedtest_progress(client, master_url, api_secret, cert_fingerprint, event)
+			)
+
+			def _consume_progress_exception(done_task: asyncio.Task[None]) -> None:
+				if done_task.cancelled():
+					return
+				exc = done_task.exception()
+				if exc is not None:
+					_log.debug("Failed to send speedtest progress: %s", exc)
+
+			task.add_done_callback(_consume_progress_exception)
 		except Exception as exc:
 			_log.debug("Failed to send speedtest progress: %s", exc)
 	
@@ -529,18 +538,20 @@ async def main() -> None:
 				token_secret_hash = hashlib.sha256(
 					payload["api_secret"].encode("utf-8")
 				).hexdigest()
-				stored_hash = state.get("enrollment_secret_hash", "")
+				stored_hash = state.get("enrollment_secret_hash")
 
 				if payload["node_id"] != state["node_id"]:
 					needs_reenroll = True
 					reason = f"node_id changed ({payload['node_id']} vs {state['node_id']})"
-				elif token_secret_hash != stored_hash and stored_hash:
-					# Token secret changed AND we have a stored hash to compare against
+				elif not stored_hash:
+					# Legacy state without enrollment_secret_hash: token is present, so force
+					# a clean enrollment to avoid stale session credentials.
+					needs_reenroll = True
+					reason = "legacy enrollment state without token hash"
+				elif token_secret_hash != stored_hash:
+					# Token secret changed from last enrollment
 					needs_reenroll = True
 					reason = "enrollment token was regenerated"
-				# Note: Missing stored_hash is NOT a trigger for re-enrollment anymore.
-				# If we have valid persisted state, keep using it. Old nodes may not have
-				# this field, and that's fine — only force re-enrollment on actual token change.
 
 				if needs_reenroll:
 					_log.warning("Enrollment token changed: %s — clearing old state for re-enrollment", reason)
@@ -738,6 +749,7 @@ async def main() -> None:
 		config_changed_event = asyncio.Event()
 		node_removed_event = asyncio.Event()  # Set when 401 auth failures indicate node removal
 		speedtest_requested_event = asyncio.Event()  # Set when master requests on-demand speedtest
+		sse_connected_event = asyncio.Event()  # Tracks whether SSE is currently connected
 		sse_task = asyncio.create_task(
 			_sse_listener(
 				master_url,
@@ -749,6 +761,7 @@ async def main() -> None:
 				shutdown_event,
 				node_removed_event,
 				speedtest_requested_event,
+				sse_connected_event,
 			)
 		)
 		
@@ -805,6 +818,24 @@ async def main() -> None:
 					wg_dump = await asyncio.to_thread(get_wg_dump)
 				except Exception as exc:
 					_log.debug("Failed to sample WG metrics: %s", exc)
+				
+				# Enqueue peer metrics for reliable delivery to master
+				# Convert wg_dump dict to list format expected by enqueue_peer_traffic
+				if wg_dump:
+					peer_stats_list = [
+						{
+							"public_key": pub_key,
+							"endpoint": stats.get("endpoint"),
+							"latest_handshake": stats.get("latest_handshake"),
+							"transfer_rx": stats.get("transfer_rx", 0),
+							"transfer_tx": stats.get("transfer_tx", 0),
+						}
+						for pub_key, stats in wg_dump.items()
+					]
+					try:
+						await asyncio.to_thread(enqueue_peer_traffic, metrics_queue_conn, peer_stats_list)
+					except Exception as exc:
+						_log.debug("Failed to enqueue peer metrics: %s", exc)
 				
 				try:
 					_log.debug("Sync loop: sending heartbeat...")
@@ -884,7 +915,13 @@ async def main() -> None:
 						_log.warning("Retrying config pull in %.1fs", wait_time)
 				else:
 					backoff = 1  # Reset on success
-					wait_time = SYNC_INTERVAL
+					# Adaptive polling: use fast interval when SSE is disconnected
+					# to ensure near-real-time config updates even without SSE push
+					if sse_connected_event.is_set():
+						wait_time = SYNC_INTERVAL
+					else:
+						wait_time = SYNC_INTERVAL_FAST
+						_log.debug("SSE disconnected — using fast polling interval (%ds)", SYNC_INTERVAL_FAST)
 				
 				_log.debug("Sync loop: waiting %.1fs (backoff=%d)", wait_time, backoff)
 				
@@ -1089,12 +1126,13 @@ async def _sse_listener(
 	master_url: str,
 	api_secret: str,
 	cert_fingerprint: str,
-	tls_verify: bool | str,
+	tls_verify: ssl.SSLContext | bool,
 	master_ca_file: str | None,
 	config_changed_event: asyncio.Event,
 	shutdown_event: asyncio.Event,
 	node_removed_event: asyncio.Event,
 	speedtest_requested_event: asyncio.Event,
+	sse_connected_event: asyncio.Event | None = None,
 ) -> None:
 	"""Listen for Server-Sent Events from master for instant config push.
 	
@@ -1117,6 +1155,7 @@ async def _sse_listener(
 	Uses a persistent client to avoid TLS handshake overhead on reconnect.
 	"""
 	_log.debug("SSE listener task started")
+	_ = tls_verify  # Kept for API compatibility; listener uses a fresh context.
 	reconnect_delay = 1
 	consecutive_401_count = 0  # Track auth failures
 	
@@ -1148,11 +1187,11 @@ async def _sse_listener(
 						_log.info("SSE event stream connected — config changes will be pushed instantly")
 						reconnect_delay = 1  # Reset on successful connection
 						consecutive_401_count = 0  # Reset on successful connection
-						
-						# Trigger immediate config pull when SSE reconnects
-						# This ensures quick recovery when master comes back online
-						config_changed_event.set()
-						
+
+						# Signal that SSE is connected (sync loop uses normal interval)
+						if sse_connected_event is not None:
+							sse_connected_event.set()
+
 						event_type = None  # Track current event type across lines
 						async for line in response.aiter_lines():
 							if shutdown_event.is_set():
@@ -1185,6 +1224,9 @@ async def _sse_listener(
 								event_type = None  # Reset after processing
 						
 				except httpx.HTTPStatusError as exc:
+					# Signal SSE disconnected so sync loop switches to fast polling
+					if sse_connected_event is not None:
+						sse_connected_event.clear()
 					if exc.response.status_code == 401:
 						consecutive_401_count += 1
 						detail = _extract_error_detail(exc.response)
@@ -1201,6 +1243,9 @@ async def _sse_listener(
 						_log.warning("SSE HTTP error: %d%s", exc.response.status_code, detail_msg)
 				except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
 					_log.warning("SSE connection error: %s", exc)
+					# Signal SSE disconnected so sync loop switches to fast polling
+					if sse_connected_event is not None:
+						sse_connected_event.clear()
 				except asyncio.CancelledError:
 					_log.debug("SSE listener cancelled")
 					return

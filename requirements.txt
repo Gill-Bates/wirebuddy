@@ -1,6 +1,6 @@
 aiosqlite==0.22.1
 cbor2==5.9.0
-cryptography==46.0.6
+cryptography==46.0.7
 email-validator==2.3.0
 fastapi==0.135.3
 geoip2==5.2.0
@@ -12,8 +12,8 @@ Pillow==12.2.0
 pydantic==2.12.5
 pydantic-settings==2.13.1
 pyotp==2.9.0
-python-multipart==0.0.22
+python-multipart==0.0.24
 qrcode[pil]==8.2
 slowapi>=0.1.9
-uvicorn[standard]==0.42.0
+uvicorn[standard]==0.44.0
 webauthn==2.7.1

@@ -498,6 +498,12 @@ async def create_peer(
 			await _sync_master_path_then_notify_node(conn, payload.node_id)
 		except Exception as exc:
 			_log.warning("Failed to bump/notify config for node %s: %s", payload.node_id, exc)
+		# Regenerate Unbound peer tags for per-peer blocklist filtering
+		# Remote peers also need tags since their DNS queries arrive at master via tunnel
+		try:
+			await run_in_threadpool(_regenerate_peer_tags, conn)
+		except Exception as exc:
+			_log.exception("PEER_TAGS_REGEN_FAILED — DNS filtering may be stale")
 	else:
 		# For local peers: sync WG config and apply isolation rules
 		try:
@@ -740,6 +746,12 @@ async def delete_peer(
 			await _sync_master_path_then_notify_node(conn, old_node_id)
 		except Exception as exc:
 			_log.warning("Failed to bump/notify config for node %s after peer delete: %s", old_node_id, exc)
+
+		# Regenerate Unbound peer tags (remote peer removed from DNS filtering)
+		try:
+			await run_in_threadpool(_regenerate_peer_tags, conn)
+		except Exception as exc:
+			_log.exception("PEER_TAGS_REGEN_FAILED — DNS filtering may be stale")
 
 		_log.info("PEER_DELETED (remote) id=%d public_key=%s... node=%s", peer_id, public_key[:8], old_node_id)
 		return

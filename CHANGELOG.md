@@ -1,3 +1,13 @@
+## [1.4.2] - 2026-04-xx
+
+- ``New`` Update multiple Python dependencies
+- ``Fix`` Metrics from the nodes were not reliably transmitted to the master 
+- ``Fix`` No Speedtest results for the master were displayed on the dashboard
+- ``Fix`` Various stability improvements in the Wirebuddy engine
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.4.1] - 2026-04-02
 
 - ``New`` Switching the speed test to ``librespeed-cli`` for more reliable results [↗](https://gill-bates.github.io/wirebuddy/features/speedtest/)
@@ -15,10 +25,6 @@
 - ``Fix`` DNS module: Improved thread-safety and performance
 - ``Fix`` Better error handling during application shutdown
 - ``Fix`` Optimized retry logic to prevent load spikes
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.4.0] - 2026-03-30
 

@@ -1214,7 +1214,7 @@ async def _phase_scheduler(ctx: LifespanContext) -> None:
 		async def _check_adblocker_timer() -> None:
 			await scheduled_tasks.check_adblocker_timer(ctx)
 		scheduler.add("adblocker-timer-check", interval_seconds=15, func=_check_adblocker_timer, run_on_start=False, timeout=30.0)
-	initial_speedtest_delay, hours_since_last, speedtest_overdue = scheduled_tasks.get_speedtest_initial_delay(ctx.cfg.db_path, ctx.cfg.tsdb_dir)
+	initial_speedtest_delay, hours_since_last, speedtest_overdue = await scheduled_tasks.get_speedtest_initial_delay(ctx.cfg.db_path, ctx.cfg.tsdb_dir)
 	if hours_since_last is not None:
 		if speedtest_overdue:
 			_log.warning("SPEEDTEST_SCHEDULER last run was %.1f hours ago (>36h) - missed tests detected!", hours_since_last)

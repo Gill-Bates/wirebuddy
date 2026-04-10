@@ -942,15 +942,14 @@
 <div class="modal fade" id="addPeerModal" tabindex="-1" aria-labelledby="addPeerModalTitle"
     aria-describedby="addPeerModalDesc">
     <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
-        <div class="modal-content">
+        <form id="add-peer-form" class="modal-content" novalidate>
             <div class="modal-header">
                 <h5 class="modal-title" id="addPeerModalTitle">Add New Peer</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
-            <form id="add-peer-form" novalidate>
-                <div class="modal-body">
-                    <p class="visually-hidden" id="addPeerModalDesc">Create a peer and configure routing, DNS and
-                        blocklists.</p>
+            <div class="modal-body">
+                <p class="visually-hidden" id="addPeerModalDesc">Create a peer and configure routing, DNS and
+                    blocklists.</p>
 
                     <!-- BASICS -->
                     <h6 class="text-muted text-uppercase small mb-2">Basics</h6>
@@ -1123,8 +1122,7 @@
                         <span class="submit-text">Create Device</span>
                     </button>
                 </div>
-            </form>
-        </div>
+        </form>
     </div>
 </div>
 
@@ -1155,16 +1153,15 @@
 <div class="modal fade" id="editPeerModal" tabindex="-1" aria-labelledby="editPeerModalTitle"
     aria-describedby="editPeerModalDesc">
     <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
-        <div class="modal-content">
+        <form id="edit-peer-form" class="modal-content" novalidate>
             <div class="modal-header">
                 <h5 class="modal-title" id="editPeerModalTitle">Edit Peer</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
-            <form id="edit-peer-form" novalidate>
-                <input type="hidden" id="edit-peer-id">
-                <div class="modal-body">
-                    <p class="visually-hidden" id="editPeerModalDesc">Update peer settings, routing and DNS behavior.
-                    </p>
+            <input type="hidden" id="edit-peer-id">
+            <div class="modal-body">
+                <p class="visually-hidden" id="editPeerModalDesc">Update peer settings, routing and DNS behavior.
+                </p>
 
                     <!-- BASICS -->
                     <h6 class="text-muted text-uppercase small mb-2">Basics</h6>
@@ -1331,8 +1328,7 @@
                         <span class="submit-text">Save Changes</span>
                     </button>
                 </div>
-            </form>
-        </div>
+        </form>
     </div>
 </div>
 {% endif %}

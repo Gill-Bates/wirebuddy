@@ -386,41 +386,48 @@ async def get_speedtest_history(
 		since = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
 	# Fetch more points when filtering to ensure we have enough after filter
-	# Note: This is a heuristic - truncated flag may be approximate with node filtering
+	# Note: We adaptively increase fetch size because TSDB limit applies before
+	# filtering by node_id. Without this, frequent node results can push master
+	# results out of the initial window.
 	MAX_FETCH_LIMIT = 10000
-	if node_id and node_id.lower() != "all":
-		fetch_limit = min((limit + 1) * 3, MAX_FETCH_LIMIT)
-	else:
-		fetch_limit = limit + 1
-	
-	points = await run_in_threadpool(
-		tsdb.query,
-		cfg.tsdb_dir,
-		peer_key=SPEEDTEST_TSDB_KEY,
-		metric=SPEEDTEST_TSDB_METRIC,
-		since=since,
-		limit=fetch_limit,
-	)
-
-	# Filter by node_id
+	fetch_limit = min(limit + 1, MAX_FETCH_LIMIT)
+	points = []
 	filtered_points = []
-	for pt in points:
-		if not isinstance(pt.value, dict):
-			continue
-		pt_node_id = pt.value.get("node_id")  # None = master
-		
+	
+	def _matches_node_filter(pt_node_id: Any) -> bool:
 		if node_id is None or node_id == "":
 			# Master only (no node_id in record)
-			if pt_node_id is None:
+			return pt_node_id is None
+		if node_id.lower() == "all":
+			# All remote nodes — explicitly exclude master
+			return pt_node_id is not None
+		# Specific node
+		return pt_node_id == node_id
+
+	while True:
+		points = await run_in_threadpool(
+			tsdb.query,
+			cfg.tsdb_dir,
+			peer_key=SPEEDTEST_TSDB_KEY,
+			metric=SPEEDTEST_TSDB_METRIC,
+			since=since,
+			limit=fetch_limit,
+		)
+
+		filtered_points = []
+		for pt in points:
+			if not isinstance(pt.value, dict):
+				continue
+			pt_node_id = pt.value.get("node_id")  # None = master
+			if _matches_node_filter(pt_node_id):
 				filtered_points.append(pt)
-		elif node_id.lower() == "all":
-			# All remote nodes — explicitly exclude master (pt_node_id is None)
-			if pt_node_id is not None:
-				filtered_points.append(pt)
-		else:
-			# Specific node
-			if pt_node_id == node_id:
-				filtered_points.append(pt)
+
+		# Stop if we already have enough filtered points, reached max fetch size,
+		# or TSDB returned fewer points than requested (no more data available).
+		if len(filtered_points) > limit or fetch_limit >= MAX_FETCH_LIMIT or len(points) < fetch_limit:
+			break
+
+		fetch_limit = min(fetch_limit * 2, MAX_FETCH_LIMIT)
 	
 	# Truncate to actual limit and detect if more data exists
 	truncated = len(filtered_points) > limit
