@@ -15,13 +15,71 @@ const _wbIcons = {
     prompt: { icon: 'edit', color: 'var(--wb-primary)' },
 };
 
+const _wbAllowedInputTypes = new Set(['text', 'password', 'email', 'number', 'url', 'tel', 'search']);
+let _wbModalPendingFinish = null;
+let _wbModalPendingAbort = null;
+
 function _showModal({ title, message, type, showCancel, showInput, inputDefault, inputPlaceholder, inputType }) {
+    const dismissValue = showInput ? null : (showCancel ? false : true);
+
     if (window._wbReconnectState && window._wbReconnectState.active) {
-        if (showInput) return Promise.resolve(null);
-        if (showCancel) return Promise.resolve(false);
-        return Promise.resolve(true);
+        return Promise.resolve(dismissValue);
     }
+
+    if (!_wbModalEl || !window._wbModal) {
+        console.error('Modal: #wbModal element or bootstrap instance missing');
+        return Promise.resolve(dismissValue);
+    }
+
+    // Ensure previous modal promise settles before wiring a new modal lifecycle.
+    if (typeof _wbModalPendingFinish === 'function') {
+        _wbModalPendingFinish();
+    }
+    if (_wbModalPendingAbort) {
+        _wbModalPendingAbort.abort();
+        _wbModalPendingAbort = null;
+    }
+
     return new Promise(resolve => {
+        const controller = new AbortController();
+        const signal = controller.signal;
+        _wbModalPendingAbort = controller;
+
+        let settled = false;
+        let fallbackTimer = null;
+        let closeValue = dismissValue;
+
+        function safeResolve(val) {
+            if (settled) return;
+            settled = true;
+            if (fallbackTimer) {
+                clearTimeout(fallbackTimer);
+                fallbackTimer = null;
+            }
+            if (_wbModalPendingFinish === finish) {
+                _wbModalPendingFinish = null;
+            }
+            if (_wbModalPendingAbort === controller) {
+                _wbModalPendingAbort = null;
+            }
+            controller.abort();
+            resolve(val);
+        }
+
+        function finish(val = dismissValue) {
+            if (settled) return;
+            closeValue = val;
+            if (!_wbModalEl.classList.contains('show')) {
+                safeResolve(closeValue);
+                return;
+            }
+            document.activeElement?.blur();
+            fallbackTimer = setTimeout(() => safeResolve(closeValue), 500);
+            window._wbModal.hide();
+        }
+
+        _wbModalPendingFinish = finish;
+
         // Close non-form modals to prevent stacking, but preserve form modals
         document.querySelectorAll('.modal.show').forEach(modal => {
             const bsModal = bootstrap.Modal.getInstance(modal);
@@ -32,63 +90,66 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
         });
 
         const cfg = _wbIcons[type] || _wbIcons.info;
-        document.getElementById('wbModalTitle').textContent = title;
-        document.getElementById('wbModalMessage').textContent = message;
+        const titleEl = document.getElementById('wbModalTitle');
+        const messageEl = document.getElementById('wbModalMessage');
         const iconEl = document.getElementById('wbModalIcon');
+        const cancelBtn = document.getElementById('wbModalCancel');
+        const inputWrap = document.getElementById('wbModalInputWrap');
+        const inputEl = document.getElementById('wbModalInput');
+        const okBtn = document.getElementById('wbModalOk');
+        const closeBtn = document.getElementById('wbModalClose');
+
+        if (!titleEl || !messageEl || !iconEl || !cancelBtn || !inputWrap || !inputEl || !okBtn) {
+            console.error('Modal: required DOM elements missing');
+            safeResolve(dismissValue);
+            return;
+        }
+
+        titleEl.textContent = title;
+        messageEl.textContent = message;
         iconEl.textContent = cfg.icon;
         iconEl.style.color = cfg.color;
 
-        const cancelBtn = document.getElementById('wbModalCancel');
         cancelBtn.classList.toggle('d-none', !showCancel);
 
-        const inputWrap = document.getElementById('wbModalInputWrap');
-        const inputEl = document.getElementById('wbModalInput');
         inputWrap.classList.toggle('d-none', !showInput);
         if (showInput) {
             inputEl.value = inputDefault || '';
             inputEl.placeholder = inputPlaceholder || '';
-            inputEl.type = inputType || 'text';
+            const normalizedType = String(inputType || 'text').toLowerCase();
+            inputEl.type = _wbAllowedInputTypes.has(normalizedType) ? normalizedType : 'text';
         }
 
-        const okBtn = document.getElementById('wbModalOk');
         okBtn.className = 'btn ' + (type === 'danger' ? 'btn-danger' : 'btn-primary');
         okBtn.textContent = showCancel || showInput ? 'Confirm' : 'OK';
 
-        let settled = false;
-        function finish(val) {
-            if (settled) return;
-            settled = true;
-            const modalEl = document.getElementById('wbModal');
-
-            if (!modalEl.classList.contains('show')) {
-                resolve(val);
-                return;
-            }
-
-            const fallback = setTimeout(() => resolve(val), 500);
-            modalEl.addEventListener('hidden.bs.modal', () => {
-                clearTimeout(fallback);
-                resolve(val);
-            }, { once: true });
-            document.activeElement?.blur();
-            window._wbModal.hide();
-        }
-
-        okBtn.onclick = () => {
+        okBtn.addEventListener('click', () => {
             if (showInput) finish(inputEl.value);
             else finish(true);
-        };
+        }, { signal });
 
-        cancelBtn.onclick = () => finish(showInput ? null : false);
-        const closeBtn = document.getElementById('wbModalClose');
-        if (closeBtn) closeBtn.onclick = () => finish(showInput ? null : !showCancel);
+        cancelBtn.addEventListener('click', () => finish(showInput ? null : false), { signal });
+        if (closeBtn) closeBtn.addEventListener('click', () => finish(dismissValue), { signal });
 
         if (showInput) {
-            inputEl.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); okBtn.click(); } };
+            inputEl.addEventListener('keydown', e => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    okBtn.click();
+                }
+            }, { signal });
+            _wbModalEl.addEventListener('shown.bs.modal', () => {
+                inputEl.focus();
+                inputEl.select();
+            }, { once: true, signal });
         }
 
+        // Covers ESC/backdrop dismiss and explicit hide() calls.
+        _wbModalEl.addEventListener('hidden.bs.modal', () => {
+            safeResolve(closeValue);
+        }, { once: true, signal });
+
         window._wbModal.show();
-        if (showInput) setTimeout(() => inputEl.focus(), 300);
     });
 }
 
@@ -105,9 +166,29 @@ function wbPrompt(message, { defaultValue = '', placeholder = '', inputType = 't
     return _showModal({ title, message, type: 'prompt', showCancel: true, showInput: true, inputDefault: defaultValue, inputPlaceholder: placeholder, inputType });
 }
 
-function chartEmptyState() {
+function chartEmptyState(text = 'No Data Available') {
     const wrap = document.createElement('div');
     wrap.className = 'chart-empty-state';
-    wrap.innerHTML = '<span class="material-icons">database</span><span class="chart-empty-state-text">No Data Available</span>';
+    const icon = document.createElement('span');
+    icon.className = 'material-icons';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = 'database';
+
+    const messageEl = document.createElement('span');
+    messageEl.className = 'chart-empty-state-text';
+    messageEl.textContent = text;
+
+    wrap.append(icon, messageEl);
     return wrap;
 }
+
+window.addEventListener('pagehide', () => {
+    if (typeof _wbModalPendingFinish === 'function') {
+        _wbModalPendingFinish();
+    }
+    if (_wbModalPendingAbort) {
+        _wbModalPendingAbort.abort();
+        _wbModalPendingAbort = null;
+    }
+    _wbModalPendingFinish = null;
+});

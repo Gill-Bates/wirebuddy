@@ -16,7 +16,6 @@ let _adBlockerEnabled = dnsApp ? (dnsApp.dataset.enableBlocklist === 'true' || d
 // Named constants
 const LOG_BATCH_SIZE = 50;  // Items to render per batch
 const LOG_FETCH_LIMIT = 1000;  // Max items to fetch from API
-const MAX_RENDERED_ROWS = 200;  // Max DOM rows (virtual scrolling light)
 const SCROLL_THRESHOLD_PX = 150;  // Trigger infinite scroll when this close to bottom
 const SEARCH_DEBOUNCE_MS = 250;  // Debounce delay for search input
 const MENU_VIEWPORT_MARGIN_PX = 8;  // Minimum margin for context menu
@@ -29,6 +28,8 @@ let _renderedCount = 0;  // How many items currently rendered
 let _filteredData = [];  // Filtered data for infinite scroll
 let _lastFilterKey = '';  // Cache key for filter state
 let _logsLoadInProgress = false;  // Guard against concurrent loadLogsOnly calls
+let _logsLoadPending = false;  // Queue one trailing loadLogsOnly call
+let _logsLoadPendingShowLoading = false;  // Preserve strongest UI intent for queued load
 let _searchTimer = null;  // Debounce timer for search
 let _scrollRaf = null;  // RAF handle for scroll throttle
 let _logAutoFillQueued = false;  // Prevent stacked auto-fill checks
@@ -36,7 +37,16 @@ let _logActionState = null; // Active row action context
 let _isInitialTopDomainsRender = true; // Skip fade on first render
 let _topDomainFadeTimeout = null; // Timeout handle for fade animation fallback
 let _fadeAbort = null; // AbortController for peer filter fade animation
+let _restoreAbort = null; // AbortController for async log scroll restoration
+let _peerMapVersion = 0; // Invalidate cached log filter when peer map changes
 let _pageAbort = new AbortController();  // Abort controller for page cleanup
+
+const isAbortError = window.WBShared?.isAbortError || (err => {
+    if (err?.name === 'AbortError') return true;
+    if (err instanceof DOMException && err.name === 'AbortError') return true;
+    if (err?.code === 'ABORTED') return true;
+    return false;
+});
 
 /**
  * Extract raw client IP from a formatted 'PeerName (IP)' string.
@@ -66,7 +76,17 @@ function getSelectedPeerClientIps() {
             ips.push(ip);
         }
     }
-    return ips.map(encodeURIComponent).join(',');
+    return ips.join(',');
+}
+
+function peerMapsEqual(a, b) {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length !== bKeys.length) return false;
+    for (const key of aKeys) {
+        if (a[key] !== b[key]) return false;
+    }
+    return true;
 }
 
 document.addEventListener('keydown', (ev) => {
@@ -176,6 +196,12 @@ async function applyLogRuleAction(action, scope) {
     closeLogActionMenu();
     if (!state || !state.domain) return;
 
+    if (scope === 'global') {
+        const verb = action === 'block' ? 'Block' : 'Unblock';
+        const confirmed = window.confirm(`${verb} "${state.domain}" for all clients?`);
+        if (!confirmed) return;
+    }
+
     const payload = {
         action,
         scope,
@@ -236,6 +262,11 @@ function fmtNum(n) {
     return Math.floor(n).toString();
 }
 
+function setTextById(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+}
+
 /**
  * Calculate optimal bucket size for DNS trend chart based on viewport width.
  * Returns bucket_minutes capped to backend API limit (<= 1440).
@@ -273,7 +304,7 @@ async function loadTrend() {
         // 30 days = 720 hours, bucket size adapts to viewport
         const bucketMinutes = Math.min(1440, Math.max(5, getTrendBucketMinutes()));
         const clientIps = getSelectedPeerClientIps();
-        const clientIpsParam = clientIps ? `&client_ips=${clientIps}` : '';
+        const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
         let t;
         try {
             t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}${clientIpsParam}`, null, { signal: _pageAbort.signal });
@@ -429,7 +460,7 @@ async function loadTrend() {
 
         document.getElementById('trend-meta').textContent = '';
     } catch (e) {
-        if (e.name !== 'AbortError') {
+        if (!isAbortError(e)) {
             console.error('Trend load failed:', e);
         }
         document.getElementById('trend-meta').textContent = 'Trend unavailable';
@@ -447,12 +478,11 @@ async function loadStats() {
             statusEl.className = `dns-stat-value ${s.is_running ? 'text-success' : 'text-danger'}`;
         }
 
-        document.getElementById('stat-queries').textContent = fmtNum(s.total_queries);
-        document.getElementById('stat-blocked').textContent = fmtNum(s.blocked_queries);
-        document.getElementById('stat-percent').textContent = s.block_percentage + '%';
-        document.getElementById('stat-domains').textContent = fmtNum(s.unique_domains);
-        document.getElementById('stat-blocklist').textContent =
-            Number.isFinite(s.blocklist_size) ? s.blocklist_size.toLocaleString() : '0';
+        setTextById('stat-queries', fmtNum(s.total_queries));
+        setTextById('stat-blocked', fmtNum(s.blocked_queries));
+        setTextById('stat-percent', s.block_percentage + '%');
+        setTextById('stat-domains', fmtNum(s.unique_domains));
+        setTextById('stat-blocklist', Number.isFinite(s.blocklist_size) ? s.blocklist_size.toLocaleString() : '0');
 
         // Update adblocker button state
         const btn = document.getElementById('adblocker-btn');
@@ -477,11 +507,11 @@ async function loadStats() {
             statusEl.textContent = '?';
             statusEl.className = 'dns-stat-value text-muted';
         }
-        document.getElementById('stat-queries').textContent = '–';
-        document.getElementById('stat-blocked').textContent = '–';
-        document.getElementById('stat-percent').textContent = '–';
-        document.getElementById('stat-domains').textContent = '–';
-        document.getElementById('stat-blocklist').textContent = '–';
+        setTextById('stat-queries', '–');
+        setTextById('stat-blocked', '–');
+        setTextById('stat-percent', '–');
+        setTextById('stat-domains', '–');
+        setTextById('stat-blocklist', '–');
     }
 }
 
@@ -504,7 +534,7 @@ function renderTopDomainDisabled({ loadingId, contentId, emptyId, disabledId, un
 async function loadTopDomains() {
     try {
         const clientIps = getSelectedPeerClientIps();
-        const clientIpsParam = clientIps ? `&client_ips=${clientIps}` : '';
+        const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
         const data = await api('GET', `/api/dns/top-domains?limit=15${clientIpsParam}`, null, { signal: _pageAbort.signal });
         const topQueried = data.top_queried || [];
         const topBlocked = data.top_blocked || [];
@@ -697,8 +727,18 @@ function showLogsLoadingState() {
 }
 
 async function loadLogsOnly(showLoading = true) {
-    if (_logsLoadInProgress) return;
+    if (_logsLoadInProgress) {
+        _logsLoadPending = true;
+        _logsLoadPendingShowLoading = _logsLoadPendingShowLoading || showLoading;
+        return;
+    }
     _logsLoadInProgress = true;
+
+    if (_restoreAbort) {
+        _restoreAbort.abort();
+        _restoreAbort = null;
+    }
+
     try {
         if (showLoading) {
             showLogsLoadingState();
@@ -720,6 +760,7 @@ async function loadLogsOnly(showLoading = true) {
         const sig = (arr) => {
             if (!arr.length) return '';
             const mid = Math.floor(arr.length / 2);
+            // Lightweight change detection: may miss same-timestamp row updates.
             return `${arr.length}:${arr[0]?.timestamp}:${arr[mid]?.timestamp}:${arr.at(-1)?.timestamp}`;
         };
         const dataChanged = sig(newData) !== sig(_logData);
@@ -742,15 +783,20 @@ async function loadLogsOnly(showLoading = true) {
 
         // Re-render additional batches to restore scroll depth (yield to avoid UI blocking)
         if (!showLoading && prevRendered > LOG_BATCH_SIZE) {
+            _restoreAbort = new AbortController();
+            const signal = _restoreAbort.signal;
             const restoreScrollAsync = async () => {
-                while (_renderedCount < Math.min(prevRendered, _filteredData.length)) {
+                while (!signal.aborted && _renderedCount < Math.min(prevRendered, _filteredData.length)) {
                     renderLogs(true);
                     // Yield to allow UI updates
                     await new Promise(r => requestAnimationFrame(r));
                 }
                 // Restore scroll position (clamped to prevent overshoot if dataset shrunk)
-                if (logContainer) {
+                if (!signal.aborted && logContainer) {
                     logContainer.scrollTop = Math.min(scrollTop, logContainer.scrollHeight - logContainer.clientHeight);
+                }
+                if (_restoreAbort?.signal === signal) {
+                    _restoreAbort = null;
                 }
             };
             void restoreScrollAsync();
@@ -772,12 +818,25 @@ async function loadLogsOnly(showLoading = true) {
         }
     } finally {
         _logsLoadInProgress = false;
+        if (_logsLoadPending && !_pageAbort.signal.aborted) {
+            const nextShowLoading = _logsLoadPendingShowLoading;
+            _logsLoadPending = false;
+            _logsLoadPendingShowLoading = false;
+            void loadLogsOnly(nextShowLoading);
+        }
     }
 }
 
 async function loadPeers() {
     if (!isAdmin) {
-        _peerMap = {};
+        if (Object.keys(_peerMap).length > 0) {
+            _peerMap = {};
+            _peerMapVersion += 1;
+            _lastFilterKey = '';
+            renderLogs();
+        } else {
+            _peerMap = {};
+        }
         const peerFilter = document.getElementById('peer-filter');
         if (peerFilter) {
             clearNode(peerFilter);
@@ -828,7 +887,13 @@ async function loadPeers() {
         }
 
         // Atomic swap to avoid partial state
+        const mapChanged = !peerMapsEqual(_peerMap, newMap);
         _peerMap = newMap;
+        if (mapChanged) {
+            _peerMapVersion += 1;
+            _lastFilterKey = '';
+            renderLogs();
+        }
 
         const exists = Array.from(peerFilter.options).some(opt => opt.value === previousValue);
         peerFilter.value = exists ? previousValue : 'all';
@@ -855,7 +920,7 @@ function renderLogs(append = false) {
     if (!append) {
         _renderedCount = 0;
         // PERF: Only recompute filter if inputs changed
-        const filterKey = `${filter}|${peerFilter}|${search}`;
+        const filterKey = `${filter}|${peerFilter}|${search}|${_peerMapVersion}`;
         if (filterKey !== _lastFilterKey) {
             _filteredData = _logData.filter(q => {
                 if (filter === 'blocked' && !q.blocked) return false;
@@ -976,11 +1041,6 @@ function renderLogs(append = false) {
     tbody.appendChild(frag);
     _renderedCount = endIdx;
 
-    // PERF: Limit DOM size by removing old rows (virtual scrolling light)
-    while (tbody.children.length > MAX_RENDERED_ROWS) {
-        tbody.removeChild(tbody.firstChild);
-    }
-
     queueLogAutoFill();
 }
 
@@ -998,8 +1058,6 @@ function queueLogAutoFill() {
     const logContainer = document.getElementById('log-table-wrap');
     if (!logContainer || _logAutoFillQueued || _renderedCount >= _filteredData.length) return;
     if (logContainer.scrollHeight > logContainer.clientHeight + 1) return;
-    // PERF: Prevent autofill loops when DOM is already large
-    if (_renderedCount > MAX_RENDERED_ROWS) return;
 
     _logAutoFillQueued = true;
     requestAnimationFrame(() => {
@@ -1198,6 +1256,7 @@ themeObserver.observe(document.documentElement, {
     attributeFilter: ['data-bs-theme'],
 });
 window.addEventListener('pagehide', () => {
+    _refreshScheduler.destroy();
     themeObserver.disconnect();
     if (_trendChart) {
         _trendChart.destroy();
@@ -1215,6 +1274,20 @@ window.addEventListener('pagehide', () => {
         _fadeAbort.abort();
         _fadeAbort = null;
     }
+    if (_topDomainFadeTimeout) {
+        clearTimeout(_topDomainFadeTimeout);
+        _topDomainFadeTimeout = null;
+    }
+    if (_scrollRaf) {
+        cancelAnimationFrame(_scrollRaf);
+        _scrollRaf = null;
+    }
+    if (_restoreAbort) {
+        _restoreAbort.abort();
+        _restoreAbort = null;
+    }
+    _logsLoadPending = false;
+    _logsLoadPendingShowLoading = false;
     // Abort all in-flight API requests
     _pageAbort.abort();
 }, { once: true });
@@ -1304,8 +1377,6 @@ if (peerFilterSelect) {
         // Remove classes first to ensure fresh transition starts
         topQueriedCard.classList.remove('top-domain-card-fading');
         topBlockedCard.classList.remove('top-domain-card-fading');
-        // Force reflow to restart CSS transition
-        void topQueriedCard.offsetHeight;
 
         // Fade out cards, re-render on transition complete
         let transitionHandled = false;
@@ -1327,13 +1398,20 @@ if (peerFilterSelect) {
 
         topQueriedCard.addEventListener('transitionend', handleTransitionEnd,
             { once: true, signal });
-        topQueriedCard.classList.add('top-domain-card-fading');
-        topBlockedCard.classList.add('top-domain-card-fading');
 
-        // Fallback timeout in case transitionend doesn't fire
-        _topDomainFadeTimeout = setTimeout(() => {
-            if (!signal.aborted) handleTransitionEnd();
-        }, FADE_FALLBACK_MS);
+        // Restart transition without forced synchronous reflow.
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                if (signal.aborted) return;
+                topQueriedCard.classList.add('top-domain-card-fading');
+                topBlockedCard.classList.add('top-domain-card-fading');
+
+                // Fallback timeout in case transitionend doesn't fire
+                _topDomainFadeTimeout = setTimeout(() => {
+                    if (!signal.aborted) handleTransitionEnd();
+                }, FADE_FALLBACK_MS);
+            });
+        });
     });
 }
 

@@ -30,13 +30,16 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
+import time
+from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, validator
+from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from ..db import tsdb
@@ -62,6 +65,59 @@ _MAX_POINTS = 100_000
 
 # Cap peer names per country in the response
 _MAX_PEER_NAMES = 20
+
+
+# ---------------------------------------------------------------------------
+# Query Result Cache (TTL-based)
+# ---------------------------------------------------------------------------
+# Scanning TSDB JSONL files for long time ranges (30d+) is expensive.
+# Cache results for a short TTL matching the scheduler sampling interval.
+
+_CACHE_TTL_SECONDS = 30.0  # Match scheduler sampling interval
+_CACHE_MAX_ENTRIES = 50    # Bounded LRU (hours × peer combinations)
+
+
+@dataclass
+class _CacheEntry:
+	"""Cached query result with timestamp."""
+	data: Any
+	ts: float
+
+
+_country_cache: dict[tuple[int, str | None], _CacheEntry] = {}
+_asn_cache: dict[tuple[int, str | None], _CacheEntry] = {}
+_cache_lock = threading.Lock()
+
+
+def _cache_get(cache: dict, key: tuple) -> Any | None:
+	"""Get cached value if still valid (within TTL)."""
+	with _cache_lock:
+		entry = cache.get(key)
+		if entry is None:
+			return None
+		if time.monotonic() - entry.ts > _CACHE_TTL_SECONDS:
+			# Expired — remove and return None
+			cache.pop(key, None)
+			return None
+		return entry.data
+
+
+def _cache_set(cache: dict, key: tuple, value: Any) -> None:
+	"""Store value in cache with current timestamp."""
+	with _cache_lock:
+		# Evict oldest entries if at capacity
+		while len(cache) >= _CACHE_MAX_ENTRIES:
+			# Find oldest entry by timestamp
+			oldest_key = min(cache.keys(), key=lambda k: cache[k].ts)
+			cache.pop(oldest_key, None)
+		cache[key] = _CacheEntry(data=value, ts=time.monotonic())
+
+
+def _cache_invalidate_all() -> None:
+	"""Clear all caches (called on settings change, etc.)."""
+	with _cache_lock:
+		_country_cache.clear()
+		_asn_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +238,11 @@ def _validate_peer_filter(peer: str | None) -> str | None:
 	if len(peer) > 255:
 		raise HTTPException(status_code=400, detail="Peer name too long (max 255 characters)")
 
-	# Basic sanitization: allow alphanumeric, underscore, hyphen, dot
-	if not all(c.isalnum() or c in "._- " for c in peer):
+	# Basic sanitization: allow alphanumeric, underscore, hyphen, dot, hash
+	if not all(c.isalnum() or c in "._- #" for c in peer):
 		raise HTTPException(
 			status_code=400,
-			detail="Peer name contains invalid characters (allowed: alphanumeric, '.', '_', '-', space)"
+			detail="Peer name contains invalid characters (allowed: alphanumeric, '.', '_', '-', '#', space)"
 		)
 
 	return peer
@@ -240,9 +296,9 @@ def _aggregate_snapshots(
 				agg[key] = {
 					"rx": 0,
 					"tx": 0,
-					"name": info.get("name", "Unknown"),  # For ASN; ignored for country
+					"name": info.get("name", "Unknown"),
 					"peers": set(),
-					"peers_seen": 0,
+					"peers_seen": set(),
 				}
 
 			agg[key]["rx"] += rx
@@ -250,13 +306,15 @@ def _aggregate_snapshots(
 
 			# Collect peer names (capped at _MAX_PEER_NAMES)
 			if peer_filter:
-				agg[key]["peers_seen"] += 1
+				agg[key]["peers_seen"].add(peer_filter)
 				agg[key]["peers"].add(peer_filter)
 			else:
-				for name in info.get("peers", []):
-					agg[key]["peers_seen"] += 1
-					if len(agg[key]["peers"]) < _MAX_PEER_NAMES:
-						agg[key]["peers"].add(name)
+				peers = info.get("peers")
+				if peers:
+					for name in peers:
+						agg[key]["peers_seen"].add(name)
+						if len(agg[key]["peers"]) < _MAX_PEER_NAMES:
+							agg[key]["peers"].add(name)
 
 	# Freeze sets into sorted lists for deterministic JSON serialization
 	for info in agg.values():
@@ -294,10 +352,10 @@ def _build_country_entry(code: str, info: dict[str, Any], display_unit: str) -> 
 			total=total_display,
 			peers=len(info["peers"]),
 			peer_names=info["peers"],
-			peer_names_truncated=info["peers_seen"] > _MAX_PEER_NAMES,
+			peer_names_truncated=len(info["peers_seen"]) > _MAX_PEER_NAMES,
 			flag=f"/static/vendor/images/flags/{code.lower()}.svg" if code != "XX" else None,
 		)
-	except (ValueError, ZeroDivisionError, OverflowError) as exc:
+	except (ValueError, OverflowError) as exc:
 		_log.warning("Failed to build country entry for %s: %s", code, exc)
 		raise
 
@@ -331,9 +389,9 @@ def _build_asn_entry(asn_key: str, info: dict[str, Any], display_unit: str) -> A
 			total=total_display,
 			peers=len(info["peers"]),
 			peer_names=info["peers"],
-			peer_names_truncated=info["peers_seen"] > _MAX_PEER_NAMES,
+			peer_names_truncated=len(info["peers_seen"]) > _MAX_PEER_NAMES,
 		)
-	except (ValueError, ZeroDivisionError, OverflowError) as exc:
+	except (ValueError, OverflowError) as exc:
 		_log.warning("Failed to build ASN entry for %s: %s", asn_key, exc)
 		raise
 
@@ -451,6 +509,17 @@ async def get_traffic_by_country(
 
 	# Validate and log request
 	validated_peer = _validate_peer_filter(peer)
+
+	# Check cache first (avoids expensive TSDB scan)
+	cache_key = (str(tsdb_dir), hours, validated_peer)
+	cached = _cache_get(_country_cache, cache_key)
+	if cached is not None:
+		_log.debug(
+			"COUNTRY_TRAFFIC cache hit hours=%d peer_filter=%s",
+			hours, validated_peer,
+		)
+		return ok_response(data=cached)
+
 	_log.info(
 		"COUNTRY_TRAFFIC query by user=%s hours=%d peer_filter=%s",
 		current_user["username"] if "username" in current_user.keys() else current_user.get("id", "unknown"),
@@ -458,10 +527,19 @@ async def get_traffic_by_country(
 		validated_peer,
 	)
 
+	t0 = time.monotonic()
 	data: CountryTrafficData = await run_in_threadpool(
 		_compute_country_traffic, tsdb_dir, hours, validated_peer
 	)
-	return ok_response(data=data.model_dump())
+	elapsed_ms = (time.monotonic() - t0) * 1000
+	if elapsed_ms > 1000:
+		_log.warning("COUNTRY_TRAFFIC slow query: %.0fms hours=%d peer_filter=%s", elapsed_ms, hours, validated_peer)
+	else:
+		_log.debug("COUNTRY_TRAFFIC query: %.0fms hours=%d", elapsed_ms, hours)
+
+	result = data.model_dump()
+	_cache_set(_country_cache, cache_key, result)
+	return ok_response(data=result)
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +680,17 @@ async def get_traffic_by_asn(
 
 	# Validate and log request
 	validated_peer = _validate_peer_filter(peer)
+
+	# Check cache first (avoids expensive TSDB scan)
+	cache_key = (str(tsdb_dir), hours, validated_peer)
+	cached = _cache_get(_asn_cache, cache_key)
+	if cached is not None:
+		_log.debug(
+			"ASN_TRAFFIC cache hit hours=%d peer_filter=%s",
+			hours, validated_peer,
+		)
+		return ok_response(data=cached)
+
 	_log.info(
 		"ASN_TRAFFIC query by user=%s hours=%d peer_filter=%s",
 		current_user["username"] if "username" in current_user.keys() else current_user.get("id", "unknown"),
@@ -609,7 +698,16 @@ async def get_traffic_by_asn(
 		validated_peer,
 	)
 
+	t0 = time.monotonic()
 	data: ASNTrafficData = await run_in_threadpool(
 		_compute_asn_traffic, tsdb_dir, hours, validated_peer
 	)
-	return ok_response(data=data.model_dump())
+	elapsed_ms = (time.monotonic() - t0) * 1000
+	if elapsed_ms > 1000:
+		_log.warning("ASN_TRAFFIC slow query: %.0fms hours=%d peer_filter=%s", elapsed_ms, hours, validated_peer)
+	else:
+		_log.debug("ASN_TRAFFIC query: %.0fms hours=%d", elapsed_ms, hours)
+
+	result = data.model_dump()
+	_cache_set(_asn_cache, cache_key, result)
+	return ok_response(data=result)

@@ -30,6 +30,21 @@ function _blurActiveElement() {
     document.activeElement?.blur();
 }
 
+function _redirectToLoginIfNeeded() {
+    if (!window.location.pathname.startsWith('/login')) {
+        window.location.href = '/login';
+    }
+}
+
+function _safeHideModal(modal) {
+    try {
+        _blurActiveElement();
+        modal?.hide();
+    } catch (err) {
+        _debugReconnectError('modal hide failed', err);
+    }
+}
+
 function _getCsrfToken() {
     return typeof getCsrfToken === 'function' ? getCsrfToken() : '';
 }
@@ -67,8 +82,7 @@ function _stopReconnectMode() {
     _wbReconnectState.failCount = 0;
     document.body.classList.remove('wb-reconnecting');
     if (_wbReconnectModal) {
-        _blurActiveElement();
-        _wbReconnectModal.hide();
+        _safeHideModal(_wbReconnectModal);
     }
     window.dispatchEvent(new CustomEvent('wb:reconnect:stop'));
     _scheduleHeartbeat();
@@ -92,7 +106,7 @@ async function _probeReconnect() {
             cache: 'no-store',
         });
         if (res.status === 401) {
-            window.location.href = '/login';
+            _redirectToLoginIfNeeded();
             return;
         }
         if (res.ok) {
@@ -107,7 +121,8 @@ async function _probeReconnect() {
     }
 
     if (_wbReconnectState.active) {
-        _wbReconnectState.delayMs = Math.min(Math.round(_wbReconnectState.delayMs * 1.5), 30000);
+        const jitter = 0.8 + (Math.random() * 0.4);
+        _wbReconnectState.delayMs = Math.min(Math.round(_wbReconnectState.delayMs * 1.5 * jitter), 30000);
         _wbReconnectState.timer = setTimeout(_probeReconnect, _wbReconnectState.delayMs);
     }
 }
@@ -135,7 +150,7 @@ async function _heartbeatReconnectCheck() {
         });
 
         if (res.status === 401) {
-            window.location.href = '/login';
+            _redirectToLoginIfNeeded();
             return;
         }
 
@@ -161,18 +176,23 @@ async function _heartbeatReconnectCheck() {
     _scheduleHeartbeat();
 }
 
-function _startReconnectMode() {
-    if (_wbReconnectState.active) return;
+function _startReconnectMode(force = false) {
+    if (_wbReconnectState.active) return true;
 
     const now = Date.now();
+    const inSameBatch = (now - (_wbReconnectState.lastFailAt || 0)) <= 500;
 
     // Debounce: parallel failures within 500ms count as one batch
-    if (now - (_wbReconnectState.lastFailAt || 0) > 500) {
+    if (!inSameBatch) {
         _wbReconnectState.failCount++;
     }
     _wbReconnectState.lastFailAt = now;
 
-    if (_wbReconnectState.failCount < _wbReconnectState.failThreshold) {
+    if (force) {
+        _wbReconnectState.failCount = Math.max(_wbReconnectState.failCount, _wbReconnectState.failThreshold);
+    }
+
+    if (!force && _wbReconnectState.failCount < _wbReconnectState.failThreshold) {
         return false;
     }
 
@@ -181,8 +201,7 @@ function _startReconnectMode() {
     _clearHeartbeatTimer();
     document.body.classList.add('wb-reconnecting');
     if (window._wbModal) {
-        _blurActiveElement();
-        window._wbModal.hide();
+        _safeHideModal(window._wbModal);
     }
 
     const toastContainer = document.getElementById('wbToastContainer');
@@ -190,7 +209,7 @@ function _startReconnectMode() {
         toastContainer.querySelectorAll('.toast').forEach(el => {
             bootstrap.Toast.getInstance(el)?.dispose();
         });
-        toastContainer.innerHTML = '';
+        toastContainer.replaceChildren();
     }
 
     if (_wbReconnectModal) _wbReconnectModal.show();
@@ -219,13 +238,17 @@ window.addEventListener('online', () => {
 
 window.addEventListener('offline', () => {
     if (_wbReconnectState.active) return;
-    _wbReconnectState.failCount = _wbReconnectState.failThreshold;
-    _startReconnectMode();
+    _startReconnectMode(true);
 });
 
 window.addEventListener('pageshow', () => {
     if (_wbReconnectState.active) return;
     _scheduleHeartbeat(1000);
+});
+
+window.addEventListener('pagehide', () => {
+    _clearHeartbeatTimer();
+    _clearReconnectTimer();
 });
 
 _scheduleHeartbeat();

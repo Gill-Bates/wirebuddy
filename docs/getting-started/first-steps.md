@@ -78,7 +78,7 @@ Configure the peer:
 
 | Field | Example | Description |
 |-------|---------|-------------|
-| **Device Name** | `John's iPhone` | Descriptive name shown in the Peers list |
+| **Device Name** | `John's iPhone` | Descriptive name shown in the Peers list (alphanumeric, `.`, `_`, `-`, `#`, space, `'`) |
 | **Interface** | `wg0` | Select your interface |
 | **Routing Mode** | `Recommended` | Routes all traffic through the VPN |
 | **Use Ad-blocking DNS (WireBuddy)** | `On` | Uses the built-in DNS resolver with blocklists |

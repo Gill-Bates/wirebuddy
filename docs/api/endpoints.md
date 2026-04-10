@@ -183,6 +183,19 @@ POST /api/wireguard/peers
 }
 ```
 
+**Validation Rules:**
+
+- `name` (required): 1-128 characters, allowed: alphanumeric, `.`, `_`, `-`, `#`, space, apostrophe (`'`)
+- `interface` (required): Valid interface name (e.g., `wg0`)
+- `allowed_ips` (required): Comma-separated CIDR list (e.g., `0.0.0.0/0, ::/0`)
+- `allowed_ips_mode` (required): `full`, `split`, or `custom`
+    - When `full`: `allowed_ips` must include both `0.0.0.0/0` and `::/0`
+- `use_adblocker` (optional): Boolean, default `true`
+- `dns_logging_enabled` (optional): Boolean, default `true`
+- `blocklist_ids` (optional): Array of blocklist IDs or `null` for all
+- `client_isolation` (optional): Boolean, default `false`
+- `node_id` (optional): Assign peer to specific node (null = local/master)
+
 WireBuddy allocates `peer_address` automatically from the selected interface.
 
 ### Update Peer
@@ -199,6 +212,22 @@ The update endpoint accepts partial payloads. Example:
   "use_adblocker": false,
   "client_isolation": true
 }
+```
+
+**Validation Rules:**
+
+All fields are optional. When provided:
+
+- `name`: 1-128 characters, same rules as Create Peer
+- `allowed_ips`: Comma-separated CIDR list
+- `allowed_ips_mode`: `full`, `split`, or `custom`
+    - When `full` and `allowed_ips` is also provided: must include both `0.0.0.0/0` and `::/0`
+- `is_enabled`: Boolean
+- `use_adblocker`: Boolean
+- `dns_logging_enabled`: Boolean
+- `blocklist_ids`: Array of blocklist IDs or `null`
+- `client_isolation`: Boolean
+- `node_id`: Migrate peer to different node (null = local/master)
 ```
 
 ### Delete Peer

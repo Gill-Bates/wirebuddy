@@ -719,10 +719,7 @@ async def main() -> None:
 			# Check if we have a cached config but no running interfaces
 			# This can happen after container restart - state is preserved but WG is down
 			if current_config_version and not has_running_interfaces():
-				_log.warning("Cached config version exists but no WG interfaces running — forcing full config pull")
-				current_config_version = None
-			
-			# Initial config pull on resume (before entering loop)
+			_log.info("Cached config version exists but no WG interfaces running — forcing full config pull")
 			# This ensures we have config even if heartbeat fails
 			if current_config_version is None:
 				_log.info("Pulling initial config...")
@@ -996,7 +993,7 @@ async def _enroll(
 	Returns:
 		EnrollResult on success or if properly enrolled, or on failure.
 	"""
-	_log.info("Enrolling with master at %s ...", master_url)
+	_log.info("Enrolling with master at %s...", master_url)
 	try:
 		resp = await client.post(
 			f"{master_url}/api/nodes/enroll",
@@ -1007,8 +1004,13 @@ async def _enroll(
 			},
 		)
 		if resp.status_code == 409:
-			_log.info("Node already enrolled (409), will fetch config in sync loop")
-			return EnrollResult(success=True, config_version=None, session_secret=None)
+			# 409 = Node enrolled with different certificate — cannot recover automatically.
+			# User needs to delete the node on master and re-create with fresh token.
+			_log.error(
+				"Enrollment rejected: Node is enrolled with a different certificate. "
+				"Delete the node in the master UI and generate a new enrollment token."
+			)
+			return EnrollResult(success=False, config_version=None, session_secret=None, fatal=True)
 		resp.raise_for_status()
 		data = resp.json()
 		config = data.get("data", {})

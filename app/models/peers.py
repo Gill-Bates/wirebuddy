@@ -17,18 +17,19 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 __all__ = [
-	"PeerCreate",
-	"PeerUpdate",
-	"PeerPublic",
-	"PeerConfig",
-	"PeerStats",
+    "PeerCreate",
+    "PeerUpdate",
+    "PeerPublic",
+    "PeerConfig",
+    "PeerStats",
 ]
 
-_INTERFACE_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]{0,14}")
-_WG_KEY_RE = re.compile(r"[A-Za-z0-9+/]{43}=")
-_BLOCKLIST_ID_RE = re.compile(r"[a-z0-9_-]{1,64}")
-_HOST_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
-_NODE_ID_RE = re.compile(r"[0-9a-f]{32}")
+_INTERFACE_RE = re.compile(r"\A[a-zA-Z][a-zA-Z0-9_-]{0,14}\Z")
+_WG_KEY_RE = re.compile(r"\A[A-Za-z0-9+/]{43}=\Z")
+_BLOCKLIST_ID_RE = re.compile(r"\A[a-z0-9_-]{1,64}\Z")
+_HOST_LABEL_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
+_NODE_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
+_PEER_NAME_RE = re.compile(r"\A[a-zA-Z0-9._\-# ']+\Z")
 
 
 def _validate_interface_name(value: str) -> str:
@@ -51,7 +52,16 @@ def _validate_wg_key(value: Optional[str]) -> Optional[str]:
 	return value
 
 
-def _normalize_csv(value: str, *, field_name: str) -> list[str]:
+def _parse_comma_separated_list(value: str, *, field_name: str) -> list[str]:
+	"""Parse and normalize a comma-separated string (e.g., WireGuard allowed_ips, DNS).
+	
+	Args:
+		value: Comma-separated string
+		field_name: Field name for error messages
+		
+	Returns:
+		List of stripped, deduplicated items (order preserved)
+	"""
 	items = [item.strip() for item in value.split(",") if item.strip()]
 	if not items:
 		raise ValueError(f"{field_name} must not be empty")
@@ -60,7 +70,7 @@ def _normalize_csv(value: str, *, field_name: str) -> list[str]:
 
 
 def _validate_cidr_list(value: str, *, field_name: str) -> str:
-	items = _normalize_csv(value, field_name=field_name)
+	items = _parse_comma_separated_list(value, field_name=field_name)
 	for item in items:
 		try:
 			ipaddress.ip_network(item, strict=False)
@@ -70,7 +80,7 @@ def _validate_cidr_list(value: str, *, field_name: str) -> str:
 
 
 def _validate_interface_list(value: str, *, field_name: str) -> str:
-	items = _normalize_csv(value, field_name=field_name)
+	items = _parse_comma_separated_list(value, field_name=field_name)
 	for item in items:
 		try:
 			ipaddress.ip_interface(item)
@@ -80,7 +90,7 @@ def _validate_interface_list(value: str, *, field_name: str) -> str:
 
 
 def _validate_ip_list(value: str, *, field_name: str) -> str:
-	items = _normalize_csv(value, field_name=field_name)
+	items = _parse_comma_separated_list(value, field_name=field_name)
 	for item in items:
 		try:
 			ipaddress.ip_address(item)
@@ -197,7 +207,10 @@ class PeerCreate(BaseModel):
 	def name_not_blank(cls, v: str) -> str:
 		if not v or not v.strip():
 			raise ValueError("Peer name is required and cannot be blank")
-		return v.strip()
+		v = v.strip()
+		if not _PEER_NAME_RE.fullmatch(v):
+			raise ValueError("Peer name contains invalid characters (allowed: alphanumeric, '.', '_', '-', '#', space, apostrophe)")
+		return v
 
 	@field_validator("interface")
 	@classmethod
@@ -279,6 +292,8 @@ class PeerUpdate(BaseModel):
 		v = v.strip()
 		if not v:
 			raise ValueError("Peer name cannot be blank")
+		if not _PEER_NAME_RE.fullmatch(v):
+			raise ValueError("Peer name contains invalid characters (allowed: alphanumeric, '.', '_', '-', '#', space, apostrophe)")
 		return v
 
 	@field_validator("allowed_ips")
@@ -302,6 +317,16 @@ class PeerUpdate(BaseModel):
 	@classmethod
 	def node_id_valid(cls, v: Optional[str]) -> Optional[str]:
 		return _validate_node_id(v)
+
+	@model_validator(mode="after")
+	def validate_mode_consistency(self):
+		"""Validate allowed_ips matches allowed_ips_mode when both are provided."""
+		if self.allowed_ips_mode == "full" and self.allowed_ips is not None:
+			expected = {"0.0.0.0/0", "::/0"}
+			actual = {ip.strip() for ip in self.allowed_ips.split(",")}
+			if not actual.issuperset(expected):
+				raise ValueError("allowed_ips_mode='full' requires both 0.0.0.0/0 and ::/0 in allowed_ips")
+		return self
 
 
 class PeerPublic(BaseModel):
@@ -327,7 +352,7 @@ class PeerPublic(BaseModel):
 class PeerConfig(BaseModel):
 	"""Full peer configuration (for QR code / config file)."""
 	interface_name: str
-	private_key: str
+	private_key: str = Field(..., repr=False)
 	address: str
 	dns: Optional[str] = None
 	mtu: int = Field(default=1420, ge=1280, le=65535)
@@ -336,7 +361,7 @@ class PeerConfig(BaseModel):
 	server_endpoint: str
 	allowed_ips: str = "0.0.0.0/0, ::/0"
 	persistent_keepalive: int = Field(default=25, ge=0, le=65535)
-	preshared_key: Optional[str] = None
+	preshared_key: Optional[str] = Field(None, repr=False)
 
 	@field_validator("interface_name")
 	@classmethod
@@ -429,4 +454,7 @@ class PeerStats(BaseModel):
 	@field_validator("endpoint")
 	@classmethod
 	def endpoint_valid(cls, v: Optional[str]) -> Optional[str]:
+		# WireGuard outputs "(none)" for peers with no endpoint
+		if v in (None, "(none)", ""):
+			return None
 		return _validate_endpoint_value(v)

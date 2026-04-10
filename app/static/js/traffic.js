@@ -18,6 +18,7 @@
     const API_TIMEOUT_MS = 25000;
     const MAX_BACKOFF_MS = 300000;
     const MIN_VISIBLE_REFRESH_INTERVAL_MS = 5000;
+    const RESIZE_FETCH_THRESHOLD = 0.2;
 
     // Responsive data point settings
     const MIN_POINTS = 10;
@@ -46,6 +47,8 @@
     let peerFilterHandler = null;
     let rangeChangeHandler = null;
     let peerFilterTimeout = null; // Timeout handle for peer filter debounce
+    let peerFilterAbort = null; // AbortController for peer filter transition race handling
+    let lastInvalidPeerWarned = '';
 
     // Color palette for multiple peers
     const peerColors = Object.freeze([
@@ -121,6 +124,7 @@
         if (!url || typeof url !== 'string') return false;
         try {
             const u = new URL(url, window.location.origin);
+            if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
             return u.origin === window.location.origin && u.pathname.startsWith('/static/');
         } catch {
             return false;
@@ -139,6 +143,30 @@
             'y1': 'last year',
         };
         return labels[rangeKey] || rangeKey;
+    }
+
+    function isValidPeerFilterValue(value) {
+        if (!value) return false;
+        const trimmed = String(value).trim();
+        if (!trimmed) return false;
+        return /^[A-Za-z0-9._\- #]+$/.test(trimmed);
+    }
+
+    function getServerPeerFilterOrEmpty() {
+        const raw = trafficPeerFilter?.value || '';
+        if (!raw) return '';
+        if (isValidPeerFilterValue(raw)) return raw;
+
+        if (lastInvalidPeerWarned !== raw) {
+            lastInvalidPeerWarned = raw;
+            const msg = 'Selected peer cannot be server-filtered due to unsupported characters.';
+            if (typeof wbToast === 'function') {
+                wbToast(msg, 'warning');
+            } else {
+                console.warn('Traffic page:', msg, raw);
+            }
+        }
+        return '';
     }
 
     /**
@@ -247,14 +275,18 @@
     function shortLabel(isoStr, hours) {
         const d = new Date(isoStr);
         if (isNaN(d.getTime())) return '—';
-        const h = Number(hours);
-        if (h > 168) {
-            return d.toLocaleDateString([], { month: 'short', day: '2-digit' });
+        try {
+            const h = Number(hours);
+            if (h > 168) {
+                return d.toLocaleDateString([], { month: 'short', day: '2-digit' });
+            }
+            if (h > 24) {
+                return d.toLocaleString([], { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+            }
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } catch {
+            return d.toISOString().slice(0, 16).replace('T', ' ');
         }
-        if (h > 24) {
-            return d.toLocaleString([], { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-        }
-        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 
     function getChartColors() {
@@ -473,7 +505,7 @@
     async function refreshCountryTraffic(signal) {
         try {
             const range = trafficRange?.value || '24h';
-            const peerFilter = trafficPeerFilter?.value || '';
+            const peerFilter = getServerPeerFilterOrEmpty();
             let url = `/api/wireguard/stats/traffic-by-country?range_key=${encodeURIComponent(range)}`;
             if (peerFilter) {
                 url += `&peer=${encodeURIComponent(peerFilter)}`;
@@ -506,7 +538,7 @@
 
         // Note: Server-side filtering is now applied via the `peer` query param.
         // Client-side filtering is kept as fallback for historical data without by_peer.
-        const peerFilter = trafficPeerFilter?.value || '';
+        const peerFilter = getServerPeerFilterOrEmpty();
         const unfilteredCount = countries.length;
 
         // Filter out countries with zero or negligible traffic (that would display as "0")
@@ -576,7 +608,7 @@
     async function refreshASNTraffic(signal) {
         try {
             const range = trafficRange?.value || '24h';
-            const peerFilter = trafficPeerFilter?.value || '';
+            const peerFilter = getServerPeerFilterOrEmpty();
             let url = `/api/wireguard/stats/traffic-by-asn?range_key=${encodeURIComponent(range)}`;
             if (peerFilter) {
                 url += `&peer=${encodeURIComponent(peerFilter)}`;
@@ -609,7 +641,7 @@
 
         // Note: Server-side filtering is now applied via the `peer` query param.
         // Client-side filtering is kept as fallback for historical data without by_peer.
-        const peerFilter = trafficPeerFilter?.value || '';
+        const peerFilter = getServerPeerFilterOrEmpty();
         const unfilteredCount = asns.length;
 
         // Filter out ASNs with zero or negligible traffic (that would display as "0")
@@ -992,6 +1024,10 @@
         clearTimeout(trafficRangeDebounce);
         clearTimeout(resizeDebounce);
         clearTimeout(peerFilterTimeout);
+        if (peerFilterAbort) {
+            peerFilterAbort.abort();
+            peerFilterAbort = null;
+        }
         if (themeObserver) {
             themeObserver.disconnect();
             themeObserver = null;
@@ -1037,7 +1073,7 @@
         isInitialRender = true;
         cleanupComplete = false;
 
-        // Clean up any existing chart from previous page load (bfcache restore)
+        // Clean up any existing chart from bfcache restore.
         destroyTrafficCharts();
 
         if (typeof api !== 'function' || typeof wbToast !== 'function') {
@@ -1110,43 +1146,72 @@
         window.addEventListener('pagehide', cleanup);
 
         peerFilterHandler = () => {
+            // Cancel previous transition workflow to ensure latest selection wins.
+            if (peerFilterAbort) {
+                peerFilterAbort.abort();
+            }
+            peerFilterAbort = new AbortController();
+            const signal = peerFilterAbort.signal;
+
             // Cancel any pending timeout from previous filter change
             clearTimeout(peerFilterTimeout);
+            peerFilterTimeout = null;
 
             // Server-side filtering requires a full refresh to re-fetch data with the new peer filter.
             // This ensures Country and ASN traffic reflect only the selected peer's traffic.
             if (!trafficCombinedWrap) {
                 // No chart to fade, refresh immediately
-                refreshAll();
+                void refreshAll();
                 return;
             }
 
             // Skip fade effect on initial render - only fade when user actively changes filter
             if (isInitialRender) {
-                refreshAll();
+                void refreshAll();
                 return;
             }
 
             // Fade out chart, refresh on transition complete
             let handled = false;
             const handleTransitionEnd = async () => {
-                if (handled) return;
+                if (handled || signal.aborted) return;
                 handled = true;
+                if (peerFilterTimeout) {
+                    clearTimeout(peerFilterTimeout);
+                    peerFilterTimeout = null;
+                }
                 try {
                     await refreshAll();
                 } catch (e) {
                     dbg('Refresh failed during filter transition:', e);
                 }
+                if (signal.aborted) return;
                 requestAnimationFrame(() => {
+                    if (signal.aborted) return;
                     trafficCombinedWrap.classList.remove('traffic-chart-fading');
                 });
+                if (peerFilterAbort?.signal === signal) {
+                    peerFilterAbort = null;
+                }
             };
 
-            trafficCombinedWrap.addEventListener('transitionend', handleTransitionEnd, { once: true });
-            trafficCombinedWrap.classList.add('traffic-chart-fading');
+            trafficCombinedWrap.classList.remove('traffic-chart-fading');
+            trafficCombinedWrap.addEventListener('transitionend', () => {
+                void handleTransitionEnd();
+            }, { once: true, signal });
+
+            // Restart transition without forced synchronous reflow.
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    if (signal.aborted) return;
+                    trafficCombinedWrap.classList.add('traffic-chart-fading');
+                });
+            });
 
             // Fallback timeout in case transitionend doesn't fire
-            peerFilterTimeout = setTimeout(handleTransitionEnd, 300);
+            peerFilterTimeout = setTimeout(() => {
+                void handleTransitionEnd();
+            }, 300);
         };
         trafficPeerFilter?.addEventListener('change', peerFilterHandler);
 
@@ -1167,11 +1232,17 @@
                 resizeDebounce = setTimeout(() => {
                     const newMaxPoints = getOptimalMaxPoints();
 
+                    if (lastMaxPoints <= 0) {
+                        lastMaxPoints = newMaxPoints;
+                        dbg(`Resize baseline set: ${newMaxPoints} points`);
+                        return;
+                    }
+
                     // Re-fetch when the optimal point count changes significantly
                     // (both up AND down — e.g. rotating phone from landscape to portrait)
-                    if (lastMaxPoints > 0 && Math.abs(newMaxPoints - lastMaxPoints) > lastMaxPoints * 0.2) {
+                    if (Math.abs(newMaxPoints - lastMaxPoints) > lastMaxPoints * RESIZE_FETCH_THRESHOLD) {
                         dbg(`Resize detected: ${lastMaxPoints} -> ${newMaxPoints} points, fetching new data...`);
-                        refreshAll();
+                        void refreshAll();
                     } else {
                         // Just re-render from cache - Chart.js handles the responsive layout
                         dbg(`Resize detected: chart will adapt automatically`);

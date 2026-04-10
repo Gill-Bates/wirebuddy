@@ -1,12 +1,22 @@
-## [1.4.2] - 2026-04-xx
+## [1.4.3] - 2026-04-10
+
+- ``Fix`` 🔥 Node re-enrollment loop when state file was lost (certificate-based recovery)
+- ``Fix`` Traffic analysis queries now cached for 30s (faster page loads)
+- ``Fix`` Peer names now support apostrophes (e.g., "John's iPhone")
+- ``Fix`` API validation consistency improved for peer updates
+- ``Fix`` Reduced unnecessary warnings in logs during normal operation
+- ``Fix`` Various stability improvements in the Wirebuddy engine
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
+## [1.4.2] - 2026-04-10
 
 - ``New`` Update multiple Python dependencies
 - ``Fix`` Metrics from the nodes were not reliably transmitted to the master 
 - ``Fix`` No Speedtest results for the master were displayed on the dashboard
 - ``Fix`` Various stability improvements in the Wirebuddy engine
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.4.1] - 2026-04-02
 

@@ -84,7 +84,7 @@ Peers represent individual clients (laptops, phones, etc.) connecting to your VP
 
 | Setting | Required | Description |
 |---------|----------|-------------|
-| **Device Name** | Yes | Descriptive label for the client device |
+| **Device Name** | Yes | Descriptive label for the client device (1-128 chars: alphanumeric, `.`, `_`, `-`, `#`, space, `'`) |
 | **Interface** | Yes | Which WireGuard interface to use |
 | **Routing Mode** | Yes | `Recommended`, `Local network access`, or `Advanced` |
 | **Public Key** | No | Auto-generated if not provided |

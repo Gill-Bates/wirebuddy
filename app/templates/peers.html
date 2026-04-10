@@ -963,8 +963,8 @@
                     
                     <div class="mb-2">
                         <label for="peer-name" class="form-label">Device Name <span class="text-danger">*</span></label>
-                        <input type="text" class="form-control" id="peer-name" maxlength="128" placeholder="e.g., John's iPhone" required>
-                        <div class="invalid-feedback">Peer name is required</div>
+                        <input type="text" class="form-control" id="peer-name" maxlength="128" placeholder="e.g., John's iPhone" pattern="[a-zA-Z0-9._\-# ']+" required>
+                        <div class="invalid-feedback" id="peer-name-feedback">Peer name is required</div>
                     </div>
                     <div class="mb-2">
                         <label for="peer-interface" class="form-label">Interface</label>
@@ -1168,8 +1168,8 @@
 
                     <div class="mb-2">
                         <label for="edit-peer-name" class="form-label">Device Name <span class="text-danger">*</span></label>
-                        <input type="text" class="form-control" id="edit-peer-name" maxlength="128" placeholder="e.g., John's iPhone" required>
-                        <div class="invalid-feedback">Peer name is required</div>
+                        <input type="text" class="form-control" id="edit-peer-name" maxlength="128" placeholder="e.g., John's iPhone" pattern="[a-zA-Z0-9._\-# ']+" required>
+                        <div class="invalid-feedback" id="edit-peer-name-feedback">Peer name is required</div>
                     </div>
 
                     {% if nodes %}
@@ -1647,6 +1647,20 @@
         return entries.every(isValidCidrEntry);
     }
 
+    function validatePeerName(name, feedbackElementId = 'peer-name-feedback') {
+        const feedbackEl = document.getElementById(feedbackElementId);
+        if (feedbackEl) {
+            if (!name || !name.trim()) {
+                feedbackEl.textContent = 'Peer name is required';
+            } else if (!name.match(/^[a-zA-Z0-9._\-# ']+$/)) {
+                feedbackEl.textContent = "Peer name contains invalid characters (allowed: alphanumeric, '.', '_', '-', '#', space, apostrophe)";
+            } else {
+                feedbackEl.textContent = '';
+            }
+        }
+        return name && name.trim() && name.match(/^[a-zA-Z0-9._\-# ']+$/);
+    }
+
     function parseEndpointIp(endpoint) {
         if (!endpoint || typeof endpoint !== 'string') return '';
         const trimmed = endpoint.trim();
@@ -2079,6 +2093,16 @@
     document.getElementById('peer-name')?.addEventListener('input', function() {
         this.classList.remove('is-invalid');
     });
+    document.getElementById('peer-name')?.addEventListener('blur', function() {
+        if (this.value) {
+            validatePeerName(this.value, 'peer-name-feedback');
+            if (!this.value.match(/^[a-zA-Z0-9._\-# ']+$/)) {
+                this.classList.add('is-invalid');
+            } else {
+                this.classList.remove('is-invalid');
+            }
+        }
+    });
     addPeerFormEl.addEventListener('submit', async function (e) {
         e.preventDefault();
 
@@ -2088,7 +2112,7 @@
 
         const peerNameInput = document.getElementById('peer-name');
         const peerName = peerNameInput.value.trim();
-        if (!peerName) {
+        if (!validatePeerName(peerName, 'peer-name-feedback')) {
             peerNameInput.classList.add('is-invalid');
             peerNameInput.focus();
             return;
@@ -2169,6 +2193,16 @@
     document.getElementById('edit-peer-name')?.addEventListener('input', function() {
         this.classList.remove('is-invalid');
     });
+    document.getElementById('edit-peer-name')?.addEventListener('blur', function() {
+        if (this.value) {
+            validatePeerName(this.value, 'edit-peer-name-feedback');
+            if (!this.value.match(/^[a-zA-Z0-9._\-# ']+$/)) {
+                this.classList.add('is-invalid');
+            } else {
+                this.classList.remove('is-invalid');
+            }
+        }
+    });
     editPeerFormEl.addEventListener('submit', async function (e) {
         e.preventDefault();
 
@@ -2184,7 +2218,7 @@
 
         const editPeerNameInput = document.getElementById('edit-peer-name');
         const name = editPeerNameInput.value.trim();
-        if (!name) {
+        if (!validatePeerName(name, 'edit-peer-name-feedback')) {
             editPeerNameInput.classList.add('is-invalid');
             editPeerNameInput.focus();
             return;

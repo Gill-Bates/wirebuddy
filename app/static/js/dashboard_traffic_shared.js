@@ -103,10 +103,6 @@
     function formatTrafficMetric(value, unit) {
         const parsed = Number(value);
         if (!Number.isFinite(parsed) || parsed <= 0) return '0 B';
-        if (parsed < 0) {
-            console.warn('formatTrafficMetric: negative value', parsed);
-            return '0 B';
-        }
 
         // Convert input value to bytes (case-insensitive unit matching)
         const unitToExp = { B: 0, KB: 1, MB: 2, GB: 3, TB: 4, PB: 5, EB: 6 };
@@ -120,12 +116,12 @@
         return formatScaledSize(parsed, exp);
     }
 
-    function formatBandwidthMetric(valueMbit, gbitDigits = 1, mbitDigits = gbitDigits) {
+    function formatBandwidthMetric(valueMbit, gbitDigits = 1, mbitDigits) {
         const numericValue = Number(valueMbit);
         if (!Number.isFinite(numericValue)) return '–';
         const normalizedGbitDigits = Math.max(Number(gbitDigits) || 0, 0);
         const normalizedMbitDigits = Math.max(
-            mbitDigits === undefined ? normalizedGbitDigits : (Number(mbitDigits) || 0),
+            mbitDigits !== undefined ? (Number(mbitDigits) || 0) : normalizedGbitDigits,
             0,
         );
 
@@ -213,10 +209,11 @@
             this.autoRefreshTimer = setTimeout(() => {
                 // Check if this timer is still valid (not superseded by stop/start)
                 if (this._destroyed || timerId !== this._timerId) return;
+                this.autoRefreshTimer = null;
 
-                this.refresh().finally(() => {
+                void this.refresh().finally(() => {
                     // Schedule next refresh only if not destroyed and timer still valid
-                    if (!this._destroyed && timerId === this._timerId && this.autoRefreshTimer !== null) {
+                    if (!this._destroyed && timerId === this._timerId) {
                         this.start(ms);
                     }
                 });
@@ -237,8 +234,11 @@
          * Stop periodic refresh.
          */
         stop() {
-            if (this.autoRefreshTimer === null) return;
-            clearTimeout(this.autoRefreshTimer);
+            // Invalidate pending/in-flight timer callbacks to prevent stale reschedules.
+            this._timerId = (this._timerId || 0) + 1;
+            if (this.autoRefreshTimer !== null) {
+                clearTimeout(this.autoRefreshTimer);
+            }
             this.autoRefreshTimer = null;
         }
 
@@ -307,7 +307,7 @@
                 if (allFailed) {
                     this.consecutiveFailures = Math.min(this.consecutiveFailures + 1, 100);
                     // Exponential backoff with jitter to prevent thundering herd
-                    const jitter = Math.random() * 0.2 + 0.9; // 0.9–1.1
+                    const jitter = Math.random() * 0.2 + 0.9; // [0.9, 1.1)
                     const backoffMs = Math.min(
                         this.autoRefreshMs * Math.pow(2, this.consecutiveFailures) * jitter,
                         this.maxBackoffMs,
@@ -337,11 +337,17 @@
                         MIN_RETRY_DELAY_MS,
                         this.currentRefreshInterval > this.autoRefreshMs ? BACKOFF_RETRY_DELAY_MS : MIN_RETRY_DELAY_MS,
                     );
-                    // Track timeout to clear in destroy()
-                    this._pendingRetryTimer = setTimeout(() => {
+                    // Track timeout to clear in destroy(), and ignore stale callbacks.
+                    if (this._pendingRetryTimer !== null) {
+                        clearTimeout(this._pendingRetryTimer);
+                        this._pendingRetryTimer = null;
+                    }
+                    const pendingRetryTimer = setTimeout(() => {
+                        if (this._pendingRetryTimer !== pendingRetryTimer || this._destroyed) return;
                         this._pendingRetryTimer = null;
                         void this.refresh();
                     }, retryDelayMs);
+                    this._pendingRetryTimer = pendingRetryTimer;
                 }
             }
         }

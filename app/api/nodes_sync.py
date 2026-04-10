@@ -249,25 +249,53 @@ async def enroll_node_endpoint(
 	node_id = payload["node_id"]
 	api_secret = payload["api_secret"]
 
-	# Verify node exists and is pending — quick pre-check before heavier work.
-	# The definitive serialised check is repeated inside the IMMEDIATE transaction.
+	# Verify node exists
 	node = get_node(conn, node_id)
 	if node is None:
 		raise HTTPException(status_code=404, detail="Enrollment token invalid or node deleted")
-	if node["status"] != "pending":
-		raise HTTPException(status_code=409, detail="Node already enrolled")
 
-	# Verify api_secret matches stored hash
-	if not hmac.compare_digest(hash_token(api_secret), node["api_secret_hash"]):
-		raise HTTPException(status_code=401, detail="API secret mismatch")
-
-	# Extract cert fingerprint
+	# Extract cert fingerprint from request (needed for both paths)
 	try:
 		cert_pem_bytes = body.cert_pem.encode("utf-8")
 		fingerprint = get_cert_fingerprint(cert_pem_bytes)
 	except (ValueError, UnicodeDecodeError) as exc:
 		_log.warning("Node enrollment rejected due to invalid certificate for node=%s: %s", node_id, exc)
 		raise HTTPException(status_code=422, detail="Invalid certificate") from exc
+
+	# ── Recovery path: Node already enrolled but lost its state file ──
+	# The enrollment token's api_secret was rotated to a session_secret after
+	# first enrollment, so the token's api_secret no longer matches.
+	# Instead, verify the certificate fingerprint matches what we stored.
+	if node["status"] != "pending":
+		stored_fingerprint = node.get("cert_fingerprint")
+		if stored_fingerprint and hmac.compare_digest(fingerprint, stored_fingerprint):
+			# Same certificate → node lost state, re-issue session secret
+			_log.info(
+				"Node re-enrollment recovery: id=%s, name=%s — same certificate, rotating session secret",
+				node_id, node["name"],
+			)
+			session_secret = new_token()
+			with transaction(conn, immediate=True):
+				rotate_node_session_secret(conn, node_id, hash_token(session_secret))
+				bump_node_config_version(conn, node_id)
+			config = get_node_config(conn, node_id)
+			config["session_secret"] = session_secret
+			return ok_response(data=config)
+		else:
+			# Different certificate → genuine duplicate enrollment attempt or hijack
+			_log.warning(
+				"Node enrollment rejected: id=%s already enrolled with different certificate "
+				"(stored=%s..., request=%s...)",
+				node_id,
+				(stored_fingerprint or "none")[:16],
+				fingerprint[:16],
+			)
+			raise HTTPException(status_code=409, detail="Node already enrolled")
+
+	# ── First enrollment path: Node is pending ──
+	# Verify api_secret matches stored hash (only for pending nodes)
+	if not hmac.compare_digest(hash_token(api_secret), node["api_secret_hash"]):
+		raise HTTPException(status_code=401, detail="API secret mismatch")
 
 	# Generate keypairs BEFORE transaction (async + SQLite = race condition risk)
 	interfaces = list_interfaces(conn)
