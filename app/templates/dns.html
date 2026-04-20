@@ -8,7 +8,7 @@
 
 {% block content %}
 <div id="dns-app" class="container-fluid wb-page"
-     data-is-admin="{{ user['is_admin'] | tojson }}"
+     data-is-admin="{{ is_admin | tojson }}"
      data-enable-blocklist="{{ enable_blocklist | tojson }}"
      data-dns-unavailable="{{ dns_unavailable | default(false) | tojson }}">
 <div class="wb-page-header flex-wrap gap-2 dns-header">
@@ -32,7 +32,7 @@
         </div>
         <!-- Ad-Blocker Toggle -->
         <div class="dropdown adblocker-dropdown" id="adblocker-dropdown-wrap">
-            <button class="btn btn-sm dropdown-toggle {% if dns_unavailable %}btn-adblocker-disabled{% elif enable_blocklist %}btn-adblocker-enabled{% else %}btn-adblocker-disabled{% endif %}" type="button" id="adblocker-btn" data-bs-toggle="dropdown" aria-expanded="false"{% if not user['is_admin'] or dns_unavailable %} disabled{% endif %}{% if dns_unavailable %} title="Unbound not installed"{% endif %}>
+            <button class="btn btn-sm dropdown-toggle {% if dns_unavailable %}btn-adblocker-disabled{% elif enable_blocklist %}btn-adblocker-enabled{% else %}btn-adblocker-disabled{% endif %}" type="button" id="adblocker-btn" data-bs-toggle="dropdown" aria-expanded="false"{% if not is_admin or dns_unavailable %} disabled{% endif %}{% if dns_unavailable %} title="Unbound not installed"{% endif %}>
                 <span id="adblocker-btn-text">{% if dns_unavailable %}Ad-Blocker: Unavailable{% elif enable_blocklist %}Ad-Blocker: Enabled{% else %}Ad-Blocker: Disabled{% endif %}</span>
                 <span id="adblocker-countdown" class="adblocker-countdown ms-1 d-none"></span>
             </button>
@@ -299,7 +299,7 @@
 <script>
     // User permission check
     const dnsApp = document.getElementById('dns-app');
-    const isAdmin = {{ 'true' if user['is_admin'] else 'false' }};
+    const isAdmin = dnsApp?.dataset.isAdmin === 'true';
 
     function chartEmptyState(text = 'No Data Available') {
         const wrapper = document.createElement('div');
@@ -1299,7 +1299,25 @@
     }
 
     // Blocked sections visibility (Top Blocked Domains + Blockrate Trend)
-    let _adblockerEnabled = {{ enable_blocklist | tojson }};  // Initial state from server
+    let _adblockerEnabled = dnsApp?.dataset.enableBlocklist === 'true';
+    const _stateEls = {
+        queriedLoading: document.getElementById('top-queried-loading'),
+        queriedContent: document.getElementById('top-queried-content'),
+        queriedEmpty: document.getElementById('top-queried-empty'),
+        queriedUnavailable: document.getElementById('top-queried-unavailable'),
+        blockedLoading: document.getElementById('top-blocked-loading'),
+        blockedContent: document.getElementById('top-blocked-content'),
+        blockedEmpty: document.getElementById('top-blocked-empty'),
+        blockedDisabled: document.getElementById('top-blocked-disabled'),
+        blockedUnavailable: document.getElementById('top-blocked-unavailable'),
+        trendLoading: document.getElementById('trend-loading'),
+        trendChart: document.getElementById('trend-chart-wrap'),
+        trendEmpty: document.getElementById('trend-empty'),
+        trendDisabled: document.getElementById('trend-disabled'),
+        trendUnavailable: document.getElementById('trend-unavailable'),
+        logUnavailable: document.getElementById('log-unavailable'),
+    };
+    _stateEls.logCardBody = _stateEls.logUnavailable?.parentElement || null;
 
     function hasVisibleState(...elements) {
         return elements.some(el => el && !el.classList.contains('d-none'));
@@ -1308,19 +1326,18 @@
     function updateBlockedSectionsVisibility(enabled) {
         _adblockerEnabled = enabled;  // Cache state for other functions
 
-        // Top Blocked Domains
-        const blockedLoading = document.getElementById('top-blocked-loading');
-        const blockedContent = document.getElementById('top-blocked-content');
-        const blockedEmpty = document.getElementById('top-blocked-empty');
-        const blockedDisabled = document.getElementById('top-blocked-disabled');
-        const blockedUnavailable = document.getElementById('top-blocked-unavailable');
-        
-        // Blockrate Trend
-        const trendLoading = document.getElementById('trend-loading');
-        const trendChart = document.getElementById('trend-chart-wrap');
-        const trendEmpty = document.getElementById('trend-empty');
-        const trendDisabled = document.getElementById('trend-disabled');
-        const trendUnavailable = document.getElementById('trend-unavailable');
+        const {
+            blockedLoading,
+            blockedContent,
+            blockedEmpty,
+            blockedDisabled,
+            blockedUnavailable,
+            trendLoading,
+            trendChart,
+            trendEmpty,
+            trendDisabled,
+            trendUnavailable,
+        } = _stateEls;
 
         if (enabled) {
             // Preserve already loaded chart/empty states; only show loading while data is unresolved.
@@ -1367,30 +1384,24 @@
 
     function updateDnsUnavailable(unavailable) {
         _dnsUnavailable = unavailable;
-
-        // Top Queried Domains
-        const queriedLoading = document.getElementById('top-queried-loading');
-        const queriedContent = document.getElementById('top-queried-content');
-        const queriedEmpty = document.getElementById('top-queried-empty');
-        const queriedUnavailable = document.getElementById('top-queried-unavailable');
-
-        // Top Blocked Domains
-        const blockedLoading = document.getElementById('top-blocked-loading');
-        const blockedContent = document.getElementById('top-blocked-content');
-        const blockedEmpty = document.getElementById('top-blocked-empty');
-        const blockedDisabled = document.getElementById('top-blocked-disabled');
-        const blockedUnavailable = document.getElementById('top-blocked-unavailable');
-
-        // Blockrate Trend
-        const trendLoading = document.getElementById('trend-loading');
-        const trendChart = document.getElementById('trend-chart-wrap');
-        const trendEmpty = document.getElementById('trend-empty');
-        const trendDisabled = document.getElementById('trend-disabled');
-        const trendUnavailable = document.getElementById('trend-unavailable');
-
-        // Query Log
-        const logUnavailable = document.getElementById('log-unavailable');
-        const logCardBody = logUnavailable?.parentElement;
+        const {
+            queriedLoading,
+            queriedContent,
+            queriedEmpty,
+            queriedUnavailable,
+            blockedLoading,
+            blockedContent,
+            blockedEmpty,
+            blockedDisabled,
+            blockedUnavailable,
+            trendLoading,
+            trendChart,
+            trendEmpty,
+            trendDisabled,
+            trendUnavailable,
+            logUnavailable,
+            logCardBody,
+        } = _stateEls;
 
         if (unavailable) {
             // Hide all states, show unavailable state for all sections
@@ -1527,7 +1538,6 @@
             // Close dropdown after selection
             const dropdown = bootstrap.Dropdown.getInstance(btn);
             if (dropdown) dropdown.hide();
-            if (dropdown) dropdown.hide();
         } catch (e) {
             wbToast('Failed to update Ad-Blocker: ' + e.message, 'danger');
         } finally {
@@ -1604,12 +1614,21 @@
         }
     });
 
-    new MutationObserver(() => {
+    const _themeObserver = new MutationObserver(() => {
         applyTrendTheme();
-    }).observe(document.documentElement, {
+    });
+    _themeObserver.observe(document.documentElement, {
         attributes: true,
         attributeFilter: ['data-bs-theme'],
     });
+
+    window.addEventListener('beforeunload', () => {
+        stopPolling();
+        _themeObserver.disconnect();
+        if (_adblockerCountdownInterval) clearInterval(_adblockerCountdownInterval);
+        if (_searchTimer) clearTimeout(_searchTimer);
+        if (_scrollRaf) cancelAnimationFrame(_scrollRaf);
+    }, { once: true });
 
     // Infinite scroll for Query Log (throttled with RAF)
     const logContainer = document.getElementById('log-table-wrap');

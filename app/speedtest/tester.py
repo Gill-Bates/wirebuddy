@@ -23,13 +23,13 @@ import logging
 import math
 import shlex
 import shutil
-from typing import Any, Callable, TypedDict
+from typing import Any, Callable, NotRequired, TypedDict
 
 from ..utils.formatting import format_bandwidth_mbit
 
 _log = logging.getLogger(__name__)
 
-# Path resolved once at import time; can be overridden for tests.
+# Path probe at import time; runtime resolution is done per call.
 LIBRESPEED_CLI = shutil.which("librespeed-cli")
 if not LIBRESPEED_CLI:
 	_log.warning("librespeed-cli not found in PATH at module load time")
@@ -44,14 +44,17 @@ _DEFAULT_DURATION = 8
 _DEFAULT_CONCURRENT = 4
 _DEFAULT_UPLOAD_SIZE = 4096  # KiB
 _DEFAULT_TIMEOUT = 30  # seconds (HTTP timeout, must exceed TLS handshake + server ping)
+_STDERR_LOG_MAX = 500
+_STDERR_MSG_MAX = 200
+_PROCESS_CLEANUP_TIMEOUT_S = 5.0
 
 
-class ProgressEvent(TypedDict, total=False):
+class ProgressEvent(TypedDict):
 	"""Progress event emitted during speedtest execution."""
 	phase: str  # Current phase name
 	progress: float  # 0.0 - 1.0
 	message: str  # Human-readable status
-	detail: dict[str, Any] | None  # Optional extra data
+	detail: NotRequired[dict[str, Any] | None]  # Optional extra data
 
 
 # Type alias for progress callback
@@ -73,6 +76,25 @@ def _safe_float(value: Any) -> float | None:
 		return None
 
 
+def _resolve_librespeed_cli() -> str | None:
+	"""Resolve librespeed-cli path at runtime.
+
+	Prefers the canonical binary name lookup each run and falls back to an
+	explicit override stored in ``LIBRESPEED_CLI`` (useful for tests).
+	"""
+	resolved = shutil.which("librespeed-cli")
+	if resolved:
+		return resolved
+	if LIBRESPEED_CLI and LIBRESPEED_CLI != "librespeed-cli":
+		return shutil.which(LIBRESPEED_CLI)
+	return None
+
+
+def _fmt_speed(mbit: float) -> str:
+	"""Format speed values consistently for progress messages."""
+	return format_bandwidth_mbit(mbit, gbit_digits=2, mbit_digits=2)
+
+
 def _error_result(msg: str, cb: ProgressCallback | None, *, skip_log: bool = False) -> dict[str, Any]:
 	"""Create error result and emit error event.
 	
@@ -92,17 +114,20 @@ def _emit(cb: ProgressCallback | None, phase: str, progress: float, message: str
 	if cb is None:
 		return
 	event: ProgressEvent = {"phase": phase, "progress": progress, "message": message}
-	if detail:
+	if detail is not None:
 		event["detail"] = detail
 	try:
 		cb(event)
 	except Exception as exc:
 		_log.debug("Progress callback failed: %s", exc)
+
+
 async def run_speedtest(
 	*,
 	progress_callback: ProgressCallback | None = None,
 	duration: int = _DEFAULT_DURATION,
 	concurrent: int = _DEFAULT_CONCURRENT,
+	upload_size: int = _DEFAULT_UPLOAD_SIZE,
 ) -> dict[str, Any]:
 	"""Run a bandwidth measurement via librespeed-cli.
 
@@ -128,20 +153,21 @@ async def run_speedtest(
 	"""
 	_emit(progress_callback, "init", 0.0, "Starting librespeed-cli…")
 
-	# Verify librespeed-cli is available at runtime (not just import time)
-	if not shutil.which(LIBRESPEED_CLI):
-		msg = f"librespeed-cli not found in PATH (expected: {LIBRESPEED_CLI})"
+	# Resolve binary at runtime (supports late installation and test overrides).
+	resolved_cli = _resolve_librespeed_cli()
+	if not resolved_cli:
+		msg = "librespeed-cli not found in PATH"
 		return _error_result(msg, progress_callback)
 
 	# Use --json mode for reliable output (text mode has TTY detection issues)
 	cmd = [
-		LIBRESPEED_CLI,
+		resolved_cli,
 		"--json",
 		"--no-icmp",
 		"--secure",
 		"--duration", str(duration),
 		"--concurrent", str(concurrent),
-		"--upload-size", str(_DEFAULT_UPLOAD_SIZE),
+		"--upload-size", str(upload_size),
 		"--timeout", str(_DEFAULT_TIMEOUT),
 	]
 
@@ -152,52 +178,67 @@ async def run_speedtest(
 
 	_emit(progress_callback, "server_select", 0.10, "Selecting fastest server…")
 
+	proc: asyncio.subprocess.Process | None = None
+	progress_task: asyncio.Task[None] | None = None
+	stdout_bytes = b""
+	stderr_bytes = b""
+	was_cancelled = False
+
 	try:
 		proc = await asyncio.create_subprocess_exec(
 			*cmd,
 			stdout=asyncio.subprocess.PIPE,
 			stderr=asyncio.subprocess.PIPE,
 		)
-		
+
 		# Start progress simulation task (time-based estimation)
-		progress_task = asyncio.create_task(
-			_emit_progress_simulation(progress_callback, duration)
-		)
-		
+		progress_task = asyncio.create_task(_emit_progress_simulation(progress_callback, duration))
+
 		try:
 			stdout_bytes, stderr_bytes = await asyncio.wait_for(
 				proc.communicate(),
 				timeout=process_timeout,
 			)
 		except asyncio.TimeoutError:
-			proc.kill()
-			await proc.communicate()  # Reap zombie
 			msg = f"librespeed-cli process timeout ({process_timeout}s)"
 			return _error_result(msg, progress_callback)
 		except asyncio.CancelledError:
-			proc.kill()
-			await proc.communicate()  # Reap zombie
-			raise
-		finally:
+			was_cancelled = True
+	except FileNotFoundError:
+		msg = f"librespeed-cli not found at {resolved_cli}"
+		return _error_result(msg, progress_callback)
+	except OSError as exc:
+		msg = f"Failed to start librespeed-cli: {exc}"
+		return _error_result(msg, progress_callback)
+	finally:
+		if progress_task is not None:
 			progress_task.cancel()
 			try:
 				await progress_task
 			except asyncio.CancelledError:
 				pass
-				
-	except FileNotFoundError:
-		msg = f"librespeed-cli not found at {LIBRESPEED_CLI}"
-		return _error_result(msg, progress_callback)
-	except OSError as exc:
-		msg = f"Failed to start librespeed-cli: {exc}"
-		return _error_result(msg, progress_callback)
+
+		if proc is not None and proc.returncode is None:
+			proc.kill()
+			try:
+				# Wait for process exit and drain pipes; shield so cancellation does not
+				# interrupt cleanup and leave a zombie process behind.
+				await asyncio.wait_for(
+					asyncio.shield(proc.communicate()),
+					timeout=_PROCESS_CLEANUP_TIMEOUT_S,
+				)
+			except (asyncio.TimeoutError, asyncio.CancelledError):
+				pass
+
+	if was_cancelled:
+		raise asyncio.CancelledError
 
 	if proc.returncode != 0:
-		stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
-		if stderr_text:
-			_log.error("SPEEDTEST stderr: %s", stderr_text[:500])
-		msg = f"librespeed-cli exited with code {proc.returncode}: {stderr_text[:200]}"
-		return _error_result(msg, progress_callback)
+		stderr_summary = stderr_bytes.decode("utf-8", errors="replace").strip()
+		if stderr_summary:
+			_log.error("SPEEDTEST stderr: %s", stderr_summary[:_STDERR_LOG_MAX])
+		msg = f"librespeed-cli exited with code {proc.returncode}: {stderr_summary[:_STDERR_MSG_MAX]}"
+		return _error_result(msg, progress_callback, skip_log=True)
 
 	# Parse JSON output
 	stdout_text = stdout_bytes.decode("utf-8", errors="replace").strip()
@@ -246,7 +287,7 @@ async def run_speedtest(
 
 	_emit(
 		progress_callback, "complete", 1.0,
-		f"Complete: ↓ {format_bandwidth_mbit(download_mbit, gbit_digits=2, mbit_digits=2)} / ↑ {format_bandwidth_mbit(upload_mbit, gbit_digits=2, mbit_digits=2)}",
+		f"Complete: ↓ {_fmt_speed(download_mbit)} / ↑ {_fmt_speed(upload_mbit)}",
 		{"download_mbit": download_mbit, "upload_mbit": upload_mbit},
 	)
 
@@ -304,4 +345,3 @@ async def _emit_progress_simulation(
 			progress = start_pct + (step_progress * i)
 			_emit(cb, phase_name, progress, message)
 			await asyncio.sleep(step_duration)
-

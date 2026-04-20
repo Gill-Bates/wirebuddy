@@ -834,7 +834,7 @@
                                     {% if peer['last_client_country_code'] %}
                                     <img class="peer-country-flag" alt="Country flag: {{ peer['last_client_country_code']|upper }}"
                                         decoding="async"
-                                        src="/static/vendor/images/flags/{{ peer['last_client_country_code'] }}.svg">
+                                        src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ peer['last_client_country_code'] }}.svg">
                                     {% endif %}
                                     <code class="ipv6">{{ (peer['last_client_ip_display'] or '').replace(':', ':\u200b').replace('/', '/\u200b') }}</code>
                                 </div>
@@ -988,7 +988,7 @@
                                     {% if local_country_code %}
                                     <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
                                          decoding="async"
-                                         src="/static/vendor/images/flags/{{ local_country_code }}.svg">
+                                         src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ local_country_code }}.svg">
                                     {% endif %}
                                     <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                 </span>
@@ -999,7 +999,7 @@
                                         {% if local_country_code %}
                                         <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
                                              decoding="async"
-                                             src="/static/vendor/images/flags/{{ local_country_code }}.svg">
+                                             src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ local_country_code }}.svg">
                                         {% endif %}
                                         <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                     </span>
@@ -1010,7 +1010,7 @@
                                         {% if n.geo_country_code %}
                                         <img class="peer-country-flag" alt="{{ n.geo_country_code|upper }} flag"
                                              decoding="async"
-                                             src="/static/vendor/images/flags/{{ n.geo_country_code }}.svg">
+                                             src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ n.geo_country_code }}.svg">
                                         {% endif %}
                                         <span class="peer-node-picker-text">{{ n.name }} ({{ n.fqdn }})</span>
                                     </span>
@@ -1187,7 +1187,7 @@
                                     {% if local_country_code %}
                                     <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
                                          decoding="async"
-                                         src="/static/vendor/images/flags/{{ local_country_code }}.svg">
+                                         src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ local_country_code }}.svg">
                                     {% endif %}
                                     <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                 </span>
@@ -1198,7 +1198,7 @@
                                         {% if local_country_code %}
                                         <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
                                              decoding="async"
-                                             src="/static/vendor/images/flags/{{ local_country_code }}.svg">
+                                             src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ local_country_code }}.svg">
                                         {% endif %}
                                         <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                     </span>
@@ -1209,7 +1209,7 @@
                                         {% if n.geo_country_code %}
                                         <img class="peer-country-flag" alt="{{ n.geo_country_code|upper }} flag"
                                              decoding="async"
-                                             src="/static/vendor/images/flags/{{ n.geo_country_code }}.svg">
+                                             src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ n.geo_country_code }}.svg">
                                         {% endif %}
                                         <span class="peer-node-picker-text">{{ n.name }} ({{ n.fqdn }})</span>
                                     </span>
@@ -1423,25 +1423,75 @@
         return { ipv4, ipv6 };
     }
 
+    function getRoutingLabel(peer) {
+        const mode = peer?.allowed_ips_mode || detectAllowedIpsMode(peer?.allowed_ips || '');
+        return { full: 'Full Tunnel', split: 'Split Tunnel' }[mode] || 'Custom';
+    }
+
+    function lookupNodeName(nodeId) {
+        const candidate = String(nodeId || '').trim();
+        if (!candidate) return '';
+
+        const selects = [
+            document.getElementById('peer-node'),
+            document.getElementById('edit-peer-node'),
+        ];
+        for (const select of selects) {
+            const option = Array.from(select?.options || []).find((entry) => entry.value === candidate);
+            const label = option?.textContent?.trim() || '';
+            if (label) return label;
+        }
+        return '';
+    }
+
+    async function hydratePeerRowData(peer) {
+        if (!peer || !Number.isFinite(Number(peer.id))) return peer;
+
+        const basePeer = {
+            ...peer,
+            node_name: peer.node_name || lookupNodeName(peer.node_id),
+        };
+
+        try {
+            const enrichedPeers = await fetchPeersEnriched();
+            const enrichedPeer = enrichedPeers.find((entry) => Number(entry.id) === Number(peer.id));
+            if (!enrichedPeer) return basePeer;
+            return {
+                ...basePeer,
+                ...enrichedPeer,
+                node_name: basePeer.node_name || enrichedPeer.node_name || lookupNodeName(basePeer.node_id || enrichedPeer.node_id),
+            };
+        } catch (_) {
+            return basePeer;
+        }
+    }
+
     /**
      * Build a <tr> element for a peer from API data (PeerPublic shape).
      */
     function buildPeerRow(peer) {
-        const mode = peer.allowed_ips_mode || 'full';
-        const routingLabel = { full: 'Full Tunnel', split: 'Split Tunnel' }[mode] || 'Custom';
+        const routingLabel = getRoutingLabel(peer);
         const { ipv4, ipv6 } = extractPeerIps(peer.peer_address);
         const name = peer.name || 'Unnamed';
         const iface = peer.interface || '';
         const isNodeTunnel = !!peer.is_node_tunnel;
+        const nodeName = peer.node_name || lookupNodeName(peer.node_id);
+        const hasClientIsolation = peer.client_isolation === true;
+        const lastHandshake = toEpochSeconds(peer.latest_handshake || peer.last_handshake_at);
+        const lastSeen = formatRelativeTime(lastHandshake);
+        const endpointIp = String(peer.endpoint_ip || peer.last_client_ip || '').trim();
+        const endpointCountry = peer.country || peer.last_client_country_code || null;
+        const endpointCity = peer.city || peer.last_client_city || null;
+        const endpointAsOrg = peer.as_org || peer.last_client_as_org || null;
 
         const tr = document.createElement('tr');
         tr.dataset.peerId = peer.id;
         tr.dataset.peerPublicKey = peer.public_key || '';
-        tr.dataset.lastHandshake = '';
-        tr.dataset.lastClientIp = '';
-        tr.dataset.lastClientCountry = '';
-        tr.dataset.lastClientCity = '';
-        tr.dataset.lastClientAsOrg = '';
+        tr.dataset.lastHandshake = lastHandshake ? String(lastHandshake) : '';
+        tr.dataset.lastClientIp = endpointIp;
+        tr.dataset.lastClientCountry = endpointCountry || '';
+        tr.dataset.lastClientCity = endpointCity || '';
+        tr.dataset.lastClientAsOrg = endpointAsOrg || '';
         if (isNodeTunnel) {
             tr.dataset.nodeTunnel = 'true';
             tr.classList.add('peer-row-node-tunnel');
@@ -1450,9 +1500,22 @@
         // Name cell
         const tdName = document.createElement('td');
         tdName.dataset.label = 'Name';
-        tdName.innerHTML = `<div class="peer-name-stack"><div class="peer-name-main"><span class="peer-name-text"></span></div><div class="peer-name-meta d-lg-none"><span></span>${peer.client_isolation ? '<span>Client Isolation</span>' : ''}</div></div>`;
+        tdName.innerHTML = '<div class="peer-name-stack"><div class="peer-name-main"><span class="peer-name-text"></span></div><div class="peer-name-meta d-lg-none"></div></div>';
         tdName.querySelector('.peer-name-text').textContent = name;
-        tdName.querySelector('.peer-name-meta span').textContent = routingLabel;
+        const nameMeta = tdName.querySelector('.peer-name-meta');
+        if (nodeName) {
+            const nodeSpan = document.createElement('span');
+            nodeSpan.textContent = nodeName;
+            nameMeta.appendChild(nodeSpan);
+        }
+        const routingSpan = document.createElement('span');
+        routingSpan.textContent = routingLabel;
+        nameMeta.appendChild(routingSpan);
+        if (hasClientIsolation) {
+            const isolationSpan = document.createElement('span');
+            isolationSpan.textContent = 'Client Isolation';
+            nameMeta.appendChild(isolationSpan);
+        }
 
         // VPN Address cell
         const tdVpn = document.createElement('td');
@@ -1468,8 +1531,24 @@
         const tdRouting = document.createElement('td');
         tdRouting.dataset.label = 'Routing';
         tdRouting.className = 'peer-routing';
-        tdRouting.innerHTML = `<div class="peer-routing-badges"><span class="badge bg-secondary"></span>${peer.client_isolation ? '<span class="badge bg-secondary">Client Isolation</span>' : ''}</div>`;
-        tdRouting.querySelector('.badge').textContent = routingLabel;
+        tdRouting.innerHTML = '<div class="peer-routing-badges"></div>';
+        const routingBadges = tdRouting.querySelector('.peer-routing-badges');
+        if (nodeName) {
+            const nodeBadge = document.createElement('span');
+            nodeBadge.className = 'badge bg-secondary';
+            nodeBadge.textContent = nodeName;
+            routingBadges.appendChild(nodeBadge);
+        }
+        const routingBadge = document.createElement('span');
+        routingBadge.className = 'badge bg-secondary';
+        routingBadge.textContent = routingLabel;
+        routingBadges.appendChild(routingBadge);
+        if (hasClientIsolation) {
+            const isolationBadge = document.createElement('span');
+            isolationBadge.className = 'badge bg-secondary';
+            isolationBadge.textContent = 'Client Isolation';
+            routingBadges.appendChild(isolationBadge);
+        }
 
         // Interface cell
         const tdIface = document.createElement('td');
@@ -1480,29 +1559,70 @@
         // Last Seen cell
         const tdLastSeen = document.createElement('td');
         tdLastSeen.dataset.label = 'Last Seen';
-        tdLastSeen.className = 'peer-last-seen text-nowrap';
+        tdLastSeen.className = 'd-none d-xl-table-cell peer-last-seen text-nowrap';
         const lastSeenSpan = document.createElement('span');
-        lastSeenSpan.className = 'text-muted';
-        lastSeenSpan.textContent = 'Never';
+        lastSeenSpan.className = lastSeen.cls;
+        lastSeenSpan.textContent = lastSeen.active ? '' : lastSeen.text;
         tdLastSeen.appendChild(lastSeenSpan);
 
         // Client IP cell
         const tdClientIp = document.createElement('td');
         tdClientIp.dataset.label = 'Client IP';
-        tdClientIp.className = 'peer-client-ip';
-        const dashSpan = document.createElement('span');
-        dashSpan.className = 'text-muted';
-        dashSpan.textContent = '\u2014';
-        tdClientIp.appendChild(dashSpan);
+        tdClientIp.className = 'd-none d-xl-table-cell peer-client-ip';
+        if (endpointIp) {
+            const stack = document.createElement('div');
+            stack.className = 'peer-client-ip-stack';
+
+            const main = document.createElement('div');
+            main.className = 'peer-client-ip-main';
+            const flag = createCountryFlagElement(endpointCountry);
+            if (flag) main.appendChild(flag);
+            const endpointCode = document.createElement('code');
+            endpointCode.className = 'ipv6';
+            endpointCode.textContent = endpointIp.replace(/:/g, ':\u200b').replace(/\//g, '/\u200b');
+            main.appendChild(endpointCode);
+            stack.appendChild(main);
+
+            if (endpointCity || endpointAsOrg) {
+                const meta = document.createElement('div');
+                meta.className = 'peer-client-ip-meta';
+                if (endpointCity) {
+                    const cityLine = document.createElement('span');
+                    cityLine.className = 'peer-meta-city';
+                    cityLine.textContent = endpointCity;
+                    meta.appendChild(cityLine);
+                }
+                if (endpointAsOrg) {
+                    const providerLine = document.createElement('span');
+                    providerLine.className = 'peer-meta-provider';
+                    providerLine.textContent = endpointAsOrg;
+                    meta.appendChild(providerLine);
+                }
+                stack.appendChild(meta);
+            }
+            tdClientIp.appendChild(stack);
+        } else {
+            tdClientIp.classList.add('peer-client-ip--empty');
+            const dashSpan = document.createElement('span');
+            dashSpan.className = 'text-muted';
+            dashSpan.textContent = '\u2014';
+            tdClientIp.appendChild(dashSpan);
+        }
 
         // Status cell
         const tdStatus = document.createElement('td');
         tdStatus.dataset.label = 'Status';
         tdStatus.setAttribute('aria-label', `Status: ${peer.is_enabled ? 'Enabled' : 'Disabled'}`);
         const connBadge = document.createElement('span');
-        connBadge.className = 'badge bg-secondary peer-connection-badge peer-connection-badge-mobile';
+        connBadge.className = `badge ${lastSeen.active ? 'bg-success' : 'bg-secondary'} peer-connection-badge peer-connection-badge-mobile`;
         connBadge.setAttribute('role', 'status');
-        connBadge.textContent = 'Offline';
+        connBadge.textContent = lastSeen.active ? 'Online' : 'Offline';
+        if (!lastSeen.active && lastSeen.text && lastSeen.text !== 'Never') {
+            const badgeTime = document.createElement('span');
+            badgeTime.className = 'peer-badge-time';
+            badgeTime.textContent = ` · ${lastSeen.text}`;
+            connBadge.appendChild(badgeTime);
+        }
         const enabledBadge = document.createElement('span');
         enabledBadge.className = `badge ${peer.is_enabled ? 'bg-success' : 'bg-secondary'} peer-enabled-badge`;
         enabledBadge.setAttribute('role', 'status');
@@ -1771,7 +1891,7 @@
         img.className = 'peer-country-flag';
         img.alt = `${code.toUpperCase()} flag`;
         img.decoding = 'async';
-        img.src = `/static/vendor/images/flags/${code}.svg`;
+        img.src = `https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/${code}.svg`;
         img.addEventListener('error', () => img.remove());
         return img;
     }
@@ -2150,25 +2270,22 @@
         submitSpinner.classList.remove('d-none');
 
         try {
-            await api('POST', '/api/wireguard/peers', data);
+            const createdPeer = await api('POST', '/api/wireguard/peers', data);
             document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('addPeerModal')).hide();
             wbToast('Peer created successfully', 'success');
 
-            // Fetch the freshly created peer and insert into table
             try {
-                const allPeers = await fetchPeersEnriched();
-                // Find the new peer (highest ID that matches our name)
-                const newPeer = allPeers
-                    .filter(p => p.name === data.name)
-                    .sort((a, b) => b.id - a.id)[0];
+                const newPeer = await hydratePeerRowData(createdPeer);
                 if (newPeer) {
                     removeEmptyRow();
                     const tbody = document.getElementById('peers-table');
                     const row = buildPeerRow(newPeer);
                     tbody.appendChild(row);
+                    refreshPeerRows();
                     updateTotalPeerCount(1);
                     initTooltips();
+                    void loadPeerStats();
                 } else {
                     reloadSoon();
                 }
@@ -2253,15 +2370,14 @@
         submitSpinner.classList.remove('d-none');
 
         try {
-            await api('PATCH', `/api/wireguard/peers/${peerId}`, data);
+            const updatedPeerResponse = await api('PATCH', `/api/wireguard/peers/${peerId}`, data);
             document.activeElement?.blur();
             bootstrap.Modal.getInstance(document.getElementById('editPeerModal')).hide();
             wbToast('Peer updated successfully', 'success');
 
             // Rebuild the row in-place
             try {
-                const allPeers = await fetchPeersEnriched();
-                const updatedPeer = allPeers.find(p => p.id === peerId);
+                const updatedPeer = await hydratePeerRowData(updatedPeerResponse);
                 if (updatedPeer) {
                     const oldRow = document.querySelector(`#peers-table tr[data-peer-id="${peerId}"]`);
                     if (oldRow) {
@@ -2269,6 +2385,8 @@
                         oldRow.replaceWith(newRow);
                         refreshPeerRows();
                         initTooltips();
+                        filterPeers(document.getElementById('peers-search-input')?.value || '');
+                        void loadPeerStats();
                     } else {
                         reloadSoon();
                     }

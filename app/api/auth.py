@@ -26,6 +26,7 @@ import sqlite3
 import re
 import threading
 import time
+import unicodedata
 import zipfile
 from datetime import datetime, timezone
 from typing import Optional
@@ -208,7 +209,6 @@ def _consume_recovery_download(token: str, user_id: int) -> tuple[str, list[str]
 	if expires_at <= time.monotonic():
 		return None
 	return username, codes
-	return username, codes
 
 
 def _allow_cookie_auth_for_path(path: str) -> bool:
@@ -376,11 +376,161 @@ def get_current_user(
 	raise HTTPException(status_code=401, detail="Not authenticated")
 
 
+def coerce_db_bool(value: object) -> bool:
+	"""Coerce SQLite-style boolean-ish values into a strict bool.
+
+	Handles ints/bools and common string encodings ("1", "0", "true", "false").
+	"""
+	if isinstance(value, bool):
+		return value
+	if isinstance(value, int):
+		return value != 0
+	text = str(value or "").strip().lower()
+	if text in {"1", "true", "yes", "on"}:
+		return True
+	if text in {"0", "false", "no", "off", ""}:
+		return False
+	# Fail closed for unknown values.
+	return False
+
+
 def require_admin(user_row: sqlite3.Row = Depends(get_current_user)) -> sqlite3.Row:
 	"""FastAPI dependency that enforces admin privileges."""
-	if not user_row["is_admin"]:
+	if not coerce_db_bool(user_row["is_admin"]):
 		raise HTTPException(status_code=403, detail="Admin privileges required")
 	return user_row
+
+
+# ---------------------------------------------------------------------------
+# Private Auth Helpers
+# ---------------------------------------------------------------------------
+
+def _sanitize_log_username(raw: str) -> str:
+	"""Strip control characters and truncate for safe log output."""
+	cleaned = "".join(ch for ch in raw if not unicodedata.category(ch).startswith("C"))
+	return cleaned[:128]
+
+
+def _enforce_ip_lockout(conn: sqlite3.Connection, client_ip: str) -> None:
+	"""Raise HTTP 429 if the IP is currently locked out."""
+	is_locked, seconds_remaining = is_ip_locked(conn, client_ip)
+	if is_locked:
+		_log.info("LOGIN_LOCKED ip=%s remaining=%ds", client_ip, seconds_remaining)
+		raise HTTPException(
+			status_code=429,
+			detail="Too many failed attempts. Please try again later.",
+			headers={"Retry-After": str(seconds_remaining)},
+		)
+
+
+def _record_failed_and_raise(
+	conn: sqlite3.Connection,
+	client_ip: str,
+	log_username: str,
+	detail: str = "Invalid username or password",
+	status_code: int = 401,
+) -> None:
+	"""Record a failed login attempt, log the result, and raise HTTPException."""
+	record_failed_login(conn, client_ip)
+	is_now_locked, lockout_secs = is_ip_locked(conn, client_ip)
+	if is_now_locked:
+		_log.warning(
+			"LOGIN_FAILED ip=%s username=%s locked_for=%ds",
+			client_ip, log_username, lockout_secs,
+		)
+	else:
+		_log.info("LOGIN_FAILED ip=%s username=%s", client_ip, log_username)
+	raise HTTPException(status_code=status_code, detail=detail)
+
+
+def _is_otp_setup_pending(user: sqlite3.Row) -> bool:
+	"""Return True if OTP setup is pending (secret set but not confirmed)."""
+	return coerce_db_bool(user["otp_secret"]) and not coerce_db_bool(user["otp_enabled"])
+
+
+def _is_passkey_setup_pending(user: sqlite3.Row) -> bool:
+	"""Return True if passkey setup is pending (admin enabled but user hasn't registered)."""
+	return coerce_db_bool(user["passkey_pending"]) and not coerce_db_bool(user["passkey_enabled"])
+
+
+def _require_otp_setup_pending(user: sqlite3.Row) -> str:
+	"""Validate OTP setup state and return decrypted plaintext secret.
+	
+	Raises HTTPException for invalid states:
+	- 400 if setup not initiated
+	- 400 if OTP is already enabled
+	- 500 if secret cannot be decrypted
+	
+	Returns the decrypted OTP secret.
+	"""
+	if not user["otp_secret"]:
+		raise HTTPException(status_code=400, detail="OTP setup not initiated")
+	if coerce_db_bool(user["otp_enabled"]):
+		raise HTTPException(status_code=400, detail="OTP is already enabled")
+	plaintext_secret = decrypt_otp_secret(user["otp_secret"])
+	if not plaintext_secret:
+		raise HTTPException(status_code=500, detail="Unable to decrypt OTP secret")
+	return plaintext_secret
+
+
+def _build_login_response_data(
+	token: str,
+	expires_at: datetime,
+	user: sqlite3.Row,
+	client_ip: str,
+	log_username: str,
+	*,
+	include_otp_pending: bool = False,
+) -> dict:
+	"""Build the standard post-login response payload with optional pending flags.
+	
+	Logs LOGIN_PASSKEY_SETUP_PENDING if passkey setup is pending.
+	Logs LOGIN_OTP_SETUP_PENDING if OTP setup is pending (when include_otp_pending=True).
+	"""
+	data: dict = {
+		"token": token,
+		"expires_at": expires_at,
+		"token_type": "Bearer",
+	}
+	if include_otp_pending and _is_otp_setup_pending(user):
+		_log.info("LOGIN_OTP_SETUP_PENDING ip=%s username=%s", client_ip, log_username)
+		data["otp_setup_pending"] = True
+	if _is_passkey_setup_pending(user):
+		_log.info("LOGIN_PASSKEY_SETUP_PENDING ip=%s username=%s", client_ip, log_username)
+		data["passkey_setup_pending"] = True
+	return data
+
+
+def _issue_session(
+	conn: sqlite3.Connection,
+	request: Request,
+	response: Response,
+	user_id: int,
+	client_ip: str,
+) -> tuple[str, datetime]:
+	"""Create auth token, set session cookie, update last_login.
+
+	Returns (token, expires_at).
+	"""
+	now = datetime.now(timezone.utc)
+	token = new_token()
+	expires_at, max_expires_at = generate_token_expiry(now=now)
+	create_auth_token(conn, user_id, token, expires_at, max_expires_at)
+	update_last_login(conn, user_id, client_ip)
+	# Cookie max_age uses max_expires_at (24h) since the DB is the authority for
+	# sliding-window expiry. This prevents the browser from deleting the cookie
+	# before the session could be extended by user activity.
+	max_age = max(0, int((max_expires_at - now).total_seconds()))
+	response.set_cookie(
+		key=_AUTH_COOKIE,
+		value=token,
+		httponly=True,
+		secure=_is_https(request),
+		samesite="lax",  # Allow cross-site navigation for passkey/WebAuthn flows
+		max_age=max_age,
+		path="/",
+	)
+	return token, expires_at
 
 
 # ---------------------------------------------------------------------------
@@ -397,42 +547,27 @@ def login(
 ):
 	"""Authenticate a user and return a bearer token."""
 	client_ip = _get_client_ip(request)
-	log_username = payload.username.replace("\n", "").replace("\r", "")[:128]
+	log_username = _sanitize_log_username(payload.username)
 
-	is_locked, seconds_remaining = is_ip_locked(conn, client_ip)
-	if is_locked:
-		_log.info("LOGIN_LOCKED ip=%s remaining=%ds", client_ip, seconds_remaining)
-		raise HTTPException(
-			status_code=429,
-			detail="Too many failed attempts. Please try again later.",
-			headers={"Retry-After": str(seconds_remaining)},
-		)
-	
+	_enforce_ip_lockout(conn, client_ip)
+
 	user = get_user_by_username(conn, payload.username)
-	
-	# Always verify password hash to prevent timing attacks
-	# Use dummy hash if user doesn't exist to maintain constant time
+
+	# Always verify password hash to prevent timing attacks.
+	# Use dummy hash if user doesn't exist to maintain constant time.
 	password_hash = user["password_hash"] if user else DUMMY_PASSWORD_HASH
 	password_valid = verify_password(payload.password, password_hash)
-	
-	if not user or not password_valid:
-		record_failed_login(conn, client_ip)
-		# Log with next lockout info for admin visibility
-		is_now_locked, lockout_secs = is_ip_locked(conn, client_ip)
-		if is_now_locked:
-			_log.warning("LOGIN_FAILED ip=%s username=%s locked_for=%ds", client_ip, log_username, lockout_secs)
-		else:
-			_log.info("LOGIN_FAILED ip=%s username=%s", client_ip, log_username)
-		raise HTTPException(status_code=401, detail="Invalid username or password")
-	
-	if not user["is_active"]:
-		_log.info("LOGIN_INACTIVE ip=%s username=%s", client_ip, log_username)
-		raise HTTPException(status_code=403, detail="Account disabled")
-	
+
+	# Include is_active in the generic failure path to prevent timing oracle:
+	# an attacker must not be able to distinguish "wrong password" from
+	# "correct password, account disabled" via HTTP status codes.
+	if not user or not password_valid or not coerce_db_bool(user["is_active"]):
+		_record_failed_and_raise(conn, client_ip, log_username)
+
 	clear_login_attempts(conn, client_ip)
 
 	# Check if OTP is fully enabled -> require MFA
-	if bool(user["otp_enabled"]):
+	if coerce_db_bool(user["otp_enabled"]):
 		mfa_token = _store_mfa_challenge(user["id"], user["username"], client_ip)
 		_log.info("LOGIN_MFA_REQUIRED ip=%s username=%s", client_ip, log_username)
 		return ok_response(
@@ -442,46 +577,10 @@ def login(
 			}
 		)
 
-	# Check if OTP setup is pending (secret set but not confirmed)
-	otp_setup_pending = bool(user["otp_secret"]) and not bool(user["otp_enabled"])
-	# Check if passkey setup is pending (admin enabled but user hasn't registered)
-	passkey_setup_pending = bool(user["passkey_pending"]) and not bool(user["passkey_enabled"])
-	
-	now = datetime.now(timezone.utc)
-	token = new_token()
-	expires_at, max_expires_at = generate_token_expiry(now=now)
-	
-	create_auth_token(conn, user["id"], token, expires_at, max_expires_at)
-	update_last_login(conn, user["id"], client_ip)
+	token, expires_at = _issue_session(conn, request, response, user["id"], client_ip)
 
-	# Cookie max_age uses max_expires_at (24h) since the DB is the authority for
-	# sliding-window expiry. This prevents the browser from deleting the cookie
-	# before the session could be extended by user activity.
-	max_age = max(0, int((max_expires_at - now).total_seconds()))
-	response.set_cookie(
-		key=_AUTH_COOKIE,
-		value=token,
-		httponly=True,
-		secure=_is_https(request),
-		samesite="lax",  # Allow cross-site navigation for passkey/WebAuthn flows
-		max_age=max_age,
-		path="/",
-	)
-	
 	_log.info("LOGIN_SUCCESS ip=%s username=%s", client_ip, log_username)
-	data = {
-		"token": token,
-		"expires_at": expires_at,
-		"token_type": "Bearer",
-	}
-
-	if otp_setup_pending:
-		_log.info("LOGIN_OTP_SETUP_PENDING ip=%s username=%s", client_ip, log_username)
-		data["otp_setup_pending"] = True
-
-	if passkey_setup_pending:
-		_log.info("LOGIN_PASSKEY_SETUP_PENDING ip=%s username=%s", client_ip, log_username)
-		data["passkey_setup_pending"] = True
+	data = _build_login_response_data(token, expires_at, user, client_ip, log_username, include_otp_pending=True)
 
 	return ok_response(data=data)
 
@@ -496,16 +595,9 @@ def verify_mfa(
 ):
 	"""Complete MFA verification and issue an auth token."""
 	client_ip = _get_client_ip(request)
-	log_username = payload.username.replace("\n", "").replace("\r", "")[:128]
+	log_username = _sanitize_log_username(payload.username)
 
-	is_locked, seconds_remaining = is_ip_locked(conn, client_ip)
-	if is_locked:
-		_log.info("LOGIN_LOCKED ip=%s remaining=%ds", client_ip, seconds_remaining)
-		raise HTTPException(
-			status_code=429,
-			detail="Too many failed attempts. Please try again later.",
-			headers={"Retry-After": str(seconds_remaining)},
-		)
+	_enforce_ip_lockout(conn, client_ip)
 
 	challenge_user_id = _consume_mfa_challenge(payload.mfa_token, payload.username, client_ip)
 	if challenge_user_id is None:
@@ -519,14 +611,13 @@ def verify_mfa(
 		_log.warning("LOGIN_MFA_CHALLENGE_MISMATCH ip=%s username=%s", client_ip, log_username)
 		raise HTTPException(status_code=401, detail="Invalid or expired MFA challenge")
 
-	if not bool(user["is_active"]):
+	if not coerce_db_bool(user["is_active"]):
 		_log.info("LOGIN_INACTIVE ip=%s username=%s", client_ip, log_username)
 		raise HTTPException(status_code=403, detail="Account disabled")
 
-	if not bool(user["otp_enabled"]):
-		record_failed_login(conn, client_ip)
-		_log.info("LOGIN_FAILED ip=%s username=%s", client_ip, log_username)
-		raise HTTPException(status_code=401, detail="Invalid MFA code")
+	if not coerce_db_bool(user["otp_enabled"]):
+		_log.error("MFA_MISCONFIG otp_enabled=False for challenged user_id=%s username=%s", user["id"], log_username)
+		raise HTTPException(status_code=500, detail="MFA configuration error")
 
 	if not user["otp_secret"]:
 		_log.error("LOGIN_MFA_MISCONFIG user_id=%s username=%s", user["id"], log_username)
@@ -556,55 +647,19 @@ def verify_mfa(
 				log_username,
 			)
 		else:
-			record_failed_login(conn, client_ip)
-			is_now_locked, lockout_secs = is_ip_locked(conn, client_ip)
-			if is_now_locked:
-				_log.warning("LOGIN_FAILED ip=%s username=%s locked_for=%ds", client_ip, log_username, lockout_secs)
-			else:
-				_log.info("LOGIN_FAILED ip=%s username=%s", client_ip, log_username)
-			raise HTTPException(status_code=401, detail="Invalid MFA code")
+			_record_failed_and_raise(conn, client_ip, log_username, detail="Invalid MFA code")
 
 	clear_login_attempts(conn, client_ip)
 
-	now = datetime.now(timezone.utc)
-	token = new_token()
-	expires_at, max_expires_at = generate_token_expiry(now=now)
-
-	create_auth_token(conn, user["id"], token, expires_at, max_expires_at)
-	update_last_login(conn, user["id"], client_ip)
-
-	# Cookie max_age uses max_expires_at (24h) since the DB is the authority for
-	# sliding-window expiry. This prevents the browser from deleting the cookie
-	# before the session could be extended by user activity.
-	max_age = max(0, int((max_expires_at - now).total_seconds()))
-	response.set_cookie(
-		key=_AUTH_COOKIE,
-		value=token,
-		httponly=True,
-		secure=_is_https(request),
-		samesite="lax",  # Allow cross-site navigation for passkey/WebAuthn flows
-		max_age=max_age,
-		path="/",
-	)
+	token, expires_at = _issue_session(conn, request, response, user["id"], client_ip)
 
 	if used_recovery:
 		_log.info("LOGIN_SUCCESS ip=%s username=%s mfa=recovery", client_ip, log_username)
 	else:
 		_log.info("LOGIN_SUCCESS ip=%s username=%s mfa=totp", client_ip, log_username)
 
-	# Check if passkey setup is pending (admin enabled but user hasn't registered)
-	passkey_setup_pending = bool(user["passkey_pending"]) and not bool(user["passkey_enabled"])
+	data = _build_login_response_data(token, expires_at, user, client_ip, log_username, include_otp_pending=False)
 
-	data = {
-		"token": token,
-		"expires_at": expires_at,
-		"token_type": "Bearer",
-	}
-	
-	if passkey_setup_pending:
-		_log.info("LOGIN_PASSKEY_SETUP_PENDING ip=%s username=%s", client_ip, log_username)
-		data["passkey_setup_pending"] = True
-	
 	return ok_response(data=data)
 
 
@@ -649,12 +704,12 @@ def get_current_user_info(user: sqlite3.Row = Depends(get_current_user)):
 	data = {
 		"id": user["id"],
 		"username": user["username"],
-		"is_admin": bool(user["is_admin"]),
-		"is_active": bool(user["is_active"]),
-		"otp_enabled": bool(user["otp_enabled"]),
-		"otp_setup_pending": bool(user["otp_secret"]) and not bool(user["otp_enabled"]),
-		"passkey_enabled": bool(user["passkey_enabled"]),
-		"passkey_setup_pending": bool(user["passkey_pending"]) and not bool(user["passkey_enabled"]),
+		"is_admin": coerce_db_bool(user["is_admin"]),
+		"is_active": coerce_db_bool(user["is_active"]),
+		"otp_enabled": coerce_db_bool(user["otp_enabled"]),
+		"otp_setup_pending": _is_otp_setup_pending(user),
+		"passkey_enabled": coerce_db_bool(user["passkey_enabled"]),
+		"passkey_setup_pending": _is_passkey_setup_pending(user),
 	}
 	return ok_response(data=data)
 
@@ -662,17 +717,13 @@ def get_current_user_info(user: sqlite3.Row = Depends(get_current_user)):
 @router.get("/me/otp/setup")
 @limiter.limit(RATE_LIMIT_AUTH)
 def get_otp_setup_info(request: Request, user: sqlite3.Row = Depends(get_current_user)):
-	"""Get OTP provisioning info for the current user (only if setup is pending)."""
-	if not user["otp_secret"]:
-		raise HTTPException(status_code=400, detail="OTP setup not initiated")
+	"""Get OTP provisioning info for the current user (only if setup is pending).
 
-	if bool(user["otp_enabled"]):
-		raise HTTPException(status_code=400, detail="OTP is already enabled")
-
-	# Decrypt for display
-	plaintext_secret = decrypt_otp_secret(user["otp_secret"])
-	if not plaintext_secret:
-		raise HTTPException(status_code=500, detail="Unable to decrypt OTP secret")
+	NOTE: sync – FastAPI threadpools this handler. qrcode.make() + PIL PNG
+	encoding are CPU-intensive (image generation). Intentionally sync so the
+	threadpool absorbs the CPU cost without blocking the event loop.
+	"""
+	plaintext_secret = _require_otp_setup_pending(user)
 
 	provisioning_uri = build_provisioning_uri(
 		secret=plaintext_secret,
@@ -704,16 +755,7 @@ def confirm_my_otp_setup(
 	user: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Confirm OTP setup for the current user."""
-	if not user["otp_secret"]:
-		raise HTTPException(status_code=400, detail="OTP setup not initiated")
-
-	if bool(user["otp_enabled"]):
-		raise HTTPException(status_code=400, detail="OTP is already enabled")
-
-	# Decrypt for verification
-	plaintext_secret = decrypt_otp_secret(user["otp_secret"])
-	if not plaintext_secret:
-		raise HTTPException(status_code=500, detail="Unable to decrypt OTP secret")
+	plaintext_secret = _require_otp_setup_pending(user)
 
 	if not verify_otp(plaintext_secret, payload.code):
 		raise HTTPException(status_code=401, detail="Invalid OTP code")

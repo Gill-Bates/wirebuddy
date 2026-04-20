@@ -1,0 +1,646 @@
+    .badge-online {
+        background-color: var(--wb-primary, #88171a);
+        color: #fff;
+    }
+
+    .dashboard-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+    }
+
+    .map-kpis {
+        flex-wrap: wrap;
+    }
+
+    #peer-map {
+        height: clamp(400px, 50vh, 650px);
+        border-radius: 0.5rem;
+        position: relative;
+        z-index: 0;
+        isolation: isolate;
+    }
+
+    .map-kpi {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        font-size: 0.85rem;
+        font-weight: 500;
+    }
+
+    .map-kpis .material-icons {
+        vertical-align: middle;
+    }
+
+    .speedtest-node-select {
+        width: auto;
+        max-width: 130px;
+    }
+
+    .speedtest-range-select {
+        width: auto;
+    }
+
+    .dashboard-traffic-metric .dashboard-metric-unit {
+        margin-left: 0;
+    }
+
+    .dashboard-kpi-subtext {
+        display: block;
+        font-size: 0.7rem;
+    }
+
+    .dashboard-bandwidth-main {
+        line-height: 1.1;
+    }
+
+    .dashboard-bandwidth-sub {
+        line-height: 1.2;
+    }
+
+    .dashboard-stats-row .wb-kpi-card {
+        min-height: 85px;
+        overflow: hidden;
+    }
+
+    .dashboard-stats-row .wb-kpi-card .card-body {
+        display: flex;
+        overflow: hidden;
+    }
+
+    /* Allow cards to shrink inside grid/flex layouts */
+    .card,
+    .card-body {
+        min-width: 0;
+    }
+
+    .dashboard-stats-row .wb-kpi-card .card-body > .d-flex {
+        width: 100%;
+        min-height: 100%;
+    }
+
+    .dashboard-stats-row .flex-shrink-0 {
+        display: flex;
+        align-items: center;
+    }
+
+    .dashboard-stats-row .wb-kpi-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        color: var(--bs-secondary-color);
+    }
+
+    .dashboard-traffic-summary {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+    }
+
+    .dashboard-traffic-summary .dashboard-traffic-metric {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 0.35rem;
+        flex-wrap: wrap;
+    }
+
+    .dashboard-traffic-summary .dashboard-metric-prefix {
+        font-weight: 600;
+    }
+
+    .speedtest-chart-wrap {
+        position: relative;
+        height: 100%;
+        min-height: 180px;
+    }
+
+/* ─── EMPTY STATE (ECHT ZENTRIERT) ─────────────────────────── */
+    .chart-empty-state {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .chart-empty-state > * {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .chart-empty-state .material-icons {
+        font-size: 34px;
+        margin-bottom: 4px;
+        line-height: 1;
+        display: block;
+    }
+
+    .chart-empty-state-text {
+        font-size: 0.85rem;
+        opacity: 0.7;
+    }
+
+    .speedtest-last-icon {
+        font-size: 14px;
+    }
+
+    /* Mobile-first Grid Layout */
+    .dashboard-main-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: var(--wb-space-3);
+        margin-bottom: var(--wb-space-3);
+    }
+
+    /* Prevent grid children from overflowing horizontally */
+    .dashboard-main-grid > * {
+        min-width: 0;
+    }
+
+    @media (min-width: 1200px) {
+        /* Dashboard page fills viewport — no scroll on desktop */
+        .dashboard-page {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        /* Header stays at natural height, unaffected by scale */
+        .dashboard-page > .wb-page-header {
+            flex-shrink: 0;
+        }
+
+        /* Scaled body fills remaining space */
+        .dashboard-page-body {
+            flex: 1 1 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* KPI row stays at natural height */
+        .dashboard-page-body > .row:first-of-type {
+            flex-shrink: 0;
+        }
+
+        /* Main grid fills all remaining viewport space */
+        .dashboard-main-grid {
+            flex: 1 1 0;
+            min-height: 0;
+            margin-bottom: 0;
+            gap: var(--wb-space-3);
+            grid-template-columns: minmax(600px, 2fr) minmax(340px, 1fr);
+
+            /* 3 Zeilen: Speedtest (260px), Map + Recent bekommen je +1 Einheit */
+            grid-template-rows: 260px 1fr 1fr;
+        }
+
+        /* Map column spans full grid height */
+        .dashboard-map-col {
+            grid-column: 1;
+            grid-row: 1 / 4; /* spannt alle 3 Zeilen */
+            min-height: 0;
+        }
+
+        .dashboard-map-col,
+        .dashboard-map-col .card,
+        .dashboard-speedtest-col,
+        .dashboard-speedtest-col .card,
+        .dashboard-recent-peers-col,
+        .dashboard-recent-peers-col .card {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .dashboard-map-col .card {
+            flex: 1 1 0;
+            min-height: 0;
+        }
+
+        .dashboard-map-col .card-body {
+            flex: 1 1 0;
+            min-height: 0;
+        }
+
+        #peer-map {
+            height: 100%;
+            min-height: 500px; /* 🔥 Map sichtbar größer */
+        }
+
+        /* Speedtest: compact, fixed height */
+        .dashboard-speedtest-col {
+            grid-column: 2;
+            grid-row: 1;
+            min-height: 0;
+            display: flex;
+        }
+
+        .dashboard-speedtest-col .card {
+            flex: 1 1 auto;
+            min-height: 260px; /* 🔥 höher */
+        }
+
+        .dashboard-speedtest-col .speedtest-chart-wrap {
+            height: 100%;
+            min-height: 140px;
+        }
+
+        .dashboard-speedtest-col .card-body {
+            padding-bottom: 0.5rem;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        /* Recent Peer Activity: fills remaining height, scrolls */
+        .dashboard-recent-peers-col {
+            grid-column: 2;
+            grid-row: 2 / 4; /* spannt Zeile 2 + 3 */
+            min-height: 0;
+            display: flex;
+        }
+
+        .dashboard-recent-peers-col .card {
+            flex: 1 1 auto;
+            min-height: 0;
+        }
+
+        .dashboard-recent-peers-col .card-body {
+            flex: 1 1 0;
+            min-height: 0;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .dashboard-stats-row {
+            margin-bottom: var(--wb-space-3) !important;
+        }
+    }
+
+    .recent-peer-subline {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .recent-peer-subline .peer-flag {
+        width: 1rem;
+        height: 0.75rem;
+        flex-shrink: 0;
+    }
+
+    .recent-peer-subline .peer-ip-text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .recent-peers-card .card-body {
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding-bottom: 1rem;
+        display: flex;
+    }
+
+    #recent-peers {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        justify-content: flex-start;
+        min-width: 0;
+        min-height: 0;
+        overflow-y: auto;
+        flex: 1;
+    }
+
+    /* Ensure inner containers don't force overflow */
+    .network-gauges-grid {
+        min-width: 0;
+    }
+
+    #recent-peers .peer-row-clickable {
+        cursor: pointer;
+        transition: background-color 0.15s ease;
+        width: 100%;
+    }
+
+    #recent-peers .peer-row-clickable:hover {
+        background-color: var(--bs-tertiary-bg, rgba(0,0,0,0.04));
+    }
+
+
+    @media (max-width: 1199.98px) {
+        .dashboard-map-col .card {
+            height: auto;
+        }
+
+        .recent-peers-card .card-body {
+            max-height: 400px;
+        }
+    }
+
+    @media (max-width: 991.98px) {
+        #peer-map {
+            height: clamp(360px, 45vh, 500px);
+        }
+
+        .map-kpis {
+            font-size: 0.8rem;
+        }
+
+        .recent-peers-card {
+            flex: none;
+            min-height: 200px;
+        }
+    }
+
+    @media (max-width: 767.98px) {
+        #peer-map {
+            height: 320px;
+        }
+
+        .dashboard-traffic-metric .dashboard-metric-unit {
+            display: inline;
+            margin-left: 0;
+            font-size: 0.875rem;
+            color: var(--bs-secondary-color);
+            white-space: nowrap;
+        }
+
+        .recent-peers-card .card-body {
+            max-height: 350px;
+        }
+
+        .speedtest-card {
+            min-height: 180px;
+        }
+    }
+
+    @media (max-width: 575.98px) {
+        .dashboard-stats-row .wb-kpi-card {
+            min-height: 124px;
+        }
+
+        .dashboard-header {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.5rem;
+        }
+
+        .dashboard-page-title {
+            font-size: 1.1rem;
+        }
+
+        #recent-peers .peer-row-clickable {
+            padding-top: 0.75rem;
+            padding-bottom: 0.75rem;
+        }
+
+    }
+
+    #peer-map.leaflet-container {
+        background: var(--bs-body-bg);
+    }
+
+    /* Pulsating marker animation */
+    @keyframes pulse-online {
+        0% {
+            transform: scale(1);
+            opacity: 1;
+        }
+
+        50% {
+            transform: scale(1.8);
+            opacity: 0.4;
+        }
+
+        100% {
+            transform: scale(1);
+            opacity: 1;
+        }
+    }
+
+    @keyframes pulse-offline {
+        0% {
+            transform: scale(1);
+            opacity: 0.6;
+        }
+
+        50% {
+            transform: scale(1.5);
+            opacity: 0.25;
+        }
+
+        100% {
+            transform: scale(1);
+            opacity: 0.6;
+        }
+    }
+
+    .pulse-marker {
+        width: 24px;
+        height: 24px;
+        background: #6c757d;
+        border-radius: 50%;
+        box-shadow: 0 0 0 4px rgba(108, 117, 125, 0.3);
+        opacity: 0.6;
+        animation: pulse-offline 3s ease-in-out infinite;
+    }
+
+    .pulse-marker.connected {
+        background: var(--wb-primary, #88171a);
+        box-shadow: 0 0 0 6px rgba(var(--bs-primary-rgb), 0.35);
+        opacity: 1;
+        animation: pulse-online 2s ease-in-out infinite;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .pulse-marker,
+        .pulse-marker.connected {
+            animation: none;
+        }
+    }
+
+    /* Map popup styles */
+    .map-popup {
+        min-width: 180px;
+        font-size: 0.875rem;
+        line-height: 1.4;
+    }
+    .map-popup-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
+        padding-bottom: 0.4rem;
+        border-bottom: 1px solid var(--bs-border-color);
+    }
+    .map-popup-header strong {
+        font-size: 0.95rem;
+    }
+    .map-popup-header .badge {
+        font-size: 0.7rem;
+        padding: 0.25em 0.5em;
+    }
+    .map-popup-location {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+        margin-bottom: 0.25rem;
+    }
+    .map-popup-location .material-icons {
+        font-size: 1rem;
+        color: var(--bs-primary);
+    }
+    .map-popup-meta,
+    .map-popup-asn,
+    .map-popup-count {
+        font-size: 0.8rem;
+        margin-top: 0.15rem;
+    }
+
+    /* ─── Network Stats Items ───────────────────────────── */
+    .network-gauges-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem;
+    }
+
+    /* Single interface takes full width */
+    .network-item:only-child {
+        grid-column: 1 / -1;
+    }
+
+    @media (max-width: 575.98px) {
+        .network-gauges-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    .network-item {
+        padding: 0.75rem;
+        border-radius: 0.5rem;
+        background: var(--bs-tertiary-bg);
+        border: 1px solid var(--wb-ni-border);
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        transition: border-color 0.15s ease, opacity 0.15s ease;
+        min-width: 0;
+        overflow-x: hidden;
+    }
+
+    [data-bs-theme="dark"] .network-item {
+        background: rgba(255, 255, 255, 0.02);
+    }
+
+    /* Idle interfaces are visually subdued */
+    .network-item:not(.active) {
+        opacity: 0.6;
+    }
+
+    /* Hover feedback */
+    .network-item:hover {
+        border-color: var(--wb-ni-border-hover);
+    }
+
+    .network-item-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.8rem;
+    }
+
+    .network-item-name {
+        font-weight: 700;
+        color: var(--bs-body-color);
+    }
+
+    .network-item-total {
+        font-weight: 800;
+        font-size: 0.9rem;
+        color: var(--bs-body-color);
+    }
+
+    .network-sparkline {
+        display: block;
+        width: 100%;
+        height: 24px;
+        opacity: 0.85;
+    }
+
+    .network-item-bar {
+        height: 6px;
+        background: var(--wb-ni-bar-bg);
+        border-radius: 999px;
+        overflow: hidden;
+    }
+
+    .network-item-bar-fill {
+        height: 100%;
+        width: 0%;
+        background: var(--wb-accent-red, #ff6384);
+        transition: width 0.2s linear;
+    }
+
+    .network-item-rates {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.7rem;
+        color: var(--bs-secondary-color);
+    }
+
+    .network-item .rx {
+        color: var(--wb-danger-strong, #b02a37);
+    }
+
+    [data-bs-theme="dark"] .network-item .rx {
+        color: var(--wb-danger-strong, #ff9cab);
+    }
+
+    .network-item .tx {
+        color: var(--wb-info-strong, #0a58ca);
+    }
+
+    [data-bs-theme="dark"] .network-item .tx {
+        color: var(--wb-info-strong, #6edff6);
+    }
+
+    /* Active interfaces highlight */
+    .network-item.active {
+        border-color: var(--wb-ni-border-active);
+    }
+
+/* ─── KPI row spacing only (fix uneven vertical gaps) ─────────── */
+.dashboard-stats-row {
+    --bs-gutter-x: var(--wb-space-3);
+    --bs-gutter-y: var(--wb-space-3);
+    margin-bottom: var(--wb-space-3) !important;
+}
+
+/* CSS Grid uses gap directly */
+.dashboard-main-grid {
+    gap: var(--wb-space-3); /* single source of truth for grid spacing */
+}
+
+/* ─── Desktop Density Scaling (Dashboard only) ────────────────── */
+@media (min-width: 992px) {
+    .dashboard-page-body {
+        transform: scale(0.8);
+        transform-origin: top left;
+        width: 125%;
+    }
+}

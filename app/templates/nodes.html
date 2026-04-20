@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% from "macros/geo.html" import geo_badge %}
 
 {% block title %}Nodes – WireBuddy{% endblock %}
 
@@ -311,12 +310,18 @@
                 <tbody id="nodesTableBody">
                     {% for node in nodes %}
                     <tr id="node-row-{{ node.id }}" data-last-speedtest-ts="{{ node.last_speedtest.ts if node.last_speedtest else '' }}" data-node-status="{{ node.status }}">
-                        <td data-label="Name"><strong>{{ node.name }}</strong></td>
+                        <td data-label="Name">
+                            <strong>{{ node.name }}</strong>
+                            {% if not node.show_on_dashboard %}
+                            <span class="badge bg-secondary ms-1" style="font-size: 0.65rem;" title="Hidden from dashboard" data-bs-toggle="tooltip">Hidden</span>
+                            {% endif %}
+                        </td>
                         <td data-label="FQDN" class="node-fqdn-cell">
                             <div class="node-fqdn-stack">
                                 <div class="node-fqdn-main">
-                                    {% if node.geo_country_code %}
-                                    <img class="node-country-flag" alt="Country flag: {{ node.geo_country_code|upper }}" decoding="async" src="/static/vendor/images/flags/{{ node.geo_country_code }}.svg">
+                                    {% set node_country_code = (node.geo_country_code or '')|lower %}
+                                    {% if node_country_code|length == 2 and node_country_code[0].isalpha() and node_country_code[1].isalpha() %}
+                                    <img class="node-country-flag" alt="Country flag: {{ node_country_code|upper }}" decoding="async" loading="lazy" src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ node_country_code }}.svg">
                                     {% endif %}
                                     <code>{{ node.fqdn }}</code>
                                 </div>
@@ -424,6 +429,7 @@
                                         data-node-name="{{ node.name }}"
                                         data-node-fqdn="{{ node.fqdn }}"
                                         data-node-port="{{ node.wg_port }}"
+                                        data-node-show-on-dashboard="{{ 'true' if node.show_on_dashboard else 'false' }}"
                                         aria-label="Edit {{ node.name }}"
                                         data-bs-toggle="tooltip"
                                         data-bs-title="Edit Node">
@@ -539,6 +545,14 @@
                     <label for="editNodePort" class="form-label">WireGuard Port <span class="text-danger">*</span></label>
                     <input type="number" class="form-control" id="editNodePort" min="1" max="65535" required>
                 </div>
+                <div class="mb-3">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" role="switch" id="editNodeShowOnDashboard"
+                            aria-describedby="editNodeDashboardHelp" checked>
+                        <label class="form-check-label" for="editNodeShowOnDashboard">Show on Dashboard</label>
+                    </div>
+                    <small id="editNodeDashboardHelp" class="text-muted">Include this node in the dashboard node counter</small>
+                </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -592,6 +606,7 @@
     const SPEEDTEST_STATE_STORAGE_KEY = 'wb_nodes_active_speedtests';
     const SPEEDTEST_LOCK_TIMEOUT_MS = 180000;
     const SPEEDTEST_STATUS_POLL_MS = 5000;
+    const FLAG_ICON_BASE_URL = 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
     
     let pollTimer = null;
     let speedtestStatusTimer = null;
@@ -740,14 +755,23 @@
         
         if (isLoading) {
             button.disabled = true;
-            if (!button.dataset.originalHtml) {
-                button.dataset.originalHtml = button.innerHTML;
+            if (!button.dataset.originalText) {
+                button.dataset.originalText = button.textContent?.trim() || 'Submit';
             }
-            button.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>${loadingText}`;
+            const spinner = document.createElement('span');
+            spinner.className = 'spinner-border spinner-border-sm me-1';
+            spinner.setAttribute('role', 'status');
+            spinner.setAttribute('aria-hidden', 'true');
+            button.replaceChildren(spinner, document.createTextNode(loadingText));
         } else {
             button.disabled = false;
-            button.innerHTML = originalText ? originalText : (button.dataset.originalHtml || 'Submit');
+            button.textContent = originalText ? originalText : (button.dataset.originalText || 'Submit');
         }
+    }
+
+    function normalizeCountryCode(value) {
+        const code = String(value || '').trim().toLowerCase();
+        return /^[a-z]{2}$/.test(code) ? code : '';
     }
 
     function normalizeSpeedtestTimestamp(value) {
@@ -1040,6 +1064,51 @@
         cell.replaceChildren(...fragments);
     }
 
+    function renderSpeedtestCell(cell, speedtest) {
+        if (!cell) return;
+
+        cell.className = 'node-speedtest-cell';
+        const hasOkResult = speedtest && speedtest.status === 'ok';
+        if (!hasOkResult) {
+            const muted = document.createElement('span');
+            muted.className = 'text-muted';
+            muted.textContent = '—';
+            cell.replaceChildren(muted);
+            return;
+        }
+
+        const wrap = document.createElement('div');
+        wrap.className = 'd-flex gap-1 flex-wrap';
+
+        if (speedtest.download_mbit) {
+            const dl = document.createElement('span');
+            dl.className = 'badge bg-secondary';
+            dl.setAttribute('title', 'Download');
+            dl.setAttribute('data-bs-toggle', 'tooltip');
+            dl.textContent = `↓ ${formatBandwidthMbit(speedtest.download_mbit, 1, 0)}`;
+            wrap.appendChild(dl);
+        }
+
+        if (speedtest.upload_mbit) {
+            const ul = document.createElement('span');
+            ul.className = 'badge bg-secondary';
+            ul.setAttribute('title', 'Upload');
+            ul.setAttribute('data-bs-toggle', 'tooltip');
+            ul.textContent = `↑ ${formatBandwidthMbit(speedtest.upload_mbit, 1, 0)}`;
+            wrap.appendChild(ul);
+        }
+
+        if (!wrap.childElementCount) {
+            const muted = document.createElement('span');
+            muted.className = 'text-muted';
+            muted.textContent = '—';
+            cell.replaceChildren(muted);
+            return;
+        }
+
+        cell.replaceChildren(wrap);
+    }
+
     function buildNodeRow(node) {
         const tr = document.createElement('tr');
         tr.id = `node-row-${node.id}`;
@@ -1052,6 +1121,15 @@
         const strong = document.createElement('strong');
         strong.textContent = node.name;
         tdName.appendChild(strong);
+        if (node.show_on_dashboard === false) {
+            const hiddenBadge = document.createElement('span');
+            hiddenBadge.className = 'badge bg-secondary ms-1';
+            hiddenBadge.style.fontSize = '0.65rem';
+            hiddenBadge.title = 'Hidden from dashboard';
+            hiddenBadge.setAttribute('data-bs-toggle', 'tooltip');
+            hiddenBadge.textContent = 'Hidden';
+            tdName.appendChild(hiddenBadge);
+        }
 
         // FQDN cell with optional geo info
         const tdFqdn = document.createElement('td');
@@ -1061,12 +1139,14 @@
         fqdnStack.className = 'node-fqdn-stack';
         const fqdnMain = document.createElement('div');
         fqdnMain.className = 'node-fqdn-main';
-        if (node.geo_country_code) {
+        const countryCode = normalizeCountryCode(node.geo_country_code);
+        if (countryCode) {
             const flag = document.createElement('img');
             flag.className = 'node-country-flag';
-            flag.alt = `Country flag: ${node.geo_country_code.toUpperCase()}`;
+            flag.alt = `Country flag: ${countryCode.toUpperCase()}`;
             flag.decoding = 'async';
-            flag.src = `/static/vendor/images/flags/${node.geo_country_code}.svg`;
+            flag.loading = 'lazy';
+            flag.src = `${FLAG_ICON_BASE_URL}/${countryCode}.svg`;
             fqdnMain.appendChild(flag);
         }
         const fqdnCode = document.createElement('code');
@@ -1095,7 +1175,9 @@
         // Port cell
         const tdPort = document.createElement('td');
         tdPort.setAttribute('data-label', 'Port');
-        tdPort.innerHTML = '<code>' + node.wg_port + '/udp</code>';
+        const portCode = document.createElement('code');
+        portCode.textContent = `${node.wg_port}/udp`;
+        tdPort.appendChild(portCode);
 
         // Status cell
         const tdStatus = document.createElement('td');
@@ -1123,6 +1205,11 @@
         const tdPeers = document.createElement('td');
         tdPeers.setAttribute('data-label', 'Peers');
         tdPeers.textContent = node.peer_count ?? 0;
+
+        // Speedtest cell
+        const tdSpeedtest = document.createElement('td');
+        tdSpeedtest.setAttribute('data-label', 'Speedtest');
+        renderSpeedtestCell(tdSpeedtest, node.last_speedtest);
 
         // Last Seen cell
         const tdLastSeen = document.createElement('td');
@@ -1208,6 +1295,7 @@
         editBtn.dataset.nodeName = node.name;
         editBtn.dataset.nodeFqdn = node.fqdn;
         editBtn.dataset.nodePort = node.wg_port;
+        editBtn.dataset.nodeShowOnDashboard = node.show_on_dashboard === false ? 'false' : 'true';
         editBtn.setAttribute('aria-label', `Edit ${node.name}`);
         editBtn.setAttribute('data-bs-toggle', 'tooltip');
         editBtn.setAttribute('data-bs-title', 'Edit Node');
@@ -1236,7 +1324,7 @@
         actionsDiv.append(restartBtn, speedtestBtn, regenBtn, editBtn, deleteBtn);
         tdActions.appendChild(actionsDiv);
 
-        tr.append(tdName, tdFqdn, tdPort, tdStatus, tdVersion, tdPeers, tdLastSeen, tdMobileMeta, tdActions);
+        tr.append(tdName, tdFqdn, tdPort, tdStatus, tdVersion, tdPeers, tdSpeedtest, tdLastSeen, tdMobileMeta, tdActions);
         return tr;
     }
 
@@ -1263,17 +1351,27 @@
         table.className = 'table table-hover mb-0 nodes-table';
 
         const thead = document.createElement('thead');
-        thead.innerHTML = `<tr>
-            <th>Name</th>
-            <th>FQDN / IP</th>
-            <th data-label="Port">Port</th>
-            <th>Status</th>
-            <th>Version</th>
-            <th>Peers</th>
-            <th>Speedtest</th>
-            <th>Last Seen</th>
-            <th class="text-end" aria-hidden="true"></th>
-        </tr>`;
+        const headerRow = document.createElement('tr');
+        const headerConfig = [
+            { text: 'Name' },
+            { text: 'FQDN / IP' },
+            { text: 'Port', dataLabel: 'Port' },
+            { text: 'Status' },
+            { text: 'Version' },
+            { text: 'Peers' },
+            { text: 'Speedtest' },
+            { text: 'Last Seen' },
+            { text: '', className: 'text-end', ariaHidden: 'true' },
+        ];
+        for (const header of headerConfig) {
+            const th = document.createElement('th');
+            th.textContent = header.text;
+            if (header.dataLabel) th.setAttribute('data-label', header.dataLabel);
+            if (header.className) th.className = header.className;
+            if (header.ariaHidden) th.setAttribute('aria-hidden', header.ariaHidden);
+            headerRow.appendChild(th);
+        }
+        thead.appendChild(headerRow);
 
         tbody = document.createElement('tbody');
         tbody.id = 'nodesTableBody';
@@ -1304,12 +1402,14 @@
     // ========================================================================
     // MODAL ACTIONS
     // ========================================================================
-    function openEditNodeModal(id, name, fqdn, port) {
+    function openEditNodeModal(id, name, fqdn, port, showOnDashboard) {
         if (!editNodeModalEl) return;
         document.getElementById('editNodeId').value = id;
         document.getElementById('editNodeName').value = name;
         document.getElementById('editNodeFqdn').value = fqdn;
         document.getElementById('editNodePort').value = port;
+        const toggle = document.getElementById('editNodeShowOnDashboard');
+        if (toggle) toggle.checked = showOnDashboard !== false && showOnDashboard !== 'false';
         bootstrap.Modal.getOrCreateInstance(editNodeModalEl).show();
     }
 
@@ -1358,6 +1458,7 @@
         const name = document.getElementById('editNodeName')?.value.trim();
         const fqdn = editNodeFqdnInput?.value.trim();
         const port = Number(document.getElementById('editNodePort')?.value) || 51820;
+        const showOnDashboard = document.getElementById('editNodeShowOnDashboard')?.checked ?? true;
 
         if (!name || !fqdn) {
             await wbAlert('Name and FQDN are required.', 'warning');
@@ -1369,7 +1470,7 @@
         }
 
         try {
-            await api('PATCH', `/api/nodes/${id}`, { name, fqdn, wg_port: port });
+            await api('PATCH', `/api/nodes/${id}`, { name, fqdn, wg_port: port, show_on_dashboard: showOnDashboard });
             refreshNodes();
             bootstrap.Modal.getInstance(editNodeModalEl)?.hide();
         } catch (err) {
@@ -1561,16 +1662,8 @@
                     const isOnline = node.status === 'online';
                     restartBtn.disabled = !isOnline;
                     restartBtn.dataset.nodeStatus = node.status || '';
-                    // Update tooltip title (only recreate if changed to reduce overhead)
                     const title = isOnline ? 'Restart Node' : 'Node is offline';
-                    
-                    if (restartBtn.getAttribute('data-bs-title') !== title) {
-                        restartBtn.setAttribute('data-bs-title', title);
-                        const tooltip = bootstrap.Tooltip.getInstance(restartBtn);
-                        if (tooltip) {
-                            tooltip.setContent({ '.tooltip-inner': title });
-                        }
-                    }
+                    updateTooltipTitle(restartBtn, title);
                 }
 
                 const speedtestBtn = row.querySelector('button[data-action="run-speedtest"]');
@@ -1578,6 +1671,9 @@
                     speedtestBtn.dataset.nodeStatus = node.status || '';
                     syncSpeedtestButtonForRow(row, node.status || '');
                 }
+
+                const speedtestCell = row.querySelector('td[data-label="Speedtest"]');
+                renderSpeedtestCell(speedtestCell, node.last_speedtest);
             }
             
             // Reset failure count on success
@@ -1630,51 +1726,45 @@
         await copyTextFromElement('regenTokenDisplay');
     });
 
-    [addNodeFqdnInput, editNodeFqdnInput].forEach((input) => {
-        input?.addEventListener('input', () => {
-            validateNodeAddressField(input);
+    for (const eventName of ['input', 'blur']) {
+        [addNodeFqdnInput, editNodeFqdnInput].forEach((input) => {
+            input?.addEventListener(eventName, () => {
+                validateNodeAddressField(input);
+            });
         });
-        input?.addEventListener('blur', () => {
-            validateNodeAddressField(input);
-        });
-    });
+    }
 
-    nodesTableBody?.addEventListener('click', async (event) => {
+    async function handleNodeActionClick(event) {
         const button = event.target.closest('button[data-action]');
         if (!button || button.disabled) return;
+        if (!button.closest('#nodesTableBody')) return;
 
         const action = button.dataset.action;
         const nodeId = button.dataset.nodeId || '';
         const nodeName = button.dataset.nodeName || 'node';
 
-        if (action === 'edit-node') {
-            openEditNodeModal(
+        const actionHandlers = {
+            'edit-node': () => openEditNodeModal(
                 nodeId,
                 nodeName,
                 button.dataset.nodeFqdn || '',
                 Number(button.dataset.nodePort) || 51820,
-            );
-            return;
-        }
+                button.dataset.nodeShowOnDashboard,
+            ),
+            'delete-node': () => deleteNode(nodeId, nodeName),
+            'regenerate-token': () => regenerateToken(nodeId, nodeName),
+            'restart-node': () => restartNode(nodeId, nodeName),
+            'run-speedtest': () => runNodeSpeedtest(nodeId, nodeName),
+        };
 
-        if (action === 'delete-node') {
-            await deleteNode(nodeId, nodeName);
-            return;
+        const handler = actionHandlers[action];
+        if (handler) {
+            await handler();
         }
+    }
 
-        if (action === 'regenerate-token') {
-            await regenerateToken(nodeId, nodeName);
-            return;
-        }
-
-        if (action === 'restart-node') {
-            await restartNode(nodeId, nodeName);
-            return;
-        }
-
-        if (action === 'run-speedtest') {
-            await runNodeSpeedtest(nodeId, nodeName);
-        }
+    document.addEventListener('click', (event) => {
+        void handleNodeActionClick(event);
     });
 
     // Reset modal state when closed (with explicit state check)

@@ -6,6 +6,10 @@
 import {
     ABOUT_MOBILE_STACK_GAP_VARIANCE_TOLERANCE_PX,
     CLICK_TARGET_MIN_SIZE_PX,
+    DASHBOARD_COMPACT_KPI_CARD_PADDING_EXPECTED,
+    DASHBOARD_COMPACT_KPI_CARD_PADDING_TOLERANCE,
+    DASHBOARD_COMPACT_KPI_ICON_MIN,
+    DASHBOARD_COMPACT_KPI_ICON_MAX,
     DASHBOARD_TRANSFER_COLOR_DISTANCE_MIN,
     KPI_CARD_PADDING_EXPECTED,
     KPI_CARD_PADDING_TOLERANCE,
@@ -349,9 +353,15 @@ export function summarizeFindings(result) {
     if (result.network.duplicateRequests.length) pushWarning(`duplicateRequests=${result.network.duplicateRequests.length}`);
 
     if (result.metrics.spacing.kpiCards?.length) {
+        const isDashboard = result.name.includes('dashboard');
+        const paddingExpected = isDashboard ? DASHBOARD_COMPACT_KPI_CARD_PADDING_EXPECTED : KPI_CARD_PADDING_EXPECTED;
+        const paddingTolerance = isDashboard ? DASHBOARD_COMPACT_KPI_CARD_PADDING_TOLERANCE : KPI_CARD_PADDING_TOLERANCE;
+        const iconMin = isDashboard ? DASHBOARD_COMPACT_KPI_ICON_MIN : KPI_ICON_MIN;
+        const iconMax = isDashboard ? DASHBOARD_COMPACT_KPI_ICON_MAX : KPI_ICON_MAX;
+
         const paddingProblems = result.metrics.spacing.kpiCards.filter((card) =>
-            Math.abs(card.paddingTop - KPI_CARD_PADDING_EXPECTED) > KPI_CARD_PADDING_TOLERANCE ||
-            Math.abs(card.paddingBottom - KPI_CARD_PADDING_EXPECTED) > KPI_CARD_PADDING_TOLERANCE
+            Math.abs(card.paddingTop - paddingExpected) > paddingTolerance ||
+            Math.abs(card.paddingBottom - paddingExpected) > paddingTolerance
         );
 
         if (paddingProblems.length) {
@@ -360,7 +370,7 @@ export function summarizeFindings(result) {
 
         const iconProblems = result.metrics.spacing.kpiCards.filter((card) =>
             card.iconSize &&
-            (card.iconSize < KPI_ICON_MIN || card.iconSize > KPI_ICON_MAX)
+            (card.iconSize < iconMin || card.iconSize > iconMax)
         );
 
         if (iconProblems.length) {

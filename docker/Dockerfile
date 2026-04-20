@@ -14,13 +14,13 @@ ARG APP_VERSION
 ARG BUILD_DATE
 ARG VCS_REF
 
-LABEL maintainer="Gill-Bates <github.com/Gill-Bates>"
-LABEL description="WireBuddy - Lightweight WireGuard Management WebUI"
-LABEL org.opencontainers.image.version="${APP_VERSION}"
-LABEL org.opencontainers.image.created="${BUILD_DATE}"
-LABEL org.opencontainers.image.revision="${VCS_REF}"
-LABEL org.opencontainers.image.licenses="AGPL-3.0"
-LABEL org.opencontainers.image.source="https://github.com/Gill-Bates/wirebuddy"
+LABEL maintainer="Gill-Bates <github.com/Gill-Bates>" \
+    description="WireBuddy - Lightweight WireGuard Management WebUI" \
+    org.opencontainers.image.version="${APP_VERSION}" \
+    org.opencontainers.image.created="${BUILD_DATE}" \
+    org.opencontainers.image.revision="${VCS_REF}" \
+    org.opencontainers.image.licenses="AGPL-3.0" \
+    org.opencontainers.image.source="https://github.com/Gill-Bates/wirebuddy"
 
 WORKDIR /app
 
@@ -46,14 +46,13 @@ RUN apt-get update && \
 # Install Python dependencies from pre-built wheels
 COPY --from=builder /wheels /wheels
 COPY requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir --no-compile --no-index --find-links=/wheels -r requirements.txt && \
-    rm -rf /wheels
+RUN pip install --no-cache-dir --no-compile --no-index --find-links=/wheels -r requirements.txt && \
+    rm -rf /wheels requirements.txt
 
 # Copy only application code (relies on .dockerignore)
 COPY app ./app
 COPY VERSION .
-COPY BUILD_INFO* .
+COPY BUILD_INFO .
 COPY LICENSE .
 COPY CHANGELOG.md .
 
@@ -61,18 +60,10 @@ COPY CHANGELOG.md .
 # automatically downloaded on first startup and updated weekly at runtime.
 # No need to bake them into the image.
 
-# Download vendor assets (flags + fonts) for local serving
+# Download vendor assets (fonts) for local serving
 RUN set -eux; \
     FONT_CSS_UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36'; \
-    mkdir -p /app/app/static/vendor/images/flags \
-             /app/app/static/vendor/fonts; \
-    \
-    # Flags (lipis/flag-icons)
-    curl -fsSL https://github.com/lipis/flag-icons/archive/refs/heads/main.tar.gz \
-    | tar -xz --strip-components=3 \
-        -C /app/app/static/vendor/images/flags \
-        flag-icons-main/flags/4x3/; \
-    echo "Downloaded $(ls /app/app/static/vendor/images/flags/*.svg | wc -l) flag SVGs"; \
+    mkdir -p /app/app/static/vendor/fonts; \
     \
     # Fonts: resolve current WOFF2 asset URLs from Google Fonts CSS at build time
     MATERIAL_ICONS_URL="$(curl -fsSL -A "$FONT_CSS_UA" 'https://fonts.googleapis.com/icon?family=Material+Icons' \
@@ -88,13 +79,19 @@ RUN set -eux; \
     test -n "$ROBOTO_FLEX_URL"; \
     test -n "$NOTO_SERIF_URL"; \
     curl -fsSL -o /app/app/static/vendor/fonts/MaterialIcons.woff2 "$MATERIAL_ICONS_URL"; \
+    test -s /app/app/static/vendor/fonts/MaterialIcons.woff2; \
     curl -fsSL -o /app/app/static/vendor/fonts/RobotoFlex.woff2 "$ROBOTO_FLEX_URL"; \
+    test -s /app/app/static/vendor/fonts/RobotoFlex.woff2; \
     curl -fsSL -o /app/app/static/vendor/fonts/NotoSerif.woff2 "$NOTO_SERIF_URL"; \
+    test -s /app/app/static/vendor/fonts/NotoSerif.woff2; \
     \
     echo "Downloaded fonts: \
 MaterialIcons=$(stat -c%s /app/app/static/vendor/fonts/MaterialIcons.woff2)B, \
 RobotoFlex=$(stat -c%s /app/app/static/vendor/fonts/RobotoFlex.woff2)B, \
 NotoSerif=$(stat -c%s /app/app/static/vendor/fonts/NotoSerif.woff2)B"
+
+# Note: Country flags are served from CDN (jsdelivr.net/npm/flag-icons)
+# to reduce image size and simplify updates.
 
 # Create data and log directories + DNSSEC root key
 # Note: Container runs as root for WireGuard/iptables commands
@@ -110,13 +107,13 @@ RUN mkdir -p /data /var/log/unbound /etc/wireguard /var/lib/unbound && \
 VOLUME ["/data"]
 
 # Expose web UI, WireGuard, and DNS ports
-EXPOSE 8000
+EXPOSE 8000/tcp
 EXPOSE 51820/udp
 EXPOSE 53/udp
 EXPOSE 53/tcp
 
 # Health check using curl (faster than Python)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
     CMD curl -f http://localhost:8000/api/system/status || exit 1
 
 # Web UI runs single-worker only. Values >1 are normalized to 1 in the entrypoint.

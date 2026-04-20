@@ -111,6 +111,20 @@ def list_interfaces(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 	return cur.fetchall()
 
 
+def get_first_listen_port(conn: sqlite3.Connection, default: int = 51820) -> int:
+	"""Return the first interface listen port or a fallback default."""
+	try:
+		row = conn.execute("SELECT listen_port FROM interfaces LIMIT 1").fetchone()
+	except sqlite3.OperationalError:
+		return default
+	if not row:
+		return default
+	try:
+		return int(row["listen_port"])
+	except (TypeError, ValueError, KeyError, IndexError):
+		return default
+
+
 def delete_interface(conn: sqlite3.Connection, name: str) -> bool:
 	"""Delete an interface from the database."""
 	with transaction(conn):

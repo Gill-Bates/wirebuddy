@@ -5,602 +5,22 @@
 {% block extra_css %}
 <link href="/static/vendor/leaflet.css" rel="stylesheet">
 <link href="/static/vendor/leaflet-gesture-handling.min.css" rel="stylesheet">
-<style>
-    .badge-online {
-        background-color: var(--wb-primary, #88171a);
-        color: #fff;
-    }
-
-    .dashboard-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 0.75rem;
-    }
-
-    .map-kpis {
-        flex-wrap: wrap;
-    }
-
-    #peer-map {
-        height: clamp(400px, 50vh, 650px);
-        border-radius: 0.5rem;
-        position: relative;
-        z-index: 0;
-        isolation: isolate;
-    }
-
-    .map-kpi {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.25rem;
-        font-size: 0.85rem;
-        font-weight: 500;
-    }
-
-    .map-kpis .material-icons {
-        vertical-align: middle;
-    }
-
-    .dashboard-traffic-metric .dashboard-metric-unit {
-        margin-left: 0;
-    }
-
-    .dashboard-kpi-subtext {
-        display: block;
-        font-size: 0.7rem;
-    }
-
-    .dashboard-bandwidth-main {
-        line-height: 1.1;
-    }
-
-    .dashboard-bandwidth-sub {
-        line-height: 1.2;
-    }
-
-    .dashboard-stats-row .wb-kpi-card {
-        min-height: 109px;
-    }
-
-    .dashboard-stats-row .wb-kpi-card .card-body {
-        display: flex;
-    }
-
-    /* Allow cards to shrink inside grid/flex layouts */
-    .card,
-    .card-body {
-        min-width: 0;
-    }
-
-    .dashboard-kpi-grid .wb-kpi-card .card-body > .d-flex {
-        width: 100%;
-        min-height: 100%;
-    }
-
-    .dashboard-kpi-grid .flex-shrink-0 {
-        display: flex;
-        align-items: center;
-    }
-
-    .dashboard-kpi-grid .wb-kpi-icon {
-        display: block;
-        line-height: 1;
-        color: var(--bs-secondary-color);
-    }
-
-    .dashboard-traffic-summary {
-        display: flex;
-        flex-direction: column;
-        gap: 0.2rem;
-    }
-
-    .dashboard-traffic-summary .dashboard-traffic-metric {
-        display: inline-flex;
-        align-items: baseline;
-        gap: 0.35rem;
-        flex-wrap: wrap;
-    }
-
-    .dashboard-traffic-summary .dashboard-metric-prefix {
-        font-weight: 600;
-    }
-
-    .speedtest-card {
-        height: 100%;
-    }
-
-    .recent-peers-card {
-        height: 100%;
-    }
-
-    /* Mobile-first Grid Layout */
-    .dashboard-main-grid {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: var(--wb-space-3);
-        margin-bottom: var(--wb-space-3);
-    }
-
-    /* Prevent grid children from overflowing horizontally */
-    .dashboard-main-grid > * {
-        min-width: 0;
-    }
-
-    .dashboard-recent-peers-col,
-    .dashboard-speedtest-col,
-    .dashboard-map-col {
-        min-width: 0;
-    }
-
-    @media (min-width: 1200px) {
-        /* Dashboard page fills viewport — no scroll on desktop */
-        .dashboard-page {
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-            overflow: hidden;
-        }
-
-        /* KPI row stays at natural height */
-        .dashboard-page > .row:first-of-type {
-            flex-shrink: 0;
-        }
-
-        .dashboard-page > .wb-page-header {
-            flex-shrink: 0;
-        }
-
-        /* Main grid fills all remaining viewport space */
-        .dashboard-main-grid {
-            flex: 1 1 0;
-            min-height: 0;
-            margin-bottom: 0;
-            /* Map bekommt feste Priorität, rechte Spalte schrumpft */
-            grid-template-columns: minmax(600px, 2fr) minmax(280px, 1fr);
-            grid-template-rows: 280px 1fr;
-        }
-
-        /* Map column spans full grid height */
-        .dashboard-map-col {
-            grid-column: 1;
-            grid-row: 1 / 3;
-            min-height: 0;
-            min-width: 0;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .dashboard-map-col .card {
-            flex: 1 1 0;
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .dashboard-map-col .card-body {
-            flex: 1 1 0;
-            min-height: 0;
-        }
-
-        #peer-map {
-            height: 100%;
-            min-height: 350px;
-        }
-
-        /* Speedtest: compact, fixed height */
-        .dashboard-speedtest-col {
-            grid-column: 2;
-            grid-row: 1;
-            min-height: 0;
-            min-width: 0;
-        }
-
-        .dashboard-speedtest-col .card {
-            height: 100%;
-        }
-
-        .dashboard-speedtest-col .card-body > div {
-            height: 200px !important;
-        }
-
-        .dashboard-speedtest-col .card-body {
-            padding-bottom: 0.75rem;
-        }
-
-        /* Recent Peer Activity: fills remaining height, scrolls */
-        .dashboard-recent-peers-col {
-            grid-column: 2;
-            grid-row: 2;
-            min-height: 0;
-            min-width: 0;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .dashboard-recent-peers-col .card {
-            flex: 1 1 0;
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .dashboard-recent-peers-col .card-body {
-            flex: 1 1 0;
-            min-height: 0;
-            overflow-y: auto;
-        }
-
-        .dashboard-speedtest-col .card,
-        .dashboard-recent-peers-col .card,
-        .dashboard-map-col .card {
-            height: 100%;
-        }
-
-        .dashboard-stats-row {
-            margin-bottom: 1rem !important;
-        }
-    }
-
-    .recent-peer-subline {
-        display: flex;
-        align-items: center;
-        gap: 0.35rem;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    .recent-peer-subline .peer-flag {
-        width: 1rem;
-        height: 0.75rem;
-        flex-shrink: 0;
-    }
-
-    .recent-peer-subline .peer-ip-text {
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    .recent-peers-card .card-body {
-        min-height: 0;
-        overflow-y: auto;
-        overflow-x: hidden;
-        padding-bottom: 1rem;
-    }
-
-    #recent-peers {
-        display: flex;
-        flex-direction: column;
-        min-width: 0;
-    }
-
-    /* Ensure inner containers don't force overflow */
-    .network-gauges-grid {
-        min-width: 0;
-    }
-
-    #recent-peers .peer-row-clickable {
-        cursor: pointer;
-        transition: background-color 0.15s ease;
-    }
-
-    #recent-peers .peer-row-clickable:hover {
-        background-color: var(--bs-tertiary-bg, rgba(0,0,0,0.04));
-    }
-
-
-    @media (max-width: 1199.98px) {
-        .speedtest-card,
-        .recent-peers-card {
-            height: auto;
-        }
-
-        .dashboard-map-col .card {
-            height: auto;
-        }
-
-        .recent-peers-card .card-body {
-            max-height: 400px;
-            overflow-y: auto;
-        }
-    }
-
-    @media (max-width: 991.98px) {
-        #peer-map {
-            height: clamp(360px, 45vh, 500px);
-        }
-
-        .map-kpis {
-            font-size: 0.8rem;
-        }
-
-        .recent-peers-card {
-            flex: none;
-            min-height: 200px;
-        }
-    }
-
-    @media (max-width: 767.98px) {
-        #peer-map {
-            height: 320px;
-        }
-
-        .dashboard-traffic-metric .dashboard-metric-unit {
-            display: inline;
-            margin-left: 0;
-            font-size: 0.875rem;
-            color: var(--bs-secondary-color);
-            white-space: nowrap;
-        }
-
-        .recent-peers-card .card-body {
-            max-height: 350px;
-            overflow-y: auto;
-        }
-
-        .speedtest-card {
-            min-height: 180px;
-        }
-    }
-
-    @media (max-width: 575.98px) {
-        .dashboard-stats-row .wb-kpi-card {
-            min-height: 124px;
-        }
-
-        .dashboard-header {
-            flex-direction: column;
-            align-items: stretch;
-            gap: 0.5rem;
-        }
-
-        .dashboard-page-title {
-            font-size: 1.1rem;
-        }
-
-        #recent-peers .peer-row-clickable {
-            padding-top: 0.75rem;
-            padding-bottom: 0.75rem;
-        }
-
-    }
-
-    .leaflet-container {
-        background: var(--bs-body-bg) !important;
-    }
-
-    /* Pulsating marker animation */
-    @keyframes pulse-online {
-        0% {
-            transform: scale(1);
-            opacity: 1;
-        }
-
-        50% {
-            transform: scale(1.8);
-            opacity: 0.4;
-        }
-
-        100% {
-            transform: scale(1);
-            opacity: 1;
-        }
-    }
-
-    @keyframes pulse-offline {
-        0% {
-            transform: scale(1);
-            opacity: 0.6;
-        }
-
-        50% {
-            transform: scale(1.5);
-            opacity: 0.25;
-        }
-
-        100% {
-            transform: scale(1);
-            opacity: 0.6;
-        }
-    }
-
-    .pulse-marker {
-        width: 24px;
-        height: 24px;
-        background: #6c757d;
-        border-radius: 50%;
-        box-shadow: 0 0 0 4px rgba(108, 117, 125, 0.3);
-        opacity: 0.6;
-        animation: pulse-offline 3s ease-in-out infinite;
-    }
-
-    .pulse-marker.connected {
-        background: var(--wb-primary, #88171a);
-        box-shadow: 0 0 0 6px rgba(var(--bs-primary-rgb), 0.35);
-        opacity: 1;
-        animation: pulse-online 2s ease-in-out infinite;
-    }
-
-    /* Map popup styles */
-    .map-popup {
-        min-width: 180px;
-        font-size: 0.875rem;
-        line-height: 1.4;
-    }
-    .map-popup-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.5rem;
-        margin-bottom: 0.5rem;
-        padding-bottom: 0.4rem;
-        border-bottom: 1px solid var(--bs-border-color);
-    }
-    .map-popup-header strong {
-        font-size: 0.95rem;
-    }
-    .map-popup-header .badge {
-        font-size: 0.7rem;
-        padding: 0.25em 0.5em;
-    }
-    .map-popup-location {
-        display: flex;
-        align-items: center;
-        gap: 0.25rem;
-        margin-bottom: 0.25rem;
-    }
-    .map-popup-location .material-icons {
-        font-size: 1rem;
-        color: var(--bs-primary);
-    }
-    .map-popup-meta,
-    .map-popup-asn,
-    .map-popup-count {
-        font-size: 0.8rem;
-        margin-top: 0.15rem;
-    }
-
-    /* ─── Network Stats Items ───────────────────────────── */
-    .network-gauges-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 0.75rem;
-    }
-
-    /* Single interface takes full width */
-    .network-item:only-child {
-        grid-column: 1 / -1;
-    }
-
-    @media (max-width: 575.98px) {
-        .network-gauges-grid {
-            grid-template-columns: 1fr;
-        }
-    }
-
-    .network-item {
-        padding: 0.75rem;
-        border-radius: 0.5rem;
-        background: var(--bs-tertiary-bg);
-        border: 1px solid rgba(0, 0, 0, 0.06);
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
-        transition: border-color 0.15s ease, opacity 0.15s ease;
-    }
-
-    [data-bs-theme="dark"] .network-item {
-        background: rgba(255, 255, 255, 0.02);
-        border-color: rgba(255, 255, 255, 0.06);
-    }
-
-    /* Idle interfaces are visually subdued */
-    .network-item:not(.active) {
-        opacity: 0.6;
-    }
-
-    /* Hover feedback */
-    .network-item:hover {
-        border-color: rgba(0, 0, 0, 0.18);
-    }
-
-    [data-bs-theme="dark"] .network-item:hover {
-        border-color: rgba(255, 255, 255, 0.18);
-    }
-
-    .network-item-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        font-size: 0.8rem;
-    }
-
-    .network-item-name {
-        font-weight: 700;
-        color: var(--bs-body-color);
-    }
-
-    .network-item-total {
-        font-weight: 800;
-        font-size: 0.9rem;
-        color: var(--bs-body-color);
-    }
-
-    .network-sparkline {
-        width: 100%;
-        height: 24px;
-        opacity: 0.85;
-    }
-
-    .network-item-bar {
-        height: 6px;
-        background: rgba(0, 0, 0, 0.08);
-        border-radius: 999px;
-        overflow: hidden;
-    }
-
-    [data-bs-theme="dark"] .network-item-bar {
-        background: rgba(255, 255, 255, 0.08);
-    }
-
-    .network-item-bar-fill {
-        height: 100%;
-        width: 0%;
-        background: var(--wb-accent-red, #ff6384);
-        transition: width 0.2s linear;
-    }
-
-    [data-bs-theme="dark"] .network-item-bar-fill {
-        background: var(--wb-accent-red, #ff6384);
-    }
-
-    .network-item-rates {
-        display: flex;
-        justify-content: space-between;
-        font-size: 0.7rem;
-        color: var(--bs-secondary-color);
-    }
-
-    .network-item .rx {
-        color: var(--wb-danger-strong, #b02a37);
-    }
-
-    [data-bs-theme="dark"] .network-item .rx {
-        color: var(--wb-danger-strong, #ff9cab);
-    }
-
-    .network-item .tx {
-        color: var(--wb-info-strong, #0a58ca);
-    }
-
-    [data-bs-theme="dark"] .network-item .tx {
-        color: var(--wb-info-strong, #6edff6);
-    }
-
-    /* Active interfaces highlight */
-    .network-item.active {
-        border-color: rgba(0, 0, 0, 0.12);
-    }
-
-    [data-bs-theme="dark"] .network-item.active {
-        border-color: rgba(255, 255, 255, 0.12);
-    }
-</style>
+<link href="/static/css/dashboard.css" rel="stylesheet">
 {% endblock %}
 
 {% block content %}
+<div id="wb-page-config" data-is-admin="{{ 'true' if user['is_admin'] else 'false' }}" class="d-none" aria-hidden="true"></div>
 <div class="container-fluid wb-page dashboard-page">
 <div class="wb-page-header">
-    <h2 class="page-title"><span class="material-icons me-2" aria-hidden="true">dashboard</span>Dashboard</h2>
+    <h2 class="page-title compact-title"><span class="material-icons me-2" aria-hidden="true">dashboard</span>Dashboard</h2>
 </div>
+<div class="dashboard-page-body">
 
 <!-- Stats Cards + Network Gauges Side by Side -->
-<div class="row g-3 mb-3">
+<div class="row g-3 dashboard-stats-row">
     <!-- Left: 2x2 KPI Cards -->
-    <div class="col-lg-6 col-12">
-        <div class="row g-3 h-100 dashboard-stats-row">
+    <div class="col-lg-4 col-12">
+        <div class="row g-3 h-100">
             <div class="col-6">
                 <div class="card h-100 wb-kpi-card">
                     <div class="card-body">
@@ -675,7 +95,7 @@
     </div>
 
     <!-- Right: Network Throughput Gauges -->
-    <div class="col-lg-6 col-12">
+    <div class="col-lg-8 col-12">
         <div class="card h-100">
             <div class="card-header">
                 <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -710,11 +130,11 @@
                     Speedtest
                 </h3>
                 <div class="d-flex gap-2 align-items-center">
-                    <select id="speedtest-node" class="form-select form-select-sm" style="width: auto; max-width: 130px;" aria-label="Filter by node">
+                    <select id="speedtest-node" class="form-select form-select-sm speedtest-node-select" aria-label="Filter by node">
                         <option value="" selected>Master</option>
                         <option value="all">All Nodes</option>
                     </select>
-                    <select id="speedtest-range" class="form-select form-select-sm" style="width: auto;" aria-label="Select time range">
+                    <select id="speedtest-range" class="form-select form-select-sm speedtest-range-select" aria-label="Select time range">
                         <option value="7d" selected>7 d</option>
                         <option value="30d">30 d</option>
                         <option value="90d">90 d</option>
@@ -724,7 +144,7 @@
                 </div>
             </div>
             <div class="card-body">
-                <div style="position: relative; height: 220px;">
+                <div class="speedtest-chart-wrap">
                     <canvas id="speedtest-chart"></canvas>
                     <div id="speedtest-chart-empty" class="chart-empty-state d-none" style="position: absolute; inset: 0;">
                         <span class="material-icons">show_chart</span>
@@ -732,7 +152,7 @@
                     </div>
                 </div>
                 <div id="speedtest-last-run" class="text-muted small mt-2 d-none">
-                    <span class="material-icons align-middle me-1" style="font-size: 14px;" aria-hidden="true">schedule</span>
+                    <span class="material-icons align-middle me-1 speedtest-last-icon" aria-hidden="true">schedule</span>
                     Last run: <span id="speedtest-last-ts">–</span>
                 </div>
             </div>
@@ -793,6 +213,7 @@
     </div>
 </div>
 </div>
+</div>
 
 {% endblock %}
 
@@ -801,7 +222,8 @@
 <script src="/static/vendor/chart.umd.min.js"></script>
 <script>
     const DEBUG = false;
-    const isAdmin = {{ 'true' if user['is_admin'] else 'false' }};
+    const pageConfigEl = document.getElementById('wb-page-config');
+    const IS_ADMIN = pageConfigEl?.dataset.isAdmin === 'true';
     const CONNECTED_THRESHOLD_SEC = 180;
     const AUTO_REFRESH_MS = 30000;
     const API_TIMEOUT_MS = 25000;
@@ -810,6 +232,9 @@
     const MAX_RECENT_PEERS = 25;
     const PEER_MAP_FLYTO_DURATION_SEC = 1.2;
     const PEER_MAP_POPUP_DELAY_MS = 1250;
+    const BYTES_PER_KB = 1024;
+    const BYTES_PER_MB = BYTES_PER_KB ** 2;
+    const BYTES_PER_GB = BYTES_PER_KB ** 3;
     let cachedPeerLocations = [];
     let peerMarkerMap = new Map();
     let userZoomedToPeer = false;
@@ -829,6 +254,8 @@
     let tileWatchdogTimer = null;
     let tileLoadedSinceSwitch = false;
     let lastVisibleRefresh = 0;
+    // Internal state for speedtest server names (used in chart tooltip)
+    let _speedtestServers = [];
 
     const nodesCountEl = document.getElementById('nodes-count');
     const peersCountEl = document.getElementById('peers-count');
@@ -919,24 +346,11 @@
         upEl.textContent = `↑ ${formatBandwidthMetric(uploadMbit, 1)}`;
     }
 
-    function unwrapNodes(payload) {
-        // api() already unwraps envelope and returns data directly
-        if (Array.isArray(payload)) return payload;
-        if (Array.isArray(payload?.nodes)) return payload.nodes;
-        if (Array.isArray(payload?.data?.nodes)) return payload.data.nodes;
-        if (Array.isArray(payload?.data)) return payload.data;
-        return [];
-    }
-
-    function unwrapPeers(payload) {
-        if (Array.isArray(payload?.peers)) return payload.peers;
-        if (Array.isArray(payload?.data?.peers)) return payload.data.peers;
-        return [];
-    }
-
-    function unwrapLocations(payload) {
-        if (Array.isArray(payload?.locations)) return payload.locations;
-        if (Array.isArray(payload?.data?.locations)) return payload.data.locations;
+    function unwrapList(payload, key) {
+        if (key && Array.isArray(payload?.[key])) return payload[key];
+        if (key && Array.isArray(payload?.data?.[key])) return payload.data[key];
+        if (!key && Array.isArray(payload)) return payload;
+        if (!key && Array.isArray(payload?.data)) return payload.data;
         return [];
     }
 
@@ -971,7 +385,7 @@
         img.alt = `${code.toUpperCase()} flag`;
         img.loading = 'eager';
         img.decoding = 'async';
-        img.src = `/static/vendor/images/flags/${code}.svg`;
+        img.src = `https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/${code}.svg`;
         img.addEventListener('error', () => img.remove());
         return img;
     }
@@ -986,16 +400,7 @@
         return `${ip} · Unknown provider`;
     }
 
-    function setMapBadgeState(badge, text, isWarning = false) {
-        if (!badge) return;
-        badge.textContent = text;
-        badge.classList.remove('bg-secondary', 'bg-success', 'bg-primary', 'bg-warning', 'text-dark');
-        const variant = isWarning ? 'warning' : 'secondary';
-        badge.classList.add(`bg-${variant}`);
-        if (variant === 'warning') badge.classList.add('text-dark');
-    }
-
-    function setMapBadgeVariant(badge, text, variant) {
+    function setMapBadge(badge, text, variant = 'secondary') {
         if (!badge) return;
         badge.textContent = text;
         badge.classList.remove('bg-secondary', 'bg-success', 'bg-primary', 'bg-warning', 'text-dark');
@@ -1007,7 +412,7 @@
         return `${Number(lat).toFixed(6)}_${Number(lon).toFixed(6)}`;
     }
 
-    function buildMapPopupContent(p, isConnected, peerTitle, locText, asnText, peerCount) {
+    function buildMapPopupContent(p, isConnected, peerTitle, locText, asnText, peerCount, totalCount) {
         const container = document.createElement('div');
         container.className = 'map-popup';
 
@@ -1015,13 +420,20 @@
         header.className = 'map-popup-header';
 
         const strong = document.createElement('strong');
-        const namesTitle = p.names ? p.names.join(', ') : peerTitle;
+        // Tooltip: show connected peers first (if any), then all peers at this IP
+        const connectedNamesForTitle = (p.connected_names && p.connected_names.length)
+            ? p.connected_names
+            : null;
+        const namesTitle = connectedNamesForTitle
+            ? connectedNamesForTitle.join(', ')
+            : (p.names ? p.names.join(', ') : peerTitle);
         strong.textContent = peerTitle;
         strong.title = namesTitle;
 
         const badge = document.createElement('span');
         badge.className = `badge ${isConnected ? 'bg-primary' : 'bg-secondary'}`;
         badge.textContent = isConnected ? 'Online' : 'Offline';
+        badge.setAttribute('aria-label', `Status: ${isConnected ? 'Online' : 'Offline'}`);
 
         header.append(strong, badge);
         container.appendChild(header);
@@ -1063,10 +475,20 @@
             container.appendChild(asn);
         }
 
-        if (peerCount > 1) {
+        const effectiveTotal = totalCount != null ? totalCount : peerCount;
+        if (isConnected && peerCount > 1) {
             const count = document.createElement('div');
             count.className = 'map-popup-count text-muted';
-            count.textContent = `${peerCount} peers at this location`;
+            if (effectiveTotal > peerCount) {
+                count.textContent = `${peerCount} of ${effectiveTotal} peers connected`;
+            } else {
+                count.textContent = `${peerCount} peers at this location`;
+            }
+            container.appendChild(count);
+        } else if (!isConnected && effectiveTotal > 1) {
+            const count = document.createElement('div');
+            count.className = 'map-popup-count text-muted';
+            count.textContent = `${effectiveTotal} peers at this location`;
             container.appendChild(count);
         }
 
@@ -1076,7 +498,7 @@
     async function refreshStats(signal) {
         try {
             const [nodesRes, enrichedRes] = await Promise.all([
-                isAdmin
+                IS_ADMIN
                     ? api(
                         'GET',
                         '/api/nodes',
@@ -1092,8 +514,8 @@
                 ),
             ]);
             if (nodesCountEl) {
-                if (isAdmin) {
-                    const nodes = unwrapNodes(nodesRes);
+                if (IS_ADMIN) {
+                    const nodes = unwrapList(nodesRes, null);
                     const onlineCount = nodes.filter(node => node?.status === 'online').length;
                     nodesCountEl.textContent = `${onlineCount}/${nodes.length}`;
                 } else {
@@ -1101,7 +523,7 @@
                 }
             }
 
-            const allPeers = unwrapPeers(enrichedRes);
+            const allPeers = unwrapList(enrichedRes, 'peers');
             const onlineCount = allPeers.filter(p => p.connected).length;
             const totalPeers = allPeers.length;
             if (peersCountEl) peersCountEl.textContent = `${onlineCount}/${totalPeers}`;
@@ -1119,9 +541,13 @@
             }
 
             const nowSec = Math.floor(Date.now() / 1000);
+            const THIRTY_DAYS_SEC = 30 * 24 * 60 * 60;
             const activePeers = allPeers
-                // Exclude node tunnel peers (inter-node connections) from Recent Peer Activity
-                .filter(p => Number(p.latest_handshake) > 0 && !p.is_node_tunnel)
+                // Exclude node tunnel peers, never-connected peers, and peers inactive for >30 days
+                .filter(p => {
+                    const hs = Number(p.latest_handshake);
+                    return hs > 0 && !p.is_node_tunnel && (nowSec - hs) <= THIRTY_DAYS_SEC;
+                })
                 .sort((a, b) => {
                     const ageA = Math.max(0, nowSec - Number(a.latest_handshake || 0));
                     const ageB = Math.max(0, nowSec - Number(b.latest_handshake || 0));
@@ -1235,6 +661,7 @@
                 const badge = document.createElement('span');
                 badge.className = relative.className;
                 badge.textContent = relative.text;
+                badge.setAttribute('aria-label', `Status: ${relative.text}${relative.timeText ? `, ${relative.timeText}` : ''}`);
                 // Append time info for offline peers (e.g., "Offline · 2h ago")
                 if (relative.timeText) {
                     const timeSpan = document.createElement('span');
@@ -1458,7 +885,7 @@
                 null,
                 { signal, timeoutMs: API_TIMEOUT_MS },
             );
-            const locs = unwrapLocations(data);
+            const locs = unwrapList(data, 'locations');
             dbg('Peer locations:', locs.length);
             cachedPeerLocations = locs;
 
@@ -1467,7 +894,7 @@
                     markerLayer.removeLayer(marker);
                 }
                 peerMarkerMap.clear();
-                setMapBadgeState(badge, 'No peers located');
+                setMapBadge(badge, 'No peers located');
                 resetMapToWorld();
                 return true;
             }
@@ -1503,13 +930,28 @@
                 });
 
                 // Build popup with clean visual hierarchy
-                const peerCount = Math.max(1, Number(p.count) || 1);
+                // Use connected peers for title/badge; show total count separately if differs
+                const connectedNames = (p.connected_names && p.connected_names.length)
+                    ? p.connected_names
+                    : (isConnected ? (p.names || [p.name]) : []);
+                const connectedCount = connectedNames.length || 0;
+                const totalCount = Math.max(1, Number(p.count) || 1);
                 const locText = [p.city, p.country].filter(Boolean).join(', ') || 'Unknown';
                 const asnText = p.asn ? `AS${p.asn}${p.as_org ? ` · ${p.as_org}` : ''}` : '';
 
-                let peerTitle = p.name || 'Peer';
-                if (p.names && p.names.length > 1) {
-                    peerTitle = p.names.length <= 2 ? p.names.join(' & ') : `${p.names.length} Peers`;
+                let peerTitle = connectedNames[0] || p.name || 'Peer';
+                if (connectedNames.length > 1) {
+                    peerTitle = connectedNames.length <= 2
+                        ? connectedNames.join(' & ')
+                        : `${connectedNames.length} Peers`;
+                } else if (!isConnected) {
+                    // Offline: show first peer name
+                    peerTitle = (p.names && p.names[0]) || p.name || 'Peer';
+                    if (p.names && p.names.length > 1) {
+                        peerTitle = p.names.length <= 2
+                            ? p.names.join(' & ')
+                            : `${p.names.length} Peers`;
+                    }
                 }
 
                 const popupContent = buildMapPopupContent(
@@ -1518,7 +960,8 @@
                     peerTitle,
                     locText,
                     asnText,
-                    peerCount,
+                    connectedCount,
+                    totalCount,
                 );
 
                 let marker = peerMarkerMap.get(markerKey);
@@ -1584,7 +1027,7 @@
             if (mapKpiTotal) mapKpiTotal.textContent = locs.length;
             if (mapKpiCountries) mapKpiCountries.textContent = uniqueCountries;
 
-            setMapBadgeVariant(
+            setMapBadge(
                 badge,
                 connectedCount > 0 ? 'Live' : 'Idle',
                 connectedCount > 0 ? 'primary' : 'secondary',
@@ -1593,7 +1036,7 @@
         } catch (e) {
             if (isAbortError(e)) return true;
             console.error('Peer locations error:', e?.message || e?.toString() || e);
-            setMapBadgeState(badge, 'Unavailable', true);
+            setMapBadge(badge, 'Unavailable', 'warning');
             return false;
         }
     }
@@ -1610,6 +1053,10 @@
 
             const s = document.createElement('script');
             s.src = src;
+            const nonce = document.querySelector('meta[name="csp-nonce"]')?.content
+                || document.querySelector('script[nonce]')?.nonce
+                || '';
+            if (nonce) s.nonce = nonce;
             s.onload = () => {
                 s.dataset.loaded = 'true';
                 resolve();
@@ -1684,6 +1131,9 @@
 
         themeObserver = new MutationObserver(() => {
             updateMapTiles();
+
+            // Keep speedtest chart colors in sync with theme changes.
+            updateSpeedtestChartColors();
         });
         // Initial load of speedtest chart (only once, not periodic)
         refreshSpeedtestChart(new AbortController().signal).catch(e => {
@@ -1802,16 +1252,48 @@
 
     function getChartColors() {
         // Use same color scheme as network gauges for visual consistency
+        const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
         const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--wb-accent-red').trim() || '#ff6384';
         return {
-            textColor: document.documentElement.getAttribute('data-bs-theme') === 'dark' ? '#b7c2d0' : '#6c757d',
-            gridColor: document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.08)',
+            textColor: dark ? '#b7c2d0' : '#6c757d',
+            gridColor: dark ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.08)',
             dlColor: primaryColor,
             dlBg: 'rgba(255, 99, 132, 0.1)',
-            ulColor: document.documentElement.getAttribute('data-bs-theme') === 'dark' ? '#6edff6' : '#0dcaf0',
-            ulBg: document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'rgba(110, 223, 246, 0.12)' : 'rgba(13, 202, 240, 0.12)',
+            ulColor: dark ? '#6edff6' : '#0dcaf0',
+            ulBg: dark ? 'rgba(110, 223, 246, 0.12)' : 'rgba(13, 202, 240, 0.12)',
             rttColor: 'rgba(255, 193, 7, 0.85)',
         };
+    }
+
+    function updateSpeedtestChartColors() {
+        if (!speedtestChart) return;
+        const colors = getChartColors();
+
+        if (speedtestChart.data.datasets.length > 0) {
+            if (speedtestChart.data.datasets[0]) {
+                speedtestChart.data.datasets[0].borderColor = colors.dlColor;
+                speedtestChart.data.datasets[0].backgroundColor = colors.dlBg;
+            }
+            if (speedtestChart.data.datasets[1]) {
+                speedtestChart.data.datasets[1].borderColor = colors.ulColor;
+                speedtestChart.data.datasets[1].backgroundColor = colors.ulBg;
+            }
+        }
+
+        const scales = speedtestChart.options.scales;
+        if (scales?.x?.ticks) scales.x.ticks.color = colors.textColor;
+        if (scales?.x?.grid) scales.x.grid.color = colors.gridColor;
+        if (scales?.y?.ticks) scales.y.ticks.color = colors.textColor;
+        if (scales?.y?.grid) scales.y.grid.color = colors.gridColor;
+        if (scales?.y?.title) scales.y.title.color = colors.textColor;
+        if (scales?.y1?.ticks) scales.y1.ticks.color = colors.textColor;
+        if (scales?.y1?.title) scales.y1.title.color = colors.textColor;
+
+        if (speedtestChart.options.plugins?.legend?.labels) {
+            speedtestChart.options.plugins.legend.labels.color = colors.textColor;
+        }
+
+        speedtestChart.update('none');
     }
 
     function getNodeSeriesColor(index) {
@@ -1996,8 +1478,8 @@
                                     return '';
                                 }
                                 const idx = items[0]?.dataIndex;
-                                if (idx != null && window._speedtestServers && window._speedtestServers[idx]) {
-                                    return ['', `Server: ${window._speedtestServers[idx]}`];
+                                if (idx != null && _speedtestServers && _speedtestServers[idx]) {
+                                    return ['', `Server: ${_speedtestServers[idx]}`];
                                 }
                                 return '';
                             }
@@ -2083,7 +1565,7 @@
                         + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
                 });
                 datasets = allNodeChart.datasets;
-                window._speedtestServers = [];
+                _speedtestServers = [];
             } else {
                 labels = okHistory.map(h => {
                     const d = new Date(h.ts);
@@ -2092,7 +1574,7 @@
                 });
 
                 // Store server names for tooltip
-                window._speedtestServers = okHistory.map(h => h.server || '–');
+                _speedtestServers = okHistory.map(h => h.server || '–');
 
                 const colors = getChartColors();
 
@@ -2171,39 +1653,6 @@
         }
     }
 
-    // Update chart colors on theme change
-    new MutationObserver(() => {
-        if (!speedtestChart) return;
-        const colors = getChartColors();
-        
-        // Update dataset colors (Download/Upload)
-        if (speedtestChart.data.datasets.length > 0) {
-            // Download dataset (index 0)
-            if (speedtestChart.data.datasets[0]) {
-                speedtestChart.data.datasets[0].borderColor = colors.dlColor;
-                speedtestChart.data.datasets[0].backgroundColor = colors.dlBg;
-            }
-            // Upload dataset (index 1)
-            if (speedtestChart.data.datasets[1]) {
-                speedtestChart.data.datasets[1].borderColor = colors.ulColor;
-                speedtestChart.data.datasets[1].backgroundColor = colors.ulBg;
-            }
-        }
-        
-        // Update axis and legend colors
-        if (speedtestChart.options.plugins?.legend?.labels) {
-            speedtestChart.options.plugins.legend.labels.color = colors.textColor;
-        }
-        if (speedtestChart.options.scales?.x?.ticks) speedtestChart.options.scales.x.ticks.color = colors.textColor;
-        if (speedtestChart.options.scales?.x?.grid) speedtestChart.options.scales.x.grid.color = colors.gridColor;
-        if (speedtestChart.options.scales?.y?.ticks) speedtestChart.options.scales.y.ticks.color = colors.textColor;
-        if (speedtestChart.options.scales?.y?.title) speedtestChart.options.scales.y.title.color = colors.textColor;
-        if (speedtestChart.options.scales?.y?.grid) speedtestChart.options.scales.y.grid.color = colors.gridColor;
-        if (speedtestChart.options.scales?.y1?.ticks) speedtestChart.options.scales.y1.ticks.color = colors.textColor;
-        if (speedtestChart.options.scales?.y1?.title) speedtestChart.options.scales.y1.title.color = colors.textColor;
-        speedtestChart.update();
-    }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-bs-theme'] });
-
     // ─── NETWORK STATS ──────────────────────────────────────────
     const NETWORK_STATS_REFRESH_MS = 2000;
     const SPARKLINE_HISTORY_LENGTH = 120; // 1 hour @ 30s intervals
@@ -2216,9 +1665,26 @@
     let networkHistoryLoaded = {}; // { interfaceName: true } - track which interfaces have loaded history
     let networkStatsTimer = null;
     let networkStatsAbort = null;
+    let networkResizeObserver = null;
     
     const networkGaugesContainer = document.getElementById('network-gauges-container');
     const networkStatsStatus = document.getElementById('network-stats-status');
+
+    function buildEmptyInterfacesMessage() {
+        const wrap = document.createElement('div');
+        wrap.className = 'text-center text-muted py-3';
+
+        const icon = document.createElement('span');
+        icon.className = 'material-icons mb-2 fs-2';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = 'wifi_off';
+
+        const message = document.createElement('div');
+        message.textContent = 'No network interfaces found';
+
+        wrap.append(icon, message);
+        return wrap;
+    }
     
     /**
      * Format bytes/sec to human-readable rate string
@@ -2280,6 +1746,35 @@
     }
     
     /**
+     * Resize a sparkline canvas to match its rendered box and device pixel ratio.
+     * @param {HTMLCanvasElement} canvas
+     * @returns {Object | null}
+     */
+    function resizeSparklineCanvas(canvas) {
+        if (!canvas) return null;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+
+        const rect = canvas.getBoundingClientRect();
+        const width = Math.max(0, Math.round(rect.width));
+        const height = Math.max(0, Math.round(rect.height));
+        if (!width || !height) return null;
+
+        const dpr = window.devicePixelRatio || 1;
+        const pixelWidth = Math.round(width * dpr);
+        const pixelHeight = Math.round(height * dpr);
+
+        if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+            canvas.width = pixelWidth;
+            canvas.height = pixelHeight;
+        }
+
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return { width, height, ctx };
+    }
+
+    /**
      * Draw a sparkline on a canvas element with smooth animation
      * @param {HTMLCanvasElement} canvas
      * @param {number[]} data - Array of rate values (current interpolated)
@@ -2288,23 +1783,10 @@
     function drawSparkline(canvas, data, maxOverride) {
         if (!canvas || !data || data.length < 2) return;
 
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
+        const sizedCanvas = resizeSparklineCanvas(canvas);
+        if (!sizedCanvas) return;
 
-        const dpr = window.devicePixelRatio || 1;
-        const w = canvas.offsetWidth;
-        const h = canvas.offsetHeight;
-        
-        // Only resize if dimensions changed
-        if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
-            canvas.width = w * dpr;
-            canvas.height = h * dpr;
-            canvas.style.width = w + 'px';
-            canvas.style.height = h + 'px';
-        }
-        
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.scale(dpr, dpr);
+        const { ctx, width: w, height: h } = sizedCanvas;
         ctx.clearRect(0, 0, w, h);
 
         // Skip drawing if all values are zero (idle interface)
@@ -2315,15 +1797,15 @@
         const strokeColor = getComputedStyle(document.documentElement).getPropertyValue('--wb-accent-red').trim() || '#ff6384';
         const accentRgb = getComputedStyle(document.documentElement).getPropertyValue('--wb-accent-red-rgb').trim() || '255, 99, 132';
         const fillColor = `rgba(${accentRgb}, 0.1)`;
+        const points = data.map((v, i) => ({
+            x: (i / (data.length - 1)) * w,
+            y: h - (v / max) * (h - 2),
+        }));
 
         // Draw filled area
         ctx.beginPath();
         ctx.moveTo(0, h);
-        data.forEach((v, i) => {
-            const x = (i / (data.length - 1)) * w;
-            const y = h - (v / max) * (h - 2);
-            ctx.lineTo(x, y);
-        });
+        points.forEach((p) => ctx.lineTo(p.x, p.y));
         ctx.lineTo(w, h);
         ctx.closePath();
         ctx.fillStyle = fillColor;
@@ -2335,11 +1817,9 @@
         ctx.strokeStyle = strokeColor;
         ctx.lineJoin = 'round';
         ctx.lineCap = 'round';
-        data.forEach((v, i) => {
-            const x = (i / (data.length - 1)) * w;
-            const y = h - (v / max) * (h - 2);
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
+        points.forEach((p, i) => {
+            if (i === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
         });
         ctx.stroke();
     }
@@ -2407,28 +1887,67 @@
     function updateGaugeElement(iface, container, globalMax) {
         const safeId = toSafeId(iface.name);
         let el = document.getElementById(`net-${safeId}`);
-        let isNewElement = false;
 
         if (!el) {
-            isNewElement = true;
             el = document.createElement('div');
             el.id = `net-${safeId}`;
             el.className = 'network-item';
+            
+            // Store interface name in data attribute for safe retrieval (prevents XSS from iface.name)
+            el.dataset.ifaceName = iface.name;
+            el.dataset.safeId = safeId;
 
-            el.innerHTML = `
-                <div class="network-item-header">
-                    <span class="network-item-name">${iface.name}</span>
-                    <span class="network-item-total" id="net-total-${safeId}">0 B/s</span>
-                </div>
-                <canvas class="network-sparkline" id="net-spark-${safeId}"></canvas>
-                <div class="network-item-bar">
-                    <div class="network-item-bar-fill" id="net-bar-${safeId}"></div>
-                </div>
-                <div class="network-item-rates">
-                    <span class="rx" id="net-rx-${safeId}">↓ 0 B/s</span>
-                    <span class="tx" id="net-tx-${safeId}">↑ 0 B/s</span>
-                </div>
-            `;
+            // Build header
+            const headerDiv = document.createElement('div');
+            headerDiv.className = 'network-item-header';
+            
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'network-item-name';
+            nameSpan.textContent = iface.name; // textContent is safe — never HTML-interpreted
+            
+            const totalSpan = document.createElement('span');
+            totalSpan.className = 'network-item-total';
+            totalSpan.id = `net-total-${safeId}`;
+            totalSpan.textContent = '0 B/s';
+            
+            headerDiv.appendChild(nameSpan);
+            headerDiv.appendChild(totalSpan);
+
+            // Build canvas
+            const canvas = document.createElement('canvas');
+            canvas.className = 'network-sparkline';
+            canvas.id = `net-spark-${safeId}`;
+
+            // Build progress bar
+            const barDiv = document.createElement('div');
+            barDiv.className = 'network-item-bar';
+            const barFill = document.createElement('div');
+            barFill.className = 'network-item-bar-fill';
+            barFill.id = `net-bar-${safeId}`;
+            barDiv.appendChild(barFill);
+
+            // Build rates
+            const ratesDiv = document.createElement('div');
+            ratesDiv.className = 'network-item-rates';
+            
+            const rxSpan = document.createElement('span');
+            rxSpan.className = 'rx';
+            rxSpan.id = `net-rx-${safeId}`;
+            rxSpan.textContent = '↓ 0 B/s';
+            
+            const txSpan = document.createElement('span');
+            txSpan.className = 'tx';
+            txSpan.id = `net-tx-${safeId}`;
+            txSpan.textContent = '↑ 0 B/s';
+            
+            ratesDiv.appendChild(rxSpan);
+            ratesDiv.appendChild(txSpan);
+
+            // Assemble element
+            el.appendChild(headerDiv);
+            el.appendChild(canvas);
+            el.appendChild(barDiv);
+            el.appendChild(ratesDiv);
 
             container.appendChild(el);
             
@@ -2519,12 +2038,7 @@
             const interfaces = data.interfaces || [];
             
             if (interfaces.length === 0) {
-                networkGaugesContainer.innerHTML = `
-                    <div class="text-center text-muted py-3">
-                        <span class="material-icons mb-2" style="font-size: 2rem;">wifi_off</span>
-                        <div>No network interfaces found</div>
-                    </div>
-                `;
+                networkGaugesContainer.replaceChildren(buildEmptyInterfacesMessage());
                 if (networkStatsStatus) {
                     networkStatsStatus.textContent = 'No interfaces';
                     networkStatsStatus.className = 'badge bg-warning text-dark';
@@ -2535,7 +2049,7 @@
             // Clear loading spinner on first data
             const spinner = networkGaugesContainer.querySelector('.spinner-border');
             if (spinner) {
-                networkGaugesContainer.innerHTML = '';
+                clearElement(networkGaugesContainer);
             }
             
             // Track existing gauges
@@ -2633,6 +2147,27 @@
     if (networkGaugesContainer) {
         startNetworkStatsRefresh();
         
+        // Redraw sparklines when container size changes (responsive resize)
+        if ('ResizeObserver' in window) {
+            networkResizeObserver = new ResizeObserver(() => {
+                // Trigger redraw of all visible sparklines
+                networkGaugesContainer.querySelectorAll('.network-sparkline').forEach(canvas => {
+                    // Retrieve interface name from parent element's data attribute
+                    // (safe from toSafeId() roundtrip errors and XSS)
+                    const parentEl = canvas.closest('.network-item');
+                    const ifaceName = parentEl?.dataset.ifaceName;
+                    if (!ifaceName) return; // Skip if name not found
+                    
+                    const history = networkHistory[ifaceName];
+                    const globalMax = Math.max(1024, ...Object.values(networkTargetHistory).flat());
+                    if (history && history.length > 0) {
+                        drawSparkline(canvas, history, globalMax);
+                    }
+                });
+            });
+            networkResizeObserver.observe(networkGaugesContainer);
+        }
+        
         // Pause when tab hidden, resume when visible
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
@@ -2643,7 +2178,13 @@
         });
         
         // Cleanup on unload
-        window.addEventListener('beforeunload', stopNetworkStatsRefresh);
+        window.addEventListener('beforeunload', () => {
+            stopNetworkStatsRefresh();
+            if (networkResizeObserver) {
+                networkResizeObserver.disconnect();
+                networkResizeObserver = null;
+            }
+        });
         
         // Theme changes are handled via CSS custom properties, no JS update needed
     }

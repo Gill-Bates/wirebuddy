@@ -128,10 +128,74 @@ Master server API URL (node mode only).
 WIREBUDDY_MASTER_URL=https://master.example.com
 ```
 
-**Required when `SERVER_MODE=node`**. Must be reachable from the node server.
+Legacy variable for node mode.
+
+Current node enrollment tokens already include the master URL, so this
+variable is usually not needed.
 
 !!! tip "Firewall Configuration"
-    Ensure the node can reach the master's sync endpoints: `/api/nodes/enroll`, `/api/nodes/{id}/heartbeat`, `/api/nodes/{id}/config`
+    Ensure the node can reach the master's sync endpoints: `/api/nodes/enroll`, `/api/nodes/heartbeat`, `/api/nodes/config`, `/api/nodes/events`
+
+### WIREBUDDY_ENROLLMENT_VERIFY_KEY
+
+Optional enrollment token HMAC verification key (node mode only).
+
+```bash
+WIREBUDDY_ENROLLMENT_VERIFY_KEY=your_hmac_verify_key
+```
+
+If set, the node verifies enrollment token signatures locally before
+contacting the master. In production, this is required by the node daemon.
+
+### WIREBUDDY_MASTER_CA_FILE
+
+Path to a custom CA certificate file for master TLS verification (node mode only).
+
+```bash
+WIREBUDDY_MASTER_CA_FILE=/app/data/certs/master-ca.pem
+```
+
+If unset, system CA certificates are used.
+
+### WIREBUDDY_NODE_SYNC_INTERVAL
+
+Normal sync interval in seconds (node mode only).
+
+```bash
+WIREBUDDY_NODE_SYNC_INTERVAL=30
+```
+
+Default: `30`
+
+### WIREBUDDY_NODE_SYNC_INTERVAL_FAST
+
+Fast sync interval in seconds used when SSE is disconnected (node mode only).
+
+```bash
+WIREBUDDY_NODE_SYNC_INTERVAL_FAST=5
+```
+
+Default: `5`
+
+### WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS
+
+Number of enrollment retry attempts on transient errors (node mode only).
+
+```bash
+WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS=3
+```
+
+Default: `3` (minimum effective value: `1`)
+
+### WIREBUDDY_NO_FIREWALL_FIX
+
+Disable automatic iptables DNS rule adjustments on node startup.
+
+```bash
+WIREBUDDY_NO_FIREWALL_FIX=1
+```
+
+Default: disabled (automatic firewall fix is enabled)
 
 ### WIREBUDDY_SKIP_NETWORK_CHECK
 

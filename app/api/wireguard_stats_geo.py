@@ -13,9 +13,11 @@ import logging
 import sqlite3
 import time
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Generic, TypeVar
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, field_validator
 from starlette.concurrency import run_in_threadpool
 
@@ -34,6 +36,7 @@ from ..db.sqlite_settings import (
 	set_tsdb_retention_days,
 	TSDB_RETENTION_OPTIONS,
 )
+from ..db.sqlite_runtime import close_connection, connect
 from ..utils.deps import get_conn, get_tsdb_dir
 from ..utils.geoip import lookup_ip
 from .auth import get_current_user, require_admin
@@ -47,6 +50,65 @@ router = APIRouter(tags=["wireguard"])
 
 __all__ = ["router"]
 
+# ---------------------------------------------------------------------------
+# Generic async TTL cache
+# ---------------------------------------------------------------------------
+
+_CACHE_MISS = object()  # Sentinel distinguishing a cached None/[] from a cache miss
+_T = TypeVar("_T")
+_geo_inflight: dict[str, asyncio.Future] = {}  # Per-IP deduplication for geo lookups
+
+
+class _AsyncTTLCache(Generic[_T]):
+	"""Thread-safe async TTL cache with double-checked locking (prevents thundering herd).
+	
+	On compute() failure, serves stale data if available; otherwise propagates exception.
+	"""
+
+	def __init__(self, ttl: float) -> None:
+		self._ttl = ttl
+		self._lock = asyncio.Lock()
+		self._entry: tuple[float, _T] | None = None
+
+	def get_if_fresh(self) -> _T | object:
+		"""Fast-path read without lock; returns _CACHE_MISS when stale or empty."""
+		entry = self._entry
+		if entry is not None and (time.monotonic() - entry[0]) < self._ttl:
+			return entry[1]
+		return _CACHE_MISS
+
+	async def get_or_compute(self, compute: Callable[[], Awaitable[_T]]) -> _T:
+		"""Return cached value or call *compute*, store the result, and return it.
+		
+		On compute() failure:
+		- If stale data exists: log warning, return stale value
+		- If no stale data: propagate exception to caller
+		"""
+		if (v := self.get_if_fresh()) is not _CACHE_MISS:
+			return v  # type: ignore[return-value]
+		async with self._lock:
+			if (v := self.get_if_fresh()) is not _CACHE_MISS:  # Re-check under lock
+				return v  # type: ignore[return-value]
+			try:
+				v = await compute()
+				self._entry = (time.monotonic(), v)
+				return v
+			except Exception:
+				# Serve stale data if available rather than propagating error
+				if self._entry is not None:
+					_log.warning("Cache recompute failed, serving stale data (ttl expired)")
+					return self._entry[1]
+				raise
+
+	def invalidate(self) -> None:
+		"""Discard the cached value; next call will recompute."""
+		self._entry = None
+
+
+# ---------------------------------------------------------------------------
+# Concurrency primitives
+# ---------------------------------------------------------------------------
+
 # Configuration constants
 _GEO_LOOKUP_CONCURRENCY = 20
 _GEO_LOOKUP_CHUNK_SIZE = 100  # Chunk size for batched geo lookups
@@ -54,17 +116,61 @@ _GEO_CACHE_TTL_S = 300.0
 _GEO_CACHE_MAX_SIZE = 2048
 _PEERS_ENRICHED_CACHE_TTL_S = 5.0
 _WG_DUMP_CACHE_TTL_S = 2.0  # Short-lived cache for wg show dump
+WG_BIN = "wg"
 
 # Concurrency primitives
 _geo_lookup_sem = asyncio.Semaphore(_GEO_LOOKUP_CONCURRENCY)
 _geo_cache: OrderedDict[str, tuple[float, dict | None]] = OrderedDict()  # LRU cache
 _geo_cache_lock = asyncio.Lock()
-_peers_enriched_cache: tuple[float, list[dict]] | None = None
-_peers_enriched_lock = asyncio.Lock()
+_peers_enriched_cache_obj: _AsyncTTLCache = _AsyncTTLCache(_PEERS_ENRICHED_CACHE_TTL_S)
 
 # Shared WG dump cache to avoid redundant parsing across endpoints
-_wg_dump_cache: tuple[float, list] | None = None
-_wg_dump_lock = asyncio.Lock()
+_wg_dump_cache_obj: _AsyncTTLCache = _AsyncTTLCache(_WG_DUMP_CACHE_TTL_S)
+
+
+def invalidate_peers_enriched_cache() -> None:
+	"""Clear the short-lived enriched peers cache after peer mutations."""
+	_peers_enriched_cache_obj.invalidate()
+
+
+def _valid_nonempty_str(value: object) -> str | None:
+	"""Return a stripped non-empty string value, otherwise None."""
+	if not isinstance(value, str):
+		return None
+	candidate = value.strip()
+	return candidate if candidate else None
+
+
+def _safe_int(value: object) -> int:
+	"""Coerce a value to int, returning 0 for None/falsy or on conversion error."""
+	try:
+		return int(value or 0)
+	except (TypeError, ValueError):
+		return 0
+
+
+async def _load_peers_with_tunnel_ids(conn: sqlite3.Connection) -> tuple[list[sqlite3.Row], set[int]]:
+	"""Load peers and tunnel-peer IDs for a consistent snapshot-like read path."""
+	peers = await run_in_threadpool(get_all_peers, conn)
+	tunnel_peer_ids = await run_in_threadpool(get_all_tunnel_peer_ids, conn)
+	return peers, set(tunnel_peer_ids)
+
+
+def _peer_handshake_ts(peer: dict) -> int:
+	"""Return normalized latest handshake timestamp for a peer dict."""
+	return _safe_int(peer.get("latest_handshake"))
+
+
+def _extract_geo_info(geo_info: dict | None) -> dict[str, object]:
+	"""Extract standard GeoIP fields (country/city/asn/as_org) from a lookup result."""
+	if not geo_info:
+		return {"country": None, "city": None, "asn": None, "as_org": None}
+	return {
+		"country": geo_info.get("country"),
+		"city": geo_info.get("city"),
+		"asn": geo_info.get("asn"),
+		"as_org": geo_info.get("as_org"),
+	}
 
 
 class TsdbRetentionUpdate(BaseModel):
@@ -80,7 +186,11 @@ class TsdbRetentionUpdate(BaseModel):
 
 
 async def _lookup_geo_cached(ip: str) -> tuple[str, dict | None]:
-	"""Resolve GeoIP/ASN with bounded concurrency and LRU cache."""
+	"""Resolve GeoIP/ASN with bounded concurrency, per-IP deduplication, and LRU cache.
+	
+	Per-IP deduplication ensures concurrent requests for the same IP share a single
+	lookup (futures), preventing duplicate work on high-concurrency scenarios.
+	"""
 	now_mono = time.monotonic()
 	async with _geo_cache_lock:
 		cached = _geo_cache.get(ip)
@@ -88,16 +198,37 @@ async def _lookup_geo_cached(ip: str) -> tuple[str, dict | None]:
 			# Move to end for LRU ordering
 			_geo_cache.move_to_end(ip)
 			return ip, cached[1]
+		# Check for in-flight lookup (deduplication)
+		if ip in _geo_inflight:
+			future = _geo_inflight[ip]
+		else:
+			future = asyncio.get_event_loop().create_future()
+			_geo_inflight[ip] = future
 
-	async with _geo_lookup_sem:
-		info = await run_in_threadpool(lookup_ip, ip)
-
-	async with _geo_cache_lock:
-		_geo_cache[ip] = (time.monotonic(), info)
-		_geo_cache.move_to_end(ip)
-		# LRU eviction: pop oldest (first) item
-		while len(_geo_cache) > _GEO_CACHE_MAX_SIZE:
-			_geo_cache.popitem(last=False)
+	if not future.done():
+		async with _geo_lookup_sem:
+			try:
+				info = await run_in_threadpool(lookup_ip, ip)
+				future.set_result(info)
+			except Exception as exc:
+				future.set_exception(exc)
+				raise
+			finally:
+				async with _geo_cache_lock:
+					_geo_inflight.pop(ip, None)
+					_geo_cache[ip] = (time.monotonic(), info)
+					_geo_cache.move_to_end(ip)
+					# LRU eviction
+					while len(_geo_cache) > _GEO_CACHE_MAX_SIZE:
+						_geo_cache.popitem(last=False)
+	else:
+		info = await asyncio.shield(future)
+		async with _geo_cache_lock:
+			# Cache the result from deduplication
+			_geo_cache[ip] = (time.monotonic(), info)
+			_geo_cache.move_to_end(ip)
+			while len(_geo_cache) > _GEO_CACHE_MAX_SIZE:
+				_geo_cache.popitem(last=False)
 	return ip, info
 
 
@@ -120,38 +251,25 @@ async def _lookup_geo_map(unique_ips: set[str]) -> dict[str, dict | None]:
 
 
 async def _get_wg_dump_cached() -> list:
-	"""Get parsed WG dump with short-lived cache to avoid redundant parsing."""
-	global _wg_dump_cache
+	"""Get parsed WG dump with short-lived cache to avoid redundant parsing.
 	
-	now_mono = time.monotonic()
-	cached = _wg_dump_cache
-	if cached and (now_mono - cached[0]) < _WG_DUMP_CACHE_TTL_S:
-		return cached[1]
-	
-	async with _wg_dump_lock:
-		# Double-check after acquiring lock
-		now_mono = time.monotonic()
-		cached = _wg_dump_cache
-		if cached and (now_mono - cached[0]) < _WG_DUMP_CACHE_TTL_S:
-			return cached[1]
-		
-		try:
-			code, stdout, stderr = await run_wg_command("wg", "show", "all", "dump")
-			if code != 0:
-				_log.debug("wg show all dump failed (code=%d): %s", code, stderr.strip() if stderr else "no output")
-				_wg_dump_cache = (time.monotonic(), [])
-				return []
-			peers = parse_wg_show_dump(stdout)
-			_wg_dump_cache = (time.monotonic(), peers)
-			return peers
-		except Exception:
-			_log.warning("wg show all dump failed", exc_info=True)
-			_wg_dump_cache = (time.monotonic(), [])
-			return []
+	Errors (wg command failure) are NOT cached; empty [] is only returned on
+	exception and allowed to be served as stale data if cache refresh fails.
+	"""
+	async def _fetch() -> list:
+		code, stdout, stderr = await run_wg_command(WG_BIN, "show", "all", "dump")
+		if code != 0:
+			# Raise exception instead of returning [] so _AsyncTTLCache doesn't cache the error
+			raise RuntimeError(f"wg show all dump failed (code={code}): {stderr.strip() if stderr else 'no output'}")
+		return parse_wg_show_dump(stdout)
+
+	try:
+		return await _wg_dump_cache_obj.get_or_compute(_fetch)  # type: ignore[return-value]
+	except Exception:
+		_log.warning("wg show all dump failed", exc_info=True)
+		return []
 
 
-async def _flush_pending_db_updates(conn: sqlite3.Connection) -> None:
-	"""Flush pending DB updates in background. Call periodically or after reads."""
 @router.get("/stats/peer-locations")
 async def get_peer_locations(
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -166,11 +284,9 @@ async def get_peer_locations(
 	Also includes peers with persisted last_client_ip from DB.
 	"""
 	now = time.time()
-	threshold = CONNECTED_THRESHOLD_S
 
 	# Build peer name lookup and last-seen data from DB (async via threadpool)
-	all_db_peers = await run_in_threadpool(get_all_peers, conn)
-	tunnel_peer_ids = await run_in_threadpool(get_all_tunnel_peer_ids, conn)
+	all_db_peers, tunnel_peer_ids = await _load_peers_with_tunnel_ids(conn)
 	peer_db_info: dict[str, dict] = {}
 	for p in all_db_peers:
 		if p["public_key"]:
@@ -197,17 +313,20 @@ async def get_peer_locations(
 
 	# 2. Collect unique IPs that need resolution (skip peers with no IP / handshake / node tunnels)
 	ip_to_peers: dict[str, list[tuple[str, dict]]] = {}
+	skipped_tunnel = 0
+	skipped_no_ip = 0
+	skipped_no_handshake = 0
 	for pub_key, info in peer_db_info.items():
 		peer_id = info.get("peer_id")
 		if peer_id in tunnel_peer_ids:
-			_log.debug("PEER_LOC skip %s: node tunnel", pub_key[:8])
+			skipped_tunnel += 1
 			continue
 		ip_str = info.get("last_client_ip")
 		if not ip_str:
-			_log.debug("PEER_LOC skip %s: no IP", pub_key[:8])
+			skipped_no_ip += 1
 			continue
 		if not (info.get("last_handshake_at") or 0):
-			_log.debug("PEER_LOC skip %s: no handshake", pub_key[:8])
+			skipped_no_handshake += 1
 			continue
 		ip_to_peers.setdefault(ip_str, []).append((pub_key, info))
 
@@ -229,37 +348,46 @@ async def get_peer_locations(
 
 		connected = False
 		names: list[str] = []
+		connected_names: list[str] = []
 		for pub_key, info in peers_at_ip:
 			handshake_ts = info.get("last_handshake_at") or 0
-			if (now - handshake_ts) < threshold:
+			peer_name = info.get("name", pub_key[:8])
+			names.append(peer_name)
+			if (now - handshake_ts) < CONNECTED_THRESHOLD_S:
 				connected = True
-			names.append(info.get("name", pub_key[:8]))
+				connected_names.append(peer_name)
 
+		# Multiple peers can share one public IP (e.g. NAT); use first peer metadata as representative.
 		first_info = peers_at_ip[0][1]
 		locations.append({
 			"lat": lat,
 			"lon": lon,
-			"city": geo_info.get("city"),
-			"country": geo_info.get("country"),
-			"asn": geo_info.get("asn"),
-			"as_org": geo_info.get("as_org"),
+			**_extract_geo_info(geo_info),
 			"ip": ip_str,
-			"name": names[0],
+			"name": connected_names[0] if connected_names else names[0],
 			"names": names,
+			"connected_names": connected_names,
 			"interface": first_info.get("interface"),
 			"connected": connected,
 			"count": len(names),
+			"connected_count": len(connected_names),
 		})
 
-	_log.debug("PEER_LOC returning %d location(s)", len(locations))
+	_log.debug(
+		"PEER_LOC returning %d location(s), skipped tunnel=%d no_ip=%d no_handshake=%d",
+		len(locations),
+		skipped_tunnel,
+		skipped_no_ip,
+		skipped_no_handshake,
+	)
 	return ok_response(data={"locations": locations})
 
 
 async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 	"""Build enriched peer payload and persist side-effect counters."""
-	rows = await run_in_threadpool(get_all_peers, conn)
-	tunnel_peer_ids = await run_in_threadpool(get_all_tunnel_peer_ids, conn)
+	rows, tunnel_peer_ids = await _load_peers_with_tunnel_ids(conn)
 	peers_by_key: dict[str, dict] = {}
+	# Track original DB handshakes separately; peers_by_key["latest_handshake"] may be replaced by live WG data.
 	db_handshakes: dict[str, int] = {}
 	for row in rows:
 		pub_key = row["public_key"]
@@ -275,7 +403,7 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 			"is_node_tunnel": peer_id in tunnel_peer_ids,
 			"endpoint_ip": row["last_client_ip"],
 			"endpoint": None,
-			"latest_handshake": int(row["last_handshake_at"] or 0),
+			"latest_handshake": _safe_int(row["last_handshake_at"]),
 			"connected": False,
 			"transfer_rx": 0,
 			"transfer_tx": 0,
@@ -284,10 +412,9 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 			"asn": None,
 			"as_org": None,
 		}
-		db_handshakes[pub_key] = int(row["last_handshake_at"] or 0)
+		db_handshakes[pub_key] = _safe_int(row["last_handshake_at"])
 
 	now = time.time()
-	threshold = CONNECTED_THRESHOLD_S
 	db_updates: list[tuple[str, int, str]] = []
 
 	# Use shared WG dump cache to avoid redundant parsing
@@ -302,29 +429,29 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 		peer["transfer_tx"] = wg_peer.tx
 
 		stored_hs = db_handshakes.get(wg_peer.public_key, 0)
-		stored_ip = str(peer.get("endpoint_ip") or "").strip()
 		if wg_peer.handshake_ts:
-			current_hs = int(peer.get("latest_handshake") or 0)
+			current_hs = _peer_handshake_ts(peer)
 			effective_hs = max(wg_peer.handshake_ts, current_hs)
 			peer["latest_handshake"] = effective_hs
 			if wg_peer.client_ip:
 				peer["endpoint_ip"] = wg_peer.client_ip
 
 			if wg_peer.handshake_ts > stored_hs:
+				stored_ip = str(peer.get("endpoint_ip") or "").strip()
 				persist_ip = wg_peer.client_ip or stored_ip
 				if persist_ip:
 					db_updates.append((persist_ip, wg_peer.handshake_ts, wg_peer.public_key))
 					db_handshakes[wg_peer.public_key] = wg_peer.handshake_ts
 					if not peer.get("endpoint_ip"):
 						peer["endpoint_ip"] = persist_ip
-		elif wg_peer.client_ip:
+		elif wg_peer.client_ip and not _valid_nonempty_str(peer.get("endpoint_ip")):
 			peer["endpoint_ip"] = wg_peer.client_ip
 
 	# Compute "connected" status consistently based on latest_handshake for all peers.
 	# This ensures Dashboard KPI and "Recent Peer Activity" use the same logic.
 	for peer in peers_by_key.values():
-		hs = int(peer.get("latest_handshake") or 0)
-		peer["connected"] = hs > 0 and (now - hs) < threshold
+		hs = _peer_handshake_ts(peer)
+		peer["connected"] = hs > 0 and (now - hs) < CONNECTED_THRESHOLD_S
 
 	# Persist last-seen updates
 	if db_updates:
@@ -351,7 +478,8 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 			last_rx = int(stored["last_wg_rx"])
 			last_tx = int(stored["last_wg_tx"])
 
-			# NOTE: this still cannot reconstruct bytes between WG restart and next poll.
+			# NOTE: bytes between the last poll and the WG restart are not reconstructable;
+			# cum_rx/tx accounts for everything observed before the counter reset.
 			if wg_rx < last_rx:
 				cum_rx += last_rx
 			if wg_tx < last_tx:
@@ -375,50 +503,51 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 		_log.warning("Failed to update cumulative transfer", exc_info=True)
 
 	unique_ips = {
-		str(peer["endpoint_ip"])
+		ip
 		for peer in peers_by_key.values()
-		if isinstance(peer.get("endpoint_ip"), str) and str(peer.get("endpoint_ip")).strip()
+		for ip in [_valid_nonempty_str(peer.get("endpoint_ip"))]
+		if ip is not None
 	}
 	geo_map = await _lookup_geo_map(unique_ips)
+	missing_geo_lookups = 0
 	for peer in peers_by_key.values():
-		endpoint_ip = peer.get("endpoint_ip")
-		if not isinstance(endpoint_ip, str) or not endpoint_ip:
+		endpoint_ip = _valid_nonempty_str(peer.get("endpoint_ip"))
+		if endpoint_ip is None:
 			continue
 		info = geo_map.get(endpoint_ip)
-		if info:
-			peer["country"] = info.get("country")
-			peer["city"] = info.get("city")
-			peer["asn"] = info.get("asn")
-			peer["as_org"] = info.get("as_org")
+		if not info:
+			missing_geo_lookups += 1
+			continue
+		peer.update(_extract_geo_info(info))
+
+	if missing_geo_lookups:
+		_log.debug("PEERS_ENRICHED geo lookup missing for %d endpoint(s)", missing_geo_lookups)
 
 	return sorted(
 		peers_by_key.values(),
-		key=lambda p: (not p["connected"], -int(p["latest_handshake"] or 0)),
+		key=lambda p: (not p["connected"], -_peer_handshake_ts(p)),
 	)
 
 
 @router.get("/stats/peers-enriched")
 async def get_peers_enriched(
-	conn: sqlite3.Connection = Depends(get_conn),
-	_: sqlite3.Row = Depends(get_current_user),
+	request: Request,
+	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Return all peers with live WireGuard stats and GeoIP/ASN enrichment."""
-	global _peers_enriched_cache
+	db_path: Path = request.app.state.db_path
 
-	now_mono = time.monotonic()
-	cached = _peers_enriched_cache
-	if cached and (now_mono - cached[0]) < _PEERS_ENRICHED_CACHE_TTL_S:
-		return ok_response(data={"peers": cached[1]})
+	async def _compute() -> list[dict]:
+		# Own the connection: a request-scoped conn from Depends(get_conn) may be
+		# closed before get_or_compute returns if another coroutine triggers cleanup,
+		# causing use-after-close errors on the SQLite handle.
+		conn = await run_in_threadpool(connect, db_path)
+		try:
+			return await _build_peers_enriched(conn)
+		finally:
+			await run_in_threadpool(close_connection, conn)
 
-	async with _peers_enriched_lock:
-		now_mono = time.monotonic()
-		cached = _peers_enriched_cache
-		if cached and (now_mono - cached[0]) < _PEERS_ENRICHED_CACHE_TTL_S:
-			return ok_response(data={"peers": cached[1]})
-
-		result = await _build_peers_enriched(conn)
-		_peers_enriched_cache = (time.monotonic(), result)
-
+	result = await _peers_enriched_cache_obj.get_or_compute(_compute)
 	return ok_response(data={"peers": result})
 
 
@@ -504,9 +633,8 @@ async def delete_peer_logs(
 
 	Clears last_client_ip, last_handshake_at, and cumulative transfer counters.
 	"""
-	global _peers_enriched_cache
 	affected = await run_in_threadpool(reset_peer_logs, conn)
-	_peers_enriched_cache = None
+	invalidate_peers_enriched_cache()
 	return ok_response(
 		message=f"Reset connection data for {affected} peer(s)",
 		data={"affected": affected},

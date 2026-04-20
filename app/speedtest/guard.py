@@ -17,11 +17,12 @@ On NFS or network filesystems, flock behavior may vary or block unexpectedly.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TextIO
+from typing import IO
 
 try:
 	import fcntl
@@ -31,7 +32,9 @@ except ImportError:
 
 _log = logging.getLogger(__name__)
 
-DEFAULT_SPEEDTEST_COOLDOWN_SECONDS = 30.0
+DEFAULT_SPEEDTEST_COOLDOWN_S = 30.0
+DEFAULT_SPEEDTEST_COOLDOWN_SECONDS = DEFAULT_SPEEDTEST_COOLDOWN_S
+_CLOCK_SKEW_TOLERANCE_S = 60.0
 
 # In-process lock for fast rejection (no ownership tracking needed)
 _local_run_lock = threading.Lock()
@@ -43,6 +46,7 @@ class SpeedtestBusyError(RuntimeError):
 
 class SpeedtestCooldownError(RuntimeError):
 	"""Raised when a speedtest was triggered too recently."""
+	__slots__ = ("remaining_seconds",)
 
 	def __init__(self, remaining_seconds: float):
 		super().__init__(f"Please wait {remaining_seconds:.1f}s before running another test")
@@ -65,9 +69,9 @@ def _read_last_run(path: Path) -> float | None:
 			return None
 		ts = float(value)
 		# Reject timestamps that are clearly invalid (negative, zero, or future)
-		# Allow 60s future skew for clock drift tolerance
+		# Allow limited future skew for clock drift tolerance.
 		now = time.time()
-		if not (0 < ts <= now + 60):
+		if not (0 < ts <= now + _CLOCK_SKEW_TOLERANCE_S):
 			_log.warning(
 				"Ignoring suspicious last_run timestamp: %.2f (now=%.2f, drift=%.1fs)",
 				ts, now, ts - now
@@ -85,7 +89,6 @@ def _read_last_run(path: Path) -> float | None:
 def _write_last_run(path: Path, timestamp: float) -> None:
 	"""Write cooldown timestamp with fsync for durability."""
 	path.parent.mkdir(parents=True, exist_ok=True)
-	import os
 	# Atomic write with fsync to ensure durability on crash
 	tmp = path.with_suffix(".tmp")
 	with open(tmp, "w", encoding="utf-8") as f:
@@ -95,7 +98,10 @@ def _write_last_run(path: Path, timestamp: float) -> None:
 	os.replace(tmp, path)
 
 
-@dataclass(eq=False, repr=False)
+@dataclass(
+	eq=False,  # Lease identity is object identity, not value equality.
+	repr=False,  # Custom repr avoids exposing file handle internals.
+)
 class SpeedtestRunLease:
 	"""Active speedtest run lease backed by local and file locks.
 	
@@ -106,9 +112,10 @@ class SpeedtestRunLease:
 	Note: Not frozen because we need to mutate released flag.
 	"""
 
-	fd_obj: TextIO
+	fd_obj: IO[bytes]
 	cooldown_path: Path | None = None
 	released: bool = False
+	_owner_thread_id: int = field(default_factory=threading.get_ident, init=False, repr=False)
 
 	def release(self) -> None:
 		"""Release the lease and record cooldown timestamp."""
@@ -130,10 +137,16 @@ class SpeedtestRunLease:
 			pass
 
 		# Release thread lock (must be called from same thread that acquired it)
+		if threading.get_ident() != self._owner_thread_id:
+			_log.error(
+				"Speedtest lock release skipped: called from wrong thread (owner=%s current=%s)",
+				self._owner_thread_id,
+				threading.get_ident(),
+			)
+			return
 		try:
 			_local_run_lock.release()
 		except RuntimeError as exc:
-			# Lock was not held by this thread (shouldn't happen in normal usage)
 			_log.error("Failed to release speedtest lock: %s", exc)
 
 	def __enter__(self) -> SpeedtestRunLease:
@@ -149,18 +162,12 @@ class SpeedtestRunLease:
 		return self
 
 	async def __aexit__(self, *exc_info: object) -> None:
-		"""Async context manager exit."""
+		"""Async context manager exit (synchronous release, no awaited I/O)."""
 		self.release()
 
 	def __repr__(self) -> str:
 		"""Custom repr that doesn't expose file handle details."""
 		return f"SpeedtestRunLease(released={self.released})"
-
-	def __del__(self) -> None:
-		"""Safeguard: release lease if user forgets context manager."""
-		if not self.released:
-			_log.warning("SpeedtestRunLease was not properly released, auto-releasing")
-			self.release()
 
 
 def acquire_speedtest_run_lease(
@@ -193,7 +200,7 @@ def acquire_speedtest_run_lease(
 	if not _local_run_lock.acquire(blocking=False):
 		raise SpeedtestBusyError("Speed test already in progress")
 
-	fd_obj: TextIO | None = None
+	fd_obj: IO[bytes] | None = None
 
 	try:
 		# Acquire file lock for cross-process coordination
@@ -201,7 +208,8 @@ def acquire_speedtest_run_lease(
 			# Fail hard instead of degrading silently - cross-process safety is critical
 			raise RuntimeError(
 				"Cross-process locking (fcntl) not available on this platform. "
-				"Speedtest guard requires POSIX-compatible file locking."
+				"Speedtest guard requires POSIX-compatible file locking. "
+				f"Lock path: {_lock_path(tsdb_dir)}"
 			)
 
 		lock_path = _lock_path(tsdb_dir)

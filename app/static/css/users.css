@@ -1,0 +1,208 @@
+/* Users page styles */
+
+.table td {
+    vertical-align: middle;
+}
+
+.users-add-btn {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.users-table .badge.bg-secondary {
+    background-color: #4b5563 !important;
+    color: #f3f4f6 !important;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.users-table td.user-actions-cell {
+    white-space: nowrap;
+}
+
+.users-table td.user-actions-cell .d-flex {
+    flex-wrap: wrap;
+}
+
+/* Compact action buttons for table rows (v1.3.3 style) */
+.users-action-btn {
+    min-width: 0;
+    min-height: 0;
+    padding: 0.2rem 0.35rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.users-action-btn .material-icons {
+    font-size: 18px;
+    pointer-events: none;
+}
+
+.users-table .user-identity {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+}
+
+.btn .material-icons {
+    vertical-align: middle;
+    line-height: 1;
+}
+
+/* User security indicators */
+.user-security-indicator {
+    font-size: 16px;
+    vertical-align: middle;
+}
+
+/* Last Login structure (all viewports) */
+.last-login {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.login-time {
+    white-space: nowrap;
+}
+
+.login-ip {
+    overflow-x: auto;
+    max-width: 100%;
+}
+
+.login-ip code {
+    white-space: nowrap;
+    font-size: 0.8rem;
+    display: inline-block;
+}
+
+@media (max-width: 768px) {
+    .users-table thead {
+        display: none;
+    }
+
+    .users-table,
+    .users-table tbody,
+    .users-table tr,
+    .users-table td {
+        display: block;
+        width: 100%;
+    }
+
+    .users-table tr {
+        border: 1px solid var(--bs-border-color);
+        border-radius: 0.75rem;
+        padding: 0.55rem 0.65rem;
+        margin-bottom: 0.65rem;
+        background: transparent;
+    }
+
+    .users-table td {
+        border: 0;
+        padding: 0.3rem 0.15rem;
+        display: grid;
+        grid-template-columns: 6.5rem 1fr;
+        align-items: start;
+        gap: 0.5rem;
+    }
+
+    .users-table td::before {
+        content: attr(data-label);
+        font-weight: 600;
+        color: var(--bs-secondary-color);
+    }
+
+    .users-table td > * {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    /* Hide Created column in mobile view */
+    .users-table td[data-label="Created"] {
+        display: none;
+    }
+
+    /* Last Login grid alignment */
+    .users-table td[data-label="Last Login"] .last-login {
+        overflow: visible;
+    }
+
+    .users-table td[data-label="Last Login"] .login-ip {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .users-table .user-identity {
+        justify-content: flex-start;
+    }
+
+    .users-table td.user-actions-cell {
+        display: flex;
+        margin-top: 0.25rem;
+        padding-top: 0.45rem;
+        border-top: 1px solid var(--bs-border-color);
+    }
+
+    .users-table td.user-actions-cell::before {
+        content: none;
+    }
+
+    .users-table td.user-actions-cell .d-flex {
+        display: inline-flex;
+        gap: 0.35rem;
+    }
+}
+
+/* Password strength indicator */
+.password-requirements {
+    font-size: 0.8rem;
+    margin-top: 0.5rem;
+}
+
+.password-requirements .req {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.15rem 0;
+    color: var(--bs-secondary-color);
+}
+
+.password-requirements .req .material-icons {
+    font-size: 16px;
+}
+
+.password-requirements .req.valid {
+    color: var(--bs-success);
+}
+
+.password-requirements .req.valid .material-icons {
+    color: var(--bs-success);
+}
+
+.password-requirements .req.invalid {
+    color: var(--bs-danger);
+}
+
+.password-requirements .req.invalid .material-icons {
+    color: var(--bs-danger);
+}
+
+.password-strength-bar {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--bs-secondary-bg);
+    margin-top: 0.5rem;
+    overflow: hidden;
+}
+
+.password-strength-bar .fill {
+    height: 100%;
+    transition: width 0.2s, background-color 0.2s;
+}

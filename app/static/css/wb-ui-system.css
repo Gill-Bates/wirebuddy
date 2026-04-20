@@ -45,6 +45,12 @@
     --wb-transition-shadow: box-shadow 0.2s ease;
     --wb-transition-bg: background-color 0.2s ease;
     --wb-transition-transform: transform 0.2s ease;
+
+    /* Network-item border tokens (Dashboard) */
+    --wb-ni-border: rgba(0, 0, 0, 0.06);
+    --wb-ni-border-hover: rgba(0, 0, 0, 0.18);
+    --wb-ni-border-active: rgba(0, 0, 0, 0.12);
+    --wb-ni-bar-bg: rgba(0, 0, 0, 0.08);
 }
 
 [data-bs-theme="dark"] {
@@ -52,6 +58,12 @@
     --wb-shadow-2: 0 4px 18px rgba(0, 0, 0, 0.65);
     --wb-muted-bg: rgba(255, 255, 255, 0.06);
     --wb-hover-bg: rgba(255, 255, 255, 0.04);
+
+    /* Network-item border tokens (dark overrides) */
+    --wb-ni-border: rgba(255, 255, 255, 0.06);
+    --wb-ni-border-hover: rgba(255, 255, 255, 0.18);
+    --wb-ni-border-active: rgba(255, 255, 255, 0.12);
+    --wb-ni-bar-bg: rgba(255, 255, 255, 0.08);
 }
 
 
@@ -214,6 +226,13 @@ small {
    This rule ensures .btn inside input-groups also matches. */
 .input-group .btn {
     height: 44px;
+}
+
+.input-group.input-group-sm .backup-browse-btn {
+    height: calc(1.5em + 0.5rem + 2px);
+    padding: 0.25rem 0.65rem;
+    border-top-right-radius: var(--wb-radius-md);
+    border-bottom-right-radius: var(--wb-radius-md);
 }
 
 .input-group .btn-icon .material-icons {

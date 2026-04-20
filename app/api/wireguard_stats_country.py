@@ -29,14 +29,14 @@ No external daemons, no InfluxDB, no NetFlow exporter required.
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 import threading
 import time
 from dataclasses import dataclass
 from datetime import timedelta
-from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -45,7 +45,7 @@ from starlette.concurrency import run_in_threadpool
 from ..db import tsdb
 from ..utils.deps import get_tsdb_dir
 from ..utils.time import utcnow
-from .auth import get_current_user
+from .auth import require_admin
 from .response import ok_response
 from .wireguard_stats import TRAFFIC_RANGE_TO_HOURS
 from .wireguard_utils import bytes_to_unit, select_display_unit
@@ -58,9 +58,11 @@ __all__ = ["router"]
 
 # Synthetic TSDB key for country traffic snapshots (written by scheduler)
 GEO_TRAFFIC_KEY = "__geo_traffic__"
-GEO_TRAFFIC_METRIC = "snapshot"
+_TRAFFIC_SNAPSHOT_METRIC = "snapshot"
+GEO_TRAFFIC_METRIC = _TRAFFIC_SNAPSHOT_METRIC
 
-# Max data points to query (100 k ≈ 35 days at 30 s intervals)
+# Max data points to query.
+# At 30 s sampling, 100k points cover ~34.7 days, so larger windows are truncated.
 _MAX_POINTS = 100_000
 
 # Cap peer names per country in the response
@@ -84,9 +86,9 @@ class _CacheEntry:
 	ts: float
 
 
-_country_cache: dict[tuple[int, str | None], _CacheEntry] = {}
-_asn_cache: dict[tuple[int, str | None], _CacheEntry] = {}
-_cache_lock = threading.Lock()
+_country_cache: dict[tuple[Path, int, str | None], _CacheEntry] = {}
+_asn_cache: dict[tuple[Path, int, str | None], _CacheEntry] = {}
+_cache_lock = threading.RLock()
 
 
 def _cache_get(cache: dict, key: tuple) -> Any | None:
@@ -133,7 +135,6 @@ class CountryEntry(BaseModel):
 	peers: int
 	peer_names: list[str]
 	peer_names_truncated: bool  # True when the peer list was capped at _MAX_PEER_NAMES
-	flag: str | None
 
 
 class CountryTrafficData(BaseModel):
@@ -211,12 +212,6 @@ def _country_name(iso: str) -> str:
 	return _COUNTRY_NAMES.get(iso, iso)
 
 
-class TrafficType(Enum):
-	"""Traffic aggregation type."""
-	COUNTRY = "country"
-	ASN = "asn"
-
-
 def _validate_peer_filter(peer: str | None) -> str | None:
 	"""Validate peer filter parameter.
 
@@ -251,14 +246,12 @@ def _validate_peer_filter(peer: str | None) -> str | None:
 def _aggregate_snapshots(
 	points: list,
 	peer_filter: str | None,
-	traffic_type: TrafficType,
 ) -> dict[str, dict[str, Any]]:
 	"""Extract and aggregate traffic data from TSDB snapshots.
 
 	Args:
 		points: TSDB query results.
 		peer_filter: Optional peer name to filter by.
-		traffic_type: Type of traffic aggregation (country or ASN).
 
 	Returns:
 		Dict mapping identifier (country code or ASN) to aggregated traffic stats.
@@ -306,6 +299,8 @@ def _aggregate_snapshots(
 
 			# Collect peer names (capped at _MAX_PEER_NAMES)
 			if peer_filter:
+				# When filtering by a specific peer, the result cardinality is 1.
+				# We intentionally skip cap checks in this branch.
 				agg[key]["peers_seen"].add(peer_filter)
 				agg[key]["peers"].add(peer_filter)
 			else:
@@ -323,6 +318,32 @@ def _aggregate_snapshots(
 	return agg
 
 
+def _compute_display_values(
+	info: dict[str, Any],
+	display_unit: str,
+	*,
+	entity_type: str,
+	entity_key: str,
+) -> tuple[float, float, float]:
+	"""Convert raw rx/tx bytes to display unit and validate finite results."""
+	rx_display = round(bytes_to_unit(info["rx"], display_unit), 2)
+	tx_display = round(bytes_to_unit(info["tx"], display_unit), 2)
+	total_display = round(bytes_to_unit(info["rx"] + info["tx"], display_unit), 2)
+
+	if not all(math.isfinite(v) and v >= 0 for v in (rx_display, tx_display, total_display)):
+		_log.warning(
+			"Invalid traffic values for %s %s: rx=%s tx=%s total=%s",
+			entity_type,
+			entity_key,
+			rx_display,
+			tx_display,
+			total_display,
+		)
+		raise ValueError("Non-finite or negative traffic calculation")
+
+	return rx_display, tx_display, total_display
+
+
 def _build_country_entry(code: str, info: dict[str, Any], display_unit: str) -> CountryEntry:
 	"""Build a CountryEntry from aggregated data.
 
@@ -335,14 +356,12 @@ def _build_country_entry(code: str, info: dict[str, Any], display_unit: str) -> 
 		CountryEntry model.
 	"""
 	try:
-		rx_display = round(bytes_to_unit(info["rx"], display_unit), 2)
-		tx_display = round(bytes_to_unit(info["tx"], display_unit), 2)
-		total_display = round(bytes_to_unit(info["rx"] + info["tx"], display_unit), 2)
-
-		# Validate results are finite
-		if not all(0 <= val < float('inf') for val in (rx_display, tx_display, total_display)):
-			_log.warning("Invalid traffic values for country %s: rx=%s tx=%s", code, rx_display, tx_display)
-			raise ValueError("Invalid traffic calculation")
+		rx_display, tx_display, total_display = _compute_display_values(
+			info,
+			display_unit,
+			entity_type="country",
+			entity_key=code,
+		)
 
 		return CountryEntry(
 			code=code,
@@ -353,7 +372,6 @@ def _build_country_entry(code: str, info: dict[str, Any], display_unit: str) -> 
 			peers=len(info["peers"]),
 			peer_names=info["peers"],
 			peer_names_truncated=len(info["peers_seen"]) > _MAX_PEER_NAMES,
-			flag=f"/static/vendor/images/flags/{code.lower()}.svg" if code != "XX" else None,
 		)
 	except (ValueError, OverflowError) as exc:
 		_log.warning("Failed to build country entry for %s: %s", code, exc)
@@ -372,14 +390,12 @@ def _build_asn_entry(asn_key: str, info: dict[str, Any], display_unit: str) -> A
 		ASNEntry model.
 	"""
 	try:
-		rx_display = round(bytes_to_unit(info["rx"], display_unit), 2)
-		tx_display = round(bytes_to_unit(info["tx"], display_unit), 2)
-		total_display = round(bytes_to_unit(info["rx"] + info["tx"], display_unit), 2)
-
-		# Validate results are finite
-		if not all(0 <= val < float('inf') for val in (rx_display, tx_display, total_display)):
-			_log.warning("Invalid traffic values for ASN %s: rx=%s tx=%s", asn_key, rx_display, tx_display)
-			raise ValueError("Invalid traffic calculation")
+		rx_display, tx_display, total_display = _compute_display_values(
+			info,
+			display_unit,
+			entity_type="ASN",
+			entity_key=asn_key,
+		)
 
 		return ASNEntry(
 			asn=asn_key,
@@ -394,6 +410,72 @@ def _build_asn_entry(asn_key: str, info: dict[str, Any], display_unit: str) -> A
 	except (ValueError, OverflowError) as exc:
 		_log.warning("Failed to build ASN entry for %s: %s", asn_key, exc)
 		raise
+
+
+def _compute_traffic_generic(
+	tsdb_dir: Path,
+	hours: int,
+	peer_filter: str | None,
+	*,
+	traffic_key: str,
+	traffic_metric: str,
+	log_prefix: str,
+	build_entry_fn: Callable[[str, dict[str, Any], str], Any],
+	build_empty_result_fn: Callable[[int], Any],
+	build_result_fn: Callable[[list[Any], str, int], Any],
+) -> Any:
+	"""Generic TSDB traffic aggregation for country and ASN endpoints."""
+	since = utcnow() - timedelta(hours=hours)
+
+	try:
+		points = tsdb.query(
+			tsdb_dir,
+			peer_key=traffic_key,
+			metric=traffic_metric,
+			since=since,
+			limit=_MAX_POINTS,
+		)
+	except Exception as exc:
+		_log.error("%s TSDB query failed: %s", log_prefix, exc, exc_info=True)
+		return build_empty_result_fn(hours)
+
+	if len(points) >= _MAX_POINTS:
+		_log.warning(
+			"%s query hit %d-point cap for %dh window; results may be truncated",
+			log_prefix,
+			_MAX_POINTS,
+			hours,
+		)
+
+	agg = _aggregate_snapshots(points, peer_filter)
+	max_bytes = max((max(info["rx"], info["tx"]) for info in agg.values()), default=0)
+	display_unit = select_display_unit(max_bytes)
+
+	entries: list[Any] = []
+	for key, info in sorted(
+		agg.items(),
+		key=lambda kv: kv[1]["rx"] + kv[1]["tx"],
+		reverse=True,
+	):
+		try:
+			entry = build_entry_fn(key, info, display_unit)
+			if entry.total < 0.01:
+				continue
+			entries.append(entry)
+		except (ValueError, ZeroDivisionError, OverflowError):
+			continue
+
+	_log.debug(
+		"%s hours=%d points=%d entries=%d display_unit=%s peer_filter=%s",
+		log_prefix,
+		hours,
+		len(points),
+		len(entries),
+		display_unit,
+		peer_filter,
+	)
+
+	return build_result_fn(entries, display_unit, hours)
 
 
 def _compute_country_traffic(
@@ -416,70 +498,84 @@ def _compute_country_traffic(
 		peer_filter: Optional peer name to filter by. When set, only traffic
 		             attributed to this specific peer is included.
 	"""
-	since = utcnow() - timedelta(hours=hours)
-
-	try:
-		points = tsdb.query(
-			tsdb_dir,
-			peer_key=GEO_TRAFFIC_KEY,
-			metric=GEO_TRAFFIC_METRIC,
-			since=since,
-			limit=_MAX_POINTS,
-		)
-	except Exception as exc:
-		_log.error("COUNTRY_TRAFFIC TSDB query failed: %s", exc, exc_info=True)
-		# Return empty result on TSDB failure
-		return CountryTrafficData(
+	return _compute_traffic_generic(
+		tsdb_dir,
+		hours,
+		peer_filter,
+		traffic_key=GEO_TRAFFIC_KEY,
+		traffic_metric=GEO_TRAFFIC_METRIC,
+		log_prefix="COUNTRY_TRAFFIC",
+		build_entry_fn=_build_country_entry,
+		build_empty_result_fn=lambda h: CountryTrafficData(
 			countries=[],
 			display_unit="B",
-			hours=hours,
+			hours=h,
 			total_countries=0,
-		)
-
-	if len(points) >= _MAX_POINTS:
-		_log.warning(
-			"COUNTRY_TRAFFIC query hit %d-point cap for %dh window; results may be truncated",
-			_MAX_POINTS, hours,
-		)
-
-	# Aggregate across all snapshot points using common logic
-	country_agg = _aggregate_snapshots(points, peer_filter, TrafficType.COUNTRY)
-
-	# Determine display unit from the max value (int 0 → "B", always valid)
-	max_bytes = max(
-		(max(info["rx"], info["tx"]) for info in country_agg.values()),
-		default=0
-	)
-	display_unit = select_display_unit(max_bytes)
-
-	# Build Pydantic models for validation and consistent serialisation
-	countries: list[CountryEntry] = []
-	for cc, info in sorted(
-		country_agg.items(),
-		key=lambda kv: kv[1]["rx"] + kv[1]["tx"],
-		reverse=True,
-	):
-		try:
-			entry = _build_country_entry(cc, info, display_unit)
-			# Skip entries with negligible traffic (< 0.01 in display unit)
-			if entry.total < 0.01:
-				continue
-			countries.append(entry)
-		except (ValueError, ZeroDivisionError, OverflowError):
-			# Skip entries with invalid values
-			continue
-
-	_log.debug(
-		"COUNTRY_TRAFFIC hours=%d points=%d countries=%d display_unit=%s peer_filter=%s",
-		hours, len(points), len(countries), display_unit, peer_filter,
+		),
+		build_result_fn=lambda countries, unit, h: CountryTrafficData(
+			countries=countries,
+			display_unit=unit,
+			hours=h,
+			total_countries=len(countries),
+		),
 	)
 
-	return CountryTrafficData(
-		countries=countries,
-		display_unit=display_unit,
-		hours=hours,
-		total_countries=len(countries),
+
+def _resolve_hours(range_key: str | None, hours: int) -> int:
+	"""Resolve preset range key to hours, preserving explicit hours as fallback."""
+	if range_key:
+		return TRAFFIC_RANGE_TO_HOURS.get(range_key, hours)
+	return hours
+
+
+def _get_user_identifier(user: sqlite3.Row) -> str:
+	"""Return username or fallback identifier for structured logs."""
+	if hasattr(user, "keys") and "username" in user.keys():
+		return str(user["username"])
+	if hasattr(user, "keys") and "id" in user.keys():
+		return str(user["id"])
+	return "unknown"
+
+
+async def _handle_traffic_request(
+	*,
+	cache: dict[tuple[Path, int, str | None], _CacheEntry],
+	compute_fn: Callable[[Path, int, str | None], Any],
+	log_prefix: str,
+	tsdb_dir: Path,
+	hours: int,
+	peer: str | None,
+	current_user: sqlite3.Row,
+) -> Any:
+	"""Shared endpoint flow for country and ASN traffic queries."""
+	resolved_hours = _resolve_hours(None, hours)
+	validated_peer = _validate_peer_filter(peer)
+	cache_key = (tsdb_dir, resolved_hours, validated_peer)
+
+	cached = _cache_get(cache, cache_key)
+	if cached is not None:
+		_log.debug("%s cache hit hours=%d peer_filter=%s", log_prefix, resolved_hours, validated_peer)
+		return ok_response(data=cached)
+
+	_log.info(
+		"%s query by user=%s hours=%d peer_filter=%s",
+		log_prefix,
+		_get_user_identifier(current_user),
+		resolved_hours,
+		validated_peer,
 	)
+
+	t0 = time.monotonic()
+	data = await run_in_threadpool(compute_fn, tsdb_dir, resolved_hours, validated_peer)
+	elapsed_ms = (time.monotonic() - t0) * 1000
+	if elapsed_ms > 1000:
+		_log.warning("%s slow query: %.0fms hours=%d peer_filter=%s", log_prefix, elapsed_ms, resolved_hours, validated_peer)
+	else:
+		_log.debug("%s query: %.0fms hours=%d", log_prefix, elapsed_ms, resolved_hours)
+
+	result = data.model_dump()
+	_cache_set(cache, cache_key, result)
+	return ok_response(data=result)
 
 
 @router.get("/stats/traffic-by-country", response_model=None)
@@ -488,7 +584,7 @@ async def get_traffic_by_country(
 	range_key: str | None = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
 	peer: str | None = Query(None, description="Filter by peer name", max_length=255),
 	tsdb_dir: Path = Depends(get_tsdb_dir),
-	current_user: sqlite3.Row = Depends(get_current_user),
+	current_user: sqlite3.Row = Depends(require_admin),
 ):
 	"""Traffic aggregated by **destination** country (admin only).
 
@@ -501,45 +597,19 @@ async def get_traffic_by_country(
 		peer:      Optional peer name to filter by.
 
 	Returns:
-		``{countries: [{code, name, rx, tx, total, peers, peer_names, flag}, ...],
+		``{countries: [{code, name, rx, tx, total, peers, peer_names}, ...],
 		  display_unit, hours, total_countries}``
 	"""
-	if range_key:
-		hours = TRAFFIC_RANGE_TO_HOURS.get(range_key, hours)
-
-	# Validate and log request
-	validated_peer = _validate_peer_filter(peer)
-
-	# Check cache first (avoids expensive TSDB scan)
-	cache_key = (str(tsdb_dir), hours, validated_peer)
-	cached = _cache_get(_country_cache, cache_key)
-	if cached is not None:
-		_log.debug(
-			"COUNTRY_TRAFFIC cache hit hours=%d peer_filter=%s",
-			hours, validated_peer,
-		)
-		return ok_response(data=cached)
-
-	_log.info(
-		"COUNTRY_TRAFFIC query by user=%s hours=%d peer_filter=%s",
-		current_user["username"] if "username" in current_user.keys() else current_user.get("id", "unknown"),
-		hours,
-		validated_peer,
+	resolved_hours = _resolve_hours(range_key, hours)
+	return await _handle_traffic_request(
+		cache=_country_cache,
+		compute_fn=_compute_country_traffic,
+		log_prefix="COUNTRY_TRAFFIC",
+		tsdb_dir=tsdb_dir,
+		hours=resolved_hours,
+		peer=peer,
+		current_user=current_user,
 	)
-
-	t0 = time.monotonic()
-	data: CountryTrafficData = await run_in_threadpool(
-		_compute_country_traffic, tsdb_dir, hours, validated_peer
-	)
-	elapsed_ms = (time.monotonic() - t0) * 1000
-	if elapsed_ms > 1000:
-		_log.warning("COUNTRY_TRAFFIC slow query: %.0fms hours=%d peer_filter=%s", elapsed_ms, hours, validated_peer)
-	else:
-		_log.debug("COUNTRY_TRAFFIC query: %.0fms hours=%d", elapsed_ms, hours)
-
-	result = data.model_dump()
-	_cache_set(_country_cache, cache_key, result)
-	return ok_response(data=result)
 
 
 # ---------------------------------------------------------------------------
@@ -547,7 +617,7 @@ async def get_traffic_by_country(
 # ---------------------------------------------------------------------------
 
 ASN_TRAFFIC_KEY = "__asn_traffic__"
-ASN_TRAFFIC_METRIC = "snapshot"
+ASN_TRAFFIC_METRIC = _TRAFFIC_SNAPSHOT_METRIC
 
 
 class ASNEntry(BaseModel):
@@ -587,69 +657,26 @@ def _compute_asn_traffic(
 		peer_filter: Optional peer name to filter by. When set, only traffic
 		             attributed to this specific peer is included.
 	"""
-	since = utcnow() - timedelta(hours=hours)
-
-	try:
-		points = tsdb.query(
-			tsdb_dir,
-			peer_key=ASN_TRAFFIC_KEY,
-			metric=ASN_TRAFFIC_METRIC,
-			since=since,
-			limit=_MAX_POINTS,
-		)
-	except Exception as exc:
-		_log.error("ASN_TRAFFIC TSDB query failed: %s", exc, exc_info=True)
-		# Return empty result on TSDB failure
-		return ASNTrafficData(
+	return _compute_traffic_generic(
+		tsdb_dir,
+		hours,
+		peer_filter,
+		traffic_key=ASN_TRAFFIC_KEY,
+		traffic_metric=ASN_TRAFFIC_METRIC,
+		log_prefix="ASN_TRAFFIC",
+		build_entry_fn=_build_asn_entry,
+		build_empty_result_fn=lambda h: ASNTrafficData(
 			asns=[],
 			display_unit="B",
-			hours=hours,
+			hours=h,
 			total_asns=0,
-		)
-
-	if len(points) >= _MAX_POINTS:
-		_log.warning(
-			"ASN_TRAFFIC query hit %d-point cap for %dh window; results may be truncated",
-			_MAX_POINTS, hours,
-		)
-
-	# Aggregate across all snapshot points using common logic
-	asn_agg = _aggregate_snapshots(points, peer_filter, TrafficType.ASN)
-
-	# Determine display unit from the max value
-	max_bytes = max(
-		(max(info["rx"], info["tx"]) for info in asn_agg.values()),
-		default=0
-	)
-	display_unit = select_display_unit(max_bytes)
-
-	# Build Pydantic models
-	asns: list[ASNEntry] = []
-	for asn_key, info in sorted(
-		asn_agg.items(),
-		key=lambda kv: kv[1]["rx"] + kv[1]["tx"],
-		reverse=True,
-	):
-		try:
-			entry = _build_asn_entry(asn_key, info, display_unit)
-			# Skip entries with negligible traffic (< 0.01 in display unit)
-			if entry.total < 0.01:
-				continue
-			asns.append(entry)
-		except (ValueError, ZeroDivisionError, OverflowError):
-			# Skip entries with invalid values
-			continue
-
-	_log.debug(
-		"ASN_TRAFFIC hours=%d points=%d asns=%d display_unit=%s peer_filter=%s",
-		hours, len(points), len(asns), display_unit, peer_filter,
-	)
-
-	return ASNTrafficData(
-		asns=asns,
-		display_unit=display_unit,
-		hours=hours,
-		total_asns=len(asns),
+		),
+		build_result_fn=lambda asns, unit, h: ASNTrafficData(
+			asns=asns,
+			display_unit=unit,
+			hours=h,
+			total_asns=len(asns),
+		),
 	)
 
 
@@ -659,7 +686,7 @@ async def get_traffic_by_asn(
 	range_key: str | None = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
 	peer: str | None = Query(None, description="Filter by peer name", max_length=255),
 	tsdb_dir: Path = Depends(get_tsdb_dir),
-	current_user: sqlite3.Row = Depends(get_current_user),
+	current_user: sqlite3.Row = Depends(require_admin),
 ):
 	"""Traffic aggregated by **destination** ASN (admin only).
 
@@ -675,39 +702,13 @@ async def get_traffic_by_asn(
 		``{asns: [{asn, name, rx, tx, total, peers, peer_names}, ...],
 		  display_unit, hours, total_asns}``
 	"""
-	if range_key:
-		hours = TRAFFIC_RANGE_TO_HOURS.get(range_key, hours)
-
-	# Validate and log request
-	validated_peer = _validate_peer_filter(peer)
-
-	# Check cache first (avoids expensive TSDB scan)
-	cache_key = (str(tsdb_dir), hours, validated_peer)
-	cached = _cache_get(_asn_cache, cache_key)
-	if cached is not None:
-		_log.debug(
-			"ASN_TRAFFIC cache hit hours=%d peer_filter=%s",
-			hours, validated_peer,
-		)
-		return ok_response(data=cached)
-
-	_log.info(
-		"ASN_TRAFFIC query by user=%s hours=%d peer_filter=%s",
-		current_user["username"] if "username" in current_user.keys() else current_user.get("id", "unknown"),
-		hours,
-		validated_peer,
+	resolved_hours = _resolve_hours(range_key, hours)
+	return await _handle_traffic_request(
+		cache=_asn_cache,
+		compute_fn=_compute_asn_traffic,
+		log_prefix="ASN_TRAFFIC",
+		tsdb_dir=tsdb_dir,
+		hours=resolved_hours,
+		peer=peer,
+		current_user=current_user,
 	)
-
-	t0 = time.monotonic()
-	data: ASNTrafficData = await run_in_threadpool(
-		_compute_asn_traffic, tsdb_dir, hours, validated_peer
-	)
-	elapsed_ms = (time.monotonic() - t0) * 1000
-	if elapsed_ms > 1000:
-		_log.warning("ASN_TRAFFIC slow query: %.0fms hours=%d peer_filter=%s", elapsed_ms, hours, validated_peer)
-	else:
-		_log.debug("ASN_TRAFFIC query: %.0fms hours=%d", elapsed_ms, hours)
-
-	result = data.model_dump()
-	_cache_set(_asn_cache, cache_key, result)
-	return ok_response(data=result)

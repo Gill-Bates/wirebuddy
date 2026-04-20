@@ -1,3 +1,17 @@
+## [1.4.4] - 2026-04-20
+
+- ``New`` SVG flags removed from the Docker image and replaced with CDN Load
+- ``New`` "Recent Peer Activity" now only shows peers who have been active in the last 30 days
+- ``Fix`` 🔥 A bug in the passkey validation process allowed users to log in even if their passkey had been deleted
+- ``Fix`` When a token is regenerated for a node, the associated peer is left orphaned
+- ``Fix`` Front-end performance improvements
+- ``Fix`` Numerous stability improvements in the Wirebuddy engine
+- ``Fix`` Update Python dependencies
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.4.3] - 2026-04-10
 
 - ``Fix`` 🔥 Node re-enrollment loop when state file was lost (certificate-based recovery)
@@ -6,10 +20,6 @@
 - ``Fix`` API validation consistency improved for peer updates
 - ``Fix`` Reduced unnecessary warnings in logs during normal operation
 - ``Fix`` Various stability improvements in the Wirebuddy engine
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.4.2] - 2026-04-10
 

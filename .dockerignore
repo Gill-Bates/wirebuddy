@@ -22,6 +22,7 @@ app/static/vendor/images/flags/
 .idea/
 *.swp
 *.swo
+*.codex
 
 # Environment & secrets
 .env

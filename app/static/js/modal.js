@@ -15,6 +15,8 @@ const _wbIcons = {
     prompt: { icon: 'edit', color: 'var(--wb-primary)' },
 };
 
+const _wbAlertTypes = new Set(['info', 'success', 'warning', 'danger']);
+// Whitelist safe input types for wbPrompt to avoid unsupported/surprising controls.
 const _wbAllowedInputTypes = new Set(['text', 'password', 'email', 'number', 'url', 'tel', 'search']);
 let _wbModalPendingFinish = null;
 let _wbModalPendingAbort = null;
@@ -22,7 +24,8 @@ let _wbModalPendingAbort = null;
 function _showModal({ title, message, type, showCancel, showInput, inputDefault, inputPlaceholder, inputType }) {
     const dismissValue = showInput ? null : (showCancel ? false : true);
 
-    if (window._wbReconnectState && window._wbReconnectState.active) {
+    // Suppress modal UX interruptions while reconnect flow is active.
+    if (window._wbReconnectState?.active) {
         return Promise.resolve(dismissValue);
     }
 
@@ -73,18 +76,14 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
                 safeResolve(closeValue);
                 return;
             }
-            document.activeElement?.blur();
             fallbackTimer = setTimeout(() => safeResolve(closeValue), 500);
             window._wbModal.hide();
         }
-
-        _wbModalPendingFinish = finish;
 
         // Close non-form modals to prevent stacking, but preserve form modals
         document.querySelectorAll('.modal.show').forEach(modal => {
             const bsModal = bootstrap.Modal.getInstance(modal);
             if (bsModal && modal.id !== 'wbModal' && !modal.querySelector('form')) {
-                document.activeElement?.blur();
                 bsModal.hide();
             }
         });
@@ -104,6 +103,9 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
             safeResolve(dismissValue);
             return;
         }
+
+        // Register active modal finisher only after required DOM is confirmed.
+        _wbModalPendingFinish = finish;
 
         titleEl.textContent = title;
         messageEl.textContent = message;
@@ -128,7 +130,7 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
             else finish(true);
         }, { signal });
 
-        cancelBtn.addEventListener('click', () => finish(showInput ? null : false), { signal });
+        cancelBtn.addEventListener('click', () => finish(dismissValue), { signal });
         if (closeBtn) closeBtn.addEventListener('click', () => finish(dismissValue), { signal });
 
         if (showInput) {
@@ -144,7 +146,7 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
             }, { once: true, signal });
         }
 
-        // Covers ESC/backdrop dismiss and explicit hide() calls.
+        // Catches all hide completions: finish(), ESC, backdrop click, or external hide().
         _wbModalEl.addEventListener('hidden.bs.modal', () => {
             safeResolve(closeValue);
         }, { once: true, signal });
@@ -154,8 +156,9 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
 }
 
 function wbAlert(message, type = 'info') {
+    const safeType = _wbAlertTypes.has(type) ? type : 'info';
     const titles = { info: 'Info', success: 'Success', warning: 'Warning', danger: 'Error' };
-    return _showModal({ title: titles[type] || 'Info', message, type, showCancel: false, showInput: false });
+    return _showModal({ title: titles[safeType], message, type: safeType, showCancel: false, showInput: false });
 }
 
 function wbConfirm(message, type = 'confirm') {

@@ -8,9 +8,7 @@
  */
 
 // Check if WebAuthn is supported (more robust check)
-const isWebAuthnSupported =
-    window.PublicKeyCredential &&
-    typeof window.PublicKeyCredential === 'function';
+const isWebAuthnSupported = typeof window.PublicKeyCredential === 'function';
 
 // AbortController for canceling pending conditional mediation requests
 let conditionalAbortController = null;
@@ -34,12 +32,12 @@ function base64UrlToArrayBuffer(base64url) {
 
 function arrayBufferToBase64Url(buffer) {
     const bytes = new Uint8Array(buffer);
-    const CHUNK = 0x8000; // 32KB chunks (safe for all JS engines)
+    const CHUNK_SIZE = 32768; // 32KB chunks to avoid call stack limits
     const parts = [];
 
-    for (let i = 0; i < bytes.length; i += CHUNK) {
+    for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
         // Use subarray + apply to avoid stack overflow on large buffers
-        parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK)));
+        parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK_SIZE)));
     }
 
     return btoa(parts.join(''))
@@ -50,6 +48,13 @@ function arrayBufferToBase64Url(buffer) {
 
 // Convert server options to WebAuthn format
 function prepareAuthOptions(serverOptions) {
+    if (!serverOptions?.challenge) {
+        throw new Error('Invalid response from server');
+    }
+    if (!serverOptions?.rp_id) {
+        throw new Error('Server did not provide RP ID');
+    }
+
     const options = {
         challenge: base64UrlToArrayBuffer(serverOptions.challenge),
         rpId: serverOptions.rp_id,
@@ -70,19 +75,58 @@ function prepareAuthOptions(serverOptions) {
 
 // Convert credential response to JSON for server
 function credentialToJSON(credential) {
+    const response = credential.response;
+
+    const serializedResponse = {
+        clientDataJSON: arrayBufferToBase64Url(response.clientDataJSON),
+    };
+
+    // Assertion response (login)
+    if (response.authenticatorData && response.signature) {
+        serializedResponse.authenticatorData = arrayBufferToBase64Url(response.authenticatorData);
+        serializedResponse.signature = arrayBufferToBase64Url(response.signature);
+        serializedResponse.userHandle = response.userHandle
+            ? arrayBufferToBase64Url(response.userHandle)
+            : null;
+    }
+
+    // Attestation response (registration) - included for compatibility
+    if (response.attestationObject) {
+        serializedResponse.attestationObject = arrayBufferToBase64Url(response.attestationObject);
+        if (response.getTransports) {
+            serializedResponse.transports = response.getTransports();
+        }
+    }
+
     return {
         id: credential.id,
         rawId: arrayBufferToBase64Url(credential.rawId),
         type: credential.type,
-        response: {
-            clientDataJSON: arrayBufferToBase64Url(credential.response.clientDataJSON),
-            authenticatorData: arrayBufferToBase64Url(credential.response.authenticatorData),
-            signature: arrayBufferToBase64Url(credential.response.signature),
-            userHandle: credential.response.userHandle
-                ? arrayBufferToBase64Url(credential.response.userHandle)
-                : null,
-        },
+        response: serializedResponse,
     };
+}
+
+function getLoginStartPayload() {
+    const username = document.getElementById('username')?.value?.trim();
+    return username ? { username } : {};
+}
+
+async function executePasskeyLogin(options = {}) {
+    const startData = await apiCall('/api/passkeys/login/start', getLoginStartPayload());
+    const serverOptions = startData?.data;
+    const publicKeyOptions = prepareAuthOptions(serverOptions);
+
+    const credentialOptions = { publicKey: publicKeyOptions };
+    if (options.mediation) credentialOptions.mediation = options.mediation;
+    if (options.signal) credentialOptions.signal = options.signal;
+
+    const credential = await navigator.credentials.get(credentialOptions);
+    if (!credential) {
+        throw new Error('Passkey authentication cancelled');
+    }
+
+    await apiCall('/api/passkeys/login/finish', { credential: credentialToJSON(credential) });
+    window.location.href = '/ui/dashboard';
 }
 
 // Passkey login flow
@@ -102,39 +146,14 @@ async function startPasskeyLogin() {
     passkeyBtn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-2"></span>Authenticating...';
 
     try {
-        // 1. Get authentication options from server
-        const startData = await apiCall('/api/passkeys/login/start', {});
-        const serverOptions = startData?.data;
-        if (!serverOptions || !serverOptions.challenge) {
-            throw new Error('Invalid response from server');
-        }
-        const publicKeyOptions = prepareAuthOptions(serverOptions);
-
-        // 2. Get credentials from browser
-        const credential = await navigator.credentials.get({
-            publicKey: publicKeyOptions,
-        });
-
-        if (!credential) {
-            throw new Error('Passkey authentication cancelled');
-        }
-
-        // 3. Send credential to server
-        const credentialJSON = credentialToJSON(credential);
-        await apiCall('/api/passkeys/login/finish', { credential: credentialJSON });
-
-        // Success - redirect to dashboard
-        window.location.href = '/ui/dashboard';
-
+        await executePasskeyLogin();
     } catch (error) {
         // Handle user cancellation gracefully
         if (error.name === 'NotAllowedError') {
-            // User cancelled - just reset button
-            passkeyBtn.disabled = false;
-            passkeyBtn.innerHTML = originalHtml;
             return;
         }
         showError(error.message || 'Passkey authentication failed');
+    } finally {
         passkeyBtn.disabled = false;
         passkeyBtn.innerHTML = originalHtml;
     }
@@ -142,42 +161,31 @@ async function startPasskeyLogin() {
 
 // Conditional UI (autofill) passkey login
 async function startConditionalPasskeyLogin() {
+    const supported = typeof window.PublicKeyCredential?.isConditionalMediationAvailable === 'function';
+    if (!supported) return;
+
+    let available = false;
     try {
-        const startData = await apiCall('/api/passkeys/login/start', {});
-        const serverOptions = startData?.data;
-        if (!serverOptions || !serverOptions.challenge) {
-            console.debug('Invalid passkey options received');
-            return;
-        }
-        const publicKeyOptions = prepareAuthOptions(serverOptions);
+        available = await window.PublicKeyCredential.isConditionalMediationAvailable();
+    } catch {
+        return;
+    }
+    if (!available) return;
 
-        // Create AbortController for this conditional request
+    try {
         conditionalAbortController = new AbortController();
-
-        // Use conditional mediation with abort signal
-        const credential = await navigator.credentials.get({
-            publicKey: publicKeyOptions,
+        await executePasskeyLogin({
             mediation: 'conditional',
             signal: conditionalAbortController.signal,
         });
 
-        conditionalAbortController = null;
-
-        if (!credential) return;
-
-        // Send credential to server
-        const credentialJSON = credentialToJSON(credential);
-        await apiCall('/api/passkeys/login/finish', { credential: credentialJSON });
-
-        // Success - redirect
-        window.location.href = '/ui/dashboard';
-
     } catch (error) {
-        conditionalAbortController = null;
         // Silent failure for conditional UI (including intentional abort)
-        if (error.name !== 'AbortError') {
+        if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
             console.debug('Conditional passkey login not available:', error.message);
         }
+    } finally {
+        conditionalAbortController = null;
     }
 }
 
@@ -188,7 +196,13 @@ async function initPasskeys() {
     // Check if any passkeys are configured in the system
     let passkeyAvailable = false;
     try {
-        const response = await fetch('/api/passkeys/available');
+        const response = await fetch('/api/passkeys/available', {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: {
+                'Accept': 'application/json',
+            },
+        });
         if (response.ok) {
             const json = await response.json();
             passkeyAvailable = json?.data?.available === true;
@@ -215,8 +229,9 @@ async function initPasskeys() {
     }
 
     // Try Conditional UI (autofill) for browsers that support it
-    if (window.PublicKeyCredential.isConditionalMediationAvailable) {
-        PublicKeyCredential.isConditionalMediationAvailable().then(available => {
+    if (typeof window.PublicKeyCredential?.isConditionalMediationAvailable === 'function') {
+        try {
+            const available = await window.PublicKeyCredential.isConditionalMediationAvailable();
             if (available) {
                 // Enable conditional UI by adding webauthn to autocomplete
                 const usernameField = document.getElementById('username');
@@ -224,8 +239,10 @@ async function initPasskeys() {
                     usernameField.setAttribute('autocomplete', 'username webauthn');
                 }
                 // Automatically start conditional passkey flow
-                startConditionalPasskeyLogin();
+                await startConditionalPasskeyLogin();
             }
-        });
+        } catch (error) {
+            console.debug('Conditional mediation check failed:', error.message);
+        }
     }
 }

@@ -13,7 +13,7 @@ import json
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -36,6 +36,7 @@ from ..speedtest import (
 	acquire_speedtest_run_lease,
 )
 from ..utils.deps import get_conn, get_config
+from ..utils.tsdb_helpers import build_latest_by_node
 from .auth import get_current_user, require_admin
 from .response import ok_response
 
@@ -64,7 +65,7 @@ SPEEDTEST_RANGE_TO_HOURS = {
 
 class SpeedtestSettingsPayload(BaseModel):
 	"""Payload for updating speedtest settings."""
-	enabled: Optional[bool] = None
+	enabled: bool | None = None
 
 
 @router.get("/speedtest/settings")
@@ -115,6 +116,25 @@ def _wrap_result(result: dict | Any, stored: bool) -> dict:
 	if isinstance(result, dict):
 		return {**result, "stored": stored}
 	return {"result": result, "stored": stored}
+
+
+def _serialize_progress_event(event: Any) -> dict:
+	"""Normalize progress payload to a JSON-serializable dictionary."""
+	return event if isinstance(event, dict) else event.__dict__
+
+
+def _drain_progress_events(progress_queue: asyncio.Queue[Any]) -> list[str]:
+	"""Drain queued progress events and serialize them as SSE payloads."""
+	events: list[str] = []
+	while True:
+		try:
+			event = progress_queue.get_nowait()
+			if event is not None:
+				event_data = _serialize_progress_event(event)
+				events.append(f"event: progress\ndata: {json.dumps(event_data)}\n\n")
+		except asyncio.QueueEmpty:
+			break
+	return events
 
 
 async def _persist_last_run_to_db(db_path) -> None:
@@ -224,7 +244,7 @@ async def trigger_speedtest_stream(
 
 			def _safe_put(event: ProgressEvent) -> None:
 				"""Drop oldest event if queue full (preserves latest state)."""
-				while True:
+				for _ in range(SPEEDTEST_PROGRESS_QUEUE_SIZE + 1):
 					try:
 						progress_queue.put_nowait(event)
 						return
@@ -233,6 +253,7 @@ async def trigger_speedtest_stream(
 							progress_queue.get_nowait()  # Make space
 						except asyncio.QueueEmpty:
 							return  # Give up if queue was emptied by consumer
+				_log.debug("SPEEDTEST_PROGRESS_EVENT_DROPPED: queue contention")
 
 			def progress_callback(event: ProgressEvent) -> None:
 				"""Thread-safe callback to enqueue progress events."""
@@ -267,8 +288,7 @@ async def trigger_speedtest_stream(
 					try:
 						event = await asyncio.wait_for(progress_queue.get(), timeout=0.5)
 						if event is not None:
-							# Serialize progress event (handle dataclass/dict)
-							event_data = event if isinstance(event, dict) else event.__dict__
+							event_data = _serialize_progress_event(event)
 							try:
 								yield f"event: progress\ndata: {json.dumps(event_data)}\n\n"
 							except RuntimeError:
@@ -280,17 +300,11 @@ async def trigger_speedtest_stream(
 						except RuntimeError:
 							break
 
-				while not progress_queue.empty():
+				for sse_event in _drain_progress_events(progress_queue):
 					try:
-						event = progress_queue.get_nowait()
-						if event is not None:
-							event_data = event if isinstance(event, dict) else event.__dict__
-							try:
-								yield f"event: progress\ndata: {json.dumps(event_data)}\n\n"
-							except RuntimeError:
-								return  # Client disconnected
-					except asyncio.QueueEmpty:
-						break
+						yield sse_event
+					except RuntimeError:
+						return  # Client disconnected
 
 				try:
 					result = await test_task
@@ -322,7 +336,7 @@ async def trigger_speedtest_stream(
 						stored = False
 				
 				# Send final result to client
-				result_wrapped = {"stored": stored, **result}
+				result_wrapped = _wrap_result(result, stored)
 				try:
 					yield f"event: result\ndata: {json.dumps(result_wrapped)}\n\n"
 				except RuntimeError:
@@ -356,9 +370,9 @@ async def trigger_speedtest_stream(
 @router.get("/speedtest/history")
 async def get_speedtest_history(
 	request: Request,
-	range_key: Optional[str] = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
+	range_key: str | None = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
 	limit: int = Query(SPEEDTEST_HISTORY_DEFAULT_LIMIT, ge=1, le=SPEEDTEST_HISTORY_MAX_LIMIT),
-	node_id: Optional[str] = Query(None, max_length=64, description="Filter by node ID (null=master only, 'all'=all remote nodes)"),
+	node_id: str | None = Query(None, max_length=64, description="Filter by node ID (null=master only, 'all'=all remote nodes)"),
 	_: sqlite3.Row = Depends(get_current_user),
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
@@ -391,8 +405,7 @@ async def get_speedtest_history(
 	# results out of the initial window.
 	MAX_FETCH_LIMIT = 10000
 	fetch_limit = min(limit + 1, MAX_FETCH_LIMIT)
-	points = []
-	filtered_points = []
+	filtered_points: list[Any] = []
 	
 	def _matches_node_filter(pt_node_id: Any) -> bool:
 		if node_id is None or node_id == "":
@@ -412,6 +425,7 @@ async def get_speedtest_history(
 			metric=SPEEDTEST_TSDB_METRIC,
 			since=since,
 			limit=fetch_limit,
+			latest=True,
 		)
 
 		filtered_points = []
@@ -432,7 +446,8 @@ async def get_speedtest_history(
 	# Truncate to actual limit and detect if more data exists
 	truncated = len(filtered_points) > limit
 	if truncated:
-		filtered_points = filtered_points[:limit]
+		# Keep newest entries while preserving chronological order for chart rendering.
+		filtered_points = filtered_points[-limit:]
 
 	history = []
 	for pt in filtered_points:
@@ -476,19 +491,11 @@ async def get_speedtest_nodes(
 		metric=SPEEDTEST_TSDB_METRIC,
 		since=since,
 		limit=2000,  # Should be enough to cover all nodes
+		latest=True,
 	)
 	
 	# Build a map of node_id -> latest speedtest
-	# Always overwrite to keep the last (newest) result, not the first (oldest)
-	latest_by_node: dict[str | None, dict] = {}  # None = master
-	for pt in points:
-		if not isinstance(pt.value, dict):
-			continue
-		node_id = pt.value.get("node_id")  # None = master
-		latest_by_node[node_id] = {
-			"ts": pt.ts.isoformat(),
-			**pt.value,
-		}
+	latest_by_node = build_latest_by_node(points)
 	
 	# Build result list, starting with master
 	result = []

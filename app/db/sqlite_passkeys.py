@@ -48,7 +48,7 @@ def get_passkey_by_credential_id(
 		"""
 		SELECT p.id, p.user_id, p.credential_id, p.public_key, p.sign_count,
 			   p.device_name, p.transports, p.created_at,
-			   u.username, u.is_active, u.auth_method
+			   u.username, u.is_active, u.auth_method, u.passkey_enabled
 		FROM passkeys p
 		JOIN users u ON p.user_id = u.id
 		WHERE p.credential_id = ?
@@ -60,6 +60,8 @@ def get_passkey_by_credential_id(
 
 def get_passkey_by_id(conn: sqlite3.Connection, passkey_id: int) -> sqlite3.Row | None:
 	"""Get a passkey by its ID."""
+	if conn.row_factory is not sqlite3.Row:
+		raise TypeError("row_factory must be sqlite3.Row")
 	cur = conn.execute(
 		"""
 		SELECT id, user_id, credential_id, public_key, sign_count,
@@ -133,6 +135,16 @@ def update_passkey_sign_count(
 	"""
 	with transaction(conn):
 		if new_sign_count == 0:
+			existing = conn.execute("SELECT sign_count FROM passkeys WHERE id = ?", (passkey_id,)).fetchone()
+			if existing is None:
+				raise ValueError(f"Passkey {passkey_id} not found")
+			if existing[0] > 0:
+				_log.error(
+					"Sign count regression blocked for passkey_id=%d: current=%d, attempted=0",
+					passkey_id,
+					existing[0],
+				)
+				raise ValueError(f"Sign count regression blocked for passkey {passkey_id}")
 			_log.debug("Sign count is 0 for passkey_id=%d (non-incrementing authenticator)", passkey_id)
 			return
 			
@@ -176,14 +188,12 @@ def delete_passkey(conn: sqlite3.Connection, passkey_id: int, user_id: int) -> b
 			_log.error("Passkey delete: ownership mismatch id=%d owner=%d requester=%d", passkey_id, existing[0], user_id)
 			return False
 
-		conn.execute("DELETE FROM passkeys WHERE id = ?", (passkey_id,))
+		cur = conn.execute("DELETE FROM passkeys WHERE id = ? AND user_id = ?", (passkey_id, user_id))
+		if cur.rowcount != 1:
+			_log.error("Passkey delete: delete failed id=%d user_id=%d", passkey_id, user_id)
+			return False
 		_log.info("Passkey deleted: id=%d user_id=%d", passkey_id, user_id)
 		return True
-
-
-
-
-
 def count_user_passkeys(conn: sqlite3.Connection, user_id: int) -> int:
 	"""Count passkeys for a user."""
 	cur = conn.execute(
@@ -201,13 +211,11 @@ def any_passkeys_exist(conn: sqlite3.Connection) -> bool:
 
 def get_credential_ids_for_user(conn: sqlite3.Connection, user_id: int) -> list[str]:
 	"""Get all credential IDs for a user (for exclude list during registration)."""
-	if conn.row_factory is not sqlite3.Row:
-		raise TypeError("row_factory must be sqlite3.Row")
 	cur = conn.execute(
 		"SELECT credential_id FROM passkeys WHERE user_id = ?",
 		(user_id,),
 	)
-	return [row["credential_id"] for row in cur.fetchall()]
+	return [row[0] for row in cur.fetchall()]
 
 
 # ---------------------------------------------------------------------------
@@ -284,15 +292,13 @@ def consume_challenge(
 	now = time.time()
 	
 	with transaction(conn):
-		conn.execute("DELETE FROM passkey_challenges WHERE expires_at <= ?", (now,))
-		
 		cur = conn.execute(
 			"""
 			DELETE FROM passkey_challenges
-			WHERE challenge = ?
+			WHERE challenge = ? AND expires_at > ?
 			RETURNING ceremony_type, user_id, username
 			""",
-			(challenge,),
+			(challenge, now),
 		)
 		row = cur.fetchone()
 		
@@ -310,9 +316,8 @@ def consume_challenge(
 				ceremony_type,
 			)
 			raise ValueError(f"Challenge was not issued for {expected_ceremony_type}")
-	
-	
-	_log.info("Consumed %s challenge for user_id=%s", ceremony_type, user_id)
+
+		_log.info("Consumed %s challenge for user_id=%s", ceremony_type, user_id)
 	return (user_id, username)
 
 

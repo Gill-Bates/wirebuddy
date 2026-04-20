@@ -28,7 +28,7 @@ import sys
 import time
 from datetime import datetime as dt, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 
@@ -64,6 +64,94 @@ STATE_FILE = DATA_DIR / "node_state.json"
 # Failure detection thresholds
 _MAX_AUTH_FAILURES = 3  # Consecutive 401 errors before assuming node removal
 _MAX_RECONNECT_DELAY = 60  # Maximum SSE reconnection delay in seconds
+
+
+def _check_firewall_dns_rules() -> None:
+	"""Check if firewall allows DNS traffic on wg0 and fix if possible.
+	
+	DNS forwarding through the VPN tunnel requires port 53 to be open.
+	Without this, clients connected via this node cannot resolve DNS.
+	
+	The node container runs with CAP_NET_ADMIN, so it can add iptables
+	rules directly. This is preferred over UFW since:
+	1. UFW is a host userspace tool not accessible from containers
+	2. iptables rules are transient (lost on reboot) - no permanent host changes
+	3. Works regardless of whether UFW is installed on host
+	"""
+	import shutil
+	import subprocess
+
+	if os.environ.get("SERVER_MODE", "").strip().lower() != "node":
+		_log.debug("Skipping firewall DNS rule check outside node mode")
+		return
+	
+	# Check if auto-fix is disabled
+	if os.environ.get("WIREBUDDY_NO_FIREWALL_FIX", "").lower() in ("1", "true", "yes"):
+		_log.debug("Firewall auto-fix disabled via WIREBUDDY_NO_FIREWALL_FIX")
+		return
+	
+	iptables_path = shutil.which("iptables")
+	if not iptables_path:
+		_log.debug("iptables not found, skipping firewall check")
+		return
+	
+	# Check if wg0 interface exists
+	try:
+		result = subprocess.run(
+			["ip", "link", "show", "wg0"],
+			capture_output=True,
+			text=True,
+			timeout=5,
+		)
+		if result.returncode != 0:
+			# wg0 doesn't exist yet - will be created later, skip for now
+			_log.debug("wg0 interface not yet present, deferring firewall check")
+			return
+	except Exception:
+		return
+	
+	# Check if DNS (port 53) is allowed - both INPUT (for local) and FORWARD (for routing to master)
+	try:
+		rules_added = []
+		
+		# Check and fix FORWARD chain (for routing DNS to master)
+		for chain in ("FORWARD", "INPUT"):
+			for proto in ("udp", "tcp"):
+				result = subprocess.run(
+					[iptables_path, "-C", chain, "-i", "wg0", "-p", proto, "--dport", "53", "-j", "ACCEPT"],
+					capture_output=True,
+					text=True,
+					timeout=5,
+				)
+				if result.returncode != 0:
+					# Rule doesn't exist, add it
+					result = subprocess.run(
+						[iptables_path, "-I", chain, "1", "-i", "wg0", "-p", proto, "--dport", "53", "-j", "ACCEPT"],
+						capture_output=True,
+						text=True,
+						timeout=5,
+					)
+					if result.returncode == 0:
+						rules_added.append(f"{chain} {proto.upper()}/53")
+					else:
+						_log.warning("Failed to add iptables %s rule for DNS/%s: %s", chain, proto.upper(), result.stderr.strip())
+		
+		if rules_added:
+			_log.info("🔧 Auto-configured firewall: added DNS rules (%s) on wg0", ", ".join(rules_added))
+		else:
+			_log.debug("Firewall: DNS rules already present for wg0")
+		
+	except subprocess.TimeoutExpired:
+		_log.debug("iptables check timed out")
+	except PermissionError:
+		_log.warning(
+			"⚠️  Cannot check/fix firewall rules (permission denied). "
+			"DNS may not work for clients. Manual fix: "
+			"sudo iptables -I FORWARD -i wg0 -p udp --dport 53 -j ACCEPT && "
+			"sudo iptables -I INPUT -i wg0 -p udp --dport 53 -j ACCEPT"
+		)
+	except Exception as exc:
+		_log.debug("Firewall check failed: %s", exc)
 
 
 def _build_request_headers(api_secret: str, cert_fingerprint: str) -> dict[str, str]:
@@ -124,7 +212,7 @@ def _parse_enrollment_token(token_string: str, verify_key: str | None = None) ->
 
 	# Token signature is verified by the master during enrollment anyway,
 	# local verification is an optional extra security layer for paranoid setups
-	_log.warning("Enrollment token verification disabled — token signature will only be checked by master")
+	_log.debug("Enrollment token verification disabled — token signature will only be checked by master")
 	return _decode_enrollment_token_payload(token_string)
 
 
@@ -190,7 +278,7 @@ def _clear_enrollment_state() -> None:
 		_log.info("Cleared old metrics queue")
 
 
-def _resolve_tls_verify(state: dict[str, Any] | None) -> tuple[ssl.SSLContext | bool, str | None]:
+def _resolve_tls_verify(state: dict[str, Any] | None) -> tuple[ssl.SSLContext, str | None]:
 	"""Resolve TLS verification settings for master API calls.
 	
 	Returns an SSLContext with TLS 1.2 minimum enforced to prevent
@@ -320,8 +408,8 @@ async def _send_speedtest_progress(
 			},
 			timeout=5.0,  # Short timeout for progress updates
 		)
-	except Exception as exc:
-		_log.debug("Failed to send speedtest progress to master: %s", exc)
+	except Exception:
+		pass  # Best-effort: progress updates are optional, result submission has longer timeout
 
 
 async def _run_node_speedtest(
@@ -353,11 +441,11 @@ async def _run_node_speedtest(
 					return
 				exc = done_task.exception()
 				if exc is not None:
-					_log.debug("Failed to send speedtest progress: %s", exc)
+					pass  # Best-effort: progress updates are optional
 
 			task.add_done_callback(_consume_progress_exception)
-		except Exception as exc:
-			_log.debug("Failed to send speedtest progress: %s", exc)
+		except Exception:
+			pass  # Best-effort: progress updates are optional
 	
 	try:
 		result = await asyncio.wait_for(
@@ -470,14 +558,18 @@ async def _speedtest_on_demand_handler(
 	while not shutdown_event.is_set():
 		try:
 			# Wait for a speedtest request or shutdown
-			await asyncio.wait(
-				[
-					asyncio.create_task(speedtest_requested_event.wait()),
-					asyncio.create_task(shutdown_event.wait()),
-				],
-				return_when=asyncio.FIRST_COMPLETED,
-			)
-			
+			_tasks = {
+				asyncio.create_task(speedtest_requested_event.wait()),
+				asyncio.create_task(shutdown_event.wait()),
+			}
+			_done, _pending = await asyncio.wait(_tasks, return_when=asyncio.FIRST_COMPLETED)
+			for _t in _pending:
+				_t.cancel()
+				try:
+					await _t
+				except asyncio.CancelledError:
+					pass
+
 			if shutdown_event.is_set():
 				return
 			
@@ -492,6 +584,13 @@ async def _speedtest_on_demand_handler(
 			await asyncio.sleep(5)  # Brief delay before continuing
 
 
+class EnrollResult(NamedTuple):
+	success: bool
+	config_version: str | None
+	session_secret: str | None
+	fatal: bool = False  # Permanent error — do not retry
+
+
 async def main() -> None:
 	"""Entry point for the node daemon."""
 	print_banner_once()
@@ -503,6 +602,9 @@ async def main() -> None:
 	for name in ("httpcore", "httpx", "hpack"):
 		logging.getLogger(name).setLevel(logging.WARNING)
 	_log.info("WireBuddy Node Daemon starting...")
+
+	# Check firewall configuration
+	_check_firewall_dns_rules()
 
 	DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -544,10 +646,16 @@ async def main() -> None:
 					needs_reenroll = True
 					reason = f"node_id changed ({payload['node_id']} vs {state['node_id']})"
 				elif not stored_hash:
-					# Legacy state without enrollment_secret_hash: token is present, so force
-					# a clean enrollment to avoid stale session credentials.
-					needs_reenroll = True
-					reason = "legacy enrollment state without token hash"
+					# Legacy state without enrollment_secret_hash: migrate by adding
+					# the hash from the current token. Trust the existing state since
+					# it was successfully enrolled with the same token.
+					_log.info(
+						"Migrating legacy state: adding enrollment_secret_hash (node=%s)",
+						state["node_id"],
+					)
+					state["enrollment_secret_hash"] = token_secret_hash
+					_save_state(state)
+					payload = None  # Using existing state, no re-enrollment needed
 				elif token_secret_hash != stored_hash:
 					# Token secret changed from last enrollment
 					needs_reenroll = True
@@ -557,7 +665,7 @@ async def main() -> None:
 					_log.warning("Enrollment token changed: %s — clearing old state for re-enrollment", reason)
 					_clear_enrollment_state()
 					state = None  # Force re-enrollment
-				else:
+				elif payload is not None:
 					_log.info("Ignoring WIREBUDDY_ENROLLMENT_TOKEN — already enrolled with this token")
 					payload = None  # Not needed, using existing state
 			except ValueError as exc:
@@ -819,19 +927,18 @@ async def main() -> None:
 				except Exception as exc:
 					_log.debug("Failed to sample WG metrics: %s", exc)
 				
-				# Enqueue peer metrics for reliable delivery to master
-				# Convert wg_dump dict to list format expected by enqueue_peer_traffic
-				if wg_dump:
-					peer_stats_list = [
-						{
-							"public_key": pub_key,
-							"endpoint": stats.get("endpoint"),
-							"latest_handshake": stats.get("latest_handshake"),
-							"transfer_rx": stats.get("transfer_rx", 0),
-							"transfer_tx": stats.get("transfer_tx", 0),
-						}
-						for pub_key, stats in wg_dump.items()
-					]
+				# Build peer stats list once — used for both queue and heartbeat
+				peer_stats_list = [
+					{
+						"public_key": pub_key,
+						"endpoint": stats.get("endpoint"),
+						"latest_handshake": stats.get("latest_handshake"),
+						"transfer_rx": stats.get("transfer_rx", 0),
+						"transfer_tx": stats.get("transfer_tx", 0),
+					}
+					for pub_key, stats in wg_dump.items()
+				]
+				if peer_stats_list:
 					try:
 						await asyncio.to_thread(enqueue_peer_traffic, metrics_queue_conn, peer_stats_list)
 					except Exception as exc:
@@ -846,7 +953,7 @@ async def main() -> None:
 						api_secret,
 						cert_fingerprint,
 						metrics_queue_conn,
-						wg_dump,  # Pass pre-sampled dump (avoid double syscall)
+						peer_stats_list,  # Pass pre-built list (avoid duplicate comprehension)
 					)
 					_log.debug("Sync loop: heartbeat OK")
 					consecutive_401_failures = 0  # Reset on success
@@ -975,14 +1082,6 @@ async def main() -> None:
 	_log.info("Node daemon stopped")
 
 
-from typing import NamedTuple
-
-class EnrollResult(NamedTuple):
-	success: bool
-	config_version: str | None
-	session_secret: str | None
-	fatal: bool = False  # Permanent error — do not retry
-
 async def _enroll(
 	client: httpx.AsyncClient,
 	master_url: str,
@@ -1021,6 +1120,8 @@ async def _enroll(
 		version = ""
 		if config:
 			version = await asyncio.to_thread(apply_config, config)
+			# Check/fix firewall rules now that wg0 exists
+			_check_firewall_dns_rules()
 		if session_secret:
 			_log.info("Received session secret from master (enrollment token is now invalidated)")
 		return EnrollResult(success=True, config_version=version, session_secret=session_secret)
@@ -1055,7 +1156,7 @@ async def _push_heartbeat(
 	api_secret: str,
 	cert_fingerprint: str,
 	metrics_queue_conn: "sqlite3.Connection",
-	wg_dump: dict[str, Any] | None = None,
+	peer_stats: list[dict[str, Any]] | None = None,
 ) -> None:
 	"""Push heartbeat with queued metrics to master.
 	
@@ -1065,8 +1166,8 @@ async def _push_heartbeat(
 	3. Delete only metrics that master ACKed
 	
 	Args:
-		wg_dump: Pre-sampled WireGuard dump (avoids double syscall if caller
-		         already sampled). If None, will sample fresh.
+		peer_stats: Pre-built peer stats list. If None or empty, heartbeat
+		            is sent without peer stats.
 	"""
 	from ..utils.version import get_version
 	uptime = _get_uptime()
@@ -1084,32 +1185,13 @@ async def _push_heartbeat(
 			metrics_batch["seq_to"],
 		)
 
-	# Use pre-sampled WG dump or sample fresh if not provided
-	if wg_dump is None:
-		try:
-			wg_dump = await asyncio.to_thread(get_wg_dump)
-		except Exception as exc:
-			_log.debug("Failed to collect wg dump for heartbeat: %s", exc)
-			wg_dump = {}
-
-	peer_stats = [
-		{
-			"public_key": pub_key,
-			"endpoint": stats.get("endpoint"),
-			"latest_handshake": stats.get("latest_handshake"),
-			"transfer_rx": stats.get("transfer_rx", 0),
-			"transfer_tx": stats.get("transfer_tx", 0),
-		}
-		for pub_key, stats in wg_dump.items()
-	]
-
 	resp = await client.post(
 		f"{master_url}/api/nodes/heartbeat",
 		headers=_build_request_headers(api_secret, cert_fingerprint),
 		json={
 			"uptime": uptime,
 			"version": get_version(),
-			"peer_stats": peer_stats,
+			"peer_stats": peer_stats or [],
 			"metrics_batch": metrics_batch,
 		},
 	)
@@ -1307,6 +1389,8 @@ async def _pull_config(
 	_log.info("Received config from master: peers=%d interfaces=%d", peer_count, len(config.get("interfaces", [])))
 	new_version = await asyncio.to_thread(apply_config, config)
 	_log.info("Applied new config (version=%s...)", new_version[:16] if new_version else "none")
+	# Check/fix firewall rules now that wg0 exists
+	_check_firewall_dns_rules()
 	return new_version
 
 

@@ -4,14 +4,23 @@
 //
 
 // NOTE: Client-side only – backend must enforce authorization on all mutations
-// User permission check (handle both "true" and "1" - SQLite stores booleans as integers)
 const dnsApp = document.getElementById('dns-app');
-const isAdmin = dnsApp ? (dnsApp.dataset.isAdmin === 'true' || dnsApp.dataset.isAdmin === '1') : false;
 const clearNode = window.WBShared?.clearElement || (el => el?.replaceChildren());
 const chartEmptyState = window.WBShared?.chartEmptyState || (() => document.createElement('div'));
 
+// Helper: parse dataset boolean (SQLite stores booleans as integers, so handle both "true" and "1")
+function _readDatasetBool(el, key, defaultValue = false) {
+    if (!el) return defaultValue;
+    const val = el.dataset[key];
+    return val === 'true' || val === '1';
+}
+
+// User permission check
+const isAdmin = _readDatasetBool(dnsApp, 'isAdmin');
 // Track ad-blocker enabled state (for Top Blocked / Blockrate disabled message)
-let _adBlockerEnabled = dnsApp ? (dnsApp.dataset.enableBlocklist === 'true' || dnsApp.dataset.enableBlocklist === '1') : true;
+let _adBlockerEnabled = _readDatasetBool(dnsApp, 'enableBlocklist', true);
+// Initial DNS availability state from server-rendered dataset
+let _dnsUnavailable = _readDatasetBool(dnsApp, 'dnsUnavailable');
 
 // Named constants
 const LOG_BATCH_SIZE = 50;  // Items to render per batch
@@ -22,6 +31,7 @@ const MENU_VIEWPORT_MARGIN_PX = 8;  // Minimum margin for context menu
 const FADE_FALLBACK_MS = 300;  // Fallback timeout for CSS transitions
 
 let _logData = [];
+let _logDataVersion = 0;  // Incremented whenever _logData content changes
 let _peerMap = {};
 let _trendChart = null;
 let _renderedCount = 0;  // How many items currently rendered
@@ -40,6 +50,99 @@ let _fadeAbort = null; // AbortController for peer filter fade animation
 let _restoreAbort = null; // AbortController for async log scroll restoration
 let _peerMapVersion = 0; // Invalidate cached log filter when peer map changes
 let _pageAbort = new AbortController();  // Abort controller for page cleanup
+
+const _stateEls = {
+    queriedLoading: document.getElementById('top-queried-loading'),
+    queriedContent: document.getElementById('top-queried-content'),
+    queriedEmpty: document.getElementById('top-queried-empty'),
+    queriedUnavailable: document.getElementById('top-queried-unavailable'),
+    blockedLoading: document.getElementById('top-blocked-loading'),
+    blockedContent: document.getElementById('top-blocked-content'),
+    blockedEmpty: document.getElementById('top-blocked-empty'),
+    blockedDisabled: document.getElementById('top-blocked-disabled'),
+    blockedUnavailable: document.getElementById('top-blocked-unavailable'),
+    trendLoading: document.getElementById('trend-loading'),
+    trendChart: document.getElementById('trend-chart-wrap'),
+    trendEmpty: document.getElementById('trend-empty'),
+    trendDisabled: document.getElementById('trend-disabled'),
+    trendUnavailable: document.getElementById('trend-unavailable'),
+    logUnavailable: document.getElementById('log-unavailable'),
+};
+_stateEls.logCardBody = _stateEls.logUnavailable?.parentElement || null;
+
+function _setHidden(el, hidden) {
+    if (!el) return;
+    el.classList.toggle('d-none', hidden);
+}
+
+/**
+ * Small visibility state machine for DNS UI sections.
+ * Priority: dnsUnavailable > adBlockerDisabled > active content/loading.
+ */
+function applyDnsVisibilityState() {
+    const {
+        queriedLoading,
+        queriedContent,
+        queriedEmpty,
+        queriedUnavailable,
+        blockedLoading,
+        blockedContent,
+        blockedEmpty,
+        blockedDisabled,
+        blockedUnavailable,
+        trendLoading,
+        trendChart,
+        trendEmpty,
+        trendDisabled,
+        trendUnavailable,
+        logUnavailable,
+        logCardBody,
+    } = _stateEls;
+
+    if (_dnsUnavailable) {
+        _setHidden(queriedLoading, true);
+        _setHidden(queriedContent, true);
+        _setHidden(queriedEmpty, true);
+        _setHidden(queriedUnavailable, false);
+
+        _setHidden(blockedLoading, true);
+        _setHidden(blockedContent, true);
+        _setHidden(blockedEmpty, true);
+        _setHidden(blockedDisabled, true);
+        _setHidden(blockedUnavailable, false);
+
+        _setHidden(trendLoading, true);
+        _setHidden(trendChart, true);
+        _setHidden(trendEmpty, true);
+        _setHidden(trendDisabled, true);
+        _setHidden(trendUnavailable, false);
+
+        if (logCardBody) logCardBody.classList.add('dns-log-unavailable');
+        _setHidden(logUnavailable, false);
+        return;
+    }
+
+    _setHidden(queriedUnavailable, true);
+    _setHidden(blockedUnavailable, true);
+    _setHidden(trendUnavailable, true);
+    if (logCardBody) logCardBody.classList.remove('dns-log-unavailable');
+    _setHidden(logUnavailable, true);
+
+    if (_adBlockerEnabled) {
+        _setHidden(blockedDisabled, true);
+        _setHidden(trendDisabled, true);
+    } else {
+        _setHidden(blockedLoading, true);
+        _setHidden(blockedContent, true);
+        _setHidden(blockedEmpty, true);
+        _setHidden(blockedDisabled, false);
+
+        _setHidden(trendLoading, true);
+        _setHidden(trendChart, true);
+        _setHidden(trendEmpty, true);
+        _setHidden(trendDisabled, false);
+    }
+}
 
 const isAbortError = window.WBShared?.isAbortError || (err => {
     if (err?.name === 'AbortError') return true;
@@ -77,6 +180,11 @@ function getSelectedPeerClientIps() {
         }
     }
     return ips.join(',');
+}
+
+function _buildClientIpsParam() {
+    const clientIps = getSelectedPeerClientIps();
+    return clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
 }
 
 function peerMapsEqual(a, b) {
@@ -227,7 +335,7 @@ async function applyLogRuleAction(action, scope) {
     }
 }
 
-function getChartThemeColors() {
+function getThemeColors() {
     const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
     return {
         gridColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
@@ -237,7 +345,7 @@ function getChartThemeColors() {
 
 function applyTrendTheme() {
     if (!_trendChart) return;
-    const { gridColor, textColor } = getChartThemeColors();
+    const { gridColor, textColor } = getThemeColors();
     _trendChart.options.scales.y.grid.color = gridColor;
     _trendChart.options.scales.y.ticks.color = textColor;
     _trendChart.options.scales.y.title.color = textColor;
@@ -286,25 +394,25 @@ async function loadTrend() {
     const trendWrap = document.getElementById('trend-chart-wrap');
     const emptyEl = document.getElementById('trend-empty');
 
+    if (_dnsUnavailable) {
+        applyDnsVisibilityState();
+        return;
+    }
+
     // Show disabled message when ad-blocker is disabled
     if (!_adBlockerEnabled) {
-        loadingEl.classList.add('d-none');
-        trendWrap.classList.add('d-none');
-        emptyEl.classList.remove('d-none');
+        applyDnsVisibilityState();
         if (_trendChart) {
             _trendChart.destroy();
             _trendChart = null;
         }
-        clearNode(emptyEl);
-        emptyEl.appendChild(chartEmptyState('DNS Ad-Blocker Disabled. Enable DNS Ad-Blocker in Settings to use this feature.'));
         return;
     }
 
     try {
         // 30 days = 720 hours, bucket size adapts to viewport
         const bucketMinutes = Math.min(1440, Math.max(5, getTrendBucketMinutes()));
-        const clientIps = getSelectedPeerClientIps();
-        const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
+        const clientIpsParam = _buildClientIpsParam();
         let t;
         try {
             t = await api('GET', `/api/dns/trend?hours=720&bucket_minutes=${bucketMinutes}${clientIpsParam}`, null, { signal: _pageAbort.signal });
@@ -339,6 +447,7 @@ async function loadTrend() {
         loadingEl.classList.add('d-none');
         trendWrap.classList.remove('d-none');
         emptyEl.classList.add('d-none');
+        applyDnsVisibilityState();
 
         // Ensure canvas exists (may have been replaced by empty state)
         if (!trendWrap.querySelector('#dnsTrendChart')) {
@@ -349,7 +458,7 @@ async function loadTrend() {
             _trendChart = null;
         }
 
-        const { gridColor, textColor } = getChartThemeColors();
+        const { gridColor, textColor } = getThemeColors();
         // Smaller points on mobile for better readability
         const isMobile = window.innerWidth < 576;
         const pointRadius = isMobile ? 2 : 3;
@@ -460,9 +569,8 @@ async function loadTrend() {
 
         document.getElementById('trend-meta').textContent = '';
     } catch (e) {
-        if (!isAbortError(e)) {
-            console.error('Trend load failed:', e);
-        }
+        if (isAbortError(e)) return;
+        console.error('Trend load failed:', e);
         document.getElementById('trend-meta').textContent = 'Trend unavailable';
     }
 }
@@ -470,6 +578,9 @@ async function loadTrend() {
 async function loadStats() {
     try {
         const s = await api('GET', '/api/dns/status', null, { signal: _pageAbort.signal });
+
+        const wasUnavailable = _dnsUnavailable;
+        _dnsUnavailable = !!s.unavailable;
 
         // Update status using DOM APIs (safe from XSS)
         const statusEl = document.getElementById('stat-status');
@@ -500,7 +611,14 @@ async function loadStats() {
                 btn.title = '';
             }
         }
+
+        applyDnsVisibilityState();
+
+        if (wasUnavailable && !_dnsUnavailable) {
+            void Promise.allSettled([loadTopDomains(), loadTrend(), loadLogsOnly()]);
+        }
     } catch (e) {
+        if (isAbortError(e)) return;
         // Update status for error state using DOM APIs
         const statusEl = document.getElementById('stat-status');
         if (statusEl) {
@@ -532,9 +650,13 @@ function renderTopDomainDisabled({ loadingId, contentId, emptyId, disabledId, un
 }
 
 async function loadTopDomains() {
+    if (_dnsUnavailable) {
+        applyDnsVisibilityState();
+        return;
+    }
+
     try {
-        const clientIps = getSelectedPeerClientIps();
-        const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
+        const clientIpsParam = _buildClientIpsParam();
         const data = await api('GET', `/api/dns/top-domains?limit=15${clientIpsParam}`, null, { signal: _pageAbort.signal });
         const topQueried = data.top_queried || [];
         const topBlocked = data.top_blocked || [];
@@ -553,6 +675,7 @@ async function loadTopDomains() {
 
         // Top Blocked: show disabled message when ad-blocker is off
         if (!_adBlockerEnabled) {
+            applyDnsVisibilityState();
             renderTopDomainDisabled({
                 loadingId: 'top-blocked-loading',
                 contentId: 'top-blocked-content',
@@ -574,7 +697,9 @@ async function loadTopDomains() {
             });
         }
     } catch (e) {
-        console.error('Top domains error:', e);
+        if (!isAbortError(e)) {
+            console.error('Top domains error:', e);
+        }
     }
 }
 
@@ -588,7 +713,7 @@ const blockedColors = [
     '#0d6efd', '#6f42c1', '#d63384', '#20c997'
 ];
 
-function getChartColors(labels, palette) {
+function getPaletteColors(labels, palette) {
     return labels.map((label, i) => palette[i % palette.length]);
 }
 
@@ -645,7 +770,7 @@ function renderTopDomainBars({ items, loadingId, contentId, listId, emptyId, dis
     if (emptyEl) emptyEl.classList.add('d-none');
 
     const { labels, values, total } = prepareBarChartData(items, maxSlices);
-    const chartColors = getChartColors(labels, colors);
+    const chartColors = getPaletteColors(labels, colors);
     const maxVal = Math.max(...values, 1);
 
     clearNode(listEl);
@@ -697,17 +822,32 @@ function renderTopDomainBars({ items, loadingId, contentId, listId, emptyId, dis
     });
 }
 
+/**
+ * Create a full-width table row for empty/loading/error states.
+ * @param {Node|string} content - Element or text to display
+ * @param {string} [className=''] - Additional CSS class for the td
+ * @returns {HTMLTableRowElement}
+ */
+function _createLogStatusRow(content, className = '') {
+    const tr = document.createElement('tr');
+    tr.className = 'log-empty-row';
+    const td = document.createElement('td');
+    td.colSpan = 3;
+    if (className) td.className = className;
+    if (typeof content === 'string') {
+        td.textContent = content;
+    } else {
+        td.appendChild(content);
+    }
+    tr.appendChild(td);
+    return tr;
+}
+
 function showLogsLoadingState() {
     const tbody = document.getElementById('log-body');
     if (!tbody) return;
 
     clearNode(tbody);
-    const tr = document.createElement('tr');
-    tr.className = 'log-empty-row';
-    const td = document.createElement('td');
-    td.colSpan = 3;
-    td.className = 'py-5';
-
     const wrap = document.createElement('div');
     wrap.className = 'd-flex justify-content-center align-items-center';
 
@@ -721,9 +861,7 @@ function showLogsLoadingState() {
 
     spinner.appendChild(hidden);
     wrap.appendChild(spinner);
-    td.appendChild(wrap);
-    tr.appendChild(td);
-    tbody.appendChild(tr);
+    tbody.appendChild(_createLogStatusRow(wrap, 'py-5'));
 }
 
 async function loadLogsOnly(showLoading = true) {
@@ -743,12 +881,11 @@ async function loadLogsOnly(showLoading = true) {
         if (showLoading) {
             showLogsLoadingState();
         }
-        const clientIps = getSelectedPeerClientIps();
-        const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
+        const clientIpsParam = _buildClientIpsParam();
         const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}${clientIpsParam}`, null, { signal: _pageAbort.signal });
-        // IMPORTANT: Backend should omit client field for non-admins in the API response.
-        // This client-side stripping is cosmetic only - data already sent over the wire.
-        // Fix: GET /api/dns/logs should check user.is_admin before including client IPs.
+        // NOTE: Backend already masks client/client_name to "*****" for non-admins
+        // (see dns.py dns_logs: `if is_admin else masked`). The spread below is kept
+        // as a defence-in-depth guard against accidental backend regressions.
         // PERF: Preprocess client IP to avoid repeated regex/toLowerCase in render
         const newData = (data.queries || []).map(q => {
             const base = isAdmin ? q : { ...q, client: undefined };
@@ -778,6 +915,7 @@ async function loadLogsOnly(showLoading = true) {
         const prevRendered = _renderedCount;
 
         _logData = newData;
+        _logDataVersion += 1;
         _renderedCount = 0;
         renderLogs();
 
@@ -802,19 +940,13 @@ async function loadLogsOnly(showLoading = true) {
             void restoreScrollAsync();
         }
     } catch (e) {
+        if (isAbortError(e)) return;
         console.error('Failed to load logs:', e);
         if (showLoading) {
             const tbody = document.getElementById('log-body');
             if (!tbody) return;
             clearNode(tbody);
-            const tr = document.createElement('tr');
-            tr.className = 'log-empty-row';
-            const td = document.createElement('td');
-            td.colSpan = 3;
-            td.className = 'text-center text-danger';
-            td.textContent = 'Failed to load logs';
-            tr.appendChild(td);
-            tbody.appendChild(tr);
+            tbody.appendChild(_createLogStatusRow('Failed to load logs', 'text-center text-danger'));
         }
     } finally {
         _logsLoadInProgress = false;
@@ -898,7 +1030,9 @@ async function loadPeers() {
         const exists = Array.from(peerFilter.options).some(opt => opt.value === previousValue);
         peerFilter.value = exists ? previousValue : 'all';
     } catch (e) {
-        console.error('Failed to load peers:', e);
+        if (!isAbortError(e)) {
+            console.error('Failed to load peers:', e);
+        }
     }
 }
 
@@ -920,7 +1054,7 @@ function renderLogs(append = false) {
     if (!append) {
         _renderedCount = 0;
         // PERF: Only recompute filter if inputs changed
-        const filterKey = `${filter}|${peerFilter}|${search}|${_peerMapVersion}`;
+        const filterKey = `${filter}|${peerFilter}|${search}|${_peerMapVersion}|${_logDataVersion}`;
         if (filterKey !== _lastFilterKey) {
             _filteredData = _logData.filter(q => {
                 if (filter === 'blocked' && !q.blocked) return false;
@@ -944,14 +1078,7 @@ function renderLogs(append = false) {
 
         // Show empty message only on initial render
         if (!_filteredData.length) {
-            const tr = document.createElement('tr');
-            tr.className = 'log-empty-row';
-            const td = document.createElement('td');
-            td.colSpan = 3;
-            td.className = 'log-empty-cell';
-            td.appendChild(chartEmptyState());
-            tr.appendChild(td);
-            tbody.appendChild(tr);
+            tbody.appendChild(_createLogStatusRow(chartEmptyState(), 'log-empty-cell'));
             return;
         }
     }
@@ -1017,7 +1144,7 @@ function renderLogs(append = false) {
         const clientInfo = document.createElement('span');
         clientInfo.className = 'text-muted log-domain-client';
         if (!isAdmin) {
-            // NOTE: Cosmetic masking only – backend should omit sensitive fields for non-admins
+            // NOTE: Backend already sends masked values; this is defence-in-depth
             clientInfo.textContent = `***** (*****)`;
         } else {
             clientInfo.textContent = peerName ? `${peerName} (${_extractClientIp(q.client)})` : (q.client || '');
@@ -1062,11 +1189,10 @@ function queueLogAutoFill() {
     _logAutoFillQueued = true;
     requestAnimationFrame(() => {
         _logAutoFillQueued = false;
-        const currentLogContainer = document.getElementById('log-table-wrap');
-        if (!currentLogContainer) return;
+        if (!logContainer.isConnected) return;
 
         if (
-            currentLogContainer.scrollHeight <= currentLogContainer.clientHeight + 1 &&
+            logContainer.scrollHeight <= logContainer.clientHeight + 1 &&
             _renderedCount < _filteredData.length
         ) {
             loadMoreLogs();
@@ -1090,6 +1216,7 @@ function updateAdblockerButton(enabled, disabledUntil = 0) {
 
     // If state changed, re-render Top Blocked Domains and Blockrate Trend
     if (wasEnabled !== enabled) {
+        applyDnsVisibilityState();
         void loadTopDomains();
         void loadTrend();
     }
@@ -1157,6 +1284,7 @@ async function loadAdblockerStatus() {
         const data = await api('GET', '/api/dns/adblocker/status', null, { signal: _pageAbort.signal });
         updateAdblockerButton(data.enabled, data.disabled_until || 0);
     } catch (e) {
+        if (isAbortError(e)) return;
         console.error('Failed to load adblocker status:', e);
     }
 }
@@ -1175,14 +1303,13 @@ async function setAdblockerMode(mode) {
         updateAdblockerButton(data.enabled, data.disabled_until || 0);
         wbToast(data.enabled ? 'Ad-Blocker enabled' : 'Ad-Blocker disabled', 'success');
         await loadStats();
-
-        // Close dropdown after selection
-        const dropdown = bootstrap.Dropdown.getInstance(btn);
-        if (dropdown) dropdown.hide();
     } catch (e) {
         wbToast('Failed to update Ad-Blocker: ' + e.message, 'danger');
     } finally {
         if (btn && isAdmin) btn.disabled = false;
+        // Always close dropdown (even on error, to avoid stale open state)
+        const dropdown = bootstrap.Dropdown.getInstance(btn);
+        if (dropdown) dropdown.hide();
     }
 }
 
@@ -1211,7 +1338,8 @@ const _refreshScheduler = new window.WBShared.RefreshScheduler({
         const fastOk = statsOk || logsOk;
 
         if (Date.now() - _lastSlowPoll > SLOW_POLL_INTERVAL) {
-            _lastSlowPoll = Date.now();
+            const now = Date.now();
+            _lastSlowPoll = now;
             const slowResults = await Promise.allSettled([loadTopDomains(), loadTrend(), loadPeers()]);
             const slowOk = slowResults.some(r => r.status === 'fulfilled');
             return fastOk || slowOk;
@@ -1288,6 +1416,8 @@ window.addEventListener('pagehide', () => {
     }
     _logsLoadPending = false;
     _logsLoadPendingShowLoading = false;
+    // Reset render-state flags so bfcache restoration works correctly
+    _isInitialTopDomainsRender = true;
     // Abort all in-flight API requests
     _pageAbort.abort();
 }, { once: true });
@@ -1420,6 +1550,8 @@ if (logSearchInput) {
     // Only filter existing data on search (debounced)
     logSearchInput.addEventListener('input', debouncedRenderLogs);
 }
+
+applyDnsVisibilityState();
 
 
 // Initial load

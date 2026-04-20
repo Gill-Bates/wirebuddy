@@ -1,0 +1,37 @@
+{# Onboarding Modal Fragment - loaded on demand #}
+<div class="modal fade" id="wbOnboardingModal" tabindex="-1" aria-labelledby="wbOnboardingTitle" aria-modal="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header border-0 pb-0">
+                <h4 class="modal-title" id="wbOnboardingTitle">
+                    <span class="material-icons align-middle text-primary me-2 wb-onboarding-icon">rocket_launch</span>
+                    Welcome to WireBuddy!
+                </h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body pt-2">
+                <p class="text-muted mb-4">Follow these steps to set up your WireGuard VPN server:</p>
+                <div class="d-flex flex-column gap-3">
+                    {% for step in onboarding_steps %}
+                    <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
+                        <span class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center wb-onboarding-step-badge">{{ loop.index }}</span>
+                        <div>
+                            <strong>{{ step['title'] | e }}{% if step['show_default_badge'] %} <span class="badge bg-success-subtle text-success small">Enabled by Default</span>{% endif %}</strong>
+                            <p class="text-muted small mb-0">{{ step['body_pre'] | e }}<a href="{{ step['href'] | e }}">{{ step['link_label'] | e }}</a>{{ step['body_post'] | e }}</p>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="modal-footer border-0 pt-0 justify-content-between">
+                <div class="form-check">
+                    {# Checkbox state is read by onboarding.js on modal hide.
+                       If checked, localStorage is updated to dismiss the modal permanently. #}
+                    <input class="form-check-input" type="checkbox" id="wbOnboardingDismiss">
+                    <label class="form-check-label text-muted small" for="wbOnboardingDismiss">Don't show again</label>
+                </div>
+                <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Got it!</button>
+            </div>
+        </div>
+    </div>
+</div>

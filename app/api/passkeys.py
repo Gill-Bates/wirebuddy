@@ -8,11 +8,14 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import logging
 import os
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -30,7 +33,6 @@ from ..db.sqlite_passkeys import (
 	delete_passkey,
 	get_credential_ids_for_user,
 	get_passkey_by_credential_id,
-	get_passkey_by_id,
 	get_passkeys_for_user,
 	update_passkey_sign_count,
 )
@@ -64,6 +66,7 @@ _log = logging.getLogger(__name__)
 router = APIRouter(tags=["passkeys"])
 
 _AUTH_COOKIE = "auth_token"
+_RP_ID_OVERRIDE = os.environ.get("PASSKEY_RP_ID")
 
 
 def _get_rp_id(request: Request) -> str:
@@ -72,6 +75,8 @@ def _get_rp_id(request: Request) -> str:
 	For development with localhost, use 'localhost'.
 	For production, use the domain without port.
 	"""
+	if _RP_ID_OVERRIDE:
+		return _RP_ID_OVERRIDE
 	host = request.headers.get("host", "localhost")
 	# Strip port if present
 	if ":" in host:
@@ -89,6 +94,61 @@ def _get_origin(request: Request) -> str:
 def _get_rp_name() -> str:
 	"""Get the Relying Party name."""
 	return os.environ.get("PASSKEY_RP_NAME", "WireBuddy")
+
+
+def _check_ip_lockout(conn: sqlite3.Connection, client_ip: str) -> None:
+	"""Raise HTTP 429 when an IP is currently locked out."""
+	is_locked, seconds_remaining = is_ip_locked(conn, client_ip)
+	if is_locked:
+		raise HTTPException(
+			status_code=429,
+			detail="Too many failed attempts. Please try again later.",
+			headers={"Retry-After": str(seconds_remaining)},
+		)
+
+
+def _parse_client_data(credential: dict[str, Any]) -> dict[str, Any]:
+	"""Decode and parse WebAuthn clientDataJSON."""
+	raw = credential.get("response", {}).get("clientDataJSON", "")
+	if not raw or not isinstance(raw, str):
+		raise ValueError("Missing clientDataJSON")
+
+	padding = (-len(raw)) % 4
+	if padding:
+		raw += "=" * padding
+
+	try:
+		decoded = base64.urlsafe_b64decode(raw.encode("ascii"))
+		client_data = json.loads(decoded)
+	except (binascii.Error, UnicodeEncodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+		raise ValueError("Malformed clientDataJSON") from exc
+
+	if not isinstance(client_data, dict):
+		raise ValueError("Invalid clientDataJSON payload")
+	return client_data
+
+
+def _parse_transports(raw: str | None) -> list[str] | None:
+	"""Safely parse stored transports JSON."""
+	if not raw:
+		return None
+	try:
+		parsed = json.loads(raw)
+	except (json.JSONDecodeError, TypeError):
+		return None
+	if not isinstance(parsed, list):
+		return None
+	return [t for t in parsed if isinstance(t, str)]
+
+
+def _serialize_passkey_row(row: sqlite3.Row) -> dict[str, Any]:
+	"""Convert passkey row to response payload."""
+	return {
+		"id": row["id"],
+		"device_name": row["device_name"],
+		"created_at": row["created_at"],
+		"transports": _parse_transports(row["transports"]),
+	}
 
 
 # ---------------------------------------------------------------------------
@@ -175,14 +235,7 @@ def passkey_register_finish(
 
 	# Extract challenge from credential response
 	try:
-		client_data_json = payload.credential.get("response", {}).get("clientDataJSON", "")
-		import base64
-		import json
-		# clientDataJSON is base64url encoded
-		padding = 4 - len(client_data_json) % 4
-		if padding != 4:
-			client_data_json += "=" * padding
-		client_data = json.loads(base64.urlsafe_b64decode(client_data_json))
+		client_data = _parse_client_data(payload.credential)
 		challenge = client_data.get("challenge", "")
 	except Exception as e:
 		_log.warning("PASSKEY_REGISTER_FINISH invalid clientDataJSON: %s", e)
@@ -234,12 +287,13 @@ def passkey_register_finish(
 	)
 
 	# Complete onboarding if passkey_pending was set (admin-initiated setup)
-	if user["passkey_pending"] and not user["passkey_enabled"]:
+	if user["passkey_pending"]:
 		clear_passkey_onboarding(conn, user["id"])
 		_log.info("PASSKEY_ONBOARDING_COMPLETE user_id=%s", user["id"])
-	elif not user["otp_enabled"]:
-		# Regular passkey registration (user-initiated): enable passkey auth
-		update_user_auth_method(conn, user["id"], "passkey", passkey_enabled=True)
+	else:
+		# User-initiated registration: enable passkeys, keep MFA auth mode if OTP is enabled.
+		auth_method = "password_mfa" if user["otp_enabled"] else "passkey"
+		update_user_auth_method(conn, user["id"], auth_method, passkey_enabled=True)
 
 	_log.info(
 		"PASSKEY_REGISTER_FINISH success user_id=%s passkey_id=%s device=%s",
@@ -263,7 +317,7 @@ def passkey_register_finish(
 @limiter.limit(RATE_LIMIT_AUTH)
 def passkey_login_start(
 	request: Request,
-	payload: PasskeyLoginStartRequest = None,
+	payload: PasskeyLoginStartRequest | None = None,
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Start passkey authentication.
@@ -277,13 +331,7 @@ def passkey_login_start(
 	client_ip = _get_client_ip(request)
 
 	# Check for lockout
-	is_locked, seconds_remaining = is_ip_locked(conn, client_ip)
-	if is_locked:
-		raise HTTPException(
-			status_code=429,
-			detail="Too many failed attempts. Please try again later.",
-			headers={"Retry-After": str(seconds_remaining)},
-		)
+	_check_ip_lockout(conn, client_ip)
 
 	rp_id = _get_rp_id(request)
 	user_id = None
@@ -332,24 +380,12 @@ def passkey_login_finish(
 	origin = _get_origin(request)
 
 	# Check for lockout
-	is_locked, seconds_remaining = is_ip_locked(conn, client_ip)
-	if is_locked:
-		raise HTTPException(
-			status_code=429,
-			detail="Too many failed attempts. Please try again later.",
-			headers={"Retry-After": str(seconds_remaining)},
-		)
+	_check_ip_lockout(conn, client_ip)
 
 	# Extract credential ID and challenge from response
 	try:
 		credential_id = payload.credential.get("id", "")
-		client_data_json = payload.credential.get("response", {}).get("clientDataJSON", "")
-		import base64
-		import json
-		padding = 4 - len(client_data_json) % 4
-		if padding != 4:
-			client_data_json += "=" * padding
-		client_data = json.loads(base64.urlsafe_b64decode(client_data_json))
+		client_data = _parse_client_data(payload.credential)
 		challenge = client_data.get("challenge", "")
 	except Exception as e:
 		_log.warning("PASSKEY_LOGIN_FINISH invalid clientDataJSON: %s", e)
@@ -389,7 +425,14 @@ def passkey_login_finish(
 	# Check user is active
 	if not passkey_row["is_active"]:
 		_log.info("PASSKEY_LOGIN_FINISH inactive user=%s ip=%s", username, client_ip)
+		record_failed_login(conn, client_ip)
 		raise HTTPException(status_code=403, detail="Account disabled")
+
+	# Check passkey authentication is enabled for user
+	if not passkey_row["passkey_enabled"]:
+		_log.warning("PASSKEY_LOGIN_FINISH passkey disabled for user=%s ip=%s", username, client_ip)
+		record_failed_login(conn, client_ip)
+		raise HTTPException(status_code=401, detail="Passkey authentication not enabled for this account")
 
 	# Verify the authentication response
 	try:
@@ -441,9 +484,7 @@ def passkey_login_finish(
 
 	return ok_response(
 		data={
-			"token": token,
 			"expires_at": expires_at,
-			"token_type": "Bearer",
 		}
 	)
 
@@ -460,25 +501,7 @@ def list_passkeys(
 ):
 	"""List all passkeys for the current user."""
 	rows = get_passkeys_for_user(conn, user["id"])
-
-	passkeys = []
-	for row in rows:
-		transports = None
-		if row["transports"]:
-			import json
-			try:
-				transports = json.loads(row["transports"])
-			except (json.JSONDecodeError, TypeError):
-				transports = None
-
-		passkeys.append({
-			"id": row["id"],
-			"device_name": row["device_name"],
-			"created_at": row["created_at"],
-			"transports": transports,
-		})
-
-	return ok_response(data=passkeys)
+	return ok_response(data=[_serialize_passkey_row(row) for row in rows])
 
 
 @router.delete("/{passkey_id}")
@@ -488,14 +511,8 @@ def delete_passkey_endpoint(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Delete a passkey belonging to the current user."""
-	passkey = get_passkey_by_id(conn, passkey_id)
-	if not passkey:
+	if not delete_passkey(conn, passkey_id, user["id"]):
 		raise HTTPException(status_code=404, detail="Passkey not found")
-
-	if passkey["user_id"] != user["id"]:
-		raise HTTPException(status_code=403, detail="Cannot delete another user's passkey")
-
-	delete_passkey(conn, passkey_id, user["id"])
 
 	# Check if user has any remaining passkeys
 	remaining = count_user_passkeys(conn, user["id"])
@@ -552,25 +569,7 @@ def list_user_passkeys_admin(
 		raise HTTPException(status_code=404, detail="User not found")
 
 	rows = get_passkeys_for_user(conn, user_id)
-
-	passkeys = []
-	for row in rows:
-		transports = None
-		if row["transports"]:
-			import json
-			try:
-				transports = json.loads(row["transports"])
-			except (json.JSONDecodeError, TypeError):
-				transports = None
-
-		passkeys.append({
-			"id": row["id"],
-			"device_name": row["device_name"],
-			"created_at": row["created_at"],
-			"transports": transports,
-		})
-
-	return ok_response(data=passkeys)
+	return ok_response(data=[_serialize_passkey_row(row) for row in rows])
 
 
 @router.get("/check")

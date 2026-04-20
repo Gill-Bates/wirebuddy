@@ -31,6 +31,12 @@
     --wb-modal-backdrop-bg: rgba(15, 23, 42, 0.6);
     --wb-modal-backdrop-blur: 8px;
     --wb-modal-backdrop-saturate: 0.8;
+    /* Button and interaction defaults */
+    --wb-border-default: #ced4da;
+    --wb-border-hover: #adb5bd;
+    --wb-border-subtle-light: #e5e7eb;
+    --wb-hover-overlay-light: rgba(0, 0, 0, 0.04);
+    --wb-active-overlay-light: rgba(0, 0, 0, 0.07);
 }
 
 [data-bs-theme="dark"] {
@@ -51,6 +57,12 @@
     --wb-accent-red-strong: #ff8aa5;
     --wb-info-strong: #6edff6;
     --wb-danger-strong: #ff6384;
+    /* Dark mode button defaults */
+    --wb-border-default: #495057;
+    --wb-border-hover: #6c757d;
+    --wb-border-subtle-light: #374151;
+    --wb-hover-overlay-light: rgba(255, 255, 255, 0.06);
+    --wb-active-overlay-light: rgba(255, 255, 255, 0.1);
 }
 
 /* -----------------------------------------------------------------------------
@@ -166,13 +178,6 @@ html.login-page body {
     overflow-y: auto;
 }
 
-/* Ensure scrollability on mobile when keyboard appears */
-@media (max-width: 767.98px) {
-    html.login-page body {
-        overflow-y: auto;
-    }
-}
-
 html.login-page[data-bs-theme="light"] body {
     background: linear-gradient(135deg, #88171a 0%, #b73639 100%);
 }
@@ -254,20 +259,20 @@ html.login-page[data-bs-theme="dark"] .card-body,
     background-color: var(--wb-bg-surface);
 }
 
-/* Dark mode tables within cards */
-html:not(.login-page)[data-bs-theme="dark"] .card .table {
-    --bs-table-bg: var(--bs-body-bg);
+/* Dark mode tables within cards - shared striped/hover styles */
+[data-bs-theme="dark"] .card .table {
     --bs-table-striped-bg: rgba(255, 255, 255, 0.02);
     --bs-table-hover-bg: rgba(255, 255, 255, 0.04);
     color: var(--bs-body-color);
 }
 
+html:not(.login-page)[data-bs-theme="dark"] .card .table {
+    --bs-table-bg: var(--bs-body-bg);
+}
+
 html.login-page[data-bs-theme="dark"] .card .table,
 [data-bs-theme="dark"] .login-card .table {
     --bs-table-bg: var(--wb-bg-surface);
-    --bs-table-striped-bg: rgba(255, 255, 255, 0.02);
-    --bs-table-hover-bg: rgba(255, 255, 255, 0.04);
-    color: var(--bs-body-color);
 }
 
 /* Dark mode table-danger (blocked DNS queries) */
@@ -344,7 +349,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
    ----------------------------------------------------------------------------- */
 .wb-btn {
     background-color: transparent;
-    border: 1px solid #ced4da;
+    border: 1px solid var(--wb-border-default);
     border-radius: var(--wb-radius-md);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
     color: var(--bs-body-color);
@@ -352,8 +357,8 @@ html.login-page[data-bs-theme="dark"] .card .table,
 }
 
 .wb-btn:hover {
-    background-color: rgba(0, 0, 0, 0.04);
-    border-color: #adb5bd;
+    background-color: var(--wb-hover-overlay-light);
+    border-color: var(--wb-border-hover);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
     color: var(--bs-body-color);
 }
@@ -365,26 +370,26 @@ html.login-page[data-bs-theme="dark"] .card .table,
 }
 
 .wb-btn:active {
-    background-color: rgba(0, 0, 0, 0.07);
+    background-color: var(--wb-active-overlay-light);
     box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 
 /* Dark mode base for WireBuddy buttons */
 [data-bs-theme="dark"] .wb-btn {
-    border-color: #495057;
+    border-color: var(--wb-border-default);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
     color: var(--wb-text-secondary);
 }
 
 [data-bs-theme="dark"] .wb-btn:hover {
-    background-color: rgba(255, 255, 255, 0.06);
-    border-color: #6c757d;
+    background-color: var(--wb-hover-overlay-light);
+    border-color: var(--wb-border-hover);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
     color: #f8f9fa;
 }
 
 [data-bs-theme="dark"] .wb-btn:active {
-    background-color: rgba(255, 255, 255, 0.1);
+    background-color: var(--wb-active-overlay-light);
 }
 
 /* =============================================================================
@@ -402,6 +407,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
 
 /* ── Primary action buttons (filled: login, create, save, modal OK) ───────── */
 .btn.btn-primary {
+    --wb-btn-focus-color: var(--wb-primary);
     --bs-btn-bg: var(--wb-primary);
     --bs-btn-border-color: var(--wb-primary);
     --bs-btn-color: #fff;
@@ -422,14 +428,9 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(var(--bs-primary-rgb), 0.3);
 }
 
-.btn.btn-primary:focus,
-.btn.btn-primary:focus-visible {
-    outline: 2px solid var(--wb-primary);
-    outline-offset: 2px;
-}
-
 /* ── Danger buttons (filled) ───────────────────────────────────────────────── */
 .btn.btn-danger {
+    --wb-btn-focus-color: var(--wb-danger);
     --bs-btn-bg: var(--wb-danger);
     --bs-btn-border-color: var(--wb-danger);
     --bs-btn-color: #fff;
@@ -447,14 +448,9 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(220, 53, 69, 0.3);
 }
 
-.btn.btn-danger:focus,
-.btn.btn-danger:focus-visible {
-    outline: 2px solid var(--wb-danger);
-    outline-offset: 2px;
-}
-
 /* ── Outline danger buttons ────────────────────────────────────────────────── */
 .btn.btn-outline-danger {
+    --wb-btn-focus-color: var(--wb-danger);
     --bs-btn-bg: transparent;
     --bs-btn-border-color: var(--wb-danger);
     --bs-btn-color: var(--wb-danger);
@@ -472,79 +468,20 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(220, 53, 69, 0.25);
 }
 
-.btn.btn-outline-danger:focus,
-.btn.btn-outline-danger:focus-visible {
-    outline: 2px solid var(--wb-danger);
-    outline-offset: 2px;
-}
-
 /* ── Secondary / cancel modal buttons ──────────────────────────────────────── */
-.btn.btn-secondary {
+.btn.btn-secondary,
+.btn.btn-outline-secondary {
+    --wb-btn-focus-color: #6c757d;
     --bs-btn-bg: transparent;
-    --bs-btn-border-color: #ced4da;
+    --bs-btn-border-color: var(--wb-border-default);
     --bs-btn-color: var(--bs-body-color);
-    --bs-btn-hover-bg: rgba(0, 0, 0, 0.04);
-    --bs-btn-hover-border-color: #adb5bd;
+    --bs-btn-hover-bg: var(--wb-hover-overlay-light);
+    --bs-btn-hover-border-color: var(--wb-border-hover);
     --bs-btn-hover-color: var(--bs-body-color);
-    --bs-btn-active-bg: rgba(0, 0, 0, 0.07);
-    --bs-btn-active-border-color: #adb5bd;
+    --bs-btn-active-bg: var(--wb-active-overlay-light);
+    --bs-btn-active-border-color: var(--wb-border-hover);
     --bs-btn-active-color: var(--bs-body-color);
     --bs-btn-focus-shadow-rgb: 108, 117, 125;
-}
-
-.btn.btn-secondary:focus,
-.btn.btn-secondary:focus-visible {
-    outline: 2px solid #6c757d;
-    outline-offset: 2px;
-    box-shadow: 0 0 0 3px rgba(108, 117, 125, 0.25);
-}
-
-[data-bs-theme="dark"] .btn.btn-secondary {
-    --bs-btn-border-color: #495057;
-    --bs-btn-color: var(--wb-text-secondary);
-    --bs-btn-hover-bg: rgba(255, 255, 255, 0.08);
-    --bs-btn-hover-border-color: #6c757d;
-    --bs-btn-hover-color: #f8f9fa;
-    --bs-btn-active-bg: rgba(255, 255, 255, 0.12);
-    --bs-btn-active-border-color: #6c757d;
-    --bs-btn-active-color: #f8f9fa;
-}
-
-/* ── Outline buttons (ghost style with semantic colors) ───────────────────── */
-.btn.btn-outline-primary {
-    --bs-btn-bg: transparent;
-    --bs-btn-border-color: var(--wb-primary);
-    --bs-btn-color: var(--wb-primary);
-    --bs-btn-hover-bg: rgba(var(--bs-primary-rgb), 0.08);
-    --bs-btn-hover-border-color: var(--wb-primary-hover);
-    --bs-btn-hover-color: var(--wb-primary-hover);
-    --bs-btn-active-bg: rgba(var(--bs-primary-rgb), 0.12);
-    --bs-btn-active-border-color: var(--wb-primary-hover);
-    --bs-btn-active-color: var(--wb-primary-hover);
-    box-shadow: 0 1px 3px rgba(var(--bs-primary-rgb), 0.1);
-}
-
-.btn.btn-outline-primary:hover {
-    box-shadow: 0 2px 6px rgba(var(--bs-primary-rgb), 0.15);
-}
-
-.btn.btn-outline-primary:focus,
-.btn.btn-outline-primary:focus-visible {
-    outline: 2px solid var(--wb-primary);
-    outline-offset: 2px;
-    box-shadow: 0 0 0 3px rgba(var(--bs-primary-rgb), 0.25);
-}
-
-.btn.btn-outline-secondary {
-    --bs-btn-bg: transparent;
-    --bs-btn-border-color: #ced4da;
-    --bs-btn-color: var(--bs-body-color);
-    --bs-btn-hover-bg: rgba(0, 0, 0, 0.04);
-    --bs-btn-hover-border-color: #adb5bd;
-    --bs-btn-hover-color: var(--bs-body-color);
-    --bs-btn-active-bg: rgba(0, 0, 0, 0.07);
-    --bs-btn-active-border-color: #adb5bd;
-    --bs-btn-active-color: var(--bs-body-color);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
@@ -552,14 +489,8 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
 }
 
-.btn.btn-outline-secondary:focus,
-.btn.btn-outline-secondary:focus-visible {
-    outline: 2px solid #6c757d;
-    outline-offset: 2px;
-    box-shadow: 0 0 0 3px rgba(108, 117, 125, 0.25);
-}
-
 .btn.btn-outline-info {
+    --wb-btn-focus-color: var(--wb-info);
     --bs-btn-bg: transparent;
     --bs-btn-border-color: var(--wb-info);
     --bs-btn-color: var(--wb-info);
@@ -576,14 +507,8 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(13, 202, 240, 0.15);
 }
 
-.btn.btn-outline-info:focus,
-.btn.btn-outline-info:focus-visible {
-    outline: 2px solid var(--wb-info);
-    outline-offset: 2px;
-    box-shadow: 0 0 0 3px rgba(13, 202, 240, 0.25);
-}
-
 .btn.btn-outline-success {
+    --wb-btn-focus-color: var(--wb-success);
     --bs-btn-bg: transparent;
     --bs-btn-border-color: var(--wb-success);
     --bs-btn-color: var(--wb-success);
@@ -600,14 +525,8 @@ html.login-page[data-bs-theme="dark"] .card .table,
     box-shadow: 0 2px 6px rgba(25, 135, 84, 0.15);
 }
 
-.btn.btn-outline-success:focus,
-.btn.btn-outline-success:focus-visible {
-    outline: 2px solid var(--wb-success);
-    outline-offset: 2px;
-    box-shadow: 0 0 0 3px rgba(25, 135, 84, 0.25);
-}
-
 .btn.btn-outline-warning {
+    --wb-btn-focus-color: var(--wb-warning);
     --bs-btn-bg: transparent;
     --bs-btn-border-color: var(--wb-warning);
     --bs-btn-color: #856404;
@@ -622,13 +541,6 @@ html.login-page[data-bs-theme="dark"] .card .table,
 
 .btn.btn-outline-warning:hover {
     box-shadow: 0 2px 6px rgba(255, 193, 7, 0.15);
-}
-
-.btn.btn-outline-warning:focus,
-.btn.btn-outline-warning:focus-visible {
-    outline: 2px solid var(--wb-warning);
-    outline-offset: 2px;
-    box-shadow: 0 0 0 3px rgba(255, 193, 7, 0.25);
 }
 
 /* Dark mode adjustments for outline buttons */
@@ -945,8 +857,8 @@ html.login-page[data-bs-theme="dark"] .card .table,
    ----------------------------------------------------------------------------- */
 .sidebar {
     width: 240px;
-    background-color: #f8f9fa;
-    border-right: 1px solid #e5e7eb;
+    background-color: var(--wb-bg-soft);
+    border-right: 1px solid var(--wb-border-subtle-light);
     flex-shrink: 0;
     position: sticky;
     top: 0;
@@ -968,7 +880,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
 }
 
 .sidebar .nav-link:hover {
-    background-color: #e5e7eb;
+    background-color: var(--wb-border-subtle-light);
 }
 
 [data-bs-theme="dark"] .sidebar .nav-link:hover {
@@ -1021,7 +933,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
         top: 0;
         bottom: var(--wb-footer-height);
         width: 1px;
-        background-color: #e5e7eb;
+        background-color: var(--wb-border-subtle-light);
         pointer-events: none;
         z-index: 1;
     }
@@ -1417,6 +1329,27 @@ body.wb-onboarding .sidebar {
 
 body.wb-onboarding .modal-backdrop.show {
     background-color: rgba(15, 23, 42, 0.6);
+}
+
+/* Center non-scrollable modals vertically while preserving scrollable dialog behavior. */
+.modal:not(.modal-dialog-scrollable) .modal-dialog {
+    margin-top: auto;
+    margin-bottom: auto;
+}
+
+/* Modal and onboarding utility classes used by base template components. */
+.wb-modal-icon {
+    margin-top: 2px;
+}
+
+.wb-onboarding-step-badge {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+}
+
+.wb-onboarding-icon {
+    font-size: 28px;
 }
 
 .spinner-border {

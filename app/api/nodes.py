@@ -9,12 +9,16 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Coroutine
+from datetime import datetime, timedelta, timezone
 import ipaddress
 import json
 import logging
 import re
 import sqlite3
+import unicodedata
 import uuid
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -23,10 +27,22 @@ from pydantic import BaseModel, Field, field_validator
 
 from ..api.auth import require_admin
 from ..api.response import ok_response
+from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
+from ..api.frontend_shared import (
+	extract_geo_fields,
+	format_last_seen_label,
+	lookup_ip_cached,
+	parse_last_seen_epoch,
+	parse_node_metadata as _parse_node_metadata,
+	resolve_node_geo_ip,
+)
+from ..api import nodes_sync
+from ..db import tsdb
 from ..node.notifier import notify_node_removed
+from ..node import notifier as node_notifier
 from ..db.sqlite_nodes import (
 	create_node,
-	delete_node,
+	delete_node_with_unassigned_count,
 	get_all_nodes,
 	get_node,
 	get_node_by_fqdn,
@@ -37,11 +53,15 @@ from ..db.sqlite_nodes import (
 	update_node,
 	update_node_api_secret,
 )
+from ..db.sqlite_peers import get_peer_by_id
 from ..db.sqlite_settings import get_setting
-from ..utils.config import get_config
+from ..utils.config import get_config, WG_CONFIG_PATH
 from ..utils.crypto import hash_token
 from ..utils.deps import get_conn
 from ..utils.node_token import generate_enrollment_token
+from ..utils.tsdb_helpers import build_latest_by_node
+from .wireguard_config import sync_interface_config
+from .wireguard_utils import run_wg_command
 
 _log = logging.getLogger(__name__)
 _NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$")
@@ -52,6 +72,13 @@ _HOSTNAME_RE = re.compile(
 _NODE_STATUS_ONLINE = "online"
 _PENDING_COMMAND_RESTART = "restart"
 _PENDING_COMMAND_SPEEDTEST = "speedtest"
+_NODE_NAME_MAX_LEN = 64
+_FQDN_MAX_LEN = 253
+_PORT_MIN = 1
+_PORT_MAX = 65535
+_SPEEDTEST_STREAM_TIMEOUT_S = 150
+_SPEEDTEST_QUEUE_MAXSIZE = 32
+_SPEEDTEST_KEEPALIVE_INTERVAL_S = 15
 
 router = APIRouter(tags=["nodes"])
 
@@ -67,6 +94,8 @@ class _NodePayloadBase(BaseModel):
 	@field_validator("name", "fqdn", mode="before", check_fields=False)
 	@classmethod
 	def _strip_text_fields(cls, value: Any) -> Any:
+		# check_fields=False is intentional in this base class because fields
+		# are declared by subclasses (NodeCreate/NodeUpdate).
 		if isinstance(value, str):
 			return value.strip()
 		return value
@@ -95,6 +124,8 @@ class _NodePayloadBase(BaseModel):
 		except ValueError:
 			if ":" in raw:
 				raise ValueError("Colons are only allowed in IPv6 addresses; do not include a port")
+			if len(raw) > _FQDN_MAX_LEN:
+				raise ValueError(f"FQDN must not exceed {_FQDN_MAX_LEN} characters")
 			if ".." in raw or raw.startswith(".") or raw.endswith("."):
 				raise ValueError("Invalid FQDN format")
 			if _HOSTNAME_RE.fullmatch(raw) is None:
@@ -106,16 +137,16 @@ class _NodePayloadBase(BaseModel):
 
 class NodeCreate(_NodePayloadBase):
 	"""Payload for creating a new remote node."""
-	name: str = Field(..., min_length=1, max_length=64, description="Display name (e.g. 'Frankfurt')")
-	fqdn: str = Field(..., min_length=1, max_length=253, description="Public FQDN or IP address")
-	wg_port: int = Field(default=51820, ge=1, le=65535, description="WireGuard listen port")
+	name: str = Field(..., min_length=1, max_length=_NODE_NAME_MAX_LEN, description="Display name (e.g. 'Frankfurt')")
+	fqdn: str = Field(..., min_length=1, max_length=_FQDN_MAX_LEN, description="Public FQDN or IP address")
+	wg_port: int = Field(default=51820, ge=_PORT_MIN, le=_PORT_MAX, description="WireGuard listen port")
 
 
 class NodeUpdate(_NodePayloadBase):
 	"""Payload for updating a node."""
-	name: str | None = Field(None, min_length=1, max_length=64)
-	fqdn: str | None = Field(None, min_length=1, max_length=253)
-	wg_port: int | None = Field(None, ge=1, le=65535)
+	name: str | None = Field(None, min_length=1, max_length=_NODE_NAME_MAX_LEN)
+	fqdn: str | None = Field(None, min_length=1, max_length=_FQDN_MAX_LEN)
+	wg_port: int | None = Field(None, ge=_PORT_MIN, le=_PORT_MAX)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -123,24 +154,40 @@ class NodeUpdate(_NodePayloadBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _parse_node_metadata(value: Any, *, node_id: str) -> Any:
-	"""Return parsed node metadata when stored as JSON text."""
-	if value is None or value == "":
-		return {}
-	if not isinstance(value, str):
-		return value
-	try:
-		return json.loads(value)
-	except json.JSONDecodeError:
-		_log.warning("Node %s has invalid metadata JSON; returning empty dict", node_id)
-		return {}
+def _get_node_or_404(conn: sqlite3.Connection, node_id: str) -> sqlite3.Row:
+	"""Fetch a node row or raise HTTP 404."""
+	node = get_node(conn, node_id)
+	if not node:
+		raise HTTPException(status_code=404, detail="Node not found")
+	return node
+
+
+def _sanitize_host_chars(host: str) -> str:
+	"""Reject control characters in host string to prevent header injection."""
+	for ch in host:
+		cat = unicodedata.category(ch)
+		if cat.startswith("C") or ch in "\r\n\t":
+			raise ValueError(f"Invalid character in host: {ch!r}")
+	return host
+
+
+def _is_private_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+	"""Return True if addr is private/loopback/link-local/ULA (Python-version-safe)."""
+	if addr.is_private or addr.is_loopback or addr.is_link_local:
+		return True
+	# ULA (fc00::/7) — not marked as private in Python < 3.11
+	if isinstance(addr, ipaddress.IPv6Address):
+		return addr in ipaddress.ip_network("fc00::/7")
+	return False
 
 
 def _format_host_for_url(host: str) -> str:
 	"""Normalize a host for URL usage, adding IPv6 brackets when needed."""
-	clean = host.strip()
+	clean = _sanitize_host_chars(host.strip())
 	clean = re.sub(r"^https?://", "", clean, flags=re.IGNORECASE)
 	clean = clean.rstrip("/")
+	if any(ch in clean for ch in ("/", "?", "#", "@")):
+		raise ValueError("Host must not contain URL path, query, fragment, or credentials")
 
 	# Bracketed IPv6 with optional port: [::1] or [::1]:8443
 	if clean.startswith("["):
@@ -149,17 +196,16 @@ def _format_host_for_url(host: str) -> str:
 			inner = clean[1:end]
 			rest = clean[end + 1 :].strip()
 			if rest and re.fullmatch(r":\d{1,5}", rest):
-				# Drop user-supplied port; _get_master_url defines the canonical port
-				rest = ""
+				raise ValueError("Do not include a port in host settings")
 			if rest:
 				raise ValueError("Invalid bracketed IPv6 host")
 			clean = inner
 
 	# Unbracketed host: strip optional :port only for hostnames/IPv4
 	if clean.count(":") <= 1 and ":" in clean:
-		host_part, port_part = clean.rsplit(":", 1)
+		_host_part, port_part = clean.rsplit(":", 1)
 		if port_part.isdigit():
-			clean = host_part
+			raise ValueError("Do not include a port in host settings")
 
 	clean = clean.strip().strip("[]")
 	if not clean:
@@ -168,21 +214,38 @@ def _format_host_for_url(host: str) -> str:
 		addr = ipaddress.ip_address(clean)
 	except ValueError:
 		return clean
-	return f"[{addr.compressed}]" if addr.version == 6 else str(addr)
+	# Unwrap IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) before SSRF check
+	if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+		addr = addr.ipv4_mapped
+	if _is_private_ip(addr):
+		raise ValueError("Private/loopback addresses are not allowed as server FQDN")
+	return f"[{addr.compressed}]" if isinstance(addr, ipaddress.IPv6Address) else str(addr)
+
+
+def _is_valid_hostname_or_ip(value: str) -> bool:
+	"""Validate host token as RFC-like hostname or IPv4/IPv6 literal."""
+	clean = str(value or "").strip().strip("[]")
+	if not clean:
+		return False
+	try:
+		ipaddress.ip_address(clean)
+		return True
+	except ValueError:
+		return _HOSTNAME_RE.fullmatch(clean) is not None
 
 
 async def _send_node_command(
 	*,
 	node_id: str,
 	command: str,
-	notify_func,
+	notify_func: Callable[[str], Coroutine[Any, Any, int]],
 	conn: sqlite3.Connection,
 	user: sqlite3.Row,
 	action_label: str,
 	success_message: str,
 ) -> dict[str, Any]:
 	"""Send a node command via in-memory SSE or DB pending-command fallback."""
-	node = await asyncio.to_thread(get_node, conn, node_id)
+	node = get_node(conn, node_id)
 	if not node:
 		raise HTTPException(status_code=404, detail="Node not found")
 
@@ -201,7 +264,7 @@ async def _send_node_command(
 			node_id,
 		)
 		try:
-			stored = await asyncio.to_thread(set_node_pending_command, conn, node_id, command)
+			stored = set_node_pending_command(conn, node_id, command)
 		except Exception as exc:
 			_log.error("Failed to queue pending command '%s' for node=%s: %s", command, node_id, exc)
 			raise HTTPException(status_code=500, detail=f"Failed to queue {action_label.lower()} command") from None
@@ -242,24 +305,80 @@ def _get_master_url(conn: sqlite3.Connection) -> str:
 		port = int(port_raw)
 
 	# Omit port for HTTPS default
+	try:
+		normalized_host = _format_host_for_url(host)
+	except ValueError as exc:
+		raise HTTPException(status_code=409, detail=str(exc)) from None
+	if not _is_valid_hostname_or_ip(normalized_host):
+		raise HTTPException(
+			status_code=409,
+			detail="Server FQDN/IP in settings is invalid. Please update it in Settings.",
+		)
+
 	if port == 443:
-		return f"https://{_format_host_for_url(host)}"
-	return f"https://{_format_host_for_url(host)}:{port}"
+		return f"https://{normalized_host}"
+	return f"https://{normalized_host}:{port}"
 
 
-def _node_to_dict(row: sqlite3.Row, peer_count: int = 0) -> dict[str, Any]:
-	"""Convert a node Row to a serialisable dict (strip secret hash)."""
-	from datetime import datetime
-	from .frontend_pages import _resolve_node_geo_ip
-	from .frontend_shared import extract_geo_fields, format_last_seen_label, lookup_ip_cached
-	from ..node import notifier as node_notifier
-	
-	resolved_geo_ip = _resolve_node_geo_ip(row["fqdn"])
-	geo_fields = extract_geo_fields(lookup_ip_cached(resolved_geo_ip)) if resolved_geo_ip else {
-		"country_code": None,
-		"city": None,
-		"as_org": None,
+def _generate_node_token(
+	conn: sqlite3.Connection,
+	node_id: str,
+	node_name: str,
+) -> tuple[str, str]:
+	"""Generate an enrollment token and secret hash for a node.
+
+	Returns:
+		(enrollment_token, secret_hash)
+	"""
+	cfg = get_config()
+	master_url = _get_master_url(conn)
+	token, api_secret = generate_enrollment_token(
+		master_url=master_url,
+		node_id=node_id,
+		node_name=node_name,
+		secret_key=cfg.secret_key,
+	)
+	return token, hash_token(api_secret)
+
+
+def _get_latest_speedtests_by_node(
+	tsdb_dir: Path,
+	node_ids: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+	"""Return the latest recorded speedtest result for each requested node."""
+	since = datetime.now(timezone.utc) - timedelta(days=90)
+	try:
+		points = tsdb.query(
+			tsdb_dir,
+			peer_key=SPEEDTEST_TSDB_KEY,
+			metric=SPEEDTEST_TSDB_METRIC,
+			since=since,
+			limit=2000,
+			latest=True,
+		)
+	except Exception:
+		_log.warning("Failed to load speedtest data from TSDB", exc_info=True)
+		return {}
+
+	all_latest = build_latest_by_node(points)
+	requested_ids = {str(nid) for nid in node_ids} if node_ids is not None else None
+	return {
+		str(k): v
+		for k, v in all_latest.items()
+		if k is not None and (requested_ids is None or str(k) in requested_ids)
 	}
+
+
+def _node_to_dict(
+	row: sqlite3.Row,
+	peer_count: int = 0,
+	*,
+	last_speedtest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+	"""Convert a node Row to a serialisable dict (strip secret hash)."""
+
+	resolved_geo_ip = resolve_node_geo_ip(row["fqdn"])
+	geo_fields = extract_geo_fields(lookup_ip_cached(resolved_geo_ip) if resolved_geo_ip else None)
 	
 	# Extract version from metadata
 	node_version = None
@@ -270,22 +389,7 @@ def _node_to_dict(row: sqlite3.Row, peer_count: int = 0) -> dict[str, Any]:
 	# Convert last_seen datetime to formatted label
 	# Bug fix: naive datetimes (no tz suffix) are assumed to be UTC to avoid
 	# local-time misinterpretation on servers not running UTC.
-	last_seen_epoch = 0
-	if row["last_seen"]:
-		try:
-			from datetime import timezone as _tz
-			if isinstance(row["last_seen"], datetime):
-				ls = row["last_seen"]
-				if ls.tzinfo is None:
-					ls = ls.replace(tzinfo=_tz.utc)
-				last_seen_epoch = int(ls.timestamp())
-			elif isinstance(row["last_seen"], str):
-				dt = datetime.fromisoformat(row["last_seen"].replace("Z", "+00:00"))
-				if dt.tzinfo is None:
-					dt = dt.replace(tzinfo=_tz.utc)
-				last_seen_epoch = int(dt.timestamp())
-		except (ValueError, TypeError, AttributeError):
-			pass
+	last_seen_epoch = parse_last_seen_epoch(row["last_seen"])
 	last_seen_label = format_last_seen_label(last_seen_epoch)
 	
 	return {
@@ -306,8 +410,42 @@ def _node_to_dict(row: sqlite3.Row, peer_count: int = 0) -> dict[str, Any]:
 		"geo_city": geo_fields["city"],
 		"geo_as_org": geo_fields["as_org"],
 		"node_version": node_version,
-		"sse_connected": node_notifier.is_node_connected_sync(row["id"]),
+		"last_speedtest": last_speedtest,
+		"sse_connected": (
+			node_notifier.is_node_connected_sync(row["id"])
+			if row["status"] == _NODE_STATUS_ONLINE
+			else False
+		),
 	}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Uniqueness Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _assert_node_name_unique(
+	conn: sqlite3.Connection,
+	name: str,
+	*,
+	exclude_id: str | None = None,
+) -> None:
+	"""Raise HTTP 409 if a node with *name* already exists (excluding *exclude_id*)."""
+	existing = get_node_by_name(conn, name)
+	if existing and existing["id"] != exclude_id:
+		raise HTTPException(status_code=409, detail=f"Node name '{name}' already exists")
+
+
+def _assert_node_fqdn_unique(
+	conn: sqlite3.Connection,
+	fqdn: str,
+	*,
+	exclude_id: str | None = None,
+) -> None:
+	"""Raise HTTP 409 if a node with *fqdn* already exists (excluding *exclude_id*)."""
+	existing = get_node_by_fqdn(conn, fqdn)
+	if existing and existing["id"] != exclude_id:
+		raise HTTPException(status_code=409, detail=f"Node FQDN '{fqdn}' already exists")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -322,25 +460,12 @@ def create_node_endpoint(
 	user: sqlite3.Row = Depends(require_admin),
 ) -> dict[str, Any]:
 	"""Create a new remote node and return the one-time enrollment token."""
-	# Validate unique name
-	if get_node_by_name(conn, body.name):
-		raise HTTPException(status_code=409, detail=f"Node name '{body.name}' already exists")
+	# Validate unique name and FQDN before doing any work
+	_assert_node_name_unique(conn, body.name)
+	_assert_node_fqdn_unique(conn, body.fqdn)
 
-	# Validate unique FQDN
-	if get_node_by_fqdn(conn, body.fqdn):
-		raise HTTPException(status_code=409, detail=f"Node FQDN '{body.fqdn}' already exists")
-
-	cfg = get_config()
 	node_id = uuid.uuid4().hex
-	master_url = _get_master_url(conn)
-
-	token, api_secret = generate_enrollment_token(
-		master_url=master_url,
-		node_id=node_id,
-		node_name=body.name,
-		secret_key=cfg.secret_key,
-	)
-	secret_hash = hash_token(api_secret)
+	token, secret_hash = _generate_node_token(conn, node_id, body.name)
 
 	try:
 		create_node(conn, node_id, body.name, body.fqdn, body.wg_port, secret_hash)
@@ -363,11 +488,25 @@ def list_nodes(
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
 ) -> dict[str, Any]:
-	"""List all registered nodes with their status and peer counts."""
+	"""List all registered nodes with their status and peer counts.
+
+	NOTE: sync – FastAPI threadpools this handler. Contains TSDB file reads
+	(_get_latest_speedtests_by_node) and per-node GeoIP lookups (_node_to_dict).
+	If node count grows large, convert to async def + asyncio.to_thread.
+	"""
+	cfg = get_config()
 	nodes = get_all_nodes(conn)
 	counts = get_peers_count_by_node(conn)
+	latest_speedtests = _get_latest_speedtests_by_node(cfg.tsdb_dir, {str(n["id"]) for n in nodes})
 	return ok_response(
-		data=[_node_to_dict(n, counts.get(n["id"], 0)) for n in nodes],
+		data=[
+			_node_to_dict(
+				n,
+				counts.get(n["id"], 0),
+				last_speedtest=latest_speedtests.get(str(n["id"])),
+			)
+			for n in nodes
+		],
 	)
 
 
@@ -378,9 +517,7 @@ def get_node_endpoint(
 	_: sqlite3.Row = Depends(require_admin),
 ) -> dict[str, Any]:
 	"""Get details for a single node."""
-	node = get_node(conn, node_id)
-	if not node:
-		raise HTTPException(status_code=404, detail="Node not found")
+	node = _get_node_or_404(conn, node_id)
 	return ok_response(data=_node_to_dict(node, get_peer_count_for_node(conn, node_id)))
 
 
@@ -392,9 +529,6 @@ def update_node_endpoint(
 	user: sqlite3.Row = Depends(require_admin),
 ) -> dict[str, Any]:
 	"""Update a node's name, FQDN, or port."""
-	if not get_node(conn, node_id):
-		raise HTTPException(status_code=404, detail="Node not found")
-
 	# exclude_unset distinguishes "not sent" from "sent as null"
 	updates = body.model_dump(exclude_unset=True)
 	if not updates:
@@ -402,21 +536,19 @@ def update_node_endpoint(
 
 	# Validate unique name if changing
 	if body.name is not None:
-		existing = get_node_by_name(conn, body.name)
-		if existing and existing["id"] != node_id:
-			raise HTTPException(status_code=409, detail=f"Node name '{body.name}' already exists")
+		_assert_node_name_unique(conn, body.name, exclude_id=node_id)
 
 	# Validate unique FQDN if changing
 	if body.fqdn is not None:
-		existing = get_node_by_fqdn(conn, body.fqdn)
-		if existing and existing["id"] != node_id:
-			raise HTTPException(status_code=409, detail=f"Node FQDN '{body.fqdn}' already exists")
+		_assert_node_fqdn_unique(conn, body.fqdn, exclude_id=node_id)
 
 	try:
-		update_node(conn, node_id, **updates)
+		updated = update_node(conn, node_id, **updates)
 	except sqlite3.IntegrityError:
 		# DB-level UNIQUE constraint: catches races that slip past the app-level checks above
 		raise HTTPException(status_code=409, detail="A node with that name or FQDN already exists")
+	if not updated:
+		raise HTTPException(status_code=404, detail="Node not found")
 	_log.info("Node updated: id=%s (by user=%s)", node_id, user["username"])
 	return ok_response(message="Node updated")
 
@@ -428,28 +560,59 @@ async def delete_node_endpoint(
 	user: sqlite3.Row = Depends(require_admin),
 ) -> dict[str, Any]:
 	"""Delete a node. Assigned peers are unassigned (node_id set to NULL)."""
-	node = await asyncio.to_thread(get_node, conn, node_id)
-	if not node:
-		raise HTTPException(status_code=404, detail="Node not found")
+	node = _get_node_or_404(conn, node_id)
 
-	# Pre-read count before the await below; used only for the response message.
-	# Slight staleness is acceptable — the design requires SSE notify before DB delete.
-	assigned_peer_count = await asyncio.to_thread(get_peer_count_for_node, conn, node_id)
+	# Pre-read tunnel peer info for WG runtime removal after DB delete
+	tunnel_peer_info: tuple[str, str] | None = None
+	if node["tunnel_peer_id"]:
+		tunnel_peer = get_peer_by_id(conn, node["tunnel_peer_id"])
+		if tunnel_peer:
+			tunnel_peer_info = (tunnel_peer["public_key"], tunnel_peer["interface"])
 
 	# Send removal signal to node before deleting (must happen while SSE auth still works)
 	notified = await notify_node_removed(node_id)
 	if notified > 0:
 		_log.info("Sent removal signal to %d SSE client(s) for node %s", notified, node_id)
 
-	if not await asyncio.to_thread(delete_node, conn, node_id):
+	unassigned_peer_count = delete_node_with_unassigned_count(conn, node_id)
+	if unassigned_peer_count is None:
 		raise HTTPException(status_code=404, detail="Node not found")
+
+	# Remove tunnel peer from live WireGuard interface (best-effort, don't fail the delete)
+	if tunnel_peer_info:
+		public_key, interface_name = tunnel_peer_info
+		code, _, stderr = await run_wg_command(
+			"wg", "set", interface_name,
+			"peer", public_key,
+			"remove",
+		)
+		if code == 0:
+			_log.info("Removed tunnel peer from WG: node=%s iface=%s", node_id, interface_name)
+		else:
+			_log.warning(
+				"Failed to remove tunnel peer from WG (may not exist): node=%s iface=%s err=%s",
+				node_id, interface_name, stderr.strip(),
+			)
+
+		# Sync config file to reflect tunnel peer removal
+		cfg = get_config()
+		try:
+			sync_interface_config(
+				WG_CONFIG_PATH,
+				interface_name,
+				conn,
+				pepper=cfg.secret_key,
+			)
+		except Exception as exc:
+			_log.warning("Failed to sync config after tunnel peer removal: %s", exc)
+
 	_log.info("Node deleted: id=%s (by user=%s)", node_id, user["username"])
 	message = "Node deleted."
-	if assigned_peer_count:
-		message = f"Node deleted. {assigned_peer_count} assigned peer(s) have been unassigned."
+	if unassigned_peer_count:
+		message = f"Node deleted. {unassigned_peer_count} assigned peer(s) have been unassigned."
 	return ok_response(
 		message=message,
-		data={"unassigned_peer_count": assigned_peer_count},
+		data={"unassigned_peer_count": unassigned_peer_count},
 	)
 
 
@@ -460,20 +623,8 @@ def regenerate_token(
 	user: sqlite3.Row = Depends(require_admin),
 ) -> dict[str, Any]:
 	"""Regenerate enrollment token for re-enrollment. Invalidates old token."""
-	node = get_node(conn, node_id)
-	if not node:
-		raise HTTPException(status_code=404, detail="Node not found")
-
-	cfg = get_config()
-	master_url = _get_master_url(conn)
-
-	token, api_secret = generate_enrollment_token(
-		master_url=master_url,
-		node_id=node_id,
-		node_name=node["name"],
-		secret_key=cfg.secret_key,
-	)
-	secret_hash = hash_token(api_secret)
+	node = _get_node_or_404(conn, node_id)
+	token, secret_hash = _generate_node_token(conn, node_id, node["name"])
 	update_node_api_secret(conn, node_id, secret_hash)
 	_log.info("Node token regenerated: id=%s (by user=%s)", node_id, user["username"])
 
@@ -494,8 +645,6 @@ async def restart_node(
 	Sends a restart signal via SSE. The node daemon will shut down
 	gracefully and Docker/systemd will restart it.
 	"""
-	from ..node import notifier as node_notifier
-
 	return await _send_node_command(
 		node_id=node_id,
 		command=_PENDING_COMMAND_RESTART,
@@ -518,8 +667,6 @@ async def trigger_node_speedtest(
 	Sends a speedtest signal via SSE. The node daemon will run a speedtest
 	and submit the results to the master.
 	"""
-	from ..node import notifier as node_notifier
-
 	return await _send_node_command(
 		node_id=node_id,
 		command=_PENDING_COMMAND_SPEEDTEST,
@@ -537,7 +684,7 @@ async def stream_node_speedtest_progress(
 	request: Request,
 	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_admin),
-):
+) -> StreamingResponse:
 	"""Stream speedtest progress updates from a remote node via SSE.
 	
 	This endpoint allows the frontend to receive real-time progress updates
@@ -548,65 +695,53 @@ async def stream_node_speedtest_progress(
 	- event: complete (when test finishes)
 	- event: timeout (if no updates received for 150s)
 	"""
-	import asyncio
-	import json
-	from ..api import nodes_sync
-	
-	node = await asyncio.to_thread(get_node, conn, node_id)
-	if not node:
-		raise HTTPException(status_code=404, detail="Node not found")
+	node = _get_node_or_404(conn, node_id)
+	if node["status"] != _NODE_STATUS_ONLINE:
+		raise HTTPException(
+			status_code=400,
+			detail=f"Node is '{node['status']}', cannot stream speedtest progress",
+		)
 	
 	async def event_generator():
 		"""Generate SSE events for node speedtest progress."""
-		progress_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=32)
-		
-		# Register this queue to receive progress updates
-		async with nodes_sync._progress_lock:
-			if node_id not in nodes_sync._node_speedtest_progress:
-				nodes_sync._node_speedtest_progress[node_id] = {
-					"progress": None,
-					"timestamp": 0,
-					"queues": [],
-				}
-			nodes_sync._node_speedtest_progress[node_id]["queues"].append(progress_queue)
+		progress_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_SPEEDTEST_QUEUE_MAXSIZE)
+		latest_progress = await nodes_sync.register_speedtest_progress_queue(node_id, progress_queue)
 		
 		try:
 			# Send initial progress if available
-			async with nodes_sync._progress_lock:
-				if nodes_sync._node_speedtest_progress[node_id]["progress"]:
-					initial = nodes_sync._node_speedtest_progress[node_id]["progress"]
-					yield f"event: progress\ndata: {json.dumps(initial)}\n\n"
+			if latest_progress:
+				yield f"event: progress\ndata: {json.dumps(latest_progress)}\n\n"
 			
-			# Stream progress updates
-			timeout_seconds = 150  # Timeout if no updates for 150s
+			# Stream progress updates with keepalive to survive proxy idle timeouts.
+			remaining_timeout = _SPEEDTEST_STREAM_TIMEOUT_S
 			while True:
 				if await request.is_disconnected():
 					break
 				
 				try:
-					progress = await asyncio.wait_for(progress_queue.get(), timeout=timeout_seconds)
-					yield f"event: progress\ndata: {json.dumps(progress)}\n\n"
-					
+					wait_for = min(_SPEEDTEST_KEEPALIVE_INTERVAL_S, remaining_timeout)
+					progress = await asyncio.wait_for(progress_queue.get(), timeout=wait_for)
+					try:
+						serialized = json.dumps(progress)
+					except (TypeError, ValueError) as exc:
+						_log.warning("Non-serializable speedtest progress dropped: %s", exc)
+						serialized = json.dumps({"error": "non-serializable data"})
+					yield f"event: progress\ndata: {serialized}\n\n"
+					remaining_timeout = _SPEEDTEST_STREAM_TIMEOUT_S
+
 					# If progress is 100%, send complete event
 					if progress.get("progress", 0) >= 1.0:
-						yield f"event: complete\ndata: {{}}\n\n"
+						yield "event: complete\ndata: {}\n\n"
 						break
 				except asyncio.TimeoutError:
-					# No updates received within timeout
-					yield f"event: timeout\ndata: {{\"message\": \"No progress updates received\"}}\n\n"
-					break
+					remaining_timeout -= wait_for
+					if remaining_timeout <= 0:
+						# No updates received within timeout
+						yield f'event: timeout\ndata: {json.dumps({"message": "No progress updates received"})}\n\n'
+						break
+					yield ": keepalive\n\n"
 		finally:
-			# Unregister queue
-			async with nodes_sync._progress_lock:
-				state = nodes_sync._node_speedtest_progress.get(node_id)
-				if state is not None:
-					try:
-						state["queues"].remove(progress_queue)
-					except ValueError:
-						pass
-					# Cleanup only if this exact state object is still current and empty.
-					if not state["queues"] and nodes_sync._node_speedtest_progress.get(node_id) is state:
-						del nodes_sync._node_speedtest_progress[node_id]
+			await nodes_sync.unregister_speedtest_progress_queue(node_id, progress_queue)
 	
 	return StreamingResponse(
 		event_generator(),

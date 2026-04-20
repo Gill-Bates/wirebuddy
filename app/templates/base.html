@@ -1,17 +1,16 @@
 {% from 'macros/nav.html' import nav_item with context %}
 {# Define navigation items once for DRY principle #}
 {# Format: (path, icon, label, external) - external defaults to false #}
+{% set admin_items = [
+    ('/ui/users', 'people', 'Users', false),
+    ('/ui/nodes', 'hub', 'Nodes', false),
+] if user and user['is_admin'] else [] %}
 {% set nav_items = [
     ('/ui/dashboard', 'dashboard', 'Dashboard', false),
     ('/ui/peers', 'devices', 'Peers', false),
     ('/ui/dns', 'dns', 'DNS', false),
     ('/ui/traffic', 'show_chart', 'Traffic', false),
-] %}
-{% if user and user['is_admin'] %}
-    {% set nav_items = nav_items + [('/ui/users', 'people', 'Users', false)] %}
-    {% set nav_items = nav_items + [('/ui/nodes', 'hub', 'Nodes', false)] %}
-{% endif %}
-{% set nav_items = nav_items + [
+] + admin_items + [
     ('/ui/settings', 'settings', 'Settings', false),
     ('/ui/about', 'info', 'About', false),
 ] %}
@@ -32,87 +31,6 @@
     <link href="/static/vendor/material-icons.css" rel="stylesheet">
     <link href="/static/css/style.css" rel="stylesheet">
     <link href="/static/css/wb-ui-system.css" rel="stylesheet">
-    <style>
-        :root {
-            --wb-z-banner: 1080;
-            --wb-z-toast: 1090;
-        }
-
-        /* Center modals vertically (except scrollable modals) - safer than flex */
-        .modal:not(.modal-dialog-scrollable) .modal-dialog {
-            margin-top: auto;
-            margin-bottom: auto;
-        }
-
-        /* Global spinner styling */
-        .spinner-border {
-            color: var(--bs-primary);
-        }
-
-        #wbReconnectModal .modal-dialog {
-            max-width: 460px;
-        }
-
-        #wbReconnectModal .modal-content {
-            border: 1px solid rgba(128, 128, 128, 0.25);
-            border-radius: var(--wb-radius-lg);
-        }
-
-        #wbReconnectModal .spinner-border {
-            width: 2.25rem;
-            height: 2.25rem;
-        }
-
-        @keyframes wbReconnectSoftPulse {
-            0% {
-                transform: scale(1);
-                box-shadow: 0 0 0 rgba(var(--bs-primary-rgb), 0);
-            }
-
-            50% {
-                transform: scale(1.012);
-                box-shadow: 0 0 0.85rem rgba(var(--bs-primary-rgb), 0.22);
-            }
-
-            100% {
-                transform: scale(1);
-                box-shadow: 0 0 0 rgba(var(--bs-primary-rgb), 0);
-            }
-        }
-
-        body.wb-reconnecting #wbReconnectModal.show .wb-reconnect-pulse {
-            animation: wbReconnectSoftPulse 1.9s ease-in-out infinite;
-            transform-origin: center;
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-            body.wb-reconnecting #wbReconnectModal.show .wb-reconnect-pulse {
-                animation: none;
-            }
-        }
-
-        /* Modal and onboarding utility classes for CSP compliance */
-        .wb-modal-icon {
-            margin-top: 2px;
-        }
-
-        .wb-onboarding-step-badge {
-            width: 28px;
-            height: 28px;
-            flex-shrink: 0;
-        }
-
-        .wb-onboarding-icon {
-            font-size: 28px;
-        }
-
-        /* Key Mismatch Banner - sticky to prevent layout shift */
-        #keyMismatchBanner {
-            position: sticky;
-            top: 0;
-            z-index: var(--wb-z-banner);
-        }
-    </style>
     {% block extra_css %}{% endblock %}
 </head>
 
@@ -157,11 +75,13 @@
             </div>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <!-- Mobile Navigation Links (2-column grid) -->
-                <div class="d-lg-none navbar-mobile-grid" aria-label="Mobile navigation">
+                {# Navigation is rendered twice (mobile + desktop).
+                   nav_item macro must not emit element IDs to avoid duplicate IDs. #}
+                <nav class="d-lg-none navbar-mobile-grid" aria-label="Mobile navigation">
                     {% for href, icon, label, external in nav_items %}
                     {{ nav_item(href, icon, label, external) }}
                     {% endfor %}
-                </div>
+                </nav>
                 <!-- Reserved for future desktop nav items -->
                 <!-- <ul class="navbar-nav ms-auto align-items-center d-none d-lg-flex"></ul> -->
             </div>
@@ -186,7 +106,7 @@
     <footer class="wb-footer">
         <span class="wb-footer-content">
             WireBuddy v{{ VERSION | e }} (<span class="font-monospace">{{ (BUILD_INFO or '')[:7] | e }}</span>)
-            &middot; &copy;&nbsp;<span id="copyright-year"></span>Gill-Bates
+            &middot; &copy;&nbsp;{{ now().year | e }}&nbsp;Gill-Bates
             &middot;&nbsp;
             <a href="https://github.com/Gill-Bates/wirebuddy"
                target="_blank" rel="noopener noreferrer"
@@ -214,7 +134,7 @@
                     <div class="d-flex align-items-start gap-3">
                         <span class="material-icons fs-3 wb-modal-icon" id="wbModalIcon">info</span>
                         <div class="flex-grow-1">
-                            <p class="mb-0" id="wbModalMessage"></p>
+                            <p class="mb-0" id="wbModalMessage" aria-live="polite"></p>
                             <div class="mt-3 d-none" id="wbModalInputWrap">
                                 <input type="text" class="form-control" id="wbModalInput">
                             </div>
@@ -222,6 +142,7 @@
                     </div>
                 </div>
                 <div class="modal-footer">
+                    {# data-bs-dismiss triggers Bootstrap hide; modal.js finish() also calls hide() — both are safe (idempotent) #}
                     <button type="button" class="btn btn-secondary d-none" id="wbModalCancel"
                         data-bs-dismiss="modal">Cancel</button>
                     <button type="button" class="btn btn-primary" id="wbModalOk">OK</button>
@@ -239,7 +160,7 @@
                         <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
                         <div>
                             <h5 id="wbReconnectTitle" class="mb-2">Connection Lost</h5>
-                            <p role="alert" class="text-muted small mb-3">Trying to reconnect to the server...</p>
+                            <p aria-live="assertive" aria-atomic="true" class="text-muted small mb-3">Trying to reconnect to the server...</p>
                             <div class="mt-3 d-none" id="wbReconnectFailsafeWrap">
                                 <button class="btn btn-sm btn-outline-secondary" id="wbReconnectReload">Reload Page</button>
                             </div>
@@ -251,75 +172,13 @@
     </div>
 
     <!-- Toast container -->
-    <div class="toast-container position-fixed top-0 end-0 p-3" id="wbToastContainer"></div>
+    <div class="toast-container position-fixed top-0 end-0 p-3" id="wbToastContainer" aria-label="Notifications" aria-live="polite"></div>
 
-    <!-- Onboarding Modal -->
-    <div class="modal fade" id="wbOnboardingModal" tabindex="-1" aria-labelledby="wbOnboardingTitle">
-        <div class="modal-dialog modal-dialog-centered modal-lg">
-            <div class="modal-content">
-                <div class="modal-header border-0 pb-0">
-                    <h4 class="modal-title" id="wbOnboardingTitle">
-                        <span class="material-icons align-middle text-primary me-2 wb-onboarding-icon">rocket_launch</span>
-                        Welcome to WireBuddy!
-                    </h4>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body pt-2">
-                    <p class="text-muted mb-4">Follow these steps to set up your WireGuard VPN server:</p>
-                    <div class="d-flex flex-column gap-3">
-                        <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
-                            <span class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center wb-onboarding-step-badge">1</span>
-                            <div>
-                                <strong>Change Admin Password</strong>
-                                <p class="text-muted small mb-0">Go to <a href="/ui/users">Users</a> and set a secure
-                                    password for the admin account.</p>
-                            </div>
-                        </div>
-                        <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
-                            <span class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center wb-onboarding-step-badge">2</span>
-                            <div>
-                                <strong>Create an Interface</strong>
-                                <p class="text-muted small mb-0">Under <a href="/ui/settings">Settings</a>, create your
-                                    first WireGuard interface (e.g., wg0).</p>
-                            </div>
-                        </div>
-                        <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
-                            <span class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center wb-onboarding-step-badge">3</span>
-                            <div>
-                                <strong>Set Your Server FQDN</strong>
-                                <p class="text-muted small mb-0">In <a href="/ui/settings">Wireguard</a> settings, enter your
-                                    server's public hostname or domain.</p>
-                            </div>
-                        </div>
-                        <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
-                            <span class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center wb-onboarding-step-badge">4</span>
-                            <div>
-                                <strong>Generate PresharedKey <span
-                                        class="badge bg-success-subtle text-success small">Enabled by Default</span></strong>
-                                <p class="text-muted small mb-0">PSK is enabled by default. Generate a global key in Settings → WireGuard.</p>
-                            </div>
-                        </div>
-                        <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
-                            <span class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center wb-onboarding-step-badge">5</span>
-                            <div>
-                                <strong>Add Your First Peer</strong>
-                                <p class="text-muted small mb-0">Go to <a href="/ui/peers">Peers</a> and create VPN clients
-                                    for your devices.</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="modal-footer border-0 pt-0 justify-content-between">
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="wbOnboardingDismiss">
-                        <label class="form-check-label text-muted small" for="wbOnboardingDismiss">Don't show
-                            again</label>
-                    </div>
-                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Got it!</button>
-                </div>
-            </div>
-        </div>
-    </div>
+    <!-- Onboarding Modal (lazy-loaded via fragment) -->
+    {# Mount point: populated by onboarding.js when modal should be shown,
+       cleaned up (innerHTML cleared) after modal is dismissed to prevent
+       duplicate fragments on subsequent client-side navigations #}
+    <div id="wbOnboardingMount"></div>
 
     <script src="/static/vendor/bootstrap.bundle.min.js"></script>
     <!-- Core Logic Split -->
@@ -349,17 +208,15 @@
                 reloadBtn.addEventListener('click', () => window.location.reload());
             }
 
-            // Copyright year
-            const yearEl = document.getElementById('copyright-year');
-            if (yearEl) {
-                yearEl.textContent = String(new Date().getFullYear()) + '\u00a0';
-            }
-
             // Theme toggle
             const themeToggle = document.getElementById('themeToggle');
             if (themeToggle) {
                 themeToggle.addEventListener('click', function() {
-                    if (typeof toggleTheme === 'function') toggleTheme();
+                    if (typeof toggleTheme === 'function') {
+                        toggleTheme();
+                        return;
+                    }
+                    console.error('toggleTheme is unavailable \u2014 /static/js/theme.js failed to load.');
                 });
             }
 
@@ -367,7 +224,11 @@
             const logoutBtn = document.getElementById('logoutBtn');
             if (logoutBtn) {
                 logoutBtn.addEventListener('click', function() {
-                    if (typeof logout === 'function') logout();
+                    if (typeof logout === 'function') {
+                        logout();
+                        return;
+                    }
+                    console.error('logout is unavailable \u2014 /static/js/api.js failed to load.');
                 });
             }
 

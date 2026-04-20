@@ -558,9 +558,13 @@
             },
             createFirstCell: (country) => {
                 const flagCell = createCell('td', 'text-center');
-                if (country.flag && isSafeImageUrl(country.flag)) {
+                const countryCode = String(country.code || '').trim().toLowerCase();
+                const flagUrl = /^[a-z]{2}$/.test(countryCode)
+                    ? `https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/${countryCode}.svg`
+                    : '';
+                if (flagUrl && isSafeImageUrl(flagUrl)) {
                     const img = document.createElement('img');
-                    img.src = country.flag;
+                    img.src = flagUrl;
                     img.alt = country.name ? `Flag of ${country.name}` : '';
                     img.className = 'country-flag';
                     img.loading = 'lazy';

@@ -20,11 +20,11 @@ from fastapi.responses import Response
 from ..db.sqlite_auth import (
     delete_user_tokens,
 )
+from ..db.sqlite_runtime import transaction
 from ..db.sqlite_users import (
     LastAdminError,
     UpdateResult,
     confirm_user_otp,
-    count_admins,
     create_user as db_create_user,
     decrypt_otp_secret,
     delete_user as db_delete_user,
@@ -37,6 +37,7 @@ from ..db.sqlite_users import (
 from ..models.users import (
     AdminPasswordResetRequest,
     OTPConfirmRequest,
+    OTPDisableRequest,
     PasswordChangeRequest,
     UserCreate,
     UserPublic,
@@ -60,6 +61,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["users"])
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 def _to_qr_data_url(content: str) -> str:
     """Render QR PNG as data URL."""
     img = qrcode.make(content)
@@ -81,6 +85,29 @@ def _row_to_public(row: sqlite3.Row) -> UserPublic:
         last_login_at=row["last_login_at"],
         last_login_ip=row["last_login_ip"],
     )
+
+
+def _get_user_or_404(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row:
+    """Load a user row or raise HTTP 404 when it does not exist."""
+    user = get_user_by_id(conn, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+def require_self_or_admin(
+    user_id: int,              # Injected from path parameter /{user_id}
+    current_user: sqlite3.Row = Depends(get_current_user),
+) -> sqlite3.Row:
+    """Allow access only to the user themself or an admin."""
+    if current_user["id"] != user_id and not current_user["is_admin"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return current_user
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# User CRUD
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 @router.get("")
@@ -126,18 +153,13 @@ def create_user(
 def get_user(
     user_id: int,
     conn: sqlite3.Connection = Depends(get_conn),
-    current_user: sqlite3.Row = Depends(get_current_user),
+    _: sqlite3.Row = Depends(require_self_or_admin),
 ):
     """Get a user by ID.
     
     Users can view their own profile, admins can view anyone.
     """
-    if current_user["id"] != user_id and not current_user["is_admin"]:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    user = get_user_by_id(conn, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = _get_user_or_404(conn, user_id)
     
     return ok_response(data=_row_to_public(user))
 
@@ -147,7 +169,7 @@ def update_user(
     user_id: int,
     payload: UserUpdate,
     conn: sqlite3.Connection = Depends(get_conn),
-    current_user: sqlite3.Row = Depends(get_current_user),
+    current_user: sqlite3.Row = Depends(require_self_or_admin),
 ):
     """Update a user.
     
@@ -157,9 +179,6 @@ def update_user(
     """
     is_self = current_user["id"] == user_id
     is_admin = bool(current_user["is_admin"])
-    
-    if not is_self and not is_admin:
-        raise HTTPException(status_code=403, detail="Not authorized")
     
     if not is_admin:
         if payload.is_admin is not None or payload.is_active is not None:
@@ -172,14 +191,6 @@ def update_user(
     # Prevent admins from deactivating themselves (safety)
     if is_self and payload.is_active is False:
         raise HTTPException(status_code=400, detail="Cannot deactivate your own account")
-    
-    user = get_user_by_id(conn, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    if payload.is_admin is False and user["is_admin"]:
-        if count_admins(conn) <= 1:
-            raise HTTPException(status_code=400, detail="Cannot remove the last admin")
     
     result = db_update_user(
         conn,
@@ -196,7 +207,7 @@ def update_user(
     if result == UpdateResult.LAST_ADMIN:
         raise HTTPException(status_code=400, detail="Cannot remove the last admin")
     
-    updated = get_user_by_id(conn, user_id)
+    updated = _get_user_or_404(conn, user_id)
     logger.info("USER_UPDATED user_id=%d by_user=%d", user_id, current_user["id"])
     return ok_response(data=_row_to_public(updated))
 
@@ -210,24 +221,23 @@ def delete_user(
     """Delete a user (admin only)."""
     if current_user["id"] == user_id:
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
-    
-    user = get_user_by_id(conn, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Prevent deleting the last admin
-    if user["is_admin"] and count_admins(conn) <= 1:
-        raise HTTPException(status_code=400, detail="Cannot delete the last admin")
-    
+
     try:
-        db_delete_user(conn, user_id)
+        with transaction(conn, immediate=True):
+            deleted = db_delete_user(conn, user_id)
+            if not deleted:
+                raise HTTPException(status_code=404, detail="User not found")
+            delete_user_tokens(conn, user_id)
     except LastAdminError:
         raise HTTPException(status_code=400, detail="Cannot delete the last admin")
     
-    delete_user_tokens(conn, user_id)
-    
     logger.info("USER_DELETED user_id=%d by_admin=%d", user_id, current_user["id"])
     return Response(status_code=204)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Password Management
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 @router.post("/{user_id}/change-password")
@@ -242,18 +252,15 @@ def change_password(
     """Change a user's own password."""
     if current_user["id"] != user_id:
         raise HTTPException(status_code=403, detail="Not authorized")
-    
-    user = get_user_by_id(conn, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    if not verify_password(payload.current_password, user["password_hash"]):
-        raise HTTPException(status_code=422, detail="Current password incorrect")
-    
-    result = db_update_user(conn, user_id, password=payload.new_password)
-    if result == UpdateResult.NOT_FOUND:
-        raise HTTPException(status_code=404, detail="User not found")
-    
+
+    with transaction(conn, immediate=True):
+        user = _get_user_or_404(conn, user_id)
+        if not verify_password(payload.current_password, user["password_hash"]):
+            raise HTTPException(status_code=422, detail="Current password incorrect")
+        result = db_update_user(conn, user_id, password=payload.new_password)
+        if result == UpdateResult.NOT_FOUND:
+            raise HTTPException(status_code=404, detail="User not found")
+
     delete_user_tokens(conn, user_id)
     
     logger.info("PASSWORD_CHANGED user_id=%d by_user=%d", user_id, current_user["id"])
@@ -261,16 +268,19 @@ def change_password(
 
 
 @router.post("/{user_id}/reset-password")
+@limiter.limit(RATE_LIMIT_AUTH)
 def reset_password(
+    request: Request,
     user_id: int,
     payload: AdminPasswordResetRequest,
     conn: sqlite3.Connection = Depends(get_conn),
     current_user: sqlite3.Row = Depends(require_admin),
 ):
     """Reset a user's password (admin only)."""
-    user = get_user_by_id(conn, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    if current_user["id"] == user_id:
+        raise HTTPException(status_code=400, detail="Use change-password for your own account")
+
+    _get_user_or_404(conn, user_id)
     
     result = db_update_user(conn, user_id, password=payload.new_password)
     if result == UpdateResult.NOT_FOUND:
@@ -282,22 +292,21 @@ def reset_password(
     return ok_response(message="Password reset successfully")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# OTP Management
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 @router.post("/{user_id}/otp/enable")
+@limiter.limit(RATE_LIMIT_AUTH)
 def enable_user_otp(
+    request: Request,
     user_id: int,
     conn: sqlite3.Connection = Depends(get_conn),
-    current_user: sqlite3.Row = Depends(get_current_user),
+    current_user: sqlite3.Row = Depends(require_self_or_admin),
 ):
     """Prepare OTP setup for a user and return provisioning details."""
-    is_self = current_user["id"] == user_id
-    is_admin = bool(current_user["is_admin"])
-    
-    if not is_self and not is_admin:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    user = get_user_by_id(conn, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = _get_user_or_404(conn, user_id)
 
     secret = generate_otp_secret()
     provisioning_uri = build_provisioning_uri(secret=secret, username=user["username"])
@@ -321,18 +330,10 @@ def confirm_user_otp_setup(
     user_id: int,
     payload: OTPConfirmRequest,
     conn: sqlite3.Connection = Depends(get_conn),
-    current_user: sqlite3.Row = Depends(get_current_user),
+    current_user: sqlite3.Row = Depends(require_self_or_admin),
 ):
     """Confirm OTP setup using first TOTP code and enable OTP."""
-    is_self = current_user["id"] == user_id
-    is_admin = bool(current_user["is_admin"])
-    
-    if not is_self and not is_admin:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    user = get_user_by_id(conn, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = _get_user_or_404(conn, user_id)
 
     # Decrypt OTP secret for verification
     encrypted_secret = str(user["otp_secret"] or "")
@@ -343,6 +344,8 @@ def confirm_user_otp_setup(
     if not plaintext_secret:
         raise HTTPException(status_code=500, detail="Unable to decrypt OTP secret")
 
+    # verify_otp() implements a used-code window to mitigate replay attacks
+    # within the 30-second TOTP validity window. See utils/otp.py for details.
     if not verify_otp(plaintext_secret, payload.code):
         raise HTTPException(status_code=401, detail="Invalid OTP code")
 
@@ -362,24 +365,47 @@ def confirm_user_otp_setup(
 
 
 @router.post("/{user_id}/otp/disable")
+@limiter.limit(RATE_LIMIT_AUTH)
 def disable_user_otp_setup(
+    request: Request,
     user_id: int,
+    payload: OTPDisableRequest,
     conn: sqlite3.Connection = Depends(get_conn),
-    current_user: sqlite3.Row = Depends(get_current_user),
+    current_user: sqlite3.Row = Depends(require_self_or_admin),
 ):
-    """Disable OTP for a user."""
-    is_self = current_user["id"] == user_id
-    is_admin = bool(current_user["is_admin"])
-    
-    if not is_self and not is_admin:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    """Disable OTP for a user after re-authentication.
 
-    user = get_user_by_id(conn, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    Re-authentication requirements:
+    - Self: current password OR valid OTP code (either suffices).
+    - Admin disabling another user: the admin's OWN password is required
+      (payload.current_password is verified against the admin's hash,
+      not the target user's hash).
+    """
+    user = _get_user_or_404(conn, user_id)
+
+    is_self = current_user["id"] == user_id
+    password_ok = bool(payload.current_password) and verify_password(
+        str(payload.current_password),
+        str(current_user["password_hash"]),
+    )
+
+    if is_self:
+        otp_ok = False
+        if payload.code:
+            encrypted_secret = str(user["otp_secret"] or "")
+            if encrypted_secret:
+                plaintext_secret = decrypt_otp_secret(encrypted_secret)
+                if plaintext_secret:
+                    otp_ok = verify_otp(plaintext_secret, payload.code)
+        if not password_ok and not otp_ok:
+            raise HTTPException(status_code=401, detail="Password or OTP code invalid")
+    elif not password_ok:
+        raise HTTPException(status_code=401, detail="Admin password verification required")
 
     if not disable_user_otp(conn, user_id):
         raise HTTPException(status_code=500, detail="Unable to disable OTP")
+
+    delete_user_tokens(conn, user_id)
 
     logger.info("USER_OTP_DISABLED user_id=%d by_user=%d", user_id, current_user["id"])
     return ok_response(message="OTP disabled")

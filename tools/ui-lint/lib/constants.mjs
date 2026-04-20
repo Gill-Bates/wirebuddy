@@ -52,6 +52,11 @@ export const KPI_CARD_PADDING_EXPECTED = 16;
 export const KPI_CARD_PADDING_TOLERANCE = 1;
 export const KPI_ICON_MIN = 32;
 export const KPI_ICON_MAX = 40;
+// Dashboard compact-density overrides (desktop ≥992px, font-size:0.85rem + padding:0.6rem)
+export const DASHBOARD_COMPACT_KPI_CARD_PADDING_EXPECTED = 10;  // 0.6rem * 16px
+export const DASHBOARD_COMPACT_KPI_CARD_PADDING_TOLERANCE = 2;
+export const DASHBOARD_COMPACT_KPI_ICON_MIN = 18;  // 1.3rem * 16px ≈ 20.8px
+export const DASHBOARD_COMPACT_KPI_ICON_MAX = 26;
 export const KPI_VISUAL_DRIFT_THRESHOLD = 0.01;
 export const KPI_HEIGHT_TOLERANCE_PX = 2;
 export const KPI_ROW_VARIANCE_MAX = 3;

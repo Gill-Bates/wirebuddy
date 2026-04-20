@@ -12,14 +12,6 @@ traffic metadata (volumes, connection times, patterns) for all peers.
 
 from __future__ import annotations
 
-from ..db.sqlite_nodes import get_all_tunnel_peer_ids
-from ..db.sqlite_peers import (
-	get_all_peers,
-)
-from ..db.sqlite_settings import (
-	get_tsdb_retention_days,
-)
-
 import logging
 import sqlite3
 import time as _time
@@ -30,18 +22,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
 
 from ..db import tsdb
+from ..db.sqlite_nodes import get_all_tunnel_peer_ids
+from ..db.sqlite_peers import get_all_peers
+from ..db.sqlite_settings import get_tsdb_retention_days
 from ..utils.deps import get_conn, get_tsdb_dir
 from ..utils.time import utcnow
 from .auth import require_admin
 from .frontend_shared import CONNECTED_THRESHOLD_S as HANDSHAKE_THRESHOLD
 from .response import ok_response
-from .wireguard_utils import bytes_to_unit, parse_wg_show_dump, run_wg_command, safe_int, select_display_unit
+from .wireguard_utils import bytes_to_unit, parse_wg_show_dump, run_wg_command, select_display_unit
 
 _log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["wireguard"])
 
 __all__ = ["router"]
+
+WG_BIN = "wg"
 
 # Time range presets for traffic queries
 TRAFFIC_RANGE_TO_HOURS = {
@@ -54,15 +51,12 @@ TRAFFIC_RANGE_TO_HOURS = {
     "y1": 8760,
 }
 
-# Reverse mapping: hours -> preset key (static dict, used for response label)
-_HOURS_TO_RANGE: dict[int, str] = {
-    6: "6h", 24: "24h", 168: "7d",
-    720: "30d", 2160: "90d", 4320: "180d", 8760: "y1",
-}
+# Reverse mapping: hours -> preset key (used for response labels)
+_HOURS_TO_RANGE: dict[int, str] = {v: k for k, v in TRAFFIC_RANGE_TO_HOURS.items()}
 
 # Resource limits to prevent DoS
 MAX_PEERS_TRAFFIC = 100  # Max peers to include in traffic stats
-MAX_POINTS_PER_PEER = 5000  # Reduced from 10000
+MAX_POINTS_PER_PEER = 5000  # Cap per-peer TSDB points to bound memory and query time.
 
 
 def _bucket_counter_delta(
@@ -73,9 +67,9 @@ def _bucket_counter_delta(
     """Aggregate counter deltas into time buckets (consumption per bucket).
 
     Points are sorted defensively (TSDB contract guarantees chronological
-    order, but we guard against future regressions).  Deltas spanning a
-    time gap wider than ``2 * bucket_seconds`` are discarded because they
-    would dump an unreliable amount of traffic into a single bucket.
+    order, but we guard against future regressions). If consecutive points
+    have a time gap wider than ``2 * bucket_seconds``, we reset the baseline.
+    The delta spanning that gap is discarded to avoid unreliable spikes.
 
     Args:
         points: Time-series data points (expected to be counter values).
@@ -97,7 +91,7 @@ def _bucket_counter_delta(
     for pt in points:
         if not isinstance(pt.value, (int, float)):
             continue
-        value = pt.value  # already numeric, no float() cast needed
+        value = pt.value
 
         if prev is None:
             prev = value
@@ -192,6 +186,34 @@ MIN_MAX_POINTS = 10  # Minimum allowed (small mobile screens)
 MAX_MAX_POINTS = 200  # Maximum allowed (prevents DoS)
 
 
+def _query_peer_metrics(
+    key: str,
+    tsdb_dir: Path,
+    query_since: datetime,
+    since: datetime,
+    bucket_seconds: int,
+) -> tuple[str, dict[str, float], dict[str, float]]:
+    """Query RX and TX metrics for one peer and bucket them."""
+    rx_points = tsdb.query(
+        tsdb_dir,
+        peer_key=key,
+        metric="rx_bytes",
+        since=query_since,
+        limit=MAX_POINTS_PER_PEER,
+    )
+    rx_buckets = _bucket_counter_delta(rx_points, since, bucket_seconds)
+
+    tx_points = tsdb.query(
+        tsdb_dir,
+        peer_key=key,
+        metric="tx_bytes",
+        since=query_since,
+        limit=MAX_POINTS_PER_PEER,
+    )
+    tx_buckets = _bucket_counter_delta(tx_points, since, bucket_seconds)
+    return key, rx_buckets, tx_buckets
+
+
 def _compute_traffic_stats(
     conn: sqlite3.Connection,
     tsdb_dir: Path,
@@ -236,7 +258,6 @@ def _compute_traffic_stats(
 
     # Early exit if no peers exist
     if not peer_keys:
-        resolved_range = _HOURS_TO_RANGE.get(hours, f"{hours}h")
         return {
             "range": resolved_range,
             "hours": hours,
@@ -266,35 +287,12 @@ def _compute_traffic_stats(
         if peer["public_key"] and peer["public_key"] in active_keys
     }
 
-    # Collect per-peer traffic data with parallel TSDB queries
-    # Build all query tasks first
-    import asyncio
-    from concurrent.futures import ThreadPoolExecutor
-    
-    def query_peer_metrics(key: str) -> tuple[str, dict, dict]:
-        """Query RX and TX for a single peer."""
-        rx_points = tsdb.query(
-            tsdb_dir,
-            peer_key=key,
-            metric="rx_bytes",
-            since=query_since,
-            limit=MAX_POINTS_PER_PEER,
-        )
-        rx_buckets = _bucket_counter_delta(rx_points, since, bucket_seconds)
-
-        tx_points = tsdb.query(
-            tsdb_dir,
-            peer_key=key,
-            metric="tx_bytes",
-            since=query_since,
-            limit=MAX_POINTS_PER_PEER,
-        )
-        tx_buckets = _bucket_counter_delta(tx_points, since, bucket_seconds)
-        return (key, rx_buckets, tx_buckets)
-    
-    # Execute all queries in parallel using a thread pool
-    with ThreadPoolExecutor(max_workers=min(len(peer_keys), 10)) as executor:
-        results = list(executor.map(query_peer_metrics, peer_keys))
+    # Collect per-peer traffic data (sequential inside this worker thread).
+    # Avoid nested thread pools because this function already runs in run_in_threadpool().
+    results = [
+        _query_peer_metrics(key, tsdb_dir, query_since, since, bucket_seconds)
+        for key in peer_keys
+    ]
     
     # Process results
     peer_data: list[dict] = []
@@ -316,7 +314,7 @@ def _compute_traffic_stats(
 
     labels = sorted(all_labels)
 
-    # Downsample via median if we still have more labels than max_points
+    # Downsample via summation if we still have more labels than max_points
     # (can happen when peers have data at slightly offset timestamps)
     if len(labels) > target_points:
         labels, peer_data = _downsample_buckets(labels, peer_data, target_points)
@@ -441,7 +439,7 @@ async def get_connection_stats(
         Connection statistics including per-interface and total counts.
     """
     try:
-        code, stdout, stderr = await run_wg_command("wg", "show", "all", "dump")
+        code, stdout, stderr = await run_wg_command(WG_BIN, "show", "all", "dump")
         if code != 0:
             _log.warning("WG_SHOW_DUMP failed: code=%d stderr=%s", code, stderr)
             raise HTTPException(status_code=500, detail="Failed to query WireGuard interfaces")
@@ -469,12 +467,17 @@ async def get_connection_stats(
 
         total_connected = sum(v["connected"] for v in interfaces.values())
         total_peers = sum(v["total"] for v in interfaces.values())
+        max_bytes = max((max(v["rx"], v["tx"]) for v in interfaces.values()), default=0)
+        display_unit = select_display_unit(max_bytes)
+        for iface_data in interfaces.values():
+            iface_data["rx"] = round(bytes_to_unit(iface_data["rx"], display_unit), 2)
+            iface_data["tx"] = round(bytes_to_unit(iface_data["tx"], display_unit), 2)
 
         data = {
             "interfaces": interfaces,
             "total_connected": total_connected,
             "total_peers": total_peers,
-            "display_unit": "B",
+            "display_unit": display_unit,
         }
         return ok_response(data=data)
 

@@ -12,6 +12,7 @@ import asyncio
 import inspect
 import logging
 import random
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, TypedDict
@@ -71,6 +72,7 @@ class Scheduler:
 	def __init__(self) -> None:
 		self._jobs: dict[str, _Job] = {}
 		self._tasks: dict[str, asyncio.Task] = {}
+		self._cancel_drain_task: asyncio.Task | None = None
 		self._stop_event: asyncio.Event | None = None
 		self._started = False
 
@@ -103,6 +105,11 @@ class Scheduler:
 		"""
 		if not callable(func):
 			raise TypeError(f"func must be callable, got {type(func).__name__}")
+		if not inspect.iscoroutinefunction(func):
+			_log.warning(
+				"SCHEDULER job=%s uses a non-coroutine callable; it must return an awaitable when called",
+				name,
+			)
 		
 		if self._started:
 			raise RuntimeError(f"Cannot add job {name!r} while scheduler is running")
@@ -178,6 +185,11 @@ class Scheduler:
 		DEPRECATED: Use stop_graceful() instead for proper async cleanup.
 		This method exists only for emergency sync shutdown scenarios.
 		"""
+		warnings.warn(
+			"Scheduler.stop() is deprecated; use await stop_graceful() instead",
+			DeprecationWarning,
+			stacklevel=2,
+		)
 		if not self._started:
 			return
 		
@@ -194,12 +206,15 @@ class Scheduler:
 				_log.info("SCHEDULER job=%s stopped", name)
 
 		if cancelled_tasks:
+			loop: asyncio.AbstractEventLoop | None
 			try:
 				loop = asyncio.get_running_loop()
 			except RuntimeError:
 				loop = None
 			if loop is not None:
-				loop.create_task(self._await_cancelled_tasks(cancelled_tasks))
+				self._cancel_drain_task = loop.create_task(self._await_cancelled_tasks(cancelled_tasks))
+			else:
+				self._cancel_drain_task = None
 		
 		self._tasks.clear()
 		self._stop_event = None
@@ -237,8 +252,39 @@ class Scheduler:
 				await asyncio.gather(*not_done, return_exceptions=True)
 		
 		self._tasks.clear()
+		self._cancel_drain_task = None
 		self._stop_event = None
 		_log.info("SCHEDULER stopped")
+
+	@staticmethod
+	def _compute_next_run(
+		*,
+		now: float,
+		next_candidate: float,
+		success: bool,
+		consecutive_failures: int,
+		interval_seconds: float,
+		max_backoff: float,
+		min_interval: float,
+		jittered_interval: float,
+		failure_jitter: float = 0.0,
+	) -> tuple[float, int, float]:
+		"""Compute next execution slot and updated failure state.
+
+		Returns ``(next_run, consecutive_failures, backoff_seconds)`` where
+		``backoff_seconds`` is ``0.0`` on success.
+		"""
+		if success:
+			return now + jittered_interval, 0, 0.0
+
+		updated_failures = consecutive_failures + 1
+		backoff = min(2 ** updated_failures, max_backoff)
+		backoff_until = now + backoff
+		if next_candidate < backoff_until:
+			skips = max(1, int((backoff_until - next_candidate) / interval_seconds) + 1)
+			next_candidate += skips * interval_seconds
+		next_candidate += failure_jitter
+		return max(now + min_interval, next_candidate), updated_failures, backoff
 
 	async def _run_loop(self, job: _Job) -> None:
 		"""Internal loop that executes a job at its interval with retry/backoff."""
@@ -251,12 +297,40 @@ class Scheduler:
 		def _jittered_interval() -> float:
 			"""Return interval with random jitter applied."""
 			if job.jitter_pct <= 0:
-				return max(_MIN_INTERVAL, job.interval_seconds)
+				return job.interval_seconds
 			jitter_range = job.interval_seconds * job.jitter_pct
 			return max(_MIN_INTERVAL, job.interval_seconds + random.uniform(-jitter_range, jitter_range))
+
+		def _failure_jitter() -> float:
+			"""Return additive jitter used only for failure rescheduling."""
+			if job.jitter_pct <= 0:
+				return 0.0
+			jitter_range = job.interval_seconds * job.jitter_pct
+			return random.uniform(-jitter_range, jitter_range)
+
+		def _schedule_next(now: float, next_candidate: float, success: bool) -> float:
+			"""Compute and log the next run slot using job-local scheduling context."""
+			nonlocal consecutive_failures
+			next_run_local, consecutive_failures, backoff = self._compute_next_run(
+				now=now,
+				next_candidate=next_candidate,
+				success=success,
+				consecutive_failures=consecutive_failures,
+				interval_seconds=job.interval_seconds,
+				max_backoff=max_backoff,
+				min_interval=_MIN_INTERVAL,
+				jittered_interval=_jittered_interval(),
+				failure_jitter=_failure_jitter(),
+			)
+			if backoff > 0:
+				_log.error(
+					"SCHEDULER job=%s failed (%d consecutive), backing off %.0fs",
+					job.name, consecutive_failures, backoff,
+				)
+			return next_run_local
 		
 		consecutive_failures = 0
-		max_backoff = 300  # 5 minutes
+		max_backoff: float = 300.0  # 5 minutes
 		initial_interval = _jittered_interval()
 		first_interval = job.initial_delay if job.initial_delay > 0 and not job.run_on_start else initial_interval
 		next_run = loop.time() + first_interval
@@ -281,17 +355,12 @@ class Scheduler:
 
 				success = await self._execute(job)
 				now = loop.time()
+				next_run = _schedule_next(now, next_run, success)
 				if success:
-					consecutive_failures = 0
-					next_run = now + _jittered_interval()
-				else:
-					consecutive_failures += 1
-					backoff = min(2 ** consecutive_failures, max_backoff)
-					_log.error(
-						"SCHEDULER job=%s failed (%d consecutive), backing off %.0fs",
-						job.name, consecutive_failures, backoff,
+					_log.debug(
+						"SCHEDULER job=%s completed initial run (run #%d), next in %.0fs",
+						job.name, job.run_count, next_run - now,
 					)
-					next_run = max(next_run, now + backoff)
 			else:
 				# No run_on_start: log when first execution is scheduled
 				_log.info(
@@ -320,36 +389,12 @@ class Scheduler:
 				
 				success = await self._execute(job)
 				now = loop.time()
-				
+				next_run = _schedule_next(now, next_run, success)
 				if success:
-					consecutive_failures = 0
-					# Schedule next run from NOW (prevents drift)
-					next_run = now + _jittered_interval()
 					_log.debug(
 						"SCHEDULER job=%s completed (run #%d), next in %.0fs",
 						job.name, job.run_count, next_run - now,
 					)
-				else:
-					# Job failed – apply exponential backoff
-					consecutive_failures += 1
-					backoff = min(2 ** consecutive_failures, max_backoff)
-					_log.error(
-						"SCHEDULER job=%s failed (%d consecutive), backing off %.0fs",
-						job.name, consecutive_failures, backoff,
-					)
-					# Schedule next attempt after backoff
-					# Keep original rhythm by computing next regular slot after backoff
-					backoff_until = now + backoff
-					if next_run < backoff_until:
-						skips = max(1, int((backoff_until - next_run) / job.interval_seconds) + 1)
-						next_run += skips * job.interval_seconds
-					
-					if job.jitter_pct > 0:
-						jitter_range = job.interval_seconds * job.jitter_pct
-						jitter = random.uniform(-jitter_range, jitter_range)
-						next_run = max(now + _MIN_INTERVAL, next_run + jitter)
-					else:
-						next_run = max(now + _MIN_INTERVAL, next_run)
 		
 		except asyncio.CancelledError:
 			_log.debug("SCHEDULER job=%s cancelled", job.name)
@@ -403,17 +448,21 @@ class Scheduler:
 	def get_status(self) -> list[JobStatus]:
 		"""Return status of all jobs (for monitoring/API).
 		
-		Safe to call from any context.
+		Safe to call from the scheduler's event-loop context.
+		For cross-thread callers, schedule this via loop.call_soon_threadsafe().
 		"""
-		return [
-			{
-				"name": job.name,
-				"interval_seconds": job.interval_seconds,
-				"last_success": job.last_success.isoformat() if job.last_success else None,
-				"last_attempt": job.last_attempt.isoformat() if job.last_attempt else None,
-				"is_running": (task := self._tasks.get(job.name)) is not None and not task.done(),
-				"run_count": job.run_count,
-				"fail_count": job.fail_count,
-			}
-			for job in self._jobs.values()
-		]
+		statuses: list[JobStatus] = []
+		for job in self._jobs.values():
+			task = self._tasks.get(job.name)
+			statuses.append(
+				{
+					"name": job.name,
+					"interval_seconds": job.interval_seconds,
+					"last_success": job.last_success.isoformat() if job.last_success else None,
+					"last_attempt": job.last_attempt.isoformat() if job.last_attempt else None,
+					"is_running": task is not None and not task.done(),
+					"run_count": job.run_count,
+					"fail_count": job.fail_count,
+				}
+			)
+		return statuses

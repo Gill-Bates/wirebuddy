@@ -28,14 +28,16 @@ import sys
 import tarfile
 import tempfile
 import time
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ..db.sqlite_runtime import close_all_connections, connect, close_connection
+from ..db.sqlite_runtime import close_all_connections, connect, close_connection, transaction
 from ..db.sqlite_settings import get_setting, set_setting
 from ..utils.crypto import verify_password
 from ..db.sqlite_users import get_user_by_id
@@ -64,6 +66,9 @@ _BACKUP_FILENAME_RE = re.compile(
 # Concurrency guard — only one restore may run at a time
 _restore_lock = asyncio.Lock()
 
+# Concurrency guard — only one scheduled backup may run at a time
+_scheduled_backup_lock = threading.Lock()
+
 # Settings keys for backup configuration
 SETTING_BACKUP_ENABLED = "backup_scheduled_enabled"
 SETTING_BACKUP_LAST_AT = "backup_last_at"
@@ -71,24 +76,35 @@ SETTING_BACKUP_HMAC_SECRET = "backup_hmac_secret"
 SETTING_BACKUP_RETENTION = "backup_retention_days"
 
 
-def _get_backup_hmac_secret(conn) -> str:
+def _get_backup_hmac_secret(conn: sqlite3.Connection) -> str:
 	"""Return backup HMAC secret for integrity verification.
 	
-	Creates a new secret on first use and stores it in the database.
+	Creates a new secret on first use and stores it atomically in the database.
 	This secret is unique per installation, preventing backup forgery.
 	"""
 	secret = get_setting(conn, SETTING_BACKUP_HMAC_SECRET)
+	if secret:
+		return secret
+
+	candidate_secret = secrets.token_hex(32)  # 256-bit key
+	with transaction(conn):
+		conn.execute(
+			"INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
+			(SETTING_BACKUP_HMAC_SECRET, candidate_secret, utcnow()),
+		)
+
+	secret = get_setting(conn, SETTING_BACKUP_HMAC_SECRET)
 	if not secret:
-		secret = secrets.token_hex(32)  # 256-bit key
-		set_setting(conn, SETTING_BACKUP_HMAC_SECRET, secret)
+		raise RuntimeError("Failed to initialize backup HMAC secret")
 	return secret
 
 
-def _compute_backup_hmac(filepath: Path, conn) -> str:
+def _compute_backup_hmac(filepath: Path, conn: sqlite3.Connection) -> str:
 	"""Compute HMAC of backup file using instance-specific secret.
 	
 	Uses streaming to avoid loading large backups into memory.
-	Returns: 32-character hex HMAC signature (128 bits)
+	Returns: 32-character hex HMAC signature (128 bits, truncated from SHA-256
+	to keep filename length manageable; 128 bits is sufficient for integrity).
 	"""
 	secret = _get_backup_hmac_secret(conn)
 	h = hmac.new(secret.encode("utf-8"), digestmod=hashlib.sha256)
@@ -121,7 +137,7 @@ def _safe_tar_extract(tar: tarfile.TarFile, dest: Path) -> None:
 		tar.extractall(dest, members=members)
 
 
-def _verify_admin_password(conn, admin: dict, password: str) -> None:
+def _verify_admin_password(conn: sqlite3.Connection, admin: dict, password: str) -> None:
 	"""Verify admin user's password for destructive operations.
 	
 	Raises HTTPException(401) if password is invalid.
@@ -140,7 +156,7 @@ def _get_backup_dir(data_dir: Path) -> Path:
 
 async def _receive_and_verify_upload(
 	file: UploadFile,
-	conn,
+	conn: sqlite3.Connection,
 	*,
 	max_bytes: int = MAX_BACKUP_UPLOAD_BYTES,
 ) -> tuple[Path, str]:
@@ -201,7 +217,7 @@ async def _receive_and_verify_upload(
 	return tmp_path, filename
 
 
-def _create_backup_archive(data_dir: Path, db_path: Path, conn) -> tuple[Path, str, int]:
+def _create_backup_archive(data_dir: Path, db_path: Path, conn: sqlite3.Connection) -> tuple[Path, str, int]:
 	"""Create a backup archive of the data directory.
 	
 	Uses SQLite's online backup API for an atomic, consistent database snapshot.
@@ -272,7 +288,7 @@ class BackupSettingsResponse(BaseModel):
 class BackupSettingsUpdate(BaseModel):
 	"""Backup settings update payload."""
 	scheduled_enabled: bool | None = None
-	retention_days: int | None = None
+	retention_days: Literal[1, 7, 14, 21, 30] | None = None
 
 
 @router.get("/settings", response_model=BackupSettingsResponse)
@@ -280,18 +296,32 @@ def get_backup_settings(
 	request: Request,
 	_: sqlite3.Row = Depends(require_admin),
 ):
-	"""Get current backup settings and status."""
+	"""Get current backup settings and status.
+
+	NOTE: sync – FastAPI threadpools this handler. Performs glob() + stat() ×
+	backup-file-count + shutil.disk_usage() – all blocking file-system calls.
+	"""
 	conn = connect(request.app.state.cfg.db_path)
 	try:
 		enabled = get_setting(conn, SETTING_BACKUP_ENABLED, "0") == "1"
 		last_backup = get_setting(conn, SETTING_BACKUP_LAST_AT)
-		retention = int(get_setting(conn, SETTING_BACKUP_RETENTION, str(BACKUP_RETENTION_DAYS)))
+		raw_retention = get_setting(conn, SETTING_BACKUP_RETENTION, str(BACKUP_RETENTION_DAYS))
+		try:
+			retention = int(raw_retention)
+			if retention not in BACKUP_RETENTION_OPTIONS:
+				_log.warning("Invalid retention_days in DB: %r, using default", raw_retention)
+				retention = BACKUP_RETENTION_DAYS
+		except (ValueError, TypeError):
+			_log.warning("Non-integer retention_days in DB: %r, using default", raw_retention)
+			retention = BACKUP_RETENTION_DAYS
 		
 		# Count existing backups and calculate total size
 		backup_dir = _get_backup_dir(request.app.state.cfg.data_dir)
-		backup_files = list(backup_dir.glob("wirebuddy_backup_*.tar.gz"))
-		backup_count = len(backup_files)
-		backup_size = sum(f.stat().st_size for f in backup_files)
+		backup_count = 0
+		backup_size = 0
+		for f in backup_dir.glob("wirebuddy_backup_*.tar.gz"):
+			backup_count += 1
+			backup_size += f.stat().st_size
 		
 		# Get disk space info
 		disk_free = shutil.disk_usage(backup_dir).free
@@ -334,11 +364,7 @@ def update_backup_settings(
 			)
 		
 		if payload.retention_days is not None:
-			if payload.retention_days not in BACKUP_RETENTION_OPTIONS:
-				raise HTTPException(
-					status_code=400,
-					detail=f"Invalid retention_days. Allowed: {sorted(BACKUP_RETENTION_OPTIONS)}",
-				)
+			# Literal[1,7,14,21,30] validator in BackupSettingsUpdate catches invalid values
 			set_setting(conn, SETTING_BACKUP_RETENTION, str(payload.retention_days))
 			_log.info(
 				"Backup retention set to %d days by %s",
@@ -353,7 +379,7 @@ def update_backup_settings(
 				_log.info("Cleaned up %d old backup(s) after retention change", deleted_count)
 				return ok_response(
 					message="Backup settings updated",
-					deleted_backups=deleted_count,
+					data={"deleted_backups": deleted_count},
 				)
 		
 		return ok_response(message="Backup settings updated")
@@ -368,7 +394,12 @@ def create_backup(
 	admin: sqlite3.Row = Depends(require_admin),
 ):
 	"""Create and download a backup of the configuration.
-	
+
+	NOTE: sync – FastAPI threadpools this handler. _create_backup_archive()
+	performs full tar + gzip archiving of the data directory (blocking file I/O,
+	can take seconds for large datasets). Intentionally kept sync to allow the
+	StreamingResponse to be returned directly after archiving completes.
+
 	Returns a gzip-compressed tarball with HMAC signature in filename.
 	Uses POST because this operation has side effects (updates last-backup timestamp).
 	"""
@@ -403,7 +434,10 @@ def create_backup(
 	return StreamingResponse(
 		iter_file(),
 		media_type="application/gzip",
-		headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+		headers={
+			"Content-Disposition": f'attachment; filename="{filename}"',
+			"Content-Length": str(file_size),
+		},
 	)
 
 
@@ -428,7 +462,12 @@ async def validate_backup(
 
 
 class RestoreRequest(BaseModel):
-	"""Password confirmation for restore operation."""
+	"""Password confirmation for restore operation.
+
+	NOTE: Not used directly — multipart endpoints cannot mix Pydantic
+	models with File()/Form() parameters in FastAPI. The password field
+	is received via Form(...) instead. Kept here for documentation only.
+	"""
 	password: str
 
 
@@ -459,16 +498,16 @@ async def restore_backup(  # async: uses await for file I/O
 		restored_items: list[str] = []
 
 		conn = connect(db_path)
+		tmp_upload_path: Path | None = None
 		try:
-			# Verify admin password
-			_verify_admin_password(conn, admin, password)
-
-			# Stream, validate gzip, and verify HMAC (shared with /validate)
+			# Verify admin password (PBKDF2-SHA256 – moved off event loop)
+			await asyncio.to_thread(_verify_admin_password, conn, admin, password)
 			tmp_upload_path, filename = await _receive_and_verify_upload(file, conn)
 
 			try:
 				_log.warning(
-					"Backup restore initiated by %s",
+					"Backup restore initiated: file=%s by=%s",
+					filename,
 					admin["username"],
 				)
 
@@ -476,9 +515,12 @@ async def restore_backup(  # async: uses await for file I/O
 				with tempfile.TemporaryDirectory() as tmpdir:
 					tmp_path = Path(tmpdir)
 
-					try:
+					# Tar extraction is blocking file I/O – moved off event loop
+					def _extract_tar() -> None:
 						with tarfile.open(tmp_upload_path, mode="r:gz") as tar:
 							_safe_tar_extract(tar, tmp_path)
+					try:
+						await asyncio.to_thread(_extract_tar)
 					except ValueError as e:
 						_log.error("Unsafe tar archive: %s", e)
 						raise HTTPException(
@@ -504,9 +546,11 @@ async def restore_backup(  # async: uses await for file I/O
 					if extracted_db.exists():
 						try:
 							test_conn = sqlite3.connect(str(extracted_db))
-							result = test_conn.execute("PRAGMA integrity_check").fetchone()
-							test_conn.close()
-							if result[0] != "ok":
+							try:
+								result = test_conn.execute("PRAGMA integrity_check").fetchone()
+							finally:
+								test_conn.close()
+							if result is None or result[0] != "ok":
 								raise HTTPException(
 									status_code=400,
 									detail="Backup contains corrupt database",
@@ -533,8 +577,8 @@ async def restore_backup(  # async: uses await for file I/O
 					rollback_dir.mkdir(exist_ok=True)
 					restore_succeeded = False
 
+					# Restore database (extracted_db defined above)
 					try:
-						# Restore database (extracted_db defined above)
 						if extracted_db.exists():
 							if db_path.exists():
 								shutil.move(str(db_path), str(rollback_dir / BACKUP_DATABASE_NAME))
@@ -594,15 +638,24 @@ async def restore_backup(  # async: uses await for file I/O
 						)
 
 					finally:
-						if restore_succeeded and rollback_dir.exists():
-							try:
-								shutil.rmtree(rollback_dir)
-							except Exception as cleanup_error:
-								_log.warning("Failed to clean up rollback: %s", cleanup_error)
+						if restore_succeeded:
+							# Rollback dir is no longer needed after successful restore
+							if rollback_dir.exists():
+								try:
+									shutil.rmtree(rollback_dir)
+								except Exception as cleanup_error:
+									_log.warning("Failed to clean up rollback: %s", cleanup_error)
+							# Maintenance mode intentionally stays True on success:
+							# the app will restart momentarily and reset it on boot.
+						else:
+							# Restore failed (rollback may have succeeded) — re-open for traffic.
+							# rollback_dir is intentionally kept as a last-resort recovery artifact.
+							request.app.state.maintenance = False
 
 			finally:
 				await file.close()
-				tmp_upload_path.unlink(missing_ok=True)
+				if tmp_upload_path is not None:
+					tmp_upload_path.unlink(missing_ok=True)
 
 		finally:
 			if conn is not None:
@@ -634,11 +687,11 @@ def list_backups(
 	
 	backups = []
 	for backup_file in sorted(backup_dir.glob("wirebuddy_backup_*.tar.gz"), reverse=True):
-		stat = backup_file.stat()
+		file_stat = backup_file.stat()
 		backups.append({
 			"filename": backup_file.name,
-			"size_bytes": stat.st_size,
-			"created_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+			"size_bytes": file_stat.st_size,
+			"created_at": datetime.fromtimestamp(file_stat.st_mtime, tz=timezone.utc).isoformat(),
 		})
 	
 	return ok_response(data=backups)
@@ -650,7 +703,11 @@ def delete_scheduled_backup(
 	filename: str,
 	admin: sqlite3.Row = Depends(require_admin),
 ):
-	"""Delete a specific scheduled backup."""
+	"""Delete a specific scheduled backup.
+
+	Admin authentication is sufficient here; no separate password confirmation is
+	required for deleting an individual stored backup file.
+	"""
 	# Validate filename format to prevent path traversal
 	if not _BACKUP_FILENAME_RE.match(filename):
 		raise HTTPException(status_code=400, detail="Invalid backup filename")
@@ -691,51 +748,65 @@ def run_scheduled_backup(data_dir: Path, db_path: Path) -> dict:
 	Raises:
 		OSError: If insufficient disk space
 	"""
-	conn = connect(db_path)
+	if not _scheduled_backup_lock.acquire(blocking=False):
+		_log.warning("Scheduled backup already running, skipping")
+		return {"skipped": True}
 	try:
-		# Get retention setting
-		retention_days = int(get_setting(conn, SETTING_BACKUP_RETENTION, str(BACKUP_RETENTION_DAYS)))
-		
-		# Check disk space before creating backup
-		backup_dir = _get_backup_dir(data_dir)
-		disk_free = shutil.disk_usage(backup_dir).free
-		min_required = 100 * 1024 * 1024  # Require at least 100MB free
-		
-		if disk_free < min_required:
-			_log.error("Insufficient disk space for backup: %d bytes free, need %d", disk_free, min_required)
-			raise OSError(f"Insufficient disk space: {disk_free // (1024*1024)}MB free, need at least 100MB")
-		
-		# Create backup archive
-		tmp_path, filename, file_size = _create_backup_archive(data_dir, db_path, conn)
-		
-		# Move to backup directory
-		final_path = backup_dir / filename
-		shutil.move(str(tmp_path), str(final_path))
-		
-		# Verify file was created successfully before updating timestamp
-		if not final_path.exists():
-			_log.error("Backup file not found after move: %s", final_path)
-			raise OSError(f"Backup file not created: {filename}")
-		
-		actual_size = final_path.stat().st_size
-		if actual_size != file_size:
-			_log.warning("Backup size mismatch: expected %d, got %d", file_size, actual_size)
-		
-		# Update last backup timestamp only after successful file creation
-		set_setting(conn, SETTING_BACKUP_LAST_AT, utcnow().isoformat())
-		
-		_log.info("Scheduled backup created: %s (%d bytes)", filename, actual_size)
-		
-		# Cleanup old backups
-		deleted_count = _cleanup_old_backups(backup_dir, retention_days)
-		
-		return {
-			"filename": filename,
-			"size_bytes": actual_size,
-			"deleted_old_backups": deleted_count,
-		}
+		conn = connect(db_path)
+		try:
+			# Get retention setting
+			raw_retention = get_setting(conn, SETTING_BACKUP_RETENTION, str(BACKUP_RETENTION_DAYS))
+			try:
+				retention_days = int(raw_retention)
+				if retention_days not in BACKUP_RETENTION_OPTIONS:
+					_log.warning("Invalid retention_days in DB: %r, using default", raw_retention)
+					retention_days = BACKUP_RETENTION_DAYS
+			except (ValueError, TypeError):
+				_log.warning("Non-integer retention_days in DB: %r, using default", raw_retention)
+				retention_days = BACKUP_RETENTION_DAYS
+			
+			# Check disk space before creating backup
+			backup_dir = _get_backup_dir(data_dir)
+			disk_free = shutil.disk_usage(backup_dir).free
+			min_required = 100 * 1024 * 1024  # Require at least 100MB free
+			
+			if disk_free < min_required:
+				_log.error("Insufficient disk space for backup: %d bytes free, need %d", disk_free, min_required)
+				raise OSError(f"Insufficient disk space: {disk_free // (1024*1024)}MB free, need at least 100MB")
+			
+			# Create backup archive
+			tmp_path, filename, file_size = _create_backup_archive(data_dir, db_path, conn)
+			
+			# Move to backup directory
+			final_path = backup_dir / filename
+			shutil.move(str(tmp_path), str(final_path))
+			
+			# Verify file was created successfully before updating timestamp
+			if not final_path.exists():
+				_log.error("Backup file not found after move: %s", final_path)
+				raise OSError(f"Backup file not created: {filename}")
+			
+			actual_size = final_path.stat().st_size
+			if actual_size != file_size:
+				_log.warning("Backup size mismatch: expected %d, got %d", file_size, actual_size)
+			
+			# Update last backup timestamp only after successful file creation
+			set_setting(conn, SETTING_BACKUP_LAST_AT, utcnow().isoformat())
+			
+			_log.info("Scheduled backup created: %s (%d bytes)", filename, actual_size)
+			
+			# Cleanup old backups
+			deleted_count = _cleanup_old_backups(backup_dir, retention_days)
+			
+			return {
+				"filename": filename,
+				"size_bytes": actual_size,
+				"deleted_old_backups": deleted_count,
+			}
+		finally:
+			close_connection(conn)
 	finally:
-		close_connection(conn)
+		_scheduled_backup_lock.release()
 
 
 def _cleanup_old_backups(backup_dir: Path, retention_days: int = BACKUP_RETENTION_DAYS) -> int:
@@ -751,12 +822,12 @@ def _cleanup_old_backups(backup_dir: Path, retention_days: int = BACKUP_RETENTIO
 	deleted = 0
 	
 	for backup_file in backup_dir.glob("wirebuddy_backup_*.tar.gz"):
-		if backup_file.stat().st_mtime < cutoff_time:
-			try:
+		try:
+			if backup_file.stat().st_mtime < cutoff_time:
 				backup_file.unlink()
 				_log.info("Deleted old backup: %s", backup_file.name)
 				deleted += 1
-			except Exception as e:
-				_log.warning("Failed to delete old backup %s: %s", backup_file.name, e)
+		except Exception as e:
+			_log.warning("Failed to process backup %s: %s", backup_file.name, e)
 	
 	return deleted

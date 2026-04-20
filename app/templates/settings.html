@@ -4,6 +4,7 @@
 
 {% block extra_css %}
 <style>
+{# Included as template to allow Jinja2 expressions in CSS when needed. #}
 {% include "settings/_css.html" %}
 </style>
 {% endblock %}
@@ -14,32 +15,28 @@
     <h2 class="page-title"><span class="material-icons me-2">settings</span>Settings</h2>
 </div>
 
+<div id="wb-page-config"
+     data-is-admin="{{ 'true' if user['is_admin'] else 'false' }}"
+     data-user-id="{{ user['id'] | int }}"
+     class="d-none" aria-hidden="true"></div>
+
 <!-- Settings Tab Navigation -->
 <ul class="nav nav-tabs mb-4" id="settingsTabs" role="tablist">
+    {% set tabs = [
+        ('general', 'General', true),
+        ('wireguard', 'WireGuard', false),
+        ('dns', 'DNS', false),
+        ('letsencrypt', "Let's Encrypt", false),
+        ('logs', 'Logs', false),
+        ('backup', 'Backup', false),
+    ] %}
+    {% for tab_id, label, is_active in tabs %}
     <li class="nav-item" role="presentation">
-        <button class="nav-link active" id="general-tab" data-bs-toggle="tab" data-bs-target="#general-pane"
-            type="button" role="tab" aria-controls="general-pane" aria-selected="true">General</button>
+        <button class="nav-link{% if is_active %} active{% endif %}" id="{{ tab_id }}-tab" data-bs-toggle="tab"
+            data-bs-target="#{{ tab_id }}-pane" type="button" role="tab" aria-controls="{{ tab_id }}-pane"
+            aria-selected="{{ 'true' if is_active else 'false' }}">{{ label }}</button>
     </li>
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" id="wireguard-tab" data-bs-toggle="tab" data-bs-target="#wireguard-pane" type="button"
-            role="tab" aria-controls="wireguard-pane" aria-selected="false">WireGuard</button>
-    </li>
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" id="dns-tab" data-bs-toggle="tab" data-bs-target="#dns-pane" type="button" role="tab"
-            aria-controls="dns-pane" aria-selected="false">DNS</button>
-    </li>
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" id="letsencrypt-tab" data-bs-toggle="tab" data-bs-target="#letsencrypt-pane"
-            type="button" role="tab" aria-controls="letsencrypt-pane" aria-selected="false">Let's Encrypt</button>
-    </li>
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs-pane"
-            type="button" role="tab" aria-controls="logs-pane" aria-selected="false">Logs</button>
-    </li>
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" id="backup-tab" data-bs-toggle="tab" data-bs-target="#backup-pane"
-            type="button" role="tab" aria-controls="backup-pane" aria-selected="false">Backup</button>
-    </li>
+    {% endfor %}
 </ul>
 
 <!-- Tab Content -->
@@ -60,8 +57,15 @@
 <script src="/static/js/dashboard_traffic_shared.js"></script>
 <script>
 (async function () {
-    const isAdmin = {{ 'true' if user['is_admin'] else 'false' }};
-    const USER_ID = {{ user['id'] | tojson }};
+    // Shared scope: all includes below run in this IIFE and share identifiers.
+    // Keep include-local names unique and preserve load order (_js_init first).
+    const cfg = document.getElementById('wb-page-config')?.dataset ?? {};
+    const isAdmin = cfg.isAdmin === 'true';
+    const USER_ID = Number.parseInt(cfg.userId || '', 10);
+    if (!Number.isInteger(USER_ID)) {
+        console.error('Invalid page config: USER_ID is missing or not an integer.');
+        return;
+    }
 
     {% include "settings/_js_init.html" %}
     {% include "settings/_js_wireguard.html" %}

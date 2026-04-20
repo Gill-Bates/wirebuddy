@@ -162,6 +162,40 @@ class OTPConfirmRequest(BaseModel):
 		return normalized
 
 
+class OTPDisableRequest(BaseModel):
+	"""OTP disable payload requiring re-authentication proof."""
+	current_password: str | None = Field(None, min_length=1, max_length=256)
+	code: str | None = Field(None, min_length=1, max_length=64)
+
+	@field_validator("current_password")
+	@classmethod
+	def normalize_current_password(cls, v: str | None) -> str | None:
+		if v is None:
+			return v
+		normalized = v.strip()
+		if not normalized:
+			raise ValueError("Current password cannot be empty")
+		return normalized
+
+	@field_validator("code")
+	@classmethod
+	def normalize_code(cls, v: str | None) -> str | None:
+		if v is None:
+			return v
+		normalized = v.strip().replace(" ", "").replace("-", "")
+		if not normalized.isdigit():
+			raise ValueError("TOTP code must be numeric")
+		if len(normalized) < 6 or len(normalized) > 8:
+			raise ValueError("TOTP code must be 6-8 digits")
+		return normalized
+
+	@model_validator(mode="after")
+	def validate_reauth_present(self) -> OTPDisableRequest:
+		if not self.current_password and not self.code:
+			raise ValueError("Either current_password or code is required")
+		return self
+
+
 class RecoveryDownloadRequest(BaseModel):
 	"""Recovery-code ZIP download request payload."""
 	token: str = Field(..., min_length=1, max_length=512)

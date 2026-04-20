@@ -17,33 +17,39 @@ import asyncio
 import hmac
 import ipaddress
 import logging
+from pathlib import Path
 import sqlite3
 import time
-from collections import deque
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
+from ..api.auth import _is_https
 from ..api.response import ok_response
+from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
 from ..db.sqlite_interfaces import list_interfaces
 from ..db.sqlite_nodes import (
 	bump_node_config_version,
+	clear_node_sse_connected,
 	create_node_interface,
 	enroll_node,
+	get_and_clear_node_pending_command,
 	get_node,
 	get_node_by_api_secret,
+	get_node_last_metric_seq,
 	get_node_config,
 	rotate_node_session_secret,
+	set_node_last_metric_seq,
 	set_node_tunnel_peer,
+	update_node_sse_connected,
 	update_node_heartbeat,
 )
-from ..db.sqlite_peers import allocate_peer_ip
+from ..db.sqlite_peers import allocate_peer_ip, get_peer_by_id, update_peers_last_seen_batch
 from ..db.sqlite_peers_mutations import create_peer
 from ..db.sqlite_runtime import connect, close_connection, transaction
-from pathlib import Path
 
 from ..utils.config import get_config
 from ..utils.crypto import hash_token, new_token
@@ -61,6 +67,8 @@ router = APIRouter(tags=["nodes-sync"])
 
 # Allowed commands for SSE command validation (prevents injection)
 _ALLOWED_SSE_COMMANDS = frozenset({"config_changed", "restart", "speedtest"})
+_SSE_CONNECTED_DB_UPDATE_INTERVAL_S = 60.0
+T = TypeVar("T")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Node Speedtest Progress Store
@@ -68,16 +76,70 @@ _ALLOWED_SSE_COMMANDS = frozenset({"config_changed", "restart", "speedtest"})
 
 # In-memory store for node speedtest progress
 # Structure: {node_id: {"progress": {...}, "timestamp": float, "queues": [asyncio.Queue, ...]}}
+# NOTE: This state is process-local and therefore single-worker only.
+# In multi-worker deployments, progress submitter and SSE client may hit
+# different workers and miss updates.
 _node_speedtest_progress: dict[str, dict[str, Any]] = {}
-_progress_lock = asyncio.Lock()
+
+
+def _new_speedtest_progress_state() -> dict[str, Any]:
+	"""Create default in-memory speedtest progress state for one node."""
+	return {
+		"progress": None,
+		"timestamp": 0.0,
+		"queues": [],
+	}
+
+
+def _get_progress_lock() -> asyncio.Lock:
+	"""Get a per-event-loop lock for speedtest progress state."""
+	loop = asyncio.get_running_loop()
+	lock = getattr(loop, "_wirebuddy_nodes_progress_lock", None)
+	if isinstance(lock, asyncio.Lock):
+		return lock
+	lock = asyncio.Lock()
+	setattr(loop, "_wirebuddy_nodes_progress_lock", lock)
+	return lock
+
+
+async def register_speedtest_progress_queue(
+	node_id: str,
+	queue: asyncio.Queue[dict[str, Any]],
+) -> dict[str, Any] | None:
+	"""Register an SSE queue for node speedtest progress updates.
+
+	Returns the latest progress event for the node, if one exists.
+	"""
+	async with _get_progress_lock():
+		state = _node_speedtest_progress.setdefault(node_id, _new_speedtest_progress_state())
+		state["queues"].append(queue)
+		progress = state.get("progress")
+		return progress if isinstance(progress, dict) else None
+
+
+async def unregister_speedtest_progress_queue(
+	node_id: str,
+	queue: asyncio.Queue[dict[str, Any]],
+) -> None:
+	"""Unregister an SSE queue from node speedtest progress updates."""
+	async with _get_progress_lock():
+		state = _node_speedtest_progress.get(node_id)
+		if state is None:
+			return
+		try:
+			state["queues"].remove(queue)
+		except ValueError:
+			pass
+		if not state["queues"] and _node_speedtest_progress.get(node_id) is state:
+			del _node_speedtest_progress[node_id]
 
 # Maps DB pending command names to the SSE event type the node daemon expects.
 # Defaults to "{cmd}_requested" for any command not listed here.
 _PENDING_CMD_EVENT_TYPE: dict[str, str] = {
 	"config_changed": "config_changed",
-    "speedtest": "run_speedtest",      # node daemon listens for "run_speedtest"
-    "restart": "restart_requested",
-    "removed": "node_removed",
+	"speedtest": "run_speedtest",      # node daemon listens for "run_speedtest"
+	"restart": "restart_requested",
+	"removed": "node_removed",
 }
 
 
@@ -106,7 +168,12 @@ def _parse_endpoint_ip(endpoint: str) -> str:
 	if endpoint.startswith("["):
 		bracket_end = endpoint.rfind("]")
 		if bracket_end > 0:
-			return endpoint[1:bracket_end]
+			candidate = endpoint[1:bracket_end]
+			try:
+				ipaddress.ip_address(candidate)
+				return candidate
+			except ValueError:
+				return ""
 		return ""
 	
 	# Try to detect IPv4:port vs bare IP
@@ -119,9 +186,72 @@ def _parse_endpoint_ip(endpoint: str) -> str:
 			return candidate
 		except ValueError:
 			pass
-	
-	# No port or parsing failed - return as-is (bare IP)
-	return endpoint
+
+	# Validate bare value as IP (reject hostnames or malformed input)
+	try:
+		ipaddress.ip_address(endpoint)
+		return endpoint
+	except ValueError:
+		return ""
+
+
+async def _run_with_short_lived_conn(
+	db_path: Path,
+	fn: Callable[..., T],
+	*args: Any,
+) -> T:
+	"""Run a DB operation in a thread using a short-lived connection."""
+	def _exec():
+		thread_conn = connect(db_path)
+		try:
+			return fn(thread_conn, *args)
+		finally:
+			close_connection(thread_conn)
+
+	return await run_in_threadpool(_exec)
+
+
+def _warn_if_not_https(request: Request, node_id: str, context: str) -> None:
+	"""Log when sensitive enrollment data is delivered over non-HTTPS."""
+	if not _is_https_best_effort(request):
+		_log.error("%s delivered session_secret over non-HTTPS transport for node=%s", context, node_id)
+
+
+def _write_peer_traffic_metric(tsdb_dir: Path, data: dict[str, Any]) -> int:
+	"""Write peer traffic metrics. Returns number of written points."""
+	public_key = data.get("public_key")
+	rx_bytes = data.get("rx_bytes", 0)
+	tx_bytes = data.get("tx_bytes", 0)
+	if not public_key or (rx_bytes <= 0 and tx_bytes <= 0):
+		return 0
+	tsdb.append_point(tsdb_dir, peer_key=public_key, metric="rx_bytes", value=rx_bytes)
+	tsdb.append_point(tsdb_dir, peer_key=public_key, metric="tx_bytes", value=tx_bytes)
+	return 2
+
+
+def _write_peer_handshake_metric(tsdb_dir: Path, data: dict[str, Any]) -> int:
+	"""Write peer handshake metric. Returns number of written points."""
+	public_key = data.get("public_key")
+	latest_handshake = data.get("latest_handshake")
+	if not public_key or not latest_handshake:
+		return 0
+	tsdb.append_point(tsdb_dir, peer_key=public_key, metric="latest_handshake", value=latest_handshake)
+	return 1
+
+
+_METRIC_WRITERS: dict[str, Callable[[Path, dict[str, Any]], int]] = {
+	"peer_traffic": _write_peer_traffic_metric,
+	"peer_handshake": _write_peer_handshake_metric,
+}
+
+
+def _is_https_best_effort(request: Request) -> bool:
+	"""Return HTTPS status without raising transport-detection exceptions."""
+	try:
+		return _is_https(request)
+	except HTTPException as exc:
+		_log.warning("Could not determine HTTPS state for enrollment transport: %s", exc.detail)
+		return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -150,8 +280,7 @@ def get_current_node(
 	node = get_node_by_api_secret(conn, secret_hash)
 
 	if node is None:
-		# Log first 8 chars of hash for debugging (safe: hash is not reversible)
-		_log.warning("Node auth failed: no node found for secret_hash=%s...", secret_hash[:8])
+		_log.warning("Node auth failed: unknown API secret")
 		raise HTTPException(status_code=401, detail="Invalid API secret")
 
 	if node["status"] == "pending":
@@ -169,9 +298,14 @@ def get_current_node(
 		_log.error("Node %s is enrolled without a stored certificate fingerprint", node["id"])
 		raise HTTPException(status_code=500, detail="Node enrollment state is invalid")
 
-	if not hmac.compare_digest(client_cert_fp.strip().lower(), stored_cert_fp):
+	client_cert_fp_normalized = client_cert_fp.strip().lower()
+	if len(client_cert_fp_normalized) != len(stored_cert_fp):
+		_log.warning("Cert fingerprint length mismatch for node=%s", node["id"])
+		raise HTTPException(status_code=403, detail="Certificate fingerprint mismatch")
+
+	if not hmac.compare_digest(client_cert_fp_normalized, stored_cert_fp):
 		_log.warning("Cert fingerprint mismatch for node=%s: got=%s... stored=%s...",
-			node["id"], client_cert_fp[:16], stored_cert_fp[:16])
+			node["id"], client_cert_fp_normalized[:16], stored_cert_fp[:16])
 		raise HTTPException(status_code=403, detail="Certificate fingerprint mismatch")
 
 	return node
@@ -267,30 +401,38 @@ async def enroll_node_endpoint(
 	# first enrollment, so the token's api_secret no longer matches.
 	# Instead, verify the certificate fingerprint matches what we stored.
 	if node["status"] != "pending":
-		stored_fingerprint = node.get("cert_fingerprint")
-		if stored_fingerprint and hmac.compare_digest(fingerprint, stored_fingerprint):
-			# Same certificate → node lost state, re-issue session secret
-			_log.info(
-				"Node re-enrollment recovery: id=%s, name=%s — same certificate, rotating session secret",
-				node_id, node["name"],
-			)
-			session_secret = new_token()
-			with transaction(conn, immediate=True):
-				rotate_node_session_secret(conn, node_id, hash_token(session_secret))
-				bump_node_config_version(conn, node_id)
-			config = get_node_config(conn, node_id)
-			config["session_secret"] = session_secret
-			return ok_response(data=config)
-		else:
-			# Different certificate → genuine duplicate enrollment attempt or hijack
-			_log.warning(
-				"Node enrollment rejected: id=%s already enrolled with different certificate "
-				"(stored=%s..., request=%s...)",
-				node_id,
-				(stored_fingerprint or "none")[:16],
-				fingerprint[:16],
-			)
-			raise HTTPException(status_code=409, detail="Node already enrolled")
+		session_secret = new_token()
+		with transaction(conn, immediate=True):
+			fresh_node = get_node(conn, node_id)
+			if fresh_node is None:
+				raise HTTPException(status_code=404, detail="Enrollment token invalid or node deleted")
+
+			if fresh_node["status"] == "pending":
+				raise HTTPException(status_code=409, detail="Node enrollment state changed, retry enrollment")
+
+			stored_fingerprint = fresh_node["cert_fingerprint"]
+			if not (stored_fingerprint and hmac.compare_digest(fingerprint, stored_fingerprint)):
+				_log.warning(
+					"Node enrollment rejected: id=%s already enrolled with different certificate "
+					"(stored=%s..., request=%s...)",
+					node_id,
+					(stored_fingerprint or "none")[:16],
+					fingerprint[:16],
+				)
+				raise HTTPException(status_code=409, detail="Node already enrolled")
+
+			if not rotate_node_session_secret(conn, node_id, hash_token(session_secret)):
+				raise HTTPException(status_code=409, detail="Node is pending and cannot use recovery enrollment")
+			bump_node_config_version(conn, node_id)
+
+		_log.info(
+			"Node re-enrollment recovery: id=%s, name=%s — same certificate, rotating session secret",
+			node_id, node["name"],
+		)
+		config = get_node_config(conn, node_id)
+		_warn_if_not_https(request, node_id, context="Enrollment recovery")
+		config["session_secret"] = session_secret
+		return ok_response(data=config)
 
 	# ── First enrollment path: Node is pending ──
 	# Verify api_secret matches stored hash (only for pending nodes)
@@ -303,9 +445,9 @@ async def enroll_node_endpoint(
 
 	# Enroll atomically — status check, keypairs, tunnel peer, secret rotation,
 	# and config-version bump all commit together or not at all.
-	session_secret = new_token()
+	session_secret = ""
 	tunnel_peer_id = None
-	tunnel_info = None  # (interface, pubkey, address) for WG sync
+	tunnel_info = None  # (interface, new_pubkey, allowed_ips, old_pubkey_to_remove)
 	with transaction(conn, immediate=True):
 		# Definitive serialised pending check inside the IMMEDIATE lock
 		if not enroll_node(conn, node_id, fingerprint):
@@ -318,24 +460,59 @@ async def enroll_node_endpoint(
 		# Use the first interface's keypair for the tunnel
 		if keypairs:
 			first_iface_name, (_, first_pubkey) = keypairs[0]
-			tunnel_address = allocate_peer_ip(conn, first_iface_name)
-			if tunnel_address:
-				tunnel_peer_id = create_peer(
-					conn,
-					public_key=first_pubkey,
-					allowed_ips=tunnel_address,  # Node can only access its own IP on master
-					name=f"[Node] {node['name']}",
-					interface=first_iface_name,
-					peer_address=tunnel_address,
-					allowed_ips_mode="custom",
-					use_adblocker=False,  # No DNS filtering for node tunnel
-					dns_logging_enabled=False,  # No DNS logging for node tunnel
+			existing_tunnel_peer = None
+			if node["tunnel_peer_id"]:
+				existing_tunnel_peer = get_peer_by_id(conn, int(node["tunnel_peer_id"]))
+
+			if existing_tunnel_peer and existing_tunnel_peer["peer_address"]:
+				tunnel_peer_id = int(existing_tunnel_peer["id"])
+				old_pubkey = str(existing_tunnel_peer["public_key"] or "")
+				tunnel_iface = str(existing_tunnel_peer["interface"] or first_iface_name)
+				tunnel_allowed_ips = str(existing_tunnel_peer["allowed_ips"] or existing_tunnel_peer["peer_address"])
+
+				conn.execute(
+					"""
+					UPDATE peers
+					SET public_key = ?,
+					    name = ?,
+					    use_adblocker = 0,
+					    dns_logging_enabled = 0
+					WHERE id = ?
+					""",
+					(first_pubkey, f"[Node] {node['name']}", tunnel_peer_id),
 				)
 				set_node_tunnel_peer(conn, node_id, tunnel_peer_id)
-				tunnel_info = (first_iface_name, first_pubkey, tunnel_address)
-				_log.info("Created tunnel peer for node=%s, peer_id=%d, address=%s", node_id, tunnel_peer_id, tunnel_address)
+				tunnel_info = (
+					tunnel_iface,
+					first_pubkey,
+					tunnel_allowed_ips,
+					old_pubkey if old_pubkey and old_pubkey != first_pubkey else None,
+				)
+				_log.info(
+					"Reused tunnel peer for node=%s, peer_id=%d, address=%s",
+					node_id,
+					tunnel_peer_id,
+					existing_tunnel_peer["peer_address"],
+				)
 			else:
-				_log.warning("Could not allocate tunnel address for node=%s (pool exhausted?)", node_id)
+				tunnel_address = allocate_peer_ip(conn, first_iface_name)
+				if tunnel_address:
+					tunnel_peer_id = create_peer(
+						conn,
+						public_key=first_pubkey,
+						allowed_ips=tunnel_address,  # Node can only access its own IP on master
+						name=f"[Node] {node['name']}",
+						interface=first_iface_name,
+						peer_address=tunnel_address,
+						allowed_ips_mode="custom",
+						use_adblocker=False,  # No DNS filtering for node tunnel
+						dns_logging_enabled=False,  # No DNS logging for node tunnel
+					)
+					set_node_tunnel_peer(conn, node_id, tunnel_peer_id)
+					tunnel_info = (first_iface_name, first_pubkey, tunnel_address, None)
+					_log.info("Created tunnel peer for node=%s, peer_id=%d, address=%s", node_id, tunnel_peer_id, tunnel_address)
+				else:
+					_log.warning("Could not allocate tunnel address for node=%s (pool exhausted?)", node_id)
 
 		bump_node_config_version(conn, node_id)
 
@@ -349,11 +526,23 @@ async def enroll_node_endpoint(
 	# Add tunnel peer to master's WireGuard (outside transaction)
 	warning_msg = None
 	if tunnel_info:
-		iface_name, pubkey, address = tunnel_info
+		iface_name, pubkey, allowed_ips, old_pubkey = tunnel_info
+		if old_pubkey:
+			code_rm, _, stderr_rm = await run_wg_command(
+				"wg", "set", iface_name,
+				"peer", old_pubkey,
+				"remove",
+			)
+			if code_rm != 0:
+				_log.debug(
+					"Old tunnel peer key removal skipped/failed for node=%s: %s",
+					node_id,
+					stderr_rm.strip(),
+				)
 		code, _, stderr = await run_wg_command(
 			"wg", "set", iface_name,
 			"peer", pubkey,
-			"allowed-ips", f"{address}/32" if "/" not in address else address,
+			"allowed-ips", allowed_ips,
 		)
 		if code != 0:
 			_log.error("Failed to add tunnel peer to WireGuard: %s", stderr.strip())
@@ -364,6 +553,7 @@ async def enroll_node_endpoint(
 	_log.info("Rotated API secret for node=%s (enrollment token invalidated)", node_id)
 
 	config = get_node_config(conn, node_id)
+	_warn_if_not_https(request, node_id, context="Enrollment")
 	config["session_secret"] = session_secret  # One-time delivery over TLS
 	if warning_msg:
 		config["_warning"] = warning_msg
@@ -383,28 +573,6 @@ async def enroll_node_endpoint(
 	)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Heartbeat
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def _get_node_last_seq(conn: sqlite3.Connection, node_id: str) -> int | None:
-	"""Get the last processed metric sequence for a node (idempotency)."""
-	row = conn.execute(
-		"SELECT last_metric_seq FROM nodes WHERE id = ?", (node_id,)
-	).fetchone()
-	return row["last_metric_seq"] if row and row["last_metric_seq"] else None
-
-
-def _set_node_last_seq(conn: sqlite3.Connection, node_id: str, seq: int) -> None:
-	"""Update the last processed metric sequence for a node."""
-	conn.execute(
-		"UPDATE nodes SET last_metric_seq = ? WHERE id = ?",
-		(seq, node_id)
-	)
-	conn.commit()
-
-
 @router.post("/heartbeat")
 def heartbeat(
 	body: HeartbeatRequest,
@@ -413,7 +581,12 @@ def heartbeat(
 	tsdb_dir: Path = Depends(get_tsdb_dir),
 ):
 	"""Receive heartbeat with metrics from a remote node.
-	
+
+	NOTE: sync – FastAPI threadpools this handler. Performs TSDB file writes
+	(_write_peer_traffic_metric / _write_peer_handshake_metric) and several DB
+	writes per call. With many nodes at short intervals this consumes thread-pool
+	slots; monitor pool saturation if the node fleet grows significantly.
+
 	Implements reliable at-least-once delivery:
 	- Accepts batched metrics with sequence numbers
 	- Skips already-processed sequences (idempotency)
@@ -433,7 +606,6 @@ def heartbeat(
 
 	# Persist peer stats from node's wg dump (makes remote peers visible in UI)
 	if body.peer_stats:
-		from ..db.sqlite_peers import update_peers_last_seen_batch
 		db_updates: list[tuple[str, int, str]] = []
 		for ps in body.peer_stats:
 			if not ps.latest_handshake or not ps.public_key:
@@ -453,7 +625,7 @@ def heartbeat(
 	acked_seq: int | None = None
 	if body.metrics_batch and body.metrics_batch.metrics:
 		batch = body.metrics_batch
-		last_seq = _get_node_last_seq(conn, node_id)
+		last_seq = get_node_last_metric_seq(conn, node_id)
 		
 		# Filter out already-processed metrics (idempotency)
 		new_metrics = [
@@ -473,20 +645,11 @@ def heartbeat(
 			try:
 				points_written = 0
 				for m in new_metrics:
-					if m.type == "peer_traffic":
-						public_key = m.data.get("public_key")
-						rx_bytes = m.data.get("rx_bytes", 0)
-						tx_bytes = m.data.get("tx_bytes", 0)
-						if public_key and (rx_bytes > 0 or tx_bytes > 0):
-							tsdb.append_point(tsdb_dir, peer_key=public_key, metric="rx_bytes", value=rx_bytes)
-							tsdb.append_point(tsdb_dir, peer_key=public_key, metric="tx_bytes", value=tx_bytes)
-							points_written += 2
-					elif m.type == "peer_handshake":
-						public_key = m.data.get("public_key")
-						latest_handshake = m.data.get("latest_handshake")
-						if public_key and latest_handshake:
-							tsdb.append_point(tsdb_dir, peer_key=public_key, metric="latest_handshake", value=latest_handshake)
-							points_written += 1
+					writer = _METRIC_WRITERS.get(m.type)
+					if writer is None:
+						_log.debug("Node %s: unknown metric type %r (skipped)", node_id, m.type)
+						continue
+					points_written += writer(tsdb_dir, m.data)
 				
 				_log.debug(
 					"Node %s: wrote %d TSDB points from %d metrics (seq %s-%s)",
@@ -495,7 +658,8 @@ def heartbeat(
 				)
 			except Exception:
 				_log.warning("Failed to write TSDB metrics from node %s", node_id, exc_info=True)
-				# Do NOT ack - node will retry on next heartbeat
+				# Do NOT ack - node will retry on next heartbeat.
+				# Heartbeat/peer-status DB updates are intentionally independent and idempotent.
 				return ok_response(
 					data={"acked_seq": acked_seq},
 					message="Heartbeat received (metrics write failed)"
@@ -503,7 +667,7 @@ def heartbeat(
 		
 		# Update last processed sequence (ACK) only after successful TSDB write
 		if batch.seq_to is not None:
-			_set_node_last_seq(conn, node_id, batch.seq_to)
+			set_node_last_metric_seq(conn, node_id, batch.seq_to)
 			acked_seq = batch.seq_to
 
 	return ok_response(
@@ -530,20 +694,17 @@ def get_config_endpoint(
 	"""
 	node_id = node["id"]
 
-	db_node = get_node(conn, node_id)
-	if db_node is None:
-		raise HTTPException(status_code=404, detail="Node not found")
-
 	# ETag-style: skip full payload if version matches
-	if version is not None and db_node["config_version"] is not None and version == str(db_node["config_version"]):
+	if version is not None and node["config_version"] is not None and version == str(node["config_version"]):
 		_log.debug("NODE_CONFIG_UNCHANGED node=%s version=%s", node_id, version[:16] if version else "none")
-		return ok_response(data=None, message="Config unchanged", config_version=db_node["config_version"])
+		return ok_response(data=None, message="Config unchanged", config_version=node["config_version"])
 
 	config = get_node_config(conn, node["id"])
 	peer_count = len(config.get("peers", []))
+	config_ver_str = str(node["config_version"]) if node["config_version"] is not None else "none"
 	_log.info(
 		"NODE_CONFIG_DELIVERED node=%s peers=%d version=%s",
-		node_id, peer_count, db_node["config_version"][:16] if db_node["config_version"] else "none",
+		node_id, peer_count, config_ver_str[:16],
 	)
 	return ok_response(data=config)
 
@@ -552,7 +713,6 @@ def get_config_endpoint(
 async def node_events(
 	request: Request,
 	node: sqlite3.Row = Depends(get_current_node),
-	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Server-Sent Events stream for real-time config change notifications.
 
@@ -567,12 +727,6 @@ async def node_events(
 	The node should pull the full config via GET /api/nodes/config after
 	receiving an event.
 	"""
-	from ..db.sqlite_nodes import (
-		update_node_sse_connected,
-		clear_node_sse_connected,
-		get_and_clear_node_pending_command,
-	)
-	
 	node_id = node["id"]
 	db_path = request.app.state.db_path
 	shutdown_event = getattr(request.app.state, "shutdown_signal_event", None)
@@ -580,35 +734,36 @@ async def node_events(
 
 	async def check_pending_command() -> str | None:
 		"""Check DB for pending command (multi-worker safe, short-lived connection)."""
-		def _check():
-			thread_conn = connect(db_path)
-			try:
-				return get_and_clear_node_pending_command(thread_conn, node_id)
-			finally:
-				close_connection(thread_conn)
-		return await run_in_threadpool(_check)
+		return await _run_with_short_lived_conn(db_path, get_and_clear_node_pending_command, node_id)
+
+	async def mark_sse_connected() -> None:
+		await _run_with_short_lived_conn(db_path, update_node_sse_connected, node_id)
+
+	async def clear_sse_connected() -> None:
+		await _run_with_short_lived_conn(db_path, clear_node_sse_connected, node_id)
+
+	async def emit_pending_command() -> str | None:
+		pending_cmd = await check_pending_command()
+		if not pending_cmd:
+			return None
+		if pending_cmd not in _ALLOWED_SSE_COMMANDS:
+			_log.warning("Node %s: unknown pending command %r (ignored)", node_id, pending_cmd)
+			return None
+
+		event_type = _PENDING_CMD_EVENT_TYPE.get(pending_cmd, f"{pending_cmd}_requested")
+		_log.info("Node %s command from DB: %s -> event: %s", node_id, pending_cmd, event_type)
+		return f"event: {event_type}\ndata: {pending_cmd}\n\n"
 
 	async def event_generator():
 		try:
 			close_event = "event: close\ndata: server_shutdown\n\n"
-			# Mark node as SSE-connected (short-lived connection)
-			def _mark_connected():
-				thread_conn = connect(db_path)
-				try:
-					update_node_sse_connected(thread_conn, node_id)
-				finally:
-					close_connection(thread_conn)
-			
-			await run_in_threadpool(_mark_connected)
+			await mark_sse_connected()
+			last_sse_connected_write = time.monotonic()
 			
 			# Check for any command that was queued while we were connecting
-			pending_cmd = await check_pending_command()
-			if pending_cmd and pending_cmd in _ALLOWED_SSE_COMMANDS:
-				event_type = _PENDING_CMD_EVENT_TYPE.get(pending_cmd, f"{pending_cmd}_requested")
-				_log.info("Node %s has pending command from DB: %s → event: %s", node_id, pending_cmd, event_type)
-				yield f"event: {event_type}\ndata: {pending_cmd}\n\n"
-			elif pending_cmd:
-				_log.warning("Node %s: unknown pending command %r (ignored)", node_id, pending_cmd)
+			pending_event = await emit_pending_command()
+			if pending_event is not None:
+				yield pending_event
 			
 			# Send initial keepalive
 			yield ": keepalive\n\n"
@@ -622,15 +777,13 @@ async def node_events(
 					break
 				# On keepalive events, also check DB for pending commands
 				if event.startswith(":"):  # Keepalive comment
-					await run_in_threadpool(_mark_connected)
-					# Check for commands from other workers (multi-worker safe)
-					pending_cmd = await check_pending_command()
-					if pending_cmd and pending_cmd in _ALLOWED_SSE_COMMANDS:
-						event_type = _PENDING_CMD_EVENT_TYPE.get(pending_cmd, f"{pending_cmd}_requested")
-						_log.info("Node %s received command from DB: %s → event: %s", node_id, pending_cmd, event_type)
-						yield f"event: {event_type}\ndata: {pending_cmd}\n\n"
-					elif pending_cmd:
-						_log.warning("Node %s: unknown pending command %r (ignored)", node_id, pending_cmd)
+					now_monotonic = time.monotonic()
+					if now_monotonic - last_sse_connected_write >= _SSE_CONNECTED_DB_UPDATE_INTERVAL_S:
+						await mark_sse_connected()
+						last_sse_connected_write = now_monotonic
+					pending_event = await emit_pending_command()
+					if pending_event is not None:
+						yield pending_event
 				if event.startswith("event: close\n"):
 					yield event
 					break
@@ -638,14 +791,7 @@ async def node_events(
 		finally:
 			# Clear SSE connection status on disconnect (short-lived connection)
 			try:
-				def _clear_connected():
-					thread_conn = connect(db_path)
-					try:
-						clear_node_sse_connected(thread_conn, node_id)
-					finally:
-						close_connection(thread_conn)
-				
-				await run_in_threadpool(_clear_connected)
+				await clear_sse_connected()
 			except Exception as exc:
 				_log.debug("Failed to clear SSE status for node %s: %s", node_id, exc)
 
@@ -670,7 +816,7 @@ class SpeedtestProgressEvent(BaseModel):
 	phase: str = Field(..., max_length=64, description="Current test phase")
 	progress: float = Field(..., ge=0, le=1, description="Progress fraction (0-1)")
 	message: str = Field("", max_length=256, description="Progress message")
-	detail: str | None = Field(None, max_length=512, description="Optional detail")
+	detail: dict[str, Any] | str | None = Field(None, description="Optional detail payload")
 
 
 @router.post("/speedtest/progress")
@@ -689,19 +835,16 @@ async def submit_node_speedtest_progress(
 	if body.detail:
 		event_data["detail"] = body.detail
 	
-	async with _progress_lock:
-		if node_id not in _node_speedtest_progress:
-			_node_speedtest_progress[node_id] = {
-				"progress": event_data,
-				"timestamp": time.time(),
-				"queues": [],
-			}
-		else:
-			_node_speedtest_progress[node_id]["progress"] = event_data
-			_node_speedtest_progress[node_id]["timestamp"] = time.time()
-			
+	async with _get_progress_lock():
+		state = _node_speedtest_progress.setdefault(
+			node_id,
+			_new_speedtest_progress_state(),
+		)
+		state["progress"] = event_data
+		state["timestamp"] = time.time()
+
 		# Broadcast to all waiting SSE clients
-		for queue in _node_speedtest_progress[node_id]["queues"]:
+		for queue in state["queues"]:
 			try:
 				queue.put_nowait(event_data)
 			except asyncio.QueueFull:
@@ -739,8 +882,6 @@ def submit_node_speedtest(
 	
 	The result is tagged with node_id to distinguish from master speedtests.
 	"""
-	from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
-	
 	node_id = node["id"]
 	node_name = node["name"]
 	

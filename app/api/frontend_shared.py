@@ -9,14 +9,18 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
+import json
 import logging
 import re
 import sqlite3
+import socket
 import time
 from dataclasses import dataclass
-from functools import lru_cache, wraps
+from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
-from typing import Never
+from typing import Any, Never, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -24,8 +28,9 @@ from fastapi.templating import Jinja2Templates
 
 from ..utils.formatting import format_bandwidth_mbit
 from ..utils.geoip import lookup_ip
+from ..utils.time import parse_utc
 from ..utils.version import BUILD_INFO, VERSION
-from .auth import get_current_user_optional
+from .auth import coerce_db_bool, get_current_user_optional
 
 _log = logging.getLogger(__name__)
 
@@ -41,6 +46,9 @@ _jinja_templates = Jinja2Templates(directory=str(_templates_path))
 
 _jinja_templates.env.globals["VERSION"] = VERSION
 _jinja_templates.env.globals["BUILD_INFO"] = BUILD_INFO
+# now() is evaluated at render time (not import time), so each template
+# render reflects the current timestamp.
+_jinja_templates.env.globals["now"] = lambda: datetime.now(timezone.utc)
 
 
 class _ContextAwareTemplates:
@@ -58,9 +66,10 @@ class _ContextAwareTemplates:
 		**kwargs: Any,
 	) -> Any:
 		"""Render template with automatic key_mismatch injection from app state."""
-		ctx = context or {}
-		# Add key_mismatch from app state (for Critical banner in base.html)
-		if not ctx.get("key_mismatch"):
+		ctx = dict(context) if context else {}
+		# Use app.state.key_mismatch as authoritative source only when the caller
+		# has not explicitly provided the key (preserves caller-set False for tests).
+		if "key_mismatch" not in ctx:
 			ctx["key_mismatch"] = getattr(request.app.state, "key_mismatch", False)
 		return self._jinja.TemplateResponse(request, name, ctx, **kwargs)
 
@@ -100,7 +109,27 @@ __all__ = [
     "CONNECTED_THRESHOLD_S",
     "format_last_seen_label",
     "extract_geo_fields",
+    "resolve_node_geo_ip",
+    "parse_last_seen_epoch",
+    "parse_node_metadata",
 ]
+
+
+def parse_node_metadata(value: Any, *, node_id: str) -> dict[str, Any]:
+    """Parse node metadata stored as a JSON string or plain dict.
+
+    Returns an empty dict on any parse failure so callers can safely call
+    `.get()` without further error handling.
+    """
+    if value is None or value == "":
+        return {}
+    if not isinstance(value, str):
+        return value if isinstance(value, dict) else {}
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):  # JSONDecodeError is a subclass of ValueError
+        _log.warning("Node %s has invalid metadata JSON; returning empty dict", node_id)
+        return {}
 
 
 class RedirectTo(Exception):
@@ -114,9 +143,9 @@ class RedirectTo(Exception):
 @dataclass(frozen=True)
 class LastSeenLabel:
     """Display model for peer last-seen information."""
-    text: str
-    css_class: str
-    is_active: bool
+    text: str        # Human-readable label, e.g. "2h ago"
+    css_class: str   # Bootstrap/CSS class for badge styling
+    is_active: bool  # True if last_seen < CONNECTED_THRESHOLD_S seconds ago
 
 
 async def redirect_to_handler(_: Request, exc: RedirectTo) -> RedirectResponse:
@@ -124,43 +153,24 @@ async def redirect_to_handler(_: Request, exc: RedirectTo) -> RedirectResponse:
     return RedirectResponse(url=exc.url, status_code=303)
 
 
-def _lookup_ip_cached_decorator(maxsize: int = 4096):
-    """LRU cache that does not store None results and returns immutable copies.
-    
-    Prevents cache poisoning from transient failures and protects against
-    mutation of cached dictionaries.
-    """
-    def decorator(fn):
-        @lru_cache(maxsize=maxsize)
-        def _cached(ip_text: str) -> dict:
-            return fn(ip_text)  # Let exception propagate → not cached
-
-        @wraps(fn)
-        def wrapper(ip_text: str) -> dict | None:
-            try:
-                result = _cached(ip_text)
-                # Return shallow copy to prevent cache corruption
-                return copy.copy(result)
-            except Exception:
-                _log.debug("GeoIP lookup failed for %s", ip_text, exc_info=True)
-                return None
-
-        wrapper.cache_clear = _cached.cache_clear
-        wrapper.cache_info = _cached.cache_info
-        return wrapper
-    return decorator
-
-
-@_lookup_ip_cached_decorator(maxsize=4096)
-def _lookup_ip_cached_inner(ip_text: str) -> dict:
-    """Process-wide cached GeoIP lookup to reduce repeated MMDB reads."""
+@lru_cache(maxsize=4096)
+def _geoip_lookup_cached(ip_text: str) -> dict:
+    """Internal: cached raw GeoIP lookup. Raises on failure (result not cached)."""
     return lookup_ip(ip_text)
 
 
 def lookup_ip_cached(ip_text: str) -> dict | None:
-    """Public API: cached GeoIP lookup."""
-    return _lookup_ip_cached_inner(ip_text)
-
+    """Public API: cached GeoIP lookup.
+    
+    Returns:
+        dict: GeoIP data (may be empty {} for IPs without geo data).
+        None: On lookup failure (not cached, next call retries).
+    """
+    try:
+        return copy.copy(_geoip_lookup_cached(ip_text))
+    except Exception:
+        _log.debug("GeoIP lookup failed for %s", ip_text, exc_info=True)
+        return None
 
 def get_csrf_token(request: Request) -> str:
     """Get CSRF token from request state."""
@@ -183,10 +193,12 @@ def _raise_redirect(url: str) -> Never:
     """Raise an HTTP redirect exception for dependency-based auth guards.
     
     Only allows redirects to known internal paths to prevent open redirect attacks.
+    NOTE: Must only be called with hardcoded relative paths, never user-controlled input.
+    The prefix check is a defence-in-depth safeguard, not the primary access guard.
     """
     if not any(url.startswith(prefix) for prefix in _ALLOWED_REDIRECT_PREFIXES):
         _log.error("Attempted redirect to disallowed URL: %s", url)
-        raise ValueError(f"Redirect to disallowed URL: {url}")
+        raise HTTPException(status_code=500, detail="Internal redirect configuration error")
     raise RedirectTo(url)
 
 
@@ -203,7 +215,7 @@ def require_admin_or_redirect(
     user: sqlite3.Row = Depends(require_user_or_redirect),
 ) -> sqlite3.Row:
     """Dependency: return admin user or redirect to dashboard."""
-    if not user["is_admin"]:
+    if not coerce_db_bool(user["is_admin"]):
         _raise_redirect("/ui/dashboard")
     return user
 
@@ -222,7 +234,7 @@ def format_last_seen_label(handshake_epoch: int, *, now_epoch: int | None = None
     diff = max(0, now - handshake_epoch)
     active = diff < CONNECTED_THRESHOLD_S
     if diff < 60:
-        return LastSeenLabel(text="Now", css_class="text-success fw-semibold", is_active=active)
+        return LastSeenLabel(text="Now", css_class="text-success fw-semibold", is_active=diff < CONNECTED_THRESHOLD_S)
     if diff < 3600:
         return LastSeenLabel(text=f"{diff // 60}m ago", css_class="text-muted", is_active=active)
     if diff < 86400:
@@ -230,18 +242,28 @@ def format_last_seen_label(handshake_epoch: int, *, now_epoch: int | None = None
     return LastSeenLabel(text=f"{diff // 86400}d ago", css_class="text-muted", is_active=active)
 
 
-def extract_geo_fields(info: dict | None) -> dict[str, str | None]:
+class GeoFields(TypedDict):
+    """Type-safe structure for extracted GeoIP fields."""
+    country_code: str | None
+    city: str | None
+    as_org: str | None
+
+
+_EMPTY_GEO_FIELDS: GeoFields = {
+    "country_code": None,
+    "city": None,
+    "as_org": None,
+}
+
+
+def extract_geo_fields(info: dict | None) -> GeoFields:
     """Normalize GeoIP lookup results for template display fields.
     
     Country codes are strictly validated to prevent path traversal attacks
     when used in flag image paths.
     """
     if not info:
-        return {
-            "country_code": None,
-            "city": None,
-            "as_org": None,
-        }
+        return dict(_EMPTY_GEO_FIELDS)
 
     country = str(info.get("country") or "").strip().lower()
     city = str(info.get("city") or "").strip() or None
@@ -262,7 +284,80 @@ def extract_geo_fields(info: dict | None) -> dict[str, str | None]:
         "as_org": as_org or None,
     }
 
+# ULA prefix for IPv6 private addresses (fc00::/7 = fc00:: – fdff::)
+_ULA_NETWORK = ipaddress.ip_network("fc00::/7")
 
-# Register route modules on shared router.
+
+def _is_globally_routable(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True if IP is publicly routable (not private/loopback/link-local/ULA)."""
+    if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_reserved:
+        return False
+    if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj in _ULA_NETWORK:
+        return False
+    return True
+
+
+@lru_cache(maxsize=256)
+def resolve_node_geo_ip(host_or_ip: str) -> str:
+    """Resolve a node FQDN/IP to a concrete public IP for GeoIP lookups.
+
+    Returns the resolved IP string, or empty string if not resolvable/private
+    (empty string is cached to avoid repeated DNS timeouts on bad hosts).
+
+    WARNING: Makes a blocking DNS call on cache miss. Call via
+    ``asyncio.to_thread()`` when used from an async context.
+    """
+    clean = str(host_or_ip or "").strip()
+    if clean.startswith("[") and clean.endswith("]"):
+        clean = clean[1:-1]
+    if not clean:
+        return ""
+
+    try:
+        # Strip IPv6 Zone-ID (e.g. "fe80::1%eth0") before parsing
+        ip_obj = ipaddress.ip_address(clean.split("%", 1)[0])
+        return str(ip_obj) if _is_globally_routable(ip_obj) else ""
+    except ValueError:
+        pass
+
+    try:
+        addrinfo = socket.getaddrinfo(clean, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return ""  # Cached as empty string — prevents repeated DNS timeout retries
+
+    for _family, _socktype, _proto, _canonname, sockaddr in addrinfo:
+        ip_text = str(sockaddr[0]).split("%", 1)[0]
+        try:
+            ip_obj = ipaddress.ip_address(ip_text)
+            if _is_globally_routable(ip_obj):
+                return str(ip_obj)
+        except ValueError:
+            continue
+
+    return ""  # All addresses were private/unresolvable
+
+
+def parse_last_seen_epoch(value: object) -> int:
+    """Parse a datetime-like value into epoch seconds (UTC fallback for naive values)."""
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    if isinstance(value, str):
+        try:
+            dt = parse_utc(value)
+            return int(dt.timestamp()) if dt else 0
+        except (ValueError, TypeError):
+            return 0
+    return 0
+
+
+# Circular import resolution: frontend_pages and frontend_status import symbols
+# from this module. Importing them here at module-end registers their routes on
+# `router` without creating a circular dependency at class-definition level.
+# The `_` prefix prevents accidental re-export via `from frontend_shared import *`.
 from . import frontend_pages as _frontend_pages  # noqa: F401, E402
 from . import frontend_status as _frontend_status  # noqa: F401, E402

@@ -2,205 +2,27 @@
 
 {% block title %}Users – WireBuddy{% endblock %}
 
+{% macro password_requirements(requirements_id) -%}
+<div class="password-requirements" id="{{ requirements_id }}" aria-live="polite" aria-relevant="text">
+    {% for req, label in [
+        ('length', 'Minimum 8 characters'),
+        ('upper', 'Uppercase letter'),
+        ('lower', 'Lowercase letter'),
+        ('digit', 'Number'),
+        ('special', 'Special character'),
+        ('strength', 'At least 3 of the above categories'),
+    ] %}
+    <div class="req" data-req="{{ req }}"><span class="material-icons">radio_button_unchecked</span> {{ label }}</div>
+    {% endfor %}
+</div>
+{%- endmacro %}
+
 {% block extra_css %}
-<style>
-    .table td {
-        vertical-align: middle;
-    }
-
-    .users-add-btn {
-        display: inline-flex;
-        align-items: center;
-        white-space: nowrap;
-        flex-shrink: 0;
-    }
-
-    .users-table .badge.bg-secondary {
-        background-color: #4b5563 !important;
-        color: #f3f4f6 !important;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-    }
-
-    .users-table td.user-actions-cell {
-        white-space: nowrap;
-    }
-
-    .users-table td.user-actions-cell .d-flex {
-        flex-wrap: wrap;
-    }
-
-    /* Compact action buttons for table rows (v1.3.3 style) */
-    .users-action-btn {
-        min-width: 0;
-        min-height: 0;
-        padding: 0.2rem 0.35rem;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        flex-shrink: 0;
-    }
-
-    .users-action-btn .material-icons {
-        font-size: 18px;
-        pointer-events: none;
-    }
-
-    .users-table .user-identity {
-        display: inline-flex;
-        align-items: center;
-        justify-content: flex-end;
-        gap: 0.25rem;
-        flex-wrap: wrap;
-    }
-
-    .btn .material-icons {
-        vertical-align: middle;
-        line-height: 1;
-    }
-
-    /* Last Login structure (all viewports) */
-    .last-login {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-    }
-
-    .login-time {
-        white-space: nowrap;
-    }
-
-    .login-ip {
-        overflow-x: auto;
-        max-width: 100%;
-    }
-
-    .login-ip code {
-        white-space: nowrap;
-        font-size: 0.8rem;
-        display: inline-block;
-    }
-
-    @media (max-width: 768px) {
-        .users-table thead {
-            display: none;
-        }
-
-        .users-table,
-        .users-table tbody,
-        .users-table tr,
-        .users-table td {
-            display: block;
-            width: 100%;
-        }
-
-        .users-table tr {
-            border: 1px solid var(--bs-border-color);
-            border-radius: 0.75rem;
-            padding: 0.55rem 0.65rem;
-            margin-bottom: 0.65rem;
-            background: transparent;
-        }
-
-        .users-table td {
-            border: 0;
-            padding: 0.3rem 0.15rem;
-            display: grid;
-            grid-template-columns: 6.5rem 1fr;
-            align-items: start;
-            gap: 0.5rem;
-        }
-
-        .users-table td::before {
-            content: attr(data-label);
-            font-weight: 600;
-            color: var(--bs-secondary-color);
-        }
-
-        .users-table td > * {
-            min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        /* Hide Created column in mobile view */
-        .users-table td[data-label="Created"] {
-            display: none;
-        }
-
-        /* Last Login grid alignment */
-        .users-table td[data-label="Last Login"] .last-login {
-            overflow: visible;
-        }
-
-        .users-table td[data-label="Last Login"] .login-ip {
-            overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
-        }
-
-        .users-table .user-identity {
-            justify-content: flex-start;
-        }
-
-        .users-table td.user-actions-cell {
-            display: flex;
-            margin-top: 0.25rem;
-            padding-top: 0.45rem;
-            border-top: 1px solid var(--bs-border-color);
-        }
-
-        .users-table td.user-actions-cell::before {
-            content: none;
-        }
-
-        .users-table td.user-actions-cell .d-flex {
-            display: inline-flex;
-            gap: 0.35rem;
-        }
-    }
-
-    /* Password strength indicator */
-    .password-requirements {
-        font-size: 0.8rem;
-        margin-top: 0.5rem;
-    }
-    .password-requirements .req {
-        display: flex;
-        align-items: center;
-        gap: 0.35rem;
-        padding: 0.15rem 0;
-        color: var(--bs-secondary-color);
-    }
-    .password-requirements .req .material-icons {
-        font-size: 16px;
-    }
-    .password-requirements .req.valid {
-        color: var(--bs-success);
-    }
-    .password-requirements .req.valid .material-icons {
-        color: var(--bs-success);
-    }
-    .password-requirements .req.invalid {
-        color: var(--bs-danger);
-    }
-    .password-requirements .req.invalid .material-icons {
-        color: var(--bs-danger);
-    }
-    .password-strength-bar {
-        height: 4px;
-        border-radius: 2px;
-        background: var(--bs-secondary-bg);
-        margin-top: 0.5rem;
-        overflow: hidden;
-    }
-    .password-strength-bar .fill {
-        height: 100%;
-        transition: width 0.2s, background-color 0.2s;
-    }
-
-</style>
+<link href="/static/css/users.css" rel="stylesheet">
 {% endblock %}
 
 {% block content %}
+<div id="wb-page-config" data-current-user-id="{{ user['id'] | int }}" data-is-admin="{{ 'true' if user['is_admin'] else 'false' }}" aria-hidden="true" class="d-none"></div>
 <div class="container-fluid wb-page">
 <div class="wb-page-header">
     <h2 class="page-title"><span class="material-icons me-2">people</span>User Management</h2>
@@ -230,18 +52,8 @@
                         <td data-label="Username">
                             <span class="user-identity">
                                 <strong>{{ u['username'] }}</strong>
-                                <span id="otp-indicator-{{ u['id'] }}">
-                                    {% if u['otp_enabled'] %}
-                                    <span class="material-icons text-success ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP enabled">verified_user</span>
-                                    {% elif u['otp_secret'] %}
-                                    <span class="material-icons text-warning ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP setup pending">schedule</span>
-                                    {% endif %}
-                                </span>
-                                <span id="passkey-indicator-{{ u['id'] }}">
-                                    {% if u['passkey_enabled'] %}
-                                    <span class="material-icons text-info ms-1" style="font-size: 16px; vertical-align: middle;" title="Passkey enabled">fingerprint</span>
-                                    {% endif %}
-                                </span>
+                                <span id="otp-indicator-{{ u['id'] }}" class="material-icons user-security-indicator ms-1{% if u['otp_enabled'] %} text-success{% elif u['otp_secret'] %} text-warning{% else %} d-none{% endif %}" title="{% if u['otp_enabled'] %}OTP enabled{% elif u['otp_secret'] %}OTP setup pending{% else %}{% endif %}" aria-hidden="true">{% if u['otp_enabled'] %}verified_user{% elif u['otp_secret'] %}schedule{% endif %}</span>
+                                <span id="passkey-indicator-{{ u['id'] }}" class="material-icons user-security-indicator text-info ms-1{% if not u['passkey_enabled'] %} d-none{% endif %}" title="Passkey enabled" aria-hidden="true">fingerprint</span>
                             </span>
                         </td>
                         <td data-label="Role">
@@ -337,14 +149,7 @@
                         <input type="password" class="form-control" id="new-password" required minlength="8"
                             autocomplete="new-password">
                         <div class="password-strength-bar"><div class="fill" id="new-password-strength"></div></div>
-                        <div class="password-requirements" id="new-password-req" aria-live="polite" aria-relevant="text">
-                            <div class="req" data-req="length"><span class="material-icons">radio_button_unchecked</span> Minimum 8 characters</div>
-                            <div class="req" data-req="upper"><span class="material-icons">radio_button_unchecked</span> Uppercase letter</div>
-                            <div class="req" data-req="lower"><span class="material-icons">radio_button_unchecked</span> Lowercase letter</div>
-                            <div class="req" data-req="digit"><span class="material-icons">radio_button_unchecked</span> Number</div>
-                            <div class="req" data-req="special"><span class="material-icons">radio_button_unchecked</span> Special character</div>
-                            <div class="req" data-req="strength"><span class="material-icons">radio_button_unchecked</span> At least 3 of the above categories</div>
-                        </div>
+                        {{ password_requirements('new-password-req') }}
                     </div>
                     <div class="form-check">
                         <input type="checkbox" class="form-check-input" id="new-is-admin">
@@ -371,7 +176,7 @@
             <form id="change-password-form">
                 <div class="modal-body">
                     <input type="text" class="d-none" id="change-password-username" autocomplete="username" tabindex="-1" aria-hidden="true">
-                    <div class="mb-3" id="current-password-field" style="display: none;">
+                    <div class="mb-3 d-none" id="current-password-field">
                         <label for="current-password" class="form-label">Current Password</label>
                         <input type="password" class="form-control" id="current-password" autocomplete="current-password">
                         <small class="text-muted">Required when changing your own password</small>
@@ -380,14 +185,7 @@
                         <label for="new-password-change" class="form-label">New Password</label>
                         <input type="password" class="form-control" id="new-password-change" required minlength="8" autocomplete="new-password">
                         <div class="password-strength-bar"><div class="fill" id="change-password-strength"></div></div>
-                        <div class="password-requirements" id="change-password-req" aria-live="polite" aria-relevant="text">
-                            <div class="req" data-req="length"><span class="material-icons">radio_button_unchecked</span> Minimum 8 characters</div>
-                            <div class="req" data-req="upper"><span class="material-icons">radio_button_unchecked</span> Uppercase letter</div>
-                            <div class="req" data-req="lower"><span class="material-icons">radio_button_unchecked</span> Lowercase letter</div>
-                            <div class="req" data-req="digit"><span class="material-icons">radio_button_unchecked</span> Number</div>
-                            <div class="req" data-req="special"><span class="material-icons">radio_button_unchecked</span> Special character</div>
-                            <div class="req" data-req="strength"><span class="material-icons">radio_button_unchecked</span> At least 3 of the above categories</div>
-                        </div>
+                        {{ password_requirements('change-password-req') }}
                     </div>
                     <div class="mb-3">
                         <label for="verify-password" class="form-label">Verify New Password</label>
@@ -467,18 +265,24 @@
 
                 <!-- Passkey list -->
                 <div id="passkey-list-container" class="mb-3">
-                    <div id="passkey-list-loading" class="text-center py-3">
+                    <div id="passkey-list-loading" class="text-center py-3 d-none">
                         <div class="spinner-border spinner-border-sm"></div>
                         <span class="ms-2">Loading passkeys...</span>
                     </div>
-                    <div id="passkey-list-empty" style="display: none;" class="text-center text-muted py-3">
+                    <div id="passkey-list-empty" class="text-center text-muted py-3 d-none">
                         No passkeys registered
                     </div>
-                    <div id="passkey-list" class="list-group" style="display: none;"></div>
+                    <div id="passkey-list-error" class="text-center py-3 d-none">
+                        <span class="text-danger">Failed to load passkeys</span>
+                    </div>
+                    <div id="passkey-list" class="list-group d-none"></div>
                 </div>
 
                 <!-- Actions -->
                 <div id="passkey-action-section">
+                    <div id="passkey-webauthn-warning" class="alert alert-warning mb-0 d-none">
+                        Passkeys are not supported in this browser.
+                    </div>
                     <div id="passkey-register-section">
                         <div class="mb-3">
                             <label for="passkey-device-name" class="form-label">Device Name (optional)</label>
@@ -495,7 +299,7 @@
                     </div>
                     
                     <!-- Admin reset button (only for other users) -->
-                    <div id="passkey-admin-section" style="display: none;" class="mt-3 pt-3 border-top">
+                    <div id="passkey-admin-section" class="mt-3 pt-3 border-top d-none">
                         <button type="button" class="btn btn-outline-danger w-100" id="passkey-reset-btn">
                             <span class="material-icons align-middle me-1">restart_alt</span>
                             Reset All Passkeys
@@ -516,6 +320,17 @@
 <script>
 (function() {
     'use strict';
+
+    // Helper to toggle d-none class
+    function setHidden(el, hidden) {
+        if (!el) return;
+        el.classList.toggle('d-none', hidden);
+    }
+
+    const pageConfigEl = document.getElementById('wb-page-config');
+    const pageConfig = pageConfigEl ? pageConfigEl.dataset : {};
+    const CURRENT_USER_ID = Number.parseInt(pageConfig.currentUserId || '', 10);
+    const IS_ADMIN = pageConfig.isAdmin === 'true';
     
     // Password strength validation
     function validatePassword(password) {
@@ -633,8 +448,7 @@
 
     // Edit user (change password)
     function editUser(userId, username) {
-        const currentUserId = {{ user['id'] }};
-        const isSelf = userId === currentUserId;
+        const isSelf = userId === CURRENT_USER_ID;
         
         // Reset form first
         const form = document.getElementById('change-password-form');
@@ -653,13 +467,8 @@
         // Show/hide current password field
         const currentPwField = document.getElementById('current-password-field');
         const currentPwInput = document.getElementById('current-password');
-        if (isSelf) {
-            currentPwField.style.display = 'block';
-            currentPwInput.required = true;
-        } else {
-            currentPwField.style.display = 'none';
-            currentPwInput.required = false;
-        }
+        setHidden(currentPwField, !isSelf);
+        currentPwInput.required = isSelf;
         
         // Show modal (reuse existing instance)
         const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
@@ -765,36 +574,41 @@
     })();
 
     // OTP Settings
-    const otpStateByUserId = new Map();
 
     function setUserOtpState(userId, isEnabled, hasSecret) {
-        otpStateByUserId.set(userId, { isEnabled: !!isEnabled, hasSecret: !!hasSecret });
+        const otpBtn = document.getElementById(`otp-settings-btn-${userId}`);
+        if (otpBtn) {
+            otpBtn.dataset.otpEnabled = isEnabled ? 'true' : 'false';
+            otpBtn.dataset.otpSecret = hasSecret ? 'true' : 'false';
+        }
 
         const indicator = document.getElementById(`otp-indicator-${userId}`);
         if (!indicator) return;
 
+        indicator.classList.remove('text-success', 'text-warning', 'd-none');
+        indicator.textContent = '';
+        indicator.removeAttribute('title');
+
         if (isEnabled) {
-            indicator.innerHTML = '<span class="material-icons text-success ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP enabled">verified_user</span>';
+            indicator.classList.add('text-success');
+            indicator.title = 'OTP enabled';
+            indicator.textContent = 'verified_user';
             return;
         }
 
         if (hasSecret) {
-            indicator.innerHTML = '<span class="material-icons text-warning ms-1" style="font-size: 16px; vertical-align: middle;" title="OTP setup pending">schedule</span>';
+            indicator.classList.add('text-warning');
+            indicator.title = 'OTP setup pending';
+            indicator.textContent = 'schedule';
             return;
         }
 
-        indicator.innerHTML = '';
+        indicator.classList.add('d-none');
     }
 
     function openOtpSettings(userId, username, isEnabled, hasSecret) {
-        const knownState = otpStateByUserId.get(userId);
-        if (knownState) {
-            isEnabled = knownState.isEnabled;
-            hasSecret = knownState.hasSecret;
-        } else {
-            // Initialize state if not already tracked (first modal open)
-            otpStateByUserId.set(userId, { isEnabled: !!isEnabled, hasSecret: !!hasSecret });
-        }
+        isEnabled = !!isEnabled;
+        hasSecret = !!hasSecret;
 
         // Store state in modal data attributes
         const modalEl = document.getElementById('otpSettingsModal');
@@ -844,8 +658,10 @@
         const userId = parseInt(modalEl.dataset.userId, 10);
         const username = modalEl.dataset.username;
 
-        const current = otpStateByUserId.get(userId) || { isEnabled: false, hasSecret: false };
-        const shouldDisable = current.isEnabled || current.hasSecret;
+        const otpBtn = document.getElementById(`otp-settings-btn-${userId}`);
+        const isEnabled = otpBtn?.dataset.otpEnabled === 'true';
+        const hasSecret = otpBtn?.dataset.otpSecret === 'true';
+        const shouldDisable = isEnabled || hasSecret;
 
         if (shouldDisable) {
             if (!await wbConfirm(`Disable two-factor authentication for "${username}"?`, 'warning')) return;
@@ -985,21 +801,13 @@
             .replace(/=/g, '');
     }
     
-    // Convert snake_case to camelCase recursively
-    function snakeToCamel(obj) {
-        if (obj === null || obj === undefined) return obj;
-        if (typeof obj !== 'object') return obj;
-        if (Array.isArray(obj)) return obj.map(snakeToCamel);
-        
-        const result = {};
-        for (const [key, value] of Object.entries(obj)) {
-            const camelKey = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
-            result[camelKey] = snakeToCamel(value);
-        }
-        return result;
+    function readDualCaseField(source, snakeKey, camelKey, defaultValue) {
+        if (source[snakeKey] !== undefined) return source[snakeKey];
+        if (source[camelKey] !== undefined) return source[camelKey];
+        return defaultValue;
     }
-    
-    // Build authenticatorSelection with explicit snake-to-camel conversion
+
+    // Build authenticatorSelection with dual-case field support.
     function buildAuthenticatorSelection(serverAuthSel) {
         if (!serverAuthSel) {
             return {
@@ -1007,39 +815,20 @@
                 userVerification: 'preferred'
             };
         }
-        
-        const result = {};
-        
-        // Map resident_key → residentKey
-        if (serverAuthSel.resident_key !== undefined) {
-            result.residentKey = serverAuthSel.resident_key;
-        } else if (serverAuthSel.residentKey !== undefined) {
-            result.residentKey = serverAuthSel.residentKey;
-        } else {
-            result.residentKey = 'preferred';
+
+        const result = {
+            residentKey: readDualCaseField(serverAuthSel, 'resident_key', 'residentKey', 'preferred'),
+            userVerification: readDualCaseField(serverAuthSel, 'user_verification', 'userVerification', 'preferred'),
+        };
+
+        const authenticatorAttachment = readDualCaseField(serverAuthSel, 'authenticator_attachment', 'authenticatorAttachment', undefined);
+        if (authenticatorAttachment !== undefined) {
+            result.authenticatorAttachment = authenticatorAttachment;
         }
-        
-        // Map user_verification → userVerification
-        if (serverAuthSel.user_verification !== undefined) {
-            result.userVerification = serverAuthSel.user_verification;
-        } else if (serverAuthSel.userVerification !== undefined) {
-            result.userVerification = serverAuthSel.userVerification;
-        } else {
-            result.userVerification = 'preferred';
-        }
-        
-        // Map authenticator_attachment → authenticatorAttachment
-        if (serverAuthSel.authenticator_attachment !== undefined) {
-            result.authenticatorAttachment = serverAuthSel.authenticator_attachment;
-        } else if (serverAuthSel.authenticatorAttachment !== undefined) {
-            result.authenticatorAttachment = serverAuthSel.authenticatorAttachment;
-        }
-        
-        // Map require_resident_key → requireResidentKey
-        if (serverAuthSel.require_resident_key !== undefined) {
-            result.requireResidentKey = serverAuthSel.require_resident_key;
-        } else if (serverAuthSel.requireResidentKey !== undefined) {
-            result.requireResidentKey = serverAuthSel.requireResidentKey;
+
+        const requireResidentKey = readDualCaseField(serverAuthSel, 'require_resident_key', 'requireResidentKey', undefined);
+        if (requireResidentKey !== undefined) {
+            result.requireResidentKey = requireResidentKey;
         }
         
         return result;
@@ -1123,14 +912,40 @@
     
     let currentPasskeyUserId = null;
     let currentPasskeyUsername = null;
+
+    function _updatePasskeyModalSections(isCurrentUser, isAdmin) {
+        const registerSection = document.getElementById('passkey-register-section');
+        const adminSection = document.getElementById('passkey-admin-section');
+        const warningEl = document.getElementById('passkey-webauthn-warning');
+
+        const showRegister = isCurrentUser && isWebAuthnSupported;
+        const showWarning = isCurrentUser && !isWebAuthnSupported;
+        const showAdmin = !isCurrentUser && isAdmin;
+
+        setHidden(registerSection, !showRegister);
+        setHidden(adminSection, !showAdmin);
+        setHidden(warningEl, !showWarning);
+    }
+
+    function _resetPasskeyListState() {
+        setHidden(document.getElementById('passkey-list-loading'), false);
+        setHidden(document.getElementById('passkey-list-empty'), true);
+        setHidden(document.getElementById('passkey-list-error'), true);
+        setHidden(document.getElementById('passkey-list'), true);
+    }
+
+    async function refreshPasskeyList() {
+        if (currentPasskeyUserId === null) return;
+        const isCurrentUser = currentPasskeyUserId === CURRENT_USER_ID;
+        await loadPasskeys(currentPasskeyUserId, isCurrentUser, IS_ADMIN);
+    }
     
     async function openPasskeySettings(userId, username) {
         currentPasskeyUserId = userId;
         currentPasskeyUsername = username;
-        
-        const currentUserId = {{ user['id'] }};
-        const isCurrentUser = userId === currentUserId;
-        const isAdmin = {{ 'true' if user['is_admin'] else 'false' }};
+
+        const isCurrentUser = userId === CURRENT_USER_ID;
+        const isAdmin = IS_ADMIN;
         
         const modalEl = document.getElementById('passkeySettingsModal');
         modalEl.dataset.userId = userId;
@@ -1140,30 +955,11 @@
         document.getElementById('passkey-status-text').textContent = 'Loading...';
         document.getElementById('passkey-count-badge').innerHTML = '';
         
-        // Show loading state
-        document.getElementById('passkey-list-loading').style.display = 'block';
-        document.getElementById('passkey-list-empty').style.display = 'none';
-        document.getElementById('passkey-list').style.display = 'none';
+        // Reset list display states
+        _resetPasskeyListState();
         
-        // Show/hide sections based on user context
-        const registerSection = document.getElementById('passkey-register-section');
-        const adminSection = document.getElementById('passkey-admin-section');
-        
-        if (isCurrentUser) {
-            registerSection.style.display = 'block';
-            adminSection.style.display = 'none';
-        } else if (isAdmin) {
-            registerSection.style.display = 'none';
-            adminSection.style.display = 'block';
-        } else {
-            registerSection.style.display = 'none';
-            adminSection.style.display = 'none';
-        }
-        
-        // Hide register section if WebAuthn not supported
-        if (!isWebAuthnSupported && isCurrentUser) {
-            registerSection.innerHTML = '<div class="alert alert-warning mb-0">Passkeys are not supported in this browser.</div>';
-        }
+        // Update section visibility
+        _updatePasskeyModalSections(isCurrentUser, isAdmin);
         
         // Show modal
         const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
@@ -1178,7 +974,7 @@
             let endpoint = isCurrentUser ? '/api/passkeys' : `/api/passkeys/user/${userId}`;
             const passkeys = await api('GET', endpoint) || [];
             
-            document.getElementById('passkey-list-loading').style.display = 'none';
+            setHidden(document.getElementById('passkey-list-loading'), true);
             
             const statusText = document.getElementById('passkey-status-text');
             const countBadge = document.getElementById('passkey-count-badge');
@@ -1189,12 +985,12 @@
             if (passkeys.length === 0) {
                 statusText.textContent = '';
                 countBadge.innerHTML = '<span class="badge bg-secondary">0 Passkeys</span>';
-                document.getElementById('passkey-list-empty').style.display = 'block';
-                document.getElementById('passkey-list').style.display = 'none';
+                setHidden(document.getElementById('passkey-list-empty'), false);
+                setHidden(document.getElementById('passkey-list'), true);
             } else {
                 statusText.textContent = `${passkeys.length} passkey${passkeys.length !== 1 ? 's' : ''} registered`;
                 countBadge.innerHTML = `<span class="badge bg-success">${passkeys.length} Passkey${passkeys.length !== 1 ? 's' : ''}</span>`;
-                document.getElementById('passkey-list-empty').style.display = 'none';
+                setHidden(document.getElementById('passkey-list-empty'), true);
                 
                 const listEl = document.getElementById('passkey-list');
                 listEl.innerHTML = '';
@@ -1202,53 +998,56 @@
                 for (const pk of passkeys) {
                     const item = document.createElement('div');
                     item.className = 'list-group-item d-flex justify-content-between align-items-center';
-                    
-                    const createdAt = new Date(pk.created_at).toLocaleDateString();
+
+                    const createdAt = new Date(pk.created_at || Date.now()).toLocaleDateString();
                     const deviceName = pk.device_name || 'Unnamed Passkey';
                     const transports = pk.transports ? pk.transports.join(', ') : '';
-                    
-                    item.innerHTML = `
-                        <div>
-                            <strong>${escapeHtml(deviceName)}</strong>
-                            <div class="small text-muted">
-                                Created: ${createdAt}
-                                ${transports ? ` • ${transports}` : ''}
-                            </div>
-                        </div>
-                        ${isCurrentUser ? `
-                            <button type="button" class="btn btn-sm btn-outline-danger btn-delete-passkey users-action-btn"
-                                data-passkey-id="${pk.id}" title="Delete passkey">
-                                <span class="material-icons icon-md" aria-hidden="true">delete</span>
-                            </button>
-                        ` : ''}
-                    `;
+
+                    const contentWrap = document.createElement('div');
+                    const nameEl = document.createElement('strong');
+                    nameEl.textContent = deviceName;
+
+                    const metaEl = document.createElement('div');
+                    metaEl.className = 'small text-muted';
+                    metaEl.textContent = transports ? `Created: ${createdAt} • ${transports}` : `Created: ${createdAt}`;
+
+                    contentWrap.append(nameEl, metaEl);
+                    item.appendChild(contentWrap);
+
+                    if (isCurrentUser) {
+                        const deleteBtn = document.createElement('button');
+                        deleteBtn.type = 'button';
+                        deleteBtn.className = 'btn btn-sm btn-outline-danger btn-delete-passkey users-action-btn';
+                        deleteBtn.dataset.passkeyId = String(pk.id);
+                        deleteBtn.title = 'Delete passkey';
+
+                        const icon = document.createElement('span');
+                        icon.className = 'material-icons icon-md';
+                        icon.setAttribute('aria-hidden', 'true');
+                        icon.textContent = 'delete';
+                        deleteBtn.appendChild(icon);
+                        item.appendChild(deleteBtn);
+                    }
+
                     listEl.appendChild(item);
                 }
                 
-                listEl.style.display = 'block';
+                setHidden(document.getElementById('passkey-list'), false);
             }
+            
+            // Ensure error box is hidden on success
+            setHidden(document.getElementById('passkey-list-error'), true);
+            
         } catch (error) {
-            document.getElementById('passkey-list-loading').style.display = 'none';
-            document.getElementById('passkey-list-empty').innerHTML = '<span class="text-danger">Failed to load passkeys</span>';
-            document.getElementById('passkey-list-empty').style.display = 'block';
+            setHidden(document.getElementById('passkey-list-loading'), true);
+            setHidden(document.getElementById('passkey-list-empty'), true);
+            setHidden(document.getElementById('passkey-list-error'), false);
         }
     }
     
     function updatePasskeyIndicator(userId, hasPasskeys) {
         const indicator = document.getElementById(`passkey-indicator-${userId}`);
-        if (!indicator) return;
-        
-        if (hasPasskeys) {
-            indicator.innerHTML = '<span class="material-icons text-info ms-1" style="font-size: 16px; vertical-align: middle;" title="Passkey enabled">fingerprint</span>';
-        } else {
-            indicator.innerHTML = '';
-        }
-    }
-    
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        setHidden(indicator, !hasPasskeys);
     }
     
     // Register new passkey
@@ -1294,14 +1093,9 @@
             // 4. Success - refresh list
             wbToast('Passkey registered successfully', 'success');
             deviceNameInput.value = '';
-            const currentUserId = {{ user['id'] }};
-            const isCurrentUser = currentPasskeyUserId === currentUserId;
-            await loadPasskeys(currentPasskeyUserId, isCurrentUser, {{ 'true' if user['is_admin'] else 'false' }});
+            await refreshPasskeyList();
             
         } catch (error) {
-            // Clear timeout on error
-            clearTimeout(timeoutId);
-            
             // Show friendly error message
             if (error.name !== 'NotAllowedError' && error.name !== 'AbortError') {
                 const friendlyMsg = FRIENDLY_ERRORS[error.name] || 'Failed to register passkey';
@@ -1332,9 +1126,7 @@
         try {
             await api('DELETE', `/api/passkeys/${passkeyId}`);
             wbToast('Passkey deleted', 'success');
-            const currentUserId = {{ user['id'] }};
-            const isCurrentUser = currentPasskeyUserId === currentUserId;
-            await loadPasskeys(currentPasskeyUserId, isCurrentUser, {{ 'true' if user['is_admin'] else 'false' }});
+            await refreshPasskeyList();
         } catch (error) {
             wbAlert('Failed to delete passkey: ' + error.message, 'danger');
             deleteBtn.disabled = false;
@@ -1351,7 +1143,7 @@
         
         try {
             const resp = await api('POST', `/api/passkeys/reset/${currentPasskeyUserId}`);
-            const deletedCount = resp.data?.deleted_count || 0;
+            const deletedCount = resp?.deleted_count || 0;
             wbToast(`Reset ${deletedCount} passkey(s)`, 'success');
             
             // Close modal

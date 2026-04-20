@@ -7,23 +7,33 @@
     - country_code: Two-letter country code (lowercase)
     - city: City name (optional)
     - as_org: AS organization name (optional)
-    - flag_size: Size variant - 'sm' for 14x10px, default is 16x12px
+    - flag_size: 'sm' | 'md' (default) | 'lg'
+    - extra_class: Additional CSS classes for wrapper div (default: 'mt-1')
 #}
-{% macro geo_badge(country_code, city, as_org, flag_size='') %}
-{% if country_code or city or as_org %}
-<div class="small text-muted d-flex align-items-center gap-2 mt-1">
-    {% if country_code %}
-    <img alt="{{ country_code|upper }} flag"
-         src="/static/vendor/images/flags/{{ country_code }}.svg"
-         width="{{ '14' if flag_size == 'sm' else '16' }}"
-         height="{{ '10' if flag_size == 'sm' else '12' }}"
-         class="flag-icon{% if flag_size == 'sm' %} flag-icon-sm{% endif %}">
+{% macro geo_badge(country_code, city, as_org, flag_size='md', extra_class='mt-1') %}
+{% set _sizes = {'sm': ('14', '10'), 'md': ('16', '12'), 'lg': ('20', '15')} %}
+{% set _sz = _sizes.get(flag_size, _sizes['md']) %}
+{% set _cc = (country_code | lower | trim) if country_code else '' %}
+{% set _letters = 'abcdefghijklmnopqrstuvwxyz' %}
+{% set _valid_cc = _cc | length == 2 and _cc[0] in _letters and _cc[1] in _letters %}
+{% set _parts = [] %}
+{% if city %}{% set _ = _parts.append(city) %}{% endif %}
+{% if as_org %}{% set _ = _parts.append(as_org) %}{% endif %}
+
+{% if _valid_cc or _parts %}
+<div class="small text-muted d-flex align-items-center gap-2 {{ extra_class }}">
+    {% if _valid_cc %}
+    <img alt="{{ _cc | upper }} flag"
+         src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ _cc }}.svg"
+         width="{{ _sz[0] }}"
+         height="{{ _sz[1] }}"
+         loading="lazy"
+         decoding="async"
+         class="flag-icon{{ ' flag-icon-sm' if flag_size == 'sm' else '' }}">
     {% endif %}
-    <span>
-        {% if city %}{{ city }}{% endif %}
-        {% if city and as_org %} · {% endif %}
-        {% if as_org %}{{ as_org }}{% endif %}
-    </span>
+    {% if _parts %}
+    <span>{{ _parts | join(' · ') }}</span>
+    {% endif %}
 </div>
 {% endif %}
 {% endmacro %}

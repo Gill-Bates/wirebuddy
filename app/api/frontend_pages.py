@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import socket
 import logging
 import os
 import re
@@ -18,32 +17,41 @@ import sqlite3
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 import ipaddress
 import markdown as _markdown
 
 import nh3
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
+from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
+from ..db import tsdb
+from ..db.sqlite_interfaces import get_first_listen_port
+from ..db.sqlite_nodes import get_all_nodes, get_all_tunnel_peer_ids, get_peers_count_by_node, is_node_sse_connected
 from ..db.sqlite_peers import get_all_peers
-from ..db.sqlite_runtime import connect, close_connection
+from ..db.sqlite_runtime import connect, close_connection, thread_connection
 from ..db.sqlite_settings import get_dns_blocklist_enabled, get_setting, get_speedtest_enabled
 from ..db.sqlite_users import get_all_users
 from ..dns import unbound
 from ..utils.config import get_config
-from ..utils.deps import get_conn
+from ..utils.onboarding import ONBOARDING_STEPS
 from ..utils.rate_limit import RATE_LIMIT_DEFAULT, RATE_LIMIT_HEAVY, limiter
+from ..utils.tsdb_helpers import build_latest_by_node
 from ..utils.version import BUILD_INFO, VERSION
 from .acme import get_certs_dir, get_challenge_response
-from .auth import get_current_user_optional
+from .auth import coerce_db_bool, get_current_user_optional
 from .frontend_shared import (
     extract_geo_fields,
     format_last_seen_label,
     get_csrf_token,
     lookup_ip_cached,
+    parse_last_seen_epoch,
+    parse_node_metadata,
+    resolve_node_geo_ip,
     require_admin_or_redirect,
     require_user_or_redirect,
     router,
@@ -54,47 +62,114 @@ from .wireguard_isolation import extract_peer_ips
 _log = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _APP_ROOT = Path("/app")
+# _APP_ROOT handles Docker deployments where the project is mounted at /app.
+# _PROJECT_ROOT handles local development checkouts.
+_SEARCH_ROOTS = (_PROJECT_ROOT, _APP_ROOT)
 _ACME_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
-
-# Semaphore to limit concurrent geo-IP lookups (prevents thread pool exhaustion)
-# Lazy initialized to avoid event loop binding issues in Python < 3.10
-_GEO_LOOKUP_SEMAPHORE: asyncio.Semaphore | None = None
-_GEO_SEMAPHORE_LOCK: asyncio.Lock | None = None
 
 # Configuration constants
 _GEO_SEMAPHORE_LIMIT = 20  # Max concurrent GeoIP lookups
-_GEO_LOOKUP_BATCH_SIZE = 100  # Batch size for geo-IP lookups
 _SUBPROCESS_TIMEOUT = 5  # Timeout for system tool version checks (seconds)
+_geo_lookup_semaphore: asyncio.Semaphore | None = None
 
 
-async def _get_geo_semaphore() -> asyncio.Semaphore:
-	"""Get or create the geo-IP lookup semaphore (lazy initialization).
-	
-	Thread-safe double-checked locking to prevent race conditions.
-	"""
-	global _GEO_LOOKUP_SEMAPHORE, _GEO_SEMAPHORE_LOCK
-	
-	if _GEO_LOOKUP_SEMAPHORE is None:
-		# Initialize lock if needed
-		if _GEO_SEMAPHORE_LOCK is None:
-			_GEO_SEMAPHORE_LOCK = asyncio.Lock()
-		
-		async with _GEO_SEMAPHORE_LOCK:
-			# Double-check inside lock
-			if _GEO_LOOKUP_SEMAPHORE is None:
-				_GEO_LOOKUP_SEMAPHORE = asyncio.Semaphore(_GEO_SEMAPHORE_LIMIT)
-	
-	return _GEO_LOOKUP_SEMAPHORE
+def _get_geo_semaphore() -> asyncio.Semaphore:
+	"""Return a lazily initialized process-local geo-IP semaphore."""
+	global _geo_lookup_semaphore
+	if _geo_lookup_semaphore is None:
+		_geo_lookup_semaphore = asyncio.Semaphore(_GEO_SEMAPHORE_LIMIT)
+	return _geo_lookup_semaphore
 
 
-def _get_geo_for_ip(ip: str | None) -> dict[str, str | None]:
-	"""Get GeoIP fields for an IP address (reusable helper).
-	
-	Returns dict with country_code, city, as_org (all may be None).
-	"""
-	if not ip:
-		return {"country_code": None, "city": None, "as_org": None}
-	return extract_geo_fields(lookup_ip_cached(ip))
+async def _batch_geoip_lookup(ips: list[str]) -> dict[str, dict | None]:
+	"""Lookup GeoIP for multiple IPs with semaphore-bounded concurrency."""
+	if not ips:
+		return {}
+	sem = _get_geo_semaphore()
+
+	async def _bounded(ip: str) -> dict | None:
+		async with sem:
+			return await asyncio.to_thread(lookup_ip_cached, ip)
+
+	results = await asyncio.gather(*[_bounded(ip) for ip in ips], return_exceptions=True)
+	return {
+		ip: (None if isinstance(r, Exception) else r)
+		for ip, r in zip(ips, results)
+	}
+
+
+def _resolve_geo(fqdn: str | None) -> dict:
+	"""Resolve FQDN to GeoIP fields, returning empty fields on failure."""
+	if not fqdn:
+		return extract_geo_fields(None)
+	ip = resolve_node_geo_ip(fqdn)
+	return extract_geo_fields(lookup_ip_cached(ip)) if ip else extract_geo_fields(None)
+
+
+def _base_context(request: Request, user: sqlite3.Row, **extra) -> dict:
+	"""Build a template context dict with guaranteed base keys."""
+	return {
+		"user": user,
+		"csrf_token": get_csrf_token(request),
+		**extra,
+	}
+
+
+def _redirect_if_setup_not_needed(condition_pending: bool, condition_done: bool) -> Response | None:
+	"""Return a dashboard redirect when setup is not needed, else None."""
+	if not condition_pending or condition_done:
+		return RedirectResponse(url="/ui/dashboard", status_code=303)
+	return None
+
+
+async def _batch_geoip_lookup(ips: list[str]) -> dict[str, dict | None]:
+	"""Lookup GeoIP for multiple IPs with semaphore-bounded concurrency."""
+	if not ips:
+		return {}
+	sem = _get_geo_semaphore()
+
+	async def _bounded(ip: str) -> dict | None:
+		async with sem:
+			return await asyncio.to_thread(lookup_ip_cached, ip)
+
+	results = await asyncio.gather(*[_bounded(ip) for ip in ips], return_exceptions=True)
+	return {
+		ip: (None if isinstance(r, Exception) else r)
+		for ip, r in zip(ips, results)
+	}
+
+
+def _resolve_geo(fqdn: str | None) -> dict:
+	"""Resolve FQDN to GeoIP fields, returning empty fields on failure."""
+	if not fqdn:
+		return extract_geo_fields(None)
+	ip = resolve_node_geo_ip(fqdn)
+	return extract_geo_fields(lookup_ip_cached(ip)) if ip else extract_geo_fields(None)
+
+
+def _base_context(request: Request, user: sqlite3.Row, **extra) -> dict:
+	"""Build a template context dict with guaranteed base keys."""
+	return {
+		"user": user,
+		"csrf_token": get_csrf_token(request),
+		**extra,
+	}
+
+
+def _redirect_if_setup_not_needed(condition_pending: bool, condition_done: bool) -> Response | None:
+	"""Return a dashboard redirect when setup is not needed, else None."""
+	if not condition_pending or condition_done:
+		return RedirectResponse(url="/ui/dashboard", status_code=303)
+	return None
+
+
+def _find_existing_file(filename: str) -> Path | None:
+	"""Resolve a project file from known search roots."""
+	for root in _SEARCH_ROOTS:
+		candidate = root / filename
+		if candidate.exists():
+			return candidate
+	return None
 
 
 class SystemStatusResponse(BaseModel):
@@ -136,47 +211,6 @@ def _is_valid_hostname_or_ip(value: str) -> bool:
 	return _FQDN_RE.match(clean) is not None
 
 
-@lru_cache(maxsize=256)
-def _resolve_node_geo_ip(host_or_ip: str) -> str | None:
-	"""Resolve a node FQDN/IP to a concrete IP for GeoIP/ASN lookups.
-	
-	Security: Resolution happens once and is cached. Result is only used
-	for GeoIP lookups, not for network calls. If reused for network calls,
-	be aware of DNS rebinding attacks (attacker could change DNS after lookup).
-	"""
-	clean = str(host_or_ip or "").strip()
-	# Strip IPv6 brackets safely (only if wrapped)
-	if clean.startswith("[") and clean.endswith("]"):
-		clean = clean[1:-1]
-	if not clean:
-		return None
-
-	try:
-		return str(ipaddress.ip_address(clean))
-	except ValueError:
-		pass
-
-	if not _is_valid_hostname_or_ip(clean):
-		return None
-
-	try:
-		addrinfo = socket.getaddrinfo(clean, None, type=socket.SOCK_STREAM)
-	except OSError:
-		return None
-
-	for _family, _socktype, _proto, _canonname, sockaddr in addrinfo:
-		ip_text = str(sockaddr[0]).split("%", 1)[0]
-		try:
-			ip = ipaddress.ip_address(ip_text)
-			# SSRF protection: block private/reserved ranges
-			if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-				return None
-			return str(ip)
-		except ValueError:
-			continue
-
-	return None
-
 # Key packages to display in about page
 _KEY_PACKAGES = [
 	"fastapi", "httpx", "jinja2", "markdown", "Pillow", "pydantic", "pydantic-settings",
@@ -205,28 +239,25 @@ def _normalize_pkg_name(name: str) -> str:
 
 def _parse_requirements() -> dict[str, str]:
 	"""Parse requirements.txt and return package->version mapping."""
-	requirements_paths = [
-		_PROJECT_ROOT / "requirements.txt",
-		_APP_ROOT / "requirements.txt",
-	]
-	for req_path in requirements_paths:
-		if req_path.exists():
-			try:
-				versions: dict[str, str] = {}
-				for raw_line in req_path.read_text(encoding="utf-8").splitlines():
-					line = raw_line.strip()
-					if not line or line.startswith("#") or line.startswith("-"):
-						continue
-					for sep in ("==", ">=", "<=", "~=", "!=", ">", "<"):
-						if sep in line:
-							pkg, ver = line.split(sep, 1)
-							pkg = _normalize_pkg_name(pkg.split("[")[0])
-							ver = ver.split("#")[0].split(";")[0].strip()
-							versions[pkg] = ver
-							break
-				return versions
-			except (OSError, ValueError, UnicodeDecodeError) as exc:
-				_log.warning("Failed to parse requirements.txt: %s", exc)
+	req_path = _find_existing_file("requirements.txt")
+	if req_path is None:
+		return {}
+	try:
+		versions: dict[str, str] = {}
+		for raw_line in req_path.read_text(encoding="utf-8").splitlines():
+			line = raw_line.strip()
+			if not line or line.startswith("#") or line.startswith("-"):
+				continue
+			for sep in ("==", ">=", "<=", "~=", "!=", ">", "<"):
+				if sep in line:
+					pkg, ver = line.split(sep, 1)
+					pkg = _normalize_pkg_name(pkg.split("[")[0])
+					ver = ver.split("#")[0].split(";")[0].strip()
+					versions[pkg] = ver
+					break
+		return versions
+	except (OSError, ValueError, UnicodeDecodeError) as exc:
+		_log.warning("Failed to parse requirements.txt: %s", exc)
 	return {}
 
 
@@ -250,19 +281,20 @@ def _resolve_dependencies(requirements_versions: dict[str, str]) -> list[tuple[s
 	return dependencies
 
 
-def _get_system_tool_version(cmd_path: str, version_pattern: str) -> str:
+def _get_system_tool_version(cmd_path: str, version_pattern: str, version_flag: str = "--version") -> str:
 	"""Get version string from a system tool.
 	
 	Args:
 		cmd_path: Absolute path to the command
 		version_pattern: Regex pattern to extract version (first group is used)
+		version_flag: Flag to request version output
 	
 	Returns:
 		Version string, "not installed", or "not available"
 	"""
 	try:
 		result = subprocess.run(
-			[cmd_path, "-V" if "unbound" in cmd_path else "--version"],
+			[cmd_path, version_flag],
 			capture_output=True,
 			text=True,
 			timeout=_SUBPROCESS_TIMEOUT,
@@ -286,35 +318,35 @@ def _get_system_tool_version(cmd_path: str, version_pattern: str) -> str:
 
 def _read_license() -> str:
 	"""Read LICENSE file content."""
-	for lp in [_PROJECT_ROOT / "LICENSE", _APP_ROOT / "LICENSE"]:
-		if lp.exists():
-			try:
-				return lp.read_text(encoding="utf-8")
-			except (OSError, UnicodeDecodeError) as exc:
-				_log.warning("Failed to read LICENSE: %s", exc)
+	license_path = _find_existing_file("LICENSE")
+	if license_path is not None:
+		try:
+			return license_path.read_text(encoding="utf-8")
+		except (OSError, UnicodeDecodeError) as exc:
+			_log.warning("Failed to read LICENSE: %s", exc)
 	return "License file not found."
 
 
 def _render_changelog() -> str:
 	"""Render CHANGELOG.md to sanitized HTML."""
-	for cp in [_PROJECT_ROOT / "CHANGELOG.md", _APP_ROOT / "CHANGELOG.md"]:
-		if cp.exists():
-			try:
-				raw = cp.read_text(encoding="utf-8")
-				rendered = _markdown.markdown(raw, extensions=["extra", "sane_lists"])
-				return nh3.clean(
-					rendered,
-					tags=_CHANGELOG_ALLOWED_TAGS,
-					attributes=_CHANGELOG_ALLOWED_ATTRS,
-					url_schemes={"http", "https", "mailto"},
-					strip_comments=True,
-				)
-			except (OSError, UnicodeDecodeError) as exc:
-				_log.warning("Failed to read changelog: %s", exc)
-				return "<p>Failed to read changelog.</p>"
-			except (ValueError, TypeError) as exc:
-				_log.warning("Failed to render changelog: %s", exc)
-				return "<p>Failed to render changelog.</p>"
+	changelog_path = _find_existing_file("CHANGELOG.md")
+	if changelog_path is not None:
+		try:
+			raw = changelog_path.read_text(encoding="utf-8")
+			rendered = _markdown.markdown(raw, extensions=["extra", "sane_lists"])
+			return nh3.clean(
+				rendered,
+				tags=_CHANGELOG_ALLOWED_TAGS,
+				attributes=_CHANGELOG_ALLOWED_ATTRS,
+				url_schemes={"http", "https", "mailto"},
+				strip_comments=True,
+			)
+		except (OSError, UnicodeDecodeError) as exc:
+			_log.warning("Failed to read changelog: %s", exc)
+			return "<p>Failed to read changelog.</p>"
+		except (ValueError, TypeError) as exc:
+			_log.warning("Failed to render changelog: %s", exc)
+			return "<p>Failed to render changelog.</p>"
 	return "<p>Changelog not found.</p>"
 
 
@@ -347,7 +379,15 @@ def _get_configured_timezone() -> str:
 
 @lru_cache(maxsize=1)
 def _get_about_data() -> dict:
-	"""Compute about page data once and cache it."""
+	"""Compute about page data once and cache it.
+
+	Callers must treat the returned mapping as read-only.
+
+	NOTE: ``lru_cache`` is safe here for the cache-hit path (read-only dict
+	return is a pure Python operation protected by the GIL).  The only
+	risk is a duplicate computation on the very first call from two concurrent
+	coroutines.  ``_about_data_lock`` prevents that race.
+	"""
 	python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
 	requirements_versions = _parse_requirements()
 
@@ -356,12 +396,29 @@ def _get_about_data() -> dict:
 		"build_info": BUILD_INFO,
 		"python_version": python_version,
 		"timezone": _get_configured_timezone(),
-		"wireguard_version": _get_system_tool_version(_WG_PATH, r"v([\d.]+)"),
-		"unbound_version": _get_system_tool_version(_UNBOUND_PATH, r"(\d+\.\d+(?:\.\d+)?)"),
+		"wireguard_version": _get_system_tool_version(_WG_PATH, r"v([\d.]+)", "--version"),
+		"unbound_version": _get_system_tool_version(_UNBOUND_PATH, r"(\d+\.\d+(?:\.\d+)?)", "-V"),
 		"dependencies": _resolve_dependencies(requirements_versions),
 		"license_text": _read_license(),
 		"changelog_html": _render_changelog(),
 	}
+
+
+# Lock ensures only one coroutine populates _get_about_data's lru_cache on
+# the first call, preventing duplicate heavy work on concurrent cache misses.
+_about_data_lock = asyncio.Lock()
+
+
+async def _get_about_data_cached() -> dict:
+	"""Thread-safe async wrapper for _get_about_data."""
+	# Fast path: already cached (lru_cache hit is GIL-protected).
+	# Two concurrent callers can both reach the lock, but only one will do the
+	# heavy computation; the second will find the cache warm and return quickly.
+	if _get_about_data.cache_info().currsize > 0:
+		return _get_about_data()
+	async with _about_data_lock:
+		# Double-checked: another coroutine may have populated it while we waited.
+		return await asyncio.to_thread(_get_about_data)
 
 
 def _is_loopback_request(request: Request) -> bool:
@@ -384,8 +441,6 @@ def get_system_status(request: Request) -> SystemStatusResponse:
 	Restricted to loopback addresses only (localhost health checks).
 	Returns 403 for non-loopback clients to avoid leaking internal state.
 	"""
-	from fastapi import HTTPException
-	
 	if not _is_loopback_request(request):
 		# Security: Only allow localhost access to prevent info disclosure
 		raise HTTPException(status_code=403, detail="Access denied: localhost only")
@@ -437,17 +492,13 @@ def otp_setup_page(
 	- User has already confirmed OTP (otp_enabled=True)
 	"""
 	has_secret = bool(user["otp_secret"])
-	already_enabled = bool(user["otp_enabled"])
-	if not has_secret or already_enabled:
-		return RedirectResponse(url="/ui/dashboard", status_code=303)
+	if redirect := _redirect_if_setup_not_needed(has_secret, bool(user["otp_enabled"])):
+		return redirect
 
 	return templates.TemplateResponse(
 		request,
 		name="otp_setup.html",
-		context={
-			"user": user,
-			"csrf_token": get_csrf_token(request),
-		},
+		context=_base_context(request, user),
 	)
 
 
@@ -464,17 +515,13 @@ def passkey_setup_page(
 	- User has already registered a passkey (passkey_enabled=True)
 	"""
 	passkey_pending = bool(user["passkey_pending"])
-	already_enabled = bool(user["passkey_enabled"])
-	if not passkey_pending or already_enabled:
-		return RedirectResponse(url="/ui/dashboard", status_code=303)
+	if redirect := _redirect_if_setup_not_needed(passkey_pending, bool(user["passkey_enabled"])):
+		return redirect
 
 	return templates.TemplateResponse(
 		request,
 		name="passkey_setup.html",
-		context={
-			"user": user,
-			"csrf_token": get_csrf_token(request),
-		},
+		context=_base_context(request, user),
 	)
 
 
@@ -488,10 +535,7 @@ def dashboard(
 	return templates.TemplateResponse(
 		request,
 		name="dashboard.html",
-		context={
-			"user": user,
-			"csrf_token": get_csrf_token(request),
-		},
+		context=_base_context(request, user),
 	)
 
 
@@ -509,53 +553,23 @@ async def peers_page(
 	db_path = request.app.state.db_path
 
 	def _load_peers_data() -> tuple[list[sqlite3.Row], set[int], dict[str, str]]:
-		"""Load all peer data, tunnel peer IDs, and node names with a single connection.
-		
-		Combines queries to avoid redundant connection overhead.
-		Returns (peers, tunnel_ids, node_id_to_name_map).
-		"""
-		from ..db.sqlite_nodes import get_all_tunnel_peer_ids, get_all_nodes
-		thread_conn = connect(db_path)
-		try:
-			peers = get_all_peers(thread_conn)
-			tunnel_ids = get_all_tunnel_peer_ids(thread_conn)
-			nodes = get_all_nodes(thread_conn)
-			node_map = {n["id"]: n["name"] for n in nodes}
-			return peers, tunnel_ids, node_map
-		finally:
-			close_connection(thread_conn)
-
+			"""Load all peer data, tunnel peer IDs, and node names with a single connection."""
+			with thread_connection(db_path) as conn:
+				peers = get_all_peers(conn)
+				tunnel_ids = get_all_tunnel_peer_ids(conn)
+				nodes = get_all_nodes(conn)
+				node_map = {n["id"]: n["name"] for n in nodes}
+				return peers, tunnel_ids, node_map
 	peer_rows, tunnel_peer_ids, node_id_to_name = await asyncio.to_thread(_load_peers_data)
 	total_peers = len(peer_rows)
 	peers: list[dict] = []
 	now_epoch = int(time.time())
 	unique_client_ips = list({
-		str(row["last_client_ip"] or "").strip()
+		ip
 		for row in peer_rows
-		if str(row["last_client_ip"] or "").strip()
+		if (ip := str(row["last_client_ip"] or "").strip())
 	})
-	geoip_cache: dict[str, dict | None] = {}
-	if unique_client_ips:
-		# Use semaphore to limit concurrent geo-IP lookups (prevents thread pool exhaustion)
-		async def _bounded_lookup(ip: str) -> dict | None:
-			async with (await _get_geo_semaphore()):
-				return await asyncio.to_thread(lookup_ip_cached, ip)
-		
-		# Process in batches to limit memory pressure from coroutine objects
-		for batch_start in range(0, len(unique_client_ips), _GEO_LOOKUP_BATCH_SIZE):
-			batch = unique_client_ips[batch_start:batch_start + _GEO_LOOKUP_BATCH_SIZE]
-			results = await asyncio.gather(*[
-				_bounded_lookup(client_ip)
-				for client_ip in batch
-			], return_exceptions=True)
-			
-			# Filter out exceptions from failed lookups
-			for ip, result in zip(batch, results):
-				if isinstance(result, BaseException):
-					_log.debug("Geo-IP lookup failed for %s: %s", ip, result)
-					geoip_cache[ip] = None
-				else:
-					geoip_cache[ip] = result
+	geoip_cache = await _batch_geoip_lookup(unique_client_ips)
 
 	for row in peer_rows:
 		peer = dict(row)
@@ -596,243 +610,232 @@ async def peers_page(
 		p.get("name", "").lower(),
 	))
 
-	# Load nodes for the node selector in the Add Peer modal (admin only)
-	nodes_data = []
+	# Load nodes for the node selector in the Add Peer modal (admin only).
+	# Run peers load and nodes load in parallel for admin requests.
+	nodes_data: list = []
 	local_fqdn = None
 	local_country_code = None
-	if user["is_admin"]:
+	if coerce_db_bool(user["is_admin"]):
 		def _load_nodes() -> tuple[list, str | None, str | None]:
-			from ..db.sqlite_nodes import get_all_nodes as db_get_all_nodes
-			from ..db.sqlite_settings import get_setting
-			thread_conn = connect(db_path)
-			try:
-				# Load remote nodes
+			with thread_connection(db_path) as conn:
 				nodes = []
-				for n in db_get_all_nodes(thread_conn):
-					resolved_geo_ip = _resolve_node_geo_ip(n["fqdn"])
-					geo_fields = _get_geo_for_ip(resolved_geo_ip)
+				for n in get_all_nodes(conn):
+					geo_fields = _resolve_geo(n["fqdn"])
 					nodes.append({
 						"id": n["id"],
 						"name": n["name"],
 						"fqdn": n["fqdn"],
 						"geo_country_code": geo_fields["country_code"],
 					})
-				
-				# Load local server info
-				fqdn = get_setting(thread_conn, "wg_fqdn") or ""
-				fqdn = fqdn.strip()
-				resolved_local_ip = _resolve_node_geo_ip(fqdn) if fqdn else None
-				local_geo = _get_geo_for_ip(resolved_local_ip)
+				fqdn = (get_setting(conn, "wg_fqdn") or "").strip()
+				local_geo = _resolve_geo(fqdn or None)
 				return nodes, fqdn or None, local_geo.get("country_code")
-			finally:
-				close_connection(thread_conn)
 		nodes_data, local_fqdn, local_country_code = await asyncio.to_thread(_load_nodes)
 
 	return templates.TemplateResponse(
 		request,
 		name="peers.html",
-		context={
-			"user": user,
-			"peers": peers,
-			"total_peers": total_peers,
-			"nodes": nodes_data,
-			"local_fqdn": local_fqdn,
-			"local_country_code": local_country_code,
-			"csrf_token": get_csrf_token(request),
-		},
+		context=_base_context(
+			request, user,
+			peers=peers,
+			total_peers=total_peers,
+			nodes=nodes_data,
+			local_fqdn=local_fqdn,
+			local_country_code=local_country_code,
+		),
 	)
 
 
 @router.get("/ui/users", response_class=HTMLResponse)
 @limiter.limit(RATE_LIMIT_DEFAULT)
-def users_page(
+async def users_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_admin_or_redirect),
-	conn: sqlite3.Connection = Depends(get_conn),
 ) -> Response:
 	"""Users management page (admin only).
-	
-	Note: This is a sync handler, so FastAPI runs it in a threadpool worker.
-	The conn dependency is created and used in the same thread — safe.
-	Auth check happens before DB connection to avoid wasting resources.
+
+	Runs blocking DB operations in a worker thread and uses a thread-local
+	SQLite connection to avoid cross-thread connection usage.
 	"""
-	users = get_all_users(conn)
+	db_path = request.app.state.db_path
+
+	def _load_users() -> list[sqlite3.Row]:
+		with thread_connection(db_path) as conn:
+			return get_all_users(conn)
+
+	users = await asyncio.to_thread(_load_users)
 	return templates.TemplateResponse(
 		request,
 		name="users.html",
-		context={
-			"user": user,
-			"users": users,
-			"csrf_token": get_csrf_token(request),
-		},
+		context=_base_context(request, user, users=users),
 	)
 
 
 @router.get("/ui/nodes", response_class=HTMLResponse)
 @limiter.limit(RATE_LIMIT_DEFAULT)
-def nodes_page(
+async def nodes_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_admin_or_redirect),
-	conn: sqlite3.Connection = Depends(get_conn),
 ) -> Response:
-	"""Remote nodes management page (admin only)."""
-	from datetime import datetime, timedelta, timezone
-	from ..db.sqlite_nodes import get_all_nodes, get_peers_count_by_node, is_node_sse_connected
-	from ..db import tsdb
-	from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
-	
+	"""Remote nodes management page (admin only).
+
+	Runs blocking DB/TSDB operations in a worker thread to avoid blocking
+	the event loop and to keep SQLite connection usage thread-safe.
+	"""
 	cfg = get_config()
-	nodes = get_all_nodes(conn)
-	peer_counts = get_peers_count_by_node(conn)
-	
-	# Fetch recent speedtest results for all nodes
-	speedtest_by_node: dict[str | None, dict] = {}  # node_id -> last result
-	try:
-		since = datetime.now(timezone.utc) - timedelta(days=90)
-		points = tsdb.query(
-			cfg.tsdb_dir,
-			peer_key=SPEEDTEST_TSDB_KEY,
-			metric=SPEEDTEST_TSDB_METRIC,
-			since=since,
-			limit=2000,
-		)
-		for pt in points:
-			if isinstance(pt.value, dict):
-				node_id = pt.value.get("node_id")  # None = master
-				# Always overwrite to keep the last (newest) result, not the first (oldest)
-				speedtest_by_node[node_id] = {
-					"ts": pt.ts.isoformat(),
-					**pt.value,
-				}
-	except Exception as exc:
-		_log.debug("Failed to load speedtest data for nodes: %s", exc)
-	
-	# Batch resolve GeoIP for all nodes (performance optimization)
-	unique_node_ips = []
-	node_ip_map = {}  # node_id -> resolved_ip
-	for n in nodes:
-		resolved_ip = _resolve_node_geo_ip(n["fqdn"])
-		if resolved_ip:
-			node_ip_map[n["id"]] = resolved_ip
-			if resolved_ip not in unique_node_ips:
-				unique_node_ips.append(resolved_ip)
-	
-	# Batch lookup GeoIP data
-	geo_cache = {}
-	for ip in unique_node_ips:
-		geo_cache[ip] = lookup_ip_cached(ip)
-	
-	nodes_data = []
-	for n in nodes:
-		resolved_ip = node_ip_map.get(n["id"])
-		geo_fields = _get_geo_for_ip(resolved_ip) if resolved_ip else _get_geo_for_ip(None)
-		# Parse metadata JSON for version
-		node_version = None
-		if n["metadata"]:
+	db_path = request.app.state.db_path
+
+	def _load_nodes_page_data() -> tuple[list[dict], int]:
+		with thread_connection(db_path) as conn:
+			nodes = get_all_nodes(conn)
+			peer_counts = get_peers_count_by_node(conn)
+
+			# Fetch recent speedtest results for all nodes
+			speedtest_by_node: dict[str | None, dict] = {}  # node_id -> last result
 			try:
-				meta = json.loads(n["metadata"]) if isinstance(n["metadata"], str) else n["metadata"]
-				node_version = meta.get("version")
-			except (json.JSONDecodeError, TypeError) as exc:
-				_log.debug("Failed to parse metadata for node %s: %s", n.get("id"), exc)
-		
-		# Convert last_seen datetime to formatted label (like peers page)
-		last_seen_epoch = 0
-		if n["last_seen"]:
-			try:
-				if isinstance(n["last_seen"], datetime):
-					last_seen_epoch = int(n["last_seen"].timestamp())
-				elif isinstance(n["last_seen"], str):
-					# Parse ISO format datetime string
-					dt = datetime.fromisoformat(n["last_seen"].replace("Z", "+00:00"))
-					last_seen_epoch = int(dt.timestamp())
-			except (ValueError, TypeError, AttributeError) as exc:
-				_log.debug("Failed to parse last_seen for node %s: %s", n.get("id"), exc)
-		last_seen_label = format_last_seen_label(last_seen_epoch)
-		
-		# Get last speedtest for this node
-		last_speedtest = speedtest_by_node.get(n["id"])
-		
-		nodes_data.append({
-			"id": n["id"],
-			"name": n["name"],
-			"fqdn": n["fqdn"],
-			"wg_port": n["wg_port"],
-			"status": n["status"],
-			"last_seen": n["last_seen"],
-			"last_seen_text": last_seen_label.text,
-			"last_seen_class": last_seen_label.css_class,
-			"enrolled_at": n["enrolled_at"],
-			"created_at": n["created_at"],
-			"peer_count": peer_counts.get(n["id"], 0),
-			"geo_country_code": geo_fields["country_code"],
-			"geo_city": geo_fields["city"],
-			"geo_as_org": geo_fields["as_org"],
-			"node_version": node_version,
-			"last_speedtest": last_speedtest,
-			"sse_connected": is_node_sse_connected(conn, n["id"]) if n["status"] == "online" else False,
-		})
-	# Get default WireGuard port from first interface for pre-filling the Add Node modal
-	first_iface = conn.execute("SELECT listen_port FROM interfaces LIMIT 1").fetchone()
-	default_wg_port = first_iface["listen_port"] if first_iface else 51820
+				since = datetime.now(timezone.utc) - timedelta(days=90)
+				points = tsdb.query(
+					cfg.tsdb_dir,
+					peer_key=SPEEDTEST_TSDB_KEY,
+					metric=SPEEDTEST_TSDB_METRIC,
+					since=since,
+					limit=2000,
+					latest=True,
+				)
+				speedtest_by_node = build_latest_by_node(points)
+			except Exception as exc:
+				_log.debug("Failed to load speedtest data for nodes: %s", exc)
+
+			# Batch resolve GeoIP for all nodes (performance optimization)
+			unique_node_ips = []
+			node_ip_map = {}  # node_id -> resolved_ip
+			for n in nodes:
+				resolved_ip = resolve_node_geo_ip(n["fqdn"])
+				if resolved_ip:
+					node_ip_map[n["id"]] = resolved_ip
+					if resolved_ip not in unique_node_ips:
+						unique_node_ips.append(resolved_ip)
+
+			# Batch lookup GeoIP data
+			geo_cache = {}
+			for ip in unique_node_ips:
+				geo_cache[ip] = extract_geo_fields(lookup_ip_cached(ip))
+
+			nodes_data = []
+			for n in nodes:
+				resolved_ip = node_ip_map.get(n["id"])
+				geo_fields = geo_cache.get(resolved_ip) if resolved_ip else extract_geo_fields(None)
+				# Parse metadata JSON for version
+				meta = parse_node_metadata(n["metadata"], node_id=n["id"])
+				node_version = (meta or {}).get("version")
+
+				# Shared parser keeps datetime/string/None handling consistent across pages.
+				last_seen_epoch = parse_last_seen_epoch(n["last_seen"])
+				last_seen_label = format_last_seen_label(last_seen_epoch)
+
+				# Get last speedtest for this node
+				last_speedtest = speedtest_by_node.get(n["id"])
+
+				try:
+					show_on_dashboard = bool(n["show_on_dashboard"])
+				except (KeyError, IndexError):
+					show_on_dashboard = True
+
+				nodes_data.append({
+					"id": n["id"],
+					"name": n["name"],
+					"fqdn": n["fqdn"],
+					"wg_port": n["wg_port"],
+					"status": n["status"],
+					"last_seen": n["last_seen"],
+					"last_seen_text": last_seen_label.text,
+					"last_seen_class": last_seen_label.css_class,
+					"enrolled_at": n["enrolled_at"],
+					"created_at": n["created_at"],
+					"peer_count": peer_counts.get(n["id"], 0),
+					"geo_country_code": geo_fields["country_code"],
+					"geo_city": geo_fields["city"],
+					"geo_as_org": geo_fields["as_org"],
+					"node_version": node_version,
+					"last_speedtest": last_speedtest,
+					"sse_connected": is_node_sse_connected(conn, n["id"]) if n["status"] == "online" else False,
+					"show_on_dashboard": show_on_dashboard,
+				})
+
+			# Get default WireGuard port from first interface for pre-filling the Add Node modal
+			default_wg_port = get_first_listen_port(conn, default=51820)
+			return nodes_data, default_wg_port
+
+	nodes_data, default_wg_port = await asyncio.to_thread(_load_nodes_page_data)
 	return templates.TemplateResponse(
 		request,
 		name="nodes.html",
-		context={
-			"user": user,
-			"nodes": nodes_data,
-			"default_wg_port": default_wg_port,
-			"csrf_token": get_csrf_token(request),
-		},
+		context=_base_context(
+			request, user,
+			nodes=nodes_data,
+			default_wg_port=default_wg_port,
+		),
 	)
 
 
 @router.get("/ui/dns", response_class=HTMLResponse)
 @limiter.limit(RATE_LIMIT_DEFAULT)
-def dns_page(
+async def dns_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
-	conn: sqlite3.Connection = Depends(get_conn),
 ) -> Response:
 	"""DNS ad-blocking page.
-	
-	Note: This is a sync handler, so FastAPI runs it in a threadpool worker.
-	The conn dependency is created and used in the same thread — safe.
-	Auth check happens before DB connection to avoid wasting resources.
+
+	Runs blocking DB/system checks in a worker thread.
 	"""
-	enable_blocklist = get_dns_blocklist_enabled(conn)
-	dns_unavailable = not unbound.is_unbound_installed()
+	db_path = request.app.state.db_path
+
+	def _load_dns_page_data() -> tuple[bool, bool]:
+		with thread_connection(db_path) as conn:
+			enable_blocklist = get_dns_blocklist_enabled(conn)
+			dns_unavailable = not unbound.is_unbound_installed()
+			return enable_blocklist, dns_unavailable
+
+	enable_blocklist, dns_unavailable = await asyncio.to_thread(_load_dns_page_data)
+	is_admin = coerce_db_bool(user["is_admin"])
 	return templates.TemplateResponse(
 		request,
 		name="dns.html",
-		context={
-			"user": user,
-			"enable_blocklist": enable_blocklist,
-			"dns_unavailable": dns_unavailable,
-			"csrf_token": get_csrf_token(request),
-		},
+		context=_base_context(
+			request, user,
+			is_admin=is_admin,
+			enable_blocklist=enable_blocklist,
+			dns_unavailable=dns_unavailable,
+		),
 	)
 
 
 @router.get("/ui/traffic", response_class=HTMLResponse)
 @limiter.limit(RATE_LIMIT_DEFAULT)
-def traffic_page(
+async def traffic_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
-	conn: sqlite3.Connection = Depends(get_conn),
 ) -> Response:
 	"""Traffic usage page.
-	
-	Auth check happens before DB connection to avoid wasting resources.
+
+	Runs blocking DB reads in a worker thread.
 	"""
-	traffic_analysis_enabled = get_setting(conn, "traffic_analysis_enabled") == "1"
+	db_path = request.app.state.db_path
+
+	def _load_traffic_page_data() -> bool:
+		with thread_connection(db_path) as conn:
+			return get_setting(conn, "traffic_analysis_enabled") == "1"
+
+	traffic_analysis_enabled = await asyncio.to_thread(_load_traffic_page_data)
+	is_admin = coerce_db_bool(user["is_admin"])
 	return templates.TemplateResponse(
 		request,
 		name="traffic.html",
-		context={
-			"user": user,
-			"traffic_analysis_enabled": traffic_analysis_enabled,
-			"csrf_token": get_csrf_token(request),
-		},
+		context=_base_context(
+			request, user,
+			is_admin=is_admin,
+			traffic_analysis_enabled=traffic_analysis_enabled,
+		),
 	)
 
 
@@ -851,56 +854,77 @@ async def about_page(
 	First call (cache miss) runs blocking operations in thread pool to avoid
 	blocking the event loop.
 	"""
-	about_data = await asyncio.to_thread(_get_about_data)
+	about_data = dict(await _get_about_data_cached())
 	return templates.TemplateResponse(
 		request,
 		name="about.html",
-		context={
-			"user": user,
-			"csrf_token": get_csrf_token(request),
-			**about_data,
-		},
+		context=_base_context(request, user, **about_data),
 	)
 
 
 @router.get("/ui/settings", response_class=HTMLResponse)
 @limiter.limit(RATE_LIMIT_DEFAULT)
-def settings_page(
+async def settings_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
-	conn: sqlite3.Connection = Depends(get_conn),
 ) -> Response:
 	"""Settings page."""
-	# Load toggle states server-side to avoid visual jump on page load
-	# Calculate URLs server-side to prevent flickering
-	# Security: Use configured FQDN only, never trust request.url.hostname (Host header injection)
-	wg_fqdn = get_setting(conn, "wg_fqdn") or ""
-	raw_host = wg_fqdn.strip().strip("[]") if wg_fqdn else "localhost"
-	
-	# Validate hostname/IP to prevent URL injection attacks
-	if not _is_valid_hostname_or_ip(raw_host):
-		_log.warning("Invalid FQDN in settings: %r", raw_host[:50])
-		raw_host = "localhost"  # Fallback to safe default
-	
-	url_host = f"[{raw_host}]" if ":" in raw_host else raw_host
-	
-	settings = {
-		"enable_status_page": get_setting(conn, "enable_status_page") == "1",
-		"enable_swagger": get_setting(conn, "enable_swagger") == "1",
-		"gui_localhost_only": get_setting(conn, "gui_localhost_only") == "1",
-		"wg_use_psk": get_setting(conn, "wg_use_psk", "1") == "1",  # Default: enabled
-		"traffic_analysis_enabled": get_setting(conn, "traffic_analysis_enabled") == "1",
-		"speedtest_enabled": get_speedtest_enabled(conn),
-		"status_page_url": f"https://{url_host}/status",
-		"swagger_url": f"https://{url_host}/swagger",
-	}
+	# Load toggle states server-side to avoid visual jump on page load.
+	# Security: use configured FQDN only, never trust request.url.hostname.
+	db_path = request.app.state.db_path
+
+	def _load_settings_page_data() -> dict[str, object]:
+		with thread_connection(db_path) as conn:
+			wg_fqdn = get_setting(conn, "wg_fqdn") or ""
+			raw_host = wg_fqdn.strip().strip("[]") if wg_fqdn else "localhost"
+
+			# Validate hostname/IP to prevent URL injection attacks.
+			if not _is_valid_hostname_or_ip(raw_host):
+				_log.warning("Invalid FQDN in settings: %r", raw_host[:50])
+				raw_host = "localhost"
+
+			url_host = f"[{raw_host}]" if ":" in raw_host else raw_host
+
+			return {
+				"enable_status_page": get_setting(conn, "enable_status_page") == "1",
+				"enable_swagger": get_setting(conn, "enable_swagger") == "1",
+				"gui_localhost_only": get_setting(conn, "gui_localhost_only") == "1",
+				"wg_use_psk": get_setting(conn, "wg_use_psk", "1") == "1",  # Default: enabled
+				"traffic_analysis_enabled": get_setting(conn, "traffic_analysis_enabled") == "1",
+				"speedtest_enabled": get_speedtest_enabled(conn),
+				"status_page_url": f"https://{url_host}/status",
+				"swagger_url": f"https://{url_host}/swagger",
+			}
+
+	settings = await asyncio.to_thread(_load_settings_page_data)
 	return templates.TemplateResponse(
 		request,
 		name="settings.html",
+		context=_base_context(request, user, settings=settings),
+	)
+
+
+@router.get("/ui/fragments/onboarding", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_DEFAULT)
+def onboarding_modal_fragment(
+	request: Request,
+	user: sqlite3.Row = Depends(require_user_or_redirect),
+) -> Response:
+	"""Serve the onboarding modal fragment on-demand.
+	
+	Returns only the modal HTML (no page wrapper), used for lazy-loading
+	by onboarding.js to reduce initial page load size.
+	
+	The onboarding steps are defined in app.utils.onboarding.ONBOARDING_STEPS
+	to enable testing, internationalization, and dynamic modifications
+	without template changes.
+	"""
+	return templates.TemplateResponse(
+		request,
+		name="fragments/onboarding_modal.html",
 		context={
 			"user": user,
-			"csrf_token": get_csrf_token(request),
-			"settings": settings,
+			"onboarding_steps": ONBOARDING_STEPS,
 		},
 	)
 

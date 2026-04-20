@@ -9,6 +9,7 @@ build/
 full_codebase_*
 .pytest_cache/
 *.backup
+*.codex
 
 # Virtual Environment
 .venv/
