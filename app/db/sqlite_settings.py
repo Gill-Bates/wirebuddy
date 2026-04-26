@@ -29,48 +29,64 @@ _log = logging.getLogger(__name__)
 # Maximum JSON payload size to prevent DB bloat / DoS
 _MAX_JSON_SETTING_LENGTH = 65_536
 
+# Shared retention choices across DNS, TSDB, and speedtest settings.
+_RETENTION_OPTIONS = (0, 7, 30, 90, 180, 365)
+
 __all__ = [
-	"get_setting",
-	"set_setting",
+	# Core operations
 	"delete_setting",
-	"validate_secret_key",
+	"get_setting",
 	"recover_missing_global_settings",
+	"set_setting",
+	"validate_secret_key",
+	# Blocklist
+	"clear_blocklist_disabled_until",
+	"get_blocklist_disabled_until",
+	"get_dns_blocklist_enabled",
 	"get_enabled_blocklists",
+	"set_blocklist_disabled_until",
+	"set_dns_blocklist_enabled",
 	"set_enabled_blocklists",
-	"get_dns_upstream_servers",
-	"set_dns_upstream_servers",
+	# DNS
+	"get_dns_custom_rules",
 	"get_dns_log_retention_days",
+	"get_dns_query_logging_enabled",
+	"get_dns_service_enabled",
+	"get_dns_upstream_servers",
+	"get_dnssec_enabled",
+	"set_dns_custom_rules",
 	"set_dns_log_retention_days",
+	"set_dns_query_logging_enabled",
+	"set_dns_service_enabled",
+	"set_dns_upstream_servers",
+	"set_dnssec_enabled",
+	# Speedtest
+	"get_speedtest_enabled",
+	"get_speedtest_ignore_peers",
+	"get_speedtest_last_result",
+	"get_node_speedtest_last_result",
+	"get_node_speedtest_last_results",
+	"get_speedtest_last_run_at",
+	"get_speedtest_retention_days",
+	"set_speedtest_enabled",
+	"set_speedtest_ignore_peers",
+	"set_speedtest_last_result",
+	"set_node_speedtest_last_result",
+	"set_speedtest_last_run_at",
+	"set_speedtest_retention_days",
+	# TSDB
 	"get_tsdb_retention_days",
 	"set_tsdb_retention_days",
-	"get_speedtest_retention_days",
-	"set_speedtest_retention_days",
-	"get_dnssec_enabled",
-	"set_dnssec_enabled",
-	"get_dns_query_logging_enabled",
-	"set_dns_query_logging_enabled",
-	"get_dns_blocklist_enabled",
-	"set_dns_blocklist_enabled",
-	"get_blocklist_disabled_until",
-	"set_blocklist_disabled_until",
-	"clear_blocklist_disabled_until",
-	"get_dns_service_enabled",
-	"set_dns_service_enabled",
-	"get_dns_custom_rules",
-	"set_dns_custom_rules",
-	"DNS_LOG_RETENTION_OPTIONS",
-	"DEFAULT_DNS_LOG_RETENTION_DAYS",
-	"TSDB_RETENTION_OPTIONS",
-	"DEFAULT_TSDB_RETENTION_DAYS",
-	"SPEEDTEST_RETENTION_OPTIONS",
-	"DEFAULT_SPEEDTEST_RETENTION_DAYS",
-	"MAX_CUSTOM_RULES_LENGTH",
-	"DEFAULT_DNS_UPSTREAM_SERVERS",
+	# Constants
 	"DEFAULT_DNS_CUSTOM_RULES",
-	"get_speedtest_enabled",
-	"set_speedtest_enabled",
-	"get_speedtest_last_run_at",
-	"set_speedtest_last_run_at",
+	"DEFAULT_DNS_LOG_RETENTION_DAYS",
+	"DEFAULT_DNS_UPSTREAM_SERVERS",
+	"DEFAULT_SPEEDTEST_RETENTION_DAYS",
+	"DEFAULT_TSDB_RETENTION_DAYS",
+	"DNS_LOG_RETENTION_OPTIONS",
+	"MAX_CUSTOM_RULES_LENGTH",
+	"SPEEDTEST_RETENTION_OPTIONS",
+	"TSDB_RETENTION_OPTIONS",
 ]
 
 # Constant for key validation
@@ -86,6 +102,52 @@ _DNS_UPSTREAM_SERVER_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
+# Validation helpers (reused across recovery and setters)
+# ---------------------------------------------------------------------------
+
+def _validate_port(text: str) -> int | None:
+	"""Parse and validate a port number string.
+	
+	Returns the port as int if valid (1-65535), or None if invalid.
+	"""
+	if not text.isdigit():
+		return None
+	port = int(text)
+	return port if 1 <= port <= 65535 else None
+
+
+def _validate_hostname(text: str) -> str | None:
+	"""Validate and normalize a hostname or IP address.
+	
+	Returns the normalized hostname/IP if valid, or None if invalid.
+	Accepts:
+	- IPv4/IPv6 literals (including bracketed IPv6)
+	- DNS hostnames (FQDN)
+	"""
+	text = str(text or "").strip()
+	if not text or len(text) > 253:
+		return None
+	
+	# Try parsing as IP address first
+	try:
+		ipaddress.ip_address(text.strip("[]"))
+		return text  # Valid IP literal
+	except ValueError:
+		pass  # Not an IP, try hostname validation
+	
+	# Validate as hostname (FQDN)
+	if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", text):
+		return None
+	labels = text.strip(".").split(".")
+	if any(
+		(not label) or len(label) > 63 or label.startswith("-") or label.endswith("-")
+		for label in labels
+	):
+		return None
+	return text
+
+
+# ---------------------------------------------------------------------------
 # Key Validation
 # ---------------------------------------------------------------------------
 
@@ -98,8 +160,6 @@ def validate_secret_key(conn: sqlite3.Connection, pepper: str) -> bool:
 	Returns:
 		True if key is valid, False if there's a mismatch.
 	"""
-	from ..utils.vault import decrypt as vault_decrypt
-	
 	stored_token = get_setting(conn, _KEY_VALIDATION_TOKEN_KEY)
 	
 	if stored_token is None:
@@ -124,7 +184,7 @@ def validate_secret_key(conn: sqlite3.Connection, pepper: str) -> bool:
 	
 	# Token exists - try to decrypt and validate
 	try:
-		decrypted = vault_decrypt(stored_token, pepper)
+		decrypted = vault.decrypt(stored_token, pepper)
 		if decrypted == _KEY_VALIDATION_PLAINTEXT:
 			return True
 		else:
@@ -146,7 +206,11 @@ def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) 
 	"""Get a setting value by key."""
 	with closing(conn.execute("SELECT value FROM settings WHERE key = ?", (key,))) as cur:
 		row = cur.fetchone()
-	return row["value"] if row else default
+	if row is None:
+		return default
+	if isinstance(row, sqlite3.Row):
+		return row["value"]
+	return row[0]
 
 
 def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
@@ -206,10 +270,8 @@ def _normalize_recovery_value(key: str, value: str) -> str | None:
 		return None
 
 	if key in {"wg_port", "gui_port", "gui_external_port"}:
-		if not text.isdigit():
-			return None
-		port = int(text)
-		return str(port) if 1 <= port <= 65535 else None
+		port = _validate_port(text)
+		return str(port) if port is not None else None
 
 	if key == "wg_mtu":
 		if not text.isdigit():
@@ -227,22 +289,10 @@ def _normalize_recovery_value(key: str, value: str) -> str | None:
 		return _normalize_bool(text)
 
 	if key == "wg_fqdn":
-		# Allow hostnames and literal IPs; reject whitespace/control characters.
-		if any(ch.isspace() for ch in text):
+		# Reject whitespace/control characters before validation.
+		if any(map(str.isspace, text)):
 			return None
-		# Try parsing as IP address first
-		try:
-			ipaddress.ip_address(text.strip("[]"))
-			return text  # Valid IP literal
-		except ValueError:
-			pass  # Not an IP, try hostname validation
-		# Validate as hostname (FQDN)
-		if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", text):
-			return None
-		labels = text.strip(".").split(".")
-		if any((not label) or len(label) > 63 or label.startswith("-") or label.endswith("-") for label in labels):
-			return None
-		return text
+		return _validate_hostname(text)
 
 	return text
 
@@ -364,24 +414,24 @@ def recover_missing_global_settings(
 	return updated
 
 
-DNS_LOG_RETENTION_OPTIONS = (0, 7, 30, 90, 180, 365)
+DNS_LOG_RETENTION_OPTIONS = _RETENTION_OPTIONS
 DEFAULT_DNS_LOG_RETENTION_DAYS = 7
 
-TSDB_RETENTION_OPTIONS = (0, 7, 30, 90, 180, 365)
+TSDB_RETENTION_OPTIONS = _RETENTION_OPTIONS
 DEFAULT_TSDB_RETENTION_DAYS = 7
 
 # Speedtest data retention (longer default since data is sparse)
-SPEEDTEST_RETENTION_OPTIONS = (0, 7, 30, 90, 180, 365)
+SPEEDTEST_RETENTION_OPTIONS = _RETENTION_OPTIONS
 DEFAULT_SPEEDTEST_RETENTION_DAYS = 365
 
 MAX_CUSTOM_RULES_LENGTH = 256_000
-DEFAULT_DNS_UPSTREAM_SERVERS = [
+DEFAULT_DNS_UPSTREAM_SERVERS = (
 	"1.1.1.1@853#cloudflare-dns.com",
 	"9.9.9.9@853#dns.quad9.net",
 	"91.239.100.100@853#anycast.censurfridns.dk",
 	"45.90.28.0@853#dns.nextdns.io",
 	"194.242.2.2@853#dns.mullvad.net",
-]
+)
 
 
 def _parse_retention_days(
@@ -407,20 +457,89 @@ def _setting_is_truthy(value: Any, default: bool = False) -> bool:
 	return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _get_bool_setting(conn: sqlite3.Connection, key: str, *, default: bool = False) -> bool:
+	"""Get a boolean setting from the database."""
+	return _setting_is_truthy(get_setting(conn, key, "1" if default else "0"), default=default)
+
+
+def _set_bool_setting(conn: sqlite3.Connection, key: str, enabled: bool) -> None:
+	"""Persist a boolean setting as canonical 0/1 text."""
+	set_setting(conn, key, "1" if enabled else "0")
+
+
+def _get_retention_days(
+	conn: sqlite3.Connection,
+	key: str,
+	options: tuple[int, ...],
+	default: int,
+) -> int:
+	"""Read a retention setting with a shared fallback parser."""
+	raw = get_setting(conn, key, str(default))
+	return _parse_retention_days(raw, options, default)
+
+
+def _set_retention_days(
+	conn: sqlite3.Connection,
+	key: str,
+	days: int,
+	options: tuple[int, ...],
+) -> None:
+	"""Persist a retention setting after validating against the allowed values."""
+	if days not in options:
+		raise ValueError(f"Invalid retention days: {days}")
+	set_setting(conn, key, str(days))
+
+
+def _get_json_list(
+	conn: sqlite3.Connection,
+	key: str,
+	*,
+	allow_empty: bool = True,
+	default: list[str] | None = None,
+) -> list[str]:
+	"""Read a JSON list setting with best-effort normalization."""
+	raw = get_setting(conn, key)
+	if raw:
+		try:
+			parsed = json.loads(raw)
+			if isinstance(parsed, list) and (allow_empty or parsed):
+				return [str(item).strip() for item in parsed if str(item).strip()]
+		except json.JSONDecodeError:
+			_log.warning("Failed to parse JSON list setting %s", key)
+	return list(default) if default is not None else []
+
+
+def _get_json_dict(conn: sqlite3.Connection, key: str) -> dict[str, Any] | None:
+	"""Read a JSON dict setting with best-effort validation."""
+	raw = get_setting(conn, key)
+	if raw is None:
+		return None
+	try:
+		parsed = json.loads(raw)
+	except json.JSONDecodeError:
+		_log.warning("Failed to parse JSON dict setting %s", key)
+		return None
+	return parsed if isinstance(parsed, dict) else None
+
+
+def _set_json_dict(conn: sqlite3.Connection, key: str, value: dict[str, Any] | None) -> None:
+	"""Persist a JSON dict setting or delete it when value is None."""
+	if value is None:
+		delete_setting(conn, key)
+		return
+	payload = {**value, "ts": value.get("ts") or utcnow().isoformat()}
+	set_setting(conn, key, json.dumps(payload, ensure_ascii=False, default=str))
+
+
 def get_enabled_blocklists(conn: sqlite3.Connection) -> list[str]:
 	"""Get list of enabled blocklist URLs from settings."""
-	value = get_setting(conn, "dns_blocklists")
+	value = _get_json_list(conn, "dns_blocklists")
 	if value:
-		try:
-			parsed = json.loads(value)
-			if isinstance(parsed, list):
-				return [str(item).strip() for item in parsed if str(item).strip()]
-		except Exception:
-			_log.warning("Invalid dns_blocklists setting, using defaults")
+		return value
 	# Return default blocklists if not set or invalid
 	from ..dns import constants as dns_constants
 
-	return dns_constants.DEFAULT_BLOCKLISTS
+	return list(dns_constants.DEFAULT_BLOCKLISTS)
 
 
 def set_enabled_blocklists(conn: sqlite3.Connection, urls: list[str]) -> None:
@@ -446,14 +565,9 @@ def set_enabled_blocklists(conn: sqlite3.Connection, urls: list[str]) -> None:
 
 def get_dns_upstream_servers(conn: sqlite3.Connection) -> list[str]:
 	"""Get list of custom upstream DNS servers from settings."""
-	value = get_setting(conn, "dns_upstream_servers")
+	value = _get_json_list(conn, "dns_upstream_servers", allow_empty=False)
 	if value:
-		try:
-			parsed = json.loads(value)
-			if isinstance(parsed, list) and parsed:
-				return [str(item).strip() for item in parsed if str(item).strip()]
-		except Exception:
-			_log.debug("Failed to parse dns_upstream_servers setting", exc_info=True)
+		return value
 	# Return default upstream servers if not set
 	return list(DEFAULT_DNS_UPSTREAM_SERVERS)
 
@@ -483,15 +597,12 @@ def set_dns_upstream_servers(conn: sqlite3.Connection, servers: list[str]) -> No
 		except ValueError as exc:
 			raise ValueError(f"Invalid upstream IP literal: {value}") from exc
 
-		port = int(match.group("port"))
-		if not 1 <= port <= 65535:
+		port = _validate_port(match.group("port"))
+		if port is None:
 			raise ValueError(f"Invalid upstream port: {value}")
 
 		host = match.group("host").strip(".").lower()
-		if not host:
-			raise ValueError(f"Invalid upstream hostname: {value}")
-		labels = host.split(".")
-		if any((not label) or len(label) > 63 or label.startswith("-") or label.endswith("-") for label in labels):
+		if _validate_hostname(host) is None:
 			raise ValueError(f"Invalid upstream hostname: {value}")
 
 		# Preserve IPv6 brackets
@@ -516,15 +627,12 @@ def get_dns_log_retention_days(conn: sqlite3.Connection) -> int:
 	- 180
 	- 365
 	"""
-	raw = get_setting(conn, "dns_log_retention_days", str(DEFAULT_DNS_LOG_RETENTION_DAYS))
-	return _parse_retention_days(raw, DNS_LOG_RETENTION_OPTIONS, DEFAULT_DNS_LOG_RETENTION_DAYS)
+	return _get_retention_days(conn, "dns_log_retention_days", DNS_LOG_RETENTION_OPTIONS, DEFAULT_DNS_LOG_RETENTION_DAYS)
 
 
 def set_dns_log_retention_days(conn: sqlite3.Connection, days: int) -> None:
 	"""Persist DNS query log retention period in days."""
-	if days not in DNS_LOG_RETENTION_OPTIONS:
-		raise ValueError(f"Invalid DNS log retention days: {days}")
-	set_setting(conn, "dns_log_retention_days", str(days))
+	_set_retention_days(conn, "dns_log_retention_days", days, DNS_LOG_RETENTION_OPTIONS)
 
 
 def get_tsdb_retention_days(conn: sqlite3.Connection) -> int:
@@ -532,15 +640,12 @@ def get_tsdb_retention_days(conn: sqlite3.Connection) -> int:
 
 	Allowed values: 7, 30, 90, 180, 365
 	"""
-	raw = get_setting(conn, "tsdb_retention_days", str(DEFAULT_TSDB_RETENTION_DAYS))
-	return _parse_retention_days(raw, TSDB_RETENTION_OPTIONS, DEFAULT_TSDB_RETENTION_DAYS)
+	return _get_retention_days(conn, "tsdb_retention_days", TSDB_RETENTION_OPTIONS, DEFAULT_TSDB_RETENTION_DAYS)
 
 
 def set_tsdb_retention_days(conn: sqlite3.Connection, days: int) -> None:
 	"""Persist TSDB (traffic metrics) retention period in days."""
-	if days not in TSDB_RETENTION_OPTIONS:
-		raise ValueError(f"Invalid TSDB retention days: {days}")
-	set_setting(conn, "tsdb_retention_days", str(days))
+	_set_retention_days(conn, "tsdb_retention_days", days, TSDB_RETENTION_OPTIONS)
 
 
 def get_speedtest_retention_days(conn: sqlite3.Connection) -> int:
@@ -549,45 +654,42 @@ def get_speedtest_retention_days(conn: sqlite3.Connection) -> int:
 	Allowed values: 0, 7, 30, 90, 180, 365
 	Default is 365 days since speedtest data is sparse.
 	"""
-	raw = get_setting(conn, "speedtest_retention_days", str(DEFAULT_SPEEDTEST_RETENTION_DAYS))
-	return _parse_retention_days(raw, SPEEDTEST_RETENTION_OPTIONS, DEFAULT_SPEEDTEST_RETENTION_DAYS)
+	return _get_retention_days(conn, "speedtest_retention_days", SPEEDTEST_RETENTION_OPTIONS, DEFAULT_SPEEDTEST_RETENTION_DAYS)
 
 
 def set_speedtest_retention_days(conn: sqlite3.Connection, days: int) -> None:
 	"""Persist speedtest data retention period in days."""
-	if days not in SPEEDTEST_RETENTION_OPTIONS:
-		raise ValueError(f"Invalid speedtest retention days: {days}")
-	set_setting(conn, "speedtest_retention_days", str(days))
+	_set_retention_days(conn, "speedtest_retention_days", days, SPEEDTEST_RETENTION_OPTIONS)
 
 
 def get_dnssec_enabled(conn: sqlite3.Connection) -> bool:
 	"""Get whether DNSSEC validation should be enabled."""
-	return _setting_is_truthy(get_setting(conn, "dnssec_enabled", "1"), default=True)
+	return _get_bool_setting(conn, "dnssec_enabled", default=True)
 
 
 def set_dnssec_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
 	"""Persist DNSSEC enabled setting."""
-	set_setting(conn, "dnssec_enabled", "1" if enabled else "0")
+	_set_bool_setting(conn, "dnssec_enabled", enabled)
 
 
 def get_dns_query_logging_enabled(conn: sqlite3.Connection) -> bool:
 	"""Get whether Unbound query logging is enabled."""
-	return _setting_is_truthy(get_setting(conn, "dns_enable_logging", "1"), default=True)
+	return _get_bool_setting(conn, "dns_enable_logging", default=True)
 
 
 def set_dns_query_logging_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
 	"""Persist Unbound query logging enabled setting."""
-	set_setting(conn, "dns_enable_logging", "1" if enabled else "0")
+	_set_bool_setting(conn, "dns_enable_logging", enabled)
 
 
 def get_dns_blocklist_enabled(conn: sqlite3.Connection) -> bool:
 	"""Get whether DNS blocklist include is enabled in Unbound config."""
-	return _setting_is_truthy(get_setting(conn, "dns_enable_blocklist", "0"), default=False)
+	return _get_bool_setting(conn, "dns_enable_blocklist", default=False)
 
 
 def set_dns_blocklist_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
 	"""Persist DNS blocklist enabled setting."""
-	set_setting(conn, "dns_enable_blocklist", "1" if enabled else "0")
+	_set_bool_setting(conn, "dns_enable_blocklist", enabled)
 
 
 def get_blocklist_disabled_until(conn: sqlite3.Connection) -> int:
@@ -614,12 +716,12 @@ def clear_blocklist_disabled_until(conn: sqlite3.Connection) -> None:
 
 def get_dns_service_enabled(conn: sqlite3.Connection) -> bool:
 	"""Get whether Unbound service should be auto-started on application startup."""
-	return _setting_is_truthy(get_setting(conn, "dns_service_enabled", "1"), default=True)
+	return _get_bool_setting(conn, "dns_service_enabled", default=True)
 
 
 def set_dns_service_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
 	"""Persist desired Unbound service state across restarts."""
-	set_setting(conn, "dns_service_enabled", "1" if enabled else "0")
+	_set_bool_setting(conn, "dns_service_enabled", enabled)
 
 
 # ---------------------------------------------------------------------------
@@ -662,9 +764,9 @@ def get_dns_custom_rules(conn: sqlite3.Connection) -> str:
 
 def set_dns_custom_rules(conn: sqlite3.Connection, rules_text: str) -> None:
 	"""Persist the raw custom DNS rules text."""
-	if len(rules_text) > MAX_CUSTOM_RULES_LENGTH:
+	normalized_rules = "" if not rules_text.strip() else rules_text.strip()
+	if len(normalized_rules) > MAX_CUSTOM_RULES_LENGTH:
 		raise ValueError("Custom rules text exceeds maximum allowed size")
-	normalized_rules = "" if not rules_text.strip() else rules_text
 	set_setting(conn, "dns_custom_rules", normalized_rules)
 
 
@@ -674,11 +776,85 @@ def set_dns_custom_rules(conn: sqlite3.Connection, rules_text: str) -> None:
 
 def get_speedtest_enabled(conn: sqlite3.Connection) -> bool:
 	"""Return True if scheduled speed tests are enabled."""
-	return get_setting(conn, "speedtest_enabled", "0") == "1"
+	return _get_bool_setting(conn, "speedtest_enabled", default=False)
 
 
 def set_speedtest_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
-	set_setting(conn, "speedtest_enabled", "1" if enabled else "0")
+	"""Persist scheduled speedtest enabled setting."""
+	_set_bool_setting(conn, "speedtest_enabled", enabled)
+
+
+def get_speedtest_ignore_peers(conn: sqlite3.Connection) -> bool:
+	"""Return True if scheduled tests should run even when peers are connected."""
+	return _get_bool_setting(conn, "speedtest_ignore_peers", default=False)
+
+
+def set_speedtest_ignore_peers(conn: sqlite3.Connection, ignore_peers: bool) -> None:
+	"""Persist whether scheduled tests skip the peer-idle check."""
+	_set_bool_setting(conn, "speedtest_ignore_peers", ignore_peers)
+
+
+def get_speedtest_last_result(conn: sqlite3.Connection) -> dict[str, Any] | None:
+	"""Return the last successful local speedtest result stored in SQLite."""
+	return _get_json_dict(conn, "speedtest_last_result")
+
+
+def set_speedtest_last_result(conn: sqlite3.Connection, result: dict[str, Any] | None = None) -> None:
+	"""Persist the last successful local speedtest result in SQLite."""
+	_set_json_dict(conn, "speedtest_last_result", result)
+
+
+def _node_speedtest_last_result_key(node_id: str) -> str:
+	"""Build the settings key for a node-specific last speedtest result."""
+	return f"speedtest_last_result:node:{node_id}"
+
+
+def get_node_speedtest_last_result(conn: sqlite3.Connection, node_id: str) -> dict[str, Any] | None:
+	"""Return the last successful speedtest result stored for a node."""
+	return _get_json_dict(conn, _node_speedtest_last_result_key(node_id))
+
+
+def get_node_speedtest_last_results(
+	conn: sqlite3.Connection,
+	node_ids: set[str],
+) -> dict[str, dict[str, Any]]:
+	"""Return last successful speedtest results for the requested nodes.
+
+	Uses a single IN-query instead of O(n) individual lookups.
+	"""
+	if not node_ids:
+		return {}
+
+	keys = [_node_speedtest_last_result_key(nid) for nid in node_ids]
+	prefix = "speedtest_last_result:node:"
+	placeholders = ",".join("?" * len(keys))
+	rows = conn.execute(
+		f"SELECT key, value FROM settings WHERE key IN ({placeholders})",
+		tuple(keys),
+	).fetchall()
+
+	results: dict[str, dict[str, Any]] = {}
+	for row in rows:
+		node_id = row["key"].removeprefix(prefix) if isinstance(row, sqlite3.Row) else row[0].removeprefix(prefix)
+		raw_value = row["value"] if isinstance(row, sqlite3.Row) else row[1]
+		if raw_value is None:
+			continue
+		try:
+			parsed = json.loads(raw_value)
+			if isinstance(parsed, dict):
+				results[node_id] = parsed
+		except json.JSONDecodeError:
+			_log.warning("Corrupt speedtest JSON for node %s", node_id)
+	return results
+
+
+def set_node_speedtest_last_result(
+	conn: sqlite3.Connection,
+	node_id: str,
+	result: dict[str, Any] | None = None,
+) -> None:
+	"""Persist the last successful speedtest result for a node."""
+	_set_json_dict(conn, _node_speedtest_last_result_key(node_id), result)
 
 
 def get_speedtest_last_run_at(conn: sqlite3.Connection) -> datetime | None:
@@ -690,8 +866,6 @@ def get_speedtest_last_run_at(conn: sqlite3.Connection) -> datetime | None:
 def set_speedtest_last_run_at(conn: sqlite3.Connection, when: datetime | None = None) -> None:
 	"""Persist the last completed local speedtest run timestamp in UTC."""
 	value = ensure_utc(when) if when is not None else utcnow()
-	if value is None:
-		value = utcnow()
 	set_setting(conn, "speedtest_last_run_at", value.isoformat())
 
 

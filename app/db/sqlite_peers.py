@@ -8,10 +8,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Optional
+from typing import TypeAlias
 
 from .sqlite_interfaces import get_interface
 from .sqlite_runtime import transaction
@@ -19,11 +20,14 @@ from .sqlite_runtime import transaction
 _log = logging.getLogger(__name__)
 
 
+LastSeenUpdate: TypeAlias = tuple[str, int, str]
+
+
 # ---------------------------------------------------------------------------
 # Peer operations (read/query)
 # ---------------------------------------------------------------------------
 
-def get_all_peers(conn: sqlite3.Connection, interface: Optional[str] = None) -> list[sqlite3.Row]:
+def get_all_peers(conn: sqlite3.Connection, interface: str | None = None) -> list[sqlite3.Row]:
 	"""Get all peers, optionally filtered by interface."""
 	if interface:
 		cur = conn.execute(
@@ -35,7 +39,7 @@ def get_all_peers(conn: sqlite3.Connection, interface: Optional[str] = None) -> 
 	return cur.fetchall()
 
 
-def count_peers(conn: sqlite3.Connection, interface: Optional[str] = None) -> int:
+def count_peers(conn: sqlite3.Connection, interface: str | None = None) -> int:
 	"""Count peers, optionally filtered by interface."""
 	if interface:
 		cur = conn.execute("SELECT COUNT(*) FROM peers WHERE interface = ?", (interface,))
@@ -50,7 +54,7 @@ def get_peers_paginated(
 	*,
 	page: int = 1,
 	page_size: int = 50,
-	interface: Optional[str] = None,
+	interface: str | None = None,
 ) -> list[sqlite3.Row]:
 	"""Get peers paginated, optionally filtered by interface."""
 	page = max(1, page)
@@ -58,7 +62,7 @@ def get_peers_paginated(
 	offset = (page - 1) * page_size
 	if interface:
 		cur = conn.execute(
-			"SELECT * FROM peers WHERE interface = ? ORDER BY interface, name LIMIT ? OFFSET ?",
+			"SELECT * FROM peers WHERE interface = ? ORDER BY name LIMIT ? OFFSET ?",
 			(interface, page_size, offset),
 		)
 	else:
@@ -69,13 +73,13 @@ def get_peers_paginated(
 	return cur.fetchall()
 
 
-def get_peer_by_public_key(conn: sqlite3.Connection, public_key: str) -> Optional[sqlite3.Row]:
+def get_peer_by_public_key(conn: sqlite3.Connection, public_key: str) -> sqlite3.Row | None:
 	"""Get a peer by public key."""
 	cur = conn.execute("SELECT * FROM peers WHERE public_key = ?", (public_key,))
 	return cur.fetchone()
 
 
-def get_peer_by_id(conn: sqlite3.Connection, peer_id: int) -> Optional[sqlite3.Row]:
+def get_peer_by_id(conn: sqlite3.Connection, peer_id: int) -> sqlite3.Row | None:
 	"""Get a peer by ID."""
 	cur = conn.execute("SELECT * FROM peers WHERE id = ?", (peer_id,))
 	return cur.fetchone()
@@ -88,16 +92,12 @@ def update_peer_last_seen(
 	handshake_at: int,
 ) -> None:
 	"""Persist the client's last observed public IP and handshake timestamp."""
-	with transaction(conn):
-		conn.execute(
-			"UPDATE peers SET last_client_ip = ?, last_handshake_at = ? WHERE public_key = ?",
-			(client_ip, handshake_at, public_key),
-		)
+	update_peers_last_seen_batch(conn, [(client_ip, handshake_at, public_key)])
 
 
 def update_peers_last_seen_batch(
 	conn: sqlite3.Connection,
-	updates: list[tuple[str, int, str]],
+	updates: list[LastSeenUpdate],
 ) -> None:
 	"""Batch-persist last_client_ip and last_handshake_at for multiple peers.
 
@@ -119,16 +119,15 @@ def get_cumulative_transfer(
 
 	Returns a dict of ``{public_key: {cumulative_rx, cumulative_tx, last_wg_rx, last_wg_tx}}``.
 	"""
-	cur = conn.execute(
+	result: dict[str, dict[str, int]] = {}
+	for row in conn.execute(
 		"SELECT public_key, cumulative_rx, cumulative_tx, last_wg_rx, last_wg_tx FROM peers"
-	)
-	result = {}
-	for row in cur.fetchall():
-		result[row[0]] = {
-			"cumulative_rx": row[1] or 0,
-			"cumulative_tx": row[2] or 0,
-			"last_wg_rx": row[3] or 0,
-			"last_wg_tx": row[4] or 0,
+	):
+		result[str(row["public_key"])] = {
+			"cumulative_rx": int(row["cumulative_rx"] or 0),
+			"cumulative_tx": int(row["cumulative_tx"] or 0),
+			"last_wg_rx": int(row["last_wg_rx"] or 0),
+			"last_wg_tx": int(row["last_wg_tx"] or 0),
 		}
 	return result
 
@@ -179,7 +178,9 @@ def get_peer_metrics_stats(conn: sqlite3.Connection) -> dict[str, int | str]:
 		"SUM(cumulative_rx + cumulative_tx) AS total_transfer "
 		"FROM peers"
 	).fetchone()
-	db_row = conn.execute("PRAGMA database_list").fetchone()
+	db_row = conn.execute(
+		"SELECT * FROM pragma_database_list WHERE name = 'main'"
+	).fetchone()
 	db_path = ""
 	if db_row and len(db_row) >= 3 and db_row[2]:
 		db_path = str(db_row[2])
@@ -205,7 +206,7 @@ def get_peer_metrics_stats(conn: sqlite3.Connection) -> dict[str, int | str]:
 	}
 
 
-def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> Optional[str]:
+def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> str | None:
 	"""Allocate the next available dual-stack IP address for a peer.
 
 	Returns:
@@ -213,12 +214,19 @@ def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> Optional[
 		or None if the pool is exhausted.
 
 	Note:
-		Allocation is optimistic and NOT atomic. A concurrent writer may reserve
+		This function must run inside an active transaction. Allocation is still
+		optimistic and NOT fully atomic unless the caller uses an immediate lock.
+		A concurrent writer may reserve
 		the same address between this read and the subsequent peer insert, causing
 		sqlite3.IntegrityError due to the unique index on (peer_address, interface).
-		Callers SHOULD catch IntegrityError and retry allocation + insert.
+		Callers should use ``transaction(conn, immediate=True)`` and catch
+		IntegrityError to retry allocation + insert when needed.
 	"""
-	import ipaddress
+	if not conn.in_transaction:
+		_log.warning(
+			"allocate_peer_ip called without an active transaction; "
+			"use transaction(conn, immediate=True) to reduce allocation races"
+		)
 
 	iface = get_interface(conn, interface_name)
 	if not iface:
@@ -255,7 +263,8 @@ def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> Optional[
 		used_v6.add(ipv6_server)
 
 	for row in cur.fetchall():
-		for part in row[0].split(","):
+		peer_address = str(row["peer_address"] or "")
+		for part in peer_address.split(","):
 			part = part.strip()
 			if not part:
 				continue
@@ -286,8 +295,26 @@ def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> Optional[
 		next_v6 = ipv6_network.network_address + v4_offset
 		if next_v6 not in used_v6 and next_v6 in ipv6_network:
 			result += f", {next_v6}/128"
+		else:
+			_log.warning(
+				"Skipping IPv6 peer address for interface=%s (candidate=%s, in_network=%s, used=%s); allocating IPv4-only",
+				interface_name,
+				next_v6,
+				next_v6 in ipv6_network,
+				next_v6 in used_v6,
+			)
 
 	return result
+
+
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+	"""Return True if *table* contains *column* in the current schema.
+
+	Delegates to the canonical _get_columns from sqlite_schema to avoid
+	duplicating PRAGMA table_info introspection logic.
+	"""
+	from .sqlite_schema import _get_columns
+	return column in _get_columns(conn, table)
 
 
 def get_dns_logging_disabled_ips(conn: sqlite3.Connection) -> set[str]:
@@ -299,20 +326,17 @@ def get_dns_logging_disabled_ips(conn: sqlite3.Connection) -> set[str]:
 	Returns:
 		Set of IP address strings (e.g., {"10.13.13.2", "fd13:13:13::2"})
 	"""
-	import ipaddress
-	
-	# Use safe column check for backward compatibility
-	try:
-		cur = conn.execute(
-			"SELECT peer_address FROM peers WHERE dns_logging_enabled = 0 AND peer_address IS NOT NULL"
-		)
-	except sqlite3.OperationalError:
-		# Column doesn't exist yet (old schema)
+	# Backward compatibility with old schema versions.
+	if not _has_column(conn, "peers", "dns_logging_enabled"):
 		return set()
+
+	cur = conn.execute(
+		"SELECT peer_address FROM peers WHERE dns_logging_enabled = 0 AND peer_address IS NOT NULL"
+	)
 	
 	disabled_ips: set[str] = set()
 	for row in cur.fetchall():
-		peer_address = row[0]
+		peer_address = row["peer_address"]
 		if not peer_address:
 			continue
 		# peer_address can be "10.0.0.2/32" or "10.0.0.2/32, fd13:13::2/128"

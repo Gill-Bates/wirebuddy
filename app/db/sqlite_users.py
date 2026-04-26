@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import enum
+import logging
 import sqlite3
 
 from ..utils.config import get_config
@@ -16,6 +17,9 @@ from ..utils.crypto import hash_password
 from ..utils.time import utcnow
 from ..utils import vault
 from .sqlite_runtime import transaction
+
+
+_log = logging.getLogger(__name__)
 
 
 class UpdateResult(enum.Enum):
@@ -34,15 +38,15 @@ class LastAdminError(Exception):
 # OTP Secret Encryption Helpers
 # ---------------------------------------------------------------------------
 
-def _encrypt_otp_secret(secret: str) -> str:
+def _encrypt_otp_secret(secret: str, pepper: str | None = None) -> str:
 	"""Encrypt OTP secret for storage at rest."""
-	pepper = get_config().secret_key
+	pepper = pepper if pepper is not None else get_config().secret_key
 	return vault.encrypt(secret, pepper)
 
 
-def decrypt_otp_secret(encrypted: str | None) -> str | None:
+def decrypt_otp_secret(encrypted: str | None, pepper: str | None = None) -> str | None:
 	"""Decrypt OTP secret from storage. Returns None if not set."""
-	pepper = get_config().secret_key
+	pepper = pepper if pepper is not None else get_config().secret_key
 	return vault.decrypt_if_needed(encrypted, pepper)
 
 
@@ -311,8 +315,7 @@ def update_user_auth_method(
 			""",
 			(auth_method, 1 if passkey_enabled else 0, user_id),
 		)
-		import logging
-		logging.getLogger(__name__).debug(
+		_log.debug(
 			"Updated auth method for user_id=%d: %s (passkey_enabled=%s)",
 			user_id,
 			auth_method,
@@ -355,8 +358,7 @@ def set_passkey_pending(conn: sqlite3.Connection, user_id: int, pending: bool) -
 			(1 if pending else 0, user_id),
 		)
 		if cur.rowcount > 0:
-			import logging
-			logging.getLogger(__name__).info("Set passkey_pending=%s for user_id=%d", pending, user_id)
+			_log.info("Set passkey_pending=%s for user_id=%d", pending, user_id)
 			return True
 		return False
 
@@ -375,8 +377,7 @@ def clear_passkey_onboarding(conn: sqlite3.Connection, user_id: int) -> None:
 			""",
 			(user_id,),
 		)
-		import logging
-		logging.getLogger(__name__).info("Completed passkey onboarding for user_id=%d", user_id)
+		_log.info("Completed passkey onboarding for user_id=%d", user_id)
 
 
 def disable_user_passkeys(conn: sqlite3.Connection, user_id: int) -> int:
@@ -400,7 +401,5 @@ def disable_user_passkeys(conn: sqlite3.Connection, user_id: int) -> int:
 			""",
 			(user_id,),
 		)
-		
-		import logging
-		logging.getLogger(__name__).info("Disabled passkeys for user_id=%d, deleted %d passkey(s)", user_id, deleted)
+		_log.info("Disabled passkeys for user_id=%d, deleted %d passkey(s)", user_id, deleted)
 		return deleted

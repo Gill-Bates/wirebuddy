@@ -19,18 +19,14 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
-
 import httpx
-from markupsafe import escape as html_escape
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ..db import tsdb
 from ..db.sqlite_interfaces import list_interfaces
 from ..db.sqlite_settings import get_setting
-from ..dns import ingestion as dns_ingestion
 from ..dns import unbound
 from ..utils.config import get_config
 from ..utils.deps import get_conn
@@ -66,7 +62,6 @@ _dns_leak_cache_lock = asyncio.Lock()
 
 
 class CheckState(str, enum.Enum):
-	"""Health check result states."""
 	OK = "ok"
 	WARN = "warn"
 	ERROR = "error"
@@ -120,9 +115,18 @@ def _load_status_trusted_proxy_networks() -> tuple[ipaddress.IPv4Network | ipadd
 _STATUS_TRUSTED_PROXY_NETWORKS = _load_status_trusted_proxy_networks()
 
 
-def _normalize_ip(value: str | None) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
-	"""Parse and normalize IPv4/IPv6 string, including IPv4-mapped IPv6."""
-	return parse_ip(value)
+def _iter_peer_vpn_ips(peer_address: str | None) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
+	"""Parse comma-separated peer addresses into VPN IPs."""
+	peer_ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+	for part in str(peer_address or "").split(","):
+		item = part.strip()
+		if not item:
+			continue
+		try:
+			peer_ips.append(ipaddress.ip_interface(item).ip)
+		except ValueError:
+			continue
+	return tuple(peer_ips)
 
 
 def _ip_in_networks(
@@ -199,7 +203,7 @@ def _pick_forwarded_client_ip(
 		return None
 	chain: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
 	for raw in x_forwarded_for.split(","):
-		ip_obj = _normalize_ip(raw.strip())
+		ip_obj = parse_ip(raw.strip())
 		if ip_obj is not None:
 			chain.append(ip_obj)
 	for ip_obj in reversed(chain):
@@ -230,18 +234,10 @@ def _find_peer_public_ip_for_vpn_ip(
 		return None
 
 	for row in rows:
-		peer_address = str(row["peer_address"] or "")
-		for part in peer_address.split(","):
-			item = part.strip()
-			if not item:
-				continue
-			try:
-				peer_ip = ipaddress.ip_interface(item).ip
-			except ValueError:
-				continue
+		for peer_ip in _iter_peer_vpn_ips(row["peer_address"]):
 			if peer_ip != vpn_ip:
 				continue
-			candidate = _normalize_ip(str(row["last_client_ip"] or "").strip())
+			candidate = parse_ip(str(row["last_client_ip"] or "").strip())
 			if candidate is None:
 				return None
 			if candidate.is_private or candidate.is_loopback or candidate.is_link_local:
@@ -277,31 +273,25 @@ def _find_node_outbound_ip(
 		return None
 
 	for row in rows:
-		for part in str(row["peer_address"] or "").split(","):
-			item = part.strip()
-			if not item:
-				continue
-			try:
-				if ipaddress.ip_interface(item).ip == vpn_ip:
-					# Found the peer's node_id — now look up tunnel peer's public IP
-					node_row = conn.execute(
-						"SELECT tunnel_peer_id FROM nodes WHERE id = ?",
-						(row["node_id"],),
-					).fetchone()
-					if not node_row or not node_row["tunnel_peer_id"]:
-						return None
-					tunnel = conn.execute(
-						"SELECT last_client_ip FROM peers WHERE id = ?",
-						(node_row["tunnel_peer_id"],),
-					).fetchone()
-					if not tunnel or not tunnel["last_client_ip"]:
-						return None
-					candidate = _normalize_ip(str(tunnel["last_client_ip"]).strip())
-					if candidate and not (candidate.is_private or candidate.is_loopback or candidate.is_link_local):
-						return str(candidate)
+		for peer_ip in _iter_peer_vpn_ips(row["peer_address"]):
+			if peer_ip == vpn_ip:
+				# Found the peer's node_id — now look up tunnel peer's public IP
+				node_row = conn.execute(
+					"SELECT tunnel_peer_id FROM nodes WHERE id = ?",
+					(row["node_id"],),
+				).fetchone()
+				if not node_row or not node_row["tunnel_peer_id"]:
 					return None
-			except ValueError:
-				continue
+				tunnel = conn.execute(
+					"SELECT last_client_ip FROM peers WHERE id = ?",
+					(node_row["tunnel_peer_id"],),
+				).fetchone()
+				if not tunnel or not tunnel["last_client_ip"]:
+					return None
+				candidate = parse_ip(str(tunnel["last_client_ip"]).strip())
+				if candidate and not (candidate.is_private or candidate.is_loopback or candidate.is_link_local):
+					return str(candidate)
+				return None
 
 	return None
 
@@ -316,7 +306,7 @@ def _resolve_public_client_ip(
 	if not (client_ip.is_private or client_ip.is_loopback or client_ip.is_link_local):
 		return str(client_ip)
 
-	forwarded_ip = _normalize_ip(forwarded_ip_value)
+	forwarded_ip = parse_ip(forwarded_ip_value)
 	if forwarded_ip and not (forwarded_ip.is_private or forwarded_ip.is_loopback or forwarded_ip.is_link_local):
 		return str(forwarded_ip)
 
@@ -331,7 +321,7 @@ def _dns_probe_targets(iface: sqlite3.Row | None) -> tuple[str, ...]:
 	targets: list[str] = []
 
 	def _add(value: str | None) -> None:
-		ip_obj = _normalize_ip(value)
+		ip_obj = parse_ip(value)
 		if ip_obj is None:
 			return
 		normalized = str(ip_obj)
@@ -420,6 +410,13 @@ async def _resolve_dns_probe_cached(iface: sqlite3.Row | None) -> tuple[bool, st
 		result = await asyncio.to_thread(_probe_all)
 		_dns_probe_cache = (result[0], result[1], now, target_key)
 		return result
+
+
+async def _resolve_geo(ip_text: str | None) -> dict[str, str | None]:
+	"""Resolve GeoIP data with a safe empty fallback."""
+	if not ip_text:
+		return {"country_code": None, "city": None, "as_org": None}
+	return extract_geo_fields(await asyncio.to_thread(lookup_ip_cached, ip_text))
 
 
 async def _detect_outbound_ip() -> tuple[str | None, str]:
@@ -534,32 +531,32 @@ async def _dns_leak_indicator(
 		if cached and (now_mono - cached[2]) < _STATUS_DNS_LEAK_CACHE_TTL:
 			return cached[0], cached[1]
 
-		# Evict stale entries if cache grows too large
-		if len(_dns_leak_cache) > _STATUS_DNS_LEAK_CACHE_MAX_SIZE:
-			cutoff = now_mono - _STATUS_DNS_LEAK_CACHE_TTL
-			stale_keys = [k for k, v in _dns_leak_cache.items() if v[2] < cutoff]
-			for k in stale_keys:
-				del _dns_leak_cache[k]
-
-		# Perform the expensive work while holding lock (prevents thundering herd)
-		try:
-			cfg = get_config()
-			queries = await asyncio.to_thread(
-				dns_ingestion.read_recent_queries,
-				Path(cfg.dns_dir),
-				_STATUS_DNS_LEAK_VERIFY_MAX_QUERIES,
-			)
-		except (OSError, IOError) as exc:
-			_log.warning("DNS leak runtime verification failed: %s", exc)
-			if config_ok:
-				result = (CheckState.WARN, (
-					f"{config_detail}; runtime verification unavailable "
-					"(could not read recent DNS logs)"
-				))
-			else:
-				result = (CheckState.WARN, config_detail)
+	try:
+		cfg = get_config()
+		queries = await asyncio.to_thread(
+			dns_ingestion.read_recent_queries,
+			Path(cfg.dns_dir),
+			_STATUS_DNS_LEAK_VERIFY_MAX_QUERIES,
+		)
+	except (OSError, IOError) as exc:
+		_log.warning("DNS leak runtime verification failed: %s", exc)
+		if config_ok:
+			result = (CheckState.WARN, (
+				f"{config_detail}; runtime verification unavailable "
+				"(could not read recent DNS logs)"
+			))
+		else:
+			result = (CheckState.WARN, config_detail)
+		async with _dns_leak_cache_lock:
 			_dns_leak_cache[cache_key] = (result[0], result[1], now_mono)
-			return result
+			if len(_dns_leak_cache) > _STATUS_DNS_LEAK_CACHE_MAX_SIZE:
+				cutoff = now_mono - _STATUS_DNS_LEAK_CACHE_TTL
+				stale_keys = [k for k, v in _dns_leak_cache.items() if v[2] < cutoff]
+				for k in stale_keys:
+					del _dns_leak_cache[k]
+		return result
+
+	# Perform the expensive work outside the lock so parallel requests don't block.
 
 		client_ip_text = str(client_ip)
 		now = datetime.now(timezone.utc)
@@ -583,7 +580,13 @@ async def _dns_leak_indicator(
 			else:
 				age_label = f"{best_age // 60}m ago"
 			result = (CheckState.OK, f"Verified via WireBuddy DNS logs ({age_label})")
-			_dns_leak_cache[cache_key] = (result[0], result[1], now_mono)
+			async with _dns_leak_cache_lock:
+				_dns_leak_cache[cache_key] = (result[0], result[1], now_mono)
+				if len(_dns_leak_cache) > _STATUS_DNS_LEAK_CACHE_MAX_SIZE:
+					cutoff = now_mono - _STATUS_DNS_LEAK_CACHE_TTL
+					stale_keys = [k for k, v in _dns_leak_cache.items() if v[2] < cutoff]
+					for k in stale_keys:
+						del _dns_leak_cache[k]
 			return result
 
 		# No recent DNS queries found from this client
@@ -592,7 +595,13 @@ async def _dns_leak_indicator(
 			f"No DNS query from this client seen in WireBuddy logs "
 			f"within last {window_min} minutes"
 		))
-		_dns_leak_cache[cache_key] = (result[0], result[1], now_mono)
+		async with _dns_leak_cache_lock:
+			_dns_leak_cache[cache_key] = (result[0], result[1], now_mono)
+			if len(_dns_leak_cache) > _STATUS_DNS_LEAK_CACHE_MAX_SIZE:
+				cutoff = now_mono - _STATUS_DNS_LEAK_CACHE_TTL
+				stale_keys = [k for k, v in _dns_leak_cache.items() if v[2] < cutoff]
+				for k in stale_keys:
+					del _dns_leak_cache[k]
 		return result
 
 
@@ -623,7 +632,7 @@ def _format_speedtest_server(value: object) -> str:
 		pass
 	return text
 
-def _latest_speedtest_check() -> dict[str, str]:
+def _latest_speedtest_check() -> dict[str, object]:
 	"""Build a health-card payload from the latest stored speedtest result."""
 	from .speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
 
@@ -661,25 +670,23 @@ def _latest_speedtest_check() -> dict[str, str]:
 		download = data.get("download_mbit")
 		upload = data.get("upload_mbit")
 		rtt = data.get("rtt_ms")
-		mono_parts: list[str] = []
+		detail_parts: list[str] = []
 		download_label = format_optional_bandwidth_mbit(download, gbit_digits=2, mbit_digits=2)
 		upload_label = format_optional_bandwidth_mbit(upload, gbit_digits=2, mbit_digits=2)
 		if download_label:
-			mono_parts.append(f"{download_label} down")
+			detail_parts.append(f"{download_label} down")
 		if upload_label:
-			mono_parts.append(f"{upload_label} up")
+			detail_parts.append(f"{upload_label} up")
 		if isinstance(rtt, (int, float)):
-			mono_parts.append(f"{rtt:.2f} ms RTT")
-		mono_parts.append(str(html_escape(server_label)))
-		# Build HTML: metrics in monospace, separators and age in normal text
-		html_spans = [f'<span class="font-monospace">{p}</span>' for p in mono_parts]
-		detail_html = " &middot; ".join(html_spans) + f" &middot; {html_escape(age_label)}"
+			detail_parts.append(f"{rtt:.2f} ms RTT")
+		detail_parts.append(server_label)
 		return {
 			"title": "Last Speedtest",
 			"state": CheckState.OK,
 			"label": "OK",
-			"detail": " \u2022 ".join(mono_parts + [age_label]),
-			"detail_html": detail_html,
+			"detail": " \u2022 ".join(detail_parts + [age_label]),
+			"detail_parts": detail_parts,
+			"age_label": age_label,
 		}
 
 	error_text = str(data.get("error") or "").strip()
@@ -723,7 +730,7 @@ async def _resolve_status_client_context(
 	user: Optional[sqlite3.Row],
 ) -> StatusClientContext:
 	"""Resolve and authorize status page client context."""
-	client_ip_obj = _normalize_ip(_get_client_ip(request))
+	client_ip_obj = parse_ip(_get_client_ip(request))
 	if client_ip_obj is None:
 		_log.warning("/status: could not determine client IP, returning 403")
 		raise HTTPException(status_code=403, detail="Forbidden")
@@ -731,7 +738,7 @@ async def _resolve_status_client_context(
 	auth_ip_source = "direct"
 	forwarded_ip_value: str | None = None
 	scope_client = request.scope.get("client")
-	socket_ip_obj = _normalize_ip(scope_client[0] if scope_client else None)
+	socket_ip_obj = parse_ip(scope_client[0] if scope_client else None)
 
 	_log.debug(
 		"/status: client_ip=%s socket_ip=%s user=%s",
@@ -768,7 +775,7 @@ async def _resolve_status_client_context(
 							socket_ip_obj,
 						)
 				if matched_iface is None and x_real_ip:
-					real_ip_obj = _normalize_ip(x_real_ip.split(",")[0].strip())
+					real_ip_obj = parse_ip(x_real_ip.split(",")[0].strip())
 					if real_ip_obj is not None:
 						real_ip_iface = await asyncio.to_thread(_find_client_interface, conn, real_ip_obj)
 						if real_ip_iface is not None:
@@ -904,26 +911,11 @@ async def status_page(
 		context.matched_iface,
 		context.forwarded_ip,
 	)
-	client_geo_country_code: str | None = None
-	client_geo_city: str | None = None
-	client_geo_as_org: str | None = None
-	if public_client_ip:
-		geo_fields = extract_geo_fields(await asyncio.to_thread(lookup_ip_cached, public_client_ip))
-		client_geo_country_code = geo_fields["country_code"]
-		client_geo_city = geo_fields["city"]
-		client_geo_as_org = geo_fields["as_org"]
+	client_geo_fields = await _resolve_geo(public_client_ip)
 
 	checks, outbound_ip = await _run_status_health_checks(context.client_ip, context.matched_iface, conn)
 
-	# Lookup GeoIP for outbound IP
-	outbound_geo_country_code: str | None = None
-	outbound_geo_city: str | None = None
-	outbound_geo_as_org: str | None = None
-	if outbound_ip:
-		outbound_geo_fields = extract_geo_fields(await asyncio.to_thread(lookup_ip_cached, outbound_ip))
-		outbound_geo_country_code = outbound_geo_fields["country_code"]
-		outbound_geo_city = outbound_geo_fields["city"]
-		outbound_geo_as_org = outbound_geo_fields["as_org"]
+	outbound_geo_fields = await _resolve_geo(outbound_ip)
 
 	return templates.TemplateResponse(
 		request,
@@ -931,16 +923,16 @@ async def status_page(
 		context={
 			"client_ip": str(context.client_ip),
 			"public_client_ip": public_client_ip or "n/a",
-			"public_client_country_code": client_geo_country_code,
-			"public_client_city": client_geo_city,
-			"public_client_as_org": client_geo_as_org,
+			"public_client_country_code": client_geo_fields["country_code"],
+			"public_client_city": client_geo_fields["city"],
+			"public_client_as_org": client_geo_fields["as_org"],
 			"client_ip_source": context.auth_ip_source,
 			"socket_ip": str(context.socket_ip) if context.socket_ip is not None else "n/a",
 			"forwarded_ip": context.forwarded_ip or "n/a",
 			"outbound_ip": outbound_ip or "n/a",
-			"outbound_country_code": outbound_geo_country_code,
-			"outbound_city": outbound_geo_city,
-			"outbound_as_org": outbound_geo_as_org,
+			"outbound_country_code": outbound_geo_fields["country_code"],
+			"outbound_city": outbound_geo_fields["city"],
+			"outbound_as_org": outbound_geo_fields["as_org"],
 			"interface_name": context.matched_iface["name"] if context.matched_iface is not None else "n/a",
 			"checks": checks,
 		},

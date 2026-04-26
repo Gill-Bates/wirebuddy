@@ -299,12 +299,24 @@
     }
 
     async function toggleInterface(name, action) {
+        const listEl = document.getElementById('interfaces-list');
+        const btn = listEl?.querySelector(`.iface-action-btn[data-iface="${CSS.escape(name)}"][data-action="${CSS.escape(action)}"]`);
+
+        // Immediately disable all action buttons for this interface to prevent double-clicks
+        const siblingBtns = listEl?.querySelectorAll(`.iface-action-btn[data-iface="${CSS.escape(name)}"]`);
+        siblingBtns?.forEach(b => { b.disabled = true; });
+
+        // Optimistic feedback — show immediately, before API responds
+        const actionText = action === 'up' ? 'started' : (action === 'down' ? 'stopped' : 'restarted');
+        wbToast(`Interface '${name}' ${actionText === 'restarted' ? 'restarting…' : actionText === 'started' ? 'starting…' : 'stopping…'}`, 'info');
+
         try {
             await api('POST', `/api/wireguard/interfaces/${encodeURIComponent(name)}/${action}`);
             await refreshInterfaces();
-            const actionText = action === 'up' ? 'started' : (action === 'down' ? 'stopped' : 'restarted');
             wbToast(`Interface '${name}' successfully ${actionText}`, 'success');
         } catch (e) {
+            // Re-enable buttons on failure so the user can retry
+            siblingBtns?.forEach(b => { b.disabled = false; });
             wbToast(`Failed to ${action} interface: ` + e.message, 'danger');
         }
     }

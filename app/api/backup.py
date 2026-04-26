@@ -29,15 +29,15 @@ import tarfile
 import tempfile
 import time
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Iterator, Literal, TypeVar
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ..db.sqlite_runtime import close_all_connections, connect, close_connection, transaction
+from ..db.sqlite_runtime import close_all_connections, connect, close_connection, thread_connection, transaction
 from ..db.sqlite_settings import get_setting, set_setting
 from ..utils.crypto import verify_password
 from ..db.sqlite_users import get_user_by_id
@@ -74,6 +74,30 @@ SETTING_BACKUP_ENABLED = "backup_scheduled_enabled"
 SETTING_BACKUP_LAST_AT = "backup_last_at"
 SETTING_BACKUP_HMAC_SECRET = "backup_hmac_secret"
 SETTING_BACKUP_RETENTION = "backup_retention_days"
+
+_T = TypeVar("_T")
+
+
+def _with_db(db_path: Path, fn: Callable[[sqlite3.Connection], _T]) -> _T:
+    """Open a short-lived SQLite connection, call fn(conn), close it."""
+    with thread_connection(db_path) as conn:
+        return fn(conn)
+
+
+def _get_retention_days(conn: sqlite3.Connection) -> int:
+    """Read and validate backup retention days from DB, with safe fallback."""
+    raw = get_setting(conn, SETTING_BACKUP_RETENTION, str(BACKUP_RETENTION_DAYS))
+    try:
+        val = int(raw)
+        return val if val in BACKUP_RETENTION_OPTIONS else BACKUP_RETENTION_DAYS
+    except (ValueError, TypeError):
+        _log.warning("Invalid retention_days in DB: %r, using default", raw)
+        return BACKUP_RETENTION_DAYS
+
+
+def _iter_backup_files(backup_dir: Path) -> Iterator[Path]:
+    """Yield all backup archive paths in the backup directory."""
+    yield from backup_dir.glob("wirebuddy_backup_*.tar.gz")
 
 
 def _get_backup_hmac_secret(conn: sqlite3.Connection) -> str:
@@ -183,6 +207,10 @@ async def _receive_and_verify_upload(
 	try:
 		total = 0
 		first_chunk = True
+
+		def _open_write(path):
+			return open(path, "wb")
+
 		with open(tmp_path, "wb") as out:
 			while True:
 				chunk = await file.read(1024 * 1024)
@@ -198,7 +226,7 @@ async def _receive_and_verify_upload(
 							detail="Invalid backup file (not a gzip archive)",
 						)
 					first_chunk = False
-				out.write(chunk)
+				await asyncio.to_thread(out.write, chunk)
 
 		if total == 0:
 			raise HTTPException(status_code=400, detail="Backup file is empty")
@@ -234,7 +262,7 @@ def _create_backup_archive(data_dir: Path, db_path: Path, conn: sqlite3.Connecti
 		with tarfile.open(tmp_path, mode="w:gz") as tar:
 			# Add the SQLite database using the online backup API for consistency
 			if db_path.exists():
-				with tempfile.TemporaryDirectory() as backup_tmpdir:
+				with tempfile.TemporaryDirectory(dir=data_dir) as backup_tmpdir:
 					backup_db_path = Path(backup_tmpdir) / BACKUP_DATABASE_NAME
 					src = sqlite3.connect(str(db_path))
 					try:
@@ -301,38 +329,29 @@ def get_backup_settings(
 	NOTE: sync – FastAPI threadpools this handler. Performs glob() + stat() ×
 	backup-file-count + shutil.disk_usage() – all blocking file-system calls.
 	"""
-	conn = connect(request.app.state.cfg.db_path)
-	try:
+	def _read(conn: sqlite3.Connection) -> BackupSettingsResponse:
 		enabled = get_setting(conn, SETTING_BACKUP_ENABLED, "0") == "1"
 		last_backup = get_setting(conn, SETTING_BACKUP_LAST_AT)
-		raw_retention = get_setting(conn, SETTING_BACKUP_RETENTION, str(BACKUP_RETENTION_DAYS))
-		try:
-			retention = int(raw_retention)
-			if retention not in BACKUP_RETENTION_OPTIONS:
-				_log.warning("Invalid retention_days in DB: %r, using default", raw_retention)
-				retention = BACKUP_RETENTION_DAYS
-		except (ValueError, TypeError):
-			_log.warning("Non-integer retention_days in DB: %r, using default", raw_retention)
-			retention = BACKUP_RETENTION_DAYS
-		
+		retention = _get_retention_days(conn)
+
 		# Count existing backups and calculate total size
 		backup_dir = _get_backup_dir(request.app.state.cfg.data_dir)
 		backup_count = 0
 		backup_size = 0
-		for f in backup_dir.glob("wirebuddy_backup_*.tar.gz"):
+		for f in _iter_backup_files(backup_dir):
 			backup_count += 1
 			backup_size += f.stat().st_size
-		
+
 		# Get disk space info
 		disk_free = shutil.disk_usage(backup_dir).free
 		# Warn if less than 500MB free or if free space < 2x current backup size
 		disk_warning = disk_free < 500 * 1024 * 1024 or (backup_size > 0 and disk_free < backup_size * 2)
-		
+
 		# Verify last_backup timestamp points to an existing file
 		if last_backup and backup_count == 0:
 			# Timestamp exists but no backups found - clear stale timestamp
 			last_backup = None
-		
+
 		return BackupSettingsResponse(
 			scheduled_enabled=enabled,
 			last_backup_at=last_backup,
@@ -342,8 +361,8 @@ def get_backup_settings(
 			disk_free_bytes=disk_free,
 			disk_warning=disk_warning,
 		)
-	finally:
-		close_connection(conn)
+
+	return _with_db(request.app.state.cfg.db_path, _read)
 
 
 @router.patch("/settings")
@@ -353,8 +372,7 @@ def update_backup_settings(
 	admin: sqlite3.Row = Depends(require_admin),
 ):
 	"""Update backup settings (enable/disable scheduled backups)."""
-	conn = connect(request.app.state.cfg.db_path)
-	try:
+	def _update(conn: sqlite3.Connection):
 		if payload.scheduled_enabled is not None:
 			set_setting(conn, SETTING_BACKUP_ENABLED, "1" if payload.scheduled_enabled else "0")
 			_log.info(
@@ -362,29 +380,27 @@ def update_backup_settings(
 				"enabled" if payload.scheduled_enabled else "disabled",
 				admin["username"],
 			)
-		
+
 		if payload.retention_days is not None:
-			# Literal[1,7,14,21,30] validator in BackupSettingsUpdate catches invalid values
 			set_setting(conn, SETTING_BACKUP_RETENTION, str(payload.retention_days))
 			_log.info(
 				"Backup retention set to %d days by %s",
 				payload.retention_days,
 				admin["username"],
 			)
-			
+
 			# Immediately cleanup backups that exceed new retention period
 			backup_dir = _get_backup_dir(request.app.state.cfg.data_dir)
 			deleted_count = _cleanup_old_backups(backup_dir, payload.retention_days)
 			if deleted_count > 0:
 				_log.info("Cleaned up %d old backup(s) after retention change", deleted_count)
-				return ok_response(
-					message="Backup settings updated",
-					data={"deleted_backups": deleted_count},
-				)
-		
-		return ok_response(message="Backup settings updated")
-	finally:
-		close_connection(conn)
+				return deleted_count
+		return 0
+
+	deleted = _with_db(request.app.state.cfg.db_path, _update)
+	if deleted:
+		return ok_response(message="Backup settings updated", data={"deleted_backups": deleted})
+	return ok_response(message="Backup settings updated")
 
 
 @router.post("/download")
@@ -686,12 +702,12 @@ def list_backups(
 	backup_dir = _get_backup_dir(request.app.state.cfg.data_dir)
 	
 	backups = []
-	for backup_file in sorted(backup_dir.glob("wirebuddy_backup_*.tar.gz"), reverse=True):
+	for backup_file in sorted(_iter_backup_files(backup_dir), reverse=True):
 		file_stat = backup_file.stat()
 		backups.append({
 			"filename": backup_file.name,
 			"size_bytes": file_stat.st_size,
-			"created_at": datetime.fromtimestamp(file_stat.st_mtime, tz=timezone.utc).isoformat(),
+			"created_at": datetime.fromtimestamp(file_stat.st_mtime, tz=UTC).isoformat(),
 		})
 	
 	return ok_response(data=backups)
@@ -729,11 +745,7 @@ def delete_scheduled_backup(
 
 def is_scheduled_backup_enabled(db_path: Path) -> bool:
 	"""Check if scheduled backups are enabled."""
-	conn = connect(db_path)
-	try:
-		return get_setting(conn, SETTING_BACKUP_ENABLED, "0") == "1"
-	finally:
-		close_connection(conn)
+	return _with_db(db_path, lambda conn: get_setting(conn, SETTING_BACKUP_ENABLED, "0") == "1")
 
 
 def run_scheduled_backup(data_dir: Path, db_path: Path) -> dict:
@@ -752,19 +764,10 @@ def run_scheduled_backup(data_dir: Path, db_path: Path) -> dict:
 		_log.warning("Scheduled backup already running, skipping")
 		return {"skipped": True}
 	try:
-		conn = connect(db_path)
-		try:
+		with thread_connection(db_path) as conn:
 			# Get retention setting
-			raw_retention = get_setting(conn, SETTING_BACKUP_RETENTION, str(BACKUP_RETENTION_DAYS))
-			try:
-				retention_days = int(raw_retention)
-				if retention_days not in BACKUP_RETENTION_OPTIONS:
-					_log.warning("Invalid retention_days in DB: %r, using default", raw_retention)
-					retention_days = BACKUP_RETENTION_DAYS
-			except (ValueError, TypeError):
-				_log.warning("Non-integer retention_days in DB: %r, using default", raw_retention)
-				retention_days = BACKUP_RETENTION_DAYS
-			
+			retention_days = _get_retention_days(conn)
+
 			# Check disk space before creating backup
 			backup_dir = _get_backup_dir(data_dir)
 			disk_free = shutil.disk_usage(backup_dir).free
@@ -803,25 +806,16 @@ def run_scheduled_backup(data_dir: Path, db_path: Path) -> dict:
 				"size_bytes": actual_size,
 				"deleted_old_backups": deleted_count,
 			}
-		finally:
-			close_connection(conn)
 	finally:
 		_scheduled_backup_lock.release()
 
 
 def _cleanup_old_backups(backup_dir: Path, retention_days: int = BACKUP_RETENTION_DAYS) -> int:
-	"""Remove backups older than retention period.
-	
-	Args:
-		backup_dir: Directory containing backup files
-		retention_days: Number of days to retain backups
-	
-	Returns: Number of deleted backups
-	"""
+	"""Remove backups older than retention period."""
 	cutoff_time = time.time() - (retention_days * 86400)
 	deleted = 0
 	
-	for backup_file in backup_dir.glob("wirebuddy_backup_*.tar.gz"):
+	for backup_file in _iter_backup_files(backup_dir):
 		try:
 			if backup_file.stat().st_mtime < cutoff_time:
 				backup_file.unlink()

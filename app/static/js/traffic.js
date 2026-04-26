@@ -47,7 +47,6 @@
     let peerFilterHandler = null;
     let rangeChangeHandler = null;
     let peerFilterTimeout = null; // Timeout handle for peer filter debounce
-    let peerFilterAbort = null; // AbortController for peer filter transition race handling
     let lastInvalidPeerWarned = '';
 
     // Color palette for multiple peers
@@ -91,30 +90,18 @@
     const asnSummary = document.getElementById('asn-traffic-summary');
     const asnTbody = document.getElementById('asn-traffic-tbody');
 
+    const WBShared = window.WBShared;
+    if (!WBShared) {
+        throw new Error('WBShared must be loaded before traffic.js');
+    }
+
     // Utility functions from WBShared
-    const dbg = window.WBShared?.createDebugLogger?.('Traffic', DEBUG)
+    const dbg = WBShared.createDebugLogger?.('Traffic', DEBUG)
         || ((...args) => { if (DEBUG) console.log('[Traffic]', ...args); });
-    const clearElement = window.WBShared?.clearElement || ((el) => { if (el) el.replaceChildren(); });
-    const isAbortError = window.WBShared?.isAbortError || ((err) => err?.code === 'ABORTED' || err?.name === 'AbortError' || err?.message === 'Request cancelled');
-
-    // Defensive fallback if WBShared.formatTrafficMetric is missing
-    const formatTrafficMetric = window.WBShared?.formatTrafficMetric
-        || (() => { throw new Error('WBShared.formatTrafficMetric required'); });
-
-    // Use shared chartEmptyState function
-    const chartEmptyState = window.WBShared?.chartEmptyState || ((text = 'No data available.') => {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'chart-empty-state';
-        const icon = document.createElement('span');
-        icon.className = 'material-icons';
-        icon.textContent = 'show_chart';
-        icon.setAttribute('aria-hidden', 'true');
-        const msg = document.createElement('span');
-        msg.className = 'chart-empty-state-text';
-        msg.textContent = text;
-        wrapper.append(icon, msg);
-        return wrapper;
-    });
+    const clearElement = WBShared.clearElement;
+    const isAbortError = WBShared.isAbortError;
+    const formatTrafficMetric = WBShared.formatTrafficMetric;
+    const chartEmptyState = WBShared.chartEmptyState;
 
     /**
      * Validate that a URL is safe for use in img src attributes.
@@ -129,6 +116,11 @@
         } catch {
             return false;
         }
+    }
+
+    function isFlagIconUrl(url) {
+        if (typeof url !== 'string') return false;
+        return url.startsWith(`${FLAG_ICON_BASE_URL}/`) && /\/flags\/4x3\/[a-z]{2}\.svg$/i.test(url);
     }
 
     // Convert range key to human-readable label
@@ -378,6 +370,20 @@
         }
     }
 
+    function makeLegendLabelGenerator(unit) {
+        return (chart) => {
+            const original = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+            return original.map((item) => {
+                const dataset = chart.data.datasets[item.datasetIndex];
+                if (dataset && Array.isArray(dataset.data)) {
+                    const sum = dataset.data.reduce((acc, val) => acc + (Number(val) || 0), 0);
+                    item.text = `${item.text} (${formatTrafficMetric(sum, unit)})`;
+                }
+                return item;
+            });
+        };
+    }
+
     function destroyTrafficCharts() {
         // Use Chart.js registry as source of truth to avoid tracking multiple references
         if (trafficCombinedCanvas && typeof Chart !== 'undefined') {
@@ -562,7 +568,7 @@
                 const flagUrl = /^[a-z]{2}$/.test(countryCode)
                     ? `https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/${countryCode}.svg`
                     : '';
-                if (flagUrl && isSafeImageUrl(flagUrl)) {
+                if (flagUrl && isFlagIconUrl(flagUrl)) {
                     const img = document.createElement('img');
                     img.src = flagUrl;
                     img.alt = country.name ? `Flag of ${country.name}` : '';
@@ -906,18 +912,7 @@
             }
             // Update legend to recalculate sums with current unit
             if (trafficCombinedChart.options?.plugins?.legend?.labels) {
-                trafficCombinedChart.options.plugins.legend.labels.generateLabels = (chart) => {
-                    const original = Chart.defaults.plugins.legend.labels.generateLabels(chart);
-                    return original.map((item) => {
-                        const dataset = chart.data.datasets[item.datasetIndex];
-                        if (dataset && Array.isArray(dataset.data)) {
-                            const sum = dataset.data.reduce((acc, val) => acc + (Number(val) || 0), 0);
-                            const formattedSum = formatTrafficMetric(sum, unit);
-                            item.text = `${item.text} (${formattedSum})`;
-                        }
-                        return item;
-                    });
-                };
+                trafficCombinedChart.options.plugins.legend.labels.generateLabels = makeLegendLabelGenerator(unit);
             }
             trafficCombinedChart.update('none');
             return;
@@ -958,19 +953,7 @@
                             color: colors.textColor,
                             padding: 12,
                             font: { size: 11 },
-                            generateLabels: (chart) => {
-                                const original = Chart.defaults.plugins.legend.labels.generateLabels(chart);
-                                // Add sum to each label
-                                return original.map((item, index) => {
-                                    const dataset = chart.data.datasets[item.datasetIndex];
-                                    if (dataset && Array.isArray(dataset.data)) {
-                                        const sum = dataset.data.reduce((acc, val) => acc + (Number(val) || 0), 0);
-                                        const formattedSum = formatTrafficMetric(sum, unit);
-                                        item.text = `${item.text} (${formattedSum})`;
-                                    }
-                                    return item;
-                                });
-                            },
+                            generateLabels: makeLegendLabelGenerator(unit),
                         },
                     },
                     tooltip: {
@@ -1028,10 +1011,6 @@
         clearTimeout(trafficRangeDebounce);
         clearTimeout(resizeDebounce);
         clearTimeout(peerFilterTimeout);
-        if (peerFilterAbort) {
-            peerFilterAbort.abort();
-            peerFilterAbort = null;
-        }
         if (themeObserver) {
             themeObserver.disconnect();
             themeObserver = null;
@@ -1150,72 +1129,23 @@
         window.addEventListener('pagehide', cleanup);
 
         peerFilterHandler = () => {
-            // Cancel previous transition workflow to ensure latest selection wins.
-            if (peerFilterAbort) {
-                peerFilterAbort.abort();
-            }
-            peerFilterAbort = new AbortController();
-            const signal = peerFilterAbort.signal;
-
-            // Cancel any pending timeout from previous filter change
             clearTimeout(peerFilterTimeout);
-            peerFilterTimeout = null;
 
             // Server-side filtering requires a full refresh to re-fetch data with the new peer filter.
-            // This ensures Country and ASN traffic reflect only the selected peer's traffic.
-            if (!trafficCombinedWrap) {
-                // No chart to fade, refresh immediately
+            // This keeps country and ASN traffic aligned with the selected peer.
+            if (!trafficCombinedWrap || isInitialRender) {
                 void refreshAll();
                 return;
             }
 
-            // Skip fade effect on initial render - only fade when user actively changes filter
-            if (isInitialRender) {
-                void refreshAll();
-                return;
-            }
-
-            // Fade out chart, refresh on transition complete
-            let handled = false;
-            const handleTransitionEnd = async () => {
-                if (handled || signal.aborted) return;
-                handled = true;
-                if (peerFilterTimeout) {
-                    clearTimeout(peerFilterTimeout);
-                    peerFilterTimeout = null;
-                }
-                try {
-                    await refreshAll();
-                } catch (e) {
-                    dbg('Refresh failed during filter transition:', e);
-                }
-                if (signal.aborted) return;
-                requestAnimationFrame(() => {
-                    if (signal.aborted) return;
-                    trafficCombinedWrap.classList.remove('traffic-chart-fading');
-                });
-                if (peerFilterAbort?.signal === signal) {
-                    peerFilterAbort = null;
-                }
-            };
-
-            trafficCombinedWrap.classList.remove('traffic-chart-fading');
-            trafficCombinedWrap.addEventListener('transitionend', () => {
-                void handleTransitionEnd();
-            }, { once: true, signal });
-
-            // Restart transition without forced synchronous reflow.
-            requestAnimationFrame(() => {
-                requestAnimationFrame(() => {
-                    if (signal.aborted) return;
-                    trafficCombinedWrap.classList.add('traffic-chart-fading');
-                });
-            });
-
-            // Fallback timeout in case transitionend doesn't fire
+            trafficCombinedWrap.classList.add('traffic-chart-fading');
             peerFilterTimeout = setTimeout(() => {
-                void handleTransitionEnd();
-            }, 300);
+                void refreshAll()
+                    .catch((e) => dbg('Refresh failed during filter change:', e))
+                    .finally(() => {
+                        trafficCombinedWrap?.classList.remove('traffic-chart-fading');
+                    });
+            }, 50);
         };
         trafficPeerFilter?.addEventListener('change', peerFilterHandler);
 

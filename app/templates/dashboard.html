@@ -267,11 +267,18 @@
     const mapKpiTotal = document.getElementById('map-kpi-total');
     const mapKpiCountries = document.getElementById('map-kpi-countries');
     const peerMapStatus = document.getElementById('peer-map-status');
-    const dbg = window.WBShared?.createDebugLogger
-        ? window.WBShared.createDebugLogger('Dashboard', DEBUG)
-        : (...args) => { if (DEBUG) console.log('[Dashboard]', ...args); };
-    const clearElement = window.WBShared?.clearElement || ((el) => { if (el) el.replaceChildren(); });
-    const isAbortError = window.WBShared?.isAbortError || ((err) => err?.code === 'ABORTED' || err?.name === 'AbortError' || err?.message === 'Request cancelled');
+    const WBShared = window.WBShared;
+    if (!WBShared?.RefreshScheduler || !WBShared.clearElement || !WBShared.isAbortError || !WBShared.formatBytes || !WBShared.formatTrafficMetric || !WBShared.formatBandwidthMetric || !WBShared.getChartColors) {
+        throw new Error('Dashboard requires WBShared helpers');
+    }
+    const dbg = WBShared.createDebugLogger('Dashboard', DEBUG);
+    const clearElement = WBShared.clearElement;
+    const isAbortError = WBShared.isAbortError;
+    const formatBytes = WBShared.formatBytes;
+    const formatTrafficMetric = WBShared.formatTrafficMetric;
+    const formatBandwidthMetric = WBShared.formatBandwidthMetric;
+    const getChartColors = WBShared.getChartColors;
+    const RefreshScheduler = WBShared.RefreshScheduler;
     
     /**
      * Sanitize string for use in HTML element IDs
@@ -280,25 +287,6 @@
     function toSafeId(value) {
         return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_');
     }
-    const formatBytes = window.WBShared?.formatBytes || ((bytes) => {
-        if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
-        const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k)));
-        const unit = sizes[i];
-        const decimals = (unit === 'MB' || unit === 'GB') ? 1 : 2;
-        return Number((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + unit;
-    });
-    const formatBandwidthMetric = window.WBShared?.formatBandwidthMetric
-        || ((valueMbit, gbitDigits = 1, mbitDigits = gbitDigits) => {
-            const numericValue = Number(valueMbit);
-            if (!Number.isFinite(numericValue)) return '–';
-            if (numericValue >= 1000) {
-                return `${(numericValue / 1000).toFixed(gbitDigits)} Gbit/s`;
-            }
-            return `${numericValue.toFixed(mbitDigits)} Mbit/s`;
-        });
-
     function setTrafficMetric(el, bytes, direction) {
         if (!el) return;
         const formatted = String(formatBytes(bytes) || '').trim();
@@ -1088,13 +1076,13 @@
             if (peerMapStatus) peerMapStatus.textContent = 'Initialization error';
             return;
         }
-        if (!window.WBShared?.RefreshScheduler) {
+        if (!WBShared.RefreshScheduler) {
             console.error('Dashboard requires WBShared.RefreshScheduler');
             if (peerMapStatus) peerMapStatus.textContent = 'Initialization error';
             return;
         }
 
-        refreshScheduler = new window.WBShared.RefreshScheduler({
+        refreshScheduler = new RefreshScheduler({
             autoRefreshMs: AUTO_REFRESH_MS,
             maxBackoffMs: MAX_BACKOFF_MS,
             log: dbg,
@@ -1250,21 +1238,6 @@
     // Load nodes on page load
     loadSpeedtestNodes();
 
-    function getChartColors() {
-        // Use same color scheme as network gauges for visual consistency
-        const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
-        const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--wb-accent-red').trim() || '#ff6384';
-        return {
-            textColor: dark ? '#b7c2d0' : '#6c757d',
-            gridColor: dark ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.08)',
-            dlColor: primaryColor,
-            dlBg: 'rgba(255, 99, 132, 0.1)',
-            ulColor: dark ? '#6edff6' : '#0dcaf0',
-            ulBg: dark ? 'rgba(110, 223, 246, 0.12)' : 'rgba(13, 202, 240, 0.12)',
-            rttColor: 'rgba(255, 193, 7, 0.85)',
-        };
-    }
-
     function updateSpeedtestChartColors() {
         if (!speedtestChart) return;
         const colors = getChartColors();
@@ -1320,50 +1293,32 @@
     }
 
     function buildAllNodeDatasets(okHistory) {
-        const labels = [];
-        const labelIndex = new Map();
-        const nodeDownload = new Map();
-        const nodeUpload = new Map();
+        const labels = [...new Set(okHistory.map((entry) => entry.ts))];
+        const labelIndex = new Map(labels.map((timestamp, index) => [timestamp, index]));
+        const nodeSeries = new Map();
 
-        okHistory.forEach((entry) => {
+        for (const entry of okHistory) {
             const nodeName = entry.node_name || 'Unknown Node';
-            const timestamp = entry.ts;
-            if (!labelIndex.has(timestamp)) {
-                labelIndex.set(timestamp, labels.length);
-                labels.push(timestamp);
+            if (!nodeSeries.has(nodeName)) {
+                nodeSeries.set(nodeName, {
+                    download: new Array(labels.length).fill(null),
+                    upload: new Array(labels.length).fill(null),
+                });
             }
-            if (!nodeDownload.has(nodeName)) {
-                nodeDownload.set(nodeName, new Array(labels.length).fill(null));
-                nodeUpload.set(nodeName, new Array(labels.length).fill(null));
-            }
-            const dlSeries = nodeDownload.get(nodeName);
-            const ulSeries = nodeUpload.get(nodeName);
-            while (dlSeries.length < labels.length) {
-                dlSeries.push(null);
-                ulSeries.push(null);
-            }
-            dlSeries[labelIndex.get(timestamp)] = Number(entry.download_mbit || 0);
-            ulSeries[labelIndex.get(timestamp)] = Number(entry.upload_mbit || 0);
-        });
-
-        for (const nodeName of nodeDownload.keys()) {
-            const dlSeries = nodeDownload.get(nodeName);
-            const ulSeries = nodeUpload.get(nodeName);
-            while (dlSeries.length < labels.length) {
-                dlSeries.push(null);
-                ulSeries.push(null);
-            }
+            const series = nodeSeries.get(nodeName);
+            const index = labelIndex.get(entry.ts);
+            series.download[index] = Number(entry.download_mbit || 0);
+            series.upload[index] = Number(entry.upload_mbit || 0);
         }
 
         const datasets = [];
         let colorIndex = 0;
-        for (const [nodeName, dlData] of nodeDownload.entries()) {
-            const ulData = nodeUpload.get(nodeName);
+        for (const [nodeName, series] of nodeSeries.entries()) {
             const color = getNodeSeriesColor(colorIndex);
             // Download: solid line
             datasets.push({
                 label: `${nodeName} (DL)`,
-                data: dlData,
+                data: series.download,
                 borderColor: color,
                 backgroundColor: withAlpha(color, 0.14),
                 fill: false,
@@ -1376,7 +1331,7 @@
             // Upload: dashed line, same color
             datasets.push({
                 label: `${nodeName} (UL)`,
-                data: ulData,
+                data: series.upload,
                 borderColor: color,
                 backgroundColor: 'transparent',
                 borderDash: [5, 3],
@@ -1443,7 +1398,7 @@
                                         backgroundColor: ctx.dataset.borderColor,
                                     };
                                 }
-                                const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--wb-accent-red').trim() || '#ff6384';
+                                const primaryColor = getChartColors().primaryColor;
                                 
                                 if (ctx.dataset.label?.includes('RTT')) {
                                     return {
@@ -1690,18 +1645,7 @@
      * Format bytes/sec to human-readable rate string
      */
     function formatRate(bytesPerSec) {
-        if (!Number.isFinite(bytesPerSec) || bytesPerSec < 0) return '0 B/s';
-        
-        if (bytesPerSec >= 1073741824) { // >= 1 GB/s
-            return (bytesPerSec / 1073741824).toFixed(1) + ' GB/s';
-        }
-        if (bytesPerSec >= 1048576) { // >= 1 MB/s
-            return (bytesPerSec / 1048576).toFixed(1) + ' MB/s';
-        }
-        if (bytesPerSec >= 1024) { // >= 1 KB/s
-            return (bytesPerSec / 1024).toFixed(1) + ' KB/s';
-        }
-        return Math.round(bytesPerSec) + ' B/s';
+        return `${formatTrafficMetric(bytesPerSec, 'B')}/s`;
     }
     
     /**
@@ -1794,9 +1738,9 @@
 
         // Use global max if provided, otherwise local max (min 1 KB/s)
         const max = maxOverride || Math.max(...data, 1024);
-        const strokeColor = getComputedStyle(document.documentElement).getPropertyValue('--wb-accent-red').trim() || '#ff6384';
-        const accentRgb = getComputedStyle(document.documentElement).getPropertyValue('--wb-accent-red-rgb').trim() || '255, 99, 132';
-        const fillColor = `rgba(${accentRgb}, 0.1)`;
+        const themeColors = getChartColors();
+        const strokeColor = themeColors.primaryColor;
+        const fillColor = `rgba(${themeColors.accentRgb}, 0.1)`;
         const points = data.map((v, i) => ({
             x: (i / (data.length - 1)) * w,
             y: h - (v / max) * (h - 2),
@@ -2084,10 +2028,10 @@
             }
 
             // Reorder DOM elements to match sorted order (prevents layout jitter)
-            const orderedElements = sortedInterfaces
-                .map(i => document.getElementById(`net-${toSafeId(i.name)}`))
-                .filter(Boolean);
-            networkGaugesContainer.replaceChildren(...orderedElements);
+            sortedInterfaces.forEach((iface, index) => {
+                const el = document.getElementById(`net-${toSafeId(iface.name)}`);
+                if (el) el.style.order = String(index);
+            });
             
             // Count active interfaces (any traffic)
             const activeCount = interfaces.filter(i => i.rx_rate > 0 || i.tx_rate > 0).length;

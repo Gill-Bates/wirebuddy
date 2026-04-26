@@ -42,6 +42,7 @@ Limitations
 from __future__ import annotations
 
 import ipaddress
+from collections import defaultdict
 import json
 import logging
 import re
@@ -117,6 +118,60 @@ _wg_gateway_ips_cache: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set(
 _wg_subnets_ts = 0.0
 
 _WG_SUBNET_TTL = 60.0  # re-detect subnets every 60 s
+
+
+def _parse_interface_address(
+	addr_str: str,
+) -> tuple[
+	ipaddress.IPv4Network | ipaddress.IPv6Network,
+	ipaddress.IPv4Address | ipaddress.IPv6Address,
+] | None:
+	"""Parse an interface address into (network, gateway_ip)."""
+	try:
+		net = ipaddress.ip_network(addr_str, strict=False)
+		if "/" not in addr_str and net.prefixlen in (32, 128):
+			_log.debug(
+				"COUNTRY_TRAFFIC address %r has no prefix length and is treated as a host route (%s)",
+				addr_str,
+				net,
+			)
+		return net, ipaddress.ip_address(addr_str.split("/")[0])
+	except ValueError:
+		return None
+
+
+def _ensure_bucket(agg: dict, key: str, name: str | None = None) -> dict:
+	"""Return an existing traffic bucket or initialise a new one."""
+	if key not in agg:
+		bucket = {"rx": 0, "tx": 0, "peers": set(), "by_peer": {}}
+		if name is not None:
+			bucket["name"] = name
+		agg[key] = bucket
+	return agg[key]
+
+
+def _add_to_bucket(bucket: dict, delta_rx: int, delta_tx: int, peer_name: str | None) -> None:
+	"""Add deltas to a traffic bucket and attribute them to a peer if present."""
+	bucket["rx"] += delta_rx
+	bucket["tx"] += delta_tx
+	if not peer_name:
+		return
+	bucket["peers"].add(peer_name)
+	peer = bucket["by_peer"].setdefault(peer_name, {"rx": 0, "tx": 0})
+	peer["rx"] += delta_rx
+	peer["tx"] += delta_tx
+
+
+def _serialize_agg(agg: dict[str, dict]) -> dict[str, dict]:
+	"""Convert aggregation buckets into JSON-safe dictionaries."""
+	return {
+		key: {
+			**{k: v for k, v in info.items() if k not in ("peers", "by_peer")},
+			"peers": sorted(info["peers"]),
+			"by_peer": dict(sorted(info["by_peer"].items())),
+		}
+		for key, info in sorted(agg.items())
+	}
 
 
 # ---------------------------------------------------------------------------
@@ -198,11 +253,11 @@ def _get_wireguard_subnets() -> tuple[
 							local = ai.get("local", "")
 							prefixlen = ai.get("prefixlen")
 							if local and prefixlen is not None:
-								try:
-									subnets.append(ipaddress.ip_network(f"{local}/{prefixlen}", strict=False))
-									gateway_ips.add(ipaddress.ip_address(local))
-								except ValueError:
-									pass
+								parsed = _parse_interface_address(f"{local}/{prefixlen}")
+								if parsed is not None:
+									net, gateway_ip = parsed
+									subnets.append(net)
+									gateway_ips.add(gateway_ip)
 			else:
 				_log.debug(
 					"COUNTRY_TRAFFIC 'ip -j addr show type wireguard' failed (rc=%d): %s",
@@ -231,14 +286,11 @@ def _get_wireguard_subnets() -> tuple[
 						)
 						if addr_result.returncode == 0:
 							for m in re.finditer(r"inet6?\s+(\S+)", addr_result.stdout):
-								try:
-									addr_str = m.group(1)
-									subnets.append(ipaddress.ip_network(addr_str, strict=False))
-									# Extract gateway IP (without prefix)
-									ip_part = addr_str.split("/")[0]
-									gateway_ips.add(ipaddress.ip_address(ip_part))
-								except ValueError:
-									pass
+								parsed = _parse_interface_address(m.group(1))
+								if parsed is not None:
+									net, gateway_ip = parsed
+									subnets.append(net)
+									gateway_ips.add(gateway_ip)
 						else:
 							_log.debug(
 								"COUNTRY_TRAFFIC 'ip addr show dev %s' failed (rc=%d): %s",
@@ -305,21 +357,11 @@ def _get_subnets_from_db() -> tuple[
 				for addr_field in ("address", "address6"):
 					addr = row[addr_field]
 					if addr:
-						try:
-							net = ipaddress.ip_network(addr, strict=False)
-							if "/" not in addr and net.prefixlen in (32, 128):
-								_log.debug(
-									"COUNTRY_TRAFFIC DB address %r has no prefix length "
-									"and is treated as a host route (%s)",
-									addr,
-									net,
-								)
+						parsed = _parse_interface_address(addr)
+						if parsed is not None:
+							net, gateway_ip = parsed
 							subnets.append(net)
-							# Extract gateway IP (without prefix)
-							ip_part = addr.split("/")[0]
-							gateway_ips.add(ipaddress.ip_address(ip_part))
-						except ValueError:
-							pass
+							gateway_ips.add(gateway_ip)
 	except (sqlite3.Error, OSError) as exc:
 		_log.debug("COUNTRY_TRAFFIC DB query failed: %s", exc)
 		return [], set()
@@ -387,40 +429,23 @@ def _parse_line(line: str) -> dict[str, Any] | None:
 			break
 
 	# Single scan: extract all key=value pairs
-	kv_pairs = _RE_KEYVAL.findall(line)
-	
-	# Group values by key (conntrack repeats keys for orig + reply directions)
-	srcs = []
-	dsts = []
-	sports = []
-	dports = []
-	bytes_vals = []
-	
-	for key, val in kv_pairs:
-		if key == "src":
-			srcs.append(val)
-		elif key == "dst":
-			dsts.append(val)
-		elif key == "sport":
-			sports.append(val)
-		elif key == "dport":
-			dports.append(val)
-		elif key == "bytes":
-			bytes_vals.append(val)
+	fields: dict[str, list[str]] = defaultdict(list)
+	for key, val in _RE_KEYVAL.findall(line):
+		fields[key].append(val)
 
 	# Need at least both direction blocks with byte counters
-	if len(srcs) < 2 or len(dsts) < 2 or len(bytes_vals) < 2:
+	if len(fields["src"]) < 2 or len(fields["dst"]) < 2 or len(fields["bytes"]) < 2:
 		return None
 
 	try:
 		return {
 			"proto": proto,
-			"src": srcs[0],              # original: WG client → internet
-			"dst": dsts[0],              # original: internet destination
-			"sport": int(sports[0]) if sports else 0,
-			"dport": int(dports[0]) if dports else 0,
-			"bytes_orig": int(bytes_vals[0]),   # client → internet (upload / tx)
-			"bytes_reply": int(bytes_vals[1]),  # internet → client (download / rx)
+			"src": fields["src"][0],              # original: WG client → internet
+			"dst": fields["dst"][0],              # original: internet destination
+			"sport": int(fields["sport"][0]) if fields["sport"] else 0,
+			"dport": int(fields["dport"][0]) if fields["dport"] else 0,
+			"bytes_orig": int(fields["bytes"][0]),   # client → internet (upload / tx)
+			"bytes_reply": int(fields["bytes"][1]),  # internet → client (download / rx)
 		}
 	except (ValueError, IndexError):
 		return None
@@ -478,29 +503,8 @@ def _aggregate_traffic(
 				asn_name = "Unknown"
 			asn_cache[dst_ip] = (asn_key, asn_name)
 
-		# Aggregate by country
-		if cc not in country_agg:
-			country_agg[cc] = {"rx": 0, "tx": 0, "peers": set(), "by_peer": {}}
-		country_agg[cc]["rx"] += delta_rx
-		country_agg[cc]["tx"] += delta_tx
-		if peer_name:
-			country_agg[cc]["peers"].add(peer_name)
-			if peer_name not in country_agg[cc]["by_peer"]:
-				country_agg[cc]["by_peer"][peer_name] = {"rx": 0, "tx": 0}
-			country_agg[cc]["by_peer"][peer_name]["rx"] += delta_rx
-			country_agg[cc]["by_peer"][peer_name]["tx"] += delta_tx
-
-		# Aggregate by ASN
-		if asn_key not in asn_agg:
-			asn_agg[asn_key] = {"rx": 0, "tx": 0, "name": asn_name, "peers": set(), "by_peer": {}}
-		asn_agg[asn_key]["rx"] += delta_rx
-		asn_agg[asn_key]["tx"] += delta_tx
-		if peer_name:
-			asn_agg[asn_key]["peers"].add(peer_name)
-			if peer_name not in asn_agg[asn_key]["by_peer"]:
-				asn_agg[asn_key]["by_peer"][peer_name] = {"rx": 0, "tx": 0}
-			asn_agg[asn_key]["by_peer"][peer_name]["rx"] += delta_rx
-			asn_agg[asn_key]["by_peer"][peer_name]["tx"] += delta_tx
+		_add_to_bucket(_ensure_bucket(country_agg, cc), delta_rx, delta_tx, peer_name)
+		_add_to_bucket(_ensure_bucket(asn_agg, asn_key, name=asn_name), delta_rx, delta_tx, peer_name)
 
 	return country_agg, asn_agg
 
@@ -660,26 +664,8 @@ def sample_country_traffic(
 
 	# Convert sets to sorted lists for JSON serialisation (outside lock)
 	# Also sort by_peer keys for consistent ordering in TSDB comparisons
-	country_result = {
-		cc: {
-			"rx": info["rx"],
-			"tx": info["tx"],
-			"peers": sorted(info["peers"]),
-			"by_peer": dict(sorted(info["by_peer"].items())),
-		}
-		for cc, info in sorted(country_agg.items())
-	}
-
-	asn_result = {
-		asn_key: {
-			"rx": info["rx"],
-			"tx": info["tx"],
-			"name": info["name"],
-			"peers": sorted(info["peers"]),
-			"by_peer": dict(sorted(info["by_peer"].items())),
-		}
-		for asn_key, info in sorted(asn_agg.items())
-	}
+	country_result = _serialize_agg(country_agg)
+	asn_result = _serialize_agg(asn_agg)
 
 	return country_result, asn_result
 

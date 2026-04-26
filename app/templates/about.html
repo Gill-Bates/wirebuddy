@@ -438,6 +438,27 @@
 <script>
 (function() {
     // -------------------- Update Check --------------------
+    function parseVersionParts(version) {
+        if (!version || typeof version !== 'string') return [0];
+        const clean = version.trim().replace(/^v/i, '');
+        const match = clean.match(/^(\d+(?:\.\d+)*)/);
+        if (!match) return [0];
+        return match[1].split('.').map((part) => Number.parseInt(part, 10) || 0);
+    }
+
+    function compareVersions(a, b) {
+        const pa = parseVersionParts(a);
+        const pb = parseVersionParts(b);
+        const len = Math.max(pa.length, pb.length);
+        for (let i = 0; i < len; i += 1) {
+            const va = pa[i] || 0;
+            const vb = pb[i] || 0;
+            if (va > vb) return 1;
+            if (va < vb) return -1;
+        }
+        return 0;
+    }
+
     async function checkForUpdates(force = false, isManualCheck = false) {
         const loadingEl = document.getElementById('update-check-loading');
         const resultEl = document.getElementById('update-check-result');
@@ -483,13 +504,26 @@
             }
             
             // Status badge
-            if (res.update_available) {
+            const currentVersion = res.current_version || '';
+            const latestVersion = res.latest_version || '';
+            const currentIsHigher = latestVersion && compareVersions(currentVersion, latestVersion) > 0;
+
+            if (currentIsHigher) {
+                setUpdateStatusBadge(
+                    statusBadge,
+                    'warning',
+                    'warning_amber',
+                    null,
+                    'You are currently using a pre-release. This is not recommended for production!'
+                );
+                availableSectionEl.classList.add('d-none');
+            } else if (res.update_available) {
                 setUpdateStatusBadge(
                     statusBadge,
                     'success',
                     'new_releases',
                     'Update available!',
-                    `Version ${res.latest_version || '–'} is ready.`
+                    `Version ${latestVersion || '–'} is ready.`
                 );
                 // Show release link
                 availableSectionEl.classList.remove('d-none');

@@ -60,165 +60,70 @@ External hardware keys:
 | Firefox | 119+ | ✅ Full |
 | Brave | 1.51+ | ✅ Full |
 
-## Setting Up Passkeys
+## Setup and Usage
 
 ### For Users
 
-1. **Login with password** (and MFA if enabled)
-2. Navigate to **Profile → Security → Passkeys**
-3. Click **Add Passkey**
-4. **Choose authenticator:**
-   - This device (platform authenticator)
-   - Security key (USB/NFC)
-5. **Follow prompts:**
-   - Touch ID: Place finger on sensor
-   - Face ID: Look at camera
-   - Windows Hello: Use configured method
-   - Security key: Insert key and touch button
-6. **Name your passkey** (e.g., "MacBook Pro Touch ID")
-7. Click **Save**
+1. Sign in with your existing method (password and optional MFA).
+2. Open **Users** and click **Passkey Settings** for your own account.
+3. Click **Add Passkey**.
+4. Complete the browser authenticator prompt (Touch ID, Face ID, Windows Hello, or a security key).
+5. Optional: enter a device name before registration.
 
-### For Admins
+### Admin-driven Onboarding
 
-Enable passkeys globally:
-
-**Settings → Security → Passkeys → Enable**
-
-Options:
-
-- **Allow Platform Authenticators:** Touch ID, Windows Hello
-- **Allow Cross-Platform:** Security keys
-- **Require User Verification:** Enforce biometric/PIN (recommended)
-
-## Using Passkeys
+Admins can enable passkey onboarding per user from the user management UI.
+The user is then prompted on next login to register a passkey.
 
 ### Login with Passkey
 
-1. Navigate to login page
-2. Enter username (or click "Sign in with passkey")
-3. Browser prompts for passkey
-4. Authenticate (fingerprint, face, security key)
-5. Logged in immediately
+1. Open the login page.
+2. Click **Sign in with Passkey** (username is optional for discoverable credentials).
+3. Complete authenticator verification.
 
-### Fallback to Password
+### Fallback Behavior
 
-Passkeys are **optional**. You can always use password + MFA.
+Passkeys are optional in the current implementation. Password login remains available unless your deployment enforces additional policies outside of the passkey module.
 
 ## Managing Passkeys
 
-### View Registered Passkeys
+### Available Actions
 
-**Profile → Security → Passkeys**
+- List registered passkeys for the current user.
+- Register additional passkeys (up to the configured per-user limit).
+- Delete individual passkeys.
+- Admin reset of all passkeys for a user.
 
-| Name | Type | Created | Last Used | Actions |
-|------|------|---------|-----------|---------|
-| MacBook Pro Touch ID | Platform | 2026-01-15 | 2 hours ago | [Rename] [Delete] |
-| YubiKey 5C | Security Key | 2026-02-01 | 3 days ago | [Rename] [Delete] |
+### Not Currently Available
 
-### Rename Passkey
+- Passkey rename endpoint.
+- Global passkey policy UI (attestation/user-verification toggles in settings).
+- "Enforce passkeys" switch in the web settings UI.
 
-Give passkeys descriptive names:
+## Configuration
 
-- ✅ "Work Laptop Touch ID"
-- ✅ "Phone Fingerprint"
-- ✅ "YubiKey Backup"
-- ❌ "Authenticator 1"
+Passkey RP behavior is controlled by environment variables:
 
-### Delete Passkey
+- `PASSKEY_RP_ID`: Optional RP ID override. If unset, WireBuddy derives it from the request host.
+- `PASSKEY_RP_NAME`: Optional RP display name (default: `WireBuddy`).
+- `MAX_PASSKEYS_PER_USER`: Maximum passkeys per account (default: `20`).
 
-Remove passkey immediately:
+Origin is validated from the incoming request scheme and host.
 
-1. Click **Delete**
-2. Confirm removal
-3. Passkey is revoked
+## API Endpoints (Current)
 
-!!! warning
-    Ensure you have another authentication method before deleting all passkeys.
-
-## Security Considerations
-
-### Attestation
-
-WireBuddy supports attestation for key verification:
-
-**Settings → Security → Passkeys → Attestation**
-
-Options:
-
-- **None:** No attestation (default, most compatible)
-- **Indirect:** Anonymous attestation
-- **Direct:** Full attestation (verify authenticator model)
-
-**Direct attestation** allows you to:
-
-- Verify specific security key models
-- Enforce corporate key policies
-- Detect cloned keys
-
-### User Verification
-
-**Require User Verification:**
-
-- ✅ **Enabled:** Force PIN/biometric (recommended)
-- ❌ **Disabled:** Possession-only (less secure)
-
-User verification ensures:
-
-- User is physically present
-- Biometric or PIN verified
-- Prevents unauthorized use if device unlocked
-
-### Backup Passkeys
-
-Register multiple passkeys:
-
-1. **Primary:** Daily use device (laptop, phone)
-2. **Backup:** Security key stored securely
-3. **Alternative:** Different device
-
-This ensures you can always access your account.
-
-### Recovery
-
-If all passkeys are lost:
-
-1. **Recovery codes:** Use MFA recovery codes
-2. **Admin reset:** Contact admin to disable passkeys
-3. **Password:** Use password + MFA
-
-## Advanced Configuration
-
-### Relying Party Settings
-
-**Settings → Security → Passkeys → Advanced**
-
-```json
-{
-  "rpName": "WireBuddy",
-  "rpID": "vpn.example.com",
-  "origins": [
-    "https://vpn.example.com"
-  ],
-  "timeout": 60000,
-  "userVerification": "required",
-  "attestation": "none"
-}
-```
-
-### Allowed Authenticators
-
-Restrict to specific authenticator types:
-
-```json
-{
-  "authenticatorSelection": {
-    "authenticatorAttachment": "cross-platform",
-    "requireResidentKey": false,
-    "residentKey": "preferred",
-    "userVerification": "required"
-  }
-}
-```
+- `POST /api/passkeys/register/start`
+- `POST /api/passkeys/register/finish`
+- `POST /api/passkeys/login/start`
+- `POST /api/passkeys/login/finish`
+- `GET /api/passkeys`
+- `DELETE /api/passkeys/{passkey_id}`
+- `GET /api/passkeys/check`
+- `GET /api/passkeys/available`
+- `POST /api/passkeys/reset/{user_id}` (admin)
+- `GET /api/passkeys/user/{user_id}` (admin)
+- `POST /api/passkeys/enable/{user_id}` (admin)
+- `POST /api/passkeys/disable/{user_id}` (admin)
 
 ## Troubleshooting
 
@@ -291,47 +196,15 @@ Restrict to specific authenticator types:
 
 ### For Users
 
-- Register multiple passkeys (primary + backup)
-- Use descriptive names for easy identification
-- Store backup security key securely (not with primary device)
-- Test backup passkey periodically
-- Review registered passkeys regularly
+- Register at least two passkeys (daily device + backup key/device).
+- Use clear device names at registration time.
+- Keep a non-passkey fallback method available.
 
 ### For Admins
 
-- Enable passkeys for all users (optional but recommended)
-- Require user verification (biometric/PIN)
-- Use platform authenticators for convenience, security keys for high security
-- Document recovery procedures
-- Monitor passkey usage in audit logs
-
-## Migration Guide
-
-### From Password-Only
-
-1. Users login with password
-2. Prompt to register passkey (banner or modal)
-3. User registers passkey
-4. Continue using password + passkey
-5. Optionally disable password once passkey is tested
-
-### From Password + MFA
-
-1. Users login with password + TOTP
-2. Register passkey as additional method
-3. Use passkey for faster login
-4. Keep MFA as backup
-
-### Enforcing Passkeys
-
-**Settings → Security → Enforce Passkeys**
-
-Options:
-
-- **Optional:** Users can choose (default)
-- **Recommended:** Encourage but don't require
-- **Required:** Block password-only login for new accounts
-- **Mandatory:** All users must register passkey (grace period: 30 days)
+- Enable onboarding per user and verify setup completion.
+- Keep a recovery procedure for lost authenticators.
+- Use reset/disable endpoints only when user recovery is needed.
 
 ## Comparison: Passkeys vs Other Methods
 

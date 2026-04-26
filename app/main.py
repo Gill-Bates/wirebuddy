@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-import typing
+import collections.abc
 
 from .db.sqlite_interfaces import (
 	list_interfaces,
@@ -54,6 +54,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -82,6 +83,7 @@ from .dns import unbound
 from .dns import ingestion as dns_ingestion
 from .utils import migration
 from .tasks import scheduled as scheduled_tasks
+from .utils.subprocess import run_command
 
 _log = logging.getLogger(__name__)
 
@@ -197,24 +199,7 @@ _DOCKER_BRIDGE_NETWORKS = (
 	ipaddress.ip_network("172.28.0.0/14"),
 )
 
-_BACKUP_INTERVAL_SECONDS = 86400  # 24 h (runs nightly)
-_BACKUP_NIGHT_HOUR = 3  # Run backups at 03:00 local time
 
-def _seconds_until_backup_time(tz: str = "UTC") -> float:
-	"""Calculate seconds until next 03:00 in given timezone (default UTC)."""
-	from datetime import datetime, timedelta, timezone
-	try:
-		from zoneinfo import ZoneInfo
-		tzinfo = ZoneInfo(tz)
-	except Exception as exc:
-		_log.warning("Invalid timezone %r for scheduled backup; falling back to UTC: %s", tz, exc)
-		tzinfo = timezone.utc
-
-	now = datetime.now(tzinfo)
-	target = now.replace(hour=_BACKUP_NIGHT_HOUR, minute=0, second=0, microsecond=0)
-	if now >= target:
-		target += timedelta(days=1)
-	return max(0.0, (target - now).total_seconds())
 
 
 async def _verify_host_network_mode() -> None:
@@ -239,17 +224,12 @@ async def _verify_host_network_mode() -> None:
 		return
 
 	try:
-		proc = await asyncio.create_subprocess_exec(
-			"ip", "route", "show", "default",
-			stdout=asyncio.subprocess.PIPE,
-			stderr=asyncio.subprocess.DEVNULL,
-		)
-		stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-		if proc.returncode != 0:
-			_log.warning("Could not verify network mode: 'ip route' exit code %s", proc.returncode)
+		res = await run_command("ip", "route", "show", "default", timeout=5.0)
+		if res.returncode != 0:
+			_log.warning("Could not verify network mode: 'ip route' exit code %s", res.returncode)
 			return
 
-		routes = stdout.decode("utf-8", errors="replace")
+		routes = res.stdout
 		for line in routes.splitlines():
 			parts = line.split()
 			if len(parts) < 3 or parts[0] != "default" or "via" not in parts:
@@ -289,16 +269,11 @@ async def _cleanup_stale_interfaces() -> list[str]:
 
 	try:
 		# Get list of active WireGuard interfaces from kernel
-		proc = await asyncio.create_subprocess_exec(
-			"wg", "show", "interfaces",
-			stdout=asyncio.subprocess.PIPE,
-			stderr=asyncio.subprocess.DEVNULL,
-		)
-		stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-		if proc.returncode != 0 or not stdout:
+		res = await run_command("wg", "show", "interfaces", timeout=5.0)
+		if res.returncode != 0 or not res.stdout:
 			return removed
 
-		active_interfaces = stdout.decode("utf-8", errors="replace").strip().split()
+		active_interfaces = res.stdout.strip().split()
 		if not active_interfaces:
 			return removed
 
@@ -320,20 +295,15 @@ async def _cleanup_stale_interfaces() -> list[str]:
 			)
 			try:
 				# Delete the interface
-				del_proc = await asyncio.create_subprocess_exec(
-					"ip", "link", "delete", iface_name,
-					stdout=asyncio.subprocess.DEVNULL,
-					stderr=asyncio.subprocess.PIPE,
-				)
-				_, stderr = await asyncio.wait_for(del_proc.communicate(), timeout=5)
-				if del_proc.returncode == 0:
+				del_res = await run_command("ip", "link", "delete", iface_name, timeout=5.0)
+				if del_res.returncode == 0:
 					_log.info("STALE_INTERFACE_REMOVED name=%s", iface_name)
 					removed.append(iface_name)
 				else:
 					_log.warning(
 						"Failed to delete stale interface %s: %s",
 						iface_name,
-						_decode_subprocess_output(stderr),
+						del_res.stderr,
 					)
 			except asyncio.TimeoutError:
 				_log.warning("Timeout cleaning up stale interface %s", iface_name)
@@ -423,44 +393,21 @@ class _ColoredFormatter(_HumanizedFormatter):
 		return super().format(record)
 
 
-async def _communicate_with_timeout(
-	proc: asyncio.subprocess.Process,
-	*,
-	timeout_seconds: float,
-	grace_seconds: float = 3.0,
-) -> tuple[bytes | None, bytes | None]:
-	"""Wait for subprocess with timeout.
-
-	On timeout, send SIGTERM first and wait ``grace_seconds`` for a clean
-	exit (so wg-quick can run its PostDown iptables cleanup), then escalate
-	to SIGKILL (issue #6).
-	"""
-	try:
-		return await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
-	except asyncio.TimeoutError:
-		if proc.returncode is None:
-			proc.terminate()  # SIGTERM – give the process a chance to clean up
-			try:
-				await asyncio.wait_for(proc.communicate(), timeout=grace_seconds)
-			except asyncio.TimeoutError:
-				proc.kill()  # SIGKILL – last resort
-				await proc.communicate()
-		raise
+def _extract_gateways(interfaces: list) -> tuple[list[str], list[str]]:
+	"""Extract unique IPv4 and IPv6 gateways from a list of interfaces."""
+	from .dns import unbound
+	listen_addrs_ipv4 = []
+	for iface in interfaces:
+		addr4 = _get_addr_field(iface, "address")
+		if addr4:
+			ip4 = str(addr4).split("/")[0]
+			if ip4 not in listen_addrs_ipv4:
+				listen_addrs_ipv4.append(ip4)
+	return listen_addrs_ipv4, unbound.get_interface_ipv6_gateways(interfaces)
 
 
-def _decode_subprocess_output(data: bytes | None) -> str:
-	"""Decode subprocess output safely for logs."""
-	if not data:
-		return ""
-	return data.decode("utf-8", errors="replace")
-
-
-def _safe_int(value: str | None, default: int = 0) -> int:
-	"""Safely parse integer values from wg dump columns."""
-	try:
-		return int(value) if value else default
-	except (TypeError, ValueError):
-		return default
+# Use the canonical safe_int from wireguard_utils to avoid duplication.
+from .api.wireguard_utils import safe_int as _safe_int
 
 
 def _parse_wg_dump_counters(stdout: str) -> dict[str, tuple[int, int, int]]:
@@ -626,42 +573,21 @@ def _regenerate_peer_tags_sync(db_path: Path) -> int:
 	"""Regenerate Unbound peer-tags.conf synchronously.
 	
 	Ensures peer tags are current at startup for ad-blocking to work.
+	Reuses the canonical implementation from wireguard_peers.
 	Returns the number of peers processed.
 	"""
-	from .api.wireguard_utils import (
-		get_enabled_blocklist_ids,
-		filter_peer_blocklist_ids,
-		parse_blocklist_ids,
-	)
-	from .dns import unbound as _unbound
+	from .api.wireguard_peers import regenerate_all_peer_tags
 	
 	conn = connect(db_path)
 	try:
-		enabled_blocklist_ids = get_enabled_blocklist_ids(conn)
-		peers = get_all_peers(conn)
-		peer_list = []
-		
-		for row in peers:
-			blocklist_ids = parse_blocklist_ids(row["blocklist_ids"])
-			if blocklist_ids is None:
-				effective_ids = list(enabled_blocklist_ids)
-			else:
-				filtered = filter_peer_blocklist_ids(blocklist_ids, enabled_blocklist_ids)
-				effective_ids = filtered or []
-			
-			peer_list.append({
-				"peer_address": row["peer_address"],
-				"use_adblocker": bool(row["use_adblocker"]),
-				"blocklist_ids": effective_ids,
-			})
-		
-		_unbound.write_peer_tags(peer_list)
-		return len(peer_list)
+		regenerate_all_peer_tags(conn)
+		# Return peer count for logging
+		return len(get_all_peers(conn))
 	finally:
 		close_connection(conn)
 
 
-def _with_conn(db_path: Path, fn: typing.Callable, *args, **kwargs):
+def _with_conn(db_path: Path, fn: collections.abc.Callable, *args, **kwargs):
 	"""Run fn(conn, *args, **kwargs) with connect/close lifecycle.
 	
 	Eliminates boilerplate connect/try/finally/close_connection pattern.
@@ -673,7 +599,7 @@ def _with_conn(db_path: Path, fn: typing.Callable, *args, **kwargs):
 		close_connection(conn)
 
 
-def _with_conn_or(db_path: Path, fn: typing.Callable, *args, default=None, **kwargs):
+def _with_conn_or(db_path: Path, fn: collections.abc.Callable, *args, default=None, **kwargs):
 	"""Like _with_conn but returns default on any exception.
 	
 	Useful for watchdog/readiness checks where DB errors should fail safe
@@ -821,17 +747,7 @@ async def _reload_unbound_for_adblocker_async(db_path: Path) -> None:
 
 		enable_logging, enable_blocklist, upstream_dns, dnssec_enabled, interfaces = await asyncio.to_thread(_read_unbound_config_sync)
 
-		ipv4_gateways = []
-		for iface in interfaces:
-			try:
-				addr4 = iface["address"]
-			except (KeyError, TypeError):
-				addr4 = getattr(iface, "address", None)
-			if addr4:
-				ip4 = str(addr4).split("/")[0]
-				if ip4 not in ipv4_gateways:
-					ipv4_gateways.append(ip4)
-		ipv6_gateways = _unbound.get_interface_ipv6_gateways(interfaces)
+		ipv4_gateways, ipv6_gateways = _extract_gateways(interfaces)
 
 		# Offload sync file I/O to thread
 		await asyncio.to_thread(
@@ -850,7 +766,7 @@ def _sqlite_shutdown_sync(db_path: Path) -> tuple[dict[str, int | str | None], i
 	"""Run SQLite checkpoint + connection close synchronously."""
 	closed_connections = close_all_connections()
 	checkpoint: dict[str, int | str | None] = {
-		"mode": "TRUNCATE",
+		"mode": "RESTART",
 		"busy": -1,
 		"log_frames": -1,
 		"checkpointed_frames": -1,
@@ -858,7 +774,7 @@ def _sqlite_shutdown_sync(db_path: Path) -> tuple[dict[str, int | str | None], i
 	}
 
 	for attempt in range(1, 11):
-		checkpoint = checkpoint_wal(db_path, mode="TRUNCATE")
+		checkpoint = checkpoint_wal(db_path, mode="RESTART")
 		checkpoint["attempts"] = attempt
 		if int(checkpoint.get("busy", -1)) == 0:
 			break
@@ -975,19 +891,11 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 	if ctx.started_interfaces:
 		for iface_name in ctx.started_interfaces:
 			try:
-				proc = await asyncio.create_subprocess_exec(
-					"wg-quick", "down", iface_name,
-					stdout=asyncio.subprocess.PIPE,
-					stderr=asyncio.subprocess.PIPE,
-				)
-				_, stderr = await _communicate_with_timeout(
-					proc,
-					timeout_seconds=_WG_DOWN_TIMEOUT_SECONDS,
-				)
-				if proc.returncode == 0:
+				res = await run_command("wg-quick", "down", iface_name, timeout=_WG_DOWN_TIMEOUT_SECONDS)
+				if res.returncode == 0:
 					_log.info("WireGuard interface %s stopped", iface_name)
 				else:
-					_log.warning("Failed to stop interface %s: %s", iface_name, _decode_subprocess_output(stderr))
+					_log.warning("Failed to stop interface %s: %s", iface_name, res.stderr)
 			except asyncio.TimeoutError:
 				_log.warning("Timeout while stopping interface %s", iface_name)
 			except Exception as e:
@@ -1018,23 +926,22 @@ async def _phase_bootstrap(ctx: LifespanContext) -> None:
 	if key_mismatch:
 		_log.critical("Aborting startup: WIREBUDDY_SECRET_KEY does not match database encryption key")
 		await _do_shutdown(ctx)
-		# Clean exit via SystemExit instead of os._exit to allow cleanup/logging
-		print(
+		# Clean exit via StartupFatalError to allow cleanup/logging
+		msg = (
 			"\n"
 			"╔══════════════════════════════════════════════════════════════════════╗\n"
 			"║  FATAL: WIREBUDDY_SECRET_KEY mismatch                                ║\n"
 			"║                                                                      ║\n"
-			"║  The configured secret key does not match the key used to encrypt   ║\n"
-			"║  this database. Continuing would cause data corruption.             ║\n"
+			"║  The configured secret key does not match the key used to encrypt    ║\n"
+			"║  this database. Continuing would cause data corruption.              ║\n"
 			"║                                                                      ║\n"
 			"║  Solutions:                                                          ║\n"
-			"║  1. Set the correct WIREBUDDY_SECRET_KEY in docker-compose.yml      ║\n"
-			"║  2. Or delete data/wirebuddy.db to start fresh (loses all data)     ║\n"
-			"╚══════════════════════════════════════════════════════════════════════╝\n",
-			file=sys.stderr,
-			flush=True,
+			"║  1. Set the correct WIREBUDDY_SECRET_KEY in docker-compose.yml       ║\n"
+			"║  2. Or delete data/wirebuddy.db to start fresh (loses all data)      ║\n"
+			"╚══════════════════════════════════════════════════════════════════════╝\n"
 		)
-		raise SystemExit(1)
+		print(msg, file=sys.stderr, flush=True)
+		raise StartupFatalError("WIREBUDDY_SECRET_KEY mismatch")
 	from .db import tsdb
 	tsdb.init_tsdb(cfg.tsdb_dir)
 	_log.info("GeoIP init scheduled in background (startup is non-blocking)")
@@ -1046,15 +953,8 @@ async def _phase_dns_config(ctx: LifespanContext) -> None:
 	try:
 		dns_data = await asyncio.to_thread(_load_dns_startup_data_sync, ctx.cfg.db_path)
 		ctx.dns_service_enabled = bool(dns_data.get("dns_service_enabled", True))
-		listen_addrs_ipv4, listen_addrs_ipv6 = [], []
 		interfaces = dns_data.get("interfaces", [])
-		for iface in interfaces:
-			addr4 = _get_addr_field(iface, "address")
-			if addr4 and addr4.split("/")[0] not in listen_addrs_ipv4:
-				listen_addrs_ipv4.append(addr4.split("/")[0])
-			addr6 = _get_addr_field(iface, "address6")
-			if addr6 and addr6.split("/")[0] not in listen_addrs_ipv6:
-				listen_addrs_ipv6.append(addr6.split("/")[0])
+		listen_addrs_ipv4, listen_addrs_ipv6 = _extract_gateways(interfaces)
 		if not listen_addrs_ipv4:
 			_log.info("DNS init skipped: no WireGuard interfaces configured yet")
 		else:
@@ -1097,18 +997,17 @@ async def _phase_wireguard_start(ctx: LifespanContext) -> None:
 		return
 	async def _start_one(iface_name: str) -> str | None:
 		try:
-			check_proc = await asyncio.create_subprocess_exec("wg", "show", iface_name, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-			await _communicate_with_timeout(check_proc, timeout_seconds=_WG_CHECK_TIMEOUT_SECONDS)
-			if check_proc.returncode == 0:
+			check_res = await run_command("wg", "show", iface_name, timeout=_WG_CHECK_TIMEOUT_SECONDS)
+			if check_res.returncode == 0:
 				_log.info("WireGuard interface %s already running", iface_name)
 				return None
-			proc = await asyncio.create_subprocess_exec("wg-quick", "up", iface_name, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-			_, stderr = await _communicate_with_timeout(proc, timeout_seconds=_WG_UP_TIMEOUT_SECONDS)
-			if proc.returncode == 0:
+			
+			up_res = await run_command("wg-quick", "up", iface_name, timeout=_WG_UP_TIMEOUT_SECONDS)
+			if up_res.returncode == 0:
 				_log.info("WireGuard interface %s started", iface_name)
 				return iface_name
 			else:
-				_log.warning("Failed to start interface %s: %s", iface_name, _decode_subprocess_output(stderr))
+				_log.warning("Failed to start interface %s: %s", iface_name, up_res.stderr)
 				return None
 		except asyncio.TimeoutError:
 			_log.warning("Timeout while starting/checking interface %s", iface_name)
@@ -1152,102 +1051,14 @@ async def _phase_scheduler(ctx: LifespanContext) -> None:
 	scheduler = Scheduler()
 	ctx.scheduler = scheduler
 	ctx.app.state.scheduler = scheduler
-	from .dns import unbound
-	from .tasks import scheduled as scheduled_tasks
-	import os
-	unbound_installed = unbound.is_unbound_installed()
-	blocklist_enabled_startup = unbound_installed and await asyncio.to_thread(_read_blocklist_enabled_sync, ctx.cfg.db_path)
-	blocklist_interval_seconds = 86400.0
-	blocklist_jitter_pct = 0.1
-	blocklist_run_on_start = False
-	if blocklist_enabled_startup:
-		try:
-			blocklist_run_on_start = unbound.get_blocklist_count() <= 0
-		except Exception:
-			_log.warning("BLOCKLIST_STARTUP could not inspect local blocklist; scheduling startup update")
-			blocklist_run_on_start = True
-		if blocklist_run_on_start:
-			_log.info("BLOCKLIST_STARTUP no cached blocklist found - scheduling immediate update")
-		else:
-			min_delay_h = (blocklist_interval_seconds * (1.0 - blocklist_jitter_pct)) / 3600.0
-			max_delay_h = (blocklist_interval_seconds * (1.0 + blocklist_jitter_pct)) / 3600.0
-			_log.info("BLOCKLIST_STARTUP cached blocklist found - deferring first update to %.1f-%.1f hours (interval=24h, jitter=±10%%)", min_delay_h, max_delay_h)
-	else:
-		if unbound_installed:
-			_log.info("BLOCKLIST_STARTUP skipped: ad-blocker is disabled")
-		else:
-			_log.info("BLOCKLIST_STARTUP skipped: Unbound not installed")
-	if unbound_installed:
-		blocklist_initial_delay = 15.0 if blocklist_run_on_start else 0.0
-		async def _update_blocklists() -> None:
-			await scheduled_tasks.update_blocklists(ctx)
-		scheduler.add("blocklist-update", interval_seconds=blocklist_interval_seconds, func=_update_blocklists, run_on_start=blocklist_run_on_start, initial_delay=blocklist_initial_delay, jitter_pct=blocklist_jitter_pct)
-	async def _maintain_tsdb() -> None:
-		await scheduled_tasks.maintain_tsdb(ctx)
-	scheduler.add("tsdb-maintenance", interval_seconds=21600, func=_maintain_tsdb, run_on_start=True, initial_delay=30.0)
-	async def _sample_tsdb_metrics() -> None:
-		await scheduled_tasks.sample_tsdb_metrics(ctx)
-	scheduler.add("tsdb-sample", interval_seconds=30.0, func=_sample_tsdb_metrics, run_on_start=True, initial_delay=10.0)
-	try:
-		from .utils.conntrack import init_conntrack_accounting
-		await asyncio.to_thread(init_conntrack_accounting)
-	except Exception as exc:
-		_log.warning("COUNTRY_TRAFFIC could not enable conntrack accounting: %s", exc)
-	async def _sample_country_traffic() -> None:
-		await scheduled_tasks.sample_country_traffic(ctx)
-	scheduler.add("country-traffic", interval_seconds=30.0, func=_sample_country_traffic, run_on_start=True, initial_delay=15.0)
-	async def _sample_network_stats() -> None:
-		await scheduled_tasks.sample_network_stats(ctx)
-	scheduler.add("network-stats", interval_seconds=30, func=_sample_network_stats, run_on_start=True, initial_delay=12.0)
-	async def _update_geoip() -> None:
-		await scheduled_tasks.update_geoip(ctx)
-	scheduler.add("geoip-update", interval_seconds=604800, func=_update_geoip, run_on_start=True, initial_delay=20.0)
-	from .tasks.maintenance import sqlite_maintenance, sqlite_integrity_check, tsdb_retention_cleanup, cleanup_stale_sessions
-	scheduler.add("sqlite-maintenance", interval_seconds=21600, func=sqlite_maintenance, run_on_start=True, initial_delay=60.0, timeout=60.0)
-	scheduler.add("sqlite-integrity", interval_seconds=604800, func=sqlite_integrity_check, run_on_start=False, timeout=300.0)
-	scheduler.add("tsdb-retention", interval_seconds=86400, func=tsdb_retention_cleanup, run_on_start=True, initial_delay=90.0, timeout=120.0)
-	scheduler.add("session-cleanup", interval_seconds=3600, func=cleanup_stale_sessions, run_on_start=True, initial_delay=120.0, timeout=30.0)
-	if unbound_installed:
-		async def _dns_watchdog() -> None:
-			await scheduled_tasks.dns_watchdog(ctx)
-		scheduler.add("dns-watchdog", interval_seconds=30, func=_dns_watchdog, run_on_start=True, initial_delay=60.0, timeout=30.0)
-		async def _check_adblocker_timer() -> None:
-			await scheduled_tasks.check_adblocker_timer(ctx)
-		scheduler.add("adblocker-timer-check", interval_seconds=15, func=_check_adblocker_timer, run_on_start=False, timeout=30.0)
-	initial_speedtest_delay, hours_since_last, speedtest_overdue = await scheduled_tasks.get_speedtest_initial_delay(ctx.cfg.db_path, ctx.cfg.tsdb_dir)
-	if hours_since_last is not None:
-		if speedtest_overdue:
-			_log.warning("SPEEDTEST_SCHEDULER last run was %.1f hours ago (>36h) - missed tests detected!", hours_since_last)
-		else:
-			_log.info("SPEEDTEST_SCHEDULER last run was %.1f hours ago", hours_since_last)
-	else:
-		_log.info("SPEEDTEST_SCHEDULER no previous run recorded")
-	if initial_speedtest_delay > 0:
-		from datetime import datetime as dt, timedelta
-		scheduled_time = dt.now() + timedelta(seconds=initial_speedtest_delay)
-		_log.info("SPEEDTEST_SCHEDULER first run in %.1f hours (at ~%s)", initial_speedtest_delay / 3600, scheduled_time.strftime("%H:%M"))
-	async def _run_scheduled_speedtest() -> None:
-		await scheduled_tasks.run_scheduled_speedtest(ctx)
-	scheduler.add("speedtest", interval_seconds=86400, func=_run_scheduled_speedtest, run_on_start=True, initial_delay=initial_speedtest_delay, timeout=7500.0, jitter_pct=0.0)
-	initial_backup_delay = _seconds_until_backup_time(os.environ.get("TZ", "UTC"))
-	_log.info("SCHEDULED_BACKUP first run in %.1f hours (at ~%02d:00)", initial_backup_delay / 3600, _BACKUP_NIGHT_HOUR)
-	async def _run_scheduled_backup() -> None:
-		await scheduled_tasks.run_scheduled_backup(ctx)
-	scheduler.add("scheduled-backup", interval_seconds=86400, func=_run_scheduled_backup, run_on_start=True, initial_delay=initial_backup_delay, timeout=300.0, jitter_pct=0.05)
-	async def _run_node_health() -> None:
-		await scheduled_tasks.monitor_node_health(ctx)
-	scheduler.add("node-health", interval_seconds=60, func=_run_node_health, run_on_start=False, timeout=15.0)
+	
+	from .tasks.scheduler_config import register_all_tasks
+	await register_all_tasks(scheduler, ctx)
+	
 	await scheduler.start()
 
-async def _sleep_interruptible(seconds: float, chunk_size: float = 60.0) -> None:
-	"""Sleep for total seconds with periodic cancellation checks.
-	
-	Breaks long sleeps into chunks to enable responsive shutdown.
-	"""
-	remaining = seconds
-	while remaining > 0:
-		await asyncio.sleep(min(chunk_size, remaining))
-		remaining -= chunk_size
+# Reuse the canonical _sleep_interruptible from tasks.scheduled.
+from .tasks.scheduled import _sleep_interruptible
 
 
 async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
@@ -1413,6 +1224,10 @@ def create_app() -> FastAPI:
 		"""Lightweight unauthenticated health endpoint for container probes."""
 		return JSONResponse(content={"status": "ok", "version": VERSION})
 
+	def _check_db_readiness(conn) -> bool:
+		"""Return true if database connection is functional."""
+		return conn.execute("SELECT 1").fetchone() is not None
+
 	@app.get("/ready", include_in_schema=False)
 	@limiter.limit("30/minute")
 	async def readiness(request: Request) -> JSONResponse:
@@ -1429,7 +1244,7 @@ def create_app() -> FastAPI:
 			await asyncio.to_thread(
 				_with_conn,
 				cfg.db_path,
-				lambda conn: conn.execute("SELECT 1").fetchone()
+				_check_db_readiness
 			)
 		except Exception as exc:
 			errors.append("database unavailable")

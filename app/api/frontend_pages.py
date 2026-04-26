@@ -17,7 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 import ipaddress
@@ -34,7 +34,7 @@ from ..db.sqlite_interfaces import get_first_listen_port
 from ..db.sqlite_nodes import get_all_nodes, get_all_tunnel_peer_ids, get_peers_count_by_node, is_node_sse_connected
 from ..db.sqlite_peers import get_all_peers
 from ..db.sqlite_runtime import connect, close_connection, thread_connection
-from ..db.sqlite_settings import get_dns_blocklist_enabled, get_setting, get_speedtest_enabled
+from ..db.sqlite_settings import get_dns_blocklist_enabled, get_node_speedtest_last_results, get_setting, get_speedtest_enabled, get_speedtest_ignore_peers
 from ..db.sqlite_users import get_all_users
 from ..dns import unbound
 from ..utils.config import get_config
@@ -79,47 +79,6 @@ def _get_geo_semaphore() -> asyncio.Semaphore:
 	if _geo_lookup_semaphore is None:
 		_geo_lookup_semaphore = asyncio.Semaphore(_GEO_SEMAPHORE_LIMIT)
 	return _geo_lookup_semaphore
-
-
-async def _batch_geoip_lookup(ips: list[str]) -> dict[str, dict | None]:
-	"""Lookup GeoIP for multiple IPs with semaphore-bounded concurrency."""
-	if not ips:
-		return {}
-	sem = _get_geo_semaphore()
-
-	async def _bounded(ip: str) -> dict | None:
-		async with sem:
-			return await asyncio.to_thread(lookup_ip_cached, ip)
-
-	results = await asyncio.gather(*[_bounded(ip) for ip in ips], return_exceptions=True)
-	return {
-		ip: (None if isinstance(r, Exception) else r)
-		for ip, r in zip(ips, results)
-	}
-
-
-def _resolve_geo(fqdn: str | None) -> dict:
-	"""Resolve FQDN to GeoIP fields, returning empty fields on failure."""
-	if not fqdn:
-		return extract_geo_fields(None)
-	ip = resolve_node_geo_ip(fqdn)
-	return extract_geo_fields(lookup_ip_cached(ip)) if ip else extract_geo_fields(None)
-
-
-def _base_context(request: Request, user: sqlite3.Row, **extra) -> dict:
-	"""Build a template context dict with guaranteed base keys."""
-	return {
-		"user": user,
-		"csrf_token": get_csrf_token(request),
-		**extra,
-	}
-
-
-def _redirect_if_setup_not_needed(condition_pending: bool, condition_done: bool) -> Response | None:
-	"""Return a dashboard redirect when setup is not needed, else None."""
-	if not condition_pending or condition_done:
-		return RedirectResponse(url="/ui/dashboard", status_code=303)
-	return None
 
 
 async def _batch_geoip_lookup(ips: list[str]) -> dict[str, dict | None]:
@@ -411,14 +370,9 @@ _about_data_lock = asyncio.Lock()
 
 async def _get_about_data_cached() -> dict:
 	"""Thread-safe async wrapper for _get_about_data."""
-	# Fast path: already cached (lru_cache hit is GIL-protected).
-	# Two concurrent callers can both reach the lock, but only one will do the
-	# heavy computation; the second will find the cache warm and return quickly.
-	if _get_about_data.cache_info().currsize > 0:
-		return _get_about_data()
+	import copy
 	async with _about_data_lock:
-		# Double-checked: another coroutine may have populated it while we waited.
-		return await asyncio.to_thread(_get_about_data)
+		return copy.deepcopy(await asyncio.to_thread(_get_about_data))
 
 
 def _is_loopback_request(request: Request) -> bool:
@@ -435,7 +389,7 @@ def _is_loopback_request(request: Request) -> bool:
 
 @router.get("/api/system/status", response_model=SystemStatusResponse)
 @limiter.limit(RATE_LIMIT_DEFAULT)
-def get_system_status(request: Request) -> SystemStatusResponse:
+async def get_system_status(request: Request) -> SystemStatusResponse:
 	"""Get system status including key mismatch warning.
 	
 	Restricted to loopback addresses only (localhost health checks).
@@ -553,13 +507,13 @@ async def peers_page(
 	db_path = request.app.state.db_path
 
 	def _load_peers_data() -> tuple[list[sqlite3.Row], set[int], dict[str, str]]:
-			"""Load all peer data, tunnel peer IDs, and node names with a single connection."""
-			with thread_connection(db_path) as conn:
-				peers = get_all_peers(conn)
-				tunnel_ids = get_all_tunnel_peer_ids(conn)
-				nodes = get_all_nodes(conn)
-				node_map = {n["id"]: n["name"] for n in nodes}
-				return peers, tunnel_ids, node_map
+		"""Load all peer data, tunnel peer IDs, and node names with a single connection."""
+		with thread_connection(db_path) as conn:
+			peers = get_all_peers(conn)
+			tunnel_ids = get_all_tunnel_peer_ids(conn)
+			nodes = get_all_nodes(conn)
+			node_map = {n["id"]: n["name"] for n in nodes}
+			return peers, tunnel_ids, node_map
 	peer_rows, tunnel_peer_ids, node_id_to_name = await asyncio.to_thread(_load_peers_data)
 	total_peers = len(peer_rows)
 	peers: list[dict] = []
@@ -690,10 +644,10 @@ async def nodes_page(
 			nodes = get_all_nodes(conn)
 			peer_counts = get_peers_count_by_node(conn)
 
-			# Fetch recent speedtest results for all nodes
-			speedtest_by_node: dict[str | None, dict] = {}  # node_id -> last result
+			# Load TSDB history first, then let persisted SQLite results override it.
+			speedtest_by_node: dict[str, dict] = {}
 			try:
-				since = datetime.now(timezone.utc) - timedelta(days=90)
+				since = datetime.now(UTC) - timedelta(days=90)
 				points = tsdb.query(
 					cfg.tsdb_dir,
 					peer_key=SPEEDTEST_TSDB_KEY,
@@ -702,9 +656,16 @@ async def nodes_page(
 					limit=2000,
 					latest=True,
 				)
-				speedtest_by_node = build_latest_by_node(points)
+				speedtest_by_node = {
+					str(node_id): point
+					for node_id, point in build_latest_by_node(points).items()
+					if node_id is not None
+				}
 			except Exception as exc:
 				_log.debug("Failed to load speedtest data for nodes: %s", exc)
+
+			# Persisted last results must win over TSDB history.
+			speedtest_by_node.update(get_node_speedtest_last_results(conn, {str(n["id"]) for n in nodes}))
 
 			# Batch resolve GeoIP for all nodes (performance optimization)
 			unique_node_ips = []
@@ -892,6 +853,7 @@ async def settings_page(
 				"wg_use_psk": get_setting(conn, "wg_use_psk", "1") == "1",  # Default: enabled
 				"traffic_analysis_enabled": get_setting(conn, "traffic_analysis_enabled") == "1",
 				"speedtest_enabled": get_speedtest_enabled(conn),
+				"speedtest_ignore_peers": get_speedtest_ignore_peers(conn),
 				"status_page_url": f"https://{url_host}/status",
 				"swagger_url": f"https://{url_host}/swagger",
 			}

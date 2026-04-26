@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -20,188 +20,119 @@ from app.utils.config import get_config
 _log = logging.getLogger(__name__)
 
 __all__ = [
-	"sqlite_maintenance",
-	"sqlite_integrity_check",
-	"tsdb_retention_cleanup",
-	"cleanup_stale_sessions",
+    "sqlite_maintenance",
+    "sqlite_integrity_check",
+    "tsdb_retention_cleanup",
+    "cleanup_stale_sessions",
 ]
 
-
-# SQLite busy timeout in seconds - how long to wait for a database lock
+# SQLite busy timeout in seconds
 _SQLITE_BUSY_TIMEOUT_SECONDS = 10.0
 
+def _ensure_db_exists(label: str) -> str | None:
+    """Return the db_path if the database exists, else log a warning."""
+    cfg = get_config()
+    db_path = str(cfg.db_path)
+    if not Path(db_path).exists():
+        _log.warning("MAINTENANCE %s: SQLite database not found at %s", label, db_path)
+        return None
+    return db_path
 
 async def sqlite_maintenance() -> None:
-	"""Periodic SQLite maintenance: WAL checkpoint, analyze, optimize.
-	
-	This task should run every 6-12 hours to:
-	- Checkpoint WAL file to prevent unbounded growth
-	- Update query planner statistics (ANALYZE)
-	- Optimize query performance (PRAGMA optimize)
-	
-	Note: VACUUM is intentionally omitted (heavy I/O, run manually if needed).
-	"""
-	cfg = get_config()
-	db_path = cfg.db_path
-	
-	if not Path(db_path).exists():
-		_log.warning("MAINTENANCE SQLite database not found at %s", db_path)
-		return
-	
-	try:
-		async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
-			# Force WAL checkpoint to prevent unbounded WAL growth
-			# TRUNCATE mode: checkpoints and truncates WAL file to 0 bytes
-			await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-			
-			# Update query planner statistics for optimal query plans
-			await db.execute("ANALYZE")
-			
-			# Optimize internal schema (query planner hints)
-			await db.execute("PRAGMA optimize")
-			
-			_log.info("MAINTENANCE SQLite maintenance completed")
-	except Exception:
-		_log.exception("MAINTENANCE SQLite maintenance failed")
-		raise
-
+    """Periodic SQLite maintenance: WAL checkpoint, analyze, optimize."""
+    db_path = _ensure_db_exists("maintenance")
+    if db_path is None:
+        return
+    
+    try:
+        async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
+            # WAL checkpoint: RESTART mode is less aggressive than TRUNCATE.
+            # It allows concurrent readers to continue from the old WAL file.
+            await db.execute("PRAGMA wal_checkpoint(RESTART)")
+            await db.execute("ANALYZE")
+            await db.execute("PRAGMA optimize")
+            
+            _log.info("MAINTENANCE SQLite maintenance completed (RESTART checkpoint)")
+    except Exception:
+        _log.exception("MAINTENANCE SQLite maintenance failed")
+        raise
 
 async def sqlite_integrity_check() -> None:
-	"""Weekly integrity check (expensive, run infrequently).
-	
-	This task should run weekly to detect database corruption early.
-	On failure, logs a CRITICAL alert for operator intervention.
-	"""
-	cfg = get_config()
-	db_path = cfg.db_path
-	
-	if not Path(db_path).exists():
-		_log.warning("MAINTENANCE SQLite database not found at %s", db_path)
-		return
-	
-	try:
-		async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
-			cursor = await db.execute("PRAGMA integrity_check")
-			result = await cursor.fetchone()
-			
-			if result and result[0] == "ok":
-				_log.info("MAINTENANCE SQLite integrity check passed")
-			else:
-				failure_msg = result[0] if result else "unknown error"
-				_log.critical("MAINTENANCE SQLite integrity check FAILED: %s", failure_msg)
-	except Exception:
-		_log.exception("MAINTENANCE SQLite integrity check error")
-		raise
-
-
-def _tsdb_cleanup_sync(tsdb_dir: Path, retention_days: int) -> tuple[int, int]:
-	"""Synchronous TSDB cleanup (runs in thread pool).
-	
-	Args:
-		tsdb_dir: Path to TSDB directory
-		retention_days: Number of days to retain data
-	
-	Returns:
-		Tuple of (deleted_files_count, deleted_bytes)
-	"""
-	cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
-	deleted_files = 0
-	deleted_bytes = 0
-	
-	for arrow_file in tsdb_dir.glob("**/*.arrow"):
-		try:
-			st = arrow_file.stat()
-			mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
-			
-			if mtime < cutoff:
-				arrow_file.unlink()
-				deleted_files += 1
-				deleted_bytes += st.st_size
-				_log.debug(
-					"MAINTENANCE TSDB deleted expired file: %s (age: %d days)",
-					arrow_file.name,
-					(datetime.now(timezone.utc) - mtime).days,
-				)
-		except FileNotFoundError:
-			continue  # Concurrent deletion, harmless
-		except Exception as e:
-			_log.warning(
-				"MAINTENANCE TSDB failed to process %s: %s",
-				arrow_file.name, e,
-			)
-	
-	# Clean up empty directories (bottom-up)
-	for dirpath in sorted(tsdb_dir.rglob("*"), reverse=True):
-		if dirpath.is_dir():
-			try:
-				dirpath.rmdir()
-			except OSError:
-				pass
-	
-	return deleted_files, deleted_bytes
-
+    """Weekly integrity check."""
+    db_path = _ensure_db_exists("integrity_check")
+    if db_path is None:
+        return
+    
+    try:
+        async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
+            cursor = await db.execute("PRAGMA integrity_check")
+            result = await cursor.fetchone()
+            
+            if result and result[0] == "ok":
+                _log.info("MAINTENANCE SQLite integrity check passed")
+            else:
+                failure_msg = result[0] if result else "unknown error"
+                _log.critical("MAINTENANCE SQLite integrity check FAILED: %s", failure_msg)
+    except Exception:
+        _log.exception("MAINTENANCE SQLite integrity check error")
+        raise
 
 async def tsdb_retention_cleanup() -> None:
-	"""Purge expired time-series data beyond retention window.
-	
-	WireBuddy uses a custom TSDB implementation (Arrow IPC files).
-	This task removes old .arrow files based on retention policy.
-	
-	Note: File I/O runs in thread pool to avoid blocking the event loop.
-	"""
-	cfg = get_config()
-	tsdb_dir = Path(cfg.tsdb_dir)
-	
-	if not await asyncio.to_thread(tsdb_dir.exists):
-		_log.debug("MAINTENANCE TSDB directory does not exist: %s", tsdb_dir)
-		return
-	
-	try:
-		retention_days = getattr(cfg, "TSDB_RETENTION_DAYS", 90)
-		
-		deleted_files, deleted_bytes = await asyncio.to_thread(
-			_tsdb_cleanup_sync, tsdb_dir, retention_days,
-		)
-		
-		if deleted_files > 0:
-			_log.info(
-				"MAINTENANCE TSDB retention cleanup: deleted %d files (%.2f MB)",
-				deleted_files,
-				deleted_bytes / (1024 * 1024),
-			)
-		else:
-			_log.debug("MAINTENANCE TSDB retention cleanup: no expired files")
-	except Exception:
-		_log.exception("MAINTENANCE TSDB retention cleanup failed")
-		raise
+    """Purge expired time-series data using unified TSDB maintenance logic.
+    
+    Consolidates cleanup by delegating to tsdb.run_maintenance, which handles
+    both file rotation and retention pruning correctly with locks.
+    """
+    from app.db import tsdb
+    from app.db.sqlite_settings import get_tsdb_retention_days, DEFAULT_TSDB_RETENTION_DAYS
+    from app.db.sqlite_runtime import connect, close_connection
+    
+    cfg = get_config()
+    tsdb_dir = Path(cfg.tsdb_dir)
+    
+    if not await asyncio.to_thread(tsdb_dir.exists):
+        return
+    
+    try:
+        def _read_retention() -> int:
+            conn = connect(cfg.db_path)
+            try:
+                return get_tsdb_retention_days(conn)
+            except Exception:
+                return DEFAULT_TSDB_RETENTION_DAYS
+            finally:
+                close_connection(conn)
 
+        retention_days = await asyncio.to_thread(_read_retention)
+        
+        # Delegate to unified maintenance logic
+        stats = await asyncio.to_thread(tsdb.run_maintenance, tsdb_dir, retention_days)
+        
+        if stats.get("pruned", 0) > 0:
+            _log.info(
+                "MAINTENANCE TSDB retention cleanup: pruned %d series (total series: %d)",
+                stats["pruned"], stats["series"]
+            )
+        else:
+            _log.debug("MAINTENANCE TSDB retention cleanup: no expired data")
+    except Exception:
+        _log.exception("MAINTENANCE TSDB retention cleanup failed")
+        raise
 
 async def cleanup_stale_sessions() -> None:
-	"""Remove expired auth tokens from SQLite.
-	
-	Runs hourly to prevent auth_tokens table bloat.
-	"""
-	cfg = get_config()
-	db_path = cfg.db_path
-	
-	if not Path(db_path).exists():
-		_log.warning("MAINTENANCE SQLite database not found at %s", db_path)
-		return
-	
-	try:
-		async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
-			# Delete expired auth tokens
-			cursor = await db.execute(
-				"DELETE FROM auth_tokens WHERE expires_at < ?",
-				(datetime.now(timezone.utc).isoformat(),),
-			)
-			await db.commit()
-			
-			deleted_count = cursor.rowcount
-			if deleted_count > 0:
-				_log.info("MAINTENANCE cleaned up %d expired auth tokens", deleted_count)
-			else:
-				_log.debug("MAINTENANCE no expired auth tokens to clean up")
-	except Exception:
-		_log.exception("MAINTENANCE auth token cleanup failed")
-		raise
+    """Remove expired auth tokens from SQLite."""
+    db_path = _ensure_db_exists("session_cleanup")
+    if db_path is None:
+        return
+    
+    try:
+        async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
+            now_iso = datetime.now(UTC).isoformat()
+            cursor = await db.execute("DELETE FROM auth_tokens WHERE expires_at < ?", (now_iso,))
+            await db.commit()
+            
+            if cursor.rowcount > 0:
+                _log.info("MAINTENANCE cleaned up %d expired auth tokens", cursor.rowcount)
+    except Exception:
+        _log.exception("MAINTENANCE auth token cleanup failed")
+        raise

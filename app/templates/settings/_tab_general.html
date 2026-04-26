@@ -106,6 +106,10 @@
                             <input class="form-check-input" type="checkbox" id="speedtest-enabled"{% if settings.speedtest_enabled %} checked{% endif %}{% if not user['is_admin'] %} disabled{% endif %}>
                             <label class="form-check-label" for="speedtest-enabled">Scheduled</label>
                         </div>
+                        <div class="form-check form-switch mb-2{% if not settings.speedtest_enabled %} d-none{% endif %}" id="speedtest-ignore-peers-row">
+                            <input class="form-check-input" type="checkbox" id="speedtest-ignore-peers"{% if settings.speedtest_ignore_peers %} checked{% endif %}{% if not user['is_admin'] %} disabled{% endif %}>
+                            <label class="form-check-label" for="speedtest-ignore-peers">Run even with connected peers</label>
+                        </div>
                         <small class="text-muted d-block mb-3">Server is automatically selected by lowest latency (<a href="https://github.com/librespeed/speedtest" target="_blank" rel="noopener noreferrer">LibreSpeed</a>)</small>
                         <div id="speedtest-result" class="mt-3 d-none">
                             <hr class="my-3">

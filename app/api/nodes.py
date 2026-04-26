@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field, field_validator
 from ..api.auth import require_admin
 from ..api.response import ok_response
 from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
+from ..api.sse import format_sse_event, format_sse_keepalive
 from ..api.frontend_shared import (
 	extract_geo_fields,
 	format_last_seen_label,
@@ -38,11 +39,10 @@ from ..api.frontend_shared import (
 )
 from ..api import nodes_sync
 from ..db import tsdb
-from ..node.notifier import notify_node_removed
 from ..node import notifier as node_notifier
 from ..db.sqlite_nodes import (
 	create_node,
-	delete_node_with_unassigned_count,
+	delete_node,
 	get_all_nodes,
 	get_node,
 	get_node_by_fqdn,
@@ -55,6 +55,7 @@ from ..db.sqlite_nodes import (
 )
 from ..db.sqlite_peers import get_peer_by_id
 from ..db.sqlite_settings import get_setting
+from ..db.sqlite_settings import get_node_speedtest_last_results
 from ..utils.config import get_config, WG_CONFIG_PATH
 from ..utils.crypto import hash_token
 from ..utils.deps import get_conn
@@ -343,9 +344,13 @@ def _generate_node_token(
 
 def _get_latest_speedtests_by_node(
 	tsdb_dir: Path,
+	conn: sqlite3.Connection,
 	node_ids: set[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
 	"""Return the latest recorded speedtest result for each requested node."""
+	requested_ids = {str(nid) for nid in node_ids} if node_ids is not None else None
+	latest_by_node: dict[str, dict[str, Any]] = {}
+
 	since = datetime.now(timezone.utc) - timedelta(days=90)
 	try:
 		points = tsdb.query(
@@ -358,15 +363,17 @@ def _get_latest_speedtests_by_node(
 		)
 	except Exception:
 		_log.warning("Failed to load speedtest data from TSDB", exc_info=True)
-		return {}
+	else:
+		all_latest = build_latest_by_node(points)
+		latest_by_node.update({
+			str(k): v
+			for k, v in all_latest.items()
+			if k is not None and (requested_ids is None or str(k) in requested_ids)
+		})
 
-	all_latest = build_latest_by_node(points)
-	requested_ids = {str(nid) for nid in node_ids} if node_ids is not None else None
-	return {
-		str(k): v
-		for k, v in all_latest.items()
-		if k is not None and (requested_ids is None or str(k) in requested_ids)
-	}
+	if requested_ids:
+		latest_by_node.update(get_node_speedtest_last_results(conn, requested_ids))
+	return latest_by_node
 
 
 def _node_to_dict(
@@ -431,9 +438,7 @@ def _assert_node_name_unique(
 	exclude_id: str | None = None,
 ) -> None:
 	"""Raise HTTP 409 if a node with *name* already exists (excluding *exclude_id*)."""
-	existing = get_node_by_name(conn, name)
-	if existing and existing["id"] != exclude_id:
-		raise HTTPException(status_code=409, detail=f"Node name '{name}' already exists")
+	_assert_node_unique(conn, "name", name, get_node_by_name, exclude_id=exclude_id)
 
 
 def _assert_node_fqdn_unique(
@@ -443,9 +448,21 @@ def _assert_node_fqdn_unique(
 	exclude_id: str | None = None,
 ) -> None:
 	"""Raise HTTP 409 if a node with *fqdn* already exists (excluding *exclude_id*)."""
-	existing = get_node_by_fqdn(conn, fqdn)
+	_assert_node_unique(conn, "FQDN", fqdn, get_node_by_fqdn, exclude_id=exclude_id)
+
+
+def _assert_node_unique(
+	conn: sqlite3.Connection,
+	label: str,
+	value: str,
+	getter: Callable[[sqlite3.Connection, str], sqlite3.Row | None],
+	*,
+	exclude_id: str | None = None,
+) -> None:
+	"""Raise HTTP 409 if a node with the given value already exists."""
+	existing = getter(conn, value)
 	if existing and existing["id"] != exclude_id:
-		raise HTTPException(status_code=409, detail=f"Node FQDN '{fqdn}' already exists")
+		raise HTTPException(status_code=409, detail=f"Node {label} '{value}' already exists")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -497,7 +514,7 @@ def list_nodes(
 	cfg = get_config()
 	nodes = get_all_nodes(conn)
 	counts = get_peers_count_by_node(conn)
-	latest_speedtests = _get_latest_speedtests_by_node(cfg.tsdb_dir, {str(n["id"]) for n in nodes})
+	latest_speedtests = _get_latest_speedtests_by_node(cfg.tsdb_dir, conn, {str(n["id"]) for n in nodes})
 	return ok_response(
 		data=[
 			_node_to_dict(
@@ -570,11 +587,11 @@ async def delete_node_endpoint(
 			tunnel_peer_info = (tunnel_peer["public_key"], tunnel_peer["interface"])
 
 	# Send removal signal to node before deleting (must happen while SSE auth still works)
-	notified = await notify_node_removed(node_id)
+	notified = await node_notifier.notify_node_removed(node_id)
 	if notified > 0:
 		_log.info("Sent removal signal to %d SSE client(s) for node %s", notified, node_id)
 
-	unassigned_peer_count = delete_node_with_unassigned_count(conn, node_id)
+	unassigned_peer_count = delete_node(conn, node_id)
 	if unassigned_peer_count is None:
 		raise HTTPException(status_code=404, detail="Node not found")
 
@@ -710,7 +727,7 @@ async def stream_node_speedtest_progress(
 		try:
 			# Send initial progress if available
 			if latest_progress:
-				yield f"event: progress\ndata: {json.dumps(latest_progress)}\n\n"
+				yield format_sse_event("progress", latest_progress)
 			
 			# Stream progress updates with keepalive to survive proxy idle timeouts.
 			remaining_timeout = _SPEEDTEST_STREAM_TIMEOUT_S
@@ -726,20 +743,20 @@ async def stream_node_speedtest_progress(
 					except (TypeError, ValueError) as exc:
 						_log.warning("Non-serializable speedtest progress dropped: %s", exc)
 						serialized = json.dumps({"error": "non-serializable data"})
-					yield f"event: progress\ndata: {serialized}\n\n"
+					yield format_sse_event("progress", json.loads(serialized))
 					remaining_timeout = _SPEEDTEST_STREAM_TIMEOUT_S
 
 					# If progress is 100%, send complete event
 					if progress.get("progress", 0) >= 1.0:
-						yield "event: complete\ndata: {}\n\n"
+						yield format_sse_event("complete", {})
 						break
 				except asyncio.TimeoutError:
 					remaining_timeout -= wait_for
 					if remaining_timeout <= 0:
 						# No updates received within timeout
-						yield f'event: timeout\ndata: {json.dumps({"message": "No progress updates received"})}\n\n'
+						yield format_sse_event("timeout", {"message": "No progress updates received"})
 						break
-					yield ": keepalive\n\n"
+					yield format_sse_keepalive()
 		finally:
 			await nodes_sync.unregister_speedtest_progress_queue(node_id, progress_queue)
 	

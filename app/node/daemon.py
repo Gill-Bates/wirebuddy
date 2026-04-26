@@ -26,15 +26,19 @@ import signal
 import ssl
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime as dt, timedelta
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
 import httpx
 
+from ..utils.async_utils import cancel_tasks as _cancel_tasks, interruptible_sleep as _interruptible_sleep
 from ..utils.banner import print_banner_once
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
+from ..utils.speedtest_window import seconds_until_night_window as _seconds_until_night_window
 from .cert import clear_node_cert, ensure_node_cert
+from .firewall import check_firewall_dns_rules as _check_firewall_dns_rules
 from .metrics_queue import (
 	init_queue,
 	close_queue,
@@ -66,92 +70,6 @@ _MAX_AUTH_FAILURES = 3  # Consecutive 401 errors before assuming node removal
 _MAX_RECONNECT_DELAY = 60  # Maximum SSE reconnection delay in seconds
 
 
-def _check_firewall_dns_rules() -> None:
-	"""Check if firewall allows DNS traffic on wg0 and fix if possible.
-	
-	DNS forwarding through the VPN tunnel requires port 53 to be open.
-	Without this, clients connected via this node cannot resolve DNS.
-	
-	The node container runs with CAP_NET_ADMIN, so it can add iptables
-	rules directly. This is preferred over UFW since:
-	1. UFW is a host userspace tool not accessible from containers
-	2. iptables rules are transient (lost on reboot) - no permanent host changes
-	3. Works regardless of whether UFW is installed on host
-	"""
-	import shutil
-	import subprocess
-
-	if os.environ.get("SERVER_MODE", "").strip().lower() != "node":
-		_log.debug("Skipping firewall DNS rule check outside node mode")
-		return
-	
-	# Check if auto-fix is disabled
-	if os.environ.get("WIREBUDDY_NO_FIREWALL_FIX", "").lower() in ("1", "true", "yes"):
-		_log.debug("Firewall auto-fix disabled via WIREBUDDY_NO_FIREWALL_FIX")
-		return
-	
-	iptables_path = shutil.which("iptables")
-	if not iptables_path:
-		_log.debug("iptables not found, skipping firewall check")
-		return
-	
-	# Check if wg0 interface exists
-	try:
-		result = subprocess.run(
-			["ip", "link", "show", "wg0"],
-			capture_output=True,
-			text=True,
-			timeout=5,
-		)
-		if result.returncode != 0:
-			# wg0 doesn't exist yet - will be created later, skip for now
-			_log.debug("wg0 interface not yet present, deferring firewall check")
-			return
-	except Exception:
-		return
-	
-	# Check if DNS (port 53) is allowed - both INPUT (for local) and FORWARD (for routing to master)
-	try:
-		rules_added = []
-		
-		# Check and fix FORWARD chain (for routing DNS to master)
-		for chain in ("FORWARD", "INPUT"):
-			for proto in ("udp", "tcp"):
-				result = subprocess.run(
-					[iptables_path, "-C", chain, "-i", "wg0", "-p", proto, "--dport", "53", "-j", "ACCEPT"],
-					capture_output=True,
-					text=True,
-					timeout=5,
-				)
-				if result.returncode != 0:
-					# Rule doesn't exist, add it
-					result = subprocess.run(
-						[iptables_path, "-I", chain, "1", "-i", "wg0", "-p", proto, "--dport", "53", "-j", "ACCEPT"],
-						capture_output=True,
-						text=True,
-						timeout=5,
-					)
-					if result.returncode == 0:
-						rules_added.append(f"{chain} {proto.upper()}/53")
-					else:
-						_log.warning("Failed to add iptables %s rule for DNS/%s: %s", chain, proto.upper(), result.stderr.strip())
-		
-		if rules_added:
-			_log.info("🔧 Auto-configured firewall: added DNS rules (%s) on wg0", ", ".join(rules_added))
-		else:
-			_log.debug("Firewall: DNS rules already present for wg0")
-		
-	except subprocess.TimeoutExpired:
-		_log.debug("iptables check timed out")
-	except PermissionError:
-		_log.warning(
-			"⚠️  Cannot check/fix firewall rules (permission denied). "
-			"DNS may not work for clients. Manual fix: "
-			"sudo iptables -I FORWARD -i wg0 -p udp --dport 53 -j ACCEPT && "
-			"sudo iptables -I INPUT -i wg0 -p udp --dport 53 -j ACCEPT"
-		)
-	except Exception as exc:
-		_log.debug("Firewall check failed: %s", exc)
 
 
 def _build_request_headers(api_secret: str, cert_fingerprint: str) -> dict[str, str]:
@@ -170,18 +88,12 @@ def _extract_error_detail(response: httpx.Response) -> str:
 	try:
 		data = response.json()
 		if isinstance(data, dict):
-			detail = data.get("detail", "")
-			return str(detail)[:200]
-	except httpx.ResponseNotRead:
-		return ""
+			return str(data.get("detail", ""))[:200]
 	except Exception:
 		pass
 
 	try:
-		text = response.text
-		return text[:200] if text else ""
-	except httpx.ResponseNotRead:
-		return ""
+		return response.text[:200]
 	except Exception:
 		return ""
 
@@ -285,9 +197,7 @@ def _resolve_tls_verify(state: dict[str, Any] | None) -> tuple[ssl.SSLContext, s
 	downgrade attacks. If a custom CA file is configured, it will be
 	loaded into the context.
 	"""
-	ca_file_raw = os.getenv("WIREBUDDY_MASTER_CA_FILE")
-	if not ca_file_raw and state is not None:
-		ca_file_raw = state.get("master_ca_file")
+	ca_file_raw = os.getenv("WIREBUDDY_MASTER_CA_FILE") or (state.get("master_ca_file") if state is not None else None)
 
 	return _create_ssl_context(ca_file_raw)
 
@@ -320,52 +230,7 @@ def _create_ssl_context(ca_file: str | None = None) -> tuple[ssl.SSLContext, str
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _local_wall_clock_timestamp(day, hour: int) -> float:
-	"""Return the local timestamp for a wall-clock hour using system DST rules."""
-	wall_time = dt(day.year, day.month, day.day, hour, 0, 0)
-	return time.mktime(wall_time.timetuple())
 
-
-def _seconds_until_night_window() -> float:
-	"""Calculate seconds until a jittered start time in the local night window.
-	
-	The target window is 02:00-04:00 local time.
-	"""
-	now_ts = time.time()
-	now_local = dt.fromtimestamp(now_ts)
-	today = now_local.date()
-	start_today = _local_wall_clock_timestamp(today, _SPEEDTEST_NIGHT_WINDOW_START_HOUR)
-	end_today = _local_wall_clock_timestamp(today, _SPEEDTEST_NIGHT_WINDOW_END_HOUR)
-	min_test_runtime_seconds = 300.0
-
-	# Currently within night window
-	if start_today <= now_ts < end_today:
-		remaining = max(0.0, end_today - now_ts)
-		if remaining <= min_test_runtime_seconds:
-			next_day = today + timedelta(days=1)
-			next_start = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_START_HOUR)
-			next_end = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_END_HOUR)
-			window_duration_seconds = max(0.0, next_end - next_start)
-			jitter_cap = max(0.0, window_duration_seconds - min_test_runtime_seconds)
-			jitter_seconds = random.uniform(0.0, jitter_cap) if jitter_cap > 0 else 0.0
-			return max(0.0, (next_start - now_ts) + jitter_seconds)
-		max_jitter = max(0.0, remaining - min_test_runtime_seconds)
-		return random.uniform(0.0, min(600.0, max_jitter))
-
-	# Calculate next window start
-	if now_ts < start_today:
-		next_start = start_today
-		next_end = end_today
-	else:
-		next_day = today + timedelta(days=1)
-		next_start = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_START_HOUR)
-		next_end = _local_wall_clock_timestamp(next_day, _SPEEDTEST_NIGHT_WINDOW_END_HOUR)
-
-	window_duration_seconds = max(0.0, next_end - next_start)
-	jitter_cap = max(0.0, window_duration_seconds - min_test_runtime_seconds)
-	jitter_seconds = random.uniform(0.0, jitter_cap) if jitter_cap > 0 else 0.0
-
-	return max(0.0, (next_start - now_ts) + jitter_seconds)
 
 
 def _read_last_speedtest_run() -> float | None:
@@ -425,9 +290,16 @@ async def _run_node_speedtest(
 	Returns True if successful, False otherwise.
 	"""
 	from ..speedtest.tester import run_speedtest
+	from ..speedtest.guard import acquire_speedtest_run_lease_async, SpeedtestBusyError
 	
 	_log.info("NODE_SPEEDTEST starting bandwidth measurement")
 	
+	try:
+		lease = await acquire_speedtest_run_lease_async(DATA_DIR, cooldown_seconds=0)
+	except SpeedtestBusyError:
+		_log.info("NODE_SPEEDTEST skipped: another test already running")
+		return False
+
 	# Progress callback to send updates to master
 	def progress_callback(event: dict) -> None:
 		"""Send progress update to master (non-blocking)."""
@@ -448,10 +320,11 @@ async def _run_node_speedtest(
 			pass  # Best-effort: progress updates are optional
 	
 	try:
-		result = await asyncio.wait_for(
-			run_speedtest(progress_callback=progress_callback),
-			timeout=_SPEEDTEST_RUN_TIMEOUT_SECONDS
-		)
+		async with lease:
+			result = await asyncio.wait_for(
+				run_speedtest(progress_callback=progress_callback),
+				timeout=_SPEEDTEST_RUN_TIMEOUT_SECONDS
+			)
 	except asyncio.TimeoutError:
 		_log.error("NODE_SPEEDTEST timeout after %ds", _SPEEDTEST_RUN_TIMEOUT_SECONDS)
 		result = {"status": "error", "reason": f"Timeout after {_SPEEDTEST_RUN_TIMEOUT_SECONDS}s"}
@@ -510,14 +383,8 @@ async def _speedtest_scheduler(
 				)
 			
 			# Wait for the night window, checking for shutdown periodically
-			remaining = wait_seconds
-			while remaining > 0 and not shutdown_event.is_set():
-				sleep_chunk = min(60.0, remaining)
-				try:
-					await asyncio.wait_for(shutdown_event.wait(), timeout=sleep_chunk)
-					return  # Shutdown requested
-				except asyncio.TimeoutError:
-					remaining -= sleep_chunk
+			if await _interruptible_sleep(wait_seconds, shutdown_event):
+				return
 			
 			if shutdown_event.is_set():
 				return
@@ -527,17 +394,14 @@ async def _speedtest_scheduler(
 			if success:
 				_write_last_speedtest_run(time.time())
 			
-			# Wait at least 20 hours before next potential run
-			await asyncio.sleep(60)  # Brief sleep before rechecking
-			
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:
 			_log.warning("NODE_SPEEDTEST scheduler error: %s", exc)
 			# Wait a bit before retrying
 			try:
-				await asyncio.wait_for(shutdown_event.wait(), timeout=300)
-				return
+					if await _interruptible_sleep(300, shutdown_event):
+						return
 			except asyncio.TimeoutError:
 				pass
 
@@ -584,7 +448,8 @@ async def _speedtest_on_demand_handler(
 			await asyncio.sleep(5)  # Brief delay before continuing
 
 
-class EnrollResult(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class EnrollResult:
 	success: bool
 	config_version: str | None
 	session_secret: str | None
@@ -675,6 +540,9 @@ async def main() -> None:
 	# Use persisted state if available, otherwise use enrollment token payload
 	source = state if state is not None else payload
 	master_url = str(source["master_url"]).rstrip("/")
+	if not master_url.startswith(("http://", "https://")):
+		_log.critical("Invalid master_url %r: must start with http:// or https://", master_url)
+		sys.exit(1)
 	node_id = str(source["node_id"])
 	api_secret = str(source["api_secret"])
 	node_name = str(source.get("node_name", "unknown"))
@@ -767,11 +635,8 @@ async def main() -> None:
 					ENROLLMENT_RETRY_ATTEMPTS,
 					delay,
 				)
-				try:
-					await asyncio.wait_for(shutdown_event.wait(), timeout=delay)
+				if await _interruptible_sleep(delay, shutdown_event):
 					break
-				except asyncio.TimeoutError:
-					pass
 
 			if not enrolled:
 				# No cached state (we're in enrollment phase where state is None) and enrollment failed — fatal
@@ -1035,11 +900,9 @@ async def main() -> None:
 				# Wait for interval with interruptible check for events
 				while wait_time > 0 and not shutdown_event.is_set() and not config_changed_event.is_set():
 					sleep_chunk = min(1.0, wait_time)
-					try:
-						await asyncio.wait_for(shutdown_event.wait(), timeout=sleep_chunk)
+					if await _interruptible_sleep(sleep_chunk, shutdown_event):
 						break  # Shutdown requested
-					except asyncio.TimeoutError:
-						wait_time -= sleep_chunk
+					wait_time -= sleep_chunk
 				
 				if shutdown_event.is_set():
 					_log.debug("Sync loop: shutdown requested")
@@ -1051,28 +914,7 @@ async def main() -> None:
 			_log.exception("Sync loop crashed with unexpected error: %s", exc)
 			raise
 		finally:
-			# Cancel SSE listener and speedtest tasks
-			sse_task.cancel()
-			speedtest_task.cancel()
-			speedtest_on_demand_task.cancel()
-			try:
-				await sse_task
-			except asyncio.CancelledError:
-				pass
-			except Exception as exc:
-				_log.error("SSE listener task crashed: %s", exc, exc_info=True)
-			try:
-				await speedtest_task
-			except asyncio.CancelledError:
-				pass
-			except Exception as exc:
-				_log.error("Speedtest scheduler task crashed: %s", exc, exc_info=True)
-			try:
-				await speedtest_on_demand_task
-			except asyncio.CancelledError:
-				pass
-			except Exception as exc:
-				_log.error("On-demand speedtest task crashed: %s", exc, exc_info=True)
+			await _cancel_tasks(sse_task, speedtest_task, speedtest_on_demand_task)
 
 	# Graceful shutdown
 	_log.info("Closing metrics queue...")
@@ -1279,36 +1121,40 @@ async def _sse_listener(
 						if sse_connected_event is not None:
 							sse_connected_event.set()
 
-						event_type = None  # Track current event type across lines
+						event_type: str | None = None
+						event_buffer: list[str] = []
 						async for line in response.aiter_lines():
 							if shutdown_event.is_set():
 								break
 							
-							line = line.strip()
-							if not line or line.startswith(":"):
+							line = line.rstrip("\n")
+							if line.startswith(":"):
 								continue  # Comment or keepalive
 							
 							if line.startswith("event:"):
 								event_type = line[6:].strip()
 							elif line.startswith("data:"):
-								# Process data for the current event type
-								if event_type == "config_changed":
-									_log.info("Received config_changed event from master")
-									config_changed_event.set()
-								elif event_type == "restart_requested":
-									_log.warning("Received restart_requested event from master — initiating graceful shutdown")
-									shutdown_event.set()
-									return
-								elif event_type == "node_removed":
-									_log.warning("Received node_removed event from master — clearing state and exiting")
-									# Clear enrollment state so node doesn't keep trying to reconnect
-									_clear_enrollment_state()
-									shutdown_event.set()
-									return
-								elif event_type == "run_speedtest":
-									_log.info("Received run_speedtest event from master — triggering on-demand speedtest")
-									speedtest_requested_event.set()
-								event_type = None  # Reset after processing
+								event_buffer.append(line[5:].strip())
+							elif line == "":
+								if event_type and event_buffer:
+									data = "\n".join(event_buffer)
+									if event_type == "config_changed":
+										_log.info("Received config_changed event from master")
+										config_changed_event.set()
+									elif event_type == "restart_requested":
+										_log.warning("Received restart_requested event from master — initiating graceful shutdown")
+										shutdown_event.set()
+										return
+									elif event_type == "node_removed":
+										_log.warning("Received node_removed event from master — clearing state and exiting")
+										_clear_enrollment_state()
+										shutdown_event.set()
+										return
+									elif event_type == "run_speedtest":
+										_log.info("Received run_speedtest event from master — triggering on-demand speedtest")
+										speedtest_requested_event.set()
+								event_type = None
+								event_buffer.clear()
 						
 				except httpx.HTTPStatusError as exc:
 					# Signal SSE disconnected so sync loop switches to fast polling
@@ -1345,11 +1191,8 @@ async def _sse_listener(
 				# Exponential backoff with jitter
 				jittered_delay = reconnect_delay * random.uniform(0.8, 1.2)
 				_log.info("SSE reconnecting in %.1fs...", jittered_delay)
-				try:
-					await asyncio.wait_for(shutdown_event.wait(), timeout=jittered_delay)
+				if await _interruptible_sleep(jittered_delay, shutdown_event):
 					break  # Shutdown requested
-				except asyncio.TimeoutError:
-					pass
 				
 				reconnect_delay = min(reconnect_delay * 2, _MAX_RECONNECT_DELAY)
 	except Exception as exc:

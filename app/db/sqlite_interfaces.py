@@ -82,26 +82,18 @@ def update_interface(
 	"""Update mutable settings of an existing WireGuard interface."""
 	now = utcnow()
 	with transaction(conn):
+		columns = "address = ?, address6 = ?, listen_port = ?, dns = ?, post_up = ?, post_down = ?"
+		params: list = [address, address6, listen_port, dns, post_up, post_down]
 		if show_on_dashboard is not None:
-			cur = conn.execute(
-				"""
-				UPDATE interfaces
-				SET address = ?, address6 = ?, listen_port = ?,
-					dns = ?, post_up = ?, post_down = ?, show_on_dashboard = ?, updated_at = ?
-				WHERE name = ?
-				""",
-				(address, address6, listen_port, dns, post_up, post_down, int(show_on_dashboard), now, name),
-			)
-		else:
-			cur = conn.execute(
-				"""
-				UPDATE interfaces
-				SET address = ?, address6 = ?, listen_port = ?,
-					dns = ?, post_up = ?, post_down = ?, updated_at = ?
-				WHERE name = ?
-				""",
-				(address, address6, listen_port, dns, post_up, post_down, now, name),
-			)
+			columns += ", show_on_dashboard = ?"
+			params.append(int(show_on_dashboard))
+		columns += ", updated_at = ?"
+		params.append(now)
+		params.append(name)
+		cur = conn.execute(
+			f"UPDATE interfaces SET {columns} WHERE name = ?",
+			params,
+		)
 		return cur.rowcount > 0
 
 

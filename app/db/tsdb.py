@@ -39,9 +39,9 @@ import time
 import warnings
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Generator, Optional
+from collections.abc import Callable
 from weakref import WeakValueDictionary
 
 # Platform check for fcntl (Unix-only)
@@ -271,6 +271,48 @@ def _count_lines(path: Path) -> int:
 	return count
 
 
+def _require_force(force: bool, operation: str, context: str = "") -> None:
+	"""Raise RuntimeError unless ``force=True`` to prevent accidental destructive calls."""
+	if not force:
+		msg = f"{operation}() requires force=True to confirm this dangerous operation."
+		if context:
+			msg += f" {context}"
+		raise RuntimeError(msg)
+
+
+def _safe_close(fd: int | None) -> None:
+	"""Close a file descriptor, ignoring errors (for use in finally blocks)."""
+	if fd is not None:
+		try:
+			os.close(fd)
+		except OSError:
+			pass
+
+
+def _safe_flock_unlock(fd: int | None) -> None:
+	"""Release an flock, ignoring errors (for use in finally blocks)."""
+	if fd is not None:
+		try:
+			fcntl.flock(fd, fcntl.LOCK_UN)
+		except OSError:
+			pass
+
+
+class _BoundedLRU(OrderedDict):
+	"""``OrderedDict`` with a maximum size; oldest entry evicted on overflow."""
+
+	def __init__(self, maxsize: int) -> None:
+		super().__init__()
+		self._maxsize = maxsize
+
+	def __setitem__(self, key, value) -> None:
+		if key in self:
+			self.move_to_end(key)
+		super().__setitem__(key, value)
+		if len(self) > self._maxsize:
+			self.popitem(last=False)
+
+
 class _ReadWriteLock:
 	"""Simple read-write lock for thread-level concurrency control.
 	
@@ -307,18 +349,16 @@ class _ReadWriteLock:
 		SIGNIFICANT FIX #4: Non-reentrant - raises if same thread tries to acquire twice.
 		"""
 		with self._write_ready:
+			# Detect reentrant lock attempts before mutating waiting state.
+			current_thread_id = threading.current_thread().ident
+			if self._writers > 0 and self._writer_thread_id == current_thread_id:
+				raise RuntimeError(
+					"_ReadWriteLock is not reentrant. "
+					"Same thread cannot acquire write lock twice. "
+					"This usually indicates a bug in lock management."
+				)
 			self._writers_waiting += 1
 			try:
-				# CRITICAL: Detect reentrant lock attempts (same thread calling twice)
-				# This would deadlock without detection
-				current_thread_id = threading.current_thread().ident
-				if self._writers > 0 and self._writer_thread_id == current_thread_id:
-					raise RuntimeError(
-						"_ReadWriteLock is not reentrant. "
-						"Same thread cannot acquire write lock twice. "
-						"This usually indicates a bug in lock management."
-					)
-				
 				while self._readers > 0 or self._writers > 0:
 					self._write_ready.wait()
 				self._writers = 1
@@ -352,8 +392,8 @@ class _FileLock:
 	def __init__(self, series_path: Path, *, read_only: bool = False):
 		self._series_path = series_path
 		self._lock_path = _lock_path(series_path)
-		self._fd: Optional[int] = None
-		self._thread_lock: Optional[threading.Lock] = None
+		self._fd: int | None = None
+		self._thread_lock: _ReadWriteLock | None = None
 		self._read_only = read_only
 
 	def __enter__(self) -> "_FileLock":
@@ -393,32 +433,19 @@ class _FileLock:
 			
 			# CRITICAL FIX #1: Recover uncompressed rotations left by crashes
 			# FIX: Only run once per series to avoid redundant glob operations
-			key = str(self._series_path)
 			with _recovered_series_lock:
 				if key not in _recovered_series:
-					# Evict oldest entry if at capacity (bounded LRU)
-					if len(_recovered_series) >= _MAX_RECOVERY_ENTRIES:
-						_recovered_series.popitem(last=False)
 					_recover_uncompressed_rotations(self._series_path)
 					_recovered_series[key] = True
-					_recovered_series.move_to_end(key)
 		
 		return self
 
 	def __exit__(self, exc_type, exc_val, exc_tb) -> None:
 		"""Release locks with guaranteed cleanup order to prevent deadlocks."""
 		try:
-			if self._fd is not None:
-				try:
-					fcntl.flock(self._fd, fcntl.LOCK_UN)
-				except OSError:
-					pass
-				finally:
-					try:
-						os.close(self._fd)
-					except OSError:
-						pass
-					self._fd = None
+			_safe_flock_unlock(self._fd)
+			_safe_close(self._fd)
+			self._fd = None
 		finally:
 			if self._thread_lock is not None:
 				if self._read_only:
@@ -454,21 +481,17 @@ def _should_prune(series_path: Path) -> bool:
 				# First time or stat failed - proceed with prune
 				pass
 			# Update mtime to claim the slot
-			os.utime(fd)
+			if os.utime in os.supports_fd:
+				os.utime(fd)
+			else:
+				os.utime(str(marker))
 			return True
 		except BlockingIOError:
 			# Another process is pruning right now
 			return False
 		finally:
-			try:
-				fcntl.flock(fd, fcntl.LOCK_UN)
-			except OSError:
-				pass
-			finally:
-				try:
-					os.close(fd)
-				except OSError:
-					pass
+			_safe_flock_unlock(fd)
+			_safe_close(fd)
 	except OSError as e:
 		_log.debug("Prune marker check failed: %s", e)
 		return False
@@ -481,24 +504,36 @@ def _validate_retention(retention_days: int) -> int:
 	return retention_days
 
 
-def _archive_sort_key(p: Path) -> str:
-	"""Normalize archive timestamps to fixed-width for correct sorting.
-	
-	Old archives use YYYYMMDDTHHMMSSz (16 chars), new ones use
-	YYYYMMDDTHHMMSSµµµµµµz (22 chars with microseconds). Without
-	normalization, 'Z' > '0' causes chronological inversion.
+def _parse_archive_timestamp(name: str) -> datetime | None:
+	"""Parse the rotation timestamp encoded in an archive filename.
+
+	Accepts both the old format (YYYYMMDDTHHMMSSz, 16 chars) and the new
+	format with microseconds (YYYYMMDDTHHMMSSµµµµµµz, 22 chars).
+	Returns ``None`` when the name does not contain a parseable timestamp.
 	"""
-	name = p.name
 	marker = ".jsonl."
 	idx = name.find(marker)
 	if idx < 0:
-		return name
+		return None
 	after = name[idx + len(marker):]
 	ts = after.removesuffix(".gz")
-	# Pad old format (no microseconds) to match new format width
-	if len(ts) == 16:  # "YYYYMMDDTHHMMSSz"
+	if len(ts) == 16:  # "YYYYMMDDTHHMMSSz" — old format, no microseconds
 		ts = ts[:-1] + "000000Z"
-	return ts
+	try:
+		return datetime.strptime(ts, "%Y%m%dT%H%M%S%fZ").replace(tzinfo=UTC)
+	except ValueError:
+		return None
+
+
+def _archive_sort_key(p: Path) -> str:
+	"""Return a fixed-width sortable key for an archive path.
+
+	Delegates to _parse_archive_timestamp so normalisation lives in one place.
+	"""
+	parsed = _parse_archive_timestamp(p.name)
+	if parsed is None:
+		return p.name
+	return parsed.strftime("%Y%m%dT%H%M%S%fZ")
 
 
 def _rotated_archives(series_path: Path) -> list[Path]:
@@ -563,16 +598,19 @@ def _compress_file(src_path: Path) -> Path:
 	return gz_path
 
 
-def _rotate_series_locked(series_path: Path) -> None:
-	"""Rotate and compress a large active series file. MUST be called with lock held."""
+def _rotate_series_locked(series_path: Path) -> bool:
+	"""Rotate and compress a large active series file. MUST be called with lock held.
+
+	Returns True if the active series was rotated successfully.
+	"""
 	if not series_path.exists():
-		return
+		return False
 	try:
 		size = series_path.stat().st_size
 	except OSError:
-		return
+		return False
 	if size <= MAX_SERIES_FILE_BYTES:
-		return
+		return False
 
 	# Use microsecond precision to prevent timestamp collisions on rapid rotations
 	stamp = utcnow().strftime("%Y%m%dT%H%M%S%fZ")
@@ -585,7 +623,7 @@ def _rotate_series_locked(series_path: Path) -> None:
 		_compress_file(rotated)
 	except OSError as e:
 		_log.warning("TSDB rotation failed for %s: %s", series_path, e)
-		return
+		return False
 
 	# Keep only the newest archives.
 	archives = _rotated_archives(series_path)
@@ -595,43 +633,29 @@ def _rotate_series_locked(series_path: Path) -> None:
 				old.unlink(missing_ok=True)
 			except OSError:
 				pass
+	return True
 
 
-def _prune_archives_locked(series_path: Path, cutoff: datetime) -> None:
+def _prune_archives_locked(series_path: Path, cutoff: datetime) -> bool:
 	"""Delete rotated archives older than cutoff. MUST be called with lock held.
 	
 	Uses timestamps encoded in filenames rather than file mtime for accurate pruning.
 	"""
+	pruned_any = False
 	for arc in _rotated_archives(series_path):
-		try:
-			# Parse timestamp from filename: metric.jsonl.20260219T120000123456Z.gz (with microseconds)
-			# Extract timestamp - must work for both .gz and uncompressed rotations
-			name = arc.name
-			marker = ".jsonl."
-			idx = name.find(marker)
-			if idx < 0:
-				_log.warning("Archive filename does not contain timestamp: %s", arc.name)
-				continue
-			after = name[idx + len(marker):]  # "20260219T120000123456Z.gz" or "20260219T120000123456Z"
-			timestamp_str = after.removesuffix(".gz")  # Get '20260219T120000123456Z'
-			# Parse ISO 8601 basic format timestamp (try with microseconds first, fall back to seconds)
-			try:
-				arc_time = datetime.strptime(timestamp_str, "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)
-			except ValueError:
-				# Fall back to old format without microseconds for backward compatibility
-				arc_time = datetime.strptime(timestamp_str, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-		except (ValueError, IndexError) as e:
-			_log.debug("Failed to parse archive timestamp from %s: %s", arc.name, e)
-			continue
-		except OSError:
+		arc_time = _parse_archive_timestamp(arc.name)
+		if arc_time is None:
+			_log.debug("Could not parse archive timestamp from %s, skipping", arc.name)
 			continue
 		
 		if arc_time < cutoff:
 			try:
 				arc.unlink(missing_ok=True)
 				_log.debug("Pruned old archive: %s", arc.name)
+				pruned_any = True
 			except OSError as e:
 				_log.warning("Failed to delete archive %s: %s", arc.name, e)
+	return pruned_any
 
 
 def _iter_json_lines(path: Path) -> Generator[str, None, None]:
@@ -653,6 +677,70 @@ def _iter_json_lines(path: Path) -> Generator[str, None, None]:
 		_log.warning("Cannot read series file %s: %s (skipping)", path.name, e)
 
 
+def _iter_metric_points(
+	series_path: Path,
+	*,
+	since: datetime | None = None,
+	until: datetime | None = None,
+	filter_fn: Callable[[Any], bool] | None = None,
+) -> Generator[MetricPoint, None, None]:
+	"""Yield parsed metric points from all series files within optional bounds."""
+	for src in _iter_series_files(series_path):
+		for line in _iter_json_lines(src):
+			line = line.strip()
+			if not line:
+				continue
+			try:
+				obj = json.loads(line)
+				ts = parse_utc(obj["ts"])
+				if ts is None:
+					continue
+				val = obj.get("value")
+			except Exception as e:
+				_log.debug("Skipping corrupted JSONL line in %s: %s", series_path.name, e)
+				continue
+
+			if since and ts < since:
+				continue
+			if until and ts > until:
+				continue
+			if filter_fn and not filter_fn(val):
+				continue
+			yield MetricPoint(ts=ts, value=val)
+
+
+def _iter_file_points(
+	src: Path,
+	*,
+	since: datetime | None = None,
+	until: datetime | None = None,
+	filter_fn: Callable[[Any], bool] | None = None,
+) -> list[MetricPoint]:
+	"""Parse and return MetricPoints from a single series file (plain or gzip)."""
+	pts: list[MetricPoint] = []
+	for line in _iter_json_lines(src):
+		line = line.strip()
+		if not line:
+			continue
+		try:
+			obj = json.loads(line)
+			ts = parse_utc(obj["ts"])
+			if ts is None:
+				continue
+			val = obj.get("value")
+		except Exception as exc:
+			_log.debug("Skipping corrupted JSONL line in %s: %s", src.name, exc)
+			continue
+		if since and ts < since:
+			continue
+		if until and ts > until:
+			continue
+		if filter_fn and not filter_fn(val):
+			continue
+		pts.append(MetricPoint(ts=ts, value=val))
+	return pts
+
+
 def _fsync_path(path: Path, *, directory: bool = False) -> bool:
 	"""Best-effort fsync for files/directories."""
 	flags = os.O_RDONLY
@@ -667,11 +755,7 @@ def _fsync_path(path: Path, *, directory: bool = False) -> bool:
 		_log.debug("Failed to fsync %s: %s", path, e)
 		return False
 	finally:
-		if fd is not None:
-			try:
-				os.close(fd)
-			except OSError:
-				pass
+		_safe_close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -709,12 +793,8 @@ def purge_tsdb(tsdb_dir: Path, *, force: bool = False) -> None:
 	Raises:
 		RuntimeError: If force is not True.
 	"""
-	if not force:
-		raise RuntimeError(
-			"purge_tsdb() requires force=True to confirm this dangerous operation. "
-			"Ensure all TSDB operations are stopped before calling."
-		)
-	
+	_require_force(force, "purge_tsdb", "Ensure all TSDB operations are stopped before calling.")
+
 	if not tsdb_dir.exists():
 		return
 	
@@ -756,12 +836,8 @@ def delete_peer_data(tsdb_dir: Path, peer_key: str, *, force: bool = False) -> N
 	Raises:
 		RuntimeError: If force is not True.
 	"""
-	if not force:
-		raise RuntimeError(
-			"delete_peer_data() requires force=True to confirm this dangerous operation. "
-			"Ensure the peer is inactive and no metrics collection is running."
-		)
-	
+	_require_force(force, "delete_peer_data", "Ensure the peer is inactive and no metrics collection is running.")
+
 	dir_name = _peer_dir_name(peer_key)
 	tdir = tsdb_dir / _PEERS_DIRNAME / dir_name
 	if not tdir.exists():
@@ -784,49 +860,42 @@ def delete_peer_data(tsdb_dir: Path, peer_key: str, *, force: bool = False) -> N
 			pass
 
 
-# Batched fsync state (per series path) - bounded LRU to prevent memory leak
-_MAX_FSYNC_ENTRIES = 2000
-_fsync_batch_state: OrderedDict[str, dict[str, Any]] = OrderedDict()
-_fsync_batch_lock = threading.Lock()
+# Batched fsync state (per series path) — sharded to reduce lock contention
+_FSYNC_LOCK_SHARDS = 16
+_fsync_batch_locks: tuple[threading.Lock, ...] = tuple(threading.Lock() for _ in range(_FSYNC_LOCK_SHARDS))
+_fsync_batch_state: _BoundedLRU = _BoundedLRU(2000)
 
 # Recovery tracking to avoid redundant uncompressed rotation recovery per series
-# FIX: Bounded LRU to prevent unbounded memory growth in long-running systems
-_MAX_RECOVERY_ENTRIES = 2000
-_recovered_series: OrderedDict[str, bool] = OrderedDict()
+_recovered_series: _BoundedLRU = _BoundedLRU(2000)
 _recovered_series_lock = threading.Lock()
+
+# In-memory TTL guard for pruning — avoids file-system stat on every append
+_prune_ttl_cache: dict[str, float] = {}
+_prune_ttl_lock = threading.Lock()
 
 
 def _should_fsync_batch(series_path: Path) -> bool:
 	"""Check if batched writes should be fsynced now.
-	
+
 	Returns True if either:
 	- Batch size limit reached
 	- Time interval exceeded since last fsync
-	
-	FIX: Uses bounded OrderedDict to prevent unbounded memory growth.
 	"""
 	key = str(series_path)
-	with _fsync_batch_lock:
+	shard_lock = _fsync_batch_locks[hash(key) % _FSYNC_LOCK_SHARDS]
+	with shard_lock:
 		if key not in _fsync_batch_state:
-			# Evict oldest entry if at capacity
-			if len(_fsync_batch_state) >= _MAX_FSYNC_ENTRIES:
-				_fsync_batch_state.popitem(last=False)
 			_fsync_batch_state[key] = {"count": 0, "last_fsync": time.time()}
-		else:
-			# Move to end (mark as recently used)
-			_fsync_batch_state.move_to_end(key)
-		
+
 		state = _fsync_batch_state[key]
 		state["count"] += 1
 		now = time.time()
-		
-		# Check if we should fsync
+
 		if state["count"] >= FSYNC_BATCH_SIZE or (now - state["last_fsync"]) >= FSYNC_BATCH_INTERVAL:
-			# Reset state
 			state["count"] = 0
 			state["last_fsync"] = now
 			return True
-		
+
 		return False
 
 
@@ -837,7 +906,7 @@ def append_point(
 	metric: str,
 	value: Any,
 	retention_days: int = DEFAULT_RETENTION_DAYS,
-	at: Optional[datetime] = None,
+	at: datetime | None = None,
 	sync: bool = False,
 ) -> None:
 	"""Append a data point to a time series.
@@ -878,9 +947,17 @@ def append_point(
 	with _FileLock(p):
 		p.parent.mkdir(parents=True, exist_ok=True)
 		
-		# FIX: Prune first to avoid unnecessary rotation of mostly-old data
-		# Rate-limited pruning: check timing with file-based marker for cross-process safety
-		if _should_prune(p):
+		# Prune first to avoid unnecessary rotation of mostly-old data.
+		# In-memory TTL fast-path: skip the file-system stat when we're
+		# within the interval (cross-process safety is still provided by
+		# _should_prune's file-based marker on the first call after the TTL).
+		_prune_key = str(p)
+		_prune_now = time.time()
+		with _prune_ttl_lock:
+			_do_prune = (_prune_now - _prune_ttl_cache.get(_prune_key, 0.0) >= PRUNE_INTERVAL_SECONDS)
+			if _do_prune:
+				_prune_ttl_cache[_prune_key] = _prune_now
+		if _do_prune and _should_prune(p):
 			_prune_series_locked(p, retention_days)
 		
 		with p.open("a", encoding="utf-8") as f:
@@ -895,21 +972,23 @@ def append_point(
 		_rotate_series_locked(p)
 
 
-def _prune_series_locked(series_path: Path, retention_days: int) -> None:
+def _prune_series_locked(series_path: Path, retention_days: int) -> bool:
 	"""Prune old data points from a series file. MUST be called with lock held.
 	
 	Critical fixes:
 	1. Always prune archives regardless of active file existence
 	2. Atomic replace with fsync to ensure durability
+
+	Returns True if any archive or active-file data was pruned.
 	"""
 	retention_days = _validate_retention(retention_days)
 	cutoff = utcnow() - timedelta(days=retention_days)
 	
 	# CRITICAL FIX #2: Always prune compressed archives, not just when active file is missing
-	_prune_archives_locked(series_path, cutoff)
+	pruned_any = _prune_archives_locked(series_path, cutoff)
 	
 	if not series_path.exists():
-		return
+		return pruned_any
 
 	kept: list[str] = []
 
@@ -931,7 +1010,7 @@ def _prune_series_locked(series_path: Path, retention_days: int) -> None:
 
 	if len(kept) == 0:
 		series_path.unlink(missing_ok=True)
-		return
+		return True
 
 	# CRITICAL FIX #1: Atomic replace with fsync for durability
 	tmp = series_path.with_suffix(series_path.suffix + ".tmp")
@@ -947,6 +1026,7 @@ def _prune_series_locked(series_path: Path, retention_days: int) -> None:
 	
 	# CRITICAL FIX #3: Fsync parent directory to ensure rename metadata is durable
 	_fsync_path(series_path.parent, directory=True)
+	return True
 
 
 def query(
@@ -954,10 +1034,11 @@ def query(
 	*,
 	peer_key: str,
 	metric: str,
-	since: Optional[datetime] = None,
-	until: Optional[datetime] = None,
+	since: datetime | None = None,
+	until: datetime | None = None,
 	limit: int = 1000,
 	latest: bool = False,
+	filter_fn: Callable[[Any], bool] | None = None,
 ) -> list[MetricPoint]:
 	"""Query data points from a time series.
 
@@ -989,71 +1070,25 @@ def query(
 
 	# Use shared lock for reads to allow concurrent queries
 	with _FileLock(p, read_only=True):
+		if limit <= 0:
+			return []
+
 		if latest:
-			# Correctness beats early termination here: callers can append backdated
-			# timestamps via `at=`, so file order is not a reliable proxy for time order.
-			all_matching: list[MetricPoint] = []
-			for src in _iter_series_files(p):
-				for line in _iter_json_lines(src):
-					line = line.strip()
-					if not line:
-						continue
-					try:
-						obj = json.loads(line)
-						ts = parse_utc(obj["ts"])
-						if ts is None:
-							continue
-						val = obj.get("value")
-					except Exception as e:
-						_log.debug("Skipping corrupted JSONL line in %s: %s", p.name, e)
-						continue
-
-					if since_u and ts < since_u:
-						continue
-					if until_u and ts > until_u:
-						continue
-					all_matching.append(MetricPoint(ts=ts, value=val))
-			
-			all_matching.sort(key=lambda pt: pt.ts)
-			if limit <= 0:
-				return []
-			return all_matching[-limit:]
-		else:
-			# For non-latest queries, collect all matching points
-			# FIX: Early termination when limit reached and no time filter
-			all_matching: list[MetricPoint] = []
-			collected = 0
-			for src in _iter_series_files(p):
-				for line in _iter_json_lines(src):
-					line = line.strip()
-					if not line:
-						continue
-					try:
-						obj = json.loads(line)
-						ts = parse_utc(obj["ts"])
-						if ts is None:
-							continue
-						val = obj.get("value")
-					except Exception as e:
-						_log.debug("Skipping corrupted JSONL line in %s: %s", p.name, e)
-						continue
-
-					if since_u and ts < since_u:
-						continue
-					if until_u and ts > until_u:
-						continue
-
-					all_matching.append(MetricPoint(ts=ts, value=val))
-					collected += 1
-					# Early termination is only safe when no time window is applied.
-					if since_u is None and until_u is None and collected >= limit:
-						break
-				if since_u is None and until_u is None and collected >= limit:
+			# Reverse file order (newest first) for early-exit when only recent
+			# points are needed.  Collect at least limit*2 points before stopping
+			# to remain correct in the presence of backdated timestamps.
+			files = list(reversed(_iter_series_files(p)))
+			collected: list[MetricPoint] = []
+			for src in files:
+				collected.extend(_iter_file_points(src, since=since_u, until=until_u, filter_fn=filter_fn))
+				if len(collected) >= limit * 2:
 					break
-
-			# Sort once after collecting all matches to ensure correct chronological order
-			all_matching.sort(key=lambda pt: pt.ts)
-			return all_matching[:limit]
+			collected.sort(key=lambda pt: pt.ts)
+			return collected[-limit:]
+		else:
+			points = list(_iter_metric_points(p, since=since_u, until=until_u, filter_fn=filter_fn))
+			points.sort(key=lambda pt: pt.ts)
+			return points[:limit]
 
 
 def query_latest(
@@ -1222,12 +1257,8 @@ def purge_synthetic_data(tsdb_dir: Path, peer_key: str, *, force: bool = False) 
 	Raises:
 		RuntimeError: If force is not True.
 	"""
-	if not force:
-		raise RuntimeError(
-			"purge_synthetic_data() requires force=True to confirm this dangerous operation. "
-			"Ensure no writes are in-flight for this synthetic key."
-		)
-	
+	_require_force(force, "purge_synthetic_data", "Ensure no writes are in-flight for this synthetic key.")
+
 	dir_path = _synthetic_dir_path(tsdb_dir, peer_key)
 	if not dir_path.exists():
 		return 0
@@ -1261,12 +1292,8 @@ def reset_all(tsdb_dir: Path, *, force: bool = False) -> int:
 	Raises:
 		RuntimeError: If force is not True.
 	"""
-	if not force:
-		raise RuntimeError(
-			"reset_all() requires force=True to confirm this dangerous operation. "
-			"This will delete ALL TSDB data."
-		)
-	
+	_require_force(force, "reset_all", "This will delete ALL TSDB data.")
+
 	if not tsdb_dir.exists():
 		return 0
 	
@@ -1338,15 +1365,9 @@ def run_maintenance(
 		
 		# Acquire lock before reading archive counts to avoid TOCTOU races
 		with _FileLock(series_path):
-			before_archives = len(_rotated_archives(series_path))
-			_rotate_series_locked(series_path)
-			after_rotate_archives = len(_rotated_archives(series_path))
-			if after_rotate_archives > before_archives:
+			if _rotate_series_locked(series_path):
 				rotated_count += 1
-			before_prune_archives = len(_rotated_archives(series_path))
-			_prune_series_locked(series_path, series_retention)
-			after_prune_archives = len(_rotated_archives(series_path))
-			if (after_prune_archives < before_prune_archives) or (not series_path.exists()):
+			if _prune_series_locked(series_path, series_retention):
 				pruned_count += 1
 
 	return {"series": series_count, "rotated": rotated_count, "pruned": pruned_count}

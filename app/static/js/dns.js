@@ -5,8 +5,12 @@
 
 // NOTE: Client-side only – backend must enforce authorization on all mutations
 const dnsApp = document.getElementById('dns-app');
-const clearNode = window.WBShared?.clearElement || (el => el?.replaceChildren());
-const chartEmptyState = window.WBShared?.chartEmptyState || (() => document.createElement('div'));
+const WBShared = window.WBShared;
+if (!WBShared) {
+    throw new Error('WBShared must be loaded before dns.js');
+}
+const clearNode = WBShared.clearElement;
+const chartEmptyState = WBShared.chartEmptyState;
 
 // Helper: parse dataset boolean (SQLite stores booleans as integers, so handle both "true" and "1")
 function _readDatasetBool(el, key, defaultValue = false) {
@@ -28,7 +32,6 @@ const LOG_FETCH_LIMIT = 1000;  // Max items to fetch from API
 const SCROLL_THRESHOLD_PX = 150;  // Trigger infinite scroll when this close to bottom
 const SEARCH_DEBOUNCE_MS = 250;  // Debounce delay for search input
 const MENU_VIEWPORT_MARGIN_PX = 8;  // Minimum margin for context menu
-const FADE_FALLBACK_MS = 300;  // Fallback timeout for CSS transitions
 
 let _logData = [];
 let _logDataVersion = 0;  // Incremented whenever _logData content changes
@@ -45,11 +48,10 @@ let _scrollRaf = null;  // RAF handle for scroll throttle
 let _logAutoFillQueued = false;  // Prevent stacked auto-fill checks
 let _logActionState = null; // Active row action context
 let _isInitialTopDomainsRender = true; // Skip fade on first render
-let _topDomainFadeTimeout = null; // Timeout handle for fade animation fallback
-let _fadeAbort = null; // AbortController for peer filter fade animation
 let _restoreAbort = null; // AbortController for async log scroll restoration
 let _peerMapVersion = 0; // Invalidate cached log filter when peer map changes
 let _pageAbort = new AbortController();  // Abort controller for page cleanup
+let _peerFilterFadeSeq = 0;
 
 const _stateEls = {
     queriedLoading: document.getElementById('top-queried-loading'),
@@ -66,13 +68,154 @@ const _stateEls = {
     trendEmpty: document.getElementById('trend-empty'),
     trendDisabled: document.getElementById('trend-disabled'),
     trendUnavailable: document.getElementById('trend-unavailable'),
+    trendMeta: document.getElementById('trend-meta'),
     logUnavailable: document.getElementById('log-unavailable'),
 };
 _stateEls.logCardBody = _stateEls.logUnavailable?.parentElement || null;
 
+function _resetPageAbortController() {
+    if (_pageAbort && !_pageAbort.signal.aborted) {
+        _pageAbort.abort();
+    }
+    _pageAbort = new AbortController();
+}
+
+function _showChartEmpty(container) {
+    if (!container) return;
+    clearNode(container);
+    container.appendChild(chartEmptyState());
+    container.classList.remove('d-none');
+}
+
+function _setTrendMeta(text) {
+    if (_stateEls.trendMeta) {
+        _stateEls.trendMeta.textContent = text;
+    }
+}
+
+function _fadeTopDomainCards(cards) {
+    for (const card of cards) {
+        card.classList.add('top-domain-card-fading');
+    }
+}
+
+function _unfadeTopDomainCards(cards) {
+    for (const card of cards) {
+        card.classList.remove('top-domain-card-fading');
+    }
+}
+
+function _getTopDomainCards() {
+    return [
+        document.getElementById('top-queried-content')?.parentElement,
+        document.getElementById('top-blocked-content')?.parentElement,
+    ].filter(Boolean);
+}
+
+function _wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function _onDocumentKeydown(ev) {
+    if (ev.key === 'Escape') closeLogActionMenu();
+}
+
+function _onDocumentClick(ev) {
+    const menu = document.getElementById('log-action-menu');
+    if (!menu) return;
+    if (!menu.contains(ev.target)) {
+        closeLogActionMenu();
+    }
+}
+
+function _attachDocumentListeners() {
+    document.addEventListener('keydown', _onDocumentKeydown);
+    document.addEventListener('click', _onDocumentClick);
+}
+
+function _detachDocumentListeners() {
+    document.removeEventListener('keydown', _onDocumentKeydown);
+    document.removeEventListener('click', _onDocumentClick);
+}
+
+function _onVisibilityChange() {
+    if (document.hidden) {
+        stopPolling();
+        closeLogActionMenu();
+        return;
+    }
+
+    _lastSlowPoll = 0;
+    if (_pageAbort.signal.aborted) {
+        _resetPageAbortController();
+    }
+    void _refreshScheduler.refresh().then(() => startPolling());
+}
+
+function _onPageHide() {
+    stopPolling();
+    _detachDocumentListeners();
+    if (themeObserver) {
+        themeObserver.disconnect();
+    }
+    if (_trendChart) {
+        _trendChart.destroy();
+        _trendChart = null;
+    }
+    if (_adblockerCountdownInterval) {
+        clearInterval(_adblockerCountdownInterval);
+        _adblockerCountdownInterval = null;
+    }
+    if (_searchTimer) {
+        clearTimeout(_searchTimer);
+        _searchTimer = null;
+    }
+    if (_scrollRaf) {
+        cancelAnimationFrame(_scrollRaf);
+        _scrollRaf = null;
+    }
+    if (_restoreAbort) {
+        _restoreAbort.abort();
+        _restoreAbort = null;
+    }
+    _logsLoadPending = false;
+    _logsLoadPendingShowLoading = false;
+    _isInitialTopDomainsRender = true;
+    _resetPageAbortController();
+}
+
+function _onPageShow(ev) {
+    if (!ev?.persisted) {
+        return;
+    }
+    if (_pageAbort.signal.aborted) {
+        _resetPageAbortController();
+    }
+    if (themeObserver) {
+        themeObserver.observe(document.documentElement, {
+            attributes: true,
+            attributeFilter: ['data-bs-theme'],
+        });
+    }
+    _attachDocumentListeners();
+    void _refreshScheduler.refresh().then(() => startPolling());
+}
+
 function _setHidden(el, hidden) {
     if (!el) return;
     el.classList.toggle('d-none', hidden);
+}
+
+function _showPanelState(prefix, activeSuffix) {
+    const panelSuffixes = {
+        queried: ['Loading', 'Content', 'Empty', 'Unavailable'],
+        blocked: ['Loading', 'Content', 'Empty', 'Disabled', 'Unavailable'],
+        trend: ['Loading', 'Chart', 'Empty', 'Disabled', 'Unavailable'],
+    };
+
+    for (const suffix of panelSuffixes[prefix] || []) {
+        _setHidden(_stateEls[`${prefix}${suffix}`], suffix !== activeSuffix);
+    }
 }
 
 /**
@@ -80,76 +223,34 @@ function _setHidden(el, hidden) {
  * Priority: dnsUnavailable > adBlockerDisabled > active content/loading.
  */
 function applyDnsVisibilityState() {
-    const {
-        queriedLoading,
-        queriedContent,
-        queriedEmpty,
-        queriedUnavailable,
-        blockedLoading,
-        blockedContent,
-        blockedEmpty,
-        blockedDisabled,
-        blockedUnavailable,
-        trendLoading,
-        trendChart,
-        trendEmpty,
-        trendDisabled,
-        trendUnavailable,
-        logUnavailable,
-        logCardBody,
-    } = _stateEls;
+    const { logUnavailable, logCardBody } = _stateEls;
 
     if (_dnsUnavailable) {
-        _setHidden(queriedLoading, true);
-        _setHidden(queriedContent, true);
-        _setHidden(queriedEmpty, true);
-        _setHidden(queriedUnavailable, false);
-
-        _setHidden(blockedLoading, true);
-        _setHidden(blockedContent, true);
-        _setHidden(blockedEmpty, true);
-        _setHidden(blockedDisabled, true);
-        _setHidden(blockedUnavailable, false);
-
-        _setHidden(trendLoading, true);
-        _setHidden(trendChart, true);
-        _setHidden(trendEmpty, true);
-        _setHidden(trendDisabled, true);
-        _setHidden(trendUnavailable, false);
+        _showPanelState('queried', 'Unavailable');
+        _showPanelState('blocked', 'Unavailable');
+        _showPanelState('trend', 'Unavailable');
 
         if (logCardBody) logCardBody.classList.add('dns-log-unavailable');
         _setHidden(logUnavailable, false);
         return;
     }
 
-    _setHidden(queriedUnavailable, true);
-    _setHidden(blockedUnavailable, true);
-    _setHidden(trendUnavailable, true);
+    _showPanelState('queried', null);
+    _showPanelState('blocked', null);
+    _showPanelState('trend', null);
     if (logCardBody) logCardBody.classList.remove('dns-log-unavailable');
     _setHidden(logUnavailable, true);
 
     if (_adBlockerEnabled) {
-        _setHidden(blockedDisabled, true);
-        _setHidden(trendDisabled, true);
+        _setHidden(_stateEls.blockedDisabled, true);
+        _setHidden(_stateEls.trendDisabled, true);
     } else {
-        _setHidden(blockedLoading, true);
-        _setHidden(blockedContent, true);
-        _setHidden(blockedEmpty, true);
-        _setHidden(blockedDisabled, false);
-
-        _setHidden(trendLoading, true);
-        _setHidden(trendChart, true);
-        _setHidden(trendEmpty, true);
-        _setHidden(trendDisabled, false);
+        _showPanelState('blocked', 'Disabled');
+        _showPanelState('trend', 'Disabled');
     }
 }
 
-const isAbortError = window.WBShared?.isAbortError || (err => {
-    if (err?.name === 'AbortError') return true;
-    if (err instanceof DOMException && err.name === 'AbortError') return true;
-    if (err?.code === 'ABORTED') return true;
-    return false;
-});
+const isAbortError = WBShared.isAbortError;
 
 /**
  * Extract raw client IP from a formatted 'PeerName (IP)' string.
@@ -187,6 +288,17 @@ function _buildClientIpsParam() {
     return clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
 }
 
+function _activateLogRow(ev) {
+    const target = ev.target instanceof Element ? ev.target : null;
+    const row = target?.closest('tr.log-row-actionable');
+    if (!row) return;
+    const idx = parseInt(row.dataset.logIndex, 10);
+    const q = _filteredData[idx];
+    if (!q) return;
+    ev.preventDefault();
+    openLogActionMenu(q, ev);
+}
+
 function peerMapsEqual(a, b) {
     const aKeys = Object.keys(a);
     const bKeys = Object.keys(b);
@@ -196,10 +308,6 @@ function peerMapsEqual(a, b) {
     }
     return true;
 }
-
-document.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape') closeLogActionMenu();
-});
 
 function closeLogActionMenu() {
     const menu = document.getElementById('log-action-menu');
@@ -390,9 +498,9 @@ function getTrendBucketMinutes() {
 }
 
 async function loadTrend() {
-    const loadingEl = document.getElementById('trend-loading');
-    const trendWrap = document.getElementById('trend-chart-wrap');
-    const emptyEl = document.getElementById('trend-empty');
+    const loadingEl = _stateEls.trendLoading;
+    const trendWrap = _stateEls.trendChart;
+    const emptyEl = _stateEls.trendEmpty;
 
     if (_dnsUnavailable) {
         applyDnsVisibilityState();
@@ -438,8 +546,7 @@ async function loadTrend() {
                 _trendChart.destroy();
                 _trendChart = null;
             }
-            clearNode(emptyEl);
-            emptyEl.appendChild(chartEmptyState());
+            _showChartEmpty(emptyEl);
             return;
         }
 
@@ -558,20 +665,18 @@ async function loadTrend() {
             _trendChart.data.datasets[0].data = blocked;
             _trendChart.data.datasets[1].data = total;
             _trendChart.data.datasets[2].data = rate;
-            _trendChart.data.datasets[0].pointRadius = pointRadius;
-            _trendChart.data.datasets[1].pointRadius = pointRadius;
-            _trendChart.data.datasets[2].pointRadius = pointRadius;
-            _trendChart.data.datasets[0].pointHoverRadius = pointHoverRadius;
-            _trendChart.data.datasets[1].pointHoverRadius = pointHoverRadius;
-            _trendChart.data.datasets[2].pointHoverRadius = pointHoverRadius;
+            _trendChart.data.datasets.forEach(ds => {
+                ds.pointRadius = pointRadius;
+                ds.pointHoverRadius = pointHoverRadius;
+            });
             _trendChart.update();
         }
 
-        document.getElementById('trend-meta').textContent = '';
+        _setTrendMeta('');
     } catch (e) {
         if (isAbortError(e)) return;
         console.error('Trend load failed:', e);
-        document.getElementById('trend-meta').textContent = 'Trend unavailable';
+        _setTrendMeta('Trend unavailable');
     }
 }
 
@@ -1356,26 +1461,6 @@ function stopPolling() {
     _refreshScheduler.stop();
 }
 
-document.addEventListener('visibilitychange', async () => {
-    if (document.hidden) {
-        stopPolling();
-        closeLogActionMenu();
-    } else {
-        // Reset slow poll tracking on tab switch
-        _lastSlowPoll = 0;
-        await _refreshScheduler.refresh();
-        startPolling();
-    }
-});
-
-document.addEventListener('click', (ev) => {
-    const menu = document.getElementById('log-action-menu');
-    if (!menu) return;
-    if (!menu.contains(ev.target)) {
-        closeLogActionMenu();
-    }
-});
-
 const themeObserver = new MutationObserver(() => {
     applyTrendTheme();
 });
@@ -1383,44 +1468,11 @@ themeObserver.observe(document.documentElement, {
     attributes: true,
     attributeFilter: ['data-bs-theme'],
 });
-window.addEventListener('pagehide', () => {
-    _refreshScheduler.destroy();
-    themeObserver.disconnect();
-    if (_trendChart) {
-        _trendChart.destroy();
-        _trendChart = null;
-    }
-    if (_adblockerCountdownInterval) {
-        clearInterval(_adblockerCountdownInterval);
-        _adblockerCountdownInterval = null;
-    }
-    if (_searchTimer) {
-        clearTimeout(_searchTimer);
-        _searchTimer = null;
-    }
-    if (_fadeAbort) {
-        _fadeAbort.abort();
-        _fadeAbort = null;
-    }
-    if (_topDomainFadeTimeout) {
-        clearTimeout(_topDomainFadeTimeout);
-        _topDomainFadeTimeout = null;
-    }
-    if (_scrollRaf) {
-        cancelAnimationFrame(_scrollRaf);
-        _scrollRaf = null;
-    }
-    if (_restoreAbort) {
-        _restoreAbort.abort();
-        _restoreAbort = null;
-    }
-    _logsLoadPending = false;
-    _logsLoadPendingShowLoading = false;
-    // Reset render-state flags so bfcache restoration works correctly
-    _isInitialTopDomainsRender = true;
-    // Abort all in-flight API requests
-    _pageAbort.abort();
-}, { once: true });
+
+_attachDocumentListeners();
+document.addEventListener('visibilitychange', _onVisibilityChange);
+window.addEventListener('pagehide', _onPageHide);
+window.addEventListener('pageshow', _onPageShow);
 
 // Infinite scroll for Query Log (throttled with RAF)
 const logContainer = document.getElementById('log-table-wrap');
@@ -1440,29 +1492,10 @@ if (logContainer) {
 // Event delegation for log row actions with keyboard support
 const logBody = document.getElementById('log-body');
 if (logBody) {
-    logBody.addEventListener('click', (ev) => {
-        const target = ev.target instanceof Element ? ev.target : null;
-        const row = target?.closest('tr.log-row-actionable');
-        if (!row) return;
-        const idx = parseInt(row.dataset.logIndex, 10);
-        const q = _filteredData[idx];
-        if (q) {
-            ev.preventDefault();
-            // NOTE: stopPropagation removed - closeLogActionMenu now called in openLogActionMenu
-            openLogActionMenu(q, ev);
-        }
-    });
-
+    logBody.addEventListener('click', _activateLogRow);
     logBody.addEventListener('keydown', (ev) => {
-        if (ev.key !== 'Enter' && ev.key !== ' ') return;
-        const target = ev.target instanceof Element ? ev.target : null;
-        const row = target?.closest('tr.log-row-actionable');
-        if (!row) return;
-        const idx = parseInt(row.dataset.logIndex, 10);
-        const q = _filteredData[idx];
-        if (q) {
-            ev.preventDefault();
-            openLogActionMenu(q, ev);
+        if (ev.key === 'Enter' || ev.key === ' ') {
+            _activateLogRow(ev);
         }
     });
 }
@@ -1478,70 +1511,23 @@ const peerFilterSelect = document.getElementById('peer-filter');
 if (peerFilterSelect) {
     // Load fresh data when peer filter changes - affects logs, trend, and top domains
     peerFilterSelect.addEventListener('change', async () => {
-        // Cancel any stale animation from previous filter change
-        if (_fadeAbort) _fadeAbort.abort();
-        _fadeAbort = new AbortController();
-        const signal = _fadeAbort.signal;
+        const seq = ++_peerFilterFadeSeq;
+        const cards = _getTopDomainCards();
+        const shouldFade = !_isInitialTopDomainsRender && cards.length > 0;
 
-        if (_topDomainFadeTimeout) {
-            clearTimeout(_topDomainFadeTimeout);
-            _topDomainFadeTimeout = null;
+        if (shouldFade) {
+            _fadeTopDomainCards(cards);
+            await _wait(150);
         }
 
-        // Fade out top domains cards before re-rendering
-        const topQueriedCard = document.getElementById('top-queried-content')?.parentElement;
-        const topBlockedCard = document.getElementById('top-blocked-content')?.parentElement;
+        if (seq !== _peerFilterFadeSeq) return;
 
-        if (!topQueriedCard || !topBlockedCard) {
-            // No cards to fade, render immediately
-            await Promise.allSettled([loadLogsOnly(), loadTrend(), loadTopDomains()]);
-            return;
+        await Promise.allSettled([loadLogsOnly(), loadTrend(), loadTopDomains()]);
+
+        if (seq !== _peerFilterFadeSeq) return;
+        if (shouldFade) {
+            _unfadeTopDomainCards(cards);
         }
-
-        // Skip fade effect on initial render - only fade when user actively changes filter
-        if (_isInitialTopDomainsRender) {
-            await Promise.allSettled([loadLogsOnly(), loadTrend(), loadTopDomains()]);
-            return;
-        }
-
-        // Remove classes first to ensure fresh transition starts
-        topQueriedCard.classList.remove('top-domain-card-fading');
-        topBlockedCard.classList.remove('top-domain-card-fading');
-
-        // Fade out cards, re-render on transition complete
-        let transitionHandled = false;
-        const handleTransitionEnd = () => {
-            if (transitionHandled || signal.aborted) return;
-            transitionHandled = true;
-            if (_topDomainFadeTimeout) {
-                clearTimeout(_topDomainFadeTimeout);
-                _topDomainFadeTimeout = null;
-            }
-            Promise.allSettled([loadLogsOnly(), loadTrend(), loadTopDomains()]).then(() => {
-                if (signal.aborted) return;
-                requestAnimationFrame(() => {
-                    topQueriedCard.classList.remove('top-domain-card-fading');
-                    topBlockedCard.classList.remove('top-domain-card-fading');
-                });
-            });
-        };
-
-        topQueriedCard.addEventListener('transitionend', handleTransitionEnd,
-            { once: true, signal });
-
-        // Restart transition without forced synchronous reflow.
-        requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-                if (signal.aborted) return;
-                topQueriedCard.classList.add('top-domain-card-fading');
-                topBlockedCard.classList.add('top-domain-card-fading');
-
-                // Fallback timeout in case transitionend doesn't fire
-                _topDomainFadeTimeout = setTimeout(() => {
-                    if (!signal.aborted) handleTransitionEnd();
-                }, FADE_FALLBACK_MS);
-            });
-        });
     });
 }
 

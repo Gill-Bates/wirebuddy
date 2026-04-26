@@ -129,8 +129,13 @@
                 <div class="card-body d-flex justify-content-between align-items-start gap-3">
                     <div>
                         <h3 class="h6 mb-1">{{ check.title|e }}</h3>
-                        {% if check.detail_html %}
-                        <p class="mb-0 text-muted small">{{ check.detail_html|safe }}</p>
+                        {% if check.detail_parts %}
+                        <p class="mb-0 text-muted small">
+                            {% for part in check.detail_parts %}
+                            <span class="font-monospace">{{ part|e }}</span>{% if not loop.last %} &middot; {% endif %}
+                            {% endfor %}
+                            {% if check.age_label %} &middot; {{ check.age_label|e }}{% endif %}
+                        </p>
                         {% else %}
                         <p class="mb-0 text-muted small font-monospace">{{ check.detail|e }}</p>
                         {% endif %}

@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import copy
 import ipaddress
 import json
 import logging
@@ -167,7 +166,7 @@ def lookup_ip_cached(ip_text: str) -> dict | None:
         None: On lookup failure (not cached, next call retries).
     """
     try:
-        return copy.copy(_geoip_lookup_cached(ip_text))
+        return dict(_geoip_lookup_cached(ip_text))
     except Exception:
         _log.debug("GeoIP lookup failed for %s", ip_text, exc_info=True)
         return None
@@ -234,7 +233,7 @@ def format_last_seen_label(handshake_epoch: int, *, now_epoch: int | None = None
     diff = max(0, now - handshake_epoch)
     active = diff < CONNECTED_THRESHOLD_S
     if diff < 60:
-        return LastSeenLabel(text="Now", css_class="text-success fw-semibold", is_active=diff < CONNECTED_THRESHOLD_S)
+        return LastSeenLabel(text="Now", css_class="text-success fw-semibold", is_active=active)
     if diff < 3600:
         return LastSeenLabel(text=f"{diff // 60}m ago", css_class="text-muted", is_active=active)
     if diff < 86400:
@@ -249,13 +248,6 @@ class GeoFields(TypedDict):
     as_org: str | None
 
 
-_EMPTY_GEO_FIELDS: GeoFields = {
-    "country_code": None,
-    "city": None,
-    "as_org": None,
-}
-
-
 def extract_geo_fields(info: dict | None) -> GeoFields:
     """Normalize GeoIP lookup results for template display fields.
     
@@ -263,7 +255,7 @@ def extract_geo_fields(info: dict | None) -> GeoFields:
     when used in flag image paths.
     """
     if not info:
-        return dict(_EMPTY_GEO_FIELDS)
+        return {"country_code": None, "city": None, "as_org": None}
 
     country = str(info.get("country") or "").strip().lower()
     city = str(info.get("city") or "").strip() or None
@@ -283,6 +275,11 @@ def extract_geo_fields(info: dict | None) -> GeoFields:
         "city": city,
         "as_org": as_org or None,
     }
+
+
+def _strip_ipv6_zone(ip_text: str) -> str:
+    """Remove an IPv6 zone identifier such as %eth0."""
+    return ip_text.split("%", 1)[0]
 
 # ULA prefix for IPv6 private addresses (fc00::/7 = fc00:: – fdff::)
 _ULA_NETWORK = ipaddress.ip_network("fc00::/7")
@@ -314,8 +311,7 @@ def resolve_node_geo_ip(host_or_ip: str) -> str:
         return ""
 
     try:
-        # Strip IPv6 Zone-ID (e.g. "fe80::1%eth0") before parsing
-        ip_obj = ipaddress.ip_address(clean.split("%", 1)[0])
+        ip_obj = ipaddress.ip_address(_strip_ipv6_zone(clean))
         return str(ip_obj) if _is_globally_routable(ip_obj) else ""
     except ValueError:
         pass
@@ -326,7 +322,7 @@ def resolve_node_geo_ip(host_or_ip: str) -> str:
         return ""  # Cached as empty string — prevents repeated DNS timeout retries
 
     for _family, _socktype, _proto, _canonname, sockaddr in addrinfo:
-        ip_text = str(sockaddr[0]).split("%", 1)[0]
+        ip_text = _strip_ipv6_zone(str(sockaddr[0]))
         try:
             ip_obj = ipaddress.ip_address(ip_text)
             if _is_globally_routable(ip_obj):

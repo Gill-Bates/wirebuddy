@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..utils.config import get_config
-from ..utils.time import utcnow
+from ..utils.time import parse_utc, utcnow
 from ..utils import vault
 from .sqlite_interfaces import get_interface, list_interfaces
 from .sqlite_settings import get_setting
@@ -43,6 +43,25 @@ _FQDN_RE = re.compile(
 )
 
 
+def _parse_ip_or_none(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+	"""Parse a bare or bracketed IP address, or return None."""
+	try:
+		return ipaddress.ip_address(value.strip("[]"))
+	except ValueError:
+		return None
+
+
+def _parse_db_timestamp(value: Any) -> datetime | None:
+	"""Normalize a DB timestamp value to a UTC-aware datetime."""
+	if value is None:
+		return None
+	if isinstance(value, datetime):
+		return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+	if isinstance(value, str):
+		return parse_utc(value)
+	return None
+
+
 def _validate_fqdn_or_ip(fqdn: str) -> None:
 	"""Validate FQDN or IP address (v4 / bracketed v6).
 
@@ -53,12 +72,8 @@ def _validate_fqdn_or_ip(fqdn: str) -> None:
 	fqdn = fqdn.strip()
 	if not fqdn:
 		raise ValueError("FQDN cannot be empty")
-	# Accept bare or bracketed IP addresses
-	try:
-		ipaddress.ip_address(fqdn.strip("[]"))
-		return  # Valid IPv4 or IPv6
-	except ValueError:
-		pass
+	if _parse_ip_or_none(fqdn) is not None:
+		return
 	if not _FQDN_RE.match(fqdn):
 		raise ValueError(f"Invalid FQDN: {fqdn!r}")
 
@@ -72,9 +87,8 @@ def _canonicalize_fqdn_or_ip(fqdn: str) -> str:
 	"""
 	fqdn = fqdn.strip()
 	_validate_fqdn_or_ip(fqdn)
-	try:
-		addr = ipaddress.ip_address(fqdn.strip("[]"))
-	except ValueError:
+	addr = _parse_ip_or_none(fqdn)
+	if addr is None:
 		return fqdn.lower()
 	return f"[{addr.compressed}]" if addr.version == 6 else addr.compressed
 
@@ -195,22 +209,14 @@ def update_node(
 		return cur.rowcount > 0
 
 
-def delete_node(conn: sqlite3.Connection, node_id: str) -> bool:
-	"""Delete a node, its tunnel peer, and unassign regular peers.
+def delete_node(conn: sqlite3.Connection, node_id: str) -> int | None:
+	"""Delete a node and return the number of peer assignments removed.
 
 	The tunnel peer (created during enrollment for Node→Master DNS routing)
 	is deleted along with the node. Regular peers assigned to this node have
 	their node_id set to NULL (ON DELETE SET NULL).
 
 	Also removes node_interfaces rows (ON DELETE CASCADE).
-	Returns True if the node existed.
-	"""
-	return delete_node_with_unassigned_count(conn, node_id) is not None
-
-
-def delete_node_with_unassigned_count(conn: sqlite3.Connection, node_id: str) -> int | None:
-	"""Delete a node and return the definitive number of peer assignments removed.
-
 	Returns:
 		- int: number of peers that had this node assigned before deletion
 		- None: node does not exist
@@ -239,8 +245,6 @@ def delete_node_with_unassigned_count(conn: sqlite3.Connection, node_id: str) ->
 
 		conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
 		return assigned_peer_count
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Enrollment
 # ─────────────────────────────────────────────────────────────────────────────
@@ -382,12 +386,13 @@ def get_node_last_metric_seq(conn: sqlite3.Connection, node_id: str) -> int | No
 
 def set_node_last_metric_seq(conn: sqlite3.Connection, node_id: str, seq: int) -> None:
 	"""Update the last processed metric sequence for a node."""
-	if int(seq) < 0:
+	seq = int(seq)
+	if seq < 0:
 		raise ValueError("seq must be >= 0")
 	with transaction(conn, immediate=True):
 		conn.execute(
 			"UPDATE nodes SET last_metric_seq = ? WHERE id = ?",
-			(int(seq), node_id),
+			(seq, node_id),
 		)
 
 
@@ -446,23 +451,10 @@ def is_node_sse_connected(conn: sqlite3.Connection, node_id: str, max_age_second
 		"SELECT sse_connected_at FROM nodes WHERE id = ?",
 		(node_id,),
 	).fetchone()
-	if not row or not row["sse_connected_at"]:
+	if not row:
 		return False
-	# Parse timestamp
-	ts = row["sse_connected_at"]
-	if isinstance(ts, str):
-		try:
-			ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-			# Ensure timezone-aware (assume UTC if naive)
-			if ts.tzinfo is None:
-				ts = ts.replace(tzinfo=timezone.utc)
-		except ValueError:
-			return False
-	elif isinstance(ts, datetime):
-		# Ensure timezone-aware (assume UTC if naive)
-		if ts.tzinfo is None:
-			ts = ts.replace(tzinfo=timezone.utc)
-	else:
+	ts = _parse_db_timestamp(row["sse_connected_at"])
+	if ts is None:
 		return False
 	return ts >= cutoff
 
@@ -512,12 +504,7 @@ def get_and_clear_node_pending_command(conn: sqlite3.Connection, node_id: str) -
 			return None
 		
 		command = row["pending_command"]
-		
-		# Clear the command
-		conn.execute(
-			"UPDATE nodes SET pending_command = NULL WHERE id = ?",
-			(node_id,),
-		)
+		_clear_node_pending_command_locked(conn, node_id)
 		
 		return command
 
@@ -525,10 +512,15 @@ def get_and_clear_node_pending_command(conn: sqlite3.Connection, node_id: str) -
 def clear_node_pending_command(conn: sqlite3.Connection, node_id: str) -> None:
 	"""Clear any pending command for a node without returning it."""
 	with transaction(conn, immediate=True):
-		conn.execute(
-			"UPDATE nodes SET pending_command = NULL WHERE id = ?",
-			(node_id,),
-		)
+		_clear_node_pending_command_locked(conn, node_id)
+
+
+def _clear_node_pending_command_locked(conn: sqlite3.Connection, node_id: str) -> None:
+	"""Clear pending command while the caller already holds a transaction."""
+	conn.execute(
+		"UPDATE nodes SET pending_command = NULL WHERE id = ?",
+		(node_id,),
+	)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -702,6 +694,8 @@ def _build_master_peer_config(conn: sqlite3.Connection, tunnel_peer: sqlite3.Row
 def get_node_config(
 	conn: sqlite3.Connection,
 	node_id: str,
+	*,
+	pepper: str | None = None,
 ) -> dict:
 	"""Build the full configuration payload for a node.
 
@@ -710,7 +704,7 @@ def get_node_config(
 	
 	Raises ValueError if node not found.
 	"""
-	pepper = get_config().secret_key
+	pepper = pepper if pepper is not None else get_config().secret_key
 	node = get_node(conn, node_id)
 	if node is None:
 		raise ValueError(f"Node not found: {node_id}")
@@ -719,12 +713,12 @@ def get_node_config(
 	interfaces = _build_interfaces_config(conn, node_id, tunnel_peer, pepper)
 	peers = _build_peers_config(conn, node_id, pepper)
 
-	_log.info(
-		"NODE_CONFIG built for node=%s: interfaces=%d peers=%d",
-		node_id, len(interfaces), len(peers),
-	)
-
 	master_peer = _build_master_peer_config(conn, tunnel_peer)
+
+	_log.info(
+		"NODE_CONFIG built for node=%s: interfaces=%d peers=%d master_peer=%s",
+		node_id, len(interfaces), len(peers), master_peer is not None,
+	)
 
 	return {
 		"config_version": node["config_version"],
@@ -745,9 +739,10 @@ def create_node_interface(
 	interface_name: str,
 	private_key: str,
 	public_key: str,
+	pepper: str | None = None,
 ) -> None:
 	"""Store an encrypted WireGuard keypair for a node's interface."""
-	pepper = get_config().secret_key
+	pepper = pepper if pepper is not None else get_config().secret_key
 	now = utcnow()
 	with transaction(conn, immediate=True):
 		conn.execute(

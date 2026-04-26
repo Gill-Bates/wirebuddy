@@ -6,8 +6,21 @@
 (async () => {
     'use strict';
 
-    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+    const _ui = {
+        csrfMeta: document.querySelector('meta[name="csrf-token"]'),
+        errorAlert: document.getElementById('error-alert'),
+        registerBtn: document.getElementById('register-btn'),
+        registerBtnText: document.getElementById('register-btn-text'),
+        deviceName: document.getElementById('device-name'),
+        stepSetup: document.getElementById('step-setup'),
+        stepSuccess: document.getElementById('step-success'),
+        stepUnsupported: document.getElementById('step-unsupported'),
+        continueBtn: document.getElementById('continue-btn'),
+        skipBtn: document.getElementById('skip-btn'),
+    };
+    const csrfToken = _ui.csrfMeta?.getAttribute('content') || '';
     let registering = false;
+    let _registerButtonText = '';
 
     // Friendly error messages (prevent server internals from leaking)
     const FRIENDLY_ERRORS = {
@@ -54,25 +67,37 @@
     // UI Helpers
     // ============================================================================
 
-    function showError(msg) {
-        const el = document.getElementById('error-alert');
-        if (!el) return;
-        el.textContent = msg;
-        el.style.display = 'block';
+    function _toggleError(show, msg = '') {
+        if (!_ui.errorAlert) return;
+        _ui.errorAlert.textContent = msg;
+        _ui.errorAlert.style.display = show ? 'block' : 'none';
     }
 
-    function hideError() {
-        const el = document.getElementById('error-alert');
-        if (el) el.style.display = 'none';
+    function _showStep(visibleStep) {
+        const steps = {
+            setup: _ui.stepSetup,
+            success: _ui.stepSuccess,
+            unsupported: _ui.stepUnsupported,
+        };
+
+        for (const [stepName, el] of Object.entries(steps)) {
+            if (!el) continue;
+            el.style.display = stepName === visibleStep ? 'block' : 'none';
+        }
     }
 
-    function showFatalError(context, error) {
-        console.error(`Passkey setup ${context}:`, error);
-        showError('Failed to initialize passkey setup. Please reload the page.');
-    }
+    function _setRegisterButton(loading) {
+        const btn = _ui.registerBtn;
+        const btnText = _ui.registerBtnText;
+        if (!btn || !btnText) return;
 
-    function setButtonLoading(btnText, loading, originalText) {
+        btn.disabled = loading;
+        btn.toggleAttribute('aria-busy', loading);
+
         if (loading) {
+            if (!_registerButtonText) {
+                _registerButtonText = btnText.textContent || 'Register Passkey';
+            }
             btnText.textContent = '';
             const spinner = document.createElement('span');
             spinner.className = 'spinner-border spinner-border-sm align-middle me-1';
@@ -82,7 +107,7 @@
             label.textContent = 'Registering…';
             btnText.append(spinner, label);
         } else {
-            btnText.textContent = originalText;
+            btnText.textContent = _registerButtonText || 'Register Passkey';
         }
     }
 
@@ -264,20 +289,16 @@
     async function registerPasskey() {
         if (registering) return;
 
-        const btn = document.getElementById('register-btn');
-        const btnText = document.getElementById('register-btn-text');
+        const btn = _ui.registerBtn;
+        const btnText = _ui.registerBtnText;
         if (!btn || !btnText) {
             registering = false;
             return;
         }
 
         registering = true;
-        hideError();
-        const originalText = btnText.textContent;
-
-        btn.disabled = true;
-        btn.setAttribute('aria-busy', 'true');
-        setButtonLoading(btnText, true, originalText);
+        _toggleError(false);
+        _setRegisterButton(true);
 
         // AbortController for timeout
         const abortController = new AbortController();
@@ -312,10 +333,7 @@
             });
 
             // 4. Success - show success state
-            const stepSetup = document.getElementById('step-setup');
-            const stepSuccess = document.getElementById('step-success');
-            if (stepSetup) stepSetup.style.display = 'none';
-            if (stepSuccess) stepSuccess.style.display = 'block';
+            _showStep('success');
 
         } catch (error) {
             // Use friendly error messages
@@ -323,13 +341,11 @@
                 (error.message && error.message.length < 200
                     ? error.message
                     : 'Failed to register passkey. Please try again.');
-            showError(friendlyMsg);
+            _toggleError(true, friendlyMsg);
         } finally {
             clearTimeout(timeoutId);
             registering = false;
-            btn.disabled = false;
-            btn.removeAttribute('aria-busy');
-            setButtonLoading(btnText, false, originalText);
+            _setRegisterButton(false);
         }
     }
 
@@ -341,48 +357,38 @@
         const isSupported = checkWebAuthnSupport();
 
         if (!isSupported) {
-            const stepSetup = document.getElementById('step-setup');
-            const stepUnsupported = document.getElementById('step-unsupported');
-            if (stepSetup) stepSetup.style.display = 'none';
-            if (stepUnsupported) stepUnsupported.style.display = 'block';
+            _showStep('unsupported');
             return;
         }
 
-        const registerBtn = document.getElementById('register-btn');
-        if (registerBtn) {
-            registerBtn.addEventListener('click', registerPasskey);
+        if (_ui.registerBtn) {
+            _ui.registerBtn.addEventListener('click', registerPasskey);
         }
 
         // Get safe redirect URL from page data or use default
         const redirectUrl = getSafeRedirectUrl();
 
-        const continueBtn = document.getElementById('continue-btn');
-        if (continueBtn) {
-            continueBtn.addEventListener('click', () => {
-                window.location.href = redirectUrl;
-            }, { once: true });
-        }
+        const redirectToSafeUrl = () => {
+            window.location.href = redirectUrl;
+        };
 
-        const skipBtn = document.getElementById('skip-btn');
-        if (skipBtn) {
-            skipBtn.addEventListener('click', () => {
-                window.location.href = redirectUrl;
-            }, { once: true });
-        }
+        [_ui.continueBtn, _ui.skipBtn].forEach(btn => {
+            if (btn) btn.addEventListener('click', redirectToSafeUrl, { once: true });
+        });
 
         // Focus device name input
-        const deviceNameInput = document.getElementById('device-name');
-        if (deviceNameInput) {
-            deviceNameInput.focus();
-        }
+        _ui.deviceName?.focus();
     }
 
-    // Run init when DOM is ready
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-            init().catch(error => showFatalError('initialization failed', error));
-        });
-    } else {
+    try {
+        if (document.readyState === 'loading') {
+            await new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
+        }
         await init();
+    } catch (error) {
+        console.error('Passkey setup fatal error:', error);
+        _toggleError(true, 'Failed to initialize passkey setup. Please reload the page.');
     }
-})().catch(error => showFatalError('fatal error', error));
+})().catch(error => {
+    console.error('Passkey setup fatal error:', error);
+});

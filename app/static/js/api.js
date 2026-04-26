@@ -26,18 +26,17 @@ function stopReconnectModeSafe() {
 }
 
 function getReconnectStateSafe() {
-    if (typeof _wbReconnectState !== 'undefined' && _wbReconnectState) {
-        return _wbReconnectState;
-    }
-    if (window._wbReconnectState) {
-        return window._wbReconnectState;
+    if (window.WBReconnect?.isActive?.()) {
+        return { active: true };
     }
     return null;
 }
 
 // CSRF token helper
 function getCsrfToken() {
-    const token = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    const token = document.querySelector('meta[name="csrf-token"]')?.content
+        || document.body?.dataset?.csrfToken
+        || '';
     if (!token) {
         console.error('CSRF token meta tag is missing; state-changing requests may fail.');
     }
@@ -87,7 +86,7 @@ async function logout() {
  * @param {'GET'|'POST'|'PUT'|'PATCH'|'DELETE'} method
  * @param {string} url
  * @param {object|null} [data=null]
- * @param {{timeoutMs?: number|false, signal?: AbortSignal}} [opts={}]
+ * @param {{timeoutMs?: number|false, signal?: AbortSignal, skipAuthRedirect?: boolean}} [opts={}]
  * @returns {Promise<any>}
  * @throws {ApiError}
  */
@@ -111,6 +110,7 @@ async function api(method, url, data = null, opts = {}) {
             ? Number(rawTimeout)
             : 15000;
     const externalSignal = opts?.signal || null;
+    const skipAuthRedirect = opts?.skipAuthRedirect === true;
     const controller = new AbortController();
     let timeoutAbort = false;
     let timeoutId = null;
@@ -168,7 +168,7 @@ async function api(method, url, data = null, opts = {}) {
     }
 
     // Auto-redirect on 401 Unauthorized
-    if (res.status === 401) {
+    if (res.status === 401 && !skipAuthRedirect) {
         clearSessionData();
         if (!window.location.pathname.startsWith('/login')) {
             window.location.href = '/login';
@@ -197,7 +197,10 @@ async function api(method, url, data = null, opts = {}) {
             msg = typeof payload.message === 'string' ? payload.message : String(payload.message);
         }
         msg = msg.slice(0, MAX_API_ERROR_MESSAGE_LENGTH);
-        throw new ApiError(msg, `HTTP_${res.status}`);
+        const error = new ApiError(msg, `HTTP_${res.status}`);
+        error.status = res.status;
+        error.retryAfter = res.headers.get('Retry-After');
+        throw error;
     }
 
     if (res.status === 204) return null;

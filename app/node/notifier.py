@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 _log = logging.getLogger(__name__)
 
@@ -37,6 +38,16 @@ _sync_lock = threading.Lock()  # For sync/thread access
 _QUEUE_SIZE = 1
 # SSE keepalive interval to prevent proxy timeouts
 _KEEPALIVE_INTERVAL = 25
+
+_MAX_NODE_ID_LEN = 64
+_NODE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+
+def _validate_node_id(node_id: str) -> str:
+    """Validate node ID to prevent injection and memory issues."""
+    if len(node_id) > _MAX_NODE_ID_LEN or not _NODE_ID_RE.fullmatch(node_id):
+        raise ValueError(f"Invalid node_id: {node_id!r}")
+    return node_id
 
 
 def _sanitize_sse_value(value: str) -> str:
@@ -81,6 +92,51 @@ def _enqueue_latest(queue: asyncio.Queue[str], event: str) -> bool:
         return False
 
 
+async def _race(
+    queue: asyncio.Queue[str],
+    shutdown_event: asyncio.Event | None,
+    timeout: float,
+) -> str | None:
+    """Return queue item, None for timeout, or ""-sentinel for shutdown."""
+    if shutdown_event is None:
+        try:
+            return await asyncio.wait_for(queue.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+
+    queue_task = asyncio.create_task(queue.get())
+    shutdown_task = asyncio.create_task(shutdown_event.wait())
+    
+    wait_tasks = [queue_task, shutdown_task]
+    try:
+        done, pending = await asyncio.wait(
+            wait_tasks,
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        if shutdown_task in done:
+            queue_task.cancel()
+            await asyncio.gather(queue_task, return_exceptions=True)
+            return ""  # shutdown sentinel
+        
+        if queue_task in done:
+            shutdown_task.cancel()
+            await asyncio.gather(shutdown_task, return_exceptions=True)
+            return queue_task.result()
+            
+        return None  # timeout
+    except asyncio.CancelledError:
+        for task in wait_tasks:
+            task.cancel()
+        await asyncio.gather(*wait_tasks, return_exceptions=True)
+        raise
+
+
 async def subscribe(
     node_id: str,
     shutdown_event: asyncio.Event | None = None,
@@ -89,7 +145,9 @@ async def subscribe(
     
     Yields SSE-formatted event strings when config changes.
     """
+    node_id = _validate_node_id(node_id)
     queue: asyncio.Queue[str] = asyncio.Queue(maxsize=_QUEUE_SIZE)
+    
     async with _lock:
         _node_queues.setdefault(node_id, set()).add(queue)
         client_count = len(_node_queues[node_id])
@@ -98,49 +156,14 @@ async def subscribe(
     try:
         close_event = _format_sse_event("close", "server_shutdown")
         while True:
-            if shutdown_event is not None and shutdown_event.is_set():
+            result = await _race(queue, shutdown_event, _KEEPALIVE_INTERVAL)
+            if result == "":
                 yield close_event
                 break
-
-            queue_task = asyncio.create_task(queue.get())
-            shutdown_task = (
-                asyncio.create_task(shutdown_event.wait())
-                if shutdown_event is not None
-                else None
-            )
-            wait_tasks = [queue_task]
-            if shutdown_task is not None:
-                wait_tasks.append(shutdown_task)
-
-            try:
-                done, pending = await asyncio.wait(
-                    wait_tasks,
-                    timeout=_KEEPALIVE_INTERVAL,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-            except asyncio.CancelledError:
-                for task in wait_tasks:
-                    task.cancel()
-                await asyncio.gather(*wait_tasks, return_exceptions=True)
-                raise
-
-            for task in pending:
-                task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
-
-            if shutdown_task is not None and shutdown_task in done:
-                yield close_event
-                await asyncio.gather(queue_task, return_exceptions=True)
-                break
-
-            if queue_task in done:
-                yield queue_task.result()
+            if result is None:
+                yield ": keepalive\n\n"
                 continue
-
-            # Timeout: send keepalive comment to prevent proxy timeout.
-            await asyncio.gather(queue_task, return_exceptions=True)
-            yield ": keepalive\n\n"
+            yield result
     except asyncio.CancelledError:
         _log.debug("SSE client cancelled for node %s", node_id)
         raise
@@ -168,66 +191,24 @@ async def subscribe(
         _log.debug("Node %s unsubscribed from config events", node_id)
 
 
-async def notify_config_changed(node_id: str, config_version: str) -> int:
-    """Notify all connected clients for a node that config has changed.
-    
-    Returns the number of clients notified or queued.
-    """
-    async with _lock:
-        queues = _node_queues.get(node_id, set()).copy()
-    
-    if queues:
-        # SSE event format with id for replay support.
-        event = _format_sse_event(
-            event_type="config_changed",
-            data=config_version,
-            event_id=config_version,
-        )
+async def _queue_db_command(node_id: str, command: str) -> bool:
+    """Queue a pending command in SQLite for multi-worker delivery."""
+    from ..db.sqlite_runtime import connect
+    from ..db.sqlite_nodes import set_node_pending_command
+    from ..utils.config import get_config
 
-        notified = 0
-        for queue in queues:
-            if _enqueue_latest(queue, event):
-                notified += 1
-            else:
-                _log.warning("Failed to enqueue config change for node %s (queue full)", node_id)
-
-        _log.debug(
-            "Notified %d SSE client(s) for node %s: config_version=%s",
-            notified, node_id, _short_version(config_version),
-        )
-        return notified
-
-    # No SSE clients in this worker: if the node is connected elsewhere, queue a
-    # config_changed command in DB so the next keepalive picks it up immediately.
-    if await is_node_connected(node_id):
-        from ..db.sqlite_runtime import connect
-        from ..db.sqlite_nodes import set_node_pending_command
-        from ..utils.config import get_config
-
-        cfg = get_config()
-        try:
-            def _queue_cmd():
-                conn = connect(cfg.db_path)
-                try:
-                    return set_node_pending_command(conn, node_id, "config_changed")
-                finally:
-                    conn.close()
-
-            queued = await asyncio.to_thread(_queue_cmd)
-            if queued:
-                _log.debug(
-                    "Queued config_changed in DB for node %s: config_version=%s",
-                    node_id, _short_version(config_version),
-                )
-                return 1
-        except Exception as exc:
-            _log.warning("Failed to queue config_changed for node %s: %s", node_id, exc)
-
-    _log.debug(
-        "No SSE clients connected for node %s (config_version=%s) — node will sync on next poll",
-        node_id, _short_version(config_version),
-    )
-    return 0
+    cfg = get_config()
+    try:
+        def _queue():
+            conn = connect(cfg.db_path)
+            try:
+                return set_node_pending_command(conn, node_id, command)
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_queue)
+    except Exception as exc:
+        _log.warning("Failed to queue %s command for node %s: %s", command, node_id, exc)
+        return False
 
 
 async def get_connected_nodes() -> list[str]:
@@ -301,6 +282,8 @@ async def _notify_or_queue(
     event_data: str,
     db_command: str,
     action_name: str,
+    *,
+    event_id: str | None = None,
 ) -> int:
     """Send SSE event to node or queue command in DB (multi-worker safe).
     
@@ -310,17 +293,20 @@ async def _notify_or_queue(
         event_data: SSE event data payload
         db_command: DB command to queue if SSE unavailable
         action_name: Human-readable action name for logging
+        event_id: Optional ID for the SSE event
     
     Returns:
         Number of clients notified (>0 if delivered or queued)
     """
+    node_id = _validate_node_id(node_id)
+    
     # Try direct notification to SSE clients in current worker
     async with _lock:
         queues = _node_queues.get(node_id, set()).copy()
     
     if queues:
         # Have direct SSE connection in this worker - send immediately
-        event = _format_sse_event(event_type=event_type, data=event_data)
+        event = _format_sse_event(event_type=event_type, data=event_data, event_id=event_id)
         
         notified = 0
         for queue in queues:
@@ -334,30 +320,29 @@ async def _notify_or_queue(
     
     # No SSE clients in current worker - check if connected to another worker
     if await is_node_connected(node_id):
-        # Node has SSE connection in another worker - queue command in DB
-        from ..db.sqlite_runtime import connect
-        from ..db.sqlite_nodes import set_node_pending_command
-        from ..utils.config import get_config
-        
-        cfg = get_config()
-        try:
-            def _queue_cmd():
-                conn = connect(cfg.db_path)
-                try:
-                    return set_node_pending_command(conn, node_id, db_command)
-                finally:
-                    conn.close()
-            
-            queued = await asyncio.to_thread(_queue_cmd)
-            if queued:
-                _log.info("Queued %s command in DB for node %s (SSE in other worker)", action_name, node_id)
-                return 1
-        except Exception as exc:
-            _log.warning("Failed to queue %s command for node %s: %s", action_name, node_id, exc)
+        queued = await _queue_db_command(node_id, db_command)
+        if queued:
+            _log.info("Queued %s command in DB for node %s (SSE in other worker)", action_name, node_id)
+            return 1
     
     # No SSE connection anywhere
     _log.warning("No SSE clients connected for node %s — cannot send %s signal", node_id, action_name)
     return 0
+
+
+async def notify_config_changed(node_id: str, config_version: str) -> int:
+    """Notify all connected clients for a node that config has changed.
+    
+    Returns the number of clients notified or queued.
+    """
+    return await _notify_or_queue(
+        node_id=node_id,
+        event_type="config_changed",
+        event_data=config_version,
+        db_command="config_changed",
+        action_name="config change",
+        event_id=config_version,
+    )
 
 
 async def notify_restart(node_id: str) -> int:
@@ -414,4 +399,3 @@ async def notify_node_removed(node_id: str) -> int:
         db_command="removed",
         action_name="removal",
     )
-

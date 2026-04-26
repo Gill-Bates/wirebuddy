@@ -21,9 +21,14 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 
+def _split_comma_separated(value: str | None) -> list[str]:
+    """Split a comma-separated string into cleaned, non-empty parts."""
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+
 def _strip_dns_decorators(raw: str) -> str:
     """Strip common DNS address suffixes (e.g. '#53', '%eth0')."""
-    value = str(raw or "").strip()
+    value = raw.strip()
     if not value:
         return ""
     value = value.split("#", 1)[0]
@@ -31,22 +36,32 @@ def _strip_dns_decorators(raw: str) -> str:
     return value.strip()
 
 
+def _host_prefix(ip: IPv4Address | IPv6Address) -> int:
+    """Return the host prefix length for an IP address."""
+    return 32 if ip.version == 4 else 128
+
+
 def _normalize_entry(entry: str) -> str:
     """Normalize CIDR/IP entries for de-duplication comparisons."""
     try:
         return str(ipaddress.ip_network(entry, strict=False))
     except ValueError:
-        return str(entry)
+        return entry
 
 
-def _is_covered(
-    ip_obj: IPv4Address | IPv6Address,
-    existing_networks_v4: list[IPv4Network],
-    existing_networks_v6: list[IPv6Network],
-) -> bool:
-    """Return True if ip_obj is covered by existing networks."""
-    candidates = existing_networks_v4 if ip_obj.version == 4 else existing_networks_v6
-    return any(ip_obj in net for net in candidates)
+class _NetworkIndex:
+    """Index that tracks IPv4 and IPv6 networks separately."""
+
+    __slots__ = ("_networks",)
+
+    def __init__(self) -> None:
+        self._networks: dict[int, list[IPv4Network | IPv6Network]] = {4: [], 6: []}
+
+    def add(self, network: IPv4Network | IPv6Network) -> None:
+        self._networks[network.version].append(network)
+
+    def covers(self, ip_obj: IPv4Address | IPv6Address) -> bool:
+        return any(ip_obj in network for network in self._networks[ip_obj.version])
 
 
 def parse_ip(value: str | None) -> IPv4Address | IPv6Address | None:
@@ -54,8 +69,7 @@ def parse_ip(value: str | None) -> IPv4Address | IPv6Address | None:
     if not value:
         return None
     try:
-        # Keep str() for runtime robustness in case non-str values leak through.
-        parsed = ipaddress.ip_address(str(value).strip())
+        parsed = ipaddress.ip_address(value.strip())
     except ValueError:
         return None
     if isinstance(parsed, IPv6Address) and parsed.ipv4_mapped:
@@ -89,48 +103,40 @@ def allowed_ips_with_dns_routes(
     if not use_adblocker:
         return allowed_ips
 
-    items = [x.strip() for x in (allowed_ips or "").split(",") if x.strip()]
-    original_allowed_ips = allowed_ips
+    items = _split_comma_separated(allowed_ips)
 
     # Parse existing networks once; ignore malformed entries but keep them as-is.
-    existing_networks_v4: list[IPv4Network] = []
-    existing_networks_v6: list[IPv6Network] = []
+    index = _NetworkIndex()
     for entry in items:
         try:
             network = ipaddress.ip_network(entry, strict=False)
         except ValueError:
             _log.warning("ALLOWED_IPS_MALFORMED entry=%r (kept as-is)", entry)
             continue
-        if isinstance(network, IPv4Network):
-            existing_networks_v4.append(network)
-        elif isinstance(network, IPv6Network):
-            existing_networks_v6.append(network)
+        index.add(network)
 
-    dns_items = [x.strip() for x in (dns_servers or "").split(",") if x.strip()]
-    routes_added = False
+    dns_items = _split_comma_separated(dns_servers)
+    new_routes: list[str] = []
     for dns in dns_items:
         ip_obj = parse_ip(_strip_dns_decorators(dns))
         if ip_obj is None:
             _log.warning("DNS_SERVER_MALFORMED entry=%r (ignored for route injection)", dns)
             continue
-        if _is_covered(ip_obj, existing_networks_v4, existing_networks_v6):
+        if index.covers(ip_obj):
             continue
 
-        host_route = f"{ip_obj}/32" if ip_obj.version == 4 else f"{ip_obj}/128"
-        items.append(host_route)
-        routes_added = True
-        if ip_obj.version == 4:
-            existing_networks_v4.append(ipaddress.ip_network(host_route, strict=False))
-        else:
-            existing_networks_v6.append(ipaddress.ip_network(host_route, strict=False))
+        prefix = _host_prefix(ip_obj)
+        host_route = f"{ip_obj}/{prefix}"
+        new_routes.append(host_route)
+        index.add(ipaddress.ip_network((ip_obj, prefix), strict=False))
 
-    if not routes_added:
-        return original_allowed_ips
+    if not new_routes:
+        return allowed_ips
 
     # De-duplicate while preserving order.
     seen: set[str] = set()
     result: list[str] = []
-    for entry in items:
+    for entry in items + new_routes:
         normalized = _normalize_entry(entry)
         if normalized in seen:
             continue

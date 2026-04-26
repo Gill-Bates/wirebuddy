@@ -1,3 +1,15 @@
+## [1.4.5] - 2026-04-26
+
+- ``Fix`` Various improvements to the GUI and fixes for display errors
+- ``Fix`` Peers connected via a node did not display traffic details in the statistics
+- ``Fix`` After restarting the Docker container, the Speedtest results from the last run were gone
+- ``Fix`` Numerous stability improvements in the Wirebuddy engine
+- ``Fix`` Update Python dependencies
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.4.4] - 2026-04-20
 
 - ``New`` SVG flags removed from the Docker image and replaced with CDN Load
@@ -5,12 +17,7 @@
 - ``Fix`` 🔥 A bug in the passkey validation process allowed users to log in even if their passkey had been deleted
 - ``Fix`` When a token is regenerated for a node, the associated peer is left orphaned
 - ``Fix`` Front-end performance improvements
-- ``Fix`` Numerous stability improvements in the Wirebuddy engine
 - ``Fix`` Update Python dependencies
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.4.3] - 2026-04-10
 

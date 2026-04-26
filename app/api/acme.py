@@ -20,7 +20,7 @@ import sqlite3
 import tempfile
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path as PathLib
 from typing import Optional
 
@@ -44,6 +44,10 @@ router = APIRouter(tags=["acme"])
 # Let's Encrypt ACME endpoints
 ACME_DIRECTORY_PROD = "https://acme-v02.api.letsencrypt.org/directory"
 ACME_DIRECTORY_STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
+# Domain name validation pattern (RFC 1123 hostname)
+# Used by CertificateRequest model and delete_certificate path parameter
+_DOMAIN_PATTERN = r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$"
 
 # Challenge TTL in seconds (10 minutes)
 CHALLENGE_TTL = 600
@@ -100,7 +104,7 @@ def _release_domain_lock(fd: int) -> None:
 
 class CertificateRequest(BaseModel):
 	"""Request to issue a new certificate."""
-	domain: str = Field(..., min_length=1, max_length=253, pattern=r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$")
+	domain: str = Field(..., min_length=1, max_length=253, pattern=_DOMAIN_PATTERN)
 	email: EmailStr
 	staging: bool = Field(default=False, description="Use staging environment for testing")
 
@@ -129,16 +133,11 @@ class ChallengeStatus(BaseModel):
 # Helper Functions
 # ---------------------------------------------------------------------------
 
-def _get_certs_dir(config: Config) -> PathLib:
-	"""Get the certificates directory."""
+def get_certs_dir(config: Config) -> PathLib:
+	"""Public wrapper for certificate directory resolution."""
 	certs_dir = config.data_dir / "certs"
 	certs_dir.mkdir(parents=True, exist_ok=True)
 	return certs_dir
-
-
-def get_certs_dir(config: Config) -> PathLib:
-	"""Public wrapper for certificate directory resolution."""
-	return _get_certs_dir(config)
 
 
 def _b64url(data: bytes) -> str:
@@ -215,6 +214,7 @@ class ACMEClient:
 		self.account_key: Optional[ec.EllipticCurvePrivateKey] = None
 		self.account_url: Optional[str] = None
 		self.http_client: Optional[httpx.AsyncClient] = None
+		self._cached_thumbprint: str | None = None
 		
 		# Paths
 		self.account_key_path = certs_dir / "account_key.pem"
@@ -301,6 +301,12 @@ class ACMEClient:
 			"y": _b64url(y_bytes),
 		}
 	
+	def _get_jwk_thumbprint(self) -> str:
+		"""Return JWK thumbprint, computing and caching it on first call."""
+		if self._cached_thumbprint is None:
+			self._cached_thumbprint = _jwk_thumbprint(self._get_jwk())
+		return self._cached_thumbprint
+
 	def _sign_payload(self, payload: bytes) -> bytes:
 		"""Sign payload with account key (ES256)."""
 		if not self.account_key:
@@ -370,7 +376,7 @@ class ACMEClient:
 		self.account_key = self._load_or_create_account_key()
 		
 		# Calculate current key thumbprint
-		current_thumbprint = _jwk_thumbprint(self._get_jwk())
+		current_thumbprint = self._get_jwk_thumbprint()
 		
 		# Check for existing account URL
 		if self.account_url_path.exists():
@@ -444,8 +450,7 @@ class ACMEClient:
 		for challenge in authorization.get("challenges", []):
 			if challenge["type"] == "http-01":
 				token = challenge["token"]
-				thumbprint = _jwk_thumbprint(self._get_jwk())
-				key_auth = f"{token}.{thumbprint}"
+				key_auth = f"{token}.{self._get_jwk_thumbprint()}"
 				return token, key_auth
 		
 		raise HTTPException(status_code=400, detail="No HTTP-01 challenge found")
@@ -481,12 +486,9 @@ class ACMEClient:
 		
 		raise HTTPException(status_code=408, detail="Timeout waiting for order to be ready")
 	
-	async def finalize_order(self, finalize_url: str, order_url: str, domain: str) -> tuple[bytes, bytes]:
-		"""Finalize order with CSR and get certificate."""
-		# Generate domain key
+	def _generate_domain_key_and_csr(self, domain: str) -> tuple[bytes, bytes]:
+		"""Generate RSA domain key and CSR (CPU-intensive, run in threadpool)."""
 		domain_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-		
-		# Create CSR with SAN extension (required by Let's Encrypt)
 		csr = (
 			x509.CertificateSigningRequestBuilder()
 			.subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, domain)]))
@@ -496,8 +498,18 @@ class ACMEClient:
 			)
 			.sign(domain_key, hashes.SHA256())
 		)
-		
 		csr_der = csr.public_bytes(serialization.Encoding.DER)
+		key_pem = domain_key.private_bytes(
+			encoding=serialization.Encoding.PEM,
+			format=serialization.PrivateFormat.PKCS8,
+			encryption_algorithm=serialization.NoEncryption(),
+		)
+		return csr_der, key_pem
+
+	async def finalize_order(self, finalize_url: str, order_url: str, domain: str) -> tuple[bytes, bytes]:
+		"""Finalize order with CSR and get certificate."""
+		# Generate domain key + CSR in a threadpool (RSA keygen is CPU-intensive)
+		csr_der, key_pem = await asyncio.to_thread(self._generate_domain_key_and_csr, domain)
 		
 		payload = {"csr": _b64url(csr_der)}
 		resp = await self._signed_request(finalize_url, payload)
@@ -522,11 +534,6 @@ class ACMEClient:
 			raise HTTPException(status_code=500, detail=f"Failed to download certificate: {_parse_acme_error(cert_resp)}")
 		
 		cert_pem = cert_resp.text.encode("utf-8")
-		key_pem = domain_key.private_bytes(
-			encoding=serialization.Encoding.PEM,
-			format=serialization.PrivateFormat.PKCS8,
-			encryption_algorithm=serialization.NoEncryption(),
-		)
 		
 		return cert_pem, key_pem
 	
@@ -663,7 +670,7 @@ def _remove_challenge(certs_dir: PathLib, token: str) -> None:
 			f.flush()
 
 
-def get_challenge_response(token: str, certs_dir: Optional[PathLib] = None) -> Optional[str]:
+def get_challenge_response(token: str, certs_dir: PathLib | None = None) -> str | None:
 	"""Get challenge response for ACME HTTP-01 validation.
 	
 	MULTI-WORKER SAFETY: With multiple Uvicorn workers, the in-memory cache
@@ -708,7 +715,7 @@ async def list_certificates(
 	_: sqlite3.Row = Depends(get_current_user),
 ) -> dict:
 	"""List all certificates."""
-	certificates = _list_certificates_internal(certs_dir)
+	certificates = await asyncio.to_thread(_list_certificates_internal, certs_dir)
 	return ok_response(data=certificates)
 
 
@@ -719,7 +726,7 @@ def _list_certificates_internal(certs_dir: PathLib) -> list[CertificateInfo]:
 	if not certs_dir.exists():
 		return certificates
 	
-	now = datetime.now(timezone.utc)
+	now = datetime.now(UTC)
 	renewal_threshold = timedelta(days=30)
 	
 	for domain_dir in certs_dir.iterdir():
@@ -835,21 +842,19 @@ async def request_certificate(
 				# Finalize order
 				cert_pem, key_pem = await client.finalize_order(order["finalize"], order_url, req.domain)
 				
-				# Save certificate
-				cert_dir = client.save_certificate(req.domain, cert_pem, key_pem, is_staging=req.staging)
+				# Save certificate (blocking file I/O — offload to thread)
+				cert_dir = await asyncio.to_thread(
+					client.save_certificate, req.domain, cert_pem, key_pem, req.staging
+				)
 				
+				suffix = "_staging" if req.staging else ""
 				return ok_response(
 					message="Certificate issued successfully",
-					success=True,
-					domain=req.domain,
-					staging=req.staging,
-					cert_path=str(cert_dir / ("fullchain_staging.pem" if req.staging else "fullchain.pem")),
-					key_path=str(cert_dir / ("privkey_staging.pem" if req.staging else "privkey.pem")),
 					data={
 						"domain": req.domain,
 						"staging": req.staging,
-						"cert_path": str(cert_dir / ("fullchain_staging.pem" if req.staging else "fullchain.pem")),
-						"key_path": str(cert_dir / ("privkey_staging.pem" if req.staging else "privkey.pem")),
+						"cert_path": str(cert_dir / f"fullchain{suffix}.pem"),
+						"key_path": str(cert_dir / f"privkey{suffix}.pem"),
 					},
 				)
 			
@@ -860,10 +865,6 @@ async def request_certificate(
 	
 	finally:
 		_release_domain_lock(lock_fd)
-
-
-# Domain name validation pattern (RFC 1123 hostname)
-_DOMAIN_PATTERN = r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$"
 
 
 @router.delete("/certificates/{domain}")

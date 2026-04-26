@@ -512,7 +512,7 @@ Configure alerts for:
 
 1. **Immediately:**
    - Change admin passwords
-   - Revoke all API tokens
+    - Revoke all active sessions/auth tokens
    - Revoke all user sessions
    - Disable affected users
 
@@ -596,7 +596,7 @@ If admin device is lost/stolen:
 - [ ] Apply updates monthly (security patches immediately)
 - [ ] Review audit logs weekly
 - [ ] Check active sessions weekly
-- [ ] Rotate API tokens quarterly
+- [ ] Rotate/reissue automation auth sessions regularly
 - [ ] Review user accounts monthly
 - [ ] Backup data weekly (encrypted)
 - [ ] Test restore procedure quarterly

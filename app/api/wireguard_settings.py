@@ -12,7 +12,6 @@ import ipaddress
 import logging
 import sqlite3
 from enum import Enum
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
@@ -88,24 +87,24 @@ def _mask_secret(value: str, *, reveal: int = 4) -> str:
 
 class WgSettingsPayload(BaseModel):
 	"""Payload for WireGuard global settings."""
-	wg_fqdn: Optional[str] = Field(
+	wg_fqdn: str | None = Field(
 		None,
 		max_length=256,
 		pattern=r"^[a-zA-Z0-9.\-:]+$",
 		description="Server FQDN or IP address",
 	)
-	wg_port: Optional[int] = Field(None, ge=1, le=65535, description="WireGuard listen port")
-	wg_mtu: Optional[int] = Field(None, ge=1280, le=9000, description="Global MTU value (1280-9000)")
-	wg_persistent_keepalive: Optional[int] = Field(None, ge=0, le=600, description="Persistent keepalive in seconds")
+	wg_port: int | None = Field(None, ge=1, le=65535, description="WireGuard listen port")
+	wg_mtu: int | None = Field(None, ge=1280, le=9000, description="Global MTU value (1280-9000)")
+	wg_persistent_keepalive: int | None = Field(None, ge=0, le=600, description="Persistent keepalive in seconds")
 	# Issue #7: real booleans instead of '0'/'1' strings — get_db_value() handles
 	# the conversion to the '0'/'1' format required by SQLite.
-	wg_use_psk: Optional[bool] = Field(None, description="Enable PresharedKey")
-	gui_port: Optional[int] = Field(None, ge=1, le=65535, description="HTTP port for the web UI")
-	gui_external_port: Optional[int] = Field(None, ge=1, le=65535, description="External port for node enrollment (reverse proxy)")
-	gui_localhost_only: Optional[bool] = Field(None, description="Only listen on localhost")
-	enable_status_page: Optional[bool] = Field(None, description="Enable public internal status page")
-	enable_swagger: Optional[bool] = Field(None, description="Enable Swagger API documentation")
-	traffic_analysis_enabled: Optional[bool] = Field(None, description="Enable traffic country analysis")
+	wg_use_psk: bool | None = Field(None, description="Enable PresharedKey")
+	gui_port: int | None = Field(None, ge=1, le=65535, description="HTTP port for the web UI")
+	gui_external_port: int | None = Field(None, ge=1, le=65535, description="External port for node enrollment (reverse proxy)")
+	gui_localhost_only: bool | None = Field(None, description="Only listen on localhost")
+	enable_status_page: bool | None = Field(None, description="Enable public internal status page")
+	enable_swagger: bool | None = Field(None, description="Enable Swagger API documentation")
+	traffic_analysis_enabled: bool | None = Field(None, description="Enable traffic country analysis")
 
 	def get_db_value(self, field: str) -> str | None:
 		"""Return the DB-storable string for ``field`` (converts bool → '0'/'1')."""
@@ -126,7 +125,7 @@ class WgSettingsPayload(BaseModel):
 
 	@field_validator("wg_fqdn")
 	@classmethod
-	def validate_fqdn(cls, v: Optional[str]) -> Optional[str]:
+	def validate_fqdn(cls, v: str | None) -> str | None:
 		"""Reject obviously malformed FQDNs (double dots, leading/trailing dots)."""
 		if v is None:
 			return v
@@ -289,8 +288,7 @@ def get_dns_for_peer(
 
 	dns_servers = [str(ipv4_iface.ip)]
 
-	# Issue #4: sqlite3.Row raises IndexError on missing keys, not KeyError.
-	# Use direct access guarded by a keys() check.
+	# sqlite3.Row support dictionary-like access; keys() is available.
 	iface_address6: str | None = iface["address6"] if "address6" in iface.keys() else None
 	if peer_address and iface_address6:
 		if _peer_has_ipv6(peer_address):

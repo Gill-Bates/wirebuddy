@@ -122,12 +122,13 @@ Allow: 10.8.0.0/24
 
 ## Passkey Configuration
 
-**Settings → Security → Passkeys**
+Passkeys are managed per user (via user management UI and passkey API), not via a global passkey policy screen in Settings.
 
-- **Enable Passkeys:** Allow WebAuthn authentication
-- **Require User Verification:** Fingerprint/PIN on security key
-- **Attestation:** None (default), Direct, or Indirect
-- **Authenticator Attachment:** Platform (Touch ID) and/or Cross-platform (security keys)
+Current behavior:
+
+- Users can register/login with WebAuthn passkeys.
+- Admins can enable onboarding, disable passkeys, and reset all passkeys per user.
+- RP identity is controlled via environment (`PASSKEY_RP_ID`, `PASSKEY_RP_NAME`).
 
 See [Passkeys Guide](../security/passkeys.md).
 

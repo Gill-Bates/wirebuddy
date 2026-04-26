@@ -25,7 +25,7 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
     const dismissValue = showInput ? null : (showCancel ? false : true);
 
     // Suppress modal UX interruptions while reconnect flow is active.
-    if (window._wbReconnectState?.active) {
+    if (window.WBReconnect?.isActive?.()) {
         return Promise.resolve(dismissValue);
     }
 

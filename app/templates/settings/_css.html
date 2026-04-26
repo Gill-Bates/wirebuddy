@@ -18,16 +18,24 @@
         display: -webkit-box;
         -webkit-box-orient: vertical;
         -webkit-line-clamp: 2;
-        line-clamp: 2;
+        /* Fallback for non-webkit: line-height 1.25 × 2 lines = 2.5em */
         max-height: 2.5em;
+    }
+
+    .speedtest-result-server .peer-flag {
+        width: 1rem;
+        height: 0.75rem;
+        flex-shrink: 0;
+        vertical-align: baseline;
     }
 
     .dns-retention-scale, .retention-scale {
         --thumb-size: 16px;
-        --rs-steps: 5;
+        --rs-steps: 5; /* Must match the number of tick/label elements; each child needs inline --i: N */
         --rs-thumb-r: calc(var(--thumb-size) / 2);
         position: relative;
         container-type: inline-size;
+        container-name: retention-scale;
     }
 
     .dns-retention-slider, .retention-slider {
@@ -126,7 +134,7 @@
         display: none;
     }
 
-    @container (max-width: 260px) {
+    @container retention-scale (max-width: 260px) {
         .dns-retention-label-full, .retention-label-full {
             display: none;
         }
@@ -146,7 +154,7 @@
         }
     }
 
-    @container (max-width: 180px) {
+    @container retention-scale (max-width: 180px) {
         .dns-retention-label:nth-child(3),
         .retention-label:nth-child(3) {
             opacity: 0;
@@ -220,6 +228,14 @@
 
     .blocklist-hero-card {
         all: unset;
+        display: block;
+        cursor: pointer;
+        box-sizing: border-box;
+    }
+
+    .blocklist-hero-card:focus-visible {
+        outline: 2px solid var(--wb-accent-red);
+        outline-offset: 2px;
     }
 
     @media (hover: hover) {
@@ -334,7 +350,7 @@
     }
 
     .blocklist-hero-meta .badge {
-        font-size: 0.64rem;
+        font-size: 0.7rem;
         font-weight: 600;
         padding: 0.2rem 0.36rem;
     }
@@ -391,7 +407,6 @@
     /* Disable transitions on initial blocklist load to prevent toggle animation */
     .no-transitions .form-check-input {
         transition: none !important;
-        overflow-wrap: normal;
     }
 
     .blocklist-hero-card .flex-grow-1 {
@@ -442,10 +457,7 @@
         }
     }
 
-    /* Less badge overload */
-    .blocklist-hero-meta .badge {
-        font-size: 0.7rem;
-    }
+
 
     /* Custom Rules textarea - hide placeholder on mobile */
     @media (max-width: 767.98px) {
@@ -569,7 +581,7 @@
     }
 
     /* Hide button labels on mobile (<768px) */
-    @media (max-width: 767px) {
+    @media (max-width: 767.98px) {
         #dns-service-controls .dns-btn-label {
             display: none;
         }

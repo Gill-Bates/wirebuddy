@@ -8,12 +8,36 @@
 
 from __future__ import annotations
 
+import logging
+import math
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from ..utils.crypto import hash_token
-from ..utils.time import utcnow
+from ..utils.time import ensure_utc, utcnow
 from .sqlite_runtime import transaction
+
+_log = logging.getLogger(__name__)
+
+
+def _parse_db_timestamp(value: object) -> datetime | None:
+	"""Normalize a database timestamp value to a timezone-aware UTC datetime."""
+	if value is None:
+		return None
+	if isinstance(value, datetime):
+		return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+	if isinstance(value, str):
+		text = value.strip()
+		if not text:
+			return None
+		if text.endswith("Z"):
+			text = text[:-1] + "+00:00"
+		try:
+			dt = datetime.fromisoformat(text)
+		except ValueError:
+			return None
+		return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+	return None
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +52,17 @@ def create_auth_token(
 	max_expires_at: datetime,
 ) -> int:
 	"""Store a new auth token (hashed) and return the token ID."""
+	if int(user_id) <= 0:
+		raise ValueError("user_id must be > 0")
 	now = utcnow()
+	expires_at = ensure_utc(expires_at)
+	max_expires_at = ensure_utc(max_expires_at)
+	if expires_at is None or max_expires_at is None:
+		raise ValueError("expires_at and max_expires_at must be timezone-aware datetimes")
+	if expires_at <= now:
+		raise ValueError("expires_at must be in the future")
+	if max_expires_at < expires_at:
+		raise ValueError("max_expires_at must be >= expires_at")
 	token_hash = hash_token(token)
 	with transaction(conn):
 		cur = conn.execute(
@@ -36,7 +70,7 @@ def create_auth_token(
 			INSERT INTO auth_tokens (user_id, token_hash, expires_at, max_expires_at, created_at)
 			VALUES (?, ?, ?, ?, ?)
 			""",
-			(user_id, token_hash, expires_at, max_expires_at, now),
+			(int(user_id), token_hash, expires_at, max_expires_at, now),
 		)
 		return cur.lastrowid
 
@@ -61,21 +95,25 @@ def get_user_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row | Non
 	return cur.fetchone()
 
 
-def refresh_auth_token(conn: sqlite3.Connection, token: str, hours: int = 1) -> None:
-	"""Extend token expiry by the given hours, but not beyond max_expires_at."""
+def refresh_auth_token(conn: sqlite3.Connection, token: str, hours: int = 1) -> bool:
+	"""Extend token expiry by the given hours, but not beyond max_expires_at.
+
+	Returns True if a non-expired token was found and refreshed.
+	"""
 	token_hash = hash_token(token)
 	now = utcnow()
 	new_expires = now + timedelta(hours=hours)
 
 	with transaction(conn):
-		conn.execute(
+		cur = conn.execute(
 			"""
 			UPDATE auth_tokens
 			SET expires_at = MIN(?, max_expires_at)
-			WHERE token_hash = ?
+			WHERE token_hash = ? AND expires_at > ?
 			""",
-			(new_expires, token_hash),
+			(new_expires, token_hash, now),
 		)
+		return cur.rowcount > 0
 
 
 def delete_auth_token(conn: sqlite3.Connection, token: str) -> None:
@@ -90,7 +128,10 @@ def delete_expired_tokens(conn: sqlite3.Connection) -> int:
 	now = utcnow()
 	with transaction(conn):
 		cur = conn.execute("DELETE FROM auth_tokens WHERE expires_at <= ?", (now,))
-		return cur.rowcount
+		deleted = cur.rowcount
+	if deleted:
+		_log.info("Deleted %d expired auth tokens", deleted)
+	return deleted
 
 
 def delete_user_tokens(conn: sqlite3.Connection, user_id: int) -> None:
@@ -121,13 +162,14 @@ def _calculate_lockout_seconds(failed_count: int) -> int:
 	- 9 failures: 960s (16 min)
 	- 10 failures: 1920s (32 min)
 	- 11 failures: 3840s (64 min)
-	- 12+ failures: capped at 24 hours
+	- higher failures are capped at 24 hours
 	"""
 	if failed_count < MIN_FAILURES_FOR_LOCKOUT:
 		return 0
 
 	exponent = failed_count - MIN_FAILURES_FOR_LOCKOUT
-	if exponent > 16:
+	max_exponent = math.floor(math.log2(MAX_LOCKOUT_SECONDS / BASE_LOCKOUT_SECONDS))
+	if exponent > max_exponent:
 		return MAX_LOCKOUT_SECONDS
 	lockout = BASE_LOCKOUT_SECONDS * (2**exponent)
 	return min(lockout, MAX_LOCKOUT_SECONDS)
@@ -148,7 +190,8 @@ def is_ip_locked(conn: sqlite3.Connection, ip_address: str) -> tuple[bool, int]:
 		return (False, 0)
 
 	locked_until = row["locked_until"]
-	if not locked_until:
+	locked_until = _parse_db_timestamp(locked_until)
+	if locked_until is None:
 		return (False, 0)
 
 	now = utcnow()
@@ -173,7 +216,7 @@ def record_failed_login(conn: sqlite3.Connection, ip_address: str) -> None:
 			(ip_address,),
 		)
 		row = cur.fetchone()
-		current_count = row["failed_count"] if row else 0
+		current_count = int(row["failed_count"] if row else 0)
 		new_count = current_count + 1
 
 		# Calculate lockout duration based on NEW count

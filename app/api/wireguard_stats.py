@@ -15,7 +15,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time as _time
-from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -79,9 +80,10 @@ def _bucket_counter_delta(
     Returns:
         Dict mapping ISO timestamp labels to summed byte deltas.
     """
-    # Defensive sort — ensures correct delta computation even if the
-    # underlying TSDB implementation changes iteration order.
-    points = sorted(points, key=lambda p: p.ts)
+    if __debug__:
+        assert all(
+            points[i].ts <= points[i + 1].ts for i in range(len(points) - 1)
+        ), "TSDB returned points out of chronological order"
 
     buckets: dict[str, float] = {}
     prev: float | None = None
@@ -121,7 +123,7 @@ def _bucket_counter_delta(
 
         ts_epoch = pt.ts.timestamp()
         bucket_ts = int(ts_epoch // bucket_seconds) * bucket_seconds
-        label = datetime.fromtimestamp(bucket_ts, timezone.utc).isoformat()
+        label = datetime.fromtimestamp(bucket_ts, UTC).isoformat()
         buckets[label] = buckets.get(label, 0) + delta
 
     return dict(sorted(buckets.items()))
@@ -178,6 +180,21 @@ def _downsample_buckets(
             new_peer_data[idx]["tx"][representative] = tx_total
 
     return new_labels, new_peer_data
+
+
+def _empty_traffic_response(hours: int, range_key: str | None, bucket_seconds: int = 3600) -> dict:
+    """Build a zero-data traffic response (logging disabled or no peers)."""
+    return {
+        "retention_days": 0,
+        "logging_disabled": True,
+        "range": range_key or "24h",
+        "hours": hours,
+        "labels": [],
+        "peers": [],
+        "all_peers": [],
+        "display_unit": "B",
+        "bucket_seconds": bucket_seconds,
+    }
 
 
 # Default target data points for different display sizes
@@ -287,12 +304,15 @@ def _compute_traffic_stats(
         if peer["public_key"] and peer["public_key"] in active_keys
     }
 
-    # Collect per-peer traffic data (sequential inside this worker thread).
-    # Avoid nested thread pools because this function already runs in run_in_threadpool().
-    results = [
-        _query_peer_metrics(key, tsdb_dir, query_since, since, bucket_seconds)
-        for key in peer_keys
-    ]
+    # Parallelize per-peer TSDB I/O with a bounded thread pool.
+    # This function already runs inside run_in_threadpool(), so spawning
+    # additional threads here is safe and avoids the N+1 sequential query
+    # pattern (2 queries × up to 100 peers = up to 200 sequential reads).
+    with ThreadPoolExecutor(max_workers=min(8, len(peer_keys))) as executor:
+        results = list(executor.map(
+            lambda k: _query_peer_metrics(k, tsdb_dir, query_since, since, bucket_seconds),
+            peer_keys,
+        ))
     
     # Process results
     peer_data: list[dict] = []
@@ -389,19 +409,9 @@ async def get_traffic_stats(
         hours = TRAFFIC_RANGE_TO_HOURS[range_key]
 
     # Check if logging is disabled (retention_days = 0)
-    retention_days = get_tsdb_retention_days(conn)
+    retention_days = await run_in_threadpool(get_tsdb_retention_days, conn)
     if retention_days == 0:
-        return ok_response(data={
-            "retention_days": 0,
-            "logging_disabled": True,
-            "range": range_key or "24h",
-            "hours": hours,
-            "labels": [],
-            "peers": [],
-            "all_peers": [],  # Empty filter list when logging disabled
-            "display_unit": "B",
-            "bucket_seconds": 3600,
-        })
+        return ok_response(data=_empty_traffic_response(hours, range_key))
 
     # Offload blocking I/O to threadpool (conn uses check_same_thread=False)
     t0 = _time.monotonic()
@@ -448,7 +458,7 @@ async def get_connection_stats(
         interfaces: dict[str, dict] = {}
 
         # Use shared parser for consistency with other endpoints
-        peers = parse_wg_show_dump(stdout)
+        peers = await run_in_threadpool(parse_wg_show_dump, stdout)
         
         for peer in peers:
             if not peer.interface:

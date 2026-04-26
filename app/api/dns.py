@@ -53,7 +53,7 @@ from collections.abc import Coroutine
 from typing import Literal
 from urllib.parse import urlparse
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -144,7 +144,7 @@ def _blocklist_mtime() -> str | None:
 		blocklist_path = unbound.get_blocklist_file()
 		if blocklist_path.exists():
 			ts = blocklist_path.stat().st_mtime
-			return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+			return datetime.fromtimestamp(ts, tz=UTC).isoformat()
 	except Exception:
 		_log.debug("Could not read blocklist mtime", exc_info=True)
 	return None
@@ -161,10 +161,10 @@ def _make_bucket_start(bucket_minutes: int):
 	"""Factory returning a bucket-floor function for the given granularity."""
 	def _bucket_start(ts: datetime) -> datetime:
 		# Floor to bucket boundary in absolute UTC minutes (works for 5..1440+).
-		ts = ts.astimezone(timezone.utc).replace(second=0, microsecond=0)
+		ts = ts.astimezone(UTC).replace(second=0, microsecond=0)
 		epoch_minutes = int(ts.timestamp() // 60)
 		bucket_epoch_minutes = (epoch_minutes // bucket_minutes) * bucket_minutes
-		return datetime.fromtimestamp(bucket_epoch_minutes * 60, tz=timezone.utc)
+		return datetime.fromtimestamp(bucket_epoch_minutes * 60, tz=UTC)
 	return _bucket_start
 
 
@@ -210,7 +210,7 @@ def _parse_tsdb_timestamp(raw: str) -> datetime | None:
 		return None
 	try:
 		dt = parse_utc(value)
-		return dt.astimezone(timezone.utc) if dt else None
+		return dt.astimezone(UTC) if dt else None
 	except (ValueError, TypeError):
 		return None
 
@@ -267,13 +267,9 @@ def _regenerate_peer_tags_safe(db_path: str | Path) -> None:
 	Creates its own DB connection for use in asyncio.to_thread(),
 	since SQLite connections are not thread-safe by default.
 	"""
-	from ..db.sqlite_runtime import close_connection, connect
-	# connect() expects Path (uses db_path.parent), so ensure conversion
-	conn = connect(Path(db_path) if isinstance(db_path, str) else db_path)
-	try:
+	from ..db.sqlite_runtime import thread_connection
+	with thread_connection(Path(db_path) if isinstance(db_path, str) else db_path) as conn:
 		_regenerate_peer_tags_for_blocklist(conn)
-	finally:
-		close_connection(conn)
 
 
 def _collect_listen_addresses(
@@ -697,17 +693,16 @@ async def dns_status(
 		return ok_response(data=cache_entry[1])
 
 	query_limit = _query_limit_for_hours(hours)
-	queries = await asyncio.to_thread(dns_ingestion.read_recent_queries, dns_dir, query_limit)
-	since = datetime.now(timezone.utc) - timedelta(hours=hours) if hours is not None else None
+	since = datetime.now(UTC) - timedelta(hours=hours) if hours is not None else None
+	queries = await asyncio.to_thread(
+		dns_ingestion.read_recent_queries, dns_dir, query_limit,
+		client_filter, since,
+	)
 	all_domains: set[str] = set()
 	all_clients: set[str] = set()
 	blocked_count = 0
 	total_queries = 0
 	for q in queries:
-		if since is not None:
-			ts = _parse_tsdb_timestamp(str(q.get("ts", "")))
-			if ts is None or ts < since:
-				continue
 		if client_filter and q.get("client") not in client_filter:
 			continue
 		domain = str(q.get("domain", "")).strip()
@@ -891,7 +886,7 @@ async def _compute_trend_data(
 	client_filter: set[str] | None,
 ) -> dict:
 	"""Heavy computation for trend data — runs under lock."""
-	now = datetime.now(timezone.utc)
+	now = datetime.now(UTC)
 	since = now - timedelta(hours=hours)
 	bucket_start = _make_bucket_start(bucket_minutes)
 
@@ -940,7 +935,7 @@ async def _compute_trend_data_tsdb(
 	vs O(m) where m = number of raw queries for JSONL approach.
 	For 720h query: ~43,200 minute buckets vs potentially millions of raw queries.
 	"""
-	now = datetime.now(timezone.utc)
+	now = datetime.now(UTC)
 	since = now - timedelta(hours=hours)
 	bucket_start = _make_bucket_start(bucket_minutes)
 
@@ -1074,11 +1069,11 @@ async def update_dns_config(
 	responsiveness for the common ad-blocker toggle use case.
 	"""
 	# Guard: Require Unbound for any setting that touches its config
-	if any([
+	if any((
 		payload.enable_blocklist is not None,
 		payload.upstream_dns is not None,
 		payload.dnssec_enabled is not None,
-	]):
+	)):
 		_require_unbound_installed()
 	
 	# Validate conflicting fields early
@@ -1174,7 +1169,8 @@ async def update_dns_config(
 		# Bind ONLY to WireGuard interface IPs to avoid conflicts with host DNS
 		# when running in Docker host network mode.
 		ipv4_gateways, ipv6_gateways = _collect_listen_addresses(conn)
-		unbound.write_config(
+		await asyncio.to_thread(
+			unbound.write_config,
 			enable_logging=enable_logging,
 			enable_blocklist=enable_blocklist,
 			upstream_dns=upstream_dns,
@@ -1237,7 +1233,7 @@ async def get_blocklist_sources(
 	if blocklist_path.exists():
 		try:
 			stat = blocklist_path.stat()
-			blocklist_updated = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime("%Y-%m-%d")
+			blocklist_updated = datetime.fromtimestamp(stat.st_mtime, tz=UTC).strftime("%Y-%m-%d")
 			# Format size
 			size_bytes = stat.st_size
 			if size_bytes < 1024:
@@ -1681,7 +1677,7 @@ async def top_domains(
 	"""Get top queried and blocked domains."""
 	client_filter, _ = _parse_client_ip_filter(client_ips)
 	query_limit = _query_limit_for_hours(hours)
-	since = datetime.now(timezone.utc) - timedelta(hours=hours) if hours is not None else None
+	since = datetime.now(UTC) - timedelta(hours=hours) if hours is not None else None
 	queries = await asyncio.to_thread(
 		dns_ingestion.read_recent_queries,
 		dns_dir,

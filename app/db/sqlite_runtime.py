@@ -29,9 +29,9 @@ class UnsetType(Enum):
 		return "UNSET"
 
 	def __bool__(self) -> bool:
-		# Convenience only: this does not distinguish UNSET from None.
-		# Use ``is UNSET`` when the caller needs precision.
-		return False
+		raise TypeError(
+			"UNSET cannot be used in boolean context; use 'is UNSET' for identity checks"
+		)
 
 
 # Sentinel value to distinguish "not provided" from "set to None" in update functions.
@@ -62,7 +62,6 @@ def _convert_datetime(value: bytes) -> datetime:
 		return dt.astimezone(timezone.utc)
 	except (UnicodeDecodeError, ValueError) as exc:
 		decoded = value.decode("utf-8", errors="replace")
-		_log.error("Corrupt timestamp in database: %r", decoded)
 		raise sqlite3.InterfaceError(f"Cannot parse timestamp: {decoded!r}") from exc
 
 
@@ -112,9 +111,10 @@ def connect(db_path: Path) -> sqlite3.Connection:
 		str(db_path),
 		detect_types=sqlite3.PARSE_DECLTYPES,
 		check_same_thread=False,  # Allows threadpool hops; not concurrent multi-thread use.
-		timeout=30.0,  # Busy timeout for multi-process access
 	)
 	conn.row_factory = sqlite3.Row
+	# Set busy timeout via PRAGMA for consistency with checkpoint_wal (30s = 30000ms)
+	conn.execute("PRAGMA busy_timeout=30000")
 
 	# Enable WAL mode with retry logic for multi-worker safety
 	# (PRAGMA journal_mode=WAL is idempotent, no pre-check needed)
@@ -180,19 +180,27 @@ def thread_connection(db_path: Path):
 		close_connection(conn)
 
 
-def close_all_connections() -> None:
-	"""Close all tracked connections for graceful shutdown."""
+def close_all_connections() -> int:
+	"""Close all tracked connections for graceful shutdown.
+	
+	Returns:
+		Number of connections that were successfully closed.
+	"""
 	with _CONNECTIONS_LOCK:
 		connections = list(_OPEN_CONNECTIONS)
-		# Clear registry first so stale references do not survive shutdown.
-		# Any close() failures are still logged below.
-		_OPEN_CONNECTIONS.clear()
 
+	closed = 0
 	for conn in connections:
 		try:
 			conn.close()
+			closed += 1
 		except Exception as e:
 			_log.warning("Failed to close SQLite connection: %s", e)
+		finally:
+			with _CONNECTIONS_LOCK:
+				_OPEN_CONNECTIONS.discard(conn)
+
+	return closed
 
 
 def _checkpoint_result(
@@ -210,20 +218,30 @@ def _checkpoint_result(
 	}
 
 
+# Valid WAL checkpoint modes for SQLite PRAGMA wal_checkpoint
+_VALID_CHECKPOINT_MODES = frozenset({"PASSIVE", "FULL", "RESTART", "TRUNCATE"})
+
+
 def checkpoint_wal(db_path: Path, mode: str = "TRUNCATE") -> dict[str, int | str]:
 	"""Run a WAL checkpoint using a dedicated short-lived connection.
 
 	Returns checkpoint counters in SQLite's ``wal_checkpoint`` format:
 	``busy``, ``log_frames``, ``checkpointed_frames``.
+	
+	Raises:
+		ValueError: If mode is not one of PASSIVE, FULL, RESTART, or TRUNCATE.
 	"""
 	mode_upper = mode.strip().upper()
-	if mode_upper not in {"PASSIVE", "FULL", "RESTART", "TRUNCATE"}:
-		mode_upper = "TRUNCATE"
+	if mode_upper not in _VALID_CHECKPOINT_MODES:
+		raise ValueError(
+			f"Invalid WAL checkpoint mode {mode!r}; "
+			f"must be one of {sorted(_VALID_CHECKPOINT_MODES)}"
+		)
 
 	conn: sqlite3.Connection | None = None
 	try:
 		conn = connect(db_path)
-		conn.execute("PRAGMA busy_timeout=30000")
+		# Note: f-string is safe here; mode_upper is constrained to _VALID_CHECKPOINT_MODES
 		row = conn.execute(f"PRAGMA wal_checkpoint({mode_upper})").fetchone()
 		if not row:
 			return _checkpoint_result(mode_upper)
@@ -258,6 +276,7 @@ def transaction(conn: sqlite3.Connection, *, immediate: bool = False):
 	performing earlier writes on that connection.
 	"""
 	if conn.in_transaction:
+		# Nested transaction: use SAVEPOINT
 		if immediate:
 			_log.warning(
 				"transaction(immediate=True) called while already in transaction; "
@@ -283,13 +302,13 @@ def transaction(conn: sqlite3.Connection, *, immediate: bool = False):
 				except Exception as release_err:
 					_log.error("Failed to release savepoint %s: %s", savepoint, release_err)
 			raise
-		return
-
-	conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
-	try:
-		yield
-		conn.commit()
-	except Exception:
-		if conn.in_transaction:
-			conn.rollback()
-		raise
+	else:
+		# Outer transaction: use BEGIN
+		conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+		try:
+			yield
+			conn.commit()
+		except Exception:
+			if conn.in_transaction:
+				conn.rollback()
+			raise

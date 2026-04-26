@@ -164,7 +164,7 @@ def decrypt(stored: str, pepper: str) -> str:
 	try:
 		version, salt, fernet_token = _parse_value(stored)
 	except ValueError as exc:
-		_log.warning("vault decrypt failed")
+		_log.warning("vault decrypt failed: corrupt payload (%s)", exc)
 		raise ValueError(f"Corrupt vault payload: {exc}") from exc
 
 	try:
@@ -172,7 +172,7 @@ def decrypt(stored: str, pepper: str) -> str:
 		fernet = Fernet(key)
 		return fernet.decrypt(fernet_token.encode("ascii")).decode("utf-8")
 	except InvalidToken as exc:
-		_log.warning("vault decrypt failed")
+		_log.warning("vault decrypt failed: invalid token (wrong pepper?)")
 		raise ValueError("Cannot decrypt secret — wrong WIREBUDDY_SECRET_KEY?") from exc
 
 

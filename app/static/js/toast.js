@@ -4,7 +4,7 @@
 //
 
 function wbToast(message, type = 'info', duration = 4000) {
-    if (window._wbReconnectState && window._wbReconnectState.active) return;
+    if (window.WBReconnect?.isActive?.()) return;
     const icons = { info: 'info', success: 'check_circle', warning: 'warning', danger: 'error' };
     const colors = { info: 'var(--wb-primary)', success: 'var(--wb-success)', warning: 'var(--wb-warning)', danger: 'var(--wb-danger)' };
     const bgClasses = { info: 'text-bg-primary', success: 'text-bg-success', warning: 'text-bg-warning', danger: 'text-bg-danger' };

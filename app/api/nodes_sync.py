@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from ..api.auth import _is_https
 from ..api.response import ok_response
 from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
+from ..api.sse import broadcast_event_to_queues, format_sse_close, format_sse_event, format_sse_keepalive
 from ..db.sqlite_interfaces import list_interfaces
 from ..db.sqlite_nodes import (
 	bump_node_config_version,
@@ -50,10 +51,12 @@ from ..db.sqlite_nodes import (
 from ..db.sqlite_peers import allocate_peer_ip, get_peer_by_id, update_peers_last_seen_batch
 from ..db.sqlite_peers_mutations import create_peer
 from ..db.sqlite_runtime import connect, close_connection, transaction
+from ..db.sqlite_settings import set_node_speedtest_last_result
 
 from ..utils.config import get_config
 from ..utils.crypto import hash_token, new_token
 from ..utils.deps import get_conn, get_tsdb_dir
+from ..utils.time import utcnow
 from ..utils.network import parse_ip_str
 from ..db import tsdb
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
@@ -67,6 +70,13 @@ router = APIRouter(tags=["nodes-sync"])
 
 # Allowed commands for SSE command validation (prevents injection)
 _ALLOWED_SSE_COMMANDS = frozenset({"config_changed", "restart", "speedtest"})
+
+# Maps raw DB command strings to SSE event-type names
+_PENDING_CMD_EVENT_TYPE: dict[str, str] = {
+    "config_changed": "config_changed",
+    "restart": "restart_requested",
+    "speedtest": "speedtest_requested",
+}
 _SSE_CONNECTED_DB_UPDATE_INTERVAL_S = 60.0
 T = TypeVar("T")
 
@@ -132,15 +142,6 @@ async def unregister_speedtest_progress_queue(
 			pass
 		if not state["queues"] and _node_speedtest_progress.get(node_id) is state:
 			del _node_speedtest_progress[node_id]
-
-# Maps DB pending command names to the SSE event type the node daemon expects.
-# Defaults to "{cmd}_requested" for any command not listed here.
-_PENDING_CMD_EVENT_TYPE: dict[str, str] = {
-	"config_changed": "config_changed",
-	"speedtest": "run_speedtest",      # node daemon listens for "run_speedtest"
-	"restart": "restart_requested",
-	"removed": "node_removed",
-}
 
 
 def _get_socket_ip(request: Request) -> str | None:
@@ -441,7 +442,10 @@ async def enroll_node_endpoint(
 
 	# Generate keypairs BEFORE transaction (async + SQLite = race condition risk)
 	interfaces = list_interfaces(conn)
-	keypairs = [(iface["name"], await generate_keypair()) for iface in interfaces]
+	keypairs = list(zip(
+		[iface["name"] for iface in interfaces],
+		await asyncio.gather(*(generate_keypair() for _ in interfaces)),
+	))
 
 	# Enroll atomically — status check, keypairs, tunnel peer, secret rotation,
 	# and config-version bump all commit together or not at all.
@@ -573,25 +577,13 @@ async def enroll_node_endpoint(
 	)
 
 
-@router.post("/heartbeat")
-def heartbeat(
+def _process_heartbeat(
+	conn: sqlite3.Connection,
+	tsdb_dir: Path,
+	node: sqlite3.Row,
 	body: HeartbeatRequest,
-	node: sqlite3.Row = Depends(get_current_node),
-	conn: sqlite3.Connection = Depends(get_conn),
-	tsdb_dir: Path = Depends(get_tsdb_dir),
-):
-	"""Receive heartbeat with metrics from a remote node.
-
-	NOTE: sync – FastAPI threadpools this handler. Performs TSDB file writes
-	(_write_peer_traffic_metric / _write_peer_handshake_metric) and several DB
-	writes per call. With many nodes at short intervals this consumes thread-pool
-	slots; monitor pool saturation if the node fleet grows significantly.
-
-	Implements reliable at-least-once delivery:
-	- Accepts batched metrics with sequence numbers
-	- Skips already-processed sequences (idempotency)
-	- Returns acked_seq to confirm receipt
-	"""
+) -> dict:
+	"""Sync core of the heartbeat handler, safe to run in a threadpool worker."""
 	node_id = node["id"]
 
 	metadata = {}
@@ -610,7 +602,6 @@ def heartbeat(
 		for ps in body.peer_stats:
 			if not ps.latest_handshake or not ps.public_key:
 				continue
-			# Extract client IP from endpoint using robust parsing
 			client_ip = _parse_endpoint_ip(ps.endpoint or "")
 			if client_ip:
 				db_updates.append((client_ip, ps.latest_handshake, ps.public_key))
@@ -626,21 +617,19 @@ def heartbeat(
 	if body.metrics_batch and body.metrics_batch.metrics:
 		batch = body.metrics_batch
 		last_seq = get_node_last_metric_seq(conn, node_id)
-		
-		# Filter out already-processed metrics (idempotency)
+
 		new_metrics = [
 			m for m in batch.metrics
 			if last_seq is None or m.seq > last_seq
 		]
-		
+
 		skipped = len(batch.metrics) - len(new_metrics)
 		if skipped > 0:
 			_log.debug(
 				"Node %s: skipped %d already-processed metrics (last_seq=%s)",
-				node_id, skipped, last_seq
+				node_id, skipped, last_seq,
 			)
-		
-		# Write new metrics to TSDB
+
 		if new_metrics:
 			try:
 				points_written = 0
@@ -650,29 +639,51 @@ def heartbeat(
 						_log.debug("Node %s: unknown metric type %r (skipped)", node_id, m.type)
 						continue
 					points_written += writer(tsdb_dir, m.data)
-				
+
 				_log.debug(
 					"Node %s: wrote %d TSDB points from %d metrics (seq %s-%s)",
 					node_id, points_written, len(new_metrics),
-					new_metrics[0].seq, new_metrics[-1].seq
+					new_metrics[0].seq, new_metrics[-1].seq,
 				)
 			except Exception:
 				_log.warning("Failed to write TSDB metrics from node %s", node_id, exc_info=True)
-				# Do NOT ack - node will retry on next heartbeat.
-				# Heartbeat/peer-status DB updates are intentionally independent and idempotent.
-				return ok_response(
-					data={"acked_seq": acked_seq},
-					message="Heartbeat received (metrics write failed)"
-				)
-		
-		# Update last processed sequence (ACK) only after successful TSDB write
+				# Do NOT ack — node will retry on next heartbeat.
+				return {"acked_seq": None, "failed": True}
+
 		if batch.seq_to is not None:
 			set_node_last_metric_seq(conn, node_id, batch.seq_to)
 			acked_seq = batch.seq_to
 
+	return {"acked_seq": acked_seq, "failed": False}
+
+
+@router.post("/heartbeat")
+async def heartbeat(
+	body: HeartbeatRequest,
+	node: sqlite3.Row = Depends(get_current_node),
+	conn: sqlite3.Connection = Depends(get_conn),
+	tsdb_dir: Path = Depends(get_tsdb_dir),
+):
+	"""Receive heartbeat with metrics from a remote node.
+
+	Async: the threadpool slot is only held during actual blocking I/O
+	(DB writes, TSDB file appends) via an explicit ``run_in_threadpool`` call.
+
+	Implements reliable at-least-once delivery:
+	- Accepts batched metrics with sequence numbers
+	- Skips already-processed sequences (idempotency)
+	- Returns acked_seq to confirm receipt
+	"""
+	result = await run_in_threadpool(_process_heartbeat, conn, tsdb_dir, node, body)
+
+	if result["failed"]:
+		return ok_response(
+			data={"acked_seq": None},
+			message="Heartbeat received (metrics write failed)",
+		)
 	return ok_response(
-		data={"acked_seq": acked_seq},
-		message="Heartbeat received"
+		data={"acked_seq": result["acked_seq"]},
+		message="Heartbeat received",
 	)
 
 
@@ -752,11 +763,11 @@ async def node_events(
 
 		event_type = _PENDING_CMD_EVENT_TYPE.get(pending_cmd, f"{pending_cmd}_requested")
 		_log.info("Node %s command from DB: %s -> event: %s", node_id, pending_cmd, event_type)
-		return f"event: {event_type}\ndata: {pending_cmd}\n\n"
+		return format_sse_event(event_type, pending_cmd)
 
 	async def event_generator():
 		try:
-			close_event = "event: close\ndata: server_shutdown\n\n"
+			close_event = format_sse_close()
 			await mark_sse_connected()
 			last_sse_connected_write = time.monotonic()
 			
@@ -766,7 +777,7 @@ async def node_events(
 				yield pending_event
 			
 			# Send initial keepalive
-			yield ": keepalive\n\n"
+			yield format_sse_keepalive()
 			
 			async for event in node_notifier.subscribe(node_id, shutdown_event=shutdown_event):
 				if shutdown_event is not None and shutdown_event.is_set():
@@ -844,19 +855,7 @@ async def submit_node_speedtest_progress(
 		state["timestamp"] = time.time()
 
 		# Broadcast to all waiting SSE clients
-		for queue in state["queues"]:
-			try:
-				queue.put_nowait(event_data)
-			except asyncio.QueueFull:
-				# Keep latest progress by dropping the oldest buffered event.
-				try:
-					queue.get_nowait()
-				except asyncio.QueueEmpty:
-					continue
-				try:
-					queue.put_nowait(event_data)
-				except asyncio.QueueFull:
-					continue
+		broadcast_event_to_queues(state["queues"], event_data)
 	
 	return ok_response(message="Progress update received")
 
@@ -865,6 +864,8 @@ class SpeedtestSubmission(BaseModel):
 	"""Speedtest result submitted by a node."""
 	status: str = Field(..., max_length=16, description="Result status: ok | error")
 	server: str | None = Field(None, max_length=256, description="Speedtest server name")
+	server_url: str | None = Field(None, max_length=512, description="Speedtest server URL (used for GeoIP fallback)")
+	country_code: str | None = Field(None, min_length=2, max_length=2, description="ISO 3166-1 alpha-2 country code")
 	download_mbit: float | None = Field(None, ge=0, le=100000, description="Download speed in Mbit/s")
 	upload_mbit: float | None = Field(None, ge=0, le=100000, description="Upload speed in Mbit/s")
 	rtt_ms: float | None = Field(None, ge=0, le=10000, description="Round-trip time in ms")
@@ -876,6 +877,7 @@ class SpeedtestSubmission(BaseModel):
 def submit_node_speedtest(
 	body: SpeedtestSubmission,
 	node: sqlite3.Row = Depends(get_current_node),
+	conn: sqlite3.Connection = Depends(get_conn),
 	tsdb_dir: Path = Depends(get_tsdb_dir),
 ):
 	"""Receive speedtest result from a node and persist to TSDB.
@@ -898,6 +900,7 @@ def submit_node_speedtest(
 		"status": "ok",
 		"node_id": node_id,
 		"node_name": node_name,
+		"ts": utcnow().isoformat(),
 	}
 	
 	if body.download_mbit is not None:
@@ -910,6 +913,14 @@ def submit_node_speedtest(
 		result["jitter_ms"] = round(body.jitter_ms, 2)
 	if body.server:
 		result["server"] = body.server
+
+	# Resolve country_code: prefer submitted value, fall back to master-side GeoIP lookup
+	country_code = (body.country_code or "").strip().lower() or None
+	if not country_code and body.server_url:
+		from ..utils.geoip import resolve_country_from_url as _resolve_country_from_url
+		country_code = _resolve_country_from_url(body.server_url)
+	if country_code:
+		result["country_code"] = country_code
 	
 	_log.info(
 		"NODE_SPEEDTEST node=%s name=%s dl=%.2f ul=%.2f rtt=%.2fms",
@@ -931,5 +942,10 @@ def submit_node_speedtest(
 	except Exception as exc:
 		_log.error("Failed to persist node speedtest: %s", exc)
 		raise HTTPException(status_code=500, detail="Failed to persist speedtest result") from None
+
+	try:
+		set_node_speedtest_last_result(conn, node_id, result)
+	except Exception as exc:
+		_log.warning("Failed to persist node speedtest result in settings: %s", exc)
 	
 	return ok_response(message="Speedtest result received")

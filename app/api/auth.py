@@ -29,7 +29,6 @@ import time
 import unicodedata
 import zipfile
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -300,7 +299,7 @@ def _lookup_user_by_token(
 	conn: sqlite3.Connection,
 	require_active: bool = True,
 	refresh: bool = False,
-) -> Optional[sqlite3.Row]:
+) -> sqlite3.Row | None:
 	"""Helper to get user by token with optional is_active check.
 	
 	Args:
@@ -320,9 +319,9 @@ def _lookup_user_by_token(
 
 def get_current_user_optional(
 	request: Request,
-	credentials: Optional[HTTPAuthorizationCredentials] = Depends(_security),
+	credentials: HTTPAuthorizationCredentials | None = Depends(_security),
 	conn: sqlite3.Connection = Depends(get_conn),
-) -> Optional[sqlite3.Row]:
+) -> sqlite3.Row | None:
 	"""Get the authenticated user, or None if not authenticated.
 	
 	Note: Still checks is_active to prevent disabled users from accessing resources.
@@ -346,7 +345,7 @@ def get_current_user_optional(
 
 def get_current_user(
 	request: Request,
-	credentials: Optional[HTTPAuthorizationCredentials] = Depends(_security),
+	credentials: HTTPAuthorizationCredentials | None = Depends(_security),
 	conn: sqlite3.Connection = Depends(get_conn),
 ) -> sqlite3.Row:
 	"""FastAPI dependency that enforces authentication.
@@ -668,8 +667,8 @@ def verify_mfa(
 def logout(
 	request: Request,
 	response: Response,
-	user: Optional[sqlite3.Row] = Depends(get_current_user_optional),
-	credentials: Optional[HTTPAuthorizationCredentials] = Depends(_security),
+	user: sqlite3.Row | None = Depends(get_current_user_optional),
+	credentials: HTTPAuthorizationCredentials | None = Depends(_security),
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Logout and invalidate the current token."""

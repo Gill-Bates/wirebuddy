@@ -78,9 +78,9 @@ BLOCKLIST_REGISTRY: dict[str, BlocklistMeta] = {
 DEFAULT_BLOCKLIST_IDS = ["ads"]
 
 # Computed once at import; BLOCKLIST_REGISTRY must not change at runtime.
-for _bid in DEFAULT_BLOCKLIST_IDS:
-	if _bid not in BLOCKLIST_REGISTRY:
-		raise ValueError(f"DEFAULT_BLOCKLIST_IDS references unknown ID: {_bid!r}")
+_unknown_default_blocklists = set(DEFAULT_BLOCKLIST_IDS) - set(BLOCKLIST_REGISTRY)
+if _unknown_default_blocklists:
+	raise ValueError(f"DEFAULT_BLOCKLIST_IDS references unknown IDs: {_unknown_default_blocklists!r}")
 DEFAULT_BLOCKLISTS = [BLOCKLIST_REGISTRY[bid]["url"] for bid in DEFAULT_BLOCKLIST_IDS]
 
 BLOCKLIST_MAX_BYTES = 25 * 1024 * 1024
@@ -95,6 +95,7 @@ ALLOWED_BLOCKLIST_CONTENT_TYPES: frozenset[str] = frozenset({
 })
 
 # Regex patterns
+# Input is normalized to lowercase before matching.
 DOMAIN_LABEL_RE = re.compile(r"^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$")  # Allow underscores (_dmarc, _acme-challenge)
 HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 UPSTREAM_ADDR_RE = re.compile(r"^([^@#\s]+)(?:@(\d{1,5}))?#([^\s#]+)$")
@@ -121,6 +122,16 @@ def get_local_data_file() -> Path:
 	return get_config().dns_dir / "local-data.conf"
 
 
+def clear_path_caches() -> None:
+	"""Clear cached path getters.
+
+	Useful in tests that change configuration fixtures or monkeypatch dns_dir.
+	"""
+	get_blocklist_file.cache_clear()
+	get_custom_client_rules_file.cache_clear()
+	get_local_data_file.cache_clear()
+
+
 # ---------------------------------------------------------------------------
 # Shared Utility Functions
 # ---------------------------------------------------------------------------
@@ -132,7 +143,6 @@ async def run_exec(*cmd: str, timeout: float = EXEC_TIMEOUT) -> tuple[int, str, 
 	FastAPI event loop – which was the root cause of UI freezes.
 	"""
 	proc: asyncio.subprocess.Process | None = None
-	timed_out = False
 	try:
 		proc = await asyncio.create_subprocess_exec(
 			*cmd,
@@ -144,7 +154,6 @@ async def run_exec(*cmd: str, timeout: float = EXEC_TIMEOUT) -> tuple[int, str, 
 		assert code is not None, "returncode should be set after communicate()"
 		return code, stdout.decode(), stderr.decode()
 	except asyncio.TimeoutError:
-		timed_out = True
 		_log.warning("DNS_EXEC_TIMEOUT command timed out after %.1fs: %s", timeout, cmd)
 		return -1, "", f"Command timed out after {timeout}s"
 	except Exception as exc:
@@ -155,9 +164,8 @@ async def run_exec(*cmd: str, timeout: float = EXEC_TIMEOUT) -> tuple[int, str, 
 		if proc is not None and proc.returncode is None:
 			with contextlib.suppress(Exception):
 				proc.kill()
-			if timed_out:
-				with contextlib.suppress(Exception):
-					await asyncio.wait_for(proc.communicate(), timeout=2.0)
+			with contextlib.suppress(Exception):
+				await asyncio.wait_for(proc.communicate(), timeout=2.0)
 			with contextlib.suppress(Exception):
 				await proc.wait()
 
@@ -235,6 +243,7 @@ __all__ = [
 	"get_blocklist_file",
 	"get_custom_client_rules_file",
 	"get_local_data_file",
+	"clear_path_caches",
 	"run_exec",
 	"atomic_write",
 	"atomic_write_text",

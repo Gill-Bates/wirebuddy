@@ -359,18 +359,29 @@
                         <td data-label="Peers">{{ node.peer_count }}</td>
                         <td data-label="Speedtest" class="node-speedtest-cell">
                             {% if node.last_speedtest and node.last_speedtest.status == 'ok' %}
-                            <div class="d-flex gap-1 flex-wrap">
+                            <div class="d-flex flex-column">
+                                <div class="d-flex gap-1 flex-wrap">
                                 {% if node.last_speedtest.download_mbit %}
                                 {% set dl = node.last_speedtest.download_mbit %}
                                 <span class="badge bg-secondary" title="Download" data-bs-toggle="tooltip">
-                                    ↓ {{ dl|format_bandwidth_mbit(1, 0) }}
+                                    ↓ {{ dl|format_bandwidth_mbit(1, 1) }}
                                 </span>
                                 {% endif %}
                                 {% if node.last_speedtest.upload_mbit %}
                                 {% set ul = node.last_speedtest.upload_mbit %}
                                 <span class="badge bg-secondary" title="Upload" data-bs-toggle="tooltip">
-                                    ↑ {{ ul|format_bandwidth_mbit(1, 0) }}
+                                    ↑ {{ ul|format_bandwidth_mbit(1, 1) }}
                                 </span>
+                                {% endif %}
+                                </div>
+                                {% if node.last_speedtest.server %}
+                                <div class="small text-muted mt-1 d-flex align-items-center flex-wrap gap-1">
+                                    {% set speedtest_country_code = (node.last_speedtest.country_code or '')|lower %}
+                                    {% if speedtest_country_code|length == 2 and speedtest_country_code[0].isalpha() and speedtest_country_code[1].isalpha() %}
+                                    <img class="node-country-flag" alt="Country flag: {{ speedtest_country_code|upper }}" decoding="async" loading="lazy" src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ speedtest_country_code }}.svg">
+                                    {% endif %}
+                                    <span class="text-truncate" title="{{ node.last_speedtest.server }}">{{ node.last_speedtest.server }}</span>
+                                </div>
                                 {% endif %}
                             </div>
                             {% else %}
@@ -1001,32 +1012,14 @@
 
         const scope = root && typeof root.querySelectorAll === 'function' ? root : document;
         scope.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
-            // Skip if element is not a valid DOM node
-            if (!el || !el.nodeName || typeof el.nodeName !== 'string') {
-                return;
-            }
-            // Skip already initialized tooltips
             if (el.dataset.tooltipInitialized === 'true') {
                 return;
             }
-            //Verify element is properly connected to DOM
-            if (!el.isConnected || !el.getAttribute) {
-                return;
-            }
-            // Dispose existing tooltip instance before creating a new one
-            const existingInstance = bootstrap.Tooltip.getInstance(el);
-            if (existingInstance) {
-                existingInstance.dispose();
-            }
-            try {
-                new bootstrap.Tooltip(el, {
-                    container: document.body,
-                    trigger: 'hover focus',
-                });
-                el.dataset.tooltipInitialized = 'true';
-            } catch (err) {
-                console.error('Failed to initialize tooltip:', err, el);
-            }
+            bootstrap.Tooltip.getOrCreateInstance(el, {
+                container: document.body,
+                trigger: 'hover focus',
+            });
+            el.dataset.tooltipInitialized = 'true';
         });
     }
 
@@ -1079,13 +1072,29 @@
 
         const wrap = document.createElement('div');
         wrap.className = 'd-flex gap-1 flex-wrap';
+        const details = document.createElement('div');
+        details.className = 'small text-muted mt-1 d-flex align-items-center flex-wrap gap-1';
+
+        const createSpeedtestFlag = (countryCode) => {
+            const code = String(countryCode || '').trim().toLowerCase();
+            if (!/^[a-z]{2}$/.test(code)) return null;
+
+            const img = document.createElement('img');
+            img.className = 'node-country-flag';
+            img.alt = `${code.toUpperCase()} flag`;
+            img.loading = 'lazy';
+            img.decoding = 'async';
+            img.src = `${FLAG_ICON_BASE_URL}/${code}.svg`;
+            img.addEventListener('error', () => img.remove());
+            return img;
+        };
 
         if (speedtest.download_mbit) {
             const dl = document.createElement('span');
             dl.className = 'badge bg-secondary';
             dl.setAttribute('title', 'Download');
             dl.setAttribute('data-bs-toggle', 'tooltip');
-            dl.textContent = `↓ ${formatBandwidthMbit(speedtest.download_mbit, 1, 0)}`;
+            dl.textContent = `↓ ${formatBandwidthMbit(speedtest.download_mbit, 1, 1)}`;
             wrap.appendChild(dl);
         }
 
@@ -1094,11 +1103,26 @@
             ul.className = 'badge bg-secondary';
             ul.setAttribute('title', 'Upload');
             ul.setAttribute('data-bs-toggle', 'tooltip');
-            ul.textContent = `↑ ${formatBandwidthMbit(speedtest.upload_mbit, 1, 0)}`;
+            ul.textContent = `↑ ${formatBandwidthMbit(speedtest.upload_mbit, 1, 1)}`;
             wrap.appendChild(ul);
         }
 
-        if (!wrap.childElementCount) {
+        if (speedtest.server) {
+            const flag = createSpeedtestFlag(speedtest.country_code);
+            if (flag) {
+                details.appendChild(flag);
+                details.appendChild(document.createTextNode(' '));
+            }
+
+            const serverSpan = document.createElement('span');
+            serverSpan.className = 'text-truncate';
+            serverSpan.style.maxWidth = '100%';
+            serverSpan.title = speedtest.server;
+            serverSpan.textContent = speedtest.server;
+            details.appendChild(serverSpan);
+        }
+
+        if (!wrap.childElementCount && !details.childElementCount) {
             const muted = document.createElement('span');
             muted.className = 'text-muted';
             muted.textContent = '—';
@@ -1106,7 +1130,14 @@
             return;
         }
 
-        cell.replaceChildren(wrap);
+        const container = document.createElement('div');
+        container.className = 'd-flex flex-column';
+        container.appendChild(wrap);
+        if (details.childElementCount) {
+            container.appendChild(details);
+        }
+
+        cell.replaceChildren(container);
     }
 
     function buildNodeRow(node) {
@@ -1383,6 +1414,46 @@
         return tbody;
     }
 
+    function toggleEmptyState(hasNodes) {
+        const cardBody = document.querySelector('.card-body');
+        if (!cardBody) return;
+
+        const tableResponsive = cardBody.querySelector('.table-responsive');
+        const emptyState = cardBody.querySelector('.nodes-empty-state');
+
+        if (hasNodes) {
+            if (emptyState) emptyState.remove();
+            if (!tableResponsive) {
+                ensureTableExists();
+            }
+            return;
+        }
+
+        if (tableResponsive) {
+            tableResponsive.remove();
+        }
+        if (!emptyState) {
+            const empty = document.createElement('div');
+            empty.className = 'nodes-empty-state text-center py-5';
+            empty.innerHTML = `
+                <span class="material-icons text-muted mb-3" style="font-size: 3rem;" aria-hidden="true">hub</span>
+                <h3 class="h5 mb-2">No remote nodes configured yet</h3>
+                <p class="text-muted mb-0">Click <strong>Add Node</strong> to register a remote VPN server.</p>
+            `;
+            cardBody.appendChild(empty);
+        }
+    }
+
+    function removeStaleRows(nodeIds) {
+        const validIds = new Set((nodeIds || []).map((id) => String(id || '')));
+        document.querySelectorAll('#nodesTableBody tr[id^="node-row-"]').forEach((row) => {
+            const rowId = String(row.id || '').replace('node-row-', '');
+            if (!validIds.has(rowId)) {
+                row.remove();
+            }
+        });
+    }
+
     async function copyTextFromElement(elementId) {
         const element = document.getElementById(elementId);
         const text = element?.textContent?.trim() || '';
@@ -1486,6 +1557,11 @@
             wbToast(data.message || `Node "${name}" deleted`, 'success');
             const row = document.getElementById(`node-row-${id}`);
             if (row) row.remove();
+
+            const remainingRows = document.querySelectorAll('#nodesTableBody tr[id^="node-row-"]').length;
+            if (remainingRows === 0) {
+                toggleEmptyState(false);
+            }
         } catch (err) {
             await wbAlert(err.message, 'danger');
         }
@@ -1594,6 +1670,9 @@
 
             // Ignore stale response if a newer request was issued
             if (seq !== _pollSeq) return;
+
+            removeStaleRows(nodes.map((node) => String(node.id || '')));
+            toggleEmptyState(nodes.length > 0);
 
             for (const node of nodes) {
                 const nodeId = String(node.id || '');

@@ -1,233 +1,112 @@
 # API Authentication
 
-WireBuddy API requires authentication via Bearer tokens.
+WireBuddy API access is based on application sessions.
 
-## Generating API Tokens
+## Authentication Modes
 
-### Via Web UI
+### 1) Browser Session Cookie
 
-1. Login to WireBuddy
-2. Navigate to **Profile → API Tokens**
-3. Click **Create Token**
-4. Configure:
-   - **Name:** Descriptive label
-   - **Expiration:** Never, 30 days, 90 days, 1 year
-   - **Permissions:** Read-only or Full (admin only)
-   - **IP Whitelist:** Optional IP restrictions
-5. Click **Create**
-6. **Copy token immediately** (shown only once)
+After login, the UI uses an auth_token cookie for authenticated API requests.
 
-### Token Format
+### 2) Bearer Header
 
-```
-wb_1234567890abcdefghijklmnopqrstuvwxyz
-```
-
-Tokens are prefixed with `wb_` for easy identification.
-
-## Using Tokens
-
-### HTTP Header
-
-Include token in `Authorization` header:
+Automation clients can use the same auth token in the Authorization header:
 
 ```bash
-curl -H "Authorization: Bearer wb_YOUR_TOKEN_HERE" \
+curl -H "Authorization: Bearer YOUR_AUTH_TOKEN" \
   https://vpn.example.com/api/wireguard/peers
 ```
 
-### Query Parameter (Not Recommended)
+Important:
 
-Alternatively, pass as query parameter:
+- There is currently no separate long-lived API-token subsystem.
+- Bearer auth validates the same session token model used by cookie auth.
 
-```bash
-curl https://vpn.example.com/api/wireguard/peers?token=wb_YOUR_TOKEN_HERE
+## How to Obtain an Auth Token
+
+Use the normal login endpoint and capture the resulting session token from your
+client flow.
+
+```text
+POST /api/login
 ```
 
-!!! warning
-    Query parameter authentication is less secure (logged in access logs). Use header-based authentication.
+For MFA-enabled users, complete the MFA verification step:
 
-## Token Permissions
-
-| Permission | Access Level |
-|------------|--------------|
-| **Read-only** | GET requests only (view data) |
-| **Full** | All methods (create, update, delete) - Admin only |
-
-## Token Lifecycle
-
-### Expiration
-
-Tokens expire based on configuration:
-
-- **Never:** No expiration (use with caution)
-- **30 days:** Recommended for automation
-- **90 days:** Longer-lived scripts
-- **1 year:** Maximum expiration
-
-Expired tokens return `401 Unauthorized`.
-
-### Revocation
-
-Revoke tokens anytime:
-
-1. **Profile → API Tokens**
-2. Select token
-3. Click **Revoke**
-
-Revoked tokens immediately become invalid.
-
-### Rotation
-
-Best practice: Rotate tokens regularly
-
-1. Create new token
-2. Update scripts/automation
-3. Revoke old token
-4. Verify new token works
-
-## Security Best Practices
-
-### Storage
-
-- ✅ Store in environment variables or secret manager
-- ✅ Use file permissions (`chmod 600`) for token files
-- ❌ Don't hardcode in source code
-- ❌ Don't commit to version control
-
-Example:
-
-```bash
-# .env
-WIREBUDDY_API_TOKEN=wb_your_token_here
-
-# Script
-TOKEN=$(cat ~/.wirebuddy_token)
-curl -H "Authorization: Bearer $TOKEN" ...
+```text
+POST /api/mfa/verify
 ```
 
-### Transmission
+Then send requests with either cookie auth (browser-like clients) or Bearer
+header auth.
 
-- ✅ Always use HTTPS
-- ✅ Use header-based authentication
-- ❌ Don't pass tokens in URLs
-- ❌ Don't log tokens
+## Node Sync Authentication
 
-### Scope
+Node daemon synchronization routes under /api/nodes/* (for example enroll,
+heartbeat, config/events sync, node speedtest submit/progress) use dedicated
+node authentication:
 
-- Use read-only tokens when possible
-- Create separate tokens for different purposes
-- Use IP whitelisting for server-to-server
+- Authorization: Bearer <node_api_secret>
+- X-Client-Cert-Fingerprint header
 
-## Error Responses
+This is separate from user session auth.
+
+## Error Semantics
 
 ### 401 Unauthorized
 
-Missing or invalid token:
+Typical causes:
 
-```json
-{
-  "error": "Unauthorized",
-  "message": "Invalid or missing authentication token"
-}
-```
-
-**Solutions:**
-
-- Verify token is correct
-- Check token hasn't expired
-- Ensure token hasn't been revoked
+- Missing auth token
+- Invalid token
+- Expired session
 
 ### 403 Forbidden
 
-Insufficient permissions:
+Typical causes:
 
-```json
-{
-  "error": "Forbidden",
-  "message": "Insufficient permissions for this operation"
-}
-```
-
-**Solutions:**
-
-- Use token with full permissions
-- Use admin account token
-- Check endpoint requires admin access
+- Authenticated but missing admin privileges
+- Account disabled
 
 ### 429 Too Many Requests
 
-Rate limit exceeded:
+Rate-limited request. Respect Retry-After when provided.
 
-```json
-{
-  "error": "Too Many Requests",
-  "message": "Rate limit exceeded. Try again in 60 seconds"
-}
+## Security Recommendations
+
+- Use HTTPS only.
+- Prefer Authorization headers for non-browser automation.
+- Do not log tokens.
+- Rotate/re-authenticate automation sessions regularly.
+
+## Examples
+
+### Bash
+
+```bash
+API_URL="https://vpn.example.com/api"
+TOKEN="YOUR_AUTH_TOKEN"
+
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$API_URL/wireguard/interfaces"
 ```
 
-**Solutions:**
-
-- Reduce request frequency
-- Implement exponential backoff
-- Contact admin to increase limits
-
-## Example: Python
+### Python
 
 ```python
 import requests
 
-API_URL = "https://vpn.example.com/api"
-TOKEN = "wb_your_token_here"
+api_url = "https://vpn.example.com/api"
+token = "YOUR_AUTH_TOKEN"
+headers = {"Authorization": f"Bearer {token}"}
 
-headers = {
-    "Authorization": f"Bearer {TOKEN}",
-    "Content-Type": "application/json"
-}
-
-# Get all peers
-response = requests.get(f"{API_URL}/peers", headers=headers)
-peers = response.json()
-
-for peer in peers:
-    print(f"{peer['name']}: {peer['status']}")
-```
-
-## Example: Bash
-
-```bash
-#!/bin/bash
-
-API_URL="https://vpn.example.com/api"
-TOKEN="wb_your_token_here"
-
-# Get all interfaces
-curl -s -H "Authorization: Bearer $TOKEN" \
-  "$API_URL/interfaces" | jq .
-```
-
-## Example: JavaScript
-
-```javascript
-const API_URL = 'https://vpn.example.com/api';
-const TOKEN = 'wb_your_token_here';
-
-async function getPeers() {
-  const response = await fetch(`${API_URL}/peers`, {
-    headers: {
-      'Authorization': `Bearer ${TOKEN}`
-    }
-  });
-  
-  const peers = await response.json();
-  console.log(peers);
-}
-
-getPeers();
+resp = requests.get(f"{api_url}/wireguard/peers", headers=headers, timeout=10)
+print(resp.status_code)
+print(resp.json())
 ```
 
 ## Next Steps
 
-- [API Endpoints](endpoints.md) - Complete endpoint reference
-- [Rate Limiting](../security/rate-limiting.md) - Rate limit details
-- [Security Best Practices](../security/best-practices.md) - API security
+- [API Endpoints](endpoints.md)
+- [Rate Limiting](../security/rate-limiting.md)
+- [Security Best Practices](../security/best-practices.md)

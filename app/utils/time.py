@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
 
 
 def utcnow() -> datetime:
@@ -17,7 +16,7 @@ def utcnow() -> datetime:
 	return datetime.now(timezone.utc)
 
 
-def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
+def ensure_utc(dt: datetime | None) -> datetime | None:
 	"""Ensure a datetime is timezone-aware and in UTC.
 	
 	Args:
@@ -36,7 +35,7 @@ def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
 	return dt.astimezone(timezone.utc)
 
 
-def parse_utc(s: str) -> Optional[datetime]:
+def parse_utc(s: str) -> datetime | None:
 	"""Parse an ISO-8601 timestamp string to a UTC datetime.
 	
 	Handles both 'Z' suffix and '+00:00' offset notation.

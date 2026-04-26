@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -78,9 +78,16 @@ def _get_rp_id(request: Request) -> str:
 	if _RP_ID_OVERRIDE:
 		return _RP_ID_OVERRIDE
 	host = request.headers.get("host", "localhost")
-	# Strip port if present
+	# Handle IPv6 literals: [::1]:8080 -> [::1]
+	if host.startswith("["):
+		# IPv6 literal — strip optional trailing port after the closing bracket
+		bracket_end = host.find("]")
+		if bracket_end != -1:
+			return host[: bracket_end + 1]
+		return host
+	# Plain hostname or IPv4 — strip port if present
 	if ":" in host:
-		host = host.split(":")[0]
+		host = host.rsplit(":", 1)[0]
 	return host
 
 
@@ -105,6 +112,31 @@ def _check_ip_lockout(conn: sqlite3.Connection, client_ip: str) -> None:
 			detail="Too many failed attempts. Please try again later.",
 			headers={"Retry-After": str(seconds_remaining)},
 		)
+
+
+def _auth_fail(
+	conn: sqlite3.Connection,
+	client_ip: str,
+	status_code: int,
+	detail: str,
+	log_msg: str,
+) -> None:
+	"""Record a failed login attempt and raise an HTTP error.
+
+	Centralises the record_failed_login + HTTPException pattern used
+	throughout passkey_login_finish so that the call can never be omitted.
+	"""
+	_log.warning("%s", log_msg)
+	record_failed_login(conn, client_ip)
+	raise HTTPException(status_code=status_code, detail=detail)
+
+
+def _require_target_user(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row:
+	"""Fetch a user by ID or raise HTTP 404."""
+	user = get_user_by_id(conn, user_id)
+	if not user:
+		raise HTTPException(status_code=404, detail="User not found")
+	return user
 
 
 def _parse_client_data(credential: dict[str, Any]) -> dict[str, Any]:
@@ -388,51 +420,45 @@ def passkey_login_finish(
 		client_data = _parse_client_data(payload.credential)
 		challenge = client_data.get("challenge", "")
 	except Exception as e:
-		_log.warning("PASSKEY_LOGIN_FINISH invalid clientDataJSON: %s", e)
-		record_failed_login(conn, client_ip)
-		raise HTTPException(status_code=400, detail="Invalid credential response")
+		_auth_fail(conn, client_ip, 400, "Invalid credential response",
+				   f"PASSKEY_LOGIN_FINISH invalid clientDataJSON: {e}")
 
 	# Consume challenge (validates it existed and hasn't expired)
 	try:
 		challenge_result = consume_authentication_challenge(conn, challenge)
 		challenge_user_id = challenge_result.user_id  # None is valid for discoverable credentials
 	except InvalidChallengeError as e:
-		_log.warning("PASSKEY_LOGIN_FINISH invalid challenge: %s ip=%s", e, client_ip)
-		record_failed_login(conn, client_ip)
-		raise HTTPException(status_code=400, detail="Invalid or expired authentication challenge")
+		_auth_fail(conn, client_ip, 400, "Invalid or expired authentication challenge",
+				   f"PASSKEY_LOGIN_FINISH invalid challenge: {e} ip={client_ip}")
 
 	# Look up the credential by ID to find the user
 	passkey_row = get_passkey_by_credential_id(conn, credential_id)
 	if not passkey_row:
-		_log.warning("PASSKEY_LOGIN_FINISH unknown credential_id ip=%s", client_ip)
-		record_failed_login(conn, client_ip)
-		raise HTTPException(status_code=401, detail="Invalid passkey")
+		_auth_fail(conn, client_ip, 401, "Invalid passkey",
+				   f"PASSKEY_LOGIN_FINISH unknown credential_id ip={client_ip}")
 
 	user_id = passkey_row["user_id"]
 	username = passkey_row["username"]
 
 	# If challenge was bound to a user, verify it matches
 	if challenge_user_id is not None and challenge_user_id != user_id:
-		_log.warning(
-			"PASSKEY_LOGIN_FINISH user mismatch challenge_user=%s credential_user=%s ip=%s",
-			challenge_user_id,
-			user_id,
-			client_ip,
+		_auth_fail(
+			conn, client_ip, 401, "Invalid passkey",
+			f"PASSKEY_LOGIN_FINISH user mismatch challenge_user={challenge_user_id} "
+			f"credential_user={user_id} ip={client_ip}",
 		)
-		record_failed_login(conn, client_ip)
-		raise HTTPException(status_code=401, detail="Invalid passkey")
 
 	# Check user is active
 	if not passkey_row["is_active"]:
-		_log.info("PASSKEY_LOGIN_FINISH inactive user=%s ip=%s", username, client_ip)
-		record_failed_login(conn, client_ip)
-		raise HTTPException(status_code=403, detail="Account disabled")
+		_auth_fail(conn, client_ip, 403, "Account disabled",
+				   f"PASSKEY_LOGIN_FINISH inactive user={username} ip={client_ip}")
 
 	# Check passkey authentication is enabled for user
 	if not passkey_row["passkey_enabled"]:
-		_log.warning("PASSKEY_LOGIN_FINISH passkey disabled for user=%s ip=%s", username, client_ip)
-		record_failed_login(conn, client_ip)
-		raise HTTPException(status_code=401, detail="Passkey authentication not enabled for this account")
+		_auth_fail(
+			conn, client_ip, 401, "Passkey authentication not enabled for this account",
+			f"PASSKEY_LOGIN_FINISH passkey disabled for user={username} ip={client_ip}",
+		)
 
 	# Verify the authentication response
 	try:
@@ -445,28 +471,22 @@ def passkey_login_finish(
 			credential_current_sign_count=passkey_row["sign_count"],
 		)
 	except Exception as e:
-		_log.warning(
-			"PASSKEY_LOGIN_FINISH verification failed user=%s ip=%s error=%s",
-			username,
-			client_ip,
-			e,
+		_auth_fail(
+			conn, client_ip, 401, "Passkey verification failed",
+			f"PASSKEY_LOGIN_FINISH verification failed user={username} ip={client_ip} error={e}",
 		)
-		record_failed_login(conn, client_ip)
-		raise HTTPException(status_code=401, detail="Passkey verification failed")
 
-	# Update sign count for replay protection
-	update_passkey_sign_count(conn, passkey_row["id"], result.new_sign_count)
-
-	# Clear any login attempt lockouts
-	clear_login_attempts(conn, client_ip)
-
-	# Create session token (same as password login)
-	now = datetime.now(timezone.utc)
+	# Commit sign-count update, session token creation, and last-login in a
+	# single transaction so a mid-flight crash cannot leave them partially applied.
+	now = datetime.now(UTC)
 	token = new_token()
 	expires_at, max_expires_at = generate_token_expiry(now=now)
 
-	create_auth_token(conn, user_id, token, expires_at, max_expires_at)
-	update_last_login(conn, user_id, client_ip)
+	with conn:
+		update_passkey_sign_count(conn, passkey_row["id"], result.new_sign_count)
+		clear_login_attempts(conn, client_ip)
+		create_auth_token(conn, user_id, token, expires_at, max_expires_at)
+		update_last_login(conn, user_id, client_ip)
 
 	# Set auth cookie
 	max_age = max(0, int((expires_at - now).total_seconds()))
@@ -538,9 +558,7 @@ def reset_user_passkeys(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Admin endpoint: Reset all passkeys for a user."""
-	target_user = get_user_by_id(conn, user_id)
-	if not target_user:
-		raise HTTPException(status_code=404, detail="User not found")
+	target_user = _require_target_user(conn, user_id)
 
 	deleted_count = disable_user_passkeys(conn, user_id)
 
@@ -564,9 +582,7 @@ def list_user_passkeys_admin(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Admin endpoint: List passkeys for any user."""
-	target_user = get_user_by_id(conn, user_id)
-	if not target_user:
-		raise HTTPException(status_code=404, detail="User not found")
+	target_user = _require_target_user(conn, user_id)
 
 	rows = get_passkeys_for_user(conn, user_id)
 	return ok_response(data=[_serialize_passkey_row(row) for row in rows])
@@ -601,9 +617,7 @@ def enable_user_passkey(
 	
 	Sets passkey_pending=1, user will be prompted to register passkey on next login.
 	"""
-	target_user = get_user_by_id(conn, user_id)
-	if not target_user:
-		raise HTTPException(status_code=404, detail="User not found")
+	target_user = _require_target_user(conn, user_id)
 
 	# Check if already enabled
 	if target_user["passkey_enabled"]:
@@ -634,9 +648,7 @@ def disable_user_passkey(
 	
 	Deletes all passkeys and resets passkey_enabled and passkey_pending.
 	"""
-	target_user = get_user_by_id(conn, user_id)
-	if not target_user:
-		raise HTTPException(status_code=404, detail="User not found")
+	target_user = _require_target_user(conn, user_id)
 
 	deleted_count = disable_user_passkeys(conn, user_id)
 

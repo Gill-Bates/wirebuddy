@@ -127,7 +127,7 @@ Sensitive data is encrypted before database storage:
 | **WireGuard Private Keys** | Fernet (AES-128-CBC + HMAC-SHA256) |
 | **TOTP Secrets** | Fernet |
 | **ACME Account Keys** | Fernet |
-| **API Tokens** | SHA-256 hash (not encrypted, one-way) |
+| **Session/Auth Tokens** | SHA-256 hash (not encrypted, one-way) |
 
 **Encryption Details:**
 

@@ -29,10 +29,67 @@ from cryptography.x509.oid import NameOID
 
 MAX_TOKEN_AGE = timedelta(hours=24)
 
+_REQUIRED_PAYLOAD_FIELDS = frozenset({"master_url", "node_id", "node_name", "api_secret", "created_at"})
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enrollment Token
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _require_secret_key(secret_key: str) -> None:
+	"""Ensure the shared secret key is present."""
+	if not secret_key:
+		raise ValueError("secret_key must not be empty")
+
+
+def _serialize_payload(payload: dict[str, str]) -> str:
+	"""Return the canonical JSON representation for token payloads."""
+	return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+def _sign_payload(payload_json: str, secret_key: str) -> str:
+	"""Return the HMAC-SHA256 hex signature for a serialized payload."""
+	return hmac.new(
+		secret_key.encode("utf-8"),
+		payload_json.encode("utf-8"),
+		hashlib.sha256,
+	).hexdigest()
+
+
+def _encode_token(payload_json: str, signature: str) -> str:
+	"""Encode payload JSON and signature into the wire token format."""
+	raw = payload_json + "." + signature
+	return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
+
+
+def _decode_token(token_string: str) -> tuple[str, str]:
+	"""Decode a wire token into payload JSON and signature parts."""
+	try:
+		raw = base64.urlsafe_b64decode(token_string.encode("ascii")).decode("utf-8")
+	except Exception as exc:
+		raise ValueError("Invalid token encoding") from exc
+
+	if "." not in raw:
+		raise ValueError("Malformed token: missing signature separator")
+
+	return raw.rsplit(".", 1)
+
+
+def _parse_created_at(created_at_raw: str) -> datetime:
+	"""Parse and validate the created_at field from a token payload."""
+	if not isinstance(created_at_raw, str):
+		raise ValueError("Token field 'created_at' must be a string")
+
+	try:
+		created_at = datetime.fromisoformat(created_at_raw)
+	except ValueError as exc:
+		raise ValueError("Token field 'created_at' is not a valid ISO timestamp") from exc
+
+	if created_at.tzinfo is None:
+		raise ValueError("Token field 'created_at' must include a timezone offset")
+
+	return created_at
 
 
 def generate_enrollment_token(
@@ -49,8 +106,7 @@ def generate_enrollment_token(
 		The returned token embeds api_secret and must therefore be handled as
 		a one-time credential, not as a non-sensitive identifier.
 	"""
-	if not secret_key:
-		raise ValueError("secret_key must not be empty")
+	_require_secret_key(secret_key)
 
 	api_secret = secrets.token_urlsafe(32)
 	payload = {
@@ -60,16 +116,9 @@ def generate_enrollment_token(
 		"api_secret": api_secret,
 		"created_at": datetime.now(timezone.utc).isoformat(),
 	}
-	payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-	signature = hmac.new(
-		secret_key.encode("utf-8"),
-		payload_json.encode("utf-8"),
-		hashlib.sha256,
-	).hexdigest()
-
-	raw = payload_json + "." + signature
-	token = base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
-	return token, api_secret
+	payload_json = _serialize_payload(payload)
+	signature = _sign_payload(payload_json, secret_key)
+	return _encode_token(payload_json, signature), api_secret
 
 
 def verify_enrollment_token(
@@ -82,24 +131,9 @@ def verify_enrollment_token(
 	Returns the parsed payload dict on success.
 	Raises ValueError on any verification failure.
 	"""
-	if not secret_key:
-		raise ValueError("secret_key must not be empty")
-
-	try:
-		raw = base64.urlsafe_b64decode(token_string.encode("ascii")).decode("utf-8")
-	except Exception as exc:
-		raise ValueError("Invalid token encoding") from exc
-
-	if "." not in raw:
-		raise ValueError("Malformed token: missing signature separator")
-
-	payload_json, signature = raw.rsplit(".", 1)
-
-	expected = hmac.new(
-		secret_key.encode("utf-8"),
-		payload_json.encode("utf-8"),
-		hashlib.sha256,
-	).hexdigest()
+	_require_secret_key(secret_key)
+	payload_json, signature = _decode_token(token_string)
+	expected = _sign_payload(payload_json, secret_key)
 
 	if not hmac.compare_digest(expected, signature):
 		raise ValueError("Token signature verification failed")
@@ -109,21 +143,11 @@ def verify_enrollment_token(
 	except json.JSONDecodeError as exc:
 		raise ValueError("Token payload is not valid JSON") from exc
 
-	for field in ("master_url", "node_id", "node_name", "api_secret", "created_at"):
+	for field in _REQUIRED_PAYLOAD_FIELDS:
 		if field not in payload:
 			raise ValueError(f"Token missing required field: {field}")
 
-	created_at_raw = payload["created_at"]
-	if not isinstance(created_at_raw, str):
-		raise ValueError("Token field 'created_at' must be a string")
-
-	try:
-		created_at = datetime.fromisoformat(created_at_raw)
-	except ValueError as exc:
-		raise ValueError("Token field 'created_at' is not a valid ISO timestamp") from exc
-
-	if created_at.tzinfo is None:
-		raise ValueError("Token field 'created_at' must include a timezone offset")
+	created_at = _parse_created_at(payload["created_at"])
 
 	if max_age is not None and datetime.now(timezone.utc) - created_at > max_age:
 		raise ValueError("Token has expired")

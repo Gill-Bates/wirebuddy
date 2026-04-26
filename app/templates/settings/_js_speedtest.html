@@ -1,5 +1,19 @@
     let _speedtestRunning = false;
 
+    function createCountryFlagElement(countryCode) {
+        const code = String(countryCode || '').trim().toLowerCase();
+        if (!/^[a-z]{2}$/.test(code)) return null;
+
+        const img = document.createElement('img');
+        img.className = 'peer-flag';
+        img.alt = `${code.toUpperCase()} flag`;
+        img.loading = 'eager';
+        img.decoding = 'async';
+        img.src = `https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/${code}.svg`;
+        img.addEventListener('error', () => img.remove());
+        return img;
+    }
+
     async function loadSpeedtestSettings() {
         try {
             const res = await api('GET', '/api/wireguard/speedtest/settings');
@@ -13,15 +27,40 @@
                 enabledToggle.style.transition = '';
             }
 
-            // Bind event listeners
-            if (isAdmin) {
-                enabledToggle?.addEventListener('change', () => saveSpeedtestSettings());
+            const ignorePeersToggle = document.getElementById('speedtest-ignore-peers');
+            if (ignorePeersToggle) {
+                ignorePeersToggle.checked = !!data.ignore_peers;
+            }
+            const ignorePeersRow = document.getElementById('speedtest-ignore-peers-row');
+            if (ignorePeersRow) {
+                ignorePeersRow.classList.toggle('d-none', !data.enabled);
+            }
 
-                document.getElementById('btn-speedtest-run')?.addEventListener('click', runSpeedtest);
+            // Bind event listeners (remove first to prevent duplication on re-initialization)
+            if (isAdmin) {
+                const runBtn = document.getElementById('btn-speedtest-run');
+                
+                enabledToggle?.removeEventListener('change', saveSpeedtestSettings);
+                enabledToggle?.addEventListener('change', saveSpeedtestSettings);
+
+                const ignorePeersToggleBtn = document.getElementById('speedtest-ignore-peers');
+                ignorePeersToggleBtn?.removeEventListener('change', saveSpeedtestSettings);
+                ignorePeersToggleBtn?.addEventListener('change', saveSpeedtestSettings);
+
+                // Show/hide the ignore-peers row when Scheduled is toggled
+                enabledToggle?.removeEventListener('change', _toggleIgnorePeersRow);
+                enabledToggle?.addEventListener('change', _toggleIgnorePeersRow);
+
+                runBtn?.removeEventListener('click', runSpeedtest);
+                runBtn?.addEventListener('click', runSpeedtest);
             }
             
-            // Load last speedtest result
-            await loadLastSpeedtest();
+            // Prefer the persisted last result from SQLite; fall back to TSDB history.
+            if (data.last_result && typeof data.last_result === 'object') {
+                showSpeedtestResult(data.last_result);
+            } else {
+                await loadLastSpeedtest();
+            }
         } catch (e) {
             console.error('Failed to load speedtest settings:', e.message);
         }
@@ -42,12 +81,21 @@
         }
     }
 
+    function _toggleIgnorePeersRow() {
+        const enabledToggle = document.getElementById('speedtest-enabled');
+        const row = document.getElementById('speedtest-ignore-peers-row');
+        if (row) row.classList.toggle('d-none', !enabledToggle?.checked);
+    }
+
     async function saveSpeedtestSettings() {
         if (!isAdmin) return;
         const payload = {};
 
         const enabledToggle = document.getElementById('speedtest-enabled');
         if (enabledToggle) payload.enabled = enabledToggle.checked;
+
+        const ignorePeersToggle = document.getElementById('speedtest-ignore-peers');
+        if (ignorePeersToggle) payload.ignore_peers = ignorePeersToggle.checked;
 
         try {
             await api('PATCH', '/api/wireguard/speedtest/settings', payload);
@@ -74,26 +122,26 @@
         if (statusEl) statusEl.textContent = 'Initializing…';
         if (progressEl) progressEl.textContent = '0%';
 
-        // Try SSE first, fall back to regular POST
-        const useSSE = typeof EventSource !== 'undefined';
-        
-        if (useSSE) {
-            try {
-                await runSpeedtestWithSSE(statusEl, progressEl, resultEl);
-            } catch (e) {
-                console.warn('SSE failed, falling back to POST:', e);
-                await runSpeedtestFallback(statusEl, progressEl, resultEl);
+        try {
+            // Try SSE first, fall back to regular POST
+            if (typeof EventSource !== 'undefined') {
+                try {
+                    await runSpeedtestWithSSE(statusEl, progressEl);
+                } catch (e) {
+                    console.warn('SSE failed, falling back to POST:', e);
+                    await runSpeedtestFallback(statusEl, progressEl);
+                }
+            } else {
+                await runSpeedtestFallback(statusEl, progressEl);
             }
-        } else {
-            await runSpeedtestFallback(statusEl, progressEl, resultEl);
+        } finally {
+            _speedtestRunning = false;
+            if (btn) btn.disabled = false;
+            if (runningEl) runningEl.classList.add('d-none');
         }
-
-        _speedtestRunning = false;
-        if (btn) btn.disabled = false;
-        if (runningEl) runningEl.classList.add('d-none');
     }
 
-    function runSpeedtestWithSSE(statusEl, progressEl, resultEl) {
+    function runSpeedtestWithSSE(statusEl, progressEl) {
         return new Promise((resolve, reject) => {
             const es = new EventSource('/api/wireguard/speedtest/run/stream');
             let completed = false;
@@ -134,20 +182,24 @@
             });
 
             es.addEventListener('error', (e) => {
+                // Only handle server-sent error events (e.data will be present)
+                // Transport failures are handled by onerror below
+                if (!e.data) return;
+                
                 completed = true;
                 es.close();
                 try {
                     const data = JSON.parse(e.data);
                     wbToast('Speed test failed: ' + (data.reason || 'Unknown error'), 'danger');
                     reject(new Error(data.reason || 'Unknown error'));
-                } catch {
-                    // SSE connection error (not a server-sent error event)
-                    reject(new Error('Connection failed'));
+                } catch (err) {
+                    reject(err);
                 }
             });
 
             es.onerror = () => {
                 if (!completed) {
+                    completed = true;
                     es.close();
                     reject(new Error('SSE connection lost'));
                 }
@@ -163,7 +215,7 @@
         });
     }
 
-    async function runSpeedtestFallback(statusEl, progressEl, resultEl) {
+    async function runSpeedtestFallback(statusEl, progressEl) {
         if (statusEl) statusEl.textContent = 'Running speed test…';
         if (progressEl) progressEl.textContent = '50%';
 
@@ -194,9 +246,9 @@
         });
 
     function formatSpeedtestMeasuredLabel(timestamp) {
+        // Assumes client and server clocks are reasonably synchronized
         const date = new Date(timestamp);
-        const now = new Date();
-        const diffMs = now - date;
+        const diffMs = Date.now() - date.getTime();
         const diffMins = Math.floor(diffMs / 60000);
 
         if (diffMins < 1) {
@@ -220,7 +272,10 @@
 
     function showSpeedtestResult(data) {
         const resultEl = document.getElementById('speedtest-result');
-        if (!resultEl) return;
+        if (!resultEl) {
+            console.debug('showSpeedtestResult: #speedtest-result not found in DOM');
+            return;
+        }
         resultEl.classList.remove('d-none');
 
         const dlEl = document.getElementById('speedtest-result-dl');
@@ -234,8 +289,19 @@
         if (ulEl) ulEl.textContent = formatBandwidthMetric(data.upload_mbit, 2);
         if (rttEl) rttEl.textContent = data.rtt_ms != null ? `${data.rtt_ms.toFixed(2)} ms (±${(data.jitter_ms || 0).toFixed(2)})` : '–';
         if (serverEl) {
-            serverEl.textContent = data.server || '–';
+            // Clear previous content
+            serverEl.textContent = '';
             serverEl.title = data.server || '';
+            
+            // Add country flag if available
+            const flag = createCountryFlagElement(data.country_code);
+            if (flag) {
+                serverEl.appendChild(flag);
+                serverEl.appendChild(document.createTextNode(' '));
+            }
+            
+            // Add server name
+            serverEl.appendChild(document.createTextNode(data.server || '–'));
         }
         if (inlineDateEl) inlineDateEl.textContent = '';
         if (dateEl && data.ts) {

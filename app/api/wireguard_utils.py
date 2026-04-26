@@ -18,7 +18,7 @@ import sqlite3
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import HTTPException
 
@@ -182,7 +182,7 @@ def parse_wg_show_dump(stdout: str) -> list[WgPeerDump]:
 	results: list[WgPeerDump] = []
 	last_iface: str | None = None
 
-	for line in stdout.strip().split("\n"):
+	for line in stdout.splitlines():
 		if not line:
 			continue
 		parts = line.split("\t")
@@ -242,9 +242,9 @@ def get_enabled_blocklist_ids(conn: sqlite3.Connection) -> list[str]:
 
 
 def filter_peer_blocklist_ids(
-	blocklist_ids: Optional[list[str]],
+	blocklist_ids: list[str] | None,
 	enabled_blocklist_ids: list[str],
-) -> Optional[list[str]]:
+) -> list[str] | None:
 	"""Filter peer blocklist IDs to globally enabled IDs (preserve user order)."""
 	if blocklist_ids is None:
 		return None
@@ -259,7 +259,7 @@ def filter_peer_blocklist_ids(
 
 
 def effective_peer_blocklist_ids(
-	peer_blocklist_ids: Optional[list[str]],
+	peer_blocklist_ids: list[str] | None,
 	enabled_global_ids: list[str],
 ) -> list[str]:
 	"""Compute effective blocklist IDs for a peer.
@@ -291,7 +291,7 @@ def validate_post_script(value: str | None, field: str) -> str | None:
 	return value.strip()
 
 
-def row_to_public(row: sqlite3.Row, enabled_blocklist_ids: Optional[list[str]] = None) -> PeerPublic:
+def row_to_public(row: sqlite3.Row, enabled_blocklist_ids: list[str] | None = None) -> PeerPublic:
 	"""Convert DB row to PeerPublic model."""
 	blocklist_ids = None
 	raw_blocklist_ids = safe_row_get(row, "blocklist_ids")
@@ -359,23 +359,41 @@ async def _run_subprocess(
 		return 1, "", str(exc)
 
 
-async def run_wg_command(*args: str, timeout: int = WG_COMMAND_TIMEOUT) -> tuple[int, str, str]:
-	"""Run command with timeout (WireGuard shorthand supported)."""
-	cmd = _resolve_command_args(*args)
-	return await _run_subprocess(cmd, timeout=timeout)
+async def run_wg_command(
+	*args: str,
+	stdin_data: str | None = None,
+	timeout: int = WG_COMMAND_TIMEOUT,
+) -> tuple[int, str, str]:
+	"""Run a WireGuard (or related) command with optional stdin input.
 
-
-async def run_wg_command_stdin(stdin_data: str, *args: str, timeout: int = WG_COMMAND_TIMEOUT) -> tuple[int, str, str]:
-	"""Run command with stdin data (WireGuard shorthand supported).
-
-	Uses communicate() with input parameter for reliable stdin handling.
+	Accepts the same shorthand as ``_resolve_command_args``.
 	"""
 	cmd = _resolve_command_args(*args)
 	return await _run_subprocess(
 		cmd,
-		stdin_data=stdin_data.encode("utf-8"),
+		stdin_data=stdin_data.encode("utf-8") if stdin_data is not None else None,
 		timeout=timeout,
 	)
+
+
+async def run_wg_command_stdin(stdin_data: str, *args: str, timeout: int = WG_COMMAND_TIMEOUT) -> tuple[int, str, str]:
+	"""Backward-compatible wrapper — prefer ``run_wg_command(..., stdin_data=...)``."""
+	return await run_wg_command(*args, stdin_data=stdin_data, timeout=timeout)
+
+
+async def _run_wg_or_raise(
+	*args: str,
+	stdin_data: str | None = None,
+	detail: str,
+	log_tag: str = "WG_CMD_FAILED",
+	timeout: int = WG_COMMAND_TIMEOUT,
+) -> str:
+	"""Run a WireGuard command and raise HTTPException(500) if it fails."""
+	code, out, err = await run_wg_command(*args, stdin_data=stdin_data, timeout=timeout)
+	if code != 0 or not out:
+		_log.error("%s cmd=%s stderr=%s", log_tag, args, err.strip())
+		raise HTTPException(status_code=500, detail=detail)
+	return out.strip()
 
 
 async def wg_set_peer_with_psk(
@@ -392,16 +410,23 @@ async def wg_set_peer_with_psk(
 	than reading from the actual stdin pipe. This function uses a secure
 	temporary file with restrictive permissions instead.
 	"""
-	fd = None
-	tmp_path = None
-	try:
-		# Create temp file with restrictive permissions (readable only by owner)
-		fd, tmp_path = tempfile.mkstemp(prefix="wg_psk_", suffix=".key")
-		os.chmod(tmp_path, 0o600)
-		os.write(fd, preshared_key.encode("utf-8"))
-		os.close(fd)
-		fd = None  # Mark as closed
+	def _write_psk_temp(key: str) -> str:
+		fd, path = tempfile.mkstemp(prefix="wg_psk_", suffix=".key")
+		try:
+			os.chmod(path, 0o600)
+			os.write(fd, key.encode("utf-8"))
+			os.close(fd)
+			return path
+		except Exception:
+			try:
+				os.close(fd)
+			except OSError:
+				pass
+			raise
 
+	tmp_path: str | None = None
+	try:
+		tmp_path = await asyncio.to_thread(_write_psk_temp, preshared_key)
 		return await run_wg_command(
 			"wg", "set", interface,
 			"peer", public_key,
@@ -409,42 +434,36 @@ async def wg_set_peer_with_psk(
 			"preshared-key", tmp_path,
 		)
 	finally:
-		# Clean up: close fd if still open, remove temp file
-		if fd is not None:
-			try:
-				os.close(fd)
-			except OSError:
-				pass
-		if tmp_path and os.path.exists(tmp_path):
-			try:
-				os.unlink(tmp_path)
-			except OSError:
-				pass
+		if tmp_path is not None:
+			await asyncio.to_thread(
+				lambda p: os.unlink(p) if os.path.exists(p) else None,
+				tmp_path,
+			)
 
 
 async def generate_keypair() -> tuple[str, str]:
 	"""Generate WireGuard private/public key pair."""
-	exit_code, privkey, stderr = await run_wg_command("genkey")
-	if exit_code != 0 or not privkey:
-		_log.error("WG_GENKEY_FAILED stderr=%s", stderr.strip())
-		raise HTTPException(status_code=500, detail="Failed to generate private key")
-	
-	privkey = privkey.strip()
-	exit_code, pubkey, stderr = await run_wg_command_stdin(privkey, "pubkey")
-	if exit_code != 0 or not pubkey:
-		_log.error("WG_PUBKEY_FAILED stderr=%s", stderr.strip())
-		raise HTTPException(status_code=500, detail="Failed to derive public key")
-	
-	return privkey, pubkey.strip()
+	privkey = await _run_wg_or_raise(
+		"genkey",
+		detail="Failed to generate private key",
+		log_tag="WG_GENKEY_FAILED",
+	)
+	pubkey = await _run_wg_or_raise(
+		"pubkey",
+		stdin_data=privkey,
+		detail="Failed to derive public key",
+		log_tag="WG_PUBKEY_FAILED",
+	)
+	return privkey, pubkey
 
 
 async def generate_preshared_key() -> str:
 	"""Generate WireGuard preshared key."""
-	exit_code, psk, stderr = await run_wg_command("genpsk")
-	if exit_code != 0 or not psk:
-		_log.error("WG_GENPSK_FAILED stderr=%s", stderr.strip())
-		raise HTTPException(status_code=500, detail="Failed to generate PSK")
-	return psk.strip()
+	return await _run_wg_or_raise(
+		"genpsk",
+		detail="Failed to generate PSK",
+		log_tag="WG_GENPSK_FAILED",
+	)
 
 
 async def derive_public_key(private_key: str) -> str:
@@ -453,11 +472,12 @@ async def derive_public_key(private_key: str) -> str:
 	Raises:
 		HTTPException: If derivation fails.
 	"""
-	exit_code, pubkey, stderr = await run_wg_command_stdin(private_key.strip(), "pubkey")
-	if exit_code != 0 or not pubkey:
-		_log.error("WG_DERIVE_PUBKEY_FAILED stderr=%s", stderr.strip())
-		raise HTTPException(status_code=500, detail="Failed to derive public key")
-	return pubkey.strip()
+	return await _run_wg_or_raise(
+		"pubkey",
+		stdin_data=private_key.strip(),
+		detail="Failed to derive public key",
+		log_tag="WG_DERIVE_PUBKEY_FAILED",
+	)
 
 
 def is_valid_wg_key(key: str) -> bool:
@@ -477,19 +497,15 @@ def is_valid_wg_key(key: str) -> bool:
 		return False
 
 
-# Backward-compatible private alias for internal callers.
-_is_valid_wg_key = is_valid_wg_key
-
-
 async def validate_keypair(private_key: str, public_key: str) -> None:
 	"""Validate WireGuard keypair format and derivation.
 
 	Raises:
 		HTTPException: If keys are invalid or don't match.
 	"""
-	if not _is_valid_wg_key(private_key):
+	if not is_valid_wg_key(private_key):
 		raise HTTPException(status_code=422, detail="Invalid private key format")
-	if not _is_valid_wg_key(public_key):
+	if not is_valid_wg_key(public_key):
 		raise HTTPException(status_code=422, detail="Invalid public key format")
 
 	# Verify public key derives from private key

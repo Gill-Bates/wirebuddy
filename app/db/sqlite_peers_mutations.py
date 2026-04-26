@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import sqlite3
 
 from ..utils.config import get_config
@@ -17,6 +19,9 @@ from ..utils import vault
 from .sqlite_runtime import UNSET, UnsetType, transaction
 
 _VALID_ALLOWED_IPS_MODES = frozenset({"full", "split", "custom"})
+_UPDATE_ASSIGNMENT_RE = re.compile(r"^[a-z_]+ = \?$")
+
+_log = logging.getLogger(__name__)
 
 
 def _validate_allowed_ips_mode(allowed_ips_mode: str) -> str:
@@ -24,6 +29,32 @@ def _validate_allowed_ips_mode(allowed_ips_mode: str) -> str:
 	if allowed_ips_mode not in _VALID_ALLOWED_IPS_MODES:
 		raise ValueError(f"Invalid allowed_ips_mode: {allowed_ips_mode!r}")
 	return allowed_ips_mode
+
+
+def _maybe_encrypt(value: str | None, pepper: str) -> str | None:
+	"""Encrypt a value if present; preserve None for nullable DB fields."""
+	if value is None:
+		return None
+	return vault.encrypt_if_needed(value, pepper)
+
+
+def _require_not_none(value: object, field: str) -> None:
+	"""Raise ValueError for explicit None on NOT NULL update fields."""
+	if value is None:
+		raise ValueError(f"{field} cannot be None")
+
+
+def _serialize_blocklist_ids(blocklist_ids: list[str] | None) -> str | None:
+	"""Serialize blocklist IDs; NULL means all blocklists enabled."""
+	if blocklist_ids is None:
+		return None
+	return json.dumps(blocklist_ids)
+
+
+def _assert_safe_update_assignments(assignments: list[str]) -> None:
+	"""Ensure UPDATE assignments are static `column = ?` fragments only."""
+	if not all(_UPDATE_ASSIGNMENT_RE.fullmatch(item) for item in assignments):
+		raise ValueError("Unsafe SQL assignment in update list")
 
 
 def create_peer(
@@ -51,11 +82,12 @@ def create_peer(
 	node_id: If set, peer is assigned to a remote node (not local WireGuard).
 	"""
 	now = utcnow()
-	blocklist_ids_json = json.dumps(blocklist_ids) if blocklist_ids is not None else None
+	blocklist_ids_json = _serialize_blocklist_ids(blocklist_ids)
 	pepper = get_config().secret_key
-	private_key_stored = vault.encrypt_if_needed(private_key, pepper)
-	preshared_key_stored = vault.encrypt_if_needed(preshared_key, pepper)
+	private_key_stored = _maybe_encrypt(private_key, pepper)
+	preshared_key_stored = _maybe_encrypt(preshared_key, pepper)
 	allowed_ips_mode = _validate_allowed_ips_mode(allowed_ips_mode)
+	peer_id: int
 	with transaction(conn, immediate=True):
 		cur = conn.execute(
 			"""
@@ -86,7 +118,8 @@ def create_peer(
 				now,
 			),
 		)
-		return cur.lastrowid
+		peer_id = int(cur.lastrowid)
+	return peer_id
 
 
 def update_peer(
@@ -119,70 +152,67 @@ def update_peer(
 			or a list of IDs to set specific blocklists.
 	"""
 	pepper = get_config().secret_key
+	updates: list[str] = []
+	params: list[object] = []
+
+	if name is not UNSET:
+		updates.append("name = ?")
+		params.append(name)
+	if private_key is not UNSET:
+		updates.append("private_key = ?")
+		params.append(_maybe_encrypt(private_key, pepper))
+	if preshared_key is not UNSET:
+		updates.append("preshared_key = ?")
+		params.append(_maybe_encrypt(preshared_key, pepper))
+	if allowed_ips is not UNSET:
+		_require_not_none(allowed_ips, "allowed_ips")
+		updates.append("allowed_ips = ?")
+		params.append(allowed_ips)
+	if allowed_ips_mode is not UNSET:
+		_require_not_none(allowed_ips_mode, "allowed_ips_mode")
+		updates.append("allowed_ips_mode = ?")
+		params.append(_validate_allowed_ips_mode(allowed_ips_mode))
+	if endpoint is not UNSET:
+		updates.append("endpoint = ?")
+		params.append(endpoint)
+	if is_enabled is not UNSET:
+		_require_not_none(is_enabled, "is_enabled")
+		updates.append("is_enabled = ?")
+		params.append(int(is_enabled))
+	if use_adblocker is not UNSET:
+		_require_not_none(use_adblocker, "use_adblocker")
+		updates.append("use_adblocker = ?")
+		params.append(int(use_adblocker))
+	if dns_logging_enabled is not UNSET:
+		_require_not_none(dns_logging_enabled, "dns_logging_enabled")
+		updates.append("dns_logging_enabled = ?")
+		params.append(int(dns_logging_enabled))
+	if blocklist_ids is not UNSET:
+		updates.append("blocklist_ids = ?")
+		params.append(_serialize_blocklist_ids(blocklist_ids))
+	if client_isolation is not UNSET:
+		_require_not_none(client_isolation, "client_isolation")
+		updates.append("client_isolation = ?")
+		params.append(int(client_isolation))
+	if node_id is not UNSET:
+		updates.append("node_id = ?")
+		params.append(node_id)
+
+	if not updates:
+		row = conn.execute("SELECT 1 FROM peers WHERE id = ?", (peer_id,)).fetchone()
+		return row is not None
+
+	updates.append("updated_at = ?")
+	_assert_safe_update_assignments(updates)
+	params.append(utcnow())
+	params.append(peer_id)
+	sql = f"UPDATE peers SET {', '.join(updates)} WHERE id = ?"
+
+	updated = False
 	with transaction(conn, immediate=True):
-		updates = []
-		params = []
-
-		if name is not UNSET:
-			updates.append("name = ?")
-			params.append(name)
-		if private_key is not UNSET:
-			updates.append("private_key = ?")
-			params.append(vault.encrypt_if_needed(private_key, pepper))
-		if preshared_key is not UNSET:
-			updates.append("preshared_key = ?")
-			params.append(vault.encrypt_if_needed(preshared_key, pepper))
-		if allowed_ips is not UNSET:
-			if allowed_ips is None:
-				raise ValueError("allowed_ips cannot be None")
-			updates.append("allowed_ips = ?")
-			params.append(allowed_ips)
-		if allowed_ips_mode is not UNSET:
-			if allowed_ips_mode is None:
-				raise ValueError("allowed_ips_mode cannot be None")
-			updates.append("allowed_ips_mode = ?")
-			params.append(_validate_allowed_ips_mode(allowed_ips_mode))
-		if endpoint is not UNSET:
-			updates.append("endpoint = ?")
-			params.append(endpoint)
-		if is_enabled is not UNSET:
-			if is_enabled is None:
-				raise ValueError("is_enabled cannot be None")
-			updates.append("is_enabled = ?")
-			params.append(int(is_enabled))
-		if use_adblocker is not UNSET:
-			if use_adblocker is None:
-				raise ValueError("use_adblocker cannot be None")
-			updates.append("use_adblocker = ?")
-			params.append(int(use_adblocker))
-		if dns_logging_enabled is not UNSET:
-			if dns_logging_enabled is None:
-				raise ValueError("dns_logging_enabled cannot be None")
-			updates.append("dns_logging_enabled = ?")
-			params.append(int(dns_logging_enabled))
-		if blocklist_ids is not UNSET:
-			updates.append("blocklist_ids = ?")
-			params.append(json.dumps(blocklist_ids) if blocklist_ids is not None else None)
-		if client_isolation is not UNSET:
-			if client_isolation is None:
-				raise ValueError("client_isolation cannot be None")
-			updates.append("client_isolation = ?")
-			params.append(int(client_isolation))
-		if node_id is not UNSET:
-			updates.append("node_id = ?")
-			params.append(node_id)
-
-		if not updates:
-			row = conn.execute("SELECT 1 FROM peers WHERE id = ?", (peer_id,)).fetchone()
-			return row is not None
-
-		updates.append("updated_at = ?")
-		params.append(utcnow())
-		params.append(peer_id)
-
-		sql = f"UPDATE peers SET {', '.join(updates)} WHERE id = ?"
 		cur = conn.execute(sql, params)
-		return cur.rowcount > 0
+		updated = cur.rowcount > 0
+	return updated
 
 
 def delete_peer(conn: sqlite3.Connection, peer_id: int) -> bool:
@@ -191,6 +221,13 @@ def delete_peer(conn: sqlite3.Connection, peer_id: int) -> bool:
 	Note: This only removes the database row. Callers are responsible for
 	removing the peer from the live WireGuard interface first.
 	"""
+	deleted = False
 	with transaction(conn, immediate=True):
 		cur = conn.execute("DELETE FROM peers WHERE id = ?", (peer_id,))
-		return cur.rowcount > 0
+		deleted = cur.rowcount > 0
+
+	if deleted:
+		_log.info("PEER_DELETE peer_id=%d", peer_id)
+	else:
+		_log.debug("PEER_DELETE peer_id=%d not found", peer_id)
+	return deleted

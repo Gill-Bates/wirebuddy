@@ -445,6 +445,20 @@
         color: var(--bs-secondary-color);
     }
 
+    .peers-empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 18rem;
+        text-align: center;
+        padding: 3rem 1.5rem;
+    }
+
+    .peers-empty-state .material-icons {
+        font-size: 3rem;
+    }
+
     /* Mobile-optimized peers rows */
     @media (max-width: 767.98px) {
         .peers-list-toolbar {
@@ -757,6 +771,7 @@
             </div>
         </div>
         <div class="peers-scroll-container" id="peers-scroll-container">
+            {% if peers %}
             <table class="table table-hover align-middle mb-0 peers-table">
                 <thead>
                     <tr>
@@ -928,10 +943,17 @@
                     {% endfor %}
                 </tbody>
             </table>
-        <div class="peers-no-results d-none" id="peers-no-results">
-            <span class="material-icons mb-2" style="font-size: 2.5rem;">search_off</span>
-            <div>No peers match your search</div>
-        </div>
+            <div class="peers-no-results d-none" id="peers-no-results">
+                <span class="material-icons mb-2" style="font-size: 2.5rem;">search_off</span>
+                <div>No peers match your search</div>
+            </div>
+            {% else %}
+            <div class="peers-empty-state text-center py-5">
+                <span class="material-icons text-muted mb-3" style="font-size: 3rem;" aria-hidden="true">hub</span>
+                <h3 class="h5 mb-2">No peers configured yet</h3>
+                <p class="text-muted mb-0">Click <strong>Add Peer</strong> to create your first peer.</p>
+            </div>
+            {% endif %}
         </div><!-- /.peers-scroll-container -->
     </div>
 </div>

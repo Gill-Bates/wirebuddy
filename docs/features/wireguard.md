@@ -231,10 +231,10 @@ The **Dashboard** shows real-time traffic for all peers:
 
 Navigate to **Traffic** for historical analytics:
 
-- **Time Range:** Select custom date range
-- **Per-Peer Charts:** Individual traffic graphs
-- **Total Throughput:** Combined traffic across all peers
-- **Export Data:** Download CSV for external analysis
+- **Time Range Presets:** `6h`, `24h`, `7d`, `30d`, `90d`, `180d`, `1y`
+- **Per-Peer Charts:** Individual RX/TX traffic graphs
+- **Total Throughput Views:** Country and ASN traffic breakdowns
+- **Responsive Bucketing:** Server-side bucket downsampling for mobile/desktop chart density
 
 ## Advanced Features
 

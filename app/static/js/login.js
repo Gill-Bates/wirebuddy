@@ -7,6 +7,9 @@
  * Login Page - Main Logic and Utilities
  */
 
+(function () {
+    'use strict';
+
 // Cached DOM elements
 let errorAlert;
 let loginForm;
@@ -14,102 +17,8 @@ let submitBtn;
 let usernameField;
 let passwordField;
 let loginCard;
-const busyState = new WeakMap();
 let throttleTimer = null;
-let loginAbortController = null;
 let _loginInProgress = false;
-
-// Get CSRF token
-function getCsrfToken() {
-    const metaToken = document.querySelector('meta[name="csrf-token"]')?.content;
-    const bodyToken = document.body?.dataset?.csrfToken;
-    const token = metaToken || bodyToken;
-    if (!token) {
-        console.error('Login page: CSRF token not found');
-    }
-    return token || '';
-}
-
-// API call helper to reduce duplication
-async function apiCall(url, body, opts = {}) {
-    const timeoutMs = Number.isFinite(Number(opts?.timeoutMs)) ? Number(opts.timeoutMs) : 15000;
-    const externalSignal = opts?.signal || null;
-    const controller = new AbortController();
-    let timeoutAbort = false;
-    let timeoutId = null;
-    let onExternalAbort = null;
-
-    if (externalSignal?.aborted) {
-        const error = new Error('Request cancelled');
-        error.status = 0;
-        error.name = 'AbortError';
-        throw error;
-    }
-    if (externalSignal) {
-        onExternalAbort = () => controller.abort();
-        externalSignal.addEventListener('abort', onExternalAbort, { once: true });
-    }
-    if (timeoutMs > 0) {
-        timeoutId = setTimeout(() => {
-            timeoutAbort = true;
-            controller.abort();
-        }, timeoutMs);
-    }
-
-    let response;
-    try {
-        response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRF-Token': getCsrfToken(),
-            },
-            body: JSON.stringify(body),
-            credentials: 'same-origin',
-            signal: controller.signal,
-        });
-    } catch (networkError) {
-        if (networkError?.name === 'AbortError') {
-            if (externalSignal?.aborted && !timeoutAbort) {
-                const error = new Error('Request cancelled');
-                error.status = 0;
-                error.name = 'AbortError';
-                throw error;
-            }
-            if (timeoutAbort) {
-                const error = new Error('Request timed out');
-                error.status = 0;
-                throw error;
-            }
-        }
-        const error = new Error('Unable to reach the server');
-        error.status = 0;
-        throw error;
-    } finally {
-        if (timeoutId) clearTimeout(timeoutId);
-        if (externalSignal && onExternalAbort) {
-            externalSignal.removeEventListener('abort', onExternalAbort);
-        }
-    }
-
-    let data = {};
-    try {
-        data = await response.json();
-    } catch (jsonError) {
-        const error = new Error('Invalid response from server');
-        error.status = response.status;
-        throw error;
-    }
-
-    if (!response.ok) {
-        const error = new Error(data.detail || data.error || 'Request failed');
-        error.status = response.status;
-        error.retryAfter = response.headers.get('Retry-After');
-        throw error;
-    }
-
-    return data;
-}
 
 function parseRetryAfter(headerValue) {
     if (!headerValue) return null;
@@ -127,32 +36,28 @@ function parseRetryAfter(headerValue) {
     return Math.max(1, diffSeconds);
 }
 
-function cloneChildNodes(node) {
-    return Array.from(node.childNodes, (child) => child.cloneNode(true));
-}
-
 function restartAnimationClass(el, className) {
     if (!el) return;
     el.classList.remove(className);
-    requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-            el.classList.add(className);
-        });
-    });
+    void el.offsetWidth;
+    el.classList.add(className);
 }
 
-function triggerLoginFailureFeedback() {
-    restartAnimationClass(passwordField, 'is-invalid');
-    restartAnimationClass(loginCard, 'login-card-shake');
-}
-
-function clearLoginFailureFeedback() {
+function setLoginFailureFeedback(active) {
     if (passwordField) {
-        passwordField.classList.remove('is-invalid');
+        if (active) {
+            restartAnimationClass(passwordField, 'is-invalid');
+        } else {
+            passwordField.classList.remove('is-invalid');
+        }
     }
 
     if (loginCard) {
-        loginCard.classList.remove('login-card-shake');
+        if (active) {
+            restartAnimationClass(loginCard, 'login-card-shake');
+        } else {
+            loginCard.classList.remove('login-card-shake');
+        }
     }
 }
 
@@ -162,11 +67,8 @@ function setBusy(buttonEl, busyText) {
         return;
     }
 
-    if (!busyState.has(buttonEl)) {
-        busyState.set(buttonEl, {
-            childNodes: cloneChildNodes(buttonEl),
-            disabled: buttonEl.disabled,
-        });
+    if (!buttonEl.dataset.originalText) {
+        buttonEl.dataset.originalText = buttonEl.textContent?.trim() || '';
     }
 
     buttonEl.disabled = true;
@@ -182,15 +84,8 @@ function clearBusy(buttonEl, idleText) {
         return;
     }
 
-    const originalState = busyState.get(buttonEl);
-    buttonEl.disabled = originalState?.disabled ?? false;
-    if (originalState?.childNodes?.length) {
-        // Clone again because replaceChildren moves nodes out of the stored snapshot.
-        buttonEl.replaceChildren(...originalState.childNodes.map((child) => child.cloneNode(true)));
-        busyState.delete(buttonEl);
-    } else {
-        buttonEl.textContent = idleText;
-    }
+    buttonEl.disabled = false;
+    buttonEl.textContent = buttonEl.dataset.originalText || idleText;
     buttonEl.removeAttribute('aria-busy');
 }
 
@@ -223,7 +118,7 @@ function hideError() {
 
     // Remove tabindex
     errorAlert.removeAttribute('tabindex');
-    clearLoginFailureFeedback();
+    setLoginFailureFeedback(false);
     if (wasFocused && usernameField) {
         usernameField.focus();
     }
@@ -292,18 +187,14 @@ async function handleLogin(e) {
     }
 
     _loginInProgress = true;
-    if (loginAbortController && !loginAbortController.signal.aborted) {
-        loginAbortController.abort();
-    }
-    loginAbortController = new AbortController();
-    let keepBusyReason = null;
+    let shouldResetBusy = true;
 
     setBusy(submitBtn, 'Signing in...');
 
     try {
-        const data = await apiCall('/api/login', { username, password }, {
-            signal: loginAbortController.signal,
+        const data = await api('POST', '/api/login', { username, password }, {
             timeoutMs: 15000,
+            skipAuthRedirect: true,
         });
 
         if (data?.data?.mfa_required) {
@@ -313,31 +204,19 @@ async function handleLogin(e) {
                 return;
             }
             clearBusy(submitBtn, 'Sign In');
+            shouldResetBusy = false;
             showMfaForm(username, data.data.mfa_token);
             return;
         }
 
-        // OTP setup data is fetched server-side on the next page.
-        if (data?.data?.otp_setup_pending) {
-            keepBusyReason = 'redirect';
-            window.location.href = '/ui/otp-setup';
-            return;
-        }
-
-        // Check if passkey setup is pending (admin enabled but user hasn't registered)
-        if (data?.data?.passkey_setup_pending) {
-            keepBusyReason = 'redirect';
-            window.location.href = '/ui/passkey-setup';
-            return;
-        }
-
-        // Auth cookie is set by the server (HttpOnly, Secure, SameSite=Strict).
-        // No client-side token storage needed.
-        keepBusyReason = 'redirect';
-        window.location.href = '/ui/dashboard';
+        const nextUrl = data?.data?.otp_setup_pending ? '/ui/otp-setup'
+            : data?.data?.passkey_setup_pending ? '/ui/passkey-setup'
+                : '/ui/dashboard';
+        shouldResetBusy = false;
+        window.location.assign(nextUrl);
 
     } catch (error) {
-        if (error?.name === 'AbortError') {
+        if (error?.code === 'TIMEOUT' || error?.code === 'ABORTED' || error?.name === 'AbortError') {
             return;
         }
 
@@ -346,7 +225,7 @@ async function handleLogin(e) {
             const retryAfter = parseRetryAfter(error.retryAfter) || 60;
             showError(error?.message || 'Too many attempts. Please wait.');
             startThrottleCountdown(retryAfter);
-            keepBusyReason = 'throttle';
+            shouldResetBusy = false;
             return;
         }
 
@@ -355,25 +234,13 @@ async function handleLogin(e) {
             passwordField.focus();
         }
         if (error.status === 401 && error.message === 'Invalid username or password') {
-            triggerLoginFailureFeedback();
+            setLoginFailureFeedback(true);
         }
         showError(error?.message || 'Request failed');
     } finally {
-        loginAbortController = null;
-        if (keepBusyReason === 'throttle') {
-            _loginInProgress = false;
-            return;
+        if (shouldResetBusy) {
+            clearBusy(submitBtn, 'Sign In');
         }
-        if (keepBusyReason === 'redirect') {
-            setTimeout(() => {
-                if (_loginInProgress && !throttleTimer) {
-                    _loginInProgress = false;
-                    clearBusy(submitBtn, 'Sign In');
-                }
-            }, 3000);
-            return;
-        }
-        clearBusy(submitBtn, 'Sign In');
         _loginInProgress = false;
     }
 }
@@ -406,18 +273,7 @@ function initLoginPage() {
     // Setup event listeners
     loginForm.addEventListener('submit', handleLogin);
 
-    passwordField.addEventListener('input', clearLoginFailureFeedback);
-
-    // Cleanup throttle timer on page unload
-    window.addEventListener('beforeunload', () => {
-        if (loginAbortController && !loginAbortController.signal.aborted) {
-            loginAbortController.abort();
-        }
-        if (throttleTimer) {
-            clearInterval(throttleTimer);
-            throttleTimer = null;
-        }
-    });
+    passwordField.addEventListener('input', () => setLoginFailureFeedback(false));
 
     // Initialize theme toggle
     initThemeToggle();
@@ -439,3 +295,5 @@ if (document.readyState === 'loading') {
 } else {
     initLoginPage();
 }
+
+})();
