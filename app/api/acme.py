@@ -22,20 +22,20 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path as PathLib
-from typing import Optional
 
 import httpx
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, EmailStr, Field
 
 from ..api.auth import get_current_user, require_admin
-from .response import ok_response
+from ..utils.rate_limit import RATE_LIMIT_HEAVY, limiter
 from ..utils.config import Config, get_config
+from .response import OkResponse
 
 _log = logging.getLogger(__name__)
 
@@ -55,11 +55,11 @@ CHALLENGE_TTL = 600
 # Domain lock file descriptor storage (prevents GC from closing locked files)
 # SECURITY: Without this, Python's GC can close the file object and release
 #           the fcntl lock prematurely, breaking domain locking guarantees
-_domain_lock_fds: dict[int, object] = {}  # fd_num -> file object
+_domain_lock_fds: dict[int, tuple[object, PathLib]] = {}  # fd_num -> (file object, lock path)
 _domain_lock_fds_lock = threading.Lock()
 
 # Domain lock file helpers (worker-safe)
-def _acquire_domain_lock(certs_dir: PathLib, domain: str) -> Optional[int]:
+def _acquire_domain_lock(certs_dir: PathLib, domain: str) -> int | None:
 	"""Acquire exclusive lock for domain order. Returns file descriptor or None.
 	
 	CRITICAL: Must keep file object alive to prevent GC from closing it and
@@ -68,6 +68,7 @@ def _acquire_domain_lock(certs_dir: PathLib, domain: str) -> Optional[int]:
 	lock_dir = certs_dir / ".locks"
 	lock_dir.mkdir(parents=True, exist_ok=True)
 	lock_file = lock_dir / f"{domain}.lock"
+	fd_obj = None
 	
 	try:
 		fd_obj = open(lock_file, "w")
@@ -78,23 +79,30 @@ def _acquire_domain_lock(certs_dir: PathLib, domain: str) -> Optional[int]:
 		# Store file object to prevent GC from closing it
 		fd_num = fd_obj.fileno()
 		with _domain_lock_fds_lock:
-			_domain_lock_fds[fd_num] = fd_obj
+			_domain_lock_fds[fd_num] = (fd_obj, lock_file)
 		return fd_num
 	except (IOError, OSError):
+		if fd_obj is not None:
+			fd_obj.close()
 		return None
 
 def _release_domain_lock(fd: int) -> None:
 	"""Release domain lock by file descriptor."""
 	# Retrieve and remove file object from storage
 	with _domain_lock_fds_lock:
-		fd_obj = _domain_lock_fds.pop(fd, None)
-	if fd_obj is None:
+		lock_entry = _domain_lock_fds.pop(fd, None)
+	if lock_entry is None:
 		return
+	fd_obj, lock_file = lock_entry
 	
 	try:
 		fcntl.flock(fd_obj.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
 		fd_obj.close()  # type: ignore
 	except Exception:
+		pass
+	try:
+		lock_file.unlink(missing_ok=True)
+	except OSError:
 		pass
 
 
@@ -112,13 +120,13 @@ class CertificateRequest(BaseModel):
 class CertificateInfo(BaseModel):
 	"""Certificate information."""
 	domain: str
-	issued_at: Optional[str] = None
-	expires_at: Optional[str] = None
-	issuer: Optional[str] = None
-	serial: Optional[str] = None
+	issued_at: str | None = None
+	expires_at: str | None = None
+	issuer: str | None = None
+	serial: str | None = None
 	exists: bool = False
 	is_staging: bool = False
-	days_until_expiry: Optional[int] = None
+	days_until_expiry: int | None = None
 	needs_renewal: bool = False
 
 
@@ -127,6 +135,35 @@ class ChallengeStatus(BaseModel):
 	token: str
 	key_authorization: str
 	status: str
+
+
+class CertificateIssueData(BaseModel):
+	"""Successful certificate issuance payload."""
+	domain: str
+	staging: bool
+	cert_path: str
+	key_path: str
+
+
+class CertificateDeleteData(BaseModel):
+	"""Certificate deletion payload."""
+	success: bool
+	domain: str
+	staging: bool
+
+
+class RenewalCandidate(BaseModel):
+	"""Single certificate renewal candidate."""
+	domain: str
+	expires_at: str | None = None
+	days_until_expiry: int | None = None
+
+
+class RenewalCheckData(BaseModel):
+	"""Certificate renewal summary payload."""
+	total_certificates: int
+	needs_renewal_count: int
+	needs_renewal: list[RenewalCandidate]
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +230,7 @@ def _atomic_write_bytes(path: PathLib, data: bytes, mode: int) -> None:
 			tmp.write(data)
 			tmp.flush()
 			os.fsync(tmp.fileno())
+		os.chmod(tmp_name, mode)
 		os.replace(tmp_name, path)
 		path.chmod(mode)
 	finally:
@@ -203,6 +241,12 @@ def _atomic_write_bytes(path: PathLib, data: bytes, mode: int) -> None:
 			pass
 
 
+
+def _atomic_write_text(path: PathLib, data: str, mode: int) -> None:
+	"""Write text atomically and apply mode."""
+	_atomic_write_bytes(path, data.encode("utf-8"), mode)
+
+
 class ACMEClient:
 	"""Lightweight ACME v2 client."""
 	
@@ -210,10 +254,10 @@ class ACMEClient:
 		self.directory_url = directory_url
 		self.certs_dir = certs_dir
 		self.directory: dict = {}
-		self.nonce: Optional[str] = None
-		self.account_key: Optional[ec.EllipticCurvePrivateKey] = None
-		self.account_url: Optional[str] = None
-		self.http_client: Optional[httpx.AsyncClient] = None
+		self.nonce: str | None = None
+		self.account_key: ec.EllipticCurvePrivateKey | None = None
+		self.account_url: str | None = None
+		self.http_client: httpx.AsyncClient | None = None
 		self._cached_thumbprint: str | None = None
 		
 		# Paths
@@ -277,10 +321,33 @@ class ACMEClient:
 			format=serialization.PrivateFormat.PKCS8,
 			encryption_algorithm=serialization.NoEncryption(),
 		)
-		self.account_key_path.write_bytes(key_pem)
-		self.account_key_path.chmod(0o600)
+		_atomic_write_bytes(self.account_key_path, key_pem, 0o600)
 		_log.info("Created new ACME account key")
 		return key
+
+	def _load_existing_account_url(self, current_thumbprint: str) -> str | None:
+		"""Load persisted account URL when it still matches the current key."""
+		if not self.account_url_path.exists():
+			return None
+		if self.account_thumbprint_path.exists():
+			stored_thumbprint = self.account_thumbprint_path.read_text().strip()
+			if stored_thumbprint != current_thumbprint:
+				_log.warning(
+					"Account key changed (thumbprint mismatch). "
+					"Removing stale account URL to re-register."
+				)
+				self.account_url_path.unlink(missing_ok=True)
+				self.account_thumbprint_path.unlink(missing_ok=True)
+				return None
+			return self.account_url_path.read_text().strip()
+		_log.warning("ACME account metadata incomplete, re-registering account")
+		self.account_url_path.unlink(missing_ok=True)
+		return None
+
+	def _save_account_metadata(self, account_url: str, current_thumbprint: str) -> None:
+		"""Persist account URL and thumbprint."""
+		_atomic_write_text(self.account_url_path, account_url, 0o600)
+		_atomic_write_text(self.account_thumbprint_path, current_thumbprint, 0o600)
 	
 	def _get_jwk(self) -> dict:
 		"""Get JWK representation of account key."""
@@ -320,7 +387,7 @@ class ACMEClient:
 		# ES256 signature is r || s, each 32 bytes
 		return r.to_bytes(32, "big") + s.to_bytes(32, "big")
 	
-	async def _signed_request(self, url: str, payload: Optional[dict]) -> httpx.Response:
+	async def _signed_request(self, url: str, payload: dict | None) -> httpx.Response:
 		"""Make a signed JWS request to ACME server."""
 		if not self.http_client:
 			raise RuntimeError("HTTP client not initialized")
@@ -373,30 +440,16 @@ class ACMEClient:
 	async def register_or_fetch_account(self, email: str) -> str:
 		"""Register new account or fetch existing one."""
 		await self._fetch_directory()
-		self.account_key = self._load_or_create_account_key()
+		self.account_key = await asyncio.to_thread(self._load_or_create_account_key)
 		
 		# Calculate current key thumbprint
 		current_thumbprint = self._get_jwk_thumbprint()
 		
 		# Check for existing account URL
-		if self.account_url_path.exists():
-			# Validate thumbprint matches current key
-			if self.account_thumbprint_path.exists():
-				stored_thumbprint = self.account_thumbprint_path.read_text().strip()
-				if stored_thumbprint != current_thumbprint:
-					_log.warning(
-						"Account key changed (thumbprint mismatch). "
-						"Removing stale account URL to re-register."
-					)
-					self.account_url_path.unlink()
-					self.account_thumbprint_path.unlink()
-				else:
-					self.account_url = self.account_url_path.read_text().strip()
-					_log.info("Using existing ACME account: %s", self.account_url)
-					return self.account_url
-			else:
-				_log.warning("ACME account metadata incomplete, re-registering account")
-				self.account_url_path.unlink()
+		self.account_url = await asyncio.to_thread(self._load_existing_account_url, current_thumbprint)
+		if self.account_url:
+			_log.info("Using existing ACME account: %s", self.account_url)
+			return self.account_url
 		
 		# Register new account
 		payload = {
@@ -414,8 +467,7 @@ class ACMEClient:
 			raise HTTPException(status_code=500, detail="No account URL in response")
 		
 		# Save account URL and thumbprint
-		self.account_url_path.write_text(self.account_url)
-		self.account_thumbprint_path.write_text(current_thumbprint)
+		await asyncio.to_thread(self._save_account_metadata, self.account_url, current_thumbprint)
 		_log.info("Registered new ACME account: %s", self.account_url)
 		
 		return self.account_url
@@ -464,7 +516,7 @@ class ACMEClient:
 		
 		return resp.json()
 	
-	async def poll_order(self, order_url: str, max_attempts: int = 30, delay: float = 2.0) -> dict:
+	async def poll_order(self, order_url: str, max_attempts: int = 15, delay: float = 4.0) -> dict:
 		"""Poll order status until ready or failed."""
 		for _ in range(max_attempts):
 			resp = await self._signed_request(order_url, None)
@@ -586,88 +638,72 @@ def _get_challenge_file(certs_dir: PathLib) -> PathLib:
 	return certs_dir / ".challenges.json"
 
 
+def _get_challenge_lock_file(certs_dir: PathLib) -> PathLib:
+	"""Get path to challenge storage lock file."""
+	return certs_dir / ".challenges.lock"
+
+
+def _read_valid_challenges(challenge_file: PathLib) -> dict[str, dict]:
+	"""Read challenge file contents and drop expired entries."""
+	if not challenge_file.exists():
+		return {}
+	content = challenge_file.read_text()
+	data = json.loads(content) if content else {}
+	now = time.time()
+	valid: dict[str, dict] = {}
+	for token, entry in data.items():
+		if isinstance(entry, dict) and entry.get("expires", 0) > now:
+			valid[token] = entry
+	return valid
+
+
 def _load_challenges(certs_dir: PathLib) -> dict[str, dict]:
 	"""Load challenges from file, cleaning expired entries."""
 	challenge_file = _get_challenge_file(certs_dir)
+	lock_file = _get_challenge_lock_file(certs_dir)
 	
 	if not challenge_file.exists():
 		return {}
 	
 	try:
-		with open(challenge_file, "r") as f:
-			fcntl.flock(f.fileno(), fcntl.LOCK_SH)
-			content = f.read()
-			data = json.loads(content) if content else {}
-		now = time.time()
-		
-		# Filter out expired challenges
-		valid = {}
-		for token, entry in data.items():
-			if isinstance(entry, dict) and entry.get("expires", 0) > now:
-				valid[token] = entry
-		
-		return valid
-	except Exception:
+		lock_file.touch(exist_ok=True)
+		with open(lock_file, "r") as lock_handle:
+			fcntl.flock(lock_handle.fileno(), fcntl.LOCK_SH)
+			return _read_valid_challenges(challenge_file)
+	except Exception as exc:
+		_log.warning("Failed to load challenges from %s: %s", challenge_file, exc)
 		return {}
 
 
 def _save_challenge(certs_dir: PathLib, token: str, key_auth: str) -> None:
 	"""Save challenge to file with TTL (thread-safe with file lock)."""
 	challenge_file = _get_challenge_file(certs_dir)
-	
-	# Ensure file exists for locking
-	challenge_file.touch(exist_ok=True)
-	
-	with open(challenge_file, "r+") as f:
-		# Acquire exclusive lock
-		fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-		
-		# Load existing and clean expired
-		f.seek(0)
-		content = f.read()
-		challenges = json.loads(content) if content else {}
-		
-		now = time.time()
-		valid = {}
-		for t, entry in challenges.items():
-			if isinstance(entry, dict) and entry.get("expires", 0) > now:
-				valid[t] = entry
-		
-		# Add new challenge
+	lock_file = _get_challenge_lock_file(certs_dir)
+	lock_file.touch(exist_ok=True)
+	with open(lock_file, "r+") as lock_handle:
+		fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+		valid = _read_valid_challenges(challenge_file)
 		valid[token] = {
 			"key_auth": key_auth,
-			"expires": now + CHALLENGE_TTL,
+			"expires": time.time() + CHALLENGE_TTL,
 		}
-		
-		# Write atomically
-		f.seek(0)
-		f.truncate()
-		f.write(json.dumps(valid))
-		f.flush()
+		_atomic_write_bytes(challenge_file, json.dumps(valid).encode("utf-8"), 0o600)
 
 
 def _remove_challenge(certs_dir: PathLib, token: str) -> None:
 	"""Remove challenge from file (thread-safe with file lock)."""
 	challenge_file = _get_challenge_file(certs_dir)
+	lock_file = _get_challenge_lock_file(certs_dir)
 	
-	if not challenge_file.exists():
+	if not challenge_file.exists() and not lock_file.exists():
 		return
 	
-	with open(challenge_file, "r+") as f:
-		# Acquire exclusive lock
-		fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-		
-		f.seek(0)
-		content = f.read()
-		challenges = json.loads(content) if content else {}
+	lock_file.touch(exist_ok=True)
+	with open(lock_file, "r+") as lock_handle:
+		fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+		challenges = _read_valid_challenges(challenge_file)
 		challenges.pop(token, None)
-		
-		f.seek(0)
-		f.truncate()
-		
-		if challenges:
-			f.write(json.dumps(challenges))
-			f.flush()
+		_atomic_write_bytes(challenge_file, json.dumps(challenges).encode("utf-8"), 0o600)
 
 
 def get_challenge_response(token: str, certs_dir: PathLib | None = None) -> str | None:
@@ -700,23 +736,41 @@ def get_challenge_response(token: str, certs_dir: PathLib | None = None) -> str 
 _pending_challenges: dict[str, str] = {}
 
 
-# ---------------------------------------------------------------------------
-# API Routes
-# ---------------------------------------------------------------------------
-
-def _get_certs_dir_dep(config: Config = Depends(get_config)) -> PathLib:
-	"""Dependency to get certs directory."""
-	return _get_certs_dir(config)
+async def _get_certs_dir_dep(config: Config = Depends(get_config)) -> PathLib:
+	"""Dependency to get certs directory without blocking the event loop."""
+	return await asyncio.to_thread(get_certs_dir, config)
 
 
-@router.get("/certificates")
+def _delete_certificate_files(domain_dir: PathLib, suffix: str) -> bool:
+	"""Delete certificate artifacts for one domain/suffix pair."""
+	if not domain_dir.exists():
+		return False
+	deleted = False
+	for filename in (
+		f"fullchain{suffix}.pem",
+		f"privkey{suffix}.pem",
+		f"cert{suffix}.pem",
+		f"chain{suffix}.pem",
+	):
+		file_path = domain_dir / filename
+		if file_path.exists():
+			file_path.unlink()
+			deleted = True
+	try:
+		domain_dir.rmdir()
+	except OSError:
+		pass
+	return deleted
+
+
+@router.get("/certificates", response_model=OkResponse[list[CertificateInfo]])
 async def list_certificates(
 	certs_dir: PathLib = Depends(_get_certs_dir_dep),
 	_: sqlite3.Row = Depends(get_current_user),
-) -> dict:
+):
 	"""List all certificates."""
 	certificates = await asyncio.to_thread(_list_certificates_internal, certs_dir)
-	return ok_response(data=certificates)
+	return OkResponse[list[CertificateInfo]](data=certificates)
 
 
 def _list_certificates_internal(certs_dir: PathLib) -> list[CertificateInfo]:
@@ -772,12 +826,14 @@ def _list_certificates_internal(certs_dir: PathLib) -> list[CertificateInfo]:
 	return certificates
 
 
-@router.post("/certificates/request")
+@router.post("/certificates/request", response_model=OkResponse[CertificateIssueData])
+@limiter.limit(RATE_LIMIT_HEAVY)
 async def request_certificate(
+	request: Request,
 	req: CertificateRequest,
 	certs_dir: PathLib = Depends(_get_certs_dir_dep),
 	_: sqlite3.Row = Depends(require_admin),
-) -> dict:
+):
 	"""
 	Request a new certificate from Let's Encrypt.
 	
@@ -787,7 +843,7 @@ async def request_certificate(
 	3. The /.well-known/acme-challenge/ path is served by this app
 	"""
 	# Prevent parallel orders for the same domain (worker-safe file lock)
-	lock_fd = _acquire_domain_lock(certs_dir, req.domain)
+	lock_fd = await asyncio.to_thread(_acquire_domain_lock, certs_dir, req.domain)
 	if lock_fd is None:
 		raise HTTPException(
 			status_code=409,
@@ -819,7 +875,7 @@ async def request_certificate(
 			
 			# Store challenge response (both in-memory and file)
 			_pending_challenges[token] = key_auth
-			_save_challenge(certs_dir, token, key_auth)
+			await asyncio.to_thread(_save_challenge, certs_dir, token, key_auth)
 			_log.info("Challenge token: %s", token)
 			
 			try:
@@ -848,65 +904,51 @@ async def request_certificate(
 				)
 				
 				suffix = "_staging" if req.staging else ""
-				return ok_response(
+				return OkResponse[CertificateIssueData](
 					message="Certificate issued successfully",
-					data={
-						"domain": req.domain,
-						"staging": req.staging,
-						"cert_path": str(cert_dir / f"fullchain{suffix}.pem"),
-						"key_path": str(cert_dir / f"privkey{suffix}.pem"),
-					},
+					data=CertificateIssueData(
+						domain=req.domain,
+						staging=req.staging,
+						cert_path=str(cert_dir / f"fullchain{suffix}.pem"),
+						key_path=str(cert_dir / f"privkey{suffix}.pem"),
+					),
 				)
 			
 			finally:
 				# Clean up challenge (both in-memory and file)
 				_pending_challenges.pop(token, None)
-				_remove_challenge(certs_dir, token)
+				await asyncio.to_thread(_remove_challenge, certs_dir, token)
 	
 	finally:
-		_release_domain_lock(lock_fd)
+		await asyncio.to_thread(_release_domain_lock, lock_fd)
 
 
-@router.delete("/certificates/{domain}")
+@router.delete("/certificates/{domain}", response_model=OkResponse[CertificateDeleteData])
+@limiter.limit(RATE_LIMIT_HEAVY)
 async def delete_certificate(
+	request: Request,
 	domain: str = Path(..., min_length=1, max_length=253, pattern=_DOMAIN_PATTERN),
 	staging: bool = False,
 	certs_dir: PathLib = Depends(_get_certs_dir_dep),
 	_: sqlite3.Row = Depends(require_admin),
-) -> dict:
+):
 	"""Delete a certificate."""
 	domain_dir = certs_dir / domain
 	
-	if not domain_dir.exists():
+	if not await asyncio.to_thread(domain_dir.exists):
 		raise HTTPException(status_code=404, detail="Certificate not found")
 	
 	suffix = "_staging" if staging else ""
-	deleted = False
-	for filename in (
-		f"fullchain{suffix}.pem",
-		f"privkey{suffix}.pem",
-		f"cert{suffix}.pem",
-		f"chain{suffix}.pem",
-	):
-		file_path = domain_dir / filename
-		if file_path.exists():
-			file_path.unlink()
-			deleted = True
-	
-	# Remove directory if empty
-	try:
-		domain_dir.rmdir()
-	except OSError:
-		pass  # Directory not empty
+	deleted = await asyncio.to_thread(_delete_certificate_files, domain_dir, suffix)
 	
 	if not deleted:
 		raise HTTPException(status_code=404, detail="Certificate files not found")
 	
 	_log.info("Deleted certificate for %s (staging=%s)", domain, staging)
 	
-	return ok_response(
+	return OkResponse[CertificateDeleteData](
 		message="Certificate deleted",
-		data={"success": True, "domain": domain, "staging": staging},
+		data=CertificateDeleteData(success=True, domain=domain, staging=staging),
 	)
 
 
@@ -927,7 +969,7 @@ async def serve_challenge(
 	if not re.match(r"^[A-Za-z0-9_\-]+$", token):
 		raise HTTPException(status_code=404, detail="Invalid token format")
 	
-	key_auth = get_challenge_response(token, certs_dir)
+	key_auth = await asyncio.to_thread(get_challenge_response, token, certs_dir)
 	
 	if not key_auth:
 		raise HTTPException(status_code=404, detail="Challenge not found")
@@ -935,11 +977,11 @@ async def serve_challenge(
 	return PlainTextResponse(content=key_auth, media_type="text/plain")
 
 
-@router.get("/certificates/renewal-check")
+@router.get("/certificates/renewal-check", response_model=OkResponse[RenewalCheckData])
 async def check_renewals(
 	certs_dir: PathLib = Depends(_get_certs_dir_dep),
 	_: sqlite3.Row = Depends(require_admin),
-) -> dict:
+):
 	"""
 	Check which certificates need renewal (expires in <= 30 days).
 	
@@ -947,23 +989,23 @@ async def check_renewals(
 	For automatic renewal, call this periodically (e.g., via cron)
 	and issue new certificates for domains where needs_renewal is True.
 	"""
-	certificates = _list_certificates_internal(certs_dir)
+	certificates = await asyncio.to_thread(_list_certificates_internal, certs_dir)
 	
 	needs_renewal = [
 		cert for cert in certificates
 		if cert.needs_renewal and not cert.is_staging
 	]
 	
-	data = {
-		"total_certificates": len([c for c in certificates if not c.is_staging]),
-		"needs_renewal_count": len(needs_renewal),
-		"needs_renewal": [
-			{
-				"domain": cert.domain,
-				"expires_at": cert.expires_at,
-				"days_until_expiry": cert.days_until_expiry,
-			}
+	data = RenewalCheckData(
+		total_certificates=len([c for c in certificates if not c.is_staging]),
+		needs_renewal_count=len(needs_renewal),
+		needs_renewal=[
+			RenewalCandidate(
+				domain=cert.domain,
+				expires_at=cert.expires_at,
+				days_until_expiry=cert.days_until_expiry,
+			)
 			for cert in needs_renewal
 		],
-	}
-	return ok_response(data=data)
+	)
+	return OkResponse[RenewalCheckData](data=data)

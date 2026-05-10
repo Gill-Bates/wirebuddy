@@ -66,6 +66,14 @@ if (!peersApp) {
         setTimeout(() => window.location.reload(), delay);
     }
 
+    function reportAsyncError(context, error) {
+        console.error(`peers.js: ${context}`, error);
+    }
+
+    function queuePeerStatsReload(context) {
+        loadPeerStats().catch((error) => reportAsyncError(context, error));
+    }
+
     function revokeQrBlobUrl() {
         if (state.qrBlobUrl) {
             URL.revokeObjectURL(state.qrBlobUrl);
@@ -150,8 +158,10 @@ if (!peersApp) {
         };
 
         try {
-            const enrichedPeers = await fetchPeersEnriched();
-            const enrichedPeer = enrichedPeers.find((entry) => Number(entry.id) === Number(peer.id));
+            const response = await api('GET', `/api/wireguard/peers/${peer.id}`);
+            const enrichedPeer = response?.data && typeof response.data === 'object'
+                ? response.data
+                : response;
             if (!enrichedPeer) return basePeer;
             return {
                 ...basePeer,
@@ -180,6 +190,24 @@ if (!peersApp) {
     function refreshPeerRows() {
         state.peerRows = Array.from(document.querySelectorAll('#peers-table tr[data-peer-id]'));
         state.peerRows.forEach(updateRowSearchText);
+    }
+
+    function createPeerActionButton(peerId, action, label, icon, btnClass) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `btn btn-sm ${btnClass}`;
+        btn.dataset.action = action;
+        btn.dataset.peerId = String(peerId);
+        btn.setAttribute('aria-label', label);
+        btn.setAttribute('data-bs-toggle', 'tooltip');
+        btn.setAttribute('data-bs-title', label);
+
+        const iconEl = document.createElement('span');
+        iconEl.className = 'material-icons';
+        iconEl.setAttribute('aria-hidden', 'true');
+        iconEl.textContent = icon;
+        btn.appendChild(iconEl);
+        return btn;
     }
 
     function createCountryFlagElement(countryCode) {
@@ -412,6 +440,8 @@ if (!peersApp) {
         const tdClientIp = document.createElement('td');
         tdClientIp.dataset.label = 'Client IP';
         tdClientIp.className = 'd-none d-xl-table-cell peer-client-ip';
+        tdClientIp.setAttribute('aria-live', 'polite');
+        tdClientIp.setAttribute('aria-atomic', 'true');
         updateClientIpCell(tdClientIp, endpointIp, endpointCountry, endpointCity, endpointAsOrg);
 
         const tdStatus = document.createElement('td');
@@ -432,14 +462,17 @@ if (!peersApp) {
         const actionsDiv = document.createElement('div');
         actionsDiv.className = 'd-flex gap-1 justify-content-end';
         if (isNodeTunnel) {
-            actionsDiv.innerHTML = '<span class="text-muted small">Managed by wirebuddy</span>';
+            const managedLabel = document.createElement('span');
+            managedLabel.className = 'text-muted small';
+            managedLabel.textContent = 'Managed by wirebuddy';
+            actionsDiv.appendChild(managedLabel);
         } else if (canManagePeers) {
-            actionsDiv.innerHTML = [
-                `<button type="button" class="btn btn-sm btn-outline-secondary" data-action="show-qr" data-peer-id="${peer.id}" aria-label="Show QR code" data-bs-toggle="tooltip" data-bs-title="Show QR Code"><span class="material-icons" aria-hidden="true">qr_code</span></button>`,
-                `<button type="button" class="btn btn-sm btn-outline-secondary" data-action="download-config" data-peer-id="${peer.id}" aria-label="Download config" data-bs-toggle="tooltip" data-bs-title="Download Config"><span class="material-icons" aria-hidden="true">download</span></button>`,
-                `<button type="button" class="btn btn-sm btn-outline-secondary" data-action="edit-peer" data-peer-id="${peer.id}" aria-label="Edit peer" data-bs-toggle="tooltip" data-bs-title="Edit Peer"><span class="material-icons" aria-hidden="true">edit</span></button>`,
-                `<button type="button" class="btn btn-sm btn-outline-danger" data-action="delete-peer" data-peer-id="${peer.id}" aria-label="Delete peer" data-bs-toggle="tooltip" data-bs-title="Delete Peer"><span class="material-icons" aria-hidden="true">delete</span></button>`,
-            ].join('');
+            actionsDiv.append(
+                createPeerActionButton(peer.id, 'show-qr', 'Show QR code', 'qr_code', 'btn-outline-secondary'),
+                createPeerActionButton(peer.id, 'download-config', 'Download config', 'download', 'btn-outline-secondary'),
+                createPeerActionButton(peer.id, 'edit-peer', 'Edit peer', 'edit', 'btn-outline-secondary'),
+                createPeerActionButton(peer.id, 'delete-peer', 'Delete peer', 'delete', 'btn-outline-danger'),
+            );
         }
         tdActions.appendChild(actionsDiv);
 
@@ -850,7 +883,7 @@ if (!peersApp) {
         }
         if (document.hidden || document.querySelector('.modal.show')) return;
         state.peerStatsTimer = setTimeout(() => {
-            void loadPeerStats();
+            queuePeerStatsReload('scheduled peer stats poll failed');
         }, Math.max(0, delay));
     }
 
@@ -1122,8 +1155,6 @@ if (!peersApp) {
         const hideNodes = hideNodesCheckbox?.checked || false;
         let visibleCount = 0;
 
-        refreshPeerRows();
-
         state.peerRows.forEach((row) => {
             const isNodeTunnel = row.hasAttribute('data-node-tunnel');
             if (hideNodes && isNodeTunnel) {
@@ -1157,6 +1188,13 @@ if (!peersApp) {
         if (searchClearBtn) {
             searchClearBtn.classList.toggle('d-none', !searchTerm);
         }
+    }
+
+    function cleanupPeersPageState() {
+        stopPeerStatsPolling();
+        disposeTooltips(document);
+        if (state.qrAbortController) state.qrAbortController.abort();
+        revokeQrBlobUrl();
     }
 
     function initModalPollingGuards() {
@@ -1350,7 +1388,7 @@ if (!peersApp) {
                         refreshPeerRows();
                         updateTotalPeerCount(1);
                         initTooltips(row);
-                        void loadPeerStats();
+                        queuePeerStatsReload('peer create follow-up stats refresh failed');
                     } else {
                         reloadSoon();
                     }
@@ -1433,7 +1471,7 @@ if (!peersApp) {
                             refreshPeerRows();
                             initTooltips(newRow);
                             filterPeers(searchInput?.value || '');
-                            void loadPeerStats();
+                            queuePeerStatsReload('peer update follow-up stats refresh failed');
                         } else {
                             reloadSoon();
                         }
@@ -1476,12 +1514,7 @@ if (!peersApp) {
         }
     });
 
-    window.addEventListener('beforeunload', () => {
-        stopPeerStatsPolling();
-        disposeTooltips(document);
-        if (state.qrAbortController) state.qrAbortController.abort();
-        revokeQrBlobUrl();
-    });
+    window.addEventListener('pagehide', cleanupPeersPageState);
 
     if (hideNodesCheckbox) {
         try {

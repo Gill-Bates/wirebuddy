@@ -24,12 +24,12 @@ import secrets
 import shutil
 import signal
 import sqlite3
-import sys
 import tarfile
 import tempfile
 import time
 import threading
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Callable, Iterator, Literal, TypeVar
 
@@ -43,7 +43,7 @@ from ..utils.crypto import verify_password
 from ..db.sqlite_users import get_user_by_id
 from ..utils.time import utcnow
 from .auth import require_admin
-from .response import ok_response
+from .response import OkResponse
 
 _log = logging.getLogger(__name__)
 
@@ -66,6 +66,9 @@ _BACKUP_FILENAME_RE = re.compile(
 # Concurrency guard — only one restore may run at a time
 _restore_lock = asyncio.Lock()
 
+# Concurrency guard — only one manual backup download may run at a time
+_backup_download_lock = asyncio.Semaphore(1)
+
 # Concurrency guard — only one scheduled backup may run at a time
 _scheduled_backup_lock = threading.Lock()
 
@@ -77,11 +80,59 @@ SETTING_BACKUP_RETENTION = "backup_retention_days"
 
 _T = TypeVar("_T")
 
+_DB_CONNECT_TIMEOUT_SECONDS = 10.0
+_VERIFY_PASSWORD_TIMEOUT_SECONDS = 15.0
+_BACKUP_HMAC_TIMEOUT_SECONDS = 60.0
+_BACKUP_CREATE_TIMEOUT_SECONDS = 300.0
+_TAR_EXTRACT_TIMEOUT_SECONDS = 120.0
+_DB_INTEGRITY_CHECK_TIMEOUT_SECONDS = 30.0
+
 
 def _with_db(db_path: Path, fn: Callable[[sqlite3.Connection], _T]) -> _T:
     """Open a short-lived SQLite connection, call fn(conn), close it."""
     with thread_connection(db_path) as conn:
         return fn(conn)
+
+
+async def _run_blocking(
+	fn: Callable[..., _T],
+	*args: object,
+	timeout: float | None,
+	operation: str,
+	**kwargs: object,
+) -> _T:
+	"""Run blocking work in a thread, optionally with a timeout."""
+	call = partial(fn, *args, **kwargs)
+	worker = asyncio.to_thread(call)
+	if timeout is None:
+		return await worker
+	try:
+		return await asyncio.wait_for(worker, timeout=timeout)
+	except TimeoutError as exc:
+		_log.error("BACKUP_OPERATION_TIMEOUT operation=%s timeout=%ss", operation, timeout)
+		raise HTTPException(status_code=504, detail=f"Operation timed out: {operation}") from exc
+
+
+async def _open_db_connection(db_path: Path) -> sqlite3.Connection:
+	"""Open a SQLite connection for async routes via thread offload."""
+	return await _run_blocking(
+		connect,
+		db_path,
+		timeout=_DB_CONNECT_TIMEOUT_SECONDS,
+		operation="open backup database connection",
+	)
+
+
+async def _close_db_connection(conn: sqlite3.Connection | None) -> None:
+	"""Close a SQLite connection opened by an async route."""
+	if conn is None:
+		return
+	await _run_blocking(
+		close_connection,
+		conn,
+		timeout=_DB_CONNECT_TIMEOUT_SECONDS,
+		operation="close backup database connection",
+	)
 
 
 def _get_retention_days(conn: sqlite3.Connection) -> int:
@@ -141,24 +192,9 @@ def _compute_backup_hmac(filepath: Path, conn: sqlite3.Connection) -> str:
 def _safe_tar_extract(tar: tarfile.TarFile, dest: Path) -> None:
 	"""Safely extract tar archive, preventing path traversal attacks.
 	
-	Uses Python 3.12+ filter='data' when available, falls back to manual checks.
-	Raises ValueError if any member attempts to escape the destination directory
-	or contains non-regular file types (symlinks, device files, FIFOs, etc.).
+	Python 3.13+ always supports filter='data', which rejects unsafe members.
 	"""
-	if sys.version_info >= (3, 12):
-		tar.extractall(dest, filter="data")
-	else:
-		dest = dest.resolve()
-		members = tar.getmembers()
-		for member in members:
-			# Only allow regular files and directories (block symlinks, hardlinks,
-			# device files, FIFOs, etc. to match Python 3.12's filter="data")
-			if not member.isfile() and not member.isdir():
-				raise ValueError(f"Unsupported file type in backup: {member.name}")
-			member_path = (dest / member.name).resolve()
-			if dest not in member_path.parents and member_path != dest:
-				raise ValueError(f"Path traversal attempt detected: {member.name}")
-		tar.extractall(dest, members=members)
+	tar.extractall(dest, filter="data")
 
 
 def _verify_admin_password(conn: sqlite3.Connection, admin: dict, password: str) -> None:
@@ -208,9 +244,6 @@ async def _receive_and_verify_upload(
 		total = 0
 		first_chunk = True
 
-		def _open_write(path):
-			return open(path, "wb")
-
 		with open(tmp_path, "wb") as out:
 			while True:
 				chunk = await file.read(1024 * 1024)
@@ -231,7 +264,13 @@ async def _receive_and_verify_upload(
 		if total == 0:
 			raise HTTPException(status_code=400, detail="Backup file is empty")
 
-		actual_hmac = _compute_backup_hmac(tmp_path, conn)
+		actual_hmac = await _run_blocking(
+			_compute_backup_hmac,
+			tmp_path,
+			conn,
+			timeout=_BACKUP_HMAC_TIMEOUT_SECONDS,
+			operation="compute backup upload HMAC",
+		)
 		if not hmac.compare_digest(actual_hmac, expected_hmac):
 			_log.warning("Backup HMAC mismatch for file: %s", filename)
 			raise HTTPException(
@@ -243,6 +282,105 @@ async def _receive_and_verify_upload(
 		raise
 
 	return tmp_path, filename
+
+
+def _validate_restored_database(extracted_db: Path) -> None:
+	"""Validate integrity of a restored SQLite database snapshot."""
+	try:
+		test_conn = sqlite3.connect(str(extracted_db))
+		try:
+			result = test_conn.execute("PRAGMA integrity_check").fetchone()
+		finally:
+			test_conn.close()
+		if result is None or result[0] != "ok":
+			raise HTTPException(
+				status_code=400,
+				detail="Backup contains corrupt database",
+			)
+	except sqlite3.Error as exc:
+		raise HTTPException(
+			status_code=400,
+			detail=f"Backup database is invalid: {exc}",
+		) from exc
+
+
+def _apply_restored_backup(data_dir: Path, db_path: Path, extracted_data: Path) -> list[str]:
+	"""Apply extracted backup contents with rollback protection.
+
+	Runs in a worker thread because it performs blocking filesystem operations.
+	This commit phase intentionally has no timeout: thread cancellation would be
+	unsafe once destructive moves have started.
+	"""
+	restored_items: list[str] = []
+	closed_count = close_all_connections()
+	_log.info("Closed %d SQLite connections before restore", closed_count)
+
+	rollback_dir = data_dir / f".rollback_{utcnow().strftime('%Y%m%d_%H%M%S')}"
+	rollback_dir.mkdir(exist_ok=True)
+	restore_succeeded = False
+	extracted_db = extracted_data / BACKUP_DATABASE_NAME
+
+	try:
+		if extracted_db.exists():
+			if db_path.exists():
+				shutil.move(str(db_path), str(rollback_dir / BACKUP_DATABASE_NAME))
+			shutil.move(str(extracted_db), str(db_path))
+			restored_items.append(BACKUP_DATABASE_NAME)
+			_log.info("Restored database")
+
+		for subdir in BACKUP_DIRECTORIES:
+			extracted_subdir = extracted_data / subdir
+			target_subdir = data_dir / subdir
+
+			if extracted_subdir.exists():
+				if target_subdir.exists():
+					shutil.move(str(target_subdir), str(rollback_dir / subdir))
+				shutil.move(str(extracted_subdir), str(target_subdir))
+				restored_items.append(subdir)
+				_log.info("Restored directory: %s", subdir)
+
+		restore_succeeded = True
+		_log.info("Restored %d items: %s", len(restored_items), ", ".join(restored_items))
+		return restored_items
+
+	except Exception as exc:
+		_log.error("Restore failed: %s. Attempting rollback...", exc)
+		try:
+			if BACKUP_DATABASE_NAME in restored_items:
+				if db_path.exists():
+					db_path.unlink()
+				rollback_db = rollback_dir / BACKUP_DATABASE_NAME
+				if rollback_db.exists():
+					shutil.move(str(rollback_db), str(db_path))
+
+			for subdir in BACKUP_DIRECTORIES:
+				target_subdir = data_dir / subdir
+				rollback_subdir = rollback_dir / subdir
+
+				if subdir in restored_items and target_subdir.exists():
+					shutil.rmtree(target_subdir)
+				if rollback_subdir.exists():
+					shutil.move(str(rollback_subdir), str(target_subdir))
+
+			_log.info("Rollback successful")
+		except Exception as rollback_error:
+			_log.critical("ROLLBACK FAILED: %s. Manual intervention required!", rollback_error)
+			raise HTTPException(
+				status_code=500,
+				detail=f"Restore AND rollback failed! Backup at: {rollback_dir}",
+			) from rollback_error
+
+		raise HTTPException(
+			status_code=500,
+			detail="Restore failed, rollback successful. Original data restored.",
+		) from exc
+
+	finally:
+		if restore_succeeded and rollback_dir.exists():
+			try:
+				shutil.rmtree(rollback_dir)
+			except Exception as cleanup_error:
+				_log.warning("Failed to clean up rollback: %s", cleanup_error)
 
 
 def _create_backup_archive(data_dir: Path, db_path: Path, conn: sqlite3.Connection) -> tuple[Path, str, int]:
@@ -319,6 +457,20 @@ class BackupSettingsUpdate(BaseModel):
 	retention_days: Literal[1, 7, 14, 21, 30] | None = None
 
 
+class BackupSettingsUpdateResult(BaseModel):
+	deleted_backups: int
+
+
+class BackupListItem(BaseModel):
+	filename: str
+	size_bytes: int
+	created_at: str
+
+
+class RestoreResult(BaseModel):
+	restored: list[str]
+
+
 @router.get("/settings", response_model=BackupSettingsResponse)
 def get_backup_settings(
 	request: Request,
@@ -365,7 +517,7 @@ def get_backup_settings(
 	return _with_db(request.app.state.cfg.db_path, _read)
 
 
-@router.patch("/settings")
+@router.patch("/settings", response_model=OkResponse[BackupSettingsUpdateResult])
 def update_backup_settings(
 	request: Request,
 	payload: BackupSettingsUpdate,
@@ -398,46 +550,59 @@ def update_backup_settings(
 		return 0
 
 	deleted = _with_db(request.app.state.cfg.db_path, _update)
-	if deleted:
-		return ok_response(message="Backup settings updated", data={"deleted_backups": deleted})
-	return ok_response(message="Backup settings updated")
+	return OkResponse[BackupSettingsUpdateResult](
+		message="Backup settings updated",
+		data=BackupSettingsUpdateResult(deleted_backups=deleted),
+	)
 
 
 @router.post("/download")
-def create_backup(
+async def create_backup(
 	request: Request,
 	background_tasks: BackgroundTasks,
 	admin: sqlite3.Row = Depends(require_admin),
 ):
 	"""Create and download a backup of the configuration.
 
-	NOTE: sync – FastAPI threadpools this handler. _create_backup_archive()
-	performs full tar + gzip archiving of the data directory (blocking file I/O,
-	can take seconds for large datasets). Intentionally kept sync to allow the
-	StreamingResponse to be returned directly after archiving completes.
-
 	Returns a gzip-compressed tarball with HMAC signature in filename.
 	Uses POST because this operation has side effects (updates last-backup timestamp).
 	"""
-	data_dir = request.app.state.cfg.data_dir
-	db_path = request.app.state.cfg.db_path
-	
-	if not data_dir.exists():
-		raise HTTPException(status_code=404, detail="Data directory not found")
-	
-	conn = connect(db_path)
-	try:
-		tmp_path, filename, file_size = _create_backup_archive(data_dir, db_path, conn)
+	if _backup_download_lock.locked():
+		raise HTTPException(status_code=409, detail="A backup download is already in progress")
+
+	async with _backup_download_lock:
+		data_dir = request.app.state.cfg.data_dir
+		db_path = request.app.state.cfg.db_path
 		
-		# Update last backup timestamp
-		set_setting(conn, SETTING_BACKUP_LAST_AT, utcnow().isoformat())
+		if not data_dir.exists():
+			raise HTTPException(status_code=404, detail="Data directory not found")
 		
-		_log.info(
-			"Backup created: %s (%d bytes) by %s",
-			filename, file_size, admin["username"],
-		)
-	finally:
-		close_connection(conn)
+		conn = await _open_db_connection(db_path)
+		try:
+			tmp_path, filename, file_size = await _run_blocking(
+				_create_backup_archive,
+				data_dir,
+				db_path,
+				conn,
+				timeout=_BACKUP_CREATE_TIMEOUT_SECONDS,
+				operation="create backup archive",
+			)
+
+			await _run_blocking(
+				set_setting,
+				conn,
+				SETTING_BACKUP_LAST_AT,
+				utcnow().isoformat(),
+				timeout=_DB_CONNECT_TIMEOUT_SECONDS,
+				operation="update backup timestamp",
+			)
+
+			_log.info(
+				"Backup created: %s (%d bytes) by %s",
+				filename, file_size, admin["username"],
+			)
+		finally:
+			await _close_db_connection(conn)
 	
 	# Stream the file (conn is already closed)
 	def iter_file():
@@ -457,7 +622,7 @@ def create_backup(
 	)
 
 
-@router.post("/validate")
+@router.post("/validate", response_model=OkResponse[None])
 async def validate_backup(
 	request: Request,
 	file: UploadFile = File(...),
@@ -468,26 +633,21 @@ async def validate_backup(
 	Use this to check backup integrity before prompting for password confirmation.
 	Returns 200 if valid, 400 with error detail if invalid.
 	"""
-	conn = connect(request.app.state.cfg.db_path)
+	conn = await _open_db_connection(request.app.state.cfg.db_path)
 	try:
 		tmp_path, _filename = await _receive_and_verify_upload(file, conn)
-		tmp_path.unlink(missing_ok=True)
-		return ok_response(message="Backup file is valid")
+		await _run_blocking(
+			tmp_path.unlink,
+			missing_ok=True,
+			timeout=_DB_CONNECT_TIMEOUT_SECONDS,
+			operation="delete validated backup upload",
+		)
+		return OkResponse[None](message="Backup file is valid")
 	finally:
-		close_connection(conn)
+		await _close_db_connection(conn)
 
 
-class RestoreRequest(BaseModel):
-	"""Password confirmation for restore operation.
-
-	NOTE: Not used directly — multipart endpoints cannot mix Pydantic
-	models with File()/Form() parameters in FastAPI. The password field
-	is received via Form(...) instead. Kept here for documentation only.
-	"""
-	password: str
-
-
-@router.post("/restore")
+@router.post("/restore", response_model=OkResponse[RestoreResult])
 async def restore_backup(  # async: uses await for file I/O
 	request: Request,
 	background_tasks: BackgroundTasks,
@@ -513,11 +673,18 @@ async def restore_backup(  # async: uses await for file I/O
 		db_path = request.app.state.cfg.db_path
 		restored_items: list[str] = []
 
-		conn = connect(db_path)
+		conn = await _open_db_connection(db_path)
 		tmp_upload_path: Path | None = None
 		try:
 			# Verify admin password (PBKDF2-SHA256 – moved off event loop)
-			await asyncio.to_thread(_verify_admin_password, conn, admin, password)
+			await _run_blocking(
+				_verify_admin_password,
+				conn,
+				admin,
+				password,
+				timeout=_VERIFY_PASSWORD_TIMEOUT_SECONDS,
+				operation="verify restore admin password",
+			)
 			tmp_upload_path, filename = await _receive_and_verify_upload(file, conn)
 
 			try:
@@ -536,7 +703,11 @@ async def restore_backup(  # async: uses await for file I/O
 						with tarfile.open(tmp_upload_path, mode="r:gz") as tar:
 							_safe_tar_extract(tar, tmp_path)
 					try:
-						await asyncio.to_thread(_extract_tar)
+						await _run_blocking(
+							_extract_tar,
+							timeout=_TAR_EXTRACT_TIMEOUT_SECONDS,
+							operation="extract backup archive",
+						)
 					except ValueError as e:
 						_log.error("Unsafe tar archive: %s", e)
 						raise HTTPException(
@@ -560,122 +731,46 @@ async def restore_backup(  # async: uses await for file I/O
 					# Validate restored database integrity before proceeding
 					extracted_db = extracted_data / BACKUP_DATABASE_NAME
 					if extracted_db.exists():
-						try:
-							test_conn = sqlite3.connect(str(extracted_db))
-							try:
-								result = test_conn.execute("PRAGMA integrity_check").fetchone()
-							finally:
-								test_conn.close()
-							if result is None or result[0] != "ok":
-								raise HTTPException(
-									status_code=400,
-									detail="Backup contains corrupt database",
-								)
-						except sqlite3.Error as e:
-							raise HTTPException(
-								status_code=400,
-								detail=f"Backup database is invalid: {e}",
-							)
+						await _run_blocking(
+							_validate_restored_database,
+							extracted_db,
+							timeout=_DB_INTEGRITY_CHECK_TIMEOUT_SECONDS,
+							operation="validate restored backup database",
+						)
 
 					# Close our own connection before closing all connections
-					close_connection(conn)
+					await _close_db_connection(conn)
 					conn = None  # prevent double-close in outer finally
 
 					# Block concurrent requests from opening fresh DB connections
 					request.app.state.maintenance = True
 
-					# Close all remaining SQLite connections before restore
-					closed_count = close_all_connections()
-					_log.info("Closed %d SQLite connections before restore", closed_count)
-
-					# Create rollback directory
-					rollback_dir = data_dir / f".rollback_{utcnow().strftime('%Y%m%d_%H%M%S')}"
-					rollback_dir.mkdir(exist_ok=True)
-					restore_succeeded = False
-
-					# Restore database (extracted_db defined above)
 					try:
-						if extracted_db.exists():
-							if db_path.exists():
-								shutil.move(str(db_path), str(rollback_dir / BACKUP_DATABASE_NAME))
-							shutil.move(str(extracted_db), str(db_path))
-							restored_items.append(BACKUP_DATABASE_NAME)
-							_log.info("Restored database")
-
-						# Restore directories
-						for subdir in BACKUP_DIRECTORIES:
-							extracted_subdir = extracted_data / subdir
-							target_subdir = data_dir / subdir
-
-							if extracted_subdir.exists():
-								if target_subdir.exists():
-									shutil.move(str(target_subdir), str(rollback_dir / subdir))
-								shutil.move(str(extracted_subdir), str(target_subdir))
-								restored_items.append(subdir)
-								_log.info("Restored directory: %s", subdir)
-
-						restore_succeeded = True
-						_log.info("Restored %d items: %s", len(restored_items), ", ".join(restored_items))
-
-					except Exception as e:
-						_log.error("Restore failed: %s. Attempting rollback...", e)
-
-						# Attempt rollback
-						try:
-							# Rollback database
-							if BACKUP_DATABASE_NAME in restored_items:
-								if db_path.exists():
-									db_path.unlink()
-								rollback_db = rollback_dir / BACKUP_DATABASE_NAME
-								if rollback_db.exists():
-									shutil.move(str(rollback_db), str(db_path))
-
-							# Rollback directories
-							for subdir in BACKUP_DIRECTORIES:
-								target_subdir = data_dir / subdir
-								rollback_subdir = rollback_dir / subdir
-
-								if subdir in restored_items and target_subdir.exists():
-									shutil.rmtree(target_subdir)
-								if rollback_subdir.exists():
-									shutil.move(str(rollback_subdir), str(target_subdir))
-
-							_log.info("Rollback successful")
-						except Exception as rollback_error:
-							_log.critical("ROLLBACK FAILED: %s. Manual intervention required!", rollback_error)
-							raise HTTPException(
-								status_code=500,
-								detail=f"Restore AND rollback failed! Backup at: {rollback_dir}",
-							)
-
-						raise HTTPException(
-							status_code=500,
-							detail="Restore failed, rollback successful. Original data restored.",
+						restored_items = await _run_blocking(
+							_apply_restored_backup,
+							data_dir,
+							db_path,
+							extracted_data,
+							timeout=None,
+							operation="apply restored backup",
 						)
 
 					finally:
-						if restore_succeeded:
-							# Rollback dir is no longer needed after successful restore
-							if rollback_dir.exists():
-								try:
-									shutil.rmtree(rollback_dir)
-								except Exception as cleanup_error:
-									_log.warning("Failed to clean up rollback: %s", cleanup_error)
-							# Maintenance mode intentionally stays True on success:
-							# the app will restart momentarily and reset it on boot.
-						else:
-							# Restore failed (rollback may have succeeded) — re-open for traffic.
-							# rollback_dir is intentionally kept as a last-resort recovery artifact.
+						if not restored_items:
 							request.app.state.maintenance = False
 
 			finally:
 				await file.close()
 				if tmp_upload_path is not None:
-					tmp_upload_path.unlink(missing_ok=True)
+					await _run_blocking(
+						tmp_upload_path.unlink,
+						missing_ok=True,
+						timeout=_DB_CONNECT_TIMEOUT_SECONDS,
+						operation="delete uploaded restore archive",
+					)
 
 		finally:
-			if conn is not None:
-				close_connection(conn)
+			await _close_db_connection(conn)
 
 	_log.warning("Backup restored successfully, initiating restart")
 
@@ -687,13 +782,13 @@ async def restore_backup(  # async: uses await for file I/O
 
 	background_tasks.add_task(restart_app)
 
-	return ok_response(
+	return OkResponse[RestoreResult](
 		message="Backup restored successfully. Application is restarting...",
-		data={"restored": restored_items},
+		data=RestoreResult(restored=restored_items),
 	)
 
 
-@router.get("/list")
+@router.get("/list", response_model=OkResponse[list[BackupListItem]])
 def list_backups(
 	request: Request,
 	_: sqlite3.Row = Depends(require_admin),
@@ -704,16 +799,16 @@ def list_backups(
 	backups = []
 	for backup_file in sorted(_iter_backup_files(backup_dir), reverse=True):
 		file_stat = backup_file.stat()
-		backups.append({
-			"filename": backup_file.name,
-			"size_bytes": file_stat.st_size,
-			"created_at": datetime.fromtimestamp(file_stat.st_mtime, tz=UTC).isoformat(),
-		})
+		backups.append(BackupListItem(
+			filename=backup_file.name,
+			size_bytes=file_stat.st_size,
+			created_at=datetime.fromtimestamp(file_stat.st_mtime, tz=UTC).isoformat(),
+		))
 	
-	return ok_response(data=backups)
+	return OkResponse[list[BackupListItem]](data=backups)
 
 
-@router.delete("/scheduled/{filename}")
+@router.delete("/scheduled/{filename}", response_model=OkResponse[None])
 def delete_scheduled_backup(
 	request: Request,
 	filename: str,
@@ -737,7 +832,7 @@ def delete_scheduled_backup(
 	backup_path.unlink()
 	_log.info("Deleted scheduled backup: %s by %s", filename, admin["username"])
 	
-	return ok_response(message="Backup deleted")
+	return OkResponse[None](message="Backup deleted")
 
 
 # ─── SCHEDULED BACKUP FUNCTIONS (called by scheduler) ────────────────────────

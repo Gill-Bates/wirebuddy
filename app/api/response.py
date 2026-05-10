@@ -35,11 +35,13 @@ def ok_response(
 	*,
 	message: str | None = None,
 	data: Any = None,
-) -> OkResponse[Any]:
+) -> dict[str, Any]:
 	"""Build a typed success envelope.
 
+	Returns a plain mapping so legacy handlers annotated as ``dict[...]`` and
+	typed ``response_model=OkResponse[T]`` routes can both serialize cleanly.
 	Prefer constructing ``OkResponse[T]`` directly when the concrete payload type
 	is known at the call site.
 	"""
-	return OkResponse[Any](message=message, data=data)
+	return OkResponse[Any](message=message, data=data).model_dump()
 

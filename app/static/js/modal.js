@@ -3,8 +3,7 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-const _wbModalEl = document.getElementById('wbModal');
-window._wbModal = _wbModalEl ? new bootstrap.Modal(_wbModalEl) : null;
+window._wbModal = null;
 
 const _wbIcons = {
     info: { icon: 'info', color: 'var(--wb-primary)' },
@@ -20,6 +19,48 @@ const _wbAlertTypes = new Set(['info', 'success', 'warning', 'danger']);
 const _wbAllowedInputTypes = new Set(['text', 'password', 'email', 'number', 'url', 'tel', 'search']);
 let _wbModalPendingFinish = null;
 let _wbModalPendingAbort = null;
+let _activeModalController = null;
+
+function _getModalEl() {
+    return document.getElementById('wbModal');
+}
+
+function _getModalInstance() {
+    const el = _getModalEl();
+    if (!el || typeof bootstrap === 'undefined' || !bootstrap?.Modal) {
+        window._wbModal = null;
+        return null;
+    }
+
+    const current = window._wbModal;
+    if (current?._element === el) {
+        return current;
+    }
+
+    if (current?.dispose) {
+        try {
+            current.dispose();
+        } catch (error) {
+            console.warn('Modal: failed to dispose stale instance', error);
+        }
+    }
+
+    window._wbModal = bootstrap.Modal.getOrCreateInstance
+        ? bootstrap.Modal.getOrCreateInstance(el)
+        : new bootstrap.Modal(el);
+    return window._wbModal;
+}
+
+function _clearModalPageState() {
+    const modalEl = _getModalEl();
+    document.querySelectorAll('.modal-backdrop').forEach(el => el.remove());
+    document.body.classList.remove('modal-open');
+    if (modalEl) {
+        modalEl.classList.remove('show');
+        modalEl.setAttribute('aria-hidden', 'true');
+        modalEl.style.display = 'none';
+    }
+}
 
 function _showModal({ title, message, type, showCancel, showInput, inputDefault, inputPlaceholder, inputType }) {
     const dismissValue = showInput ? null : (showCancel ? false : true);
@@ -29,24 +70,29 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
         return Promise.resolve(dismissValue);
     }
 
-    if (!_wbModalEl || !window._wbModal) {
+    const modalEl = _getModalEl();
+    const modalInstance = _getModalInstance();
+    if (!modalEl || !modalInstance) {
         console.error('Modal: #wbModal element or bootstrap instance missing');
         return Promise.resolve(dismissValue);
     }
 
     // Ensure previous modal promise settles before wiring a new modal lifecycle.
-    if (typeof _wbModalPendingFinish === 'function') {
-        _wbModalPendingFinish();
-    }
-    if (_wbModalPendingAbort) {
-        _wbModalPendingAbort.abort();
-        _wbModalPendingAbort = null;
+    if (_activeModalController) {
+        _activeModalController.finish();
+        _activeModalController.abort();
+        _activeModalController = null;
     }
 
     return new Promise(resolve => {
         const controller = new AbortController();
         const signal = controller.signal;
+        const modalControl = {
+            finish: () => { },
+            abort: () => controller.abort(),
+        };
         _wbModalPendingAbort = controller;
+        _activeModalController = modalControl;
 
         let settled = false;
         let fallbackTimer = null;
@@ -65,6 +111,9 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
             if (_wbModalPendingAbort === controller) {
                 _wbModalPendingAbort = null;
             }
+            if (_activeModalController === modalControl) {
+                _activeModalController = null;
+            }
             controller.abort();
             resolve(val);
         }
@@ -72,16 +121,19 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
         function finish(val = dismissValue) {
             if (settled) return;
             closeValue = val;
-            if (!_wbModalEl.classList.contains('show')) {
+            if (!modalEl.classList.contains('show')) {
                 safeResolve(closeValue);
                 return;
             }
             fallbackTimer = setTimeout(() => safeResolve(closeValue), 500);
-            window._wbModal.hide();
+            modalInstance.hide();
         }
+
+        modalControl.finish = finish;
 
         // Close non-form modals to prevent stacking, but preserve form modals
         document.querySelectorAll('.modal.show').forEach(modal => {
+            if (typeof bootstrap === 'undefined' || !bootstrap?.Modal) return;
             const bsModal = bootstrap.Modal.getInstance(modal);
             if (bsModal && modal.id !== 'wbModal' && !modal.querySelector('form')) {
                 bsModal.hide();
@@ -89,14 +141,14 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
         });
 
         const cfg = _wbIcons[type] || _wbIcons.info;
-        const titleEl = document.getElementById('wbModalTitle');
-        const messageEl = document.getElementById('wbModalMessage');
-        const iconEl = document.getElementById('wbModalIcon');
-        const cancelBtn = document.getElementById('wbModalCancel');
-        const inputWrap = document.getElementById('wbModalInputWrap');
-        const inputEl = document.getElementById('wbModalInput');
-        const okBtn = document.getElementById('wbModalOk');
-        const closeBtn = document.getElementById('wbModalClose');
+        const titleEl = modalEl.querySelector('#wbModalTitle');
+        const messageEl = modalEl.querySelector('#wbModalMessage');
+        const iconEl = modalEl.querySelector('#wbModalIcon');
+        const cancelBtn = modalEl.querySelector('#wbModalCancel');
+        const inputWrap = modalEl.querySelector('#wbModalInputWrap');
+        const inputEl = modalEl.querySelector('#wbModalInput');
+        const okBtn = modalEl.querySelector('#wbModalOk');
+        const closeBtn = modalEl.querySelector('#wbModalClose');
 
         if (!titleEl || !messageEl || !iconEl || !cancelBtn || !inputWrap || !inputEl || !okBtn) {
             console.error('Modal: required DOM elements missing');
@@ -126,7 +178,7 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
         okBtn.textContent = showCancel || showInput ? 'Confirm' : 'OK';
 
         okBtn.addEventListener('click', () => {
-            if (showInput) finish(inputEl.value);
+            if (showInput) finish(inputEl.value.trim());
             else finish(true);
         }, { signal });
 
@@ -140,18 +192,18 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
                     okBtn.click();
                 }
             }, { signal });
-            _wbModalEl.addEventListener('shown.bs.modal', () => {
+            modalEl.addEventListener('shown.bs.modal', () => {
                 inputEl.focus();
                 inputEl.select();
             }, { once: true, signal });
         }
 
         // Catches all hide completions: finish(), ESC, backdrop click, or external hide().
-        _wbModalEl.addEventListener('hidden.bs.modal', () => {
+        modalEl.addEventListener('hidden.bs.modal', () => {
             safeResolve(closeValue);
         }, { once: true, signal });
 
-        window._wbModal.show();
+        modalInstance.show();
     });
 }
 
@@ -172,6 +224,8 @@ function wbPrompt(message, { defaultValue = '', placeholder = '', inputType = 't
 function chartEmptyState(text = 'No Data Available') {
     const wrap = document.createElement('div');
     wrap.className = 'chart-empty-state';
+    wrap.setAttribute('role', 'status');
+    wrap.setAttribute('aria-live', 'polite');
     const icon = document.createElement('span');
     icon.className = 'material-icons';
     icon.setAttribute('aria-hidden', 'true');
@@ -189,9 +243,11 @@ window.addEventListener('pagehide', () => {
     if (typeof _wbModalPendingFinish === 'function') {
         _wbModalPendingFinish();
     }
+    _clearModalPageState();
     if (_wbModalPendingAbort) {
         _wbModalPendingAbort.abort();
         _wbModalPendingAbort = null;
     }
     _wbModalPendingFinish = null;
+    _activeModalController = null;
 });

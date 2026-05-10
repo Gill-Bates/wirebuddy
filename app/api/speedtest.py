@@ -83,10 +83,11 @@ async def _run_in_threadpool_with_timeout(
 	timeout_seconds: float,
 	func: Any,
 	*args: Any,
+	**kwargs: Any,
 ) -> Any:
 	"""Run blocking work in the threadpool with a bounded deadline."""
 	async with asyncio.timeout(timeout_seconds):
-		return await run_in_threadpool(func, *args)
+		return await run_in_threadpool(func, *args, **kwargs)
 
 
 def _update_speedtest_settings_sync(

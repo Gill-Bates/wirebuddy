@@ -185,6 +185,7 @@
         width: 100%;
         max-height: 18rem;
         overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
     }
 
     .peer-node-option {
@@ -321,6 +322,7 @@
         #addPeerModal .modal-content,
         #editPeerModal .modal-content {
             max-height: calc(100vh - 1rem);
+            max-height: calc(100dvh - 1rem);
             display: flex;
             flex-direction: column;
         }
@@ -340,6 +342,7 @@
         #editPeerModal .modal-body {
             padding: 0.75rem;
             overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
             flex: 1 1 auto;
         }
     }
@@ -389,6 +392,7 @@
         color: var(--bs-secondary-color);
         line-height: 1;
         opacity: 0.7;
+        -webkit-tap-highlight-color: transparent;
     }
 
     .peers-search-clear:hover {
@@ -399,6 +403,10 @@
         position: static;
         transform: none;
         font-size: 16px;
+    }
+
+    .peers-table td.peer-actions-cell .btn {
+        -webkit-tap-highlight-color: transparent;
     }
 
     /* Peers container: page-level scrolling only (no inner scroll) */
@@ -655,23 +663,9 @@
         }
 
         .peers-table tr:not([data-peer-id]) td {
-            display: block;
-            width: 100%;
             padding: 0.45rem 0;
             text-align: left !important;
             white-space: normal;
             overflow-wrap: break-word;
-        }
-    }
-
-    /* Narrow and tiny screens now use same stacked layout */
-    @media (max-width: 399.98px) {
-        .peers-table tr[data-peer-id] {
-            grid-template-areas:
-                "name     status"
-                "vpn      vpn"
-                "clientip clientip"
-                "actions  actions";
-            grid-template-columns: minmax(0, 1fr) auto;
         }
     }
