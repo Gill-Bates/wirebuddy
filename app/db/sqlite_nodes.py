@@ -155,6 +155,7 @@ def get_node(conn: sqlite3.Connection, node_id: str) -> sqlite3.Row | None:
 
 def get_node_by_name(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
 	"""Fetch a single node by display name."""
+	name = name.strip()
 	return conn.execute("SELECT * FROM nodes WHERE name = ?", (name,)).fetchone()
 
 
@@ -207,7 +208,7 @@ def update_node(
 		params.append(int(show_on_dashboard))
 
 	if not updates:
-		return False  # No changes requested
+		raise ValueError("No fields provided for update")
 
 	params.append(node_id)
 	sql = f"UPDATE nodes SET {', '.join(updates)} WHERE id = ?"
@@ -343,7 +344,7 @@ def set_node_tunnel_peer(
 def update_node_heartbeat(
 	conn: sqlite3.Connection,
 	node_id: str,
-	metadata: dict | None = None,
+	metadata: dict[str, Any] | None = None,
 ) -> bool:
 	"""Update node heartbeat timestamp and optional metadata JSON.
 
@@ -538,7 +539,7 @@ def bump_node_config_version(
 	"""Compute and store a new config_version hash for the node.
 
 	The version is a deterministic SHA-256 hash of the full peer configuration
-	assigned to this node (public_key, allowed_ips, preshared_key presence).
+	assigned to this node, including roaming peers served on all nodes.
 	Timestamp is NOT included to ensure idempotency.
 	"""
 	with transaction(conn, immediate=True):
@@ -548,21 +549,26 @@ def bump_node_config_version(
 				public_key,
 				allowed_ips,
 				interface,
-				(preshared_key IS NOT NULL AND preshared_key != '') AS has_psk
+				peer_address,
+				name,
+				COALESCE(preshared_key, '') AS preshared_key
 			FROM peers
-			WHERE node_id = ? AND is_enabled = 1
+			WHERE (node_id = ? OR allow_all_nodes = 1) AND is_enabled = 1
 			ORDER BY public_key
 			""",
 			(node_id,),
 		).fetchall()
-		# Include full peer config (but not decrypted keys) for version hash
+		# Include all peer fields that are delivered to nodes. Using the stored
+		# PSK value ensures rotations invalidate the version without decrypting it.
 		payload = json.dumps(
 			[
 				{
 					"public_key": r["public_key"],
 					"allowed_ips": r["allowed_ips"],
-					"has_psk": bool(r["has_psk"]),
 					"interface": r["interface"],
+					"peer_address": r["peer_address"],
+					"name": r["name"],
+					"preshared_key": r["preshared_key"],
 				}
 				for r in rows
 			],
@@ -592,9 +598,8 @@ def _build_interfaces_config(
 	conn: sqlite3.Connection,
 	node_id: str,
 	tunnel_peer: sqlite3.Row | None,
-	pepper: str,
 ) -> list[dict[str, Any]]:
-	"""Assemble interface configs for a node, decrypting per-node private keys."""
+	"""Assemble interface configs for a node with encrypted private keys intact."""
 	interfaces_map = {row["name"]: row for row in list_interfaces(conn)}
 	tunnel_interface = tunnel_peer["interface"] if tunnel_peer else None
 
@@ -618,7 +623,7 @@ def _build_interfaces_config(
 
 		interfaces.append({
 			"name": ni["interface_name"],
-			"private_key": vault.decrypt_if_needed(ni["private_key"], pepper),
+			"private_key_enc": ni["private_key"],
 			"public_key": ni["public_key"],
 			"address": interface_address,
 			"address6": interface_address6,
@@ -631,10 +636,15 @@ def _build_interfaces_config(
 	return interfaces
 
 
-def _build_peers_config(conn: sqlite3.Connection, node_id: str, pepper: str) -> list[dict[str, Any]]:
-	"""Assemble peers assigned to a node for config delivery."""
+def _build_peers_config(conn: sqlite3.Connection, node_id: str) -> list[dict[str, Any]]:
+	"""Assemble peers assigned to a node for config delivery.
+	
+	Includes:
+	- Peers explicitly assigned to this node (node_id = ?)
+	- Peers with allow_all_nodes=1 (roaming peers available on all nodes)
+	"""
 	peer_rows = conn.execute(
-		"SELECT * FROM peers WHERE node_id = ? AND is_enabled = 1",
+		"SELECT * FROM peers WHERE (node_id = ? OR allow_all_nodes = 1) AND is_enabled = 1",
 		(node_id,),
 	).fetchall()
 	return [
@@ -642,7 +652,7 @@ def _build_peers_config(conn: sqlite3.Connection, node_id: str, pepper: str) -> 
 			"interface": p["interface"],
 			"name": p["name"],
 			"public_key": p["public_key"],
-			"preshared_key": vault.decrypt_if_needed(p["preshared_key"], pepper) if p["preshared_key"] else None,
+			"preshared_key_enc": p["preshared_key"],
 			"peer_address": p["peer_address"],
 			"allowed_ips": p["allowed_ips"],
 		}
@@ -704,7 +714,7 @@ def get_node_config(
 	node_id: str,
 	*,
 	pepper: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
 	"""Build the full configuration payload for a node.
 
 	Args:
@@ -725,9 +735,26 @@ def get_node_config(
 			raise ValueError(f"Node not found: {node_id}")
 
 		tunnel_peer = _get_tunnel_peer(conn, node["tunnel_peer_id"])
-		interfaces = _build_interfaces_config(conn, node_id, tunnel_peer, pepper)
-		peers = _build_peers_config(conn, node_id, pepper)
+		interfaces_enc = _build_interfaces_config(conn, node_id, tunnel_peer)
+		peers_enc = _build_peers_config(conn, node_id)
 		master_peer = _build_master_peer_config(conn, tunnel_peer)
+
+	interfaces = [
+		{
+			**item,
+			"private_key": vault.decrypt_if_needed(str(item.pop("private_key_enc")), pepper),
+		}
+		for item in interfaces_enc
+	]
+	peers = [
+		{
+			**item,
+			"preshared_key": vault.decrypt_if_needed(item.pop("preshared_key_enc"), pepper)
+			if item.get("preshared_key_enc")
+			else None,
+		}
+		for item in peers_enc
+	]
 
 	_log.info(
 		"NODE_CONFIG built for node=%s: interfaces=%d peers=%d master_peer=%s",
@@ -761,9 +788,13 @@ def create_node_interface(
 	with transaction(conn, immediate=True):
 		conn.execute(
 			"""
-			INSERT OR REPLACE INTO node_interfaces
+			INSERT INTO node_interfaces
 				(node_id, interface_name, private_key, public_key, created_at)
 			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(node_id, interface_name) DO UPDATE SET
+				private_key = excluded.private_key,
+				public_key = excluded.public_key,
+				created_at = excluded.created_at
 			""",
 			(node_id, interface_name, vault.encrypt_if_needed(private_key, pepper), public_key, now),
 		)
@@ -851,10 +882,11 @@ def get_tunnel_peer_allowed_ips(conn: sqlite3.Connection, node_id: str) -> str |
 	This allows the master to accept DNS traffic from all peers connected
 	to the node, not just the node itself.
 	"""
-	node = get_node(conn, node_id)
-	if not node or not node["tunnel_peer_id"]:
-		return None
-	return _compute_tunnel_allowed_ips(conn, node_id, node["tunnel_peer_id"])
+	with transaction(conn):
+		node = get_node(conn, node_id)
+		if not node or not node["tunnel_peer_id"]:
+			return None
+		return _compute_tunnel_allowed_ips(conn, node_id, node["tunnel_peer_id"])
 
 
 def _compute_tunnel_allowed_ips(conn: sqlite3.Connection, node_id: str, tunnel_peer_id: int) -> str | None:
@@ -868,7 +900,7 @@ def _compute_tunnel_allowed_ips(conn: sqlite3.Connection, node_id: str, tunnel_p
 
 	addresses: set[str] = set(_split_addresses(tunnel_peer["peer_address"]))
 	peer_rows = conn.execute(
-		"SELECT peer_address FROM peers WHERE node_id = ? AND is_enabled = 1",
+		"SELECT peer_address FROM peers WHERE (node_id = ? OR allow_all_nodes = 1) AND is_enabled = 1",
 		(node_id,),
 	).fetchall()
 	for row in peer_rows:

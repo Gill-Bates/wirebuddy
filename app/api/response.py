@@ -8,26 +8,38 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Generic, Literal, TypeVar
+
+from pydantic import BaseModel
+
+T = TypeVar("T")
+
+
+class OkResponse(BaseModel, Generic[T]):
+	"""Typed success envelope for FastAPI response_model declarations."""
+
+	status: Literal["ok"] = "ok"
+	message: str | None = None
+	data: T | None = None
+
+
+class ErrorResponse(BaseModel):
+	"""Standardized error envelope for API error responses."""
+
+	status: Literal["error"] = "error"
+	message: str
+	detail: str | None = None
 
 
 def ok_response(
 	*,
 	message: str | None = None,
 	data: Any = None,
-	**extra: Any,
-) -> dict[str, Any]:
-	"""Build a normalized success response.
+) -> OkResponse[Any]:
+	"""Build a typed success envelope.
 
-	Includes a stable ``status`` field while allowing legacy top-level fields
-	for backward compatibility with existing frontend code.
+	Prefer constructing ``OkResponse[T]`` directly when the concrete payload type
+	is known at the call site.
 	"""
-	payload: dict[str, Any] = {"status": "ok"}
-	if message is not None:
-		payload["message"] = message
-	if data is not None:
-		payload["data"] = data
-	if extra:
-		payload.update(extra)
-	return payload
+	return OkResponse[Any](message=message, data=data)
 

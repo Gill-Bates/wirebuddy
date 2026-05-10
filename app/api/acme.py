@@ -906,9 +906,7 @@ async def delete_certificate(
 	
 	return ok_response(
 		message="Certificate deleted",
-		success=True,
-		domain=domain,
-		data={"domain": domain, "staging": staging},
+		data={"success": True, "domain": domain, "staging": staging},
 	)
 
 

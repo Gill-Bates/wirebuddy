@@ -154,7 +154,19 @@ def init_schema(conn: sqlite3.Connection) -> None:
 			"""
 		)
 
-		# Login attempts (for brute-force protection)
+		# Migration framework bookkeeping
+		conn.execute(
+			"""
+			CREATE TABLE IF NOT EXISTS schema_version (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				version INTEGER NOT NULL DEFAULT 0,
+				updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			)
+			"""
+		)
+		conn.execute("INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 0)")
+
+		# Login attempts (IP-level brute-force protection)
 		conn.execute(
 			"""
 			CREATE TABLE IF NOT EXISTS login_attempts (
@@ -194,6 +206,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				last_wg_rx INTEGER NOT NULL DEFAULT 0,
 				last_wg_tx INTEGER NOT NULL DEFAULT 0,
 				node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
+				allow_all_nodes INTEGER NOT NULL DEFAULT 0,
 				created_at timestamp NOT NULL,
 				updated_at timestamp NOT NULL
 			)
@@ -280,6 +293,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 		)
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status)")
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_last_seen ON nodes(last_seen)")
+		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_api_secret_hash ON nodes(api_secret_hash)")
 
 		# Per-node WireGuard interface keypairs
 		conn.execute(
@@ -295,9 +309,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
 			)
 			"""
 		)
-
-	# Run migrations for existing databases (must be inside transaction)
-	with transaction(conn, immediate=True):
 		_run_migrations(conn)
 
 
@@ -316,111 +327,167 @@ def _add_column_if_missing(
 	definition: str,
 	existing_columns: set[str],
 	log_message: str,
-) -> None:
-	"""Add a column if absent and keep local column snapshots in sync."""
+) -> bool:
+	"""Add a column if absent.
+
+	Returns ``True`` when the column was added so callers can update any local
+	column snapshot explicitly.
+	"""
 	if column in existing_columns:
-		return
+		return False
 	_log.info(log_message)
 	conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-	existing_columns.add(column)
+	return True
 
 
-def _create_unique_index_or_warn(conn: sqlite3.Connection, ddl: str, *, label: str) -> None:
-	"""Create a unique index or log why it could not be enforced."""
-	try:
-		conn.execute(ddl)
-	except sqlite3.Error as exc:
-		_log.warning("Could not create unique index %s: %s", label, exc)
+def _find_duplicate_value(
+	conn: sqlite3.Connection,
+	*,
+	table: str,
+	column: str,
+) -> sqlite3.Row | None:
+	"""Return one duplicate value for ``table.column`` if present."""
+	return conn.execute(
+		f"""
+		SELECT {column} AS value, COUNT(*) AS cnt
+		FROM {table}
+		WHERE {column} IS NOT NULL
+		GROUP BY {column}
+		HAVING COUNT(*) > 1
+		LIMIT 1
+		"""
+	).fetchone()
+
+
+def _create_unique_index_if_no_duplicates(
+	conn: sqlite3.Connection,
+	*,
+	table: str,
+	column: str,
+	ddl: str,
+	label: str,
+) -> None:
+	"""Create a unique index unless duplicate data already exists."""
+	duplicate = _find_duplicate_value(conn, table=table, column=column)
+	if duplicate is not None:
+		_log.warning(
+			"Skipping unique index %s because duplicate values already exist (%s=%s, count=%s)",
+			label,
+			column,
+			duplicate["value"],
+			duplicate["cnt"],
+		)
+		return
+	conn.execute(ddl)
 
 
 def _run_migrations(conn: sqlite3.Connection) -> None:
 	"""Apply schema migrations for existing databases.
-	
+
 	These migrations handle columns/tables added after initial release.
 	Safe to run multiple times (idempotent).
-	
+
 	Must be called within an IMMEDIATE transaction to prevent concurrent schema
 	modifications and partial migration state.
 	"""
 	if not conn.in_transaction:
 		raise RuntimeError("_run_migrations must run inside an active transaction")
 
-	# Get existing columns in peers table
 	existing_columns = _get_columns(conn, "peers")
-
-	_add_column_if_missing(
+	if _add_column_if_missing(
 		conn,
 		table="peers",
 		column="dns_logging_enabled",
 		definition="INTEGER NOT NULL DEFAULT 1",
 		existing_columns=existing_columns,
 		log_message="Migrating peers table: adding dns_logging_enabled column",
-	)
+	):
+		existing_columns.add("dns_logging_enabled")
 
-	if "node_id" not in existing_columns:
-		_add_column_if_missing(
-			conn,
-			table="peers",
-			column="node_id",
-			definition="TEXT REFERENCES nodes(id) ON DELETE SET NULL",
-			existing_columns=existing_columns,
-			log_message="Migrating peers table: adding node_id column for Master-Node architecture",
-		)
+	if _add_column_if_missing(
+		conn,
+		table="peers",
+		column="node_id",
+		definition="TEXT REFERENCES nodes(id) ON DELETE SET NULL",
+		existing_columns=existing_columns,
+		log_message="Migrating peers table: adding node_id column for Master-Node architecture",
+	):
+		existing_columns.add("node_id")
+	if "node_id" in existing_columns:
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_node_id ON peers(node_id)")
 
-	# Migration: Add tunnel_peer_id to nodes (Node→Master tunnel for DNS)
+	if _add_column_if_missing(
+		conn,
+		table="peers",
+		column="allow_all_nodes",
+		definition="INTEGER NOT NULL DEFAULT 0",
+		existing_columns=existing_columns,
+		log_message="Migrating peers table: adding allow_all_nodes for multi-node roaming",
+	):
+		existing_columns.add("allow_all_nodes")
+
 	nodes_columns = _get_columns(conn, "nodes")
-	_add_column_if_missing(
+	if _add_column_if_missing(
 		conn,
 		table="nodes",
 		column="tunnel_peer_id",
 		definition="INTEGER REFERENCES peers(id) ON DELETE SET NULL",
 		existing_columns=nodes_columns,
 		log_message="Migrating nodes table: adding tunnel_peer_id for Node→Master DNS tunnel",
-	)
-	_add_column_if_missing(
+	):
+		nodes_columns.add("tunnel_peer_id")
+	if _add_column_if_missing(
 		conn,
 		table="nodes",
 		column="last_metric_seq",
 		definition="INTEGER",
 		existing_columns=nodes_columns,
 		log_message="Migrating nodes table: adding last_metric_seq for reliable metric delivery",
-	)
-	_add_column_if_missing(
+	):
+		nodes_columns.add("last_metric_seq")
+	if _add_column_if_missing(
 		conn,
 		table="nodes",
 		column="sse_connected_at",
 		definition="TIMESTAMP",
 		existing_columns=nodes_columns,
 		log_message="Migrating nodes table: adding sse_connected_at for multi-worker SSE tracking",
-	)
-	_add_column_if_missing(
+	):
+		nodes_columns.add("sse_connected_at")
+	if _add_column_if_missing(
 		conn,
 		table="nodes",
 		column="pending_command",
 		definition="TEXT",
 		existing_columns=nodes_columns,
 		log_message="Migrating nodes table: adding pending_command for multi-worker command delivery",
-	)
-	_add_column_if_missing(
+	):
+		nodes_columns.add("pending_command")
+	if _add_column_if_missing(
 		conn,
 		table="nodes",
 		column="show_on_dashboard",
 		definition="INTEGER NOT NULL DEFAULT 1",
 		existing_columns=nodes_columns,
 		log_message="Migrating nodes table: adding show_on_dashboard visibility flag",
-	)
+	):
+		nodes_columns.add("show_on_dashboard")
 
-	_create_unique_index_or_warn(
+	_create_unique_index_if_no_duplicates(
 		conn,
-		"CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_name_unique ON nodes(name)",
+		table="nodes",
+		column="name",
+		ddl="CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_name_unique ON nodes(name)",
 		label="idx_nodes_name_unique",
 	)
-	_create_unique_index_or_warn(
+	_create_unique_index_if_no_duplicates(
 		conn,
-		"CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_fqdn_unique ON nodes(fqdn)",
+		table="nodes",
+		column="fqdn",
+		ddl="CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_fqdn_unique ON nodes(fqdn)",
 		label="idx_nodes_fqdn_unique",
 	)
+	conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_api_secret_hash ON nodes(api_secret_hash)")
 
 
 def ensure_default_admin(conn: sqlite3.Connection) -> None:

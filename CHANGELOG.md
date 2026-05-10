@@ -1,6 +1,6 @@
 ## [1.5.0] - 2026-05-xx
 
-- ``New`` Ein neues Feature erlaubt pro Peer sich mit allen verfügbaren Nodes zu verbinden.
+- ``New`` A new feature allows each peer to connect to all available nodes.
 
 
 <details markdown="1">

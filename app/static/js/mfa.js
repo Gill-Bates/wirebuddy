@@ -9,6 +9,9 @@
 
 let mfaUsername = '';
 let mfaToken = '';
+let mfaInitialized = false;
+let mfaSubmitting = false;
+let errorClearTimeoutId = null;
 
 // Cached DOM elements
 let mfaSubmitBtn;
@@ -18,8 +21,33 @@ let mfaHeader;
 let otpDigitsContainer;
 let recoveryCodeInput;
 
+function clearPendingOtpReset() {
+    if (errorClearTimeoutId !== null) {
+        clearTimeout(errorClearTimeoutId);
+        errorClearTimeoutId = null;
+    }
+}
+
+function clearOtpErrorState() {
+    if (!otpDigits?.length) return;
+    otpDigits.forEach((digit) => {
+        digit.classList.remove('otp-error');
+        digit.removeAttribute('aria-invalid');
+    });
+}
+
+function updateSubmitState() {
+    if (!mfaSubmitBtn) return;
+    mfaSubmitBtn.disabled = mfaSubmitting || getOtpCode().length !== 6;
+}
+
 // Initialize MFA form
 function initMfa() {
+    if (mfaInitialized) {
+        return;
+    }
+    mfaInitialized = true;
+
     // Cache DOM elements
     mfaSubmitBtn = document.getElementById('mfa-submit-btn');
     otpDigitsContainer = document.getElementById('otp-digits');
@@ -30,12 +58,18 @@ function initMfa() {
     // Setup recovery code flow
     const useRecoveryBtn = document.getElementById('use-recovery-btn');
     if (useRecoveryBtn) {
-        useRecoveryBtn.addEventListener('click', showRecoveryForm);
+        useRecoveryBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            showRecoveryForm();
+        });
     }
 
     const recoverySubmitBtn = document.getElementById('recovery-submit-btn');
     if (recoverySubmitBtn) {
-        recoverySubmitBtn.addEventListener('click', submitRecoveryCode);
+        recoverySubmitBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            void submitRecoveryCode();
+        });
     }
 
     if (recoveryCodeInput) {
@@ -48,8 +82,9 @@ function initMfa() {
     }
 
     if (mfaSubmitBtn) {
-        mfaSubmitBtn.addEventListener('click', () => {
-            submitMfa(getOtpCode());
+        mfaSubmitBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            void submitMfa(getOtpCode());
         });
     }
 }
@@ -63,24 +98,50 @@ function showMfaForm(username, token) {
         throw new Error('MFA challenge could not be initialized');
     }
 
+    mfaSubmitting = false;
+    clearPendingOtpReset();
+    hideError();
+
     document.getElementById('login-form').classList.add('hidden');
     document.getElementById('mfa-form').classList.remove('hidden');
+    mfaHeader?.classList.remove('hidden');
+    otpDigitsContainer?.classList.remove('d-none');
+    mfaSubmitBtn?.classList.remove('hidden');
+    document.getElementById('use-recovery-btn')?.classList.remove('hidden');
+    recoveryForm?.classList.add('hidden');
+    if (recoveryCodeInput) {
+        recoveryCodeInput.value = '';
+        recoveryCodeInput.removeAttribute('aria-invalid');
+    }
     initOtpDigits();
+    clearOtpDigits();
 }
 
 // OTP digit boxes with auto-advance and auto-submit
 function initOtpDigits() {
     otpDigits = document.querySelectorAll('.otp-digit');
 
+    if (!otpDigits.length) {
+        return;
+    }
+
     otpDigits.forEach((input, idx) => {
         // Add accessibility labels
         input.setAttribute('aria-label', `Digit ${idx + 1} of 6`);
-        // Add autocomplete hint for iOS
+        input.setAttribute('inputmode', 'numeric');
+        input.setAttribute('pattern', '[0-9]*');
         input.setAttribute('autocomplete', 'one-time-code');
 
         input.value = '';
 
+        if (input.dataset.mfaBound === '1') {
+            return;
+        }
+        input.dataset.mfaBound = '1';
+
         input.addEventListener('input', (e) => {
+            clearPendingOtpReset();
+            clearOtpErrorState();
             const val = e.target.value.replace(/\D/g, '');
             e.target.value = val.slice(0, 1);
 
@@ -99,7 +160,9 @@ function initOtpDigits() {
 
         input.addEventListener('paste', (e) => {
             e.preventDefault();
-            const paste = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '');
+            clearPendingOtpReset();
+            clearOtpErrorState();
+            const paste = e.clipboardData.getData('text').replace(/\D/g, '');
             for (let i = 0; i < Math.min(paste.length, otpDigits.length); i++) {
                 otpDigits[i].value = paste[i];
             }
@@ -109,36 +172,48 @@ function initOtpDigits() {
             autoSubmitIfComplete();
         });
 
-        input.addEventListener('focus', () => input.select());
+        input.addEventListener('focus', () => {
+            clearPendingOtpReset();
+            input.select();
+        });
     });
 
     otpDigits[0].focus();
 
-    function updateSubmitState() {
-        const code = getOtpCode();
-        mfaSubmitBtn.disabled = code.length !== 6;
-    }
-
     function autoSubmitIfComplete() {
         const code = getOtpCode();
-        if (code.length === 6) {
-            submitMfa(code);
+        if (code.length === 6 && !mfaSubmitting) {
+            void submitMfa(code);
         }
     }
+
+    updateSubmitState();
 }
 
 function getOtpCode() {
-    return Array.from(otpDigits).map(d => d.value).join('');
+    return Array.from(otpDigits || []).map(d => d.value).join('');
 }
 
 function clearOtpDigits() {
+    if (!otpDigits?.length) {
+        return;
+    }
+    clearPendingOtpReset();
+    clearOtpErrorState();
     otpDigits.forEach(d => d.value = '');
     otpDigits[0]?.focus();
-    mfaSubmitBtn.disabled = true;
+    updateSubmitState();
 }
 
 async function submitMfa(code) {
+    if (mfaSubmitting) {
+        return;
+    }
+
+    clearPendingOtpReset();
+    mfaSubmitting = true;
     hideError();
+    updateSubmitState();
     setBusy(mfaSubmitBtn, 'Verifying...');
 
     try {
@@ -157,25 +232,31 @@ async function submitMfa(code) {
         window.location.href = '/ui/dashboard';
     } catch (error) {
         // Shake + red flash, then clear for re-entry
-        otpDigits.forEach(d => {
-            d.classList.add('otp-error');
-            d.setAttribute('aria-invalid', 'true');
-        });
+        if (otpDigits?.length) {
+            otpDigits.forEach(d => {
+                d.classList.add('otp-error');
+                d.setAttribute('aria-invalid', 'true');
+            });
+        }
 
         // Show error message
         showError(error.message || 'Invalid code. Please try again.');
 
-        setTimeout(() => {
-            otpDigits.forEach(d => {
-                d.classList.remove('otp-error');
-                d.removeAttribute('aria-invalid');
-                d.value = '';
-            });
-            otpDigits[0]?.focus();
-            mfaSubmitBtn.disabled = true;
+        errorClearTimeoutId = setTimeout(() => {
+            clearOtpErrorState();
+            if (otpDigits?.length) {
+                otpDigits.forEach(d => {
+                    d.value = '';
+                });
+                otpDigits[0]?.focus();
+            }
+            updateSubmitState();
+            errorClearTimeoutId = null;
         }, 600);
     } finally {
+        mfaSubmitting = false;
         clearBusy(mfaSubmitBtn, 'Verify');
+        updateSubmitState();
     }
 }
 

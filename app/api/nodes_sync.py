@@ -762,7 +762,7 @@ def get_config_endpoint(
 	# ETag-style: skip full payload if version matches
 	if version is not None and node["config_version"] is not None and version == str(node["config_version"]):
 		_log.debug("NODE_CONFIG_UNCHANGED node=%s version=%s", node_id, version[:16] if version else "none")
-		return ok_response(data=None, message="Config unchanged", config_version=node["config_version"])
+		return ok_response(data={"config_version": node["config_version"]}, message="Config unchanged")
 
 	config = get_node_config(conn, node["id"])
 	peer_count = len(config.get("peers", []))

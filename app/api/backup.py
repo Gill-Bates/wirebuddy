@@ -689,7 +689,7 @@ async def restore_backup(  # async: uses await for file I/O
 
 	return ok_response(
 		message="Backup restored successfully. Application is restarting...",
-		restored=restored_items,
+		data={"restored": restored_items},
 	)
 
 
