@@ -1,3 +1,11 @@
+## [1.5.0] - 2026-05-xx
+
+- ``New`` Ein neues Feature erlaubt pro Peer sich mit allen verfügbaren Nodes zu verbinden.
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.4.6] - 2026-05-10
 
 - ``Fix`` A rollback bug in the backup routine has been fixed
@@ -8,10 +16,6 @@
 - ``Fix`` General stability improvements in WireBuddy engine
 - ``Fix`` Several design improvements in the GUI
 - ``Fix`` Update Python dependencies
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.4.5] - 2026-04-26
 
