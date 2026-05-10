@@ -148,6 +148,7 @@ class NodeUpdate(_NodePayloadBase):
 	name: str | None = Field(None, min_length=1, max_length=_NODE_NAME_MAX_LEN)
 	fqdn: str | None = Field(None, min_length=1, max_length=_FQDN_MAX_LEN)
 	wg_port: int | None = Field(None, ge=_PORT_MIN, le=_PORT_MAX)
+	show_on_dashboard: bool | None = Field(None, description="Whether the node is shown on the dashboard")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -418,6 +419,7 @@ def _node_to_dict(
 		"geo_as_org": geo_fields["as_org"],
 		"node_version": node_version,
 		"last_speedtest": last_speedtest,
+		"show_on_dashboard": bool(row["show_on_dashboard"] if "show_on_dashboard" in row.keys() else 1),
 		"sse_connected": (
 			node_notifier.is_node_connected_sync(row["id"])
 			if row["status"] == _NODE_STATUS_ONLINE
@@ -545,7 +547,7 @@ def update_node_endpoint(
 	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_admin),
 ) -> dict[str, Any]:
-	"""Update a node's name, FQDN, or port."""
+	"""Update a node's name, FQDN, port, or dashboard visibility."""
 	# exclude_unset distinguishes "not sent" from "sent as null"
 	updates = body.model_dump(exclude_unset=True)
 	if not updates:

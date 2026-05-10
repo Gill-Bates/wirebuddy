@@ -1,3 +1,18 @@
+## [1.4.6] - 2026-05-10
+
+- ``Fix`` A rollback bug in the backup routine has been fixed
+- ``Fix`` On iOS, the country table was not displayed correctly in the traffic metrics
+- ``Fix`` It was not possible to add additional nodes
+- ``Fix`` A persistent bug was preventing speed tests
+- ``Fix`` Various stability improvements in the Wirebuddy engine
+- ``Fix`` General stability improvements in WireBuddy engine
+- ``Fix`` Several design improvements in the GUI
+- ``Fix`` Update Python dependencies
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.4.5] - 2026-04-26
 
 - ``Fix`` Various improvements to the GUI and fixes for display errors
@@ -5,10 +20,6 @@
 - ``Fix`` After restarting the Docker container, the Speedtest results from the last run were gone
 - ``Fix`` Numerous stability improvements in the Wirebuddy engine
 - ``Fix`` Update Python dependencies
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.4.4] - 2026-04-20
 

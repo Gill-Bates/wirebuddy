@@ -297,9 +297,32 @@
 <script src="/static/js/dashboard_traffic_shared.js"></script>
 <script src="/static/vendor/chart.umd.min.js"></script>
 <script>
-    // User permission check
+    (function () {
+    'use strict';
+
     const dnsApp = document.getElementById('dns-app');
-    const isAdmin = dnsApp?.dataset.isAdmin === 'true';
+    const logRowTemplate = document.getElementById('log-row-template');
+    if (!dnsApp || !logRowTemplate) {
+        console.error('[dns] Required DOM roots are missing.');
+        return;
+    }
+
+    const requiredGlobals = [
+        ['api', window.api],
+        ['wbToast', window.wbToast],
+        ['Chart', window.Chart],
+        ['bootstrap', window.bootstrap],
+    ];
+    for (const [name, value] of requiredGlobals) {
+        if (!value) {
+            console.error(`[dns] Required global "${name}" is not defined.`);
+            return;
+        }
+    }
+
+    // User permission check
+    const isAdmin = dnsApp.dataset.isAdmin === 'true';
+    const STAT_IDS = ['stat-queries', 'stat-blocked', 'stat-percent', 'stat-domains', 'stat-blocklist'];
 
     function chartEmptyState(text = 'No Data Available') {
         const wrapper = document.createElement('div');
@@ -334,7 +357,8 @@
 
     /**
      * Extract raw client IP from a formatted "PeerName (IP)" string.
-     * Returns the IP inside parentheses, or the original value if no match exists.
+     * Returns an empty string for falsy input, the IP inside parentheses if present,
+     * or the original value if no formatted suffix exists.
      */
     function _extractClientIp(clientStr) {
         if (!clientStr) return '';
@@ -362,8 +386,39 @@
         return ips.join(',');
     }
 
+    function getClientIpsQueryParam() {
+        const clientIps = getSelectedPeerClientIps();
+        return clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
+    }
+
     function clearNode(el) {
-        while (el && el.firstChild) el.removeChild(el.firstChild);
+        if (el) el.replaceChildren();
+    }
+
+    function resetStatCards(placeholder = '–') {
+        for (const id of STAT_IDS) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = placeholder;
+        }
+    }
+
+    function createLogPlaceholderRow(content, className = 'log-empty-cell') {
+        const tr = document.createElement('tr');
+        tr.className = 'log-empty-row';
+        const td = document.createElement('td');
+        td.colSpan = 3;
+        td.className = className;
+        if (typeof content === 'string') {
+            td.textContent = content;
+        } else {
+            td.appendChild(content);
+        }
+        tr.appendChild(td);
+        return tr;
+    }
+
+    function formatYAxisTick(value) {
+        return fmtNum(Number(value)).replace('k', 'K');
     }
 
     function closeLogActionMenu() {
@@ -372,8 +427,9 @@
         menu.classList.remove('show');
         _logActionState = null;
         // Reset ARIA expanded state on all rows
-        document.querySelectorAll('[aria-expanded="true"]')
-            .forEach(el => el.setAttribute('aria-expanded', 'false'));
+        for (const el of document.querySelectorAll('[aria-expanded="true"]')) {
+            el.setAttribute('aria-expanded', 'false');
+        }
     }
 
     function openLogActionMenu(q, clickEvent) {
@@ -412,10 +468,11 @@
             menu.appendChild(btn);
         }
 
+        const clientIp = _extractClientIp(q.client || '');
         _logActionState = {
             domain: q.domain || '',
-            client: _extractClientIp(q.client || ''),
-            clientName: _peerMap[_extractClientIp(q.client || '').toLowerCase()] || '',
+            client: clientIp,
+            clientName: _peerMap[clientIp.toLowerCase()] || '',
             blocked,
         };
 
@@ -587,24 +644,14 @@
             const rangeMultiplier = Math.max(1, Math.ceil(rangeHours / 720));
             const bucketMinutes = Math.min(1440 * rangeMultiplier, Math.max(5, baseBucket * rangeMultiplier));
             const clientIps = getSelectedPeerClientIps();
-            const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
+            const clientIpsParam = getClientIpsQueryParam();
 
             // Build cache key from parameters
             const cacheKey = `${rangeHours}|${bucketMinutes}|${clientIps || ''}`;
             let t = getTrendCache(cacheKey);
 
             if (!t) {
-                // No valid cache, fetch from API
-                try {
-                    t = await api('GET', `/api/dns/trend?hours=${rangeHours}&bucket_minutes=${bucketMinutes}${clientIpsParam}`);
-                } catch (err) {
-                    // Fallback for strict query validation mismatches on older deployments.
-                    if (err?.code === 'HTTP_422' && bucketMinutes !== 1440) {
-                        t = await api('GET', `/api/dns/trend?hours=${rangeHours}&bucket_minutes=1440${clientIpsParam}`);
-                    } else {
-                        throw err;
-                    }
-                }
+                t = await api('GET', `/api/dns/trend?hours=${rangeHours}&bucket_minutes=${bucketMinutes}${clientIpsParam}`);
                 setTrendCache(cacheKey, t);
             }
             const labels = (t.labels || []).map(_fmtTrendLabel);
@@ -616,14 +663,6 @@
             const trendWrap = document.getElementById('trend-chart-wrap');
             const emptyEl = document.getElementById('trend-empty');
             const unavailableEl = document.getElementById('trend-unavailable');
-
-            if (_dnsUnavailable) {
-                loadingEl.classList.add('d-none');
-                trendWrap.classList.add('d-none');
-                emptyEl.classList.add('d-none');
-                unavailableEl.classList.remove('d-none');
-                return;
-            }
 
             const hasData = labels.length > 0 && total.some(v => v > 0);
             if (!hasData) {
@@ -732,7 +771,7 @@
                                 grid: { color: gridColor },
                                 ticks: {
                                     color: textColor,
-                                    callback: v => v >= 1e6 ? (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'K' : v
+                                    callback: formatYAxisTick,
                                 },
                                 title: { display: true, text: 'Queries', color: textColor },
                             },
@@ -771,12 +810,8 @@
     async function loadStats() {
         try {
             const rangeHours = getSelectedRangeHours();
-            const clientIps = getSelectedPeerClientIps();
-            const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
-            const [s, config] = await Promise.all([
-                api('GET', `/api/dns/status?hours=${rangeHours}${clientIpsParam}`),
-                api('GET', '/api/dns/config'),
-            ]);
+            const clientIpsParam = getClientIpsQueryParam();
+            const s = await api('GET', `/api/dns/status?hours=${rangeHours}${clientIpsParam}`);
 
             // Update status using DOM APIs (safe from XSS)
             const statusEl = document.getElementById('stat-status');
@@ -822,11 +857,7 @@
                 statusEl.textContent = '?';
                 statusEl.className = 'dns-stat-value text-muted';
             }
-            document.getElementById('stat-queries').textContent = '–';
-            document.getElementById('stat-blocked').textContent = '–';
-            document.getElementById('stat-percent').textContent = '–';
-            document.getElementById('stat-domains').textContent = '–';
-            document.getElementById('stat-blocklist').textContent = '–';
+            resetStatCards();
         }
     }
 
@@ -836,8 +867,7 @@
 
         try {
             const rangeHours = getSelectedRangeHours();
-            const clientIps = getSelectedPeerClientIps();
-            const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
+            const clientIpsParam = getClientIpsQueryParam();
             const data = await api('GET', `/api/dns/top-domains?limit=15&hours=${rangeHours}${clientIpsParam}`);
             const topQueried = data.top_queried || [];
             const topBlocked = data.top_blocked || [];
@@ -964,7 +994,7 @@
         const maxVal = Math.max(...values, 1);
 
         clearNode(listEl);
-        labels.forEach((label, i) => {
+        for (const [i, label] of labels.entries()) {
             const val = values[i];
             const pct = (val / maxVal) * 100;
             const totalPct = total > 0 ? (val / total * 100).toFixed(1) : 0;
@@ -1009,7 +1039,7 @@
             itemWrap.appendChild(topRow);
             itemWrap.appendChild(barWrap);
             listEl.appendChild(itemWrap);
-        });
+        }
     }
 
     function showLogsLoadingState() {
@@ -1031,9 +1061,7 @@
         spinner.setAttribute('role', 'status');
         spinner.setAttribute('aria-label', 'Loading');
         wrap.appendChild(spinner);
-        td.appendChild(wrap);
-        tr.appendChild(td);
-        tbody.appendChild(tr);
+        tbody.appendChild(createLogPlaceholderRow(wrap, 'py-5'));
     }
 
     async function loadLogsOnly(showLoading = true) {
@@ -1046,8 +1074,7 @@
             if (showLoading) {
                 showLogsLoadingState();
             }
-            const clientIps = getSelectedPeerClientIps();
-            const clientIpsParam = clientIps ? `&client_ips=${encodeURIComponent(clientIps)}` : '';
+            const clientIpsParam = getClientIpsQueryParam();
             const data = await api('GET', `/api/dns/logs?lines=${LOG_FETCH_LIMIT}${clientIpsParam}`);
             _logData = data.queries || [];
             _renderedCount = 0;  // Reset for fresh render
@@ -1059,14 +1086,7 @@
                 const tbody = document.getElementById('log-body');
                 if (!tbody) return;
                 clearNode(tbody);
-                const tr = document.createElement('tr');
-                tr.className = 'log-empty-row';
-                const td = document.createElement('td');
-                td.colSpan = 3;
-                td.className = 'text-center text-danger';
-                td.textContent = 'Failed to load logs';
-                tr.appendChild(td);
-                tbody.appendChild(tr);
+                tbody.appendChild(createLogPlaceholderRow('Failed to load logs', 'text-center text-danger'));
             }
         } finally {
             _logsLoadInProgress = false;
@@ -1159,14 +1179,7 @@
 
             // Show empty message only on initial render
             if (!_filteredData.length) {
-                const tr = document.createElement('tr');
-                tr.className = 'log-empty-row';
-                const td = document.createElement('td');
-                td.colSpan = 3;
-                td.className = 'log-empty-cell';
-                td.appendChild(chartEmptyState());
-                tr.appendChild(td);
-                tbody.appendChild(tr);
+                tbody.appendChild(createLogPlaceholderRow(chartEmptyState()));
                 return;
             }
         }
@@ -1181,7 +1194,7 @@
         const frag = document.createDocumentFragment();
         for (let i = 0; i < batch.length; i++) {
             const q = batch[i];
-            const tr = document.createElement('tr');
+            const tr = logRowTemplate.content.firstElementChild.cloneNode(true);
             if (q.blocked) tr.className = 'table-danger bg-opacity-10';
             if (isAdmin) {
                 tr.classList.add('log-row-actionable');
@@ -1193,38 +1206,26 @@
             }
             tr.dataset.logIndex = startIdx + i;
 
-            const tdTime = document.createElement('td');
-            tdTime.setAttribute('data-label', 'Time');
-            tdTime.className = 'text-muted log-col-time';
+            const tdTime = tr.querySelector('.log-col-time');
+            const timeDate = tr.querySelector('.log-time-date');
+            const timeClock = tr.querySelector('.log-time-clock');
             const timestamp = String(q.timestamp || '');
             const timeParts = timestamp.includes('T')
                 ? timestamp.split('T')
                 : timestamp.split(' ');
             if (timeParts.length >= 2) {
-                const timeStack = document.createElement('div');
-                timeStack.className = 'log-time-stack';
-                const dateSpan = document.createElement('span');
-                dateSpan.className = 'log-time-date';
-                dateSpan.textContent = timeParts[0];
-                const clockSpan = document.createElement('span');
-                clockSpan.className = 'log-time-clock';
-                clockSpan.textContent = timeParts[1];
-                timeStack.appendChild(dateSpan);
-                timeStack.appendChild(clockSpan);
-                tdTime.appendChild(timeStack);
+                timeDate.textContent = timeParts[0];
+                timeClock.textContent = timeParts[1];
             } else {
-                tdTime.textContent = timestamp;
+                timeDate.textContent = timestamp;
+                timeClock.remove();
             }
 
             // Domain with client/peer info below in gray
-            const tdDomain = document.createElement('td');
-            tdDomain.setAttribute('data-label', 'Domain');
-            const domainWrap = document.createElement('div');
-            domainWrap.className = 'log-domain-stack';
-            const domainText = document.createElement('span');
-            domainText.className = 'log-domain';
+            const tdDomain = tr.querySelector('td[data-label="Domain"]');
+            const domainWrap = tdDomain.querySelector('.log-domain-stack');
+            const domainText = domainWrap.querySelector('.log-domain');
             domainText.textContent = q.domain || '';
-            domainWrap.appendChild(domainText);
             
             // Add Custom Rule badge if applicable
             if (q.custom_rule) {
@@ -1235,27 +1236,18 @@
             }
 
             // Add client/peer info below domain
-            const peerName = _peerMap[_extractClientIp(q.client || '').toLowerCase()];
-            const clientInfo = document.createElement('span');
-            clientInfo.className = 'text-muted log-domain-client';
+            const clientIp = _extractClientIp(q.client || '');
+            const peerName = _peerMap[clientIp.toLowerCase()];
+            const clientInfo = domainWrap.querySelector('.log-domain-client');
             if (!isAdmin) {
-                clientInfo.textContent = `***** (*****)`;
+                clientInfo.textContent = 'Client hidden';
             } else {
-                clientInfo.textContent = peerName ? `${peerName} (${_extractClientIp(q.client)})` : (q.client || '');
+                clientInfo.textContent = peerName ? `${peerName} (${clientIp})` : (q.client || '');
             }
-            domainWrap.appendChild(clientInfo);
-            tdDomain.appendChild(domainWrap);
 
-            const tdType = document.createElement('td');
-            tdType.setAttribute('data-label', 'Type');
-            tdType.className = 'log-col-type';
-            const typeCode = document.createElement('code');
+            const tdType = tr.querySelector('.log-col-type');
+            const typeCode = tdType.querySelector('code');
             typeCode.textContent = q.type || '';
-            tdType.appendChild(typeCode);
-
-            tr.appendChild(tdTime);
-            tr.appendChild(tdDomain);
-            tr.appendChild(tdType);
             frag.appendChild(tr);
         }
 
@@ -1318,64 +1310,73 @@
         logUnavailable: document.getElementById('log-unavailable'),
     };
     _stateEls.logCardBody = _stateEls.logUnavailable?.parentElement || null;
+    const _stateGroups = {
+        queried: {
+            loading: _stateEls.queriedLoading,
+            content: _stateEls.queriedContent,
+            empty: _stateEls.queriedEmpty,
+            unavailable: _stateEls.queriedUnavailable,
+        },
+        blocked: {
+            loading: _stateEls.blockedLoading,
+            content: _stateEls.blockedContent,
+            empty: _stateEls.blockedEmpty,
+            disabled: _stateEls.blockedDisabled,
+            unavailable: _stateEls.blockedUnavailable,
+        },
+        trend: {
+            loading: _stateEls.trendLoading,
+            content: _stateEls.trendChart,
+            empty: _stateEls.trendEmpty,
+            disabled: _stateEls.trendDisabled,
+            unavailable: _stateEls.trendUnavailable,
+        },
+    };
 
     function hasVisibleState(...elements) {
         return elements.some(el => el && !el.classList.contains('d-none'));
     }
 
+    function showExclusiveState(group, activeKey) {
+        for (const [key, el] of Object.entries(group)) {
+            if (!el) continue;
+            el.classList.toggle('d-none', key !== activeKey);
+        }
+    }
+
+    function showDnsLoadingState(options = {}) {
+        const { stats = false, logs = false, trend = false, topDomains = false } = options;
+        if (stats) resetStatCards();
+        if (logs) showLogsLoadingState();
+        if (trend && _adblockerEnabled) showExclusiveState(_stateGroups.trend, 'loading');
+        if (topDomains) {
+            showExclusiveState(_stateGroups.queried, 'loading');
+            if (_adblockerEnabled) showExclusiveState(_stateGroups.blocked, 'loading');
+        }
+    }
+
     function updateBlockedSectionsVisibility(enabled) {
         _adblockerEnabled = enabled;  // Cache state for other functions
 
-        const {
-            blockedLoading,
-            blockedContent,
-            blockedEmpty,
-            blockedDisabled,
-            blockedUnavailable,
-            trendLoading,
-            trendChart,
-            trendEmpty,
-            trendDisabled,
-            trendUnavailable,
-        } = _stateEls;
-
         if (enabled) {
             // Preserve already loaded chart/empty states; only show loading while data is unresolved.
-            const blockedResolved = hasVisibleState(blockedContent, blockedEmpty);
-            const trendResolved = hasVisibleState(trendChart, trendEmpty);
+            const blockedResolved = hasVisibleState(_stateGroups.blocked.content, _stateGroups.blocked.empty);
+            const trendResolved = hasVisibleState(_stateGroups.trend.content, _stateGroups.trend.empty);
 
-            if (blockedDisabled) blockedDisabled.classList.add('d-none');
-            if (blockedUnavailable) blockedUnavailable.classList.add('d-none');
             if (blockedResolved) {
-                if (blockedLoading) blockedLoading.classList.add('d-none');
+                if (_stateGroups.blocked.loading) _stateGroups.blocked.loading.classList.add('d-none');
             } else {
-                if (blockedContent) blockedContent.classList.add('d-none');
-                if (blockedEmpty) blockedEmpty.classList.add('d-none');
-                if (blockedLoading) blockedLoading.classList.remove('d-none');
+                showExclusiveState(_stateGroups.blocked, 'loading');
             }
 
-            if (trendDisabled) trendDisabled.classList.add('d-none');
-            if (trendUnavailable) trendUnavailable.classList.add('d-none');
             if (trendResolved) {
-                if (trendLoading) trendLoading.classList.add('d-none');
+                if (_stateGroups.trend.loading) _stateGroups.trend.loading.classList.add('d-none');
             } else {
-                if (trendChart) trendChart.classList.add('d-none');
-                if (trendEmpty) trendEmpty.classList.add('d-none');
-                if (trendLoading) trendLoading.classList.remove('d-none');
+                showExclusiveState(_stateGroups.trend, 'loading');
             }
         } else {
-            // Hide all states, show disabled state
-            if (blockedLoading) blockedLoading.classList.add('d-none');
-            if (blockedContent) blockedContent.classList.add('d-none');
-            if (blockedEmpty) blockedEmpty.classList.add('d-none');
-            if (blockedUnavailable) blockedUnavailable.classList.add('d-none');
-            if (blockedDisabled) blockedDisabled.classList.remove('d-none');
-            
-            if (trendLoading) trendLoading.classList.add('d-none');
-            if (trendChart) trendChart.classList.add('d-none');
-            if (trendEmpty) trendEmpty.classList.add('d-none');
-            if (trendUnavailable) trendUnavailable.classList.add('d-none');
-            if (trendDisabled) trendDisabled.classList.remove('d-none');
+            showExclusiveState(_stateGroups.blocked, 'disabled');
+            showExclusiveState(_stateGroups.trend, 'disabled');
         }
     }
 
@@ -1384,53 +1385,20 @@
 
     function updateDnsUnavailable(unavailable) {
         _dnsUnavailable = unavailable;
-        const {
-            queriedLoading,
-            queriedContent,
-            queriedEmpty,
-            queriedUnavailable,
-            blockedLoading,
-            blockedContent,
-            blockedEmpty,
-            blockedDisabled,
-            blockedUnavailable,
-            trendLoading,
-            trendChart,
-            trendEmpty,
-            trendDisabled,
-            trendUnavailable,
-            logUnavailable,
-            logCardBody,
-        } = _stateEls;
 
         if (unavailable) {
-            // Hide all states, show unavailable state for all sections
-            if (queriedLoading) queriedLoading.classList.add('d-none');
-            if (queriedContent) queriedContent.classList.add('d-none');
-            if (queriedEmpty) queriedEmpty.classList.add('d-none');
-            if (queriedUnavailable) queriedUnavailable.classList.remove('d-none');
-
-            if (blockedLoading) blockedLoading.classList.add('d-none');
-            if (blockedContent) blockedContent.classList.add('d-none');
-            if (blockedEmpty) blockedEmpty.classList.add('d-none');
-            if (blockedDisabled) blockedDisabled.classList.add('d-none');
-            if (blockedUnavailable) blockedUnavailable.classList.remove('d-none');
-
-            if (trendLoading) trendLoading.classList.add('d-none');
-            if (trendChart) trendChart.classList.add('d-none');
-            if (trendEmpty) trendEmpty.classList.add('d-none');
-            if (trendDisabled) trendDisabled.classList.add('d-none');
-            if (trendUnavailable) trendUnavailable.classList.remove('d-none');
-
-            if (logCardBody) logCardBody.classList.add('dns-log-unavailable');
-            if (logUnavailable) logUnavailable.classList.remove('d-none');
+            showExclusiveState(_stateGroups.queried, 'unavailable');
+            showExclusiveState(_stateGroups.blocked, 'unavailable');
+            showExclusiveState(_stateGroups.trend, 'unavailable');
+            if (_stateEls.logCardBody) _stateEls.logCardBody.classList.add('dns-log-unavailable');
+            if (_stateEls.logUnavailable) _stateEls.logUnavailable.classList.remove('d-none');
         } else {
             // Hide unavailable states
-            if (queriedUnavailable) queriedUnavailable.classList.add('d-none');
-            if (blockedUnavailable) blockedUnavailable.classList.add('d-none');
-            if (trendUnavailable) trendUnavailable.classList.add('d-none');
-            if (logCardBody) logCardBody.classList.remove('dns-log-unavailable');
-            if (logUnavailable) logUnavailable.classList.add('d-none');
+            if (_stateGroups.queried.unavailable) _stateGroups.queried.unavailable.classList.add('d-none');
+            if (_stateGroups.blocked.unavailable) _stateGroups.blocked.unavailable.classList.add('d-none');
+            if (_stateGroups.trend.unavailable) _stateGroups.trend.unavailable.classList.add('d-none');
+            if (_stateEls.logCardBody) _stateEls.logCardBody.classList.remove('dns-log-unavailable');
+            if (_stateEls.logUnavailable) _stateEls.logUnavailable.classList.add('d-none');
         }
     }
 
@@ -1546,23 +1514,12 @@
     }
 
     // Adblocker dropdown event listeners
-    document.querySelectorAll('[data-adblocker-mode]').forEach(item => {
+    for (const item of document.querySelectorAll('[data-adblocker-mode]')) {
         item.addEventListener('click', function(e) {
             e.preventDefault();
             if (!isAdmin) return;
             const mode = this.getAttribute('data-adblocker-mode');
             setAdblockerMode(mode);
-        });
-    });
-
-    const adblockerMenu = document.querySelector('#adblocker-dropdown-wrap .dropdown-menu');
-    const adblockerWrap = document.getElementById('adblocker-dropdown-wrap');
-    if (adblockerMenu && adblockerWrap) {
-        adblockerWrap.addEventListener('show.bs.dropdown', () => {
-            adblockerMenu.setAttribute('aria-hidden', 'false');
-        });
-        adblockerWrap.addEventListener('hide.bs.dropdown', () => {
-            adblockerMenu.setAttribute('aria-hidden', 'true');
         });
     }
 
@@ -1596,6 +1553,10 @@
         if (document.hidden) {
             stopPolling();
             closeLogActionMenu();
+            if (_scrollRaf) {
+                cancelAnimationFrame(_scrollRaf);
+                _scrollRaf = null;
+            }
         } else {
             // Load all data in parallel
             await Promise.allSettled([
@@ -1622,7 +1583,7 @@
         attributeFilter: ['data-bs-theme'],
     });
 
-    window.addEventListener('beforeunload', () => {
+    window.addEventListener('pagehide', () => {
         stopPolling();
         _themeObserver.disconnect();
         if (_adblockerCountdownInterval) clearInterval(_adblockerCountdownInterval);
@@ -1685,6 +1646,7 @@
         // Load fresh data when peer filter changes - affects stats, logs, trend, and top domains
         peerFilterSelect.addEventListener('change', async () => {
             clearTrendCache();
+            showDnsLoadingState({ stats: true, logs: true, trend: true, topDomains: true });
             await Promise.allSettled([loadStats(), loadLogsOnly(), loadTrend(), loadTopDomains()]);
         });
     }
@@ -1694,6 +1656,7 @@
         // Reload all range-aware DNS sections when time range changes
         dnsRangeSelect.addEventListener('change', async () => {
             clearTrendCache();
+            showDnsLoadingState({ stats: true, trend: true, topDomains: true });
             await Promise.allSettled([loadStats(), loadTopDomains(), loadTrend()]);
         });
     }
@@ -1721,6 +1684,7 @@
             loadTrend(), loadLogsOnly(), loadAdblockerStatus()
         ]);
         startPolling(); // Only start polling after initial load completes
+    })();
     })();
 </script>
 {% endblock %}

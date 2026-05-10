@@ -40,13 +40,13 @@ See [API Endpoints](endpoints.md) for the runtime-generated route list.
 ## OpenAPI Documentation
 
 ```text
-https://vpn.example.com/docs
+https://vpn.example.com/swagger
 ```
 
 OpenAPI JSON:
 
 ```text
-https://vpn.example.com/openapi.json
+https://vpn.example.com/swagger/openapi.json
 ```
 
 ## Example

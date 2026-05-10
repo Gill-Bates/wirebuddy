@@ -23,6 +23,7 @@ import logging
 import os
 import random
 import signal
+import sqlite3
 import ssl
 import sys
 import time
@@ -37,6 +38,7 @@ from ..utils.async_utils import cancel_tasks as _cancel_tasks, interruptible_sle
 from ..utils.banner import print_banner_once
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
 from ..utils.speedtest_window import seconds_until_night_window as _seconds_until_night_window
+from ..utils.version import get_version
 from .cert import clear_node_cert, ensure_node_cert
 from .firewall import check_firewall_dns_rules as _check_firewall_dns_rules
 from .metrics_queue import (
@@ -52,8 +54,8 @@ from .wg_manager import apply_config, get_wg_dump, has_running_interfaces, shutd
 
 _log = logging.getLogger(__name__)
 
-SYNC_INTERVAL = int(os.environ.get("WIREBUDDY_NODE_SYNC_INTERVAL", "30"))
-SYNC_INTERVAL_FAST = int(os.environ.get("WIREBUDDY_NODE_SYNC_INTERVAL_FAST", "5"))
+SYNC_INTERVAL = max(5, int(os.environ.get("WIREBUDDY_NODE_SYNC_INTERVAL", "30")))
+SYNC_INTERVAL_FAST = max(1, int(os.environ.get("WIREBUDDY_NODE_SYNC_INTERVAL_FAST", "5")))
 ENROLLMENT_RETRY_ATTEMPTS = max(1, int(os.environ.get("WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS", "3")))
 SESSION_PROPAGATION_DELAY = 0.5  # Delay after enrollment to ensure master has committed session secret
 
@@ -367,7 +369,7 @@ async def _speedtest_scheduler(
 	while not shutdown_event.is_set():
 		try:
 			# Check if we already ran a test today
-			last_run = _read_last_speedtest_run()
+			last_run = await asyncio.to_thread(_read_last_speedtest_run)
 			now = time.time()
 			if last_run and (now - last_run) < 20 * 3600:  # Less than 20 hours ago
 				# Already ran recently, wait until next day
@@ -392,7 +394,7 @@ async def _speedtest_scheduler(
 			# Run the speedtest
 			success = await _run_node_speedtest(client, master_url, api_secret, cert_fingerprint)
 			if success:
-				_write_last_speedtest_run(time.time())
+				await asyncio.to_thread(_write_last_speedtest_run, time.time())
 			
 		except asyncio.CancelledError:
 			raise
@@ -469,7 +471,7 @@ async def main() -> None:
 	_log.info("WireBuddy Node Daemon starting...")
 
 	# Check firewall configuration
-	_check_firewall_dns_rules()
+	await asyncio.to_thread(_check_firewall_dns_rules)
 
 	DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -519,7 +521,7 @@ async def main() -> None:
 						state["node_id"],
 					)
 					state["enrollment_secret_hash"] = token_secret_hash
-					_save_state(state)
+					await asyncio.to_thread(_save_state, state)
 					payload = None  # Using existing state, no re-enrollment needed
 				elif token_secret_hash != stored_hash:
 					# Token secret changed from last enrollment
@@ -528,7 +530,7 @@ async def main() -> None:
 
 				if needs_reenroll:
 					_log.warning("Enrollment token changed: %s — clearing old state for re-enrollment", reason)
-					_clear_enrollment_state()
+					await asyncio.to_thread(_clear_enrollment_state)
 					state = None  # Force re-enrollment
 				elif payload is not None:
 					_log.info("Ignoring WIREBUDDY_ENROLLMENT_TOKEN — already enrolled with this token")
@@ -662,7 +664,7 @@ async def main() -> None:
 
 			current_config_version = current_config_version or None
 			node_state["config_version"] = current_config_version
-			_save_state(node_state)
+			await asyncio.to_thread(_save_state, node_state)
 
 			if current_config_version is None:
 				_log.info("Enrollment completed without config payload, fetching full config...")
@@ -681,17 +683,17 @@ async def main() -> None:
 					_log.exception("Unexpected error during initial config pull: %s", exc)
 				else:
 					node_state["config_version"] = current_config_version
-					_save_state(node_state)
+					await asyncio.to_thread(_save_state, node_state)
 
 			_log.info("Enrollment successful, starting sync loop")
 		else:
 			if state.get("master_ca_file") != master_ca_file:
-				_save_state(node_state)
+				await asyncio.to_thread(_save_state, node_state)
 			_log.info("Already enrolled, resuming sync loop")
 			
 			# Check if we have a cached config but no running interfaces
 			# This can happen after container restart - state is preserved but WG is down
-			if current_config_version and not has_running_interfaces():
+			if current_config_version and not await asyncio.to_thread(has_running_interfaces):
 				_log.info("Cached config version exists but no WG interfaces running — forcing full config pull")
 				current_config_version = None
 
@@ -710,7 +712,7 @@ async def main() -> None:
 					)
 					if current_config_version:
 						node_state["config_version"] = current_config_version
-						_save_state(node_state)
+						await asyncio.to_thread(_save_state, node_state)
 				except Exception as exc:
 					_log.warning("Initial config pull failed: %s", exc)
 
@@ -770,7 +772,7 @@ async def main() -> None:
 				# Check if node was removed (via SSE 401 or explicit event)
 				if node_removed_event.is_set():
 					_log.warning("Node removal detected (authentication failure) — clearing state")
-					_clear_enrollment_state()
+					await asyncio.to_thread(_clear_enrollment_state)
 					break
 				
 				_log.debug("Sync loop: iteration start")
@@ -863,7 +865,7 @@ async def main() -> None:
 						node_state["config_version"] = current_config_version
 						# Write guard: only save if state actually changed
 						if node_state != last_saved_state:
-							_save_state(node_state)
+							await asyncio.to_thread(_save_state, node_state)
 							last_saved_state = dict(node_state)
 					else:
 						_log.debug("Sync loop: config unchanged")
@@ -963,7 +965,7 @@ async def _enroll(
 		if config:
 			version = await asyncio.to_thread(apply_config, config)
 			# Check/fix firewall rules now that wg0 exists
-			_check_firewall_dns_rules()
+			await asyncio.to_thread(_check_firewall_dns_rules)
 		if session_secret:
 			_log.info("Received session secret from master (enrollment token is now invalidated)")
 		return EnrollResult(success=True, config_version=version, session_secret=session_secret)
@@ -1011,8 +1013,7 @@ async def _push_heartbeat(
 		peer_stats: Pre-built peer stats list. If None or empty, heartbeat
 		            is sent without peer stats.
 	"""
-	from ..utils.version import get_version
-	uptime = _get_uptime()
+	uptime = await asyncio.to_thread(_get_uptime)
 
 	# Get pending metrics batch from queue
 	pending_batch = await asyncio.to_thread(get_pending_batch, metrics_queue_conn)
@@ -1147,7 +1148,7 @@ async def _sse_listener(
 										return
 									elif event_type == "node_removed":
 										_log.warning("Received node_removed event from master — clearing state and exiting")
-										_clear_enrollment_state()
+										await asyncio.to_thread(_clear_enrollment_state)
 										shutdown_event.set()
 										return
 									elif event_type == "run_speedtest":
@@ -1174,7 +1175,13 @@ async def _sse_listener(
 						detail = _extract_error_detail(exc.response)
 						detail_msg = f" - {detail}" if detail else ""
 						_log.warning("SSE HTTP error: %d%s", exc.response.status_code, detail_msg)
-				except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
+				except (
+					httpx.ConnectError,
+					httpx.ReadError,
+					httpx.ReadTimeout,
+					httpx.WriteTimeout,
+					httpx.RemoteProtocolError,
+				) as exc:
 					_log.warning("SSE connection error: %s", exc)
 					# Signal SSE disconnected so sync loop switches to fast polling
 					if sse_connected_event is not None:
@@ -1233,7 +1240,7 @@ async def _pull_config(
 	new_version = await asyncio.to_thread(apply_config, config)
 	_log.info("Applied new config (version=%s...)", new_version[:16] if new_version else "none")
 	# Check/fix firewall rules now that wg0 exists
-	_check_firewall_dns_rules()
+	await asyncio.to_thread(_check_firewall_dns_rules)
 	return new_version
 
 

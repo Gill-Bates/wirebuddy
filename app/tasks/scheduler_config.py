@@ -9,12 +9,13 @@
 from __future__ import annotations
 
 import asyncio
-import collections.abc
 import logging
 import os
-from dataclasses import dataclass
+from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Awaitable
+from pathlib import Path
+from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..dns import unbound
 from . import scheduled as scheduled_tasks
@@ -28,39 +29,96 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 # Constants for scheduling intervals
-INTERVAL_ONE_MINUTE = 60.0
-INTERVAL_THIRTY_SECONDS = 30.0
 INTERVAL_FIFTEEN_SECONDS = 15.0
-INTERVAL_HOURLY = 3600.0
-INTERVAL_SIX_HOURS = 21600.0
-INTERVAL_DAILY = 86400.0
-INTERVAL_WEEKLY = 604800.0
+INTERVAL_THIRTY_SECONDS = INTERVAL_FIFTEEN_SECONDS * 2
+INTERVAL_ONE_MINUTE = INTERVAL_THIRTY_SECONDS * 2
+INTERVAL_HOURLY = INTERVAL_ONE_MINUTE * 60
+INTERVAL_SIX_HOURS = INTERVAL_HOURLY * 6
+INTERVAL_DAILY = INTERVAL_HOURLY * 24
+INTERVAL_WEEKLY = INTERVAL_DAILY * 7
 
-BACKUP_NIGHT_HOUR = 3  # Run backups at 03:00 local time
+# Run backups at 03:00 in the resolved application timezone.
+BACKUP_NIGHT_HOUR = 3
+_BLOCKLIST_STARTUP_DELAY_SECONDS = 15.0
+
+
+def _get_configured_backup_timezone() -> str:
+    """Resolve the timezone used for scheduled backup wall-clock calculations.
+
+    Resolution order mirrors the UI display path closely:
+    1. ``TZ`` environment variable
+    2. ``/etc/timezone``
+    3. ``/etc/localtime`` symlink relative to ``/usr/share/zoneinfo``
+    4. ``UTC`` fallback
+    """
+    tz_name = os.getenv("TZ", "").strip()
+    if tz_name:
+        return tz_name
+
+    tz_file = Path("/etc/timezone")
+    try:
+        tz_text = tz_file.read_text(encoding="utf-8").strip()
+        if tz_text:
+            return tz_text
+    except OSError:
+        pass
+
+    try:
+        localtime_path = Path("/etc/localtime").resolve()
+        zoneinfo_root = Path("/usr/share/zoneinfo")
+        if zoneinfo_root in localtime_path.parents:
+            return str(localtime_path.relative_to(zoneinfo_root))
+    except OSError:
+        pass
+
+    return "UTC"
+
 
 def _seconds_until_backup_time(tz: str = "UTC") -> float:
-    """Calculate seconds until next 03:00 in given timezone (default UTC)."""
+    """Return seconds until the next 03:00 wall-clock time in the given timezone.
+
+    Args:
+        tz: IANA timezone name such as ``Europe/Berlin``. Invalid values fall
+            back to UTC and emit a warning.
+
+    Returns:
+        A non-negative number of seconds until the next configured backup hour.
+        The target is advanced until it is strictly in the future, which keeps
+        DST transition days from producing a stale or negative delay.
+    """
     try:
-        from zoneinfo import ZoneInfo
         tzinfo = ZoneInfo(tz)
-    except Exception as exc:
+    except (ZoneInfoNotFoundError, ValueError) as exc:
         _log.warning("Invalid timezone %r for scheduled backup; falling back to UTC: %s", tz, exc)
         tzinfo = UTC
 
     now = datetime.now(tzinfo)
     target = now.replace(hour=BACKUP_NIGHT_HOUR, minute=0, second=0, microsecond=0)
-    if now >= target:
+    while target <= now:
         target += timedelta(days=1)
     return max(0.0, (target - now).total_seconds())
 
-def _bind(ctx: LifespanContext, coro_fn: collections.abc.Callable[[LifespanContext], Awaitable[None]]) -> collections.abc.Callable[[], Awaitable[None]]:
-    """Return a null-ary async function that calls *coro_fn* with *ctx*."""
+
+def _bind(
+    ctx: LifespanContext,
+    coro_fn: Callable[[LifespanContext], Coroutine[None, None, None]],
+) -> Callable[[], Coroutine[None, None, None]]:
+    """Bind ``ctx`` to a context-aware async task function.
+
+    Returns a zero-argument async callable compatible with the scheduler's job
+    interface.
+    """
     async def _wrapper() -> None:
         await coro_fn(ctx)
     return _wrapper
 
+
 async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None:
-    """Register all scheduled tasks based on current configuration."""
+    """Register all background jobs for the application scheduler.
+
+    This performs startup-side configuration reads and lightweight environment
+    inspection before mutating ``scheduler`` with the full job set.
+    """
     
     # Needs to import this specific function directly to avoid circular / heavy imports
     from ..main import _read_blocklist_enabled_sync
@@ -75,8 +133,8 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
     if blocklist_enabled_startup:
         try:
             blocklist_run_on_start = unbound.get_blocklist_count() <= 0
-        except Exception:
-            _log.warning("BLOCKLIST_STARTUP could not inspect local blocklist; scheduling startup update")
+        except Exception as exc:
+            _log.warning("BLOCKLIST_STARTUP could not inspect local blocklist (%s); scheduling startup update", exc)
             blocklist_run_on_start = True
             
         if blocklist_run_on_start:
@@ -84,7 +142,12 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
         else:
             min_delay_h = (INTERVAL_DAILY * (1.0 - blocklist_jitter_pct)) / 3600.0
             max_delay_h = (INTERVAL_DAILY * (1.0 + blocklist_jitter_pct)) / 3600.0
-            _log.info("BLOCKLIST_STARTUP cached blocklist found - deferring first update to %.1f-%.1f hours (interval=24h, jitter=±10%%)", min_delay_h, max_delay_h)
+            _log.info(
+                "BLOCKLIST_STARTUP cached blocklist found - deferring first update to %.1f-%.1f hours (interval=24h, jitter=±%.0f%%)",
+                min_delay_h,
+                max_delay_h,
+                blocklist_jitter_pct * 100,
+            )
     else:
         if unbound_installed:
             _log.info("BLOCKLIST_STARTUP skipped: ad-blocker is disabled")
@@ -92,7 +155,7 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
             _log.info("BLOCKLIST_STARTUP skipped: Unbound not installed")
 
     if unbound_installed:
-        blocklist_initial_delay = 15.0 if blocklist_run_on_start else 0.0
+        blocklist_initial_delay = _BLOCKLIST_STARTUP_DELAY_SECONDS if blocklist_run_on_start else 0.0
         scheduler.add(
             "blocklist-update",
             interval_seconds=INTERVAL_DAILY,
@@ -204,7 +267,7 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
         )
 
     # 8. Speedtest
-    initial_speedtest_delay, hours_since_last, speedtest_overdue = await scheduled_tasks.get_speedtest_initial_delay(ctx.cfg.db_path, ctx.cfg.tsdb_dir)
+    initial_speedtest_delay, hours_since_last, speedtest_overdue = await scheduled_tasks.get_speedtest_initial_delay(ctx.cfg.db_path)
     if hours_since_last is not None:
         if speedtest_overdue:
             _log.warning("SPEEDTEST_SCHEDULER last run was %.1f hours ago (>36h) - missed tests detected!", hours_since_last)
@@ -214,8 +277,7 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
         _log.info("SPEEDTEST_SCHEDULER no previous run recorded")
 
     if initial_speedtest_delay > 0:
-        from datetime import datetime as dt, timedelta
-        scheduled_time = dt.now() + timedelta(seconds=initial_speedtest_delay)
+        scheduled_time = datetime.now() + timedelta(seconds=initial_speedtest_delay)
         _log.info("SPEEDTEST_SCHEDULER first run in %.1f hours (at ~%s)", initial_speedtest_delay / 3600, scheduled_time.strftime("%H:%M"))
 
     scheduler.add(
@@ -229,7 +291,8 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
     )
 
     # 9. Backup
-    initial_backup_delay = _seconds_until_backup_time(os.environ.get("TZ", "UTC"))
+    backup_timezone = await asyncio.to_thread(_get_configured_backup_timezone)
+    initial_backup_delay = await asyncio.to_thread(_seconds_until_backup_time, backup_timezone)
     _log.info("SCHEDULED_BACKUP first run in %.1f hours (at ~%02d:00)", initial_backup_delay / 3600, BACKUP_NIGHT_HOUR)
     
     scheduler.add(

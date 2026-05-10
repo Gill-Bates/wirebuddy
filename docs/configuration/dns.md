@@ -363,12 +363,23 @@ The blocklist file can be large (~10-50 MB). To reduce memory:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/api/dns/adblocker/status` | GET | Read current ad-blocker state and active disable timer |
 | `/api/dns/status` | GET | DNS status and statistics |
 | `/api/dns/config` | GET/POST | DNS configuration |
+| `/api/dns/test-upstream` | POST | Validate upstream DNS-over-TLS server reachability |
 | `/api/dns/blocklist/sources` | GET/POST | Blocklist selection |
+| `/api/dns/blocklist/count` | GET | Get current blocklist domain count |
+| `/api/dns/blocklist/update` | POST | Trigger a blocklist refresh |
 | `/api/dns/custom-rules` | GET/PATCH | Custom rules management |
+| `/api/dns/custom-rules/actions` | POST | Apply bulk custom-rule actions |
 | `/api/dns/adblocker/mode` | POST | Change ad-blocker mode |
 | `/api/dns/logs` | GET | Query log data |
+| `/api/dns/logs` | DELETE | Purge stored DNS query logs |
+| `/api/dns/storage` | GET | Inspect DNS log and TSDB storage usage |
+| `/api/dns/selftest` | GET | Run DNS health checks |
+| `/api/dns/restart` | POST | Restart the DNS service |
+| `/api/dns/start` | POST | Start the DNS service |
+| `/api/dns/stop` | POST | Stop the DNS service |
 
 See [API Documentation](../api/endpoints.md#dns) for full details.
 

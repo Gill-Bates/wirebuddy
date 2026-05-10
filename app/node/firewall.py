@@ -15,6 +15,7 @@ _log = logging.getLogger(__name__)
 
 __all__ = ["check_firewall_dns_rules"]
 
+
 def check_firewall_dns_rules(iface: str = "wg0") -> None:
     """Check if firewall allows DNS traffic on wireguard interface and fix if possible.
     
@@ -39,7 +40,14 @@ def check_firewall_dns_rules(iface: str = "wg0") -> None:
         if result.returncode != 0:
             _log.debug("%s interface not yet present, deferring firewall check", iface)
             return
-    except Exception:
+    except subprocess.TimeoutExpired:
+        _log.warning("Timed out checking whether interface %s exists", iface)
+        return
+    except PermissionError:
+        _log.warning("Permission denied while checking interface %s for firewall DNS rules", iface)
+        return
+    except Exception as exc:
+        _log.warning("Failed to inspect interface %s before firewall DNS check: %s", iface, exc)
         return
     
     try:
@@ -76,11 +84,11 @@ def check_firewall_dns_rules(iface: str = "wg0") -> None:
             _log.debug("Firewall: DNS rules already present for %s", iface)
         
     except subprocess.TimeoutExpired:
-        _log.debug("iptables check timed out")
+        _log.warning("Timed out while checking or applying firewall DNS rules for %s", iface)
     except PermissionError:
         _log.warning(
             "⚠️ Cannot check/fix firewall rules (permission denied). "
             "DNS may not work for clients."
         )
     except Exception as exc:
-        _log.debug("Firewall check failed: %s", exc)
+        _log.warning("Firewall DNS rule check failed for %s: %s", iface, exc)

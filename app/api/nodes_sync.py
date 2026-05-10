@@ -20,7 +20,8 @@ import logging
 from pathlib import Path
 import sqlite3
 import time
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -50,7 +51,7 @@ from ..db.sqlite_nodes import (
 )
 from ..db.sqlite_peers import allocate_peer_ip, get_peer_by_id, update_peers_last_seen_batch
 from ..db.sqlite_peers_mutations import create_peer
-from ..db.sqlite_runtime import connect, close_connection, transaction
+from ..db.sqlite_runtime import thread_connection, transaction
 from ..db.sqlite_settings import set_node_speedtest_last_result
 
 from ..utils.config import get_config
@@ -75,9 +76,13 @@ _ALLOWED_SSE_COMMANDS = frozenset({"config_changed", "restart", "speedtest"})
 _PENDING_CMD_EVENT_TYPE: dict[str, str] = {
     "config_changed": "config_changed",
     "restart": "restart_requested",
-    "speedtest": "speedtest_requested",
+	"speedtest": "run_speedtest",
 }
 _SSE_CONNECTED_DB_UPDATE_INTERVAL_S = 60.0
+_NODE_RATE_LIMIT_POLL = "600/minute"
+_NODE_RATE_LIMIT_EVENTS = "300/minute"
+_NODE_RATE_LIMIT_PROGRESS = "1800/minute"
+_NODE_SPEEDTEST_PROGRESS_MAX_AGE_SECONDS = 300.0
 T = TypeVar("T")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -90,6 +95,7 @@ T = TypeVar("T")
 # In multi-worker deployments, progress submitter and SSE client may hit
 # different workers and miss updates.
 _node_speedtest_progress: dict[str, dict[str, Any]] = {}
+_progress_lock = asyncio.Lock()
 
 
 def _new_speedtest_progress_state() -> dict[str, Any]:
@@ -101,15 +107,16 @@ def _new_speedtest_progress_state() -> dict[str, Any]:
 	}
 
 
-def _get_progress_lock() -> asyncio.Lock:
-	"""Get a per-event-loop lock for speedtest progress state."""
-	loop = asyncio.get_running_loop()
-	lock = getattr(loop, "_wirebuddy_nodes_progress_lock", None)
-	if isinstance(lock, asyncio.Lock):
-		return lock
-	lock = asyncio.Lock()
-	setattr(loop, "_wirebuddy_nodes_progress_lock", lock)
-	return lock
+def _prune_stale_progress_locked(now: float) -> None:
+	"""Drop stale node progress entries that no longer have live subscribers."""
+	cutoff = now - _NODE_SPEEDTEST_PROGRESS_MAX_AGE_SECONDS
+	stale_node_ids = [
+		node_id
+		for node_id, state in _node_speedtest_progress.items()
+		if not state["queues"] and float(state.get("timestamp") or 0.0) < cutoff
+	]
+	for node_id in stale_node_ids:
+		del _node_speedtest_progress[node_id]
 
 
 async def register_speedtest_progress_queue(
@@ -120,7 +127,8 @@ async def register_speedtest_progress_queue(
 
 	Returns the latest progress event for the node, if one exists.
 	"""
-	async with _get_progress_lock():
+	async with _progress_lock:
+		_prune_stale_progress_locked(time.time())
 		state = _node_speedtest_progress.setdefault(node_id, _new_speedtest_progress_state())
 		state["queues"].append(queue)
 		progress = state.get("progress")
@@ -132,7 +140,7 @@ async def unregister_speedtest_progress_queue(
 	queue: asyncio.Queue[dict[str, Any]],
 ) -> None:
 	"""Unregister an SSE queue from node speedtest progress updates."""
-	async with _get_progress_lock():
+	async with _progress_lock:
 		state = _node_speedtest_progress.get(node_id)
 		if state is None:
 			return
@@ -142,6 +150,7 @@ async def unregister_speedtest_progress_queue(
 			pass
 		if not state["queues"] and _node_speedtest_progress.get(node_id) is state:
 			del _node_speedtest_progress[node_id]
+		_prune_stale_progress_locked(time.time())
 
 
 def _get_socket_ip(request: Request) -> str | None:
@@ -203,11 +212,8 @@ async def _run_with_short_lived_conn(
 ) -> T:
 	"""Run a DB operation in a thread using a short-lived connection."""
 	def _exec():
-		thread_conn = connect(db_path)
-		try:
+		with thread_connection(db_path) as thread_conn:
 			return fn(thread_conn, *args)
-		finally:
-			close_connection(thread_conn)
 
 	return await run_in_threadpool(_exec)
 
@@ -253,6 +259,124 @@ def _is_https_best_effort(request: Request) -> bool:
 	except HTTPException as exc:
 		_log.warning("Could not determine HTTPS state for enrollment transport: %s", exc.detail)
 		return False
+
+
+def _recover_node_enrollment_sync(
+	conn: sqlite3.Connection,
+	node_id: str,
+	fingerprint: str,
+	session_secret: str,
+) -> dict[str, Any]:
+	"""Complete recovery enrollment inside a single blocking DB section."""
+	with transaction(conn, immediate=True):
+		fresh_node = get_node(conn, node_id)
+		if fresh_node is None:
+			raise HTTPException(status_code=404, detail="Enrollment token invalid or node deleted")
+
+		if fresh_node["status"] == "pending":
+			raise HTTPException(status_code=409, detail="Node enrollment state changed, retry enrollment")
+
+		stored_fingerprint = fresh_node["cert_fingerprint"]
+		if not (stored_fingerprint and hmac.compare_digest(fingerprint, stored_fingerprint)):
+			_log.warning(
+				"Node enrollment rejected: id=%s already enrolled with different certificate "
+				"(stored=%s..., request=%s...)",
+				node_id,
+				(stored_fingerprint or "none")[:16],
+				fingerprint[:16],
+			)
+			raise HTTPException(status_code=409, detail="Node already enrolled")
+
+		if not rotate_node_session_secret(conn, node_id, hash_token(session_secret)):
+			raise HTTPException(status_code=409, detail="Node is pending and cannot use recovery enrollment")
+		bump_node_config_version(conn, node_id)
+
+	return get_node_config(conn, node_id)
+
+
+def _enroll_pending_node_sync(
+	conn: sqlite3.Connection,
+	node_id: str,
+	node_name: str,
+	tunnel_peer_id_hint: int | None,
+	fingerprint: str,
+	keypairs: list[tuple[str, tuple[str, str]]],
+	session_secret: str,
+) -> tuple[tuple[str, str, str, str | None] | None, dict[str, Any]]:
+	"""Enroll a pending node and return tunnel update info plus rendered config."""
+	tunnel_info: tuple[str, str, str, str | None] | None = None
+
+	with transaction(conn, immediate=True):
+		if not enroll_node(conn, node_id, fingerprint):
+			raise HTTPException(status_code=409, detail="Node already enrolled")
+
+		for iface_name, (privkey, pubkey) in keypairs:
+			create_node_interface(conn, node_id, iface_name, privkey, pubkey)
+
+		if keypairs:
+			first_iface_name, (_, first_pubkey) = keypairs[0]
+			existing_tunnel_peer = None
+			if tunnel_peer_id_hint:
+				existing_tunnel_peer = get_peer_by_id(conn, int(tunnel_peer_id_hint))
+
+			if existing_tunnel_peer and existing_tunnel_peer["peer_address"]:
+				old_pubkey = str(existing_tunnel_peer["public_key"] or "")
+				tunnel_iface = str(existing_tunnel_peer["interface"] or first_iface_name)
+				tunnel_allowed_ips = str(existing_tunnel_peer["allowed_ips"] or existing_tunnel_peer["peer_address"])
+
+				conn.execute(
+					"""
+					UPDATE peers
+					SET public_key = ?,
+					    name = ?,
+					    use_adblocker = 0,
+					    dns_logging_enabled = 0
+					WHERE id = ?
+					""",
+					(first_pubkey, f"[Node] {node_name}", int(existing_tunnel_peer["id"])),
+				)
+				set_node_tunnel_peer(conn, node_id, int(existing_tunnel_peer["id"]))
+				tunnel_info = (
+					tunnel_iface,
+					first_pubkey,
+					tunnel_allowed_ips,
+					old_pubkey if old_pubkey and old_pubkey != first_pubkey else None,
+				)
+				_log.info(
+					"Reused tunnel peer for node=%s, peer_id=%d, address=%s",
+					node_id,
+					int(existing_tunnel_peer["id"]),
+					existing_tunnel_peer["peer_address"],
+				)
+			else:
+				tunnel_address = allocate_peer_ip(conn, first_iface_name)
+				if tunnel_address:
+					new_tunnel_peer_id = create_peer(
+						conn,
+						public_key=first_pubkey,
+						allowed_ips=tunnel_address,
+						name=f"[Node] {node_name}",
+						interface=first_iface_name,
+						peer_address=tunnel_address,
+						allowed_ips_mode="custom",
+						use_adblocker=False,
+						dns_logging_enabled=False,
+					)
+					set_node_tunnel_peer(conn, node_id, new_tunnel_peer_id)
+					tunnel_info = (first_iface_name, first_pubkey, tunnel_address, None)
+					_log.info(
+						"Created tunnel peer for node=%s, peer_id=%d, address=%s",
+						node_id,
+						new_tunnel_peer_id,
+						tunnel_address,
+					)
+				else:
+					_log.warning("Could not allocate tunnel address for node=%s (pool exhausted?)", node_id)
+
+		bump_node_config_version(conn, node_id)
+		rotate_node_session_secret(conn, node_id, hash_token(session_secret))
+
+	return tunnel_info, get_node_config(conn, node_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -385,7 +509,7 @@ async def enroll_node_endpoint(
 	api_secret = payload["api_secret"]
 
 	# Verify node exists
-	node = get_node(conn, node_id)
+	node = await run_in_threadpool(get_node, conn, node_id)
 	if node is None:
 		raise HTTPException(status_code=404, detail="Enrollment token invalid or node deleted")
 
@@ -403,34 +527,18 @@ async def enroll_node_endpoint(
 	# Instead, verify the certificate fingerprint matches what we stored.
 	if node["status"] != "pending":
 		session_secret = new_token()
-		with transaction(conn, immediate=True):
-			fresh_node = get_node(conn, node_id)
-			if fresh_node is None:
-				raise HTTPException(status_code=404, detail="Enrollment token invalid or node deleted")
-
-			if fresh_node["status"] == "pending":
-				raise HTTPException(status_code=409, detail="Node enrollment state changed, retry enrollment")
-
-			stored_fingerprint = fresh_node["cert_fingerprint"]
-			if not (stored_fingerprint and hmac.compare_digest(fingerprint, stored_fingerprint)):
-				_log.warning(
-					"Node enrollment rejected: id=%s already enrolled with different certificate "
-					"(stored=%s..., request=%s...)",
-					node_id,
-					(stored_fingerprint or "none")[:16],
-					fingerprint[:16],
-				)
-				raise HTTPException(status_code=409, detail="Node already enrolled")
-
-			if not rotate_node_session_secret(conn, node_id, hash_token(session_secret)):
-				raise HTTPException(status_code=409, detail="Node is pending and cannot use recovery enrollment")
-			bump_node_config_version(conn, node_id)
+		config = await run_in_threadpool(
+			_recover_node_enrollment_sync,
+			conn,
+			node_id,
+			fingerprint,
+			session_secret,
+		)
 
 		_log.info(
 			"Node re-enrollment recovery: id=%s, name=%s — same certificate, rotating session secret",
 			node_id, node["name"],
 		)
-		config = get_node_config(conn, node_id)
 		_warn_if_not_https(request, node_id, context="Enrollment recovery")
 		config["session_secret"] = session_secret
 		return ok_response(data=config)
@@ -441,7 +549,7 @@ async def enroll_node_endpoint(
 		raise HTTPException(status_code=401, detail="API secret mismatch")
 
 	# Generate keypairs BEFORE transaction (async + SQLite = race condition risk)
-	interfaces = list_interfaces(conn)
+	interfaces = await run_in_threadpool(list_interfaces, conn)
 	keypairs = list(zip(
 		[iface["name"] for iface in interfaces],
 		await asyncio.gather(*(generate_keypair() for _ in interfaces)),
@@ -449,83 +557,17 @@ async def enroll_node_endpoint(
 
 	# Enroll atomically — status check, keypairs, tunnel peer, secret rotation,
 	# and config-version bump all commit together or not at all.
-	session_secret = ""
-	tunnel_peer_id = None
-	tunnel_info = None  # (interface, new_pubkey, allowed_ips, old_pubkey_to_remove)
-	with transaction(conn, immediate=True):
-		# Definitive serialised pending check inside the IMMEDIATE lock
-		if not enroll_node(conn, node_id, fingerprint):
-			raise HTTPException(status_code=409, detail="Node already enrolled")
-
-		for iface_name, (privkey, pubkey) in keypairs:
-			create_node_interface(conn, node_id, iface_name, privkey, pubkey)
-
-		# Create tunnel peer on master for Node→Master DNS routing
-		# Use the first interface's keypair for the tunnel
-		if keypairs:
-			first_iface_name, (_, first_pubkey) = keypairs[0]
-			existing_tunnel_peer = None
-			if node["tunnel_peer_id"]:
-				existing_tunnel_peer = get_peer_by_id(conn, int(node["tunnel_peer_id"]))
-
-			if existing_tunnel_peer and existing_tunnel_peer["peer_address"]:
-				tunnel_peer_id = int(existing_tunnel_peer["id"])
-				old_pubkey = str(existing_tunnel_peer["public_key"] or "")
-				tunnel_iface = str(existing_tunnel_peer["interface"] or first_iface_name)
-				tunnel_allowed_ips = str(existing_tunnel_peer["allowed_ips"] or existing_tunnel_peer["peer_address"])
-
-				conn.execute(
-					"""
-					UPDATE peers
-					SET public_key = ?,
-					    name = ?,
-					    use_adblocker = 0,
-					    dns_logging_enabled = 0
-					WHERE id = ?
-					""",
-					(first_pubkey, f"[Node] {node['name']}", tunnel_peer_id),
-				)
-				set_node_tunnel_peer(conn, node_id, tunnel_peer_id)
-				tunnel_info = (
-					tunnel_iface,
-					first_pubkey,
-					tunnel_allowed_ips,
-					old_pubkey if old_pubkey and old_pubkey != first_pubkey else None,
-				)
-				_log.info(
-					"Reused tunnel peer for node=%s, peer_id=%d, address=%s",
-					node_id,
-					tunnel_peer_id,
-					existing_tunnel_peer["peer_address"],
-				)
-			else:
-				tunnel_address = allocate_peer_ip(conn, first_iface_name)
-				if tunnel_address:
-					tunnel_peer_id = create_peer(
-						conn,
-						public_key=first_pubkey,
-						allowed_ips=tunnel_address,  # Node can only access its own IP on master
-						name=f"[Node] {node['name']}",
-						interface=first_iface_name,
-						peer_address=tunnel_address,
-						allowed_ips_mode="custom",
-						use_adblocker=False,  # No DNS filtering for node tunnel
-						dns_logging_enabled=False,  # No DNS logging for node tunnel
-					)
-					set_node_tunnel_peer(conn, node_id, tunnel_peer_id)
-					tunnel_info = (first_iface_name, first_pubkey, tunnel_address, None)
-					_log.info("Created tunnel peer for node=%s, peer_id=%d, address=%s", node_id, tunnel_peer_id, tunnel_address)
-				else:
-					_log.warning("Could not allocate tunnel address for node=%s (pool exhausted?)", node_id)
-
-		bump_node_config_version(conn, node_id)
-
-		# ── Secret rotation: make the enrollment token single-use ──
-		# Generate a fresh session secret inside the atomic transaction
-		session_secret = new_token()
-		session_hash = hash_token(session_secret)
-		rotate_node_session_secret(conn, node_id, session_hash)
-		_log.debug("Rotated session secret for node=%s, new_hash=%s...", node_id, session_hash[:8])
+	session_secret = new_token()
+	tunnel_info, config = await run_in_threadpool(
+		_enroll_pending_node_sync,
+		conn,
+		node_id,
+		str(node["name"]),
+		int(node["tunnel_peer_id"]) if node["tunnel_peer_id"] else None,
+		fingerprint,
+		keypairs,
+		session_secret,
+	)
 
 	# Add tunnel peer to master's WireGuard (outside transaction)
 	warning_msg = None
@@ -556,7 +598,6 @@ async def enroll_node_endpoint(
 
 	_log.info("Rotated API secret for node=%s (enrollment token invalidated)", node_id)
 
-	config = get_node_config(conn, node_id)
 	_warn_if_not_https(request, node_id, context="Enrollment")
 	config["session_secret"] = session_secret  # One-time delivery over TLS
 	if warning_msg:
@@ -583,7 +624,12 @@ def _process_heartbeat(
 	node: sqlite3.Row,
 	body: HeartbeatRequest,
 ) -> dict:
-	"""Sync core of the heartbeat handler, safe to run in a threadpool worker."""
+	"""Persist heartbeat metadata, peer stats, and queued metrics for one node.
+
+	Heartbeat metadata and peer last-seen updates are idempotent. If TSDB metric
+	writes fail later in the function, the node is intentionally not acked so it
+	can retry the metrics batch on the next heartbeat.
+	"""
 	node_id = node["id"]
 
 	metadata = {}
@@ -647,7 +693,9 @@ def _process_heartbeat(
 				)
 			except Exception:
 				_log.warning("Failed to write TSDB metrics from node %s", node_id, exc_info=True)
-				# Do NOT ack — node will retry on next heartbeat.
+					# Heartbeat metadata and peer stats are idempotent, so a node retry is
+					# safe even though those writes already happened above.
+					# Do NOT ack — node will retry on next heartbeat.
 				return {"acked_seq": None, "failed": True}
 
 		if batch.seq_to is not None:
@@ -658,7 +706,9 @@ def _process_heartbeat(
 
 
 @router.post("/heartbeat")
+@limiter.limit(_NODE_RATE_LIMIT_POLL)
 async def heartbeat(
+	request: Request,
 	body: HeartbeatRequest,
 	node: sqlite3.Row = Depends(get_current_node),
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -674,6 +724,7 @@ async def heartbeat(
 	- Skips already-processed sequences (idempotency)
 	- Returns acked_seq to confirm receipt
 	"""
+	_ = request
 	result = await run_in_threadpool(_process_heartbeat, conn, tsdb_dir, node, body)
 
 	if result["failed"]:
@@ -693,7 +744,9 @@ async def heartbeat(
 
 
 @router.get("/config")
+@limiter.limit(_NODE_RATE_LIMIT_POLL)
 def get_config_endpoint(
+	request: Request,
 	version: str | None = None,
 	node: sqlite3.Row = Depends(get_current_node),
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -703,6 +756,7 @@ def get_config_endpoint(
 	If ``version`` matches the current ``config_version``, returns an
 	unchanged response with ``data=None`` for node-daemon compatibility.
 	"""
+	_ = request
 	node_id = node["id"]
 
 	# ETag-style: skip full payload if version matches
@@ -721,22 +775,21 @@ def get_config_endpoint(
 
 
 @router.get("/events")
+@limiter.limit(_NODE_RATE_LIMIT_EVENTS)
 async def node_events(
 	request: Request,
 	node: sqlite3.Row = Depends(get_current_node),
 ):
-	"""Server-Sent Events stream for real-time config change notifications.
+	"""Server-Sent Events stream for real-time node commands.
 
-	Nodes subscribe to this endpoint to receive instant push notifications
-	when their configuration changes (e.g., new peer added). This eliminates
-	the 30-second polling delay.
+	Nodes subscribe to receive push notifications for:
+	- ``config_changed``: pull updated config via ``GET /api/nodes/config``
+	- ``restart_requested``: restart the node service gracefully
+	- ``run_speedtest``: trigger an on-demand speedtest
 
 	Event format:
-		event: config_changed
-		data: <new_config_version>
-
-	The node should pull the full config via GET /api/nodes/config after
-	receiving an event.
+		event: <command_name>
+		data: <payload>
 	"""
 	node_id = node["id"]
 	db_path = request.app.state.db_path
@@ -831,11 +884,14 @@ class SpeedtestProgressEvent(BaseModel):
 
 
 @router.post("/speedtest/progress")
+@limiter.limit(_NODE_RATE_LIMIT_PROGRESS)
 async def submit_node_speedtest_progress(
+	request: Request,
 	body: SpeedtestProgressEvent,
 	node: sqlite3.Row = Depends(get_current_node),
 ):
 	"""Receive speedtest progress update from a node and broadcast to SSE clients."""
+	_ = request
 	node_id = node["id"]
 	
 	event_data = {
@@ -846,7 +902,8 @@ async def submit_node_speedtest_progress(
 	if body.detail:
 		event_data["detail"] = body.detail
 	
-	async with _get_progress_lock():
+	async with _progress_lock:
+		_prune_stale_progress_locked(time.time())
 		state = _node_speedtest_progress.setdefault(
 			node_id,
 			_new_speedtest_progress_state(),
@@ -874,7 +931,9 @@ class SpeedtestSubmission(BaseModel):
 
 
 @router.post("/speedtest")
+@limiter.limit(_NODE_RATE_LIMIT_POLL)
 def submit_node_speedtest(
+	request: Request,
 	body: SpeedtestSubmission,
 	node: sqlite3.Row = Depends(get_current_node),
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -884,6 +943,7 @@ def submit_node_speedtest(
 	
 	The result is tagged with node_id to distinguish from master speedtests.
 	"""
+	_ = request
 	node_id = node["id"]
 	node_name = node["name"]
 	
@@ -914,10 +974,9 @@ def submit_node_speedtest(
 	if body.server:
 		result["server"] = body.server
 
-	# Resolve country_code: prefer submitted value, fall back to master-side GeoIP lookup
+	# Resolve country_code: prefer submitted value, fall back to GeoIP lookup
 	country_code = (body.country_code or "").strip().lower() or None
 	if not country_code and body.server_url:
-		from ..utils.geoip import resolve_country_from_url as _resolve_country_from_url
 		country_code = _resolve_country_from_url(body.server_url)
 	if country_code:
 		result["country_code"] = country_code
@@ -941,7 +1000,7 @@ def submit_node_speedtest(
 		)
 	except Exception as exc:
 		_log.error("Failed to persist node speedtest: %s", exc)
-		raise HTTPException(status_code=500, detail="Failed to persist speedtest result") from None
+		raise HTTPException(status_code=500, detail="Failed to persist speedtest result") from exc
 
 	try:
 		set_node_speedtest_last_result(conn, node_id, result)

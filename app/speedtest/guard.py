@@ -19,7 +19,7 @@ import logging
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
@@ -64,16 +64,25 @@ def _read_last_run(path: Path) -> float | None:
     """Read last run timestamp from cooldown file with validation."""
     try:
         value = path.read_text(encoding="utf-8").strip()
-        if not value:
-            return None
-        ts = float(value)
-        now = time.time()
-        # Reject invalid timestamps
-        if not (0 < ts <= now + _CLOCK_SKEW_TOLERANCE_S):
-            return None
-        return ts
-    except (FileNotFoundError, OSError, ValueError):
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        _log.warning("Unexpected error reading cooldown file %s: %s", path, exc)
+        return None
+
+    if not value:
+        return None
+
+    try:
+        ts = float(value)
+    except ValueError:
+        return None
+
+    now = time.time()
+    # Reject invalid timestamps
+    if not (0 < ts <= now + _CLOCK_SKEW_TOLERANCE_S):
+        return None
+    return ts
 
 
 def _write_last_run(path: Path, timestamp: float) -> None:
@@ -87,7 +96,7 @@ def _write_last_run(path: Path, timestamp: float) -> None:
     os.replace(tmp, path)
 
 
-@dataclass(eq=False, repr=False)
+@dataclass(eq=False, repr=False, slots=True)
 class SpeedtestRunLease:
     """Active speedtest run lease backed by cross-layer locks."""
 
@@ -95,6 +104,29 @@ class SpeedtestRunLease:
     cooldown_path: Path | None = None
     released: bool = False
     _async_acquired: bool = False
+    _owns_thread_lock: bool = False
+
+    def _persist_cooldown(self) -> None:
+        if not self.cooldown_path:
+            return
+        try:
+            _write_last_run(self.cooldown_path, time.time())
+        except OSError as exc:
+            _log.warning("Failed to write cooldown timestamp: %s", exc)
+
+    def _close_fd(self) -> None:
+        try:
+            self.fd_obj.close()
+        except OSError:
+            pass
+
+    def _release_thread_lock(self) -> None:
+        if not self._owns_thread_lock:
+            return
+        try:
+            _local_thread_lock.release()
+        except RuntimeError as exc:
+            _log.warning("Failed to release speedtest thread lock: %s", exc)
 
     def release(self) -> None:
         """Release the lease (sync version)."""
@@ -103,23 +135,13 @@ class SpeedtestRunLease:
         self.released = True
 
         # 1. Record cooldown
-        if self.cooldown_path:
-            try:
-                _write_last_run(self.cooldown_path, time.time())
-            except OSError as exc:
-                _log.warning("Failed to write cooldown timestamp: %s", exc)
+        self._persist_cooldown()
 
         # 2. Release fcntl lock
-        try:
-            self.fd_obj.close()
-        except OSError:
-            pass
+        self._close_fd()
 
         # 3. Release thread lock
-        try:
-            _local_thread_lock.release()
-        except RuntimeError:
-            pass
+        self._release_thread_lock()
             
         # Note: asyncio.Lock must be released via 'async with' or manual release()
         # if acquired. This class handles it in __aexit__.
@@ -128,7 +150,8 @@ class SpeedtestRunLease:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
-        self.release()
+        if not self.released:
+            await asyncio.to_thread(self.release)
         if self._async_acquired:
             _local_async_lock.release()
 
@@ -143,8 +166,8 @@ class SpeedtestRunLease:
             try:
                 loop = asyncio.get_running_loop()
                 loop.call_soon_threadsafe(_local_async_lock.release)
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                _log.error("Cannot release async speedtest lock from sync context: %s", exc)
 
 
 def acquire_speedtest_run_lease(
@@ -182,6 +205,7 @@ def acquire_speedtest_run_lease(
         return SpeedtestRunLease(
             fd_obj=fd_obj,
             cooldown_path=_cooldown_path(tsdb_dir) if update_cooldown else None,
+            _owns_thread_lock=True,
         )
     except Exception:
         if fd_obj and not fd_obj.closed:

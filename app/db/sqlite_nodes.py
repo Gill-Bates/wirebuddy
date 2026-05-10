@@ -35,6 +35,7 @@ _MIN_PORT = 1
 STATUS_PENDING = "pending"
 STATUS_ONLINE = "online"
 STATUS_OFFLINE = "offline"
+STATUS_ERROR = "error"
 
 # FQDN validation: RFC 1123 compliant hostname/domain
 _FQDN_RE = re.compile(
@@ -84,6 +85,7 @@ def _canonicalize_fqdn_or_ip(fqdn: str) -> str:
 	- Hostnames are lowercased (DNS is case-insensitive).
 	- IPv4 is stored compressed.
 	- IPv6 is stored bracketed and compressed.
+	- Bracketed IPv6 input is accepted and normalized.
 	"""
 	fqdn = fqdn.strip()
 	_validate_fqdn_or_ip(fqdn)
@@ -93,6 +95,11 @@ def _canonicalize_fqdn_or_ip(fqdn: str) -> str:
 	return f"[{addr.compressed}]" if addr.version == 6 else addr.compressed
 
 
+def _resolve_pepper(pepper: str | None) -> str:
+	"""Return the provided pepper or fall back to the configured secret key."""
+	return pepper if pepper is not None else get_config().secret_key
+
+
 def _validate_port(port: int) -> None:
 	"""Validate port is in valid range."""
 	if not (_MIN_PORT <= port <= _MAX_PORT):
@@ -100,8 +107,7 @@ def _validate_port(port: int) -> None:
 
 
 def _validate_name(name: str) -> None:
-	"""Validate node name is non-empty and properly formatted."""
-	name = name.strip()
+	"""Validate a normalized node name."""
 	if not name:
 		raise ValueError("Node name cannot be empty")
 	if len(name) > 63:
@@ -155,10 +161,7 @@ def get_node_by_name(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
 def get_node_by_fqdn(conn: sqlite3.Connection, fqdn: str) -> sqlite3.Row | None:
 	"""Fetch a single node by FQDN."""
 	normalized = _canonicalize_fqdn_or_ip(fqdn)
-	return conn.execute(
-		"SELECT * FROM nodes WHERE fqdn = ? COLLATE NOCASE",
-		(normalized,),
-	).fetchone()
+	return conn.execute("SELECT * FROM nodes WHERE fqdn = ?", (normalized,)).fetchone()
 
 
 def get_all_nodes(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -180,6 +183,7 @@ def update_node(
 	name: str | None = None,
 	fqdn: str | None = None,
 	wg_port: int | None = None,
+	show_on_dashboard: bool | None = None,
 ) -> bool:
 	"""Update mutable node fields. Returns True if found and updated."""
 	updates: list[str] = []
@@ -198,6 +202,9 @@ def update_node(
 		_validate_port(wg_port)
 		updates.append("wg_port = ?")
 		params.append(wg_port)
+	if show_on_dashboard is not None:
+		updates.append("show_on_dashboard = ?")
+		params.append(int(show_on_dashboard))
 
 	if not updates:
 		return False  # No changes requested
@@ -210,16 +217,14 @@ def update_node(
 
 
 def delete_node(conn: sqlite3.Connection, node_id: str) -> int | None:
-	"""Delete a node and return the number of peer assignments removed.
+	"""Delete a node and return the prior number of assigned peers.
 
-	The tunnel peer (created during enrollment for Node→Master DNS routing)
-	is deleted along with the node. Regular peers assigned to this node have
-	their node_id set to NULL (ON DELETE SET NULL).
+	Schema-side effects:
+	- ``node_interfaces`` rows are removed via ``ON DELETE CASCADE``.
+	- ``peers.node_id`` is set to ``NULL`` via ``ON DELETE SET NULL``.
 
-	Also removes node_interfaces rows (ON DELETE CASCADE).
-	Returns:
-		- int: number of peers that had this node assigned before deletion
-		- None: node does not exist
+	The node tunnel peer, if present, is explicitly deleted before the node.
+	Returns ``None`` if the node does not exist.
 	"""
 	with transaction(conn, immediate=True):
 		row = conn.execute(
@@ -229,11 +234,10 @@ def delete_node(conn: sqlite3.Connection, node_id: str) -> int | None:
 		if not row:
 			return None
 
-		assigned_peer_count_row = conn.execute(
-			"SELECT COUNT(*) AS cnt FROM peers WHERE node_id = ?",
+		assigned_peer_count = conn.execute(
+			"SELECT COUNT(*) FROM peers WHERE node_id = ?",
 			(node_id,),
-		).fetchone()
-		assigned_peer_count = int(assigned_peer_count_row["cnt"]) if assigned_peer_count_row else 0
+		).fetchone()[0]
 
 		if row["tunnel_peer_id"]:
 			cur = conn.execute(
@@ -244,6 +248,7 @@ def delete_node(conn: sqlite3.Connection, node_id: str) -> int | None:
 				_log.info("Deleted tunnel peer for node=%s", node_id)
 
 		conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
+		_log.info("Deleted node=%s (assigned_peers=%d)", node_id, assigned_peer_count)
 		return assigned_peer_count
 # ─────────────────────────────────────────────────────────────────────────────
 # Enrollment
@@ -277,11 +282,10 @@ def rotate_node_session_secret(
 	node_id: str,
 	api_secret_hash: str,
 ) -> bool:
-	"""Replace the API secret hash after successful enrollment.
+	"""Rotate the session API secret hash for an enrolled node.
 
-	This invalidates the enrollment token's api_secret so the token
-	becomes single-use. Works on any enrolled node (status != 'pending').
-	Returns True if the row was updated.
+	Called after enrollment to replace the one-time enrollment secret with the
+	node's session credential. Only applies to non-pending nodes.
 	"""
 	with transaction(conn, immediate=True):
 		cur = conn.execute(
@@ -358,10 +362,10 @@ def update_node_heartbeat(
 			UPDATE nodes
 			SET last_seen = ?,
 			    metadata = COALESCE(?, metadata),
-			    status = CASE WHEN status != 'error' THEN ? ELSE status END
+			    status = CASE WHEN status != ? THEN ? ELSE status END
 			WHERE id = ?
 			""",
-			(now, meta_json, STATUS_ONLINE, node_id),
+			(now, meta_json, STATUS_ERROR, STATUS_ONLINE, node_id),
 		)
 		return cur.rowcount > 0
 
@@ -489,9 +493,8 @@ def set_node_pending_command(conn: sqlite3.Connection, node_id: str, command: st
 def get_and_clear_node_pending_command(conn: sqlite3.Connection, node_id: str) -> str | None:
 	"""Atomically get and clear any pending command for a node.
 	
-	Returns the command string if one was pending, None otherwise.
-	Uses SELECT-then-UPDATE within a transaction to ensure atomicity
-	across multiple workers.
+	Uses ``BEGIN IMMEDIATE`` so another worker cannot observe the same command
+	between the read and clear steps. Returns the command string or ``None``.
 	"""
 	with transaction(conn, immediate=True):
 		# SELECT first to get the current value
@@ -591,7 +594,7 @@ def _build_interfaces_config(
 	tunnel_peer: sqlite3.Row | None,
 	pepper: str,
 ) -> list[dict[str, Any]]:
-	"""Decrypt and assemble WireGuard interface configs for a node."""
+	"""Assemble interface configs for a node, decrypting per-node private keys."""
 	interfaces_map = {row["name"]: row for row in list_interfaces(conn)}
 	tunnel_interface = tunnel_peer["interface"] if tunnel_peer else None
 
@@ -673,6 +676,11 @@ def _build_master_peer_config(conn: sqlite3.Connection, tunnel_peer: sqlite3.Row
 		master_ip = str(ipaddress.ip_interface(master_iface["address"]).ip)
 	except ValueError:
 		master_ip = master_iface["address"].split("/")[0]
+		_log.warning(
+			"Invalid master interface address %r; using fallback value %r",
+			master_iface["address"],
+			master_ip,
+		)
 	allowed_ips = f"{master_ip}/32"
 
 	if master_iface["address6"]:
@@ -699,21 +707,27 @@ def get_node_config(
 ) -> dict:
 	"""Build the full configuration payload for a node.
 
+	Args:
+		conn: Active SQLite connection.
+		node_id: Node identifier.
+		pepper: Encryption pepper for private-key decryption. Defaults to the
+			configured application secret key.
+
 	Returns a dict with interfaces (+ keypairs), assigned peers, and master_peer
 	for the Node→Master DNS tunnel.
 	
 	Raises ValueError if node not found.
 	"""
-	pepper = pepper if pepper is not None else get_config().secret_key
-	node = get_node(conn, node_id)
-	if node is None:
-		raise ValueError(f"Node not found: {node_id}")
+	pepper = _resolve_pepper(pepper)
+	with transaction(conn):
+		node = get_node(conn, node_id)
+		if node is None:
+			raise ValueError(f"Node not found: {node_id}")
 
-	tunnel_peer = _get_tunnel_peer(conn, node["tunnel_peer_id"])
-	interfaces = _build_interfaces_config(conn, node_id, tunnel_peer, pepper)
-	peers = _build_peers_config(conn, node_id, pepper)
-
-	master_peer = _build_master_peer_config(conn, tunnel_peer)
+		tunnel_peer = _get_tunnel_peer(conn, node["tunnel_peer_id"])
+		interfaces = _build_interfaces_config(conn, node_id, tunnel_peer, pepper)
+		peers = _build_peers_config(conn, node_id, pepper)
+		master_peer = _build_master_peer_config(conn, tunnel_peer)
 
 	_log.info(
 		"NODE_CONFIG built for node=%s: interfaces=%d peers=%d master_peer=%s",
@@ -742,7 +756,7 @@ def create_node_interface(
 	pepper: str | None = None,
 ) -> None:
 	"""Store an encrypted WireGuard keypair for a node's interface."""
-	pepper = pepper if pepper is not None else get_config().secret_key
+	pepper = _resolve_pepper(pepper)
 	now = utcnow()
 	with transaction(conn, immediate=True):
 		conn.execute(
@@ -791,8 +805,9 @@ def get_all_tunnel_peer_ids(conn: sqlite3.Connection) -> set[int]:
 
 
 def get_peers_count_by_node(conn: sqlite3.Connection) -> dict[str | None, int]:
-	"""Return peer counts for all nodes in one query (None key = local/master).
+	"""Return a mapping of node_id to peer count for all nodes.
 
+	The ``None`` key represents peers assigned to the master/local node.
 	Use this for list/bulk views. For a single node, prefer
 	``get_peer_count_for_node``.
 	"""
@@ -878,7 +893,7 @@ def update_tunnel_peer_allowed_ips(conn: sqlite3.Connection, node_id: str) -> bo
 	with transaction(conn, immediate=True):
 		# Read, compute, and write inside one transaction to avoid stale data
 		# from concurrent peer assignment changes.
-		node = conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+		node = conn.execute("SELECT tunnel_peer_id FROM nodes WHERE id = ?", (node_id,)).fetchone()
 		if not node or not node["tunnel_peer_id"]:
 			return False
 

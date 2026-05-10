@@ -17,6 +17,20 @@ from .sqlite_runtime import transaction
 
 _log = logging.getLogger(__name__)
 
+_KNOWN_SCHEMA_TABLES = frozenset({
+	"auth_tokens",
+	"interfaces",
+	"login_attempts",
+	"node_interfaces",
+	"nodes",
+	"passkey_challenges",
+	"passkeys",
+	"peers",
+	"schema_version",
+	"settings",
+	"users",
+})
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Default Settings (called AFTER key validation)
@@ -51,10 +65,10 @@ def insert_default_settings(conn: sqlite3.Connection) -> None:
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-	"""Create the required database schema (factory default).
+	"""Create tables for a fresh installation, then apply pending migrations.
 
-	This defines the complete schema for fresh installs.
-	All historical migrations up to the current baseline are absorbed here.
+	Fresh databases are created with the current baseline schema. Existing
+	databases are then brought forward via ``_run_migrations``.
 	"""
 	with transaction(conn, immediate=True):
 		# Users table
@@ -153,7 +167,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
 			)
 			"""
 		)
-		# Index not needed - UNIQUE already creates an index
 
 		# WireGuard peers
 		conn.execute(
@@ -190,7 +203,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_peer_address ON peers(peer_address)")
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_node_id ON peers(node_id)")
 		# Enforce uniqueness for assigned peer VPN address per interface.
-		# Safe rollout: if legacy duplicates exist, keep startup running and warn.
+		# If duplicates already exist, keep startup running and warn.
 		duplicate = conn.execute(
 			"""
 			SELECT interface, peer_address, COUNT(*) AS cnt
@@ -211,7 +224,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 			)
 		else:
 			_log.warning(
-				"Skipping unique peer_address index due to legacy duplicates (interface=%s, peer_address=%s, count=%s)",
+				"Skipping unique peer_address index because duplicate values already exist (interface=%s, peer_address=%s, count=%s)",
 				duplicate[0],
 				duplicate[1],
 				duplicate[2],
@@ -248,6 +261,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				name TEXT NOT NULL UNIQUE,
 				fqdn TEXT NOT NULL,
 				wg_port INTEGER NOT NULL DEFAULT 51820,
+				show_on_dashboard INTEGER NOT NULL DEFAULT 1,
 				api_secret_hash TEXT NOT NULL,
 				cert_fingerprint TEXT,
 				status TEXT NOT NULL DEFAULT 'pending'
@@ -255,7 +269,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				last_seen timestamp,
 				enrolled_at timestamp,
 				created_at timestamp NOT NULL,
-							config_version TEXT,
+				config_version TEXT,
 				metadata TEXT,
 				tunnel_peer_id INTEGER REFERENCES peers(id) ON DELETE SET NULL,
 				last_metric_seq INTEGER,
@@ -288,8 +302,35 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
 
 def _get_columns(conn: sqlite3.Connection, table: str) -> set[str]:
-	"""Get set of column names for a table."""
-	return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+	"""Return the set of column names currently defined on *table*."""
+	if table not in _KNOWN_SCHEMA_TABLES:
+		raise ValueError(f"Unknown table: {table!r}")
+	return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _add_column_if_missing(
+	conn: sqlite3.Connection,
+	*,
+	table: str,
+	column: str,
+	definition: str,
+	existing_columns: set[str],
+	log_message: str,
+) -> None:
+	"""Add a column if absent and keep local column snapshots in sync."""
+	if column in existing_columns:
+		return
+	_log.info(log_message)
+	conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+	existing_columns.add(column)
+
+
+def _create_unique_index_or_warn(conn: sqlite3.Connection, ddl: str, *, label: str) -> None:
+	"""Create a unique index or log why it could not be enforced."""
+	try:
+		conn.execute(ddl)
+	except sqlite3.Error as exc:
+		_log.warning("Could not create unique index %s: %s", label, exc)
 
 
 def _run_migrations(conn: sqlite3.Connection) -> None:
@@ -298,55 +339,88 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 	These migrations handle columns/tables added after initial release.
 	Safe to run multiple times (idempotent).
 	
-	NOTE: Must be called within a transaction for atomicity.
+	Must be called within an IMMEDIATE transaction to prevent concurrent schema
+	modifications and partial migration state.
 	"""
+	if not conn.in_transaction:
+		raise RuntimeError("_run_migrations must run inside an active transaction")
+
 	# Get existing columns in peers table
 	existing_columns = _get_columns(conn, "peers")
-	
-	# Migration: Add dns_logging_enabled column (added in v1.4.0)
-	if "dns_logging_enabled" not in existing_columns:
-		_log.info("Migrating peers table: adding dns_logging_enabled column")
-		conn.execute("ALTER TABLE peers ADD COLUMN dns_logging_enabled INTEGER NOT NULL DEFAULT 1")
 
-	# Migration: Master-Node architecture — add node_id to peers
-	# NOTE: nodes and node_interfaces tables are created by init_schema() with CREATE TABLE IF NOT EXISTS
+	_add_column_if_missing(
+		conn,
+		table="peers",
+		column="dns_logging_enabled",
+		definition="INTEGER NOT NULL DEFAULT 1",
+		existing_columns=existing_columns,
+		log_message="Migrating peers table: adding dns_logging_enabled column",
+	)
+
 	if "node_id" not in existing_columns:
-		_log.info("Migrating peers table: adding node_id column for Master-Node architecture")
-		conn.execute("ALTER TABLE peers ADD COLUMN node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL")
+		_add_column_if_missing(
+			conn,
+			table="peers",
+			column="node_id",
+			definition="TEXT REFERENCES nodes(id) ON DELETE SET NULL",
+			existing_columns=existing_columns,
+			log_message="Migrating peers table: adding node_id column for Master-Node architecture",
+		)
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_node_id ON peers(node_id)")
 
 	# Migration: Add tunnel_peer_id to nodes (Node→Master tunnel for DNS)
 	nodes_columns = _get_columns(conn, "nodes")
-	if "tunnel_peer_id" not in nodes_columns:
-		_log.info("Migrating nodes table: adding tunnel_peer_id for Node→Master DNS tunnel")
-		conn.execute("ALTER TABLE nodes ADD COLUMN tunnel_peer_id INTEGER REFERENCES peers(id) ON DELETE SET NULL")
+	_add_column_if_missing(
+		conn,
+		table="nodes",
+		column="tunnel_peer_id",
+		definition="INTEGER REFERENCES peers(id) ON DELETE SET NULL",
+		existing_columns=nodes_columns,
+		log_message="Migrating nodes table: adding tunnel_peer_id for Node→Master DNS tunnel",
+	)
+	_add_column_if_missing(
+		conn,
+		table="nodes",
+		column="last_metric_seq",
+		definition="INTEGER",
+		existing_columns=nodes_columns,
+		log_message="Migrating nodes table: adding last_metric_seq for reliable metric delivery",
+	)
+	_add_column_if_missing(
+		conn,
+		table="nodes",
+		column="sse_connected_at",
+		definition="TIMESTAMP",
+		existing_columns=nodes_columns,
+		log_message="Migrating nodes table: adding sse_connected_at for multi-worker SSE tracking",
+	)
+	_add_column_if_missing(
+		conn,
+		table="nodes",
+		column="pending_command",
+		definition="TEXT",
+		existing_columns=nodes_columns,
+		log_message="Migrating nodes table: adding pending_command for multi-worker command delivery",
+	)
+	_add_column_if_missing(
+		conn,
+		table="nodes",
+		column="show_on_dashboard",
+		definition="INTEGER NOT NULL DEFAULT 1",
+		existing_columns=nodes_columns,
+		log_message="Migrating nodes table: adding show_on_dashboard visibility flag",
+	)
 
-	# Migration: Add last_metric_seq to nodes (for reliable metric delivery idempotency)
-	if "last_metric_seq" not in nodes_columns:
-		_log.info("Migrating nodes table: adding last_metric_seq for reliable metric delivery")
-		conn.execute("ALTER TABLE nodes ADD COLUMN last_metric_seq INTEGER")
-
-	# Migration: Add sse_connected_at to nodes (for multi-worker SSE tracking)
-	if "sse_connected_at" not in nodes_columns:
-		_log.info("Migrating nodes table: adding sse_connected_at for multi-worker SSE tracking")
-		conn.execute("ALTER TABLE nodes ADD COLUMN sse_connected_at TIMESTAMP")
-
-	# Migration: Add pending_command to nodes (for multi-worker command delivery)
-	if "pending_command" not in nodes_columns:
-		_log.info("Migrating nodes table: adding pending_command for multi-worker command delivery")
-		conn.execute("ALTER TABLE nodes ADD COLUMN pending_command TEXT")
-
-	# Migration: Add name UNIQUE constraint to nodes (idempotent — fails silently if already exists)
-	try:
-		conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_name_unique ON nodes(name)")
-	except sqlite3.OperationalError:
-		pass  # Index may already exist if this is a fresh schema
-
-	# Migration: Add FQDN UNIQUE constraint to nodes
-	try:
-		conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_fqdn_unique ON nodes(fqdn)")
-	except sqlite3.OperationalError:
-		pass  # Index may already exist if this is a fresh schema
+	_create_unique_index_or_warn(
+		conn,
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_name_unique ON nodes(name)",
+		label="idx_nodes_name_unique",
+	)
+	_create_unique_index_or_warn(
+		conn,
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_fqdn_unique ON nodes(fqdn)",
+		label="idx_nodes_fqdn_unique",
+	)
 
 
 def ensure_default_admin(conn: sqlite3.Connection) -> None:
@@ -357,7 +431,7 @@ def ensure_default_admin(conn: sqlite3.Connection) -> None:
 	"""
 	try:
 		with transaction(conn, immediate=True):
-			count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+			(count,) = conn.execute("SELECT COUNT(*) FROM users").fetchone()
 			if count == 0:
 				conn.execute(
 					"""
@@ -366,6 +440,8 @@ def ensure_default_admin(conn: sqlite3.Connection) -> None:
 					""",
 					("admin", hash_password("admin"), utcnow()),
 				)
-				_log.warning("Created default admin user (username: admin, password: admin) - CHANGE THIS!")
+				_log.warning(
+					"Created default admin user 'admin' with a well-known default password. Change it immediately."
+				)
 	except sqlite3.IntegrityError:
-		pass  # another worker beat us — row already exists
+		_log.debug("Default admin insert skipped because a user already exists")

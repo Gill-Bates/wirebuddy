@@ -9,6 +9,9 @@
 Wraps the librespeed-cli binary (--json) for download, upload, ping and jitter
 measurement.  Server selection is handled by librespeed-cli itself (nearest
 server by ping RTT).
+
+Default measurement parameters are tuned for VPN server monitoring and can be
+overridden via ``run_speedtest()`` keyword arguments.
 """
 
 from __future__ import annotations
@@ -20,7 +23,8 @@ import logging
 import math
 import shlex
 import shutil
-from typing import Any, Callable, NotRequired, TypedDict
+from collections.abc import Callable
+from typing import Any, NotRequired, TypedDict
 
 from ..utils.formatting import format_bandwidth_mbit
 from ..utils.geoip import resolve_country_from_url as _resolve_country_from_url
@@ -31,12 +35,17 @@ _log = logging.getLogger(__name__)
 # Default CLI flags tuned for VPN server monitoring:
 _DEFAULT_DURATION = 8
 _DEFAULT_CONCURRENT = 4
-_DEFAULT_UPLOAD_SIZE = 4096  # KiB
-_DEFAULT_TIMEOUT = 30  # seconds (HTTP timeout)
+_DEFAULT_UPLOAD_SIZE_KIB = 4096
+_CLI_HTTP_TIMEOUT_SECONDS = 30
+_SUBPROCESS_TIMEOUT_BUFFER_SECONDS = 30
 _PROGRESS_UPDATES_PER_SECOND = 2
+_SIMULATED_SERVER_SELECT_SECONDS = 5.0
 
 # Explicit runtime override for tests.
 _LIBRESPEED_CLI_OVERRIDE: str | None = None
+_LIBRESPEED_CLI_PATH: str | None = None
+_LIBRESPEED_CLI_RESOLVED = False
+
 
 class ProgressEvent(TypedDict):
     """Progress event emitted during speedtest execution."""
@@ -48,8 +57,13 @@ class ProgressEvent(TypedDict):
 # Type alias for progress callback
 ProgressCallback = Callable[[ProgressEvent], None]
 
+
 def _safe_float(value: Any) -> float | None:
-    """Safely convert value to float with explicit None on failure."""
+    """Convert a value to a finite float, or return ``None``.
+
+    ``None`` is returned both for conversion failures and for non-finite values
+    such as ``NaN`` or infinity, which are not meaningful speedtest metrics.
+    """
     try:
         result = float(value)
         if not math.isfinite(result):
@@ -58,9 +72,16 @@ def _safe_float(value: Any) -> float | None:
     except (TypeError, ValueError, AttributeError):
         return None
 
+
 def _round_metric(value: float | None, ndigits: int = 2) -> float:
     """Round a metric, treating None as 0.0 for persistence and display."""
     return round(value if value is not None else 0.0, ndigits)
+
+
+def _extract_metric(data: dict[str, Any], key: str, ndigits: int = 2) -> float:
+    """Extract, safely convert, and round a librespeed metric from JSON output."""
+    return _round_metric(_safe_float(data.get(key)), ndigits)
+
 
 async def _lookup_country_from_url(server_url: str) -> str | None:
     """Resolve server URL to country code via GeoIP lookup (async-safe)."""
@@ -68,11 +89,42 @@ async def _lookup_country_from_url(server_url: str) -> str | None:
         return None
     return await asyncio.to_thread(_resolve_country_from_url, server_url)
 
+
+def _validate_tunable_int(
+    value: int,
+    *,
+    name: str,
+    minimum: int,
+    maximum: int,
+    cb: ProgressCallback | None,
+) -> int | None:
+    """Validate public speedtest tunables before spawning the subprocess."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        _error_result(f"{name} must be an integer", cb, log_level=logging.WARNING)
+        return None
+    if not (minimum <= value <= maximum):
+        _error_result(f"{name} must be {minimum}-{maximum}", cb, log_level=logging.WARNING)
+        return None
+    return value
+
+
 def _resolve_librespeed_cli() -> str | None:
-    """Resolve librespeed-cli path at runtime."""
+    """Return the librespeed-cli path.
+
+    Uses the explicit runtime override for tests when set; otherwise resolves
+    the binary lazily on first use and caches the result.
+    """
+    global _LIBRESPEED_CLI_PATH, _LIBRESPEED_CLI_RESOLVED
+
     if _LIBRESPEED_CLI_OVERRIDE is not None:
         return _LIBRESPEED_CLI_OVERRIDE
-    return shutil.which("librespeed-cli")
+
+    if not _LIBRESPEED_CLI_RESOLVED:
+        _LIBRESPEED_CLI_PATH = shutil.which("librespeed-cli")
+        _LIBRESPEED_CLI_RESOLVED = True
+
+    return _LIBRESPEED_CLI_PATH
+
 
 def _error_result(
     msg: str,
@@ -81,13 +133,17 @@ def _error_result(
     log_level: int = logging.ERROR,
     stderr: str | None = None,
 ) -> dict[str, Any]:
-    """Create error result and emit error event."""
+    """Log an error, emit an error progress event, and return an error result.
+
+    ``stderr`` is truncated before logging to keep log lines bounded.
+    """
     if stderr:
         _log.log(log_level, "SPEEDTEST error: %s (stderr: %s)", msg, stderr[:200])
     else:
         _log.log(log_level, "SPEEDTEST %s", msg)
     _emit(cb, "error", 1.0, msg)
     return {"status": "error", "reason": msg}
+
 
 def _emit(cb: ProgressCallback | None, phase: str, progress: float, message: str, detail: dict[str, Any] | None = None) -> None:
     """Emit a progress event if a callback is registered."""
@@ -99,16 +155,60 @@ def _emit(cb: ProgressCallback | None, phase: str, progress: float, message: str
     try:
         cb(event)
     except Exception as exc:
-        _log.debug("Progress callback failed: %s", exc)
+        _log.warning("Progress callback failed: %s", exc, exc_info=True)
+
 
 async def run_speedtest(
     *,
     progress_callback: ProgressCallback | None = None,
     duration: int = _DEFAULT_DURATION,
     concurrent: int = _DEFAULT_CONCURRENT,
-    upload_size: int = _DEFAULT_UPLOAD_SIZE,
+    upload_size: int = _DEFAULT_UPLOAD_SIZE_KIB,
 ) -> dict[str, Any]:
-    """Run a bandwidth measurement via librespeed-cli."""
+    """Run librespeed-cli and return a normalized speedtest result dictionary.
+
+    Optionally emits progress events while the subprocess is running. On
+    success, returns a dict containing normalized bandwidth and latency fields.
+    On failure, returns ``{"status": "error", "reason": ...}``.
+
+    Args:
+        progress_callback: Optional callback receiving progress events.
+        duration: Per-phase measurement duration passed to librespeed-cli.
+        concurrent: Number of parallel streams passed to librespeed-cli.
+        upload_size: Upload payload size in KiB passed to librespeed-cli.
+
+    ``asyncio.CancelledError`` is not swallowed and propagates to the caller.
+    """
+    validated_duration = _validate_tunable_int(
+        duration,
+        name="duration",
+        minimum=1,
+        maximum=300,
+        cb=progress_callback,
+    )
+    if validated_duration is None:
+        return {"status": "error", "reason": "duration must be 1-300"}
+
+    validated_concurrent = _validate_tunable_int(
+        concurrent,
+        name="concurrent",
+        minimum=1,
+        maximum=64,
+        cb=progress_callback,
+    )
+    if validated_concurrent is None:
+        return {"status": "error", "reason": "concurrent must be 1-64"}
+
+    validated_upload_size = _validate_tunable_int(
+        upload_size,
+        name="upload_size",
+        minimum=1,
+        maximum=1_048_576,
+        cb=progress_callback,
+    )
+    if validated_upload_size is None:
+        return {"status": "error", "reason": "upload_size must be 1-1048576 KiB"}
+
     _emit(progress_callback, "init", 0.0, "Starting librespeed-cli\u2026")
 
     resolved_cli = _resolve_librespeed_cli()
@@ -117,22 +217,24 @@ async def run_speedtest(
 
     cmd = [
         resolved_cli, "--json", "--no-icmp", "--secure",
-        "--duration", str(duration),
-        "--concurrent", str(concurrent),
-        "--upload-size", str(upload_size),
-        "--timeout", str(_DEFAULT_TIMEOUT),
+        "--duration", str(validated_duration),
+        "--concurrent", str(validated_concurrent),
+        "--upload-size", str(validated_upload_size),
+        "--timeout", str(_CLI_HTTP_TIMEOUT_SECONDS),
     ]
 
     _log.info("SPEEDTEST cmd=%s", shlex.join(cmd))
-    timeout = _DEFAULT_TIMEOUT + (duration * 2) + 30
+    timeout = _CLI_HTTP_TIMEOUT_SECONDS + (validated_duration * 2) + _SUBPROCESS_TIMEOUT_BUFFER_SECONDS
 
     _emit(progress_callback, "server_select", 0.10, "Selecting fastest server\u2026")
 
     progress_task: asyncio.Task[None] | None = None
     try:
         if progress_callback:
-            progress_task = asyncio.create_task(_emit_progress_simulation(progress_callback, duration))
-        
+            progress_task = asyncio.create_task(_emit_progress_simulation(progress_callback, validated_duration))
+
+        # run_command raises asyncio.TimeoutError when the subprocess exceeds
+        # the provided timeout.
         res = await run_command(*cmd, timeout=timeout)
         
         if res.returncode != 0:
@@ -140,6 +242,8 @@ async def run_speedtest(
 
         # Parse JSON output
         stdout = res.stdout.strip()
+        # librespeed-cli emits ASCII JSON, so character count matches byte count
+        # for this defensive size guard.
         if len(stdout) > 5_000_000:
             return _error_result("CLI output unexpectedly large", progress_callback)
         try:
@@ -153,24 +257,23 @@ async def run_speedtest(
             return _error_result(f"Unexpected JSON type: {type(data).__name__}", progress_callback)
 
         # Extract server info
-        server_name = ""
-        server_url = ""
         server_data = data.get("server", "")
         if isinstance(server_data, dict):
-            server_name = server_data.get("name", "")
-            server_url = server_data.get("url", "")
+            server_name = str(server_data.get("name") or "")
+            server_url = str(server_data.get("url") or "")
         else:
-            server_name = str(server_data)
+            server_name = str(server_data or "")
+            server_url = ""
 
         # Country lookup (async-safe)
         country_code = await _lookup_country_from_url(server_url)
 
         # Extract and validate metrics
         metrics = {
-            "download_mbit": _round_metric(_safe_float(data.get("download"))),
-            "upload_mbit": _round_metric(_safe_float(data.get("upload"))),
-            "rtt_ms": _round_metric(_safe_float(data.get("ping"))),
-            "jitter_ms": _round_metric(_safe_float(data.get("jitter"))),
+            "download_mbit": _extract_metric(data, "download"),
+            "upload_mbit": _extract_metric(data, "upload"),
+            "rtt_ms": _extract_metric(data, "ping"),
+            "jitter_ms": _extract_metric(data, "jitter"),
         }
 
         if metrics["download_mbit"] == 0 and metrics["upload_mbit"] == 0:
@@ -193,8 +296,6 @@ async def run_speedtest(
     except asyncio.TimeoutError:
         return _error_result(f"librespeed-cli process timeout ({timeout}s)", progress_callback)
     except Exception as exc:
-        if isinstance(exc, asyncio.CancelledError):
-            raise
         return _error_result(f"Speedtest failed: {exc}", progress_callback)
     finally:
         if progress_task:
@@ -202,9 +303,15 @@ async def run_speedtest(
             with contextlib.suppress(asyncio.CancelledError):
                 await progress_task
 
+
 async def _emit_progress_simulation(cb: ProgressCallback, duration: int) -> None:
-    """Emit time-based progress events during speedtest execution (UX helper)."""
-    server_select_time = 5.0
+    """Emit synthetic progress updates while the speedtest subprocess runs.
+
+    This coroutine is intended to run as a separate asyncio task and be
+    cancelled by the caller once the speedtest completes or fails. Progress is
+    time-based UX simulation, not a reflection of actual librespeed internals.
+    """
+    server_select_time = _SIMULATED_SERVER_SELECT_SECONDS
     download_time = float(duration)
     upload_time = float(duration)
     

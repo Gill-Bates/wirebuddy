@@ -12,6 +12,7 @@ const isWebAuthnSupported = typeof window.PublicKeyCredential === 'function';
 
 // AbortController for canceling pending conditional mediation requests
 let conditionalAbortController = null;
+let passkeysInitialized = false;
 
 // Base64URL encoding/decoding helpers
 function base64UrlToArrayBuffer(base64url) {
@@ -32,15 +33,9 @@ function base64UrlToArrayBuffer(base64url) {
 
 function arrayBufferToBase64Url(buffer) {
     const bytes = new Uint8Array(buffer);
-    const CHUNK_SIZE = 32768; // 32KB chunks to avoid call stack limits
-    const parts = [];
+    const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join('');
 
-    for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
-        // Use subarray + apply to avoid stack overflow on large buffers
-        parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK_SIZE)));
-    }
-
-    return btoa(parts.join(''))
+    return btoa(binary)
         .replace(/\+/g, '-')
         .replace(/\//g, '_')
         .replace(/=/g, '');
@@ -81,8 +76,7 @@ function credentialToJSON(credential) {
         clientDataJSON: arrayBufferToBase64Url(response.clientDataJSON),
     };
 
-    // Assertion response (login)
-    if (response.authenticatorData && response.signature) {
+    if (response instanceof AuthenticatorAssertionResponse) {
         serializedResponse.authenticatorData = arrayBufferToBase64Url(response.authenticatorData);
         serializedResponse.signature = arrayBufferToBase64Url(response.signature);
         serializedResponse.userHandle = response.userHandle
@@ -90,10 +84,9 @@ function credentialToJSON(credential) {
             : null;
     }
 
-    // Attestation response (registration) - included for compatibility
-    if (response.attestationObject) {
+    if (response instanceof AuthenticatorAttestationResponse) {
         serializedResponse.attestationObject = arrayBufferToBase64Url(response.attestationObject);
-        if (response.getTransports) {
+        if (typeof response.getTransports === 'function') {
             serializedResponse.transports = response.getTransports();
         }
     }
@@ -191,7 +184,13 @@ async function startConditionalPasskeyLogin() {
 
 // Initialize passkey support
 async function initPasskeys() {
-    if (!isWebAuthnSupported) return;
+    if (!isWebAuthnSupported || passkeysInitialized) return;
+    if (typeof apiCall !== 'function') {
+        console.error('Passkeys require apiCall() from base.html');
+        return;
+    }
+
+    passkeysInitialized = true;
 
     // Check if any passkeys are configured in the system
     let passkeyAvailable = false;

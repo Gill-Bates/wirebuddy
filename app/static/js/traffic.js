@@ -17,8 +17,18 @@
     const AUTO_REFRESH_MS = 30000;
     const API_TIMEOUT_MS = 25000;
     const MAX_BACKOFF_MS = 300000;
+    const MAX_ALL_PEER_SERIES = 12;
     const MIN_VISIBLE_REFRESH_INTERVAL_MS = 5000;
     const RESIZE_FETCH_THRESHOLD = 0.2;
+    const RANGE_LABELS = Object.freeze({
+        '6h': 'last 6 hours',
+        '24h': 'last 24 hours',
+        '7d': 'last 7 days',
+        '30d': 'last 30 days',
+        '90d': 'last 90 days',
+        '180d': 'last 180 days',
+        'y1': 'last year',
+    });
 
     // Responsive data point settings
     const MIN_POINTS = 10;
@@ -30,6 +40,7 @@
     let trafficCombinedChart = null;
     let cleanupComplete = false;
     let cachedTrafficData = null;
+    let cachedTrafficLabels = null;
     let cachedCountryData = null;
     let cachedASNData = null;
     let refreshScheduler = null;
@@ -37,17 +48,19 @@
     let lastVisibleRefresh = 0;
     let lastMaxPoints = 0;
     let resizeDebounce = null;
-    let isInitialRender = true;
-    let knownTrafficPeers = [];
-    let lastCountryRenderKey = '';
-    let lastASNRenderKey = '';
+    let knownTrafficPeerKeys = '';
     let themeObserver = null;
     let visibilityHandler = null;
     let resizeHandler = null;
     let peerFilterHandler = null;
     let rangeChangeHandler = null;
+    let pagehideHandler = null;
     let peerFilterTimeout = null; // Timeout handle for peer filter debounce
+    let pendingRefreshScopes = [];
     let lastInvalidPeerWarned = '';
+
+    const countryRenderKey = { current: '' };
+    const asnRenderKey = { current: '' };
 
     // Color palette for multiple peers
     const peerColors = Object.freeze([
@@ -63,9 +76,8 @@
 
     // Get user permissions and config from data attributes
     const appEl = document.getElementById('traffic-app');
-    // Handle both "true" and "1" (SQLite stores booleans as integers)
-    const isAdmin = appEl?.dataset.isAdmin === 'true' || appEl?.dataset.isAdmin === '1';
-    const trafficAnalysisEnabled = appEl?.dataset.trafficAnalysisEnabled === 'true' || appEl?.dataset.trafficAnalysisEnabled === '1';
+    const isAdmin = appEl?.dataset.isAdmin === 'true';
+    const trafficAnalysisEnabled = appEl?.dataset.trafficAnalysisEnabled === 'true';
 
     // DOM element references
     const trafficCombinedCanvas = isAdmin ? document.getElementById('trafficCombinedChart') : null;
@@ -103,38 +115,22 @@
     const formatTrafficMetric = WBShared.formatTrafficMetric;
     const chartEmptyState = WBShared.chartEmptyState;
 
-    /**
-     * Validate that a URL is safe for use in img src attributes.
-     * Only allows same-origin static paths.
-     */
-    function isSafeImageUrl(url) {
-        if (!url || typeof url !== 'string') return false;
-        try {
-            const u = new URL(url, window.location.origin);
-            if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
-            return u.origin === window.location.origin && u.pathname.startsWith('/static/');
-        } catch {
-            return false;
-        }
-    }
-
-    function isFlagIconUrl(url) {
-        if (typeof url !== 'string') return false;
-        return url.startsWith(`${FLAG_ICON_BASE_URL}/`) && /\/flags\/4x3\/[a-z]{2}\.svg$/i.test(url);
-    }
-
-    // Convert range key to human-readable label
     function getRangeLabel(rangeKey) {
-        const labels = {
-            '6h': 'last 6 hours',
-            '24h': 'last 24 hours',
-            '7d': 'last 7 days',
-            '30d': 'last 30 days',
-            '90d': 'last 90 days',
-            '180d': 'last 180 days',
-            'y1': 'last year',
-        };
-        return labels[rangeKey] || rangeKey;
+        return RANGE_LABELS[rangeKey] ?? rangeKey;
+    }
+
+    function countryCodeToFlagEmoji(countryCode) {
+        if (!/^[a-z]{2}$/i.test(countryCode)) return '';
+
+        try {
+            return countryCode
+                .toUpperCase()
+                .split('')
+                .map((char) => String.fromCodePoint(127397 + char.charCodeAt(0)))
+                .join('');
+        } catch {
+            return '';
+        }
     }
 
     function isValidPeerFilterValue(value) {
@@ -172,7 +168,13 @@
     }
 
     /**
-     * Create a traffic metric inline element (arrow + value).
+     * Create a traffic metric inline element.
+     * Returns a wrapper span containing a directional arrow and a formatted value.
+     *
+     * @param {number} value - Raw traffic value.
+     * @param {string} unit - Display unit used by formatTrafficMetric.
+     * @param {'rx'|'tx'} direction - Traffic direction; 'rx' renders ↓, 'tx' renders ↑.
+     * @returns {HTMLSpanElement}
      */
     function createTrafficMetric(value, unit, direction) {
         const wrapper = document.createElement('span');
@@ -201,27 +203,13 @@
         const stack = document.createElement('div');
         stack.className = 'rxtx-stack';
 
-        // RX line
         const rxLine = document.createElement('span');
         rxLine.className = 'rxtx-line';
-        const rxArrow = document.createElement('span');
-        rxArrow.className = 'rxtx-arrow rx-arrow';
-        rxArrow.textContent = '↓';
-        const rxSmall = document.createElement('small');
-        rxSmall.textContent = formatTrafficMetric(rx, unit);
-        rxLine.appendChild(rxArrow);
-        rxLine.appendChild(rxSmall);
+        rxLine.appendChild(createTrafficMetric(rx, unit, 'rx'));
 
-        // TX line
         const txLine = document.createElement('span');
         txLine.className = 'rxtx-line';
-        const txArrow = document.createElement('span');
-        txArrow.className = 'rxtx-arrow tx-arrow';
-        txArrow.textContent = '↑';
-        const txSmall = document.createElement('small');
-        txSmall.textContent = formatTrafficMetric(tx, unit);
-        txLine.appendChild(txArrow);
-        txLine.appendChild(txSmall);
+        txLine.appendChild(createTrafficMetric(tx, unit, 'tx'));
 
         stack.appendChild(rxLine);
         stack.appendChild(txLine);
@@ -236,10 +224,15 @@
         const wrapper = document.createElement('div');
         wrapper.className = 'd-flex gap-1 mt-1';
 
-        const pct = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
+        // Defensive coercion: server may send strings for numeric fields
+        const numTotal = Number(total) || 0;
+        const numMax = Number(maxTotal) || 1;
+        const numRx = Number(rx) || 0;
+
+        const pct = numMax > 0 ? (numTotal / numMax) * 100 : 0;
         wrapper.style.width = `${Math.max(pct, 3)}%`;
 
-        const rxPct = total > 0 ? (rx / total) * 100 : 50;
+        const rxPct = numTotal > 0 ? (numRx / numTotal) * 100 : 50;
         const txPct = 100 - rxPct;
 
         // RX bar (decorative - data already in table)
@@ -261,8 +254,97 @@
         return wrapper;
     }
 
+    function showLoadingState({ loading, content, empty, summary }, summaryText = '') {
+        if (loading) loading.classList.remove('d-none');
+        if (content) {
+            content.classList.add('d-none');
+            content.setAttribute('aria-busy', 'true');
+        }
+        if (empty) empty.classList.add('d-none');
+        if (summary) summary.textContent = summaryText;
+    }
+
+    function showSectionError({ loading, content, empty, summary }, message) {
+        if (loading) loading.classList.add('d-none');
+        if (content) {
+            content.classList.add('d-none');
+            content.removeAttribute('aria-busy');
+        }
+        if (empty) {
+            empty.classList.remove('d-none');
+            clearElement(empty);
+            empty.appendChild(chartEmptyState(message));
+        }
+        if (summary) summary.textContent = '';
+    }
+
+    function showTrafficLoading(options = {}) {
+        const { chart = false, country = false, asn = false } = options;
+
+        if (chart && isAdmin) {
+            if (trafficCombinedWrap) {
+                trafficCombinedWrap.classList.add('d-none');
+                trafficCombinedWrap.setAttribute('aria-busy', 'true');
+            }
+            if (trafficEmptyState) trafficEmptyState.classList.add('d-none');
+            if (trafficCombinedLoading) trafficCombinedLoading.classList.remove('d-none');
+        }
+
+        if (country) {
+            showLoadingState(
+                {
+                    loading: countryLoading,
+                    content: countryContent,
+                    empty: countryEmpty,
+                    summary: countrySummary,
+                },
+                'Calculating...',
+            );
+        }
+
+        if (asn) {
+            showLoadingState(
+                {
+                    loading: asnLoading,
+                    content: asnContent,
+                    empty: asnEmpty,
+                    summary: asnSummary,
+                },
+                'Calculating...',
+            );
+        }
+    }
+
+    function mergeRefreshScope(left, right) {
+        if (left === 'all' || right === 'all') return 'all';
+        return left ?? right ?? 'all';
+    }
+
+    function queueRefreshScope(scope) {
+        pendingRefreshScopes.push(scope);
+    }
+
+    function dequeueRefreshScope() {
+        if (pendingRefreshScopes.length === 0) return 'all';
+
+        let mergedScope = pendingRefreshScopes[0] ?? 'all';
+        for (let index = 1; index < pendingRefreshScopes.length; index += 1) {
+            mergedScope = mergeRefreshScope(mergedScope, pendingRefreshScopes[index]);
+        }
+        pendingRefreshScopes = [];
+        return mergedScope;
+    }
+
+    function unwrapApiData(result) {
+        return result?.data ?? result;
+    }
+
     /**
-     * Creates a short label for chart x-axis based on time range.
+     * Format an ISO timestamp as a short chart x-axis label.
+     *
+     * @param {string} isoStr - ISO 8601 timestamp string.
+     * @param {number|string} hours - Time range duration in hours.
+     * @returns {string}
      */
     function shortLabel(isoStr, hours) {
         const d = new Date(isoStr);
@@ -395,6 +477,147 @@
         trafficCombinedChart = null;
     }
 
+    function buildCountryRenderKey(items, unit, peerFilter) {
+        const hash = items.map((country, index) =>
+            `${country.code || country.name || index}:${Number(country.total || 0).toFixed(2)}`
+        ).join(';');
+        return `${unit}|${peerFilter}|${items.length}|${hash}`;
+    }
+
+    function buildAsnRenderKey(items, unit, peerFilter) {
+        const hash = items.map((asn, index) =>
+            `${asn.asn || asn.name || index}:${Number(asn.total || 0).toFixed(2)}`
+        ).join(';');
+        return `${unit}|${peerFilter}|${items.length}|${hash}`;
+    }
+
+    function normalizePeerSeries(peer) {
+        const rx = Array.isArray(peer?.rx) ? peer.rx.map((value) => Number(value || 0)) : [];
+        const tx = Array.isArray(peer?.tx) ? peer.tx.map((value) => Number(value || 0)) : [];
+        const bucketCount = Math.max(rx.length, tx.length);
+        const total = [];
+
+        for (let index = 0; index < bucketCount; index += 1) {
+            total.push((rx[index] || 0) + (tx[index] || 0));
+        }
+
+        return {
+            ...peer,
+            rx,
+            tx,
+            total,
+            totalSum: total.reduce((sum, value) => sum + value, 0),
+        };
+    }
+
+    function limitAllPeerSeries(peers) {
+        const normalizedPeers = peers.map(normalizePeerSeries);
+        if (normalizedPeers.length <= MAX_ALL_PEER_SERIES) {
+            return normalizedPeers;
+        }
+
+        const sortedPeers = [...normalizedPeers].sort((left, right) => right.totalSum - left.totalSum);
+        const visiblePeers = sortedPeers.slice(0, MAX_ALL_PEER_SERIES - 1);
+        const hiddenPeers = sortedPeers.slice(MAX_ALL_PEER_SERIES - 1);
+        const bucketCount = hiddenPeers.reduce((max, peer) => Math.max(max, peer.total.length), 0);
+        const otherTotal = Array.from({ length: bucketCount }, (_, index) =>
+            hiddenPeers.reduce((sum, peer) => sum + (peer.total[index] || 0), 0)
+        );
+
+        visiblePeers.push({
+            key: '__other__',
+            name: `Other (${hiddenPeers.length})`,
+            total: otherTotal,
+            totalSum: otherTotal.reduce((sum, value) => sum + value, 0),
+        });
+
+        return visiblePeers;
+    }
+
+    function createCountryFirstCell(country) {
+        const flagCell = createCell('td', 'text-center');
+        const countryCode = String(country.code ?? '').trim().toLowerCase();
+        const flagEmoji = countryCodeToFlagEmoji(countryCode);
+
+        if (flagEmoji) {
+            const flag = document.createElement('span');
+            flag.className = 'country-flag';
+            flag.setAttribute('role', 'img');
+            flag.setAttribute('aria-label', country.name ? `Flag of ${country.name}` : 'Country flag');
+            flag.textContent = flagEmoji;
+            flagCell.appendChild(flag);
+        } else {
+            const icon = document.createElement('span');
+            icon.className = 'material-icons traffic-fallback-icon';
+            icon.setAttribute('aria-hidden', 'true');
+            icon.textContent = 'public';
+            flagCell.appendChild(icon);
+        }
+        return flagCell;
+    }
+
+    function createCountryNameCell(country) {
+        const nameCell = createCell('td');
+        const nameDiv = document.createElement('div');
+        nameDiv.className = 'fw-medium';
+        nameDiv.title = country.name ?? '';
+        nameDiv.textContent = country.name ?? '';
+        nameCell.appendChild(nameDiv);
+        return nameCell;
+    }
+
+    function createAsnFirstCell(asn) {
+        const asnCell = createCell('td', 'traffic-col-asn');
+        const asnBadge = document.createElement('span');
+        asnBadge.className = 'badge bg-secondary bg-opacity-25 text-body asn-badge';
+        asnBadge.textContent = asn.asn === '0' ? '–' : `AS${asn.asn}`;
+        asnCell.appendChild(asnBadge);
+        return asnCell;
+    }
+
+    function createAsnNameCell(asn) {
+        const nameCell = createCell('td');
+        const nameDiv = document.createElement('div');
+        nameDiv.className = 'fw-medium';
+        nameDiv.title = asn.name ?? '';
+        nameDiv.textContent = asn.name ?? '';
+
+        if (asn.asn && asn.asn !== '0') {
+            const asnInline = document.createElement('span');
+            asnInline.className = 'asn-inline';
+            asnInline.textContent = `AS${asn.asn}`;
+            nameDiv.appendChild(asnInline);
+        }
+
+        nameCell.appendChild(nameDiv);
+        return nameCell;
+    }
+
+    async function refreshTrafficBreakdown(signal, config) {
+        const { endpoint, setCache, getCache, render, elements, logLabel, uiErrorMessage } = config;
+        try {
+            const range = trafficRange?.value || '24h';
+            const peerFilter = getServerPeerFilterOrEmpty();
+            let url = `${endpoint}?range_key=${encodeURIComponent(range)}`;
+            if (peerFilter) {
+                url += `&peer=${encodeURIComponent(peerFilter)}`;
+            }
+            const result = await api('GET', url, null, { signal, timeoutMs: API_TIMEOUT_MS });
+            setCache(unwrapApiData(result));
+            render();
+            return true;
+        } catch (e) {
+            if (isAbortError(e)) return true;
+            console.error(logLabel, e);
+            if (getCache()) {
+                render();
+            } else {
+                showSectionError(elements, uiErrorMessage);
+            }
+            return false;
+        }
+    }
+
     /**
      * Generic traffic table renderer to eliminate duplication between country and ASN tables.
      * 
@@ -409,8 +632,9 @@
      * @param {Object} config.renderKey - Object with get/set for last render key
      * @param {string} config.itemNoun - Singular noun for summary (e.g., 'country', 'provider')
      * @param {string} config.itemNounPlural - Plural noun for summary
-     * @param {boolean} config.hasPeerData - Whether peer attribution data exists
-     * @param {number} config.unfilteredCount - Count before peer filtering
+    * @param {boolean} config.hasPeerData - Whether any item has peer_names data;
+    * used to distinguish missing attribution from a true empty peer result.
+    * @param {number} config.unfilteredCount - Server item count before client-side display threshold filtering.
      */
     function renderTrafficTable(config) {
         const {
@@ -450,7 +674,7 @@
         if (empty) empty.classList.add('d-none');
 
         // Summary text with time range
-        const totalTraffic = items.reduce((s, item) => s + item.total, 0);
+        const totalTraffic = items.reduce((s, item) => s + Number(item.total || 0), 0);
         const rangeLabel = getRangeLabel(trafficRange?.value || '24h');
         if (summary) {
             const noun = items.length === 1 ? itemNoun : itemNounPlural;
@@ -458,12 +682,12 @@
         }
 
         if (!tbody) return;
-        const maxTotal = items[0]?.total || 1;
+        const maxTotal = Number(items[0]?.total) || 1;
 
         // Render deduplication - skip if data unchanged
         const newRenderKey = buildRenderKey(items, unit, peerFilter);
-        if (newRenderKey === renderKey.get()) return;
-        renderKey.set(newRenderKey);
+        if (newRenderKey === renderKey.current) return;
+        renderKey.current = newRenderKey;
 
         // Build rows using DOM construction (safe from XSS)
         const fragment = document.createDocumentFragment();
@@ -509,35 +733,30 @@
     /* ── Country Traffic ───────────────────────────────── */
 
     async function refreshCountryTraffic(signal) {
-        try {
-            const range = trafficRange?.value || '24h';
-            const peerFilter = getServerPeerFilterOrEmpty();
-            let url = `/api/wireguard/stats/traffic-by-country?range_key=${encodeURIComponent(range)}`;
-            if (peerFilter) {
-                url += `&peer=${encodeURIComponent(peerFilter)}`;
-            }
-            const result = await api(
-                'GET',
-                url,
-                null,
-                { signal, timeoutMs: API_TIMEOUT_MS },
-            );
-            cachedCountryData = result;
-            renderCountryTraffic();
-            return true;
-        } catch (e) {
-            if (isAbortError(e)) return true;
-            console.error('Country traffic error:', e);
-            return false;
-        }
+        return refreshTrafficBreakdown(signal, {
+            endpoint: '/api/wireguard/stats/traffic-by-country',
+            setCache: (data) => { cachedCountryData = data; },
+            getCache: () => cachedCountryData,
+            render: renderCountryTraffic,
+            elements: {
+                loading: countryLoading,
+                content: countryContent,
+                empty: countryEmpty,
+                summary: countrySummary,
+            },
+            logLabel: 'Country traffic error:',
+            uiErrorMessage: 'Failed to load country traffic. Will retry...',
+        });
     }
 
     function renderCountryTraffic() {
-        const data = cachedCountryData?.data || cachedCountryData;
+        const data = cachedCountryData;
         if (!data) return;
 
+        if (countryContent) countryContent.removeAttribute('aria-busy');
+
         let countries = Array.isArray(data.countries) ? data.countries : [];
-        const unit = data.display_unit || 'MB';
+        const unit = data.display_unit ?? 'MB';
 
         // Check if peer attribution data exists (any country has peer_names)
         const hasPeerData = countries.some(c => Array.isArray(c.peer_names) && c.peer_names.length > 0);
@@ -549,7 +768,10 @@
 
         // Filter out countries with zero or negligible traffic (that would display as "0")
         const minDisplayThreshold = (unit === 'MB' || unit === 'GB') ? 0.05 : 0.005;
-        countries = countries.filter(c => c.total >= minDisplayThreshold);
+        countries = countries.filter(c => {
+            const total = Number(c.total);
+            return Number.isFinite(total) && total >= minDisplayThreshold;
+        });
 
         renderTrafficTable({
             items: countries,
@@ -562,50 +784,10 @@
                 summary: countrySummary,
                 tbody: countryTbody,
             },
-            createFirstCell: (country) => {
-                const flagCell = createCell('td', 'text-center');
-                const countryCode = String(country.code || '').trim().toLowerCase();
-                const flagUrl = /^[a-z]{2}$/.test(countryCode)
-                    ? `https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/${countryCode}.svg`
-                    : '';
-                if (flagUrl && isFlagIconUrl(flagUrl)) {
-                    const img = document.createElement('img');
-                    img.src = flagUrl;
-                    img.alt = country.name ? `Flag of ${country.name}` : '';
-                    img.className = 'country-flag';
-                    img.loading = 'lazy';
-                    // Attach error handler during creation
-                    img.addEventListener('error', () => { img.style.display = 'none'; }, { once: true });
-                    flagCell.appendChild(img);
-                } else {
-                    const icon = document.createElement('span');
-                    icon.className = 'material-icons traffic-fallback-icon';
-                    icon.setAttribute('aria-hidden', 'true');
-                    icon.textContent = 'public';
-                    flagCell.appendChild(icon);
-                }
-                return flagCell;
-            },
-            createNameCell: (country) => {
-                const nameCell = createCell('td');
-                const nameDiv = document.createElement('div');
-                nameDiv.className = 'fw-medium';
-                nameDiv.title = country.name || '';
-                nameDiv.textContent = country.name || '';
-                nameCell.appendChild(nameDiv);
-                return nameCell;
-            },
-            buildRenderKey: (items, u, pf) => {
-                // Use item identifiers for robust deduplication (avoids hash collisions)
-                const hash = items.map((c, i) =>
-                    `${c.code || c.name || i}:${c.total.toFixed(2)}`
-                ).join(';');
-                return `${u}|${pf}|${items.length}|${hash}`;
-            },
-            renderKey: {
-                get: () => lastCountryRenderKey,
-                set: (key) => { lastCountryRenderKey = key; }
-            },
+            createFirstCell: createCountryFirstCell,
+            createNameCell: createCountryNameCell,
+            buildRenderKey: buildCountryRenderKey,
+            renderKey: countryRenderKey,
             itemNoun: 'country',
             itemNounPlural: 'countries',
             hasPeerData,
@@ -616,35 +798,30 @@
     /* ── ASN Traffic ───────────────────────────────── */
 
     async function refreshASNTraffic(signal) {
-        try {
-            const range = trafficRange?.value || '24h';
-            const peerFilter = getServerPeerFilterOrEmpty();
-            let url = `/api/wireguard/stats/traffic-by-asn?range_key=${encodeURIComponent(range)}`;
-            if (peerFilter) {
-                url += `&peer=${encodeURIComponent(peerFilter)}`;
-            }
-            const result = await api(
-                'GET',
-                url,
-                null,
-                { signal, timeoutMs: API_TIMEOUT_MS },
-            );
-            cachedASNData = result;
-            renderASNTraffic();
-            return true;
-        } catch (e) {
-            if (isAbortError(e)) return true;
-            console.error('ASN traffic error:', e);
-            return false;
-        }
+        return refreshTrafficBreakdown(signal, {
+            endpoint: '/api/wireguard/stats/traffic-by-asn',
+            setCache: (data) => { cachedASNData = data; },
+            getCache: () => cachedASNData,
+            render: renderASNTraffic,
+            elements: {
+                loading: asnLoading,
+                content: asnContent,
+                empty: asnEmpty,
+                summary: asnSummary,
+            },
+            logLabel: 'ASN traffic error:',
+            uiErrorMessage: 'Failed to load ASN traffic. Will retry...',
+        });
     }
 
     function renderASNTraffic() {
-        const data = cachedASNData?.data || cachedASNData;
+        const data = cachedASNData;
         if (!data) return;
 
+        if (asnContent) asnContent.removeAttribute('aria-busy');
+
         let asns = Array.isArray(data.asns) ? data.asns : [];
-        const unit = data.display_unit || 'MB';
+        const unit = data.display_unit ?? 'MB';
 
         // Check if peer attribution data exists (any ASN has peer_names)
         const hasPeerData = asns.some(a => Array.isArray(a.peer_names) && a.peer_names.length > 0);
@@ -656,7 +833,10 @@
 
         // Filter out ASNs with zero or negligible traffic (that would display as "0")
         const minDisplayThreshold = (unit === 'MB' || unit === 'GB') ? 0.05 : 0.005;
-        asns = asns.filter(a => a.total >= minDisplayThreshold);
+        asns = asns.filter(a => {
+            const total = Number(a.total);
+            return Number.isFinite(total) && total >= minDisplayThreshold;
+        });
 
         renderTrafficTable({
             items: asns,
@@ -669,43 +849,10 @@
                 summary: asnSummary,
                 tbody: asnTbody,
             },
-            createFirstCell: (asn) => {
-                const asnCell = createCell('td', 'traffic-col-asn');
-                const asnBadge = document.createElement('span');
-                asnBadge.className = 'badge bg-secondary bg-opacity-25 text-body asn-badge';
-                asnBadge.textContent = asn.asn === '0' ? '–' : `AS${asn.asn}`;
-                asnCell.appendChild(asnBadge);
-                return asnCell;
-            },
-            createNameCell: (asn) => {
-                const nameCell = createCell('td');
-                const nameDiv = document.createElement('div');
-                nameDiv.className = 'fw-medium';
-                nameDiv.title = asn.name || '';
-                nameDiv.textContent = asn.name || '';
-
-                // Add inline ASN for mobile (only if ASN exists)
-                if (asn.asn && asn.asn !== '0') {
-                    const asnInline = document.createElement('span');
-                    asnInline.className = 'asn-inline';
-                    asnInline.textContent = `AS${asn.asn}`;
-                    nameDiv.appendChild(asnInline);
-                }
-
-                nameCell.appendChild(nameDiv);
-                return nameCell;
-            },
-            buildRenderKey: (items, u, pf) => {
-                // Use item identifiers for robust deduplication (avoids hash collisions)
-                const hash = items.map((a, i) =>
-                    `${a.asn || a.name || i}:${a.total.toFixed(2)}`
-                ).join(';');
-                return `${u}|${pf}|${items.length}|${hash}`;
-            },
-            renderKey: {
-                get: () => lastASNRenderKey,
-                set: (key) => { lastASNRenderKey = key; }
-            },
+            createFirstCell: createAsnFirstCell,
+            createNameCell: createAsnNameCell,
+            buildRenderKey: buildAsnRenderKey,
+            renderKey: asnRenderKey,
             itemNoun: 'provider',
             itemNounPlural: 'providers',
             hasPeerData,
@@ -720,16 +867,15 @@
         const currentValue = trafficPeerFilter.value;
 
         const peerOptions = peers.map(p => ({
-            value: p.name || p.key || 'Unknown',
-            key: p.key || p.name,
-            label: p.name || p.key || 'Unknown',
+            value: p.name ?? p.key ?? 'Unknown',
+            key: p.key ?? p.name,
+            label: p.name ?? p.key ?? 'Unknown',
         }));
 
         const newKeys = peerOptions.map(p => p.key).sort().join(',');
-        const oldKeys = knownTrafficPeers.map(p => p.key).sort().join(',');
-        if (newKeys === oldKeys) return;
+        if (newKeys === knownTrafficPeerKeys) return;
 
-        knownTrafficPeers = peerOptions;
+        knownTrafficPeerKeys = newKeys;
 
         // Build select options using DOM construction
         const defaultOpt = document.createElement('option');
@@ -764,29 +910,32 @@
                 null,
                 { signal, timeoutMs: API_TIMEOUT_MS },
             );
-            cachedTrafficData = traffic;
+            cachedTrafficData = unwrapApiData(traffic);
+            cachedTrafficLabels = null;
             renderTrafficCharts();
             return true;
         } catch (e) {
             if (isAbortError(e)) return true;
             console.error('Traffic chart error:', e);
-            // Hide loading spinner and show error state on failure
-            if (trafficCombinedLoading) trafficCombinedLoading.classList.add('d-none');
-            if (trafficCombinedWrap) trafficCombinedWrap.classList.add('d-none');
-            if (trafficEmptyState) {
-                trafficEmptyState.classList.remove('d-none');
-                clearElement(trafficEmptyState);
-                trafficEmptyState.appendChild(chartEmptyState('Failed to load traffic data. Will retry...'));
-            }
+            showSectionError(
+                {
+                    loading: trafficCombinedLoading,
+                    content: trafficCombinedWrap,
+                    empty: trafficEmptyState,
+                    summary: null,
+                },
+                'Failed to load traffic data. Will retry...'
+            );
             return false;
         }
     }
 
     function renderTrafficCharts() {
         if (!isAdmin || !trafficCombinedWrap || !trafficEmptyState || !trafficCombinedCanvas) return;
-        // Handle both wrapped { data: {...} } and bare response formats
-        const traffic = cachedTrafficData?.data || cachedTrafficData;
+        const traffic = cachedTrafficData;
         if (!traffic) return;
+
+        trafficCombinedWrap.removeAttribute('aria-busy');
 
         // Hide loading indicator and show content on first render
         if (trafficCombinedLoading && !trafficCombinedLoading.classList.contains('d-none')) {
@@ -804,13 +953,14 @@
             return;
         }
 
-        const peerFilter = trafficPeerFilter?.value || '';
-        const hours = Number(traffic?.hours || 24);
-        const labels = (traffic?.labels || []).map(ts => shortLabel(ts, hours));
-        const unit = traffic?.display_unit || 'MB';
-        let peers = Array.isArray(traffic?.peers_display) && traffic.peers_display.length
-            ? traffic.peers_display
-            : (Array.isArray(traffic?.peers) ? traffic.peers : []);
+        const peerFilter = trafficPeerFilter?.value ?? '';
+        const hours = Number(traffic?.hours ?? 24);
+        if (!cachedTrafficLabels) {
+            cachedTrafficLabels = (traffic?.labels ?? []).map(ts => shortLabel(ts, hours));
+        }
+        const labels = cachedTrafficLabels;
+        const unit = traffic?.display_unit ?? 'MB';
+        let peers = Array.isArray(traffic?.peers) ? traffic.peers : [];
 
         // Use all_peers for filter dropdown (includes peers without traffic data)
         const allPeersForFilter = Array.isArray(traffic?.all_peers) ? traffic.all_peers : peers;
@@ -841,17 +991,14 @@
         const isAllPeersView = !peerFilter && peers.length > 1;
 
         if (isAllPeersView) {
+            const visiblePeers = limitAllPeerSeries(peers);
             // All Peers: one cumulative (RX+TX) line per peer
-            peers.forEach((peer, idx) => {
-                const rx = Array.isArray(peer.rx) ? peer.rx : [];
-                const tx = Array.isArray(peer.tx) ? peer.tx : [];
-                const peerName = peer.name || peer.key || `Peer ${idx + 1}`;
+            visiblePeers.forEach((peer, idx) => {
+                const peerName = peer.name ?? peer.key ?? `Peer ${idx + 1}`;
                 const color = peerColors[idx % peerColors.length];
-                // Sum RX + TX per bucket
-                const total = rx.map((r, i) => Number(r || 0) + Number(tx[i] || 0));
                 datasets.push({
                     label: peerName,
-                    data: total,
+                    data: peer.total,
                     borderColor: color,
                     backgroundColor: 'transparent',
                     fill: false,
@@ -985,8 +1132,9 @@
 
     /* ── Refresh Management ───────────────────────────────── */
 
-    async function refreshAll() {
+    async function refreshAll(scope = 'all') {
         if (!refreshScheduler) return;
+        queueRefreshScope(scope);
         await refreshScheduler.refresh();
     }
 
@@ -1001,7 +1149,7 @@
     }
 
     /**
-     * Centralized cleanup to ensure consistency across beforeunload and pagehide.
+    * Centralized cleanup for full page teardown only.
      * Idempotent - safe to call multiple times.
      */
     function cleanup() {
@@ -1031,9 +1179,10 @@
             trafficRange.removeEventListener('change', rangeChangeHandler);
             rangeChangeHandler = null;
         }
-        // Remove cleanup listeners to prevent duplicate registrations on bfcache restore
-        window.removeEventListener('beforeunload', cleanup);
-        window.removeEventListener('pagehide', cleanup);
+        if (pagehideHandler) {
+            window.removeEventListener('pagehide', pagehideHandler);
+            pagehideHandler = null;
+        }
         destroyTrafficCharts();
         if (refreshScheduler) {
             refreshScheduler.destroy();
@@ -1052,8 +1201,6 @@
             return;
         }
 
-        // Reset state for bfcache restore
-        isInitialRender = true;
         cleanupComplete = false;
 
         // Clean up any existing chart from bfcache restore.
@@ -1092,11 +1239,15 @@
                 // Guard against scheduler being destroyed during refresh
                 if (!refreshScheduler) return false;
 
-                const results = await Promise.allSettled([
-                    refreshTrafficCharts(signal),
-                    refreshCountryTraffic(signal),
-                    refreshASNTraffic(signal),
-                ]);
+                const scope = dequeueRefreshScope();
+
+                const refreshTasks = [];
+                if (scope === 'all') {
+                    refreshTasks.push(refreshTrafficCharts(signal));
+                }
+                refreshTasks.push(refreshCountryTraffic(signal), refreshASNTraffic(signal));
+
+                const results = await Promise.allSettled(refreshTasks);
                 const statuses = results.map(r => (r.status === 'fulfilled' ? r.value : false));
                 return statuses.some(v => v === true);
             },
@@ -1117,42 +1268,48 @@
                 const now = Date.now();
                 if (now - lastVisibleRefresh > MIN_VISIBLE_REFRESH_INTERVAL_MS) {
                     lastVisibleRefresh = now;
-                    refreshAll();
+                    void refreshAll();
                 }
                 startAutoRefresh();
             }
         };
         document.addEventListener('visibilitychange', visibilityHandler);
 
-        // Centralized cleanup on page unload
-        window.addEventListener('beforeunload', cleanup);
-        window.addEventListener('pagehide', cleanup);
+        // Only tear down when the page is actually discarded.
+        pagehideHandler = (event) => {
+            if (!event.persisted) {
+                cleanup();
+            }
+        };
+        window.addEventListener('pagehide', pagehideHandler);
 
         peerFilterHandler = () => {
             clearTimeout(peerFilterTimeout);
+            const needsChartFetch = !cachedTrafficData;
 
-            // Server-side filtering requires a full refresh to re-fetch data with the new peer filter.
-            // This keeps country and ASN traffic aligned with the selected peer.
-            if (!trafficCombinedWrap || isInitialRender) {
-                void refreshAll();
-                return;
-            }
+            // Show spinners immediately for instant feedback (always show chart spinner for UX)
+            showTrafficLoading({
+                chart: isAdmin,
+                country: true,
+                asn: true,
+            });
 
-            trafficCombinedWrap.classList.add('traffic-chart-fading');
             peerFilterTimeout = setTimeout(() => {
-                void refreshAll()
-                    .catch((e) => dbg('Refresh failed during filter change:', e))
-                    .finally(() => {
-                        trafficCombinedWrap?.classList.remove('traffic-chart-fading');
-                    });
+                if (!needsChartFetch) {
+                    renderTrafficCharts();
+                }
+
+                void refreshAll(needsChartFetch ? 'all' : 'breakdowns')
+                    .catch((e) => dbg('Refresh failed during filter change:', e));
             }, 50);
         };
         trafficPeerFilter?.addEventListener('change', peerFilterHandler);
 
         rangeChangeHandler = () => {
             clearTimeout(trafficRangeDebounce);
+            showTrafficLoading({ chart: isAdmin, country: true, asn: true });
             trafficRangeDebounce = setTimeout(() => {
-                refreshAll();
+                void refreshAll('all');
             }, 200);
         };
         trafficRange?.addEventListener('change', rangeChangeHandler);
@@ -1191,7 +1348,6 @@
             .catch(e => dbg('Initial refresh failed:', e))
             .finally(() => {
                 startAutoRefresh();
-                isInitialRender = false;
             });
     }
 

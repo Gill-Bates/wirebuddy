@@ -44,6 +44,8 @@ export function summarizeFindings(result) {
     if (result.metrics.tablesWithoutResponsive?.length) pushWarning(`tablesWithoutResponsive=${result.metrics.tablesWithoutResponsive.length}`);
     if (result.metrics.ghostScroll) pushWarning('ghostScrollDetected');
     if (result.metrics.ghostScrollContainers?.length) pushWarning(`ghostScrollContainers=${result.metrics.ghostScrollContainers.length}`);
+    if (result.metrics.scrollbarGutterRisks?.length) pushWarning(`scrollbarGutterRisks=${result.metrics.scrollbarGutterRisks.length}`);
+    if (result.metrics.safariTableOverflowRisks?.length) pushWarning(`safariTableOverflowRisks=${result.metrics.safariTableOverflowRisks.length}`);
     if (result.metrics.horizontalOverflow.hasOverflow) pushHard('horizontalOverflow');
     if (result.metrics.horizontalOverflow.hasOverflow && result.metrics.horizontalOverflow.offenders.length) {
         pushHard(`overflowOffenders=${result.metrics.horizontalOverflow.offenders.length}`);
@@ -339,6 +341,21 @@ export function summarizeFindings(result) {
     if (result.network.requestFailures.length) pushHard(`failedRequests=${result.network.requestFailures.length}`);
     if (result.network.badResponses.length) pushHard(`badResponses=${result.network.badResponses.length}`);
     if (result.diff.sizeMismatch) pushHard('screenshotSizeMismatch');
+    if (result.metrics.trafficTableHealth) {
+        const emptyTrafficTables = Object.entries(result.metrics.trafficTableHealth)
+            .filter(([, metric]) => metric?.suspiciousEmpty)
+            .map(([name]) => name);
+        if (emptyTrafficTables.length) {
+            pushHard(`trafficTablesEmpty=${emptyTrafficTables.join(',')}`);
+        }
+
+        const riskyTrafficScrollbarGutters = Object.entries(result.metrics.trafficTableHealth)
+            .filter(([, metric]) => metric?.hasRiskyScrollbarGutter)
+            .map(([name]) => name);
+        if (riskyTrafficScrollbarGutters.length) {
+            pushWarning(`trafficScrollbarGutter=${riskyTrafficScrollbarGutters.join(',')}`);
+        }
+    }
 
     const duplicateRequestMap = new Map();
     for (const entry of result.network.requests || []) {

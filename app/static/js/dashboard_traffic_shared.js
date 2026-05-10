@@ -131,7 +131,7 @@
             primaryColor,
             accentRgb,
             dlColor: primaryColor,
-            dlBg: isDark ? 'rgba(255,99,132,0.12)' : 'rgba(255,99,132,0.10)',
+            dlBg: isDark ? `rgba(${accentRgb}, 0.12)` : `rgba(${accentRgb}, 0.10)`,
             ulColor: isDark ? '#6edff6' : '#0dcaf0',
             ulBg: isDark ? 'rgba(110,223,246,0.12)' : 'rgba(13,202,240,0.12)',
             rttColor: 'rgba(255, 193, 7, 0.85)',

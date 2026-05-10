@@ -12,6 +12,7 @@ class ApiError extends Error {
 }
 
 const MAX_API_ERROR_MESSAGE_LENGTH = 500;
+const LOGOUT_REQUEST_TIMEOUT_MS = 5000;
 
 function startReconnectModeSafe() {
     if (typeof _startReconnectMode === 'function') {
@@ -57,6 +58,9 @@ async function logout() {
     _logoutPromise = (async () => {
         clearSessionData();
 
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), LOGOUT_REQUEST_TIMEOUT_MS);
+
         try {
             // Best-effort logout call, don't block redirect on failure
             await fetch('/api/logout', {
@@ -65,8 +69,10 @@ async function logout() {
                     'X-CSRF-Token': getCsrfToken(),
                 },
                 credentials: 'same-origin',
+                signal: controller.signal,
             }).catch(() => { });
         } finally {
+            clearTimeout(timeoutId);
             window.location.href = '/login';
             // Fallback reset only if redirect did not happen.
             setTimeout(() => {
@@ -158,12 +164,8 @@ async function api(method, url, data = null, opts = {}) {
         startReconnectModeSafe();
         throw new ApiError('Trying to reconnect ...', 'SERVER_UNAVAILABLE');
     } else if (res.ok) {
-        const reconnectState = getReconnectStateSafe();
-        if (reconnectState) {
-            if (reconnectState.active) {
-                stopReconnectModeSafe();
-            }
-            reconnectState.failCount = 0;
+        if (getReconnectStateSafe()?.active) {
+            stopReconnectModeSafe();
         }
     }
 

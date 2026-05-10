@@ -3,8 +3,9 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-const _wbReconnectEl = document.getElementById('wbReconnectModal');
-const _wbReconnectModal = _wbReconnectEl ? new bootstrap.Modal(_wbReconnectEl) : null;
+const RECONNECT_PROBE_TIMEOUT_MS = 10000;
+
+let _wbReconnectModal = null;
 
 const _wbReconnectState = {
     active: false,
@@ -30,6 +31,16 @@ const _wbReconnectApi = Object.freeze({
 });
 
 window.WBReconnect = _wbReconnectApi;
+
+function _getReconnectModal() {
+    if (_wbReconnectModal) return _wbReconnectModal;
+
+    const reconnectEl = document.getElementById('wbReconnectModal');
+    if (!reconnectEl) return null;
+
+    _wbReconnectModal = new bootstrap.Modal(reconnectEl);
+    return _wbReconnectModal;
+}
 
 function _isReconnectActive() {
     return _wbReconnectState.active;
@@ -137,7 +148,7 @@ async function _probeReconnect() {
     _wbReconnectState.inFlight = true;
 
     try {
-        const res = await _fetchPing();
+        const res = await _fetchPing({ timeoutMs: RECONNECT_PROBE_TIMEOUT_MS });
         if (_handlePingResponse(res) === 'handled') {
             return;
         }
@@ -219,13 +230,11 @@ function _enterReconnectMode() {
 
     const toastContainer = document.getElementById('wbToastContainer');
     if (toastContainer) {
-        toastContainer.querySelectorAll('.toast').forEach(el => {
-            bootstrap.Toast.getInstance(el)?.dispose();
-        });
         toastContainer.replaceChildren();
     }
 
-    if (_wbReconnectModal) _wbReconnectModal.show();
+    const reconnectModal = _getReconnectModal();
+    if (reconnectModal) reconnectModal.show();
     window.dispatchEvent(new CustomEvent('wb:reconnect:start'));
 }
 
@@ -252,7 +261,8 @@ function _onOffline() {
     _startReconnectMode(true);
 }
 
-function _onPageShow() {
+function _onPageShow(event) {
+    if (!event?.persisted) return;
     if (_wbReconnectState.active) return;
     _scheduleHeartbeat(1000);
 }
@@ -266,6 +276,15 @@ function _onPageHide() {
 function destroyReconnect() {
     _clearHeartbeatTimer();
     _clearReconnectTimer();
+    _wbReconnectState.active = false;
+    _wbReconnectState.inFlight = false;
+    _wbReconnectState.delayMs = 2000;
+    _wbReconnectState.failCount = 0;
+    document.body.classList.remove('wb-reconnecting');
+    const reconnectModal = _getReconnectModal();
+    if (reconnectModal) {
+        _safeHideModal(reconnectModal);
+    }
     document.removeEventListener('visibilitychange', _onVisibilityChange);
     window.removeEventListener('online', _onOnline);
     window.removeEventListener('offline', _onOffline);

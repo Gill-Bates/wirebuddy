@@ -2,6 +2,14 @@
 
 {% block title %}Nodes – WireBuddy{% endblock %}
 
+{% set flag_icon_base_url = "https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3" %}
+{% macro country_flag(code, alt_prefix='Country flag') -%}
+{% set cc = (code or '')|lower %}
+{% if cc|length == 2 and cc[0].isalpha() and cc[1].isalpha() %}
+<img class="node-country-flag" width="16" height="12" alt="{{ alt_prefix }}: {{ cc|upper }}" decoding="async" loading="lazy" src="{{ flag_icon_base_url }}/{{ cc }}.svg">
+{% endif %}
+{%- endmacro %}
+
 {% block extra_css %}
 <style>
     :root {
@@ -18,7 +26,7 @@
         text-align: center;
     }
     
-    /* Node FQDN stacked layout (same style as peer-client-ip) */
+    /* Node FQDN layout with inline location meta */
     .node-fqdn-stack {
         display: flex;
         flex-direction: column;
@@ -41,6 +49,10 @@
     }
 
     .node-fqdn-meta {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.25rem;
         font-size: .75rem;
         color: var(--bs-secondary-color);
         margin-left: calc(var(--flag-width) + var(--flag-gap));
@@ -50,7 +62,7 @@
 
     .node-fqdn-meta .node-meta-city,
     .node-fqdn-meta .node-meta-provider {
-        display: block;
+        display: inline;
     }
 
     .node-fqdn-meta .node-meta-provider {
@@ -62,6 +74,10 @@
         vertical-align: bottom;
     }
 
+    .node-fqdn-meta .node-meta-separator {
+        opacity: 0.7;
+    }
+
     .node-country-flag {
         width: var(--flag-width);
         height: var(--flag-height);
@@ -69,6 +85,10 @@
         box-shadow: 0 0 0 1px rgba(0, 0, 0, .15);
         object-fit: cover;
         flex: 0 0 auto;
+    }
+
+    .nodes-empty-icon {
+        font-size: 3rem;
     }
 
     .enrollment-token-box {
@@ -93,7 +113,7 @@
         /* Ensure enough space for 5 buttons (5 × 38px + 4 × 4px gap = 206px) */
         min-width: 210px;
     }
-    /* Compact action buttons for table rows (v1.3.3 style) */
+    /* Compact square action buttons: 38px touch target, icon-only */
     .node-action-btn {
         /* Accessibility: 38px touch target (UI-Lint CLICK_TARGET_MIN_SIZE_PX) */
         min-width: 38px;
@@ -108,6 +128,10 @@
     .node-action-btn .material-icons {
         font-size: 18px;
         pointer-events: none;
+    }
+
+    .wb-step-hidden {
+        display: none !important;
     }
 
     @media (min-width: 768px) and (max-width: 1799.98px) {
@@ -280,7 +304,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="container-fluid wb-page">
+<div class="container-fluid wb-page" id="nodesPageRoot" data-flag-icon-base-url="{{ flag_icon_base_url }}">
 <div class="wb-page-header flex-wrap gap-2">
     <h2 class="page-title"><span class="material-icons me-2">hub</span>Remote Nodes</h2>
     <button type="button" class="btn btn-primary nodes-primary-trigger" data-bs-toggle="modal" data-bs-target="#addNodeModal">
@@ -319,16 +343,16 @@
                         <td data-label="FQDN" class="node-fqdn-cell">
                             <div class="node-fqdn-stack">
                                 <div class="node-fqdn-main">
-                                    {% set node_country_code = (node.geo_country_code or '')|lower %}
-                                    {% if node_country_code|length == 2 and node_country_code[0].isalpha() and node_country_code[1].isalpha() %}
-                                    <img class="node-country-flag" alt="Country flag: {{ node_country_code|upper }}" decoding="async" loading="lazy" src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ node_country_code }}.svg">
-                                    {% endif %}
+                                    {{ country_flag(node.geo_country_code) }}
                                     <code>{{ node.fqdn }}</code>
                                 </div>
                                 {% if node.geo_city or node.geo_as_org %}
                                 <div class="node-fqdn-meta">
                                     {% if node.geo_city %}
                                     <span class="node-meta-city">{{ node.geo_city }}</span>
+                                    {% endif %}
+                                    {% if node.geo_city and node.geo_as_org %}
+                                    <span class="node-meta-separator" aria-hidden="true">&middot;</span>
                                     {% endif %}
                                     {% if node.geo_as_org %}
                                     <span class="node-meta-provider">{{ node.geo_as_org }}</span>
@@ -376,10 +400,7 @@
                                 </div>
                                 {% if node.last_speedtest.server %}
                                 <div class="small text-muted mt-1 d-flex align-items-center flex-wrap gap-1">
-                                    {% set speedtest_country_code = (node.last_speedtest.country_code or '')|lower %}
-                                    {% if speedtest_country_code|length == 2 and speedtest_country_code[0].isalpha() and speedtest_country_code[1].isalpha() %}
-                                    <img class="node-country-flag" alt="Country flag: {{ speedtest_country_code|upper }}" decoding="async" loading="lazy" src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ speedtest_country_code }}.svg">
-                                    {% endif %}
+                                    {{ country_flag(node.last_speedtest.country_code) }}
                                     <span class="text-truncate" title="{{ node.last_speedtest.server }}">{{ node.last_speedtest.server }}</span>
                                 </div>
                                 {% endif %}
@@ -465,7 +486,7 @@
         </div>
         {% else %}
         <div class="nodes-empty-state text-center py-5">
-            <span class="material-icons text-muted mb-3" style="font-size: 3rem;" aria-hidden="true">hub</span>
+            <span class="material-icons text-muted mb-3 nodes-empty-icon" aria-hidden="true">hub</span>
             <h3 class="h5 mb-2">No remote nodes configured yet</h3>
             <p class="text-muted mb-0">Click <strong>Add Node</strong> to register a remote VPN server.</p>
         </div>
@@ -474,7 +495,7 @@
 </div>
 
 <!-- Add Node Modal -->
-<div class="modal fade" id="addNodeModal" tabindex="-1" aria-labelledby="addNodeModalLabel" aria-modal="true" role="dialog">
+<div class="modal fade" id="addNodeModal" tabindex="-1" aria-labelledby="addNodeModalLabel">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -496,18 +517,19 @@
                     <div class="mb-3">
                         <label for="nodeFqdn" class="form-label">FQDN / IP Address <span class="text-danger">*</span></label>
                         <input type="text" class="form-control" id="nodeFqdn" placeholder="e.g. de.vpn.example.com"
-                               required maxlength="253" autocomplete="off">
-                        <small class="text-muted">Public address where clients will connect</small>
+                               required maxlength="253" autocomplete="off" aria-describedby="nodeFqdnHelp nodeFqdnFeedback" spellcheck="false">
+                        <small id="nodeFqdnHelp" class="text-muted">Public address where clients will connect</small>
+                        <div class="invalid-feedback" id="nodeFqdnFeedback">Enter a valid FQDN, IPv4, or IPv6 address without a port.</div>
                     </div>
                     <div class="mb-3">
                         <label for="nodePort" class="form-label">WireGuard Port <span class="text-danger">*</span></label>
-                        <input type="number" class="form-control" id="nodePort" value="{{ default_wg_port }}"
+                           <input type="number" class="form-control" id="nodePort" value="{{ default_wg_port }}" data-default="{{ default_wg_port }}"
                                min="1" max="65535" required>
                         <small class="text-muted">UDP port for WireGuard (default from global settings)</small>
                     </div>
                 </div>
                 <!-- Step 2: Token Display -->
-                <div id="addNodeStep2" style="display: none;">
+                <div id="addNodeStep2" class="wb-step-hidden">
                     <div class="alert alert-success mb-3">
                         <span class="material-icons align-middle me-1">check_circle</span>
                         Node created successfully!
@@ -532,7 +554,7 @@
 </div>
 
 <!-- Edit Node Modal -->
-<div class="modal fade" id="editNodeModal" tabindex="-1" aria-labelledby="editNodeModalLabel" aria-modal="true" role="dialog">
+<div class="modal fade" id="editNodeModal" tabindex="-1" aria-labelledby="editNodeModalLabel">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -550,7 +572,9 @@
                 </div>
                 <div class="mb-3">
                     <label for="editNodeFqdn" class="form-label">FQDN / IP Address <span class="text-danger">*</span></label>
-                    <input type="text" class="form-control" id="editNodeFqdn" maxlength="253" required autocomplete="off">
+                    <input type="text" class="form-control" id="editNodeFqdn" maxlength="253" required autocomplete="off"
+                           aria-describedby="editNodeFqdnFeedback" spellcheck="false">
+                    <div class="invalid-feedback" id="editNodeFqdnFeedback">Enter a valid FQDN, IPv4, or IPv6 address without a port.</div>
                 </div>
                 <div class="mb-3">
                     <label for="editNodePort" class="form-label">WireGuard Port <span class="text-danger">*</span></label>
@@ -575,7 +599,7 @@
 </div>
 
 <!-- Token Display Modal (for regeneration) -->
-<div class="modal fade" id="tokenModal" tabindex="-1" aria-labelledby="tokenModalLabel" aria-modal="true" role="dialog">
+<div class="modal fade" id="tokenModal" tabindex="-1" aria-labelledby="tokenModalLabel">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -614,10 +638,12 @@
     const POLL_INTERVAL_MS = 30000;
     const MAX_POLL_FAILURES = 3;
     const POLL_BACKOFF_MS = 60000;
-    const SPEEDTEST_STATE_STORAGE_KEY = 'wb_nodes_active_speedtests';
+    const SPEEDTEST_STORAGE_KEY = 'wb_nodes_active_speedtests';
     const SPEEDTEST_LOCK_TIMEOUT_MS = 180000;
     const SPEEDTEST_STATUS_POLL_MS = 5000;
-    const FLAG_ICON_BASE_URL = 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
+    const FLAG_ICON_BASE_URL = document.getElementById('nodesPageRoot')?.dataset.flagIconBaseUrl
+        || '{{ flag_icon_base_url }}';
+    const HOVER_MEDIA = window.matchMedia('(hover: hover) and (pointer: fine)');
     
     let pollTimer = null;
     let speedtestStatusTimer = null;
@@ -627,12 +653,7 @@
     let _pollSeq = 0; // Request versioning to guard against out-of-order responses
     const restartingNodes = new Map(); // node_id → { phase: 'sent'|'offline', timeout: number }
     const activeSpeedtests = new Map(); // node_id → { nodeName, baselineTs, startedAt, phase }
-
-    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-    const headers = {
-        'Content-Type': 'application/json',
-        'X-CSRF-Token': csrfToken,
-    };
+    const NODE_ROW_PREFIX = 'node-row-';
 
     // ========================================================================
     // DOM ELEMENT CACHE
@@ -642,13 +663,30 @@
     const tokenModalEl = document.getElementById('tokenModal');
     const addNodeForm = document.getElementById('addNodeForm');
     const editNodeForm = document.getElementById('editNodeForm');
-    const nodesTableBody = document.getElementById('nodesTableBody');
+    let nodesTableBody = document.getElementById('nodesTableBody');
     const addNodeFqdnInput = document.getElementById('nodeFqdn');
     const editNodeFqdnInput = document.getElementById('editNodeFqdn');
     const addNodeSubmitBtn = document.getElementById('addNodeSubmitBtn');
     const nodeNameInput = document.getElementById('addNodeName');
     const enrollmentTokenDisplay = document.getElementById('enrollmentTokenDisplay');
     const regenTokenDisplay = document.getElementById('regenTokenDisplay');
+
+    for (const dependency of ['api', 'wbToast', 'wbAlert', 'wbConfirm']) {
+        if (typeof window[dependency] !== 'function') {
+            console.error(`[nodes] Required global "${dependency}" is not defined. Page functionality disabled.`);
+            return;
+        }
+    }
+
+    // Local bandwidth formatting function (mirrors WBShared.formatBandwidthMetric)
+    function formatBandwidthMbit(valueMbit, gbitDigits = 1, mbitDigits = gbitDigits) {
+        const numericValue = Number(valueMbit);
+        if (!Number.isFinite(numericValue)) return '–';
+        const isGbit = numericValue >= 1000;
+        const scaled = isGbit ? numericValue / 1000 : numericValue;
+        const digits = Math.max(Number(isGbit ? gbitDigits : mbitDigits) || 0, 0);
+        return `${scaled.toFixed(digits)} ${isGbit ? 'Gbit/s' : 'Mbit/s'}`;
+    }
 
     const HOSTNAME_LABEL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
 
@@ -677,8 +715,8 @@
 
     function isValidHostname(value) {
         if (!value || value.length > 253) return false;
-        // Reject IPv6 addresses in hostname context
-        if (value.includes(':') && !isValidIpv6(value)) return false;
+        // Hostnames never contain ':'; reject IPv6 literals and host:port input early.
+        if (value.includes(':')) return false;
         if (value.includes('..') || value.startsWith('.') || value.endsWith('.')) return false;
         return value.split('.').every((label) => HOSTNAME_LABEL_RE.test(label));
     }
@@ -698,9 +736,42 @@
     }
 
     function validateNodeAddressField(input) {
+        if (!(input instanceof HTMLInputElement)) return false;
         const result = validateNodeAddressValue(input.value);
         input.setCustomValidity(result.message);
+        input.classList.toggle('is-invalid', !result.valid);
+        input.classList.toggle('is-valid', result.valid && input.value.trim().length > 0);
+
+        const feedbackId = `${input.id}Feedback`;
+        const feedback = document.getElementById(feedbackId);
+        if (feedback) {
+            feedback.textContent = result.message || 'Enter a valid FQDN, IPv4, or IPv6 address without a port.';
+        }
         return result.valid;
+    }
+
+    function resetNodeAddressFieldValidation(input) {
+        if (!(input instanceof HTMLInputElement)) return;
+        input.setCustomValidity('');
+        input.classList.remove('is-invalid', 'is-valid');
+    }
+
+    function getValidatedPort(inputId) {
+        const portInput = document.getElementById(inputId);
+        if (!(portInput instanceof HTMLInputElement)) {
+            console.error(`[nodes] Required port input "${inputId}" is missing.`);
+            return null;
+        }
+
+        const port = Number(portInput.value);
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+            portInput.setCustomValidity('Enter a valid port number (1-65535).');
+            portInput.reportValidity();
+            return null;
+        }
+
+        portInput.setCustomValidity('');
+        return port;
     }
 
     // ========================================================================
@@ -793,10 +864,50 @@
         return Number.isFinite(parsed) ? trimmed : '';
     }
 
+    function getNodeMobileMetaFingerprint(node) {
+        return JSON.stringify([
+            node?.node_version || '',
+            node?.wg_port ?? '',
+            node?.peer_count ?? 0,
+            node?.last_seen_text || 'Never',
+        ]);
+    }
+
+    function getSpeedtestFingerprint(speedtest) {
+        if (!speedtest || speedtest.status !== 'ok') {
+            return 'empty';
+        }
+        return JSON.stringify([
+            speedtest.ts || '',
+            speedtest.download_mbit ?? '',
+            speedtest.upload_mbit ?? '',
+            speedtest.server || '',
+            speedtest.country_code || '',
+        ]);
+    }
+
+    function disposeTooltips(root) {
+        if (typeof bootstrap === 'undefined' || !bootstrap.Tooltip || !root?.querySelectorAll) {
+            return;
+        }
+        for (const el of root.querySelectorAll('[data-bs-toggle="tooltip"]')) {
+            bootstrap.Tooltip.getInstance(el)?.dispose();
+        }
+    }
+
+    function clearRestartingNodeTimeouts() {
+        for (const entry of restartingNodes.values()) {
+            if (entry?.timeout) {
+                clearTimeout(entry.timeout);
+            }
+        }
+        restartingNodes.clear();
+    }
+
     function persistActiveSpeedtests() {
         try {
             if (!activeSpeedtests.size) {
-                localStorage.removeItem(SPEEDTEST_STATE_STORAGE_KEY);
+                localStorage.removeItem(SPEEDTEST_STORAGE_KEY);
                 return;
             }
 
@@ -809,17 +920,18 @@
                     phase: entry.phase === 'starting' ? 'starting' : 'running',
                 };
             }
-            localStorage.setItem(SPEEDTEST_STATE_STORAGE_KEY, JSON.stringify(serialized));
-        } catch (_) {
-            // Ignore storage failures and keep the in-memory lock.
+            localStorage.setItem(SPEEDTEST_STORAGE_KEY, JSON.stringify(serialized));
+        } catch (err) {
+            console.warn('[nodes] localStorage write failed:', err);
         }
     }
 
     function loadActiveSpeedtests() {
         let raw = '';
         try {
-            raw = localStorage.getItem(SPEEDTEST_STATE_STORAGE_KEY) || '';
-        } catch (_) {
+            raw = localStorage.getItem(SPEEDTEST_STORAGE_KEY) || '';
+        } catch (err) {
+            console.warn('[nodes] localStorage read failed:', err);
             return;
         }
 
@@ -841,11 +953,12 @@
                 });
             }
             persistActiveSpeedtests();
-        } catch (_) {
+        } catch (parseErr) {
+            console.warn('[nodes] Failed to parse speedtest state from localStorage:', parseErr);
             try {
-                localStorage.removeItem(SPEEDTEST_STATE_STORAGE_KEY);
-            } catch (_) {
-                // Ignore storage cleanup failures.
+                localStorage.removeItem(SPEEDTEST_STORAGE_KEY);
+            } catch (cleanupErr) {
+                console.warn('[nodes] localStorage cleanup failed:', cleanupErr);
             }
         }
     }
@@ -899,21 +1012,67 @@
         const button = row.querySelector('button[data-action="run-speedtest"]');
         if (!button) return;
 
-        const resolvedStatus = nodeStatus || button.dataset.nodeStatus || '';
+        // Only two authoritative sources: explicit parameter or row dataset
+        const resolvedStatus = nodeStatus ?? row.dataset.nodeStatus ?? '';
         const entry = activeSpeedtests.get(String(button.dataset.nodeId || '')) || null;
         applySpeedtestButtonState(button, resolvedStatus === 'online', entry);
     }
 
+    /**
+     * Returns true if the speedtest for the given entry has completed.
+        * Completion compares the latest result timestamp against the stored baseline.
+        * If baselineTs is set, any different timestamp means the run finished. If it is
+        * empty, any timestamp at or after startedAt (minus 5s skew tolerance) counts.
+     * @param {object} entry - Active speedtest state from activeSpeedtests
+        * @param {string} latestTs - Pre-normalized ISO timestamp of the latest result, or empty string
+        * @returns {boolean}
+     */
     function hasSpeedtestCompleted(entry, latestTs) {
-        const normalizedLatest = normalizeSpeedtestTimestamp(latestTs);
-        if (!normalizedLatest) return false;
+        if (!latestTs) return false;
 
         if (entry.baselineTs) {
-            return normalizedLatest !== entry.baselineTs;
+            return latestTs !== entry.baselineTs;
         }
 
-        const latestMs = Date.parse(normalizedLatest);
+        const latestMs = Date.parse(latestTs);
         return Number.isFinite(latestMs) && latestMs >= entry.startedAt - 5000;
+    }
+
+    function createFlagImage(countryCode, { altPrefix = 'Country flag' } = {}) {
+        const code = normalizeCountryCode(countryCode);
+        if (!code) return null;
+
+        const img = document.createElement('img');
+        img.className = 'node-country-flag';
+        img.alt = `${altPrefix}: ${code.toUpperCase()}`;
+        img.width = 16;
+        img.height = 12;
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.src = `${FLAG_ICON_BASE_URL}/${code}.svg`;
+        img.addEventListener('error', () => img.remove(), { once: true });
+        return img;
+    }
+
+    /**
+        * Attach error handlers and dimension guards to all .node-country-flag images in root.
+        * Idempotent: already initialized images are skipped via data-flag-initialized.
+        * Used for server-rendered rows; JS-built rows use createFlagImage() directly.
+        * @param {Document|Element} [root=document]
+     */
+    function initFlagImages(root = document) {
+        const scope = root && typeof root.querySelectorAll === 'function' ? root : document;
+        for (const img of scope.querySelectorAll('img.node-country-flag')) {
+            if (img.dataset.flagInitialized === 'true') continue;
+            img.width ||= 16;
+            img.height ||= 12;
+            img.addEventListener('error', () => img.remove(), { once: true });
+            if (img.complete && img.naturalWidth === 0) {
+                img.remove();
+                continue;
+            }
+            img.dataset.flagInitialized = 'true';
+        }
     }
 
     async function fetchLatestSpeedtestByNode() {
@@ -943,8 +1102,9 @@
         }
 
         const now = Date.now();
-        for (const [nodeId, entry] of [...activeSpeedtests.entries()]) {
-            const row = document.getElementById(`node-row-${nodeId}`);
+        // Map iteration is safe with delete per ECMAScript spec — no spread needed
+        for (const [nodeId, entry] of activeSpeedtests) {
+            const row = document.getElementById(`${NODE_ROW_PREFIX}${nodeId}`);
             if (!row) {
                 clearActiveSpeedtest(nodeId);
                 continue;
@@ -997,13 +1157,14 @@
     }
 
     function syncAllSpeedtestButtons() {
-        document.querySelectorAll('#nodesTableBody tr[id^="node-row-"]').forEach((row) => {
+        if (!nodesTableBody) return;
+        for (const row of nodesTableBody.querySelectorAll(`tr[id^="${NODE_ROW_PREFIX}"]`)) {
             syncSpeedtestButtonForRow(row);
-        });
+        }
     }
 
     function initTooltips(root = document) {
-        if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+        if (!HOVER_MEDIA.matches) {
             return;
         }
         if (typeof bootstrap === 'undefined' || !bootstrap.Tooltip) {
@@ -1011,24 +1172,27 @@
         }
 
         const scope = root && typeof root.querySelectorAll === 'function' ? root : document;
-        scope.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
+        for (const el of scope.querySelectorAll('[data-bs-toggle="tooltip"]')) {
             if (el.dataset.tooltipInitialized === 'true') {
-                return;
+                continue;
             }
             bootstrap.Tooltip.getOrCreateInstance(el, {
                 container: document.body,
                 trigger: 'hover focus',
             });
             el.dataset.tooltipInitialized = 'true';
-        });
+        }
     }
 
     /**
-     * Programmatically build a node table row (mirrors Jinja template structure).
-     * Used when adding new nodes without full page reload.
+     * Update the mobile-only meta cell (.node-mobile-meta.d-none) with version, port,
+     * peer count, and last-seen text. Visibility is controlled by CSS on mobile.
      */
     function syncNodeMobileMetaCell(cell, node) {
         if (!cell) return;
+
+        const fingerprint = getNodeMobileMetaFingerprint(node);
+        if (cell.dataset.metaFingerprint === fingerprint) return;
 
         const fragments = [];
         if (node.node_version) {
@@ -1055,10 +1219,16 @@
         fragments.push(lastSeenSpan);
 
         cell.replaceChildren(...fragments);
+        cell.dataset.metaFingerprint = fingerprint;
     }
 
     function renderSpeedtestCell(cell, speedtest) {
         if (!cell) return;
+
+        const fingerprint = getSpeedtestFingerprint(speedtest);
+        if (cell.dataset.speedtestFingerprint === fingerprint) {
+            return;
+        }
 
         cell.className = 'node-speedtest-cell';
         const hasOkResult = speedtest && speedtest.status === 'ok';
@@ -1067,6 +1237,7 @@
             muted.className = 'text-muted';
             muted.textContent = '—';
             cell.replaceChildren(muted);
+            cell.dataset.speedtestFingerprint = fingerprint;
             return;
         }
 
@@ -1074,20 +1245,6 @@
         wrap.className = 'd-flex gap-1 flex-wrap';
         const details = document.createElement('div');
         details.className = 'small text-muted mt-1 d-flex align-items-center flex-wrap gap-1';
-
-        const createSpeedtestFlag = (countryCode) => {
-            const code = String(countryCode || '').trim().toLowerCase();
-            if (!/^[a-z]{2}$/.test(code)) return null;
-
-            const img = document.createElement('img');
-            img.className = 'node-country-flag';
-            img.alt = `${code.toUpperCase()} flag`;
-            img.loading = 'lazy';
-            img.decoding = 'async';
-            img.src = `${FLAG_ICON_BASE_URL}/${code}.svg`;
-            img.addEventListener('error', () => img.remove());
-            return img;
-        };
 
         if (speedtest.download_mbit) {
             const dl = document.createElement('span');
@@ -1108,7 +1265,7 @@
         }
 
         if (speedtest.server) {
-            const flag = createSpeedtestFlag(speedtest.country_code);
+            const flag = createFlagImage(speedtest.country_code);
             if (flag) {
                 details.appendChild(flag);
                 details.appendChild(document.createTextNode(' '));
@@ -1127,6 +1284,7 @@
             muted.className = 'text-muted';
             muted.textContent = '—';
             cell.replaceChildren(muted);
+            cell.dataset.speedtestFingerprint = fingerprint;
             return;
         }
 
@@ -1138,11 +1296,78 @@
         }
 
         cell.replaceChildren(container);
+        cell.dataset.speedtestFingerprint = fingerprint;
     }
 
+    /**
+     * Create a styled action button for node operations.
+     */
+    function createActionButton({
+        action,
+        nodeId,
+        nodeName,
+        icon,
+        ariaLabel,
+        title,
+        danger = false,
+        disabled = false,
+        extraData = {},
+    }) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `btn btn-sm ${danger ? 'btn-outline-danger' : 'btn-outline-secondary'} node-action-btn`;
+        button.dataset.action = action;
+        button.dataset.nodeId = String(nodeId || '');
+        button.dataset.nodeName = nodeName;
+        for (const [key, value] of Object.entries(extraData)) {
+            if (value != null) button.dataset[key] = String(value);
+        }
+        button.setAttribute('aria-label', ariaLabel);
+        button.setAttribute('data-bs-toggle', 'tooltip');
+        button.setAttribute('data-bs-title', title);
+        button.disabled = disabled;
+
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'material-icons icon-md';
+        iconSpan.setAttribute('aria-hidden', 'true');
+        iconSpan.textContent = icon;
+        button.appendChild(iconSpan);
+        return button;
+    }
+
+    /**
+     * Create a version display element (code or muted dash).
+     */
+    function createVersionElement(version) {
+        if (version) {
+            const code = document.createElement('code');
+            code.textContent = version;
+            return code;
+        }
+        const span = document.createElement('span');
+        span.className = 'text-muted';
+        span.textContent = '—';
+        return span;
+    }
+
+    /**
+     * Create a last seen display element with appropriate styling.
+     */
+    function createLastSeenElement(text, className) {
+        const span = document.createElement('span');
+        span.className = className || 'text-muted';
+        span.textContent = text || 'Never';
+        return span;
+    }
+
+    /**
+        * Programmatically build a node table row mirroring the Jinja structure,
+        * including the hidden mobile-meta cell between Last Seen and Actions.
+        * Used when adding new nodes without full page reload.
+     */
     function buildNodeRow(node) {
         const tr = document.createElement('tr');
-        tr.id = `node-row-${node.id}`;
+        tr.id = `${NODE_ROW_PREFIX}${node.id}`;
         tr.dataset.lastSpeedtestTs = normalizeSpeedtestTimestamp(node.last_speedtest?.ts || '');
         tr.dataset.nodeStatus = node.status || '';
 
@@ -1172,13 +1397,8 @@
         fqdnMain.className = 'node-fqdn-main';
         const countryCode = normalizeCountryCode(node.geo_country_code);
         if (countryCode) {
-            const flag = document.createElement('img');
-            flag.className = 'node-country-flag';
-            flag.alt = `Country flag: ${countryCode.toUpperCase()}`;
-            flag.decoding = 'async';
-            flag.loading = 'lazy';
-            flag.src = `${FLAG_ICON_BASE_URL}/${countryCode}.svg`;
-            fqdnMain.appendChild(flag);
+            const flag = createFlagImage(countryCode);
+            if (flag) fqdnMain.appendChild(flag);
         }
         const fqdnCode = document.createElement('code');
         fqdnCode.textContent = node.fqdn;
@@ -1192,6 +1412,13 @@
                 citySpan.className = 'node-meta-city';
                 citySpan.textContent = node.geo_city;
                 fqdnMeta.appendChild(citySpan);
+            }
+            if (node.geo_city && node.geo_as_org) {
+                const separatorSpan = document.createElement('span');
+                separatorSpan.className = 'node-meta-separator';
+                separatorSpan.setAttribute('aria-hidden', 'true');
+                separatorSpan.textContent = '·';
+                fqdnMeta.appendChild(separatorSpan);
             }
             if (node.geo_as_org) {
                 const provSpan = document.createElement('span');
@@ -1221,16 +1448,7 @@
         // Version cell
         const tdVersion = document.createElement('td');
         tdVersion.setAttribute('data-label', 'Version');
-        if (node.node_version) {
-            const vCode = document.createElement('code');
-            vCode.textContent = node.node_version;
-            tdVersion.appendChild(vCode);
-        } else {
-            const vSpan = document.createElement('span');
-            vSpan.className = 'text-muted';
-            vSpan.textContent = '—';
-            tdVersion.appendChild(vSpan);
-        }
+        tdVersion.appendChild(createVersionElement(node.node_version));
 
         // Peers cell
         const tdPeers = document.createElement('td');
@@ -1246,10 +1464,7 @@
         const tdLastSeen = document.createElement('td');
         tdLastSeen.setAttribute('data-label', 'Last Seen');
         tdLastSeen.className = 'node-last-seen text-nowrap';
-        const lastSeenSpan = document.createElement('span');
-        lastSeenSpan.className = node.last_seen_class || 'text-muted';
-        lastSeenSpan.textContent = node.last_seen_text || 'Never';
-        tdLastSeen.appendChild(lastSeenSpan);
+        tdLastSeen.appendChild(createLastSeenElement(node.last_seen_text, node.last_seen_class));
 
         // Mobile meta cell (hidden on desktop)
         const tdMobileMeta = document.createElement('td');
@@ -1265,92 +1480,60 @@
 
         const isOnline = node.status === 'online';
 
-        // Restart button
-        const restartBtn = document.createElement('button');
-        restartBtn.type = 'button';
-        restartBtn.className = 'btn btn-sm btn-outline-secondary node-action-btn';
-        restartBtn.dataset.action = 'restart-node';
-        restartBtn.dataset.nodeId = node.id;
-        restartBtn.dataset.nodeName = node.name;
-        restartBtn.dataset.nodeStatus = node.status || '';
-        restartBtn.setAttribute('aria-label', `Restart ${node.name}`);
-        restartBtn.setAttribute('data-bs-toggle', 'tooltip');
-        restartBtn.setAttribute('data-bs-title', isOnline ? 'Restart Node' : 'Node is offline');
-        if (!isOnline) restartBtn.disabled = true;
-        const restartIcon = document.createElement('span');
-        restartIcon.className = 'material-icons icon-md';
-        restartIcon.setAttribute('aria-hidden', 'true');
-        restartIcon.textContent = 'restart_alt';
-        restartBtn.appendChild(restartIcon);
+        const restartBtn = createActionButton({
+            action: 'restart-node',
+            nodeId: node.id,
+            nodeName: node.name,
+            icon: 'restart_alt',
+            ariaLabel: `Restart ${node.name}`,
+            title: isOnline ? 'Restart Node' : 'Node is offline',
+            disabled: !isOnline,
+            extraData: { nodeStatus: node.status || '' },
+        });
 
-        // Speedtest button
-        const speedtestBtn = document.createElement('button');
-        speedtestBtn.type = 'button';
-        speedtestBtn.className = 'btn btn-sm btn-outline-secondary node-action-btn';
-        speedtestBtn.dataset.action = 'run-speedtest';
-        speedtestBtn.dataset.nodeId = node.id;
-        speedtestBtn.dataset.nodeName = node.name;
-        speedtestBtn.dataset.nodeStatus = node.status || '';
-        speedtestBtn.setAttribute('aria-label', `Run speedtest on ${node.name}`);
-        speedtestBtn.setAttribute('data-bs-toggle', 'tooltip');
-        speedtestBtn.setAttribute('data-bs-title', isOnline ? 'Run Speedtest' : 'Node is offline');
-        const speedtestIcon = document.createElement('span');
-        speedtestIcon.className = 'material-icons icon-md';
-        speedtestIcon.setAttribute('aria-hidden', 'true');
-        speedtestIcon.textContent = 'speed';
-        speedtestBtn.appendChild(speedtestIcon);
+        const speedtestBtn = createActionButton({
+            action: 'run-speedtest',
+            nodeId: node.id,
+            nodeName: node.name,
+            icon: 'speed',
+            ariaLabel: `Run speedtest on ${node.name}`,
+            title: isOnline ? 'Run Speedtest' : 'Node is offline',
+            extraData: { nodeStatus: node.status || '' },
+        });
         applySpeedtestButtonState(speedtestBtn, isOnline, activeSpeedtests.get(String(node.id)) || null);
 
-        // Regenerate token button
-        const regenBtn = document.createElement('button');
-        regenBtn.type = 'button';
-        regenBtn.className = 'btn btn-sm btn-outline-secondary node-action-btn';
-        regenBtn.dataset.action = 'regenerate-token';
-        regenBtn.dataset.nodeId = node.id;
-        regenBtn.dataset.nodeName = node.name;
-        regenBtn.setAttribute('aria-label', `Regenerate token for ${node.name}`);
-        regenBtn.setAttribute('data-bs-toggle', 'tooltip');
-        regenBtn.setAttribute('data-bs-title', 'Regenerate Token');
-        const regenIcon = document.createElement('span');
-        regenIcon.className = 'material-icons icon-md';
-        regenIcon.setAttribute('aria-hidden', 'true');
-        regenIcon.textContent = 'vpn_key';
-        regenBtn.appendChild(regenIcon);
+        const regenBtn = createActionButton({
+            action: 'regenerate-token',
+            nodeId: node.id,
+            nodeName: node.name,
+            icon: 'vpn_key',
+            ariaLabel: `Regenerate token for ${node.name}`,
+            title: 'Regenerate Token',
+        });
 
-        // Edit button
-        const editBtn = document.createElement('button');
-        editBtn.type = 'button';
-        editBtn.className = 'btn btn-sm btn-outline-secondary node-action-btn';
-        editBtn.dataset.action = 'edit-node';
-        editBtn.dataset.nodeId = node.id;
-        editBtn.dataset.nodeName = node.name;
-        editBtn.dataset.nodeFqdn = node.fqdn;
-        editBtn.dataset.nodePort = node.wg_port;
-        editBtn.dataset.nodeShowOnDashboard = node.show_on_dashboard === false ? 'false' : 'true';
-        editBtn.setAttribute('aria-label', `Edit ${node.name}`);
-        editBtn.setAttribute('data-bs-toggle', 'tooltip');
-        editBtn.setAttribute('data-bs-title', 'Edit Node');
-        const editIcon = document.createElement('span');
-        editIcon.className = 'material-icons icon-md';
-        editIcon.setAttribute('aria-hidden', 'true');
-        editIcon.textContent = 'edit';
-        editBtn.appendChild(editIcon);
+        const editBtn = createActionButton({
+            action: 'edit-node',
+            nodeId: node.id,
+            nodeName: node.name,
+            icon: 'edit',
+            ariaLabel: `Edit ${node.name}`,
+            title: 'Edit Node',
+            extraData: {
+                nodeFqdn: node.fqdn,
+                nodePort: node.wg_port,
+                nodeShowOnDashboard: node.show_on_dashboard === false ? 'false' : 'true',
+            },
+        });
 
-        // Delete button
-        const deleteBtn = document.createElement('button');
-        deleteBtn.type = 'button';
-        deleteBtn.className = 'btn btn-sm btn-outline-danger node-action-btn';
-        deleteBtn.dataset.action = 'delete-node';
-        deleteBtn.dataset.nodeId = node.id;
-        deleteBtn.dataset.nodeName = node.name;
-        deleteBtn.setAttribute('aria-label', `Delete ${node.name}`);
-        deleteBtn.setAttribute('data-bs-toggle', 'tooltip');
-        deleteBtn.setAttribute('data-bs-title', 'Delete Node');
-        const deleteIcon = document.createElement('span');
-        deleteIcon.className = 'material-icons icon-md';
-        deleteIcon.setAttribute('aria-hidden', 'true');
-        deleteIcon.textContent = 'delete';
-        deleteBtn.appendChild(deleteIcon);
+        const deleteBtn = createActionButton({
+            action: 'delete-node',
+            nodeId: node.id,
+            nodeName: node.name,
+            icon: 'delete',
+            ariaLabel: `Delete ${node.name}`,
+            title: 'Delete Node',
+            danger: true,
+        });
 
         actionsDiv.append(restartBtn, speedtestBtn, regenBtn, editBtn, deleteBtn);
         tdActions.appendChild(actionsDiv);
@@ -1359,14 +1542,51 @@
         return tr;
     }
 
+    function rowNeedsIdentityRefresh(row, node) {
+        if (!row || !node) return false;
+
+        const currentName = row.querySelector('td[data-label="Name"] strong')?.textContent || '';
+        const currentFqdn = row.querySelector('.node-fqdn-cell code')?.textContent || '';
+        const currentPort = row.querySelector('td[data-label="Port"] code')?.textContent || '';
+        const editButton = row.querySelector('button[data-action="edit-node"]');
+        const dashboardHidden = row.querySelector('td[data-label="Name"] .badge.bg-secondary') !== null;
+
+        return (
+            currentName !== String(node.name || '')
+            || currentFqdn !== String(node.fqdn || '')
+            || currentPort !== `${node.wg_port}/udp`
+            || dashboardHidden !== (node.show_on_dashboard === false)
+            || (editButton?.dataset.nodeName || '') !== String(node.name || '')
+            || (editButton?.dataset.nodeFqdn || '') !== String(node.fqdn || '')
+            || (editButton?.dataset.nodePort || '') !== String(node.wg_port || '')
+            || (editButton?.dataset.nodeShowOnDashboard || 'true') !== (node.show_on_dashboard === false ? 'false' : 'true')
+        );
+    }
+
+    function rebuildNodeRow(row, node) {
+        disposeTooltips(row);
+        const freshRow = buildNodeRow(node);
+        row.replaceWith(freshRow);
+        initTooltips(freshRow);
+        return freshRow;
+    }
+
     /**
-     * Ensure the nodes table exists (replacing empty state if needed).
-     * Returns the tbody element or null if creation failed.
+        * Return the nodes tbody element, creating the full table structure if needed.
+        * Uses a cached reference and falls back to getElementById if the cache is stale.
+        * Returns null only if the .card-body container is missing from the DOM.
      */
     function ensureTableExists() {
-        // Already have a tbody?
-        let tbody = document.getElementById('nodesTableBody');
-        if (tbody) return tbody;
+        // Fast path: cached reference is valid
+        if (nodesTableBody) return nodesTableBody;
+
+        // Slow path: cache was cleared (e.g. by toggleEmptyState when last node was deleted)
+        // Try to find an existing tbody before building a new table structure.
+        const existing = document.getElementById('nodesTableBody');
+        if (existing) {
+            nodesTableBody = existing;
+            return existing;
+        }
 
         // Remove empty state and create table structure
         const cardBody = document.querySelector('.card-body');
@@ -1404,12 +1624,13 @@
         }
         thead.appendChild(headerRow);
 
-        tbody = document.createElement('tbody');
+        const tbody = document.createElement('tbody');
         tbody.id = 'nodesTableBody';
 
         table.append(thead, tbody);
         tableResponsive.appendChild(table);
         cardBody.appendChild(tableResponsive);
+        nodesTableBody = tbody;
 
         return tbody;
     }
@@ -1431,29 +1652,48 @@
 
         if (tableResponsive) {
             tableResponsive.remove();
+            nodesTableBody = null;
         }
         if (!emptyState) {
             const empty = document.createElement('div');
             empty.className = 'nodes-empty-state text-center py-5';
-            empty.innerHTML = `
-                <span class="material-icons text-muted mb-3" style="font-size: 3rem;" aria-hidden="true">hub</span>
-                <h3 class="h5 mb-2">No remote nodes configured yet</h3>
-                <p class="text-muted mb-0">Click <strong>Add Node</strong> to register a remote VPN server.</p>
-            `;
+            const icon = document.createElement('span');
+            icon.className = 'material-icons text-muted mb-3 nodes-empty-icon';
+            icon.setAttribute('aria-hidden', 'true');
+            icon.textContent = 'hub';
+
+            const heading = document.createElement('h3');
+            heading.className = 'h5 mb-2';
+            heading.textContent = 'No remote nodes configured yet';
+
+            const paragraph = document.createElement('p');
+            paragraph.className = 'text-muted mb-0';
+            paragraph.append('Click ');
+            const strong = document.createElement('strong');
+            strong.textContent = 'Add Node';
+            paragraph.append(strong, ' to register a remote VPN server.');
+
+            empty.append(icon, heading, paragraph);
             cardBody.appendChild(empty);
         }
     }
 
     function removeStaleRows(nodeIds) {
+        if (!nodesTableBody) return;
         const validIds = new Set((nodeIds || []).map((id) => String(id || '')));
-        document.querySelectorAll('#nodesTableBody tr[id^="node-row-"]').forEach((row) => {
-            const rowId = String(row.id || '').replace('node-row-', '');
+        for (const row of nodesTableBody.querySelectorAll(`tr[id^="${NODE_ROW_PREFIX}"]`)) {
+            const rowId = row.id.slice(NODE_ROW_PREFIX.length);
             if (!validIds.has(rowId)) {
+                disposeTooltips(row);
                 row.remove();
             }
-        });
+        }
     }
 
+    /**
+     * Copy text content from an element to clipboard.
+     * Trims whitespace — enrollment tokens should not have surrounding whitespace.
+     */
     async function copyTextFromElement(elementId) {
         const element = document.getElementById(elementId);
         const text = element?.textContent?.trim() || '';
@@ -1486,18 +1726,23 @@
 
     async function submitAddNode() {
         // Guard against double-submit (Enter key can fire before button disables)
-        if (addNodeSubmitBtn?.disabled) return;
+        if (!addNodeSubmitBtn || addNodeSubmitBtn.disabled) return;
 
         const name = nodeNameInput?.value.trim();
         const fqdn = addNodeFqdnInput?.value.trim();
-        const port = Number(document.getElementById('nodePort')?.value) || 51820;
+        const port = getValidatedPort('nodePort');
 
         if (!name || !fqdn) {
             await wbAlert('Name and FQDN are required.', 'warning');
             return;
         }
         if (!validateNodeAddressField(addNodeFqdnInput)) {
+            addNodeFqdnInput.classList.add('is-invalid');
+            addNodeFqdnInput.focus();
             addNodeFqdnInput.reportValidity();
+            return;
+        }
+        if (port === null) {
             return;
         }
 
@@ -1509,8 +1754,8 @@
             // Show token step and set flag
             nodeCreatedFlag = true;
             wbToast('Node created successfully', 'success');
-            document.getElementById('addNodeStep1').style.display = 'none';
-            document.getElementById('addNodeStep2').style.display = 'block';
+            document.getElementById('addNodeStep1')?.classList.add('wb-step-hidden');
+            document.getElementById('addNodeStep2')?.classList.remove('wb-step-hidden');
             if (enrollmentTokenDisplay) {
                 enrollmentTokenDisplay.textContent = data.enrollment_token;
             }
@@ -1528,7 +1773,7 @@
         const id = document.getElementById('editNodeId')?.value;
         const name = document.getElementById('editNodeName')?.value.trim();
         const fqdn = editNodeFqdnInput?.value.trim();
-        const port = Number(document.getElementById('editNodePort')?.value) || 51820;
+        const port = getValidatedPort('editNodePort');
         const showOnDashboard = document.getElementById('editNodeShowOnDashboard')?.checked ?? true;
 
         if (!name || !fqdn) {
@@ -1536,7 +1781,12 @@
             return;
         }
         if (!validateNodeAddressField(editNodeFqdnInput)) {
+            editNodeFqdnInput.classList.add('is-invalid');
+            editNodeFqdnInput.focus();
             editNodeFqdnInput.reportValidity();
+            return;
+        }
+        if (port === null) {
             return;
         }
 
@@ -1555,10 +1805,13 @@
         try {
             const data = await api('DELETE', `/api/nodes/${id}`);
             wbToast(data.message || `Node "${name}" deleted`, 'success');
-            const row = document.getElementById(`node-row-${id}`);
-            if (row) row.remove();
+            const row = document.getElementById(`${NODE_ROW_PREFIX}${id}`);
+            if (row) {
+                disposeTooltips(row);
+                row.remove();
+            }
 
-            const remainingRows = document.querySelectorAll('#nodesTableBody tr[id^="node-row-"]').length;
+            const remainingRows = nodesTableBody?.querySelectorAll(`tr[id^="${NODE_ROW_PREFIX}"]`).length || 0;
             if (remainingRows === 0) {
                 toggleEmptyState(false);
             }
@@ -1588,7 +1841,7 @@
         if (!await wbConfirm(`Restart node "${name}"? The node will disconnect briefly and reconnect.`, 'warning')) return;
 
         // Find the row and button for immediate UI feedback
-        const row = document.getElementById(`node-row-${nodeId}`);
+        const row = document.getElementById(`${NODE_ROW_PREFIX}${nodeId}`);
         const restartBtn = row?.querySelector('button[data-action="restart-node"]');
 
         try {
@@ -1598,6 +1851,7 @@
             const statusCell = row?.querySelector('td[data-label="Status"]');
             if (statusCell) {
                 statusCell.replaceChildren(createStatusBadge('restarting'));
+                statusCell.dataset.status = 'restarting';
             }
 
             // Disable the restart button while restarting
@@ -1623,8 +1877,7 @@
         const nodeId = String(id || '');
         if (!nodeId || activeSpeedtests.has(nodeId)) return;
 
-        const row = document.getElementById(`node-row-${nodeId}`);
-        const speedtestBtn = row?.querySelector('button[data-action="run-speedtest"]');
+        const row = document.getElementById(`${NODE_ROW_PREFIX}${nodeId}`);
         const baselineTs = normalizeSpeedtestTimestamp(row?.dataset.lastSpeedtestTs || '');
 
         setActiveSpeedtest(nodeId, {
@@ -1633,7 +1886,7 @@
             startedAt: Date.now(),
             phase: 'starting',
         });
-        syncSpeedtestButtonForRow(row, speedtestBtn?.dataset.nodeStatus || 'online');
+        syncSpeedtestButtonForRow(row, row?.dataset.nodeStatus || 'online');
 
         try {
             await api('POST', `/api/nodes/${nodeId}/speedtest`);
@@ -1648,7 +1901,7 @@
             wbToast(`Speedtest triggered on "${name}". Results will appear on the Speedtest page.`, 'success');
         } catch (err) {
             clearActiveSpeedtest(nodeId);
-            syncSpeedtestButtonForRow(row, speedtestBtn?.dataset.nodeStatus || 'online');
+            syncSpeedtestButtonForRow(row, row?.dataset.nodeStatus || 'online');
             wbToast(err.message || `Failed to trigger speedtest on "${name}"`, 'danger');
         }
     }
@@ -1657,26 +1910,33 @@
     // POLLING LOGIC
     // ========================================================================
     async function refreshNodes() {
-        // Ensure table exists (handles case when first node is added)
-        const tbody = ensureTableExists();
-        if (!tbody) return;
-
         const seq = ++_pollSeq; // Stamp this request to detect stale responses
         pollController?.abort();
         pollController = new AbortController();
 
         try {
+            // api() forwards opts.signal to fetch(); abort + _pollSeq together prevent stale updates.
             const nodes = await api('GET', '/api/nodes', null, { signal: pollController.signal });
 
             // Ignore stale response if a newer request was issued
             if (seq !== _pollSeq) return;
 
-            removeStaleRows(nodes.map((node) => String(node.id || '')));
+            // Show empty state or ensure table exists based on result
             toggleEmptyState(nodes.length > 0);
+            
+            // If no nodes, we're done (empty state is shown)
+            if (nodes.length === 0) return;
+            
+            // Ensure table exists for rendering nodes
+            const tbody = ensureTableExists();
+            if (!tbody) return;
+
+            removeStaleRows(nodes.map((node) => String(node.id || '')));
 
             for (const node of nodes) {
                 const nodeId = String(node.id || '');
-                let row = document.getElementById(`node-row-${nodeId}`);
+                let row = document.getElementById(`${NODE_ROW_PREFIX}${nodeId}`);
+                const latestSpeedtestTs = normalizeSpeedtestTimestamp(node.last_speedtest?.ts || '');
                 
                 // Handle NEW nodes: build row and insert into table
                 if (!row) {
@@ -1684,6 +1944,10 @@
                     tbody.appendChild(row);
                     initTooltips(row);
                     continue; // Skip update logic for newly created row
+                }
+
+                if (rowNeedsIdentityRefresh(row, node)) {
+                    row = rebuildNodeRow(row, node);
                 }
 
                 // Update status badge (secure DOM manipulation)
@@ -1705,16 +1969,7 @@
                     const newVersion = node.node_version || '';
                     
                     if (currentVersion !== newVersion) {
-                        if (node.node_version) {
-                            const code = document.createElement('code');
-                            code.textContent = node.node_version;
-                            versionCell.replaceChildren(code);
-                        } else {
-                            const span = document.createElement('span');
-                            span.className = 'text-muted';
-                            span.textContent = '—';
-                            versionCell.replaceChildren(span);
-                        }
+                        versionCell.replaceChildren(createVersionElement(node.node_version));
                     }
                 }
 
@@ -1726,10 +1981,7 @@
                     const newText = node.last_seen_text || 'Never';
                     
                     if (currentText !== newText) {
-                        const span = document.createElement('span');
-                        span.className = node.last_seen_class || 'text-muted';
-                        span.textContent = newText;
-                        lastSeenCell.replaceChildren(span);
+                        lastSeenCell.replaceChildren(createLastSeenElement(node.last_seen_text, node.last_seen_class));
                     }
                 }
 
@@ -1740,7 +1992,7 @@
                 if (restartBtn) {
                     const isOnline = node.status === 'online';
                     restartBtn.disabled = !isOnline;
-                    restartBtn.dataset.nodeStatus = node.status || '';
+                    restartBtn.dataset.nodeStatus = node.status || ''; // Keep in sync
                     const title = isOnline ? 'Restart Node' : 'Node is offline';
                     updateTooltipTitle(restartBtn, title);
                 }
@@ -1751,8 +2003,8 @@
                     syncSpeedtestButtonForRow(row, node.status || '');
                 }
 
-                const speedtestCell = row.querySelector('td[data-label="Speedtest"]');
-                renderSpeedtestCell(speedtestCell, node.last_speedtest);
+                row.dataset.lastSpeedtestTs = latestSpeedtestTs;
+                renderSpeedtestCell(row.querySelector('td[data-label="Speedtest"]'), node.last_speedtest);
             }
             
             // Reset failure count on success
@@ -1763,9 +2015,14 @@
                 pollFailureCount = 0;
             }
         } catch (err) {
-            if (err.code === 'ABORTED' || err.name === 'AbortError') return;
+            if (err instanceof DOMException && err.name === 'AbortError') return;
+            // Restart with backoff interval at the threshold only; subsequent failures
+            // keep the existing backoff timer without disrupting it.
+            const wasUnderThreshold = pollFailureCount < MAX_POLL_FAILURES;
             pollFailureCount++;
-            if (pollFailureCount === MAX_POLL_FAILURES) startPolling(); // Backoff
+            if (wasUnderThreshold && pollFailureCount >= MAX_POLL_FAILURES) {
+                startPolling(); // Transition to backoff interval
+            }
         }
     }
 
@@ -1787,29 +2044,44 @@
     // ========================================================================
     // EVENT LISTENERS
     // ========================================================================
-    addNodeForm?.addEventListener('submit', async (event) => {
+    addNodeForm?.addEventListener('submit', (event) => {
         event.preventDefault();
-        await submitAddNode();
+        submitAddNode().catch((err) => {
+            console.error('[nodes] submitAddNode threw unexpectedly:', err);
+        });
     });
 
-    editNodeForm?.addEventListener('submit', async (event) => {
+    editNodeForm?.addEventListener('submit', (event) => {
         event.preventDefault();
-        await submitEditNode();
+        submitEditNode().catch((err) => {
+            console.error('[nodes] submitEditNode threw unexpectedly:', err);
+        });
     });
 
-    document.getElementById('copyEnrollmentTokenBtn')?.addEventListener('click', async () => {
-        await copyTextFromElement('enrollmentTokenDisplay');
+    document.getElementById('copyEnrollmentTokenBtn')?.addEventListener('click', () => {
+        copyTextFromElement('enrollmentTokenDisplay').catch((err) => {
+            console.error('[nodes] copyTextFromElement threw unexpectedly:', err);
+        });
     });
 
-    document.getElementById('copyRegeneratedTokenBtn')?.addEventListener('click', async () => {
-        await copyTextFromElement('regenTokenDisplay');
+    document.getElementById('copyRegeneratedTokenBtn')?.addEventListener('click', () => {
+        copyTextFromElement('regenTokenDisplay').catch((err) => {
+            console.error('[nodes] copyTextFromElement threw unexpectedly:', err);
+        });
     });
 
-    for (const eventName of ['input', 'blur']) {
-        [addNodeFqdnInput, editNodeFqdnInput].forEach((input) => {
-            input?.addEventListener(eventName, () => {
-                validateNodeAddressField(input);
-            });
+    for (const input of [addNodeFqdnInput, editNodeFqdnInput]) {
+        if (!input) continue;
+        input.addEventListener('input', () => {
+            const hasValue = input.value.trim().length > 0;
+            if (!hasValue) {
+                resetNodeAddressFieldValidation(input);
+                return;
+            }
+            validateNodeAddressField(input);
+        });
+        input.addEventListener('blur', () => {
+            validateNodeAddressField(input);
         });
     }
 
@@ -1822,38 +2094,47 @@
         const nodeId = button.dataset.nodeId || '';
         const nodeName = button.dataset.nodeName || 'node';
 
-        const actionHandlers = {
-            'edit-node': () => openEditNodeModal(
-                nodeId,
-                nodeName,
-                button.dataset.nodeFqdn || '',
-                Number(button.dataset.nodePort) || 51820,
-                button.dataset.nodeShowOnDashboard,
-            ),
-            'delete-node': () => deleteNode(nodeId, nodeName),
-            'regenerate-token': () => regenerateToken(nodeId, nodeName),
-            'restart-node': () => restartNode(nodeId, nodeName),
-            'run-speedtest': () => runNodeSpeedtest(nodeId, nodeName),
-        };
-
-        const handler = actionHandlers[action];
-        if (handler) {
-            await handler();
+        // Use switch to avoid allocating closures on every click
+        switch (action) {
+            case 'edit-node':
+                openEditNodeModal(
+                    nodeId,
+                    nodeName,
+                    button.dataset.nodeFqdn || '',
+                    Number(button.dataset.nodePort) || 51820,
+                    button.dataset.nodeShowOnDashboard,
+                );
+                break;
+            case 'delete-node':
+                await deleteNode(nodeId, nodeName);
+                break;
+            case 'regenerate-token':
+                await regenerateToken(nodeId, nodeName);
+                break;
+            case 'restart-node':
+                await restartNode(nodeId, nodeName);
+                break;
+            case 'run-speedtest':
+                await runNodeSpeedtest(nodeId, nodeName);
+                break;
         }
     }
 
     document.addEventListener('click', (event) => {
-        void handleNodeActionClick(event);
+        handleNodeActionClick(event).catch((err) => {
+            console.error('[nodes] Unhandled error in action handler:', err);
+        });
     });
 
     // Reset modal state when closed (with explicit state check)
     addNodeModalEl?.addEventListener('hidden.bs.modal', function() {
-        document.getElementById('addNodeStep1').style.display = 'block';
-        document.getElementById('addNodeStep2').style.display = 'none';
+        document.getElementById('addNodeStep1')?.classList.remove('wb-step-hidden');
+        document.getElementById('addNodeStep2')?.classList.add('wb-step-hidden');
         if (nodeNameInput) nodeNameInput.value = '';
         if (addNodeFqdnInput) addNodeFqdnInput.value = '';
+        resetNodeAddressFieldValidation(addNodeFqdnInput);
         const nodePortInput = document.getElementById('nodePort');
-        if (nodePortInput) nodePortInput.value = '{{ default_wg_port }}';
+        if (nodePortInput) nodePortInput.value = nodePortInput.dataset.default || '51820';
         setButtonLoading(addNodeSubmitBtn, false);
         if (addNodeSubmitBtn) addNodeSubmitBtn.style.display = '';
         
@@ -1871,6 +2152,10 @@
 
     editNodeModalEl?.addEventListener('shown.bs.modal', () => {
         document.getElementById('editNodeName')?.focus();
+    });
+
+    editNodeModalEl?.addEventListener('hidden.bs.modal', () => {
+        resetNodeAddressFieldValidation(editNodeFqdnInput);
     });
 
     // Pause polling when tab is hidden
@@ -1891,6 +2176,7 @@
         stopPolling();
         stopSpeedtestStatusPolling();
         pollController?.abort();
+        clearRestartingNodeTimeouts();
     });
 
     // ========================================================================
@@ -1899,6 +2185,7 @@
     loadActiveSpeedtests();
     syncAllSpeedtestButtons();
     initTooltips();
+    initFlagImages();
     void refreshNodes();
     startPolling();
     ensureSpeedtestStatusPolling();

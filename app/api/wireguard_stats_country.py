@@ -38,12 +38,13 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from ..db import tsdb
 from ..utils.deps import get_tsdb_dir
+from ..utils.rate_limit import RATE_LIMIT_HEAVY, limiter
 from ..utils.time import utcnow
 from .auth import require_admin
 from .response import ok_response
@@ -579,7 +580,9 @@ async def _handle_traffic_request(
 
 
 @router.get("/stats/traffic-by-country", response_model=None)
+@limiter.limit(RATE_LIMIT_HEAVY)
 async def get_traffic_by_country(
+	request: Request,
 	hours: int = Query(24, ge=1, le=8760, description="Hours of history (1-8760)"),
 	range_key: str | None = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
 	peer: str | None = Query(None, description="Filter by peer name", max_length=255),
@@ -681,7 +684,9 @@ def _compute_asn_traffic(
 
 
 @router.get("/stats/traffic-by-asn", response_model=None)
+@limiter.limit(RATE_LIMIT_HEAVY)
 async def get_traffic_by_asn(
+	request: Request,
 	hours: int = Query(24, ge=1, le=8760, description="Hours of history (1-8760)"),
 	range_key: str | None = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
 	peer: str | None = Query(None, description="Filter by peer name", max_length=255),

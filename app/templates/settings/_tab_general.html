@@ -1,3 +1,15 @@
+    {% set is_admin = user['is_admin'] %}
+    {% set disabled_attr = 'disabled' if not is_admin else '' %}
+    {% set readonly_attr = 'readonly' if not is_admin else '' %}
+    {% macro copyable_url(element_id, url, label) -%}
+    <div class="mt-2 small text-muted d-flex align-items-center gap-2">
+        <span id="{{ element_id }}" class="font-monospace wb-monospace-value">{{ url }}</span>
+        <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
+            id="btn-copy-{{ element_id }}" aria-label="Copy {{ label }}" title="Copy URL">
+            <span class="material-icons icon-sm" aria-hidden="true">content_copy</span>
+        </button>
+    </div>
+    {%- endmacro %}
     <div class="tab-pane fade show active" id="general-pane" role="tabpanel" aria-labelledby="general-tab">
         <div class="row g-3 settings-general-equal-row">
             <div class="col-lg-6 settings-general-col settings-general-col-left">
@@ -7,17 +19,11 @@
                     </div>
                     <div class="card-body">
                         <div class="form-check form-switch mb-2">
-                            <input class="form-check-input" type="checkbox" id="enable-status-page"{% if settings.enable_status_page %} checked{% endif %}{% if not user['is_admin'] %} disabled{% endif %}>
+                            <input class="form-check-input" type="checkbox" id="enable-status-page" aria-describedby="enable-status-page-help"{% if settings.enable_status_page %} checked{% endif %} {{ disabled_attr }}>
                             <label class="form-check-label" for="enable-status-page">Enable Status Page</label>
                         </div>
-                        <small class="text-muted">Publishes <span class="font-monospace">/status</span> for WireGuard-<strong>internal</strong> clients only.</small>
-                        <div class="mt-2 small text-muted d-flex align-items-center gap-2">
-                            <span id="status-page-url" class="font-monospace wb-monospace-value">{{ settings.status_page_url }}</span>
-                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
-                                id="btn-copy-status-page-url" aria-label="Copy status page URL" title="Copy URL">
-                                <span class="material-icons" style="font-size: 16px;">content_copy</span>
-                            </button>
-                        </div>
+                        <small class="text-muted" id="enable-status-page-help">Publishes <span class="font-monospace">/status</span> for WireGuard-<strong>internal</strong> clients only.</small>
+                        {{ copyable_url('status-page-url', settings.status_page_url, 'status page URL') }}
                     </div>
                 </div>
 
@@ -27,17 +33,11 @@
                     </div>
                     <div class="card-body">
                         <div class="form-check form-switch mb-2">
-                            <input class="form-check-input" type="checkbox" id="enable-swagger"{% if settings.enable_swagger %} checked{% endif %}{% if not user['is_admin'] %} disabled{% endif %}>
+                            <input class="form-check-input" type="checkbox" id="enable-swagger" aria-describedby="enable-swagger-help"{% if settings.enable_swagger %} checked{% endif %} {{ disabled_attr }}>
                             <label class="form-check-label" for="enable-swagger">Enable Swagger UI</label>
                         </div>
-                        <small class="text-muted">Exposes <span class="font-monospace">/swagger</span> for <strong>admin</strong> users only.</small>
-                        <div class="mt-2 small text-muted d-flex align-items-center gap-2">
-                            <span id="swagger-url" class="font-monospace wb-monospace-value">{{ settings.swagger_url }}</span>
-                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
-                                id="btn-copy-swagger-url" aria-label="Copy Swagger URL" title="Copy URL">
-                                <span class="material-icons" style="font-size: 16px;">content_copy</span>
-                            </button>
-                        </div>
+                        <small class="text-muted" id="enable-swagger-help">Exposes <span class="font-monospace">/swagger</span> for <strong>admin</strong> users only.</small>
+                        {{ copyable_url('swagger-url', settings.swagger_url, 'Swagger URL') }}
                     </div>
                 </div>
             </div>
@@ -52,34 +52,32 @@
                             <label for="wg-fqdn" class="form-label">Server FQDN / IP</label>
                             <div class="input-group">
                                 <input type="text" class="form-control" id="wg-fqdn" placeholder="vpn.example.com"
-                                    autocomplete="url" autocapitalize="off" autocorrect="off" spellcheck="false"{% if not user['is_admin'] %} readonly{% endif %}>
+                                    autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-describedby="wg-fqdn-help" {{ readonly_attr }}>
                                 <button class="btn btn-outline-secondary btn-icon" type="button" id="btn-fqdn-detect"
-                                    title="Auto-detect from current hostname">
-                                    <span class="material-icons">auto_fix_high</span>
+                                    aria-label="Auto-detect FQDN from current hostname" title="Auto-detect from current hostname" {{ disabled_attr }}>
+                                    <span class="material-icons" aria-hidden="true">auto_fix_high</span>
                                 </button>
                             </div>
-                            <small class="text-muted">Public hostname or IP (without port) clients connect to</small>
+                            <small class="text-muted" id="wg-fqdn-help">Public hostname or IP address clients connect to, without a port.</small>
                         </div>
                         <div class="mb-3">
                             <label for="gui-port" class="form-label">HTTP Port (GUI)</label>
                             <input type="number" class="form-control" id="gui-port" min="1" max="65535"
-                                placeholder="8000"{% if not user['is_admin'] %} readonly{% endif %}>
-                            <small class="text-muted">TCP port for the web interface</small>
+                                placeholder="8000" aria-describedby="gui-port-help" {{ readonly_attr }}>
+                            <small class="text-muted" id="gui-port-help">TCP port for the web interface.</small>
                         </div>
                         <div class="mb-3">
                             <label for="gui-external-port" class="form-label">External Port (Reverse Proxy)</label>
                             <input type="number" class="form-control" id="gui-external-port" min="1" max="65535"
-                                placeholder="443"{% if not user['is_admin'] %} readonly{% endif %}>
-                            <small class="text-muted">External port for node enrollment (leave empty if not using a reverse proxy, use 443 for HTTPS standard port)</small>
+                                placeholder="443" aria-describedby="gui-external-port-help" {{ readonly_attr }}>
+                            <small class="text-muted" id="gui-external-port-help">External HTTPS port exposed by your reverse proxy. Leave empty for direct access.</small>
                         </div>
                         <div class="mb-3">
                             <div class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" id="gui-localhost-only"{% if settings.gui_localhost_only %} checked{% endif %}{% if not user['is_admin'] %} disabled{% endif %}>
-                                <label class="form-check-label" for="gui-localhost-only">Only listen on
-                                    Localhost</label>
+                                <input class="form-check-input" type="checkbox" id="gui-localhost-only" aria-describedby="gui-localhost-only-help"{% if settings.gui_localhost_only %} checked{% endif %} {{ disabled_attr }}>
+                                <label class="form-check-label" for="gui-localhost-only">Only listen on Localhost</label>
                             </div>
-                            <small class="text-muted">When enabled, GUI only accessible from 127.0.0.1 (requires
-                                restart)</small>
+                            <small class="text-muted" id="gui-localhost-only-help">When enabled, the GUI is only accessible from 127.0.0.1 (requires restart).</small>
                         </div>
                     </div>
                 </div>
@@ -88,29 +86,25 @@
 
         <!-- Speedtest / Bandwidth Measurement -->
         <div class="row g-3 mt-0">
-            <div class="col-lg-12">
-                <div class="card h-100">
+            <div class="col-12">
+                <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                         <h3 class="h5 mb-0">
                             Speedtest
                         </h3>
                         <div class="settings-header-actions">
-                            <button class="btn btn-sm btn-outline-secondary text-nowrap" id="btn-speedtest-run"{% if not user['is_admin'] %} disabled{% endif %}
+                            <button class="btn btn-sm btn-outline-secondary text-nowrap" id="btn-speedtest-run" {{ disabled_attr }}
                                 title="Run speed test now">
-                                <span class="material-icons align-middle me-1" style="font-size: 16px;">play_arrow</span>Run Now
+                                <span class="material-icons align-middle me-1 icon-sm" aria-hidden="true">play_arrow</span>Run Now
                             </button>
                         </div>
                     </div>
                     <div class="card-body">
                         <div class="form-check form-switch mb-2">
-                            <input class="form-check-input" type="checkbox" id="speedtest-enabled"{% if settings.speedtest_enabled %} checked{% endif %}{% if not user['is_admin'] %} disabled{% endif %}>
+                            <input class="form-check-input" type="checkbox" id="speedtest-enabled" aria-describedby="speedtest-enabled-help"{% if settings.speedtest_enabled %} checked{% endif %} {{ disabled_attr }}>
                             <label class="form-check-label" for="speedtest-enabled">Scheduled</label>
                         </div>
-                        <div class="form-check form-switch mb-2{% if not settings.speedtest_enabled %} d-none{% endif %}" id="speedtest-ignore-peers-row">
-                            <input class="form-check-input" type="checkbox" id="speedtest-ignore-peers"{% if settings.speedtest_ignore_peers %} checked{% endif %}{% if not user['is_admin'] %} disabled{% endif %}>
-                            <label class="form-check-label" for="speedtest-ignore-peers">Run even with connected peers</label>
-                        </div>
-                        <small class="text-muted d-block mb-3">Server is automatically selected by lowest latency (<a href="https://github.com/librespeed/speedtest" target="_blank" rel="noopener noreferrer">LibreSpeed</a>)</small>
+                        <small class="text-muted d-block mb-3" id="speedtest-enabled-help">Server is automatically selected by lowest latency (<a href="https://github.com/librespeed/speedtest" target="_blank" rel="noopener noreferrer">LibreSpeed</a>)</small>
                         <div id="speedtest-result" class="mt-3 d-none">
                             <hr class="my-3">
                             <div class="row g-3">
@@ -132,10 +126,11 @@
                                 </div>
                                 <div class="col-12 col-lg-auto">
                                     <div class="text-muted small d-flex align-items-center gap-1 flex-wrap">
+                                        {# Show the measured timestamp inline on mobile and as a block on desktop. #}
                                         <span>Measured</span>
                                         <span class="d-inline d-lg-none" id="speedtest-result-date-inline"></span>
                                     </div>
-                                    <div class="fw-semibold" id="speedtest-result-date">&ndash;</div>
+                                    <div class="fw-semibold d-none d-lg-block" id="speedtest-result-date">&ndash;</div>
                                 </div>
                             </div>
                         </div>
@@ -145,8 +140,8 @@
                                 <div class="spinner-border spinner-border-sm text-primary" role="status">
                                     <span class="visually-hidden">Running...</span>
                                 </div>
-                                <span id="speedtest-status" class="text-muted">Initializing&hellip;</span>
-                                <span id="speedtest-progress" class="ms-2 badge bg-primary">0%</span>
+                                <span id="speedtest-status" class="text-muted" aria-live="polite" aria-atomic="true">Initializing&hellip;</span>
+                                <span id="speedtest-progress" class="ms-2 badge bg-primary" aria-live="polite" aria-atomic="true">0%</span>
                             </div>
                         </div>
                     </div>

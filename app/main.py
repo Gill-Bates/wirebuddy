@@ -11,7 +11,8 @@
 
 from __future__ import annotations
 
-import collections.abc
+from collections import OrderedDict
+from collections.abc import Callable
 
 from .db.sqlite_interfaces import (
 	list_interfaces,
@@ -44,10 +45,10 @@ from .db.sqlite_settings import (
 )
 
 import asyncio
-import collections
 import ipaddress
 import logging
 import os
+import random
 import re
 import signal
 import sys
@@ -57,7 +58,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from .utils.config import load_config, WG_CONFIG_PATH, Config
 from .utils.rate_limit import limiter
@@ -103,7 +105,7 @@ class LifespanContext:
 	app: FastAPI
 	interfaces_to_start: list[str] = field(default_factory=list)
 	started_interfaces: list[str] = field(default_factory=list)
-	peer_connection_state: collections.OrderedDict = field(default_factory=collections.OrderedDict)
+	peer_connection_state: OrderedDict[str, bool] = field(default_factory=OrderedDict)
 	dns_service_enabled: bool = False
 	dns_config_ready: bool = False
 	scheduler: Scheduler | None = None
@@ -569,6 +571,30 @@ def _load_blocklist_update_inputs_sync(db_path: Path) -> tuple[list[str], str]:
 		close_connection(conn)
 
 
+def _ensure_dns_offset_path_sync(data_dir: Path) -> Path:
+	"""Prepare the DNS ingestion offset path synchronously.
+
+	This keeps filesystem setup off the event loop while preserving the current
+	offset-file migration behavior.
+	"""
+	offset_path = data_dir / "dns" / "dns_tail.offset"
+	offset_path.parent.mkdir(parents=True, exist_ok=True)
+
+	legacy_offset_path = data_dir / "runtime" / "dns_tail.offset"
+	if not offset_path.exists() and legacy_offset_path.exists():
+		try:
+			offset_path.write_text(legacy_offset_path.read_text(encoding="utf-8"), encoding="utf-8")
+			legacy_offset_path.unlink(missing_ok=True)
+			legacy_runtime_dir = legacy_offset_path.parent
+			if legacy_runtime_dir.exists() and not any(legacy_runtime_dir.iterdir()):
+				legacy_runtime_dir.rmdir()
+			_log.info("DNS_INGESTION migrated offset file from %s to %s", legacy_offset_path, offset_path)
+		except Exception as exc:
+			_log.warning("DNS_INGESTION failed to migrate legacy offset file: %s", exc)
+
+	return offset_path
+
+
 def _regenerate_peer_tags_sync(db_path: Path) -> int:
 	"""Regenerate Unbound peer-tags.conf synchronously.
 	
@@ -587,7 +613,7 @@ def _regenerate_peer_tags_sync(db_path: Path) -> int:
 		close_connection(conn)
 
 
-def _with_conn(db_path: Path, fn: collections.abc.Callable, *args, **kwargs):
+def _with_conn(db_path: Path, fn: Callable, *args, **kwargs):
 	"""Run fn(conn, *args, **kwargs) with connect/close lifecycle.
 	
 	Eliminates boilerplate connect/try/finally/close_connection pattern.
@@ -599,11 +625,11 @@ def _with_conn(db_path: Path, fn: collections.abc.Callable, *args, **kwargs):
 		close_connection(conn)
 
 
-def _with_conn_or(db_path: Path, fn: collections.abc.Callable, *args, default=None, **kwargs):
-	"""Like _with_conn but returns default on any exception.
+def _with_conn_or(db_path: Path, fn: Callable, *args, default=None, **kwargs):
+	"""Like _with_conn but returns default for non-database runtime failures.
 	
-	Useful for watchdog/readiness checks where DB errors should fail safe
-	instead of crashing.
+	``sqlite3.DatabaseError`` is re-raised so database corruption or persistent
+	locking problems do not get silently masked in watchdog-style checks.
 	"""
 	import sqlite3
 	try:
@@ -702,9 +728,9 @@ def _check_adblocker_timer_sync(db_path: Path) -> bool:
 		set_dns_blocklist_enabled,
 	)
 	from .api.wireguard_peers import regenerate_all_peer_tags
+	from .db.sqlite_runtime import transaction
 
-	conn = connect(db_path)
-	try:
+	def _check(conn) -> bool:
 		# Read-only check first - avoid write lock if not needed
 		disabled_until = get_blocklist_disabled_until(conn)
 		enabled = get_dns_blocklist_enabled(conn)
@@ -712,15 +738,14 @@ def _check_adblocker_timer_sync(db_path: Path) -> bool:
 
 		if disabled_until > 0 and disabled_until <= now and not enabled:
 			# Timer expired and blocklist is still disabled - need to re-enable
-			from .db.sqlite_runtime import transaction
 			with transaction(conn, immediate=True):
 				set_dns_blocklist_enabled(conn, True)
 				clear_blocklist_disabled_until(conn)
 				regenerate_all_peer_tags(conn)
 			return True
 		return False
-	finally:
-		close_connection(conn)
+
+	return _with_conn(db_path, _check)
 
 
 async def _reload_unbound_for_adblocker_async(db_path: Path) -> None:
@@ -833,11 +858,12 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 	
 	This function handles all cleanup:
 	1. DNS ingestion daemon
-	2. Scheduler
-	3. SQLite checkpoint
-	4. Unbound DNS
-	5. WireGuard interfaces
-	6. TSDB fsync
+	2. DNS API background tasks
+	3. Scheduler
+	4. SQLite checkpoint
+	5. Unbound DNS
+	6. WireGuard interfaces
+	7. TSDB fsync
 	"""
 
 	# 1. Cancel DNS ingestion daemon (fastest to stop)
@@ -943,7 +969,7 @@ async def _phase_bootstrap(ctx: LifespanContext) -> None:
 		print(msg, file=sys.stderr, flush=True)
 		raise StartupFatalError("WIREBUDDY_SECRET_KEY mismatch")
 	from .db import tsdb
-	tsdb.init_tsdb(cfg.tsdb_dir)
+	await asyncio.to_thread(tsdb.init_tsdb, cfg.tsdb_dir)
 	_log.info("GeoIP init scheduled in background (startup is non-blocking)")
 
 async def _phase_dns_config(ctx: LifespanContext) -> None:
@@ -975,7 +1001,7 @@ async def _phase_dns_config(ctx: LifespanContext) -> None:
 			await asyncio.to_thread(dns_ingestion.enforce_dns_log_retention, ctx.cfg.dns_dir, dns_retention_days)
 			_log.info("DNS config written (IPv4: %s, IPv6: %s)", ", ".join(listen_addrs_ipv4) if listen_addrs_ipv4 else "none", ", ".join(listen_addrs_ipv6) if listen_addrs_ipv6 else "none")
 			from .dns.unbound_blocklist import check_and_reset_stale_blocklist
-			if check_and_reset_stale_blocklist():
+			if await asyncio.to_thread(check_and_reset_stale_blocklist):
 				_log.info("Blocklist reset due to tag migration - triggering immediate update")
 				try:
 					bl_urls, bl_custom_rules = await asyncio.to_thread(_load_blocklist_update_inputs_sync, ctx.cfg.db_path)
@@ -1057,11 +1083,13 @@ async def _phase_scheduler(ctx: LifespanContext) -> None:
 	
 	await scheduler.start()
 
-# Reuse the canonical _sleep_interruptible from tasks.scheduled.
-from .tasks.scheduled import _sleep_interruptible
-
 
 async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
+	"""Run the DNS query-log ingestion loop until cancellation.
+
+	The loop waits for Unbound readiness, tails the query log into the DNS data
+	store, and restarts with bounded exponential backoff after failures.
+	"""
 	from .dns import unbound
 	from .dns import ingestion as dns_ingestion
 	if not unbound.is_unbound_installed():
@@ -1072,7 +1100,7 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 	while True:
 		should_run = await asyncio.to_thread(_should_unbound_run_sync, ctx.cfg.db_path)
 		if not should_run:
-			await _sleep_interruptible(30.0)
+			await scheduled_tasks._sleep_with_cancellation_check(30.0)
 			continue
 		for attempt in range(15):
 			if await unbound.is_running():
@@ -1086,19 +1114,7 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 			return dns_retention_days_cache
 		try:
 			dns_retention_days_cache = await asyncio.to_thread(_read_dns_retention_days_sync, ctx.cfg.db_path)
-			offset_path = ctx.cfg.data_dir / "dns" / "dns_tail.offset"
-			offset_path.parent.mkdir(parents=True, exist_ok=True)
-			legacy_offset_path = ctx.cfg.data_dir / "runtime" / "dns_tail.offset"
-			if not offset_path.exists() and legacy_offset_path.exists():
-				try:
-					offset_path.write_text(legacy_offset_path.read_text(encoding="utf-8"), encoding="utf-8")
-					legacy_offset_path.unlink(missing_ok=True)
-					legacy_runtime_dir = legacy_offset_path.parent
-					if legacy_runtime_dir.exists() and not any(legacy_runtime_dir.iterdir()):
-						legacy_runtime_dir.rmdir()
-					_log.info("DNS_INGESTION migrated offset file from %s to %s", legacy_offset_path, offset_path)
-				except Exception as exc:
-					_log.warning("DNS_INGESTION failed to migrate legacy offset file: %s", exc)
+			offset_path = await asyncio.to_thread(_ensure_dns_offset_path_sync, ctx.cfg.data_dir)
 			await dns_ingestion.run_dns_ingestion(
 				log_path=unbound.QUERY_LOG,
 				offset_path=offset_path,
@@ -1109,21 +1125,20 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 			)
 			retry_count = 0
 			_log.warning("DNS_INGESTION stopped unexpectedly; restarting in 5s")
-			await _sleep_interruptible(5.0)
+			await scheduled_tasks._sleep_with_cancellation_check(5.0)
 		except asyncio.CancelledError:
 			_log.info("DNS_INGESTION shutdown requested")
 			raise
 		except Exception as exc:
 			retry_count += 1
 			# Exponential backoff with jitter to prevent thundering herd
-			import random
 			jitter = random.uniform(0.8, 1.2)
 			delay = min(
 				(2 ** retry_count * _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS * jitter),
 				_DNS_INGESTION_RESTART_MAX_DELAY_SECONDS
 			)
 			_log.error("DNS_INGESTION crashed (retry #%d in %.0fs): %s", retry_count, delay, exc)
-			await _sleep_interruptible(delay)
+			await scheduled_tasks._sleep_with_cancellation_check(delay)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -1180,7 +1195,7 @@ def create_app() -> FastAPI:
 	app.state.db_path = cfg.db_path
 	app.state.tsdb_dir = cfg.tsdb_dir
 	app.state.dns_dir = cfg.dns_dir
-	app.state.peer_connection_state = collections.OrderedDict()
+	app.state.peer_connection_state = OrderedDict()
 	app.state.shutdown_signal_event = None
 	app.state.key_mismatch = False  # Set to True if SECRET_KEY doesn't match DB encryption
 	
@@ -1193,8 +1208,6 @@ def create_app() -> FastAPI:
 	app.state.limiter = limiter
 
 	from slowapi.errors import RateLimitExceeded
-	from starlette.requests import Request
-	from starlette.responses import JSONResponse
 
 	async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
 		"""Custom rate limit handler that uses 'detail' for API consistency."""
@@ -1222,6 +1235,7 @@ def create_app() -> FastAPI:
 	@app.get("/health", include_in_schema=False)
 	async def healthcheck() -> JSONResponse:
 		"""Lightweight unauthenticated health endpoint for container probes."""
+		# Intentionally unrate-limited: container probes may hit this frequently.
 		return JSONResponse(content={"status": "ok", "version": VERSION})
 
 	def _check_db_readiness(conn) -> bool:
@@ -1295,8 +1309,6 @@ def create_app() -> FastAPI:
 def _register_swagger_routes(app: FastAPI) -> None:
 	"""Register admin-protected Swagger UI at /swagger."""
 	import sqlite3
-	from fastapi import Depends, HTTPException
-	from fastapi.responses import HTMLResponse, JSONResponse
 	from .api.auth import require_admin
 	from .utils.deps import get_conn
 
@@ -1309,14 +1321,16 @@ def _register_swagger_routes(app: FastAPI) -> None:
 		return str(value or "").strip().lower() in _SWAGGER_TRUTHY
 
 	@app.get("/swagger/openapi.json", include_in_schema=False)
-	async def swagger_openapi_json(_=Depends(require_admin), conn: sqlite3.Connection = Depends(get_conn)):
+	@limiter.limit("60/minute")
+	async def swagger_openapi_json(request: Request, _=Depends(require_admin), conn: sqlite3.Connection = Depends(get_conn)):
 		"""Serve OpenAPI schema (admin only, when enabled)."""
 		if not _is_swagger_enabled(conn):
 			raise HTTPException(status_code=404, detail="Swagger API disabled")
 		return JSONResponse(content=app.openapi())
 
 	@app.get("/swagger", include_in_schema=False)
-	async def swagger_ui(_=Depends(require_admin), conn: sqlite3.Connection = Depends(get_conn)):
+	@limiter.limit("60/minute")
+	async def swagger_ui(request: Request, _=Depends(require_admin), conn: sqlite3.Connection = Depends(get_conn)):
 		"""Serve Swagger UI (admin only, when enabled)."""
 		if not _is_swagger_enabled(conn):
 			raise HTTPException(status_code=404, detail="Swagger API disabled")

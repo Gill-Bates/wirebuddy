@@ -507,7 +507,11 @@ def _write_interface_configs(interfaces: list[InterfaceConfig]) -> dict[str, boo
     return changed_map
 
 
-def _sync_interface_states(interfaces: list[InterfaceConfig], changed_map: dict[str, bool]) -> None:
+def _sync_interface_states(
+    interfaces: list[InterfaceConfig],
+    changed_map: dict[str, bool],
+    backups: dict[str, str],
+) -> None:
     """Phase 2: Start or reload interfaces."""
     running = _get_running_interfaces()
     for iface in interfaces:
@@ -520,20 +524,23 @@ def _sync_interface_states(interfaces: list[InterfaceConfig], changed_map: dict[
         elif changed:
             _log.info("Reloading interface %s (config changed)...", name)
             conf_path = _get_interface_conf_path(name)
-            backup_content = conf_path.read_text(encoding="utf-8")
+            backup_content = backups.get(name)
             try:
                 _run_checked(["wg-quick", "down", name], timeout=_TIMEOUT_WG_QUICK)
                 _run_checked(["wg-quick", "up", name], timeout=_TIMEOUT_WG_QUICK)
                 _log.info("Interface %s reloaded", name)
             except RuntimeError as exc:
                 _log.critical("Interface reload failed for %s: %s", name, exc)
-                _log.warning("Attempting to restore previous config for %s...", name)
-                try:
-                    conf_path.write_text(backup_content, encoding="utf-8")
-                    _run_checked(["wg-quick", "up", name], timeout=_TIMEOUT_WG_QUICK)
-                    _log.warning("Successfully restored previous config for %s", name)
-                except Exception as restore_exc:
-                    _log.critical("Failed to restore %s (interface offline): %s", name, restore_exc)
+                if backup_content is None:
+                    _log.critical("No previous managed config available to restore for %s", name)
+                else:
+                    _log.warning("Attempting to restore previous config for %s...", name)
+                    try:
+                        conf_path.write_text(backup_content, encoding="utf-8")
+                        _run_checked(["wg-quick", "up", name], timeout=_TIMEOUT_WG_QUICK)
+                        _log.warning("Successfully restored previous config for %s", name)
+                    except Exception as restore_exc:
+                        _log.critical("Failed to restore %s (interface offline): %s", name, restore_exc)
                 raise
 
 
@@ -550,10 +557,16 @@ def _remove_orphaned_interfaces(desired_ifaces: set[str]) -> None:
 def _apply_config_locked(config: dict[str, Any]) -> str:
     """Inner apply_config orchestration."""
     version, interfaces, peers_by_interface = _parse_and_validate(config)
+
+    backups = {
+        iface.name: managed_config
+        for iface in interfaces
+        if (managed_config := _read_managed_config(_get_interface_conf_path(iface.name))) is not None
+    }
     
     # Phase 1 & 2: Interfaces
     changed_map = _write_interface_configs(interfaces)
-    _sync_interface_states(interfaces, changed_map)
+    _sync_interface_states(interfaces, changed_map, backups)
     
     # Phase 3: Peers (handles normal node peers + master peer)
     for iface in interfaces:
@@ -629,18 +642,30 @@ def _sync_peers_for_interface(iface_name: str, desired_peers: list[PeerConfig]) 
     for key in desired_keys:
         p = desired_map[key]
         desired_ips = p.peer_address.replace(" ", "")
-        current_ips = current_state.get(key, PeerState("", None)).allowed_ips.replace(" ", "")
-        current_endpoint = current_state.get(key, PeerState("", None)).endpoint
+        current_peer = current_state.get(key, PeerState("", None))
+        current_ips = current_peer.allowed_ips.replace(" ", "")
+        current_endpoint = current_peer.endpoint
+        endpoint_removed = key in current_keys and current_endpoint is not None and p.endpoint is None
         
         needs_update = (
             key not in current_keys or
             desired_ips != current_ips or
-            (p.endpoint is not None and p.endpoint != current_endpoint) or
+            p.endpoint != current_endpoint or
             p.preshared_key is not None
         )
         
         if not needs_update:
             continue
+
+        if key in current_keys and desired_ips != current_ips:
+            for ip in current_peer.allowed_ips.split(","):
+                ip = ip.strip()
+                if ip:
+                    ip_family_flag = "-6" if ":" in ip else "-4"
+                    _run(["ip", ip_family_flag, "route", "delete", ip, "dev", iface_name])
+
+        if endpoint_removed:
+            _run_checked(["wg", "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
 
         cmd = ["wg", "set", iface_name, "peer", key, "allowed-ips", p.peer_address]
         if p.endpoint:
@@ -685,18 +710,31 @@ def get_wg_dump() -> dict[str, dict[str, Any]]:
         return {}
 
     result: dict[str, dict[str, Any]] = {}
+    peer_interfaces: dict[str, str] = {}
+    current_iface = ""
     for line in stdout.strip().split("\n"):
         parts = line.split("\t")
+        if len(parts) == 5:
+            current_iface = parts[0]
+            continue
         if len(parts) != 9:
             continue
         pubkey = parts[1]
         try:
+            if pubkey in result:
+                _log.warning(
+                    "Duplicate peer pubkey %s in wg dump on %s (previous: %s)",
+                    pubkey[:8] if pubkey else "unknown",
+                    current_iface or "unknown",
+                    peer_interfaces.get(pubkey, "unknown"),
+                )
             result[pubkey] = {
                 "endpoint": parts[3] if parts[3] != "(none)" else None,
                 "latest_handshake": int(parts[5]) if parts[5] != "0" else None,
                 "transfer_rx": int(parts[6]),
                 "transfer_tx": int(parts[7]),
             }
+            peer_interfaces[pubkey] = current_iface or "unknown"
         except ValueError:
             _log.debug("Skipping malformed wg dump line for peer %s", pubkey[:8] if pubkey else "unknown")
     return result

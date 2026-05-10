@@ -784,6 +784,91 @@ async function collectPageMetrics(page, scope) {
             return style.overflowY === 'auto' || style.overflowY === 'scroll';
         };
 
+        const hasNonZeroBorderRadius = (style) => {
+            const radii = [
+                style.borderTopLeftRadius,
+                style.borderTopRightRadius,
+                style.borderBottomRightRadius,
+                style.borderBottomLeftRadius,
+            ];
+
+            return radii.some((value) => Number.parseFloat(value || '0') > 0);
+        };
+
+        const scrollbarGutterRisks = contentElements
+            .filter((el) => isScrollContainer(el))
+            .map((el) => {
+                const style = window.getComputedStyle(el);
+                const scrollbarGutter = style.scrollbarGutter || '';
+                if (!/^stable\b/i.test(scrollbarGutter)) return null;
+
+                return {
+                    ...rectInfo(el),
+                    overflowY: style.overflowY,
+                    scrollbarGutter,
+                };
+            })
+            .filter(Boolean)
+            .slice(0, 20);
+
+        const safariTableOverflowRisks = contentElements
+            .filter((el) => isScrollContainer(el))
+            .map((el) => {
+                const table = el.querySelector('table');
+                if (!table) return null;
+
+                const style = window.getComputedStyle(el);
+                const parent = el.parentElement;
+                const parentStyle = parent ? window.getComputedStyle(parent) : null;
+                const riskFactors = [];
+
+                if (/^stable\b/i.test(style.scrollbarGutter || '')) {
+                    riskFactors.push('scrollbar-gutter-stable');
+                }
+                if (hasNonZeroBorderRadius(style)) {
+                    riskFactors.push('rounded-scroll-container');
+                }
+                if ((style.maxHeight || '') !== 'none' && Number.parseFloat(style.maxHeight || '0') > 0) {
+                    riskFactors.push('max-height');
+                }
+                if (style.webkitOverflowScrolling === 'touch') {
+                    riskFactors.push('webkit-overflow-scrolling-touch');
+                }
+                if (parentStyle?.display?.includes('flex')) {
+                    riskFactors.push('flex-parent');
+                }
+
+                const clampedTableCellContent = Array.from(el.querySelectorAll('td *')).some((child) => {
+                    const childStyle = window.getComputedStyle(child);
+                    const lineClamp = childStyle.webkitLineClamp || childStyle.lineClamp || '';
+                    return childStyle.display === '-webkit-box'
+                        && lineClamp !== 'none'
+                        && lineClamp !== 'unset'
+                        && lineClamp !== 'initial'
+                        && lineClamp !== ''
+                        && childStyle.overflow === 'hidden';
+                });
+                if (clampedTableCellContent) {
+                    riskFactors.push('line-clamp-in-table-cell');
+                }
+
+                if (!riskFactors.length) return null;
+
+                return {
+                    ...rectInfo(el),
+                    overflowY: style.overflowY,
+                    maxHeight: style.maxHeight,
+                    scrollbarGutter: style.scrollbarGutter || '',
+                    webkitOverflowScrolling: style.webkitOverflowScrolling || '',
+                    parentDisplay: parentStyle?.display || null,
+                    hasTable: true,
+                    riskFactors,
+                    table: rectInfo(table),
+                };
+            })
+            .filter(Boolean)
+            .slice(0, 20);
+
         const resolveTrailingVisibleContent = (container) => {
             let current = container;
             let lastVisibleChild = null;
@@ -3022,6 +3107,52 @@ async function collectPageMetrics(page, scope) {
 
         colorProbe.remove();
 
+        const trafficTableHealth = scope === 'traffic' ? (() => {
+            const inspectTrafficTable = ({ tableId, tbodyId, contentId, emptyId, loadingId }) => {
+                const table = document.getElementById(tableId);
+                if (!table) return null;
+
+                const tbody = document.getElementById(tbodyId);
+                const content = document.getElementById(contentId);
+                const empty = document.getElementById(emptyId);
+                const loading = document.getElementById(loadingId);
+                const wrap = table.closest('.traffic-table-wrap');
+                const wrapStyle = wrap ? window.getComputedStyle(wrap) : null;
+                const rowCount = tbody?.rows?.length ?? 0;
+                const loadingHidden = !loading || loading.classList.contains('d-none');
+                const contentVisible = Boolean(content && !content.classList.contains('d-none') && isVisible(content));
+                const emptyVisible = Boolean(empty && !empty.classList.contains('d-none') && isVisible(empty));
+                const scrollbarGutter = wrapStyle?.scrollbarGutter || '';
+
+                return {
+                    rowCount,
+                    loadingHidden,
+                    contentVisible,
+                    emptyVisible,
+                    scrollbarGutter,
+                    hasRiskyScrollbarGutter: /^stable\b/i.test(scrollbarGutter),
+                    suspiciousEmpty: loadingHidden && contentVisible && !emptyVisible && rowCount === 0,
+                };
+            };
+
+            return {
+                country: inspectTrafficTable({
+                    tableId: 'country-traffic-table',
+                    tbodyId: 'country-traffic-tbody',
+                    contentId: 'country-traffic-content',
+                    emptyId: 'country-traffic-empty',
+                    loadingId: 'country-traffic-loading',
+                }),
+                asn: inspectTrafficTable({
+                    tableId: 'asn-traffic-table',
+                    tbodyId: 'asn-traffic-tbody',
+                    contentId: 'asn-traffic-content',
+                    emptyId: 'asn-traffic-empty',
+                    loadingId: 'asn-traffic-loading',
+                }),
+            };
+        })() : null;
+
         return {
             duplicateIds,
             emptyAriaLabels,
@@ -3035,6 +3166,8 @@ async function collectPageMetrics(page, scope) {
             tablesWithoutResponsive,
             ghostScroll,
             ghostScrollContainers,
+            scrollbarGutterRisks,
+            safariTableOverflowRisks,
             doubleScrollRisk,
             horizontalOverflow,
             clippedButtons,
@@ -3068,6 +3201,7 @@ async function collectPageMetrics(page, scope) {
             inputGroupHeightIssues,
             colorSchemeConsistency,
             deprecatedColorUsage,
+            trafficTableHealth,
         };
     }, { scope, constants: UI_EVAL_CONSTANTS });
 }
@@ -3707,6 +3841,8 @@ async function main() {
             scrollEdgeCrowding: metrics.scrollEdgeCrowding?.length || 0,
             scrollBottomCrowding: metrics.scrollBottomCrowding?.length || 0,
             ghostScrollContainers: metrics.ghostScrollContainers?.length || 0,
+            scrollbarGutterRisks: metrics.scrollbarGutterRisks?.length || 0,
+            safariTableOverflowRisks: metrics.safariTableOverflowRisks?.length || 0,
             nestedScrollContainers: metrics.nestedScrollContainers?.length || 0,
             flexScrollTraps: metrics.flexScrollTraps?.length || 0,
             badgeStyleMismatches: metrics.badgeStyleMismatches?.length || 0,

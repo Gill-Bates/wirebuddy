@@ -374,7 +374,7 @@ SWAGGER_ENABLED=false
 
 Default: `true` (can disable in production)
 
-Access at: `http://localhost:8000/docs`
+Access at: `http://localhost:8000/swagger`
 
 ### CORS_ORIGINS
 
@@ -388,7 +388,7 @@ Default: Not set (CORS disabled)
 
 ### TZ
 
-Timezone for scheduled tasks (backups run at 03:00 local time). Uses standard IANA timezone names.
+Timezone for scheduled tasks. Scheduled backups run at 03:00 in the resolved application timezone, using `TZ` when set and otherwise falling back to the system timezone configuration. Uses standard IANA timezone names.
 
 ```bash
 TZ=America/New_York

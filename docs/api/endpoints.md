@@ -195,4 +195,4 @@ Authoritative route list generated from mounted FastAPI routers.
 
 - This page reflects mounted routes at runtime (`create_app()`), including all included routers.
 - Endpoint permissions vary (`get_current_user` vs `require_admin` vs node-specific auth dependencies).
-- For request/response schemas, use the OpenAPI spec at `/openapi.json` and Swagger UI at `/docs`.
+- For request/response schemas, use the OpenAPI spec at `/swagger/openapi.json` and Swagger UI at `/swagger`.

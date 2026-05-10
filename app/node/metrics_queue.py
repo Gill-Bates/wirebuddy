@@ -355,6 +355,20 @@ def ack_up_to_seq(conn: sqlite3.Connection, acked_seq: int) -> int:
         Number of metrics deleted (0 if acked_seq is invalid)
     """
     with _get_connection_lock(conn):
+        if isinstance(acked_seq, bool) or not isinstance(acked_seq, int) or acked_seq < 1:
+            return 0
+
+        row = conn.execute(
+            "SELECT MIN(seq) as min_seq, MAX(seq) as max_seq FROM metrics_queue"
+        ).fetchone()
+        max_seq = row["max_seq"] if row is not None else None
+        if max_seq is None:
+            return 0
+
+        if acked_seq > max_seq:
+            _log.warning("ACK seq %d exceeds queue max seq %d, clamping", acked_seq, max_seq)
+            acked_seq = int(max_seq)
+
         cursor = conn.execute(
             "DELETE FROM metrics_queue WHERE seq <= ?",
             (acked_seq,)

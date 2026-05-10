@@ -6,8 +6,8 @@
 function wbToast(message, type = 'info', duration = 4000) {
     if (window.WBReconnect?.isActive?.()) return;
     const icons = { info: 'info', success: 'check_circle', warning: 'warning', danger: 'error' };
-    const colors = { info: 'var(--wb-primary)', success: 'var(--wb-success)', warning: 'var(--wb-warning)', danger: 'var(--wb-danger)' };
     const bgClasses = { info: 'text-bg-primary', success: 'text-bg-success', warning: 'text-bg-warning', danger: 'text-bg-danger' };
+    const ariaLive = { info: 'polite', success: 'polite', warning: 'assertive', danger: 'assertive' };
 
     const container = document.getElementById('wbToastContainer');
     if (!container) {
@@ -17,8 +17,7 @@ function wbToast(message, type = 'info', duration = 4000) {
 
     const existingToasts = container.querySelectorAll('.toast');
     for (let t of existingToasts) {
-        const msgSpan = t.querySelector('.toast-body span:last-child');
-        if (msgSpan && msgSpan.textContent === message) {
+        if (t.dataset.wbMessage === message) {
             try {
                 const bsToast = bootstrap.Toast.getInstance(t);
                 if (bsToast) {
@@ -40,8 +39,9 @@ function wbToast(message, type = 'info', duration = 4000) {
     const toastEl = document.createElement('div');
     toastEl.className = `toast align-items-center border-0 ${bgClasses[type] || bgClasses.info}`;
     toastEl.setAttribute('role', 'alert');
-    toastEl.setAttribute('aria-live', 'assertive');
+    toastEl.setAttribute('aria-live', ariaLive[type] || 'polite');
     toastEl.setAttribute('aria-atomic', 'true');
+    toastEl.dataset.wbMessage = message;
 
     // Create elements safely to prevent XSS
     const toastBody = document.createElement('div');
@@ -74,5 +74,5 @@ function wbToast(message, type = 'info', duration = 4000) {
     const toast = new bootstrap.Toast(toastEl, { delay: duration });
     toast.show();
 
-    toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+    toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove(), { once: true });
 }

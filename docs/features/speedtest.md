@@ -58,18 +58,11 @@ Server selection is automatic — no manual configuration needed.
 When enabled, WireBuddy runs a speed test automatically every night:
 
 - **Window:** 02:00 – 04:00 local time
-- **Peer deferral:** If WireGuard peers are actively connected, the test is deferred (up to 4 retries, 30 min apart)
-- **Cooldown:** 30 seconds between tests
+- **Execution model:** The scheduler waits for the nightly window and then runs the test if scheduled speed tests are enabled
+- **No peer gating:** Active WireGuard peers do not block or defer the nightly run
+- **Cross-process lease:** Concurrent runs are prevented so manual and scheduled tests do not overlap
 
-> **Important:** If peers remain active throughout all 4 retry attempts (4 × 30 min = 2 hours), the test is **skipped entirely for that night** — no measurement is recorded. Since the window is only 2 hours wide and retries consume exactly that time, a busy server may go days or weeks without a Master-side measurement even with "Scheduled" enabled.
->
-> **This is by design** — the test is deferred to avoid saturating active VPN tunnels. If you consistently see no scheduled results, check whether peers are idle during the 02:00–04:00 window:
->
-> ```bash
-> wg show all dump
-> ```
->
-> Peers with a `latest_handshake` older than 3 minutes are considered idle. If all peers are always active at night, consider running tests manually via **Settings → General → Speed Test → Run Now**.
+If the scheduler reaches the nightly window while speed tests are enabled, the run is attempted regardless of current peer activity. Failed runs are still recorded so the UI can surface the failure instead of silently retrying on the next scheduler tick.
 
 ## Running a Speed Test
 
