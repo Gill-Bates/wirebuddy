@@ -845,7 +845,7 @@ def _setup_logging(log_level: str) -> None:
 		logger.propagate = True
 
 	# Quiet down noisy third-party libraries
-	for name in ("httpcore", "httpx", "hpack", "watchfiles"):
+	for name in ("aiosqlite", "httpcore", "httpx", "hpack", "watchfiles"):
 		logging.getLogger(name).setLevel(logging.WARNING)
 
 

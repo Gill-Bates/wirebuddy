@@ -42,6 +42,9 @@ BUILD_INFO*
 .env
 
 # Linting
+tools/ui-lint/node_modules/
+tools/ui-lint/test-results/
+tools/ui-lint/tests/
 tools/ui-lint/ui-lint-summary.json
 
 # Documentation

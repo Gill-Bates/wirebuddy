@@ -37,10 +37,9 @@ class UvicornMessageFilter(logging.Filter):
 	"""Filter to downgrade specific uvicorn messages from INFO to DEBUG."""
 	
 	def filter(self, record: logging.LogRecord) -> bool:
-		# Downgrade "Finished server process" from INFO to DEBUG
+		# Drop the noisy shutdown message instead of mutating the shared record.
 		if record.levelno == logging.INFO and "Finished server process" in record.getMessage():
-			record.levelno = logging.DEBUG
-			record.levelname = "DEBUG"
+			return False
 		return True
 
 
@@ -83,7 +82,7 @@ _UVICORN_LOG_CONFIG: dict = {
 }
 
 
-def main():
+def main() -> None:
 	server_mode = os.environ.get("SERVER_MODE", "master").lower()
 
 	if server_mode == "node":
@@ -105,14 +104,14 @@ def main():
 		init_schema(conn)
 
 		gui_port_str = get_setting(conn, "gui_port", "8000")
-		gui_localhost_only_str = get_setting(conn, "gui_localhost_only", "false")
+		gui_localhost_only_str = get_setting(conn, "gui_localhost_only", "true")
 
 		try:
 			gui_port = int(gui_port_str)
 		except (ValueError, TypeError):
 			gui_port = 8000
 
-		gui_localhost_only = gui_localhost_only_str.lower() in ("true", "1", "yes")
+		gui_localhost_only = gui_localhost_only_str.lower() not in ("false", "0", "no")
 		host = "127.0.0.1" if gui_localhost_only else "0.0.0.0"
 
 	finally:
@@ -123,6 +122,7 @@ def main():
 		"true",
 		"yes",
 	)
+	proxy_allow_ips = os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1").strip() or "127.0.0.1"
 
 	uvicorn.run(
 		"app:create_app",
@@ -132,7 +132,7 @@ def main():
 		factory=True,
 		log_config=_UVICORN_LOG_CONFIG,
 		proxy_headers=True,
-		forwarded_allow_ips="*",
+		forwarded_allow_ips=proxy_allow_ips,
 	)
 
 

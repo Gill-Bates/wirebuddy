@@ -4,11 +4,23 @@
     "type": "module",
     "scripts": {
         "audit": "node run-ui-lint.mjs",
-        "install:browsers": "playwright install chromium"
+        "install:browsers": "playwright install chromium firefox webkit",
+        "test": "playwright test",
+        "test:headed": "playwright test --headed",
+        "test:ui": "playwright test --ui",
+        "report": "playwright show-report"
     },
     "dependencies": {
-        "pixelmatch": "^7.1.0",
-        "playwright": "^1.58.2",
-        "pngjs": "^7.0.0"
+        "@axe-core/playwright": "latest",
+        "@playwright/test": "latest",
+        "chalk": "latest",
+        "fast-glob": "latest",
+        "lighthouse": "latest",
+        "mime-types": "latest",
+        "pixelmatch": "latest",
+        "pngjs": "latest",
+        "sharp": "latest",
+        "ssim.js": "latest",
+        "zod": "latest"
     }
 }

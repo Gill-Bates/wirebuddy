@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { chromium, devices } from 'playwright';
+import { chromium, webkit, firefox, devices } from 'playwright';
 
 import {
     ABOUT_APPLICATION_DETAILS_FORBIDDEN_ROWS,
@@ -88,6 +88,22 @@ import {
     sanitize,
 } from './lib/browser-utils.mjs';
 import { summarizeFindings, isExpectedStatusUnavailable } from './lib/findings.mjs';
+import {
+    buildRunPaths,
+    getAuthenticatedContextOptions,
+    getLoginFailureContextOptions,
+} from './lib/runtime-config.mjs';
+import {
+    collectDOMStabilityMetrics,
+    collectPerformanceMetrics,
+    checkFontLoading,
+    computeSSIM,
+    filterConsoleEntries,
+    installDOMStabilityObserver,
+    installPerformanceObservers,
+    runAxeAudit,
+    scoreConsoleSeverity,
+} from './lib/audit-helpers.mjs';
 import { LOGIN_FAILURE_VIEWS, VIEWS } from './lib/views.mjs';
 
 const BASE_URL = process.env.UI_LINT_BASE_URL || 'http://localhost:8000';
@@ -100,16 +116,36 @@ if (!USERNAME || !PASSWORD) {
     process.exit(1);
 }
 
+// Browser matrix configuration
+// Set UI_LINT_BROWSERS=chromium,webkit,firefox to test all browsers
+// Default: chromium only for speed
+const AVAILABLE_BROWSERS = { chromium, webkit, firefox };
+const SELECTED_BROWSERS = (process.env.UI_LINT_BROWSERS || 'chromium')
+    .split(',')
+    .map((b) => b.trim().toLowerCase())
+    .filter((b) => b in AVAILABLE_BROWSERS);
+
+if (SELECTED_BROWSERS.length === 0) {
+    console.error('Error: No valid browsers selected. Available: chromium, webkit, firefox');
+    process.exit(1);
+}
+
+console.log(`Browser matrix: ${SELECTED_BROWSERS.join(', ')}`);
+
 // Generate unique session ID for this test run to avoid conflicts
 const SESSION_ID = Date.now();
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const OUTPUT_DIR = process.env.UI_LINT_OUTPUT_DIR || `/tmp/wirebuddy-ui-lint-${SESSION_ID}`;
-const SCREENSHOT_DIR = path.resolve(
-    OUTPUT_DIR,
-    process.env.UI_LINT_SCREENSHOT_DIR || 'screenshots'
-);
-// Results JSON stays in tools/ui-lint/, not in temp
-const RESULTS_DIR = SCRIPT_DIR;
+const {
+    outputDir: OUTPUT_DIR,
+    screenshotDir: SCREENSHOT_DIR,
+    summaryPath: SUMMARY_PATH,
+    latestSummaryPath: LATEST_SUMMARY_PATH,
+} = buildRunPaths({
+    scriptDir: SCRIPT_DIR,
+    sessionId: SESSION_ID,
+    outputDir: process.env.UI_LINT_OUTPUT_DIR,
+    screenshotDir: process.env.UI_LINT_SCREENSHOT_DIR,
+});
 
 async function collectPageMetrics(page, scope) {
     return page.evaluate(async ({ scope, constants }) => {
@@ -3528,13 +3564,36 @@ async function auditView(page, view) {
             shotB: shots.shotB,
             screenshotDir: SCREENSHOT_DIR,
         });
+
+        // SSIM perceptual diff (complementary to pixelmatch)
+        const ssimResult = await computeSSIM(shots.shotA, shots.shotB);
+        diff.ssim = ssimResult.ssim;
+        diff.mssim = ssimResult.mssim;
+
         const metrics = await collectPageMetrics(page, view.scope);
+
+        // Extended audits: Axe, Performance, Fonts, DOM stability
+        const [axeResults, perfMetrics, fontMetrics, domStability] = await Promise.all([
+            runAxeAudit(page),
+            collectPerformanceMetrics(page),
+            checkFontLoading(page),
+            collectDOMStabilityMetrics(page),
+        ]);
+        metrics.axe = axeResults;
+        metrics.performance = perfMetrics;
+        metrics.fonts = fontMetrics;
+        metrics.domStability = domStability;
         if (view.scope === 'nodes') {
             metrics.spacing.nodesDynamicBehavior = await runNodesDynamicChecks(page, view);
         }
         network = detachNetwork();
         const statusUnavailableExpected = isExpectedStatusUnavailable(view, response);
         network.requestFailures = network.requestFailures.filter((entry) => entry.error !== 'net::ERR_ABORTED');
+
+        // Filter console noise and compute severity
+        network.consoleEntriesRaw = [...network.consoleEntries];
+        network.consoleEntries = filterConsoleEntries(network.consoleEntries);
+        network.consoleSeverity = scoreConsoleSeverity(network.consoleEntries);
         if (statusUnavailableExpected) {
             network.consoleEntries = network.consoleEntries.filter((entry) => {
                 const text = String(entry.text || '');
@@ -3655,161 +3714,165 @@ async function main() {
     ensureDir(SCREENSHOT_DIR);
 
     const results = [];
-    let browser;
 
-    try {
-        browser = await chromium.launch({ headless: true });
-        const authContext = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
-        await login(await authContext.newPage(), {
-            baseUrl: BASE_URL,
-            username: USERNAME,
-            password: PASSWORD,
-            motionResetCss: FULL_MOTION_RESET_CSS,
-        });
-        const authState = await authContext.storageState();
-        await authContext.close();
+    // Iterate over selected browsers
+    for (const browserName of SELECTED_BROWSERS) {
+        console.log(`\n--- Testing with ${browserName} ---`);
+        const browserLauncher = AVAILABLE_BROWSERS[browserName];
+        let browser;
 
-        const desktopContext = await browser.newContext({
-            viewport: { width: 1440, height: 1100 },
-            storageState: authState,
-        });
-        const largeDesktopContext = await browser.newContext({
-            viewport: { width: 1600, height: 1100 },
-            storageState: authState,
-        });
-        const tabletContext = await browser.newContext({
-            ...devices['iPad Pro 11'],
-            storageState: authState,
-        });
-        const mobileContext = await browser.newContext({
-            ...devices['iPhone 13'],
-            storageState: authState,
-        });
-        await installLayoutShiftObserver(desktopContext);
-        await installLayoutShiftObserver(largeDesktopContext);
-        await installLayoutShiftObserver(tabletContext);
-        await installLayoutShiftObserver(mobileContext);
+        try {
+            browser = await browserLauncher.launch({ headless: true });
+            const authContext = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
+            await login(await authContext.newPage(), {
+                baseUrl: BASE_URL,
+                username: USERNAME,
+                password: PASSWORD,
+                motionResetCss: FULL_MOTION_RESET_CSS,
+            });
+            const authState = await authContext.storageState();
+            await authContext.close();
 
-        const desktopPage = await desktopContext.newPage();
-        const largeDesktopPage = await largeDesktopContext.newPage();
-        const tabletPage = await tabletContext.newPage();
-        const mobilePage = await mobileContext.newPage();
+            const desktopContext = await browser.newContext(getAuthenticatedContextOptions('desktop', devices, authState));
+            const largeDesktopContext = await browser.newContext(getAuthenticatedContextOptions('large-desktop', devices, authState));
+            const tabletContext = await browser.newContext(getAuthenticatedContextOptions('tablet', devices, authState));
+            const mobileContext = await browser.newContext(getAuthenticatedContextOptions('mobile', devices, authState));
+            await installLayoutShiftObserver(desktopContext);
+            await installLayoutShiftObserver(largeDesktopContext);
+            await installLayoutShiftObserver(tabletContext);
+            await installLayoutShiftObserver(mobileContext);
 
-        // Run authenticated view tests
-        for (const view of VIEWS) {
-            let page;
-            if (view.device === 'mobile') {
-                page = mobilePage;
-            } else if (view.device === 'tablet') {
-                page = tabletPage;
-            } else if (view.device === 'large-desktop') {
-                page = largeDesktopPage;
-            } else {
-                page = desktopPage;
-            }
-            try {
-                const result = await auditView(page, view);
-                const summarized = summarizeFindings(result);
-                result.findings = summarized.findings;
-                result.hardFindings = summarized.hardFindings;
-                result.warnings = summarized.warnings;
-                results.push(result);
-            } catch (err) {
-                console.error(`[${view.name}] Audit failed: ${err.message}`);
-                results.push({
-                    name: view.name,
-                    url: view.url,
-                    theme: view.theme,
-                    error: err.message,
-                    findings: ['auditError'],
-                    hardFindings: ['auditError'],
-                    warnings: [],
-                    diff: { ratio: 0, sizeMismatch: false },
-                    metrics: {},
-                    network: { consoleEntries: [], pageErrors: [], requestFailures: [], badResponses: [], requests: [], duplicateRequests: [] },
-                });
-            }
-        }
+            // Extended observers: Performance (LCP/INP), DOM stability
+            await installPerformanceObservers(desktopContext);
+            await installPerformanceObservers(largeDesktopContext);
+            await installPerformanceObservers(tabletContext);
+            await installPerformanceObservers(mobileContext);
+            await installDOMStabilityObserver(desktopContext);
+            await installDOMStabilityObserver(largeDesktopContext);
+            await installDOMStabilityObserver(tabletContext);
+            await installDOMStabilityObserver(mobileContext);
 
-        // Run login-failure tests LAST to avoid rate limiting blocking the real login
-        for (const [index, view] of LOGIN_FAILURE_VIEWS.entries()) {
-            let page;
-            if (view.device === 'mobile') {
-                page = mobilePage;
-            } else if (view.device === 'tablet') {
-                page = tabletPage;
-            } else if (view.device === 'large-desktop') {
-                page = largeDesktopPage;
-            } else {
-                page = desktopPage;
-            }
+            const desktopPage = await desktopContext.newPage();
+            const largeDesktopPage = await largeDesktopContext.newPage();
+            const tabletPage = await tabletContext.newPage();
+            const mobilePage = await mobileContext.newPage();
 
-            // Retry logic for rate limiting: detect "too many attempts" and wait before retry
-            let result;
-            let attempt = 0;
-            const maxRetries = 3;
-
-            while (attempt < maxRetries) {
+            // Run authenticated view tests
+            for (const view of VIEWS) {
+                let page;
+                if (view.device === 'mobile') {
+                    page = mobilePage;
+                } else if (view.device === 'tablet') {
+                    page = tabletPage;
+                } else if (view.device === 'large-desktop') {
+                    page = largeDesktopPage;
+                } else {
+                    page = desktopPage;
+                }
                 try {
-                    // Stagger login attempts to stay under 5/minute rate limit
-                    if (index > 0 && attempt === 0) {
-                        await new Promise((resolve) => setTimeout(resolve, LOGIN_TEST_STAGGER_MS));
-                    }
-
-                    result = await auditLoginFailureView(page, view);
-
-                    // Check if rate limited by examining error text
-                    const errorText = result?.metrics?.loginFailure?.errorText?.toLowerCase() || '';
-                    if (errorText.includes('too many') || errorText.includes('rate limit') || errorText.includes('locked')) {
-                        if (attempt < maxRetries - 1) {
-                            console.warn(`[${view.name}] Rate limited, waiting ${LOGIN_LOCKOUT_RESET_MS}ms before retry ${attempt + 1}/${maxRetries - 1}`);
-                            await new Promise((resolve) => setTimeout(resolve, LOGIN_LOCKOUT_RESET_MS));
-                            attempt++;
-                            continue;
-                        }
-                    }
-
-                    // Success or non-rate-limit error
-                    break;
+                    const result = await auditView(page, view);
+                    result.browser = browserName;
+                    const summarized = summarizeFindings(result);
+                    result.findings = summarized.findings;
+                    result.hardFindings = summarized.hardFindings;
+                    result.warnings = summarized.warnings;
+                    results.push(result);
                 } catch (err) {
-                    if (attempt === maxRetries - 1) {
-                        console.error(`[${view.name}] Audit failed after ${maxRetries} attempts: ${err.message}`);
-                        result = {
-                            name: view.name,
-                            url: view.url,
-                            theme: view.theme,
-                            error: err.message,
-                            findings: ['auditError'],
-                            hardFindings: ['auditError'],
-                            warnings: [],
-                            diff: { ratio: 0, sizeMismatch: false },
-                            metrics: {},
-                            network: { consoleEntries: [], pageErrors: [], requestFailures: [], badResponses: [], requests: [], duplicateRequests: [] },
-                        };
-                        break;
-                    }
-                    attempt++;
+                    console.error(`[${browserName}/${view.name}] Audit failed: ${err.message}`);
+                    results.push({
+                        name: view.name,
+                        browser: browserName,
+                        url: view.url,
+                        theme: view.theme,
+                        error: err.message,
+                        findings: ['auditError'],
+                        hardFindings: ['auditError'],
+                        warnings: [],
+                        diff: { ratio: 0, sizeMismatch: false },
+                        metrics: {},
+                        network: { consoleEntries: [], pageErrors: [], requestFailures: [], badResponses: [], requests: [], duplicateRequests: [] },
+                    });
                 }
             }
 
-            if (result) {
-                const summarized = summarizeFindings(result);
-                result.findings = summarized.findings;
-                result.hardFindings = summarized.hardFindings;
-                result.warnings = summarized.warnings;
-                results.push(result);
+            // Run login-failure tests LAST to avoid rate limiting blocking the real login
+            for (const [index, view] of LOGIN_FAILURE_VIEWS.entries()) {
+                // Retry logic for rate limiting: detect "too many attempts" and wait before retry
+                let result;
+                let attempt = 0;
+                const maxRetries = 3;
+
+                while (attempt < maxRetries) {
+                    const loginContext = await browser.newContext(getLoginFailureContextOptions(view.device, devices));
+                    await installLayoutShiftObserver(loginContext);
+                    const loginPage = await loginContext.newPage();
+
+                    try {
+                        // Stagger login attempts to stay under 5/minute rate limit
+                        if (index > 0 && attempt === 0) {
+                            await new Promise((resolve) => setTimeout(resolve, LOGIN_TEST_STAGGER_MS));
+                        }
+
+                        result = await auditLoginFailureView(loginPage, view);
+
+                        // Check if rate limited by examining error text
+                        const errorText = result?.metrics?.loginFailure?.errorText?.toLowerCase() || '';
+                        if (errorText.includes('too many') || errorText.includes('rate limit') || errorText.includes('locked')) {
+                            if (attempt < maxRetries - 1) {
+                                console.warn(`[${browserName}/${view.name}] Rate limited, waiting ${LOGIN_LOCKOUT_RESET_MS}ms before retry ${attempt + 1}/${maxRetries - 1}`);
+                                await new Promise((resolve) => setTimeout(resolve, LOGIN_LOCKOUT_RESET_MS));
+                                attempt++;
+                                continue;
+                            }
+                        }
+
+                        // Success or non-rate-limit error
+                        break;
+                    } catch (err) {
+                        if (attempt === maxRetries - 1) {
+                            console.error(`[${browserName}/${view.name}] Audit failed after ${maxRetries} attempts: ${err.message}`);
+                            result = {
+                                name: view.name,
+                                browser: browserName,
+                                url: view.url,
+                                theme: view.theme,
+                                error: err.message,
+                                findings: ['auditError'],
+                                hardFindings: ['auditError'],
+                                warnings: [],
+                                diff: { ratio: 0, sizeMismatch: false },
+                                metrics: {},
+                                network: { consoleEntries: [], pageErrors: [], requestFailures: [], badResponses: [], requests: [], duplicateRequests: [] },
+                            };
+                            break;
+                        }
+                        attempt++;
+                    } finally {
+                        await loginContext.close().catch(() => { });
+                    }
+                }
+
+                if (result) {
+                    result.browser = browserName;
+                    const summarized = summarizeFindings(result);
+                    result.findings = summarized.findings;
+                    result.hardFindings = summarized.hardFindings;
+                    result.warnings = summarized.warnings;
+                    results.push(result);
+                }
             }
-        }
-    } finally {
-        if (browser) {
-            await browser.close();
+        } finally {
+            if (browser) {
+                await browser.close();
+            }
         }
     }
 
-    const summaryPath = path.join(RESULTS_DIR, 'ui-lint-summary.json');
-    fs.writeFileSync(summaryPath, JSON.stringify(results, null, 2));
+    // Write results after all browsers complete
+    fs.writeFileSync(SUMMARY_PATH, JSON.stringify(results, null, 2));
+    fs.writeFileSync(LATEST_SUMMARY_PATH, JSON.stringify({ summaryPath: SUMMARY_PATH }, null, 2));
 
-    console.log(`\nResults saved to: ${summaryPath}`);
+    console.log(`\nResults saved to: ${SUMMARY_PATH}`);
     console.log(`Screenshots: ${SCREENSHOT_DIR}\n`);
 
     console.log('UI_LINT_START');
@@ -3820,6 +3883,7 @@ async function main() {
         const layoutShiftValue = Number(metrics.layoutShift?.value || 0);
         console.log(JSON.stringify({
             name: result.name,
+            browser: result.browser || 'chromium',
             url: result.url,
             theme: result.theme || null,
             findings: result.findings,
@@ -3865,7 +3929,7 @@ async function main() {
             logsPathWrapped: spacing.logsPathLayout?.filter((entry) => entry.wraps)?.length || 0,
             compactCardActionRows: spacing.compactCardActionRows?.length || 0,
             compactCardActionRowIssues: spacing.compactCardActionRows?.filter((entry) => !entry.isCompactMargin || !entry.isCompactPadding || !entry.isBorderless)?.length || 0,
-            duplicateRequests: result.network.duplicateRequests?.length || 0,
+            duplicateRequests: result.network?.duplicateRequests?.length || 0,
             kpiCards: spacing.kpiCards?.length || 0,
             dashboardKpiIcons: spacing.dashboardKpiIcons?.length || 0,
             dashboardKpiContextualIconColor: spacing.dashboardKpiIcons?.filter((card) => card.contextualClasses?.length)?.length || 0,
@@ -3910,7 +3974,47 @@ async function main() {
             loginErrorVisible: Boolean(metrics.loginFailure?.alertVisible),
             loginShakeActive: Boolean(metrics.loginFailure?.cardAnimationActive),
             loginPasswordInvalid: Boolean(metrics.loginFailure?.passwordInvalidClass),
-            summaryPath,
+
+            // SSIM perceptual diff
+            ssim: result.diff.ssim ?? null,
+            mssim: result.diff.mssim ?? null,
+
+            // Axe accessibility
+            axeViolations: metrics.axe?.violations || 0,
+            axeCritical: metrics.axe?.critical?.length || 0,
+            axeSerious: metrics.axe?.serious?.length || 0,
+            axeModerate: metrics.axe?.moderate?.length || 0,
+            axeMinor: metrics.axe?.minor?.length || 0,
+            axePassed: metrics.axe?.passed || 0,
+
+            // Performance metrics
+            perfFCP: metrics.performance?.paint?.fcp ?? null,
+            perfLCP: metrics.performance?.lcp ?? null,
+            perfDOMContentLoaded: metrics.performance?.navigation?.domContentLoaded ?? null,
+            perfTTFB: metrics.performance?.navigation?.ttfb ?? null,
+            perfResourceCount: metrics.performance?.resourceCount || 0,
+            perfTransferSize: metrics.performance?.totalTransferSize || 0,
+            perfHeapUtilization: metrics.performance?.memory?.heapUtilization ?? null,
+
+            // Font loading
+            fontsReady: Boolean(metrics.fonts?.fontsReady),
+            materialIconsLoaded: Boolean(metrics.fonts?.materialIconsLoaded),
+            fontsMissing: metrics.fonts?.failedFonts?.length || 0,
+            iconsMissing: metrics.fonts?.iconMissing?.length || 0,
+            foutRisk: Boolean(metrics.fonts?.foutRisk),
+
+            // DOM stability
+            domMutationCount: metrics.domStability?.mutationCount || 0,
+            domMutationBursts: metrics.domStability?.mutationBursts || 0,
+            domMaxBurstSize: metrics.domStability?.maxBurstSize || 0,
+            domReconnectCount: metrics.domStability?.reconnectCount || 0,
+
+            // Console severity
+            consoleSeverityScore: result.network?.consoleSeverity?.score || 0,
+            consoleCritical: result.network?.consoleSeverity?.critical?.length || 0,
+            consoleSerious: result.network?.consoleSeverity?.serious?.length || 0,
+
+            summaryPath: SUMMARY_PATH,
         }));
     }
     console.log('UI_LINT_END');

@@ -466,7 +466,7 @@ async def main() -> None:
 		format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
 		datefmt="%Y-%m-%d %H:%M:%S",
 	)
-	for name in ("httpcore", "httpx", "hpack"):
+	for name in ("aiosqlite", "httpcore", "httpx", "hpack"):
 		logging.getLogger(name).setLevel(logging.WARNING)
 	_log.info("WireBuddy Node Daemon starting...")
 
