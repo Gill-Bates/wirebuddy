@@ -1,3 +1,8 @@
+//
+// app/static/js/otp-setup.js
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
     (() => {
         const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
         const username = document.body.dataset.username || '';

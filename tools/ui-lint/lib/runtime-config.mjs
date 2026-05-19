@@ -1,3 +1,8 @@
+//
+// tools/ui-lint/lib/runtime-config.mjs
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
 import path from 'node:path';
 
 export function buildRunPaths({ scriptDir, sessionId, outputDir, screenshotDir = 'screenshots' }) {

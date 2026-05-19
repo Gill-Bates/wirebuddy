@@ -1,5 +1,8 @@
 //
 // tools/ui-lint/lib/audit-helpers.mjs
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
 // Extended audit capabilities: Axe, Performance, Fonts, SSIM, Console filtering
 //
 

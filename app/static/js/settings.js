@@ -1,3 +1,8 @@
+//
+// app/static/js/settings.js
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
 (async function () {
     // Shared scope: all includes below run in this IIFE and share identifiers.
     // Keep include-local names unique and preserve load order (_js_init first).

@@ -1,3 +1,7 @@
+//
+// app/static/js/dashboard.js
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
 
     const DEBUG = false;
     const pageConfigEl = document.getElementById('wb-page-config');

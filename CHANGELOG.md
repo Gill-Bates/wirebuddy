@@ -1,7 +1,10 @@
-## [1.5.0] - 2026-05-xx
+## [1.5.0] - 2026-05-19
 
 - ``New`` A new feature allows each peer to connect to all available nodes.
-- ``Fix`` CSP Hardening
+- ``New`` arm64 images are now built natively
+- ``Fix`` CSP Security Hardening
+- ``Fix`` Update Python dependencies
+
 
 <details markdown="1">
 <summary>Previous versions...</summary>

@@ -1,3 +1,8 @@
+//
+// app/static/js/base-ui.js
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
         document.addEventListener('DOMContentLoaded', function() {
             // Reconnect Failsafe Timeout
             // Note: This handles the case where page loads with wb-reconnecting class
