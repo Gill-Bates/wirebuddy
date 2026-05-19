@@ -18,6 +18,13 @@
                 api('GET', '/api/dns/blocklist/sources'),
                 api('GET', '/api/dns/status'),
             ]);
+            const { blocklistItem, emptyState } = window.WB?.settingsComponents || {};
+            const { clearChildren, fragment } = window.WB?.dom || {};
+
+            if (!blocklistItem || !emptyState || !clearChildren || !fragment) {
+                throw new Error('Settings components unavailable');
+            }
+
             // DNS unavailable (Unbound not installed) - disable all blocklist controls
             const dnsUnavailable = status?.unavailable || false;
             const rebuildInProgress = res.rebuild_in_progress || false;
@@ -37,66 +44,28 @@
                 const bName = String(b?.name || '').trim();
                 return aName.localeCompare(bName, undefined, { sensitivity: 'base' });
             });
-            let html = '';
-            for (let i = 0; i < sortedSources.length; i++) {
-                const source = sortedSources[i];
-                const checked = source.enabled ? 'checked' : '';
-                const domainsValue = source.domains;
-                // Show "Pending" for enabled blocklists with 0 domains during rebuild
-                const isPending = source.enabled && rebuildInProgress && Number(domainsValue) === 0;
-                const domains = isPending
-                    ? 'Pending'
-                    : (Number.isFinite(Number(domainsValue))
-                        ? Number(domainsValue).toLocaleString()
-                        : (String(domainsValue ?? '').trim() || '—'));
-                const updated = source.last_updated || '—';
-                const level = source.level || '';
-                const levelBadgeLabel = {
-                    'Moderat': 'Moderate',
-                    'Ausgewogen': 'Balanced',
-                    'Extrem': '🔥Extreme',
-                    '18+': '❤️ 18+',
-                }[level] || (level ? esc(level) : '');
-                const levelBadgeIcon = '';
-                const levelBadge = levelBadgeLabel
-                    ? `<span class="badge text-bg-secondary blocklist-level-badge">${levelBadgeIcon}${levelBadgeLabel}</span>`
-                    : '';
-                // Use hash + index to prevent ID collisions
-                const sourceId = `blocklist-${simpleHash(source.url)}-${i}`;
-                const dataUrl = esc(source.url).replace(/"/g, '&quot;');
-                html += `
-                    <article class="blocklist-item${source.enabled ? ' enabled' : ''}">
-                        <div class="blocklist-row">
-                            <div class="flex-grow-1">
-                                <label class="blocklist-title" for="${sourceId}">
-                                    <span>${esc(source.name)}</span>
-                                    ${levelBadge}
-                                </label>
-                                <div class="blocklist-desc">${esc(source.description)}</div>
-                                <div class="blocklist-meta">
-                                    <span class="blocklist-meta-mono">${domains} domains</span>
-                                    <span class="blocklist-meta-separator" aria-hidden="true">·</span>
-                                    <span class="blocklist-meta-mono">Updated ${updated}</span>
-                                </div>
-                            </div>
-                            <div class="form-check form-switch m-0">
-                                <input class="form-check-input" type="checkbox" id="${sourceId}"
-                                    data-url="${dataUrl}" data-name="${esc(source.name)}" ${checked}${(isAdmin && !dnsUnavailable) ? '' : ' disabled'}>
-                            </div>
-                        </div>
-                    </article>`;
-            }
+
             const container = document.getElementById('blocklist-sources');
             // Disable transitions during initial render to prevent toggle animation
             container.classList.add('no-transitions');
-            container.innerHTML =
-                html || '<div class="text-muted text-center py-3">No blocklist sources available</div>';
+            clearChildren(container);
+
+            if (sortedSources.length) {
+                const nodes = sortedSources.map((source, index) => blocklistItem(source, index, {
+                    rebuildInProgress,
+                    isAdmin,
+                    dnsUnavailable,
+                }));
+                container.appendChild(fragment(nodes));
+            } else {
+                container.appendChild(emptyState('No blocklist sources available'));
+            }
             bindBlocklistSourceListeners();
             // Re-enable transitions after render completes
             requestAnimationFrame(() => {
                 container.classList.remove('no-transitions');
             });
-            
+
             // DNS unavailable - disable all DNS filtering controls
             const updateBlocklistBtn = document.getElementById('btn-update-blocklist');
             const saveCustomRulesBtn = document.getElementById('save-custom-rules-btn');
@@ -120,7 +89,7 @@
                 if (saveCustomRulesBtn) saveCustomRulesBtn.disabled = !isAdmin;
                 if (customRulesInput && isAdmin) customRulesInput.disabled = false;
             }
-            
+
             const updEl = document.getElementById('blocklist-last-update');
             const updValueEl = updEl?.querySelector('.blocklist-last-value');
             if (updEl) {
@@ -146,8 +115,16 @@
                 cancelRebuildPoll();
             }
         } catch (error) {
-            document.getElementById('blocklist-sources').innerHTML =
-                `<div class="text-danger py-2">Failed to load blocklists: ${error.message}</div>`;
+            const container = document.getElementById('blocklist-sources');
+            const { emptyState } = window.WB?.settingsComponents || {};
+            if (container) {
+                container.textContent = '';
+                if (emptyState) {
+                    container.appendChild(emptyState(`Failed to load blocklists: ${error.message}`, 'danger'));
+                } else {
+                    container.textContent = `Failed to load blocklists: ${error.message}`;
+                }
+            }
             const updEl = document.getElementById('blocklist-last-update');
             const updValueEl = updEl?.querySelector('.blocklist-last-value');
             if (updValueEl) {
@@ -381,14 +358,24 @@
 
         // Second: Backend connectivity test
         btn.disabled = true;
-        statusEl.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-1"></span>Testing servers...';
+        const { spinner, statusIndicator } = window.WB?.settingsComponents || {};
+        const { clearChildren } = window.WB?.dom || {};
+        if (clearChildren) {
+            clearChildren(statusEl);
+        }
+        if (spinner) {
+            statusEl.appendChild(spinner('Testing servers...'));
+        }
         statusEl.className = 'small text-muted';
 
         try {
             const res = await api('POST', '/api/dns/test-upstream', { servers });
 
             if (res.all_success) {
-                statusEl.innerHTML = '<span class="material-icons align-middle text-success" style="font-size:16px;">check_circle</span> All servers validated';
+                if (clearChildren) clearChildren(statusEl);
+                if (statusIndicator) {
+                    statusEl.appendChild(statusIndicator({ icon: 'check_circle', text: 'All servers validated', variant: 'success' }));
+                }
                 statusEl.className = 'small text-success';
                 wbToast(`All ${res.results.length} DNS servers are reachable`, 'success');
             } else {
@@ -397,12 +384,18 @@
                     .map(r => `${r.server}: ${r.error}`)
                     .join('\n');
 
-                statusEl.innerHTML = `<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> ${res.failed_count} server(s) failed`;
+                if (clearChildren) clearChildren(statusEl);
+                if (statusIndicator) {
+                    statusEl.appendChild(statusIndicator({ icon: 'error', text: `${res.failed_count} server(s) failed`, variant: 'danger' }));
+                }
                 statusEl.className = 'small text-danger';
                 wbToast('DNS server validation failed:\n' + failedServers, 'danger');
             }
         } catch (error) {
-            statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Test failed';
+            if (clearChildren) clearChildren(statusEl);
+            if (statusIndicator) {
+                statusEl.appendChild(statusIndicator({ icon: 'error', text: 'Test failed', variant: 'danger' }));
+            }
             statusEl.className = 'small text-danger';
             wbToast('DNS validation error: ' + error.message, 'danger');
         } finally {
@@ -514,8 +507,13 @@
 
                 // Connectivity test
                 const statusEl = document.getElementById('dns-validation-status');
+                const { spinner, statusIndicator } = window.WB?.settingsComponents || {};
+                const { clearChildren } = window.WB?.dom || {};
                 if (statusEl) {
-                    statusEl.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-1"></span>Validating...';
+                    if (clearChildren) clearChildren(statusEl);
+                    if (spinner) {
+                        statusEl.appendChild(spinner('Validating...'));
+                    }
                     statusEl.className = 'small text-muted';
                 }
 
@@ -527,19 +525,28 @@
                             .map(r => `${r.server}: ${r.error}`)
                             .join('\n');
                         if (statusEl) {
-                            statusEl.innerHTML = `<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> ${testRes.failed_count} failed`;
+                            if (clearChildren) clearChildren(statusEl);
+                            if (statusIndicator) {
+                                statusEl.appendChild(statusIndicator({ icon: 'error', text: `${testRes.failed_count} failed`, variant: 'danger' }));
+                            }
                             statusEl.className = 'small text-danger';
                         }
                         wbToast('DNS validation failed - settings not saved:\n' + failedServers, 'danger');
                         return;
                     }
                     if (statusEl) {
-                        statusEl.innerHTML = '<span class="material-icons align-middle text-success" style="font-size:16px;">check_circle</span> Validated';
+                        if (clearChildren) clearChildren(statusEl);
+                        if (statusIndicator) {
+                            statusEl.appendChild(statusIndicator({ icon: 'check_circle', text: 'Validated', variant: 'success' }));
+                        }
                         statusEl.className = 'small text-success';
                     }
                 } catch (error) {
                     if (statusEl) {
-                        statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Test failed';
+                        if (clearChildren) clearChildren(statusEl);
+                        if (statusIndicator) {
+                            statusEl.appendChild(statusIndicator({ icon: 'error', text: 'Test failed', variant: 'danger' }));
+                        }
                         statusEl.className = 'small text-danger';
                     }
                     wbToast('DNS validation error: ' + error.message, 'danger');

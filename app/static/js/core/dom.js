@@ -193,6 +193,9 @@
         fragment
     };
 
+    window.WB = window.WB || {};
+    window.WB.dom = window.WBDom;
+
     // Also expose el directly for convenience
     window.el = el;
 })();

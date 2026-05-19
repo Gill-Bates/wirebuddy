@@ -620,6 +620,11 @@
         align-items: stretch;
     }
 
+
+    .settings-syntax-summary {
+        cursor: pointer;
+    }
+
     .settings-general-col {
         display: flex;
         flex-direction: column;

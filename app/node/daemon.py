@@ -95,13 +95,17 @@ def _extract_error_detail(response: httpx.Response) -> str:
 		pass
 
 	try:
-		return response.text[:200]
+		body = response.content[:200].decode("utf-8", errors="replace")
+		return body.replace("\n", "\\n").replace("\r", "\\r")
 	except Exception:
 		return ""
 
 
 def _decode_enrollment_token_payload(token_string: str) -> dict[str, Any]:
 	"""Decode the token payload without verifying its HMAC signature."""
+	if len(token_string) > 16384:
+		raise ValueError("Enrollment token too large")
+
 	try:
 		raw = base64.urlsafe_b64decode(token_string.encode("ascii")).decode("utf-8")
 		payload_json, _signature = raw.rsplit(".", 1)
@@ -135,6 +139,10 @@ def _load_state() -> dict[str, Any] | None:
 	if not STATE_FILE.exists():
 		return None
 
+	mode = STATE_FILE.stat().st_mode & 0o777
+	if mode & 0o077:
+		raise RuntimeError("Insecure permissions on node state file")
+
 	try:
 		state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
 	except (OSError, json.JSONDecodeError) as exc:
@@ -156,7 +164,7 @@ def _load_state() -> dict[str, Any] | None:
 def _save_state(state: dict[str, Any]) -> None:
 	"""Persist node runtime state with restrictive permissions."""
 	DATA_DIR.mkdir(parents=True, exist_ok=True)
-	tmp = STATE_FILE.with_suffix(".tmp")
+	tmp = STATE_FILE.with_suffix(f".{os.getpid()}.tmp")
 	try:
 		fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 		with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -165,7 +173,10 @@ def _save_state(state: dict[str, Any]) -> None:
 			os.fsync(handle.fileno())
 		os.replace(tmp, STATE_FILE)
 	except Exception:
-		tmp.unlink(missing_ok=True)
+		try:
+			tmp.unlink(missing_ok=True)
+		except OSError as cleanup_exc:
+			_log.warning("Failed to clean up temporary state file %s: %s", tmp, cleanup_exc)
 		raise
 
 
@@ -213,6 +224,10 @@ def _create_ssl_context(ca_file: str | None = None) -> tuple[ssl.SSLContext, str
 	# Create SSL context with TLS 1.2 minimum (prevents downgrade attacks)
 	ssl_ctx = ssl.create_default_context()
 	ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+	try:
+		ssl_ctx.set_ciphers("ECDHE+AESGCM:ECDHE+CHACHA20")
+	except ssl.SSLError as exc:
+		_log.warning("Could not apply hardened TLS cipher policy: %s", exc)
 	
 	if not ca_file:
 		# Use system CA certificates with TLS 1.2+ enforced
@@ -235,13 +250,19 @@ def _create_ssl_context(ca_file: str | None = None) -> tuple[ssl.SSLContext, str
 
 
 
-def _read_last_speedtest_run() -> float | None:
+def _read_last_speedtest_run() -> dt.date | None:
 	"""Read the timestamp of the last speedtest run."""
 	path = DATA_DIR / _SPEEDTEST_LAST_RUN_FILE
 	if not path.exists():
 		return None
 	try:
-		return float(path.read_text().strip())
+		raw = path.read_text(encoding="utf-8").strip()
+		if not raw:
+			return None
+		try:
+			return dt.fromisoformat(raw).date()
+		except ValueError:
+			return dt.fromtimestamp(float(raw)).date()
 	except (ValueError, OSError):
 		return None
 
@@ -250,7 +271,7 @@ def _write_last_speedtest_run(ts: float) -> None:
 	"""Write the timestamp of the last speedtest run."""
 	path = DATA_DIR / _SPEEDTEST_LAST_RUN_FILE
 	try:
-		path.write_text(str(ts))
+		path.write_text(dt.fromtimestamp(ts).date().isoformat(), encoding="utf-8")
 	except OSError as exc:
 		_log.warning("Failed to write speedtest last run timestamp: %s", exc)
 
@@ -275,8 +296,8 @@ async def _send_speedtest_progress(
 			},
 			timeout=5.0,  # Short timeout for progress updates
 		)
-	except Exception:
-		pass  # Best-effort: progress updates are optional, result submission has longer timeout
+	except Exception as exc:
+		_log.debug("Speedtest progress push failed: %s", exc, exc_info=True)
 
 
 async def _run_node_speedtest(
@@ -303,23 +324,31 @@ async def _run_node_speedtest(
 		return False
 
 	# Progress callback to send updates to master
+	progress_task: asyncio.Task[None] | None = None
+
 	def progress_callback(event: dict) -> None:
 		"""Send progress update to master (non-blocking)."""
+		nonlocal progress_task
+		if progress_task is not None and not progress_task.done():
+			return
 		try:
-			task = asyncio.create_task(
+			progress_task = asyncio.create_task(
 				_send_speedtest_progress(client, master_url, api_secret, cert_fingerprint, event)
 			)
 
 			def _consume_progress_exception(done_task: asyncio.Task[None]) -> None:
+				nonlocal progress_task
 				if done_task.cancelled():
+					progress_task = None
 					return
 				exc = done_task.exception()
+				progress_task = None
 				if exc is not None:
-					pass  # Best-effort: progress updates are optional
+					_log.debug("Speedtest progress push failed: %s", exc, exc_info=True)
 
-			task.add_done_callback(_consume_progress_exception)
+			progress_task.add_done_callback(_consume_progress_exception)
 		except Exception:
-			pass  # Best-effort: progress updates are optional
+			_log.debug("Speedtest progress callback scheduling failed", exc_info=True)
 	
 	try:
 		async with lease:
@@ -335,6 +364,13 @@ async def _run_node_speedtest(
 	except Exception as exc:
 		_log.error("NODE_SPEEDTEST failed: %s", exc)
 		result = {"status": "error", "reason": str(exc)}
+	finally:
+		if progress_task is not None and not progress_task.done():
+			progress_task.cancel()
+			try:
+				await progress_task
+			except asyncio.CancelledError:
+				pass
 	
 	# Submit result to master
 	try:
@@ -371,19 +407,16 @@ async def _speedtest_scheduler(
 	while not shutdown_event.is_set():
 		try:
 			# Check if we already ran a test today
-			last_run = await asyncio.to_thread(_read_last_speedtest_run)
-			now = time.time()
-			if last_run and (now - last_run) < 20 * 3600:  # Less than 20 hours ago
-				# Already ran recently, wait until next day
-				wait_seconds = _seconds_until_night_window()
-				_log.debug("NODE_SPEEDTEST already ran %.1fh ago, next in %.0fs", (now - last_run) / 3600, wait_seconds)
+			last_run_date = await asyncio.to_thread(_read_last_speedtest_run)
+			today = dt.now().date()
+			wait_seconds = _seconds_until_night_window()
+			if last_run_date == today:
+				_log.debug("NODE_SPEEDTEST already ran today (%s), next in %.0fs", today.isoformat(), wait_seconds)
 			else:
-				wait_seconds = _seconds_until_night_window()
-				hours_since_last = (now - last_run) / 3600 if last_run else None
 				_log.info(
 					"NODE_SPEEDTEST scheduled in %.0f seconds (last run: %s)",
 					wait_seconds,
-					f"{hours_since_last:.1f}h ago" if hours_since_last else "never",
+					last_run_date.isoformat() if last_run_date else "never",
 				)
 			
 			# Wait for the night window, checking for shutdown periodically
@@ -400,8 +433,8 @@ async def _speedtest_scheduler(
 			
 		except asyncio.CancelledError:
 			raise
-		except Exception as exc:
-			_log.warning("NODE_SPEEDTEST scheduler error: %s", exc)
+		except Exception:
+			_log.exception("NODE_SPEEDTEST scheduler error")
 			# Wait a bit before retrying
 			try:
 					if await _interruptible_sleep(300, shutdown_event):
@@ -447,8 +480,8 @@ async def _speedtest_on_demand_handler(
 				await _run_node_speedtest(client, master_url, api_secret, cert_fingerprint)
 		except asyncio.CancelledError:
 			return
-		except Exception as exc:
-			_log.warning("NODE_SPEEDTEST on-demand handler error: %s", exc)
+		except Exception:
+			_log.exception("NODE_SPEEDTEST on-demand handler error")
 			await asyncio.sleep(5)  # Brief delay before continuing
 
 
@@ -660,9 +693,6 @@ async def main() -> None:
 				# Log first 8 chars of the new secret hash for debugging
 				new_secret_hash = hashlib.sha256(api_secret.encode("utf-8")).hexdigest()
 				_log.info("Switched to session secret (hash=%s...)", new_secret_hash[:8])
-				# Small delay to ensure master has fully committed the session secret
-				# before we attempt authenticated requests with it
-				await asyncio.sleep(SESSION_PROPAGATION_DELAY)
 
 			current_config_version = current_config_version or None
 			node_state["config_version"] = current_config_version
@@ -671,16 +701,24 @@ async def main() -> None:
 			if current_config_version is None:
 				_log.info("Enrollment completed without config payload, fetching full config...")
 				try:
-					current_config_version = await _pull_config(
-						client,
-						master_url,
-						node_id,
-						None,
-						api_secret,
-						cert_fingerprint,
-					)
-				except httpx.HTTPError as exc:
-					_log.warning("Initial config pull after enrollment failed: %s", exc)
+					for attempt in range(2):
+						try:
+							current_config_version = await _pull_config(
+								client,
+								master_url,
+								node_id,
+								None,
+								api_secret,
+								cert_fingerprint,
+							)
+							break
+						except httpx.HTTPStatusError as exc:
+							if attempt == 0 and exc.response.status_code == 401 and session_secret:
+								_log.info("Session secret not ready yet; retrying config pull once")
+								await asyncio.sleep(SESSION_PROPAGATION_DELAY)
+								continue
+							_log.warning("Initial config pull after enrollment failed: %s", exc)
+							break
 				except Exception as exc:
 					_log.exception("Unexpected error during initial config pull: %s", exc)
 				else:
@@ -1047,6 +1085,10 @@ async def _push_heartbeat(
 		data = resp.json()
 		acked_seq = data.get("data", {}).get("acked_seq")
 		if acked_seq is not None:
+			if not isinstance(acked_seq, int):
+				raise RuntimeError("Invalid ACK sequence from master")
+			if pending_count > 0 and acked_seq > metrics_batch["seq_to"]:
+				raise RuntimeError("Invalid ACK sequence from master")
 			deleted = await asyncio.to_thread(ack_up_to_seq, metrics_queue_conn, acked_seq)
 			if deleted > 0:
 				_log.debug("Heartbeat ACK: master confirmed %d metrics (up to seq %d)", deleted, acked_seq)
@@ -1137,7 +1179,10 @@ async def _sse_listener(
 							if line.startswith("event:"):
 								event_type = line[6:].strip()
 							elif line.startswith("data:"):
-								event_buffer.append(line[5:].strip())
+								chunk = line[5:].strip()
+								if sum(len(part) for part in event_buffer) + len(chunk) > 1_000_000:
+									raise RuntimeError("SSE event too large")
+								event_buffer.append(chunk)
 							elif line == "":
 								if event_type and event_buffer:
 									data = "\n".join(event_buffer)
@@ -1230,6 +1275,8 @@ async def _pull_config(
 		params=params,
 	)
 	resp.raise_for_status()
+	if len(resp.content) > 50_000_000:
+		raise RuntimeError("Config payload too large")
 	data = resp.json()
 
 	config = data.get("data")

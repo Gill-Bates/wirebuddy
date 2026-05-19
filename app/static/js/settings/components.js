@@ -10,7 +10,7 @@
 (function () {
     'use strict';
 
-    const { el, clearChildren } = window.WB?.dom || {};
+    const { el, clearChildren } = window.WB?.dom || window.WBDom || {};
     if (!el) {
         console.error('[SettingsComponents] WB.dom not available');
         return;

@@ -42,7 +42,7 @@
 
                 <div class="d-flex justify-content-end align-items-center mt-1">
                     <button class="btn btn-sm btn-outline-secondary" id="btn-update-blocklist">
-                        <span class="material-icons align-middle me-1" style="font-size: 16px;">cached</span>Update Blocklists
+                        <span class="material-icons align-middle me-1 icon-sm">cached</span>Update Blocklists
                     </button>
                 </div>
 
@@ -70,20 +70,20 @@
                                   autocapitalize="off"
                                   {% if not user['is_admin'] %}readonly{% endif %}></textarea>
 
-                        <div id="custom-rules-errors" class="mt-2" style="display: none;"></div>
+                        <div id="custom-rules-errors" class="mt-2 d-none"></div>
 
                         <div class="d-flex justify-content-between align-items-center mt-2 settings-inline-actions">
                             <span class="small text-muted" id="custom-rules-count">0 rules</span>
                             <div class="d-flex align-items-center gap-2 settings-header-actions">
                                 <span id="custom-rules-status" class="small text-muted" aria-live="polite"></span>
                                 <button class="btn btn-sm btn-primary text-nowrap" id="save-custom-rules-btn">
-                                    <span class="material-icons align-middle me-1" style="font-size: 16px;">save</span>Save Rules
+                                    <span class="material-icons align-middle me-1 icon-sm">save</span>Save Rules
                                 </button>
                             </div>
                         </div>
 
                         <details class="mt-3 small text-muted">
-                            <summary style="cursor:pointer;">Syntax reference</summary>
+                            <summary class="settings-syntax-summary">Syntax reference</summary>
                             <div class="mt-2 ps-2 small">
                                 <code class="d-block mb-1">||example.com^        Block domain + subdomains</code>
                                 <code class="d-block mb-1">@@||example.com^      Allow override</code>
