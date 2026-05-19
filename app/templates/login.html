@@ -12,7 +12,7 @@
     <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
     <link href="/static/css/style.css" rel="stylesheet">
     <link href="/static/css/wb-ui-system.css" rel="stylesheet">
-    <link href="/static/css/login.css" rel="stylesheet">
+    <link href="/static/css/pages/login.css" rel="stylesheet">
     <link href="/static/vendor/material-icons.css" rel="stylesheet">
     <script src="/static/js/theme.js"></script>
 </head>
@@ -27,7 +27,20 @@
                 <p class="login-tagline small mb-2">Use WireGuard with ease!</p>
             </div>
 
-            <div class="alert alert-danger d-none" id="error-alert" role="alert" aria-live="assertive" aria-atomic="true"></div>
+            <div class="alert alert-danger is-hidden" id="error-alert" role="alert" aria-live="assertive" aria-atomic="true"></div>
+
+            <div id="passkey-section" class="is-hidden mb-4">
+                <p class="text-muted small mb-2 text-center">Use a passkey first when available.</p>
+                <button type="button" class="btn btn-outline-secondary btn-lg w-100" id="passkey-login-btn">
+                    <span class="material-icons align-middle me-2 icon-sm">fingerprint</span>
+                    Sign in with Passkey
+                </button>
+                <div class="d-flex align-items-center my-3">
+                    <hr class="flex-grow-1">
+                    <span class="px-3 text-muted small">or continue with password</span>
+                    <hr class="flex-grow-1">
+                </div>
+            </div>
 
             <form id="login-form" aria-describedby="error-alert">
                 <div class="mb-3">
@@ -49,20 +62,7 @@
                 </button>
             </form>
 
-            <!-- Passkey Login Section -->
-            <div id="passkey-section" class="hidden">
-                <div class="d-flex align-items-center my-3">
-                    <hr class="flex-grow-1">
-                    <span class="px-3 text-muted small">or</span>
-                    <hr class="flex-grow-1">
-                </div>
-                <button type="button" class="btn btn-outline-secondary btn-lg w-100" id="passkey-login-btn">
-                    <span class="material-icons align-middle me-2 icon-sm">fingerprint</span>
-                    Sign in with Passkey
-                </button>
-            </div>
-
-            <div id="mfa-form" class="hidden">
+            <div id="mfa-form" class="is-hidden">
                 <div class="text-center mb-3" id="mfa-header">
                     <span class="material-icons icon-lg text-primary">security</span>
                     <h5 class="mt-2 mb-1">Two-Factor Authentication</h5>
@@ -89,7 +89,7 @@
                     </button>
                 </div>
 
-                <div id="recovery-form" class="hidden mt-3">
+                <div id="recovery-form" class="is-hidden mt-3">
                     <div class="mb-3">
                         <label for="recovery-code" class="form-label">Recovery Code</label>
                         <input type="text" class="form-control form-control-lg" id="recovery-code" 

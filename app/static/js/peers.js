@@ -11,7 +11,7 @@ if (!peersApp) {
     console.warn('peers.js loaded without #peers-app context');
 } else {
     const canManagePeers = peersApp.dataset.canManagePeers === '1';
-    const flagIconBaseUrl = peersApp.dataset.flagIconBaseUrl || 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
+    const flagIconBaseUrl = peersApp.dataset.flagIconBaseUrl || '/static/vendor/flag-icons/flags/4x3';
 
     const ALLOWED_IPS_PRESETS = {
         full: '0.0.0.0/0, ::/0',
@@ -111,10 +111,14 @@ if (!peersApp) {
         });
     }
 
-    function escapeHtml(str) {
-        const d = document.createElement('div');
-        d.textContent = str;
-        return d.innerHTML;
+    function appendSafeText(parent, tagName, text, className = '') {
+        const element = document.createElement(tagName);
+        if (className) {
+            element.className = className;
+        }
+        element.textContent = text;
+        parent.appendChild(element);
+        return element;
     }
 
     function extractPeerIps(peerAddress) {
@@ -385,9 +389,15 @@ if (!peersApp) {
 
         const tdName = document.createElement('td');
         tdName.dataset.label = 'Name';
-        tdName.innerHTML = '<div class="peer-name-stack"><div class="peer-name-main"><span class="peer-name-text"></span></div><div class="peer-name-meta d-lg-none"></div></div>';
-        tdName.querySelector('.peer-name-text').textContent = name;
-        const nameMeta = tdName.querySelector('.peer-name-meta');
+        const nameStack = document.createElement('div');
+        nameStack.className = 'peer-name-stack';
+        const nameMain = document.createElement('div');
+        nameMain.className = 'peer-name-main';
+        appendSafeText(nameMain, 'span', name, 'peer-name-text');
+        const nameMeta = document.createElement('div');
+        nameMeta.className = 'peer-name-meta d-lg-none';
+        nameStack.append(nameMain, nameMeta);
+        tdName.appendChild(nameStack);
         if (nodeName) {
             const nodeSpan = document.createElement('span');
             nodeSpan.textContent = nodeName;
@@ -405,17 +415,25 @@ if (!peersApp) {
         const tdVpn = document.createElement('td');
         tdVpn.dataset.label = 'VPN Address';
         tdVpn.className = 'peer-vpn-address';
-        const vpnParts = [];
-        if (ipv4) vpnParts.push(`<code class="ipv6">${escapeHtml(ipv4)}</code>`);
-        if (ipv4 && ipv6) vpnParts.push('<br>');
-        if (ipv6) vpnParts.push(`<code class="ipv6">${escapeHtml(ipv6).replace(/:/g, ':\u200b')}</code>`);
-        tdVpn.innerHTML = vpnParts.join('') || '<code class="ipv6">—</code>';
+        if (ipv4) {
+            appendSafeText(tdVpn, 'code', ipv4, 'ipv6');
+        }
+        if (ipv4 && ipv6) {
+            tdVpn.appendChild(document.createElement('br'));
+        }
+        if (ipv6) {
+            appendSafeText(tdVpn, 'code', ipv6.replace(/:/g, ':\u200b'), 'ipv6');
+        }
+        if (!ipv4 && !ipv6) {
+            appendSafeText(tdVpn, 'code', '—', 'ipv6');
+        }
 
         const tdRouting = document.createElement('td');
         tdRouting.dataset.label = 'Routing';
         tdRouting.className = 'peer-routing';
-        tdRouting.innerHTML = '<div class="peer-routing-badges"></div>';
-        const routingBadges = tdRouting.querySelector('.peer-routing-badges');
+        const routingBadges = document.createElement('div');
+        routingBadges.className = 'peer-routing-badges';
+        tdRouting.appendChild(routingBadges);
         if (nodeName) {
             const nodeBadge = document.createElement('span');
             nodeBadge.className = 'badge bg-secondary';
@@ -524,7 +542,9 @@ if (!peersApp) {
         const label = picker.querySelector('.peer-node-picker-label');
 
         if (selectedOption && label) {
-            label.innerHTML = selectedOption.querySelector('.peer-node-option-label')?.innerHTML || selectedOption.innerHTML;
+            label.textContent = selectedOption.querySelector('.peer-node-option-label')?.textContent?.trim()
+                || selectedOption.textContent?.trim()
+                || '';
         }
 
         picker.querySelectorAll('.peer-node-option').forEach((option) => {

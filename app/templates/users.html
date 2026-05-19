@@ -18,7 +18,7 @@
 {%- endmacro %}
 
 {% block extra_css %}
-<link href="/static/css/users.css" rel="stylesheet">
+<link href="/static/css/pages/users.css" rel="stylesheet">
 {% endblock %}
 
 {% block content %}
@@ -35,7 +35,7 @@
 <div class="card">
     <div class="card-body">
         <div class="table-responsive">
-            <table class="table table-hover mb-0 users-table">
+            <table class="table table-hover mb-0 users-table wb-responsive-table">
                 <thead>
                     <tr>
                         <th>Username</th>
@@ -48,7 +48,7 @@
                 </thead>
                 <tbody>
                     {% for u in users %}
-                    <tr id="user-row-{{ u['id'] }}">
+                    <tr class="wb-responsive-row" id="user-row-{{ u['id'] }}">
                         <td data-label="Username">
                             <span class="user-identity">
                                 <strong>{{ u['username'] }}</strong>
@@ -85,7 +85,7 @@
                             {% endif %}
                         </td>
                         <td data-label="Created">{{ u['created_at'].strftime('%Y-%m-%d') }}</td>
-                        <td data-label="Actions" class="user-actions-cell">
+                        <td data-label="Actions" class="user-actions-cell wb-responsive-actions">
                             <div class="d-flex gap-1 justify-content-end">
                                 <button type="button" class="btn btn-sm btn-outline-secondary btn-edit-user users-action-btn"
                                     data-user-id="{{ u['id'] }}"

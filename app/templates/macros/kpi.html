@@ -1,0 +1,24 @@
+{% macro kpi_card(icon, label, value_id, value='-', subtext='', status_class='') -%}
+<div class="card h-100 wb-kpi-card{{ ' ' ~ status_class if status_class else '' }}">
+    <div class="card-body">
+        <div class="d-flex align-items-start gap-3 w-100">
+            <div class="flex-shrink-0">
+                <span class="material-icons wb-kpi-icon" aria-hidden="true">{{ icon }}</span>
+            </div>
+            <div class="flex-grow-1 min-w-0">
+                <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-{{ value_id | replace('_', '-') }}">{{ label }}</div>
+                {% if caller is defined %}
+                <div class="wb-kpi-value-group" aria-labelledby="label-{{ value_id | replace('_', '-') }}" aria-live="polite">
+                    {{ caller() }}
+                </div>
+                {% else %}
+                <p class="h3 mb-0 wb-kpi-value" id="{{ value_id }}" aria-labelledby="label-{{ value_id | replace('_', '-') }}" aria-live="polite">{{ value }}</p>
+                {% if subtext %}
+                <small class="text-muted wb-kpi-subtext">{{ subtext }}</small>
+                {% endif %}
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{%- endmacro %}

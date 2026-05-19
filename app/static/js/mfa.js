@@ -102,13 +102,13 @@ function showMfaForm(username, token) {
     clearPendingOtpReset();
     hideError();
 
-    document.getElementById('login-form').classList.add('hidden');
-    document.getElementById('mfa-form').classList.remove('hidden');
-    mfaHeader?.classList.remove('hidden');
+    hideElement(document.getElementById('login-form'));
+    showElement(document.getElementById('mfa-form'));
+    showElement(mfaHeader);
     otpDigitsContainer?.classList.remove('d-none');
-    mfaSubmitBtn?.classList.remove('hidden');
-    document.getElementById('use-recovery-btn')?.classList.remove('hidden');
-    recoveryForm?.classList.add('hidden');
+    showElement(mfaSubmitBtn);
+    showElement(document.getElementById('use-recovery-btn'));
+    hideElement(recoveryForm);
     if (recoveryCodeInput) {
         recoveryCodeInput.value = '';
         recoveryCodeInput.removeAttribute('aria-invalid');
@@ -261,11 +261,11 @@ async function submitMfa(code) {
 }
 
 function showRecoveryForm() {
-    mfaHeader.classList.add('hidden');
+    hideElement(mfaHeader);
     otpDigitsContainer.classList.add('d-none');
-    mfaSubmitBtn.classList.add('hidden');
-    document.getElementById('use-recovery-btn').classList.add('hidden');
-    recoveryForm.classList.remove('hidden');
+    hideElement(mfaSubmitBtn);
+    hideElement(document.getElementById('use-recovery-btn'));
+    showElement(recoveryForm);
     recoveryCodeInput.focus();
 }
 

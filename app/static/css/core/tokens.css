@@ -1,13 +1,22 @@
 :root {
-  --wb-color-bg: #0b1220;
-  --wb-color-surface: #111827;
-  --wb-color-border: #374151;
-  --wb-color-text: #e5e7eb;
-  --wb-color-text-muted: #9ca3af;
-  --wb-color-primary: #2563eb;
-  --wb-color-success: #16a34a;
-  --wb-color-warning: #d97706;
-  --wb-color-danger: #dc2626;
-  --wb-radius-md: 0.5rem;
-  --wb-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --wb-viewport-h: 100dvh;
+  --wb-spacing-xs: 0.25rem;
+  --wb-spacing-sm: 0.5rem;
+  --wb-spacing-md: 1rem;
+  --wb-spacing-lg: 1.5rem;
+  --wb-radius-sm: 0.375rem;
+  --wb-radius-md: 0.75rem;
+  --wb-radius-lg: 1rem;
+  --wb-danger: #c53a2f;
+  --wb-warning: #b7791f;
+  --wb-success: #2f855a;
+  --wb-card-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
+  --wb-card-shadow-hover: 0 18px 38px rgba(15, 23, 42, 0.12);
+  --wb-surface-muted: rgba(148, 163, 184, 0.08);
+}
+
+@supports not (height: 100dvh) {
+  :root {
+    --wb-viewport-h: 100vh;
+  }
 }

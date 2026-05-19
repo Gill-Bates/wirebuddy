@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-(function() {
+(function () {
     'use strict';
 
     // ========================================================================
@@ -16,9 +16,9 @@
     const SPEEDTEST_LOCK_TIMEOUT_MS = 180000;
     const SPEEDTEST_STATUS_POLL_MS = 5000;
     const FLAG_ICON_BASE_URL = document.getElementById('nodesPageRoot')?.dataset.flagIconBaseUrl
-        || '{{ flag_icon_base_url }}';
+        || '/static/vendor/flag-icons/flags/4x3';
     const HOVER_MEDIA = window.matchMedia('(hover: hover) and (pointer: fine)');
-    
+
     let pollTimer = null;
     let speedtestStatusTimer = null;
     let pollFailureCount = 0;
@@ -77,7 +77,7 @@
         const raw = value.replace(/^\[|\]$/g, '');
         if (!raw || raw.includes('[') || raw.includes(']')) return false;
         if (raw.includes('%')) return false;
-        
+
         // Use URL parsing for robust IPv6 validation
         try {
             const url = new URL(`http://[${raw}]`);
@@ -171,7 +171,7 @@
             span.classList.add('bg-secondary');
             span.textContent = status || '—';
         }
-        
+
         return span;
     }
 
@@ -208,7 +208,7 @@
 
     function setButtonLoading(button, isLoading, loadingText = 'Loading...', originalText = null) {
         if (!button) return;
-        
+
         if (isLoading) {
             button.disabled = true;
             if (!button.dataset.originalText) {
@@ -1297,10 +1297,10 @@
 
             // Show empty state or ensure table exists based on result
             toggleEmptyState(nodes.length > 0);
-            
+
             // If no nodes, we're done (empty state is shown)
             if (nodes.length === 0) return;
-            
+
             // Ensure table exists for rendering nodes
             const tbody = ensureTableExists();
             if (!tbody) return;
@@ -1311,7 +1311,7 @@
                 const nodeId = String(node.id || '');
                 let row = document.getElementById(`${NODE_ROW_PREFIX}${nodeId}`);
                 const latestSpeedtestTs = normalizeSpeedtestTimestamp(node.last_speedtest?.ts || '');
-                
+
                 // Handle NEW nodes: build row and insert into table
                 if (!row) {
                     row = buildNodeRow(node);
@@ -1341,7 +1341,7 @@
                 if (versionCell) {
                     const currentVersion = versionCell.querySelector('code')?.textContent || '';
                     const newVersion = node.node_version || '';
-                    
+
                     if (currentVersion !== newVersion) {
                         versionCell.replaceChildren(createVersionElement(node.node_version));
                     }
@@ -1353,7 +1353,7 @@
                     const currentSpan = lastSeenCell.querySelector('span');
                     const currentText = currentSpan?.textContent || '';
                     const newText = node.last_seen_text || 'Never';
-                    
+
                     if (currentText !== newText) {
                         lastSeenCell.replaceChildren(createLastSeenElement(node.last_seen_text, node.last_seen_class));
                     }
@@ -1380,7 +1380,7 @@
                 row.dataset.lastSpeedtestTs = latestSpeedtestTs;
                 renderSpeedtestCell(row.querySelector('td[data-label="Speedtest"]'), node.last_speedtest);
             }
-            
+
             // Reset failure count on success
             if (pollFailureCount >= MAX_POLL_FAILURES) {
                 pollFailureCount = 0;
@@ -1402,7 +1402,7 @@
 
     function startPolling() {
         stopPolling();
-        
+
         // Use backoff if too many failures
         const interval = pollFailureCount >= MAX_POLL_FAILURES ? POLL_BACKOFF_MS : POLL_INTERVAL_MS;
         pollTimer = setInterval(refreshNodes, interval);
@@ -1501,7 +1501,7 @@
     });
 
     // Reset modal state when closed (with explicit state check)
-    addNodeModalEl?.addEventListener('hidden.bs.modal', function() {
+    addNodeModalEl?.addEventListener('hidden.bs.modal', function () {
         document.getElementById('addNodeStep1')?.classList.remove('wb-step-hidden');
         document.getElementById('addNodeStep2')?.classList.add('wb-step-hidden');
         if (nodeNameInput) nodeNameInput.value = '';
@@ -1511,7 +1511,7 @@
         if (nodePortInput) nodePortInput.value = nodePortInput.dataset.default || '51820';
         setButtonLoading(addNodeSubmitBtn, false);
         if (addNodeSubmitBtn) addNodeSubmitBtn.style.display = '';
-        
+
         // Refresh datatable instead of full reload if a node was created
         if (nodeCreatedFlag) {
             nodeCreatedFlag = false;

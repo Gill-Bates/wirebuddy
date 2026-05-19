@@ -82,7 +82,7 @@
    ----------------------------------------------------------------------------- */
 body {
     font-family: 'Roboto Flex', system-ui, -apple-system, 'Segoe UI', sans-serif;
-    min-height: 100vh;
+    min-height: var(--wb-viewport-h, 100vh);
     display: flex;
     flex-direction: column;
     background-color: var(--bs-body-bg);
@@ -167,10 +167,8 @@ html.login-page body {
     align-items: center;
     justify-content: center;
     width: 100%;
-    height: 100vh;
-    height: 100dvh;
-    min-height: 100vh;
-    min-height: 100dvh;
+    height: var(--wb-viewport-h, 100vh);
+    min-height: var(--wb-viewport-h, 100vh);
     padding-top: calc(1rem + env(safe-area-inset-top));
     padding-right: calc(1rem + env(safe-area-inset-right));
     padding-bottom: calc(1rem + env(safe-area-inset-bottom));
@@ -191,8 +189,7 @@ html.login-page[data-bs-theme="dark"] body {
     width: calc(100% - 2rem);
     margin: 0 auto;
     /* Ensure card is scrollable within viewport on mobile */
-    max-height: calc(100vh - 2rem);
-    max-height: calc(100dvh - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    max-height: calc(var(--wb-viewport-h, 100vh) - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
     overflow-y: auto;
 }
 

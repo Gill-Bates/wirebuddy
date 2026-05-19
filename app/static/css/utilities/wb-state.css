@@ -2,6 +2,10 @@
   display: none !important;
 }
 
+.is-empty {
+  opacity: 0.72;
+}
+
 .is-disabled {
   pointer-events: none !important;
   opacity: 0.6 !important;
@@ -9,6 +13,7 @@
 
 .is-loading {
   cursor: progress;
+  position: relative;
 }
 
 .is-success {
@@ -21,4 +26,8 @@
 
 .is-danger {
   color: var(--wb-color-danger, #dc2626) !important;
+}
+
+[aria-busy="true"].is-loading {
+  pointer-events: none;
 }

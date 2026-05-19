@@ -1198,12 +1198,35 @@ def create_app() -> FastAPI:
 	app.state.peer_connection_state = OrderedDict()
 	app.state.shutdown_signal_event = None
 	app.state.key_mismatch = False  # Set to True if SECRET_KEY doesn't match DB encryption
+	default_csp = (
+		"default-src 'self'; "
+		"script-src 'self'; "
+		"style-src 'self'; "
+		"img-src 'self' data:; "
+		"font-src 'self'; "
+		"connect-src 'self'; "
+		"object-src 'none'; "
+		"base-uri 'self'; "
+		"frame-ancestors 'none'; "
+		"form-action 'self';"
+	)
 	
 	# ─── MIDDLEWARE ──────────────────────────────────────────
 	app.add_middleware(RequestIDMiddleware)
 
 	from .middleware.csrf import CSRFMiddleware
 	app.add_middleware(CSRFMiddleware)
+
+	@app.middleware("http")
+	async def add_security_headers(request: Request, call_next):
+		response = await call_next(request)
+		response.headers.setdefault("Content-Security-Policy", default_csp)
+		response.headers.setdefault("X-Frame-Options", "DENY")
+		response.headers.setdefault("X-Content-Type-Options", "nosniff")
+		response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+		if request.url.scheme == "https":
+			response.headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		return response
 
 	app.state.limiter = limiter
 

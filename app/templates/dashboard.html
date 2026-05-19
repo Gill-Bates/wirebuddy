@@ -1,11 +1,12 @@
 {% extends "base.html" %}
+{% from "macros/kpi.html" import kpi_card %}
 
 {% block title %}Dashboard – WireBuddy{% endblock %}
 
 {% block extra_css %}
 <link href="/static/vendor/leaflet.css" rel="stylesheet">
 <link href="/static/vendor/leaflet-gesture-handling.min.css" rel="stylesheet">
-<link href="/static/css/dashboard.css" rel="stylesheet">
+<link href="/static/css/pages/dashboard.css" rel="stylesheet">
 {% endblock %}
 
 {% block content %}
@@ -22,74 +23,32 @@
     <div class="col-lg-4 col-12">
         <div class="row g-3 h-100">
             <div class="col-6">
-                <div class="card h-100 wb-kpi-card">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="flex-shrink-0">
-                                <span class="material-icons wb-kpi-icon" aria-hidden="true">hub</span>
-                            </div>
-                            <div class="flex-grow-1 ms-3">
-                                <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-nodes">Nodes</div>
-                                <p class="h3 mb-0 wb-kpi-value" id="nodes-count" aria-labelledby="label-nodes" aria-live="polite">-</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                {{ kpi_card('hub', 'Nodes', 'nodes-count') }}
             </div>
 
             <div class="col-6">
-                <div class="card h-100 wb-kpi-card">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="flex-shrink-0">
-                                <span class="material-icons wb-kpi-icon" aria-hidden="true">cell_tower</span>
-                            </div>
-                            <div class="flex-grow-1 ms-3">
-                                <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-peers">Connections</div>
-                                <p class="h3 mb-0 wb-kpi-value" id="peers-count" aria-labelledby="label-peers" aria-live="polite">-</p>
-                                <small class="text-muted" id="peers-count-label">Peers Online</small>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                {% call kpi_card('cell_tower', 'Connections', 'peers-count') %}
+                <p class="h3 mb-0 wb-kpi-value" id="peers-count">-</p>
+                <small class="text-muted wb-kpi-subtext" id="peers-count-label">Peers Online</small>
+                {% endcall %}
             </div>
 
             <div class="col-6">
-                <div class="card h-100 wb-kpi-card">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="flex-shrink-0">
-                                <span class="material-icons wb-kpi-icon" aria-hidden="true">swap_vert</span>
-                            </div>
-                            <div class="flex-grow-1 ms-3">
-                                <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-total-traffic">Traffic</div>
-                                <div class="dashboard-bandwidth dashboard-traffic-summary" aria-labelledby="label-total-traffic" aria-live="polite">
-                                    <p class="h3 mb-0 dashboard-bandwidth-main dashboard-traffic-metric" id="total-rx">↓ -</p>
-                                    <small class="text-muted dashboard-kpi-subtext dashboard-bandwidth-sub dashboard-traffic-metric" id="total-tx">↑ -</small>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                {% call kpi_card('swap_vert', 'Traffic', 'total-rx') %}
+                <div class="dashboard-bandwidth dashboard-traffic-summary">
+                    <p class="h3 mb-0 dashboard-bandwidth-main dashboard-traffic-metric wb-kpi-value" id="total-rx">↓ -</p>
+                    <small class="text-muted dashboard-kpi-subtext dashboard-bandwidth-sub dashboard-traffic-metric" id="total-tx">↑ -</small>
                 </div>
+                {% endcall %}
             </div>
 
             <div class="col-6">
-                <div class="card h-100 wb-kpi-card">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="flex-shrink-0">
-                                <span class="material-icons wb-kpi-icon" aria-hidden="true">speed</span>
-                            </div>
-                            <div class="flex-grow-1 ms-3">
-                                <div class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-speedtest">Bandwidth</div>
-                                <div class="dashboard-bandwidth" aria-labelledby="label-speedtest" aria-live="polite">
-                                    <p class="h3 mb-0 dashboard-bandwidth-main" id="speedtest-download">–</p>
-                                    <small class="text-muted dashboard-kpi-subtext dashboard-bandwidth-sub" id="speedtest-upload"></small>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                {% call kpi_card('speed', 'Bandwidth', 'speedtest-download') %}
+                <div class="dashboard-bandwidth">
+                    <p class="h3 mb-0 dashboard-bandwidth-main wb-kpi-value" id="speedtest-download">–</p>
+                    <small class="text-muted dashboard-kpi-subtext dashboard-bandwidth-sub" id="speedtest-upload"></small>
                 </div>
+                {% endcall %}
             </div>
         </div>
     </div>
@@ -186,7 +145,7 @@
                 </div>
             </div>
             <div class="card-body p-0">
-                <div id="peer-map" role="application" aria-label="Interactive map showing peer locations"></div>
+                <div id="peer-map" role="region" aria-label="Peer locations map"></div>
             </div>
         </div>
     </div>

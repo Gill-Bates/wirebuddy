@@ -1,9 +1,10 @@
 {% extends "base.html" %}
+{% from "macros/kpi.html" import kpi_card %}
 
 {% block title %}DNS – WireBuddy{% endblock %}
 
 {% block extra_css %}
-<link rel='stylesheet' href='/static/css/dns.css'>
+<link rel='stylesheet' href='/static/css/pages/dns.css'>
 {% endblock %}
 
 {% block content %}
@@ -49,76 +50,34 @@
 
 <div class="row g-3 mb-3 align-items-stretch">
     <div class="col-6 col-lg-2">
-        <div class="card h-100 wb-kpi-card">
-            <div class="card-body">
-                <div class="d-flex justify-content-between align-items-start mb-2">
-                    <div class="dns-stat-label" id="label-status">Status</div>
-                    <span class="material-icons dns-stat-icon wb-kpi-icon">dns</span>
-                </div>
-                <div class="dns-stat-value{% if dns_unavailable %} text-muted{% endif %}" id="stat-status" aria-labelledby="label-status">{% if dns_unavailable %}N/A{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}
-                </div>
-            </div>
-        </div>
+        {% call kpi_card('dns', 'Status', 'stat-status', status_class='dns-stat-card') %}
+        <div class="dns-stat-value{% if dns_unavailable %} text-muted{% endif %}" id="stat-status">{% if dns_unavailable %}N/A{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}</div>
+        {% endcall %}
     </div>
     <div class="col-6 col-lg-2">
-        <div class="card h-100 wb-kpi-card">
-            <div class="card-body">
-                <div class="d-flex justify-content-between align-items-start mb-2">
-                    <div class="dns-stat-label" id="label-queries">Queries</div>
-                    <span class="material-icons dns-stat-icon wb-kpi-icon">query_stats</span>
-                </div>
-                <div class="dns-stat-value" id="stat-queries" aria-labelledby="label-queries">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}
-                </div>
-            </div>
-        </div>
+        {% call kpi_card('query_stats', 'Queries', 'stat-queries', status_class='dns-stat-card') %}
+        <div class="dns-stat-value" id="stat-queries">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}</div>
+        {% endcall %}
     </div>
     <div class="col-6 col-lg-2">
-        <div class="card h-100 wb-kpi-card">
-            <div class="card-body">
-                <div class="d-flex justify-content-between align-items-start mb-2">
-                    <div class="dns-stat-label" id="label-blocked">Blocked</div>
-                    <span class="material-icons dns-stat-icon wb-kpi-icon">block</span>
-                </div>
-                <div class="dns-stat-value{% if not dns_unavailable %} text-danger{% endif %}" id="stat-blocked" aria-labelledby="label-blocked">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}
-                </div>
-            </div>
-        </div>
+        {% call kpi_card('block', 'Blocked', 'stat-blocked', status_class='dns-stat-card') %}
+        <div class="dns-stat-value{% if not dns_unavailable %} text-danger{% endif %}" id="stat-blocked">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}</div>
+        {% endcall %}
     </div>
     <div class="col-6 col-lg-2">
-        <div class="card h-100 wb-kpi-card">
-            <div class="card-body">
-                <div class="d-flex justify-content-between align-items-start mb-2">
-                    <div class="dns-stat-label" id="label-percent">% Blocked</div>
-                    <span class="material-icons dns-stat-icon wb-kpi-icon">percent</span>
-                </div>
-                <div class="dns-stat-value{% if not dns_unavailable %} text-danger{% endif %}" id="stat-percent" aria-labelledby="label-percent">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}
-                </div>
-            </div>
-        </div>
+        {% call kpi_card('percent', '% Blocked', 'stat-percent', status_class='dns-stat-card') %}
+        <div class="dns-stat-value{% if not dns_unavailable %} text-danger{% endif %}" id="stat-percent">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}</div>
+        {% endcall %}
     </div>
     <div class="col-6 col-lg-2">
-        <div class="card h-100 wb-kpi-card">
-            <div class="card-body">
-                <div class="d-flex justify-content-between align-items-start mb-2">
-                    <div class="dns-stat-label" id="label-domains">Domains</div>
-                    <span class="material-icons dns-stat-icon wb-kpi-icon">public</span>
-                </div>
-                <div class="dns-stat-value" id="stat-domains" aria-labelledby="label-domains">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}
-                </div>
-            </div>
-        </div>
+        {% call kpi_card('public', 'Domains', 'stat-domains', status_class='dns-stat-card') %}
+        <div class="dns-stat-value" id="stat-domains">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}</div>
+        {% endcall %}
     </div>
     <div class="col-6 col-lg-2">
-        <div class="card h-100 wb-kpi-card">
-            <div class="card-body">
-                <div class="d-flex justify-content-between align-items-start mb-2">
-                    <div class="dns-stat-label" id="label-blocklist">Blocklist</div>
-                    <span class="material-icons dns-stat-icon wb-kpi-icon">list_alt</span>
-                </div>
-                <div class="dns-stat-value" id="stat-blocklist" aria-labelledby="label-blocklist">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}
-                </div>
-            </div>
-        </div>
+        {% call kpi_card('list_alt', 'Blocklist', 'stat-blocklist', status_class='dns-stat-card') %}
+        <div class="dns-stat-value" id="stat-blocklist">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm"></span>{% endif %}</div>
+        {% endcall %}
     </div>
 </div>
 
