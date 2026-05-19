@@ -1,0 +1,325 @@
+/**
+ * WireBuddy Button System
+ * ========================
+ * Unified button hierarchy replacing scattered button styles.
+ *
+ * Hierarchy:
+ * 1. .btn - Bootstrap base (overridden)
+ * 2. .wb-btn - WireBuddy neutral button
+ * 3. .wb-btn-icon - Icon-only button
+ * 4. .wb-btn-toolbar - Toolbar action button
+ * 5. Semantic variants: -primary, -danger, -success
+ *
+ * All buttons automatically meet touch target requirements.
+ */
+
+/* ============================================
+ * Base Button Token Overrides
+ * ============================================ */
+
+:root {
+    --wb-btn-padding-y: 0.5rem;
+    --wb-btn-padding-x: 1rem;
+    --wb-btn-padding-y-sm: 0.25rem;
+    --wb-btn-padding-x-sm: 0.5rem;
+    --wb-btn-padding-y-lg: 0.75rem;
+    --wb-btn-padding-x-lg: 1.5rem;
+    --wb-btn-font-size: var(--wb-font-size-sm);
+    --wb-btn-font-weight: var(--wb-font-weight-medium);
+    --wb-btn-radius: var(--wb-radius-sm);
+    --wb-btn-transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s, color 0.15s;
+}
+
+/* ============================================
+ * WireBuddy Base Button (.wb-btn)
+ * ============================================ */
+
+/**
+ * Neutral button with subtle border.
+ * Use for secondary actions, toolbar buttons.
+ */
+.wb-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--wb-spacing-xs);
+    min-height: var(--wb-touch-target-min);
+    padding: var(--wb-btn-padding-y) var(--wb-btn-padding-x);
+    font-size: var(--wb-btn-font-size);
+    font-weight: var(--wb-btn-font-weight);
+    line-height: 1.5;
+    text-decoration: none;
+    white-space: nowrap;
+    vertical-align: middle;
+    cursor: pointer;
+    user-select: none;
+    background-color: transparent;
+    border: 1px solid var(--wb-border-default);
+    border-radius: var(--wb-btn-radius);
+    box-shadow: var(--wb-shadow-sm);
+    color: var(--bs-body-color);
+    transition: var(--wb-btn-transition);
+}
+
+.wb-btn:hover {
+    background-color: var(--wb-hover-overlay-light);
+    border-color: var(--wb-border-hover);
+    box-shadow: var(--wb-shadow-md);
+    color: var(--bs-body-color);
+}
+
+.wb-btn:focus-visible {
+    outline: var(--wb-focus-ring-width) solid var(--wb-focus-ring-color);
+    outline-offset: var(--wb-focus-ring-offset);
+}
+
+.wb-btn:active {
+    background-color: var(--wb-active-overlay-light);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.wb-btn:disabled,
+.wb-btn.disabled {
+    opacity: 0.65;
+    pointer-events: none;
+}
+
+/* Dark mode */
+[data-bs-theme="dark"] .wb-btn {
+    border-color: var(--wb-border-default);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    color: var(--wb-text-secondary);
+}
+
+[data-bs-theme="dark"] .wb-btn:hover {
+    background-color: var(--wb-hover-overlay-light);
+    border-color: var(--wb-border-hover);
+    color: var(--wb-text-primary);
+}
+
+/* ============================================
+ * Icon Button (.wb-btn-icon)
+ * ============================================ */
+
+/**
+ * Square button for icon-only actions.
+ * Must have aria-label for accessibility.
+ */
+.wb-btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--wb-touch-target-min);
+    height: var(--wb-touch-target-min);
+    padding: 0;
+    font-size: 1.25rem;
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--wb-btn-radius);
+    color: var(--bs-body-color);
+    cursor: pointer;
+    transition: var(--wb-btn-transition);
+}
+
+.wb-btn-icon:hover {
+    background-color: var(--wb-hover-overlay-light);
+    border-color: var(--wb-border-default);
+}
+
+.wb-btn-icon:focus-visible {
+    outline: var(--wb-focus-ring-width) solid var(--wb-focus-ring-color);
+    outline-offset: var(--wb-focus-ring-offset);
+}
+
+.wb-btn-icon:active {
+    background-color: var(--wb-active-overlay-light);
+}
+
+/* Small icon button */
+.wb-btn-icon-sm {
+    width: var(--wb-action-btn-size-sm);
+    height: var(--wb-action-btn-size-sm);
+    font-size: 1rem;
+}
+
+/* ============================================
+ * Toolbar Button (.wb-btn-toolbar)
+ * ============================================ */
+
+/**
+ * Compact button for toolbars and action bars.
+ * Slightly smaller than standard buttons.
+ */
+.wb-btn-toolbar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--wb-spacing-xs);
+    min-height: var(--wb-action-btn-size-sm);
+    padding: var(--wb-btn-padding-y-sm) var(--wb-btn-padding-x-sm);
+    font-size: var(--wb-font-size-xs);
+    font-weight: var(--wb-font-weight-medium);
+    background-color: transparent;
+    border: 1px solid var(--wb-border-default);
+    border-radius: var(--wb-btn-radius);
+    color: var(--bs-body-color);
+    cursor: pointer;
+    transition: var(--wb-btn-transition);
+}
+
+.wb-btn-toolbar:hover {
+    background-color: var(--wb-hover-overlay-light);
+    border-color: var(--wb-border-hover);
+}
+
+.wb-btn-toolbar:focus-visible {
+    outline: var(--wb-focus-ring-width) solid var(--wb-focus-ring-color);
+    outline-offset: var(--wb-focus-ring-offset);
+}
+
+/* ============================================
+ * Semantic Button Variants
+ * ============================================ */
+
+/* Primary action */
+.wb-btn-primary {
+    background-color: var(--wb-primary);
+    border-color: var(--wb-primary);
+    color: #fff;
+    box-shadow: var(--wb-shadow-sm);
+}
+
+.wb-btn-primary:hover {
+    background-color: var(--wb-primary-hover);
+    border-color: var(--wb-primary-hover);
+    color: #fff;
+    box-shadow: var(--wb-shadow-md);
+}
+
+/* Danger action */
+.wb-btn-danger {
+    background-color: var(--wb-danger);
+    border-color: var(--wb-danger);
+    color: #fff;
+}
+
+.wb-btn-danger:hover {
+    background-color: var(--wb-danger-strong);
+    border-color: var(--wb-danger-strong);
+    color: #fff;
+}
+
+/* Soft danger (for destructive actions that need confirmation) */
+.wb-btn-danger-soft {
+    background-color: var(--wb-danger-muted);
+    border-color: transparent;
+    color: var(--wb-danger);
+}
+
+.wb-btn-danger-soft:hover {
+    background-color: var(--wb-danger);
+    border-color: var(--wb-danger);
+    color: #fff;
+}
+
+/* Success action */
+.wb-btn-success {
+    background-color: var(--wb-success);
+    border-color: var(--wb-success);
+    color: #fff;
+}
+
+.wb-btn-success:hover {
+    background-color: #237a4b;
+    border-color: #237a4b;
+    color: #fff;
+}
+
+/* ============================================
+ * Button Size Variants
+ * ============================================ */
+
+.wb-btn-sm {
+    min-height: var(--wb-action-btn-size-sm);
+    padding: var(--wb-btn-padding-y-sm) var(--wb-btn-padding-x-sm);
+    font-size: var(--wb-font-size-xs);
+}
+
+.wb-btn-lg {
+    min-height: var(--wb-touch-target-comfortable);
+    padding: var(--wb-btn-padding-y-lg) var(--wb-btn-padding-x-lg);
+    font-size: var(--wb-font-size-base);
+}
+
+/* ============================================
+ * Button Groups
+ * ============================================ */
+
+.wb-btn-group {
+    display: inline-flex;
+    gap: 0;
+}
+
+.wb-btn-group>.wb-btn,
+.wb-btn-group>.wb-btn-icon {
+    border-radius: 0;
+}
+
+.wb-btn-group>.wb-btn:first-child,
+.wb-btn-group>.wb-btn-icon:first-child {
+    border-top-left-radius: var(--wb-btn-radius);
+    border-bottom-left-radius: var(--wb-btn-radius);
+}
+
+.wb-btn-group>.wb-btn:last-child,
+.wb-btn-group>.wb-btn-icon:last-child {
+    border-top-right-radius: var(--wb-btn-radius);
+    border-bottom-right-radius: var(--wb-btn-radius);
+}
+
+.wb-btn-group>.wb-btn+.wb-btn,
+.wb-btn-group>.wb-btn-icon+.wb-btn-icon {
+    margin-left: -1px;
+}
+
+/* Spaced button group */
+.wb-btn-group-spaced {
+    display: inline-flex;
+    gap: var(--wb-action-btn-gap);
+}
+
+.wb-btn-group-spaced>.wb-btn,
+.wb-btn-group-spaced>.wb-btn-icon {
+    border-radius: var(--wb-btn-radius);
+}
+
+/* ============================================
+ * Loading State
+ * ============================================ */
+
+.wb-btn-loading {
+    position: relative;
+    color: transparent !important;
+    pointer-events: none;
+}
+
+.wb-btn-loading::after {
+    content: "";
+    position: absolute;
+    width: 1rem;
+    height: 1rem;
+    top: 50%;
+    left: 50%;
+    margin-top: -0.5rem;
+    margin-left: -0.5rem;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: wb-btn-spin 0.75s linear infinite;
+}
+
+@keyframes wb-btn-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}

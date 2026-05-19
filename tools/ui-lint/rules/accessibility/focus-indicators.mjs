@@ -2,6 +2,7 @@
 // tools/ui-lint/rules/accessibility/focus-indicators.mjs
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Rule: Focusable elements must have visible focus indicators (WCAG 2.4.7).
 //
 

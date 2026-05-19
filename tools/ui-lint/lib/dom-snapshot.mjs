@@ -2,6 +2,7 @@
 // tools/ui-lint/lib/dom-snapshot.mjs
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // DOM snapshot collector - collects all DOM data in a single pass.
 // Avoids layout thrashing from repeated getBoundingClientRect/getComputedStyle calls.
 //

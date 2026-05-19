@@ -2,6 +2,7 @@
 // app/static/js/core/logger.js
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Structured frontend logging with levels and optional context.
 // Replaces scattered console.error/warn/debug calls.
 //

@@ -2,6 +2,7 @@
 // app/static/js/settings/modules/logs.js
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Logs/Metrics settings module.
 // Handles TSDB, DNS metrics, peer metrics, and speedtest retention.
 //

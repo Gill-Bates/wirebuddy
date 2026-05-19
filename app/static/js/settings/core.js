@@ -2,6 +2,7 @@
 // app/static/js/settings/core.js
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Settings page core module - provides shared state, utilities, and module registry.
 //
 

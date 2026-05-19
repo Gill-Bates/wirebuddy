@@ -2,6 +2,7 @@
 // tools/ui-lint/rules/mobile/scroll-traps.mjs
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Rule: Detect scroll traps and nested scroll containers (iOS/Safari issues).
 //
 

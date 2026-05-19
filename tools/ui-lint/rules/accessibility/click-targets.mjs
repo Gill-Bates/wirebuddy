@@ -2,6 +2,7 @@
 // tools/ui-lint/rules/accessibility/click-targets.mjs
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Rule: Click targets must meet minimum touch target size (WCAG 2.5.5).
 //
 

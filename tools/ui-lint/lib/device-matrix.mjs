@@ -2,6 +2,7 @@
 // tools/ui-lint/lib/device-matrix.mjs
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Device matrix configuration for mobile testing.
 // Uses Playwright's built-in device descriptors.
 //

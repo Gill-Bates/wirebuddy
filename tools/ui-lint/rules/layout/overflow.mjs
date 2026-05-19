@@ -2,6 +2,7 @@
 // tools/ui-lint/rules/layout/overflow.mjs
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Rule: Detect horizontal overflow and content clipping issues.
 //
 

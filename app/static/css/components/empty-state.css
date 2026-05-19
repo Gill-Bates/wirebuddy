@@ -1,0 +1,75 @@
+/**
+ * WireBuddy Empty State Component
+ * ================================
+ * Consistent empty state styling for when content is not available.
+ * Replaces scattered .chart-empty-state and similar patterns.
+ */
+
+.wb-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--wb-spacing-md);
+    padding: var(--wb-empty-padding);
+    text-align: center;
+    color: var(--bs-secondary-color);
+}
+
+/* Icon */
+.wb-empty-state-icon {
+    font-size: var(--wb-empty-icon-size);
+    color: var(--wb-empty-icon-color);
+    opacity: 0.6;
+}
+
+/* Title */
+.wb-empty-state-title {
+    font-size: var(--wb-font-size-lg);
+    font-weight: var(--wb-font-weight-medium);
+    color: var(--bs-body-color);
+    margin: 0;
+}
+
+/* Description */
+.wb-empty-state-desc {
+    font-size: var(--wb-font-size-sm);
+    max-width: 300px;
+    margin: 0;
+}
+
+/* Action button */
+.wb-empty-state-action {
+    margin-top: var(--wb-spacing-sm);
+}
+
+/* Compact variant */
+.wb-empty-state-compact {
+    padding: var(--wb-spacing-lg);
+    gap: var(--wb-spacing-sm);
+}
+
+.wb-empty-state-compact .wb-empty-state-icon {
+    font-size: 32px;
+}
+
+.wb-empty-state-compact .wb-empty-state-title {
+    font-size: var(--wb-font-size-base);
+}
+
+/* Inline variant (for table rows, list items) */
+.wb-empty-state-inline {
+    flex-direction: row;
+    padding: var(--wb-spacing-md);
+    gap: var(--wb-spacing-sm);
+}
+
+.wb-empty-state-inline .wb-empty-state-icon {
+    font-size: 24px;
+}
+
+/* Fill parent height */
+.wb-empty-state-fill {
+    flex: 1;
+    min-height: 200px;
+}

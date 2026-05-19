@@ -2,6 +2,7 @@
 // tools/ui-lint/rules/index.mjs
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Rule index - imports and registers all lint rules.
 //
 

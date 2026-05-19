@@ -2,6 +2,7 @@
 // tools/ui-lint/lib/rule-registry.mjs
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Rule registry system for modular lint rules.
 // Each rule is isolated and can be run independently.
 //

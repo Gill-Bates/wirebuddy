@@ -2,6 +2,7 @@
 // app/static/js/components/retention-slider.js
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Generic retention slider component.
 // Replaces duplicated TSDB/DNS/Speedtest/Backup retention slider code.
 //

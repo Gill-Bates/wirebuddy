@@ -2,6 +2,7 @@
 // app/static/js/ui-state.js
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Central UI state management helpers.
 // All DOM state changes should flow through these functions.
 //

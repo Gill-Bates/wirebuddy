@@ -1,0 +1,287 @@
+/**
+ * WireBuddy Breakpoints Policy
+ * =============================
+ * Centralized responsive breakpoint definitions.
+ * All media queries should reference these values.
+ *
+ * Aligned with Bootstrap 5.3 breakpoints:
+ * - sm: 576px
+ * - md: 768px
+ * - lg: 992px
+ * - xl: 1200px
+ * - xxl: 1400px
+ *
+ * Mobile-first approach: base styles are mobile, add complexity upward.
+ */
+
+/* ============================================
+ * Breakpoint Reference (via CSS custom properties)
+ * Note: CSS custom properties can't be used in media queries,
+ * but we document them here for JS access via DesignTokens.
+ * ============================================ */
+
+:root {
+    /* These are defined in tokens.css but referenced here for clarity */
+    /* --wb-breakpoint-sm: 576px; */
+    /* --wb-breakpoint-md: 768px; */
+    /* --wb-breakpoint-lg: 992px; */
+    /* --wb-breakpoint-xl: 1200px; */
+    /* --wb-breakpoint-xxl: 1400px; */
+}
+
+/* ============================================
+ * Container Width Policy
+ * ============================================ */
+
+/* Maximum content width at each breakpoint */
+.wb-container {
+    width: 100%;
+    margin-inline: auto;
+    padding-inline: var(--wb-page-padding-mobile);
+}
+
+@media (min-width: 576px) {
+    .wb-container {
+        max-width: 540px;
+        padding-inline: var(--wb-page-padding);
+    }
+}
+
+@media (min-width: 768px) {
+    .wb-container {
+        max-width: 720px;
+    }
+}
+
+@media (min-width: 992px) {
+    .wb-container {
+        max-width: 960px;
+    }
+}
+
+@media (min-width: 1200px) {
+    .wb-container {
+        max-width: 1140px;
+    }
+}
+
+@media (min-width: 1400px) {
+    .wb-container {
+        max-width: var(--wb-content-max-width);
+    }
+}
+
+/* Fluid container (no max-width) */
+.wb-container-fluid {
+    width: 100%;
+    padding-inline: var(--wb-page-padding-mobile);
+}
+
+@media (min-width: 768px) {
+    .wb-container-fluid {
+        padding-inline: var(--wb-page-padding);
+    }
+}
+
+/* ============================================
+ * Spacing Responsive Overrides
+ * ============================================ */
+
+/* Reduce padding on mobile */
+@media (max-width: 767.98px) {
+    .wb-page {
+        padding: var(--wb-page-padding-mobile);
+    }
+
+    .wb-section {
+        gap: var(--wb-spacing-md);
+    }
+}
+
+/* ============================================
+ * Typography Responsive Scaling
+ * ============================================ */
+
+/* Page titles scale down on mobile */
+@media (max-width: 575.98px) {
+
+    .page-title,
+    .wb-page-title {
+        font-size: var(--wb-font-size-lg);
+    }
+
+    h1 {
+        font-size: 1.5rem;
+    }
+
+    h2 {
+        font-size: 1.25rem;
+    }
+}
+
+/* ============================================
+ * Component Responsive Behavior
+ * ============================================ */
+
+/* Cards stack on mobile */
+@media (max-width: 575.98px) {
+    .card-body {
+        padding: var(--wb-spacing-md);
+    }
+}
+
+/* Toolbar items wrap on mobile */
+@media (max-width: 767.98px) {
+    .wb-toolbar {
+        flex-wrap: wrap;
+        gap: var(--wb-spacing-sm);
+    }
+
+    .wb-toolbar>* {
+        flex: 1 1 auto;
+        min-width: calc(50% - var(--wb-spacing-sm));
+    }
+}
+
+/* ============================================
+ * Table Responsive Behavior
+ * ============================================ */
+
+/* Convert table to card layout on mobile */
+@media (max-width: 991.98px) {
+    .wb-responsive-table {
+        border: none;
+    }
+
+    .wb-responsive-table thead {
+        display: none;
+    }
+
+    .wb-responsive-table tbody {
+        display: flex;
+        flex-direction: column;
+        gap: var(--wb-spacing-md);
+    }
+
+    .wb-responsive-table tr,
+    .wb-responsive-row {
+        display: flex;
+        flex-direction: column;
+        background: var(--bs-body-bg);
+        border: 1px solid var(--wb-table-border-color);
+        border-radius: var(--wb-radius-md);
+        padding: var(--wb-spacing-md);
+        gap: var(--wb-spacing-xs);
+    }
+
+    .wb-responsive-table td {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: var(--wb-spacing-xs) 0;
+        border: none;
+    }
+
+    .wb-responsive-table td::before {
+        content: attr(data-label);
+        font-weight: var(--wb-font-weight-medium);
+        color: var(--bs-secondary-color);
+    }
+
+    .wb-responsive-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: var(--wb-action-btn-gap);
+        padding-top: var(--wb-spacing-sm);
+        border-top: 1px solid var(--wb-table-border-color);
+        margin-top: var(--wb-spacing-sm);
+    }
+}
+
+/* ============================================
+ * Navigation Responsive Behavior
+ * ============================================ */
+
+/* Tab navigation scrolls horizontally on mobile */
+@media (max-width: 767.98px) {
+    .nav-tabs {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+
+    .nav-tabs::-webkit-scrollbar {
+        display: none;
+    }
+
+    .nav-tabs .nav-link {
+        white-space: nowrap;
+    }
+}
+
+/* ============================================
+ * Modal Responsive Behavior
+ * ============================================ */
+
+/* Full-screen modal on mobile */
+@media (max-width: 575.98px) {
+    .modal-dialog {
+        margin: 0;
+        max-width: 100%;
+        height: 100%;
+    }
+
+    .modal-content {
+        height: 100%;
+        border: none;
+        border-radius: 0;
+    }
+
+    .modal-body {
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+}
+
+/* ============================================
+ * Form Responsive Behavior
+ * ============================================ */
+
+/* Stack form groups on mobile */
+@media (max-width: 575.98px) {
+    .input-group {
+        flex-wrap: wrap;
+    }
+
+    .input-group>.form-control,
+    .input-group>.form-select {
+        flex: 1 1 100%;
+        margin-bottom: var(--wb-spacing-xs);
+        border-radius: var(--wb-input-radius) !important;
+    }
+
+    .input-group>.btn {
+        flex: 1 1 100%;
+        border-radius: var(--wb-input-radius) !important;
+    }
+}
+
+/* ============================================
+ * Chart/Map Responsive Behavior
+ * ============================================ */
+
+/* Reduce chart height on mobile */
+@media (max-width: 575.98px) {
+    .wb-chart-container {
+        min-height: 200px;
+        max-height: 300px;
+    }
+}
+
+/* Map adjusts to viewport */
+@media (max-width: 767.98px) {
+    .wb-map-container {
+        height: clamp(300px, 40vh, 400px);
+    }
+}

@@ -2,6 +2,7 @@
 // app/static/js/core/dom.js
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // DOM builder utilities to replace innerHTML string concatenation.
 // Provides XSS-safe element creation with declarative API.
 //
