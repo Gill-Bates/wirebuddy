@@ -90,6 +90,10 @@
     display: inline-block;
 }
 
+.users-mobile-actions {
+    display: none;
+}
+
 .users-mobile-summary {
     display: none;
 }
@@ -232,20 +236,59 @@
     }
 
     .users-table td.user-actions-cell .d-flex {
-        display: grid !important;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        justify-content: stretch;
-        gap: 0.5rem;
+        display: none !important;
     }
 
-    .users-table td.user-actions-cell .d-flex>.users-action-btn {
-        flex: 1 1 auto;
-        min-width: 0;
+    .users-mobile-actions {
+        display: flex;
+        justify-content: flex-end;
+    }
+
+    .users-mobile-actions-toggle {
+        min-width: 44px;
         min-height: 44px;
-        border-radius: 0.75rem;
-        background: var(--bs-secondary-bg);
-        border-color: var(--bs-border-color-translucent);
-        justify-content: center;
+        border-radius: 0.8rem;
+    }
+
+    .users-mobile-actions-menu {
+        min-width: 14rem;
+        padding: 0.4rem;
+        border-radius: 1rem;
+        box-shadow: var(--wb-card-shadow);
+    }
+
+    .users-mobile-actions-menu .dropdown-item {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        border-radius: 0.7rem;
+        min-height: 44px;
+        padding: 0.55rem 0.8rem;
+    }
+
+    .users-mobile-actions-menu .dropdown-divider {
+        margin: 0.4rem 0;
+    }
+
+    .users-mobile-summary {
+        margin-top: 0.85rem;
+        padding: 1rem;
+        gap: 0.85rem;
+    }
+
+    .users-mobile-details {
+        grid-template-columns: 1fr;
+        gap: 0.75rem;
+    }
+
+    .users-mobile-detail:first-child {
+        grid-column: auto;
+    }
+
+    .users-mobile-value code,
+    .login-ip code {
+        font-size: 0.72rem;
+        opacity: 0.72;
     }
 }
 

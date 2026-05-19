@@ -300,6 +300,46 @@ async def _send_speedtest_progress(
 		_log.debug("Speedtest progress push failed: %s", exc, exc_info=True)
 
 
+async def _ack_node_command(
+	client: httpx.AsyncClient,
+	master_url: str,
+	api_secret: str,
+	cert_fingerprint: str,
+	command_id: int,
+) -> bool:
+	"""Acknowledge a durable master command after the node handled it."""
+	if command_id <= 0:
+		return False
+	try:
+		resp = await client.post(
+			f"{master_url}/api/nodes/commands/{command_id}/ack",
+			headers=_build_request_headers(api_secret, cert_fingerprint),
+			timeout=5.0,
+		)
+		resp.raise_for_status()
+		return True
+	except Exception as exc:
+		_log.warning("Failed to acknowledge node command %s: %s", command_id, exc)
+		return False
+
+
+def _extract_command_id(data: str) -> int | None:
+	"""Extract a durable command_id from an SSE data payload."""
+	if not data:
+		return None
+	try:
+		parsed = json.loads(data)
+	except Exception:
+		return None
+	if not isinstance(parsed, dict):
+		return None
+	try:
+		command_id = int(parsed.get("command_id") or 0)
+	except (TypeError, ValueError):
+		return None
+	return command_id if command_id > 0 else None
+
+
 async def _run_node_speedtest(
 	client: httpx.AsyncClient,
 	master_url: str,
@@ -1186,21 +1226,30 @@ async def _sse_listener(
 							elif line == "":
 								if event_type and event_buffer:
 									data = "\n".join(event_buffer)
+									command_id = _extract_command_id(data)
 									if event_type == "config_changed":
 										_log.info("Received config_changed event from master")
 										config_changed_event.set()
+										if command_id is not None:
+											await _ack_node_command(sse_client, master_url, api_secret, cert_fingerprint, command_id)
 									elif event_type == "restart_requested":
 										_log.warning("Received restart_requested event from master — initiating graceful shutdown")
+										if command_id is not None:
+											await _ack_node_command(sse_client, master_url, api_secret, cert_fingerprint, command_id)
 										shutdown_event.set()
 										return
 									elif event_type == "node_removed":
 										_log.warning("Received node_removed event from master — clearing state and exiting")
+										if command_id is not None:
+											await _ack_node_command(sse_client, master_url, api_secret, cert_fingerprint, command_id)
 										await asyncio.to_thread(_clear_enrollment_state)
 										shutdown_event.set()
 										return
 									elif event_type == "run_speedtest":
 										_log.info("Received run_speedtest event from master — triggering on-demand speedtest")
 										speedtest_requested_event.set()
+										if command_id is not None:
+											await _ack_node_command(sse_client, master_url, api_secret, cert_fingerprint, command_id)
 								event_type = None
 								event_buffer.clear()
 						

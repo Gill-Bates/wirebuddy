@@ -20,6 +20,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+from email.utils import parsedate_to_datetime
 from datetime import UTC, datetime, timedelta
 from pathlib import Path as PathLib
 
@@ -198,6 +199,27 @@ def _parse_acme_error(resp: httpx.Response) -> str:
 		return resp.text
 	except Exception:
 		return resp.text
+
+
+def _parse_retry_after(resp: httpx.Response, fallback_delay: float) -> float:
+	"""Parse Retry-After header as seconds, falling back to the provided delay."""
+	raw_value = resp.headers.get("Retry-After")
+	if not raw_value:
+		return fallback_delay
+
+	raw_value = raw_value.strip()
+	try:
+		return max(0.0, float(raw_value))
+	except ValueError:
+		pass
+
+	try:
+		retry_at = parsedate_to_datetime(raw_value)
+		if retry_at.tzinfo is None:
+			retry_at = retry_at.replace(tzinfo=UTC)
+		return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+	except Exception:
+		return fallback_delay
 
 
 def _jwk_thumbprint(jwk: dict) -> str:
@@ -516,6 +538,26 @@ class ACMEClient:
 			raise HTTPException(status_code=500, detail=f"Failed to respond to challenge: {_parse_acme_error(resp)}")
 		
 		return resp.json()
+
+			async def poll_authorization(self, auth_url: str, max_attempts: int = 15, delay: float = 4.0) -> dict:
+				"""Poll authorization status until the challenge is validated or fails."""
+				for _ in range(max_attempts):
+					resp = await self._signed_request(auth_url, None)
+
+					if resp.status_code != 200:
+						raise HTTPException(status_code=500, detail=f"Failed to poll authorization: {_parse_acme_error(resp)}")
+
+					authorization = resp.json()
+					status = authorization.get("status")
+
+					if status == "valid":
+						return authorization
+					if status in ("invalid", "expired", "revoked", "deactivated"):
+						raise HTTPException(status_code=400, detail=f"Authorization failed: {status}")
+
+					await asyncio.sleep(_parse_retry_after(resp, delay))
+
+				raise HTTPException(status_code=408, detail="Timeout waiting for authorization to become valid")
 	
 	async def poll_order(self, order_url: str, max_attempts: int = 15, delay: float = 4.0) -> dict:
 		"""Poll order status until ready or failed."""
@@ -535,7 +577,7 @@ class ACMEClient:
 			elif status in ("invalid", "expired", "revoked"):
 				raise HTTPException(status_code=400, detail=f"Order failed: {status}")
 			
-			await asyncio.sleep(delay)
+			await asyncio.sleep(_parse_retry_after(resp, delay))
 		
 		raise HTTPException(status_code=408, detail="Timeout waiting for order to be ready")
 	
@@ -708,6 +750,15 @@ def _remove_challenge(certs_dir: PathLib, token: str) -> None:
 		challenges = _read_valid_challenges(challenge_file)
 		challenges.pop(token, None)
 		_atomic_write_bytes(challenge_file, json.dumps(challenges).encode("utf-8"), 0o600)
+
+
+async def _delayed_challenge_cleanup(certs_dir: PathLib, token: str, delay_seconds: float = 120.0) -> None:
+	"""Delay challenge cleanup to avoid racing late ACME validation retries."""
+	try:
+		await asyncio.sleep(delay_seconds)
+	finally:
+		_pending_challenges.pop(token, None)
+		await asyncio.to_thread(_remove_challenge, certs_dir, token)
 
 
 def get_challenge_response(token: str, certs_dir: PathLib | None = None) -> str | None:
@@ -908,6 +959,10 @@ async def request_certificate(
 				
 				# Tell ACME server we're ready
 				await client.respond_to_challenge(challenge_url)
+
+				# Poll authorization explicitly so we observe invalid/expired states
+				# before advancing to order polling/finalization.
+				await client.poll_authorization(auth_url)
 				
 				# Wait for order to be ready
 				order = await client.poll_order(order_url)
@@ -932,9 +987,8 @@ async def request_certificate(
 				)
 			
 			finally:
-				# Clean up challenge (both in-memory and file)
-				_pending_challenges.pop(token, None)
-				await asyncio.to_thread(_remove_challenge, certs_dir, token)
+				# Delay cleanup so late validation retries do not race immediate deletion.
+				asyncio.create_task(_delayed_challenge_cleanup(certs_dir, token))
 	
 	finally:
 		await asyncio.to_thread(_release_domain_lock, lock_fd)

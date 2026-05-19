@@ -20,22 +20,18 @@ Delivery guarantees:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
-import threading
 from collections.abc import AsyncGenerator
+
+from anyio import EndOfStream
+
+from .events import NodeCommandPayload, NodeEventBus, NodeEventType
 
 _log = logging.getLogger(__name__)
 
-# Per-node event queues: node_id -> set of asyncio.Queue
-# Each connected SSE client gets its own queue
-_node_queues: dict[str, set[asyncio.Queue[str]]] = {}
-_lock = asyncio.Lock()  # For async access
-_sync_lock = threading.Lock()  # For sync/thread access
-
-# Queue size optimized for latest-wins: only the newest event matters
-# Larger queues would accumulate stale events that get dropped anyway
-_QUEUE_SIZE = 1
+_event_bus: NodeEventBus | None = None
 # SSE keepalive interval to prevent proxy timeouts
 _KEEPALIVE_INTERVAL = 25
 
@@ -80,39 +76,30 @@ def _short_version(version: str, max_len: int = 16) -> str:
     return version[:max_len] if len(version) > max_len else version
 
 
-def _enqueue_latest(queue: asyncio.Queue[str], event: str) -> bool:
-    """Enqueue event, replacing old event if queue is full (latest-wins).
-    
-    Returns True if event was enqueued, False on failure.
-    """
-    try:
-        if queue.full():
-            try:
-                queue.get_nowait()  # Discard old event
-            except asyncio.QueueEmpty:
-                pass  # Race: another coroutine drained it
-        queue.put_nowait(event)
-        return True
-    except (asyncio.QueueFull, asyncio.QueueEmpty):
-        return False
+def configure_event_bus(event_bus: NodeEventBus | None) -> None:
+    """Attach the lifespan-scoped node event bus used for local fanout."""
+    global _event_bus
+    _event_bus = event_bus
 
 
 async def _race(
-    queue: asyncio.Queue[str],
+    receive_stream,
     shutdown_event: asyncio.Event | None,
     timeout: float,
-) -> str | None:
-    """Return queue item, None for timeout, or ""-sentinel for shutdown."""
+) -> object | None:
+    """Return next event, None for timeout, or ""-sentinel for shutdown/end-of-stream."""
     if shutdown_event is None:
         try:
-            return await asyncio.wait_for(queue.get(), timeout=timeout)
+            return await asyncio.wait_for(receive_stream.receive(), timeout=timeout)
         except asyncio.TimeoutError:
             return None
+        except EndOfStream:
+            return ""
 
-    queue_task = asyncio.create_task(queue.get())
+    receive_task = asyncio.create_task(receive_stream.receive())
     shutdown_task = asyncio.create_task(shutdown_event.wait())
     
-    wait_tasks = [queue_task, shutdown_task]
+    wait_tasks = [receive_task, shutdown_task]
     try:
         done, pending = await asyncio.wait(
             wait_tasks,
@@ -125,16 +112,19 @@ async def _race(
             await asyncio.gather(*pending, return_exceptions=True)
 
         if shutdown_task in done:
-            queue_task.cancel()
-            await asyncio.gather(queue_task, return_exceptions=True)
+            receive_task.cancel()
+            await asyncio.gather(receive_task, return_exceptions=True)
             return ""  # shutdown sentinel
         
-        if queue_task in done:
+        if receive_task in done:
             shutdown_task.cancel()
             await asyncio.gather(shutdown_task, return_exceptions=True)
-            if queue_task.cancelled():
+            if receive_task.cancelled():
                 return None
-            return queue_task.result()
+            try:
+                return receive_task.result()
+            except EndOfStream:
+                return ""
             
         return None  # timeout
     except asyncio.CancelledError:
@@ -153,56 +143,62 @@ async def subscribe(
     Yields SSE-formatted event strings when config changes.
     """
     node_id = _validate_node_id(node_id)
-    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=_QUEUE_SIZE)
-    
-    async with _lock:
-        _node_queues.setdefault(node_id, set()).add(queue)
-        client_count = len(_node_queues[node_id])
+    bus = _event_bus
+    if bus is None:
+        _log.warning("Node event bus unavailable for notifier subscription: %s", node_id)
+        yield _format_sse_event("close", "server_starting")
+        return
+    subscription = await bus.subscribe_commands(node_id)
+    client_count = await bus.command_subscription_count(node_id)
     _log.debug("Node %s subscribed to config events (clients=%d)", node_id, client_count)
     
     try:
         close_event = _format_sse_event("close", "server_shutdown")
         ping_event = _format_sse_ping()
         while True:
-            result = await _race(queue, shutdown_event, _KEEPALIVE_INTERVAL)
+            result = await _race(subscription.receive_stream, shutdown_event, _KEEPALIVE_INTERVAL)
             if result == "":
                 yield close_event
                 break
             if result is None:
                 yield ping_event
                 continue
-            yield result
+            if result.type is not NodeEventType.COMMAND or not isinstance(result.payload, NodeCommandPayload):
+                continue
+            yield _format_sse_event(
+                event_type=_command_event_name(result.payload.command),
+                data=result.payload.model_dump_json(),
+            )
     except asyncio.CancelledError:
         _log.debug("SSE client cancelled for node %s", node_id)
         raise
     finally:
-        # Cleanup must be protected from cancellation to prevent resource leak
-        # If cancelled during lock acquisition, fall back to best-effort cleanup
         try:
-            async with _lock:
-                queues = _node_queues.get(node_id)
-                if queues:
-                    queues.discard(queue)
-                    if not queues:
-                        del _node_queues[node_id]
+                await subscription.aclose()
         except asyncio.CancelledError:
-            # Best-effort cleanup without lock (race possible but better than leak)
-            _log.debug("Cleanup cancelled for node %s, attempting best-effort", node_id)
-            queues = _node_queues.get(node_id)
-            if queues:
-                queues.discard(queue)
-                if not queues:
-                    try:
-                        del _node_queues[node_id]
-                    except KeyError:
-                        pass  # Another task cleaned up already
+            _log.debug("Cleanup cancelled for node %s", node_id)
         _log.debug("Node %s unsubscribed from config events", node_id)
 
 
-async def _queue_db_command(node_id: str, command: str) -> bool:
-    """Queue a pending command in SQLite for multi-worker delivery."""
+def _command_event_name(db_command: str) -> str:
+    """Map durable command names to SSE event names."""
+    return {
+        "config_changed": "config_changed",
+        "restart": "restart_requested",
+        "speedtest": "run_speedtest",
+        "removed": "node_removed",
+    }.get(db_command, db_command)
+
+
+async def _queue_db_command(
+    node_id: str,
+    command: str,
+    *,
+    payload: dict[str, str] | None = None,
+) -> int | None:
+    """Queue a durable command in SQLite for replay-safe delivery."""
     from ..db.sqlite_runtime import connect
-    from ..db.sqlite_nodes import set_node_pending_command
+    from ..db.sqlite_nodes import enqueue_node_command
     from ..utils.config import get_config
 
     cfg = get_config()
@@ -210,25 +206,60 @@ async def _queue_db_command(node_id: str, command: str) -> bool:
         def _queue():
             conn = connect(cfg.db_path)
             try:
-                return set_node_pending_command(conn, node_id, command)
+                return enqueue_node_command(conn, node_id, command, payload=payload)
             finally:
                 conn.close()
         return await asyncio.to_thread(_queue)
     except Exception as exc:
         _log.warning("Failed to queue %s command for node %s: %s", command, node_id, exc)
+        return None
+
+
+async def _mark_db_command_delivered(node_id: str, command_id: int) -> bool:
+    """Mark a queued command as delivered to a live SSE subscriber."""
+    from ..db.sqlite_runtime import connect
+    from ..db.sqlite_nodes import mark_node_command_delivered
+    from ..utils.config import get_config
+
+    cfg = get_config()
+    try:
+        def _mark():
+            conn = connect(cfg.db_path)
+            try:
+                return mark_node_command_delivered(conn, node_id, command_id)
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_mark)
+    except Exception as exc:
+        _log.warning("Failed to mark command %s delivered for node %s: %s", command_id, node_id, exc)
         return False
+
+
+def _command_event_data(command_id: int, db_command: str, *, config_version: str | None = None) -> str:
+    """Build structured JSON command payload for SSE delivery."""
+    payload: dict[str, str | int] = {
+        "command_id": int(command_id),
+        "command": db_command,
+    }
+    if config_version:
+        payload["config_version"] = config_version
+    return json.dumps(payload, separators=(",", ":"))
 
 
 async def get_connected_nodes() -> list[str]:
     """Return list of node IDs with active SSE connections."""
-    async with _lock:
-        return list(_node_queues.keys())
+    bus = _event_bus
+    if bus is None:
+        return []
+    return await bus.active_command_nodes()
 
 
 async def get_connection_count(node_id: str) -> int:
     """Return number of active SSE connections for a node."""
-    async with _lock:
-        return len(_node_queues.get(node_id, set()))
+    bus = _event_bus
+    if bus is None:
+        return 0
+    return await bus.command_subscription_count(node_id)
 
 
 async def is_node_connected(node_id: str) -> bool:
@@ -255,9 +286,10 @@ async def is_node_connected(node_id: str) -> bool:
         return await asyncio.to_thread(_check_db)
     except Exception as exc:
         _log.debug("Failed to check SSE status for node %s: %s", node_id, exc)
-        # Fall back to in-memory check (same-worker only)
-        async with _lock:
-            return bool(_node_queues.get(node_id))
+        bus = _event_bus
+        if bus is None:
+            return False
+        return await bus.command_subscription_count(node_id) > 0
 
 
 def is_node_connected_sync(node_id: str) -> bool:
@@ -279,63 +311,61 @@ def is_node_connected_sync(node_id: str) -> bool:
             conn.close()
     except Exception as exc:
         _log.debug("Failed to check SSE status for node %s: %s", node_id, exc)
-        # Fall back to in-memory check (thread-safe with threading.Lock)
-        with _sync_lock:
-            return bool(_node_queues.get(node_id))
+        return False
 
 
 async def _notify_or_queue(
     node_id: str,
     event_type: str,
-    event_data: str,
     db_command: str,
     action_name: str,
     *,
-    event_id: str | None = None,
+    config_version: str | None = None,
 ) -> int:
     """Send SSE event to node or queue command in DB (multi-worker safe).
     
     Args:
         node_id: Target node ID
         event_type: SSE event type (e.g., "restart_requested")
-        event_data: SSE event data payload
         db_command: DB command to queue if SSE unavailable
         action_name: Human-readable action name for logging
-        event_id: Optional ID for the SSE event
+        config_version: Optional config version payload for config change notifications
     
     Returns:
         Number of clients notified (>0 if delivered or queued)
     """
     node_id = _validate_node_id(node_id)
+    queue_payload = {"config_version": config_version} if config_version else None
+    command_id = await _queue_db_command(node_id, db_command, payload=queue_payload)
+    if command_id is None:
+        _log.warning("Failed to queue durable %s command for node %s", action_name, node_id)
+        return 0
+    payload_json = _command_event_data(command_id, db_command, config_version=config_version)
     
-    # Try direct notification to SSE clients in current worker
-    async with _lock:
-        queues = _node_queues.get(node_id, set()).copy()
+    # Try direct notification to SSE clients in current worker via lifecycle-scoped bus.
+    bus = _event_bus
+    if bus is not None:
+        notified = await bus.publish_command(
+            node_id,
+            NodeCommandPayload(
+                command_id=int(command_id),
+                command=db_command,
+                config_version=config_version,
+            ),
+        )
+        if notified > 0:
+            await _mark_db_command_delivered(node_id, int(command_id))
+            _log.info("Sent %s signal to %d SSE client(s) for node %s (command_id=%s)", action_name, notified, node_id, command_id)
+            return max(notified, 1)
     
-    if queues:
-        # Have direct SSE connection in this worker - send immediately
-        event = _format_sse_event(event_type=event_type, data=event_data, event_id=event_id)
-        
-        notified = 0
-        for queue in queues:
-            if _enqueue_latest(queue, event):
-                notified += 1
-            else:
-                _log.warning("Failed to enqueue %s event for node %s (queue full)", action_name, node_id)
-        
-        _log.info("Sent %s signal to %d SSE client(s) for node %s", action_name, notified, node_id)
-        return notified
-    
-    # No SSE clients in current worker - check if connected to another worker
+    # No SSE clients in current worker - durable command remains queued for replay.
     if await is_node_connected(node_id):
-        queued = await _queue_db_command(node_id, db_command)
-        if queued:
-            _log.info("Queued %s command in DB for node %s (SSE in other worker)", action_name, node_id)
-            return 1
+        _log.info("Queued %s command in DB for node %s (SSE connected in other worker, command_id=%s)", action_name, node_id, command_id)
+        return 1
     
-    # No SSE connection anywhere
-    _log.warning("No SSE clients connected for node %s — cannot send %s signal", node_id, action_name)
-    return 0
+    # No SSE connection anywhere; command stays durable until reconnect.
+    _log.warning("No SSE clients connected for node %s — queued durable %s command_id=%s", node_id, action_name, command_id)
+    return 1
 
 
 async def notify_config_changed(node_id: str, config_version: str) -> int:
@@ -346,10 +376,9 @@ async def notify_config_changed(node_id: str, config_version: str) -> int:
     return await _notify_or_queue(
         node_id=node_id,
         event_type="config_changed",
-        event_data=config_version,
         db_command="config_changed",
         action_name="config change",
-        event_id=config_version,
+        config_version=config_version,
     )
 
 
@@ -365,7 +394,6 @@ async def notify_restart(node_id: str) -> int:
     return await _notify_or_queue(
         node_id=node_id,
         event_type="restart_requested",
-        event_data="restart",
         db_command="restart",
         action_name="restart",
     )
@@ -382,7 +410,6 @@ async def notify_run_speedtest(node_id: str) -> int:
     return await _notify_or_queue(
         node_id=node_id,
         event_type="run_speedtest",
-        event_data="speedtest",
         db_command="speedtest",
         action_name="speedtest",
     )
@@ -403,7 +430,6 @@ async def notify_node_removed(node_id: str) -> int:
     return await _notify_or_queue(
         node_id=node_id,
         event_type="node_removed",
-        event_data="removed",
         db_command="removed",
         action_name="removal",
     )

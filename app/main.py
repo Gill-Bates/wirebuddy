@@ -83,6 +83,8 @@ from .api import nodes_sync as nodes_sync_api
 from .db import tsdb
 from .dns import unbound
 from .dns import ingestion as dns_ingestion
+from .node.events import NodeEventBus
+from .node.notifier import configure_event_bus
 from .utils import migration
 from .tasks import scheduled as scheduled_tasks
 from .utils.subprocess import run_command
@@ -1148,6 +1150,8 @@ async def _lifespan(app: FastAPI):
 	loop = asyncio.get_running_loop()
 	shutdown_signal_event = asyncio.Event()
 	app.state.shutdown_signal_event = shutdown_signal_event
+	app.state.node_event_bus = NodeEventBus()
+	configure_event_bus(app.state.node_event_bus)
 	previous_signal_handlers = _install_shutdown_signal_handlers(loop, shutdown_signal_event)
 	cfg = app.state.cfg
 	ctx = LifespanContext(
@@ -1170,6 +1174,11 @@ async def _lifespan(app: FastAPI):
 		yield
 	finally:
 		shutdown_signal_event.set()
+		node_event_bus = getattr(app.state, "node_event_bus", None)
+		if node_event_bus is not None:
+			await node_event_bus.aclose()
+			app.state.node_event_bus = None
+		configure_event_bus(None)
 		_restore_signal_handlers(previous_signal_handlers)
 		await _do_shutdown(ctx)
 
@@ -1196,6 +1205,7 @@ def create_app() -> FastAPI:
 	app.state.tsdb_dir = cfg.tsdb_dir
 	app.state.dns_dir = cfg.dns_dir
 	app.state.peer_connection_state = OrderedDict()
+	app.state.node_event_bus = None
 	app.state.shutdown_signal_event = None
 	app.state.key_mismatch = False  # Set to True if SECRET_KEY doesn't match DB encryption
 	default_csp = (

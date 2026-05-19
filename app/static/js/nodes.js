@@ -558,6 +558,27 @@
         }
     }
 
+    function initNodeActionDropdowns(root = document) {
+        if (typeof bootstrap === 'undefined' || !bootstrap.Dropdown) {
+            return;
+        }
+
+        const scope = root && typeof root.querySelectorAll === 'function' ? root : document;
+        for (const trigger of scope.querySelectorAll('.node-actions-more-toggle')) {
+            if (trigger.dataset.dropdownInitialized === 'true') {
+                continue;
+            }
+
+            trigger.dataset.dropdownInitialized = 'true';
+            bootstrap.Dropdown.getOrCreateInstance(trigger);
+            trigger.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                bootstrap.Dropdown.getOrCreateInstance(trigger).toggle();
+            });
+        }
+    }
+
     /**
      * Update the mobile summary block inside the FQDN cell.
      * This keeps entity metadata close to the identity block instead of hiding it in a spare td.
@@ -764,7 +785,7 @@
             icon: 'more_vert',
             ariaLabel: `More actions for ${node.name}`,
             title: 'More Actions',
-            className: 'btn btn-sm btn-outline-secondary node-action-btn node-actions-more-toggle',
+            className: 'btn btn-sm btn-outline-secondary dropdown-toggle node-action-btn node-actions-more-toggle',
         });
         trigger.removeAttribute('data-action');
         trigger.setAttribute('data-bs-toggle', 'dropdown');
@@ -1467,6 +1488,8 @@
                     }
                 }
 
+                initNodeActionDropdowns(row);
+
                 syncNodeMobileSummaryCell(row.querySelector('.node-mobile-summary'), node);
 
                 // Update restart button state based on node status
@@ -1667,6 +1690,7 @@
     loadActiveSpeedtests();
     syncAllSpeedtestButtons();
     initTooltips();
+    initNodeActionDropdowns();
     initFlagImages();
     void refreshNodes();
     startPolling();

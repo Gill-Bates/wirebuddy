@@ -300,6 +300,8 @@ async def _run_speedtest_core(
 	except asyncio.TimeoutError:
 		_log.error("SPEEDTEST_TIMEOUT: test exceeded %ss", SPEEDTEST_RUN_TIMEOUT_SECONDS)
 		raise HTTPException(status_code=504, detail="Speed test timed out") from None
+	except asyncio.CancelledError:
+		raise
 	except Exception:
 		_log.exception("SPEEDTEST_RUN_FAILED")
 		raise HTTPException(status_code=500, detail="Speed test failed") from None

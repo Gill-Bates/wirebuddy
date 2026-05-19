@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import ipaddress
+import json
 import logging
 from pathlib import Path
 import sqlite3
@@ -32,14 +33,15 @@ from pydantic import BaseModel, Field
 from ..api.auth import _is_https
 from ..api.response import ok_response
 from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
-from ..api.sse import broadcast_event_to_queues, format_sse_close, format_sse_event, format_sse_keepalive
+from ..api.sse import format_sse_close, format_sse_event, format_sse_keepalive
 from ..db.sqlite_interfaces import list_interfaces
 from ..db.sqlite_nodes import (
+	ack_node_command as db_ack_node_command,
 	bump_node_config_version,
+	claim_pending_node_commands,
 	clear_node_sse_connected,
 	create_node_interface,
 	enroll_node,
-	get_and_clear_node_pending_command,
 	get_node,
 	get_node_by_api_secret,
 	get_node_last_metric_seq,
@@ -65,93 +67,19 @@ from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
 from ..api.wireguard_utils import generate_keypair, run_wg_command
 from ..utils.rate_limit import limiter
 from ..node import notifier as node_notifier
+from ..node.events import NodeCommandPayload, NodeCommandType, SpeedtestProgressPayload
 
 _log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["nodes-sync"])
 
-# Allowed commands for SSE command validation (prevents injection)
-_ALLOWED_SSE_COMMANDS = frozenset({"config_changed", "restart", "speedtest"})
-
-# Maps raw DB command strings to SSE event-type names
-_PENDING_CMD_EVENT_TYPE: dict[str, str] = {
-    "config_changed": "config_changed",
-    "restart": "restart_requested",
-	"speedtest": "run_speedtest",
-}
 _SSE_CONNECTED_DB_UPDATE_INTERVAL_S = 60.0
 _NODE_RATE_LIMIT_POLL = "600/minute"
 _NODE_RATE_LIMIT_EVENTS = "300/minute"
 _NODE_RATE_LIMIT_PROGRESS = "1800/minute"
-_NODE_SPEEDTEST_PROGRESS_MAX_AGE_SECONDS = 300.0
+_NODE_COMMAND_REPLAY_AFTER_SECONDS = 30
+_NODE_COMMAND_CLAIM_LIMIT = 20
 T = TypeVar("T")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Node Speedtest Progress Store
-# ─────────────────────────────────────────────────────────────────────────────
-
-# In-memory store for node speedtest progress
-# Structure: {node_id: {"progress": {...}, "timestamp": float, "queues": [asyncio.Queue, ...]}}
-# NOTE: This state is process-local and therefore single-worker only.
-# In multi-worker deployments, progress submitter and SSE client may hit
-# different workers and miss updates.
-_node_speedtest_progress: dict[str, dict[str, Any]] = {}
-_progress_lock = asyncio.Lock()
-
-
-def _new_speedtest_progress_state() -> dict[str, Any]:
-	"""Create default in-memory speedtest progress state for one node."""
-	return {
-		"progress": None,
-		"timestamp": 0.0,
-		"queues": [],
-	}
-
-
-def _prune_stale_progress_locked(now: float) -> None:
-	"""Drop stale node progress entries that no longer have live subscribers."""
-	cutoff = now - _NODE_SPEEDTEST_PROGRESS_MAX_AGE_SECONDS
-	stale_node_ids = [
-		node_id
-		for node_id, state in _node_speedtest_progress.items()
-		if not state["queues"] and float(state.get("timestamp") or 0.0) < cutoff
-	]
-	for node_id in stale_node_ids:
-		del _node_speedtest_progress[node_id]
-
-
-async def register_speedtest_progress_queue(
-	node_id: str,
-	queue: asyncio.Queue[dict[str, Any]],
-) -> dict[str, Any] | None:
-	"""Register an SSE queue for node speedtest progress updates.
-
-	Returns the latest progress event for the node, if one exists.
-	"""
-	async with _progress_lock:
-		_prune_stale_progress_locked(time.time())
-		state = _node_speedtest_progress.setdefault(node_id, _new_speedtest_progress_state())
-		state["queues"].append(queue)
-		progress = state.get("progress")
-		return progress if isinstance(progress, dict) else None
-
-
-async def unregister_speedtest_progress_queue(
-	node_id: str,
-	queue: asyncio.Queue[dict[str, Any]],
-) -> None:
-	"""Unregister an SSE queue from node speedtest progress updates."""
-	async with _progress_lock:
-		state = _node_speedtest_progress.get(node_id)
-		if state is None:
-			return
-		try:
-			state["queues"].remove(queue)
-		except ValueError:
-			pass
-		if not state["queues"] and _node_speedtest_progress.get(node_id) is state:
-			del _node_speedtest_progress[node_id]
-		_prune_stale_progress_locked(time.time())
 
 
 def _get_socket_ip(request: Request) -> str | None:
@@ -251,6 +179,62 @@ async def _run_with_short_lived_conn(
 			return fn(thread_conn, *args)
 
 	return await run_in_threadpool(_exec)
+
+
+def _get_node_event_bus(request: Request):
+	"""Return the lifespan-scoped node event bus from app state."""
+	bus = getattr(request.app.state, "node_event_bus", None)
+	if bus is None:
+		raise HTTPException(status_code=503, detail="Node event runtime unavailable")
+	return bus
+
+
+def _command_event_name(command: NodeCommandType) -> str:
+	"""Map durable command type to SSE event name."""
+	if command is NodeCommandType.CONFIG_CHANGED:
+		return "config_changed"
+	if command is NodeCommandType.RESTART:
+		return "restart_requested"
+	if command is NodeCommandType.SPEEDTEST:
+		return "run_speedtest"
+	if command is NodeCommandType.REMOVED:
+		return "node_removed"
+	return f"{command.value}_requested"
+
+
+def _format_command_sse(command_row: dict[str, Any]) -> str | None:
+	"""Convert one durable command row into an SSE event string."""
+	command_name = str(command_row.get("command_type") or "").strip().lower()
+	try:
+		command = NodeCommandType(command_name)
+	except ValueError:
+		_log.warning("Unknown durable node command ignored: %r", command_name)
+		return None
+
+	payload_dict = command_row.get("payload") if isinstance(command_row.get("payload"), dict) else {}
+	payload = NodeCommandPayload(
+		command_id=int(command_row["id"]),
+		command=command,
+		config_version=str(payload_dict.get("config_version")) if payload_dict.get("config_version") is not None else None,
+	)
+	return format_sse_event(_command_event_name(command), payload.model_dump())
+
+
+async def _claim_pending_command_events(db_path: Path, node_id: str) -> list[str]:
+	"""Claim replayable commands from SQLite and return formatted SSE events."""
+	rows = await _run_with_short_lived_conn(
+		db_path,
+		claim_pending_node_commands,
+		node_id,
+		replay_after_seconds=_NODE_COMMAND_REPLAY_AFTER_SECONDS,
+		limit=_NODE_COMMAND_CLAIM_LIMIT,
+	)
+	formatted: list[str] = []
+	for row in rows:
+		event = _format_command_sse(row)
+		if event is not None:
+			formatted.append(event)
+	return formatted
 
 
 def _warn_if_not_https(request: Request, node_id: str, context: str) -> None:
@@ -831,27 +815,11 @@ async def node_events(
 	shutdown_event = getattr(request.app.state, "shutdown_signal_event", None)
 	_log.info("Node %s connected to SSE event stream", node_id)
 
-	async def check_pending_command() -> str | None:
-		"""Check DB for pending command (multi-worker safe, short-lived connection)."""
-		return await _run_with_short_lived_conn(db_path, get_and_clear_node_pending_command, node_id)
-
 	async def mark_sse_connected() -> None:
 		await _run_with_short_lived_conn(db_path, update_node_sse_connected, node_id)
 
 	async def clear_sse_connected() -> None:
 		await _run_with_short_lived_conn(db_path, clear_node_sse_connected, node_id)
-
-	async def emit_pending_command() -> str | None:
-		pending_cmd = await check_pending_command()
-		if not pending_cmd:
-			return None
-		if pending_cmd not in _ALLOWED_SSE_COMMANDS:
-			_log.warning("Node %s: unknown pending command %r (ignored)", node_id, pending_cmd)
-			return None
-
-		event_type = _PENDING_CMD_EVENT_TYPE.get(pending_cmd, f"{pending_cmd}_requested")
-		_log.info("Node %s command from DB: %s -> event: %s", node_id, pending_cmd, event_type)
-		return format_sse_event(event_type, pending_cmd)
 
 	async def event_generator():
 		try:
@@ -860,8 +828,7 @@ async def node_events(
 			last_sse_connected_write = time.monotonic()
 			
 			# Check for any command that was queued while we were connecting
-			pending_event = await emit_pending_command()
-			if pending_event is not None:
+			for pending_event in await _claim_pending_command_events(db_path, node_id):
 				yield pending_event
 			
 			# Send initial keepalive
@@ -880,8 +847,7 @@ async def node_events(
 					if now_monotonic - last_sse_connected_write >= _SSE_CONNECTED_DB_UPDATE_INTERVAL_S:
 						await mark_sse_connected()
 						last_sse_connected_write = now_monotonic
-					pending_event = await emit_pending_command()
-					if pending_event is not None:
+					for pending_event in await _claim_pending_command_events(db_path, node_id):
 						yield pending_event
 				if event.startswith("event: close\n"):
 					yield event
@@ -926,30 +892,38 @@ async def submit_node_speedtest_progress(
 	node: sqlite3.Row = Depends(get_current_node),
 ):
 	"""Receive speedtest progress update from a node and broadcast to SSE clients."""
-	_ = request
+	bus = _get_node_event_bus(request)
 	node_id = node["id"]
-	
-	event_data = {
-		"phase": body.phase,
-		"progress": body.progress,
-		"message": body.message,
-	}
-	if body.detail:
-		event_data["detail"] = body.detail
-	
-	async with _progress_lock:
-		_prune_stale_progress_locked(time.time())
-		state = _node_speedtest_progress.setdefault(
-			node_id,
-			_new_speedtest_progress_state(),
-		)
-		state["progress"] = event_data
-		state["timestamp"] = time.time()
-
-		# Broadcast to all waiting SSE clients
-		broadcast_event_to_queues(state["queues"], event_data)
+	payload = SpeedtestProgressPayload(
+		phase=body.phase,
+		progress=body.progress,
+		message=body.message,
+		detail=body.detail,
+	)
+	await bus.publish_speedtest(node_id, payload)
 	
 	return ok_response(message="Progress update received")
+
+
+@router.post("/commands/{command_id}/ack")
+@limiter.limit(_NODE_RATE_LIMIT_POLL)
+async def ack_node_command_endpoint(
+	command_id: int,
+	request: Request,
+	node: sqlite3.Row = Depends(get_current_node),
+):
+	"""Acknowledge one durable control-plane command after the node handled it."""
+	if command_id <= 0:
+		raise HTTPException(status_code=422, detail="Invalid command_id")
+	stored = await _run_with_short_lived_conn(
+		request.app.state.db_path,
+		db_ack_node_command,
+		node["id"],
+		command_id,
+	)
+	if not stored:
+		raise HTTPException(status_code=404, detail="Command not found or already acknowledged")
+	return ok_response(message="Command acknowledged")
 
 
 class SpeedtestSubmission(BaseModel):

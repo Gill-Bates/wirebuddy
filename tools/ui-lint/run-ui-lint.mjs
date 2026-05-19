@@ -3524,7 +3524,7 @@ async function runNodesDynamicChecks(page, view) {
     }
 }
 
-async function auditView(page, view) {
+async function auditView(page, view, browserName) {
     const detachNetwork = collectConsoleAndNetwork(page);
     let network = null;
     try {
@@ -3577,7 +3577,7 @@ async function auditView(page, view) {
         // Extended audits: Axe, Performance, Fonts, DOM stability
         const [axeResults, perfMetrics, fontMetrics, domStability] = await Promise.all([
             runAxeAudit(page),
-            collectPerformanceMetrics(page),
+            collectPerformanceMetrics(page, { browserName }),
             checkFontLoading(page),
             collectDOMStabilityMetrics(page),
         ]);
@@ -3643,7 +3643,7 @@ async function auditView(page, view) {
     }
 }
 
-async function auditLoginFailureView(page, view) {
+async function auditLoginFailureView(page, view, browserName) {
     const detachNetwork = collectConsoleAndNetwork(page);
     let network = null;
     try {
@@ -3805,7 +3805,7 @@ async function main() {
                     page = desktopPage;
                 }
                 try {
-                    const result = await auditView(page, view);
+                    const result = await auditView(page, view, browserName);
                     result.browser = browserName;
                     const summarized = summarizeFindings(result);
                     result.findings = summarized.findings;
@@ -3850,7 +3850,7 @@ async function main() {
                             await new Promise((resolve) => setTimeout(resolve, LOGIN_TEST_STAGGER_MS));
                         }
 
-                        result = await auditLoginFailureView(loginPage, view);
+                        result = await auditLoginFailureView(loginPage, view, browserName);
 
                         // Check if rate limited by examining error text
                         const errorText = result?.metrics?.loginFailure?.errorText?.toLowerCase() || '';

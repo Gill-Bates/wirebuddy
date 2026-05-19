@@ -36,8 +36,11 @@ let tileFallbackSwitching = false;
 let tileWatchdogTimer = null;
 let tileLoadedSinceSwitch = false;
 let lastVisibleRefresh = 0;
+let peerMapResizeObserver = null;
 // Internal state for speedtest server names (used in chart tooltip)
 let _speedtestServers = [];
+let networkPaginationEl = null;
+let networkPaginationScrollRaf = null;
 let speedtestChartResizeTimer = null;
 
 const nodesCountEl = document.getElementById('nodes-count');
@@ -644,14 +647,28 @@ function initMap() {
     }
     markerLayer = L.layerGroup().addTo(peerMap);
     // Defer invalidateSize to ensure map panes are fully initialized
-    setTimeout(() => {
-        if (peerMap && peerMap.getContainer()) peerMap.invalidateSize();
-    }, 100);
+    const invalidatePeerMapSize = () => {
+        if (peerMap && peerMap.getContainer()) {
+            peerMap.invalidateSize(true);
+        }
+    };
+    requestAnimationFrame(() => {
+        invalidatePeerMapSize();
+        requestAnimationFrame(invalidatePeerMapSize);
+    });
+    setTimeout(invalidatePeerMapSize, 100);
+    setTimeout(invalidatePeerMapSize, 400);
+    if ('ResizeObserver' in window && !peerMapResizeObserver) {
+        peerMapResizeObserver = new ResizeObserver(() => {
+            invalidatePeerMapSize();
+        });
+        peerMapResizeObserver.observe(container);
+    }
     if (!mapResizeBound) {
         window.addEventListener('resize', () => {
             clearTimeout(dashboardResizeTimer);
             dashboardResizeTimer = setTimeout(() => {
-                if (peerMap && peerMap.getContainer()) peerMap.invalidateSize();
+                invalidatePeerMapSize();
             }, 150);
         });
         mapResizeBound = true;
@@ -985,6 +1002,10 @@ function stopAutoRefresh() {
         if (dashboardResizeTimer) {
             clearTimeout(dashboardResizeTimer);
             dashboardResizeTimer = null;
+        }
+        if (peerMapResizeObserver) {
+            peerMapResizeObserver.disconnect();
+            peerMapResizeObserver = null;
         }
         if (speedtestChartResizeTimer) {
             clearTimeout(speedtestChartResizeTimer);
@@ -1476,6 +1497,93 @@ function buildEmptyInterfacesMessage() {
     return wrap;
 }
 
+function isMobileNetworkPager() {
+    return window.matchMedia('(max-width: 575.98px)').matches;
+}
+
+function getNetworkItems() {
+    return networkGaugesContainer ? Array.from(networkGaugesContainer.querySelectorAll('.network-item')) : [];
+}
+
+function ensureNetworkPagination() {
+    if (!networkGaugesContainer || !networkGaugesContainer.parentElement) return null;
+
+    if (!networkPaginationEl) {
+        networkPaginationEl = document.getElementById('network-pagination');
+        if (!networkPaginationEl) {
+            networkPaginationEl = document.createElement('div');
+            networkPaginationEl.id = 'network-pagination';
+            networkPaginationEl.className = 'network-pagination d-none';
+            networkGaugesContainer.insertAdjacentElement('afterend', networkPaginationEl);
+        }
+    }
+
+    return networkPaginationEl;
+}
+
+function updateNetworkPagination() {
+    const pager = ensureNetworkPagination();
+    if (!pager) return;
+
+    const items = getNetworkItems();
+    pager.replaceChildren();
+
+    if (!isMobileNetworkPager() || items.length <= 1) {
+        pager.classList.add('d-none');
+        return;
+    }
+
+    items.forEach((item, index) => {
+        const dot = document.createElement('button');
+        dot.type = 'button';
+        dot.className = 'network-page-dot';
+        dot.setAttribute('aria-label', `Show network interface ${index + 1} of ${items.length}`);
+        dot.dataset.index = String(index);
+        dot.addEventListener('click', () => {
+            item.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        });
+        pager.appendChild(dot);
+    });
+
+    pager.classList.remove('d-none');
+    syncNetworkPagination();
+}
+
+function syncNetworkPagination() {
+    if (!networkPaginationEl || !networkGaugesContainer || !isMobileNetworkPager()) return;
+
+    const dots = Array.from(networkPaginationEl.querySelectorAll('.network-page-dot'));
+    const items = getNetworkItems();
+    if (!dots.length || !items.length) {
+        dots.forEach((dot) => dot.classList.remove('active'));
+        return;
+    }
+
+    const slideWidth = networkGaugesContainer.clientWidth || 1;
+    const index = Math.max(0, Math.min(items.length - 1, Math.round(networkGaugesContainer.scrollLeft / slideWidth)));
+
+    dots.forEach((dot, dotIndex) => {
+        dot.classList.toggle('active', dotIndex === index);
+        dot.setAttribute('aria-current', dotIndex === index ? 'true' : 'false');
+    });
+}
+
+function bindNetworkPaginationScroll() {
+    if (!networkGaugesContainer || networkPaginationScrollRaf !== null) return;
+
+    networkGaugesContainer.addEventListener('scroll', () => {
+        if (networkPaginationScrollRaf) return;
+        networkPaginationScrollRaf = requestAnimationFrame(() => {
+            networkPaginationScrollRaf = null;
+            syncNetworkPagination();
+        });
+    }, { passive: true });
+
+    window.addEventListener('resize', () => {
+        updateNetworkPagination();
+    });
+}
+
 /**
  * Format bytes/sec to human-readable rate string
  */
@@ -1884,6 +1992,8 @@ async function refreshNetworkStats() {
             if (el) networkGaugesContainer.appendChild(el);
         });
 
+        updateNetworkPagination();
+
         // Count active interfaces (any traffic)
         const activeCount = interfaces.filter(i => i.rx_rate > 0 || i.tx_rate > 0).length;
         const wgCount = interfaces.filter(i => i.is_wg).length;
@@ -1940,6 +2050,7 @@ function stopNetworkStatsRefresh() {
 
 // Start network stats when page loads
 if (networkGaugesContainer) {
+    bindNetworkPaginationScroll();
     startNetworkStatsRefresh();
 
     // Redraw sparklines when container size changes (responsive resize)

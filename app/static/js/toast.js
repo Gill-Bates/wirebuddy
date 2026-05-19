@@ -48,10 +48,9 @@ function wbToast(message, type = 'info', duration = 4000) {
     }
 
     const MAX_TOASTS = 5;
-    while (container.children.length >= MAX_TOASTS) {
-        const oldestToast = container.firstElementChild;
-        if (!oldestToast) break;
-
+    const toTrim = Math.max(0, container.children.length - (MAX_TOASTS - 1));
+    const oldestToasts = Array.from(container.children).slice(0, toTrim);
+    for (const oldestToast of oldestToasts) {
         try {
             const oldestInstance = window.bootstrap.Toast.getInstance(oldestToast);
             if (oldestInstance) {

@@ -21,6 +21,7 @@ _KNOWN_SCHEMA_TABLES = frozenset({
 	"auth_tokens",
 	"interfaces",
 	"login_attempts",
+	"node_commands",
 	"node_interfaces",
 	"nodes",
 	"passkey_challenges",
@@ -295,6 +296,24 @@ def init_schema(conn: sqlite3.Connection) -> None:
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_last_seen ON nodes(last_seen)")
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_api_secret_hash ON nodes(api_secret_hash)")
 
+		# Durable node command queue for replay-safe control-plane delivery
+		conn.execute(
+			"""
+			CREATE TABLE IF NOT EXISTS node_commands (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				node_id TEXT NOT NULL,
+				command_type TEXT NOT NULL,
+				payload TEXT NOT NULL DEFAULT '{}',
+				created_at timestamp NOT NULL,
+				delivered_at timestamp,
+				acked_at timestamp,
+				FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+			)
+			"""
+		)
+		conn.execute("CREATE INDEX IF NOT EXISTS idx_node_commands_pending ON node_commands(node_id, acked_at, delivered_at, created_at)")
+		conn.execute("CREATE INDEX IF NOT EXISTS idx_node_commands_acked_at ON node_commands(acked_at)")
+
 		# Per-node WireGuard interface keypairs
 		conn.execute(
 			"""
@@ -472,6 +491,23 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 		log_message="Migrating nodes table: adding show_on_dashboard visibility flag",
 	):
 		nodes_columns.add("show_on_dashboard")
+
+	conn.execute(
+		"""
+		CREATE TABLE IF NOT EXISTS node_commands (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			node_id TEXT NOT NULL,
+			command_type TEXT NOT NULL,
+			payload TEXT NOT NULL DEFAULT '{}',
+			created_at timestamp NOT NULL,
+			delivered_at timestamp,
+			acked_at timestamp,
+			FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+		)
+		"""
+	)
+	conn.execute("CREATE INDEX IF NOT EXISTS idx_node_commands_pending ON node_commands(node_id, acked_at, delivered_at, created_at)")
+	conn.execute("CREATE INDEX IF NOT EXISTS idx_node_commands_acked_at ON node_commands(acked_at)")
 
 	_create_unique_index_if_no_duplicates(
 		conn,

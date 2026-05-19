@@ -522,11 +522,20 @@
     @media (max-width: 575.98px) {
         .network-gauges-grid {
             display: flex;
-            gap: 0.75rem;
+            gap: 0;
             overflow-x: auto;
+            overflow-y: hidden;
             padding-bottom: 0.25rem;
-            scroll-snap-type: x proximity;
+            scroll-snap-type: x mandatory;
+            scroll-padding-inline: 0;
+            scroll-behavior: smooth;
             -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+        }
+
+        .network-gauges-grid::-webkit-scrollbar {
+            display: none;
         }
 
         .network-gauges-grid>.text-center {
@@ -535,9 +544,13 @@
         }
 
         .network-item {
-            flex: 0 0 clamp(280px, 85vw, 380px);
-            min-width: clamp(280px, 85vw, 380px);
-            scroll-snap-align: start;
+            flex: 0 0 100%;
+            width: 100%;
+            min-width: 100%;
+            min-height: 160px;
+            padding: 1rem;
+            scroll-snap-align: center;
+            scroll-snap-stop: always;
         }
 
         .network-item:only-child {
@@ -546,6 +559,41 @@
 
         .network-sparkline {
             width: 100% !important;
+            height: 72px;
+        }
+
+        .network-item-rates {
+            flex-wrap: nowrap;
+            gap: 0.5rem;
+        }
+
+        .network-item-rates span {
+            min-width: 0;
+        }
+
+        .network-pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.4rem;
+            padding-top: 0.75rem;
+        }
+
+        .network-page-dot {
+            width: 0.55rem;
+            height: 0.55rem;
+            border: 0;
+            border-radius: 999px;
+            background: var(--bs-secondary-color);
+            opacity: 0.35;
+            padding: 0;
+            transition: transform 0.15s ease, opacity 0.15s ease, background-color 0.15s ease;
+        }
+
+        .network-page-dot.active {
+            background: var(--bs-primary);
+            opacity: 1;
+            transform: scale(1.25);
         }
     }
 

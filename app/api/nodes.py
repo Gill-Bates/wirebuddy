@@ -49,7 +49,6 @@ from ..db.sqlite_nodes import (
 	get_node_by_name,
 	get_peer_count_for_node,
 	get_peers_count_by_node,
-	set_node_pending_command,
 	update_node,
 	update_node_api_secret,
 )
@@ -258,22 +257,8 @@ async def _send_node_command(
 		)
 
 	notified = await notify_func(node_id)
-
-	if notified == 0:
-		_log.info(
-			"notify_%s: no in-memory queue for node=%s, falling back to DB pending command",
-			command,
-			node_id,
-		)
-		try:
-			stored = set_node_pending_command(conn, node_id, command)
-		except Exception as exc:
-			_log.error("Failed to queue pending command '%s' for node=%s: %s", command, node_id, exc)
-			raise HTTPException(status_code=500, detail=f"Failed to queue {action_label.lower()} command") from None
-
-		if not stored:
-			_log.error("set_node_pending_command returned false for node=%s command=%s", node_id, command)
-			raise HTTPException(status_code=500, detail=f"Failed to queue {action_label.lower()} command")
+	if notified <= 0:
+		raise HTTPException(status_code=500, detail=f"Failed to queue {action_label.lower()} command")
 
 	_log.info("%s signal sent to node: id=%s, name=%s (by user=%s)", action_label, node_id, node["name"], user["username"])
 	return ok_response(
@@ -723,13 +708,15 @@ async def stream_node_speedtest_progress(
 	
 	async def event_generator():
 		"""Generate SSE events for node speedtest progress."""
-		progress_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_SPEEDTEST_QUEUE_MAXSIZE)
-		latest_progress = await nodes_sync.register_speedtest_progress_queue(node_id, progress_queue)
+		bus = getattr(request.app.state, "node_event_bus", None)
+		if bus is None:
+			raise HTTPException(status_code=503, detail="Node event runtime unavailable")
+		subscription = await bus.subscribe_speedtest(node_id)
 		
 		try:
 			# Send initial progress if available
-			if latest_progress:
-				yield format_sse_event("progress", latest_progress)
+			if subscription.latest_progress is not None:
+				yield format_sse_event("progress", subscription.latest_progress.model_dump())
 			
 			# Stream progress updates with keepalive to survive proxy idle timeouts.
 			remaining_timeout = _SPEEDTEST_STREAM_TIMEOUT_S
@@ -739,7 +726,8 @@ async def stream_node_speedtest_progress(
 				
 				try:
 					wait_for = min(_SPEEDTEST_KEEPALIVE_INTERVAL_S, remaining_timeout)
-					progress = await asyncio.wait_for(progress_queue.get(), timeout=wait_for)
+					event = await asyncio.wait_for(subscription.receive_stream.receive(), timeout=wait_for)
+					progress = event.payload.model_dump()
 					try:
 						serialized = json.dumps(progress)
 					except (TypeError, ValueError) as exc:
@@ -760,7 +748,7 @@ async def stream_node_speedtest_progress(
 						break
 					yield format_sse_keepalive()
 		finally:
-			await nodes_sync.unregister_speedtest_progress_queue(node_id, progress_queue)
+			await subscription.aclose()
 	
 	return StreamingResponse(
 		event_generator(),

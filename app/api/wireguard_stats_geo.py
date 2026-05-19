@@ -311,11 +311,10 @@ async def get_peer_locations(
 		if peer.interface:
 			peer_db_info[peer.public_key]["interface"] = peer.interface
 
-	# 2. Collect unique IPs that need resolution (skip peers with no IP / handshake / node tunnels)
+	# 2. Collect unique IPs that need resolution (skip peers with no IP / node tunnels)
 	ip_to_peers: dict[str, list[tuple[str, dict]]] = {}
 	skipped_tunnel = 0
 	skipped_no_ip = 0
-	skipped_no_handshake = 0
 	for pub_key, info in peer_db_info.items():
 		peer_id = info.get("peer_id")
 		if peer_id in tunnel_peer_ids:
@@ -324,9 +323,6 @@ async def get_peer_locations(
 		ip_str = info.get("last_client_ip")
 		if not ip_str:
 			skipped_no_ip += 1
-			continue
-		if not (info.get("last_handshake_at") or 0):
-			skipped_no_handshake += 1
 			continue
 		ip_to_peers.setdefault(ip_str, []).append((pub_key, info))
 
@@ -374,11 +370,10 @@ async def get_peer_locations(
 		})
 
 	_log.debug(
-		"PEER_LOC returning %d location(s), skipped tunnel=%d no_ip=%d no_handshake=%d",
+		"PEER_LOC returning %d location(s), skipped tunnel=%d no_ip=%d",
 		len(locations),
 		skipped_tunnel,
 		skipped_no_ip,
-		skipped_no_handshake,
 	)
 	return ok_response(data={"locations": locations})
 

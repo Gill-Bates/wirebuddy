@@ -472,51 +472,149 @@ def is_node_sse_connected(conn: sqlite3.Connection, node_id: str, max_age_second
 VALID_NODE_COMMANDS = frozenset({"config_changed", "restart", "shutdown", "removed", "speedtest"})
 
 
-def set_node_pending_command(conn: sqlite3.Connection, node_id: str, command: str) -> bool:
-	"""Set a pending command for a node (multi-worker safe).
-	
-	Returns True if command was set, False if node doesn't exist.
-	
-	Raises:
-		ValueError: If command is not in VALID_NODE_COMMANDS.
-	"""
+def _serialize_command_payload(payload: dict[str, Any] | None) -> str:
+	"""Serialize command payload as compact JSON."""
+	if payload is None:
+		return "{}"
+	return json.dumps(payload, separators=(",", ":"), default=str)
+
+
+def _parse_command_payload(raw: Any) -> dict[str, Any]:
+	"""Parse a stored JSON command payload defensively."""
+	if not raw:
+		return {}
+	try:
+		parsed = json.loads(str(raw))
+	except (TypeError, ValueError, json.JSONDecodeError):
+		_log.warning("Invalid node command payload: %r", raw)
+		return {}
+	return parsed if isinstance(parsed, dict) else {}
+
+
+def enqueue_node_command(
+	conn: sqlite3.Connection,
+	node_id: str,
+	command: str,
+	*,
+	payload: dict[str, Any] | None = None,
+) -> int | None:
+	"""Persist a durable command for one node and return its row ID."""
 	if command not in VALID_NODE_COMMANDS:
 		raise ValueError(f"Invalid node command: {command!r}. Valid: {sorted(VALID_NODE_COMMANDS)}")
-	
+
+	now = utcnow()
 	with transaction(conn, immediate=True):
-		result = conn.execute(
-			"UPDATE nodes SET pending_command = ? WHERE id = ?",
-			(command, node_id),
+		row = conn.execute("SELECT 1 FROM nodes WHERE id = ?", (node_id,)).fetchone()
+		if row is None:
+			return None
+		cur = conn.execute(
+			"""
+			INSERT INTO node_commands (node_id, command_type, payload, created_at)
+			VALUES (?, ?, ?, ?)
+			""",
+			(node_id, command, _serialize_command_payload(payload), now),
 		)
-		return result.rowcount > 0
+		return int(cur.lastrowid)
+
+
+def claim_pending_node_commands(
+	conn: sqlite3.Connection,
+	node_id: str,
+	*,
+	replay_after_seconds: int = 30,
+	limit: int = 20,
+) -> list[dict[str, Any]]:
+	"""Claim replayable commands for SSE delivery and mark them as delivered."""
+	if limit <= 0:
+		return []
+
+	threshold = utcnow() - timedelta(seconds=max(0, replay_after_seconds))
+	now = utcnow()
+	with transaction(conn, immediate=True):
+		rows = conn.execute(
+			"""
+			SELECT id, node_id, command_type, payload, created_at, delivered_at, acked_at
+			FROM node_commands
+			WHERE node_id = ?
+			  AND acked_at IS NULL
+			  AND (delivered_at IS NULL OR delivered_at < ?)
+			ORDER BY created_at ASC, id ASC
+			LIMIT ?
+			""",
+			(node_id, threshold, limit),
+		).fetchall()
+		if not rows:
+			return []
+
+		conn.executemany(
+			"UPDATE node_commands SET delivered_at = ? WHERE id = ? AND node_id = ? AND acked_at IS NULL",
+			[(now, int(row["id"]), node_id) for row in rows],
+		)
+
+		return [
+			{
+				"id": int(row["id"]),
+				"node_id": row["node_id"],
+				"command_type": str(row["command_type"]),
+				"payload": _parse_command_payload(row["payload"]),
+				"created_at": row["created_at"],
+				"delivered_at": row["delivered_at"],
+				"acked_at": row["acked_at"],
+			}
+			for row in rows
+		]
+
+
+def ack_node_command(conn: sqlite3.Connection, node_id: str, command_id: int) -> bool:
+	"""Acknowledge one delivered command."""
+	now = utcnow()
+	with transaction(conn, immediate=True):
+		cur = conn.execute(
+			"""
+			UPDATE node_commands
+			SET acked_at = ?
+			WHERE id = ? AND node_id = ? AND acked_at IS NULL
+			""",
+			(now, int(command_id), node_id),
+		)
+		return cur.rowcount > 0
+
+
+def mark_node_command_delivered(conn: sqlite3.Connection, node_id: str, command_id: int) -> bool:
+	"""Stamp one durable command as delivered to an active SSE stream."""
+	now = utcnow()
+	with transaction(conn, immediate=True):
+		cur = conn.execute(
+			"""
+			UPDATE node_commands
+			SET delivered_at = ?
+			WHERE id = ? AND node_id = ? AND acked_at IS NULL
+			""",
+			(now, int(command_id), node_id),
+		)
+		return cur.rowcount > 0
+
+
+def set_node_pending_command(conn: sqlite3.Connection, node_id: str, command: str) -> bool:
+	"""Compatibility wrapper for the legacy single-slot pending command field."""
+	command_id = enqueue_node_command(conn, node_id, command)
+	return command_id is not None
 
 
 def get_and_clear_node_pending_command(conn: sqlite3.Connection, node_id: str) -> str | None:
-	"""Atomically get and clear any pending command for a node.
-	
-	Uses ``BEGIN IMMEDIATE`` so another worker cannot observe the same command
-	between the read and clear steps. Returns the command string or ``None``.
-	"""
-	with transaction(conn, immediate=True):
-		# SELECT first to get the current value
-		row = conn.execute(
-			"SELECT pending_command FROM nodes WHERE id = ?",
-			(node_id,),
-		).fetchone()
+	"""Compatibility wrapper that returns one unacked durable command."""
+	commands = claim_pending_node_commands(conn, node_id, replay_after_seconds=0, limit=1)
+	if not commands:
+		return None
 		
-		if not row or not row["pending_command"]:
-			return None
-		
-		command = row["pending_command"]
-		_clear_node_pending_command_locked(conn, node_id)
-		
-		return command
+	return str(commands[0]["command_type"])
 
 
 def clear_node_pending_command(conn: sqlite3.Connection, node_id: str) -> None:
-	"""Clear any pending command for a node without returning it."""
-	with transaction(conn, immediate=True):
-		_clear_node_pending_command_locked(conn, node_id)
+	"""Compatibility helper that acks all currently replayable commands."""
+	commands = claim_pending_node_commands(conn, node_id, replay_after_seconds=0, limit=100)
+	for command in commands:
+		ack_node_command(conn, node_id, int(command["id"]))
 
 
 def _clear_node_pending_command_locked(conn: sqlite3.Connection, node_id: str) -> None:

@@ -120,7 +120,7 @@
                         </td>
                         <td data-label="Created">{{ u['created_at'].strftime('%Y-%m-%d') }}</td>
                         <td data-label="Actions" class="user-actions-cell wb-responsive-actions">
-                            <div class="d-flex gap-1 justify-content-end">
+                            <div class="d-none d-lg-flex gap-1 justify-content-end users-desktop-actions">
                                 <button type="button" class="btn btn-sm btn-outline-secondary btn-edit-user users-action-btn"
                                     data-user-id="{{ u['id'] }}"
                                     data-username="{{ u['username'] }}"
@@ -151,6 +151,46 @@
                                     <span class="material-icons icon-md" aria-hidden="true">delete</span>
                                 </button>
                                 {% endif %}
+                            </div>
+                            <div class="dropdown d-lg-none users-mobile-actions">
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-secondary dropdown-toggle users-mobile-actions-toggle"
+                                        data-bs-toggle="dropdown"
+                                        aria-expanded="false"
+                                        aria-label="More actions for {{ u['username'] }}">
+                                    <span class="material-icons icon-md" aria-hidden="true">more_vert</span>
+                                </button>
+                                <div class="dropdown-menu dropdown-menu-end users-mobile-actions-menu">
+                                    <button type="button" class="dropdown-item btn-edit-user"
+                                        data-user-id="{{ u['id'] }}"
+                                        data-username="{{ u['username'] }}">
+                                        <span class="material-icons icon-md me-2" aria-hidden="true">edit</span>
+                                        Edit User
+                                    </button>
+                                    <button type="button" class="dropdown-item btn-otp-settings"
+                                        data-user-id="{{ u['id'] }}"
+                                        data-username="{{ u['username'] }}"
+                                        data-otp-enabled="{{ 'true' if u['otp_enabled'] else 'false' }}"
+                                        data-otp-secret="{{ 'true' if u['otp_secret'] else 'false' }}">
+                                        <span class="material-icons icon-md me-2" aria-hidden="true">security</span>
+                                        OTP Settings
+                                    </button>
+                                    <button type="button" class="dropdown-item btn-passkey-settings"
+                                        data-user-id="{{ u['id'] }}"
+                                        data-username="{{ u['username'] }}">
+                                        <span class="material-icons icon-md me-2" aria-hidden="true">fingerprint</span>
+                                        Passkey Settings
+                                    </button>
+                                    {% if u['id'] != user['id'] %}
+                                    <div class="dropdown-divider"></div>
+                                    <button type="button" class="dropdown-item text-danger btn-delete-user"
+                                        data-user-id="{{ u['id'] }}"
+                                        data-username="{{ u['username'] }}">
+                                        <span class="material-icons icon-md me-2" aria-hidden="true">delete</span>
+                                        Delete User
+                                    </button>
+                                    {% endif %}
+                                </div>
                             </div>
                         </td>
                     </tr>
