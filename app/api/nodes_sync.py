@@ -172,11 +172,12 @@ async def _run_with_short_lived_conn(
 	db_path: Path,
 	fn: Callable[..., T],
 	*args: Any,
+	**kwargs: Any,
 ) -> T:
 	"""Run a DB operation in a thread using a short-lived connection."""
 	def _exec():
 		with thread_connection(db_path) as thread_conn:
-			return fn(thread_conn, *args)
+			return fn(thread_conn, *args, **kwargs)
 
 	return await run_in_threadpool(_exec)
 

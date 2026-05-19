@@ -17,10 +17,21 @@ export async function performLogin(page, { baseUrl, username, password, motionRe
 
     await page.fill('#username', username);
     await page.fill('#password', password);
-    await Promise.all([
-        page.waitForURL((url) => !url.toString().includes('/login'), { timeout: 10000 }),
-        page.click('#submit-btn'),
-    ]);
+
+    await page.click('#submit-btn');
+
+    try {
+        await page.waitForFunction(
+            () => !window.location.pathname.includes('/login') || Boolean(document.getElementById('logoutBtn')),
+            { timeout: 10000 },
+        );
+    } catch (err) {
+        const loginFailure = await detectLoginFailure(page);
+        if (loginFailure) {
+            throw new Error(`Login failed: ${loginFailure}`);
+        }
+        throw err;
+    }
 
     await bootstrapAuthenticatedSession(page, { baseUrl });
 }

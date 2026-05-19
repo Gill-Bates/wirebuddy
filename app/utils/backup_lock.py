@@ -46,7 +46,14 @@ def _lock_path(data_dir: Path, lock_name: str) -> Path:
 
 
 @contextmanager
-def _acquire_lock_file(lock_path: Path, *, blocking: bool = False, timeout: float | None = None) -> Iterator[BinaryIO]:
+def _acquire_lock_file(
+	lock_path: Path,
+	*,
+	blocking: bool = False,
+	timeout: float | None = None,
+	shared: bool = False,
+	update_metadata: bool = True,
+) -> Iterator[BinaryIO]:
 	flags = os.O_RDWR | os.O_CREAT
 	flags |= getattr(os, "O_NOFOLLOW", 0)
 	flags |= getattr(os, "O_CLOEXEC", 0)
@@ -61,7 +68,8 @@ def _acquire_lock_file(lock_path: Path, *, blocking: bool = False, timeout: floa
 		deadline = None if timeout is None else time.monotonic() + timeout
 		while True:
 			try:
-				lock_mode = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
+				base_lock = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+				lock_mode = base_lock if blocking else (base_lock | fcntl.LOCK_NB)
 				fcntl.flock(lock_file.fileno(), lock_mode)
 				break
 			except BlockingIOError as exc:
@@ -72,12 +80,13 @@ def _acquire_lock_file(lock_path: Path, *, blocking: bool = False, timeout: floa
 					raise BackupLockBusyError(lock_path.name) from exc
 				time.sleep(0.1)
 
-		lock_file.seek(0)
-		lock_file.truncate()
-		lock_file.write(
-			f"pid={os.getpid()} host={socket.gethostname()} acquired_at={time.time():.6f}\n".encode("utf-8")
-		)
-		lock_file.flush()
+		if update_metadata:
+			lock_file.seek(0)
+			lock_file.truncate()
+			lock_file.write(
+				f"pid={os.getpid()} host={socket.gethostname()} acquired_at={time.time():.6f}\n".encode("utf-8")
+			)
+			lock_file.flush()
 		yield lock_file
 	finally:
 		try:
@@ -109,7 +118,7 @@ def is_restore_in_progress(data_dir: Path) -> bool:
 	"""
 	lock_path = _lock_path(data_dir, BACKUP_RESTORE_LOCK_NAME)
 	try:
-		with _acquire_lock_file(lock_path):
+		with _acquire_lock_file(lock_path, shared=True, update_metadata=False):
 			return False
 	except BackupLockBusyError:
 		return True

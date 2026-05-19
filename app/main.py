@@ -1246,7 +1246,7 @@ def create_app() -> FastAPI:
 		"script-src 'self'; "
 		"script-src-attr 'none'; "
 		"style-src 'self'; "
-		"img-src 'self' data:; "
+		"img-src 'self' data: https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com; "
 		"font-src 'self'; "
 		"connect-src 'self'; "
 		"object-src 'none'; "

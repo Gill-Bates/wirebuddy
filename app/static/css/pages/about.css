@@ -107,6 +107,18 @@
     margin: 1rem 0;
 }
 
+.about-doc-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    line-height: 1.2;
+}
+
+.about-doc-link .material-icons {
+    flex-shrink: 0;
+}
+
 /* Changelog markdown styling */
 .changelog-content h2 {
     font-size: 1rem;

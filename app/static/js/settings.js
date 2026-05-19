@@ -75,7 +75,7 @@ void (async function () {
         switch (tabId) {
             case 'general':
                 await loadWgSettings();
-                await loadSpeedtestSettings();
+                await window.WB?.settingsSpeedtest?.loadSettings?.();
                 tabLoaded.general = true;
                 break;
             case 'wireguard':
@@ -2500,9 +2500,6 @@ void (async function () {
         pageAbortController.abort();
     });
 
-    // Initialize tabs on page load (await to ensure settings are loaded before user interaction)
-    await initTabs();
-
     // ─── BACKUP MANAGEMENT ─────────────────────────────────────────────────────
 
     // Backup retention days mapping (slider index → days)
@@ -2889,7 +2886,7 @@ void (async function () {
 
     // Initialize backup functionality
     bindBackupListeners();
-    loadBackupSettings();
+    await initTabs();
 
 })();
 

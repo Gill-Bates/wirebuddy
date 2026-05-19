@@ -532,8 +532,14 @@ async function refreshStats(signal) {
 }
 
 function getMapTileSources() {
+    const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+    if (dark) {
+        return [
+            'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+        ];
+    }
     return [
-        'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+        'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
     ];
 }
 
@@ -637,7 +643,7 @@ function initMap() {
             maxZoom: 18,
             tileSize: 256,
             detectRetina: true,
-            attribution: '',
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
         };
         tileLayer = L.tileLayer(activeTileSources[0], tileOpts).addTo(peerMap);
         tileLayer.on('tileerror', handleTileError);
