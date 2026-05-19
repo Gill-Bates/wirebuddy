@@ -55,7 +55,7 @@ export async function resetLayoutShiftMetric(page) {
         if (runtime?.performance?.webVitals) {
             runtime.performance.webVitals.cls = 0;
         }
-    }).catch(() => {});
+    }).catch(() => { });
 }
 
 export async function collectCLSMetrics(page) {

@@ -65,9 +65,9 @@ export {
 export { captureKpiCards } from './components/kpi-capture.mjs';
 export { diffKpiSets } from './components/card-diffing.mjs';
 
-export { createRuntime } from './runtime/lifecycle.mjs';
-export { createCleanupBucket } from './runtime/cleanup.mjs';
-export { buildRuntimeDiagnostics } from './runtime/diagnostics.mjs';
+export { createRuntime } from './runtime/runtime/lifecycle.mjs';
+export { createCleanupBucket } from './runtime/runtime/cleanup.mjs';
+export { buildRuntimeDiagnostics } from './runtime/runtime/diagnostics.mjs';
 
 export { login, performLogin, detectLoginFailure } from './auth/login-flow.mjs';
 export { applyTheme, bootstrapAuthenticatedSession } from './auth/auth-state.mjs';

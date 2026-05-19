@@ -13,7 +13,7 @@ export async function bootstrapAuthenticatedSession(page, { baseUrl, theme } = {
         await page.evaluate((nextTheme) => {
             localStorage.setItem('theme', nextTheme);
             document.documentElement.setAttribute('data-bs-theme', nextTheme);
-        }, theme).catch(() => {});
+        }, theme).catch(() => { });
     }
 }
 

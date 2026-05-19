@@ -28,7 +28,7 @@ export function createTelemetrySession(page) {
     };
     const onPageError = (err) => pageErrors.push({ message: String(err?.message || err), timestamp: Date.now() });
     const onRequest = (req) => {
-        const requestId = timeline.nextId += 1;
+        const requestId = ++timeline.nextId;
         timeline.byId.set(req, requestId);
         const entry = {
             requestId,

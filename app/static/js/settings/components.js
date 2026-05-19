@@ -10,10 +10,42 @@
 (function () {
     'use strict';
 
-    const { el, clearChildren } = window.WB?.dom || window.WBDom || {};
+    const { el } = window.WB?.dom || window.WBDom || {};
     if (!el) {
         console.error('[SettingsComponents] WB.dom not available');
         return;
+    }
+
+    const BLOCKED_DATA_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+    function sanitizeDataset(data) {
+        if (!data || typeof data !== 'object') {
+            return undefined;
+        }
+
+        const sanitized = {};
+        for (const [key, value] of Object.entries(data)) {
+            if (BLOCKED_DATA_KEYS.has(key) || value == null) {
+                continue;
+            }
+            sanitized[key] = String(value);
+        }
+
+        return Object.keys(sanitized).length ? sanitized : undefined;
+    }
+
+    function stableDomId(value) {
+        const encoded = new TextEncoder().encode(String(value ?? ''));
+        let binary = '';
+
+        for (const byte of encoded) {
+            binary += String.fromCharCode(byte);
+        }
+
+        return btoa(binary)
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/g, '');
     }
 
     /**
@@ -27,6 +59,7 @@
     function badge(text, variant, options = {}) {
         const classes = ['badge', `bg-${variant}`];
         if (options.textDark) classes.push('text-dark');
+        if (options.className) classes.push(options.className);
         if (options.class) classes.push(options.class);
         return el('span', { class: classes.join(' '), text });
     }
@@ -41,6 +74,7 @@
      */
     function icon(name, options = {}) {
         const classes = ['material-icons', 'align-middle'];
+        if (options.className) classes.push(options.className);
         if (options.class) classes.push(options.class);
         if (options.size) {
             const sizeClass = {
@@ -53,7 +87,13 @@
             }[options.size];
             if (sizeClass) classes.push(sizeClass);
         }
-        return el('span', { class: classes.join(' '), text: name });
+        return el('span', {
+            class: classes.join(' '),
+            text: name,
+            attrs: {
+                'aria-hidden': 'true',
+            },
+        });
     }
 
     /**
@@ -71,24 +111,25 @@
      */
     function actionButton(opts) {
         const classes = ['btn', 'btn-sm', `btn-outline-${opts.variant}`, 'text-nowrap'];
+        if (opts.className) classes.push(opts.className);
         if (opts.class) classes.push(opts.class);
 
-        const btn = el('button', {
-            class: classes.join(' '),
-            attrs: {
-                title: opts.title,
-                'aria-label': opts.ariaLabel || opts.title,
-                disabled: opts.disabled || false,
-            },
-            data: opts.data,
-            children: [icon(opts.icon, { class: 'icon-md' })],
-        });
+        const attrs = {
+            title: opts.title,
+            'aria-label': opts.ariaLabel || opts.title,
+        };
 
-        if (opts.onClick) {
-            btn.addEventListener('click', opts.onClick);
+        if (opts.disabled) {
+            attrs.disabled = true;
         }
 
-        return btn;
+        return el('button', {
+            class: classes.join(' '),
+            attrs,
+            data: sanitizeDataset(opts.data),
+            on: opts.onClick ? { click: opts.onClick } : undefined,
+            children: [icon(opts.icon, { class: 'icon-md' })],
+        });
     }
 
     /**
@@ -221,7 +262,14 @@
 
         // Expiry info
         const expiresDate = cert.expires_at ? new Date(cert.expires_at) : null;
-        const expiresStr = expiresDate ? expiresDate.toLocaleDateString() : 'Unknown';
+        const expiresStr = expiresDate
+            ? expiresDate.toLocaleDateString('en-GB', {
+                timeZone: 'UTC',
+                year: 'numeric',
+                month: 'short',
+                day: '2-digit',
+            })
+            : 'Unknown';
         const daysStr = cert.days_until_expiry !== null ? ` (${cert.days_until_expiry}d)` : '';
 
         // Action buttons
@@ -299,7 +347,8 @@
         const levelLabel = levelLabels[level] || level || '';
 
         // Unique ID for checkbox
-        const sourceId = `blocklist-${simpleHash(source.url)}-${index}`;
+        const sourceKey = `${String(source.url ?? '').trim()}|${String(source.name ?? '').trim()}|${index}`;
+        const sourceId = `blocklist-${stableDomId(sourceKey)}`;
 
         const titleChildren = [el('span', { text: source.name })];
         if (levelLabel) {
@@ -338,37 +387,32 @@
                         el('div', {
                             class: 'form-check form-switch m-0',
                             children: [
-                                el('input', {
-                                    class: 'form-check-input',
-                                    attrs: {
+                                (() => {
+                                    const checkboxAttrs = {
                                         type: 'checkbox',
                                         id: sourceId,
-                                        checked: source.enabled || false,
-                                        disabled: !isAdmin || dnsUnavailable,
-                                    },
-                                    data: { url: source.url, name: source.name },
-                                }),
+                                    };
+
+                                    if (source.enabled) {
+                                        checkboxAttrs.checked = true;
+                                    }
+
+                                    if (!isAdmin || dnsUnavailable) {
+                                        checkboxAttrs.disabled = true;
+                                    }
+
+                                    return el('input', {
+                                        class: 'form-check-input',
+                                        attrs: checkboxAttrs,
+                                        data: sanitizeDataset({ url: source.url, name: source.name }),
+                                    });
+                                })(),
                             ],
                         }),
                     ],
                 }),
             ],
         });
-    }
-
-    /**
-     * Simple hash function for generating stable IDs.
-     * @param {string} str - String to hash
-     * @returns {string} - Hex hash
-     */
-    function simpleHash(str) {
-        let hash = 0;
-        for (let i = 0; i < str.length; i++) {
-            const char = str.charCodeAt(i);
-            hash = ((hash << 5) - hash) + char;
-            hash = hash & hash;
-        }
-        return Math.abs(hash).toString(16);
     }
 
     /**
@@ -431,7 +475,6 @@
         emptyState,
         spinner,
         statusIndicator,
-        simpleHash,
     };
 
 })();

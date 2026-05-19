@@ -3,125 +3,184 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-// Device matrix configuration for mobile testing.
-// Uses Playwright's built-in device descriptors.
-//
+// Device orchestration runtime for responsive and multi-engine audits.
 
-import { devices } from 'playwright';
+import { devices as playwrightDevices } from 'playwright';
 
-/**
- * Device categories for organized testing.
- */
-export const DEVICE_CATEGORIES = {
-    desktop: ['Desktop Chrome', 'Desktop Firefox', 'Desktop Safari'],
-    mobile: ['iPhone 15', 'iPhone SE', 'Pixel 7'],
-    tablet: ['iPad Pro 11', 'iPad Mini'],
-    foldable: ['Galaxy Z Fold 5'],
-};
+import {
+    BROWSER_PROFILES,
+    CUSTOM_VIEWPORTS,
+    DEFAULT_MATRIX,
+    DEVICE_CATALOG,
+    DEVICE_CATEGORIES,
+    EXTENDED_MATRIX,
+    NETWORK_PROFILES,
+    SCENARIOS,
+    buildMatrixHash,
+    buildSerializableRuntime,
+    createDeviceRuntime,
+    createMatrixRuntime,
+    getBrowserProfile,
+    getNetworkProfile,
+    getScenario,
+    toPlaywrightOptions,
+} from './device-runtime/index.mjs';
 
-/**
- * Default test matrix - covers common breakpoints.
- */
-export const DEFAULT_MATRIX = [
-    'Desktop Chrome',
-    'iPhone 15',
-    'iPad Pro 11',
-];
+export const DEVICE_RUNTIME_VERSION = 1;
 
-/**
- * Extended test matrix - comprehensive coverage.
- */
-export const EXTENDED_MATRIX = [
-    'Desktop Chrome',
-    'Desktop Safari',
-    'iPhone 15',
-    'iPhone SE',
-    'Pixel 7',
-    'iPad Pro 11',
-    'iPad Mini',
-];
+function inferBrowserFromName(name) {
+    if (/firefox/i.test(name)) return 'firefox';
+    if (/safari|iphone|ipad/i.test(name)) return 'webkit';
+    return 'chromium';
+}
 
-/**
- * Custom viewport configurations (not in Playwright devices).
- */
-export const CUSTOM_VIEWPORTS = {
-    'Desktop 1080p': {
-        viewport: { width: 1920, height: 1080 },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        deviceScaleFactor: 1,
-        isMobile: false,
-        hasTouch: false,
-    },
-    'Desktop 768': {
-        viewport: { width: 768, height: 1024 },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        deviceScaleFactor: 1,
-        isMobile: false,
-        hasTouch: false,
-    },
-    'Desktop 576': {
-        viewport: { width: 576, height: 900 },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        deviceScaleFactor: 1,
-        isMobile: false,
-        hasTouch: false,
-    },
-};
+function inferPlatformFromName(name) {
+    if (/iphone|ipad/i.test(name)) return 'ios';
+    if (/pixel|galaxy/i.test(name)) return 'android';
+    return 'desktop';
+}
 
-/**
- * Get device configuration by name.
- * @param {string} name - Device name
- * @returns {Object|null}
- */
-export function getDevice(name) {
-    // Check custom viewports first
+function inferScenarioFromName(name) {
+    if (/fold/i.test(name)) return 'foldable-open';
+    if (/iphone se/i.test(name)) return 'low-end-mobile';
+    if (/iphone/i.test(name)) return 'one-handed-mobile';
+    if (/pixel/i.test(name)) return 'low-end-android';
+    if (/ipad/i.test(name)) return /mini/i.test(name) ? 'portrait-tablet' : 'landscape-tablet';
+    return 'desktop-default';
+}
+
+function normalizeMatrixEntry(entry) {
+    if (typeof entry === 'string') {
+        const trimmed = entry.trim();
+        if (!trimmed) return null;
+        const atIndex = trimmed.lastIndexOf('@');
+        const pipeIndex = trimmed.lastIndexOf('|');
+        const separatorIndex = Math.max(atIndex, pipeIndex);
+
+        if (separatorIndex > 0) {
+            const left = trimmed.slice(0, separatorIndex).trim();
+            const right = trimmed.slice(separatorIndex + 1).trim();
+            const browserNames = new Set(['chromium', 'webkit', 'firefox']);
+            if (browserNames.has(left)) {
+                return { browser: left, device: right, scenario: inferScenarioFromName(right), platform: inferPlatformFromName(right) };
+            }
+            if (browserNames.has(right)) {
+                return { browser: right, device: left, scenario: inferScenarioFromName(left), platform: inferPlatformFromName(left) };
+            }
+        }
+
+        return {
+            browser: inferBrowserFromName(trimmed),
+            device: trimmed,
+            scenario: inferScenarioFromName(trimmed),
+            platform: inferPlatformFromName(trimmed),
+        };
+    }
+
+    return {
+        browser: entry.browser || inferBrowserFromName(entry.device || ''),
+        device: entry.device,
+        scenario: entry.scenario || inferScenarioFromName(entry.device || ''),
+        platform: entry.platform || inferPlatformFromName(entry.device || ''),
+    };
+}
+
+function getCatalogDescriptor(name) {
     if (CUSTOM_VIEWPORTS[name]) {
-        return { name, ...CUSTOM_VIEWPORTS[name] };
+        return {
+            name,
+            ...CUSTOM_VIEWPORTS[name],
+            browser: CUSTOM_VIEWPORTS[name].browser || 'chromium',
+            platform: CUSTOM_VIEWPORTS[name].platform || 'desktop',
+            scenario: 'custom-viewport',
+        };
     }
 
-    // Check Playwright devices
-    const device = devices[name];
-    if (device) {
-        return { name, ...device };
+    const catalogDescriptor = DEVICE_CATALOG[name] || null;
+    const presetDescriptor = playwrightDevices[name] || null;
+
+    if (!catalogDescriptor && !presetDescriptor) {
+        return null;
     }
 
-    console.warn(`Unknown device: ${name}`);
-    return null;
+    return {
+        name,
+        ...(catalogDescriptor || {}),
+        ...(presetDescriptor || {}),
+        browser: (catalogDescriptor || {}).browser || inferBrowserFromName(name),
+        platform: (catalogDescriptor || {}).platform || inferPlatformFromName(name),
+        scenario: (catalogDescriptor || {}).scenario || inferScenarioFromName(name),
+    };
 }
 
-/**
- * Get all devices for a matrix.
- * @param {string[]} matrix - Device names
- * @returns {Object[]}
- */
+export function createDeviceMatrixRuntime({ entries = DEFAULT_MATRIX } = {}) {
+    const matrixRuntime = createMatrixRuntime({ entries: entries.map(normalizeMatrixEntry).filter(Boolean) });
+
+    return {
+        ...matrixRuntime,
+        resolve() {
+            return matrixRuntime.entries.map((entry) => {
+                const descriptor = getCatalogDescriptor(entry.device);
+                if (!descriptor) return null;
+                return createDeviceRuntime({
+                    descriptor,
+                    browser: entry.browser,
+                    platform: entry.platform,
+                    scenario: entry.scenario,
+                });
+            }).filter(Boolean);
+        },
+    };
+}
+
+export function getDevice(name, options = {}) {
+    const descriptor = getCatalogDescriptor(name);
+    if (!descriptor) {
+        console.warn(`Unknown device: ${name}`);
+        return null;
+    }
+
+    return createDeviceRuntime({
+        descriptor,
+        browser: options.browser || descriptor.browser || inferBrowserFromName(name),
+        platform: options.platform || descriptor.platform || inferPlatformFromName(name),
+        scenario: options.scenario || descriptor.scenario || inferScenarioFromName(name),
+        capabilities: options.capabilities || {},
+    });
+}
+
 export function getDevices(matrix) {
-    return matrix.map(getDevice).filter(Boolean);
+    return (matrix || []).map((entry) => {
+        const normalized = normalizeMatrixEntry(entry);
+        if (!normalized) return null;
+
+        const descriptor = getCatalogDescriptor(normalized.device);
+        if (!descriptor) return null;
+
+        const capabilities = entry && typeof entry === 'object' ? entry.capabilities || {} : {};
+
+        return createDeviceRuntime({
+            descriptor,
+            browser: normalized.browser || descriptor.browser,
+            platform: normalized.platform || descriptor.platform,
+            scenario: normalized.scenario || descriptor.scenario,
+            capabilities,
+        });
+    }).filter(Boolean);
 }
 
-/**
- * Get devices by category.
- * @param {string} category - Category name
- * @returns {Object[]}
- */
 export function getDevicesByCategory(category) {
     const names = DEVICE_CATEGORIES[category] || [];
     return getDevices(names);
 }
 
-/**
- * Resolve matrix from environment or default.
- * UI_LINT_DEVICE_MATRIX=iPhone 15,iPad Pro 11
- * @returns {Object[]}
- */
 export function resolveDeviceMatrix() {
     const envMatrix = process.env.UI_LINT_DEVICE_MATRIX;
 
     if (envMatrix) {
-        const names = envMatrix.split(',').map(s => s.trim());
-        return getDevices(names);
+        return getDevices(envMatrix.split(',').map((entry) => entry.trim()).filter(Boolean));
     }
 
-    // Check for extended mode
     if (process.env.UI_LINT_EXTENDED_MATRIX === 'true') {
         return getDevices(EXTENDED_MATRIX);
     }
@@ -129,12 +188,19 @@ export function resolveDeviceMatrix() {
     return getDevices(DEFAULT_MATRIX);
 }
 
-/**
- * Get breakpoint-specific viewports for responsive testing.
- * @returns {Object[]}
- */
+export function resolveDeviceMatrixRuntime() {
+    const entries = process.env.UI_LINT_DEVICE_MATRIX
+        ? process.env.UI_LINT_DEVICE_MATRIX.split(',').map((entry) => entry.trim()).filter(Boolean)
+        : (process.env.UI_LINT_EXTENDED_MATRIX === 'true' ? EXTENDED_MATRIX : DEFAULT_MATRIX);
+
+    return createDeviceMatrixRuntime({ entries });
+}
+
 export function getBreakpointViewports() {
     return [
+        getDevice('Desktop 576')?.snapshot?.() || { name: 'Desktop 576', viewport: { width: 576, height: 900 }, isMobile: false },
+        getDevice('Desktop 768')?.snapshot?.() || { name: 'Desktop 768', viewport: { width: 768, height: 1024 }, isMobile: false },
+        getDevice('Desktop 1080p')?.snapshot?.() || { name: 'Desktop 1080p', viewport: { width: 1920, height: 1080 }, isMobile: false },
         { name: 'base (320px)', viewport: { width: 320, height: 568 }, isMobile: true },
         { name: 'sm (576px)', viewport: { width: 576, height: 900 }, isMobile: false },
         { name: 'md (768px)', viewport: { width: 768, height: 1024 }, isMobile: false },
@@ -144,34 +210,55 @@ export function getBreakpointViewports() {
     ];
 }
 
-/**
- * Check if a device is mobile.
- * @param {Object} device
- * @returns {boolean}
- */
 export function isMobileDevice(device) {
-    return device.isMobile === true;
+    return Boolean(device?.snapshot ? device.snapshot().capabilities?.touch : device?.isMobile || device?.touch);
 }
 
-/**
- * Check if a device is iOS.
- * @param {Object} device
- * @returns {boolean}
- */
 export function isIOSDevice(device) {
-    return device.name?.includes('iPhone') ||
-        device.name?.includes('iPad') ||
-        device.userAgent?.includes('iPhone') ||
-        device.userAgent?.includes('iPad');
+    const snapshot = device?.snapshot ? device.snapshot() : device;
+    return Boolean(
+        snapshot?.platform === 'ios' ||
+        snapshot?.name?.includes('iPhone') ||
+        snapshot?.name?.includes('iPad') ||
+        snapshot?.userAgent?.includes('iPhone') ||
+        snapshot?.userAgent?.includes('iPad')
+    );
 }
 
-/**
- * Check if a device is a tablet.
- * @param {Object} device
- * @returns {boolean}
- */
 export function isTablet(device) {
-    return device.name?.includes('iPad') ||
-        device.name?.includes('Galaxy Tab') ||
-        (device.viewport?.width >= 768 && device.isMobile);
+    const snapshot = device?.snapshot ? device.snapshot() : device;
+    return Boolean(
+        (snapshot?.platform === 'ios' && snapshot?.capabilities?.touch && snapshot?.viewport?.layout?.width >= 744) ||
+        snapshot?.name?.includes('iPad') ||
+        snapshot?.name?.includes('Galaxy Tab') ||
+        (snapshot?.viewport?.layout?.width >= 768 && snapshot?.isMobile)
+    );
 }
+
+export function matrixHash(entries = DEFAULT_MATRIX) {
+    return buildMatrixHash(createDeviceMatrixRuntime({ entries }));
+}
+
+export function buildPlaywrightOptions(name, options = {}) {
+    const device = getDevice(name, options);
+    return device ? toPlaywrightOptions(device) : null;
+}
+
+export {
+    BROWSER_PROFILES,
+    CUSTOM_VIEWPORTS,
+    DEFAULT_MATRIX,
+    DEVICE_CATALOG,
+    DEVICE_CATEGORIES,
+    EXTENDED_MATRIX,
+    NETWORK_PROFILES,
+    SCENARIOS,
+    buildMatrixHash,
+    buildSerializableRuntime,
+    createDeviceRuntime,
+    createMatrixRuntime,
+    getBrowserProfile,
+    getNetworkProfile,
+    getScenario,
+    toPlaywrightOptions,
+};

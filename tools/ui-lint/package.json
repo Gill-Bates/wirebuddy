@@ -19,6 +19,7 @@
         "mime-types": "latest",
         "pixelmatch": "latest",
         "pngjs": "latest",
+        "postcss": "^8.5.15",
         "sharp": "latest",
         "ssim.js": "latest",
         "zod": "latest"

@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 
 export function sanitize(name) {
-    return String(name || '').replace(/[^a-z0-9-_]+/g, '_').toLowerCase();
+    return String(name || '').toLowerCase().replace(/[^a-z0-9-_]+/g, '_');
 }
 
 export function ensureDir(dirPath) {

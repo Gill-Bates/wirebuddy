@@ -6,9 +6,55 @@
 async function refreshCertificates() {
     const { certificateRow, emptyState } = window.WB?.settingsComponents || {};
     const { clearChildren } = window.WB?.dom || {};
+    const pageAbortController = new AbortController();
+
+    function bindOnce(element, event, handler, options = {}) {
+        if (!element) {
+            return;
+        }
+
+        const boundKey = `bound-${event}`;
+        if (element.dataset?.[boundKey] === '1') {
+            return;
+        }
+
+        element.dataset[boundKey] = '1';
+        const listenerOptions = { ...options };
+        if (!listenerOptions.signal) {
+            listenerOptions.signal = pageAbortController.signal;
+        }
+        element.addEventListener(event, handler, listenerOptions);
+    }
+
+    function pageApi(method, url, data = null, opts = {}) {
+        return api(method, url, data, {
+            ...opts,
+            signal: opts.signal || pageAbortController.signal,
+        });
+    }
+
+    function arraysEqual(left, right) {
+        return left.length === right.length && left.every((value, index) => value === right[index]);
+    }
+
+    function renderStatusMessage(target, iconName, className, text) {
+        if (!target) {
+            return;
+        }
+
+        clearChildren(target);
+        target.append(
+            el('span', {
+                class: `material-icons align-middle ${className} icon-sm`,
+                text: iconName,
+                attrs: { 'aria-hidden': 'true' },
+            }),
+            document.createTextNode(` ${text}`)
+        );
+    }
 
     try {
-        const certs = await api('GET', '/api/acme/certificates');
+        const certs = await pageApi('GET', '/api/acme/certificates');
         const guidanceEl = document.getElementById('letsencrypt-guidance');
         const listEl = document.getElementById('certificates-list');
 
@@ -24,8 +70,8 @@ async function refreshCertificates() {
             async function loadBlocklistSources() {
                 try {
                     const [res, status] = await Promise.all([
-                        api('GET', '/api/dns/blocklist/sources'),
-                        api('GET', '/api/dns/status'),
+                        pageApi('GET', '/api/dns/blocklist/sources'),
+                        pageApi('GET', '/api/dns/status'),
                     ]);
                     const { blocklistItem, emptyState } = window.WB?.settingsComponents || {};
                     const { clearChildren, fragment } = window.WB?.dom || {};
@@ -165,8 +211,8 @@ async function refreshCertificates() {
                         el.style.left = '-9999px';
                         document.body.appendChild(el);
                         el.select();
-                        document.execCommand('copy');
                         document.body.removeChild(el);
+                        throw new Error('Clipboard API unavailable');
                     }
                     wbToast('Status URL copied', 'success');
                 } catch (error) {
@@ -205,8 +251,8 @@ async function refreshCertificates() {
                         el.style.left = '-9999px';
                         document.body.appendChild(el);
                         el.select();
-                        document.execCommand('copy');
                         document.body.removeChild(el);
+                        throw new Error('Clipboard API unavailable');
                     }
                     wbToast('Swagger URL copied', 'success');
                 } catch (error) {
@@ -438,7 +484,7 @@ async function refreshCertificates() {
             const fqdnDetectBtn = document.getElementById('btn-fqdn-detect');
             if (fqdnDetectBtn && fqdnDetectBtn.dataset.bound !== '1') {
                 fqdnDetectBtn.dataset.bound = '1';
-                fqdnDetectBtn.addEventListener('click', async () => {
+                bindOnce(fqdnDetectBtn, 'click', async () => {
                     const detected = detectHostname();
                     if (!detected) {
                         wbToast('Could not detect hostname', 'warning');
@@ -454,7 +500,7 @@ async function refreshCertificates() {
             }
 
             // Certificate Domain Auto-Detect
-            document.getElementById('btn-cert-domain-detect')?.addEventListener('click', () => {
+            bindOnce(document.getElementById('btn-cert-domain-detect'), 'click', () => {
                 const detected = detectHostname();
                 if (!detected) {
                     wbToast('Could not detect hostname', 'warning');
@@ -470,7 +516,11 @@ async function refreshCertificates() {
             }
 
             // Cancel pending debounced saves on page unload to prevent stale writes
-            window.addEventListener('pagehide', () => clearTimeout(wgSettingsSaveTimeout));
+            window.addEventListener('pagehide', () => {
+                clearTimeout(wgSettingsSaveTimeout);
+                cancelRebuildPoll();
+                pageAbortController.abort();
+            });
 
             // PSK toggle handler (with race condition protection)
 
@@ -808,7 +858,7 @@ async function refreshCertificates() {
         }
 
         // Attach traffic analysis toggle event listener
-        document.getElementById('traffic-analysis-toggle')?.addEventListener('change', toggleTrafficAnalysis);
+        bindOnce(document.getElementById('traffic-analysis-toggle'), 'change', toggleTrafficAnalysis);
 
         // DNS Service Control
         async function loadDnsServiceStatus() {
@@ -883,27 +933,27 @@ async function refreshCertificates() {
 
         const dnsStartBtn = document.getElementById('btn-dns-start');
         if (dnsStartBtn) {
-            dnsStartBtn.addEventListener('click', () => dnsServiceAction('start'));
+            bindOnce(dnsStartBtn, 'click', () => dnsServiceAction('start'));
         }
         const dnsStopBtn = document.getElementById('btn-dns-stop');
         if (dnsStopBtn) {
-            dnsStopBtn.addEventListener('click', () => dnsServiceAction('stop'));
+            bindOnce(dnsStopBtn, 'click', () => dnsServiceAction('stop'));
         }
         const dnsRestartBtn = document.getElementById('btn-dns-restart');
         if (dnsRestartBtn) {
-            dnsRestartBtn.addEventListener('click', () => dnsServiceAction('restart'));
+            bindOnce(dnsRestartBtn, 'click', () => dnsServiceAction('restart'));
         }
 
         const requestCertificateBtn = document.getElementById('btn-request-certificate');
         if (requestCertificateBtn) {
-            requestCertificateBtn.addEventListener('click', () => {
+            bindOnce(requestCertificateBtn, 'click', () => {
                 void requestCertificate();
             });
         }
 
         const ifaceSubmitBtn = document.getElementById('btn-iface-submit');
         if (ifaceSubmitBtn) {
-            ifaceSubmitBtn.addEventListener('click', () => {
+            bindOnce(ifaceSubmitBtn, 'click', () => {
                 void submitInterfaceForm();
             });
         }
@@ -1140,7 +1190,7 @@ async function refreshCertificates() {
                     name: name,
                     address: address,
                     address6: address6,
-                    listen_port: parseInt(port),
+                    listen_port: Number.parseInt(port, 10),
                     dns: dns
                 });
 
@@ -1230,7 +1280,7 @@ async function refreshCertificates() {
                 const res = await api('PATCH', `/api/wireguard/interfaces/${encodeURIComponent(editingInterfaceName)}`, {
                     address: address,
                     address6: address6,
-                    listen_port: parseInt(port),
+                    listen_port: Number.parseInt(port, 10),
                     dns: dns,
                     show_on_dashboard: showOnDashboard
                 });
@@ -1576,6 +1626,10 @@ async function refreshCertificates() {
             if (_rebuildPollTimer) return; // already polling
             _rebuildPollCount = 0;
             _rebuildPollTimer = setInterval(async () => {
+                if (pageAbortController.signal.aborted || document.visibilityState === 'hidden') {
+                    cancelRebuildPoll();
+                    return;
+                }
                 _rebuildPollCount++;
                 if (_rebuildPollCount >= _REBUILD_POLL_MAX) {
                     cancelRebuildPoll();
@@ -1726,7 +1780,7 @@ async function refreshCertificates() {
             if (!match) return { valid: false, error: 'Invalid format' };
 
             const ip = match[1]?.trim();
-            const port = match[2] ? parseInt(match[2], 10) : 853;
+            const port = match[2] ? Number.parseInt(match[2], 10) : 853;
             const hostname = match[3]?.trim();
 
             // IPv4 validation with range checks
@@ -1789,14 +1843,14 @@ async function refreshCertificates() {
 
             // Second: Backend connectivity test
             btn.disabled = true;
-            statusEl.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-1"></span>Testing servers...';
+            renderStatusMessage(statusEl, 'hourglass_empty', 'text-muted', 'Testing servers...');
             statusEl.className = 'small text-muted';
 
             try {
                 const res = await api('POST', '/api/dns/test-upstream', { servers });
 
                 if (res.all_success) {
-                    statusEl.innerHTML = '<span class="material-icons align-middle text-success icon-sm">check_circle</span> All servers validated';
+                    renderStatusMessage(statusEl, 'check_circle', 'text-success', 'All servers validated');
                     statusEl.className = 'small text-success';
                     wbToast(`All ${res.results.length} DNS servers are reachable`, 'success');
                 } else {
@@ -1805,12 +1859,12 @@ async function refreshCertificates() {
                         .map(r => `${r.server}: ${r.error}`)
                         .join('\n');
 
-                    statusEl.innerHTML = `<span class="material-icons align-middle text-danger icon-sm">error</span> ${res.failed_count} server(s) failed`;
+                    renderStatusMessage(statusEl, 'error', 'text-danger', `${res.failed_count} server(s) failed`);
                     statusEl.className = 'small text-danger';
                     wbToast('DNS server validation failed:\n' + failedServers, 'danger');
                 }
             } catch (error) {
-                statusEl.innerHTML = '<span class="material-icons align-middle text-danger icon-sm">error</span> Test failed';
+                renderStatusMessage(statusEl, 'error', 'text-danger', 'Test failed');
                 statusEl.className = 'small text-danger';
                 wbToast('DNS validation error: ' + error.message, 'danger');
             } finally {
@@ -1903,7 +1957,7 @@ async function refreshCertificates() {
                 const servers = parseDnsUpstreamInput(upstreamInput?.value || '');
 
                 // Check if upstream servers changed
-                const upstreamChanged = JSON.stringify(servers) !== JSON.stringify(dnsConfigLastUpstream);
+                const upstreamChanged = !arraysEqual(servers, dnsConfigLastUpstream);
 
                 // Validate DNS servers before saving (only if they changed and any are specified)
                 if (upstreamChanged && servers.length > 0) {
@@ -1923,7 +1977,7 @@ async function refreshCertificates() {
                     // Connectivity test
                     const statusEl = document.getElementById('dns-validation-status');
                     if (statusEl) {
-                        statusEl.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-1"></span>Validating...';
+                        renderStatusMessage(statusEl, 'hourglass_empty', 'text-muted', 'Validating...');
                         statusEl.className = 'small text-muted';
                     }
 
@@ -2162,7 +2216,7 @@ async function refreshCertificates() {
             const rules = input.value;
             if (btn) btn.disabled = true;
             if (statusEl) {
-                statusEl.innerHTML = '';
+                clearChildren(statusEl);
                 statusEl.className = 'small text-muted';
             }
 
@@ -2175,20 +2229,20 @@ async function refreshCertificates() {
                 if (data.error_count > 0) {
                     wbToast(`Rules saved with ${data.error_count} syntax error(s)`, 'warning');
                     if (statusEl) {
-                        statusEl.innerHTML = `<span class="material-icons align-middle text-warning icon-sm">warning</span> ${data.error_count} error(s)`;
+                        renderStatusMessage(statusEl, 'warning', 'text-warning', `${data.error_count} error(s)`);
                         statusEl.className = 'small text-warning';
                     }
                 } else {
                     wbToast('Custom rules saved', 'success');
                     if (statusEl) {
-                        statusEl.innerHTML = '';
+                        clearChildren(statusEl);
                         statusEl.className = 'small text-muted';
                     }
                 }
             } catch (e) {
                 wbToast('Failed to save custom rules: ' + e.message, 'danger');
                 if (statusEl) {
-                    statusEl.innerHTML = '<span class="material-icons align-middle text-danger icon-sm">error</span> Failed';
+                    renderStatusMessage(statusEl, 'error', 'text-danger', 'Failed');
                     statusEl.className = 'small text-danger';
                 }
                 // Also update rule count from textarea to reflect actual state
@@ -2395,6 +2449,8 @@ async function refreshCertificates() {
             clearTimeout(wgSettingsSaveTimeout);
             clearTimeout(blocklistSaveTimeout);
             clearTimeout(dnsConfigSaveTimeout);
+            cancelRebuildPoll();
+            pageAbortController.abort();
         });
 
         // Initialize tabs on page load (await to ensure settings are loaded before user interaction)
@@ -2710,9 +2766,9 @@ async function refreshCertificates() {
             let stopped = false;
 
             const checkInterval = setInterval(async () => {
-                if (stopped) return;
+                if (stopped || pageAbortController.signal.aborted || document.visibilityState === 'hidden') return;
                 try {
-                    const resp = await fetch('/health', { cache: 'no-store' });
+                    const resp = await fetch('/health', { cache: 'no-store', signal: pageAbortController.signal });
                     if (resp.ok) {
                         stopped = true;
                         clearInterval(checkInterval);
@@ -2788,4 +2844,11 @@ async function refreshCertificates() {
         bindBackupListeners();
         loadBackupSettings();
 
-    }) ();
+    } catch (error) {
+        console.error('Failed to initialize settings page:', error);
+        wbToast('Failed to initialize settings page. Please refresh the page.', 'danger');
+
+}
+
+}
+

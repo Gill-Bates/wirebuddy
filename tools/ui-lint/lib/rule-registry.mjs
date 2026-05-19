@@ -3,298 +3,134 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-// Rule registry system for modular lint rules.
-// Each rule is isolated and can be run independently.
-//
+import {
+    RuleBuilder,
+    createRuleRegistryState,
+    registerRuleWithState,
+    unregisterRuleWithState,
+    getRuleWithState,
+    getAllRulesWithState,
+    getRuleCatalogWithState,
+    getRuleMetadataWithState,
+    getRulesByCategoryWithState,
+    getCategoriesWithState,
+    getRulesByCapabilityWithState,
+    getRulesByOwnerWithState,
+    createExecutionGraphWithState,
+    createContextWithState,
+    runRuleWithState,
+    runRulesWithState,
+    runCategoryWithState,
+    runAllRulesWithState,
+    exportRegistryWithState,
+    registerPluginWithState,
+    getRuleTelemetryWithState,
+    getRuleHealthWithState,
+    whyDidRuleFail,
+} from './rule-orchestration/index.mjs';
 
-/**
- * @typedef {Object} RuleContext
- * @property {Object} snapshot - DOM snapshot with elements, styles, rects
- * @property {Object} tokens - Design tokens from CSS
- * @property {Object} page - Playwright page object
- * @property {string} scope - View scope (e.g., 'dashboard', 'settings')
- * @property {Object} options - Rule-specific options
- */
+const registryState = createRuleRegistryState();
 
-/**
- * @typedef {Object} RuleFinding
- * @property {string} rule - Rule identifier
- * @property {string} severity - 'error' | 'warning' | 'info'
- * @property {string} message - Human-readable message
- * @property {string} [selector] - CSS selector or element identifier
- * @property {Object} [details] - Additional context
- */
+export { RuleBuilder };
 
-/**
- * @typedef {Object} Rule
- * @property {string} id - Unique rule identifier
- * @property {string} name - Human-readable name
- * @property {string} category - Rule category (accessibility, layout, mobile, etc.)
- * @property {string} description - What the rule checks
- * @property {Function} run - Async function (context) => RuleFinding[]
- */
-
-const rules = new Map();
-const categories = new Set();
-const ruleCatalog = new Map();
-
-function normalizeArray(value) {
-    return Array.isArray(value) ? value.filter(Boolean) : [];
-}
-
-function normalizeRuleMeta(rule) {
-    const meta = rule.meta || {};
-    return {
-        id: meta.id || rule.id,
-        category: meta.category || rule.category || null,
-        severity: meta.severity || null,
-        browsers: normalizeArray(meta.browsers),
-        devices: normalizeArray(meta.devices),
-        requires: normalizeArray(meta.requires),
-        optional: normalizeArray(meta.optional),
-        capabilities: normalizeArray(meta.capabilities),
-        performanceCost: meta.performanceCost || 'medium',
-        tags: normalizeArray(meta.tags),
-        executionMode: meta.executionMode || 'parallel',
-        severityByBrowser: meta.severityByBrowser || {},
-    };
-}
-
-/**
- * Register a lint rule.
- * @param {Rule} rule
- */
 export function registerRule(rule) {
-    if (!rule.id || !rule.run) {
-        throw new Error('Rule must have id and run function');
-    }
-    rule.meta = normalizeRuleMeta(rule);
-    rules.set(rule.id, rule);
-    ruleCatalog.set(rule.id, rule.meta);
-    if (rule.category) {
-        categories.add(rule.category);
-    }
+    return registerRuleWithState(registryState, rule);
 }
 
-/**
- * Get a rule by ID.
- * @param {string} id
- * @returns {Rule|undefined}
- */
+export function unregisterRule(ruleId) {
+    return unregisterRuleWithState(registryState, ruleId);
+}
+
+export function registerPlugin(plugin) {
+    return registerPluginWithState(registryState, plugin);
+}
+
 export function getRule(id) {
-    return rules.get(id);
+    return getRuleWithState(registryState, id);
 }
 
-/**
- * Get all registered rules.
- * @returns {Rule[]}
- */
 export function getAllRules() {
-    return Array.from(rules.values());
+    return getAllRulesWithState(registryState);
 }
 
-/**
- * Get the registered rule catalog.
- * @returns {Object[]}
- */
 export function getRuleCatalog() {
-    return Array.from(ruleCatalog.values());
+    return getRuleCatalogWithState(registryState);
 }
 
-/**
- * Get metadata for a single rule.
- * @param {string} id
- * @returns {Object|undefined}
- */
 export function getRuleMetadata(id) {
-    return ruleCatalog.get(id);
+    return getRuleMetadataWithState(registryState, id);
 }
 
-/**
- * Get rules by category.
- * @param {string} category
- * @returns {Rule[]}
- */
 export function getRulesByCategory(category) {
-    return Array.from(rules.values()).filter(r => r.category === category);
+    return getRulesByCategoryWithState(registryState, category);
 }
 
-/**
- * Get all categories.
- * @returns {string[]}
- */
 export function getCategories() {
-    return Array.from(categories);
+    return getCategoriesWithState(registryState);
 }
 
-/**
- * Run a single rule.
- * @param {string} ruleId
- * @param {RuleContext} context
- * @returns {Promise<RuleFinding[]>}
- */
-export async function runRule(ruleId, context) {
-    const rule = rules.get(ruleId);
-    if (!rule) {
-        throw new Error(`Rule not found: ${ruleId}`);
-    }
-
-    try {
-        const findings = await rule.run(context);
-        return findings.map(f => ({
-            ...f,
-            rule: rule.id,
-        }));
-    } catch (err) {
-        console.error(`Rule ${ruleId} failed:`, err.message);
-        return [{
-            rule: ruleId,
-            severity: 'error',
-            message: `Rule execution failed: ${err.message}`,
-        }];
-    }
+export function getRulesByCapability(capability) {
+    return getRulesByCapabilityWithState(registryState, capability);
 }
 
-/**
- * Run multiple rules in parallel.
- * @param {string[]} ruleIds
- * @param {RuleContext} context
- * @returns {Promise<RuleFinding[]>}
- */
-export async function runRules(ruleIds, context) {
-    const results = await Promise.all(
-        ruleIds.map(id => runRule(id, context))
-    );
-    return results.flat();
+export function getRulesByOwner(owner) {
+    return getRulesByOwnerWithState(registryState, owner);
 }
 
-/**
- * Run all rules in a category.
- * @param {string} category
- * @param {RuleContext} context
- * @returns {Promise<RuleFinding[]>}
- */
-export async function runCategory(category, context) {
-    const categoryRules = getRulesByCategory(category);
-    const ruleIds = categoryRules.map(r => r.id);
-    return runRules(ruleIds, context);
+export function getExecutionGraph(ruleIds, context) {
+    return createExecutionGraphWithState(registryState, ruleIds, context);
 }
 
-/**
- * Run all registered rules.
- * @param {RuleContext} context
- * @returns {Promise<RuleFinding[]>}
- */
-export async function runAllRules(context) {
-    const ruleIds = Array.from(rules.keys());
-    return runRules(ruleIds, context);
-}
-
-/**
- * Create a rule context from page and tokens.
- * @param {Object} options
- * @param {Object} options.page - Playwright page
- * @param {Object} options.snapshot - DOM snapshot
- * @param {Object} options.tokens - Design tokens
- * @param {string} options.scope - View scope
- * @returns {RuleContext}
- */
 export function createContext({ page, snapshot, tokens, scope, options = {} }) {
-    return {
-        page,
-        snapshot,
-        tokens,
-        scope,
-        options,
-    };
+    return createContextWithState(registryState, { page, snapshot, tokens, scope, options });
 }
 
-/**
- * Rule builder helper for common patterns.
- */
-export const RuleBuilder = {
-    /**
-     * Create an accessibility rule.
-     * @param {string} id
-     * @param {string} name
-     * @param {Function} run
-     * @returns {Rule}
-     */
-    accessibility(id, name, run) {
-        return {
-            id,
-            name,
-            category: 'accessibility',
-            description: `Accessibility check: ${name}`,
-            run,
-        };
-    },
+export async function runRule(ruleId, context) {
+    return runRuleWithState(registryState, ruleId, context);
+}
 
-    /**
-     * Create a layout rule.
-     * @param {string} id
-     * @param {string} name
-     * @param {Function} run
-     * @returns {Rule}
-     */
-    layout(id, name, run) {
-        return {
-            id,
-            name,
-            category: 'layout',
-            description: `Layout check: ${name}`,
-            run,
-        };
-    },
+export async function runRules(ruleIds, context) {
+    return runRulesWithState(registryState, ruleIds, context);
+}
 
-    /**
-     * Create a mobile rule.
-     * @param {string} id
-     * @param {string} name
-     * @param {Function} run
-     * @returns {Rule}
-     */
-    mobile(id, name, run) {
-        return {
-            id,
-            name,
-            category: 'mobile',
-            description: `Mobile/iOS check: ${name}`,
-            run,
-        };
-    },
+export async function runCategory(category, context) {
+    return runCategoryWithState(registryState, category, context);
+}
 
-    /**
-     * Create a component rule.
-     * @param {string} id
-     * @param {string} name
-     * @param {Function} run
-     * @returns {Rule}
-     */
-    component(id, name, run) {
-        return {
-            id,
-            name,
-            category: 'component',
-            description: `Component check: ${name}`,
-            run,
-        };
-    },
+export async function runAllRules(context) {
+    return runAllRulesWithState(registryState, context);
+}
 
-    /**
-     * Create a performance rule.
-     * @param {string} id
-     * @param {string} name
-     * @param {Function} run
-     * @returns {Rule}
-     */
-    performance(id, name, run) {
+export function getRuleTelemetry(ruleId) {
+    return getRuleTelemetryWithState(registryState, ruleId);
+}
+
+export function getRuleHealth(ruleId) {
+    return getRuleHealthWithState(registryState, ruleId);
+}
+
+export function exportRegistry() {
+    return exportRegistryWithState(registryState);
+}
+
+export function explainRuleFailure(ruleId, context, findings = []) {
+    const rule = getRuleWithState(registryState, ruleId);
+    if (!rule) {
         return {
-            id,
-            name,
-            category: 'performance',
-            description: `Performance check: ${name}`,
-            run,
+            ruleId,
+            found: false,
+            explanation: `Rule not found: ${ruleId}`,
         };
-    },
-};
+    }
+
+    const telemetry = getRuleTelemetryWithState(registryState, ruleId) || {
+        lastDurationMs: 0,
+        pageEvaluations: 0,
+        domReads: 0,
+        health: 'stable',
+        failureRate: 0,
+    };
+    return whyDidRuleFail(rule, findings, telemetry, context);
+}
+
+export { whyDidRuleFail };

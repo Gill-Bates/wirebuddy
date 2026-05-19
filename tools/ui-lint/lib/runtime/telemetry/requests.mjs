@@ -7,6 +7,6 @@ export function createRequestTimeline() {
     return {
         items: [],
         byId: new Map(),
-        nextId: 1,
+        nextId: 0,
     };
 }
