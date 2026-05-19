@@ -100,7 +100,9 @@ export async function collectDOMSnapshot(page, options = {}) {
                 disabled: el.disabled || el.getAttribute('aria-disabled') === 'true',
                 role: el.getAttribute('role'),
                 ariaLabel: el.getAttribute('aria-label'),
+                ariaHidden: el.getAttribute('aria-hidden'),
                 ariaDescribedby: el.getAttribute('aria-describedby'),
+                inert: el.hasAttribute('inert'),
                 tabIndex: el.tabIndex,
                 text: el.textContent?.trim().slice(0, 100) || '',
                 scrollHeight: el.scrollHeight,
@@ -156,6 +158,12 @@ export async function collectDOMSnapshot(page, options = {}) {
                 // Add semantic attributes
                 dataUi: el.getAttribute('data-ui'),
                 dataUiRole: el.getAttribute('data-ui-role'),
+                dataUiComponent: el.getAttribute('data-ui-component'),
+                dataUiDensity: el.getAttribute('data-ui-density'),
+                dataUiImportance: el.getAttribute('data-ui-importance'),
+                dataAction: el.getAttribute('data-action'),
+                dataPeerId: el.getAttribute('data-peer-id'),
+                dataNodeId: el.getAttribute('data-node-id'),
             };
         };
 

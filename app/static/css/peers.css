@@ -109,9 +109,9 @@
     }
 
     .peer-card-action-btn {
-        min-width: 38px;
-        min-height: 38px;
-        padding: 0.2rem 0.35rem;
+        min-width: var(--wb-touch-target-min);
+        min-height: var(--wb-touch-target-min);
+        padding: 0.25rem 0.5rem;
         display: inline-flex;
         align-items: center;
         justify-content: center;

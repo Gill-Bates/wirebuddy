@@ -148,12 +148,15 @@
                                 <span class="badge bg-secondary peer-enabled-badge" role="status">Disabled</span>
                                 {% endif %}
                             </td>
-                            <td class="peer-actions-cell">
-                                <div class="d-flex gap-1 justify-content-end">
+                            <td class="peer-actions-cell" data-ui-component="peer-actions" data-ui-density="compact">
+                                <div class="d-flex gap-1 justify-content-end" data-ui-component="peer-actions" data-ui-density="compact">
                                     {% if not peer['is_node_tunnel'] %}
                                     {% if user['is_admin'] %}
                                     <button type="button" class="btn btn-sm btn-outline-secondary" data-action="show-qr"
                                         data-peer-id="{{ peer['id'] }}"
+                                        data-ui-component="peer-actions"
+                                        data-ui-density="compact"
+                                        data-ui-importance="secondary"
                                         aria-label="Show QR code for {{ peer['name'] or 'peer' }}" data-bs-toggle="tooltip"
                                         data-bs-title="Show QR Code">
                                         <span class="material-icons" aria-hidden="true">qr_code</span>
@@ -169,6 +172,9 @@
                                     {% if user['is_admin'] %}
                                     <button type="button" class="btn btn-sm btn-outline-secondary"
                                         data-action="download-config" data-peer-id="{{ peer['id'] }}"
+                                        data-ui-component="peer-actions"
+                                        data-ui-density="compact"
+                                        data-ui-importance="secondary"
                                         aria-label="Download config for {{ peer['name'] or 'peer' }}"
                                         data-bs-toggle="tooltip" data-bs-title="Download Config">
                                         <span class="material-icons" aria-hidden="true">download</span>
@@ -184,11 +190,17 @@
                                     {% if user['is_admin'] %}
                                     <button type="button" class="btn btn-sm btn-outline-secondary" data-action="edit-peer"
                                         data-peer-id="{{ peer['id'] }}" aria-label="Edit {{ peer['name'] or 'peer' }}"
+                                        data-ui-component="peer-actions"
+                                        data-ui-density="compact"
+                                        data-ui-importance="secondary"
                                         data-bs-toggle="tooltip" data-bs-title="Edit Peer">
                                         <span class="material-icons" aria-hidden="true">edit</span>
                                     </button>
                                     <button type="button" class="btn btn-sm btn-outline-danger" data-action="delete-peer"
                                         data-peer-id="{{ peer['id'] }}" aria-label="Delete {{ peer['name'] or 'peer' }}"
+                                        data-ui-component="peer-actions"
+                                        data-ui-density="compact"
+                                        data-ui-importance="primary"
                                         data-bs-toggle="tooltip" data-bs-title="Delete Peer">
                                         <span class="material-icons" aria-hidden="true">delete</span>
                                     </button>
@@ -263,16 +275,18 @@
                         </div>
                     </div>
 
-                    <div class="peer-card-actions">
+                    <div class="peer-card-actions" data-ui-component="peer-actions" data-ui-density="compact">
                         {% if not peer['is_node_tunnel'] %}
                         {% if user['is_admin'] %}
                         <button type="button" class="btn btn-sm btn-outline-secondary peer-card-action-btn" data-action="show-qr"
                             data-peer-id="{{ peer['id'] }}" aria-label="Show QR code for {{ peer['name'] or 'peer' }}"
+                            data-ui-component="peer-actions" data-ui-density="compact" data-ui-importance="secondary"
                             data-bs-toggle="tooltip" data-bs-title="Show QR Code">
                             <span class="material-icons" aria-hidden="true">qr_code</span>
                         </button>
                         <button type="button" class="btn btn-sm btn-outline-secondary peer-card-action-btn" data-action="download-config"
                             data-peer-id="{{ peer['id'] }}" aria-label="Download config for {{ peer['name'] or 'peer' }}"
+                            data-ui-component="peer-actions" data-ui-density="compact" data-ui-importance="secondary"
                             data-bs-toggle="tooltip" data-bs-title="Download Config">
                             <span class="material-icons" aria-hidden="true">download</span>
                         </button>

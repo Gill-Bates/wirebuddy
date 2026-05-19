@@ -329,9 +329,9 @@
     }
 
     .node-action-btn {
-        /* Maintain 38px touch targets on mobile (UI-Lint compliance) */
-        min-width: 38px;
-        min-height: 38px;
-        padding: 0.2rem 0.35rem;
+        /* Maintain 44px touch targets on mobile (UI-Lint compliance) */
+        min-width: var(--wb-touch-target-min);
+        min-height: var(--wb-touch-target-min);
+        padding: 0.25rem 0.5rem;
     }
 }

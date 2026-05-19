@@ -7,6 +7,32 @@
 //
 
 import { registerRule, RuleBuilder } from '../../lib/rule-registry.mjs';
+import {
+    buildInteractionSelector,
+    getDensityMultiplier,
+    getInteractionDensity,
+    getInteractionImportance,
+    getViewportAwareTouchTarget,
+    groupInteractionViolations,
+    inspectInteractionTargets,
+} from '../../lib/interaction-utils.mjs';
+
+export const meta = {
+    id: 'click-targets',
+    category: 'accessibility',
+    severity: 'warning',
+    browsers: ['chromium', 'webkit', 'firefox'],
+    devices: ['desktop', 'tablet', 'mobile'],
+    requires: ['dom-snapshot', 'interaction'],
+    optional: ['viewport'],
+    capabilities: ['dom', 'interaction'],
+    performanceCost: 'high',
+    tags: ['a11y', 'interaction', 'mobile'],
+    executionMode: 'serial',
+    severityByBrowser: {
+        webkit: 'serious',
+    },
+};
 
 /**
  * Selectors that should meet minimum click target size.
@@ -29,9 +55,7 @@ const COMPACT_CONTROL_EXCEPTIONS = [
     '.leaflet-control-zoom a',
     '.leaflet-bar a',
     '.form-select-sm',
-    '.btn-sm',
     '.btn-close',
-    '.dropdown-item',
 ];
 
 /**
@@ -64,45 +88,114 @@ const clickTargetRule = RuleBuilder.accessibility(
     'click-targets',
     'Minimum click target size',
     async (context) => {
-        const { snapshot, tokens } = context;
+        const { page, snapshot, tokens } = context;
         const findings = [];
 
-        const minSize = tokens.interaction.touchTargetMin;
+        const viewport = page.viewportSize() || {
+            width: 1440,
+            height: 1100,
+        };
+        const baseMinSize = getViewportAwareTouchTarget(tokens, viewport);
 
         // Check interactive elements
+        const targets = [];
         for (const el of snapshot.collections.interactive) {
             // Skip exceptions
             if (isInlineLink(el)) continue;
             if (isCompactException(el)) continue;
             if (el.disabled) continue;
 
-            const { width, height } = el.rect;
+            const selector = buildInteractionSelector(el);
+            if (!selector) continue;
 
-            // Check minimum dimensions
-            if (width < minSize || height < minSize) {
-                const smaller = Math.min(width, height);
-
-                // Only report if significantly smaller
-                if (smaller < minSize - 4) {
-                    findings.push({
-                        severity: smaller < minSize - 10 ? 'error' : 'warning',
-                        message: `Click target too small: ${width}x${height}px (minimum: ${minSize}px)`,
-                        selector: el.id ? `#${el.id}` : `.${el.classList?.join('.')}`,
-                        details: {
-                            tag: el.tag,
-                            width,
-                            height,
-                            required: minSize,
-                            text: el.text?.slice(0, 30),
-                        },
-                    });
-                }
-            }
+            targets.push({
+                selector,
+                tag: el.tag,
+                id: el.id,
+                classList: el.classList,
+                role: el.role,
+                ariaLabel: el.ariaLabel,
+                dataAction: el.dataAction,
+                dataUiComponent: el.dataUiComponent,
+                dataUiDensity: el.dataUiDensity,
+                dataUiImportance: el.dataUiImportance,
+                dataUiRole: el.dataUiRole,
+                dataPeerId: el.dataPeerId,
+                dataNodeId: el.dataNodeId,
+                rect: el.rect,
+            });
         }
 
-        return findings;
+        const inspectedTargets = await inspectInteractionTargets(page, targets);
+
+        for (const target of inspectedTargets) {
+            if (!target.exists) continue;
+
+            const density = getInteractionDensity(target);
+            const importance = getInteractionImportance(target);
+            const required = Math.round(baseMinSize * getDensityMultiplier(density));
+            const { width, height } = target;
+            const smaller = Math.min(width, height);
+            const tooSmall = smaller < required - 4;
+            const interactionFailure = !target.clickable || target.occluded || target.pointerEvents === 'none' || target.hidden || target.disabled || target.inert;
+
+            if (!tooSmall && !interactionFailure) continue;
+
+            const severity = interactionFailure || importance === 'primary' || smaller < required - 10 ? 'error' : 'warning';
+            const kind = interactionFailure ? 'click-target-occluded' : 'click-target-too-small';
+
+            findings.push({
+                severity,
+                kind,
+                message: interactionFailure
+                    ? `${target.component || 'UI'} control is not actually clickable`
+                    : `Click target too small: ${width}x${height}px (minimum: ${required}px)`,
+                selector: target.selector,
+                details: {
+                    tag: target.tag,
+                    component: target.component || target.dataUiComponent || null,
+                    density,
+                    importance,
+                    width,
+                    height,
+                    required,
+                    clickable: target.clickable,
+                    occluded: target.occluded,
+                    pointerEvents: target.pointerEvents,
+                    viewport: viewport.width ? (viewport.width < 768 ? 'mobile' : viewport.width < 992 ? 'tablet' : 'desktop') : 'desktop',
+                    text: target.text?.slice(0, 30),
+                    target,
+                },
+            });
+        }
+
+        return groupInteractionViolations(findings).map((group) => ({
+            severity: group.severity,
+            kind: group.kind,
+            message: group.message,
+            selector: group.selector,
+            count: group.count,
+            details: {
+                count: group.count,
+                component: group.component || null,
+                density: group.density || null,
+                importance: group.importance || null,
+                viewport: group.viewport || null,
+                clickable: group.clickable,
+                occluded: group.occluded,
+                hidden: group.hidden,
+                disabled: group.disabled,
+                inert: group.inert,
+                width: group.width,
+                height: group.height,
+                required: group.required,
+                items: group.items,
+            },
+        }));
     }
 );
+
+clickTargetRule.meta = meta;
 
 registerRule(clickTargetRule);
 

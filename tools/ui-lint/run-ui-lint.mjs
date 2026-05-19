@@ -103,7 +103,9 @@ import {
     installPerformanceObservers,
     runAxeAudit,
     scoreConsoleSeverity,
-} from './lib/audit-helpers.mjs';
+} from './lib/orchestration/audit-runner.mjs';
+import { correlateConsoleEntries } from './lib/dom-health.mjs';
+import { buildUIHealthReport } from './lib/ui-health-score.mjs';
 import { LOGIN_FAILURE_VIEWS, VIEWS } from './lib/views.mjs';
 
 const BASE_URL = process.env.UI_LINT_BASE_URL || 'http://localhost:8000';
@@ -3593,6 +3595,12 @@ async function auditView(page, view) {
         // Filter console noise and compute severity
         network.consoleEntriesRaw = [...network.consoleEntries];
         network.consoleEntries = filterConsoleEntries(network.consoleEntries);
+        network.consoleEntries = correlateConsoleEntries(network.consoleEntries, metrics, {
+            route: view.url,
+            component: view.scope,
+            browser: browserName,
+            scope: view.scope,
+        });
         network.consoleSeverity = scoreConsoleSeverity(network.consoleEntries);
         if (statusUnavailableExpected) {
             network.consoleEntries = network.consoleEntries.filter((entry) => {
@@ -3619,6 +3627,15 @@ async function auditView(page, view) {
             findings: [],
             screenshots: { ...shots, diffPath: diff.diffPath },
             kpiShots,
+            uiHealth: buildUIHealthReport({
+                name: view.name,
+                url: page.url(),
+                browser: browserName,
+                scope: view.scope,
+                metrics,
+                diff,
+                network,
+            }),
         };
     } finally {
         // Always detach network listeners to prevent memory leaks
@@ -3669,9 +3686,18 @@ async function auditLoginFailureView(page, view) {
             screenshotDir: SCREENSHOT_DIR,
         });
         network = detachNetwork();
+        network.consoleEntriesRaw = [...network.consoleEntries];
+        network.consoleEntries = filterConsoleEntries(network.consoleEntries);
         network.consoleEntries = network.consoleEntries.filter((entry) =>
             !(loginResponse.status() === 401 && entry.text.includes('401 (Unauthorized)'))
         );
+        network.consoleEntries = correlateConsoleEntries(network.consoleEntries, metrics, {
+            route: view.url,
+            component: view.scope,
+            browser: browserName,
+            scope: view.scope,
+        });
+        network.consoleSeverity = scoreConsoleSeverity(network.consoleEntries);
         network.requestFailures = network.requestFailures.filter((entry) => entry.error !== 'net::ERR_ABORTED');
         network.badResponses = network.badResponses.filter((entry) => {
             try {
@@ -3692,6 +3718,15 @@ async function auditLoginFailureView(page, view) {
             screenshots: { ...shots, diffPath: diff.diffPath },
             kpiShots,
             loginResponseStatus: loginResponse.status(),
+            uiHealth: buildUIHealthReport({
+                name: view.name,
+                url: page.url(),
+                browser: browserName,
+                scope: view.scope,
+                metrics,
+                diff,
+                network,
+            }),
         };
     } finally {
         // Always detach network listeners to prevent memory leaks
@@ -3776,6 +3811,7 @@ async function main() {
                     result.findings = summarized.findings;
                     result.hardFindings = summarized.hardFindings;
                     result.warnings = summarized.warnings;
+                    result.uiHealth = buildUIHealthReport(result);
                     results.push(result);
                 } catch (err) {
                     console.error(`[${browserName}/${view.name}] Audit failed: ${err.message}`);
@@ -3791,6 +3827,7 @@ async function main() {
                         diff: { ratio: 0, sizeMismatch: false },
                         metrics: {},
                         network: { consoleEntries: [], pageErrors: [], requestFailures: [], badResponses: [], requests: [], duplicateRequests: [] },
+                        uiHealth: null,
                     });
                 }
             }
@@ -3843,6 +3880,7 @@ async function main() {
                                 diff: { ratio: 0, sizeMismatch: false },
                                 metrics: {},
                                 network: { consoleEntries: [], pageErrors: [], requestFailures: [], badResponses: [], requests: [], duplicateRequests: [] },
+                                uiHealth: null,
                             };
                             break;
                         }
@@ -3858,6 +3896,7 @@ async function main() {
                     result.findings = summarized.findings;
                     result.hardFindings = summarized.hardFindings;
                     result.warnings = summarized.warnings;
+                    result.uiHealth = buildUIHealthReport(result);
                     results.push(result);
                 }
             }
@@ -4013,6 +4052,13 @@ async function main() {
             consoleSeverityScore: result.network?.consoleSeverity?.score || 0,
             consoleCritical: result.network?.consoleSeverity?.critical?.length || 0,
             consoleSerious: result.network?.consoleSeverity?.serious?.length || 0,
+            uiHealthScore: result.uiHealth?.score ?? null,
+            uiHealthSeverity: result.uiHealth?.severity ?? null,
+            uiHealthCritical: result.uiHealth?.ux?.critical ?? 0,
+            uiHealthSerious: result.uiHealth?.ux?.serious ?? 0,
+            uiHealthMinor: result.uiHealth?.ux?.minor ?? 0,
+            uiHealthRoute: result.uiHealth?.route ?? null,
+            uiHealthComponent: result.uiHealth?.component ?? null,
 
             summaryPath: SUMMARY_PATH,
         }));
@@ -4020,7 +4066,9 @@ async function main() {
     console.log('UI_LINT_END');
 
     const hasHardFindings = results.some((result) => (result.hardFindings || []).length > 0);
-    process.exitCode = hasHardFindings ? 1 : 0;
+    const healthGateMin = Number(process.env.UI_LINT_HEALTH_MIN || '0');
+    const hasHealthGateFailure = healthGateMin > 0 && results.some((result) => (result.uiHealth?.score ?? 100) < healthGateMin);
+    process.exitCode = hasHardFindings || hasHealthGateFailure ? 1 : 0;
 }
 
 main().catch((error) => {

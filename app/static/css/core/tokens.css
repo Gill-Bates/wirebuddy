@@ -106,6 +106,9 @@
    * ============================================ */
   --wb-touch-target-min: 44px;
   /* WCAG minimum */
+  --wb-touch-target-min-mobile: 44px;
+  --wb-touch-target-min-tablet: 40px;
+  --wb-touch-target-min-desktop: 32px;
   --wb-touch-target-comfortable: 48px;
   /* Recommended */
   --wb-focus-ring-width: 3px;

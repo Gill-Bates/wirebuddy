@@ -694,6 +694,9 @@
         button.dataset.action = action;
         button.dataset.nodeId = String(nodeId || '');
         button.dataset.nodeName = nodeName;
+        button.dataset.uiComponent = 'node-actions';
+        button.dataset.uiDensity = 'compact';
+        button.dataset.uiImportance = danger || action.startsWith('restart') || action.startsWith('delete') ? 'primary' : 'secondary';
         for (const [key, value] of Object.entries(extraData)) {
             if (value != null) button.dataset[key] = String(value);
         }
@@ -726,6 +729,9 @@
         button.dataset.action = action;
         button.dataset.nodeId = String(nodeId || '');
         button.dataset.nodeName = nodeName;
+        button.dataset.uiComponent = 'node-actions';
+        button.dataset.uiDensity = 'compact';
+        button.dataset.uiImportance = danger ? 'primary' : 'secondary';
         for (const [key, value] of Object.entries(extraData)) {
             if (value != null) button.dataset[key] = String(value);
         }
@@ -748,6 +754,8 @@
     function createNodeActionsDropdown(node) {
         const wrapper = document.createElement('div');
         wrapper.className = 'dropdown node-actions-more d-md-none';
+        wrapper.dataset.uiComponent = 'node-actions';
+        wrapper.dataset.uiDensity = 'compact';
 
         const trigger = createActionButton({
             action: 'open-node-actions',
@@ -942,8 +950,12 @@
         const tdActions = document.createElement('td');
         tdActions.setAttribute('data-label', 'Actions');
         tdActions.className = 'text-end node-actions-cell';
+        tdActions.dataset.uiComponent = 'node-actions';
+        tdActions.dataset.uiDensity = 'compact';
         const actionsDiv = document.createElement('div');
         actionsDiv.className = 'd-flex gap-1 justify-content-end';
+        actionsDiv.dataset.uiComponent = 'node-actions';
+        actionsDiv.dataset.uiDensity = 'compact';
 
         const isOnline = node.status === 'online';
 

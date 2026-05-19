@@ -129,13 +129,16 @@
                         <td data-label="Last Seen" class="node-last-seen text-nowrap">
                             <span class="{{ node.last_seen_class }}">{{ node.last_seen_text }}</span>
                         </td>
-                        <td data-label="Actions" class="text-end node-actions-cell">
-                            <div class="d-flex gap-1 justify-content-end">
+                        <td data-label="Actions" class="text-end node-actions-cell" data-ui-component="node-actions" data-ui-density="compact">
+                            <div class="d-flex gap-1 justify-content-end" data-ui-component="node-actions" data-ui-density="compact">
                                 <button type="button"
                                         class="btn btn-sm btn-outline-secondary node-action-btn"
                                         data-action="restart-node"
                                         data-node-id="{{ node.id }}"
                                         data-node-name="{{ node.name }}"
+                                        data-ui-component="node-actions"
+                                        data-ui-density="compact"
+                                        data-ui-importance="primary"
                                         data-node-status="{{ node.status }}"
                                         aria-label="Restart {{ node.name }}"
                                         data-bs-toggle="tooltip"
@@ -148,6 +151,9 @@
                                         data-action="run-speedtest"
                                         data-node-id="{{ node.id }}"
                                         data-node-name="{{ node.name }}"
+                                    data-ui-component="node-actions"
+                                    data-ui-density="compact"
+                                    data-ui-importance="secondary"
                                         data-node-status="{{ node.status }}"
                                         aria-label="Run speedtest on {{ node.name }}"
                                         data-bs-toggle="tooltip"
@@ -155,7 +161,7 @@
                                         {% if node.status != 'online' %}disabled{% endif %}>
                                     <span class="material-icons icon-md" aria-hidden="true">speed</span>
                                 </button>
-                                <div class="dropdown node-actions-more d-md-none">
+                                <div class="dropdown node-actions-more d-md-none" data-ui-component="node-actions" data-ui-density="compact">
                                     <button type="button"
                                             class="btn btn-sm btn-outline-secondary node-action-btn node-actions-more-toggle"
                                             data-bs-toggle="dropdown"
@@ -169,6 +175,9 @@
                                             data-action="regenerate-token"
                                             data-node-id="{{ node.id }}"
                                             data-node-name="{{ node.name }}"
+                                            data-ui-component="node-actions"
+                                            data-ui-density="compact"
+                                            data-ui-importance="secondary"
                                             aria-label="Regenerate token for {{ node.name }}">
                                         <span class="material-icons icon-md" aria-hidden="true">vpn_key</span>
                                         <span>Regenerate token</span>
@@ -181,6 +190,9 @@
                                             data-node-fqdn="{{ node.fqdn }}"
                                             data-node-port="{{ node.wg_port }}"
                                             data-node-show-on-dashboard="{{ 'true' if node.show_on_dashboard else 'false' }}"
+                                            data-ui-component="node-actions"
+                                            data-ui-density="compact"
+                                            data-ui-importance="secondary"
                                             aria-label="Edit {{ node.name }}">
                                         <span class="material-icons icon-md" aria-hidden="true">edit</span>
                                         <span>Edit node</span>
@@ -190,6 +202,9 @@
                                             data-action="delete-node"
                                             data-node-id="{{ node.id }}"
                                             data-node-name="{{ node.name }}"
+                                            data-ui-component="node-actions"
+                                            data-ui-density="compact"
+                                            data-ui-importance="primary"
                                             aria-label="Delete {{ node.name }}">
                                         <span class="material-icons icon-md" aria-hidden="true">delete</span>
                                         <span>Delete node</span>
@@ -201,6 +216,9 @@
                                         data-action="regenerate-token"
                                         data-node-id="{{ node.id }}"
                                         data-node-name="{{ node.name }}"
+                                    data-ui-component="node-actions"
+                                    data-ui-density="compact"
+                                    data-ui-importance="secondary"
                                         aria-label="Regenerate token for {{ node.name }}"
                                         data-bs-toggle="tooltip"
                                         data-bs-title="Regenerate Token">
@@ -214,6 +232,9 @@
                                         data-node-fqdn="{{ node.fqdn }}"
                                         data-node-port="{{ node.wg_port }}"
                                         data-node-show-on-dashboard="{{ 'true' if node.show_on_dashboard else 'false' }}"
+                                    data-ui-component="node-actions"
+                                    data-ui-density="compact"
+                                    data-ui-importance="secondary"
                                         aria-label="Edit {{ node.name }}"
                                         data-bs-toggle="tooltip"
                                         data-bs-title="Edit Node">
@@ -224,6 +245,9 @@
                                         data-action="delete-node"
                                         data-node-id="{{ node.id }}"
                                         data-node-name="{{ node.name }}"
+                                    data-ui-component="node-actions"
+                                    data-ui-density="compact"
+                                    data-ui-importance="primary"
                                         aria-label="Delete {{ node.name }}"
                                         data-bs-toggle="tooltip"
                                         data-bs-title="Delete Node">

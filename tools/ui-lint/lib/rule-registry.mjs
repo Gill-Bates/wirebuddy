@@ -36,6 +36,29 @@
 
 const rules = new Map();
 const categories = new Set();
+const ruleCatalog = new Map();
+
+function normalizeArray(value) {
+    return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function normalizeRuleMeta(rule) {
+    const meta = rule.meta || {};
+    return {
+        id: meta.id || rule.id,
+        category: meta.category || rule.category || null,
+        severity: meta.severity || null,
+        browsers: normalizeArray(meta.browsers),
+        devices: normalizeArray(meta.devices),
+        requires: normalizeArray(meta.requires),
+        optional: normalizeArray(meta.optional),
+        capabilities: normalizeArray(meta.capabilities),
+        performanceCost: meta.performanceCost || 'medium',
+        tags: normalizeArray(meta.tags),
+        executionMode: meta.executionMode || 'parallel',
+        severityByBrowser: meta.severityByBrowser || {},
+    };
+}
 
 /**
  * Register a lint rule.
@@ -45,7 +68,9 @@ export function registerRule(rule) {
     if (!rule.id || !rule.run) {
         throw new Error('Rule must have id and run function');
     }
+    rule.meta = normalizeRuleMeta(rule);
     rules.set(rule.id, rule);
+    ruleCatalog.set(rule.id, rule.meta);
     if (rule.category) {
         categories.add(rule.category);
     }
@@ -66,6 +91,23 @@ export function getRule(id) {
  */
 export function getAllRules() {
     return Array.from(rules.values());
+}
+
+/**
+ * Get the registered rule catalog.
+ * @returns {Object[]}
+ */
+export function getRuleCatalog() {
+    return Array.from(ruleCatalog.values());
+}
+
+/**
+ * Get metadata for a single rule.
+ * @param {string} id
+ * @returns {Object|undefined}
+ */
+export function getRuleMetadata(id) {
+    return ruleCatalog.get(id);
 }
 
 /**

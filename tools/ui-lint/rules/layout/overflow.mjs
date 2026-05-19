@@ -7,6 +7,27 @@
 //
 
 import { registerRule, RuleBuilder } from '../../lib/rule-registry.mjs';
+import {
+    classifyOverflowIssue,
+    collectOverflowDiagnostics,
+} from '../../lib/layout-diagnostics.mjs';
+
+export const meta = {
+    id: 'horizontal-overflow',
+    category: 'layout',
+    severity: 'warning',
+    browsers: ['chromium', 'webkit', 'firefox'],
+    devices: ['desktop', 'tablet', 'mobile'],
+    requires: ['dom-snapshot'],
+    optional: ['interaction'],
+    capabilities: ['dom'],
+    performanceCost: 'cheap',
+    tags: ['layout', 'responsive', 'scroll'],
+    executionMode: 'parallel',
+    severityByBrowser: {
+        webkit: 'serious',
+    },
+};
 
 /**
  * Elements that are allowed to have overflow.
@@ -28,57 +49,34 @@ const overflowRule = RuleBuilder.layout(
         const { page } = context;
         const findings = [];
 
-        const overflowIssues = await page.evaluate((allowedSelectors) => {
-            const issues = [];
-            const viewportWidth = window.innerWidth;
-            const TOLERANCE = 2; // px
+        const diagnostics = await page.evaluate(collectOverflowDiagnostics, {
+            allowedSelectors: OVERFLOW_ALLOWED,
+            tolerance: 2,
+            browser: context.browser || null,
+            scope: context.scope || null,
+        });
 
-            const isAllowed = (el) => {
-                for (const sel of allowedSelectors) {
-                    try {
-                        if (el.matches(sel) || el.closest(sel)) return true;
-                    } catch (e) { }
-                }
-                return false;
-            };
+        const viewport = page.viewportSize() || { width: 1440, height: 1100 };
 
-            const contentRoot = document.querySelector('main.main-content') || document.body;
-            const elements = contentRoot.querySelectorAll('*');
-
-            for (const el of elements) {
-                if (isAllowed(el)) continue;
-
-                const rect = el.getBoundingClientRect();
-
-                // Check if element extends beyond viewport
-                if (rect.right > viewportWidth + TOLERANCE) {
-                    const overflow = rect.right - viewportWidth;
-                    issues.push({
-                        tag: el.tagName,
-                        id: el.id || null,
-                        className: typeof el.className === 'string' ? el.className.slice(0, 100) : null,
-                        overflow: Math.round(overflow),
-                        width: Math.round(rect.width),
-                        viewportWidth,
-                    });
-                }
-            }
-
-            return issues.slice(0, 20); // Limit results
-        }, OVERFLOW_ALLOWED);
-
-        for (const issue of overflowIssues) {
-            findings.push({
-                severity: issue.overflow > 50 ? 'error' : 'warning',
-                message: `Element overflows viewport by ${issue.overflow}px`,
-                selector: issue.id ? `#${issue.id}` : issue.className ? `.${issue.className.split(' ')[0]}` : issue.tag,
-                details: issue,
+        for (const issue of diagnostics.issues) {
+            const finding = classifyOverflowIssue(issue, {
+                browser: context.browser || null,
+                component: context.component || context.scope || null,
+                scope: context.scope || null,
+                viewport,
+                tolerance: 2,
             });
+
+            if (!finding) continue;
+
+            findings.push(finding);
         }
 
         return findings;
     }
 );
+
+overflowRule.meta = meta;
 
 registerRule(overflowRule);
 

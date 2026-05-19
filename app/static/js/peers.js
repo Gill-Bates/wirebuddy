@@ -230,6 +230,9 @@ if (!peersApp) {
         btn.className = `btn btn-sm ${btnClass}`;
         btn.dataset.action = action;
         btn.dataset.peerId = String(peerId);
+        btn.dataset.uiComponent = options.uiComponent || 'peer-actions';
+        btn.dataset.uiDensity = options.uiDensity || 'compact';
+        btn.dataset.uiImportance = options.uiImportance || (action.startsWith('delete') ? 'primary' : 'secondary');
         btn.setAttribute('aria-label', label);
         btn.setAttribute('data-bs-toggle', 'tooltip');
         btn.setAttribute('data-bs-title', label);
@@ -251,6 +254,9 @@ if (!peersApp) {
         button.className = `dropdown-item d-flex align-items-center gap-2${danger ? ' text-danger' : ''}`;
         button.dataset.action = action;
         button.dataset.peerId = String(peerId);
+        button.dataset.uiComponent = 'peer-actions';
+        button.dataset.uiDensity = 'compact';
+        button.dataset.uiImportance = danger ? 'primary' : 'secondary';
         button.setAttribute('aria-label', label);
 
         const iconEl = document.createElement('span');
@@ -269,10 +275,15 @@ if (!peersApp) {
     function createPeerMoreActions(peer) {
         const wrapper = document.createElement('div');
         wrapper.className = 'dropdown peer-card-more-actions';
+        wrapper.dataset.uiComponent = 'peer-actions';
+        wrapper.dataset.uiDensity = 'compact';
 
         const toggle = document.createElement('button');
         toggle.type = 'button';
         toggle.className = 'btn btn-sm btn-outline-secondary peer-card-action-btn';
+        toggle.dataset.uiComponent = 'peer-actions';
+        toggle.dataset.uiDensity = 'compact';
+        toggle.dataset.uiImportance = 'tertiary';
         toggle.setAttribute('data-bs-toggle', 'dropdown');
         toggle.setAttribute('aria-expanded', 'false');
         toggle.setAttribute('aria-label', `More actions for ${peer.name || 'peer'}`);
@@ -564,8 +575,12 @@ if (!peersApp) {
 
         const tdActions = document.createElement('td');
         tdActions.className = 'peer-actions-cell';
+        tdActions.dataset.uiComponent = 'peer-actions';
+        tdActions.dataset.uiDensity = 'compact';
         const actionsDiv = document.createElement('div');
         actionsDiv.className = 'd-flex gap-1 justify-content-end';
+        actionsDiv.dataset.uiComponent = 'peer-actions';
+        actionsDiv.dataset.uiDensity = 'compact';
         if (isNodeTunnel) {
             const managedLabel = document.createElement('span');
             managedLabel.className = 'text-muted small';
@@ -681,6 +696,8 @@ if (!peersApp) {
 
         const actions = document.createElement('div');
         actions.className = 'peer-card-actions';
+        actions.dataset.uiComponent = 'peer-actions';
+        actions.dataset.uiDensity = 'compact';
         if (isNodeTunnel) {
             const managedLabel = document.createElement('span');
             managedLabel.className = 'text-muted small';
