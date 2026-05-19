@@ -1,0 +1,288 @@
+    :root {
+        --flag-width: 16px;
+        --flag-height: 12px;
+        --flag-gap: 8px;
+    }
+
+    .table td {
+        vertical-align: middle;
+    }
+    .node-status-badge {
+        min-width: 70px;
+        text-align: center;
+    }
+    
+    /* Node FQDN layout with inline location meta */
+    .node-fqdn-stack {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.15;
+    }
+
+    .node-fqdn-main {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--flag-gap);
+        flex-wrap: wrap;
+    }
+
+    .node-fqdn-main code {
+        color: var(--bs-secondary-color);
+        /* Prevent horizontal overflow for long domains (UI-Lint compliance) */
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        max-width: 100%;
+    }
+
+    .node-fqdn-meta {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+        font-size: .75rem;
+        color: var(--bs-secondary-color);
+        margin-left: calc(var(--flag-width) + var(--flag-gap));
+        margin-top: 0.25rem;
+        white-space: normal;
+    }
+
+    .node-fqdn-meta .node-meta-city,
+    .node-fqdn-meta .node-meta-provider {
+        display: inline;
+    }
+
+    .node-fqdn-meta .node-meta-provider {
+        display: inline-block;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: bottom;
+    }
+
+    .node-fqdn-meta .node-meta-separator {
+        opacity: 0.7;
+    }
+
+    .node-country-flag {
+        width: var(--flag-width);
+        height: var(--flag-height);
+        border-radius: 2px;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, .15);
+        object-fit: cover;
+        flex: 0 0 auto;
+    }
+
+    .nodes-empty-icon {
+        font-size: 3rem;
+    }
+
+    .enrollment-token-box {
+        font-family: var(--bs-font-monospace);
+        font-size: 0.75rem;
+        word-break: break-all;
+        max-height: 120px;
+        overflow-y: auto;
+        background: var(--bs-body-bg);
+        border: 1px solid var(--bs-border-color);
+        border-radius: 6px;
+        padding: 12px;
+    }
+    .node-actions-cell .d-flex {
+        flex-wrap: nowrap;
+        justify-content: flex-end;
+        gap: 4px;
+    }
+    
+    .node-actions-cell {
+        white-space: nowrap;
+        /* Ensure enough space for 5 buttons (5 × 38px + 4 × 4px gap = 206px) */
+        min-width: 210px;
+    }
+    /* Compact square action buttons: 38px touch target, icon-only */
+    .node-action-btn {
+        /* Accessibility: 38px touch target (UI-Lint CLICK_TARGET_MIN_SIZE_PX) */
+        min-width: 38px;
+        min-height: 38px;
+        padding: 0.2rem 0.35rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+    }
+
+    .node-action-btn .material-icons {
+        font-size: 18px;
+        pointer-events: none;
+    }
+
+    .wb-step-hidden {
+        display: none !important;
+    }
+
+    @media (min-width: 768px) and (max-width: 1799.98px) {
+        .node-actions-cell {
+            white-space: normal;
+            min-width: 122px;
+        }
+
+        .node-actions-cell .d-flex {
+            flex-wrap: wrap;
+        }
+    }
+
+    .nodes-copy-btn .material-icons,
+    .nodes-primary-trigger .material-icons {
+        pointer-events: none;
+    }
+
+    @media (max-width: 991.98px) {
+        /* Hide Port column on tablet */
+        .nodes-table th[data-label="Port"],
+        .nodes-table td[data-label="Port"] {
+            display: none;
+        }
+    }
+
+    /* Mobile-optimized nodes rows — card layout matching peers.html */
+    @media (max-width: 767.98px) {
+        /* UI-Lint: overflow-x auto (not hidden) to detect real layout issues */
+        .table-responsive {
+            overflow-x: auto;
+            overflow-y: visible;
+        }
+
+        .nodes-table {
+            font-size: 0.82rem;
+        }
+
+        .nodes-table thead {
+            display: none;
+        }
+
+        .nodes-table,
+        .nodes-table tbody,
+        .nodes-table tr,
+        .nodes-table td {
+            display: block;
+            width: 100%;
+        }
+
+        /* Card layout with CSS Grid areas */
+        .nodes-table tbody tr {
+            display: grid;
+            grid-template-areas:
+                "name      status"
+                "fqdn      fqdn"
+                "meta      meta"
+                "speedtest speedtest"
+                "actions   actions";
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: start;
+            gap: 0.25rem 0.5rem;
+            border: 1px solid var(--bs-border-color);
+            border-radius: 0.5rem;
+            padding: 0.45rem 0.55rem;
+            margin-bottom: 0.45rem;
+            background: var(--bs-body-bg);
+        }
+
+        .nodes-table td {
+            border: 0;
+            padding: 0;
+            min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        /* Hide data-label pseudo-elements */
+        .nodes-table td::before {
+            display: none;
+        }
+
+        /* Grid area assignments */
+        .nodes-table td[data-label="Name"] {
+            grid-area: name;
+            align-self: center;
+            font-weight: 600;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .nodes-table td[data-label="Status"] {
+            grid-area: status;
+            justify-self: end;
+            align-self: center;
+        }
+
+        .nodes-table td[data-label="FQDN"] {
+            grid-area: fqdn;
+        }
+
+        .nodes-table td[data-label="FQDN"] .node-fqdn-meta {
+            margin-left: 0;
+        }
+
+        /* Hide Port and Version columns on mobile, show as meta line */
+        .nodes-table td[data-label="Port"],
+        .nodes-table td[data-label="Version"] {
+            display: none !important;
+        }
+
+        /* Peers + Last Seen combined as meta line */
+        .nodes-table td[data-label="Peers"],
+        .nodes-table td[data-label="Last Seen"] {
+            display: none !important;
+        }
+
+        /* Meta row with version, port, peers, last seen (visible on mobile only) */
+        .node-mobile-meta {
+            grid-area: meta;
+            display: flex !important;
+            flex-wrap: wrap;
+            gap: 0.25rem 0.75rem;
+            font-size: 0.75rem;
+            color: var(--bs-secondary-color);
+        }
+
+        .node-mobile-meta-version,
+        .node-mobile-meta-port {
+            font-family: var(--bs-font-monospace);
+            white-space: nowrap;
+        }
+
+        .node-mobile-meta span + span::before {
+            content: "·";
+            margin-right: 0.5rem;
+        }
+
+        .nodes-table td[data-label="Speedtest"] {
+            grid-area: speedtest;
+            margin-top: 0.15rem;
+        }
+
+        /* Actions */
+        .nodes-table td[data-label="Actions"] {
+            grid-area: actions;
+            border-top: 1px solid var(--bs-border-color);
+            padding-top: 0.4rem !important;
+            margin-top: 0.2rem;
+        }
+
+        .node-actions-cell {
+            min-width: auto !important;
+        }
+
+        .node-actions-cell .d-flex {
+            justify-content: flex-end !important;
+        }
+
+        .node-action-btn {
+            /* Maintain 38px touch targets on mobile (UI-Lint compliance) */
+            min-width: 38px;
+            min-height: 38px;
+            padding: 0.2rem 0.35rem;
+        }
+    }

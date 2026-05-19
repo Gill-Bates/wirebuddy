@@ -1,0 +1,24 @@
+.is-hidden {
+  display: none !important;
+}
+
+.is-disabled {
+  pointer-events: none !important;
+  opacity: 0.6 !important;
+}
+
+.is-loading {
+  cursor: progress;
+}
+
+.is-success {
+  color: var(--wb-color-success, #16a34a) !important;
+}
+
+.is-warning {
+  color: var(--wb-color-warning, #d97706) !important;
+}
+
+.is-danger {
+  color: var(--wb-color-danger, #dc2626) !important;
+}

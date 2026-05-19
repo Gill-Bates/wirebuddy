@@ -1,0 +1,13 @@
+:root {
+  --wb-color-bg: #0b1220;
+  --wb-color-surface: #111827;
+  --wb-color-border: #374151;
+  --wb-color-text: #e5e7eb;
+  --wb-color-text-muted: #9ca3af;
+  --wb-color-primary: #2563eb;
+  --wb-color-success: #16a34a;
+  --wb-color-warning: #d97706;
+  --wb-color-danger: #dc2626;
+  --wb-radius-md: 0.5rem;
+  --wb-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
