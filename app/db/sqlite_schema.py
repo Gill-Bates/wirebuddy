@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import secrets
 import sqlite3
 
 from ..utils.crypto import hash_password
@@ -31,6 +33,23 @@ _KNOWN_SCHEMA_TABLES = frozenset({
 	"settings",
 	"users",
 })
+
+_PRAGMA_TABLE_INFO = {
+	"auth_tokens": "PRAGMA table_info(auth_tokens)",
+	"interfaces": "PRAGMA table_info(interfaces)",
+	"login_attempts": "PRAGMA table_info(login_attempts)",
+	"node_commands": "PRAGMA table_info(node_commands)",
+	"node_interfaces": "PRAGMA table_info(node_interfaces)",
+	"nodes": "PRAGMA table_info(nodes)",
+	"passkey_challenges": "PRAGMA table_info(passkey_challenges)",
+	"passkeys": "PRAGMA table_info(passkeys)",
+	"peers": "PRAGMA table_info(peers)",
+	"schema_version": "PRAGMA table_info(schema_version)",
+	"settings": "PRAGMA table_info(settings)",
+	"users": "PRAGMA table_info(users)",
+}
+_BOOTSTRAP_ADMIN_PASSWORD_ENV = "WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD"
+_BOOTSTRAP_ADMIN_USERNAME = "admin"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,7 +292,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 			CREATE TABLE IF NOT EXISTS nodes (
 				id TEXT PRIMARY KEY,
 				name TEXT NOT NULL UNIQUE,
-				fqdn TEXT NOT NULL,
+				fqdn TEXT NOT NULL UNIQUE,
 				wg_port INTEGER NOT NULL DEFAULT 51820,
 				show_on_dashboard INTEGER NOT NULL DEFAULT 1,
 				api_secret_hash TEXT NOT NULL,
@@ -284,16 +303,18 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				enrolled_at timestamp,
 				created_at timestamp NOT NULL,
 				config_version TEXT,
-				metadata TEXT,
+				metadata TEXT CHECK (metadata IS NULL OR length(metadata) <= 4096),
 				tunnel_peer_id INTEGER REFERENCES peers(id) ON DELETE SET NULL,
 				last_metric_seq INTEGER,
 				sse_connected_at TIMESTAMP,
+				-- Legacy single-slot command field; durable queue lives in node_commands.
 				pending_command TEXT
 			)
 			"""
 		)
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status)")
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_last_seen ON nodes(last_seen)")
+		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_status_last_seen ON nodes(status, last_seen)")
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_api_secret_hash ON nodes(api_secret_hash)")
 
 		# Durable node command queue for replay-safe control-plane delivery
@@ -335,7 +356,16 @@ def _get_columns(conn: sqlite3.Connection, table: str) -> set[str]:
 	"""Return the set of column names currently defined on *table*."""
 	if table not in _KNOWN_SCHEMA_TABLES:
 		raise ValueError(f"Unknown table: {table!r}")
-	return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+	return {row[1] for row in conn.execute(_PRAGMA_TABLE_INFO[table])}
+
+
+def _index_exists(conn: sqlite3.Connection, index_name: str) -> bool:
+	"""Return True when an index already exists."""
+	row = conn.execute(
+		"SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ? LIMIT 1",
+		(index_name,),
+	).fetchone()
+	return row is not None
 
 
 def _add_column_if_missing(
@@ -387,6 +417,8 @@ def _create_unique_index_if_no_duplicates(
 	label: str,
 ) -> None:
 	"""Create a unique index unless duplicate data already exists."""
+	if _index_exists(conn, label):
+		return
 	duplicate = _find_duplicate_value(conn, table=table, column=column)
 	if duplicate is not None:
 		_log.warning(
@@ -479,7 +511,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 		column="pending_command",
 		definition="TEXT",
 		existing_columns=nodes_columns,
-		log_message="Migrating nodes table: adding pending_command for multi-worker command delivery",
+		log_message="Migrating nodes table: adding legacy pending_command compatibility column",
 	):
 		nodes_columns.add("pending_command")
 	if _add_column_if_missing(
@@ -523,6 +555,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 		ddl="CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_fqdn_unique ON nodes(fqdn)",
 		label="idx_nodes_fqdn_unique",
 	)
+	conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_status_last_seen ON nodes(status, last_seen)")
 	conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_api_secret_hash ON nodes(api_secret_hash)")
 
 
@@ -536,15 +569,25 @@ def ensure_default_admin(conn: sqlite3.Connection) -> None:
 		with transaction(conn, immediate=True):
 			(count,) = conn.execute("SELECT COUNT(*) FROM users").fetchone()
 			if count == 0:
+				bootstrap_password = os.environ.get(_BOOTSTRAP_ADMIN_PASSWORD_ENV) or secrets.token_urlsafe(24)
 				conn.execute(
 					"""
 					INSERT INTO users (username, password_hash, is_admin, is_active, created_at)
 					VALUES (?, ?, 1, 1, ?)
 					""",
-					("admin", hash_password("admin"), utcnow()),
+					(_BOOTSTRAP_ADMIN_USERNAME, hash_password(bootstrap_password), utcnow()),
 				)
-				_log.warning(
-					"Created default admin user 'admin' with a well-known default password. Change it immediately."
-				)
+				if os.environ.get(_BOOTSTRAP_ADMIN_PASSWORD_ENV):
+					_log.warning(
+						"Created bootstrap admin user %r using password from %s. Change it immediately.",
+						_BOOTSTRAP_ADMIN_USERNAME,
+						_BOOTSTRAP_ADMIN_PASSWORD_ENV,
+					)
+				else:
+					_log.critical(
+						"Created bootstrap admin user %r with generated password: %s",
+						_BOOTSTRAP_ADMIN_USERNAME,
+						bootstrap_password,
+					)
 	except sqlite3.IntegrityError:
 		_log.debug("Default admin insert skipped because a user already exists")

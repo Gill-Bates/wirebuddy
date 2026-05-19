@@ -26,6 +26,7 @@ import signal
 import sqlite3
 import ssl
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime as dt, timedelta
@@ -70,6 +71,9 @@ STATE_FILE = DATA_DIR / "node_state.json"
 # Failure detection thresholds
 _MAX_AUTH_FAILURES = 3  # Consecutive 401 errors before assuming node removal
 _MAX_RECONNECT_DELAY = 60  # Maximum SSE reconnection delay in seconds
+_MAX_DECODED_ENROLLMENT_TOKEN_SIZE = 65_536
+_MAX_SSE_EVENT_SIZE = 64 * 1024
+_MAX_CONFIG_SIZE = 5 * 1024 * 1024
 
 
 
@@ -107,15 +111,22 @@ def _decode_enrollment_token_payload(token_string: str) -> dict[str, Any]:
 		raise ValueError("Enrollment token too large")
 
 	try:
-		raw = base64.urlsafe_b64decode(token_string.encode("ascii")).decode("utf-8")
+		decoded = base64.urlsafe_b64decode(token_string.encode("ascii"))
+		if len(decoded) > _MAX_DECODED_ENROLLMENT_TOKEN_SIZE:
+			raise ValueError("Decoded enrollment token too large")
+		raw = decoded.decode("utf-8")
 		payload_json, _signature = raw.rsplit(".", 1)
 		payload = json.loads(payload_json)
 	except Exception as exc:
 		raise ValueError("Failed to decode enrollment token") from exc
 
+	if not isinstance(payload, dict):
+		raise ValueError("Enrollment token payload must be a JSON object")
+
 	for field in ("master_url", "node_id", "api_secret"):
-		if field not in payload:
-			raise ValueError(f"Enrollment token missing required field: {field}")
+		value = payload.get(field)
+		if not isinstance(value, str) or not value.strip():
+			raise ValueError(f"Invalid enrollment token field: {field}")
 	return payload
 
 
@@ -163,11 +174,17 @@ def _load_state() -> dict[str, Any] | None:
 
 def _save_state(state: dict[str, Any]) -> None:
 	"""Persist node runtime state with restrictive permissions."""
-	DATA_DIR.mkdir(parents=True, exist_ok=True)
-	tmp = STATE_FILE.with_suffix(f".{os.getpid()}.tmp")
+	DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+	os.chmod(DATA_DIR, 0o700)
+	fd, tmp_name = tempfile.mkstemp(
+		dir=str(DATA_DIR),
+		prefix="node_state.",
+		suffix=".tmp",
+	)
+	tmp = Path(tmp_name)
 	try:
-		fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 		with os.fdopen(fd, "w", encoding="utf-8") as handle:
+			os.chmod(tmp, 0o600)
 			json.dump(state, handle, separators=(",", ":"), sort_keys=True)
 			handle.flush()
 			os.fsync(handle.fileno())
@@ -186,6 +203,8 @@ def _clear_enrollment_state() -> None:
 	Removes node state, certificates, and metrics queue.
 	"""
 	if STATE_FILE.exists():
+		if STATE_FILE.is_symlink():
+			raise RuntimeError(f"Refusing to delete symlink: {STATE_FILE}")
 		STATE_FILE.unlink()
 		_log.info("Removed old node state file")
 
@@ -197,6 +216,8 @@ def _clear_enrollment_state() -> None:
 	for suffix in ("", "-wal", "-shm"):
 		f = queue_file.parent / (queue_file.name + suffix)
 		if f.exists():
+			if f.is_symlink():
+				raise RuntimeError(f"Refusing to delete symlink: {f}")
 			f.unlink()
 			cleared = True
 	if cleared:
@@ -228,6 +249,15 @@ def _create_ssl_context(ca_file: str | None = None) -> tuple[ssl.SSLContext, str
 		ssl_ctx.set_ciphers("ECDHE+AESGCM:ECDHE+CHACHA20")
 	except ssl.SSLError as exc:
 		_log.warning("Could not apply hardened TLS cipher policy: %s", exc)
+	if hasattr(ssl_ctx, "set_ciphersuites"):
+		try:
+			ssl_ctx.set_ciphersuites(
+				"TLS_AES_256_GCM_SHA384:"
+				"TLS_CHACHA20_POLY1305_SHA256:"
+				"TLS_AES_128_GCM_SHA256"
+			)
+		except ssl.SSLError as exc:
+			_log.warning("Could not apply TLS 1.3 cipher suite policy: %s", exc)
 	
 	if not ca_file:
 		# Use system CA certificates with TLS 1.2+ enforced
@@ -365,16 +395,29 @@ async def _run_node_speedtest(
 
 	# Progress callback to send updates to master
 	progress_task: asyncio.Task[None] | None = None
+	latest_event: dict[str, Any] | None = None
 
 	def progress_callback(event: dict) -> None:
-		"""Send progress update to master (non-blocking)."""
-		nonlocal progress_task
+		"""Send latest progress update to master with bounded in-flight work."""
+		nonlocal progress_task, latest_event
+		latest_event = dict(event)
 		if progress_task is not None and not progress_task.done():
 			return
+
+		async def _drain_progress_updates() -> None:
+			nonlocal latest_event
+			while latest_event is not None:
+				event_to_send = latest_event
+				latest_event = None
+				await _send_speedtest_progress(
+					client,
+					master_url,
+					api_secret,
+					cert_fingerprint,
+					event_to_send,
+				)
 		try:
-			progress_task = asyncio.create_task(
-				_send_speedtest_progress(client, master_url, api_secret, cert_fingerprint, event)
-			)
+			progress_task = asyncio.create_task(_drain_progress_updates())
 
 			def _consume_progress_exception(done_task: asyncio.Task[None]) -> None:
 				nonlocal progress_task
@@ -534,7 +577,7 @@ class EnrollResult:
 
 
 async def main() -> None:
-	"""Entry point for the node daemon."""
+	"""Primary async entry point for the node daemon."""
 	print_banner_once()
 	logging.basicConfig(
 		level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -548,7 +591,8 @@ async def main() -> None:
 	# Check firewall configuration
 	await asyncio.to_thread(_check_firewall_dns_rules)
 
-	DATA_DIR.mkdir(parents=True, exist_ok=True)
+	DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+	os.chmod(DATA_DIR, 0o700)
 
 	try:
 		state = _load_state()
@@ -1220,7 +1264,7 @@ async def _sse_listener(
 								event_type = line[6:].strip()
 							elif line.startswith("data:"):
 								chunk = line[5:].strip()
-								if sum(len(part) for part in event_buffer) + len(chunk) > 1_000_000:
+								if sum(len(part) for part in event_buffer) + len(chunk) > _MAX_SSE_EVENT_SIZE:
 									raise RuntimeError("SSE event too large")
 								event_buffer.append(chunk)
 							elif line == "":
@@ -1324,7 +1368,7 @@ async def _pull_config(
 		params=params,
 	)
 	resp.raise_for_status()
-	if len(resp.content) > 50_000_000:
+	if len(resp.content) > _MAX_CONFIG_SIZE:
 		raise RuntimeError("Config payload too large")
 	data = resp.json()
 
@@ -1345,14 +1389,14 @@ async def _pull_config(
 def _get_uptime() -> float | None:
 	"""Read system uptime in seconds."""
 	try:
-		with open("/proc/uptime") as f:
+		with open("/proc/uptime", "r", encoding="ascii") as f:
 			return float(f.read().split()[0])
 	except (OSError, ValueError):
 		return None
 
 
 def run() -> None:
-	"""Synchronous entry point for the node daemon."""
+	"""CLI wrapper that owns the event loop for standalone daemon execution."""
 	asyncio.run(main())
 
 

@@ -532,7 +532,9 @@ async function refreshStats(signal) {
 }
 
 function getMapTileSources() {
-    return [];
+    return [
+        'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    ];
 }
 
 function createLocalBackdropLayer() {

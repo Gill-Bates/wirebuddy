@@ -27,7 +27,7 @@ import sqlite3
 import tarfile
 import tempfile
 import time
-import threading
+from contextlib import suppress
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -39,6 +39,11 @@ from pydantic import BaseModel
 
 from ..db.sqlite_runtime import close_all_connections, connect, close_connection, thread_connection, transaction
 from ..db.sqlite_settings import get_setting, set_setting
+from ..utils.backup_lock import (
+	BackupLockBusyError,
+	acquire_backup_operation_lock,
+	acquire_restore_guard,
+)
 from ..utils.crypto import verify_password
 from ..db.sqlite_users import get_user_by_id
 from ..utils.time import utcnow
@@ -62,15 +67,6 @@ MAX_BACKUP_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB
 _BACKUP_FILENAME_RE = re.compile(
 	r"wirebuddy_backup_\d{8}_\d{6}_([a-f0-9]{32})\.tar\.gz$"
 )
-
-# Concurrency guard — only one restore may run at a time
-_restore_lock = asyncio.Lock()
-
-# Concurrency guard — only one manual backup download may run at a time
-_backup_download_lock = asyncio.Semaphore(1)
-
-# Concurrency guard — only one scheduled backup may run at a time
-_scheduled_backup_lock = threading.Lock()
 
 # Settings keys for backup configuration
 SETTING_BACKUP_ENABLED = "backup_scheduled_enabled"
@@ -567,59 +563,77 @@ async def create_backup(
 	Returns a gzip-compressed tarball with HMAC signature in filename.
 	Uses POST because this operation has side effects (updates last-backup timestamp).
 	"""
-	if _backup_download_lock.locked():
-		raise HTTPException(status_code=409, detail="A backup download is already in progress")
-
-	async with _backup_download_lock:
-		data_dir = request.app.state.cfg.data_dir
-		db_path = request.app.state.cfg.db_path
-		
-		if not data_dir.exists():
-			raise HTTPException(status_code=404, detail="Data directory not found")
-		
-		conn = await _open_db_connection(db_path)
+	data_dir = request.app.state.cfg.data_dir
+	db_path = request.app.state.cfg.db_path
+	conn: sqlite3.Connection | None = None
+	tmp_path: Path | None = None
+	filename = ""
+	file_size = 0
+	try:
 		try:
-			tmp_path, filename, file_size = await _run_blocking(
-				_create_backup_archive,
-				data_dir,
-				db_path,
-				conn,
-				timeout=_BACKUP_CREATE_TIMEOUT_SECONDS,
-				operation="create backup archive",
-			)
+			with acquire_backup_operation_lock(data_dir):
+				if not data_dir.exists():
+					raise HTTPException(status_code=404, detail="Data directory not found")
 
+				conn = await _open_db_connection(db_path)
+				try:
+					tmp_path, filename, file_size = await _run_blocking(
+						_create_backup_archive,
+						data_dir,
+						db_path,
+						conn,
+						timeout=_BACKUP_CREATE_TIMEOUT_SECONDS,
+						operation="create backup archive",
+					)
+
+					await _run_blocking(
+						set_setting,
+						conn,
+						SETTING_BACKUP_LAST_AT,
+						utcnow().isoformat(),
+						timeout=_DB_CONNECT_TIMEOUT_SECONDS,
+						operation="update backup timestamp",
+					)
+
+					_log.info(
+						"Backup created: %s (%d bytes) by %s",
+						filename, file_size, admin["username"],
+					)
+				finally:
+					await _close_db_connection(conn)
+					conn = None
+		except BackupLockBusyError as exc:
+			raise HTTPException(status_code=409, detail="A backup or restore operation is already in progress") from exc
+	
+		if tmp_path is None:
+			raise HTTPException(status_code=500, detail="Backup archive was not created")
+
+		# Stream the file (conn is already closed)
+		def iter_file():
+			with open(tmp_path, "rb") as f:
+				yield from iter(lambda: f.read(1024 * 1024), b"")
+
+		# Guaranteed cleanup even on client disconnect
+		background_tasks.add_task(tmp_path.unlink, missing_ok=True)
+		response = StreamingResponse(
+			iter_file(),
+			media_type="application/gzip",
+			headers={
+				"Content-Disposition": f'attachment; filename="{filename}"',
+				"Content-Length": str(file_size),
+			},
+		)
+		tmp_path = None
+		return response
+	finally:
+		await _close_db_connection(conn)
+		if tmp_path is not None:
 			await _run_blocking(
-				set_setting,
-				conn,
-				SETTING_BACKUP_LAST_AT,
-				utcnow().isoformat(),
+				tmp_path.unlink,
+				missing_ok=True,
 				timeout=_DB_CONNECT_TIMEOUT_SECONDS,
-				operation="update backup timestamp",
+				operation="delete failed backup archive",
 			)
-
-			_log.info(
-				"Backup created: %s (%d bytes) by %s",
-				filename, file_size, admin["username"],
-			)
-		finally:
-			await _close_db_connection(conn)
-	
-	# Stream the file (conn is already closed)
-	def iter_file():
-		with open(tmp_path, "rb") as f:
-			yield from iter(lambda: f.read(1024 * 1024), b"")
-	
-	# Guaranteed cleanup even on client disconnect
-	background_tasks.add_task(tmp_path.unlink, missing_ok=True)
-	
-	return StreamingResponse(
-		iter_file(),
-		media_type="application/gzip",
-		headers={
-			"Content-Disposition": f'attachment; filename="{filename}"',
-			"Content-Length": str(file_size),
-		},
-	)
 
 
 @router.post("/validate", response_model=OkResponse[None])
@@ -660,22 +674,18 @@ async def restore_backup(  # async: uses await for file I/O
 	CRITICAL: Requires password confirmation (destructive operation).
 	Validates HMAC signature before restoring.
 	Triggers application restart after successful restore.
+
 	Only one restore may run at a time (concurrency guard).
 	"""
-	if _restore_lock.locked():
-		raise HTTPException(
-			status_code=409,
-			detail="A restore operation is already in progress",
-		)
+	data_dir = request.app.state.cfg.data_dir
+	db_path = request.app.state.cfg.db_path
+	restored_items: list[str] = []
+	conn: sqlite3.Connection | None = None
+	tmp_upload_path: Path | None = None
 
-	async with _restore_lock:
-		data_dir = request.app.state.cfg.data_dir
-		db_path = request.app.state.cfg.db_path
-		restored_items: list[str] = []
-
-		conn = await _open_db_connection(db_path)
-		tmp_upload_path: Path | None = None
-		try:
+	try:
+		with acquire_backup_operation_lock(data_dir):
+			conn = await _open_db_connection(db_path)
 			# Verify admin password (PBKDF2-SHA256 – moved off event loop)
 			await _run_blocking(
 				_verify_admin_password,
@@ -738,27 +748,27 @@ async def restore_backup(  # async: uses await for file I/O
 							operation="validate restored backup database",
 						)
 
-					# Close our own connection before closing all connections
-					await _close_db_connection(conn)
-					conn = None  # prevent double-close in outer finally
+					with acquire_restore_guard(data_dir):
+						# Close our own connection before closing all connections
+						await _close_db_connection(conn)
+						conn = None  # prevent double-close in outer finally
 
-					# Block concurrent requests from opening fresh DB connections
-					request.app.state.maintenance = True
+						# Block concurrent requests in this worker; other workers observe the restore guard.
+						request.app.state.maintenance = True
 
-					try:
-						restored_items = await _run_blocking(
-							_apply_restored_backup,
-							data_dir,
-							db_path,
-							extracted_data,
-							timeout=None,
-							operation="apply restored backup",
-						)
+						try:
+							restored_items = await _run_blocking(
+								_apply_restored_backup,
+								data_dir,
+								db_path,
+								extracted_data,
+								timeout=None,
+								operation="apply restored backup",
+							)
 
-					finally:
-						if not restored_items:
-							request.app.state.maintenance = False
-
+						finally:
+							if not restored_items:
+								request.app.state.maintenance = False
 			finally:
 				await file.close()
 				if tmp_upload_path is not None:
@@ -768,9 +778,13 @@ async def restore_backup(  # async: uses await for file I/O
 						timeout=_DB_CONNECT_TIMEOUT_SECONDS,
 						operation="delete uploaded restore archive",
 					)
-
-		finally:
-			await _close_db_connection(conn)
+	except BackupLockBusyError as exc:
+		raise HTTPException(
+			status_code=409,
+			detail="A backup or restore operation is already in progress",
+		) from exc
+	finally:
+		await _close_db_connection(conn)
 
 	_log.warning("Backup restored successfully, initiating restart")
 
@@ -855,54 +869,59 @@ def run_scheduled_backup(data_dir: Path, db_path: Path) -> dict:
 	Raises:
 		OSError: If insufficient disk space
 	"""
-	if not _scheduled_backup_lock.acquire(blocking=False):
-		_log.warning("Scheduled backup already running, skipping")
-		return {"skipped": True}
+	tmp_path: Path | None = None
 	try:
-		with thread_connection(db_path) as conn:
-			# Get retention setting
-			retention_days = _get_retention_days(conn)
+		with acquire_backup_operation_lock(data_dir):
+			with thread_connection(db_path) as conn:
+				# Get retention setting
+				retention_days = _get_retention_days(conn)
 
-			# Check disk space before creating backup
-			backup_dir = _get_backup_dir(data_dir)
-			disk_free = shutil.disk_usage(backup_dir).free
-			min_required = 100 * 1024 * 1024  # Require at least 100MB free
-			
-			if disk_free < min_required:
-				_log.error("Insufficient disk space for backup: %d bytes free, need %d", disk_free, min_required)
-				raise OSError(f"Insufficient disk space: {disk_free // (1024*1024)}MB free, need at least 100MB")
-			
-			# Create backup archive
-			tmp_path, filename, file_size = _create_backup_archive(data_dir, db_path, conn)
-			
-			# Move to backup directory
-			final_path = backup_dir / filename
-			shutil.move(str(tmp_path), str(final_path))
-			
-			# Verify file was created successfully before updating timestamp
-			if not final_path.exists():
-				_log.error("Backup file not found after move: %s", final_path)
-				raise OSError(f"Backup file not created: {filename}")
-			
-			actual_size = final_path.stat().st_size
-			if actual_size != file_size:
-				_log.warning("Backup size mismatch: expected %d, got %d", file_size, actual_size)
-			
-			# Update last backup timestamp only after successful file creation
-			set_setting(conn, SETTING_BACKUP_LAST_AT, utcnow().isoformat())
-			
-			_log.info("Scheduled backup created: %s (%d bytes)", filename, actual_size)
-			
-			# Cleanup old backups
-			deleted_count = _cleanup_old_backups(backup_dir, retention_days)
-			
-			return {
-				"filename": filename,
-				"size_bytes": actual_size,
-				"deleted_old_backups": deleted_count,
-			}
+				# Check disk space before creating backup
+				backup_dir = _get_backup_dir(data_dir)
+				disk_free = shutil.disk_usage(backup_dir).free
+				min_required = 100 * 1024 * 1024  # Require at least 100MB free
+				
+				if disk_free < min_required:
+					_log.error("Insufficient disk space for backup: %d bytes free, need %d", disk_free, min_required)
+					raise OSError(f"Insufficient disk space: {disk_free // (1024*1024)}MB free, need at least 100MB")
+				
+				# Create backup archive
+				tmp_path, filename, file_size = _create_backup_archive(data_dir, db_path, conn)
+				
+				# Move to backup directory
+				final_path = backup_dir / filename
+				shutil.move(str(tmp_path), str(final_path))
+				tmp_path = None
+				
+				# Verify file was created successfully before updating timestamp
+				if not final_path.exists():
+					_log.error("Backup file not found after move: %s", final_path)
+					raise OSError(f"Backup file not created: {filename}")
+				
+				actual_size = final_path.stat().st_size
+				if actual_size != file_size:
+					_log.warning("Backup size mismatch: expected %d, got %d", file_size, actual_size)
+				
+				# Update last backup timestamp only after successful file creation
+				set_setting(conn, SETTING_BACKUP_LAST_AT, utcnow().isoformat())
+				
+				_log.info("Scheduled backup created: %s (%d bytes)", filename, actual_size)
+				
+				# Cleanup old backups
+				deleted_count = _cleanup_old_backups(backup_dir, retention_days)
+				
+				return {
+					"filename": filename,
+					"size_bytes": actual_size,
+					"deleted_old_backups": deleted_count,
+				}
+	except BackupLockBusyError:
+		_log.warning("Backup or restore already running, skipping scheduled backup")
+		return {"skipped": True}
 	finally:
-		_scheduled_backup_lock.release()
+		if tmp_path is not None:
+			with suppress(FileNotFoundError):
+				tmp_path.unlink()
 
 
 def _cleanup_old_backups(backup_dir: Path, retention_days: int = BACKUP_RETENTION_DAYS) -> int:

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import ipaddress
 from collections import defaultdict
+from collections.abc import Iterator
 import json
 import logging
 import re
@@ -72,6 +73,11 @@ __all__ = [
 
 _CONNTRACK_PROC = Path("/proc/net/nf_conntrack")
 _CONNTRACK_ACCT = Path("/proc/sys/net/netfilter/nf_conntrack_acct")
+_MAX_CONNTRACK_LINE = 16_384
+_MAX_IP_JSON_OUTPUT = 10_000_000
+_MAX_CONNTRACK_TOOL_OUTPUT = 20_000_000
+_MAX_TRACKED_CONNECTIONS = 500_000
+_MAX_PEER_NAME_LEN = 128
 
 
 # Explicitly exclude ranges that may be treated inconsistently by
@@ -95,6 +101,7 @@ ASN_TRAFFIC_METRIC = "snapshot"
 
 # Single-pass key=value parser — extracts all fields in one scan
 _RE_KEYVAL = re.compile(r"(\w+)=(\S+)")
+_ALLOWED_KEYS = frozenset({"src", "dst", "sport", "dport", "bytes"})
 
 # Known protocols (first token in conntrack line)
 _KNOWN_PROTOS = frozenset({"tcp", "udp", "sctp", "dccp", "icmp", "icmpv6"})
@@ -107,6 +114,7 @@ _ct_prev: dict[tuple, tuple[int, int]] = {}   # conn_key → (bytes_orig, bytes_
 _ct_lock = threading.Lock()                    # serialises both conntrack state AND sampling
 _ct_initialized = False
 _acct_warned = False   # log "accounting disabled" only once per process
+_ct_overflow_warned = False
 
 # Locking note:
 # - Do not call _get_wireguard_subnets() while holding _ct_lock.
@@ -118,6 +126,16 @@ _wg_gateway_ips_cache: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set(
 _wg_subnets_ts = 0.0
 
 _WG_SUBNET_TTL = 60.0  # re-detect subnets every 60 s
+
+
+def _normalize_peer_name(peer_name: str | None) -> str | None:
+	"""Clamp peer names before they enter aggregation payloads."""
+	if not peer_name:
+		return None
+	normalized = str(peer_name).replace("\n", " ").replace("\r", " ").replace("\x00", " ").strip()
+	if not normalized:
+		return None
+	return normalized[:_MAX_PEER_NAME_LEN]
 
 
 def _parse_interface_address(
@@ -247,6 +265,8 @@ def _get_wireguard_subnets() -> tuple[
 				capture_output=True, text=True, timeout=5,
 			)
 			if result.returncode == 0:
+				if len(result.stdout) > _MAX_IP_JSON_OUTPUT:
+					raise ValueError("iproute2 output too large")
 				if result.stdout.strip():
 					for iface in json.loads(result.stdout):
 						for ai in iface.get("addr_info", []):
@@ -268,6 +288,8 @@ def _get_wireguard_subnets() -> tuple[
 			_log.debug("COUNTRY_TRAFFIC 'ip' command not found")
 		except subprocess.TimeoutExpired:
 			_log.debug("COUNTRY_TRAFFIC 'ip -j addr show' timed out")
+		except ValueError as exc:
+			_log.debug("COUNTRY_TRAFFIC 'ip -j addr show' rejected: %s", exc)
 		except json.JSONDecodeError as exc:
 			_log.debug("COUNTRY_TRAFFIC 'ip -j addr show' returned invalid JSON: %s", exc)
 
@@ -373,22 +395,19 @@ def _get_subnets_from_db() -> tuple[
 # Conntrack parsing
 # ---------------------------------------------------------------------------
 
-def _read_conntrack_lines() -> list[str]:
+def _read_conntrack_lines() -> Iterator[str]:
 	"""Read conntrack entries from /proc or the conntrack tool.
 
 	Streams /proc/net/nf_conntrack to avoid memory spikes on large systems.
 	"""
-	lines: list[str] = []
-
 	# Primary: /proc pseudo-file (no extra package needed)
 	try:
 		with _CONNTRACK_PROC.open() as f:
 			for line in f:
 				stripped = line.rstrip("\n")
 				if stripped:
-					lines.append(stripped)
-		if lines:
-			return lines
+					yield stripped
+		return
 	except (OSError, PermissionError) as exc:
 		_log.debug("Cannot read %s: %s", _CONNTRACK_PROC, exc)
 
@@ -399,7 +418,13 @@ def _read_conntrack_lines() -> list[str]:
 			capture_output=True, text=True, timeout=10,
 		)
 		if result.returncode == 0:
-			return result.stdout.splitlines()
+			if len(result.stdout) > _MAX_CONNTRACK_TOOL_OUTPUT:
+				_log.warning("COUNTRY_TRAFFIC conntrack output too large — skipping sample")
+				return
+			for line in result.stdout.splitlines():
+				if line:
+					yield line
+			return
 		_log.debug(
 			"COUNTRY_TRAFFIC 'conntrack -L -o extended' failed (rc=%d): %s",
 			result.returncode,
@@ -410,8 +435,6 @@ def _read_conntrack_lines() -> list[str]:
 	except subprocess.TimeoutExpired:
 		_log.debug("COUNTRY_TRAFFIC conntrack command timed out")
 
-	return []
-
 
 def _parse_line(line: str) -> dict[str, Any] | None:
 	"""Parse a single conntrack entry into structured data.
@@ -419,6 +442,9 @@ def _parse_line(line: str) -> dict[str, Any] | None:
 	Extracts the two direction blocks (original + reply) using a single-pass
 	key=value parser instead of 5 separate regex scans.
 	"""
+	if len(line) > _MAX_CONNTRACK_LINE:
+		return None
+
 	# Extract protocol from first token (faster than regex)
 	tokens = line.split(None, 3)  # Split into max 4 parts
 	proto = "other"
@@ -431,7 +457,8 @@ def _parse_line(line: str) -> dict[str, Any] | None:
 	# Single scan: extract all key=value pairs
 	fields: dict[str, list[str]] = defaultdict(list)
 	for key, val in _RE_KEYVAL.findall(line):
-		fields[key].append(val)
+		if key in _ALLOWED_KEYS:
+			fields[key].append(val)
 
 	# Need at least both direction blocks with byte counters
 	if len(fields["src"]) < 2 or len(fields["dst"]) < 2 or len(fields["bytes"]) < 2:
@@ -475,7 +502,7 @@ def _aggregate_traffic(
 	asn_cache: dict[str, tuple[str, str]] = {}  # dst_ip → (asn_key, asn_name)
 
 	for dst_ip, src_ip, delta_tx, delta_rx in deltas:
-		peer_name = peer_ip_map.get(src_ip) if peer_ip_map else None
+		peer_name = _normalize_peer_name(peer_ip_map.get(src_ip) if peer_ip_map else None)
 
 		# Country lookup (cached)
 		if dst_ip in geo_cache:
@@ -557,7 +584,7 @@ def sample_country_traffic(
 		Connections that disappear between two samples lose their final
 		delta — this is an inherent limitation of polling conntrack.
 	"""
-	global _ct_initialized, _ct_prev, _acct_warned
+	global _ct_initialized, _ct_prev, _acct_warned, _ct_overflow_warned
 
 	# Warn if byte accounting appears to be off — log once, re-arm when it recovers
 	acct_active: bool | None = None
@@ -592,15 +619,12 @@ def sample_country_traffic(
 	# _ct_lock serialises both conntrack state access and the sampling
 	# itself, preventing two concurrent calls from corrupting _ct_prev.
 	with _ct_lock:
-		lines = _read_conntrack_lines()
-		if not lines:
-			_log.debug("COUNTRY_TRAFFIC no conntrack data available")
-			return {}, {}
-
 		# --- Parse + filter ----------------------------------------------
 		current: dict[tuple, tuple[int, int]] = {}  # conn_key → (orig, reply)
+		saw_line = False
 
-		for line in lines:
+		for line in _read_conntrack_lines():
+			saw_line = True
 			entry = _parse_line(line)
 			if entry is None:
 				continue
@@ -621,7 +645,21 @@ def sample_country_traffic(
 				continue
 
 			key = (entry["proto"], entry["src"], entry["sport"], entry["dst"], entry["dport"])
+			if key not in current and len(current) >= _MAX_TRACKED_CONNECTIONS:
+				if not _ct_overflow_warned:
+					_ct_overflow_warned = True
+					_log.warning(
+						"COUNTRY_TRAFFIC tracked connection cap reached (%d) — skipping additional flows",
+						_MAX_TRACKED_CONNECTIONS,
+					)
+				continue
 			current[key] = (entry["bytes_orig"], entry["bytes_reply"])
+
+		if not saw_line:
+			_log.debug("COUNTRY_TRAFFIC no conntrack data available")
+			return {}, {}
+		if _ct_overflow_warned and len(current) < _MAX_TRACKED_CONNECTIONS:
+			_ct_overflow_warned = False
 
 		# --- First call: establish baseline, no deltas ------------------
 		if not _ct_initialized:

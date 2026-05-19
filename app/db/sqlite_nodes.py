@@ -14,9 +14,11 @@ import json
 import logging
 import re
 import sqlite3
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ..node.events import NodeCommandType
 from ..utils.config import get_config
 from ..utils.time import parse_utc, utcnow
 from ..utils import vault
@@ -28,6 +30,7 @@ _log = logging.getLogger(__name__)
 
 # Input validation constants
 _MAX_METADATA_SIZE = 4096  # bytes
+_MAX_COMMAND_PAYLOAD_SIZE = 16_384  # bytes
 _MAX_PORT = 65535
 _MIN_PORT = 1
 
@@ -114,6 +117,13 @@ def _validate_name(name: str) -> None:
 		raise ValueError("Node name exceeds 63 characters")
 
 
+def _normalize_name(name: str) -> str:
+	"""Normalize node names consistently before lookup or persistence."""
+	normalized = unicodedata.normalize("NFKC", str(name)).strip()
+	_validate_name(normalized)
+	return normalized
+
+
 def _split_addresses(raw: str) -> list[str]:
 	"""Split a comma-separated address list into clean non-empty entries."""
 	return [part.strip() for part in str(raw or "").split(",") if part.strip()]
@@ -133,9 +143,8 @@ def create_node(
 	api_secret_hash: str,
 ) -> None:
 	"""Insert a new node record (status='pending')."""
-	name = name.strip()
+	name = _normalize_name(name)
 	fqdn = _canonicalize_fqdn_or_ip(fqdn)
-	_validate_name(name)
 	_validate_port(wg_port)
 	now = utcnow()
 	with transaction(conn, immediate=True):
@@ -155,7 +164,7 @@ def get_node(conn: sqlite3.Connection, node_id: str) -> sqlite3.Row | None:
 
 def get_node_by_name(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
 	"""Fetch a single node by display name."""
-	name = name.strip()
+	name = _normalize_name(name)
 	return conn.execute("SELECT * FROM nodes WHERE name = ?", (name,)).fetchone()
 
 
@@ -191,8 +200,7 @@ def update_node(
 	params: list[Any] = []
 
 	if name is not None:
-		name = name.strip()
-		_validate_name(name)
+		name = _normalize_name(name)
 		updates.append("name = ?")
 		params.append(name)
 	if fqdn is not None:
@@ -242,8 +250,16 @@ def delete_node(conn: sqlite3.Connection, node_id: str) -> int | None:
 
 		if row["tunnel_peer_id"]:
 			cur = conn.execute(
-				"DELETE FROM peers WHERE id = ?",
-				(row["tunnel_peer_id"],),
+				"""
+				DELETE FROM peers
+				WHERE id = ?
+				  AND id IN (
+					SELECT tunnel_peer_id
+					FROM nodes
+					WHERE id = ?
+				  )
+				""",
+				(row["tunnel_peer_id"], node_id),
 			)
 			if cur.rowcount > 0:
 				_log.info("Deleted tunnel peer for node=%s", node_id)
@@ -353,7 +369,10 @@ def update_node_heartbeat(
 	now = utcnow()
 	meta_json = None
 	if metadata is not None:
-		meta_json = json.dumps(metadata, default=str)
+		try:
+			meta_json = json.dumps(metadata)
+		except TypeError as exc:
+			raise ValueError("Metadata must be JSON-serializable") from exc
 		if len(meta_json.encode("utf-8")) > _MAX_METADATA_SIZE:
 			raise ValueError(f"Metadata exceeds maximum size ({_MAX_METADATA_SIZE} bytes)")
 	with transaction(conn, immediate=True):
@@ -461,6 +480,10 @@ def is_node_sse_connected(conn: sqlite3.Connection, node_id: str, max_age_second
 	ts = _parse_db_timestamp(row["sse_connected_at"])
 	if ts is None:
 		return False
+	now = utcnow()
+	if ts > now + timedelta(minutes=1):
+		_log.warning("Ignoring future sse_connected_at for node=%s: %s", node_id, ts.isoformat())
+		return False
 	return ts >= cutoff
 
 
@@ -469,14 +492,20 @@ def is_node_sse_connected(conn: sqlite3.Connection, node_id: str, max_age_second
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Valid commands for node control
-VALID_NODE_COMMANDS = frozenset({"config_changed", "restart", "shutdown", "removed", "speedtest"})
+VALID_NODE_COMMANDS = frozenset(command.value for command in NodeCommandType)
 
 
 def _serialize_command_payload(payload: dict[str, Any] | None) -> str:
 	"""Serialize command payload as compact JSON."""
 	if payload is None:
 		return "{}"
-	return json.dumps(payload, separators=(",", ":"), default=str)
+	try:
+		raw = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+	except TypeError as exc:
+		raise ValueError("Command payload must be JSON-serializable") from exc
+	if len(raw.encode("utf-8")) > _MAX_COMMAND_PAYLOAD_SIZE:
+		raise ValueError("Command payload too large")
+	return raw
 
 
 def _parse_command_payload(raw: Any) -> dict[str, Any]:
@@ -531,7 +560,7 @@ def claim_pending_node_commands(
 	threshold = utcnow() - timedelta(seconds=max(0, replay_after_seconds))
 	now = utcnow()
 	with transaction(conn, immediate=True):
-		rows = conn.execute(
+		candidate_rows = conn.execute(
 			"""
 			SELECT id, node_id, command_type, payload, created_at, delivered_at, acked_at
 			FROM node_commands
@@ -543,13 +572,27 @@ def claim_pending_node_commands(
 			""",
 			(node_id, threshold, limit),
 		).fetchall()
-		if not rows:
+		if not candidate_rows:
 			return []
 
-		conn.executemany(
-			"UPDATE node_commands SET delivered_at = ? WHERE id = ? AND node_id = ? AND acked_at IS NULL",
-			[(now, int(row["id"]), node_id) for row in rows],
-		)
+		claimed_rows: list[sqlite3.Row] = []
+		for row in candidate_rows:
+			cur = conn.execute(
+				"""
+				UPDATE node_commands
+				SET delivered_at = ?
+				WHERE id = ?
+				  AND node_id = ?
+				  AND acked_at IS NULL
+				  AND (delivered_at IS NULL OR delivered_at < ?)
+				""",
+				(now, int(row["id"]), node_id, threshold),
+			)
+			if cur.rowcount > 0:
+				claimed_rows.append(row)
+
+		if not claimed_rows:
+			return []
 
 		return [
 			{
@@ -561,7 +604,7 @@ def claim_pending_node_commands(
 				"delivered_at": row["delivered_at"],
 				"acked_at": row["acked_at"],
 			}
-			for row in rows
+			for row in claimed_rows
 		]
 
 
@@ -641,7 +684,7 @@ def bump_node_config_version(
 	Timestamp is NOT included to ensure idempotency.
 	"""
 	with transaction(conn, immediate=True):
-		rows = conn.execute(
+		cursor = conn.execute(
 			"""
 			SELECT
 				public_key,
@@ -655,24 +698,25 @@ def bump_node_config_version(
 			ORDER BY public_key
 			""",
 			(node_id,),
-		).fetchall()
-		# Include all peer fields that are delivered to nodes. Using the stored
-		# PSK value ensures rotations invalidate the version without decrypting it.
-		payload = json.dumps(
-			[
-				{
-					"public_key": r["public_key"],
-					"allowed_ips": r["allowed_ips"],
-					"interface": r["interface"],
-					"peer_address": r["peer_address"],
-					"name": r["name"],
-					"preshared_key": r["preshared_key"],
-				}
-				for r in rows
-			],
-			separators=(",", ":"),
 		)
-		version = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+		hasher = hashlib.sha256()
+		for row in cursor:
+			hasher.update(b"\x1e")
+			hasher.update(
+				json.dumps(
+					{
+						"allowed_ips": row["allowed_ips"],
+						"interface": row["interface"],
+						"name": row["name"],
+						"peer_address": row["peer_address"],
+						"preshared_key": row["preshared_key"],
+						"public_key": row["public_key"],
+					},
+					separators=(",", ":"),
+					sort_keys=True,
+				).encode("utf-8")
+			)
+		version = hasher.hexdigest()
 		conn.execute(
 			"UPDATE nodes SET config_version = ? WHERE id = ?",
 			(version, node_id),
@@ -837,22 +881,22 @@ def get_node_config(
 		peers_enc = _build_peers_config(conn, node_id)
 		master_peer = _build_master_peer_config(conn, tunnel_peer)
 
-	interfaces = [
-		{
-			**item,
-			"private_key": vault.decrypt_if_needed(str(item.pop("private_key_enc")), pepper),
-		}
-		for item in interfaces_enc
-	]
-	peers = [
-		{
-			**item,
-			"preshared_key": vault.decrypt_if_needed(item.pop("preshared_key_enc"), pepper)
-			if item.get("preshared_key_enc")
-			else None,
-		}
-		for item in peers_enc
-	]
+		interfaces = [
+			{
+				**item,
+				"private_key": vault.decrypt_required(str(item.pop("private_key_enc")), pepper),
+			}
+			for item in interfaces_enc
+		]
+		peers = [
+			{
+				**item,
+				"preshared_key": vault.decrypt_required(item.pop("preshared_key_enc"), pepper)
+				if item.get("preshared_key_enc")
+				else None,
+			}
+			for item in peers_enc
+		]
 
 	_log.info(
 		"NODE_CONFIG built for node=%s: interfaces=%d peers=%d master_peer=%s",
@@ -1004,7 +1048,14 @@ def _compute_tunnel_allowed_ips(conn: sqlite3.Connection, node_id: str, tunnel_p
 	for row in peer_rows:
 		addresses.update(_split_addresses(row["peer_address"]))
 
-	return ", ".join(sorted(addresses)) if addresses else None
+	def _sort_key(value: str) -> tuple[int, bytes, int, str]:
+		try:
+			iface = ipaddress.ip_interface(value)
+			return (iface.version, iface.ip.packed, iface.network.prefixlen, iface.compressed)
+		except ValueError:
+			return (99, value.encode("utf-8"), 0, value)
+
+	return ", ".join(sorted(addresses, key=_sort_key)) if addresses else None
 
 
 def update_tunnel_peer_allowed_ips(conn: sqlite3.Connection, node_id: str) -> bool:

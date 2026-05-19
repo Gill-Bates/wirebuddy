@@ -123,12 +123,13 @@ void (async function () {
             return;
         }
 
-        const boundKey = `bound-${event}`;
-        if (element.dataset?.[boundKey] === '1') {
+        const normalizedEvent = String(event).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        const boundAttr = `data-bound-${normalizedEvent}`;
+        if (element.getAttribute(boundAttr) === '1') {
             return;
         }
 
-        element.dataset[boundKey] = '1';
+        element.setAttribute(boundAttr, '1');
         const listenerOptions = { ...options };
         if (!listenerOptions.signal) {
             listenerOptions.signal = pageAbortController.signal;

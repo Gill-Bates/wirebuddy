@@ -9,16 +9,22 @@
 Requires the ``qrcode`` and ``Pillow`` packages.  If they are not
 installed, importing this module will fail with ``ImportError`` —
 callers should catch that at the import site.
+
+Generated QR images contain full WireGuard credentials and must be treated as
+high-sensitivity artifacts. Callers should ensure HTTP responses are sent with
+non-cacheable headers such as ``Cache-Control: no-store``.
 """
 
 from __future__ import annotations
 
+import inspect
 import io
 import logging
 from pathlib import Path
 from typing import Optional
 
 import qrcode
+import qrcode.constants
 from PIL import Image, ImageDraw, ImageFont
 
 _log = logging.getLogger(__name__)
@@ -26,7 +32,7 @@ _log = logging.getLogger(__name__)
 # Asset paths resolved relative to the app package
 _APP_DIR = Path(__file__).resolve().parent.parent  # …/app
 _LOGO_PATH = _APP_DIR / "static" / "img" / "wirebuddy_1c.png"
-_FONT_PATH = _APP_DIR / "static" / "vendor" / "fonts" / "RobotoFlex.woff2"
+_FONT_PATH = _APP_DIR / "static" / "vendor" / "fonts" / "RobotoFlex.ttf"
 
 # Layout tunables
 _LOGO_SCALE = 0.6  # Logo width relative to QR code width
@@ -34,6 +40,10 @@ _MAX_LABEL_LEN = 32  # Truncate peer names beyond this to avoid canvas overflow
 _BADGE_PAD_X = 22
 _BADGE_PAD_Y = 10
 _BADGE_SECTION_SPACING = 18
+_MAX_QR_CONFIG_SIZE = 8192
+_MAX_CANVAS_SIZE = 4096
+_PNG_OPTIMIZE = False
+_SUPPORTS_DEFAULT_FONT_SIZE = "size" in inspect.signature(ImageFont.load_default).parameters
 
 
 def _load_font(size: int, variation_name: Optional[str] = None) -> ImageFont.ImageFont:
@@ -44,11 +54,25 @@ def _load_font(size: int, variation_name: Optional[str] = None) -> ImageFont.Ima
 			font.set_variation_by_name(variation_name)
 		return font
 	except (AttributeError, OSError, ValueError):
-		try:
+		if _SUPPORTS_DEFAULT_FONT_SIZE:
 			return ImageFont.load_default(size=size)
-		except TypeError:
-			# Pillow < 10.0 does not accept a size argument
-			return ImageFont.load_default()
+		return ImageFont.load_default()
+
+
+def _truncate_to_width(text: str, font: ImageFont.ImageFont, max_width: int) -> str:
+	"""Truncate text to fit within a rendered width budget."""
+	if not text:
+		return text
+	truncated = text
+	if len(truncated) > _MAX_LABEL_LEN:
+		truncated = truncated[:_MAX_LABEL_LEN]
+	while truncated and font.getlength(truncated) > max_width:
+		truncated = truncated[:-1]
+	if truncated != text:
+		while truncated and font.getlength(truncated + "…") > max_width:
+			truncated = truncated[:-1]
+		return (truncated or text[:1]) + "…"
+	return truncated
 
 
 def _draw_node_badge(
@@ -79,11 +103,14 @@ def _draw_node_badge(
 	y1 = y0 + badge_h
 
 	# Badge background
-	draw.rounded_rectangle(
-		[x0, y0, x1, y1],
-		radius=radius,
-		fill="#000000",
-	)
+	if hasattr(draw, "rounded_rectangle"):
+		draw.rounded_rectangle(
+			[x0, y0, x1, y1],
+			radius=radius,
+			fill="#000000",
+		)
+	else:
+		draw.rectangle([x0, y0, x1, y1], fill="#000000")
 
 	# Center text using anchor-based alignment for more consistent vertical centering.
 	cx = (x0 + x1) // 2
@@ -121,15 +148,20 @@ def generate_qr_png(
 	Returns:
 		PNG image bytes.
 	"""
+	config_size = len(config_text.encode("utf-8"))
+	if config_size > _MAX_QR_CONFIG_SIZE:
+		raise ValueError("QR payload too large")
+
 	# Sanitise inputs
 	peer_name = peer_name or "Peer"
-	if len(peer_name) > _MAX_LABEL_LEN:
-		peer_name = peer_name[:_MAX_LABEL_LEN - 1] + "…"
-	if node_name and len(node_name) > _MAX_LABEL_LEN:
-		node_name = node_name[:_MAX_LABEL_LEN - 1] + "…"
 
 	# version=1 is a minimum hint; fit=True auto-upgrades for larger payloads
-	qr = qrcode.QRCode(version=1, box_size=10, border=4)
+	qr = qrcode.QRCode(
+		version=1,
+		box_size=10,
+		border=4,
+		error_correction=qrcode.constants.ERROR_CORRECT_H,
+	)
 	qr.add_data(config_text)
 	qr.make(fit=True)
 
@@ -147,16 +179,20 @@ def generate_qr_png(
 			scale = target_w / logo_img.width
 			target_h = int(logo_img.height * scale)
 			logo_img = logo_img.resize((target_w, target_h), Image.LANCZOS)
-		except (OSError, ValueError, SyntaxError):
-			_log.warning("Could not load logo from %s", _LOGO_PATH)
+		except (OSError, ValueError, SyntaxError) as exc:
+			_log.warning("Could not load logo from %s: %s", _LOGO_PATH, exc)
 			logo_img = None
 
 	# --- load font (optional – graceful fallback) ---
 	font_size = max(20, qr_w // 18)
 	font = _load_font(font_size)
+	max_text_width = max(64, qr_w - 32)
+	peer_name = _truncate_to_width(peer_name, font, max_text_width)
 
 	badge_font_size = max(16, font_size * 3 // 4)
 	badge_font = _load_font(badge_font_size, variation_name="Bold")
+	if node_name:
+		node_name = _truncate_to_width(node_name, badge_font, max_text_width)
 
 	# --- measure text ---
 	text_bbox = font.getbbox(peer_name)
@@ -178,6 +214,8 @@ def generate_qr_png(
 
 	canvas_w = qr_w
 	canvas_h = qr_h + logo_section_h + badge_section_h + text_section_h + padding * 2
+	if canvas_w > _MAX_CANVAS_SIZE or canvas_h > _MAX_CANVAS_SIZE:
+		raise ValueError("QR image dimensions exceed limit")
 	canvas = Image.new("RGBA", (canvas_w, canvas_h), "white")
 
 	# Paste QR code at top
@@ -206,5 +244,5 @@ def generate_qr_png(
 	canvas = canvas.convert("RGB")
 
 	buffer = io.BytesIO()
-	canvas.save(buffer, format="PNG", optimize=True)
+	canvas.save(buffer, format="PNG", optimize=_PNG_OPTIMIZE)
 	return buffer.getvalue()

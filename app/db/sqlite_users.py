@@ -47,7 +47,7 @@ def _encrypt_otp_secret(secret: str, pepper: str | None = None) -> str:
 def decrypt_otp_secret(encrypted: str | None, pepper: str | None = None) -> str | None:
 	"""Decrypt OTP secret from storage. Returns None if not set."""
 	pepper = pepper if pepper is not None else get_config().secret_key
-	return vault.decrypt_if_needed(encrypted, pepper)
+	return vault.decrypt_required(encrypted, pepper)
 
 
 # ---------------------------------------------------------------------------

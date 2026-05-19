@@ -539,25 +539,25 @@ class ACMEClient:
 		
 		return resp.json()
 
-			async def poll_authorization(self, auth_url: str, max_attempts: int = 15, delay: float = 4.0) -> dict:
-				"""Poll authorization status until the challenge is validated or fails."""
-				for _ in range(max_attempts):
-					resp = await self._signed_request(auth_url, None)
+	async def poll_authorization(self, auth_url: str, max_attempts: int = 15, delay: float = 4.0) -> dict:
+		"""Poll authorization status until the challenge is validated or fails."""
+		for _ in range(max_attempts):
+			resp = await self._signed_request(auth_url, None)
 
-					if resp.status_code != 200:
-						raise HTTPException(status_code=500, detail=f"Failed to poll authorization: {_parse_acme_error(resp)}")
+			if resp.status_code != 200:
+				raise HTTPException(status_code=500, detail=f"Failed to poll authorization: {_parse_acme_error(resp)}")
 
-					authorization = resp.json()
-					status = authorization.get("status")
+			authorization = resp.json()
+			status = authorization.get("status")
 
-					if status == "valid":
-						return authorization
-					if status in ("invalid", "expired", "revoked", "deactivated"):
-						raise HTTPException(status_code=400, detail=f"Authorization failed: {status}")
+			if status == "valid":
+				return authorization
+			if status in ("invalid", "expired", "revoked", "deactivated"):
+				raise HTTPException(status_code=400, detail=f"Authorization failed: {status}")
 
-					await asyncio.sleep(_parse_retry_after(resp, delay))
+			await asyncio.sleep(_parse_retry_after(resp, delay))
 
-				raise HTTPException(status_code=408, detail="Timeout waiting for authorization to become valid")
+		raise HTTPException(status_code=408, detail="Timeout waiting for authorization to become valid")
 	
 	async def poll_order(self, order_url: str, max_attempts: int = 15, delay: float = 4.0) -> dict:
 		"""Poll order status until ready or failed."""
