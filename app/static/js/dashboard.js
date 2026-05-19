@@ -38,6 +38,7 @@ let tileLoadedSinceSwitch = false;
 let lastVisibleRefresh = 0;
 // Internal state for speedtest server names (used in chart tooltip)
 let _speedtestServers = [];
+let speedtestChartResizeTimer = null;
 
 const nodesCountEl = document.getElementById('nodes-count');
 const peersCountEl = document.getElementById('peers-count');
@@ -114,6 +115,40 @@ function setBandwidthMetric(downloadMbit, uploadMbit) {
 
     downEl.textContent = `↓ ${formatBandwidthMetric(downloadMbit, 1)}`;
     upEl.textContent = `↑ ${formatBandwidthMetric(uploadMbit, 1)}`;
+}
+
+function resizeSpeedtestCanvas(canvas) {
+    if (!canvas) return false;
+
+    const wrap = canvas.parentElement;
+    if (!wrap) return false;
+
+    const rect = wrap.getBoundingClientRect();
+    const width = Math.max(0, Math.round(rect.width));
+    const height = Math.max(0, Math.round(rect.height));
+    if (!width || !height) return false;
+
+    const dpr = window.devicePixelRatio || 1;
+    const pixelWidth = Math.round(width * dpr);
+    const pixelHeight = Math.round(height * dpr);
+
+    if (canvas.width !== pixelWidth) {
+        canvas.width = pixelWidth;
+    }
+    if (canvas.height !== pixelHeight) {
+        canvas.height = pixelHeight;
+    }
+
+    return true;
+}
+
+function syncSpeedtestChartSize() {
+    const canvas = document.getElementById('speedtest-chart');
+    if (!canvas || !speedtestChart) return;
+
+    if (resizeSpeedtestCanvas(canvas)) {
+        speedtestChart.resize();
+    }
 }
 
 function unwrapList(payload, key) {
@@ -951,6 +986,10 @@ function stopAutoRefresh() {
             clearTimeout(dashboardResizeTimer);
             dashboardResizeTimer = null;
         }
+        if (speedtestChartResizeTimer) {
+            clearTimeout(speedtestChartResizeTimer);
+            speedtestChartResizeTimer = null;
+        }
         if (refreshScheduler) {
             refreshScheduler.destroy();
             refreshScheduler = null;
@@ -975,6 +1014,13 @@ document.addEventListener('speedtest-completed', () => {
     refreshSpeedtestChart(new AbortController().signal).catch(e => {
         console.error('Failed to refresh speedtest chart:', e);
     });
+});
+
+window.addEventListener('resize', () => {
+    clearTimeout(speedtestChartResizeTimer);
+    speedtestChartResizeTimer = setTimeout(() => {
+        syncSpeedtestChartSize();
+    }, 150);
 });
 
 // Listen for range selector changes
@@ -1146,12 +1192,13 @@ function initSpeedtestChart() {
     }
 
     const colors = getChartColors();
+    resizeSpeedtestCanvas(canvas);
 
     speedtestChart = new Chart(canvas, {
         type: 'line',
         data: { labels: [], datasets: [] },
         options: {
-            responsive: true,
+            responsive: false,
             maintainAspectRatio: false,
             interaction: {
                 mode: 'index',

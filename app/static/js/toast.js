@@ -5,6 +5,15 @@
 
 function wbToast(message, type = 'info', duration = 4000) {
     if (window.WBReconnect?.isActive?.()) return;
+    if (!window.bootstrap?.Toast) {
+        console.error('bootstrap.Toast not available - toast cannot be displayed:', message);
+        return;
+    }
+
+    const toastType = type === 'error' ? 'danger' : type;
+    const safeDuration = Number.isFinite(Number(duration))
+        ? Math.max(1000, Number(duration))
+        : 4000;
     const icons = { info: 'info', success: 'check_circle', warning: 'warning', danger: 'error' };
     const bgClasses = { info: 'text-bg-primary', success: 'text-bg-success', warning: 'text-bg-warning', danger: 'text-bg-danger' };
     const ariaLive = { info: 'polite', success: 'polite', warning: 'assertive', danger: 'assertive' };
@@ -16,10 +25,12 @@ function wbToast(message, type = 'info', duration = 4000) {
     }
 
     const existingToasts = container.querySelectorAll('.toast');
-    for (let t of existingToasts) {
-        if (t.dataset.wbMessage === message) {
+    const toastKey = `${toastType}:${message}`;
+
+    for (const toastNode of existingToasts) {
+        if (toastNode.dataset.wbToastKey === toastKey) {
             try {
-                const bsToast = bootstrap.Toast.getInstance(t);
+                const bsToast = window.bootstrap.Toast.getInstance(toastNode);
                 if (bsToast) {
                     // Use hide() instead of dispose() — dispose() nullifies
                     // _element immediately, which crashes if Bootstrap's
@@ -28,20 +39,37 @@ function wbToast(message, type = 'info', duration = 4000) {
                     bsToast.hide();
                 } else {
                     // No active Bootstrap instance — safe to remove directly
-                    t.remove();
+                    toastNode.remove();
                 }
             } catch (e) {
-                t.remove();
+                toastNode.remove();
             }
         }
     }
 
+    const MAX_TOASTS = 5;
+    while (container.children.length >= MAX_TOASTS) {
+        const oldestToast = container.firstElementChild;
+        if (!oldestToast) break;
+
+        try {
+            const oldestInstance = window.bootstrap.Toast.getInstance(oldestToast);
+            if (oldestInstance) {
+                oldestInstance.hide();
+            } else {
+                oldestToast.remove();
+            }
+        } catch (e) {
+            oldestToast.remove();
+        }
+    }
+
     const toastEl = document.createElement('div');
-    toastEl.className = `toast align-items-center border-0 ${bgClasses[type] || bgClasses.info}`;
+    toastEl.className = `toast align-items-center border-0 ${bgClasses[toastType] || bgClasses.info}`;
     toastEl.setAttribute('role', 'alert');
-    toastEl.setAttribute('aria-live', ariaLive[type] || 'polite');
+    toastEl.setAttribute('aria-live', ariaLive[toastType] || 'polite');
     toastEl.setAttribute('aria-atomic', 'true');
-    toastEl.dataset.wbMessage = message;
+    toastEl.dataset.wbToastKey = toastKey;
 
     // Create elements safely to prevent XSS
     const toastBody = document.createElement('div');
@@ -49,7 +77,7 @@ function wbToast(message, type = 'info', duration = 4000) {
 
     const iconSpan = document.createElement('span');
     iconSpan.className = 'material-icons';
-    iconSpan.textContent = icons[type] || icons.info;
+    iconSpan.textContent = icons[toastType] || icons.info;
 
     const messageSpan = document.createElement('span');
     messageSpan.textContent = message;  // textContent is XSS-safe
@@ -71,8 +99,11 @@ function wbToast(message, type = 'info', duration = 4000) {
     toastEl.appendChild(flexDiv);
 
     container.appendChild(toastEl);
-    const toast = new bootstrap.Toast(toastEl, { delay: duration });
+    const toast = new window.bootstrap.Toast(toastEl, { delay: safeDuration });
     toast.show();
 
-    toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove(), { once: true });
+    toastEl.addEventListener('hidden.bs.toast', () => {
+        window.bootstrap.Toast.getInstance(toastEl)?.dispose();
+        toastEl.remove();
+    }, { once: true });
 }

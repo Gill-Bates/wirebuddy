@@ -266,7 +266,8 @@ class ACMEClient:
 		self.account_thumbprint_path = certs_dir / "account_thumbprint.txt"
 	
 	async def __aenter__(self):
-		self.http_client = httpx.AsyncClient(timeout=30.0)
+		limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+		self.http_client = httpx.AsyncClient(timeout=30.0, limits=limits)
 		return self
 	
 	async def __aexit__(self, *args):
@@ -593,7 +594,7 @@ class ACMEClient:
 		"""Save certificate, chain, and key to disk."""
 		# Create domain directory
 		domain_dir = self.certs_dir / domain
-		domain_dir.mkdir(parents=True, exist_ok=True)
+		domain_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 		
 		suffix = "_staging" if is_staging else ""
 		
@@ -647,8 +648,11 @@ def _read_valid_challenges(challenge_file: PathLib) -> dict[str, dict]:
 	"""Read challenge file contents and drop expired entries."""
 	if not challenge_file.exists():
 		return {}
-	content = challenge_file.read_text()
-	data = json.loads(content) if content else {}
+	try:
+		content = challenge_file.read_text()
+		data = json.loads(content) if content else {}
+	except (OSError, json.JSONDecodeError):
+		return {}
 	now = time.time()
 	valid: dict[str, dict] = {}
 	for token, entry in data.items():
@@ -716,8 +720,12 @@ def get_challenge_response(token: str, certs_dir: PathLib | None = None) -> str 
 	optimization for the common case.
 	"""
 	# Try in-memory first (for current process)
-	if token in _pending_challenges:
-		return _pending_challenges[token]
+	entry = _pending_challenges.get(token)
+	if entry:
+		key_auth, expires_at = entry
+		if expires_at > time.time():
+			return key_auth
+		_pending_challenges.pop(token, None)
 	
 	# Try file-based (for multi-worker/restart scenarios)
 	if certs_dir:
@@ -733,7 +741,15 @@ def get_challenge_response(token: str, certs_dir: PathLib | None = None) -> str 
 # WARNING: This dict is per-process. With UVICORN_WORKERS > 1, challenges
 # stored in one worker won't be visible in another. File-based storage
 # (_save_challenge) ensures cross-worker compatibility.
-_pending_challenges: dict[str, str] = {}
+_pending_challenges: dict[str, tuple[str, float]] = {}
+
+
+def _prune_pending_challenges(now: float | None = None) -> None:
+	"""Drop expired in-memory challenges."""
+	current_time = time.time() if now is None else now
+	expired_tokens = [token for token, value in _pending_challenges.items() if value[1] <= current_time]
+	for token in expired_tokens:
+		_pending_challenges.pop(token, None)
 
 
 async def _get_certs_dir_dep(config: Config = Depends(get_config)) -> PathLib:
@@ -874,7 +890,8 @@ async def request_certificate(
 			token, key_auth = client.get_http01_challenge(authorization)
 			
 			# Store challenge response (both in-memory and file)
-			_pending_challenges[token] = key_auth
+			_prune_pending_challenges()
+			_pending_challenges[token] = (key_auth, time.time() + CHALLENGE_TTL)
 			await asyncio.to_thread(_save_challenge, certs_dir, token, key_auth)
 			_log.info("Challenge token: %s", token)
 			

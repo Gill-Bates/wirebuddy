@@ -535,13 +535,17 @@
         }
 
         .network-item {
-            flex: 0 0 240px;
-            min-width: 240px;
+            flex: 0 0 clamp(280px, 85vw, 380px);
+            min-width: clamp(280px, 85vw, 380px);
             scroll-snap-align: start;
         }
 
         .network-item:only-child {
             grid-column: auto;
+        }
+
+        .network-sparkline {
+            width: 100% !important;
         }
     }
 

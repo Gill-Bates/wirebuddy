@@ -15,6 +15,7 @@ import {
     diffScreenshots,
     ensureDir,
     installLayoutShiftObserver,
+    disableMotion,
     resetLayoutShiftMetric,
     sanitize,
 } from '../../lib/browser-utils.mjs';
@@ -108,4 +109,26 @@ test('browser runtime facade captures console telemetry and stable screenshot di
     expect(diff.sizeMismatch).toBe(false);
     expect(fs.existsSync(diff.diffPath)).toBe(true);
     expect(sanitize('Browser runtime stable pair')).toBe('browser_runtime_stable_pair');
+});
+
+test('disableMotion serves motion reset CSS through a routed stylesheet', async () => {
+    const routeHandlers = [];
+    const addStyleTagCalls = [];
+
+    const fakePage = {
+        async route(pattern, handler) {
+            routeHandlers.push({ pattern, handler });
+        },
+        async addStyleTag(options) {
+            addStyleTagCalls.push(options);
+        },
+    };
+
+    await disableMotion(fakePage, 'body { animation: none; }', 'test-view');
+
+    expect(routeHandlers).toHaveLength(1);
+    expect(routeHandlers[0].pattern).toMatch(/__ui_lint__\/motion-reset-[a-f0-9]{16}\.css$/);
+    expect(addStyleTagCalls).toHaveLength(1);
+    expect(addStyleTagCalls[0]).toMatchObject({ url: expect.stringMatching(/^\/__ui_lint__\/motion-reset-[a-f0-9]{16}\.css$/) });
+    expect(addStyleTagCalls[0]).not.toHaveProperty('content');
 });

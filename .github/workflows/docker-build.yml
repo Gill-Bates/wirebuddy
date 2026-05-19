@@ -6,6 +6,10 @@ on:
       - 'v*'
   workflow_dispatch:
 
+concurrency:
+  group: docker-release
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -27,7 +31,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -66,28 +70,35 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Trivy scan Python dependencies (requirements.txt)
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          scan-type: 'fs'
-          scan-ref: 'requirements.txt'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: true
-          severity: 'CRITICAL,HIGH'
-          timeout: '5m'
-
-  build-amd64:
-    name: Build amd64 image natively
+  build:
+    name: Build ${{ matrix.arch }} image natively
     needs: meta
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+            cache_scope: amd64
+            test_image: wirebuddy:test-amd64
+            container_name: wirebuddy-test-amd64
+            image_suffix: amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            cache_scope: arm64
+            test_image: wirebuddy:test-arm64
+            container_name: wirebuddy-test-arm64
+            image_suffix: arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
       contents: read
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -108,46 +119,46 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build amd64 image for smoke tests
+      - name: Build image for smoke tests
         run: |
           set -euo pipefail
           docker buildx build \
-            --platform linux/amd64 \
+            --platform "${{ matrix.platform }}" \
             --target runtime \
             --load \
-            --cache-from type=gha,scope=amd64 \
-            --cache-to type=gha,mode=max,scope=amd64 \
+            --cache-from type=gha,scope=${{ matrix.cache_scope }} \
+            --cache-to type=gha,mode=max,scope=${{ matrix.cache_scope }} \
             --build-arg "APP_VERSION=${{ needs.meta.outputs.tag }}" \
             --build-arg "BUILD_DATE=${{ needs.meta.outputs.build_date }}" \
             --build-arg "VCS_REF=${{ github.sha }}" \
-            -t wirebuddy:test-amd64 \
+            -t "${{ matrix.test_image }}" \
             -f docker/Dockerfile \
             .
 
       - name: Smoke test (Master mode)
         run: |
           set -euo pipefail
-          docker run -d --name wirebuddy-test-amd64 \
+          docker run -d --name "${{ matrix.container_name }}" \
             -p 127.0.0.1:0:8000 \
             -e WIREBUDDY_SECRET_KEY="ci-smoke-test-key-not-for-production" \
             -e WIREBUDDY_SKIP_NETWORK_CHECK="1" \
-            wirebuddy:test-amd64
+            "${{ matrix.test_image }}"
 
           echo "Waiting for container to start..."
           for i in $(seq 1 30); do
-            if ! docker ps -q -f name=wirebuddy-test-amd64 | grep -q .; then
+            if ! docker ps -q -f name="${{ matrix.container_name }}" | grep -q .; then
               echo "✗ Container exited during startup after ${i}s"
               echo "=== Container logs ==="
-              docker logs wirebuddy-test-amd64 2>&1 || echo "Could not retrieve logs"
-              docker rm -f wirebuddy-test-amd64 2>/dev/null || true
+              docker logs "${{ matrix.container_name }}" 2>&1 || echo "Could not retrieve logs"
+              docker rm -f "${{ matrix.container_name }}" 2>/dev/null || true
               exit 1
             fi
 
-            if docker exec wirebuddy-test-amd64 curl -fsS --max-time 2 \
+            if docker exec "${{ matrix.container_name }}" curl -fsS --max-time 2 \
                 http://127.0.0.1:8000/api/system/status > /dev/null 2>&1; then
               echo "✓ Master mode: Container ready after ${i}s"
-              docker stop wirebuddy-test-amd64
-              docker rm wirebuddy-test-amd64
+              docker stop "${{ matrix.container_name }}"
+              docker rm "${{ matrix.container_name }}"
               exit 0
             fi
 
@@ -156,11 +167,11 @@ jobs:
 
           echo "✗ Health check timeout after 30s"
           echo "=== Container logs ==="
-          docker logs wirebuddy-test-amd64 2>&1 || echo "Could not retrieve logs"
+          docker logs "${{ matrix.container_name }}" 2>&1 || echo "Could not retrieve logs"
           echo "=== Container status ==="
-          docker ps -a -f name=wirebuddy-test-amd64
-          docker stop wirebuddy-test-amd64 2>/dev/null || true
-          docker rm -f wirebuddy-test-amd64 2>/dev/null || true
+          docker ps -a -f name="${{ matrix.container_name }}"
+          docker stop "${{ matrix.container_name }}" 2>/dev/null || true
+          docker rm -f "${{ matrix.container_name }}" 2>/dev/null || true
           exit 1
 
       - name: Smoke test (Node mode)
@@ -168,7 +179,7 @@ jobs:
           set -euo pipefail
 
           echo "Testing node daemon module import..."
-          docker run --rm --entrypoint python wirebuddy:test-amd64 \
+          docker run --rm --entrypoint python "${{ matrix.test_image }}" \
             -c "from app.node.daemon import run, main; print('✓ Node daemon module imports OK')"
 
           echo "Testing node mode startup (expecting graceful exit)..."
@@ -177,7 +188,7 @@ jobs:
             -e SERVER_MODE=node \
             -e LOG_LEVEL=DEBUG \
             -e WIREBUDDY_SECRET_KEY="ci-node-test-key" \
-            wirebuddy:test-amd64 2>&1) || EXIT_CODE=$?
+            "${{ matrix.test_image }}" 2>&1) || EXIT_CODE=$?
 
           if [ $EXIT_CODE -eq 1 ] && echo "$LOGS" | grep -q "WIREBUDDY_ENROLLMENT_TOKEN is required"; then
             echo "✓ Node mode: Startup path OK (expected exit: missing enrollment token)"
@@ -189,15 +200,15 @@ jobs:
             exit 1
           fi
 
-      - name: Tag amd64 image for scanning and push
+      - name: Tag image for scanning and push
         run: |
           set -euo pipefail
-          docker tag wirebuddy:test-amd64 "${IMAGE_NAME}:${{ needs.meta.outputs.tag }}-amd64"
+          docker tag "${{ matrix.test_image }}" "${IMAGE_NAME}:${{ needs.meta.outputs.tag }}-${{ matrix.image_suffix }}"
 
-      - name: Trivy vulnerability scan (amd64)
+      - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          image-ref: '${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.tag }}-amd64'
+          image-ref: '${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.tag }}-${{ matrix.image_suffix }}'
           format: 'table'
           exit-code: '1'
           ignore-unfixed: true
@@ -206,149 +217,15 @@ jobs:
           timeout: '10m'
           trivyignores: '.trivyignore'
 
-      - name: Push amd64 image
+      - name: Push image
         run: |
           set -euo pipefail
-          docker push "${IMAGE_NAME}:${{ needs.meta.outputs.tag }}-amd64"
-
-  build-arm64:
-    name: Build arm64 image natively
-    needs: meta
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Generate BUILD_INFO
-        run: git rev-parse HEAD > BUILD_INFO
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-        with:
-          driver-opts: |
-            image=moby/buildkit:latest
-            network=host
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build arm64 image for smoke tests
-        run: |
-          set -euo pipefail
-          docker buildx build \
-            --platform linux/arm64 \
-            --target runtime \
-            --load \
-            --cache-from type=gha,scope=arm64 \
-            --cache-to type=gha,mode=max,scope=arm64 \
-            --build-arg "APP_VERSION=${{ needs.meta.outputs.tag }}" \
-            --build-arg "BUILD_DATE=${{ needs.meta.outputs.build_date }}" \
-            --build-arg "VCS_REF=${{ github.sha }}" \
-            -t wirebuddy:test-arm64 \
-            -f docker/Dockerfile \
-            .
-
-      - name: Smoke test (Master mode)
-        run: |
-          set -euo pipefail
-          docker run -d --name wirebuddy-test-arm64 \
-            -p 127.0.0.1:0:8000 \
-            -e WIREBUDDY_SECRET_KEY="ci-smoke-test-key-not-for-production" \
-            -e WIREBUDDY_SKIP_NETWORK_CHECK="1" \
-            wirebuddy:test-arm64
-
-          echo "Waiting for container to start..."
-          for i in $(seq 1 30); do
-            if ! docker ps -q -f name=wirebuddy-test-arm64 | grep -q .; then
-              echo "✗ Container exited during startup after ${i}s"
-              echo "=== Container logs ==="
-              docker logs wirebuddy-test-arm64 2>&1 || echo "Could not retrieve logs"
-              docker rm -f wirebuddy-test-arm64 2>/dev/null || true
-              exit 1
-            fi
-
-            if docker exec wirebuddy-test-arm64 curl -fsS --max-time 2 \
-                http://127.0.0.1:8000/api/system/status > /dev/null 2>&1; then
-              echo "✓ Master mode: Container ready after ${i}s"
-              docker stop wirebuddy-test-arm64
-              docker rm wirebuddy-test-arm64
-              exit 0
-            fi
-
-            sleep 1
-          done
-
-          echo "✗ Health check timeout after 30s"
-          echo "=== Container logs ==="
-          docker logs wirebuddy-test-arm64 2>&1 || echo "Could not retrieve logs"
-          echo "=== Container status ==="
-          docker ps -a -f name=wirebuddy-test-arm64
-          docker stop wirebuddy-test-arm64 2>/dev/null || true
-          docker rm -f wirebuddy-test-arm64 2>/dev/null || true
-          exit 1
-
-      - name: Smoke test (Node mode)
-        run: |
-          set -euo pipefail
-
-          echo "Testing node daemon module import..."
-          docker run --rm --entrypoint python wirebuddy:test-arm64 \
-            -c "from app.node.daemon import run, main; print('✓ Node daemon module imports OK')"
-
-          echo "Testing node mode startup (expecting graceful exit)..."
-          EXIT_CODE=0
-          LOGS=$(docker run --rm \
-            -e SERVER_MODE=node \
-            -e LOG_LEVEL=DEBUG \
-            -e WIREBUDDY_SECRET_KEY="ci-node-test-key" \
-            wirebuddy:test-arm64 2>&1) || EXIT_CODE=$?
-
-          if [ $EXIT_CODE -eq 1 ] && echo "$LOGS" | grep -q "WIREBUDDY_ENROLLMENT_TOKEN is required"; then
-            echo "✓ Node mode: Startup path OK (expected exit: missing enrollment token)"
-          else
-            echo "✗ Node mode: Unexpected behavior"
-            echo "=== Exit code: $EXIT_CODE (expected: 1) ==="
-            echo "=== Logs ==="
-            echo "$LOGS"
-            exit 1
-          fi
-
-      - name: Tag arm64 image for scanning and push
-        run: |
-          set -euo pipefail
-          docker tag wirebuddy:test-arm64 "${IMAGE_NAME}:${{ needs.meta.outputs.tag }}-arm64"
-
-      - name: Trivy vulnerability scan (arm64)
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          image-ref: '${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.tag }}-arm64'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
-          timeout: '10m'
-          trivyignores: '.trivyignore'
-
-      - name: Push arm64 image
-        run: |
-          set -euo pipefail
-          docker push "${IMAGE_NAME}:${{ needs.meta.outputs.tag }}-arm64"
+          docker push "${IMAGE_NAME}:${{ needs.meta.outputs.tag }}-${{ matrix.image_suffix }}"
 
   create-manifest:
     name: Create multi-arch manifest
-    needs: [meta, build-amd64, build-arm64]
-    if: always() && needs.build-amd64.result == 'success' && needs.build-arm64.result == 'success'
+    needs: [meta, build]
+    if: needs.build.result == 'success'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -366,98 +243,23 @@ jobs:
           set -euo pipefail
           VERSION="${{ needs.meta.outputs.version }}"
 
-          docker manifest create "${IMAGE_NAME}:${VERSION}" \
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:${VERSION}" \
             "${IMAGE_NAME}:${VERSION}-amd64" \
-            "${IMAGE_NAME}:${VERSION}-arm64" \
-            --amend
-          docker manifest push "${IMAGE_NAME}:${VERSION}"
+            "${IMAGE_NAME}:${VERSION}-arm64"
 
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            docker manifest create "${IMAGE_NAME}:latest" \
+          if [[ "$VERSION" != *"-"* ]]; then
+            docker buildx imagetools create \
+              --tag "${IMAGE_NAME}:latest" \
               "${IMAGE_NAME}:${VERSION}-amd64" \
-              "${IMAGE_NAME}:${VERSION}-arm64" \
-              --amend
-            docker manifest push "${IMAGE_NAME}:latest"
+              "${IMAGE_NAME}:${VERSION}-arm64"
           fi
 
           echo "Pushed manifests:"
           echo "  ${IMAGE_NAME}:${VERSION}"
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          if [[ "$VERSION" != *"-"* ]]; then
             echo "  ${IMAGE_NAME}:latest"
           fi
-
-  cleanup-old-tags:
-    name: Cleanup old Docker Hub tags
-    needs: [meta, create-manifest]
-    if: startsWith(github.ref, 'refs/tags/v')
-    continue-on-error: true
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    env:
-      DH_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-
-    steps:
-      - name: Cleanup old Docker Hub tags
-        run: |
-          set -euo pipefail
-
-          REPO="${DH_USERNAME}/wirebuddy"
-          CURRENT_TAG="${{ needs.meta.outputs.tag }}"
-          KEEP_COUNT=3  # Keep latest + 3 most recent version tags
-
-          echo "Fetching Docker Hub token..."
-          TOKEN=$(jq -n \
-            --arg user "$DH_USERNAME" \
-            --arg pass "$DH_TOKEN" \
-            '{"username": $user, "password": $pass}' | \
-            curl -s -X POST \
-              -H "Content-Type: application/json" \
-              -d @- \
-              https://hub.docker.com/v2/users/login/ | jq -r .token)
-
-          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "ERROR: Failed to authenticate with Docker Hub"
-            exit 1
-          fi
-
-          echo "Fetching all tags for ${REPO}..."
-          ALL_TAGS=""
-          NEXT_URL="https://hub.docker.com/v2/repositories/${REPO}/tags/?page_size=100"
-
-          while [ -n "$NEXT_URL" ] && [ "$NEXT_URL" != "null" ]; do
-            RESPONSE=$(curl -s -H "Authorization: JWT ${TOKEN}" "$NEXT_URL")
-            PAGE_TAGS=$(echo "$RESPONSE" | jq -r '.results[].name')
-            ALL_TAGS="${ALL_TAGS}${PAGE_TAGS}\n"
-            NEXT_URL=$(echo "$RESPONSE" | jq -r '.next // empty')
-          done
-
-          VERSIONED_TAGS=$(echo -e "$ALL_TAGS" | grep -E '^v[0-9]' | sort -Vr | head -n "$KEEP_COUNT")
-
-          echo "Current tag: ${CURRENT_TAG}"
-          echo "Keeping version tags: ${VERSIONED_TAGS}"
-
-          echo -e "$ALL_TAGS" | while read -r TAG; do
-            [ -z "$TAG" ] && continue
-
-            if ! echo "$TAG" | grep -qE '^v[0-9]'; then
-              echo "Skipping non-version tag: ${TAG}"
-              continue
-            fi
-
-            if [ "$TAG" = "$CURRENT_TAG" ] || echo "$VERSIONED_TAGS" | grep -qx "$TAG"; then
-              echo "Keeping version tag: ${TAG}"
-            else
-              echo "Deleting old version tag: ${TAG}"
-              curl -s -X DELETE \
-                -H "Authorization: JWT ${TOKEN}" \
-                "https://hub.docker.com/v2/repositories/${REPO}/tags/${TAG}/" || \
-                echo "Warning: Failed to delete ${TAG}"
-            fi
-          done
-
-          echo "✓ Cleanup completed. Kept 'latest' + ${KEEP_COUNT} most recent versions."
 
   create-release:
     name: Create GitHub Release
@@ -474,6 +276,17 @@ jobs:
           script: |
             const version = '${{ needs.meta.outputs.version }}';
             const imageName = '${{ env.IMAGE_NAME }}';
+            const isPrerelease = version.includes('-');
+
+            const tags = [
+              '- `' + imageName + ':' + version + '` (multi-arch)',
+              '- `' + imageName + ':' + version + '-amd64`',
+              '- `' + imageName + ':' + version + '-arm64`'
+            ];
+
+            if (!isPrerelease) {
+              tags.push('- `' + imageName + ':latest`');
+            }
 
             const body = [
               '## WireBuddy ' + version,
@@ -481,10 +294,7 @@ jobs:
               '**Docker Image:** `docker pull ' + imageName + ':' + version + '`',
               '',
               '### Available Tags',
-              '- `' + imageName + ':' + version + '` (multi-arch)',
-              '- `' + imageName + ':' + version + '-amd64`',
-              '- `' + imageName + ':' + version + '-arm64`',
-              '- `' + imageName + ':latest`',
+              ...tags,
               '',
               '**Source:** [WireBuddy Repository](https://github.com/' + context.repo.owner + '/' + context.repo.repo + ')'
             ].join('\n');
@@ -497,7 +307,7 @@ jobs:
                 name: 'WireBuddy ' + version,
                 body: body,
                 draft: false,
-                prerelease: false
+                prerelease: isPrerelease
               });
               console.log('Created release v' + version);
             } catch (e) {

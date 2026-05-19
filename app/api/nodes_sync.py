@@ -22,6 +22,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from typing import Any, TypeVar
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -203,6 +204,40 @@ def _parse_endpoint_ip(endpoint: str) -> str:
 		return endpoint
 	except ValueError:
 		return ""
+
+
+def _resolve_country_from_url(server_url: str) -> str | None:
+	"""Return a best-effort ISO country hint derived from a server URL hostname.
+
+	This is intentionally conservative: only a 2-letter ccTLD is accepted.
+	Hostnames under generic TLDs or IP literals return ``None``.
+	"""
+	if not server_url:
+		return None
+
+	raw_url = server_url.strip()
+	if not raw_url:
+		return None
+
+	parsed = urlsplit(raw_url if "://" in raw_url else f"https://{raw_url}")
+	hostname = (parsed.hostname or "").strip().rstrip(".").lower()
+	if not hostname:
+		return None
+
+	try:
+		ipaddress.ip_address(hostname)
+		return None
+	except ValueError:
+		pass
+
+	labels = [label for label in hostname.split(".") if label]
+	if not labels:
+		return None
+
+	country_code = labels[-1]
+	if len(country_code) == 2 and country_code.isalpha():
+		return country_code
+	return None
 
 
 async def _run_with_short_lived_conn(
@@ -974,7 +1009,7 @@ def submit_node_speedtest(
 	if body.server:
 		result["server"] = body.server
 
-	# Resolve country_code: prefer submitted value, fall back to GeoIP lookup
+	# Resolve country_code: prefer submitted value, otherwise use a hostname ccTLD hint.
 	country_code = (body.country_code or "").strip().lower() or None
 	if not country_code and body.server_url:
 		country_code = _resolve_country_from_url(body.server_url)
