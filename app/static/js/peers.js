@@ -672,12 +672,12 @@ if (!peersApp) {
         const routing = document.createElement('div');
         routing.className = 'peer-card-routing';
         const routingLabelSpan = document.createElement('span');
-        routingLabelSpan.className = 'peer-card-routing-badge';
+        routingLabelSpan.className = 'badge peer-card-routing-badge';
         routingLabelSpan.textContent = routingLabel;
         routing.appendChild(routingLabelSpan);
         if (hasClientIsolation) {
             const isolatedSpan = document.createElement('span');
-            isolatedSpan.className = 'peer-card-routing-badge';
+            isolatedSpan.className = 'badge peer-card-routing-badge';
             isolatedSpan.textContent = 'Isolated';
             routing.appendChild(isolatedSpan);
         }

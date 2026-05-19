@@ -193,6 +193,7 @@ async function collectPageMetrics(page, scope) {
             '.badge.small',
             '.badge.rounded-circle',
         ].join(', ');
+        const badgeConsistencySelector = ['.badge', '.peer-card-routing-badge'].join(', ');
         const monospaceToneExcludeSelector = [
             'input',
             'textarea',
@@ -1123,7 +1124,7 @@ async function collectPageMetrics(page, scope) {
         };
         referenceBadge.remove();
 
-        const badgeStyleMismatches = Array.from(contentRoot.querySelectorAll('.badge'))
+        const badgeStyleMismatches = Array.from(contentRoot.querySelectorAll(badgeConsistencySelector))
             .filter((el) => isVisible(el) && isInContentRoot(el))
             .filter((el) => !el.matches(badgeConsistencyExcludeSelector))
             .map((el) => {

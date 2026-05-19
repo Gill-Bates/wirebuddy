@@ -98,6 +98,21 @@ async def _resolve_geo_fields_for_fqdns(fqdns: list[str | None]) -> dict[str, di
 	if not fqdns:
 		return {}
 
+	def _fallback_country_code(host_or_ip: str | None) -> str | None:
+		hostname = str(host_or_ip or "").strip().rstrip(".").lower()
+		if not hostname:
+			return None
+		try:
+			ipaddress.ip_address(hostname)
+			return None
+		except ValueError:
+			pass
+		labels = [label for label in hostname.split(".") if label]
+		if not labels:
+			return None
+		cc_tld = labels[-1]
+		return cc_tld if len(cc_tld) == 2 and cc_tld.isalpha() else None
+
 	resolved_ip_by_fqdn: dict[str, str | None] = {}
 	unique_ips: list[str] = []
 	for fqdn in fqdns:
@@ -110,10 +125,18 @@ async def _resolve_geo_fields_for_fqdns(fqdns: list[str | None]) -> dict[str, di
 			unique_ips.append(resolved_ip)
 
 	raw_geo = await _batch_geoip_lookup(list(dict.fromkeys(unique_ips)))
-	return {
-		fqdn_key: extract_geo_fields(raw_geo.get(resolved_ip)) if resolved_ip else extract_geo_fields(None)
-		for fqdn_key, resolved_ip in resolved_ip_by_fqdn.items()
-	}
+	resolved_fields: dict[str, dict] = {}
+	for fqdn_key, resolved_ip in resolved_ip_by_fqdn.items():
+		fields = extract_geo_fields(raw_geo.get(resolved_ip)) if resolved_ip else extract_geo_fields(None)
+		if not fields["country_code"]:
+			fallback_country = _fallback_country_code(fqdn_key)
+			if fallback_country:
+				fields = {
+					**fields,
+					"country_code": fallback_country,
+				}
+		resolved_fields[fqdn_key] = fields
+	return resolved_fields
 
 
 def _base_context(request: Request, user: sqlite3.Row, **extra) -> dict:

@@ -131,18 +131,14 @@ function resizeSpeedtestCanvas(canvas) {
     const height = Math.max(0, Math.round(rect.height));
     if (!width || !height) return false;
 
-    const dpr = window.devicePixelRatio || 1;
-    const pixelWidth = Math.round(width * dpr);
-    const pixelHeight = Math.round(height * dpr);
-
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
-
-    if (canvas.width !== pixelWidth) {
-        canvas.width = pixelWidth;
+    // Chart.js applies its own device-pixel-ratio scaling. Feeding it a DPR-
+    // scaled backing size and then shrinking via CSS makes the chart contents
+    // render visibly too small.
+    if (canvas.width !== width) {
+        canvas.width = width;
     }
-    if (canvas.height !== pixelHeight) {
-        canvas.height = pixelHeight;
+    if (canvas.height !== height) {
+        canvas.height = height;
     }
 
     return true;
@@ -1537,24 +1533,36 @@ function updateNetworkPagination() {
     if (!pager) return;
 
     const items = getNetworkItems();
-    pager.replaceChildren();
 
     if (!isMobileNetworkPager() || items.length <= 1) {
         pager.classList.add('d-none');
         return;
     }
 
-    items.forEach((item, index) => {
-        const dot = document.createElement('button');
-        dot.type = 'button';
-        dot.className = 'network-page-dot';
-        dot.setAttribute('aria-label', `Show network interface ${index + 1} of ${items.length}`);
-        dot.dataset.index = String(index);
-        dot.addEventListener('click', () => {
-            item.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    const itemKey = items
+        .map((item) => item.dataset.safeId || item.dataset.ifaceName || item.id || '')
+        .join('|');
+    const needsRebuild =
+        pager.childElementCount !== items.length
+        || pager.dataset.itemKey !== itemKey;
+
+    if (needsRebuild) {
+        pager.replaceChildren();
+
+        items.forEach((item, index) => {
+            const dot = document.createElement('button');
+            dot.type = 'button';
+            dot.className = 'network-page-dot';
+            dot.setAttribute('aria-label', `Show network interface ${index + 1} of ${items.length}`);
+            dot.dataset.index = String(index);
+            dot.addEventListener('click', () => {
+                item.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            });
+            pager.appendChild(dot);
         });
-        pager.appendChild(dot);
-    });
+
+        pager.dataset.itemKey = itemKey;
+    }
 
     pager.classList.remove('d-none');
     syncNetworkPagination();
