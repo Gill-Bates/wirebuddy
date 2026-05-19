@@ -80,6 +80,46 @@
     font-size: 3rem;
 }
 
+.nodes-hidden-badge {
+    font-size: 0.65rem;
+}
+
+.node-mobile-summary {
+    display: none;
+}
+
+.node-mobile-summary-version,
+.node-mobile-summary-port {
+    font-family: var(--bs-font-monospace);
+    white-space: nowrap;
+}
+
+.node-mobile-summary {
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.5rem;
+    margin-top: 0.35rem;
+    font-size: 0.75rem;
+    color: var(--bs-secondary-color);
+}
+
+.node-mobile-summary span+span::before {
+    content: "·";
+    margin-right: 0.35rem;
+}
+
+.node-actions-more {
+    display: none;
+}
+
+.node-actions-more-menu {
+    min-width: 12rem;
+}
+
+.node-action-menu-item {
+    gap: 0.5rem;
+}
+
 .enrollment-token-box {
     font-family: var(--bs-font-monospace);
     font-size: 0.75rem;
@@ -181,7 +221,6 @@
         grid-template-areas:
             "name      status"
             "fqdn      fqdn"
-            "meta      meta"
             "speedtest speedtest"
             "actions   actions";
         grid-template-columns: minmax(0, 1fr) auto;
@@ -232,6 +271,10 @@
         margin-left: 0;
     }
 
+    .nodes-table td[data-label="FQDN"] .node-mobile-summary {
+        display: flex !important;
+    }
+
     /* Hide Port and Version columns on mobile, show as meta line */
     .nodes-table td[data-label="Port"],
     .nodes-table td[data-label="Version"] {
@@ -242,27 +285,6 @@
     .nodes-table td[data-label="Peers"],
     .nodes-table td[data-label="Last Seen"] {
         display: none !important;
-    }
-
-    /* Meta row with version, port, peers, last seen (visible on mobile only) */
-    .node-mobile-meta {
-        grid-area: meta;
-        display: flex !important;
-        flex-wrap: wrap;
-        gap: 0.25rem 0.75rem;
-        font-size: 0.75rem;
-        color: var(--bs-secondary-color);
-    }
-
-    .node-mobile-meta-version,
-    .node-mobile-meta-port {
-        font-family: var(--bs-font-monospace);
-        white-space: nowrap;
-    }
-
-    .node-mobile-meta span+span::before {
-        content: "·";
-        margin-right: 0.5rem;
     }
 
     .nodes-table td[data-label="Speedtest"] {
@@ -284,6 +306,26 @@
 
     .node-actions-cell .d-flex {
         justify-content: flex-end !important;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+
+    .node-action-secondary {
+        display: none !important;
+    }
+
+    .node-actions-more {
+        display: inline-flex;
+    }
+
+    .node-actions-more-menu {
+        min-width: 13rem;
+    }
+
+    .node-action-menu-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
     }
 
     .node-action-btn {

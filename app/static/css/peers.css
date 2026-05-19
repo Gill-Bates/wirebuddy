@@ -15,6 +15,134 @@
         background-color: var(--bs-secondary-bg) !important;
     }
 
+    .peers-table-wrapper {
+        display: block;
+    }
+
+    .peer-card-list {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    .peer-card {
+        background: var(--bs-body-bg);
+        border: 1px solid var(--bs-border-color);
+        border-radius: 12px;
+        padding: 1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+    }
+
+    .peer-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 1rem;
+    }
+
+    .peer-card-identity {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.3rem;
+    }
+
+    .peer-card-title {
+        font-size: 1rem;
+        font-weight: 600;
+        line-height: 1.2;
+    }
+
+    .peer-card-subline {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        font-size: 0.8rem;
+        color: var(--bs-secondary-color);
+    }
+
+    .peer-card-subline span+span::before {
+        content: "·";
+        margin-right: 0.35rem;
+    }
+
+    .peer-card-status {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 0.25rem;
+        flex-shrink: 0;
+    }
+
+    .peer-card-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .peer-card-routing {
+        font-size: 0.82rem;
+        color: var(--bs-secondary-color);
+    }
+
+    .peer-card-addresses {
+        display: flex;
+        flex-direction: column;
+        gap: 0.3rem;
+    }
+
+    .peer-card-addresses code {
+        font-size: 0.78rem;
+        opacity: 0.9;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+    }
+
+    .peer-card-actions {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-top: 0.25rem;
+    }
+
+    .peer-card-action-btn {
+        min-width: 38px;
+        min-height: 38px;
+        padding: 0.2rem 0.35rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+    }
+
+    .peer-card-action-btn .material-icons {
+        font-size: 18px;
+        pointer-events: none;
+    }
+
+    .peer-card-more-actions .dropdown-menu {
+        min-width: 12rem;
+    }
+
+    @media (max-width: 991.98px) {
+        .peers-table-wrapper {
+            display: none !important;
+        }
+
+        .peer-card-list {
+            display: flex !important;
+        }
+    }
+
+    @media (min-width: 992px) {
+        .peer-card-list {
+            display: none !important;
+        }
+    }
+
     .peer-help-icon {
         font-size: 16px;
         vertical-align: text-bottom;
@@ -36,7 +164,8 @@
         font-size: 3rem;
     }
 
-    html.wb-peers-hide-nodes .peers-table tr[data-node-tunnel="true"] {
+    html.wb-peers-hide-nodes .peers-table tr[data-node-tunnel="true"],
+    html.wb-peers-hide-nodes .peer-card[data-node-tunnel="true"] {
         display: none;
     }
 
@@ -58,7 +187,7 @@
     }
 
     /* VPN address column - monospace font for better readability */
-    .peers-table td[data-label="VPN Address"] {
+    .peers-table td.peer-vpn-address {
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, 'Courier New', monospace;
     }
 
@@ -83,11 +212,11 @@
     }
 
     /* Status badges: wrap instead of overflowing, vertical-align with table row */
-    .peers-table td[data-label="Status"] {
+    .peers-table td.peer-status-cell {
         white-space: nowrap;
     }
 
-    .peers-table td[data-label="Status"] .badge+.badge {
+    .peers-table td.peer-status-cell .badge+.badge {
         margin-left: 0.25rem;
     }
 
@@ -115,7 +244,7 @@
         pointer-events: none;
     }
 
-    .peers-table td[data-label="Name"],
+    .peers-table td.peer-name-cell,
     .peers-table td.peer-routing,
     .peers-table td.peer-client-ip {
         overflow-wrap: break-word;
@@ -123,7 +252,7 @@
     }
 
     /* Make peer names bold */
-    .peers-table td[data-label="Name"] {
+    .peers-table td.peer-name-cell {
         font-weight: 600;
     }
 
@@ -291,26 +420,6 @@
     @media (min-width: 992px) and (max-width: 1399.98px) {
         .peer-routing-badges {
             max-width: 140px;
-        }
-    }
-
-    /* Tablet: hide Routing & Interface columns, show badge in Name instead */
-    @media (max-width: 991.98px) {
-
-        .peers-table th.peer-col-routing,
-        .peers-table td.peer-routing,
-        .peers-table th.peer-col-interface,
-        .peers-table td.peer-interface {
-            display: none;
-        }
-
-        /* VPN address: keep IPv4/IPv6 on single lines */
-        .peers-table td[data-label="VPN Address"] code {
-            white-space: nowrap;
-        }
-
-        .peer-name-meta {
-            display: flex;
         }
     }
 
@@ -492,222 +601,4 @@
 
     .peers-empty-state .material-icons {
         font-size: 3rem;
-    }
-
-    /* Mobile-optimized peers rows */
-    @media (max-width: 767.98px) {
-        .peers-list-toolbar {
-            flex-direction: column;
-            align-items: stretch !important;
-            gap: 0.5rem;
-        }
-
-        .peers-search-wrapper {
-            max-width: 100%;
-        }
-
-        .peers-scroll-container {
-            max-height: none;
-        }
-
-        .peers-table {
-            font-size: 0.82rem;
-        }
-
-        .peers-table thead {
-            display: none;
-        }
-
-        .peers-table,
-        .peers-table tbody,
-        .peers-table tr,
-        .peers-table td {
-            display: block;
-            width: 100%;
-        }
-
-        /* Compact card layout */
-        .peers-table tr[data-peer-id] {
-            display: grid;
-            grid-template-areas:
-                "name      status"
-                "vpn       vpn"
-                "clientip  clientip"
-                "actions   actions";
-            grid-template-columns: minmax(0, 1fr) auto;
-            align-items: start;
-            gap: 0.25rem 0.5rem;
-            border: 1px solid var(--bs-border-color);
-            border-radius: 0.5rem;
-            padding: 0.45rem 0.55rem;
-            margin-bottom: 0.45rem;
-            background: var(--bs-body-bg);
-        }
-
-        /* Show last-seen time inside connection badge on mobile */
-        .peer-badge-time {
-            display: inline;
-        }
-
-        /* Hide separate last-seen cell (time is in the badge now) */
-        .peers-table td.peer-last-seen {
-            display: none !important;
-        }
-
-        .peers-table td {
-            border: 0;
-            padding: 0;
-            min-width: 0;
-            overflow-wrap: break-word;
-            word-break: normal;
-        }
-
-        /* Labels removed; visual context is enough */
-        .peers-table td::before {
-            display: none;
-        }
-
-        /* Grid area assignments */
-        .peers-table td[data-label="Name"] {
-            grid-area: name;
-            align-self: start;
-            font-weight: 500;
-            min-width: 0;
-        }
-
-        .peers-table td[data-label="Name"] .peer-name-text {
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            display: block;
-        }
-
-        .peers-table td[data-label="Status"] {
-            grid-area: status;
-            justify-self: end;
-            align-self: start;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.25rem;
-            justify-content: flex-end;
-            flex-shrink: 0;
-        }
-
-        .peers-table td[data-label="Status"] .peer-enabled-badge {
-            display: inline-flex;
-        }
-
-        .peers-table td[data-label="Status"] .peer-connection-badge-mobile {
-            display: inline-flex;
-        }
-
-        .peers-table td[data-label="Status"] .badge {
-            white-space: nowrap;
-            font-size: 0.7rem;
-            padding: 0.25em 0.5em;
-        }
-
-        .peers-table td[data-label="VPN Address"] {
-            grid-area: vpn;
-            align-self: center;
-            display: flex;
-            align-items: center;
-            gap: 0.35rem;
-            white-space: nowrap;
-        }
-
-        /* Hairline removed — VPN and Client IP are stacked now */
-
-        .peers-table td.peer-client-ip {
-            grid-area: clientip;
-            align-self: center;
-            display: flex !important;
-            /* Override d-none d-xl-table-cell for mobile grid layout */
-            flex-direction: column;
-            justify-content: center;
-            margin-top: 0.35rem;
-            padding-top: 0.35rem;
-            border-top: 1px solid var(--bs-border-color-translucent);
-        }
-
-        /* Collapse client-ip row automatically if no stack exists */
-        /* Fallback for browsers without :has() support */
-        .peers-table td.peer-client-ip.peer-client-ip--empty {
-            display: none;
-        }
-
-        /* Modern browsers with :has() support (override fallback) */
-        .peers-table td.peer-client-ip:not(:has(.peer-client-ip-stack)) {
-            display: none;
-        }
-
-        .peers-table td.peer-routing,
-        .peers-table td.peer-interface {
-            display: none;
-        }
-
-        /* Actions */
-        .peers-table td.peer-actions-cell {
-            grid-area: actions;
-            border-top: 1px solid var(--bs-border-color);
-            padding-top: 0.4rem;
-            margin-top: 0.2rem;
-            white-space: normal;
-            display: flex;
-            justify-content: flex-end;
-        }
-
-        .peers-table td.peer-actions-cell::before {
-            display: none;
-        }
-
-        .peers-table td.peer-actions-cell .d-flex.gap-1 {
-            justify-content: flex-end !important;
-            margin-left: auto;
-            gap: 0.35rem !important;
-            flex-wrap: nowrap;
-        }
-
-        /* Compact action buttons (mobile) */
-        .peers-table td.peer-actions-cell .btn {
-            /* Maintain 38px touch targets on mobile (UI-Lint compliance) */
-            min-width: 38px;
-            min-height: 38px;
-            padding: 0.2rem 0.35rem;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .peers-table td.peer-actions-cell .material-icons {
-            font-size: 18px;
-            pointer-events: none;
-        }
-
-        /* VPN address: keep IPv4 and IPv6 on one line in mobile cards */
-        .peers-table td[data-label="VPN Address"] br {
-            display: none;
-        }
-
-        .peers-table td[data-label="VPN Address"] code {
-            white-space: nowrap;
-            word-break: normal;
-            overflow-wrap: normal;
-        }
-
-        .peer-client-ip-meta {
-            margin-left: 0;
-        }
-
-        /* Empty row (no peer) */
-        .peers-table tr:not([data-peer-id]) td::before {
-            content: none;
-        }
-
-        .peers-table tr:not([data-peer-id]) td {
-            padding: 0.45rem 0;
-            text-align: left !important;
-            white-space: normal;
-            overflow-wrap: break-word;
-        }
     }

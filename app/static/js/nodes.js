@@ -238,7 +238,7 @@
         return Number.isFinite(parsed) ? trimmed : '';
     }
 
-    function getNodeMobileMetaFingerprint(node) {
+    function getNodeMobileSummaryFingerprint(node) {
         return JSON.stringify([
             node?.node_version || '',
             node?.wg_port ?? '',
@@ -559,26 +559,26 @@
     }
 
     /**
-     * Update the mobile-only meta cell (.node-mobile-meta.d-none) with version, port,
-     * peer count, and last-seen text. Visibility is controlled by CSS on mobile.
+     * Update the mobile summary block inside the FQDN cell.
+     * This keeps entity metadata close to the identity block instead of hiding it in a spare td.
      */
-    function syncNodeMobileMetaCell(cell, node) {
-        if (!cell) return;
+    function syncNodeMobileSummaryCell(container, node) {
+        if (!container) return;
 
-        const fingerprint = getNodeMobileMetaFingerprint(node);
-        if (cell.dataset.metaFingerprint === fingerprint) return;
+        const fingerprint = getNodeMobileSummaryFingerprint(node);
+        if (container.dataset.summaryFingerprint === fingerprint) return;
 
         const fragments = [];
         if (node.node_version) {
             const versionSpan = document.createElement('span');
-            versionSpan.className = 'node-mobile-meta-version';
+            versionSpan.className = 'node-mobile-summary-version';
             versionSpan.textContent = `v${node.node_version}`;
             fragments.push(versionSpan);
         }
 
         if (node.wg_port) {
             const portSpan = document.createElement('span');
-            portSpan.className = 'node-mobile-meta-port';
+            portSpan.className = 'node-mobile-summary-port';
             portSpan.textContent = `${node.wg_port}/udp`;
             fragments.push(portSpan);
         }
@@ -592,8 +592,8 @@
         lastSeenSpan.textContent = node.last_seen_text || 'Never';
         fragments.push(lastSeenSpan);
 
-        cell.replaceChildren(...fragments);
-        cell.dataset.metaFingerprint = fingerprint;
+        container.replaceChildren(...fragments);
+        container.dataset.summaryFingerprint = fingerprint;
     }
 
     function renderSpeedtestCell(cell, speedtest) {
@@ -686,10 +686,11 @@
         danger = false,
         disabled = false,
         extraData = {},
+        className = '',
     }) {
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = `btn btn-sm ${danger ? 'btn-outline-danger' : 'btn-outline-secondary'} node-action-btn`;
+        button.className = className || `btn btn-sm ${danger ? 'btn-outline-danger' : 'btn-outline-secondary'} node-action-btn`;
         button.dataset.action = action;
         button.dataset.nodeId = String(nodeId || '');
         button.dataset.nodeName = nodeName;
@@ -707,6 +708,98 @@
         iconSpan.textContent = icon;
         button.appendChild(iconSpan);
         return button;
+    }
+
+    function createMenuActionItem({
+        action,
+        nodeId,
+        nodeName,
+        icon,
+        label,
+        danger = false,
+        disabled = false,
+        extraData = {},
+    }) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `dropdown-item d-flex align-items-center gap-2 node-action-menu-item${danger ? ' text-danger' : ''}`;
+        button.dataset.action = action;
+        button.dataset.nodeId = String(nodeId || '');
+        button.dataset.nodeName = nodeName;
+        for (const [key, value] of Object.entries(extraData)) {
+            if (value != null) button.dataset[key] = String(value);
+        }
+        button.setAttribute('aria-label', label);
+        button.disabled = disabled;
+
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'material-icons icon-md';
+        iconSpan.setAttribute('aria-hidden', 'true');
+        iconSpan.textContent = icon;
+        button.appendChild(iconSpan);
+
+        const textSpan = document.createElement('span');
+        textSpan.textContent = label;
+        button.appendChild(textSpan);
+
+        return button;
+    }
+
+    function createNodeActionsDropdown(node) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'dropdown node-actions-more d-md-none';
+
+        const trigger = createActionButton({
+            action: 'open-node-actions',
+            nodeId: node.id,
+            nodeName: node.name,
+            icon: 'more_vert',
+            ariaLabel: `More actions for ${node.name}`,
+            title: 'More Actions',
+            className: 'btn btn-sm btn-outline-secondary node-action-btn node-actions-more-toggle',
+        });
+        trigger.removeAttribute('data-action');
+        trigger.setAttribute('data-bs-toggle', 'dropdown');
+        trigger.setAttribute('aria-expanded', 'false');
+
+        const menu = document.createElement('div');
+        menu.className = 'dropdown-menu dropdown-menu-end node-actions-more-menu';
+
+        menu.append(
+            createMenuActionItem({
+                action: 'regenerate-token',
+                nodeId: node.id,
+                nodeName: node.name,
+                icon: 'vpn_key',
+                label: 'Regenerate token',
+                ariaLabel: `Regenerate token for ${node.name}`,
+            }),
+            createMenuActionItem({
+                action: 'edit-node',
+                nodeId: node.id,
+                nodeName: node.name,
+                icon: 'edit',
+                label: 'Edit node',
+                ariaLabel: `Edit ${node.name}`,
+                extraData: {
+                    nodeFqdn: node.fqdn,
+                    nodePort: node.wg_port,
+                    nodeShowOnDashboard: node.show_on_dashboard === false ? 'false' : 'true',
+                },
+            }),
+            createMenuActionItem({
+                action: 'delete-node',
+                nodeId: node.id,
+                nodeName: node.name,
+                icon: 'delete',
+                label: 'Delete node',
+                ariaLabel: `Delete ${node.name}`,
+                danger: true,
+            }),
+        );
+
+        wrapper.append(trigger, menu);
+        return wrapper;
     }
 
     /**
@@ -802,6 +895,11 @@
             }
             fqdnStack.appendChild(fqdnMeta);
         }
+
+        const mobileSummary = document.createElement('div');
+        mobileSummary.className = 'node-mobile-summary d-none';
+        syncNodeMobileSummaryCell(mobileSummary, node);
+        fqdnStack.appendChild(mobileSummary);
         tdFqdn.appendChild(fqdnStack);
 
         // Port cell
@@ -840,11 +938,6 @@
         tdLastSeen.className = 'node-last-seen text-nowrap';
         tdLastSeen.appendChild(createLastSeenElement(node.last_seen_text, node.last_seen_class));
 
-        // Mobile meta cell (hidden on desktop)
-        const tdMobileMeta = document.createElement('td');
-        tdMobileMeta.className = 'node-mobile-meta d-none';
-        syncNodeMobileMetaCell(tdMobileMeta, node);
-
         // Actions cell
         const tdActions = document.createElement('td');
         tdActions.setAttribute('data-label', 'Actions');
@@ -875,6 +968,8 @@
             extraData: { nodeStatus: node.status || '' },
         });
         applySpeedtestButtonState(speedtestBtn, isOnline, activeSpeedtests.get(String(node.id)) || null);
+
+        const moreActions = createNodeActionsDropdown(node);
 
         const regenBtn = createActionButton({
             action: 'regenerate-token',
@@ -907,12 +1002,13 @@
             ariaLabel: `Delete ${node.name}`,
             title: 'Delete Node',
             danger: true,
+            className: 'btn btn-sm btn-outline-danger node-action-btn node-action-secondary d-none d-md-inline-flex',
         });
 
-        actionsDiv.append(restartBtn, speedtestBtn, regenBtn, editBtn, deleteBtn);
+        actionsDiv.append(restartBtn, speedtestBtn, moreActions, regenBtn, editBtn, deleteBtn);
         tdActions.appendChild(actionsDiv);
 
-        tr.append(tdName, tdFqdn, tdPort, tdStatus, tdVersion, tdPeers, tdSpeedtest, tdLastSeen, tdMobileMeta, tdActions);
+        tr.append(tdName, tdFqdn, tdPort, tdStatus, tdVersion, tdPeers, tdSpeedtest, tdLastSeen, tdActions);
         return tr;
     }
 
@@ -1359,7 +1455,7 @@
                     }
                 }
 
-                syncNodeMobileMetaCell(row.querySelector('.node-mobile-meta'), node);
+                syncNodeMobileSummaryCell(row.querySelector('.node-mobile-summary'), node);
 
                 // Update restart button state based on node status
                 const restartBtn = row.querySelector('button[data-action="restart-node"]');

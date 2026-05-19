@@ -48,54 +48,211 @@
             </div>
         </div>
         <div class="peers-scroll-container" id="peers-scroll-container">
-            {% if peers %}
-            <table class="table table-hover align-middle mb-0 peers-table wb-responsive-table">
-                <thead>
-                    <tr>
-                        <th>Name</th>
-                        <th>VPN Address</th>
-                        <th class="peer-col-routing">Routing</th>
-                        <th class="peer-col-interface">Interface</th>
-                        <th class="d-none d-xl-table-cell">Last Seen</th>
-                        <th class="d-none d-xl-table-cell">Client&nbsp;IP</th>
-                        <th class="text-nowrap">Status</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody id="peers-table" aria-live="polite" aria-relevant="text">
-                    {% for peer in peers %}
-                    {% set mode = peer['allowed_ips_mode'] or 'full' %}
-                    {% set routing_label = {'full': 'Full Tunnel', 'split': 'Split Tunnel'}.get(mode, 'Custom') %}
-                    <tr class="wb-responsive-row{% if peer['is_node_tunnel'] %} peer-row-node-tunnel{% endif %}" data-peer-id="{{ peer['id'] }}"
-                        data-peer-public-key="{{ peer['public_key'] or '' }}"
-                        data-last-handshake="{{ peer['last_handshake_at'] or '' }}"
-                        data-last-client-ip="{{ peer['last_client_ip'] or '' }}"
-                        data-last-client-country="{{ peer['last_client_country_code'] or '' }}"
-                        data-last-client-city="{{ peer['last_client_city'] or '' }}"
-                        data-last-client-as-org="{{ peer['last_client_as_org'] or '' }}"
-                        {% if peer['is_node_tunnel'] %}data-node-tunnel="true"{% endif %}>
-                        <td data-label="Name">
-                            <div class="peer-name-stack">
-                                <div class="peer-name-main">
-                                    <span class="peer-name-text">{{ peer['name'] or 'Unnamed' }}</span>
+            <div class="peers-table-wrapper d-none d-lg-block{% if not peers %} d-none{% endif %}" id="peers-table-wrapper">
+                <table class="table table-hover align-middle mb-0 peers-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>VPN Address</th>
+                            <th class="peer-col-routing">Routing</th>
+                            <th class="peer-col-interface">Interface</th>
+                            <th class="d-none d-xl-table-cell">Last Seen</th>
+                            <th class="d-none d-xl-table-cell">Client&nbsp;IP</th>
+                            <th class="text-nowrap">Status</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="peers-table" aria-live="polite" aria-relevant="text">
+                        {% for peer in peers %}
+                        {% set mode = peer['allowed_ips_mode'] or 'full' %}
+                        {% set routing_label = {'full': 'Full Tunnel', 'split': 'Split Tunnel'}.get(mode, 'Custom') %}
+                        <tr class="{% if peer['is_node_tunnel'] %}peer-row-node-tunnel{% endif %}" data-peer-id="{{ peer['id'] }}"
+                            data-peer-public-key="{{ peer['public_key'] or '' }}"
+                            data-last-handshake="{{ peer['last_handshake_at'] or '' }}"
+                            data-last-client-ip="{{ peer['last_client_ip'] or '' }}"
+                            data-last-client-country="{{ peer['last_client_country_code'] or '' }}"
+                            data-last-client-city="{{ peer['last_client_city'] or '' }}"
+                            data-last-client-as-org="{{ peer['last_client_as_org'] or '' }}"
+                            {% if peer['is_node_tunnel'] %}data-node-tunnel="true"{% endif %}>
+                            <td class="peer-name-cell">
+                                <div class="peer-name-stack">
+                                    <div class="peer-name-main">
+                                        <span class="peer-name-text">{{ peer['name'] or 'Unnamed' }}</span>
+                                    </div>
                                 </div>
-                                <div class="peer-name-meta d-lg-none">
-                                    {% if peer['node_name'] %}
-                                    <span>{{ peer['node_name'] }}</span>
-                                    {% endif %}
-                                    <span>{{ routing_label }}</span>
-                                    {% if peer['client_isolation'] %}
-                                    <span>Client Isolation</span>
+                            </td>
+                            <td class="peer-vpn-address">
+                                {% if peer['peer_ipv4'] %}
+                                <code class="ipv6">{{ peer['peer_ipv4'] }}</code>
+                                {% endif %}
+                                {% if peer['peer_ipv4'] and peer['peer_ipv6'] %}
+                                <br>
+                                {% endif %}
+                                {% if peer['peer_ipv6'] %}
+                                <code class="ipv6">{{ peer['peer_ipv6'].replace(':', ':\u200b') }}</code>
+                                {% endif %}
+                                {% if not peer['peer_ipv4'] and not peer['peer_ipv6'] %}
+                                <code class="ipv6">—</code>
+                                {% endif %}
+                            </td>
+                            <td class="peer-routing">
+                                <div class="peer-routing-badges">
+                                {% if peer['node_name'] %}
+                                <span class="badge bg-secondary">{{ peer['node_name'] }}</span>
+                                {% endif %}
+                                <span class="badge bg-secondary">{{ routing_label }}</span>
+                                {% if peer['client_isolation'] %}
+                                <span class="badge bg-secondary">Client Isolation</span>
+                                {% endif %}
+                                </div>
+                            </td>
+                            <td class="peer-interface">{{ peer['interface'] }}</td>
+                            <td class="peer-last-seen d-none d-xl-table-cell text-nowrap">
+                                <span class="{{ peer['last_seen_class'] }}">{{ peer['last_seen_text'] }}</span>
+                            </td>
+                            <td class="peer-client-ip d-none d-xl-table-cell">
+                                {% if peer['last_client_ip_display'] %}
+                                <div class="peer-client-ip-stack">
+                                    <div class="peer-client-ip-main">
+                                        {% if peer['last_client_country_code'] %}
+                                        <img class="peer-country-flag" alt="Country flag: {{ peer['last_client_country_code']|upper }}"
+                                            decoding="async"
+                                            src="/static/vendor/flag-icons/flags/4x3/{{ peer['last_client_country_code'] }}.svg">
+                                        {% endif %}
+                                        <code class="ipv6">{{ (peer['last_client_ip_display'] or '').replace(':', ':\u200b').replace('/', '/\u200b') }}</code>
+                                    </div>
+                                    {% if peer['last_client_city'] or peer['last_client_as_org'] %}
+                                    <div class="peer-client-ip-meta">
+                                        {% if peer['last_client_city'] %}
+                                        <span class="peer-meta-city">{{ peer['last_client_city'] }}</span>
+                                        {% endif %}
+                                        {% if peer['last_client_as_org'] %}
+                                        <span class="peer-meta-provider">({{ peer['last_client_as_org'] }})</span>
+                                        {% endif %}
+                                    </div>
                                     {% endif %}
                                 </div>
+                                {% else %}
+                                <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                            <td aria-label="Status: {{ 'Enabled' if peer['is_enabled'] else 'Disabled' }}" class="peer-status-cell text-nowrap">
+                                {% if peer['last_seen_active'] %}
+                                <span class="badge bg-success peer-connection-badge peer-connection-badge-mobile" role="status">Online</span>
+                                {% else %}
+                                <span class="badge bg-secondary peer-connection-badge peer-connection-badge-mobile" role="status">Offline{% if peer['last_seen_text'] and peer['last_seen_text'] != 'Never' %}<span class="peer-badge-time"> · {{ peer['last_seen_text'] }}</span>{% endif %}</span>
+                                {% endif %}
+                                {% if peer['is_enabled'] %}
+                                <span class="badge bg-success peer-enabled-badge" role="status">Enabled</span>
+                                {% else %}
+                                <span class="badge bg-secondary peer-enabled-badge" role="status">Disabled</span>
+                                {% endif %}
+                            </td>
+                            <td class="peer-actions-cell">
+                                <div class="d-flex gap-1 justify-content-end">
+                                    {% if not peer['is_node_tunnel'] %}
+                                    {% if user['is_admin'] %}
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" data-action="show-qr"
+                                        data-peer-id="{{ peer['id'] }}"
+                                        aria-label="Show QR code for {{ peer['name'] or 'peer' }}" data-bs-toggle="tooltip"
+                                        data-bs-title="Show QR Code">
+                                        <span class="material-icons" aria-hidden="true">qr_code</span>
+                                    </button>
+                                    {% else %}
+                                    <span class="d-inline-block" data-bs-toggle="tooltip"
+                                          data-bs-title="Admin privileges required">
+                                        <button type="button" class="btn btn-sm btn-outline-secondary peer-inert-button" disabled>
+                                            <span class="material-icons" aria-hidden="true">qr_code</span>
+                                        </button>
+                                    </span>
+                                    {% endif %}
+                                    {% if user['is_admin'] %}
+                                    <button type="button" class="btn btn-sm btn-outline-secondary"
+                                        data-action="download-config" data-peer-id="{{ peer['id'] }}"
+                                        aria-label="Download config for {{ peer['name'] or 'peer' }}"
+                                        data-bs-toggle="tooltip" data-bs-title="Download Config">
+                                        <span class="material-icons" aria-hidden="true">download</span>
+                                    </button>
+                                    {% else %}
+                                    <span class="d-inline-block" data-bs-toggle="tooltip"
+                                          data-bs-title="Admin privileges required">
+                                        <button type="button" class="btn btn-sm btn-outline-secondary peer-inert-button" disabled>
+                                            <span class="material-icons" aria-hidden="true">download</span>
+                                        </button>
+                                    </span>
+                                    {% endif %}
+                                    {% if user['is_admin'] %}
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" data-action="edit-peer"
+                                        data-peer-id="{{ peer['id'] }}" aria-label="Edit {{ peer['name'] or 'peer' }}"
+                                        data-bs-toggle="tooltip" data-bs-title="Edit Peer">
+                                        <span class="material-icons" aria-hidden="true">edit</span>
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" data-action="delete-peer"
+                                        data-peer-id="{{ peer['id'] }}" aria-label="Delete {{ peer['name'] or 'peer' }}"
+                                        data-bs-toggle="tooltip" data-bs-title="Delete Peer">
+                                        <span class="material-icons" aria-hidden="true">delete</span>
+                                    </button>
+                                    {% endif %}
+                                    {% else %}
+                                    <span class="text-muted small">Managed by wirebuddy</span>
+                                    {% endif %}
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="peer-card-list d-lg-none{% if not peers %} d-none{% endif %}" id="peer-card-list">
+                {% for peer in peers %}
+                {% set mode = peer['allowed_ips_mode'] or 'full' %}
+                {% set routing_label = {'full': 'Full Tunnel', 'split': 'Split Tunnel'}.get(mode, 'Custom') %}
+                <article class="peer-card{% if peer['is_node_tunnel'] %} peer-row-node-tunnel{% endif %}" data-peer-id="{{ peer['id'] }}"
+                    data-peer-public-key="{{ peer['public_key'] or '' }}"
+                    data-last-handshake="{{ peer['last_handshake_at'] or '' }}"
+                    data-last-client-ip="{{ peer['last_client_ip'] or '' }}"
+                    data-last-client-country="{{ peer['last_client_country_code'] or '' }}"
+                    data-last-client-city="{{ peer['last_client_city'] or '' }}"
+                    data-last-client-as-org="{{ peer['last_client_as_org'] or '' }}"
+                    {% if peer['is_node_tunnel'] %}data-node-tunnel="true"{% endif %}>
+                    <div class="peer-card-header">
+                        <div class="peer-card-identity">
+                            <div class="peer-card-title">{{ peer['name'] or 'Unnamed' }}</div>
+                            <div class="peer-card-subline">
+                                {% if peer['node_name'] %}
+                                <span>{{ peer['node_name'] }}</span>
+                                {% endif %}
+                                {% if peer['last_seen_text'] %}
+                                <span class="peer-card-last-seen">{{ peer['last_seen_text'] }}</span>
+                                {% endif %}
                             </div>
-                        </td>
-                        <td data-label="VPN Address" class="peer-vpn-address">
-                            {% if peer['peer_ipv4'] %}
-                            <code class="ipv6">{{ peer['peer_ipv4'] }}</code>
+                        </div>
+                        <div class="peer-card-status">
+                            {% if peer['last_seen_active'] %}
+                            <span class="badge bg-success peer-card-online-badge" role="status">Online</span>
+                            {% else %}
+                            <span class="badge bg-secondary peer-card-online-badge" role="status">Offline</span>
                             {% endif %}
-                            {% if peer['peer_ipv4'] and peer['peer_ipv6'] %}
-                            <br>
+                            {% if peer['is_enabled'] %}
+                            <span class="badge bg-success peer-card-enabled-badge" role="status">Enabled</span>
+                            {% else %}
+                            <span class="badge bg-secondary peer-card-enabled-badge" role="status">Disabled</span>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <div class="peer-card-meta">
+                        <div class="peer-card-routing">
+                            <span>{{ routing_label }}</span>
+                            {% if peer['client_isolation'] %}
+                            <span>• Isolated</span>
+                            {% endif %}
+                        </div>
+
+                        <div class="peer-card-addresses">
+                            {% if peer['peer_ipv4'] %}
+                            <code>{{ peer['peer_ipv4'] }}</code>
                             {% endif %}
                             {% if peer['peer_ipv6'] %}
                             <code class="ipv6">{{ peer['peer_ipv6'].replace(':', ':\u200b') }}</code>
@@ -103,132 +260,74 @@
                             {% if not peer['peer_ipv4'] and not peer['peer_ipv6'] %}
                             <code class="ipv6">—</code>
                             {% endif %}
-                        </td>
-                        <td data-label="Routing" class="peer-routing">
-                            <div class="peer-routing-badges">
-                            {% if peer['node_name'] %}
-                            <span class="badge bg-secondary">{{ peer['node_name'] }}</span>
-                            {% endif %}
-                            <span class="badge bg-secondary">{{ routing_label }}</span>
-                            {% if peer['client_isolation'] %}
-                            <span class="badge bg-secondary">Client Isolation</span>
-                            {% endif %}
-                            </div>
-                        </td>
-                        <td data-label="Interface" class="peer-interface">{{ peer['interface'] }}</td>
-                        <td data-label="Last Seen" class="d-none d-xl-table-cell peer-last-seen text-nowrap">
-                            <span class="{{ peer['last_seen_class'] }}">{{ peer['last_seen_text'] }}</span>
-                        </td>
-                        <td data-label="Client IP" class="d-none d-xl-table-cell peer-client-ip">
-                            {% if peer['last_client_ip_display'] %}
-                            <div class="peer-client-ip-stack">
-                                <div class="peer-client-ip-main">
-                                    {% if peer['last_client_country_code'] %}
-                                    <img class="peer-country-flag" alt="Country flag: {{ peer['last_client_country_code']|upper }}"
-                                        decoding="async"
-                                        src="/static/vendor/flag-icons/flags/4x3/{{ peer['last_client_country_code'] }}.svg">
-                                    {% endif %}
-                                    <code class="ipv6">{{ (peer['last_client_ip_display'] or '').replace(':', ':\u200b').replace('/', '/\u200b') }}</code>
-                                </div>
-                                {% if peer['last_client_city'] or peer['last_client_as_org'] %}
-                                <div class="peer-client-ip-meta">
-                                    {% if peer['last_client_city'] %}
-                                    <span class="peer-meta-city">{{ peer['last_client_city'] }}</span>
-                                    {% endif %}
-                                    {% if peer['last_client_as_org'] %}
-                                    <span class="peer-meta-provider">({{ peer['last_client_as_org'] }})</span>
-                                    {% endif %}
-                                </div>
-                                {% endif %}
-                            </div>
-                            {% else %}
-                            <span class="text-muted">—</span>
-                            {% endif %}
-                        </td>
-                        <td data-label="Status"
-                            aria-label="Status: {{ 'Enabled' if peer['is_enabled'] else 'Disabled' }}">
-                            {% if peer['last_seen_active'] %}
-                            <span class="badge bg-success peer-connection-badge peer-connection-badge-mobile" role="status">Online</span>
-                            {% else %}
-                            <span class="badge bg-secondary peer-connection-badge peer-connection-badge-mobile" role="status">Offline{% if peer['last_seen_text'] and peer['last_seen_text'] != 'Never' %}<span class="peer-badge-time"> · {{ peer['last_seen_text'] }}</span>{% endif %}</span>
-                            {% endif %}
-                            {% if peer['is_enabled'] %}
-                            <span class="badge bg-success peer-enabled-badge" role="status">Enabled</span>
-                            {% else %}
-                            <span class="badge bg-secondary peer-enabled-badge" role="status">Disabled</span>
-                            {% endif %}
-                        </td>
-                        <td data-label="Actions" class="peer-actions-cell wb-responsive-actions">
-                            <div class="d-flex gap-1 justify-content-end">
-                                {% if not peer['is_node_tunnel'] %}
-                                {% if user['is_admin'] %}
-                                <button type="button" class="btn btn-sm btn-outline-secondary" data-action="show-qr"
-                                    data-peer-id="{{ peer['id'] }}"
-                                    aria-label="Show QR code for {{ peer['name'] or 'peer' }}" data-bs-toggle="tooltip"
-                                    data-bs-title="Show QR Code">
-                                    <span class="material-icons" aria-hidden="true">qr_code</span>
-                                </button>
-                                {% else %}
-                                <span class="d-inline-block" data-bs-toggle="tooltip"
-                                      data-bs-title="Admin privileges required">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary peer-inert-button" disabled>
-                                        <span class="material-icons" aria-hidden="true">qr_code</span>
-                                    </button>
-                                </span>
-                                {% endif %}
-                                {% if user['is_admin'] %}
-                                <button type="button" class="btn btn-sm btn-outline-secondary"
-                                    data-action="download-config" data-peer-id="{{ peer['id'] }}"
-                                    aria-label="Download config for {{ peer['name'] or 'peer' }}"
-                                    data-bs-toggle="tooltip" data-bs-title="Download Config">
-                                    <span class="material-icons" aria-hidden="true">download</span>
-                                </button>
-                                {% else %}
-                                <span class="d-inline-block" data-bs-toggle="tooltip"
-                                      data-bs-title="Admin privileges required">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary peer-inert-button" disabled>
-                                        <span class="material-icons" aria-hidden="true">download</span>
-                                    </button>
-                                </span>
-                                {% endif %}
-                                {% if user['is_admin'] %}
-                                <button type="button" class="btn btn-sm btn-outline-secondary" data-action="edit-peer"
-                                    data-peer-id="{{ peer['id'] }}" aria-label="Edit {{ peer['name'] or 'peer' }}"
-                                    data-bs-toggle="tooltip" data-bs-title="Edit Peer">
+                        </div>
+                    </div>
+
+                    <div class="peer-card-actions">
+                        {% if not peer['is_node_tunnel'] %}
+                        {% if user['is_admin'] %}
+                        <button type="button" class="btn btn-sm btn-outline-secondary peer-card-action-btn" data-action="show-qr"
+                            data-peer-id="{{ peer['id'] }}" aria-label="Show QR code for {{ peer['name'] or 'peer' }}"
+                            data-bs-toggle="tooltip" data-bs-title="Show QR Code">
+                            <span class="material-icons" aria-hidden="true">qr_code</span>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary peer-card-action-btn" data-action="download-config"
+                            data-peer-id="{{ peer['id'] }}" aria-label="Download config for {{ peer['name'] or 'peer' }}"
+                            data-bs-toggle="tooltip" data-bs-title="Download Config">
+                            <span class="material-icons" aria-hidden="true">download</span>
+                        </button>
+                        {% else %}
+                        <span class="d-inline-block" data-bs-toggle="tooltip" data-bs-title="Admin privileges required">
+                            <button type="button" class="btn btn-sm btn-outline-secondary peer-inert-button peer-card-action-btn" disabled>
+                                <span class="material-icons" aria-hidden="true">qr_code</span>
+                            </button>
+                        </span>
+                        <span class="d-inline-block" data-bs-toggle="tooltip" data-bs-title="Admin privileges required">
+                            <button type="button" class="btn btn-sm btn-outline-secondary peer-inert-button peer-card-action-btn" disabled>
+                                <span class="material-icons" aria-hidden="true">download</span>
+                            </button>
+                        </span>
+                        {% endif %}
+                        {% if user['is_admin'] %}
+                        <div class="dropdown peer-card-more-actions">
+                            <button type="button" class="btn btn-sm btn-outline-secondary peer-card-action-btn" data-bs-toggle="dropdown"
+                                aria-expanded="false" aria-label="More actions for {{ peer['name'] or 'peer' }}">
+                                <span class="material-icons" aria-hidden="true">more_vert</span>
+                            </button>
+                            <div class="dropdown-menu dropdown-menu-end">
+                                <button type="button" class="dropdown-item d-flex align-items-center gap-2" data-action="edit-peer"
+                                    data-peer-id="{{ peer['id'] }}" aria-label="Edit {{ peer['name'] or 'peer' }}">
                                     <span class="material-icons" aria-hidden="true">edit</span>
+                                    <span>Edit</span>
                                 </button>
-                                <button type="button" class="btn btn-sm btn-outline-danger" data-action="delete-peer"
-                                    data-peer-id="{{ peer['id'] }}" aria-label="Delete {{ peer['name'] or 'peer' }}"
-                                    data-bs-toggle="tooltip" data-bs-title="Delete Peer">
+                                <button type="button" class="dropdown-item text-danger d-flex align-items-center gap-2" data-action="delete-peer"
+                                    data-peer-id="{{ peer['id'] }}" aria-label="Delete {{ peer['name'] or 'peer' }}">
                                     <span class="material-icons" aria-hidden="true">delete</span>
+                                    <span>Delete</span>
                                 </button>
-                                {% endif %}
-                                {% else %}
-                                <span class="text-muted small">Managed by wirebuddy</span>
-                                {% endif %}
                             </div>
-                        </td>
-                    </tr>
-                    {% else %}
-                    <tr>
-                        <td colspan="8" class="text-center text-muted py-4">
-                            No peers configured. Click "Add Peer" to create one.
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            <div class="peers-no-results d-none" id="peers-no-results">
-                <span class="material-icons mb-2 peers-empty-state-icon-lg">search_off</span>
-                <div>No peers match your search</div>
+                        </div>
+                        {% endif %}
+                        {% else %}
+                        <span class="text-muted small">Managed by wirebuddy</span>
+                        {% endif %}
+                    </div>
+                </article>
+                {% endfor %}
             </div>
-            {% else %}
-            <div class="peers-empty-state text-center py-5">
+
+            {% if not peers %}
+            <div class="peers-empty-state text-center py-5" id="peers-empty-state">
                 <span class="material-icons text-muted mb-3 peers-empty-state-icon-xl" aria-hidden="true">hub</span>
                 <h3 class="h5 mb-2">No peers configured yet</h3>
                 <p class="text-muted mb-0">Click <strong>Add Peer</strong> to create your first peer.</p>
             </div>
             {% endif %}
+
+            <div class="peers-no-results d-none" id="peers-no-results">
+                <span class="material-icons mb-2 peers-empty-state-icon-lg">search_off</span>
+                <div>No peers match your search</div>
+            </div>
         </div><!-- /.peers-scroll-container -->
     </div>
 </div>

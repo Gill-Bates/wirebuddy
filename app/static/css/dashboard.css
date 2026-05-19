@@ -529,7 +529,7 @@
             -webkit-overflow-scrolling: touch;
         }
 
-        .network-gauges-grid > .text-center {
+        .network-gauges-grid>.text-center {
             flex: 0 0 100%;
             min-width: 100%;
         }
@@ -650,13 +650,4 @@
     .dashboard-main-grid {
         gap: var(--wb-space-3);
         /* single source of truth for grid spacing */
-    }
-
-    /* ─── Desktop Density Scaling (Dashboard only) ────────────────── */
-    @media (min-width: 992px) {
-        .dashboard-page-body {
-            transform: scale(0.8);
-            transform-origin: top left;
-            width: 125%;
-        }
     }

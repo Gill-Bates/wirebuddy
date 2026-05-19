@@ -48,7 +48,7 @@
                         <td data-label="Name">
                             <strong>{{ node.name }}</strong>
                             {% if not node.show_on_dashboard %}
-                            <span class="badge bg-secondary ms-1" style="font-size: 0.65rem;" title="Hidden from dashboard" data-bs-toggle="tooltip">Hidden</span>
+                            <span class="badge bg-secondary ms-1 nodes-hidden-badge" title="Hidden from dashboard" data-bs-toggle="tooltip">Hidden</span>
                             {% endif %}
                         </td>
                         <td data-label="FQDN" class="node-fqdn-cell">
@@ -70,6 +70,12 @@
                                     {% endif %}
                                 </div>
                                 {% endif %}
+                            </div>
+                            <div class="node-mobile-summary d-none">
+                                {% if node.node_version %}<span class="node-mobile-summary-version">v{{ node.node_version }}</span>{% endif %}
+                                {% if node.wg_port %}<span class="node-mobile-summary-port">{{ node.wg_port }}/udp</span>{% endif %}
+                                <span>{{ node.peer_count }} Peer{{ 's' if node.peer_count != 1 else '' }}</span>
+                                <span>{{ node.last_seen_text }}</span>
                             </div>
                         </td>
                         <td data-label="Port"><code>{{ node.wg_port }}/udp</code></td>
@@ -123,12 +129,6 @@
                         <td data-label="Last Seen" class="node-last-seen text-nowrap">
                             <span class="{{ node.last_seen_class }}">{{ node.last_seen_text }}</span>
                         </td>
-                        <td class="node-mobile-meta d-none">
-                            {% if node.node_version %}<span class="node-mobile-meta-version">v{{ node.node_version }}</span>{% endif %}
-                            {% if node.wg_port %}<span class="node-mobile-meta-port">{{ node.wg_port }}/udp</span>{% endif %}
-                            <span>{{ node.peer_count }} Peer{{ 's' if node.peer_count != 1 else '' }}</span>
-                            <span>{{ node.last_seen_text }}</span>
-                        </td>
                         <td data-label="Actions" class="text-end node-actions-cell">
                             <div class="d-flex gap-1 justify-content-end">
                                 <button type="button"
@@ -155,8 +155,49 @@
                                         {% if node.status != 'online' %}disabled{% endif %}>
                                     <span class="material-icons icon-md" aria-hidden="true">speed</span>
                                 </button>
+                                <div class="dropdown node-actions-more d-md-none">
+                                    <button type="button"
+                                            class="btn btn-sm btn-outline-secondary node-action-btn node-actions-more-toggle"
+                                            data-bs-toggle="dropdown"
+                                            aria-expanded="false"
+                                            aria-label="More actions for {{ node.name }}">
+                                        <span class="material-icons icon-md" aria-hidden="true">more_vert</span>
+                                    </button>
+                                    <div class="dropdown-menu dropdown-menu-end node-actions-more-menu">
+                                    <button type="button"
+                                            class="dropdown-item node-action-menu-item"
+                                            data-action="regenerate-token"
+                                            data-node-id="{{ node.id }}"
+                                            data-node-name="{{ node.name }}"
+                                            aria-label="Regenerate token for {{ node.name }}">
+                                        <span class="material-icons icon-md" aria-hidden="true">vpn_key</span>
+                                        <span>Regenerate token</span>
+                                    </button>
+                                    <button type="button"
+                                            class="dropdown-item node-action-menu-item"
+                                            data-action="edit-node"
+                                            data-node-id="{{ node.id }}"
+                                            data-node-name="{{ node.name }}"
+                                            data-node-fqdn="{{ node.fqdn }}"
+                                            data-node-port="{{ node.wg_port }}"
+                                            data-node-show-on-dashboard="{{ 'true' if node.show_on_dashboard else 'false' }}"
+                                            aria-label="Edit {{ node.name }}">
+                                        <span class="material-icons icon-md" aria-hidden="true">edit</span>
+                                        <span>Edit node</span>
+                                    </button>
+                                    <button type="button"
+                                            class="dropdown-item node-action-menu-item text-danger"
+                                            data-action="delete-node"
+                                            data-node-id="{{ node.id }}"
+                                            data-node-name="{{ node.name }}"
+                                            aria-label="Delete {{ node.name }}">
+                                        <span class="material-icons icon-md" aria-hidden="true">delete</span>
+                                        <span>Delete node</span>
+                                    </button>
+                                    </div>
+                                </div>
                                 <button type="button"
-                                        class="btn btn-sm btn-outline-secondary node-action-btn"
+                                        class="btn btn-sm btn-outline-secondary node-action-btn node-action-secondary d-none d-md-inline-flex"
                                         data-action="regenerate-token"
                                         data-node-id="{{ node.id }}"
                                         data-node-name="{{ node.name }}"
@@ -166,7 +207,7 @@
                                     <span class="material-icons icon-md" aria-hidden="true">vpn_key</span>
                                 </button>
                                 <button type="button"
-                                        class="btn btn-sm btn-outline-secondary node-action-btn"
+                                        class="btn btn-sm btn-outline-secondary node-action-btn node-action-secondary d-none d-md-inline-flex"
                                         data-action="edit-node"
                                         data-node-id="{{ node.id }}"
                                         data-node-name="{{ node.name }}"
@@ -179,7 +220,7 @@
                                     <span class="material-icons icon-md" aria-hidden="true">edit</span>
                                 </button>
                                 <button type="button"
-                                        class="btn btn-sm btn-outline-danger node-action-btn"
+                                        class="btn btn-sm btn-outline-danger node-action-btn node-action-secondary d-none d-md-inline-flex"
                                         data-action="delete-node"
                                         data-node-id="{{ node.id }}"
                                         data-node-name="{{ node.name }}"

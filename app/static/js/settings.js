@@ -1,4 +1,8 @@
 //
+// app/static/js/settings.js
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
 async function refreshCertificates() {
     const { certificateRow, emptyState } = window.WB?.settingsComponents || {};
     const { clearChildren } = window.WB?.dom || {};

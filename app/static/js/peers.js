@@ -38,6 +38,7 @@ if (!peersApp) {
         blocklistRegistry: [],
         globalDnsLoggingEnabled: { add: true, edit: true },
         lastSeenCache: new Map(),
+        peerCards: [],
         peerRows: [],
         peerSeenCache: new Map(),
         peerStatsAbortController: null,
@@ -58,6 +59,9 @@ if (!peersApp) {
     const visibleCountEl = document.getElementById('peers-visible-count');
     const noResultsEl = document.getElementById('peers-no-results');
     const peersTableEl = document.getElementById('peers-table');
+    const peersTableWrapperEl = document.getElementById('peers-table-wrapper');
+    const peerCardListEl = document.getElementById('peer-card-list');
+    const peersEmptyStateEl = document.getElementById('peers-empty-state');
     const hideNodesCheckbox = document.getElementById('peers-hide-nodes');
     const rootEl = document.documentElement;
 
@@ -182,26 +186,45 @@ if (!peersApp) {
         }
     }
 
-    function computeSearchText(row) {
-        return [
-            row.querySelector('td[data-label="Name"]')?.textContent || '',
-            row.querySelector('td[data-label="VPN Address"]')?.textContent || '',
-            row.querySelector('.peer-client-ip')?.textContent || '',
-            row.querySelector('.peer-interface')?.textContent || '',
-            row.querySelector('.peer-routing')?.textContent || '',
-        ].join(' ').toLowerCase();
+    function computeSearchText(container) {
+        if (!container) return '';
+
+        const selectors = container.classList.contains('peer-card')
+            ? [
+                '.peer-card-title',
+                '.peer-card-subline',
+                '.peer-card-routing',
+                '.peer-card-addresses',
+                '.peer-card-status',
+            ]
+            : [
+                '.peer-name-cell',
+                '.peer-vpn-address',
+                '.peer-routing',
+                '.peer-interface',
+                '.peer-status-cell',
+                '.peer-client-ip',
+            ];
+
+        return selectors
+            .map((selector) => container.querySelector(selector)?.textContent || '')
+            .join(' ')
+            .toLowerCase();
     }
 
-    function updateRowSearchText(row) {
-        row.dataset.searchText = computeSearchText(row);
+    function updateRowSearchText(container) {
+        if (!container) return;
+        container.dataset.searchText = computeSearchText(container);
     }
 
     function refreshPeerRows() {
         state.peerRows = Array.from(document.querySelectorAll('#peers-table tr[data-peer-id]'));
+        state.peerCards = Array.from(document.querySelectorAll('#peer-card-list .peer-card[data-peer-id]'));
         state.peerRows.forEach(updateRowSearchText);
+        state.peerCards.forEach(updateRowSearchText);
     }
 
-    function createPeerActionButton(peerId, action, label, icon, btnClass) {
+    function createPeerActionButton(peerId, action, label, icon, btnClass, options = {}) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = `btn btn-sm ${btnClass}`;
@@ -210,6 +233,9 @@ if (!peersApp) {
         btn.setAttribute('aria-label', label);
         btn.setAttribute('data-bs-toggle', 'tooltip');
         btn.setAttribute('data-bs-title', label);
+        if (options.disabled) {
+            btn.disabled = true;
+        }
 
         const iconEl = document.createElement('span');
         iconEl.className = 'material-icons';
@@ -217,6 +243,55 @@ if (!peersApp) {
         iconEl.textContent = icon;
         btn.appendChild(iconEl);
         return btn;
+    }
+
+    function createPeerMenuButton(peerId, action, label, icon, danger = false) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `dropdown-item d-flex align-items-center gap-2${danger ? ' text-danger' : ''}`;
+        button.dataset.action = action;
+        button.dataset.peerId = String(peerId);
+        button.setAttribute('aria-label', label);
+
+        const iconEl = document.createElement('span');
+        iconEl.className = 'material-icons';
+        iconEl.setAttribute('aria-hidden', 'true');
+        iconEl.textContent = icon;
+        button.appendChild(iconEl);
+
+        const labelEl = document.createElement('span');
+        labelEl.textContent = label;
+        button.appendChild(labelEl);
+
+        return button;
+    }
+
+    function createPeerMoreActions(peer) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'dropdown peer-card-more-actions';
+
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'btn btn-sm btn-outline-secondary peer-card-action-btn';
+        toggle.setAttribute('data-bs-toggle', 'dropdown');
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.setAttribute('aria-label', `More actions for ${peer.name || 'peer'}`);
+
+        const iconEl = document.createElement('span');
+        iconEl.className = 'material-icons';
+        iconEl.setAttribute('aria-hidden', 'true');
+        iconEl.textContent = 'more_vert';
+        toggle.appendChild(iconEl);
+
+        const menu = document.createElement('div');
+        menu.className = 'dropdown-menu dropdown-menu-end';
+        menu.append(
+            createPeerMenuButton(peer.id, 'edit-peer', 'Edit', 'edit'),
+            createPeerMenuButton(peer.id, 'delete-peer', 'Delete', 'delete', true),
+        );
+
+        wrapper.append(toggle, menu);
+        return wrapper;
     }
 
     function createCountryFlagElement(countryCode) {
@@ -358,6 +433,34 @@ if (!peersApp) {
         span.className = rel.cls;
         span.textContent = nextText;
         lastSeenCell.appendChild(span);
+
+        return rel;
+    }
+
+    function syncPeerCardLiveState(card, rel) {
+        if (!card || !rel) return;
+
+        const onlineBadge = card.querySelector('.peer-card-online-badge');
+        if (onlineBadge) {
+            onlineBadge.classList.toggle('bg-success', Boolean(rel.active));
+            onlineBadge.classList.toggle('bg-secondary', !rel.active);
+            onlineBadge.textContent = rel.active ? 'Online' : 'Offline';
+        }
+
+        const subline = card.querySelector('.peer-card-subline');
+        let lastSeen = card.querySelector('.peer-card-last-seen');
+        if (rel.text) {
+            if (!lastSeen && subline) {
+                lastSeen = document.createElement('span');
+                lastSeen.className = 'peer-card-last-seen';
+                subline.appendChild(lastSeen);
+            }
+            if (lastSeen) {
+                lastSeen.textContent = rel.text;
+            }
+        } else {
+            lastSeen?.remove();
+        }
     }
 
     function buildPeerRow(peer) {
@@ -388,32 +491,16 @@ if (!peersApp) {
         }
 
         const tdName = document.createElement('td');
-        tdName.dataset.label = 'Name';
+        tdName.className = 'peer-name-cell';
         const nameStack = document.createElement('div');
         nameStack.className = 'peer-name-stack';
         const nameMain = document.createElement('div');
         nameMain.className = 'peer-name-main';
         appendSafeText(nameMain, 'span', name, 'peer-name-text');
-        const nameMeta = document.createElement('div');
-        nameMeta.className = 'peer-name-meta d-lg-none';
-        nameStack.append(nameMain, nameMeta);
+        nameStack.appendChild(nameMain);
         tdName.appendChild(nameStack);
-        if (nodeName) {
-            const nodeSpan = document.createElement('span');
-            nodeSpan.textContent = nodeName;
-            nameMeta.appendChild(nodeSpan);
-        }
-        const routingSpan = document.createElement('span');
-        routingSpan.textContent = routingLabel;
-        nameMeta.appendChild(routingSpan);
-        if (hasClientIsolation) {
-            const isolationSpan = document.createElement('span');
-            isolationSpan.textContent = 'Client Isolation';
-            nameMeta.appendChild(isolationSpan);
-        }
 
         const tdVpn = document.createElement('td');
-        tdVpn.dataset.label = 'VPN Address';
         tdVpn.className = 'peer-vpn-address';
         if (ipv4) {
             appendSafeText(tdVpn, 'code', ipv4, 'ipv6');
@@ -429,7 +516,6 @@ if (!peersApp) {
         }
 
         const tdRouting = document.createElement('td');
-        tdRouting.dataset.label = 'Routing';
         tdRouting.className = 'peer-routing';
         const routingBadges = document.createElement('div');
         routingBadges.className = 'peer-routing-badges';
@@ -452,23 +538,20 @@ if (!peersApp) {
         }
 
         const tdIface = document.createElement('td');
-        tdIface.dataset.label = 'Interface';
         tdIface.className = 'peer-interface';
         tdIface.textContent = iface;
 
         const tdLastSeen = document.createElement('td');
-        tdLastSeen.dataset.label = 'Last Seen';
         tdLastSeen.className = 'd-none d-xl-table-cell peer-last-seen text-nowrap';
 
         const tdClientIp = document.createElement('td');
-        tdClientIp.dataset.label = 'Client IP';
         tdClientIp.className = 'd-none d-xl-table-cell peer-client-ip';
         tdClientIp.setAttribute('aria-live', 'polite');
         tdClientIp.setAttribute('aria-atomic', 'true');
         updateClientIpCell(tdClientIp, endpointIp, endpointCountry, endpointCity, endpointAsOrg);
 
         const tdStatus = document.createElement('td');
-        tdStatus.dataset.label = 'Status';
+        tdStatus.className = 'peer-status-cell text-nowrap';
         tdStatus.setAttribute('aria-label', `Status: ${peer.is_enabled ? 'Enabled' : 'Disabled'}`);
         const connBadge = document.createElement('span');
         connBadge.className = 'badge bg-secondary peer-connection-badge peer-connection-badge-mobile';
@@ -480,7 +563,6 @@ if (!peersApp) {
         tdStatus.append(connBadge, enabledBadge);
 
         const tdActions = document.createElement('td');
-        tdActions.dataset.label = 'Actions';
         tdActions.className = 'peer-actions-cell';
         const actionsDiv = document.createElement('div');
         actionsDiv.className = 'd-flex gap-1 justify-content-end';
@@ -505,6 +587,123 @@ if (!peersApp) {
         return tr;
     }
 
+    function buildPeerCard(peer) {
+        const routingLabel = getRoutingLabel(peer);
+        const { ipv4, ipv6 } = extractPeerIps(peer.peer_address);
+        const name = peer.name || 'Unnamed';
+        const nodeName = peer.node_name || lookupNodeName(peer.node_id);
+        const hasClientIsolation = peer.client_isolation === true;
+        const isNodeTunnel = !!peer.is_node_tunnel;
+        const lastHandshake = toEpochSeconds(peer.latest_handshake || peer.last_handshake_at);
+        const rel = formatRelativeTime(lastHandshake);
+
+        const article = document.createElement('article');
+        article.className = `peer-card${isNodeTunnel ? ' peer-row-node-tunnel' : ''}`;
+        article.dataset.peerId = peer.id;
+        article.dataset.peerPublicKey = peer.public_key || '';
+        article.dataset.lastHandshake = lastHandshake ? String(lastHandshake) : '';
+        article.dataset.lastClientIp = String(peer.last_client_ip || '').trim();
+        article.dataset.lastClientCountry = String(peer.last_client_country_code || '').trim();
+        article.dataset.lastClientCity = String(peer.last_client_city || '').trim();
+        article.dataset.lastClientAsOrg = String(peer.last_client_as_org || '').trim();
+        if (isNodeTunnel) {
+            article.dataset.nodeTunnel = 'true';
+        }
+
+        const header = document.createElement('div');
+        header.className = 'peer-card-header';
+
+        const identity = document.createElement('div');
+        identity.className = 'peer-card-identity';
+        const title = document.createElement('div');
+        title.className = 'peer-card-title';
+        title.textContent = name;
+        identity.appendChild(title);
+
+        const subline = document.createElement('div');
+        subline.className = 'peer-card-subline';
+        if (nodeName) {
+            const nodeSpan = document.createElement('span');
+            nodeSpan.textContent = nodeName;
+            subline.appendChild(nodeSpan);
+        }
+        if (rel.text) {
+            const seenSpan = document.createElement('span');
+            seenSpan.className = 'peer-card-last-seen';
+            seenSpan.textContent = rel.text;
+            subline.appendChild(seenSpan);
+        }
+        identity.appendChild(subline);
+
+        const status = document.createElement('div');
+        status.className = 'peer-card-status';
+        const onlineBadge = document.createElement('span');
+        onlineBadge.className = `badge ${rel.active ? 'bg-success' : 'bg-secondary'} peer-card-online-badge`;
+        onlineBadge.setAttribute('role', 'status');
+        onlineBadge.textContent = rel.active ? 'Online' : 'Offline';
+        status.appendChild(onlineBadge);
+
+        const enabledBadge = document.createElement('span');
+        enabledBadge.className = `badge ${peer.is_enabled ? 'bg-success' : 'bg-secondary'} peer-card-enabled-badge`;
+        enabledBadge.setAttribute('role', 'status');
+        enabledBadge.textContent = peer.is_enabled ? 'Enabled' : 'Disabled';
+        status.appendChild(enabledBadge);
+
+        header.append(identity, status);
+
+        const meta = document.createElement('div');
+        meta.className = 'peer-card-meta';
+
+        const routing = document.createElement('div');
+        routing.className = 'peer-card-routing';
+        const routingLabelSpan = document.createElement('span');
+        routingLabelSpan.textContent = routingLabel;
+        routing.appendChild(routingLabelSpan);
+        if (hasClientIsolation) {
+            const isolatedSpan = document.createElement('span');
+            isolatedSpan.textContent = '• Isolated';
+            routing.appendChild(isolatedSpan);
+        }
+
+        const addresses = document.createElement('div');
+        addresses.className = 'peer-card-addresses';
+        if (ipv4) {
+            appendSafeText(addresses, 'code', ipv4, 'ipv6');
+        }
+        if (ipv6) {
+            appendSafeText(addresses, 'code', ipv6.replace(/:/g, ':\u200b'), 'ipv6');
+        }
+        if (!ipv4 && !ipv6) {
+            appendSafeText(addresses, 'code', '—', 'ipv6');
+        }
+
+        meta.append(routing, addresses);
+
+        const actions = document.createElement('div');
+        actions.className = 'peer-card-actions';
+        if (isNodeTunnel) {
+            const managedLabel = document.createElement('span');
+            managedLabel.className = 'text-muted small';
+            managedLabel.textContent = 'Managed by wirebuddy';
+            actions.appendChild(managedLabel);
+        } else if (canManagePeers) {
+            actions.append(
+                createPeerActionButton(peer.id, 'show-qr', 'Show QR code', 'qr_code', 'btn-outline-secondary peer-card-action-btn'),
+                createPeerActionButton(peer.id, 'download-config', 'Download config', 'download', 'btn-outline-secondary peer-card-action-btn'),
+                createPeerMoreActions(peer),
+            );
+        } else {
+            actions.append(
+                createPeerActionButton(peer.id, 'show-qr', 'Show QR code', 'qr_code', 'btn-outline-secondary peer-card-action-btn peer-inert-button', { disabled: true }),
+                createPeerActionButton(peer.id, 'download-config', 'Download config', 'download', 'btn-outline-secondary peer-card-action-btn peer-inert-button', { disabled: true }),
+            );
+        }
+
+        article.append(header, meta, actions);
+        article.dataset.searchText = computeSearchText(article);
+        return article;
+    }
+
     function updateTotalPeerCount(delta) {
         const totalEl = document.getElementById('peers-total-count');
         if (totalEl) {
@@ -515,6 +714,9 @@ if (!peersApp) {
     }
 
     function removeEmptyRow() {
+        peersEmptyStateEl?.remove();
+        peersTableWrapperEl?.classList.remove('d-none');
+        peerCardListEl?.classList.remove('d-none');
         const tbody = document.getElementById('peers-table');
         const emptyRow = tbody?.querySelector('tr:not([data-peer-id])');
         if (emptyRow) emptyRow.remove();
@@ -940,7 +1142,7 @@ if (!peersApp) {
         state.peerStatsAbortController = controller;
         const requestSeq = ++state.peerStatsRequestSeq;
 
-        if (!state.peerRows.length) refreshPeerRows();
+        if (!state.peerRows.length || !state.peerCards.length) refreshPeerRows();
 
         try {
             const peers = await fetchPeersEnriched(controller.signal);
@@ -969,7 +1171,7 @@ if (!peersApp) {
                 const cachedHandshake = liveHandshake
                     ? updateLastSeenCache(peerId, liveHandshake)
                     : toEpochSeconds(state.lastSeenCache.get(peerId));
-                updateLastSeenDisplay(row, cachedHandshake);
+                const rel = updateLastSeenDisplay(row, cachedHandshake);
 
                 const liveEndpointIp = String(stats.endpoint_ip || parseEndpointIp(stats.endpoint || '') || '').trim();
                 updatePeerSeenCache(
@@ -996,7 +1198,10 @@ if (!peersApp) {
                 if (clientIpCell) {
                     updateClientIpCell(clientIpCell, endpointIp, country, city, asOrg);
                 }
+                const card = document.querySelector(`#peer-card-list .peer-card[data-peer-id="${peerId}"]`);
+                syncPeerCardLiveState(card, rel);
                 updateRowSearchText(row);
+                if (card) updateRowSearchText(card);
             });
 
             state.peerStatsBackoffMs = PEER_STATS_INTERVAL_MS;
@@ -1118,9 +1323,16 @@ if (!peersApp) {
             await api('DELETE', `/api/wireguard/peers/${peerId}`);
             wbToast('Peer deleted successfully', 'success');
             const row = document.querySelector(`#peers-table tr[data-peer-id="${peerId}"]`);
+            const card = document.querySelector(`#peer-card-list .peer-card[data-peer-id="${peerId}"]`);
             if (row) {
                 disposeTooltips(row);
                 row.remove();
+            }
+            if (card) {
+                disposeTooltips(card);
+                card.remove();
+            }
+            if (row || card) {
                 refreshPeerRows();
                 updateTotalPeerCount(-1);
             } else {
@@ -1180,33 +1392,44 @@ if (!peersApp) {
         const hideNodes = hideNodesCheckbox?.checked || false;
         let visibleCount = 0;
 
-        state.peerRows.forEach((row) => {
-            const isNodeTunnel = row.hasAttribute('data-node-tunnel');
-            if (hideNodes && isNodeTunnel) {
-                row.classList.add('peer-row-hidden');
-                return;
-            }
+        const applyVisibility = (items) => {
+            items.forEach((item) => {
+                const isNodeTunnel = item.hasAttribute('data-node-tunnel');
+                if (hideNodes && isNodeTunnel) {
+                    item.classList.add('peer-row-hidden');
+                    return;
+                }
 
-            if (!searchTerm || String(row.dataset.searchText || '').includes(searchTerm)) {
-                row.classList.remove('peer-row-hidden');
-                visibleCount += 1;
-            } else {
-                row.classList.add('peer-row-hidden');
-            }
-        });
+                if (!searchTerm || String(item.dataset.searchText || '').includes(searchTerm)) {
+                    item.classList.remove('peer-row-hidden');
+                } else {
+                    item.classList.add('peer-row-hidden');
+                }
+            });
+        };
+
+        applyVisibility(state.peerRows);
+        applyVisibility(state.peerCards);
+        visibleCount = state.peerRows.reduce((count, row) => count + (row.classList.contains('peer-row-hidden') ? 0 : 1), 0);
 
         if (visibleCountEl) {
             visibleCountEl.textContent = String(visibleCount);
         }
 
         if (noResultsEl && peersTableEl) {
-            const peersTableWrap = peersTableEl.closest('table');
+            const hasPeers = state.peerRows.length > 0 || state.peerCards.length > 0;
+            const peersTableWrap = peersTableWrapperEl;
+            const mobileListWrap = peerCardListEl;
             if (visibleCount === 0 && state.peerRows.length > 0) {
                 noResultsEl.classList.remove('d-none');
                 peersTableWrap?.classList.add('d-none');
+                mobileListWrap?.classList.add('d-none');
             } else {
                 noResultsEl.classList.add('d-none');
-                peersTableWrap?.classList.remove('d-none');
+                if (hasPeers) {
+                    peersTableWrap?.classList.remove('d-none');
+                    mobileListWrap?.classList.remove('d-none');
+                }
             }
         }
 
@@ -1408,11 +1631,15 @@ if (!peersApp) {
                     if (newPeer) {
                         removeEmptyRow();
                         const tbody = document.getElementById('peers-table');
+                        const cardList = document.getElementById('peer-card-list');
                         const row = buildPeerRow(newPeer);
+                        const card = buildPeerCard(newPeer);
                         tbody.appendChild(row);
+                        cardList?.appendChild(card);
                         refreshPeerRows();
                         updateTotalPeerCount(1);
                         initTooltips(row);
+                        initTooltips(card);
                         queuePeerStatsReload('peer create follow-up stats refresh failed');
                     } else {
                         reloadSoon();
@@ -1492,9 +1719,13 @@ if (!peersApp) {
                         if (oldRow) {
                             disposeTooltips(oldRow);
                             const newRow = buildPeerRow(updatedPeer);
+                            const oldCard = document.querySelector(`#peer-card-list .peer-card[data-peer-id="${peerId}"]`);
+                            const newCard = buildPeerCard(updatedPeer);
                             oldRow.replaceWith(newRow);
+                            oldCard?.replaceWith(newCard);
                             refreshPeerRows();
                             initTooltips(newRow);
+                            initTooltips(newCard);
                             filterPeers(searchInput?.value || '');
                             queuePeerStatsReload('peer update follow-up stats refresh failed');
                         } else {
@@ -1584,9 +1815,11 @@ if (!peersApp) {
         }
     });
 
-    document.getElementById('peers-table')?.addEventListener('click', async (event) => {
+    document.addEventListener('click', async (event) => {
         const button = event.target.closest('button[data-action][data-peer-id]');
         if (!button || button.disabled) return;
+        if (!button.closest('#peers-table') && !button.closest('#peer-card-list')) return;
+
         const peerId = Number(button.dataset.peerId);
         if (!Number.isFinite(peerId) || peerId <= 0) return;
 
