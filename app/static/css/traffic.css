@@ -81,22 +81,12 @@
 }
 
 .country-flag {
-    /*
-     * iOS Safari has rendering bugs with regional indicator emojis when using:
-     * - display: inline-flex (causes entire table row to vanish)
-     * - fixed width/height (breaks glyph bound calculations)
-     * Using inline-block with min-dimensions avoids these issues.
-     */
     display: inline-block;
-    min-width: 24px;
-    min-height: 18px;
+    width: 24px;
+    height: 18px;
     border-radius: 2px;
-    line-height: 18px;
-    font-size: 16px;
-    text-align: center;
+    object-fit: cover;
     vertical-align: middle;
-    background: var(--bs-tertiary-bg);
-    /* Subtle border effect; kept minimal for large table performance */
     box-shadow: 0 0 0 1px rgba(0, 0, 0, .08);
 }
 

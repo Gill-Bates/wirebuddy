@@ -2,7 +2,7 @@
 
 {% block title %}Nodes – WireBuddy{% endblock %}
 
-{% set flag_icon_base_url = "/static/vendor/flag-icons/flags/4x3" %}
+{% set flag_icon_base_url = "https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3" %}
 {% macro country_flag(code, alt_prefix='Country flag') -%}
 {% set cc = (code or '')|lower %}
 {% if cc|length == 2 and cc[0].isalpha() and cc[1].isalpha() %}

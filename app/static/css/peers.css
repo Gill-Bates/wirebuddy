@@ -83,8 +83,22 @@
     }
 
     .peer-card-routing {
-        font-size: 0.82rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+    }
+
+    .peer-card-routing-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.2rem 0.55rem;
+        border-radius: 999px;
+        background: var(--bs-secondary-bg);
         color: var(--bs-secondary-color);
+        font-size: 0.78rem;
+        font-weight: 500;
+        line-height: 1.2;
+        border: 1px solid var(--bs-border-color);
     }
 
     .peer-card-addresses {

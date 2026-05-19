@@ -19,6 +19,7 @@
     const MAX_BACKOFF_MS = 300000;
     const MAX_ALL_PEER_SERIES = 12;
     const MIN_VISIBLE_REFRESH_INTERVAL_MS = 5000;
+    const FLAG_ICON_BASE_URL = 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
     const RESIZE_FETCH_THRESHOLD = 0.2;
     const RANGE_LABELS = Object.freeze({
         '6h': 'last 6 hours',
@@ -545,14 +546,24 @@
     function createCountryFirstCell(country) {
         const flagCell = createCell('td', 'text-center');
         const countryCode = String(country.code ?? '').trim().toLowerCase();
-        const flagEmoji = countryCodeToFlagEmoji(countryCode);
 
-        if (flagEmoji) {
-            const flag = document.createElement('span');
+        if (/^[a-z]{2}$/.test(countryCode)) {
+            const flag = document.createElement('img');
             flag.className = 'country-flag';
-            flag.setAttribute('role', 'img');
-            flag.setAttribute('aria-label', country.name ? `Flag of ${country.name}` : 'Country flag');
-            flag.textContent = flagEmoji;
+            flag.alt = country.name ? `Flag of ${country.name}` : 'Country flag';
+            flag.width = 24;
+            flag.height = 18;
+            flag.loading = 'lazy';
+            flag.decoding = 'async';
+            flag.src = `${FLAG_ICON_BASE_URL}/${countryCode}.svg`;
+            flag.addEventListener('error', () => {
+                flag.remove();
+                const icon = document.createElement('span');
+                icon.className = 'material-icons traffic-fallback-icon';
+                icon.setAttribute('aria-hidden', 'true');
+                icon.textContent = 'public';
+                flagCell.appendChild(icon);
+            }, { once: true });
             flagCell.appendChild(flag);
         } else {
             const icon = document.createElement('span');

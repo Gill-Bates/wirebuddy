@@ -11,7 +11,7 @@ if (!peersApp) {
     console.warn('peers.js loaded without #peers-app context');
 } else {
     const canManagePeers = peersApp.dataset.canManagePeers === '1';
-    const flagIconBaseUrl = peersApp.dataset.flagIconBaseUrl || '/static/vendor/flag-icons/flags/4x3';
+    const flagIconBaseUrl = peersApp.dataset.flagIconBaseUrl || 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
 
     const ALLOWED_IPS_PRESETS = {
         full: '0.0.0.0/0, ::/0',
@@ -672,11 +672,13 @@ if (!peersApp) {
         const routing = document.createElement('div');
         routing.className = 'peer-card-routing';
         const routingLabelSpan = document.createElement('span');
+        routingLabelSpan.className = 'peer-card-routing-badge';
         routingLabelSpan.textContent = routingLabel;
         routing.appendChild(routingLabelSpan);
         if (hasClientIsolation) {
             const isolatedSpan = document.createElement('span');
-            isolatedSpan.textContent = '• Isolated';
+            isolatedSpan.className = 'peer-card-routing-badge';
+            isolatedSpan.textContent = 'Isolated';
             routing.appendChild(isolatedSpan);
         }
 

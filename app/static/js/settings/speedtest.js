@@ -41,7 +41,7 @@
         purgeLogsBtn: null,
     };
 
-    const FLAG_ICON_BASE_URL = '/static/vendor/flag-icons/flags/4x3';
+    const FLAG_ICON_BASE_URL = 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
     const SPEEDTEST_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
     const VALID_COUNTRY_CODE = /^[a-z]{2}$/;
 

@@ -287,7 +287,7 @@
         min-height: 0;
         overflow-y: auto;
         overflow-x: hidden;
-        padding-bottom: 1rem;
+        padding: 0;
         display: flex;
     }
 
@@ -302,6 +302,17 @@
         flex: 1;
     }
 
+    #recent-peers>.chart-empty-state,
+    #recent-peers>.text-center {
+        width: 100%;
+        margin-inline: auto;
+        align-self: center;
+    }
+
+    #recent-peers>.chart-empty-state {
+        flex: 1 0 auto;
+    }
+
     /* Ensure inner containers don't force overflow */
     .network-gauges-grid {
         min-width: 0;
@@ -311,6 +322,8 @@
         cursor: pointer;
         transition: background-color 0.15s ease;
         width: 100%;
+        box-sizing: border-box;
+        padding-inline: 1rem;
     }
 
     #recent-peers .peer-row-clickable:hover {
@@ -346,7 +359,7 @@
 
     @media (max-width: 767.98px) {
         #peer-map {
-            height: 220px;
+            height: 300px;
         }
 
         .dashboard-traffic-metric .dashboard-metric-unit {
@@ -374,7 +387,7 @@
 
     @media (max-width: 575.98px) {
         #peer-map {
-            height: 180px;
+            height: 260px;
         }
 
         .dashboard-stats-row .wb-kpi-card {
@@ -580,13 +593,23 @@
         }
 
         .network-page-dot {
-            width: 0.55rem;
-            height: 0.55rem;
+            display: block;
+            width: 0.55rem !important;
+            min-width: 0.55rem !important;
+            height: 0.55rem !important;
+            min-height: 0.55rem !important;
             border: 0;
-            border-radius: 999px;
+            border-radius: 50%;
             background: var(--bs-secondary-color);
             opacity: 0.35;
             padding: 0;
+            flex: 0 0 auto;
+            aspect-ratio: 1 / 1;
+            appearance: none;
+            -webkit-appearance: none;
+            line-height: 0;
+            box-shadow: none;
+            cursor: pointer;
             transition: transform 0.15s ease, opacity 0.15s ease, background-color 0.15s ease;
         }
 

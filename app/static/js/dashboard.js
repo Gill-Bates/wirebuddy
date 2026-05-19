@@ -135,6 +135,9 @@ function resizeSpeedtestCanvas(canvas) {
     const pixelWidth = Math.round(width * dpr);
     const pixelHeight = Math.round(height * dpr);
 
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+
     if (canvas.width !== pixelWidth) {
         canvas.width = pixelWidth;
     }
@@ -193,7 +196,7 @@ function createCountryFlagElement(countryCode) {
     img.alt = `${code.toUpperCase()} flag`;
     img.loading = 'eager';
     img.decoding = 'async';
-    img.src = `/static/vendor/flag-icons/flags/4x3/${code}.svg`;
+    img.src = `https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/${code}.svg`;
     img.addEventListener('error', () => img.remove());
     return img;
 }

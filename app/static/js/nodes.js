@@ -16,7 +16,7 @@
     const SPEEDTEST_LOCK_TIMEOUT_MS = 180000;
     const SPEEDTEST_STATUS_POLL_MS = 5000;
     const FLAG_ICON_BASE_URL = document.getElementById('nodesPageRoot')?.dataset.flagIconBaseUrl
-        || '/static/vendor/flag-icons/flags/4x3';
+        || 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
     const HOVER_MEDIA = window.matchMedia('(hover: hover) and (pointer: fine)');
 
     let pollTimer = null;

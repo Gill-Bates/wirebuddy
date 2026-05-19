@@ -65,10 +65,10 @@
     min-height: var(--wb-touch-target-comfortable);
 }
 
-/* Ensure buttons meet minimum touch target */
-.btn,
+/* Ensure standard buttons meet minimum touch target without inflating compact variants */
+.btn:not(.btn-sm):not(.btn-link),
 .wb-btn,
-button:not(.btn-close):not(.accordion-button) {
+button:not(.btn):not(.btn-close):not(.accordion-button) {
     min-height: var(--wb-touch-target-min);
 }
 

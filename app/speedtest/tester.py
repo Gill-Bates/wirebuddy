@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import json
 import logging
 import math
@@ -26,6 +27,7 @@ import shutil
 from functools import cache
 from collections.abc import Callable
 from typing import Any, NotRequired, TypedDict
+from urllib.parse import urlsplit
 
 from ..utils.formatting import format_bandwidth_mbit
 from ..utils.geoip import resolve_country_from_url as _resolve_country_from_url
@@ -82,7 +84,31 @@ async def _lookup_country_from_url(server_url: str) -> str | None:
     """Resolve server URL to country code via GeoIP lookup (async-safe)."""
     if not server_url:
         return None
-    return await asyncio.to_thread(_resolve_country_from_url, server_url)
+
+    country_code = await asyncio.to_thread(_resolve_country_from_url, server_url)
+    if country_code:
+        return country_code
+
+    raw_url = server_url.strip()
+    parsed = urlsplit(raw_url if "://" in raw_url else f"https://{raw_url}")
+    hostname = (parsed.hostname or "").strip().rstrip(".").lower()
+    if not hostname:
+        return None
+
+    try:
+        ipaddress.ip_address(hostname)
+        return None
+    except ValueError:
+        pass
+
+    labels = [label for label in hostname.split(".") if label]
+    if not labels:
+        return None
+
+    cc_tld = labels[-1]
+    if len(cc_tld) == 2 and cc_tld.isalpha():
+        return cc_tld
+    return None
 
 
 async def _validate_tunable_int(

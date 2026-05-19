@@ -59,7 +59,7 @@
 <div class="row g-3 mb-3 align-items-stretch">
     <div class="col-6 col-lg-2">
         {% call kpi_card('dns', 'Status', 'stat-status', status_class='dns-stat-card', live=true) %}
-        <div class="dns-stat-value{% if dns_unavailable %} text-muted{% endif %}" id="stat-status">{% if dns_unavailable %}N/A{% else %}<span class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading status…</span></span>{% endif %}</div>
+        <div class="dns-stat-value{% if dns_unavailable %} text-muted{% endif %}" id="stat-status">{% if dns_unavailable %}–{% else %}<span class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading status…</span></span>{% endif %}</div>
         {% endcall %}
     </div>
     <div class="col-6 col-lg-2">

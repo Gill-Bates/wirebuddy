@@ -7,7 +7,7 @@
 {% endblock %}
 
 {% block content %}
-<div id="peers-app" data-can-manage-peers="{{ '1' if user['is_admin'] else '0' }}" data-flag-icon-base-url="/static/vendor/flag-icons/flags/4x3" hidden></div>
+<div id="peers-app" data-can-manage-peers="{{ '1' if user['is_admin'] else '0' }}" data-flag-icon-base-url="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3" hidden></div>
 <div class="container-fluid wb-page">
 <div class="wb-page-header">
     <h2 class="page-title"><span class="material-icons me-2">devices</span>Peers</h2>
@@ -117,7 +117,7 @@
                                         {% if peer['last_client_country_code'] %}
                                         <img class="peer-country-flag" alt="Country flag: {{ peer['last_client_country_code']|upper }}"
                                             decoding="async"
-                                            src="/static/vendor/flag-icons/flags/4x3/{{ peer['last_client_country_code'] }}.svg">
+                                            src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ peer['last_client_country_code'] }}.svg">
                                         {% endif %}
                                         <code class="ipv6">{{ (peer['last_client_ip_display'] or '').replace(':', ':\u200b').replace('/', '/\u200b') }}</code>
                                     </div>
@@ -256,9 +256,9 @@
 
                     <div class="peer-card-meta">
                         <div class="peer-card-routing">
-                            <span>{{ routing_label }}</span>
+                            <span class="peer-card-routing-badge">{{ routing_label }}</span>
                             {% if peer['client_isolation'] %}
-                            <span>• Isolated</span>
+                            <span class="peer-card-routing-badge">Isolated</span>
                             {% endif %}
                         </div>
 
@@ -398,7 +398,7 @@
                                     {% if local_country_code %}
                                     <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
                                          decoding="async"
-                                         src="/static/vendor/flag-icons/flags/4x3/{{ local_country_code }}.svg">
+                                         src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ local_country_code }}.svg">
                                     {% endif %}
                                     <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                 </span>
@@ -409,7 +409,7 @@
                                         {% if local_country_code %}
                                         <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
                                              decoding="async"
-                                             src="/static/vendor/flag-icons/flags/4x3/{{ local_country_code }}.svg">
+                                             src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ local_country_code }}.svg">
                                         {% endif %}
                                         <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                     </span>
@@ -420,7 +420,7 @@
                                         {% if n.geo_country_code %}
                                         <img class="peer-country-flag" alt="{{ n.geo_country_code|upper }} flag"
                                              decoding="async"
-                                             src="/static/vendor/flag-icons/flags/4x3/{{ n.geo_country_code }}.svg">
+                                             src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ n.geo_country_code }}.svg">
                                         {% endif %}
                                         <span class="peer-node-picker-text">{{ n.name }} ({{ n.fqdn }})</span>
                                     </span>
@@ -617,7 +617,7 @@
                                     {% if local_country_code %}
                                     <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
                                          decoding="async"
-                                         src="/static/vendor/flag-icons/flags/4x3/{{ local_country_code }}.svg">
+                                         src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ local_country_code }}.svg">
                                     {% endif %}
                                     <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                 </span>
@@ -628,7 +628,7 @@
                                         {% if local_country_code %}
                                         <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
                                              decoding="async"
-                                             src="/static/vendor/flag-icons/flags/4x3/{{ local_country_code }}.svg">
+                                             src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ local_country_code }}.svg">
                                         {% endif %}
                                         <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                     </span>
@@ -639,7 +639,7 @@
                                         {% if n.geo_country_code %}
                                         <img class="peer-country-flag" alt="{{ n.geo_country_code|upper }} flag"
                                              decoding="async"
-                                             src="/static/vendor/flag-icons/flags/4x3/{{ n.geo_country_code }}.svg">
+                                             src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ n.geo_country_code }}.svg">
                                         {% endif %}
                                         <span class="peer-node-picker-text">{{ n.name }} ({{ n.fqdn }})</span>
                                     </span>

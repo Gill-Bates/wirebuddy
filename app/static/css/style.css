@@ -1372,6 +1372,25 @@ body.wb-onboarding .modal-backdrop.show {
     height: 2.25rem;
 }
 
+@media (max-width: 575.98px) {
+    #wbReconnectModal .modal-dialog {
+        margin: auto;
+        max-width: min(460px, calc(100vw - 1.5rem));
+        height: auto;
+        min-height: 0;
+    }
+
+    #wbReconnectModal .modal-content {
+        height: auto;
+        border: 1px solid rgba(128, 128, 128, 0.25);
+        border-radius: var(--wb-radius-lg);
+    }
+
+    #wbReconnectModal .modal-body {
+        overflow: visible;
+    }
+}
+
 @keyframes wbReconnectSoftPulse {
     0% {
         transform: scale(1);
