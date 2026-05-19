@@ -77,7 +77,7 @@
         min-width: 0;
     }
 
-    .dashboard-stats-row .wb-kpi-card .card-body > .d-flex {
+    .dashboard-stats-row .wb-kpi-card .card-body>.d-flex {
         width: 100%;
         min-height: 100%;
     }
@@ -118,34 +118,6 @@
         min-height: 180px;
     }
 
-/* ─── EMPTY STATE (ECHT ZENTRIERT) ─────────────────────────── */
-    .chart-empty-state {
-        position: absolute;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    .chart-empty-state > * {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-    }
-
-    .chart-empty-state .material-icons {
-        font-size: 34px;
-        margin-bottom: 4px;
-        line-height: 1;
-        display: block;
-    }
-
-    .chart-empty-state-text {
-        font-size: 0.85rem;
-        opacity: 0.7;
-    }
-
     .speedtest-last-icon {
         font-size: 14px;
     }
@@ -159,11 +131,12 @@
     }
 
     /* Prevent grid children from overflowing horizontally */
-    .dashboard-main-grid > * {
+    .dashboard-main-grid>* {
         min-width: 0;
     }
 
     @media (min-width: 1200px) {
+
         /* Dashboard page fills viewport — no scroll on desktop */
         .dashboard-page {
             display: flex;
@@ -173,7 +146,7 @@
         }
 
         /* Header stays at natural height, unaffected by scale */
-        .dashboard-page > .wb-page-header {
+        .dashboard-page>.wb-page-header {
             flex-shrink: 0;
         }
 
@@ -186,7 +159,7 @@
         }
 
         /* KPI row stays at natural height */
-        .dashboard-page-body > .row:first-of-type {
+        .dashboard-page-body>.row:first-of-type {
             flex-shrink: 0;
         }
 
@@ -205,7 +178,8 @@
         /* Map column spans full grid height */
         .dashboard-map-col {
             grid-column: 1;
-            grid-row: 1 / 4; /* spannt alle 3 Zeilen */
+            grid-row: 1 / 4;
+            /* spannt alle 3 Zeilen */
             min-height: 0;
         }
 
@@ -231,7 +205,8 @@
 
         #peer-map {
             height: 100%;
-            min-height: 500px; /* 🔥 Map sichtbar größer */
+            min-height: 500px;
+            /* 🔥 Map sichtbar größer */
         }
 
         /* Speedtest: compact, fixed height */
@@ -244,7 +219,8 @@
 
         .dashboard-speedtest-col .card {
             flex: 1 1 auto;
-            min-height: 260px; /* 🔥 höher */
+            min-height: 260px;
+            /* 🔥 höher */
         }
 
         .dashboard-speedtest-col .speedtest-chart-wrap {
@@ -263,7 +239,8 @@
         /* Recent Peer Activity: fills remaining height, scrolls */
         .dashboard-recent-peers-col {
             grid-column: 2;
-            grid-row: 2 / 4; /* spannt Zeile 2 + 3 */
+            grid-row: 2 / 4;
+            /* spannt Zeile 2 + 3 */
             min-height: 0;
             display: flex;
         }
@@ -337,7 +314,7 @@
     }
 
     #recent-peers .peer-row-clickable:hover {
-        background-color: var(--bs-tertiary-bg, rgba(0,0,0,0.04));
+        background-color: var(--bs-tertiary-bg, rgba(0, 0, 0, 0.04));
     }
 
 
@@ -467,6 +444,7 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
+
         .pulse-marker,
         .pulse-marker.connected {
             animation: none;
@@ -479,6 +457,7 @@
         font-size: 0.875rem;
         line-height: 1.4;
     }
+
     .map-popup-header {
         display: flex;
         align-items: center;
@@ -488,23 +467,28 @@
         padding-bottom: 0.4rem;
         border-bottom: 1px solid var(--bs-border-color);
     }
+
     .map-popup-header strong {
         font-size: 0.95rem;
     }
+
     .map-popup-header .badge {
         font-size: 0.7rem;
         padding: 0.25em 0.5em;
     }
+
     .map-popup-location {
         display: flex;
         align-items: center;
         gap: 0.25rem;
         margin-bottom: 0.25rem;
     }
+
     .map-popup-location .material-icons {
         font-size: 1rem;
         color: var(--bs-primary);
     }
+
     .map-popup-meta,
     .map-popup-asn,
     .map-popup-count {
@@ -624,23 +608,24 @@
         border-color: var(--wb-ni-border-active);
     }
 
-/* ─── KPI row spacing only (fix uneven vertical gaps) ─────────── */
-.dashboard-stats-row {
-    --bs-gutter-x: var(--wb-space-3);
-    --bs-gutter-y: var(--wb-space-3);
-    margin-bottom: var(--wb-space-3) !important;
-}
-
-/* CSS Grid uses gap directly */
-.dashboard-main-grid {
-    gap: var(--wb-space-3); /* single source of truth for grid spacing */
-}
-
-/* ─── Desktop Density Scaling (Dashboard only) ────────────────── */
-@media (min-width: 992px) {
-    .dashboard-page-body {
-        transform: scale(0.8);
-        transform-origin: top left;
-        width: 125%;
+    /* ─── KPI row spacing only (fix uneven vertical gaps) ─────────── */
+    .dashboard-stats-row {
+        --bs-gutter-x: var(--wb-space-3);
+        --bs-gutter-y: var(--wb-space-3);
+        margin-bottom: var(--wb-space-3) !important;
     }
-}
+
+    /* CSS Grid uses gap directly */
+    .dashboard-main-grid {
+        gap: var(--wb-space-3);
+        /* single source of truth for grid spacing */
+    }
+
+    /* ─── Desktop Density Scaling (Dashboard only) ────────────────── */
+    @media (min-width: 992px) {
+        .dashboard-page-body {
+            transform: scale(0.8);
+            transform-origin: top left;
+            width: 125%;
+        }
+    }

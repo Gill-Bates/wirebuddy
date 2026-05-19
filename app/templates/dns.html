@@ -222,7 +222,7 @@
                 <!-- Screen reader announcement for search results -->
                 <div id="log-sr-announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
                 <!-- DNS unavailable overlay (z-index higher than sticky header) -->
-                <div id="log-unavailable" class="chart-empty-state position-absolute top-0 start-0 w-100 h-100 d-flex flex-column align-items-center justify-content-center bg-body{% if not dns_unavailable %} d-none{% endif %}" style="z-index: 1030;">
+                <div id="log-unavailable" class="chart-empty-state wb-empty-state-overlay bg-body{% if not dns_unavailable %} d-none{% endif %}">
                     <span class="material-icons">block</span>
                     <span class="chart-empty-state-text">DNS Unavailable</span>
                     <span class="chart-empty-state-text small">Unbound is not installed.</span>
@@ -255,5 +255,5 @@
 {% block extra_js %}
 <script src="/static/js/dashboard_traffic_shared.js"></script>
 <script src="/static/vendor/chart.umd.min.js"></script>
-<script src="{{ url_for('static', filename='js/dns-page.js') }}"></script>
+<script src="{{ url_for('static', path='js/dns-page.js') }}"></script>
 {% endblock %}

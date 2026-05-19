@@ -42,8 +42,18 @@
     function icon(name, options = {}) {
         const classes = ['material-icons', 'align-middle'];
         if (options.class) classes.push(options.class);
-        const style = options.size ? { fontSize: options.size } : undefined;
-        return el('span', { class: classes.join(' '), text: name, style });
+        if (options.size) {
+            const sizeClass = {
+                '14px': 'icon-xs',
+                '16px': 'icon-sm',
+                '18px': 'icon-md',
+                '24px': 'icon-lg',
+                '32px': 'icon-xl',
+                '48px': 'icon-xxl',
+            }[options.size];
+            if (sizeClass) classes.push(sizeClass);
+        }
+        return el('span', { class: classes.join(' '), text: name });
     }
 
     /**
@@ -402,7 +412,7 @@
     function statusIndicator(opts) {
         return el('span', {
             children: [
-                icon(opts.icon, { class: `text-${opts.variant}`, size: '16px' }),
+                icon(opts.icon, { class: `text-${opts.variant} icon-sm` }),
                 ' ' + opts.text,
             ],
         });

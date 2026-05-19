@@ -194,10 +194,6 @@
     /* Height handled by flex layout, no hardcoded values to avoid ghost scroll */
 }
 
-.log-table tr.log-empty-row .log-empty-cell .chart-empty-state {
-    /* Flex-grow handles height; min-height removed to prevent ghost scroll */
-}
-
 .log-table th.log-col-time,
 .log-table td.log-col-time {
     width: 100px;

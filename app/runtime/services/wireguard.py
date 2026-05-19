@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..service import RuntimeService, ServiceHealth
@@ -78,8 +77,6 @@ class WireGuardService(RuntimeService):
 
     async def _do_start(self) -> None:
         """Clean stale interfaces and start enabled ones."""
-        from ...utils.subprocess import run_command
-
         # Clean up stale interfaces first
         self._stale_removed = await self._cleanup_stale_interfaces()
         if self._stale_removed:
@@ -89,6 +86,18 @@ class WireGuardService(RuntimeService):
                 self._stale_removed,
             )
 
+        interfaces: list[str] = []
+        for iface_name in dict.fromkeys(self._interfaces_to_start):
+            if not _IFACE_NAME_RE.match(iface_name):
+                _log.warning(
+                    "WIREGUARD_INVALID_INTERFACE_NAME name=%r",
+                    iface_name,
+                )
+                continue
+            interfaces.append(iface_name)
+
+        self._interfaces_to_start = interfaces
+
         if not self._interfaces_to_start:
             _log.info("WIREGUARD_NO_INTERFACES_TO_START")
             return
@@ -97,7 +106,12 @@ class WireGuardService(RuntimeService):
         sem = asyncio.Semaphore(_WG_STARTUP_CONCURRENCY)
 
         async def _start_one(iface_name: str) -> str | None:
+            if self._shutdown_event.is_set():
+                raise asyncio.CancelledError
+
             async with sem:
+                if self._shutdown_event.is_set():
+                    raise asyncio.CancelledError
                 return await self._start_interface(iface_name)
 
         results = await asyncio.gather(
@@ -116,10 +130,11 @@ class WireGuardService(RuntimeService):
         """Stop all interfaces that we started."""
         from ...utils.subprocess import run_command
 
-        if not self._started_interfaces:
+        started_interfaces = tuple(self._started_interfaces)
+        if not started_interfaces:
             return
 
-        for iface_name in self._started_interfaces:
+        for iface_name in started_interfaces:
             try:
                 res = await run_command(
                     "wg-quick", "down", iface_name,
@@ -135,14 +150,18 @@ class WireGuardService(RuntimeService):
                     )
             except asyncio.TimeoutError:
                 _log.warning("WIREGUARD_STOP_TIMEOUT name=%s", iface_name)
-            except Exception as exc:
-                _log.warning("WIREGUARD_STOP_ERROR name=%s error=%s", iface_name, exc)
+            except FileNotFoundError:
+                _log.exception("WIREGUARD_TOOLS_MISSING name=%s", iface_name)
+            except Exception:
+                _log.exception("WIREGUARD_STOP_ERROR name=%s", iface_name)
 
         self._started_interfaces.clear()
 
     async def check_health(self) -> ServiceHealth:
         """Check WireGuard interface health via wg show."""
         health = await super().check_health()
+        health.details = dict(health.details)
+        started_interfaces = tuple(self._started_interfaces)
 
         if not self.is_running:
             return health
@@ -154,19 +173,27 @@ class WireGuardService(RuntimeService):
             if res.returncode == 0:
                 active = res.stdout.strip().split() if res.stdout.strip() else []
                 health.details["active_interfaces"] = active
-                health.details["managed_interfaces"] = self._started_interfaces
+                health.details["managed_interfaces"] = list(started_interfaces)
 
                 # Check if all started interfaces are still active
-                missing = set(self._started_interfaces) - set(active)
+                missing = set(started_interfaces) - set(active)
                 if missing:
                     health.healthy = False
                     health.error = f"Interfaces not active: {list(missing)}"
             else:
                 health.healthy = False
                 health.error = "wg show failed"
-        except Exception as exc:
+        except asyncio.TimeoutError:
             health.healthy = False
-            health.error = str(exc)
+            health.error = "wg health check timed out"
+        except FileNotFoundError:
+            health.healthy = False
+            health.error = "wg tools missing"
+            _log.exception("WIREGUARD_TOOLS_MISSING")
+        except Exception:
+            health.healthy = False
+            health.error = "wg health check failed"
+            _log.exception("WIREGUARD_HEALTH_CHECK_FAILED")
 
         return health
 
@@ -177,6 +204,13 @@ class WireGuardService(RuntimeService):
             Interface name if started successfully, None otherwise.
         """
         from ...utils.subprocess import run_command
+
+        if not _IFACE_NAME_RE.match(iface_name):
+            _log.warning(
+                "WIREGUARD_INVALID_INTERFACE_NAME name=%r",
+                iface_name,
+            )
+            return None
 
         try:
             # Check if already running
@@ -207,8 +241,11 @@ class WireGuardService(RuntimeService):
         except asyncio.TimeoutError:
             _log.warning("WIREGUARD_START_TIMEOUT name=%s", iface_name)
             return None
-        except Exception as exc:
-            _log.warning("WIREGUARD_START_ERROR name=%s error=%s", iface_name, exc)
+        except FileNotFoundError:
+            _log.exception("WIREGUARD_TOOLS_MISSING name=%s", iface_name)
+            return None
+        except Exception:
+            _log.exception("WIREGUARD_START_ERROR name=%s", iface_name)
             return None
 
     async def _cleanup_stale_interfaces(self) -> list[str]:
@@ -242,7 +279,7 @@ class WireGuardService(RuntimeService):
 
                 # Check if config file exists
                 conf_file = self._config_path / f"{iface_name}.conf"
-                if conf_file.exists():
+                if conf_file.is_file():
                     continue  # Has config, not orphaned
 
                 # Orphaned interface: active but no config
@@ -267,19 +304,20 @@ class WireGuardService(RuntimeService):
                         )
                 except asyncio.TimeoutError:
                     _log.warning("WIREGUARD_STALE_DELETE_TIMEOUT name=%s", iface_name)
-                except Exception as exc:
-                    _log.warning(
-                        "WIREGUARD_STALE_DELETE_ERROR name=%s error=%s",
+                except FileNotFoundError:
+                    _log.exception("WIREGUARD_TOOLS_MISSING name=%s", iface_name)
+                except Exception:
+                    _log.exception(
+                        "WIREGUARD_STALE_DELETE_ERROR name=%s",
                         iface_name,
-                        exc,
                     )
 
         except FileNotFoundError:
             _log.debug("wg command not found, skipping stale cleanup")
         except asyncio.TimeoutError:
             _log.warning("Timeout checking for stale interfaces")
-        except Exception as exc:
-            _log.warning("Could not check stale interfaces: %s", exc)
+        except Exception:
+            _log.exception("Could not check stale interfaces")
 
         return removed
 
@@ -290,6 +328,13 @@ class WireGuardService(RuntimeService):
             True if restart succeeded.
         """
         from ...utils.subprocess import run_command
+
+        if not _IFACE_NAME_RE.match(iface_name):
+            _log.warning(
+                "WIREGUARD_INVALID_INTERFACE_NAME name=%r",
+                iface_name,
+            )
+            return False
 
         try:
             # Stop
@@ -320,6 +365,9 @@ class WireGuardService(RuntimeService):
                 )
                 return False
 
-        except Exception as exc:
-            _log.warning("WIREGUARD_RESTART_ERROR name=%s error=%s", iface_name, exc)
+        except FileNotFoundError:
+            _log.exception("WIREGUARD_TOOLS_MISSING name=%s", iface_name)
+            return False
+        except Exception:
+            _log.exception("WIREGUARD_RESTART_ERROR name=%s", iface_name)
             return False

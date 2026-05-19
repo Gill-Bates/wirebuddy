@@ -73,3 +73,10 @@
     flex: 1;
     min-height: 200px;
 }
+
+/* Overlay variant for charts and stacked card bodies */
+.wb-empty-state-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 1030;
+}

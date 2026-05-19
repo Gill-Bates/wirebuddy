@@ -380,6 +380,8 @@ async def _execute_scheduled_speedtest_run(ctx: main.LifespanContext) -> None:
             # Persist failed runs as well so the UI can surface the failure and the
             # scheduler does not immediately retry on the next tick.
             await asyncio.to_thread(_persist_last_run_to_db, ctx.cfg.db_path)
+            if result.get("status") == "ok":
+                lease.mark_success()
             
             if result.get("status") == "ok":
                 _log.info(

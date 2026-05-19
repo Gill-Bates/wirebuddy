@@ -144,61 +144,6 @@
 }
 
 /* ============================================
- * Table Responsive Behavior
- * ============================================ */
-
-/* Convert table to card layout on mobile */
-@media (max-width: 991.98px) {
-    .wb-responsive-table {
-        border: none;
-    }
-
-    .wb-responsive-table thead {
-        display: none;
-    }
-
-    .wb-responsive-table tbody {
-        display: flex;
-        flex-direction: column;
-        gap: var(--wb-spacing-md);
-    }
-
-    .wb-responsive-table tr,
-    .wb-responsive-row {
-        display: flex;
-        flex-direction: column;
-        background: var(--bs-body-bg);
-        border: 1px solid var(--wb-table-border-color);
-        border-radius: var(--wb-radius-md);
-        padding: var(--wb-spacing-md);
-        gap: var(--wb-spacing-xs);
-    }
-
-    .wb-responsive-table td {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: var(--wb-spacing-xs) 0;
-        border: none;
-    }
-
-    .wb-responsive-table td::before {
-        content: attr(data-label);
-        font-weight: var(--wb-font-weight-medium);
-        color: var(--bs-secondary-color);
-    }
-
-    .wb-responsive-actions {
-        display: flex;
-        justify-content: flex-end;
-        gap: var(--wb-action-btn-gap);
-        padding-top: var(--wb-spacing-sm);
-        border-top: 1px solid var(--wb-table-border-color);
-        margin-top: var(--wb-spacing-sm);
-    }
-}
-
-/* ============================================
  * Navigation Responsive Behavior
  * ============================================ */
 

@@ -88,7 +88,7 @@
         switch (tabId) {
             case 'general':
                 await loadWgSettings();  // Status Page toggle is on General tab
-                await loadSpeedtestSettings();
+                await window.WB?.settingsSpeedtest?.loadSettings?.();
                 tabLoaded.general = true;
                 break;
             case 'wireguard':
@@ -119,7 +119,7 @@
                 loadTsdbStats();
                 loadDnsMetricsStats();
                 loadPeerMetricsStats();
-                loadSpeedtestStats();
+                window.WB?.settingsSpeedtest?.loadStats?.();
                 tabLoaded.logs = true;
                 break;
         }
@@ -828,7 +828,7 @@
     const purgeSpeedtestLogsBtn = document.getElementById('btn-purge-speedtest-logs');
     if (purgeSpeedtestLogsBtn) {
         purgeSpeedtestLogsBtn.addEventListener('click', () => {
-            void purgeSpeedtestLogs();
+            void window.WB?.settingsSpeedtest?.purgeLogs?.();
         });
     }
 
@@ -1947,7 +1947,7 @@
             const res = await api('POST', '/api/dns/test-upstream', { servers });
 
             if (res.all_success) {
-                statusEl.innerHTML = '<span class="material-icons align-middle text-success" style="font-size:16px;">check_circle</span> All servers validated';
+                statusEl.innerHTML = '<span class="material-icons align-middle text-success icon-sm">check_circle</span> All servers validated';
                 statusEl.className = 'small text-success';
                 wbToast(`All ${res.results.length} DNS servers are reachable`, 'success');
             } else {
@@ -1956,12 +1956,12 @@
                     .map(r => `${r.server}: ${r.error}`)
                     .join('\n');
 
-                statusEl.innerHTML = `<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> ${res.failed_count} server(s) failed`;
+                statusEl.innerHTML = `<span class="material-icons align-middle text-danger icon-sm">error</span> ${res.failed_count} server(s) failed`;
                 statusEl.className = 'small text-danger';
                 wbToast('DNS server validation failed:\n' + failedServers, 'danger');
             }
         } catch (error) {
-            statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Test failed';
+            statusEl.innerHTML = '<span class="material-icons align-middle text-danger icon-sm">error</span> Test failed';
             statusEl.className = 'small text-danger';
             wbToast('DNS validation error: ' + error.message, 'danger');
         } finally {
@@ -2086,19 +2086,19 @@
                             .map(r => `${r.server}: ${r.error}`)
                             .join('\n');
                         if (statusEl) {
-                            statusEl.innerHTML = `<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> ${testRes.failed_count} failed`;
+                            statusEl.innerHTML = `<span class="material-icons align-middle text-danger icon-sm">error</span> ${testRes.failed_count} failed`;
                             statusEl.className = 'small text-danger';
                         }
                         wbToast('DNS validation failed - settings not saved:\n' + failedServers, 'danger');
                         return;
                     }
                     if (statusEl) {
-                        statusEl.innerHTML = '<span class="material-icons align-middle text-success" style="font-size:16px;">check_circle</span> Validated';
+                        statusEl.innerHTML = '<span class="material-icons align-middle text-success icon-sm">check_circle</span> Validated';
                         statusEl.className = 'small text-success';
                     }
                 } catch (error) {
                     if (statusEl) {
-                        statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Test failed';
+                        statusEl.innerHTML = '<span class="material-icons align-middle text-danger icon-sm">error</span> Test failed';
                         statusEl.className = 'small text-danger';
                     }
                     wbToast('DNS validation error: ' + error.message, 'danger');
@@ -2233,308 +2233,6 @@
         return days;
     }
 
-    // Speedtest retention slider (same values as TSDB but default 365 days)
-    const SPEEDTEST_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
-
-    function speedtestRetentionLabel(days) {
-        const n = Number(days);
-        if (n === 0) return 'No Logs';
-        if (n === 365) return '1 Year';
-        return `${n} Days`;
-    }
-
-    function speedtestRetentionIndexForDays(days) {
-        const idx = SPEEDTEST_RETENTION_VALUES.indexOf(Number(days));
-        return idx >= 0 ? idx : 5; // default: 365 days
-    }
-
-    function speedtestRetentionDaysFromSlider(rawValue) {
-        const parsed = Number.parseInt(String(rawValue), 10);
-        const idx = Number.isFinite(parsed)
-            ? Math.max(0, Math.min(SPEEDTEST_RETENTION_VALUES.length - 1, parsed))
-            : 5;
-        return SPEEDTEST_RETENTION_VALUES[idx];
-    }
-
-    function updateSpeedtestRetentionPreview(rawValue) {
-        const days = speedtestRetentionDaysFromSlider(rawValue);
-        const labelEl = document.getElementById('speedtest-retention-value');
-        if (labelEl) {
-            labelEl.textContent = speedtestRetentionLabel(days);
-            labelEl.className = days === 0
-                ? 'badge text-bg-danger'
-                : 'badge text-bg-secondary';
-        }
-        return days;
-    }
-
-    let _tsdbRetentionSaving = false;
-    let _dnsMetricsRetentionSaving = false;
-    let _speedtestRetentionSaving = false;
-
-    async function loadTsdbStats() {
-        try {
-            const stats = await api('GET', '/api/wireguard/stats/tsdb');
-
-            const size = stats.size_bytes || 0;
-            const compressedSize = stats.compressed_size_bytes || 0;
-            const archiveCount = stats.archive_count || 0;
-
-            setMetricPath('tsdb-path', stats.path);
-
-            document.getElementById('tsdb-size').textContent = formatBytes(size);
-            document.getElementById('tsdb-peers').textContent = stats.peer_count || 0;
-            document.getElementById('tsdb-files').textContent = stats.file_count || 0;
-            document.getElementById('tsdb-archives').textContent =
-                `${archiveCount} (${formatBytes(compressedSize)})`;
-
-            // Set retention slider
-            const slider = document.getElementById('tsdb-retention-slider');
-            if (slider && stats.retention_days != null) {
-                slider.value = String(tsdbRetentionIndexForDays(stats.retention_days));
-                updateTsdbRetentionPreview(slider.value);
-            }
-        } catch (e) {
-            console.error('Failed to load TSDB stats:', e);
-        }
-    }
-
-    async function loadDnsMetricsStats() {
-        try {
-            const stats = await api('GET', '/api/dns/storage');
-
-            setMetricPath('dns-metrics-path', stats.path);
-
-            const sizeEl = document.getElementById('dns-metrics-size');
-            if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
-
-            const filesEl = document.getElementById('dns-metrics-files');
-            if (filesEl) filesEl.textContent = stats.file_count || 0;
-
-            // Set retention slider
-            const slider = document.getElementById('dns-metrics-retention-slider');
-            if (slider && stats.retention_days != null) {
-                slider.value = String(dnsMetricsRetentionIndexForDays(stats.retention_days));
-                updateDnsMetricsRetentionPreview(slider.value);
-            }
-        } catch (e) {
-            console.error('Failed to load DNS metrics stats:', e);
-        }
-    }
-
-    async function loadPeerMetricsStats() {
-        try {
-            const stats = await api('GET', '/api/wireguard/stats/peer-metrics');
-
-            setMetricPath('peer-metrics-path', stats.full_path || stats.path);
-
-            const sizeEl = document.getElementById('peer-metrics-size');
-            if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
-
-            const totalEl = document.getElementById('peer-metrics-total');
-            if (totalEl) totalEl.textContent = stats.total_peers || 0;
-
-            const hsEl = document.getElementById('peer-metrics-handshake');
-            if (hsEl) hsEl.textContent = stats.peers_with_handshake || 0;
-        } catch (e) {
-            console.error('Failed to load peer metrics stats:', e);
-        }
-    }
-
-    async function loadSpeedtestStats() {
-        try {
-            const stats = await api('GET', '/api/wireguard/speedtest/storage');
-
-            setMetricPath('speedtest-metrics-path', stats.path);
-
-            const sizeEl = document.getElementById('speedtest-metrics-size');
-            if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
-
-            const recordsEl = document.getElementById('speedtest-metrics-records');
-            if (recordsEl) recordsEl.textContent = stats.record_count || 0;
-
-            // Set retention slider (admin only)
-            const slider = document.getElementById('speedtest-retention-slider');
-            if (slider && stats.retention_days != null) {
-                slider.value = String(speedtestRetentionIndexForDays(stats.retention_days));
-                updateSpeedtestRetentionPreview(slider.value);
-            }
-        } catch (e) {
-            console.error('Failed to load speedtest stats:', e);
-        }
-    }
-
-    async function saveTsdbRetention() {
-        if (_tsdbRetentionSaving) return;
-        _tsdbRetentionSaving = true;
-        const slider = document.getElementById('tsdb-retention-slider');
-        const days = tsdbRetentionDaysFromSlider(slider?.value ?? 5);
-
-        if (days === 0) {
-            const ok = await wbConfirm(
-                '"No Logs" disables traffic logging and deletes existing data. Dashboard charts will show "Logging disabled". Continue?',
-                'warning'
-            );
-            if (!ok) {
-                // Revert slider
-                loadTsdbStats();
-                _tsdbRetentionSaving = false;
-                return;
-            }
-        }
-
-        try {
-            await api('PATCH', '/api/wireguard/stats/tsdb/retention', { retention_days: days });
-            wbToast(`Traffic retention set to ${tsdbRetentionLabel(days)}`, 'success');
-        } catch (e) {
-            wbToast('Failed to update traffic retention: ' + e.message, 'danger');
-        } finally {
-            _tsdbRetentionSaving = false;
-        }
-    }
-
-    async function saveDnsMetricsRetention() {
-        if (_dnsMetricsRetentionSaving) return;
-        _dnsMetricsRetentionSaving = true;
-        const slider = document.getElementById('dns-metrics-retention-slider');
-        const days = dnsMetricsRetentionDaysFromSlider(slider?.value ?? 2);
-
-        if (days === 0) {
-            const ok = await wbConfirm(
-                '"No Logs" disables DNS logging and deletes existing DNS data. Continue?',
-                'warning'
-            );
-            if (!ok) {
-                // Revert slider
-                loadDnsMetricsStats();
-                _dnsMetricsRetentionSaving = false;
-                return;
-            }
-        }
-
-        try {
-            await api('POST', '/api/dns/config', { log_retention_days: days });
-            wbToast(`DNS retention set to ${dnsMetricsRetentionLabel(days)}`, 'success');
-        } catch (e) {
-            wbToast('Failed to update DNS retention: ' + e.message, 'danger');
-        } finally {
-            _dnsMetricsRetentionSaving = false;
-        }
-    }
-
-    async function saveSpeedtestRetention() {
-        if (_speedtestRetentionSaving) return;
-        _speedtestRetentionSaving = true;
-        const slider = document.getElementById('speedtest-retention-slider');
-        const days = speedtestRetentionDaysFromSlider(slider?.value ?? 5);
-
-        if (days === 0) {
-            const ok = await wbConfirm(
-                '"No Logs" disables speedtest logging and deletes existing data. Bandwidth history chart will be empty. Continue?',
-                'warning'
-            );
-            if (!ok) {
-                // Revert slider
-                loadSpeedtestStats();
-                _speedtestRetentionSaving = false;
-                return;
-            }
-        }
-
-        try {
-            await api('PATCH', '/api/wireguard/speedtest/storage/retention', { retention_days: days });
-            wbToast(`Speedtest retention set to ${speedtestRetentionLabel(days)}`, 'success');
-        } catch (e) {
-            wbToast('Failed to update speedtest retention: ' + e.message, 'danger');
-        } finally {
-            _speedtestRetentionSaving = false;
-        }
-    }
-
-    // Bind retention slider listeners
-    (function bindMetricsRetentionListeners() {
-        const tsdbSlider = document.getElementById('tsdb-retention-slider');
-        if (tsdbSlider) {
-            tsdbSlider.addEventListener('input', function () {
-                updateTsdbRetentionPreview(this.value);
-            });
-            tsdbSlider.addEventListener('change', function () {
-                saveTsdbRetention();
-            });
-        }
-
-        const dnsSlider = document.getElementById('dns-metrics-retention-slider');
-        if (dnsSlider) {
-            dnsSlider.addEventListener('input', function () {
-                updateDnsMetricsRetentionPreview(this.value);
-            });
-            dnsSlider.addEventListener('change', function () {
-                saveDnsMetricsRetention();
-            });
-        }
-
-        const speedtestSlider = document.getElementById('speedtest-retention-slider');
-        if (speedtestSlider) {
-            speedtestSlider.addEventListener('input', function () {
-                updateSpeedtestRetentionPreview(this.value);
-            });
-            speedtestSlider.addEventListener('change', function () {
-                saveSpeedtestRetention();
-            });
-        }
-    })();
-
-    async function purgeTrafficLogs() {
-        if (!await wbConfirm('Delete all traffic metric data? This cannot be undone.', 'danger')) return;
-
-        try {
-            const res = await api('DELETE', '/api/wireguard/stats/tsdb');
-            wbToast(res.message || 'Traffic metrics deleted', 'success');
-            loadTsdbStats();
-        } catch (e) {
-            wbToast('Failed to delete traffic metrics: ' + e.message, 'danger');
-        }
-    }
-
-    async function purgeDnsLogs() {
-        if (!await wbConfirm('Delete all DNS query data? This cannot be undone.', 'danger')) return;
-
-        try {
-            const res = await api('DELETE', '/api/dns/logs');
-            wbToast(res.message || 'DNS metrics deleted', 'success');
-            loadDnsMetricsStats();
-        } catch (e) {
-            wbToast('Failed to delete DNS metrics: ' + e.message, 'danger');
-        }
-    }
-
-    async function purgePeerLogs() {
-        if (!await wbConfirm('Reset all peer connection tracking data? This cannot be undone.', 'danger')) return;
-
-        try {
-            const res = await api('DELETE', '/api/wireguard/stats/peer-logs');
-            wbToast(res.message || 'Peer metrics reset', 'success');
-            loadPeerMetricsStats();
-        } catch (e) {
-            wbToast('Failed to reset peer metrics: ' + e.message, 'danger');
-        }
-    }
-
-    async function purgeSpeedtestLogs() {
-        if (!await wbConfirm('Delete all speedtest data? Bandwidth history chart will be empty. This cannot be undone.', 'danger')) return;
-
-        try {
-            const res = await api('DELETE', '/api/wireguard/speedtest/storage');
-            wbToast(res.message || 'Speedtest data deleted', 'success');
-            loadSpeedtestStats();
-            // Notify dashboard to refresh speedtest chart
-            document.dispatchEvent(new CustomEvent('speedtest-completed'));
-        } catch (e) {
-            const errorMsg = e?.message || String(e);
-            wbToast('Failed to delete speedtest data: ' + errorMsg, 'danger');
-        }
-    }
-
     /* ── Custom DNS Rules ──────────────────────────────────── */
 
     async function loadCustomRules() {
@@ -2613,7 +2311,7 @@
             if (data.error_count > 0) {
                 wbToast(`Rules saved with ${data.error_count} syntax error(s)`, 'warning');
                 if (statusEl) {
-                    statusEl.innerHTML = `<span class="material-icons align-middle text-warning" style="font-size:16px;">warning</span> ${data.error_count} error(s)`;
+                    statusEl.innerHTML = `<span class="material-icons align-middle text-warning icon-sm">warning</span> ${data.error_count} error(s)`;
                     statusEl.className = 'small text-warning';
                 }
             } else {
@@ -2626,7 +2324,7 @@
         } catch (e) {
             wbToast('Failed to save custom rules: ' + e.message, 'danger');
             if (statusEl) {
-                statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Failed';
+                statusEl.innerHTML = '<span class="material-icons align-middle text-danger icon-sm">error</span> Failed';
                 statusEl.className = 'small text-danger';
             }
             // Also update rule count from textarea to reflect actual state
@@ -2640,361 +2338,179 @@
         }
     }
 
-    // ─── SPEEDTEST / BANDWIDTH MEASUREMENT ──────────────────────
+    let _tsdbRetentionSaving = false;
+    let _dnsMetricsRetentionSaving = false;
 
-    let _speedtestRunning = false;
-    const FLAG_ICON_BASE_URL = '/static/vendor/flag-icons/flags/4x3';
-    const formatBandwidthMetric = window.WBShared.formatBandwidthMetric;
-    const speedtestElements = {
-        enabledToggle: document.getElementById('speedtest-enabled'),
-        runBtn: document.getElementById('btn-speedtest-run'),
-        running: document.getElementById('speedtest-running'),
-        result: document.getElementById('speedtest-result'),
-        status: document.getElementById('speedtest-status'),
-        progress: document.getElementById('speedtest-progress'),
-        download: document.getElementById('speedtest-result-dl'),
-        upload: document.getElementById('speedtest-result-ul'),
-        rtt: document.getElementById('speedtest-result-rtt'),
-        server: document.getElementById('speedtest-result-server'),
-        date: document.getElementById('speedtest-result-date'),
-        inlineDate: document.getElementById('speedtest-result-date-inline'),
-    };
-
-    function createCountryFlagElement(countryCode) {
-        const code = String(countryCode || '').trim().toLowerCase();
-        if (!/^[a-z]{2}$/.test(code)) return null;
-
-        const img = document.createElement('img');
-        img.className = 'peer-flag';
-        img.alt = `Country flag: ${code.toUpperCase()}`;
-        img.loading = 'lazy';
-        img.decoding = 'async';
-        img.src = `${FLAG_ICON_BASE_URL}/${code}.svg`;
-        img.addEventListener('error', () => img.remove(), { once: true });
-        return img;
-    }
-
-    function setSpeedtestStatusMessage(statusEl, rawMessage) {
-        if (!statusEl) return;
-        statusEl.replaceChildren();
-
-        const message = String(rawMessage || 'Running…');
-        const parts = message.split(/\((https?:\/\/[^)]+)\)/g);
-        for (let index = 0; index < parts.length; index++) {
-            const part = parts[index];
-            if (!part) continue;
-            if (index % 2 === 1) {
-                const code = document.createElement('code');
-                code.className = 'small';
-                code.textContent = part;
-                statusEl.append('(', code, ')');
-                continue;
-            }
-            statusEl.append(document.createTextNode(part));
-        }
-    }
-
-    function reportSpeedtestError(message) {
-        wbToast(`Speed test failed: ${message || 'Unknown error'}`, 'danger');
-    }
-
-    function handleSpeedtestResult(data) {
-        if (data?.status === 'busy') {
-            wbToast('Network appears busy — measurement skipped', 'warning');
-            return;
-        }
-
-        showSpeedtestResult(data);
-        wbToast('Speed test completed', 'success');
-        document.dispatchEvent(new CustomEvent('speedtest-completed'));
-    }
-
-    function createReportedError(message) {
-        const error = new Error(message || 'Unknown error');
-        error.speedtestReported = true;
-        return error;
-    }
-
-    function initSpeedtestUI() {
-        if (!isAdmin) return;
-        speedtestElements.enabledToggle?.addEventListener('change', saveSpeedtestSettings);
-        speedtestElements.runBtn?.addEventListener('click', runSpeedtest);
-    }
-
-    async function loadSpeedtestSettings() {
+    async function loadTsdbStats() {
         try {
-            const data = await api('GET', '/api/wireguard/speedtest/settings');
+            const stats = await api('GET', '/api/wireguard/stats/tsdb');
+            setMetricPath('tsdb-path', stats.path);
 
-            const { enabledToggle } = speedtestElements;
-            if (enabledToggle) {
-                enabledToggle.style.transition = 'none';
-                enabledToggle.checked = !!data.enabled;
-                enabledToggle.offsetHeight;
-                enabledToggle.style.transition = '';
+            const sizeEl = document.getElementById('tsdb-size');
+            if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
+
+            const peersEl = document.getElementById('tsdb-peers');
+            if (peersEl) peersEl.textContent = stats.peer_count || 0;
+
+            const filesEl = document.getElementById('tsdb-files');
+            if (filesEl) filesEl.textContent = stats.file_count || 0;
+
+            const archivesEl = document.getElementById('tsdb-archives');
+            if (archivesEl) {
+                const archiveCount = stats.archive_count || 0;
+                const compressedSize = stats.compressed_size_bytes || 0;
+                archivesEl.textContent = `${archiveCount} (${formatBytes(compressedSize)})`;
             }
 
-            // Use the last result embedded in the settings response if available;
-            // otherwise fetch the latest result from the history endpoint.
-            if (data.last_result && typeof data.last_result === 'object') {
-                showSpeedtestResult(data.last_result);
-            } else {
-                await loadLastSpeedtest();
+            const slider = document.getElementById('tsdb-retention-slider');
+            if (slider && stats.retention_days != null) {
+                slider.value = String(tsdbRetentionIndexForDays(stats.retention_days));
+                updateTsdbRetentionPreview(slider.value);
             }
         } catch (e) {
-            console.error('Failed to load speedtest settings:', e.message);
-            wbToast('Failed to load speedtest settings', 'danger');
+            console.error('Failed to load TSDB stats:', e);
         }
     }
 
-    async function loadLastSpeedtest() {
+    async function loadDnsMetricsStats() {
         try {
-            const data = await api('GET', '/api/wireguard/speedtest/history?limit=1');
+            const stats = await api('GET', '/api/dns/storage');
+            setMetricPath('dns-metrics-path', stats.path);
 
-            if (data.history && data.history.length > 0) {
-                const lastResult = data.history[0];
-                showSpeedtestResult(lastResult);
+            const sizeEl = document.getElementById('dns-metrics-size');
+            if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
+
+            const filesEl = document.getElementById('dns-metrics-files');
+            if (filesEl) filesEl.textContent = stats.file_count || 0;
+
+            const slider = document.getElementById('dns-metrics-retention-slider');
+            if (slider && stats.retention_days != null) {
+                slider.value = String(dnsMetricsRetentionIndexForDays(stats.retention_days));
+                updateDnsMetricsRetentionPreview(slider.value);
             }
         } catch (e) {
-            // Silently fail if no history exists yet
-            console.debug('No speedtest history available:', e.message);
+            console.error('Failed to load DNS metrics stats:', e);
         }
     }
 
-    async function saveSpeedtestSettings() {
-        if (!isAdmin) return;
-        const payload = {};
-
-        const { enabledToggle } = speedtestElements;
-        if (enabledToggle) payload.enabled = enabledToggle.checked;
-
+    async function loadPeerMetricsStats() {
         try {
-            await api('PATCH', '/api/wireguard/speedtest/settings', payload);
-            const status = payload.enabled ? 'enabled' : 'disabled';
-            wbToast(`Speedtest ${status}`, 'success');
+            const stats = await api('GET', '/api/wireguard/stats/peer-metrics');
+            setMetricPath('peer-metrics-path', stats.full_path || stats.path);
+
+            const sizeEl = document.getElementById('peer-metrics-size');
+            if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
+
+            const totalEl = document.getElementById('peer-metrics-total');
+            if (totalEl) totalEl.textContent = stats.total_peers || 0;
+
+            const hsEl = document.getElementById('peer-metrics-handshake');
+            if (hsEl) hsEl.textContent = stats.peers_with_handshake || 0;
         } catch (e) {
-            wbToast('Failed to save speedtest settings: ' + e.message, 'danger');
+            console.error('Failed to load peer metrics stats:', e);
         }
     }
 
-    async function runSpeedtest() {
-        if (_speedtestRunning || !isAdmin) return;
-        _speedtestRunning = true;
-
-        const {
-            runBtn: btn,
-            running: runningEl,
-            result: resultEl,
-            status: statusEl,
-            progress: progressEl,
-        } = speedtestElements;
-
-        if (btn) btn.disabled = true;
-        if (runningEl) runningEl.classList.remove('d-none');
-        if (resultEl) resultEl.classList.add('d-none');
-        if (statusEl) statusEl.textContent = 'Initializing…';
-        if (progressEl) progressEl.textContent = '0%';
-
+    async function purgeTrafficLogs() {
+        if (!await wbConfirm('Delete all traffic metric data? This cannot be undone.', 'danger')) return;
         try {
-            await runSpeedtestWithSSE(statusEl, progressEl);
+            const res = await api('DELETE', '/api/wireguard/stats/tsdb');
+            wbToast(res.message || 'Traffic metrics deleted', 'success');
+            loadTsdbStats();
         } catch (e) {
-            if (!e?.speedtestReported) {
-                reportSpeedtestError(e.message);
-            }
-        } finally {
-            _speedtestRunning = false;
-            if (btn) btn.disabled = false;
-            if (runningEl) runningEl.classList.add('d-none');
+            wbToast('Failed to delete traffic metrics: ' + e.message, 'danger');
         }
     }
 
-    /**
-     * Run a speedtest via Server-Sent Events.
-     * Resolves with the final result payload or rejects on transport failure or timeout.
-     * @param {HTMLElement|null} statusEl
-     * @param {HTMLElement|null} progressEl
-     * @returns {Promise<object>}
-     */
-    function runSpeedtestWithSSE(statusEl, progressEl) {
-        return new Promise((resolve, reject) => {
-            const es = new EventSource('/api/wireguard/speedtest/run/stream');
-            let completed = false;
-            let safetyTimer = null;
+    async function purgeDnsLogs() {
+        if (!await wbConfirm('Delete all DNS query data? This cannot be undone.', 'danger')) return;
+        try {
+            const res = await api('DELETE', '/api/dns/logs');
+            wbToast(res.message || 'DNS metrics deleted', 'success');
+            loadDnsMetricsStats();
+        } catch (e) {
+            wbToast('Failed to delete DNS metrics: ' + e.message, 'danger');
+        }
+    }
 
-            function finish(callback) {
-                if (completed) return;
-                completed = true;
-                if (safetyTimer !== null) {
-                    clearTimeout(safetyTimer);
-                    safetyTimer = null;
-                }
-                es.close();
-                callback();
-            }
+    async function purgePeerLogs() {
+        if (!await wbConfirm('Reset all peer connection tracking data? This cannot be undone.', 'danger')) return;
+        try {
+            const res = await api('DELETE', '/api/wireguard/stats/peer-logs');
+            wbToast(res.message || 'Peer metrics reset', 'success');
+            loadPeerMetricsStats();
+        } catch (e) {
+            wbToast('Failed to reset peer metrics: ' + e.message, 'danger');
+        }
+    }
 
-            es.addEventListener('progress', (e) => {
-                try {
-                    const data = JSON.parse(e.data);
-                    setSpeedtestStatusMessage(statusEl, data.message);
-                    if (progressEl) progressEl.textContent = `${Math.round(data.progress * 100)}%`;
-                } catch (err) {
-                    console.warn('Failed to parse progress event:', err);
-                }
+    (function bindMetricsRetentionListeners() {
+        const tsdbSlider = document.getElementById('tsdb-retention-slider');
+        if (tsdbSlider) {
+            tsdbSlider.addEventListener('input', function () {
+                updateTsdbRetentionPreview(this.value);
             });
-
-            es.addEventListener('result', (e) => {
-                finish(() => {
+            tsdbSlider.addEventListener('change', function () {
+                if (_tsdbRetentionSaving) return;
+                _tsdbRetentionSaving = true;
+                void (async () => {
                     try {
-                        const data = JSON.parse(e.data);
-                        handleSpeedtestResult(data);
-                        resolve(data);
-                    } catch (err) {
-                        reject(err);
+                        const days = tsdbRetentionDaysFromSlider(this.value);
+                        if (days === 0) {
+                            const ok = await wbConfirm(
+                                '"No Logs" disables traffic logging and deletes existing data. Dashboard charts will show "Logging disabled". Continue?',
+                                'warning'
+                            );
+                            if (!ok) {
+                                loadTsdbStats();
+                                return;
+                            }
+                        }
+                        await api('PATCH', '/api/wireguard/stats/tsdb/retention', { retention_days: tsdbRetentionDaysFromSlider(this.value) });
+                        wbToast(`Traffic retention set to ${tsdbRetentionLabel(tsdbRetentionDaysFromSlider(this.value))}`, 'success');
+                    } catch (e) {
+                        wbToast('Failed to update traffic retention: ' + e.message, 'danger');
+                    } finally {
+                        _tsdbRetentionSaving = false;
                     }
-                });
+                })();
             });
+        }
 
-            es.addEventListener('error', (e) => {
-                // Only handle server-sent error events (e.data will be present)
-                // Transport failures are handled by onerror below
-                if (!e.data) return;
-
-                finish(() => {
+        const dnsSlider = document.getElementById('dns-metrics-retention-slider');
+        if (dnsSlider) {
+            dnsSlider.addEventListener('input', function () {
+                updateDnsMetricsRetentionPreview(this.value);
+            });
+            dnsSlider.addEventListener('change', function () {
+                if (_dnsMetricsRetentionSaving) return;
+                _dnsMetricsRetentionSaving = true;
+                void (async () => {
                     try {
-                        const data = JSON.parse(e.data);
-                        reportSpeedtestError(data.reason || 'Unknown error');
-                        reject(createReportedError(data.reason || 'Unknown error'));
-                    } catch (err) {
-                        reject(err);
+                        const days = dnsMetricsRetentionDaysFromSlider(this.value);
+                        if (days === 0) {
+                            const ok = await wbConfirm(
+                                '"No Logs" disables DNS logging and deletes existing DNS data. Continue?',
+                                'warning'
+                            );
+                            if (!ok) {
+                                loadDnsMetricsStats();
+                                return;
+                            }
+                        }
+                        await api('POST', '/api/dns/config', { log_retention_days: dnsMetricsRetentionDaysFromSlider(this.value) });
+                        wbToast(`DNS retention set to ${dnsMetricsRetentionLabel(dnsMetricsRetentionDaysFromSlider(this.value))}`, 'success');
+                    } catch (e) {
+                        wbToast('Failed to update DNS retention: ' + e.message, 'danger');
+                    } finally {
+                        _dnsMetricsRetentionSaving = false;
                     }
-                });
-            });
-
-            es.onerror = () => {
-                finish(() => {
-                    reject(new Error('SSE connection lost'));
-                });
-            };
-
-            // Safety timeout
-            safetyTimer = window.setTimeout(() => {
-                finish(() => {
-                    reject(new Error('Timeout'));
-                });
-            }, 180000);
-        });
-    }
-
-    /**
-     * Format a speedtest timestamp as a human-readable relative label.
-     * Falls back to an absolute date string for timestamps older than 24h
-     * or when the timestamp lies in the future due to clock skew.
-     * @param {string} timestamp
-     * @returns {string}
-     */
-    function formatSpeedtestMeasuredLabel(timestamp) {
-        const date = new Date(timestamp);
-        const diffMs = Date.now() - date.getTime();
-        const diffMins = Math.floor(diffMs / 60000);
-
-        if (diffMins >= 0 && diffMins < 1) {
-            return 'Just now';
-        }
-        if (diffMins < 0) {
-            return date.toLocaleString(undefined, {
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
+                })();
             });
         }
-        if (diffMins < 60) {
-            return `${diffMins} min ago`;
-        }
-        if (diffMins < 1440) {
-            const hours = Math.floor(diffMins / 60);
-            return `${hours}h ago`;
-        }
+    })();
 
-        return date.toLocaleString(undefined, {
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-        });
-    }
-
-    function showSpeedtestResult(data) {
-        if (!data || data.status === 'busy' || data.status === 'error') {
-            console.warn('[speedtest] showSpeedtestResult called with non-ok result:', data?.status);
-            return;
-        }
-
-        const {
-            result: resultEl,
-            download: dlEl,
-            upload: ulEl,
-            rtt: rttEl,
-            server: serverEl,
-            date: dateEl,
-            inlineDate: inlineDateEl,
-        } = speedtestElements;
-        if (!resultEl) {
-            console.debug('showSpeedtestResult: #speedtest-result not found in DOM');
-            return;
-        }
-        resultEl.classList.remove('d-none');
-
-        if (dlEl) dlEl.textContent = formatBandwidthMetric(data.download_mbit, 2);
-        if (ulEl) ulEl.textContent = formatBandwidthMetric(data.upload_mbit, 2);
-        if (rttEl) rttEl.textContent = data.rtt_ms != null ? `${data.rtt_ms.toFixed(2)} ms (±${(data.jitter_ms || 0).toFixed(2)})` : '–';
-        if (serverEl) {
-            // Clear previous content
-            serverEl.textContent = '';
-            serverEl.title = data.server || '';
-
-            // Add country flag if available
-            const flag = createCountryFlagElement(data.country_code);
-            if (flag) {
-                serverEl.appendChild(flag);
-                serverEl.appendChild(document.createTextNode(' '));
-            }
-
-            // Add server name
-            serverEl.appendChild(document.createTextNode(data.server || '–'));
-        }
-        if (inlineDateEl) {
-            inlineDateEl.textContent = '';
-            inlineDateEl.removeAttribute('aria-label');
-        }
-        if (dateEl) {
-            if (!data.ts) {
-                dateEl.textContent = '–';
-                if (inlineDateEl) {
-                    inlineDateEl.textContent = '';
-                    inlineDateEl.removeAttribute('aria-label');
-                }
-                dateEl.title = '';
-            } else {
-                const date = new Date(data.ts);
-                if (Number.isNaN(date.getTime())) {
-                    dateEl.textContent = '–';
-                    if (inlineDateEl) {
-                        inlineDateEl.textContent = '';
-                        inlineDateEl.removeAttribute('aria-label');
-                    }
-                    dateEl.title = '';
-                } else {
-                    const label = formatSpeedtestMeasuredLabel(data.ts);
-                    dateEl.textContent = label;
-                    if (inlineDateEl) {
-                        inlineDateEl.textContent = label;
-                        inlineDateEl.setAttribute('aria-label', label);
-                    }
-                    dateEl.title = date.toLocaleString();
-                }
-            }
-        }
-    }
+    // Speedtest logic moved to /static/js/settings/speedtest.js
 
     window.WBSettings = {
         purgeTrafficLogs,
@@ -3015,11 +2531,9 @@
         clearTimeout(wgSettingsSaveTimeout);
         clearTimeout(blocklistSaveTimeout);
         clearTimeout(dnsConfigSaveTimeout);
-        _speedtestRunning = false;
     });
 
     // Initialize tabs on page load (await to ensure settings are loaded before user interaction)
-    initSpeedtestUI();
     await initTabs();
 
     // ─── BACKUP MANAGEMENT ─────────────────────────────────────────────────────

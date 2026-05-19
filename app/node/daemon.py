@@ -327,6 +327,8 @@ async def _run_node_speedtest(
 				run_speedtest(progress_callback=progress_callback),
 				timeout=_SPEEDTEST_RUN_TIMEOUT_SECONDS
 			)
+			if result.get("status") == "ok":
+				lease.mark_success()
 	except asyncio.TimeoutError:
 		_log.error("NODE_SPEEDTEST timeout after %ds", _SPEEDTEST_RUN_TIMEOUT_SECONDS)
 		result = {"status": "error", "reason": f"Timeout after {_SPEEDTEST_RUN_TIMEOUT_SECONDS}s"}

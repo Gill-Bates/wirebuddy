@@ -73,7 +73,7 @@ class SQLiteService(RuntimeService):
         self._schema_version = result.get("schema_version")
 
         if self._key_mismatch:
-            raise RuntimeError("WIREBUDDY_SECRET_KEY does not match database encryption key")
+            raise RuntimeError("DATABASE_SECRET_KEY_VALIDATION_FAILED")
 
         _log.info(
             "SQLITE_INITIALIZED path=%s schema_version=%s",
@@ -99,18 +99,23 @@ class SQLiteService(RuntimeService):
     async def check_health(self) -> ServiceHealth:
         """Verify database connectivity."""
         health = await super().check_health()
+        health.details = dict(health.details)
 
         if not self.is_running:
             return health
 
         try:
-            ok = await asyncio.to_thread(self._check_connectivity)
+            ok = await asyncio.wait_for(
+                asyncio.to_thread(self._check_connectivity),
+                timeout=5.0,
+            )
             health.healthy = ok
             if not ok:
                 health.error = "Database connectivity check failed"
-        except Exception as exc:
+        except Exception:
+            _log.exception("SQLITE_HEALTH_CHECK_FAILED")
             health.healthy = False
-            health.error = str(exc)
+            health.error = "Database health check failed"
 
         return health
 
@@ -124,22 +129,24 @@ class SQLiteService(RuntimeService):
         result: dict[str, object] = {"key_mismatch": False}
 
         try:
+            # init_schema() and insert_default_settings() manage their own
+            # atomic transactions inside the SQLite layer.
             init_schema(conn)
 
             # Validate secret key
             if not validate_secret_key(conn, self._config.secret_key):
                 result["key_mismatch"] = True
-                _log.critical(
-                    "KEY_MISMATCH_DETECTED: WIREBUDDY_SECRET_KEY does not match "
-                    "the key used to encrypt this database"
-                )
+                _log.critical("DATABASE_SECRET_KEY_VALIDATION_FAILED")
                 return result
 
             insert_default_settings(conn)
 
             # Get schema version for health reporting
             cursor = conn.execute("PRAGMA user_version")
-            row = cursor.fetchone()
+            try:
+                row = cursor.fetchone()
+            finally:
+                cursor.close()
             result["schema_version"] = str(row[0]) if row else "unknown"
 
         finally:
@@ -151,7 +158,6 @@ class SQLiteService(RuntimeService):
         """Synchronous database shutdown (runs in thread)."""
         from ...db.sqlite_runtime import checkpoint_wal, close_all_connections
 
-        closed_connections = close_all_connections()
         checkpoint: dict[str, int | str | None] = {
             "mode": "RESTART",
             "busy": -1,
@@ -165,7 +171,18 @@ class SQLiteService(RuntimeService):
             checkpoint["attempts"] = attempt
             if int(checkpoint.get("busy", -1)) == 0:
                 break
+            if self._shutdown_event.is_set():
+                break
             time.sleep(self.CHECKPOINT_RETRY_DELAY)
+
+        if int(checkpoint.get("busy", -1)) != 0:
+            _log.warning(
+                "SQLITE_CHECKPOINT_INCOMPLETE busy=%s attempts=%s",
+                checkpoint.get("busy"),
+                checkpoint.get("attempts"),
+            )
+
+        closed_connections = close_all_connections()
 
         return checkpoint, closed_connections
 
@@ -175,7 +192,11 @@ class SQLiteService(RuntimeService):
 
         conn = connect(self._db_path)
         try:
-            result = conn.execute("SELECT 1").fetchone()
-            return result is not None and result[0] == 1
+            cursor = conn.execute("PRAGMA quick_check")
+            try:
+                result = cursor.fetchone()
+            finally:
+                cursor.close()
+            return result is not None and str(result[0]).lower() == "ok"
         finally:
             close_connection(conn)

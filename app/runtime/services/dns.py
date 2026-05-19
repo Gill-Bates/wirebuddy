@@ -22,7 +22,7 @@ import asyncio
 import logging
 import random
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from ..service import RuntimeService, ServiceHealth
 
@@ -55,6 +55,7 @@ class DNSService(RuntimeService):
         self._service_enabled = False
         self._config_ready = False
         self._ingestion_task: asyncio.Task | None = None
+        self._reload_lock = asyncio.Lock()
 
     @property
     def service_enabled(self) -> bool:
@@ -75,15 +76,18 @@ class DNSService(RuntimeService):
             return
 
         try:
-            # Write configuration
             await self._write_config()
+
+            if self._shutdown_event.is_set():
+                raise asyncio.CancelledError
 
             if not self._config_ready:
                 _log.info("DNS_SKIPPED: No interfaces to bind to")
                 return
 
-            # Start or stop Unbound based on enabled setting
-            await self._sync_unbound_state()
+            async with self._reload_lock:
+                # Start or stop Unbound based on enabled setting
+                await self._sync_unbound_state()
 
             # Start ingestion in background
             if self._service_enabled:
@@ -92,6 +96,9 @@ class DNSService(RuntimeService):
                     name="dns-ingestion",
                 )
 
+        except asyncio.CancelledError:
+            _log.info("DNS_STARTUP_CANCELLED")
+            raise
         except FileNotFoundError as exc:
             _log.warning("DNS_INIT_SKIPPED: Unbound tools not found (%s)", exc)
         except Exception:
@@ -105,21 +112,26 @@ class DNSService(RuntimeService):
         # Ingestion task is cancelled by base class
 
         if not unbound.is_unbound_installed():
+            self._ingestion_task = None
             return
 
         try:
-            if await unbound.is_running():
-                ok, msg = await unbound.stop()
-                if ok:
-                    _log.info("DNS_UNBOUND_STOPPED")
-                else:
-                    _log.warning("DNS_UNBOUND_STOP_FAILED: %s", msg)
-        except Exception as exc:
-            _log.warning("DNS_SHUTDOWN_ERROR: %s", exc)
+            async with self._reload_lock:
+                if await unbound.is_running():
+                    ok, msg = await unbound.stop()
+                    if ok:
+                        _log.info("DNS_UNBOUND_STOPPED")
+                    else:
+                        _log.warning("DNS_UNBOUND_STOP_FAILED: %s", msg)
+        except Exception:
+            _log.exception("DNS_SHUTDOWN_ERROR")
+        finally:
+            self._ingestion_task = None
 
     async def check_health(self) -> ServiceHealth:
         """Check DNS service health."""
         health = await super().check_health()
+        health.details = dict(health.details)
 
         if not self.is_running:
             return health
@@ -130,23 +142,31 @@ class DNSService(RuntimeService):
             health.details["installed"] = False
             return health
 
+        service_enabled = self._service_enabled
+        config_ready = self._config_ready
+        ingestion_task = self._ingestion_task
+        if ingestion_task and ingestion_task.done():
+            self._ingestion_task = None
+            ingestion_task = None
+
         health.details["installed"] = True
-        health.details["enabled"] = self._service_enabled
-        health.details["config_ready"] = self._config_ready
+        health.details["enabled"] = service_enabled
+        health.details["config_ready"] = config_ready
 
         try:
             running = await unbound.is_running()
             health.details["unbound_running"] = running
 
-            if self._service_enabled and self._config_ready and not running:
+            if service_enabled and config_ready and not running:
                 health.healthy = False
                 health.error = "Unbound not running but should be"
 
-            if self._ingestion_task:
-                health.details["ingestion_running"] = not self._ingestion_task.done()
-        except Exception as exc:
+            if ingestion_task:
+                health.details["ingestion_running"] = not ingestion_task.done()
+        except Exception:
+            _log.exception("DNS_HEALTH_CHECK_FAILED")
             health.healthy = False
-            health.error = str(exc)
+            health.error = "DNS health check failed"
 
         return health
 
@@ -155,22 +175,9 @@ class DNSService(RuntimeService):
         from ...dns import unbound
         from ...dns import ingestion as dns_ingestion
         from ...dns.unbound_blocklist import check_and_reset_stale_blocklist
-        from ...db.sqlite_runtime import connect, close_connection
-        from ...db.sqlite_interfaces import list_interfaces
-        from ...db.sqlite_settings import (
-            DEFAULT_DNS_LOG_RETENTION_DAYS,
-            get_dns_blocklist_enabled,
-            get_dns_custom_rules,
-            get_dns_log_retention_days,
-            get_dns_query_logging_enabled,
-            get_dns_service_enabled,
-            get_dns_upstream_servers,
-            get_dnssec_enabled,
-            get_enabled_blocklists,
-            get_setting,
-        )
-        from ...api.wireguard_peers import regenerate_all_peer_tags
         from ...api.wireguard_utils import safe_int
+
+        self._config_ready = False
 
         # Load DNS config from DB
         dns_data = await asyncio.to_thread(self._load_dns_config_sync)
@@ -233,8 +240,8 @@ class DNSService(RuntimeService):
                 )
                 _, msg = await unbound.update_blocklists(bl_urls, custom_rules_text=bl_custom_rules)
                 _log.info("BLOCKLIST_MIGRATION %s", msg)
-            except Exception as exc:
-                _log.warning("BLOCKLIST_MIGRATION update failed: %s", exc)
+            except Exception:
+                _log.exception("BLOCKLIST_MIGRATION update failed")
 
         self._config_ready = True
 
@@ -249,9 +256,10 @@ class DNSService(RuntimeService):
                 ok, msg = await unbound.start()
                 if ok:
                     _log.info("DNS_UNBOUND_STARTED")
-                    await asyncio.sleep(2)  # Allow startup
+                    if await self.wait_for_shutdown(timeout=2.0):
+                        raise asyncio.CancelledError
                 else:
-                    _log.warning("DNS_UNBOUND_START_FAILED: %s", msg)
+                    raise RuntimeError(f"Failed to start Unbound: {msg}")
         else:
             if unbound_running:
                 ok, msg = await unbound.stop()
@@ -266,13 +274,7 @@ class DNSService(RuntimeService):
         """Run DNS query log ingestion with restart on failure."""
         from ...dns import unbound
         from ...dns import ingestion as dns_ingestion
-        from ...db.sqlite_runtime import connect, close_connection
-        from ...db.sqlite_settings import (
-            DEFAULT_DNS_LOG_RETENTION_DAYS,
-            get_dns_log_retention_days,
-            get_dns_service_enabled,
-        )
-        from ...db.sqlite_interfaces import list_interfaces
+        from ...db.sqlite_settings import DEFAULT_DNS_LOG_RETENTION_DAYS
         from ...tasks import scheduled as scheduled_tasks
 
         retry_count = 0
@@ -280,7 +282,9 @@ class DNSService(RuntimeService):
 
         while True:
             # Check if DNS should be running
-            should_run = await asyncio.to_thread(self._should_unbound_run_sync)
+            should_run, dns_retention_days_cache = await asyncio.to_thread(
+                self._read_runtime_settings_sync
+            )
             if not should_run:
                 await scheduled_tasks._sleep_with_cancellation_check(30.0)
                 continue
@@ -295,7 +299,8 @@ class DNSService(RuntimeService):
                     attempt + 1,
                     delay,
                 )
-                await asyncio.sleep(delay)
+                if await self.wait_for_shutdown(timeout=delay):
+                    raise asyncio.CancelledError
             else:
                 _log.warning("DNS_INGESTION Unbound not ready; starting anyway")
 
@@ -303,11 +308,6 @@ class DNSService(RuntimeService):
                 return dns_retention_days_cache
 
             try:
-                # Refresh retention setting
-                dns_retention_days_cache = await asyncio.to_thread(
-                    self._read_dns_retention_sync
-                )
-
                 # Ensure offset path exists
                 offset_path = await asyncio.to_thread(
                     self._ensure_offset_path_sync
@@ -325,6 +325,8 @@ class DNSService(RuntimeService):
 
                 # Unexpected exit - restart
                 retry_count = 0
+                if self._shutdown_event.is_set():
+                    return
                 _log.warning("DNS_INGESTION stopped unexpectedly; restarting in 5s")
                 await scheduled_tasks._sleep_with_cancellation_check(5.0)
 
@@ -332,19 +334,25 @@ class DNSService(RuntimeService):
                 _log.info("DNS_INGESTION shutdown requested")
                 raise
 
-            except Exception as exc:
-                retry_count += 1
+            except Exception:
+                retry_count = min(retry_count + 1, 32)
                 jitter = random.uniform(0.8, 1.2)
                 delay = min(
                     (2 ** retry_count * _INGESTION_RESTART_BASE_DELAY * jitter),
                     _INGESTION_RESTART_MAX_DELAY,
                 )
-                _log.error(
-                    "DNS_INGESTION crashed (retry #%d in %.0fs): %s",
-                    retry_count,
-                    delay,
-                    exc,
-                )
+                if retry_count <= 3:
+                    _log.exception(
+                        "DNS_INGESTION crashed (retry #%d in %.0fs)",
+                        retry_count,
+                        delay,
+                    )
+                else:
+                    _log.error(
+                        "DNS_INGESTION crashed (retry #%d in %.0fs)",
+                        retry_count,
+                        delay,
+                    )
                 await scheduled_tasks._sleep_with_cancellation_check(delay)
 
     def _load_dns_config_sync(self) -> dict[str, object]:
@@ -400,29 +408,18 @@ class DNSService(RuntimeService):
         finally:
             close_connection(conn)
 
-    def _should_unbound_run_sync(self) -> bool:
-        """Check if Unbound should be running (sync, runs in thread)."""
+    def _read_runtime_settings_sync(self) -> tuple[bool, int]:
+        """Read DNS runtime settings (sync, runs in thread)."""
         from ...db.sqlite_runtime import connect, close_connection
         from ...db.sqlite_interfaces import list_interfaces
+        from ...db.sqlite_settings import get_dns_log_retention_days
         from ...db.sqlite_settings import get_dns_service_enabled
 
         conn = connect(self._config.db_path)
         try:
-            if not get_dns_service_enabled(conn):
-                return False
+            service_enabled = get_dns_service_enabled(conn)
             interfaces = list_interfaces(conn)
-            return len(interfaces) > 0
-        finally:
-            close_connection(conn)
-
-    def _read_dns_retention_sync(self) -> int:
-        """Read DNS retention days (sync, runs in thread)."""
-        from ...db.sqlite_runtime import connect, close_connection
-        from ...db.sqlite_settings import get_dns_log_retention_days
-
-        conn = connect(self._config.db_path)
-        try:
-            return get_dns_log_retention_days(conn)
+            return service_enabled and len(interfaces) > 0, get_dns_log_retention_days(conn)
         finally:
             close_connection(conn)
 
@@ -435,6 +432,10 @@ class DNSService(RuntimeService):
         legacy_path = self._config.data_dir / "runtime" / "dns_tail.offset"
         if not offset_path.exists() and legacy_path.exists():
             try:
+                max_size = 64 * 1024
+                if legacy_path.stat().st_size > max_size:
+                    raise ValueError("Legacy offset file is unexpectedly large")
+
                 offset_path.write_text(
                     legacy_path.read_text(encoding="utf-8"),
                     encoding="utf-8",
@@ -448,8 +449,8 @@ class DNSService(RuntimeService):
                     legacy_path,
                     offset_path,
                 )
-            except Exception as exc:
-                _log.warning("DNS_INGESTION failed to migrate offset file: %s", exc)
+            except Exception:
+                _log.exception("DNS_INGESTION failed to migrate offset file")
 
         return offset_path
 
@@ -458,11 +459,13 @@ class DNSService(RuntimeService):
         from ...dns import unbound
 
         listen_addrs_ipv4 = []
+        seen_ipv4: set[str] = set()
         for iface in interfaces:
             addr4 = self._get_addr_field(iface, "address")
             if addr4:
                 ip4 = str(addr4).split("/")[0]
-                if ip4 not in listen_addrs_ipv4:
+                if ip4 not in seen_ipv4:
+                    seen_ipv4.add(ip4)
                     listen_addrs_ipv4.append(ip4)
 
         return listen_addrs_ipv4, unbound.get_interface_ipv6_gateways(interfaces)
@@ -472,7 +475,7 @@ class DNSService(RuntimeService):
         """Get address field from interface row."""
         try:
             return iface[key]  # type: ignore[index]
-        except (KeyError, TypeError, IndexError):
+        except (KeyError, IndexError):
             pass
         return getattr(iface, key, None)
 
@@ -484,11 +487,15 @@ class DNSService(RuntimeService):
         """
         from ...dns import unbound
 
-        try:
-            await self._write_config()
-            await unbound.reload_config()
-            _log.info("DNS_CONFIG_RELOADED")
-            return True
-        except Exception as exc:
-            _log.error("DNS_RELOAD_FAILED: %s", exc)
+        await self._write_config()
+        if not self._config_ready or self._shutdown_event.is_set():
             return False
+
+        async with self._reload_lock:
+            try:
+                await unbound.reload_config()
+                _log.info("DNS_CONFIG_RELOADED")
+                return True
+            except Exception:
+                _log.exception("DNS_RELOAD_FAILED runtime state may not match written config")
+                return False

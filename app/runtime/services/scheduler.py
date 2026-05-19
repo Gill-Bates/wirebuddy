@@ -44,7 +44,7 @@ class SchedulerService(RuntimeService):
 
     def __init__(self, config: Config) -> None:
         super().__init__()
-        self._config = config
+        del config
         self._scheduler: Scheduler | None = None
 
     @property
@@ -57,35 +57,59 @@ class SchedulerService(RuntimeService):
         from ...utils.scheduler import Scheduler
         from ...tasks.scheduler_config import register_all_tasks
 
-        self._scheduler = Scheduler()
+        if self._container is None:
+            raise RuntimeError("SchedulerService requires container injection")
 
-        # Register all scheduled tasks
-        # Note: register_all_tasks expects a LifespanContext, but we pass
-        # the container reference via self._container
-        await register_all_tasks(self._scheduler, self._container)
+        scheduler = Scheduler()
 
-        await self._scheduler.start()
+        try:
+            # register_all_tasks currently requires service-container access
+            # for runtime dependency resolution.
+            await register_all_tasks(scheduler, self._container)
+            await scheduler.start()
+        except Exception:
+            try:
+                await scheduler.stop_graceful(timeout=self.stop_timeout)
+            except Exception:
+                _log.exception("SCHEDULER_START_CLEANUP_FAILED")
+            raise
+
+        self._scheduler = scheduler
         _log.info("SCHEDULER_STARTED")
 
     async def _do_stop(self) -> None:
         """Stop scheduler gracefully."""
-        if self._scheduler:
-            await self._scheduler.stop_graceful(timeout=5.0)
+        scheduler = self._scheduler
+
+        if scheduler is None:
+            return
+
+        try:
+            await scheduler.stop_graceful(timeout=self.stop_timeout)
             _log.info("SCHEDULER_STOPPED")
+        except Exception:
+            _log.exception("SCHEDULER_STOP_FAILED")
+            raise
+        finally:
+            self._scheduler = None
 
     async def check_health(self) -> ServiceHealth:
         """Check scheduler health."""
         health = await super().check_health()
+        health.details = dict(health.details)
 
         if not self.is_running or not self._scheduler:
+            health.details["scheduler_initialized"] = self._scheduler is not None
             return health
 
         try:
-            # Get task info from scheduler
-            health.details["running"] = True
-            # Add task count if available
-        except Exception as exc:
+            status = self._scheduler.get_status()
+            health.details["scheduler_initialized"] = True
+            health.details["task_count"] = len(status)
+            health.details["running"] = any(item["is_running"] for item in status)
+        except Exception:
+            _log.exception("SCHEDULER_HEALTH_CHECK_FAILED")
             health.healthy = False
-            health.error = str(exc)
+            health.error = "Scheduler health check failed"
 
         return health

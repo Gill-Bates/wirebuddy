@@ -214,3 +214,7 @@ async function api(method, url, data = null, opts = {}) {
     }
     return payload;
 }
+
+if (typeof window.apiCall !== 'function') {
+    window.apiCall = api;
+}

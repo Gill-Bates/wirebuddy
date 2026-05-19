@@ -16,6 +16,8 @@ const SettingsApp = (function () {
     // ========================================================================
 
     const state = {
+        initialized: false,
+        initializing: false,
         isAdmin: false,
         userId: null,
         tabLoaded: {
@@ -108,13 +110,16 @@ const SettingsApp = (function () {
      */
     function hashId(str) {
         if (!str) return 'empty';
-        let hash = 0;
-        for (let i = 0; i < str.length; i++) {
-            const char = str.charCodeAt(i);
-            hash = ((hash << 5) - hash) + char;
-            hash |= 0;
+        const bytes = new TextEncoder().encode(String(str));
+        let binary = '';
+        for (const byte of bytes) {
+            binary += String.fromCharCode(byte);
         }
-        return Math.abs(hash).toString(36);
+        return btoa(binary)
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/g, '')
+            .slice(0, 12);
     }
 
     /**
@@ -133,11 +138,12 @@ const SettingsApp = (function () {
      * @returns {string}
      */
     function formatBytes(bytes) {
-        if (!bytes || bytes === 0) return '0 B';
+        const value = Number(bytes);
+        if (!Number.isFinite(value) || value <= 0) return '0 B';
         const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(1024));
-        const value = bytes / Math.pow(1024, i);
-        return `${value.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
+        const i = Math.floor(Math.log(value) / Math.log(1024));
+        const normalized = value / Math.pow(1024, i);
+        return `${normalized.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
     }
 
     /**
@@ -153,6 +159,7 @@ const SettingsApp = (function () {
             timeoutId = setTimeout(() => fn.apply(this, args), delay);
         };
         debounced.cancel = () => clearTimeout(timeoutId);
+        window.addEventListener('pagehide', debounced.cancel, { once: true });
         return debounced;
     }
 
@@ -177,6 +184,10 @@ const SettingsApp = (function () {
 
         // Listen for tab changes
         document.querySelectorAll('#settingsTabs button[data-bs-toggle="tab"]').forEach(tabBtn => {
+            if (tabBtn.dataset.wbTabBound === 'true') {
+                return;
+            }
+            tabBtn.dataset.wbTabBound = 'true';
             tabBtn.addEventListener('shown.bs.tab', async function (e) {
                 const tabId = e.target.id.replace('-tab', '');
                 history.replaceState(null, '', `#${tabId}`);
@@ -226,7 +237,11 @@ const SettingsApp = (function () {
         try {
             return await api(method, url, data, opts);
         } catch (err) {
-            logger.apiError(`${method} ${url}`, err);
+            if (typeof logger.apiError === 'function') {
+                logger.apiError(`${method} ${url}`, err);
+            } else {
+                logger.error(`${method} ${url}`, err);
+            }
             throw err;
         }
     }
@@ -254,6 +269,7 @@ const SettingsApp = (function () {
         if (typeof wbConfirm === 'function') {
             return wbConfirm(message, type);
         }
+        logger.warn('wbConfirm unavailable; using blocking fallback dialog');
         return window.confirm(message);
     }
 
@@ -265,29 +281,48 @@ const SettingsApp = (function () {
      * Initialize the settings app.
      */
     async function init() {
-        if (!initDomCache()) {
-            logger.error('Settings initialization failed: invalid config');
+        if (state.initialized || state.initializing) {
             return;
         }
 
-        logger.info('Initializing settings app', { isAdmin: state.isAdmin, userId: state.userId });
+        state.initializing = true;
 
-        // Initialize all registered modules
-        for (const [name, module] of modules) {
-            if (typeof module.init === 'function') {
-                try {
-                    await module.init();
-                    logger.debug(`Module initialized: ${name}`);
-                } catch (err) {
-                    logger.error(`Failed to initialize module ${name}`, err);
+        try {
+            if (!initDomCache()) {
+                logger.error('Settings initialization failed: invalid config');
+                return;
+            }
+
+            logger.info('Initializing settings app', { isAdmin: state.isAdmin, userId: state.userId });
+
+            // Initialize all registered modules
+            for (const [name, module] of modules) {
+                if (typeof module.init === 'function') {
+                    try {
+                        await module.init();
+                        logger.debug(`Module initialized: ${name}`);
+                    } catch (err) {
+                        logger.error(`Failed to initialize module ${name}`, err);
+                    }
                 }
             }
+
+            // Initialize tabs
+            await initTabs();
+
+            state.initialized = true;
+            logger.info('Settings app initialized');
+        } finally {
+            state.initializing = false;
         }
+    }
 
-        // Initialize tabs
-        await initTabs();
-
-        logger.info('Settings app initialized');
+    function getState() {
+        return {
+            ...state,
+            tabLoaded: { ...state.tabLoaded },
+            wgSettings: { ...state.wgSettings },
+        };
     }
 
     // ========================================================================
@@ -297,6 +332,7 @@ const SettingsApp = (function () {
     return {
         // State
         state,
+        getState,
         dom,
 
         // Module management
@@ -324,12 +360,17 @@ const SettingsApp = (function () {
 // Auto-initialize on DOMContentLoaded if modules are loaded via script tags
 // For ES modules, call SettingsApp.init() explicitly after module registration
 if (typeof document !== 'undefined') {
-    document.addEventListener('DOMContentLoaded', () => {
-        // Delay initialization to allow modules to register
-        setTimeout(() => {
-            if (SettingsApp.state.userId === null) {
-                SettingsApp.init();
+    const scheduleInit = () => {
+        queueMicrotask(() => {
+            if (!SettingsApp.state.initialized && !SettingsApp.state.initializing) {
+                void SettingsApp.init();
             }
-        }, 0);
-    });
+        });
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', scheduleInit, { once: true });
+    } else {
+        scheduleInit();
+    }
 }

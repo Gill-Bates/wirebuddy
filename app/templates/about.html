@@ -32,7 +32,7 @@
                             </thead>
                             <tbody>
                                 <tr>
-                                    <td class="ps-0" style="width: 50%;"><strong>Python</strong></td>
+                                    <td class="ps-0 wb-cell-half"><strong>Python</strong></td>
                                     <td class="text-end"><code class="about-meta-value about-meta-value-mono about-reference-value">{{ python_version }}</code></td>
                                 </tr>
                                 <tr>
@@ -81,7 +81,7 @@
                             <span class="fw-semibold">Check for Updates</span>
                         </div>
                         <button class="btn btn-sm btn-outline-secondary text-nowrap ms-2" id="btn-check-updates" title="Check now" data-is-admin="{{ user['is_admin'] | tojson }}">
-                            <span class="material-icons align-middle me-1" style="font-size: 16px;">refresh</span>Check Now
+                            <span class="material-icons align-middle me-1 icon-sm">refresh</span>Check Now
                         </button>
                     </div>
                     <div class="card-body">
@@ -104,7 +104,7 @@
                                 </thead>
                                 <tbody>
                                     <tr>
-                                        <td class="ps-0" style="width: 50%;"><strong>Current</strong></td>
+                                        <td class="ps-0 wb-cell-half"><strong>Current</strong></td>
                                         <td class="text-end">
                                             <code class="about-meta-value about-meta-value-mono about-update-value" id="update-current-version">–</code>
                                         </td>
@@ -130,7 +130,7 @@
                             
                             <div id="update-available-section" class="d-none mt-2">
                                 <a id="update-release-link" href="#" target="_blank" class="btn btn-sm btn-primary w-100">
-                                    <span class="material-icons me-1" style="font-size: 14px;">open_in_new</span>
+                                    <span class="material-icons me-1 icon-xs">open_in_new</span>
                                     View Release on GitHub
                                 </a>
                             </div>
@@ -144,9 +144,9 @@
                         <a class="btn btn-outline-secondary w-100"
                            href="https://gill-bates.github.io/wirebuddy/"
                            target="_blank" rel="noopener noreferrer">
-                            <span class="material-icons align-middle me-1" style="font-size: 18px;">description</span>
+                            <span class="material-icons align-middle me-1 icon-md">description</span>
                             Documentation
-                            <span class="material-icons align-middle ms-1" style="font-size: 14px; opacity: 0.6;">open_in_new</span>
+                            <span class="material-icons align-middle ms-1 icon-external">open_in_new</span>
                         </a>
                     </div>
                 </div>
@@ -200,9 +200,9 @@
     </div>
 </div>
 
-<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/about.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', path='css/pages/about.css') }}">
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/about.js') }}"></script>
+<script src="{{ url_for('static', path='js/about.js') }}"></script>
 {% endblock extra_js %}

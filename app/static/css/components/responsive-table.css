@@ -57,8 +57,18 @@
     margin-bottom: var(--wb-spacing-xs);
   }
 
+  .wb-responsive-row>td>* {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .wb-responsive-actions {
     display: flex;
     justify-content: flex-end;
+    gap: var(--wb-action-btn-gap);
+    padding-top: var(--wb-spacing-sm);
+    border-top: 1px solid var(--wb-table-border-color);
+    margin-top: var(--wb-spacing-sm);
   }
 }

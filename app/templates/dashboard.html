@@ -105,7 +105,7 @@
             <div class="card-body">
                 <div class="speedtest-chart-wrap">
                     <canvas id="speedtest-chart"></canvas>
-                    <div id="speedtest-chart-empty" class="chart-empty-state d-none" style="position: absolute; inset: 0;">
+                    <div id="speedtest-chart-empty" class="chart-empty-state wb-empty-state-overlay d-none">
                         <span class="material-icons">show_chart</span>
                         <span class="chart-empty-state-text">No Data Available</span>
                     </div>
@@ -179,5 +179,5 @@
 {% block extra_js %}
 <script src="/static/js/dashboard_traffic_shared.js"></script>
 <script src="/static/vendor/chart.umd.min.js"></script>
-<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<script src="{{ url_for('static', path='js/dashboard.js') }}"></script>
 {% endblock %}
