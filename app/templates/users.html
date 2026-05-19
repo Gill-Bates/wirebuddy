@@ -55,6 +55,39 @@
                                 <span id="otp-indicator-{{ u['id'] }}" class="material-icons user-security-indicator ms-1{% if u['otp_enabled'] %} text-success{% elif u['otp_secret'] %} text-warning{% else %} d-none{% endif %}" title="{% if u['otp_enabled'] %}OTP enabled{% elif u['otp_secret'] %}OTP setup pending{% else %}{% endif %}" aria-hidden="true">{% if u['otp_enabled'] %}verified_user{% elif u['otp_secret'] %}schedule{% endif %}</span>
                                 <span id="passkey-indicator-{{ u['id'] }}" class="material-icons user-security-indicator text-info ms-1{% if not u['passkey_enabled'] %} d-none{% endif %}" title="Passkey enabled" aria-hidden="true">fingerprint</span>
                             </span>
+                            <div class="users-mobile-summary d-lg-none">
+                                <div class="users-mobile-badges">
+                                    {% if u['is_admin'] %}
+                                    <span class="badge bg-primary">Admin</span>
+                                    {% else %}
+                                    <span class="badge bg-secondary">User</span>
+                                    {% endif %}
+                                    {% if u['is_active'] %}
+                                    <span class="badge bg-success">Active</span>
+                                    {% else %}
+                                    <span class="badge bg-danger">Disabled</span>
+                                    {% endif %}
+                                </div>
+                                <div class="users-mobile-details">
+                                    <div class="users-mobile-detail">
+                                        <span class="users-mobile-label">Last login</span>
+                                        {% if u['last_login_at'] %}
+                                        <span class="users-mobile-value">
+                                            <span class="login-time">{{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }}</span>
+                                            {% if u['last_login_ip'] %}
+                                            <code class="ipv6">{{ (u['last_login_ip'] or '').replace(':', ':&#8203;').replace('/', '/&#8203;') }}</code>
+                                            {% endif %}
+                                        </span>
+                                        {% else %}
+                                        <span class="users-mobile-value text-muted">Never</span>
+                                        {% endif %}
+                                    </div>
+                                    <div class="users-mobile-detail">
+                                        <span class="users-mobile-label">Created</span>
+                                        <span class="users-mobile-value">{{ u['created_at'].strftime('%Y-%m-%d') }}</span>
+                                    </div>
+                                </div>
+                            </div>
                         </td>
                         <td data-label="Role">
                             {% if u['is_admin'] %}

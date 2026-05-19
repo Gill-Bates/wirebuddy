@@ -171,8 +171,7 @@
                                 {% else %}
                                 <span class="d-inline-block" data-bs-toggle="tooltip"
                                       data-bs-title="Admin privileges required">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" disabled
-                                            style="pointer-events: none;">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary peer-inert-button" disabled>
                                         <span class="material-icons" aria-hidden="true">qr_code</span>
                                     </button>
                                 </span>
@@ -187,8 +186,7 @@
                                 {% else %}
                                 <span class="d-inline-block" data-bs-toggle="tooltip"
                                       data-bs-title="Admin privileges required">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" disabled
-                                            style="pointer-events: none;">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary peer-inert-button" disabled>
                                         <span class="material-icons" aria-hidden="true">download</span>
                                     </button>
                                 </span>
@@ -221,12 +219,12 @@
                 </tbody>
             </table>
             <div class="peers-no-results d-none" id="peers-no-results">
-                <span class="material-icons mb-2" style="font-size: 2.5rem;">search_off</span>
+                <span class="material-icons mb-2 peers-empty-state-icon-lg">search_off</span>
                 <div>No peers match your search</div>
             </div>
             {% else %}
             <div class="peers-empty-state text-center py-5">
-                <span class="material-icons text-muted mb-3" style="font-size: 3rem;" aria-hidden="true">hub</span>
+                <span class="material-icons text-muted mb-3 peers-empty-state-icon-xl" aria-hidden="true">hub</span>
                 <h3 class="h5 mb-2">No peers configured yet</h3>
                 <p class="text-muted mb-0">Click <strong>Add Peer</strong> to create your first peer.</p>
             </div>
@@ -326,8 +324,7 @@
                                 Allow on all Nodes
                                 <a class="text-muted ms-1" data-bs-toggle="collapse" href="#allowAllNodesHelp"
                                     role="button" aria-expanded="false" aria-controls="allowAllNodesHelp">
-                                    <span class="material-icons"
-                                        style="font-size: 16px; vertical-align: text-bottom;">help_outline</span>
+                                    <span class="material-icons peer-help-icon">help_outline</span>
                                 </a>
                             </label>
                         </div>
@@ -352,8 +349,7 @@
                             Routing Mode
                             <a class="text-muted ms-1" data-bs-toggle="collapse" href="#routingModeHelp" role="button"
                                 aria-expanded="false" aria-controls="routingModeHelp">
-                                <span class="material-icons"
-                                    style="font-size: 16px; vertical-align: text-bottom;">help_outline</span>
+                                <span class="material-icons peer-help-icon">help_outline</span>
                             </a>
                         </label>
                         <div class="collapse mb-2" id="routingModeHelp">
@@ -383,7 +379,7 @@
                     <h6 class="text-muted text-uppercase small mt-3 mb-2">DNS & Filtering</h6>
 
                     <!-- DNS Settings Group -->
-                    <div class="mb-2 p-3 border rounded" style="background-color: var(--bs-body-bg);">
+                    <div class="mb-2 p-3 border rounded peer-surface-panel">
                         <div class="mb-2">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="peer-use-adblocker" checked>
@@ -420,8 +416,7 @@
                                 Client Isolation
                                 <a class="text-muted ms-1" data-bs-toggle="collapse" href="#clientIsolationHelp"
                                     role="button" aria-expanded="false" aria-controls="clientIsolationHelp">
-                                    <span class="material-icons"
-                                        style="font-size: 16px; vertical-align: text-bottom;">help_outline</span>
+                                    <span class="material-icons peer-help-icon">help_outline</span>
                                 </a>
                             </label>
                         </div>
@@ -548,8 +543,7 @@
                                 Allow on all Nodes
                                 <a class="text-muted ms-1" data-bs-toggle="collapse" href="#editAllowAllNodesHelp"
                                     role="button" aria-expanded="false" aria-controls="editAllowAllNodesHelp">
-                                    <span class="material-icons"
-                                        style="font-size: 16px; vertical-align: text-bottom;">help_outline</span>
+                                    <span class="material-icons peer-help-icon">help_outline</span>
                                 </a>
                             </label>
                         </div>
@@ -574,8 +568,7 @@
                             Routing Mode
                             <a class="text-muted ms-1" data-bs-toggle="collapse" href="#editRoutingModeHelp"
                                 role="button" aria-expanded="false" aria-controls="editRoutingModeHelp">
-                                <span class="material-icons"
-                                    style="font-size: 16px; vertical-align: text-bottom;">help_outline</span>
+                                <span class="material-icons peer-help-icon">help_outline</span>
                             </a>
                         </label>
                         <div class="collapse mb-2" id="editRoutingModeHelp">
@@ -605,7 +598,7 @@
                     <h6 class="text-muted text-uppercase small mt-3 mb-2">DNS & Filtering</h6>
 
                     <!-- DNS Settings Group -->
-                    <div class="mb-2 p-3 border rounded" style="background-color: var(--bs-body-bg);">
+                    <div class="mb-2 p-3 border rounded peer-surface-panel">
                         <div class="mb-2">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="edit-peer-use-adblocker" checked>
@@ -642,8 +635,7 @@
                                 Client Isolation
                                 <a class="text-muted ms-1" data-bs-toggle="collapse" href="#editClientIsolationHelp"
                                     role="button" aria-expanded="false" aria-controls="editClientIsolationHelp">
-                                    <span class="material-icons"
-                                        style="font-size: 16px; vertical-align: text-bottom;">help_outline</span>
+                                    <span class="material-icons peer-help-icon">help_outline</span>
                                 </a>
                             </label>
                         </div>

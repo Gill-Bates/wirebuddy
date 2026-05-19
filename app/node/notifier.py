@@ -14,7 +14,7 @@ Delivery guarantees:
 - At-most-once delivery (best-effort)
 - Latest config always prioritized (old events dropped under backpressure)
 - Per-client isolation (no shared queue contention)
-- Keepalive comments every 25s to prevent proxy timeouts
+- SSE ping events every 25s to prevent proxy timeouts
 """
 
 from __future__ import annotations
@@ -68,6 +68,11 @@ def _format_sse_event(event_type: str, data: str, event_id: str | None = None) -
         lines.insert(0, f"id: {_sanitize_sse_value(event_id)}")
     lines.append("")  # Empty line terminates event
     return "\n".join(lines) + "\n"
+
+
+def _format_sse_ping() -> str:
+    """Format a lightweight SSE ping event."""
+    return _format_sse_event("ping", "{}")
 
 
 def _short_version(version: str, max_len: int = 16) -> str:
@@ -127,6 +132,8 @@ async def _race(
         if queue_task in done:
             shutdown_task.cancel()
             await asyncio.gather(shutdown_task, return_exceptions=True)
+            if queue_task.cancelled():
+                return None
             return queue_task.result()
             
         return None  # timeout
@@ -155,13 +162,14 @@ async def subscribe(
     
     try:
         close_event = _format_sse_event("close", "server_shutdown")
+        ping_event = _format_sse_ping()
         while True:
             result = await _race(queue, shutdown_event, _KEEPALIVE_INTERVAL)
             if result == "":
                 yield close_event
                 break
             if result is None:
-                yield ": keepalive\n\n"
+                yield ping_event
                 continue
             yield result
     except asyncio.CancelledError:

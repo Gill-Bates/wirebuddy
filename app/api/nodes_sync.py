@@ -840,7 +840,7 @@ async def node_events(
 				if await request.is_disconnected():
 					break
 				# On keepalive events, also check DB for pending commands
-				if event.startswith(":"):  # Keepalive comment
+				if event.startswith(":") or event.startswith("event: ping\n"):
 					now_monotonic = time.monotonic()
 					if now_monotonic - last_sse_connected_write >= _SSE_CONNECTED_DB_UPDATE_INTERVAL_S:
 						await mark_sse_connected()

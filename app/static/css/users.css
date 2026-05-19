@@ -82,6 +82,112 @@
     display: inline-block;
 }
 
+.users-mobile-summary {
+    display: none;
+}
+
+@media (max-width: 991.98px) {
+    .users-table .wb-responsive-row {
+        padding: var(--wb-spacing-sm);
+    }
+
+    .users-table .wb-responsive-row>td[data-label="Username"]::before,
+    .users-table .wb-responsive-row>td[data-label="Actions"]::before {
+        display: none;
+    }
+
+    .users-table .wb-responsive-row>td[data-label="Role"],
+    .users-table .wb-responsive-row>td[data-label="Status"],
+    .users-table .wb-responsive-row>td[data-label="Last Login"],
+    .users-table .wb-responsive-row>td[data-label="Created"] {
+        display: none;
+    }
+
+    .users-table .wb-responsive-row>td[data-label="Username"] {
+        padding-bottom: 0;
+    }
+
+    .users-table .user-identity {
+        justify-content: flex-start;
+        align-items: flex-start;
+        gap: 0.35rem;
+    }
+
+    .users-table .user-identity strong {
+        font-size: 1rem;
+        line-height: 1.2;
+    }
+
+    .users-mobile-summary {
+        display: grid;
+        gap: 0.6rem;
+        margin-top: 0.6rem;
+    }
+
+    .users-mobile-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+    }
+
+    .users-mobile-details {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.5rem 0.75rem;
+    }
+
+    .users-mobile-detail {
+        display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
+        min-width: 0;
+    }
+
+    .users-mobile-detail:first-child {
+        grid-column: 1 / -1;
+    }
+
+    .users-mobile-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: var(--bs-secondary-color);
+    }
+
+    .users-mobile-value {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .users-mobile-value .login-time,
+    .users-mobile-value .login-ip {
+        display: block;
+    }
+
+    .users-mobile-value .login-ip {
+        margin-top: 0.15rem;
+    }
+
+    .users-table td.user-actions-cell {
+        white-space: normal;
+        padding-top: 0.75rem;
+        margin-top: 0.25rem;
+        border-top: 1px solid var(--wb-table-border-color);
+    }
+
+    .users-table td.user-actions-cell .d-flex {
+        justify-content: flex-start;
+        gap: 0.35rem;
+    }
+
+    .users-table td.user-actions-cell .d-flex>.users-action-btn {
+        flex: 1 1 calc(50% - 0.35rem);
+        min-width: 0;
+    }
+}
+
 /* Password strength indicator */
 .password-requirements {
     font-size: 0.8rem;

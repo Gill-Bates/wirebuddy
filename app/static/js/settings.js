@@ -517,10 +517,10 @@ async function refreshCertificates() {
             // PSK visibility toggle (loads actual key on reveal)
             const pskVisBtn = document.getElementById('psk-toggle-visibility');
             if (pskVisBtn) {
-                pskVisBtn.addEventListener('click', async function () {
+                pskVisBtn.addEventListener('click', async (event) => {
                     const display = document.getElementById('wg-psk-display');
-                    const icon = this.querySelector('.material-icons');
-                    if (display.type === 'password') {
+                    const icon = event.currentTarget?.querySelector('.material-icons');
+                    if (display?.type === 'password') {
                         try {
                             if (!cachedRevealedPsk) {
                                 const res = await api('GET', '/api/wireguard/settings/psk?reveal=true');
@@ -529,29 +529,16 @@ async function refreshCertificates() {
                             display.value = cachedRevealedPsk || display.value;
                             display.type = 'text';
                             setPskValidationState(false);
-                            icon.textContent = 'visibility_off';
+                            if (icon) {
+                                icon.textContent = 'visibility_off';
+                            }
                         } catch (error) {
-                            const container = document.getElementById('blocklist-sources');
-                            const { emptyState } = window.WB?.settingsComponents || {};
-                            if (container) {
-                                container.textContent = '';
-                                if (emptyState) {
-                                    container.appendChild(emptyState(`Failed to load blocklists: ${error.message}`, 'danger'));
-                                } else {
-                                    container.textContent = `Failed to load blocklists: ${error.message}`;
-                                }
-                            }
-                            const updEl = document.getElementById('blocklist-last-update');
-                            const updValueEl = updEl?.querySelector('.blocklist-last-value');
-                            if (updValueEl) {
-                                updValueEl.textContent = '–';
-                            } else if (updEl) {
-                                updEl.textContent = '–';
-                            }
+                            wbToast('Cannot retrieve key', 'danger');
+                            return;
                         }
                     }
-                }
-    });
+                });
+            }
         }
 
         // PSK copy to clipboard
@@ -1944,19 +1931,34 @@ async function refreshCertificates() {
                                 .map(r => `${r.server}: ${r.error}`)
                                 .join('\n');
                             if (statusEl) {
-                                statusEl.innerHTML = `<span class="material-icons align-middle text-danger icon-sm">error</span> ${testRes.failed_count} failed`;
+                                const { statusIndicator } = window.WB?.settingsComponents || {};
+                                const { clearChildren } = window.WB?.dom || {};
+                                if (clearChildren) clearChildren(statusEl);
+                                if (statusIndicator) {
+                                    statusEl.appendChild(statusIndicator({ icon: 'error', text: `${testRes.failed_count} failed`, variant: 'danger' }));
+                                }
                                 statusEl.className = 'small text-danger';
                             }
                             wbToast('DNS validation failed - settings not saved:\n' + failedServers, 'danger');
                             return;
                         }
                         if (statusEl) {
-                            statusEl.innerHTML = '<span class="material-icons align-middle text-success icon-sm">check_circle</span> Validated';
+                            const { statusIndicator } = window.WB?.settingsComponents || {};
+                            const { clearChildren } = window.WB?.dom || {};
+                            if (clearChildren) clearChildren(statusEl);
+                            if (statusIndicator) {
+                                statusEl.appendChild(statusIndicator({ icon: 'check_circle', text: 'Validated', variant: 'success' }));
+                            }
                             statusEl.className = 'small text-success';
                         }
                     } catch (error) {
                         if (statusEl) {
-                            statusEl.innerHTML = '<span class="material-icons align-middle text-danger icon-sm">error</span> Test failed';
+                            const { statusIndicator } = window.WB?.settingsComponents || {};
+                            const { clearChildren } = window.WB?.dom || {};
+                            if (clearChildren) clearChildren(statusEl);
+                            if (statusIndicator) {
+                                statusEl.appendChild(statusIndicator({ icon: 'error', text: 'Test failed', variant: 'danger' }));
+                            }
                             statusEl.className = 'small text-danger';
                         }
                         wbToast('DNS validation error: ' + error.message, 'danger');

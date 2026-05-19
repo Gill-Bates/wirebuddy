@@ -324,7 +324,8 @@
         }
 
         .recent-peers-card .card-body {
-            max-height: 400px;
+            max-height: none;
+            overflow: visible;
         }
     }
 
@@ -345,7 +346,7 @@
 
     @media (max-width: 767.98px) {
         #peer-map {
-            height: 320px;
+            height: 220px;
         }
 
         .dashboard-traffic-metric .dashboard-metric-unit {
@@ -357,7 +358,13 @@
         }
 
         .recent-peers-card .card-body {
-            max-height: 350px;
+            max-height: none;
+            overflow: visible;
+        }
+
+        #recent-peers {
+            overflow-y: visible;
+            flex: none;
         }
 
         .speedtest-card {
@@ -366,8 +373,12 @@
     }
 
     @media (max-width: 575.98px) {
+        #peer-map {
+            height: 180px;
+        }
+
         .dashboard-stats-row .wb-kpi-card {
-            min-height: 124px;
+            min-height: 108px;
         }
 
         .dashboard-header {
@@ -510,7 +521,27 @@
 
     @media (max-width: 575.98px) {
         .network-gauges-grid {
-            grid-template-columns: 1fr;
+            display: flex;
+            gap: 0.75rem;
+            overflow-x: auto;
+            padding-bottom: 0.25rem;
+            scroll-snap-type: x proximity;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .network-gauges-grid > .text-center {
+            flex: 0 0 100%;
+            min-width: 100%;
+        }
+
+        .network-item {
+            flex: 0 0 240px;
+            min-width: 240px;
+            scroll-snap-align: start;
+        }
+
+        .network-item:only-child {
+            grid-column: auto;
         }
     }
 
