@@ -138,12 +138,12 @@
         try {
             const settings = await api('GET', '/api/wireguard/settings');
             _wgSettings = settings || {};
-            
+
             const fqdnInput = document.getElementById('wg-fqdn');
             if (fqdnInput && settings.wg_fqdn) {
                 fqdnInput.value = settings.wg_fqdn;
             }
-            
+
             const guiPortInput = document.getElementById('gui-port');
             if (guiPortInput && settings.gui_port) {
                 guiPortInput.value = settings.gui_port;
@@ -153,12 +153,12 @@
             if (guiExternalPortInput && settings.gui_external_port) {
                 guiExternalPortInput.value = settings.gui_external_port;
             }
-            
+
             const mtuInput = document.getElementById('wg-mtu');
             if (mtuInput && settings.wg_mtu !== null && settings.wg_mtu !== undefined && settings.wg_mtu !== '') {
                 mtuInput.value = settings.wg_mtu;
             }
-            
+
             const keepaliveInput = document.getElementById('wg-keepalive');
             if (keepaliveInput && settings.wg_persistent_keepalive !== null && settings.wg_persistent_keepalive !== undefined && settings.wg_persistent_keepalive !== '') {
                 keepaliveInput.value = settings.wg_persistent_keepalive;
@@ -360,7 +360,7 @@
 
     async function loadPsk() {
         if (!isAdmin) return;  // PSK endpoint requires admin
-        
+
         try {
             const res = await api('GET', '/api/wireguard/settings/psk');
             const maskedValue = res.masked || res.data?.masked || '';
@@ -397,7 +397,7 @@
         const addr = match[1];
         const mask = Number(match[2]);
         if (!Number.isFinite(mask) || mask < 0 || mask > 128) return false;
-        
+
         // Comprehensive IPv6 regex (handles all valid formats including ::1, 2001:db8::, etc.)
         const ipv6Regex = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$/;
         return ipv6Regex.test(addr);
@@ -428,13 +428,13 @@
         const { silentSuccess = false, fields = null } = options;
         const payload = {};
         const includeField = (field) => !Array.isArray(fields) || fields.includes(field);
-        
+
         const fqdnInput = document.getElementById('wg-fqdn');
         const guiPortInput = document.getElementById('gui-port');
         const guiExternalPortInput = document.getElementById('gui-external-port');
         const mtuInput = document.getElementById('wg-mtu');
         const keepaliveInput = document.getElementById('wg-keepalive');
-        
+
         if (fqdnInput && includeField('wg_fqdn')) {
             const fqdn = fqdnInput.value.trim();
             payload.wg_fqdn = fqdn || null;
@@ -1053,62 +1053,90 @@
     }
 
     async function refreshInterfaces() {
+        const { interfaceRow, emptyState } = window.WB?.settingsComponents || {};
+        const { clearChildren } = window.WB?.dom || {};
+
         try {
             const res = await api('GET', '/api/wireguard/interfaces');
-            let html = '';
-            for (const iface of res.interfaces) {
-                const safeName = esc(iface.name);
-                const dataName = esc(iface.name).replace(/"/g, '&quot;');
-                const statusBadge = iface.is_active
-                    ? '<span class="badge bg-success">Active</span>'
-                    : '<span class="badge bg-secondary">Inactive</span>';
-
-                // Button states
-                const isActive = !!iface.is_active;
-                const isConfigured = !!(iface.is_configured ?? (iface.in_database || iface.has_config_file));
-                
-                // Action buttons - disabled for non-admins or based on state
-                const startDisabled = !isAdmin || isActive;
-                const stopDisabled = !isAdmin || !isActive;
-                const restartDisabled = !isAdmin || !isActive;
-                const deleteDisabled = !isAdmin || isActive;
-                
-                // Start: only enabled if admin and not active
-                const startBtn = `<button class="btn btn-sm btn-outline-success text-nowrap iface-action-btn" data-iface="${dataName}" data-action="up" title="${!isAdmin ? 'Admin privileges required' : 'Start'}" aria-label="Start"${startDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle icon-md">play_arrow</span></button>`;
-                // Stop: only enabled if admin and active
-                const stopBtn = `<button class="btn btn-sm btn-outline-danger text-nowrap iface-action-btn" data-iface="${dataName}" data-action="down" title="${!isAdmin ? 'Admin privileges required' : 'Stop'}" aria-label="Stop"${stopDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle icon-md">stop</span></button>`;
-                // Restart: only enabled if admin and active
-                const restartBtn = `<button class="btn btn-sm btn-outline-warning text-nowrap iface-action-btn" data-iface="${dataName}" data-action="restart" title="${!isAdmin ? 'Admin privileges required' : 'Restart'}" aria-label="Restart"${restartDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle icon-md">restart_alt</span></button>`;
-                // Delete: only enabled if admin and not active
-                const deleteBtn = (isAdmin)
-                    ? `<button class="btn btn-sm btn-outline-danger text-nowrap iface-delete-btn" data-iface="${dataName}" title="Delete" aria-label="Delete"${deleteDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">delete</span></button>`
-                    : '';
-                const editBtn = (isAdmin && isConfigured)
-                    ? `<button class="btn btn-sm btn-outline-secondary text-nowrap iface-edit-btn" data-iface="${dataName}" title="Edit" aria-label="Edit"><span class="material-icons align-middle icon-md">edit</span></button>`
-                    : '';
-
-                html += `
-                    <div class="settings-interface-row">
-                        <div>
-                            <strong>${safeName}</strong>
-                            <span class="ms-2">${statusBadge}</span>
-                        </div>
-                        <div class="settings-interface-actions">${startBtn}${stopBtn}${restartBtn}${editBtn}${deleteBtn}</div>
-                    </div>`;
-            }
-            if (!html) {
-                html = isAdmin
-                    ? '<p class="text-muted mb-0">No WireGuard interfaces. Click <strong>+</strong> to create one.</p>'
-                    : '<p class="text-muted mb-0">No WireGuard interfaces configured.</p>';
-            }
             const listEl = document.getElementById('interfaces-list');
-            listEl.innerHTML = html;
+
+            if (interfaceRow && clearChildren) {
+                // Use DOM builder (XSS-safe)
+                clearChildren(listEl);
+
+                if (!res.interfaces.length) {
+                    const msg = isAdmin
+                        ? 'No WireGuard interfaces. Click + to create one.'
+                        : 'No WireGuard interfaces configured.';
+                    listEl.appendChild(emptyState(msg));
+                } else {
+                    for (const iface of res.interfaces) {
+                        listEl.appendChild(interfaceRow(iface, isAdmin));
+                    }
+                }
+            } else {
+                // Fallback to HTML strings
+                let html = '';
+                for (const iface of res.interfaces) {
+                    const safeName = esc(iface.name);
+                    const dataName = esc(iface.name).replace(/"/g, '&quot;');
+                    const statusBadge = iface.is_active
+                        ? '<span class="badge bg-success">Active</span>'
+                        : '<span class="badge bg-secondary">Inactive</span>';
+
+                    // Button states
+                    const isActive = !!iface.is_active;
+                    const isConfigured = !!(iface.is_configured ?? (iface.in_database || iface.has_config_file));
+
+                    // Action buttons - disabled for non-admins or based on state
+                    const startDisabled = !isAdmin || isActive;
+                    const stopDisabled = !isAdmin || !isActive;
+                    const restartDisabled = !isAdmin || !isActive;
+                    const deleteDisabled = !isAdmin || isActive;
+
+                    // Start: only enabled if admin and not active
+                    const startBtn = `<button class="btn btn-sm btn-outline-success text-nowrap iface-action-btn" data-iface="${dataName}" data-action="up" title="${!isAdmin ? 'Admin privileges required' : 'Start'}" aria-label="Start"${startDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">play_arrow</span></button>`;
+                    // Stop: only enabled if admin and active
+                    const stopBtn = `<button class="btn btn-sm btn-outline-danger text-nowrap iface-action-btn" data-iface="${dataName}" data-action="down" title="${!isAdmin ? 'Admin privileges required' : 'Stop'}" aria-label="Stop"${stopDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">stop</span></button>`;
+                    // Restart: only enabled if admin and active
+                    const restartBtn = `<button class="btn btn-sm btn-outline-warning text-nowrap iface-action-btn" data-iface="${dataName}" data-action="restart" title="${!isAdmin ? 'Admin privileges required' : 'Restart'}" aria-label="Restart"${restartDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">restart_alt</span></button>`;
+                    // Delete: only enabled if admin and not active
+                    const deleteBtn = (isAdmin)
+                        ? `<button class="btn btn-sm btn-outline-danger text-nowrap iface-delete-btn" data-iface="${dataName}" title="Delete" aria-label="Delete"${deleteDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">delete</span></button>`
+                        : '';
+                    const editBtn = (isAdmin && isConfigured)
+                        ? `<button class="btn btn-sm btn-outline-secondary text-nowrap iface-edit-btn" data-iface="${dataName}" title="Edit" aria-label="Edit"><span class="material-icons align-middle icon-md">edit</span></button>`
+                        : '';
+
+                    html += `
+                        <div class="settings-interface-row">
+                            <div>
+                                <strong>${safeName}</strong>
+                                <span class="ms-2">${statusBadge}</span>
+                            </div>
+                            <div class="settings-interface-actions">${startBtn}${stopBtn}${restartBtn}${editBtn}${deleteBtn}</div>
+                        </div>`;
+                }
+                if (!html) {
+                    html = isAdmin
+                        ? '<p class="text-muted mb-0">No WireGuard interfaces. Click <strong>+</strong> to create one.</p>'
+                        : '<p class="text-muted mb-0">No WireGuard interfaces configured.</p>';
+                }
+                listEl.innerHTML = html;
+            }
 
             // Event delegation for interface buttons
             listEl.removeEventListener('click', handleInterfaceClick);
             listEl.addEventListener('click', handleInterfaceClick);
         } catch (error) {
-            document.getElementById('interfaces-list').innerHTML = `<p class="text-danger mb-0">Failed to load interfaces: ${esc(error.message)}</p>`;
+            const { emptyState } = window.WB?.settingsComponents || {};
+            const listEl = document.getElementById('interfaces-list');
+            if (emptyState) {
+                listEl.textContent = '';
+                listEl.appendChild(emptyState(`Failed to load interfaces: ${error.message}`, 'danger'));
+            } else {
+                listEl.innerHTML = `<p class="text-danger mb-0">Failed to load interfaces: ${esc(error.message)}</p>`;
+            }
         }
     }
 
@@ -1350,66 +1378,95 @@
     // SSL/TLS Certificate management
 
     async function refreshCertificates() {
+        const { certificateRow, emptyState } = window.WB?.settingsComponents || {};
+        const { clearChildren } = window.WB?.dom || {};
+
         try {
             const certs = await api('GET', '/api/acme/certificates');
             const guidanceEl = document.getElementById('letsencrypt-guidance');
-            let html = '';
+            const listEl = document.getElementById('certificates-list');
 
-            for (const cert of certs) {
-                const safeDomain = esc(cert.domain);
-                const dataDomain = esc(cert.domain).replace(/"/g, '&quot;');
-                const staging = !!cert.is_staging;
-                const stagingBadge = staging ? '<span class="badge bg-warning text-dark ms-1">Staging</span>' : '';
-                const isExpired = cert.days_until_expiry !== null && cert.days_until_expiry < 0;
-                const needsRenewal = cert.needs_renewal && !isExpired;
+            if (certificateRow && clearChildren) {
+                // Use DOM builder (XSS-safe)
+                clearChildren(listEl);
 
-                let statusBadge = '<span class="badge bg-success">Valid</span>';
-                if (isExpired) {
-                    statusBadge = '<span class="badge bg-danger">Expired</span>';
-                } else if (needsRenewal) {
-                    statusBadge = '<span class="badge bg-warning text-dark">Renew</span>';
+                if (!certs.length) {
+                    listEl.appendChild(emptyState('No certificates found. Click + to request one.'));
+                } else {
+                    for (const cert of certs) {
+                        listEl.appendChild(certificateRow(cert));
+                    }
                 }
 
-                const expiresDate = cert.expires_at ? new Date(cert.expires_at) : null;
-                const expiresStr = expiresDate ? expiresDate.toLocaleDateString() : 'Unknown';
-                const daysStr = cert.days_until_expiry !== null ? ` (${cert.days_until_expiry}d)` : '';
+                if (guidanceEl) {
+                    guidanceEl.classList.toggle('d-none', certs.length > 0);
+                }
+            } else {
+                // Fallback to HTML strings
+                let html = '';
 
-                html += `
-                    <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
-                        <div>
-                            <strong>${safeDomain}</strong>
-                            ${statusBadge}${stagingBadge}
-                            <br><small class="text-muted">Expires: ${expiresStr}${daysStr} • Issuer: ${esc(cert.issuer || 'Unknown')}</small>
-                        </div>
-                        <div class="d-flex gap-1">
-                            ${needsRenewal ? `<button class="btn btn-sm btn-outline-warning cert-renew-btn" data-domain="${dataDomain}" data-staging="${staging}" title="Renew"><span class="material-icons" style="font-size: 18px;">refresh</span></button>` : ''}
-                            <button class="btn btn-sm btn-outline-danger cert-delete-btn" data-domain="${dataDomain}" data-staging="${staging}" title="Delete">
-                                <span class="material-icons" style="font-size: 18px;">delete</span>
-                            </button>
-                        </div>
-                    </div>`;
+                for (const cert of certs) {
+                    const safeDomain = esc(cert.domain);
+                    const dataDomain = esc(cert.domain).replace(/"/g, '&quot;');
+                    const staging = !!cert.is_staging;
+                    const stagingBadge = staging ? '<span class="badge bg-warning text-dark ms-1">Staging</span>' : '';
+                    const isExpired = cert.days_until_expiry !== null && cert.days_until_expiry < 0;
+                    const needsRenewal = cert.needs_renewal && !isExpired;
+
+                    let statusBadge = '<span class="badge bg-success">Valid</span>';
+                    if (isExpired) {
+                        statusBadge = '<span class="badge bg-danger">Expired</span>';
+                    } else if (needsRenewal) {
+                        statusBadge = '<span class="badge bg-warning text-dark">Renew</span>';
+                    }
+
+                    const expiresDate = cert.expires_at ? new Date(cert.expires_at) : null;
+                    const expiresStr = expiresDate ? expiresDate.toLocaleDateString() : 'Unknown';
+                    const daysStr = cert.days_until_expiry !== null ? ` (${cert.days_until_expiry}d)` : '';
+
+                    html += `
+                        <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+                            <div>
+                                <strong>${safeDomain}</strong>
+                                ${statusBadge}${stagingBadge}
+                                <br><small class="text-muted">Expires: ${expiresStr}${daysStr} • Issuer: ${esc(cert.issuer || 'Unknown')}</small>
+                            </div>
+                            <div class="d-flex gap-1">
+                                ${needsRenewal ? `<button class="btn btn-sm btn-outline-warning cert-renew-btn" data-domain="${dataDomain}" data-staging="${staging}" title="Renew"><span class="material-icons">refresh</span></button>` : ''}
+                                <button class="btn btn-sm btn-outline-danger cert-delete-btn" data-domain="${dataDomain}" data-staging="${staging}" title="Delete">
+                                    <span class="material-icons">delete</span>
+                                </button>
+                            </div>
+                        </div>`;
+                }
+
+                if (!html) {
+                    html = '<p class="text-muted mb-0">No certificates found. Click + to request one.</p>';
+                }
+
+                if (guidanceEl) {
+                    guidanceEl.classList.toggle('d-none', certs.length > 0);
+                }
+
+                listEl.innerHTML = html;
             }
-
-            if (!html) {
-                html = '<p class="text-muted mb-0">No certificates found. Click + to request one.</p>';
-            }
-
-            if (guidanceEl) {
-                guidanceEl.classList.toggle('d-none', certs.length > 0);
-            }
-
-            const listEl = document.getElementById('certificates-list');
-            listEl.innerHTML = html;
 
             // Event delegation for certificate buttons
             listEl.removeEventListener('click', handleCertificateClick);
             listEl.addEventListener('click', handleCertificateClick);
         } catch (error) {
+            const { emptyState } = window.WB?.settingsComponents || {};
             const guidanceEl = document.getElementById('letsencrypt-guidance');
+            const listEl = document.getElementById('certificates-list');
             if (guidanceEl) {
                 guidanceEl.classList.remove('d-none');
             }
-            document.getElementById('certificates-list').innerHTML = `<p class="text-danger mb-0">Failed to load certificates: ${esc(error.message)}</p>`;
+            if (emptyState) {
+                listEl.textContent = '';
+                listEl.appendChild(emptyState(`Failed to load certificates: ${error.message}`, 'danger'));
+            } else {
+                listEl.innerHTML = `<p class="text-danger mb-0">Failed to load certificates: ${esc(error.message)}</p>`;
+            }
         }
     }
 
@@ -1598,7 +1655,7 @@
             requestAnimationFrame(() => {
                 container.classList.remove('no-transitions');
             });
-            
+
             // DNS unavailable - disable all DNS filtering controls
             const updateBlocklistBtn = document.getElementById('btn-update-blocklist');
             const saveCustomRulesBtn = document.getElementById('save-custom-rules-btn');
@@ -1622,7 +1679,7 @@
                 if (saveCustomRulesBtn) saveCustomRulesBtn.disabled = !isAdmin;
                 if (customRulesInput && isAdmin) customRulesInput.disabled = false;
             }
-            
+
             const updEl = document.getElementById('blocklist-last-update');
             const updValueEl = updEl?.querySelector('.blocklist-last-value');
             if (updEl) {
@@ -2586,98 +2643,98 @@
     // ─── SPEEDTEST / BANDWIDTH MEASUREMENT ──────────────────────
 
     let _speedtestRunning = false;
-        const FLAG_ICON_BASE_URL = '/static/vendor/flag-icons/flags/4x3';
-        const formatBandwidthMetric = window.WBShared.formatBandwidthMetric;
-        const speedtestElements = {
-            enabledToggle: document.getElementById('speedtest-enabled'),
-            runBtn: document.getElementById('btn-speedtest-run'),
-            running: document.getElementById('speedtest-running'),
-            result: document.getElementById('speedtest-result'),
-            status: document.getElementById('speedtest-status'),
-            progress: document.getElementById('speedtest-progress'),
-            download: document.getElementById('speedtest-result-dl'),
-            upload: document.getElementById('speedtest-result-ul'),
-            rtt: document.getElementById('speedtest-result-rtt'),
-            server: document.getElementById('speedtest-result-server'),
-            date: document.getElementById('speedtest-result-date'),
-            inlineDate: document.getElementById('speedtest-result-date-inline'),
-        };
+    const FLAG_ICON_BASE_URL = '/static/vendor/flag-icons/flags/4x3';
+    const formatBandwidthMetric = window.WBShared.formatBandwidthMetric;
+    const speedtestElements = {
+        enabledToggle: document.getElementById('speedtest-enabled'),
+        runBtn: document.getElementById('btn-speedtest-run'),
+        running: document.getElementById('speedtest-running'),
+        result: document.getElementById('speedtest-result'),
+        status: document.getElementById('speedtest-status'),
+        progress: document.getElementById('speedtest-progress'),
+        download: document.getElementById('speedtest-result-dl'),
+        upload: document.getElementById('speedtest-result-ul'),
+        rtt: document.getElementById('speedtest-result-rtt'),
+        server: document.getElementById('speedtest-result-server'),
+        date: document.getElementById('speedtest-result-date'),
+        inlineDate: document.getElementById('speedtest-result-date-inline'),
+    };
 
-        function createCountryFlagElement(countryCode) {
-            const code = String(countryCode || '').trim().toLowerCase();
-            if (!/^[a-z]{2}$/.test(code)) return null;
+    function createCountryFlagElement(countryCode) {
+        const code = String(countryCode || '').trim().toLowerCase();
+        if (!/^[a-z]{2}$/.test(code)) return null;
 
-            const img = document.createElement('img');
-            img.className = 'peer-flag';
-            img.alt = `Country flag: ${code.toUpperCase()}`;
-            img.loading = 'lazy';
-            img.decoding = 'async';
-            img.src = `${FLAG_ICON_BASE_URL}/${code}.svg`;
-            img.addEventListener('error', () => img.remove(), { once: true });
-            return img;
-        }
+        const img = document.createElement('img');
+        img.className = 'peer-flag';
+        img.alt = `Country flag: ${code.toUpperCase()}`;
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.src = `${FLAG_ICON_BASE_URL}/${code}.svg`;
+        img.addEventListener('error', () => img.remove(), { once: true });
+        return img;
+    }
 
-        function setSpeedtestStatusMessage(statusEl, rawMessage) {
-            if (!statusEl) return;
-            statusEl.replaceChildren();
+    function setSpeedtestStatusMessage(statusEl, rawMessage) {
+        if (!statusEl) return;
+        statusEl.replaceChildren();
 
-            const message = String(rawMessage || 'Running…');
-            const parts = message.split(/\((https?:\/\/[^)]+)\)/g);
-            for (let index = 0; index < parts.length; index++) {
-                const part = parts[index];
-                if (!part) continue;
-                if (index % 2 === 1) {
-                    const code = document.createElement('code');
-                    code.className = 'small';
-                    code.textContent = part;
-                    statusEl.append('(', code, ')');
-                    continue;
-                }
-                statusEl.append(document.createTextNode(part));
+        const message = String(rawMessage || 'Running…');
+        const parts = message.split(/\((https?:\/\/[^)]+)\)/g);
+        for (let index = 0; index < parts.length; index++) {
+            const part = parts[index];
+            if (!part) continue;
+            if (index % 2 === 1) {
+                const code = document.createElement('code');
+                code.className = 'small';
+                code.textContent = part;
+                statusEl.append('(', code, ')');
+                continue;
             }
+            statusEl.append(document.createTextNode(part));
+        }
+    }
+
+    function reportSpeedtestError(message) {
+        wbToast(`Speed test failed: ${message || 'Unknown error'}`, 'danger');
+    }
+
+    function handleSpeedtestResult(data) {
+        if (data?.status === 'busy') {
+            wbToast('Network appears busy — measurement skipped', 'warning');
+            return;
         }
 
-        function reportSpeedtestError(message) {
-            wbToast(`Speed test failed: ${message || 'Unknown error'}`, 'danger');
-        }
+        showSpeedtestResult(data);
+        wbToast('Speed test completed', 'success');
+        document.dispatchEvent(new CustomEvent('speedtest-completed'));
+    }
 
-        function handleSpeedtestResult(data) {
-            if (data?.status === 'busy') {
-                wbToast('Network appears busy — measurement skipped', 'warning');
-                return;
-            }
+    function createReportedError(message) {
+        const error = new Error(message || 'Unknown error');
+        error.speedtestReported = true;
+        return error;
+    }
 
-            showSpeedtestResult(data);
-            wbToast('Speed test completed', 'success');
-            document.dispatchEvent(new CustomEvent('speedtest-completed'));
-        }
-
-        function createReportedError(message) {
-            const error = new Error(message || 'Unknown error');
-            error.speedtestReported = true;
-            return error;
-        }
-
-        function initSpeedtestUI() {
-            if (!isAdmin) return;
-            speedtestElements.enabledToggle?.addEventListener('change', saveSpeedtestSettings);
-            speedtestElements.runBtn?.addEventListener('click', runSpeedtest);
-        }
+    function initSpeedtestUI() {
+        if (!isAdmin) return;
+        speedtestElements.enabledToggle?.addEventListener('change', saveSpeedtestSettings);
+        speedtestElements.runBtn?.addEventListener('click', runSpeedtest);
+    }
 
     async function loadSpeedtestSettings() {
         try {
-                const data = await api('GET', '/api/wireguard/speedtest/settings');
+            const data = await api('GET', '/api/wireguard/speedtest/settings');
 
-                const { enabledToggle } = speedtestElements;
+            const { enabledToggle } = speedtestElements;
             if (enabledToggle) {
                 enabledToggle.style.transition = 'none';
                 enabledToggle.checked = !!data.enabled;
                 enabledToggle.offsetHeight;
                 enabledToggle.style.transition = '';
             }
-            
-                // Use the last result embedded in the settings response if available;
-                // otherwise fetch the latest result from the history endpoint.
+
+            // Use the last result embedded in the settings response if available;
+            // otherwise fetch the latest result from the history endpoint.
             if (data.last_result && typeof data.last_result === 'object') {
                 showSpeedtestResult(data.last_result);
             } else {
@@ -2685,14 +2742,14 @@
             }
         } catch (e) {
             console.error('Failed to load speedtest settings:', e.message);
-                wbToast('Failed to load speedtest settings', 'danger');
+            wbToast('Failed to load speedtest settings', 'danger');
         }
     }
 
     async function loadLastSpeedtest() {
         try {
-                const data = await api('GET', '/api/wireguard/speedtest/history?limit=1');
-            
+            const data = await api('GET', '/api/wireguard/speedtest/history?limit=1');
+
             if (data.history && data.history.length > 0) {
                 const lastResult = data.history[0];
                 showSpeedtestResult(lastResult);
@@ -2894,14 +2951,14 @@
             // Clear previous content
             serverEl.textContent = '';
             serverEl.title = data.server || '';
-            
+
             // Add country flag if available
             const flag = createCountryFlagElement(data.country_code);
             if (flag) {
                 serverEl.appendChild(flag);
                 serverEl.appendChild(document.createTextNode(' '));
             }
-            
+
             // Add server name
             serverEl.appendChild(document.createTextNode(data.server || '–'));
         }
@@ -3003,10 +3060,10 @@
     // Load backup settings and status
     async function loadBackupSettings() {
         if (!isAdmin) return;
-        
+
         try {
             const data = await api('GET', '/api/backup/settings');
-            
+
             // Update UI with null checks
             const scheduledEl = document.getElementById('backup-scheduled-enabled');
             const countEl = document.getElementById('backup-count');
@@ -3016,17 +3073,17 @@
             const retentionSlider = document.getElementById('backup-retention-slider');
             const sizeEl = document.getElementById('backup-size');
             const diskWarningEl = document.getElementById('backup-disk-warning');
-            
+
             if (scheduledEl) scheduledEl.checked = data.scheduled_enabled;
             if (countEl) countEl.textContent = data.backup_count.toString();
-            
+
             // Set retention slider value
             if (retentionSlider && data.retention_days !== undefined) {
                 const sliderIndex = BACKUP_RETENTION_DAYS.indexOf(data.retention_days);
                 retentionSlider.value = sliderIndex >= 0 ? sliderIndex : 4; // Default to 30 days
                 updateBackupRetentionBadge(retentionSlider.value);
             }
-            
+
             // Show/hide retention slider and stats section based on scheduled status
             if (retentionSection) {
                 retentionSection.classList.toggle('d-none', !data.scheduled_enabled);
@@ -3034,17 +3091,17 @@
             if (statsEl) {
                 statsEl.classList.toggle('d-none', !data.scheduled_enabled);
             }
-            
+
             // Update backup size
             if (sizeEl && data.backup_size_bytes !== undefined) {
                 sizeEl.textContent = formatBackupSize(data.backup_size_bytes);
             }
-            
+
             // Show/hide disk warning
             if (diskWarningEl) {
                 diskWarningEl.classList.toggle('d-none', !data.disk_warning);
             }
-            
+
             if (lastAtEl) {
                 if (data.last_backup_at && data.backup_count > 0) {
                     const date = new Date(data.last_backup_at);
@@ -3061,7 +3118,7 @@
     // Toggle scheduled backups
     async function toggleScheduledBackup(enabled) {
         if (!isAdmin) return;
-        
+
         // Immediately show/hide retention slider and stats section for responsiveness
         const retentionSection = document.getElementById('backup-retention-section');
         const statsEl = document.getElementById('backup-scheduled-stats');
@@ -3071,13 +3128,13 @@
         if (statsEl) {
             statsEl.classList.toggle('d-none', !enabled);
         }
-        
+
         try {
             await api('PATCH', '/api/backup/settings', { scheduled_enabled: enabled });
-            
+
             // Reload settings to confirm change
             await loadBackupSettings();
-            
+
             // Show toast
             wbToast(enabled ? 'Scheduled backups enabled' : 'Scheduled backups disabled', 'success');
         } catch (err) {
@@ -3099,20 +3156,20 @@
     // Update backup retention period
     async function updateBackupRetention(sliderValue) {
         if (!isAdmin) return;
-        
+
         const days = BACKUP_RETENTION_DAYS[sliderValue] || 30;
         updateBackupRetentionBadge(sliderValue);
-        
+
         try {
             const result = await api('PATCH', '/api/backup/settings', { retention_days: days });
-            
+
             // Check if old backups were deleted
             if (result?.deleted_backups > 0) {
                 wbToast(`Retention set to ${BACKUP_RETENTION_LABELS[sliderValue]} — ${result.deleted_backups} old backup(s) removed`, 'success');
             } else {
                 wbToast(`Backup retention set to ${BACKUP_RETENTION_LABELS[sliderValue]}`, 'success');
             }
-            
+
             // Reload to update backup count and size
             await loadBackupSettings();
         } catch (err) {
@@ -3126,25 +3183,25 @@
     // Download backup
     async function downloadBackup() {
         if (!isAdmin) return;
-        
+
         const btn = document.getElementById('btn-backup-download');
         if (!btn) return;
         const originalHtml = btn.innerHTML;
-        
+
         try {
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-1" role="status"></span>Creating...';
-            
+
             const resp = await fetch('/api/backup/download', {
                 method: 'POST',
                 headers: { 'X-CSRF-Token': getCsrfToken() },
                 credentials: 'same-origin'
             });
-            
+
             if (!resp.ok) {
                 throw new Error(await parseBackupApiError(resp));
             }
-            
+
             // Get filename from Content-Disposition header
             const disposition = resp.headers.get('Content-Disposition');
             let filename = 'wirebuddy_backup.tar.gz';
@@ -3152,7 +3209,7 @@
                 const match = disposition.match(/filename="?([^";]+)"?/);
                 if (match) filename = match[1].trim();
             }
-            
+
             // Download the file
             const blob = await resp.blob();
             const url = window.URL.createObjectURL(blob);
@@ -3163,7 +3220,7 @@
             a.click();
             window.URL.revokeObjectURL(url);
             document.body.removeChild(a);
-            
+
             // Reload settings to update last backup time
             await loadBackupSettings();
         } catch (err) {
@@ -3178,88 +3235,88 @@
     // Restore backup
     async function restoreBackup() {
         if (!isAdmin) return;
-        
+
         const fileInput = document.getElementById('backup-restore-file');
         if (!fileInput) return;
         const file = fileInput.files[0];
-        
+
         if (!file) {
             wbToast('Please select a backup file first.', 'warning');
             return;
         }
-        
+
         // Validate file extension
         if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.gz')) {
             wbToast('Invalid file type. Please select a .tar.gz backup file.', 'warning');
             return;
         }
-        
+
         const btn = document.getElementById('btn-backup-restore');
         if (!btn) return;
         const originalHtml = btn.innerHTML;
-        
+
         try {
             // Step 1: Validate backup file HMAC before asking for password
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle" role="status"></span> Validating...';
-            
+
             const validateFormData = new FormData();
             validateFormData.append('file', file);
-            
+
             const validateResp = await fetch('/api/backup/validate', {
                 method: 'POST',
                 headers: { 'X-CSRF-Token': getCsrfToken() },
                 credentials: 'same-origin',
                 body: validateFormData
             });
-            
+
             if (!validateResp.ok) {
                 throw new Error(await parseBackupApiError(validateResp));
             }
-            
+
             // Reset button before showing modal
             btn.disabled = false;
             btn.innerHTML = originalHtml;
             updateRestoreButtonState();
-            
+
             // Step 2: Confirm with password prompt (only if validation passed)
             const password = await wbPrompt(
                 'Backup is valid. This will overwrite all configuration and restart the application. Enter your admin password to confirm:',
                 { inputType: 'password', placeholder: 'Admin password', title: 'Confirm Restore' }
             );
-            
+
             if (!password) return;
-            
+
             // Step 3: Perform actual restore
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle" role="status"></span> Restoring...';
-            
+
             const restoreFormData = new FormData();
             restoreFormData.append('file', file);
             restoreFormData.append('password', password);
-            
+
             const resp = await fetch('/api/backup/restore', {
                 method: 'POST',
                 headers: { 'X-CSRF-Token': getCsrfToken() },
                 credentials: 'same-origin',
                 body: restoreFormData
             });
-            
+
             if (!resp.ok) {
                 throw new Error(await parseBackupApiError(resp));
             }
-            
+
             const result = await resp.json();
 
             fileInput.value = '';
             updateRestoreButtonState();
-            
+
             // Show success message and wait for restart
             wbAlert(result.message + ' The page will reload automatically.', 'success');
-            
+
             // Wait a moment then start checking for server restart
             setTimeout(pollForRestart, 2000);
-            
+
         } catch (err) {
             console.error('Failed to restore backup:', err);
             wbToast('Failed to restore backup: ' + err.message, 'danger');
@@ -3273,7 +3330,7 @@
     // Poll for server restart after restore
     function pollForRestart() {
         let stopped = false;
-        
+
         const checkInterval = setInterval(async () => {
             if (stopped) return;
             try {
@@ -3287,7 +3344,7 @@
                 // Server not ready yet, keep polling
             }
         }, 1000);
-        
+
         // Give up after 60 seconds
         setTimeout(() => {
             if (!stopped) {
@@ -3306,7 +3363,7 @@
                 toggleScheduledBackup(e.target.checked);
             });
         }
-        
+
         const retentionSlider = document.getElementById('backup-retention-slider');
         if (retentionSlider) {
             // Update badge on input (while dragging)
@@ -3318,12 +3375,12 @@
                 updateBackupRetention(parseInt(e.target.value, 10));
             });
         }
-        
+
         const downloadBtn = document.getElementById('btn-backup-download');
         if (downloadBtn) {
             downloadBtn.addEventListener('click', downloadBackup);
         }
-        
+
         const restoreBtn = document.getElementById('btn-backup-restore');
         if (restoreBtn) {
             restoreBtn.addEventListener('click', restoreBackup);

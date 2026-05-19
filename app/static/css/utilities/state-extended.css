@@ -1,0 +1,52 @@
+/**
+ * WireBuddy State Utilities (Extended)
+ * =====================================
+ * Additional state and display utilities
+ */
+
+/* Hidden by default - use JS to show */
+.wb-hidden-initial {
+    display: none;
+}
+
+/* Disabled interaction - replaces pointer-events: none inline */
+.wb-no-pointer {
+    pointer-events: none;
+}
+
+/* Full coverage overlay positioning */
+.wb-overlay-fill {
+    position: absolute;
+    inset: 0;
+}
+
+/* High z-index for overlays */
+.wb-z-overlay {
+    z-index: var(--wb-z-overlay, 1030);
+}
+
+/* Container width limits */
+.wb-max-w-narrow {
+    max-width: 640px;
+}
+
+.wb-max-w-md {
+    max-width: 768px;
+}
+
+/* Subdued elements */
+.wb-subdued {
+    opacity: 0.6;
+}
+
+/* Table cell widths */
+.wb-cell-half {
+    width: 50%;
+}
+
+/* Recovery codes display */
+.wb-recovery-codes {
+    font-size: 0.95rem;
+    line-height: 1.8;
+    white-space: pre-line;
+}
