@@ -18,6 +18,10 @@
   min-height: 2.75rem;
 }
 
+.wb-kpi-value {
+  font-variant-numeric: tabular-nums;
+}
+
 .wb-kpi-subtext,
 .dashboard-kpi-subtext {
   display: block;

@@ -437,12 +437,20 @@ summary {
     font-size: 1rem;
 }
 
+.material-icons.icon-xs {
+    font-size: 0.875rem;
+}
+
 .material-icons.icon-md {
     font-size: 1.25rem;
 }
 
 .material-icons.icon-lg {
     font-size: 1.5rem;
+}
+
+.material-icons.icon-xl {
+    font-size: 3rem;
 }
 
 /* Standard icon spacing in text */

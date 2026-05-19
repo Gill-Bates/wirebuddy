@@ -471,7 +471,7 @@
             if (data.error_count > 0) {
                 wbToast(`Rules saved with ${data.error_count} syntax error(s)`, 'warning');
                 if (statusEl) {
-                    statusEl.innerHTML = `<span class="material-icons align-middle text-warning" style="font-size:16px;">warning</span> ${data.error_count} error(s)`;
+                    statusEl.innerHTML = `<span class="material-icons icon-sm align-middle text-warning" aria-hidden="true">warning</span> ${data.error_count} error(s)`;
                     statusEl.className = 'small text-warning';
                 }
             } else {
@@ -484,7 +484,7 @@
         } catch (e) {
             wbToast('Failed to save custom rules: ' + e.message, 'danger');
             if (statusEl) {
-                statusEl.innerHTML = '<span class="material-icons align-middle text-danger" style="font-size:16px;">error</span> Failed';
+                statusEl.innerHTML = '<span class="material-icons icon-sm align-middle text-danger" aria-hidden="true">error</span> Failed';
                 statusEl.className = 'small text-danger';
             }
             // Also update rule count from textarea to reflect actual state

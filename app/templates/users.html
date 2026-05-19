@@ -25,7 +25,7 @@
 <div id="wb-page-config" data-current-user-id="{{ user['id'] | int }}" data-is-admin="{{ 'true' if user['is_admin'] else 'false' }}" aria-hidden="true" class="d-none"></div>
 <div class="container-fluid wb-page">
 <div class="wb-page-header">
-    <h2 class="page-title"><span class="material-icons me-2">people</span>User Management</h2>
+    <h1 class="page-title"><span class="material-icons me-2" aria-hidden="true">people</span>User Management</h1>
     <button class="btn btn-primary users-add-btn" data-bs-toggle="modal" data-bs-target="#addUserModal">
         <span class="material-icons me-2">person_add</span>
         Add User
@@ -36,6 +36,7 @@
     <div class="card-body">
         <div class="table-responsive">
             <table class="table table-hover mb-0 users-table wb-responsive-table">
+                <caption class="visually-hidden">User accounts and management actions</caption>
                 <thead>
                     <tr>
                         <th>Username</th>

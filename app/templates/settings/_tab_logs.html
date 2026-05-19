@@ -6,7 +6,7 @@
                 <div class="card h-100">
                     <div class="card-header">
                         <h3 class="h5 mb-0">
-                            <span class="material-icons align-middle me-1" style="font-size: 20px;">show_chart</span>Traffic Metrics
+                            <span class="material-icons icon-md align-middle me-1" aria-hidden="true">show_chart</span>Traffic Metrics
                         </h3>
                     </div>
                     <div class="card-body">
@@ -58,23 +58,23 @@
                                 <input type="range" class="form-range retention-slider" id="tsdb-retention-slider"
                                     min="0" max="5" step="1" value="5">
                                 <div class="retention-ticks" aria-hidden="true">
-                                    <span class="retention-tick" style="--i:0"></span>
-                                    <span class="retention-tick" style="--i:1"></span>
-                                    <span class="retention-tick" style="--i:2"></span>
-                                    <span class="retention-tick" style="--i:3"></span>
-                                    <span class="retention-tick" style="--i:4"></span>
-                                    <span class="retention-tick" style="--i:5"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
                                 </div>
                                 <div class="retention-labels" aria-hidden="true">
-                                    <span class="retention-label" style="--i:0">
+                                    <span class="retention-label">
                                         <span class="retention-label-full">No Logs</span>
                                         <span class="retention-label-abbr">Off</span>
                                     </span>
-                                    <span class="retention-label" style="--i:1">7d</span>
-                                    <span class="retention-label" style="--i:2">30d</span>
-                                    <span class="retention-label" style="--i:3">90d</span>
-                                    <span class="retention-label" style="--i:4">180d</span>
-                                    <span class="retention-label" style="--i:5">1y</span>
+                                    <span class="retention-label">7d</span>
+                                    <span class="retention-label">30d</span>
+                                    <span class="retention-label">90d</span>
+                                    <span class="retention-label">180d</span>
+                                    <span class="retention-label">1y</span>
                                 </div>
                             </div>
                             {% endif %}
@@ -87,7 +87,7 @@
                                         <div class="small text-muted">Permanently removes all stored traffic metric data (TSDB).</div>
                                     </div>
                                     <button class="btn btn-sm btn-outline-danger" id="btn-purge-traffic-logs"{% if not user['is_admin'] %} disabled{% endif %}>
-                                        <span class="material-icons align-middle me-1" style="font-size: 16px;">delete_forever</span>Purge
+                                        <span class="material-icons icon-sm align-middle me-1" aria-hidden="true">delete_forever</span>Purge
                                     </button>
                                 </div>
                             </div>
@@ -101,7 +101,7 @@
                 <div class="card h-100">
                     <div class="card-header">
                         <h3 class="h5 mb-0">
-                            <span class="material-icons align-middle me-1" style="font-size: 20px;">dns</span>DNS Metrics
+                            <span class="material-icons icon-md align-middle me-1" aria-hidden="true">dns</span>DNS Metrics
                         </h3>
                     </div>
                     <div class="card-body">
@@ -141,23 +141,23 @@
                                 <input type="range" class="form-range retention-slider" id="dns-metrics-retention-slider"
                                     min="0" max="5" step="1" value="2">
                                 <div class="retention-ticks" aria-hidden="true">
-                                    <span class="retention-tick" style="--i:0"></span>
-                                    <span class="retention-tick" style="--i:1"></span>
-                                    <span class="retention-tick" style="--i:2"></span>
-                                    <span class="retention-tick" style="--i:3"></span>
-                                    <span class="retention-tick" style="--i:4"></span>
-                                    <span class="retention-tick" style="--i:5"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
                                 </div>
                                 <div class="retention-labels" aria-hidden="true">
-                                    <span class="retention-label" style="--i:0">
+                                    <span class="retention-label">
                                         <span class="retention-label-full">No Logs</span>
                                         <span class="retention-label-abbr">Off</span>
                                     </span>
-                                    <span class="retention-label" style="--i:1">7d</span>
-                                    <span class="retention-label" style="--i:2">30d</span>
-                                    <span class="retention-label" style="--i:3">90d</span>
-                                    <span class="retention-label" style="--i:4">180d</span>
-                                    <span class="retention-label" style="--i:5">1y</span>
+                                    <span class="retention-label">7d</span>
+                                    <span class="retention-label">30d</span>
+                                    <span class="retention-label">90d</span>
+                                    <span class="retention-label">180d</span>
+                                    <span class="retention-label">1y</span>
                                 </div>
                             </div>
                             {% endif %}
@@ -170,7 +170,7 @@
                                         <div class="small text-muted">Permanently removes all stored DNS query data.</div>
                                     </div>
                                     <button class="btn btn-sm btn-outline-danger" id="btn-purge-dns-logs"{% if not user['is_admin'] %} disabled{% endif %}>
-                                        <span class="material-icons align-middle me-1" style="font-size: 16px;">delete_forever</span>Purge
+                                        <span class="material-icons icon-sm align-middle me-1" aria-hidden="true">delete_forever</span>Purge
                                     </button>
                                 </div>
                             </div>
@@ -184,7 +184,7 @@
                 <div class="card h-100">
                     <div class="card-header">
                         <h3 class="h5 mb-0">
-                            <span class="material-icons align-middle me-1" style="font-size: 20px;">people</span>Peer Metrics
+                            <span class="material-icons icon-md align-middle me-1" aria-hidden="true">people</span>Peer Metrics
                         </h3>
                     </div>
                     <div class="card-body">
@@ -228,7 +228,7 @@
                                         <div class="small text-muted">Resets all peer connection tracking</div>
                                     </div>
                                     <button class="btn btn-sm btn-outline-danger" id="btn-purge-peer-logs"{% if not user['is_admin'] %} disabled{% endif %}>
-                                        <span class="material-icons align-middle me-1" style="font-size: 16px;">delete_forever</span>Reset
+                                        <span class="material-icons icon-sm align-middle me-1" aria-hidden="true">delete_forever</span>Reset
                                     </button>
                                 </div>
                             </div>
@@ -242,7 +242,7 @@
                 <div class="card h-100">
                     <div class="card-header">
                         <h3 class="h5 mb-0">
-                            <span class="material-icons align-middle me-1" style="font-size: 20px;">speed</span>Speedtest Metrics
+                            <span class="material-icons icon-md align-middle me-1" aria-hidden="true">speed</span>Speedtest Metrics
                         </h3>
                     </div>
                     <div class="card-body">
@@ -282,23 +282,23 @@
                                 <input type="range" class="form-range retention-slider" id="speedtest-retention-slider"
                                     min="0" max="5" step="1" value="5">
                                 <div class="retention-ticks" aria-hidden="true">
-                                    <span class="retention-tick" style="--i:0"></span>
-                                    <span class="retention-tick" style="--i:1"></span>
-                                    <span class="retention-tick" style="--i:2"></span>
-                                    <span class="retention-tick" style="--i:3"></span>
-                                    <span class="retention-tick" style="--i:4"></span>
-                                    <span class="retention-tick" style="--i:5"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
+                                    <span class="retention-tick"></span>
                                 </div>
                                 <div class="retention-labels" aria-hidden="true">
-                                    <span class="retention-label" style="--i:0">
+                                    <span class="retention-label">
                                         <span class="retention-label-full">No Logs</span>
                                         <span class="retention-label-abbr">Off</span>
                                     </span>
-                                    <span class="retention-label" style="--i:1">7d</span>
-                                    <span class="retention-label" style="--i:2">30d</span>
-                                    <span class="retention-label" style="--i:3">90d</span>
-                                    <span class="retention-label" style="--i:4">180d</span>
-                                    <span class="retention-label" style="--i:5">1y</span>
+                                    <span class="retention-label">7d</span>
+                                    <span class="retention-label">30d</span>
+                                    <span class="retention-label">90d</span>
+                                    <span class="retention-label">180d</span>
+                                    <span class="retention-label">1y</span>
                                 </div>
                             </div>
                             {% endif %}
@@ -311,7 +311,7 @@
                                         <div class="small text-muted">Permanently removes all stored bandwidth test history.</div>
                                     </div>
                                     <button class="btn btn-sm btn-outline-danger" id="btn-purge-speedtest-logs"{% if not user['is_admin'] %} disabled{% endif %}>
-                                        <span class="material-icons align-middle me-1" style="font-size: 16px;">delete_forever</span>Purge
+                                        <span class="material-icons icon-sm align-middle me-1" aria-hidden="true">delete_forever</span>Purge
                                     </button>
                                 </div>
                             </div>

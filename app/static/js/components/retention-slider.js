@@ -10,6 +10,8 @@
 (function () {
     'use strict';
 
+    const WB_DEBUG = window.WB_DEBUG === true;
+
     /**
      * Default retention values (days).
      * 0 = disabled/no logs
@@ -56,7 +58,7 @@
      * });
      * tsdbSlider.setValue(30);
      */
-    function RetentionSlider(config) {
+    function RetentionSlider(config = {}) {
         const {
             sliderId,
             badgeId,
@@ -71,20 +73,52 @@
             onSave
         } = config;
 
+        if (!Array.isArray(values) || values.length === 0) {
+            throw new Error('RetentionSlider: values must be a non-empty array');
+        }
+
+        const sliderValues = values.map((value) => {
+            const normalized = Number(value);
+            if (!Number.isFinite(normalized)) {
+                throw new Error('RetentionSlider: values must contain only numeric entries');
+            }
+            return normalized;
+        });
+
+        for (let index = 1; index < sliderValues.length; index++) {
+            if (sliderValues[index] < sliderValues[index - 1]) {
+                throw new Error('RetentionSlider: values must be sorted in ascending order');
+            }
+        }
+
+        const parsedDefaultIndex = Number.parseInt(String(defaultIndex), 10);
+        const safeDefaultIndex = Number.isFinite(parsedDefaultIndex)
+            ? Math.max(0, Math.min(sliderValues.length - 1, parsedDefaultIndex))
+            : sliderValues.length - 1;
+
         const slider = document.getElementById(sliderId);
         const badge = document.getElementById(badgeId);
 
         if (!slider) {
-            console.warn(`RetentionSlider: slider #${sliderId} not found`);
+            if (WB_DEBUG) {
+                console.warn(`RetentionSlider: slider #${sliderId} not found`);
+            }
             return null;
+        }
+
+        if (slider._wbRetentionSlider) {
+            slider._wbRetentionSlider.destroy();
         }
 
         // Configure slider range
         slider.min = '0';
-        slider.max = String(values.length - 1);
+        slider.max = String(sliderValues.length - 1);
         slider.step = '1';
 
+        let destroyed = false;
         let isSaving = false;
+        let pendingDays = null;
+        let committedDays = sliderValues[safeDefaultIndex];
 
         /**
          * Get index for a given days value.
@@ -92,8 +126,8 @@
          * @returns {number}
          */
         function indexForDays(days) {
-            const idx = values.indexOf(Number(days));
-            return idx >= 0 ? idx : defaultIndex;
+            const idx = sliderValues.indexOf(Number(days));
+            return idx >= 0 ? idx : safeDefaultIndex;
         }
 
         /**
@@ -104,9 +138,9 @@
         function daysFromIndex(rawValue) {
             const parsed = Number.parseInt(String(rawValue), 10);
             const idx = Number.isFinite(parsed)
-                ? Math.max(0, Math.min(values.length - 1, parsed))
-                : defaultIndex;
-            return values[idx];
+                ? Math.max(0, Math.min(sliderValues.length - 1, parsed))
+                : safeDefaultIndex;
+            return sliderValues[idx];
         }
 
         /**
@@ -114,9 +148,13 @@
          * @param {number} days
          */
         function updateBadge(days) {
+            const label = labelFormatter(days);
+            slider.setAttribute('aria-valuetext', label);
+            slider.setAttribute('aria-valuenow', String(days));
+
             if (!badge) return;
 
-            badge.textContent = labelFormatter(days);
+            badge.textContent = label;
 
             // Apply warning/normal class
             badge.classList.remove(warningClass, normalClass);
@@ -128,6 +166,7 @@
          * @param {Event} e
          */
         function handleInput(e) {
+            if (destroyed) return;
             const days = daysFromIndex(e.target.value);
             updateBadge(days);
             if (typeof onInput === 'function') {
@@ -140,40 +179,80 @@
          * @param {Event} e
          */
         async function handleChange(e) {
+            if (destroyed) return;
             const days = daysFromIndex(e.target.value);
 
             if (typeof onChange === 'function') {
                 onChange(days, e);
             }
 
-            if (typeof onSave === 'function' && !isSaving) {
-                isSaving = true;
-                slider.disabled = true;
-                try {
-                    await onSave(days);
-                } catch (err) {
+            if (typeof onSave === 'function') {
+                await persist(days);
+            }
+        }
+
+        async function persist(days) {
+            if (destroyed) return;
+
+            if (isSaving) {
+                pendingDays = days;
+                return;
+            }
+
+            isSaving = true;
+            const wasDisabled = slider.disabled;
+            slider.disabled = true;
+
+            try {
+                await onSave(days);
+                if (destroyed) return;
+                committedDays = days;
+                pendingDays = null;
+            } catch (err) {
+                if (WB_DEBUG) {
                     console.error(`RetentionSlider: save failed for ${sliderId}`, err);
-                } finally {
-                    slider.disabled = false;
-                    isSaving = false;
+                }
+                if (!destroyed) {
+                    setValue(committedDays);
+                    pendingDays = null;
+                }
+            } finally {
+                if (!destroyed) {
+                    slider.disabled = wasDisabled;
+                }
+                isSaving = false;
+
+                if (!destroyed && pendingDays !== null && pendingDays !== committedDays) {
+                    const next = pendingDays;
+                    pendingDays = null;
+                    void persist(next);
                 }
             }
         }
 
         // Bind events
-        slider.addEventListener('input', handleInput);
+        slider.addEventListener('input', handleInput, { passive: true });
         slider.addEventListener('change', handleChange);
 
-        // Public API
-        return {
+        // Initialize current UI state.
+        const initialDays = daysFromIndex(slider.value);
+        slider.value = String(indexForDays(initialDays));
+        committedDays = daysFromIndex(slider.value);
+        updateBadge(committedDays);
+
+        const controller = {
             /**
              * Set slider value by days.
              * @param {number} days
              */
             setValue(days) {
+                if (destroyed) return;
                 const idx = indexForDays(days);
+                const normalizedDays = sliderValues[idx];
                 slider.value = String(idx);
-                updateBadge(days);
+                committedDays = normalizedDays;
+                pendingDays = null;
+                updateBadge(normalizedDays);
             },
 
             /**
@@ -181,13 +260,14 @@
              * @returns {number}
              */
             getValue() {
-                return daysFromIndex(slider.value);
+                return committedDays;
             },
 
             /**
              * Enable slider.
              */
             enable() {
+                if (destroyed) return;
                 slider.disabled = false;
             },
 
@@ -195,6 +275,7 @@
              * Disable slider.
              */
             disable() {
+                if (destroyed) return;
                 slider.disabled = true;
             },
 
@@ -202,8 +283,14 @@
              * Destroy instance and remove event listeners.
              */
             destroy() {
+                if (destroyed) return;
+                destroyed = true;
+                pendingDays = null;
                 slider.removeEventListener('input', handleInput);
                 slider.removeEventListener('change', handleChange);
+                if (slider._wbRetentionSlider === controller) {
+                    slider._wbRetentionSlider = null;
+                }
             },
 
             /**
@@ -211,11 +298,16 @@
              * @returns {number[]}
              */
             getValues() {
-                return [...values];
+                return [...sliderValues];
             }
         };
+
+        slider._wbRetentionSlider = controller;
+        return controller;
     }
 
     // Expose globally
+    window.WB = window.WB || {};
+    window.WB.RetentionSlider = RetentionSlider;
     window.RetentionSlider = RetentionSlider;
 })();

@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-    (function () {
+(function () {
     'use strict';
 
     const dnsApp = document.getElementById('dns-app');
@@ -33,6 +33,8 @@
     function chartEmptyState(text = 'No Data Available') {
         const wrapper = document.createElement('div');
         wrapper.className = 'chart-empty-state';
+        wrapper.setAttribute('role', 'status');
+        wrapper.setAttribute('aria-live', 'polite');
         const icon = document.createElement('span');
         icon.className = 'material-icons';
         icon.textContent = 'show_chart';
@@ -81,7 +83,7 @@
         if (!peerFilterEl) return '';
         const selectedPeer = peerFilterEl.value;
         if (!selectedPeer || selectedPeer === 'all') return '';
-        
+
         // Reverse lookup: find all IPs that map to the selected peer name
         const ips = [];
         for (const [ip, name] of Object.entries(_peerMap)) {
@@ -99,6 +101,11 @@
 
     function clearNode(el) {
         if (el) el.replaceChildren();
+    }
+
+    function setBusyState(el, busy) {
+        if (!el) return;
+        el.setAttribute('aria-busy', busy ? 'true' : 'false');
     }
 
     function resetStatCards(placeholder = '–') {
@@ -155,11 +162,11 @@
             ];
 
         clearNode(menu);
-        
+
         // Set ARIA attributes for accessibility
         menu.setAttribute('role', 'menu');
         menu.setAttribute('aria-label', `Actions for ${q.domain}`);
-        
+
         for (const item of actions) {
             const btn = document.createElement('button');
             btn.type = 'button';
@@ -321,7 +328,7 @@
     }
 
     function clearTrendCache() {
-        try { sessionStorage.removeItem(TREND_CACHE_KEY); } catch {}
+        try { sessionStorage.removeItem(TREND_CACHE_KEY); } catch { }
     }
 
     /**
@@ -574,6 +581,8 @@
         try {
             const rangeHours = getSelectedRangeHours();
             const clientIpsParam = getClientIpsQueryParam();
+            setBusyState(_stateEls.queriedContent, true);
+            setBusyState(_stateEls.blockedContent, true);
             const data = await api('GET', `/api/dns/top-domains?limit=15&hours=${rangeHours}${clientIpsParam}`);
             const topQueried = data.top_queried || [];
             const topBlocked = data.top_blocked || [];
@@ -614,8 +623,11 @@
                 if (blockedEmpty) blockedEmpty.classList.add('d-none');
                 if (blockedUnavailable) blockedUnavailable.classList.add('d-none');
                 if (blockedDisabled) blockedDisabled.classList.remove('d-none');
+                setBusyState(blockedContent, false);
             }
         } catch (e) {
+            setBusyState(_stateEls.queriedContent, false);
+            setBusyState(_stateEls.blockedContent, false);
             console.error('Top domains error:', e);
         }
     }
@@ -679,6 +691,7 @@
             if (emptyEl) emptyEl.classList.add('d-none');
             if (disabledEl) disabledEl.classList.add('d-none');
             if (unavailableEl) unavailableEl.classList.remove('d-none');
+            setBusyState(contentEl, false);
             return;
         }
 
@@ -689,11 +702,13 @@
         if (!items.length) {
             if (contentEl) contentEl.classList.add('d-none');
             if (emptyEl) emptyEl.classList.remove('d-none');
+            setBusyState(contentEl, false);
             return;
         }
 
         if (contentEl) contentEl.classList.remove('d-none');
         if (emptyEl) emptyEl.classList.add('d-none');
+        setBusyState(contentEl, false);
 
         const { labels, values, total } = prepareBarChartData(items, maxSlices);
         const chartColors = getChartColors(labels, colors);
@@ -708,6 +723,9 @@
 
             const itemWrap = document.createElement('div');
             itemWrap.className = 'd-flex flex-column gap-1';
+            itemWrap.setAttribute('role', 'listitem');
+            itemWrap.setAttribute('aria-setsize', String(labels.length));
+            itemWrap.setAttribute('aria-posinset', String(i + 1));
 
             const topRow = document.createElement('div');
             topRow.className = 'd-flex justify-content-between align-items-end gap-2 top-domain-top-row';
@@ -765,7 +783,10 @@
         const spinner = document.createElement('div');
         spinner.className = 'spinner-border text-primary';
         spinner.setAttribute('role', 'status');
-        spinner.setAttribute('aria-label', 'Loading');
+        const hiddenText = document.createElement('span');
+        hiddenText.className = 'visually-hidden';
+        hiddenText.textContent = 'Loading query log…';
+        spinner.appendChild(hiddenText);
         wrap.appendChild(spinner);
         tbody.appendChild(createLogPlaceholderRow(wrap, 'py-5'));
     }
@@ -777,6 +798,7 @@
         if (_logsLoadInProgress) return;
         _logsLoadInProgress = true;
         try {
+            setBusyState(document.getElementById('log-table-wrap'), true);
             if (showLoading) {
                 showLogsLoadingState();
             }
@@ -795,6 +817,7 @@
                 tbody.appendChild(createLogPlaceholderRow('Failed to load logs', 'text-center text-danger'));
             }
         } finally {
+            setBusyState(document.getElementById('log-table-wrap'), false);
             _logsLoadInProgress = false;
         }
     }
@@ -819,7 +842,7 @@
             const peers = data.peers || [];
             const peerFilter = document.getElementById('peer-filter');
             if (!peerFilter) return; // Guard against null
-            
+
             const previousValue = peerFilter.value || 'all';
             _peerMap = {};
 
@@ -863,9 +886,9 @@
         const peerFilterEl = document.getElementById('peer-filter');
         const searchEl = document.getElementById('log-search');
         const tbody = document.getElementById('log-body');
-        
+
         if (!filterEl || !peerFilterEl || !searchEl || !tbody) return;
-        
+
         const filter = filterEl.value;
         const peerFilter = peerFilterEl.value;
         const search = searchEl.value.toLowerCase();
@@ -932,7 +955,7 @@
             const domainWrap = tdDomain.querySelector('.log-domain-stack');
             const domainText = domainWrap.querySelector('.log-domain');
             domainText.textContent = q.domain || '';
-            
+
             // Add Custom Rule badge if applicable
             if (q.custom_rule) {
                 const badge = document.createElement('span');
@@ -1098,6 +1121,10 @@
             showExclusiveState(_stateGroups.trend, 'unavailable');
             if (_stateEls.logCardBody) _stateEls.logCardBody.classList.add('dns-log-unavailable');
             if (_stateEls.logUnavailable) _stateEls.logUnavailable.classList.remove('d-none');
+            setBusyState(_stateEls.queriedContent, false);
+            setBusyState(_stateEls.blockedContent, false);
+            setBusyState(_stateEls.trendChart, false);
+            setBusyState(document.getElementById('log-table-wrap'), false);
         } else {
             // Hide unavailable states
             if (_stateGroups.queried.unavailable) _stateGroups.queried.unavailable.classList.add('d-none');
@@ -1202,13 +1229,13 @@
             updateAdblockerButton(data.enabled, data.disabled_until || 0);
             wbToast(data.enabled ? 'Ad-Blocker enabled' : 'Ad-Blocker disabled', 'success');
             await loadStats();
-            
+
             // If enabling, reload blocked sections (they were showing disabled state)
             if (data.enabled) {
                 clearTrendCache();  // Force fresh data after ad-blocker toggle
                 await Promise.allSettled([loadTopDomains(), loadTrend()]);
             }
-            
+
             // Close dropdown after selection
             const dropdown = bootstrap.Dropdown.getInstance(btn);
             if (dropdown) dropdown.hide();
@@ -1221,7 +1248,7 @@
 
     // Adblocker dropdown event listeners
     for (const item of document.querySelectorAll('[data-adblocker-mode]')) {
-        item.addEventListener('click', function(e) {
+        item.addEventListener('click', function (e) {
             e.preventDefault();
             if (!isAdmin) return;
             const mode = this.getAttribute('data-adblocker-mode');
@@ -1384,11 +1411,11 @@
             await loadPeers();
             return; // Skip polling - nothing to poll
         }
-        
+
         await Promise.allSettled([
             loadPeers(), loadStats(), loadTopDomains(),
             loadTrend(), loadLogsOnly(), loadAdblockerStatus()
         ]);
         startPolling(); // Only start polling after initial load completes
     })();
-    })();
+})();

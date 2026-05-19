@@ -36,30 +36,30 @@
                             <label class="form-check-label" for="backup-scheduled-enabled">Daily Backups (03:00 local time)</label>
                         </div>
 
-                        <div class="mb-3 retention-scale d-none" id="backup-retention-section" style="--rs-steps: 4">
+                        <div class="mb-3 retention-scale d-none" id="backup-retention-section">
                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <label for="backup-retention-slider" class="form-label mb-0">Retention Period</label>
                                 <span class="badge text-bg-secondary" id="backup-retention-value">30 Days</span>
                             </div>
                             <input type="range" class="form-range retention-slider" id="backup-retention-slider" min="0" max="4" step="1" value="4"{% if not user['is_admin'] %} disabled{% endif %}>
                             <div class="retention-ticks" aria-hidden="true">
-                                <span class="retention-tick" style="--i:0"></span>
-                                <span class="retention-tick" style="--i:1"></span>
-                                <span class="retention-tick" style="--i:2"></span>
-                                <span class="retention-tick" style="--i:3"></span>
-                                <span class="retention-tick" style="--i:4"></span>
+                                <span class="retention-tick"></span>
+                                <span class="retention-tick"></span>
+                                <span class="retention-tick"></span>
+                                <span class="retention-tick"></span>
+                                <span class="retention-tick"></span>
                             </div>
                             <div class="retention-labels" aria-hidden="true">
-                                <span class="retention-label" style="--i:0">1d</span>
-                                <span class="retention-label" style="--i:1">7d</span>
-                                <span class="retention-label" style="--i:2">14d</span>
-                                <span class="retention-label" style="--i:3">21d</span>
-                                <span class="retention-label" style="--i:4">30d</span>
+                                <span class="retention-label">1d</span>
+                                <span class="retention-label">7d</span>
+                                <span class="retention-label">14d</span>
+                                <span class="retention-label">21d</span>
+                                <span class="retention-label">30d</span>
                             </div>
                         </div>
 
                         <div class="alert alert-warning small py-2 mb-3 d-none" id="backup-disk-warning">
-                            <span class="material-icons align-middle me-1" style="font-size: 1rem;">warning</span>
+                            <span class="material-icons icon-sm align-middle me-1" aria-hidden="true">warning</span>
                             Low disk space. Backups may fail.
                         </div>
 

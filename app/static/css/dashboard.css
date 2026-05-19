@@ -598,17 +598,18 @@
     }
 
     .network-item-bar {
+        display: block;
         height: 6px;
-        background: var(--wb-ni-bar-bg);
-        border-radius: 999px;
         overflow: hidden;
     }
 
+    .network-item-bar-bg {
+        fill: var(--wb-ni-bar-bg);
+    }
+
     .network-item-bar-fill {
-        height: 100%;
-        width: 0%;
-        background: var(--wb-accent-red, #ff6384);
-        transition: width 0.2s linear;
+        fill: var(--wb-accent-red, #ff6384);
+        transition: opacity 0.2s linear;
     }
 
     .network-item-rates {

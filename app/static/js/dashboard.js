@@ -1273,14 +1273,14 @@ async function refreshSpeedtestChart(signal) {
         const speedtestDownload = document.getElementById('speedtest-download');
         const speedtestUpload = document.getElementById('speedtest-upload');
         if (!history.length) {
-            if (canvas) canvas.style.display = 'none';
+            if (canvas) canvas.hidden = true;
             if (emptyEl) emptyEl.classList.remove('d-none');
             if (speedtestDownload) speedtestDownload.textContent = '–';
             if (speedtestUpload) speedtestUpload.textContent = 'No data';
             return true;
         }
 
-        if (canvas) canvas.style.display = '';
+        if (canvas) canvas.hidden = false;
         if (emptyEl) emptyEl.classList.add('d-none');
 
         // Only init chart once
@@ -1651,11 +1651,27 @@ function updateGaugeElement(iface, container, globalMax) {
         canvas.id = `net-spark-${safeId}`;
 
         // Build progress bar
-        const barDiv = document.createElement('div');
-        barDiv.className = 'network-item-bar';
-        const barFill = document.createElement('div');
-        barFill.className = 'network-item-bar-fill';
+        const svgNS = 'http://www.w3.org/2000/svg';
+        const barDiv = document.createElementNS(svgNS, 'svg');
+        barDiv.classList.add('network-item-bar');
+        barDiv.setAttribute('width', '100%');
+        barDiv.setAttribute('height', '6');
+        barDiv.setAttribute('viewBox', '0 0 100 6');
+        barDiv.setAttribute('preserveAspectRatio', 'none');
+        const barBg = document.createElementNS(svgNS, 'rect');
+        barBg.classList.add('network-item-bar-bg');
+        barBg.setAttribute('x', '0');
+        barBg.setAttribute('y', '0');
+        barBg.setAttribute('width', '100');
+        barBg.setAttribute('height', '6');
+        const barFill = document.createElementNS(svgNS, 'rect');
+        barFill.classList.add('network-item-bar-fill');
         barFill.id = `net-bar-${safeId}`;
+        barFill.setAttribute('x', '0');
+        barFill.setAttribute('y', '0');
+        barFill.setAttribute('width', '0');
+        barFill.setAttribute('height', '6');
+        barDiv.appendChild(barBg);
         barDiv.appendChild(barFill);
 
         // Build rates
@@ -1728,8 +1744,8 @@ function updateGaugeElement(iface, container, globalMax) {
     const pct = Math.min(100, (total / globalMax) * 100);
 
     if (barEl) {
-        barEl.style.width = pct + '%';
-        barEl.style.opacity = total > 0 ? 1 : 0.3;
+        barEl.setAttribute('width', String(pct));
+        barEl.setAttribute('opacity', total > 0 ? '1' : '0.3');
     }
 
     el.classList.toggle('active', total > 0);
@@ -1816,9 +1832,9 @@ async function refreshNetworkStats() {
         }
 
         // Reorder DOM elements to match sorted order (prevents layout jitter)
-        sortedInterfaces.forEach((iface, index) => {
+        sortedInterfaces.forEach((iface) => {
             const el = document.getElementById(`net-${toSafeId(iface.name)}`);
-            if (el) el.style.order = String(index);
+            if (el) networkGaugesContainer.appendChild(el);
         });
 
         // Count active interfaces (any traffic)

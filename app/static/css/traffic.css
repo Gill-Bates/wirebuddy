@@ -111,13 +111,13 @@
 }
 
 .traffic-bar {
+    display: block;
     height: 6px;
     border-radius: 3px;
     min-width: 2px;
     transform-origin: left center;
     animation: traffic-bar-grow 0.45s cubic-bezier(0.22, 0.61, 0.36, 1) both;
-    /* Cap animation delay at 15 rows to prevent sluggish rendering for large tables */
-    animation-delay: calc(min(var(--row-i, 0), 15) * 30ms);
+    animation-delay: 0ms;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -127,11 +127,11 @@
 }
 
 .traffic-bar-rx {
-    background: var(--traffic-rx);
+    fill: var(--traffic-rx);
 }
 
 .traffic-bar-tx {
-    background: var(--traffic-tx);
+    fill: var(--traffic-tx);
 }
 
 .traffic-row td {
@@ -139,7 +139,7 @@
 }
 
 /* Prevent progress bar overflow */
-.traffic-table-wrap td>div.d-flex {
+.traffic-table-wrap td>.traffic-bar {
     max-width: 100%;
     overflow: hidden;
 }

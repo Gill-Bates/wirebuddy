@@ -34,8 +34,6 @@
 .dns-retention-scale,
 .retention-scale {
     --thumb-size: 16px;
-    --rs-steps: 5;
-    /* Must match the number of tick/label elements; each child needs inline --i: N */
     --rs-thumb-r: calc(var(--thumb-size) / 2);
     position: relative;
     container-type: inline-size;
@@ -91,17 +89,20 @@
 
 .dns-retention-ticks,
 .retention-ticks {
-    position: relative;
+    display: flex;
+    justify-content: space-between;
+    gap: 0;
     height: 6px;
     margin: -2px var(--rs-thumb-r) 0;
 }
 
 .dns-retention-tick,
 .retention-tick {
-    position: absolute;
-    top: 0;
-    left: calc(var(--i) / var(--rs-steps) * 100%);
-    transform: translateX(-50%);
+    position: relative;
+    flex: 1 1 0;
+    display: flex;
+    justify-content: center;
+    align-items: stretch;
     width: 2px;
     height: 100%;
     border-radius: 1px;
@@ -110,7 +111,9 @@
 
 .dns-retention-labels,
 .retention-labels {
-    position: relative;
+    display: flex;
+    justify-content: space-between;
+    gap: 0;
     height: 1.3em;
     margin: 4px var(--rs-thumb-r) 0;
     margin-bottom: 0;
@@ -120,10 +123,9 @@
 
 .dns-retention-label,
 .retention-label {
-    position: absolute;
-    top: 0;
-    left: calc(var(--i) / var(--rs-steps) * 100%);
-    transform: translateX(-50%);
+    position: relative;
+    flex: 1 1 0;
+    text-align: center;
     font-size: 0.675rem;
     color: var(--bs-secondary-color);
     line-height: 1;
@@ -133,12 +135,12 @@
 
 .dns-retention-labels .dns-retention-label:first-child,
 .retention-labels .retention-label:first-child {
-    transform: translateX(0);
+    text-align: left;
 }
 
 .dns-retention-labels .dns-retention-label:last-child,
 .retention-labels .retention-label:last-child {
-    transform: translateX(-100%);
+    text-align: right;
 }
 
 .dns-retention-label-abbr,
