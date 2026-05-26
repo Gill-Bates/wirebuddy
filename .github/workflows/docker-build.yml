@@ -99,15 +99,13 @@ jobs:
           - arch: amd64
             runner: ubuntu-24.04
             platform: linux/amd64
-            needs_qemu: false
             cache_scope: amd64
             test_image: wirebuddy:test-amd64
             container_name: wirebuddy-test-amd64
             image_suffix: amd64
           - arch: arm64
-            runner: ubuntu-24.04
+            runner: ubuntu-24.04-arm64
             platform: linux/arm64
-            needs_qemu: true
             cache_scope: arm64
             test_image: wirebuddy:test-arm64
             container_name: wirebuddy-test-arm64
@@ -123,12 +121,6 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 1
-
-      - name: Set up QEMU (arm64 emulation)
-        if: matrix.needs_qemu
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Generate BUILD_INFO
         run: git rev-parse HEAD > BUILD_INFO
