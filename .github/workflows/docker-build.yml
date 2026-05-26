@@ -174,6 +174,7 @@ jobs:
           trap cleanup EXIT
 
           docker run -d --name "${{ matrix.container_name }}" \
+            --platform "${{ matrix.platform }}" \
             -e WIREBUDDY_SECRET_KEY="ci-smoke-test-key-not-for-production" \
             -e WIREBUDDY_SKIP_NETWORK_CHECK="1" \
             "${{ matrix.test_image }}"
@@ -208,12 +209,13 @@ jobs:
           set -euo pipefail
 
           echo "Testing node daemon module import..."
-          docker run --rm --entrypoint python "${{ matrix.test_image }}" \
+          docker run --rm --platform "${{ matrix.platform }}" --entrypoint python "${{ matrix.test_image }}" \
             -c "from app.node.daemon import run, main; print('✓ Node daemon module imports OK')"
 
           echo "Testing node mode startup (expecting graceful exit)..."
           EXIT_CODE=0
           LOGS=$(timeout 30s docker run --rm \
+            --platform "${{ matrix.platform }}" \
             -e SERVER_MODE=node \
             -e LOG_LEVEL=DEBUG \
             -e WIREBUDDY_SECRET_KEY="ci-node-test-key" \
@@ -315,6 +317,10 @@ jobs:
             echo "  ${IMAGE_NAME}:latest"
           fi
 
+          echo "Cleaning up temporary CI tags..."
+          docker buildx imagetools rm "${STAGED_AMD64}" || echo "Warning: could not remove ${STAGED_AMD64}"
+          docker buildx imagetools rm "${STAGED_ARM64}" || echo "Warning: could not remove ${STAGED_ARM64}"
+
   create-release:
     name: Create GitHub Release
     needs: [meta, create-manifest]
@@ -328,13 +334,53 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
       - name: Create or update GitHub Release
         uses: actions/github-script@v9
         with:
           script: |
+            const fs = require('node:fs');
             const version = process.env.VERSION;
             const imageName = process.env.IMAGE_NAME;
             const isPrerelease = version.includes('-');
+
+            function extractVersionSection(markdown, targetVersion) {
+              const headingPattern = /^## \[([^\]]+)\] - .+$/gm;
+              let startIndex = -1;
+              let endIndex = markdown.length;
+              let match;
+
+              while ((match = headingPattern.exec(markdown)) !== null) {
+                if (startIndex === -1 && match[1] === targetVersion) {
+                  startIndex = match.index;
+                  continue;
+                }
+                if (startIndex !== -1) {
+                  endIndex = match.index;
+                  break;
+                }
+              }
+
+              if (startIndex === -1) {
+                return null;
+              }
+              return markdown.slice(startIndex, endIndex).trim();
+            }
+
+            let changelogSection = null;
+            try {
+              const changelogText = fs.readFileSync('CHANGELOG.md', 'utf8');
+              changelogSection = extractVersionSection(changelogText, version);
+              if (!changelogSection) {
+                console.log('No matching changelog section found for version ' + version);
+              }
+            } catch (err) {
+              console.log('Could not read CHANGELOG.md: ' + err.message);
+            }
 
             const tags = [
               '- `' + imageName + ':' + version + '` (multi-arch)',
@@ -353,6 +399,9 @@ jobs:
               '',
               '### Available Tags',
               ...tags,
+              '',
+              '### Changelog',
+              changelogSection || '_No matching CHANGELOG entry found for this version._',
               '',
               '**Source:** [WireBuddy Repository](https://github.com/' + context.repo.owner + '/' + context.repo.repo + ')'
             ].join('\n');
