@@ -14,7 +14,7 @@ The Backup module provides:
 - ⏰ **Scheduled Backups** - Automatic daily backups at 03:00 local time
 - 🔄 **One-Click Restore** - Restore from any backup with HMAC verification
 - 📅 **Configurable Retention** - Choose retention period: 1, 7, 14, 21, or 30 days
-- 🔐 **Integrity Protection** - HMAC signing prevents tampering and ensures backups are from the same instance
+- 🔐 **Integrity Protection** - HMAC signing prevents tampering and stays compatible with the configured `WIREBUDDY_SECRET_KEY`
 - ⚠️ **Disk Monitoring** - Warnings when disk space is low
 
 ## What's Included
@@ -107,12 +107,13 @@ WireBuddy monitors available disk space and displays a warning when:
 
 WireBuddy performs several safety checks during restore:
 
-- **HMAC Verification** - Ensures the backup was created by this WireBuddy instance
+- **HMAC Verification** - Ensures the backup matches the configured `WIREBUDDY_SECRET_KEY`; legacy backups from older releases are also accepted when the embedded database snapshot matches the current secret key
 - **Archive Integrity** - Validates the tar.gz structure
 - **Path Traversal Protection** - Prevents malicious file extraction outside data directory
 
-!!! warning "Instance Lock-In"
-    Backups are cryptographically signed with an instance-specific secret. You cannot restore a backup from a different WireBuddy installation.
+!!! warning "Secret Key Compatibility"
+    New backups are signed from `WIREBUDDY_SECRET_KEY`, so they can be restored on a replacement WireBuddy installation configured with the same secret key.
+    Legacy backups created by older releases remain restorable on the original instance and are also accepted when the embedded backup database matches the current secret key.
 
 ### Automatic Rollback
 

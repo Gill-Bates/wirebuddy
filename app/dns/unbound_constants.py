@@ -15,7 +15,6 @@ import os
 import re
 import tempfile
 from collections.abc import Generator
-from functools import lru_cache
 from pathlib import Path
 from typing import IO, TypedDict
 
@@ -32,7 +31,7 @@ class BlocklistMeta(TypedDict):
 	name: str
 	description: str
 	url: str
-	level: str  # Badge label: Moderat, Ausgewogen, Extrem, 18+
+	level: str  # UI badge label
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -72,6 +71,30 @@ BLOCKLIST_REGISTRY: dict[str, BlocklistMeta] = {
 	},
 }
 
+_BLOCKLIST_ID_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
+_ALLOWED_BLOCKLIST_LEVELS: frozenset[str] = frozenset({"Moderat", "Ausgewogen", "Extrem", "18+"})
+
+
+def _validate_blocklist_registry() -> None:
+	"""Validate static blocklist metadata at import time."""
+	for blocklist_id, meta in BLOCKLIST_REGISTRY.items():
+		if not _BLOCKLIST_ID_RE.fullmatch(blocklist_id):
+			raise ValueError(f"Invalid blocklist id: {blocklist_id!r}")
+
+		if not str(meta["name"]).strip():
+			raise ValueError(f"Blocklist {blocklist_id!r} has empty name")
+
+		url = str(meta["url"]).strip()
+		if not url.startswith(("https://", "http://")):
+			raise ValueError(f"Blocklist {blocklist_id!r} has invalid URL")
+
+		level = str(meta["level"]).strip()
+		if level not in _ALLOWED_BLOCKLIST_LEVELS:
+			raise ValueError(f"Blocklist {blocklist_id!r} has invalid level {level!r}")
+
+
+_validate_blocklist_registry()
+
 # Default blocklists for new installations
 # Adult content list ("porn") is available, but disabled by default.
 # HaGeZi Pro ("hagezi") is available, but disabled by default (large list).
@@ -104,32 +127,37 @@ UPSTREAM_ADDR_RE = re.compile(r"^([^@#\s]+)(?:@(\d{1,5}))?#([^\s#]+)$")
 EXEC_TIMEOUT = 5  # seconds
 
 
-@lru_cache(maxsize=1)
 def get_blocklist_file() -> Path:
 	"""Return the path to the blocklist file in data/dns directory."""
 	return get_config().dns_dir / "blocklist.conf"
 
 
-@lru_cache(maxsize=1)
 def get_custom_client_rules_file() -> Path:
 	"""Return the path to generated client-specific custom DNS overrides."""
 	return get_config().dns_dir / "custom-client-rules.conf"
 
 
-@lru_cache(maxsize=1)
 def get_local_data_file() -> Path:
 	"""Return the path to local-data overrides (split-DNS for WG interfaces)."""
 	return get_config().dns_dir / "local-data.conf"
 
 
 def clear_path_caches() -> None:
-	"""Clear cached path getters.
+	"""Compatibility no-op for legacy callers.
 
-	Useful in tests that change configuration fixtures or monkeypatch dns_dir.
+	Path getters are no longer cached in this module.
 	"""
-	get_blocklist_file.cache_clear()
-	get_custom_client_rules_file.cache_clear()
-	get_local_data_file.cache_clear()
+	return None
+
+
+def normalize_content_type(value: str | None) -> str:
+	"""Normalize an HTTP Content-Type to media type only."""
+	return (value or "").split(";", 1)[0].strip().lower()
+
+
+def is_allowed_blocklist_content_type(value: str | None) -> bool:
+	"""Return True if Content-Type media type is accepted for blocklist downloads."""
+	return normalize_content_type(value) in ALLOWED_BLOCKLIST_CONTENT_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -149,13 +177,25 @@ async def run_exec(*cmd: str, timeout: float = EXEC_TIMEOUT) -> tuple[int, str, 
 			stdout=asyncio.subprocess.PIPE,
 			stderr=asyncio.subprocess.PIPE,
 		)
-		stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+
+		try:
+			stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+		except asyncio.TimeoutError:
+			_log.warning("DNS_EXEC_TIMEOUT command timed out after %.1fs: %s", timeout, cmd)
+			with contextlib.suppress(Exception):
+				proc.kill()
+			with contextlib.suppress(Exception):
+				await asyncio.wait_for(proc.communicate(), timeout=2.0)
+			return -1, "", f"Command timed out after {timeout}s"
+
+		stdout_text = stdout.decode("utf-8", errors="replace")
+		stderr_text = stderr.decode("utf-8", errors="replace")
+
 		code = proc.returncode
-		assert code is not None, "returncode should be set after communicate()"
-		return code, stdout.decode(), stderr.decode()
-	except asyncio.TimeoutError:
-		_log.warning("DNS_EXEC_TIMEOUT command timed out after %.1fs: %s", timeout, cmd)
-		return -1, "", f"Command timed out after {timeout}s"
+		if code is None:
+			return -1, stdout_text, "Process return code missing"
+
+		return code, stdout_text, stderr_text
 	except Exception as exc:
 		_log.warning("DNS_EXEC_ERROR command failed: %s – %s", cmd, exc)
 		return -1, "", str(exc)
@@ -171,7 +211,12 @@ async def run_exec(*cmd: str, timeout: float = EXEC_TIMEOUT) -> tuple[int, str, 
 
 
 @contextlib.contextmanager
-def atomic_write(path: Path, encoding: str = "utf-8") -> Generator[IO[str], None, None]:
+def atomic_write(
+	path: Path,
+	encoding: str = "utf-8",
+	*,
+	mode: int = 0o644,
+) -> Generator[IO[str], None, None]:
 	"""Context manager for atomic file writes with fsync.
 	
 	Yields a file handle for writing. On successful exit, the file is
@@ -195,6 +240,7 @@ def atomic_write(path: Path, encoding: str = "utf-8") -> Generator[IO[str], None
 			yield f
 			f.flush()
 			os.fsync(f.fileno())
+		os.chmod(tmp_path, mode)
 		os.replace(tmp_path, path)
 		# Sync parent directory to ensure the rename is durable
 		try:
@@ -216,9 +262,9 @@ def atomic_write(path: Path, encoding: str = "utf-8") -> Generator[IO[str], None
 				os.unlink(tmp_path)
 
 
-def atomic_write_text(path: Path, content: str) -> None:
+def atomic_write_text(path: Path, content: str, *, mode: int = 0o644) -> None:
 	"""Atomically write UTF-8 text to a file (convenience wrapper)."""
-	with atomic_write(path) as f:
+	with atomic_write(path, mode=mode) as f:
 		f.write(content)
 
 
@@ -236,6 +282,8 @@ __all__ = [
 	"BLOCKLIST_MAX_LINES",
 	"BLOCKLIST_MAX_DOMAINS",
 	"ALLOWED_BLOCKLIST_CONTENT_TYPES",
+	"normalize_content_type",
+	"is_allowed_blocklist_content_type",
 	"DOMAIN_LABEL_RE",
 	"HOST_LABEL_RE",
 	"UPSTREAM_ADDR_RE",

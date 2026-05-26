@@ -26,6 +26,7 @@ import signal
 import sqlite3
 import ssl
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime as dt, timedelta
@@ -70,6 +71,9 @@ STATE_FILE = DATA_DIR / "node_state.json"
 # Failure detection thresholds
 _MAX_AUTH_FAILURES = 3  # Consecutive 401 errors before assuming node removal
 _MAX_RECONNECT_DELAY = 60  # Maximum SSE reconnection delay in seconds
+_MAX_DECODED_ENROLLMENT_TOKEN_SIZE = 65_536
+_MAX_SSE_EVENT_SIZE = 64 * 1024
+_MAX_CONFIG_SIZE = 5 * 1024 * 1024
 
 
 
@@ -95,23 +99,34 @@ def _extract_error_detail(response: httpx.Response) -> str:
 		pass
 
 	try:
-		return response.text[:200]
+		body = response.content[:200].decode("utf-8", errors="replace")
+		return body.replace("\n", "\\n").replace("\r", "\\r")
 	except Exception:
 		return ""
 
 
 def _decode_enrollment_token_payload(token_string: str) -> dict[str, Any]:
 	"""Decode the token payload without verifying its HMAC signature."""
+	if len(token_string) > 16384:
+		raise ValueError("Enrollment token too large")
+
 	try:
-		raw = base64.urlsafe_b64decode(token_string.encode("ascii")).decode("utf-8")
+		decoded = base64.urlsafe_b64decode(token_string.encode("ascii"))
+		if len(decoded) > _MAX_DECODED_ENROLLMENT_TOKEN_SIZE:
+			raise ValueError("Decoded enrollment token too large")
+		raw = decoded.decode("utf-8")
 		payload_json, _signature = raw.rsplit(".", 1)
 		payload = json.loads(payload_json)
 	except Exception as exc:
 		raise ValueError("Failed to decode enrollment token") from exc
 
+	if not isinstance(payload, dict):
+		raise ValueError("Enrollment token payload must be a JSON object")
+
 	for field in ("master_url", "node_id", "api_secret"):
-		if field not in payload:
-			raise ValueError(f"Enrollment token missing required field: {field}")
+		value = payload.get(field)
+		if not isinstance(value, str) or not value.strip():
+			raise ValueError(f"Invalid enrollment token field: {field}")
 	return payload
 
 
@@ -135,6 +150,10 @@ def _load_state() -> dict[str, Any] | None:
 	if not STATE_FILE.exists():
 		return None
 
+	mode = STATE_FILE.stat().st_mode & 0o777
+	if mode & 0o077:
+		raise RuntimeError("Insecure permissions on node state file")
+
 	try:
 		state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
 	except (OSError, json.JSONDecodeError) as exc:
@@ -155,17 +174,26 @@ def _load_state() -> dict[str, Any] | None:
 
 def _save_state(state: dict[str, Any]) -> None:
 	"""Persist node runtime state with restrictive permissions."""
-	DATA_DIR.mkdir(parents=True, exist_ok=True)
-	tmp = STATE_FILE.with_suffix(".tmp")
+	DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+	os.chmod(DATA_DIR, 0o700)
+	fd, tmp_name = tempfile.mkstemp(
+		dir=str(DATA_DIR),
+		prefix="node_state.",
+		suffix=".tmp",
+	)
+	tmp = Path(tmp_name)
 	try:
-		fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 		with os.fdopen(fd, "w", encoding="utf-8") as handle:
+			os.chmod(tmp, 0o600)
 			json.dump(state, handle, separators=(",", ":"), sort_keys=True)
 			handle.flush()
 			os.fsync(handle.fileno())
 		os.replace(tmp, STATE_FILE)
 	except Exception:
-		tmp.unlink(missing_ok=True)
+		try:
+			tmp.unlink(missing_ok=True)
+		except OSError as cleanup_exc:
+			_log.warning("Failed to clean up temporary state file %s: %s", tmp, cleanup_exc)
 		raise
 
 
@@ -175,6 +203,8 @@ def _clear_enrollment_state() -> None:
 	Removes node state, certificates, and metrics queue.
 	"""
 	if STATE_FILE.exists():
+		if STATE_FILE.is_symlink():
+			raise RuntimeError(f"Refusing to delete symlink: {STATE_FILE}")
 		STATE_FILE.unlink()
 		_log.info("Removed old node state file")
 
@@ -186,6 +216,8 @@ def _clear_enrollment_state() -> None:
 	for suffix in ("", "-wal", "-shm"):
 		f = queue_file.parent / (queue_file.name + suffix)
 		if f.exists():
+			if f.is_symlink():
+				raise RuntimeError(f"Refusing to delete symlink: {f}")
 			f.unlink()
 			cleared = True
 	if cleared:
@@ -213,6 +245,19 @@ def _create_ssl_context(ca_file: str | None = None) -> tuple[ssl.SSLContext, str
 	# Create SSL context with TLS 1.2 minimum (prevents downgrade attacks)
 	ssl_ctx = ssl.create_default_context()
 	ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+	try:
+		ssl_ctx.set_ciphers("ECDHE+AESGCM:ECDHE+CHACHA20")
+	except ssl.SSLError as exc:
+		_log.warning("Could not apply hardened TLS cipher policy: %s", exc)
+	if hasattr(ssl_ctx, "set_ciphersuites"):
+		try:
+			ssl_ctx.set_ciphersuites(
+				"TLS_AES_256_GCM_SHA384:"
+				"TLS_CHACHA20_POLY1305_SHA256:"
+				"TLS_AES_128_GCM_SHA256"
+			)
+		except ssl.SSLError as exc:
+			_log.warning("Could not apply TLS 1.3 cipher suite policy: %s", exc)
 	
 	if not ca_file:
 		# Use system CA certificates with TLS 1.2+ enforced
@@ -235,13 +280,19 @@ def _create_ssl_context(ca_file: str | None = None) -> tuple[ssl.SSLContext, str
 
 
 
-def _read_last_speedtest_run() -> float | None:
+def _read_last_speedtest_run() -> dt.date | None:
 	"""Read the timestamp of the last speedtest run."""
 	path = DATA_DIR / _SPEEDTEST_LAST_RUN_FILE
 	if not path.exists():
 		return None
 	try:
-		return float(path.read_text().strip())
+		raw = path.read_text(encoding="utf-8").strip()
+		if not raw:
+			return None
+		try:
+			return dt.fromisoformat(raw).date()
+		except ValueError:
+			return dt.fromtimestamp(float(raw)).date()
 	except (ValueError, OSError):
 		return None
 
@@ -250,7 +301,7 @@ def _write_last_speedtest_run(ts: float) -> None:
 	"""Write the timestamp of the last speedtest run."""
 	path = DATA_DIR / _SPEEDTEST_LAST_RUN_FILE
 	try:
-		path.write_text(str(ts))
+		path.write_text(dt.fromtimestamp(ts).date().isoformat(), encoding="utf-8")
 	except OSError as exc:
 		_log.warning("Failed to write speedtest last run timestamp: %s", exc)
 
@@ -275,8 +326,48 @@ async def _send_speedtest_progress(
 			},
 			timeout=5.0,  # Short timeout for progress updates
 		)
+	except Exception as exc:
+		_log.debug("Speedtest progress push failed: %s", exc, exc_info=True)
+
+
+async def _ack_node_command(
+	client: httpx.AsyncClient,
+	master_url: str,
+	api_secret: str,
+	cert_fingerprint: str,
+	command_id: int,
+) -> bool:
+	"""Acknowledge a durable master command after the node handled it."""
+	if command_id <= 0:
+		return False
+	try:
+		resp = await client.post(
+			f"{master_url}/api/nodes/commands/{command_id}/ack",
+			headers=_build_request_headers(api_secret, cert_fingerprint),
+			timeout=5.0,
+		)
+		resp.raise_for_status()
+		return True
+	except Exception as exc:
+		_log.warning("Failed to acknowledge node command %s: %s", command_id, exc)
+		return False
+
+
+def _extract_command_id(data: str) -> int | None:
+	"""Extract a durable command_id from an SSE data payload."""
+	if not data:
+		return None
+	try:
+		parsed = json.loads(data)
 	except Exception:
-		pass  # Best-effort: progress updates are optional, result submission has longer timeout
+		return None
+	if not isinstance(parsed, dict):
+		return None
+	try:
+		command_id = int(parsed.get("command_id") or 0)
+	except (TypeError, ValueError):
+		return None
+	return command_id if command_id > 0 else None
 
 
 async def _run_node_speedtest(
@@ -303,23 +394,44 @@ async def _run_node_speedtest(
 		return False
 
 	# Progress callback to send updates to master
+	progress_task: asyncio.Task[None] | None = None
+	latest_event: dict[str, Any] | None = None
+
 	def progress_callback(event: dict) -> None:
-		"""Send progress update to master (non-blocking)."""
+		"""Send latest progress update to master with bounded in-flight work."""
+		nonlocal progress_task, latest_event
+		latest_event = dict(event)
+		if progress_task is not None and not progress_task.done():
+			return
+
+		async def _drain_progress_updates() -> None:
+			nonlocal latest_event
+			while latest_event is not None:
+				event_to_send = latest_event
+				latest_event = None
+				await _send_speedtest_progress(
+					client,
+					master_url,
+					api_secret,
+					cert_fingerprint,
+					event_to_send,
+				)
 		try:
-			task = asyncio.create_task(
-				_send_speedtest_progress(client, master_url, api_secret, cert_fingerprint, event)
-			)
+			progress_task = asyncio.create_task(_drain_progress_updates())
 
 			def _consume_progress_exception(done_task: asyncio.Task[None]) -> None:
+				nonlocal progress_task
 				if done_task.cancelled():
+					progress_task = None
 					return
 				exc = done_task.exception()
+				progress_task = None
 				if exc is not None:
-					pass  # Best-effort: progress updates are optional
+					_log.debug("Speedtest progress push failed: %s", exc, exc_info=True)
 
-			task.add_done_callback(_consume_progress_exception)
+			progress_task.add_done_callback(_consume_progress_exception)
 		except Exception:
-			pass  # Best-effort: progress updates are optional
+			_log.debug("Speedtest progress callback scheduling failed", exc_info=True)
 	
 	try:
 		async with lease:
@@ -327,12 +439,21 @@ async def _run_node_speedtest(
 				run_speedtest(progress_callback=progress_callback),
 				timeout=_SPEEDTEST_RUN_TIMEOUT_SECONDS
 			)
+			if result.get("status") == "ok":
+				lease.mark_success()
 	except asyncio.TimeoutError:
 		_log.error("NODE_SPEEDTEST timeout after %ds", _SPEEDTEST_RUN_TIMEOUT_SECONDS)
 		result = {"status": "error", "reason": f"Timeout after {_SPEEDTEST_RUN_TIMEOUT_SECONDS}s"}
 	except Exception as exc:
 		_log.error("NODE_SPEEDTEST failed: %s", exc)
 		result = {"status": "error", "reason": str(exc)}
+	finally:
+		if progress_task is not None and not progress_task.done():
+			progress_task.cancel()
+			try:
+				await progress_task
+			except asyncio.CancelledError:
+				pass
 	
 	# Submit result to master
 	try:
@@ -369,19 +490,16 @@ async def _speedtest_scheduler(
 	while not shutdown_event.is_set():
 		try:
 			# Check if we already ran a test today
-			last_run = await asyncio.to_thread(_read_last_speedtest_run)
-			now = time.time()
-			if last_run and (now - last_run) < 20 * 3600:  # Less than 20 hours ago
-				# Already ran recently, wait until next day
-				wait_seconds = _seconds_until_night_window()
-				_log.debug("NODE_SPEEDTEST already ran %.1fh ago, next in %.0fs", (now - last_run) / 3600, wait_seconds)
+			last_run_date = await asyncio.to_thread(_read_last_speedtest_run)
+			today = dt.now().date()
+			wait_seconds = _seconds_until_night_window()
+			if last_run_date == today:
+				_log.debug("NODE_SPEEDTEST already ran today (%s), next in %.0fs", today.isoformat(), wait_seconds)
 			else:
-				wait_seconds = _seconds_until_night_window()
-				hours_since_last = (now - last_run) / 3600 if last_run else None
 				_log.info(
 					"NODE_SPEEDTEST scheduled in %.0f seconds (last run: %s)",
 					wait_seconds,
-					f"{hours_since_last:.1f}h ago" if hours_since_last else "never",
+					last_run_date.isoformat() if last_run_date else "never",
 				)
 			
 			# Wait for the night window, checking for shutdown periodically
@@ -398,8 +516,8 @@ async def _speedtest_scheduler(
 			
 		except asyncio.CancelledError:
 			raise
-		except Exception as exc:
-			_log.warning("NODE_SPEEDTEST scheduler error: %s", exc)
+		except Exception:
+			_log.exception("NODE_SPEEDTEST scheduler error")
 			# Wait a bit before retrying
 			try:
 					if await _interruptible_sleep(300, shutdown_event):
@@ -445,8 +563,8 @@ async def _speedtest_on_demand_handler(
 				await _run_node_speedtest(client, master_url, api_secret, cert_fingerprint)
 		except asyncio.CancelledError:
 			return
-		except Exception as exc:
-			_log.warning("NODE_SPEEDTEST on-demand handler error: %s", exc)
+		except Exception:
+			_log.exception("NODE_SPEEDTEST on-demand handler error")
 			await asyncio.sleep(5)  # Brief delay before continuing
 
 
@@ -459,21 +577,22 @@ class EnrollResult:
 
 
 async def main() -> None:
-	"""Entry point for the node daemon."""
+	"""Primary async entry point for the node daemon."""
 	print_banner_once()
 	logging.basicConfig(
 		level=os.environ.get("LOG_LEVEL", "INFO").upper(),
 		format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
 		datefmt="%Y-%m-%d %H:%M:%S",
 	)
-	for name in ("httpcore", "httpx", "hpack"):
+	for name in ("aiosqlite", "httpcore", "httpx", "hpack"):
 		logging.getLogger(name).setLevel(logging.WARNING)
 	_log.info("WireBuddy Node Daemon starting...")
 
 	# Check firewall configuration
 	await asyncio.to_thread(_check_firewall_dns_rules)
 
-	DATA_DIR.mkdir(parents=True, exist_ok=True)
+	DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+	os.chmod(DATA_DIR, 0o700)
 
 	try:
 		state = _load_state()
@@ -658,9 +777,6 @@ async def main() -> None:
 				# Log first 8 chars of the new secret hash for debugging
 				new_secret_hash = hashlib.sha256(api_secret.encode("utf-8")).hexdigest()
 				_log.info("Switched to session secret (hash=%s...)", new_secret_hash[:8])
-				# Small delay to ensure master has fully committed the session secret
-				# before we attempt authenticated requests with it
-				await asyncio.sleep(SESSION_PROPAGATION_DELAY)
 
 			current_config_version = current_config_version or None
 			node_state["config_version"] = current_config_version
@@ -669,16 +785,24 @@ async def main() -> None:
 			if current_config_version is None:
 				_log.info("Enrollment completed without config payload, fetching full config...")
 				try:
-					current_config_version = await _pull_config(
-						client,
-						master_url,
-						node_id,
-						None,
-						api_secret,
-						cert_fingerprint,
-					)
-				except httpx.HTTPError as exc:
-					_log.warning("Initial config pull after enrollment failed: %s", exc)
+					for attempt in range(2):
+						try:
+							current_config_version = await _pull_config(
+								client,
+								master_url,
+								node_id,
+								None,
+								api_secret,
+								cert_fingerprint,
+							)
+							break
+						except httpx.HTTPStatusError as exc:
+							if attempt == 0 and exc.response.status_code == 401 and session_secret:
+								_log.info("Session secret not ready yet; retrying config pull once")
+								await asyncio.sleep(SESSION_PROPAGATION_DELAY)
+								continue
+							_log.warning("Initial config pull after enrollment failed: %s", exc)
+							break
 				except Exception as exc:
 					_log.exception("Unexpected error during initial config pull: %s", exc)
 				else:
@@ -1045,6 +1169,10 @@ async def _push_heartbeat(
 		data = resp.json()
 		acked_seq = data.get("data", {}).get("acked_seq")
 		if acked_seq is not None:
+			if not isinstance(acked_seq, int):
+				raise RuntimeError("Invalid ACK sequence from master")
+			if pending_count > 0 and acked_seq > metrics_batch["seq_to"]:
+				raise RuntimeError("Invalid ACK sequence from master")
 			deleted = await asyncio.to_thread(ack_up_to_seq, metrics_queue_conn, acked_seq)
 			if deleted > 0:
 				_log.debug("Heartbeat ACK: master confirmed %d metrics (up to seq %d)", deleted, acked_seq)
@@ -1135,25 +1263,37 @@ async def _sse_listener(
 							if line.startswith("event:"):
 								event_type = line[6:].strip()
 							elif line.startswith("data:"):
-								event_buffer.append(line[5:].strip())
+								chunk = line[5:].strip()
+								if sum(len(part) for part in event_buffer) + len(chunk) > _MAX_SSE_EVENT_SIZE:
+									raise RuntimeError("SSE event too large")
+								event_buffer.append(chunk)
 							elif line == "":
 								if event_type and event_buffer:
 									data = "\n".join(event_buffer)
+									command_id = _extract_command_id(data)
 									if event_type == "config_changed":
 										_log.info("Received config_changed event from master")
 										config_changed_event.set()
+										if command_id is not None:
+											await _ack_node_command(sse_client, master_url, api_secret, cert_fingerprint, command_id)
 									elif event_type == "restart_requested":
 										_log.warning("Received restart_requested event from master — initiating graceful shutdown")
+										if command_id is not None:
+											await _ack_node_command(sse_client, master_url, api_secret, cert_fingerprint, command_id)
 										shutdown_event.set()
 										return
 									elif event_type == "node_removed":
 										_log.warning("Received node_removed event from master — clearing state and exiting")
+										if command_id is not None:
+											await _ack_node_command(sse_client, master_url, api_secret, cert_fingerprint, command_id)
 										await asyncio.to_thread(_clear_enrollment_state)
 										shutdown_event.set()
 										return
 									elif event_type == "run_speedtest":
 										_log.info("Received run_speedtest event from master — triggering on-demand speedtest")
 										speedtest_requested_event.set()
+										if command_id is not None:
+											await _ack_node_command(sse_client, master_url, api_secret, cert_fingerprint, command_id)
 								event_type = None
 								event_buffer.clear()
 						
@@ -1228,6 +1368,8 @@ async def _pull_config(
 		params=params,
 	)
 	resp.raise_for_status()
+	if len(resp.content) > _MAX_CONFIG_SIZE:
+		raise RuntimeError("Config payload too large")
 	data = resp.json()
 
 	config = data.get("data")
@@ -1247,14 +1389,14 @@ async def _pull_config(
 def _get_uptime() -> float | None:
 	"""Read system uptime in seconds."""
 	try:
-		with open("/proc/uptime") as f:
+		with open("/proc/uptime", "r", encoding="ascii") as f:
 			return float(f.read().split()[0])
 	except (OSError, ValueError):
 		return None
 
 
 def run() -> None:
-	"""Synchronous entry point for the node daemon."""
+	"""CLI wrapper that owns the event loop for standalone daemon execution."""
 	asyncio.run(main())
 
 

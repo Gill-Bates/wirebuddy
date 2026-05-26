@@ -29,16 +29,22 @@
         vertical-align: baseline;
     }
 
-    .dns-retention-scale, .retention-scale {
+    .dns-retention-scale, .retention-scale,
+    .backup-retention-scale {
         --thumb-size: 16px;
-        --rs-steps: 5; /* Must match the number of tick/label elements; each child needs inline --i: N */
+        --rs-points: 6;
         --rs-thumb-r: calc(var(--thumb-size) / 2);
         position: relative;
         container-type: inline-size;
         container-name: retention-scale;
     }
 
-    .dns-retention-slider, .retention-slider {
+    .backup-retention-scale {
+        --rs-points: 5;
+    }
+
+    .dns-retention-slider, .retention-slider,
+    .backup-retention-slider {
         width: 100%;
         margin: 0;
         margin-bottom: 0;
@@ -49,58 +55,67 @@
     .dns-retention-slider:focus,
     .dns-retention-slider:focus-visible,
     .retention-slider:focus,
-    .retention-slider:focus-visible {
+    .retention-slider:focus-visible,
+    .backup-retention-slider:focus,
+    .backup-retention-slider:focus-visible {
         outline: 2px solid var(--wb-accent-red);
         outline-offset: 2px;
     }
 
     .dns-retention-slider::-webkit-slider-thumb,
-    .retention-slider::-webkit-slider-thumb {
+    .retention-slider::-webkit-slider-thumb,
+    .backup-retention-slider::-webkit-slider-thumb {
         background-color: var(--wb-accent-red);
     }
 
     .dns-retention-slider::-moz-range-thumb,
-    .retention-slider::-moz-range-thumb {
+    .retention-slider::-moz-range-thumb,
+    .backup-retention-slider::-moz-range-thumb {
         background-color: var(--wb-accent-red);
     }
 
     @media (pointer: coarse) {
-        .dns-retention-scale, .retention-scale {
+        .dns-retention-scale, .retention-scale,
+        .backup-retention-scale {
             --thumb-size: 19.2px;
         }
 
         .dns-retention-slider::-webkit-slider-thumb,
-        .retention-slider::-webkit-slider-thumb {
+        .retention-slider::-webkit-slider-thumb,
+        .backup-retention-slider::-webkit-slider-thumb {
             width: 1.2rem;
             height: 1.2rem;
         }
 
         .dns-retention-slider::-moz-range-thumb,
-        .retention-slider::-moz-range-thumb {
+        .retention-slider::-moz-range-thumb,
+        .backup-retention-slider::-moz-range-thumb {
             width: 1.2rem;
             height: 1.2rem;
         }
     }
 
-    .dns-retention-ticks, .retention-ticks {
-        position: relative;
-        height: 6px;
-        margin: -2px var(--rs-thumb-r) 0;
+    .dns-retention-ticks, .retention-ticks,
+    .backup-retention-ticks {
+        display: none;
     }
 
-    .dns-retention-tick, .retention-tick {
-        position: absolute;
-        top: 0;
-        left: calc(var(--i) / var(--rs-steps) * 100%);
-        transform: translateX(-50%);
+    .dns-retention-tick, .retention-tick,
+    .backup-retention-tick {
+        position: static;
+        flex: 0 0 2px;
         width: 2px;
         height: 100%;
         border-radius: 1px;
         background-color: rgba(var(--wb-accent-red-rgb), 0.55);
+        transform: none;
     }
 
-    .dns-retention-labels, .retention-labels {
-        position: relative;
+    .dns-retention-labels, .retention-labels,
+    .backup-retention-labels {
+        display: grid;
+        grid-template-columns: repeat(var(--rs-points), minmax(0, 1fr));
+        align-items: flex-start;
         height: 1.3em;
         margin: 4px var(--rs-thumb-r) 0;
         margin-bottom: 0;
@@ -108,29 +123,35 @@
         pointer-events: none;
     }
 
-    .dns-retention-label, .retention-label {
-        position: absolute;
-        top: 0;
-        left: calc(var(--i) / var(--rs-steps) * 100%);
-        transform: translateX(-50%);
+    .dns-retention-label, .retention-label,
+    .backup-retention-label {
+        position: static;
+        flex: 0 0 auto;
+        justify-self: center;
         font-size: 0.675rem;
         color: var(--bs-secondary-color);
         line-height: 1;
         white-space: nowrap;
+        transform: none;
         transition: opacity 0.2s ease;
     }
 
-    .dns-retention-labels .dns-retention-label:first-child,
-    .retention-labels .retention-label:first-child {
-        transform: translateX(0);
+    .dns-retention-label:first-child,
+    .retention-label:first-child,
+    .backup-retention-label:first-child {
+        justify-self: start;
+        text-align: left;
     }
 
-    .dns-retention-labels .dns-retention-label:last-child,
-    .retention-labels .retention-label:last-child {
-        transform: translateX(-100%);
+    .dns-retention-label:last-child,
+    .retention-label:last-child,
+    .backup-retention-label:last-child {
+        justify-self: end;
+        text-align: right;
     }
 
-    .dns-retention-label-abbr, .retention-label-abbr {
+    .dns-retention-label-abbr, .retention-label-abbr,
+    .backup-retention-label-abbr {
         display: none;
     }
 
@@ -139,7 +160,8 @@
             display: none;
         }
 
-        .dns-retention-label-abbr, .retention-label-abbr {
+        .dns-retention-label-abbr, .retention-label-abbr,
+        .backup-retention-label-abbr {
             display: inline;
         }
 
@@ -148,7 +170,9 @@
         .dns-retention-label:nth-child(5),
         .retention-label:nth-child(2),
         .retention-label:nth-child(4),
-        .retention-label:nth-child(5) {
+        .retention-label:nth-child(5),
+        .backup-retention-label:nth-child(2),
+        .backup-retention-label:nth-child(4) {
             opacity: 0;
             pointer-events: none;
         }
@@ -156,7 +180,8 @@
 
     @container retention-scale (max-width: 180px) {
         .dns-retention-label:nth-child(3),
-        .retention-label:nth-child(3) {
+        .retention-label:nth-child(3),
+        .backup-retention-label:nth-child(3) {
             opacity: 0;
             pointer-events: none;
         }
@@ -180,8 +205,14 @@
         border-color: rgba(148, 163, 184, 0.22);
     }
 
+    #settingsTabs {
+        margin-bottom: 1rem !important; /* Override mb-4 */
+    }
+
     #settingsTabs .nav-link {
         color: var(--bs-secondary-color);
+        padding: 0.35rem 0.75rem;
+        font-size: 0.9rem;
     }
 
     #settingsTabs .nav-link:hover,
@@ -317,6 +348,19 @@
         align-items: center;
         gap: 0.5rem;
         flex-wrap: wrap;
+    }
+
+    .settings-copy-btn {
+        border: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
+
+    .settings-copy-btn:hover,
+    .settings-copy-btn:focus-visible {
+        border: 0 !important;
+        background: rgba(255, 255, 255, 0.08) !important;
+        box-shadow: none !important;
     }
 
     .settings-interface-row {
@@ -457,13 +501,10 @@
         }
     }
 
-
-
-    /* Custom Rules textarea - hide placeholder on mobile */
-    @media (max-width: 767.98px) {
-        .custom-rules-textarea::placeholder {
-            color: transparent;
-        }
+    /* Custom Rules textarea placeholder should look like a subtle watermark */
+    .custom-rules-textarea::placeholder {
+        color: var(--bs-secondary-color);
+        opacity: 0.45;
     }
 
     /* Logging danger spacing */
@@ -508,6 +549,8 @@
 
         #settingsTabs .nav-link {
             white-space: nowrap;
+            padding: 0.3rem 0.6rem;
+            font-size: 0.85rem;
         }
     }
 
@@ -672,16 +715,45 @@
         margin-bottom: 0.35rem;
     }
 
-    /* Logs cards: push delete section to bottom for aligned hairlines */
+    #logs-pane .logs-metrics-row {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: baseline;
+        gap: 0.9rem;
+    }
+
+    #logs-pane .logs-metrics-row-cols-2 {
+        --logs-metric-columns: 2;
+    }
+
+    #logs-pane .logs-metrics-row-cols-3 {
+        --logs-metric-columns: 3;
+    }
+
+    #logs-pane .logs-metrics-row-cols-4 {
+        --logs-metric-columns: 4;
+    }
+
+    #logs-pane .logs-metric-item {
+        flex: 1 1 0;
+        min-width: 0;
+        display: flex;
+        align-items: baseline;
+        gap: 0.35rem;
+        white-space: nowrap;
+    }
+
+    /* Logs cards: keep footer sections compact without forced filler space */
     #logs-pane .card-body {
         display: flex;
         flex-direction: column;
+        gap: 0.75rem;
     }
 
     #logs-pane .metrics-footer {
-        margin-top: auto;
         display: flex;
         flex-direction: column;
+        gap: 0.75rem;
     }
 
     #logs-pane .metrics-footer .retention-scale {
@@ -689,13 +761,13 @@
     }
 
     #logs-pane .metrics-delete hr {
-        margin: 1rem 0;
+        margin: 0.25rem 0 0;
     }
 
     #logs-pane .metrics-delete-inner {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
-        align-items: center;
+        align-items: start;
         gap: 0.75rem;
     }
 
@@ -705,11 +777,12 @@
 
     #logs-pane .metrics-delete-inner .btn {
         flex-shrink: 0;
+        align-self: start;
     }
 
     @media (min-width: 768px) {
         #logs-pane .metrics-delete-copy {
-            min-height: 6rem;
+            min-height: 0;
         }
     }
 

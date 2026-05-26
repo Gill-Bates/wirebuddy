@@ -15,9 +15,7 @@ import shutil
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .unbound_constants import (
 	BLOCKLIST_REGISTRY,
@@ -87,6 +85,82 @@ def _safe_unbound_value(value: str) -> str:
 	return value
 
 
+def _normalize_client_scope(value: str) -> str:
+	"""Normalize and validate client scope as IP network."""
+	raw = _safe_unbound_value(value.strip())
+	try:
+		return str(ipaddress.ip_network(raw, strict=False))
+	except ValueError as exc:
+		raise ValueError(f"invalid client scope: {value!r}") from exc
+
+
+def _normalize_unbound_tag(tag: str) -> str:
+	"""Validate and normalize unbound tag identifiers."""
+	value = _safe_unbound_value(str(tag).strip())
+	if not value or any(c.isspace() for c in value):
+		raise ValueError(f"invalid unbound tag: {tag!r}")
+	return value
+
+
+def _normalize_peer_host_network(value: str) -> str:
+	"""Normalize peer address and require host routes only (/32 or /128)."""
+	network = ipaddress.ip_network(value.strip(), strict=False)
+	expected_prefix = 32 if network.version == 4 else 128
+	if network.prefixlen != expected_prefix:
+		raise ValueError(f"peer address must be host route /{expected_prefix}: {value!r}")
+	return str(network)
+
+
+def _normalize_listen_ips(
+	*,
+	listen_addr: str,
+	listen_addrs_ipv4: list[str] | None,
+	listen_addrs_ipv6: list[str] | None,
+) -> list[str]:
+	"""Validate and return all listen IPs; fail closed when none are valid."""
+	addresses: list[str] = []
+
+	for raw in listen_addrs_ipv4 or []:
+		try:
+			parsed = ipaddress.ip_address(raw.strip())
+			if parsed.version != 4:
+				raise ValueError
+			addresses.append(str(parsed))
+		except ValueError:
+			_log.warning("DNS_CONFIG invalid IPv4 listen address %r, skipping", raw)
+
+	for raw in listen_addrs_ipv6 or []:
+		try:
+			parsed = ipaddress.ip_address(raw.strip())
+			if parsed.version != 6:
+				raise ValueError
+			addresses.append(str(parsed))
+		except ValueError:
+			_log.warning("DNS_CONFIG invalid IPv6 listen address %r, skipping", raw)
+
+	if addresses:
+		return addresses
+
+	if listen_addr in ("0.0.0.0", "127.0.0.1"):
+		raise ValueError("No valid DNS listen address configured")
+
+	try:
+		parsed = ipaddress.ip_address(listen_addr)
+	except ValueError as exc:
+		raise ValueError(f"Invalid listen address: {listen_addr!r}") from exc
+
+	return [str(parsed)]
+
+
+def _ensure_unbound_readable(path: Path) -> None:
+	"""Best-effort file permissions for unbound-readable generated files."""
+	try:
+		path.chmod(0o644)
+		shutil.chown(path, user="unbound", group="unbound")
+	except (OSError, LookupError) as exc:
+		_log.debug("Could not adjust permissions for %s: %s", path, exc)
+
+
 def _auto_num_threads() -> int:
 	"""Choose a sane default thread count.
 	
@@ -107,6 +181,16 @@ def _auto_cache_sizes() -> tuple[str, str]:
 	if mem_mb < 2048:
 		return ("32m", "64m")
 	return ("64m", "128m")
+
+
+def _slabs_for_threads(num_threads: int) -> int:
+	"""Return a power-of-two slab count aligned to worker threads."""
+	if num_threads <= 1:
+		return 1
+	slabs = 1
+	while slabs < num_threads:
+		slabs <<= 1
+	return slabs
 
 
 def is_dnssec_available() -> bool:
@@ -158,8 +242,8 @@ def _validate_upstream_dot(addr: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _resolve_upstream(upstream_dns: list[str] | None) -> list[str]:
-	"""Validate and return upstream DoT addresses, falling back to defaults."""
-	upstream = upstream_dns or _DEFAULT_UPSTREAM_DOT[:]
+	"""Validate and return upstream DoT addresses."""
+	upstream = upstream_dns if upstream_dns is not None else _DEFAULT_UPSTREAM_DOT[:]
 	valid: list[str] = []
 	invalid: list[str] = []
 	for addr in upstream:
@@ -171,20 +255,23 @@ def _resolve_upstream(upstream_dns: list[str] | None) -> list[str]:
 		except Exception:
 			invalid.append(addr)
 			_log.warning("DNS_CONFIG upstream %r dropped (invalid DoT format)", addr)
-	
-	if invalid and not valid:
+
+	if valid:
+		return valid
+
+	if invalid:
 		raise ValueError(f"All upstream DNS entries invalid: {invalid}")
-	if not valid:
-		# All user-provided entries invalid; fall back to defaults
-		_log.warning("DNS_CONFIG all upstream entries invalid, using defaults")
-		valid = [_validate_upstream_dot(addr) for addr in _DEFAULT_UPSTREAM_DOT]
-	return valid
+
+	if upstream_dns is not None:
+		raise ValueError("No upstream DNS entries configured")
+
+	return [_validate_upstream_dot(addr) for addr in _DEFAULT_UPSTREAM_DOT]
 
 
 def generate_config(
 	listen_addr: str = "127.0.0.1",
 	listen_port: int = 53,
-	enable_logging: bool = True,
+	enable_logging: bool = False,
 	upstream_dns: list[str] | None = None,
 	enable_blocklist: bool = True,
 	enable_dnssec: bool = True,
@@ -204,31 +291,11 @@ def generate_config(
 		listen_addrs_ipv6: Optional list of IPv6 addresses to listen on
 		                   (e.g., interface gateway addresses for dual-stack peers).
 	"""
-	# Use explicit list if provided, otherwise fall back to single address
-	ipv4_addrs: list[str] = []
-	if listen_addrs_ipv4:
-		for addr in listen_addrs_ipv4:
-			try:
-				parsed = ipaddress.ip_address(addr.strip())
-				if parsed.version == 4:
-					ipv4_addrs.append(str(parsed))
-			except ValueError:
-				_log.warning("DNS_CONFIG invalid IPv4 listen address %r, skipping", addr)
-	if not ipv4_addrs:
-		# No explicit WireGuard IPs provided - check legacy single address
-		# Host-mode safety: never use 0.0.0.0, and avoid 127.0.0.1 which may conflict
-		# with host-side DNS resolver (systemd-resolved, dnsmasq, etc.)
-		if listen_addr not in ("0.0.0.0", "127.0.0.1"):
-			try:
-				ipaddress.ip_address(listen_addr)
-				ipv4_addrs = [listen_addr]
-			except ValueError as exc:
-				raise ValueError(f"Invalid listen address: {listen_addr!r}") from exc
-		else:
-			# Use link-local address that won't conflict with host services
-			# This ensures Unbound doesn't bind to 0.0.0.0 or system DNS ports
-			ipv4_addrs = ["169.254.53.53"]
-			_log.debug("DNS_CONFIG no WireGuard interface IPs found, binding to %s", ipv4_addrs[0])
+	listen_ips = _normalize_listen_ips(
+		listen_addr=listen_addr,
+		listen_addrs_ipv4=listen_addrs_ipv4,
+		listen_addrs_ipv6=listen_addrs_ipv6,
+	)
 	if not isinstance(listen_port, int):
 		raise TypeError(f"listen_port must be int, got {type(listen_port).__name__}")
 	if not 1 <= listen_port <= 65535:
@@ -245,28 +312,17 @@ def generate_config(
 	# Check if DNSSEC root key is available
 	dnssec_available = is_dnssec_available() and enable_dnssec
 	num_threads = _auto_num_threads()
+	slabs = _slabs_for_threads(num_threads)
 	msg_cache_size, rrset_cache_size = _auto_cache_sizes()
 
-	# Build interface lines (IPv4 + optional IPv6 addresses)
+	# Build interface lines (IPv4 and/or IPv6)
 	# NOTE: Do NOT bind to 127.0.0.1 to avoid conflicts with host DNS
 	# in Docker host network mode. Container DNS is configured via resolv.conf.
-	interface_lines = [f"    interface: {addr}" for addr in ipv4_addrs]
-	validated_v6: list[str] = []
-	if listen_addrs_ipv6:
-		for v6_raw in listen_addrs_ipv6:
-			v6_raw = v6_raw.strip()
-			if not v6_raw:
-				continue
-			try:
-				v6_obj = ipaddress.ip_address(v6_raw)
-				if v6_obj.version != 6:
-					raise ValueError(f"Expected IPv6, got IPv4: {v6_raw!r}")
-				validated_v6.append(str(v6_obj))
-			except ValueError:
-				_log.warning("DNS_CONFIG invalid IPv6 listen address %r, skipping", v6_raw)
-	for v6_addr in validated_v6:
-		interface_lines.append(f"    interface: {v6_addr}")
+	interface_lines = [f"    interface: {addr}" for addr in listen_ips]
 	interface_block = "\n".join(interface_lines)
+
+	blocklist_tags = [_normalize_unbound_tag(tag) for tag in BLOCKLIST_REGISTRY]
+	define_tags = " ".join(blocklist_tags)
 
 	conf = f"""# WireBuddy Unbound Configuration
 # Auto-generated – do not edit manually
@@ -286,23 +342,27 @@ server:
     prefer-ip6: no
 
     # Blocklist tags for per-peer filtering
-    define-tag: "{' '.join(BLOCKLIST_REGISTRY.keys())}"
+	define-tag: "{define_tags}"
 
     # Per-peer tag assignments (generated separately)
     include: {UNBOUND_CONF_DIR / "peer-tags.conf"}
 
     # Performance
     num-threads: {num_threads}
-    msg-cache-slabs: 4
-    rrset-cache-slabs: 4
-    infra-cache-slabs: 4
-    key-cache-slabs: 4
+    msg-cache-slabs: {slabs}
+    rrset-cache-slabs: {slabs}
+    infra-cache-slabs: {slabs}
+    key-cache-slabs: {slabs}
     msg-cache-size: {msg_cache_size}
     rrset-cache-size: {rrset_cache_size}
     cache-min-ttl: {cache_min_ttl_num}
     cache-max-ttl: 86400
     prefetch: yes
     prefetch-key: yes
+    so-reuseport: yes
+    msg-buffer-size: 65552
+    outgoing-num-tcp: 25
+    incoming-num-tcp: 25
 
     # Upstream server selection (round-robin with failover)
     # infra-host-ttl: how long to remember server RTT/status
@@ -341,11 +401,11 @@ server:
     # Query logging
     use-syslog: no
     log-queries: yes
-    log-replies: yes
-    log-tag-queryreply: yes
+	log-replies: no
+	log-tag-queryreply: no
     logfile: /var/log/unbound/queries.log
     log-time-ascii: no
-    verbosity: 4
+	verbosity: 1
 """
 
 	if enable_blocklist:
@@ -419,23 +479,28 @@ def write_config(**kwargs) -> None:
 	blocklist_path = get_blocklist_file()
 	if not blocklist_path.exists():
 		atomic_write_text(blocklist_path, "# Empty blocklist - will be populated on update\n")
+	_ensure_unbound_readable(blocklist_path)
 
 	# Ensure custom client rule override file exists (even if empty)
 	custom_client_rules_path = get_custom_client_rules_file()
 	if not custom_client_rules_path.exists():
 		atomic_write_text(custom_client_rules_path, "# Client-specific custom DNS overrides - auto-generated\n")
+	_ensure_unbound_readable(custom_client_rules_path)
 	
 	# Ensure peer-tags.conf exists (even if empty)
 	peer_tags_path = UNBOUND_CONF_DIR / "peer-tags.conf"
 	if not peer_tags_path.exists():
 		atomic_write_text(peer_tags_path, "# Per-peer blocklist tags - auto-generated\n")
+	_ensure_unbound_readable(peer_tags_path)
 
 	# Ensure local-data.conf exists (even if empty)
 	local_data_path = get_local_data_file()
 	if not local_data_path.exists():
 		atomic_write_text(local_data_path, "# Split-DNS local-data overrides - auto-generated\n")
+	_ensure_unbound_readable(local_data_path)
 
 	atomic_write_text(UNBOUND_CONF, content)
+	_ensure_unbound_readable(UNBOUND_CONF)
 	_log.info("DNS_CONFIG written to %s", UNBOUND_CONF)
 
 
@@ -454,7 +519,7 @@ def write_custom_client_rules(rules: list["ParsedRule"]) -> None:
 		if rule.client_scope is None or rule.domain is None:
 			continue
 		try:
-			client_scope = _safe_unbound_value(str(rule.client_scope).strip())
+			client_scope = _normalize_client_scope(str(rule.client_scope))
 			domain = _safe_unbound_value(_normalize_hostname(str(rule.domain)))
 		except ValueError as exc:
 			_log.warning("DNS_CUSTOM_CLIENT_RULES dropped unsafe rule: %s", exc)
@@ -486,6 +551,7 @@ def write_custom_client_rules(rules: list["ParsedRule"]) -> None:
 		lines.append("# (none)")
 
 	atomic_write_text(path, "\n".join(lines) + "\n")
+	_ensure_unbound_readable(path)
 	_log.info("DNS_CUSTOM_CLIENT_RULES wrote %d overrides to %s", len(effective), path)
 
 
@@ -500,13 +566,14 @@ def write_peer_tags(peers: list[dict]) -> None:
 	UNBOUND_CONF_DIR.mkdir(parents=True, exist_ok=True)
 	peer_tags_path = UNBOUND_CONF_DIR / "peer-tags.conf"
 	
-	all_tags = list(BLOCKLIST_REGISTRY.keys())
+	all_tags = [_normalize_unbound_tag(tag) for tag in BLOCKLIST_REGISTRY]
 	lines = [
 		"# Per-peer blocklist tag assignments",
 		f"# Auto-generated – {datetime.now(timezone.utc).isoformat()}",
 		"# IMPORTANT: This file MUST be included inside the server: block",
 		"",
 	]
+	entry_count = 0
 	
 	for peer in peers:
 		peer_address = peer.get("peer_address")
@@ -522,7 +589,14 @@ def write_peer_tags(peers: list[dict]) -> None:
 			tags = all_tags
 		else:
 			# Filter to only valid tags
-			tags = [bid for bid in blocklist_ids if bid in BLOCKLIST_REGISTRY]
+			tags = []
+			for bid in blocklist_ids:
+				try:
+					normalized = _normalize_unbound_tag(str(bid))
+				except ValueError:
+					continue
+				if normalized in BLOCKLIST_REGISTRY:
+					tags.append(normalized)
 		
 		if not tags:
 			continue
@@ -533,14 +607,16 @@ def write_peer_tags(peers: list[dict]) -> None:
 			if not addr:
 				continue
 			try:
-				network = ipaddress.ip_network(addr, strict=False)
+				network = _normalize_peer_host_network(addr)
 			except ValueError:
-				_log.warning("DNS_PEER_TAGS invalid address %r, skipping", addr)
+				_log.warning("DNS_PEER_TAGS invalid peer host address %r, skipping", addr)
 				continue
 			lines.append(f'    access-control-tag: {network} "{" ".join(tags)}"')
+			entry_count += 1
 	
 	atomic_write_text(peer_tags_path, "\n".join(lines) + "\n")
-	_log.info("DNS_PEER_TAGS written %d entries to %s", len([l for l in lines if l.startswith("    access")]), peer_tags_path)
+	_ensure_unbound_readable(peer_tags_path)
+	_log.info("DNS_PEER_TAGS written %d entries to %s", entry_count, peer_tags_path)
 
 
 def write_local_data_overrides(interfaces: Sequence[Any], fqdn: str | None) -> int:
@@ -574,6 +650,7 @@ def write_local_data_overrides(interfaces: Sequence[Any], fqdn: str | None) -> i
 	if not fqdn_clean:
 		lines.append("# No wg_fqdn configured - no overrides generated")
 		atomic_write_text(path, "\n".join(lines) + "\n")
+		_ensure_unbound_readable(path)
 		_log.debug("DNS_LOCAL_DATA no fqdn configured, wrote empty file to %s", path)
 		return 0
 
@@ -581,6 +658,7 @@ def write_local_data_overrides(interfaces: Sequence[Any], fqdn: str | None) -> i
 	if not all(HOST_LABEL_RE.fullmatch(label) for label in fqdn_clean.split(".")):
 		lines.append(f"# Invalid FQDN format: {fqdn_clean!r}")
 		atomic_write_text(path, "\n".join(lines) + "\n")
+		_ensure_unbound_readable(path)
 		_log.warning("DNS_LOCAL_DATA invalid fqdn %r, wrote empty file", fqdn_clean)
 		return 0
 
@@ -589,6 +667,7 @@ def write_local_data_overrides(interfaces: Sequence[Any], fqdn: str | None) -> i
 	except ValueError:
 		lines.append(f"# Unsafe or invalid FQDN format: {fqdn_clean!r}")
 		atomic_write_text(path, "\n".join(lines) + "\n")
+		_ensure_unbound_readable(path)
 		_log.warning("DNS_LOCAL_DATA unsafe fqdn %r, wrote empty file", fqdn_clean)
 		return 0
 
@@ -633,6 +712,7 @@ def write_local_data_overrides(interfaces: Sequence[Any], fqdn: str | None) -> i
 		lines.append("# No interface addresses found - no overrides generated")
 
 	atomic_write_text(path, "\n".join(lines) + "\n")
+	_ensure_unbound_readable(path)
 	_log.debug("DNS_LOCAL_DATA wrote %d records for %s to %s", record_count, fqdn_clean, path)
 	return record_count
 

@@ -5,12 +5,20 @@ services:
     restart: always
     stop_grace_period: 20s
     network_mode: host
+    cap_drop:
+      - ALL
     cap_add:
       - NET_ADMIN
     environment:
       LOG_LEVEL: INFO # DEBUG
       TZ: Etc/UTC
       WIREBUDDY_SECRET_KEY: "<YOUR_SECRET_KEY>" # Generate with: head -c 32 /dev/urandom | base64
+      # Optional: override the default bootstrap admin password on first boot
+      # WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD: "change-me-now"
+      WIREBUDDY_TRUST_PROXY_HEADERS: "1"
+      # If Caddy/nginx does not connect from 127.0.0.1, set its IP or CIDR here.
+      # FORWARDED_ALLOW_IPS: "127.0.0.1,172.18.0.0/16"
+      WIREBUDDY_DATA_DIR: /app/data
       WIREBUDDY_SKIP_NETWORK_CHECK: "1"
     logging:
       driver: json-file
@@ -23,6 +31,7 @@ services:
       - /dev/net/tun:/dev/net/tun
     volumes:
       - ./data:/app/data
+      
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--max-time", "5", "http://127.0.0.1:${WIREBUDDY_PORT:-8000}/health"]
       interval: 30s

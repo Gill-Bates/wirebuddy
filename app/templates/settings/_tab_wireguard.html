@@ -17,7 +17,7 @@
                                 tabindex="-1"
                                 aria-hidden="true"
                                 role="presentation"
-                                style="position:absolute;left:-10000px;width:1px;height:1px;opacity:0;pointer-events:none;"
+                                class="visually-hidden"
                             >
                             <div class="mb-3">
                                 <label for="wg-mtu" class="form-label">MTU</label>
@@ -42,9 +42,9 @@
                             </div>
                             <div class="mb-3 d-none" id="psk-details">
                                 <div class="d-flex justify-content-between align-items-center mb-2">
-                                    <label class="form-label mb-0">Global PresharedKey</label>
+                                    <label class="form-label mb-0" for="wg-psk-display">Global PresharedKey</label>
                                     <button type="button" class="btn btn-sm btn-warning" id="psk-generate-btn">
-                                        <span class="material-icons" style="font-size: 16px;">refresh</span>
+                                        <span class="material-icons icon-sm" aria-hidden="true">refresh</span>
                                         Regenerate PSK
                                     </button>
                                 </div>
@@ -52,7 +52,8 @@
                                     <input type="password" class="form-control font-monospace" id="wg-psk-display"
                                         name="wireguard_psk_manual" value="" placeholder="No key generated yet"
                                         autocomplete="new-password" spellcheck="false" autocapitalize="off"
-                                        autocorrect="off" data-lpignore="true" data-1p-ignore="true"{% if not user['is_admin'] %} readonly{% endif %}>
+                                        autocorrect="off" data-lpignore="true" data-1p-ignore="true"
+                                        aria-label="Global PresharedKey"{% if not user['is_admin'] %} readonly{% endif %}>
                                     <button class="btn btn-outline-secondary btn-icon" type="button" id="psk-copy-btn"
                                         title="Copy to Clipboard">
                                         <span class="material-icons">content_copy</span>
@@ -75,7 +76,7 @@
                         <h3 class="h5 mb-0">Interfaces</h3>
                         <div class="settings-header-actions">
                             <button class="btn btn-sm btn-primary" id="btn-open-create-interface-modal"{% if user['is_admin'] %} data-bs-toggle="modal" data-bs-target="#ifaceModal"{% endif %}>
-                                <span class="material-icons align-middle me-1" style="font-size: 18px;">add_circle</span>Add Interface
+                                <span class="material-icons icon-md align-middle me-1" aria-hidden="true">add_circle</span>Add Interface
                             </button>
                         </div>
                     </div>
@@ -90,8 +91,8 @@
                 <div class="card mb-3">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="h5 mb-0">Traffic Analysis</h3>
-                        <span id="traffic-requirements-badge" class="badge bg-secondary" style="display: none;">
-                            <span class="material-icons align-middle me-1" style="font-size: 14px;">info</span>
+                        <span id="traffic-requirements-badge" class="badge bg-secondary" hidden>
+                            <span class="material-icons icon-xs align-middle me-1" aria-hidden="true">info</span>
                             <span class="badge-text">Checking...</span>
                         </span>
                     </div>

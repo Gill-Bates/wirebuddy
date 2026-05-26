@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import os
+
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -17,6 +19,7 @@ RATE_LIMIT_AUTH = "5/minute"       # Strict limit for login attempts
 RATE_LIMIT_HEAVY = "10/minute"     # For expensive operations
 RATE_LIMIT_API = "120/minute"      # General API operations
 RATE_LIMIT_CRITICAL = "3/minute"   # For sensitive operations like PSK reveal
+RATE_LIMIT_UI_HEAVY = os.getenv("WIREBUDDY_RATE_LIMIT_UI_HEAVY", "60/minute")
 
 # Global limiter instance
 limiter = Limiter(key_func=get_remote_address)
@@ -26,6 +29,7 @@ __all__ = [
 	"RATE_LIMIT_CRITICAL",
 	"RATE_LIMIT_DEFAULT",
 	"RATE_LIMIT_HEAVY",
+	"RATE_LIMIT_UI_HEAVY",
 	"RATE_LIMIT_API",
 	"limiter",
 ]

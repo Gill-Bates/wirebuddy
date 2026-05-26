@@ -26,8 +26,8 @@ def format_sse_event(event_type: str, payload: Any, *, ensure_ascii: bool = Fals
 
 
 def format_sse_keepalive() -> str:
-	"""Return a comment frame that keeps SSE connections alive."""
-	return ": keepalive\n\n"
+	"""Return a lightweight SSE ping frame that keeps connections alive."""
+	return format_sse_event("ping", {})
 
 
 def format_sse_close(reason: str = "server_shutdown") -> str:

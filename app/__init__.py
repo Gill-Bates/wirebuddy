@@ -9,11 +9,12 @@
 from __future__ import annotations
 
 from typing import Any
+from fastapi import FastAPI
 
 __all__ = ["create_app"]
 
 
-def create_app(*args: Any, **kwargs: Any):
+def create_app(*args: Any, **kwargs: Any) -> FastAPI:
 	"""Lazily import the FastAPI app factory.
 
 	This keeps lightweight modules importable in tests and utility scripts

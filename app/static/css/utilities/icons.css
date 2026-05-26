@@ -1,0 +1,62 @@
+/**
+ * WireBuddy Icon Size Utilities
+ * =============================
+ * Replaces inline style="font-size: Xpx" on material icons
+ */
+
+/* Base icon alignment - applies to all material-icons */
+.material-icons {
+    vertical-align: middle;
+}
+
+/* Icon size modifiers */
+.icon-xs {
+    font-size: 14px !important;
+}
+
+.icon-sm {
+    font-size: 16px !important;
+}
+
+.icon-md {
+    font-size: 18px !important;
+}
+
+.icon-lg {
+    font-size: 24px !important;
+}
+
+.icon-xl {
+    font-size: 32px !important;
+}
+
+.icon-xxl {
+    font-size: 48px !important;
+}
+
+.icon-3x {
+    font-size: 3rem !important;
+}
+
+.icon-4x {
+    font-size: 64px !important;
+}
+
+/* Icon alignment helpers */
+.icon-baseline {
+    vertical-align: text-bottom;
+}
+
+/* External link icon (commonly used) */
+.icon-external {
+    font-size: 14px;
+    margin-left: 4px;
+    opacity: 0.6;
+}
+
+/* Help icon (commonly used in forms) */
+.icon-help {
+    font-size: 16px;
+    vertical-align: text-bottom;
+    cursor: help;
+}

@@ -55,10 +55,12 @@
 
     .dashboard-bandwidth-main {
         line-height: 1.1;
+        white-space: nowrap;
     }
 
     .dashboard-bandwidth-sub {
         line-height: 1.2;
+        white-space: nowrap;
     }
 
     .dashboard-stats-row .wb-kpi-card {
@@ -77,7 +79,7 @@
         min-width: 0;
     }
 
-    .dashboard-stats-row .wb-kpi-card .card-body > .d-flex {
+    .dashboard-stats-row .wb-kpi-card .card-body>.d-flex {
         width: 100%;
         min-height: 100%;
     }
@@ -112,38 +114,42 @@
         font-weight: 600;
     }
 
+    .dashboard-metric-prefix,
+    .dashboard-metric-value,
+    .dashboard-metric-unit {
+        font-variant-numeric: tabular-nums;
+    }
+
+    .dashboard-metric-value {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .dashboard-metric-unit {
+        font-size: 0.78em;
+        opacity: 0.85;
+        white-space: nowrap;
+    }
+
+    .network-rate,
+    .network-rate-inline {
+        font-variant-numeric: tabular-nums;
+    }
+
+    .network-rate .dashboard-metric-value {
+        font-weight: 700;
+    }
+
+    .network-rate-inline .dashboard-metric-unit {
+        font-size: 0.8em;
+    }
+
     .speedtest-chart-wrap {
         position: relative;
         height: 100%;
         min-height: 180px;
-    }
-
-/* ─── EMPTY STATE (ECHT ZENTRIERT) ─────────────────────────── */
-    .chart-empty-state {
-        position: absolute;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    .chart-empty-state > * {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-    }
-
-    .chart-empty-state .material-icons {
-        font-size: 34px;
-        margin-bottom: 4px;
-        line-height: 1;
-        display: block;
-    }
-
-    .chart-empty-state-text {
-        font-size: 0.85rem;
-        opacity: 0.7;
     }
 
     .speedtest-last-icon {
@@ -159,11 +165,12 @@
     }
 
     /* Prevent grid children from overflowing horizontally */
-    .dashboard-main-grid > * {
+    .dashboard-main-grid>* {
         min-width: 0;
     }
 
     @media (min-width: 1200px) {
+
         /* Dashboard page fills viewport — no scroll on desktop */
         .dashboard-page {
             display: flex;
@@ -173,7 +180,7 @@
         }
 
         /* Header stays at natural height, unaffected by scale */
-        .dashboard-page > .wb-page-header {
+        .dashboard-page>.wb-page-header {
             flex-shrink: 0;
         }
 
@@ -186,7 +193,7 @@
         }
 
         /* KPI row stays at natural height */
-        .dashboard-page-body > .row:first-of-type {
+        .dashboard-page-body>.row:first-of-type {
             flex-shrink: 0;
         }
 
@@ -205,7 +212,8 @@
         /* Map column spans full grid height */
         .dashboard-map-col {
             grid-column: 1;
-            grid-row: 1 / 4; /* spannt alle 3 Zeilen */
+            grid-row: 1 / 4;
+            /* spannt alle 3 Zeilen */
             min-height: 0;
         }
 
@@ -231,7 +239,8 @@
 
         #peer-map {
             height: 100%;
-            min-height: 500px; /* 🔥 Map sichtbar größer */
+            min-height: 500px;
+            /* 🔥 Map sichtbar größer */
         }
 
         /* Speedtest: compact, fixed height */
@@ -244,7 +253,8 @@
 
         .dashboard-speedtest-col .card {
             flex: 1 1 auto;
-            min-height: 260px; /* 🔥 höher */
+            min-height: 260px;
+            /* 🔥 höher */
         }
 
         .dashboard-speedtest-col .speedtest-chart-wrap {
@@ -263,7 +273,8 @@
         /* Recent Peer Activity: fills remaining height, scrolls */
         .dashboard-recent-peers-col {
             grid-column: 2;
-            grid-row: 2 / 4; /* spannt Zeile 2 + 3 */
+            grid-row: 2 / 4;
+            /* spannt Zeile 2 + 3 */
             min-height: 0;
             display: flex;
         }
@@ -290,6 +301,8 @@
         display: flex;
         align-items: center;
         gap: 0.35rem;
+        font-size: 0.72rem;
+        line-height: 1.1;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -302,15 +315,18 @@
     }
 
     .recent-peer-subline .peer-ip-text {
+        display: inline-block;
+        max-width: 100%;
         overflow: hidden;
         text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .recent-peers-card .card-body {
         min-height: 0;
         overflow-y: auto;
         overflow-x: hidden;
-        padding-bottom: 1rem;
+        padding: 0;
         display: flex;
     }
 
@@ -319,10 +335,21 @@
         flex-direction: column;
         align-items: stretch;
         justify-content: flex-start;
+        width: 100%;
         min-width: 0;
         min-height: 0;
-        overflow-y: auto;
         flex: 1;
+    }
+
+    #recent-peers>.chart-empty-state,
+    #recent-peers>.text-center {
+        width: 100%;
+        margin-inline: auto;
+    }
+
+    #recent-peers>.chart-empty-state {
+        flex: 1 0 auto;
+        align-self: stretch;
     }
 
     /* Ensure inner containers don't force overflow */
@@ -332,12 +359,51 @@
 
     #recent-peers .peer-row-clickable {
         cursor: pointer;
+        position: relative;
+        display: block;
         transition: background-color 0.15s ease;
+        width: 100%;
+        box-sizing: border-box;
+        min-width: 0;
+        padding: 0.55rem 1rem;
+        border-radius: 0.5rem;
+    }
+
+    #recent-peers .peer-row-clickable::after {
+        content: '';
+        position: absolute;
+        left: 1rem;
+        right: 1rem;
+        bottom: 0;
+        height: 1px;
+        background-color: var(--bs-border-color-translucent);
+        opacity: 0.45;
+    }
+
+    #recent-peers .peer-row-clickable:last-child::after {
+        display: none;
+    }
+
+    #recent-peers .peer-row-clickable>div,
+    #recent-peers .peer-row-clickable .d-flex {
+        min-width: 0;
         width: 100%;
     }
 
+    #recent-peers .peer-row-clickable strong {
+        font-size: 0.92rem;
+        line-height: 1.2;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    #recent-peers .peer-row-clickable .badge {
+        font-size: 0.68rem;
+    }
+
     #recent-peers .peer-row-clickable:hover {
-        background-color: var(--bs-tertiary-bg, rgba(0,0,0,0.04));
+        background-color: var(--bs-tertiary-bg, rgba(0, 0, 0, 0.04));
     }
 
 
@@ -347,7 +413,8 @@
         }
 
         .recent-peers-card .card-body {
-            max-height: 400px;
+            max-height: none;
+            overflow: visible;
         }
     }
 
@@ -368,7 +435,7 @@
 
     @media (max-width: 767.98px) {
         #peer-map {
-            height: 320px;
+            height: 300px;
         }
 
         .dashboard-traffic-metric .dashboard-metric-unit {
@@ -380,7 +447,13 @@
         }
 
         .recent-peers-card .card-body {
-            max-height: 350px;
+            max-height: none;
+            overflow: visible;
+        }
+
+        #recent-peers {
+            overflow-y: visible;
+            flex: none;
         }
 
         .speedtest-card {
@@ -389,8 +462,45 @@
     }
 
     @media (max-width: 575.98px) {
+        #peer-map {
+            height: 260px;
+        }
+
+        .dashboard-kpi-grid {
+            row-gap: 0.55rem;
+            column-gap: 0.55rem;
+        }
+
+        .dashboard-kpi-tile {
+            min-width: 0;
+        }
+
         .dashboard-stats-row .wb-kpi-card {
-            min-height: 124px;
+            min-height: 90px;
+        }
+
+        .dashboard-stats-row .wb-kpi-card .card-body {
+            padding: 0.75rem;
+        }
+
+        .dashboard-stats-row .wb-kpi-card .wb-kpi-value,
+        .dashboard-stats-row .wb-kpi-card .h3.wb-kpi-value {
+            font-size: 1.2rem !important;
+            line-height: 1.15;
+        }
+
+        .dashboard-bandwidth {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+        }
+
+        .dashboard-bandwidth-main.wb-kpi-value {
+            font-size: 1.2rem !important;
+        }
+
+        .dashboard-bandwidth-sub {
+            font-size: 0.78rem !important;
         }
 
         .dashboard-header {
@@ -406,6 +516,39 @@
         #recent-peers .peer-row-clickable {
             padding-top: 0.75rem;
             padding-bottom: 0.75rem;
+        }
+
+        .network-gauges-grid {
+            display: flex !important;
+            flex-wrap: nowrap !important;
+            gap: 0 !important;
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
+            padding-bottom: 0.35rem !important;
+            scroll-snap-type: x mandatory !important;
+            scroll-behavior: smooth;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior-x: contain;
+        }
+
+        .network-gauges-grid>.text-center {
+            flex: 0 0 100%;
+            min-width: 100%;
+        }
+
+        .network-item,
+        .network-item:only-child {
+            width: 100% !important;
+            min-width: 100% !important;
+            flex: 0 0 100% !important;
+            min-height: 8.4rem;
+            padding: 0.65rem;
+            scroll-snap-align: start;
+            scroll-snap-stop: always;
+        }
+
+        .network-pagination {
+            display: flex !important;
         }
 
     }
@@ -467,6 +610,7 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
+
         .pulse-marker,
         .pulse-marker.connected {
             animation: none;
@@ -479,6 +623,7 @@
         font-size: 0.875rem;
         line-height: 1.4;
     }
+
     .map-popup-header {
         display: flex;
         align-items: center;
@@ -488,23 +633,28 @@
         padding-bottom: 0.4rem;
         border-bottom: 1px solid var(--bs-border-color);
     }
+
     .map-popup-header strong {
         font-size: 0.95rem;
     }
+
     .map-popup-header .badge {
         font-size: 0.7rem;
         padding: 0.25em 0.5em;
     }
+
     .map-popup-location {
         display: flex;
         align-items: center;
         gap: 0.25rem;
         margin-bottom: 0.25rem;
     }
+
     .map-popup-location .material-icons {
         font-size: 1rem;
         color: var(--bs-primary);
     }
+
     .map-popup-meta,
     .map-popup-asn,
     .map-popup-count {
@@ -525,8 +675,14 @@
     }
 
     @media (max-width: 575.98px) {
-        .network-gauges-grid {
-            grid-template-columns: 1fr;
+        .network-sparkline {
+            width: 100% !important;
+            height: 72px;
+        }
+
+        .network-item-rates {
+            flex-wrap: nowrap;
+            gap: 0.5rem;
         }
     }
 
@@ -566,13 +722,22 @@
 
     .network-item-name {
         font-weight: 700;
-        color: var(--bs-body-color);
+        color: var(--bs-emphasis-color, var(--bs-body-color));
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .network-item-total {
         font-weight: 800;
         font-size: 0.9rem;
-        color: var(--bs-body-color);
+        color: var(--bs-emphasis-color, var(--bs-body-color));
+        min-width: 0;
+        max-width: 62%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .network-sparkline {
@@ -583,17 +748,18 @@
     }
 
     .network-item-bar {
+        display: block;
         height: 6px;
-        background: var(--wb-ni-bar-bg);
-        border-radius: 999px;
         overflow: hidden;
     }
 
+    .network-item-bar-bg {
+        fill: var(--wb-ni-bar-bg);
+    }
+
     .network-item-bar-fill {
-        height: 100%;
-        width: 0%;
-        background: var(--wb-accent-red, #ff6384);
-        transition: width 0.2s linear;
+        fill: var(--wb-accent-red, #ff6384);
+        transition: opacity 0.2s linear;
     }
 
     .network-item-rates {
@@ -603,20 +769,27 @@
         color: var(--bs-secondary-color);
     }
 
+    .network-item-rates span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
     .network-item .rx {
-        color: var(--wb-danger-strong, #b02a37);
+        color: #8f1d36;
     }
 
     [data-bs-theme="dark"] .network-item .rx {
-        color: var(--wb-danger-strong, #ff9cab);
+        color: #ffb1bd;
     }
 
     .network-item .tx {
-        color: var(--wb-info-strong, #0a58ca);
+        color: #1f5fbf;
     }
 
     [data-bs-theme="dark"] .network-item .tx {
-        color: var(--wb-info-strong, #6edff6);
+        color: #8bc8ff;
     }
 
     /* Active interfaces highlight */
@@ -624,23 +797,169 @@
         border-color: var(--wb-ni-border-active);
     }
 
-/* ─── KPI row spacing only (fix uneven vertical gaps) ─────────── */
-.dashboard-stats-row {
-    --bs-gutter-x: var(--wb-space-3);
-    --bs-gutter-y: var(--wb-space-3);
-    margin-bottom: var(--wb-space-3) !important;
-}
-
-/* CSS Grid uses gap directly */
-.dashboard-main-grid {
-    gap: var(--wb-space-3); /* single source of truth for grid spacing */
-}
-
-/* ─── Desktop Density Scaling (Dashboard only) ────────────────── */
-@media (min-width: 992px) {
-    .dashboard-page-body {
-        transform: scale(0.8);
-        transform-origin: top left;
-        width: 125%;
+    .network-pagination {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.45rem;
+        margin-top: 0.45rem;
     }
-}
+
+    .network-page-dot {
+        width: 7px;
+        height: 7px;
+        min-width: 7px;
+        min-height: 7px;
+        flex: 0 0 7px;
+        display: inline-block;
+        line-height: 0;
+        appearance: none;
+        -webkit-appearance: none;
+        border: 0;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.35);
+        opacity: 0.75;
+        transition: transform 0.15s ease, opacity 0.15s ease, background-color 0.15s ease;
+        cursor: pointer;
+        padding: 0;
+    }
+
+    .network-page-dot.active,
+    .network-page-dot[aria-current="true"] {
+        background: var(--wb-primary, #88171a);
+        opacity: 1;
+        transform: scale(1.18);
+    }
+
+    /* ─── KPI row spacing only (fix uneven vertical gaps) ─────────── */
+    .dashboard-stats-row {
+        --bs-gutter-x: var(--wb-space-3);
+        --bs-gutter-y: var(--wb-space-3);
+        margin-bottom: var(--wb-space-3) !important;
+    }
+
+    /* CSS Grid uses gap directly */
+    .dashboard-main-grid {
+        gap: var(--wb-space-3);
+        /* single source of truth for grid spacing */
+    }
+
+    /* ─── Dashboard KPI Tiles: stable 2x2 mobile grid ───────────── */
+
+    .dashboard-kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem;
+        width: 100%;
+        min-width: 0;
+    }
+
+    .dashboard-kpi-tile {
+        min-width: 0;
+    }
+
+    .dashboard-kpi-tile .wb-kpi-card {
+        height: 100%;
+        min-width: 0;
+        overflow: hidden;
+    }
+
+    .dashboard-kpi-tile .wb-kpi-card .card-body {
+        min-width: 0;
+    }
+
+    .dashboard-kpi-tile .wb-kpi-card .card-body>.d-flex {
+        min-width: 0;
+    }
+
+    .dashboard-kpi-tile .flex-grow-1,
+    .dashboard-kpi-tile .wb-kpi-custom-content,
+    .dashboard-kpi-tile .dashboard-bandwidth {
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .dashboard-kpi-tile .wb-kpi-label {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .dashboard-kpi-tile .wb-kpi-value,
+    .dashboard-kpi-tile .h3.wb-kpi-value {
+        max-width: 100%;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .dashboard-kpi-tile .dashboard-bandwidth-main,
+    .dashboard-kpi-tile .dashboard-bandwidth-sub,
+    .dashboard-kpi-tile .dashboard-traffic-metric {
+        min-width: 0;
+        max-width: 100%;
+        display: flex;
+        align-items: baseline;
+        gap: 0.25rem;
+        white-space: nowrap;
+        overflow: hidden;
+    }
+
+    .dashboard-kpi-tile .dashboard-metric-prefix {
+        flex: 0 0 auto;
+        font-weight: 700;
+    }
+
+    .dashboard-kpi-tile .dashboard-metric-value {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .dashboard-kpi-tile .dashboard-metric-unit {
+        flex: 0 0 auto;
+        font-size: 0.72em;
+        color: var(--bs-secondary-color);
+    }
+
+    @media (max-width: 575.98px) {
+        .dashboard-kpi-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            gap: 0.55rem;
+        }
+
+        .dashboard-kpi-tile .wb-kpi-card {
+            min-height: 7.2rem;
+            border-radius: 1rem;
+        }
+
+        .dashboard-kpi-tile .wb-kpi-card .card-body {
+            padding: 0.7rem;
+        }
+
+        .dashboard-kpi-tile .wb-kpi-card .card-body>.d-flex {
+            gap: 0.55rem !important;
+        }
+
+        .dashboard-kpi-tile .wb-kpi-icon {
+            font-size: 1.35rem;
+        }
+
+        .dashboard-kpi-tile .wb-kpi-label {
+            font-size: 0.68rem;
+            line-height: 1.1;
+        }
+
+        .dashboard-kpi-tile .wb-kpi-value,
+        .dashboard-kpi-tile .h3.wb-kpi-value {
+            font-size: clamp(1rem, 5vw, 1.35rem) !important;
+            line-height: 1.05;
+        }
+
+        .dashboard-kpi-tile .dashboard-bandwidth-sub {
+            font-size: 0.76rem !important;
+        }
+    }

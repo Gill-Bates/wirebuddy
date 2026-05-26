@@ -24,10 +24,14 @@ app/static/vendor/images/flags/
 *.swp
 *.swo
 *.codex
+.gitignore
+.prettierignore
+.trivyignore
 
 # Environment & secrets
 .env
 .env.*
+.env-example
 
 # Local data
 data/
@@ -47,6 +51,7 @@ build/
 
 # Docker (keep main Dockerfile only)
 docker-compose*.yml
+docker/docker-compose*.yml
 Dockerfile.dev
 .dockerignore
 
@@ -61,3 +66,7 @@ Thumbs.db
 setup.conf
 *.conf
 !app/**/*.conf
+
+# Build context files not copied into the runtime image
+Caddyfile
+run.py

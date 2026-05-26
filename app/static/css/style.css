@@ -14,7 +14,7 @@
     --wb-accent-red-rgb: 255, 99, 132;
     --wb-accent-red-strong: #b4234d;
     --wb-success: #198754;
-    --wb-danger: #dc3545;
+    --wb-danger: #88171a;
     --wb-warning: #ffc107;
     --wb-info: #0dcaf0;
     --wb-info-strong: #0a58ca;
@@ -27,7 +27,7 @@
     --wb-z-toast: 1090;
     --wb-monospace-fg: #495057;
     --wb-monospace-bg: rgba(0, 0, 0, 0.05);
-    --wb-danger-strong: #b02a37;
+    --wb-danger-strong: #6f1215;
     --wb-modal-backdrop-bg: rgba(15, 23, 42, 0.6);
     --wb-modal-backdrop-blur: 8px;
     --wb-modal-backdrop-saturate: 0.8;
@@ -56,7 +56,7 @@
     --wb-monospace-bg: rgba(255, 255, 255, 0.08);
     --wb-accent-red-strong: #ff8aa5;
     --wb-info-strong: #6edff6;
-    --wb-danger-strong: #ff6384;
+    --wb-danger-strong: #a82024;
     /* Dark mode button defaults */
     --wb-border-default: #495057;
     --wb-border-hover: #6c757d;
@@ -82,7 +82,7 @@
    ----------------------------------------------------------------------------- */
 body {
     font-family: 'Roboto Flex', system-ui, -apple-system, 'Segoe UI', sans-serif;
-    min-height: 100vh;
+    min-height: var(--wb-viewport-h, 100vh);
     display: flex;
     flex-direction: column;
     background-color: var(--bs-body-bg);
@@ -106,6 +106,29 @@ summary:focus-visible {
     outline: 2px solid var(--wb-primary);
     outline-offset: 2px;
     border-radius: var(--wb-radius-sm);
+}
+
+.wb-inline-touch-target {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0.5rem 0.75rem;
+    margin: -0.5rem -0.25rem;
+    border-radius: var(--wb-radius-sm);
+}
+
+.wb-onboarding-default-badge {
+    color: var(--bs-success-text-emphasis);
+}
+
+.wb-onboarding-link {
+    color: var(--bs-emphasis-color);
+    font-weight: 500;
+}
+
+.wb-onboarding-link:hover,
+.wb-onboarding-link:focus-visible {
+    color: var(--wb-primary);
 }
 
 /* Material Icons base styles are in wb-ui-system.css Section 13 */
@@ -167,10 +190,8 @@ html.login-page body {
     align-items: center;
     justify-content: center;
     width: 100%;
-    height: 100vh;
-    height: 100dvh;
-    min-height: 100vh;
-    min-height: 100dvh;
+    height: var(--wb-viewport-h, 100vh);
+    min-height: var(--wb-viewport-h, 100vh);
     padding-top: calc(1rem + env(safe-area-inset-top));
     padding-right: calc(1rem + env(safe-area-inset-right));
     padding-bottom: calc(1rem + env(safe-area-inset-bottom));
@@ -191,8 +212,7 @@ html.login-page[data-bs-theme="dark"] body {
     width: calc(100% - 2rem);
     margin: 0 auto;
     /* Ensure card is scrollable within viewport on mobile */
-    max-height: calc(100vh - 2rem);
-    max-height: calc(100dvh - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    max-height: calc(var(--wb-viewport-h, 100vh) - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
     overflow-y: auto;
 }
 
@@ -1281,8 +1301,8 @@ html.login-page .alert {
 }
 
 .chart-empty-state-text {
-    font-weight: 400;
-    opacity: 0.6;
+    font-weight: 500;
+    color: var(--bs-emphasis-color, var(--bs-body-color));
 }
 
 .chart-empty-state-text.small {
@@ -1373,6 +1393,25 @@ body.wb-onboarding .modal-backdrop.show {
 #wbReconnectModal .spinner-border {
     width: 2.25rem;
     height: 2.25rem;
+}
+
+@media (max-width: 575.98px) {
+    #wbReconnectModal .modal-dialog {
+        margin: auto;
+        max-width: min(460px, calc(100vw - 1.5rem));
+        height: auto;
+        min-height: 0;
+    }
+
+    #wbReconnectModal .modal-content {
+        height: auto;
+        border: 1px solid rgba(128, 128, 128, 0.25);
+        border-radius: var(--wb-radius-lg);
+    }
+
+    #wbReconnectModal .modal-body {
+        overflow: visible;
+    }
 }
 
 @keyframes wbReconnectSoftPulse {

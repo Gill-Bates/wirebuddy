@@ -149,6 +149,8 @@ def _get_all_interface_stats(wg_visibility: dict[str, bool] | None = None) -> di
         wg_visibility: Optional dict mapping WG interface names to their
             show_on_dashboard setting. If None, all WG interfaces are shown.
     """
+    global _cache_ts
+
     now = time.monotonic()
     
     # Note: We can't cache when wg_visibility filtering is applied
@@ -248,7 +250,7 @@ def _get_all_interface_stats(wg_visibility: dict[str, bool] | None = None) -> di
     result = {"interfaces": results}
     _cache.clear()
     _cache.update(result)
-    # Note: We use assignment not rebinding, so no global declaration needed
+    _cache_ts = now
     
     return result
 

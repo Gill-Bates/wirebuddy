@@ -12,9 +12,9 @@ import base64
 import ipaddress
 import re
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
 
 __all__ = [
     "PeerCreate",
@@ -39,7 +39,7 @@ def _validate_interface_name(value: str) -> str:
 	return value
 
 
-def _validate_wg_key(value: Optional[str]) -> Optional[str]:
+def _validate_wg_key(value: str | None) -> str | None:
 	if value is None:
 		return value
 	value = value.strip()
@@ -114,7 +114,7 @@ def _validate_hostname(host: str) -> str:
 	return host.lower()
 
 
-def _validate_endpoint_value(value: Optional[str]) -> Optional[str]:
+def _validate_endpoint_value(value: str | None) -> str | None:
 	if value is None:
 		return value
 	candidate = value.strip()
@@ -128,9 +128,11 @@ def _validate_endpoint_value(value: Optional[str]) -> Optional[str]:
 		host = match.group(1)
 		port_raw = match.group(2)
 		try:
-			ipaddress.ip_address(host)
+			address = ipaddress.ip_address(host)
 		except ValueError as exc:
 			raise ValueError(f"Invalid IPv6 endpoint host: {host!r}") from exc
+		if address.version != 6:
+			raise ValueError(f"Bracketed endpoint must contain IPv6 address, got IPv4: {host!r}")
 	else:
 		if candidate.count(":") != 1:
 			raise ValueError(f"Invalid endpoint format: {candidate!r}")
@@ -149,7 +151,7 @@ def _validate_endpoint_value(value: Optional[str]) -> Optional[str]:
 	return candidate
 
 
-def _validate_blocklist_ids(value: Optional[list[str]]) -> Optional[list[str]]:
+def _validate_blocklist_ids(value: list[str] | None) -> list[str] | None:
 	if value is None:
 		return value
 	validated: list[str] = []
@@ -162,7 +164,7 @@ def _validate_blocklist_ids(value: Optional[list[str]]) -> Optional[list[str]]:
 	return list(dict.fromkeys(validated))
 
 
-def _validate_node_id(value: Optional[str]) -> Optional[str]:
+def _validate_node_id(value: str | None) -> str | None:
 	if value is None:
 		return value
 	value = value.strip()
@@ -180,27 +182,32 @@ class PeerCreate(BaseModel):
 		default=False,
 		description="Block peer-to-peer communication via server-side firewall rules",
 	)
-	endpoint: Optional[str] = Field(None, max_length=256)
+	endpoint: str | None = Field(None, max_length=256)
 	interface: str = Field(default="wg0", max_length=15)
-	node_id: Optional[str] = Field(
+	node_id: str | None = Field(
 		None,
 		max_length=64,
 		description="Assign peer to a remote node (null=local/master)",
+	)
+	allow_all_nodes: bool = Field(
+		default=False,
+		description="Allow peer to connect to all nodes with same credentials (roaming)",
 	)
 	use_adblocker: bool = True
 	dns_logging_enabled: bool = Field(
 		default=True,
 		description="Enable DNS query logging for this peer",
 	)
-	blocklist_ids: Optional[list[str]] = Field(
+	blocklist_ids: list[str] | None = Field(
 		None,
+		max_length=32,
 		description="Enabled blocklist IDs (null=all, []=none, ['ads','porn']=specific)",
 	)
 	
 	# Optional: provide keys, or let server generate them
-	public_key: Optional[str] = None
-	private_key: Optional[str] = None
-	preshared_key: Optional[str] = None
+	public_key: str | None = None
+	private_key: str | None = None
+	preshared_key: str | None = None
 
 	@field_validator("name")
 	@classmethod
@@ -224,22 +231,22 @@ class PeerCreate(BaseModel):
 
 	@field_validator("endpoint")
 	@classmethod
-	def endpoint_valid(cls, v: Optional[str]) -> Optional[str]:
+	def endpoint_valid(cls, v: str | None) -> str | None:
 		return _validate_endpoint_value(v)
 
 	@field_validator("blocklist_ids")
 	@classmethod
-	def blocklist_ids_valid(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+	def blocklist_ids_valid(cls, v: list[str] | None) -> list[str] | None:
 		return _validate_blocklist_ids(v)
 
 	@field_validator("node_id")
 	@classmethod
-	def node_id_valid(cls, v: Optional[str]) -> Optional[str]:
+	def node_id_valid(cls, v: str | None) -> str | None:
 		return _validate_node_id(v)
 
 	@field_validator("public_key", "private_key", "preshared_key")
 	@classmethod
-	def validate_key(cls, v: Optional[str]) -> Optional[str]:
+	def validate_key(cls, v: str | None) -> str | None:
 		return _validate_wg_key(v)
 
 	@model_validator(mode="after")
@@ -263,30 +270,35 @@ class PeerCreate(BaseModel):
 
 class PeerUpdate(BaseModel):
 	"""Peer update payload."""
-	name: Optional[str] = Field(None, max_length=128)
-	allowed_ips: Optional[str] = Field(None, max_length=256)
-	allowed_ips_mode: Optional[Literal["full", "split", "custom"]] = None
-	client_isolation: Optional[bool] = Field(
+	name: str | None = Field(None, max_length=128)
+	allowed_ips: str | None = Field(None, max_length=256)
+	allowed_ips_mode: Literal["full", "split", "custom"] | None = None
+	client_isolation: bool | None = Field(
 		None,
 		description="Block peer-to-peer communication via server-side firewall rules",
 	)
-	endpoint: Optional[str] = Field(None, max_length=256)
-	is_enabled: Optional[bool] = None
-	use_adblocker: Optional[bool] = None
-	dns_logging_enabled: Optional[bool] = None
-	blocklist_ids: Optional[list[str]] = Field(
+	endpoint: str | None = Field(None, max_length=256)
+	is_enabled: bool | None = None
+	use_adblocker: bool | None = None
+	dns_logging_enabled: bool | None = None
+	blocklist_ids: list[str] | None = Field(
 		None,
+		max_length=32,
 		description="Enabled blocklist IDs (null=all, []=none, ['ads','porn']=specific)",
 	)
-	node_id: Optional[str] = Field(
+	node_id: str | None = Field(
 		None,
 		max_length=64,
 		description="Migrate peer to a different node (null=local/master)",
 	)
+	allow_all_nodes: bool | None = Field(
+		None,
+		description="Allow peer to connect to all nodes with same credentials (roaming)",
+	)
 
 	@field_validator("name")
 	@classmethod
-	def name_not_blank_if_provided(cls, v: Optional[str]) -> Optional[str]:
+	def name_not_blank_if_provided(cls, v: str | None) -> str | None:
 		if v is None:
 			return v
 		v = v.strip()
@@ -298,24 +310,24 @@ class PeerUpdate(BaseModel):
 
 	@field_validator("allowed_ips")
 	@classmethod
-	def allowed_ips_valid(cls, v: Optional[str]) -> Optional[str]:
+	def allowed_ips_valid(cls, v: str | None) -> str | None:
 		if v is None:
 			return v
 		return _validate_cidr_list(v, field_name="allowed_ips")
 
 	@field_validator("endpoint")
 	@classmethod
-	def endpoint_valid(cls, v: Optional[str]) -> Optional[str]:
+	def endpoint_valid(cls, v: str | None) -> str | None:
 		return _validate_endpoint_value(v)
 
 	@field_validator("blocklist_ids")
 	@classmethod
-	def blocklist_ids_valid(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+	def blocklist_ids_valid(cls, v: list[str] | None) -> list[str] | None:
 		return _validate_blocklist_ids(v)
 
 	@field_validator("node_id")
 	@classmethod
-	def node_id_valid(cls, v: Optional[str]) -> Optional[str]:
+	def node_id_valid(cls, v: str | None) -> str | None:
 		return _validate_node_id(v)
 
 	@model_validator(mode="after")
@@ -333,20 +345,21 @@ class PeerPublic(BaseModel):
 	"""Public peer representation."""
 	id: int
 	public_key: str
-	name: Optional[str] = None
+	name: str | None = None
 	allowed_ips: str
 	allowed_ips_mode: Literal["full", "split", "custom"] = "full"
 	client_isolation: bool = False
-	peer_address: Optional[str] = None
-	endpoint: Optional[str] = None
+	peer_address: str | None = None
+	endpoint: str | None = None
 	interface: str
-	node_id: Optional[str] = None
+	node_id: str | None = None
+	allow_all_nodes: bool = False
 	is_enabled: bool
 	use_adblocker: bool = True
 	dns_logging_enabled: bool = True
-	blocklist_ids: Optional[list[str]] = None  # null=all enabled
-	created_at: datetime
-	updated_at: datetime
+	blocklist_ids: list[str] | None = None  # null=all enabled
+	created_at: AwareDatetime
+	updated_at: AwareDatetime
 
 
 class PeerConfig(BaseModel):
@@ -354,14 +367,14 @@ class PeerConfig(BaseModel):
 	interface_name: str
 	private_key: str = Field(..., repr=False)
 	address: str
-	dns: Optional[str] = None
+	dns: str | None = None
 	mtu: int = Field(default=1420, ge=1280, le=65535)
 	# Server details
 	server_public_key: str
 	server_endpoint: str
 	allowed_ips: str = "0.0.0.0/0, ::/0"
 	persistent_keepalive: int = Field(default=25, ge=0, le=65535)
-	preshared_key: Optional[str] = Field(None, repr=False)
+	preshared_key: str | None = Field(None, repr=False)
 
 	@field_validator("interface_name")
 	@classmethod
@@ -370,7 +383,7 @@ class PeerConfig(BaseModel):
 
 	@field_validator("private_key", "server_public_key", "preshared_key")
 	@classmethod
-	def validate_key(cls, v: Optional[str]) -> Optional[str]:
+	def validate_key(cls, v: str | None) -> str | None:
 		return _validate_wg_key(v)
 
 	@field_validator("address")
@@ -380,7 +393,7 @@ class PeerConfig(BaseModel):
 
 	@field_validator("dns")
 	@classmethod
-	def dns_valid(cls, v: Optional[str]) -> Optional[str]:
+	def dns_valid(cls, v: str | None) -> str | None:
 		if v is None:
 			return v
 		return _validate_ip_list(v, field_name="dns")
@@ -445,15 +458,15 @@ class PeerConfig(BaseModel):
 class PeerStats(BaseModel):
 	"""Peer statistics from WireGuard."""
 	public_key: str
-	endpoint: Optional[str] = None
-	latest_handshake: Optional[datetime] = None
+	endpoint: str | None = None
+	latest_handshake: datetime | None = None
 	transfer_rx: int = Field(default=0, ge=0)  # bytes received
 	transfer_tx: int = Field(default=0, ge=0)  # bytes transmitted
-	allowed_ips: Optional[str] = None
+	allowed_ips: str | None = None
 
 	@field_validator("endpoint")
 	@classmethod
-	def endpoint_valid(cls, v: Optional[str]) -> Optional[str]:
+	def endpoint_valid(cls, v: str | None) -> str | None:
 		# WireGuard outputs "(none)" for peers with no endpoint
 		if v in (None, "(none)", ""):
 			return None

@@ -1,0 +1,48 @@
+{% macro kpi_card(icon, label, value_id, value='-', subtext='', status_class='', live=false) -%}
+{% set _allowed_chars = 'abcdefghijklmnopqrstuvwxyz0123456789-' %}
+{% set _raw_id = (value_id | string | lower | trim) %}
+{% set _safe = namespace(value='') %}
+{% for _ch in _raw_id %}
+{% if _ch in _allowed_chars %}
+{% set _safe.value = _safe.value ~ _ch %}
+{% elif _ch in ' _' %}
+{% if _safe.value and _safe.value[-1] != '-' %}
+{% set _safe.value = _safe.value ~ '-' %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% set _safe_id = _safe.value | trim('-') if _safe.value else 'kpi' %}
+{% set _status_raw = (status_class | string | trim) %}
+{% set _status_token = _status_raw.split() | first if _status_raw else '' %}
+{% set _status = namespace(value='') %}
+{% for _ch in _status_token %}
+{% if _ch in _allowed_chars or _ch == '_' %}
+{% set _status.value = _status.value ~ _ch %}
+{% endif %}
+{% endfor %}
+{% set _status_class = _status.value %}
+<div class="card h-100 wb-kpi-card{{ ' ' ~ _status_class if _status_class else '' }}">
+    <div class="card-body">
+        <div class="d-flex align-items-start gap-3 w-100">
+            <div class="flex-shrink-0">
+                <span class="material-icons wb-kpi-icon" aria-hidden="true">{{ icon }}</span>
+            </div>
+            <div class="flex-grow-1 min-w-0">
+                <h3 class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-{{ _safe_id }}">{{ label }}</h3>
+                {% if caller is defined %}
+                <div class="wb-kpi-value-group" aria-labelledby="label-{{ _safe_id }}"{% if live %} aria-live="polite" role="status"{% endif %}>
+                    <div class="wb-kpi-custom-content">
+                        {{ caller() }}
+                    </div>
+                </div>
+                {% else %}
+                <output class="h3 mb-0 wb-kpi-value" id="{{ _safe_id }}" aria-labelledby="label-{{ _safe_id }}"{% if live %} aria-live="polite" role="status"{% endif %}>{{ value }}</output>
+                {% if subtext %}
+                <small class="text-muted wb-kpi-subtext">{{ subtext }}</small>
+                {% endif %}
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{%- endmacro %}

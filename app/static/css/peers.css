@@ -1,0 +1,639 @@
+    /* CSS variables for reusable dimensions */
+    :root {
+        --flag-width: 1.15rem;
+        --flag-height: 0.85rem;
+        --flag-gap: 0.35rem;
+    }
+
+    /* Node tunnel peers (system peers, not user-editable) */
+    .peer-row-node-tunnel {
+        opacity: 0.65;
+        background-color: var(--bs-tertiary-bg);
+    }
+
+    .peer-row-node-tunnel:hover {
+        background-color: var(--bs-secondary-bg) !important;
+    }
+
+    .peers-table-wrapper {
+        display: block;
+    }
+
+    .peer-card-list {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    .peer-card {
+        background: var(--bs-body-bg);
+        border: 1px solid var(--bs-border-color);
+        border-radius: 12px;
+        padding: 1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+    }
+
+    .peer-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 1rem;
+    }
+
+    .peer-card-identity {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.3rem;
+    }
+
+    .peer-card-title {
+        font-size: 1rem;
+        font-weight: 600;
+        line-height: 1.2;
+    }
+
+    .peer-card-subline {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        font-size: 0.8rem;
+        color: var(--bs-secondary-color);
+    }
+
+    .peer-card-subline span+span::before {
+        content: "·";
+        margin-right: 0.35rem;
+    }
+
+    .peer-card-status {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 0.25rem;
+        flex-shrink: 0;
+    }
+
+    .peer-card-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .peer-card-routing {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+    }
+
+    .peer-card-routing-badge {
+        display: inline-flex;
+        align-items: center;
+        background: var(--bs-secondary-bg);
+        color: var(--bs-secondary-color);
+        line-height: 1.2;
+        border: 1px solid var(--bs-border-color);
+    }
+
+    .peer-card-addresses {
+        display: flex;
+        flex-direction: column;
+        gap: 0.3rem;
+    }
+
+    .peer-card-addresses code {
+        font-size: 0.78rem;
+        opacity: 0.9;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+    }
+
+    .peer-card-actions {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-top: 0.25rem;
+    }
+
+    .peer-card-action-btn {
+        min-width: var(--wb-touch-target-min);
+        min-height: var(--wb-touch-target-min);
+        padding: 0.25rem 0.5rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+    }
+
+    .peer-card-action-btn .material-icons {
+        font-size: 18px;
+        pointer-events: none;
+    }
+
+    .peer-card-more-actions .dropdown-menu {
+        min-width: 12rem;
+    }
+
+    @media (max-width: 991.98px) {
+        .peers-table-wrapper {
+            display: none !important;
+        }
+
+        .peer-card-list {
+            display: flex !important;
+        }
+    }
+
+    @media (min-width: 992px) {
+        .peer-card-list {
+            display: none !important;
+        }
+    }
+
+    .peer-help-icon {
+        font-size: 16px;
+        vertical-align: text-bottom;
+    }
+
+    .peer-surface-panel {
+        background-color: var(--bs-body-bg);
+    }
+
+    .peer-inert-button {
+        pointer-events: none;
+    }
+
+    .peers-empty-state-icon-lg {
+        font-size: 2.5rem;
+    }
+
+    .peers-empty-state-icon-xl {
+        font-size: 3rem;
+    }
+
+    html.wb-peers-hide-nodes .peers-table tr[data-node-tunnel="true"],
+    html.wb-peers-hide-nodes .peer-card[data-node-tunnel="true"] {
+        display: none;
+    }
+
+    /* Table layout */
+    .table {
+        width: 100%;
+    }
+
+    /* Allow code elements to wrap */
+    .table code {
+        overflow-wrap: break-word;
+        word-break: normal;
+    }
+
+    /* IPv6/IP address wrapping at smart breakpoints */
+    .ipv6 {
+        word-break: normal;
+        overflow-wrap: break-word;
+    }
+
+    /* VPN address column - monospace font for better readability */
+    .peers-table td.peer-vpn-address {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, 'Courier New', monospace;
+    }
+
+    /* VPN address: two-line layout for IPv4 and IPv6 */
+    .peer-vpn-address {
+        line-height: 1.4;
+    }
+
+    .peer-vpn-address code {
+        display: inline-block;
+    }
+
+    /* Keep action buttons on one line */
+    .peers-table td.peer-actions-cell {
+        white-space: nowrap;
+        /* UI-Lint: 5 buttons × 38px + 4 gaps × 4px = 206px minimum */
+        min-width: 210px;
+    }
+
+    .peers-table td.peer-actions-cell .d-flex {
+        flex-wrap: nowrap;
+    }
+
+    /* Status badges: wrap instead of overflowing, vertical-align with table row */
+    .peers-table td.peer-status-cell {
+        white-space: nowrap;
+    }
+
+    .peers-table td.peer-status-cell .badge+.badge {
+        margin-left: 0.25rem;
+    }
+
+    .peer-routing-badges {
+        display: inline-flex;
+        justify-content: flex-start;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+    }
+
+    /* Compact action buttons for table rows (v1.3.3 style) */
+    .peers-table td.peer-actions-cell .btn {
+        /* Accessibility: 38px touch target (UI-Lint CLICK_TARGET_MIN_SIZE_PX) */
+        min-width: 38px;
+        min-height: 38px;
+        padding: 0.2rem 0.35rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .peers-table td.peer-actions-cell .material-icons {
+        font-size: 18px;
+        pointer-events: none;
+    }
+
+    .peers-table td.peer-name-cell,
+    .peers-table td.peer-routing,
+    .peers-table td.peer-client-ip {
+        overflow-wrap: break-word;
+        word-break: normal;
+    }
+
+    /* Make peer names bold */
+    .peers-table td.peer-name-cell {
+        font-weight: 600;
+    }
+
+    /* Client IP stacked layout */
+    .peer-client-ip-stack {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.15;
+    }
+
+    .peer-client-ip-main {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--flag-gap);
+        flex-wrap: wrap;
+    }
+
+    .peer-client-ip-main code {
+        color: var(--bs-secondary-color);
+    }
+
+    .peer-client-ip-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+        font-size: .75rem;
+        color: var(--bs-secondary-color);
+        margin-left: calc(var(--flag-width) + var(--flag-gap));
+        margin-top: 0.25rem;
+        white-space: normal;
+    }
+
+    .peer-client-ip-meta .peer-meta-provider {
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .peer-country-flag {
+        width: var(--flag-width);
+        height: var(--flag-height);
+        border-radius: 2px;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, .15);
+        object-fit: cover;
+        flex: 0 0 auto;
+    }
+
+    .peer-node-select {
+        display: none;
+    }
+
+    .peer-node-picker .dropdown-toggle {
+        min-height: 44px;
+        width: 100%;
+        justify-content: space-between;
+        text-align: left;
+    }
+
+    .peer-node-picker .dropdown-toggle::after {
+        margin-left: 0.75rem;
+    }
+
+    .peer-node-picker-label,
+    .peer-node-option-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+    }
+
+    .peer-node-picker-text {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .peer-node-picker-menu {
+        width: 100%;
+        max-height: 18rem;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .peer-node-option {
+        display: flex;
+        align-items: center;
+        width: 100%;
+    }
+
+    .peer-help-icon {
+        font-size: 16px;
+        vertical-align: text-bottom;
+    }
+
+    .peer-surface-panel {
+        background-color: var(--bs-body-bg);
+    }
+
+    .peer-inert-button {
+        pointer-events: none;
+    }
+
+    .peers-empty-state-icon-lg {
+        font-size: 2.5rem;
+    }
+
+    .peers-empty-state-icon-xl {
+        font-size: 3rem;
+    }
+
+    .peer-name-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+        min-width: 0;
+    }
+
+    .peer-name-main {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+        flex-wrap: wrap;
+    }
+
+    .peer-name-text {
+        font-weight: 600;
+        min-width: 0;
+    }
+
+    .peer-name-meta {
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 0.25rem 0.5rem;
+        font-size: 0.75rem;
+        color: var(--bs-secondary-color);
+        font-weight: 400;
+        white-space: nowrap;
+    }
+
+    .peer-name-meta span+span::before {
+        content: "·";
+        margin-right: 0.5rem;
+    }
+
+    /* Last-seen time inside connection badge (mobile only) */
+    .peer-badge-time {
+        display: none;
+    }
+
+    /* Support for reduced motion preferences */
+    @media (prefers-reduced-motion: reduce) {
+
+        *,
+        *::before,
+        *::after {
+            animation-duration: 0.001ms !important;
+            animation-iteration-count: 1 !important;
+        }
+    }
+
+    /* Large desktop (1200px-1399px): allow routing badges to wrap */
+    @media (min-width: 992px) and (max-width: 1399.98px) {
+        .peer-routing-badges {
+            max-width: 140px;
+        }
+    }
+
+    /* Button icon alignment */
+    .btn .material-icons {
+        vertical-align: middle;
+        line-height: 1;
+    }
+
+    .btn-sm .material-icons {
+        font-size: 18px;
+    }
+
+    #qr-image {
+        max-width: min(100%, 280px);
+        height: auto;
+    }
+
+    #qrModal .modal-dialog {
+        max-width: 22rem;
+    }
+
+    #qrModal .modal-body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.75rem;
+    }
+
+    @media (max-width: 575.98px) {
+        #qrModal .modal-dialog {
+            max-width: 90vw;
+            margin: 1rem auto;
+        }
+
+        #qrModal .modal-body {
+            padding: 1rem;
+        }
+
+        #qr-image {
+            max-width: min(100%, 240px);
+        }
+
+        #addPeerModal .modal-dialog,
+        #editPeerModal .modal-dialog {
+            width: 100vw;
+            max-width: none;
+            margin: 0;
+        }
+
+        #addPeerModal .modal-content,
+        #editPeerModal .modal-content {
+            width: 100%;
+            min-height: 100vh;
+            min-height: 100dvh;
+            max-height: none;
+            display: flex;
+            flex-direction: column;
+            border: 0;
+            border-radius: 0;
+        }
+
+        /* form sits between modal-content and modal-body/footer –
+           must participate in the flex layout so footer stays visible */
+        #addPeerModal .modal-content>form,
+        #editPeerModal .modal-content>form {
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            min-height: 0;
+        }
+
+        #addPeerModal .modal-body,
+        #editPeerModal .modal-body {
+            padding: 0.75rem 0.75rem 6rem;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            flex: 1 1 auto;
+        }
+
+        #addPeerModal .modal-header,
+        #editPeerModal .modal-header,
+        #addPeerModal .modal-footer,
+        #editPeerModal .modal-footer {
+            position: sticky;
+            background: var(--bs-body-bg);
+            z-index: 2;
+        }
+
+        #addPeerModal .modal-header,
+        #editPeerModal .modal-header {
+            top: 0;
+        }
+
+        #addPeerModal .modal-footer,
+        #editPeerModal .modal-footer {
+            bottom: 0;
+            padding-bottom: calc(var(--bs-modal-footer-padding-y) + env(safe-area-inset-bottom));
+            box-shadow: 0 -1px 0 var(--bs-border-color-translucent);
+        }
+    }
+
+    /* Search filter */
+    .peers-search-wrapper {
+        position: relative;
+        max-width: 280px;
+    }
+
+    /* Hide nodes toggle */
+    .peers-hide-nodes-toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.875rem;
+        white-space: nowrap;
+    }
+
+    .peers-hide-nodes-toggle .form-check-input {
+        margin-top: 0;
+    }
+
+    .peers-search-wrapper .material-icons {
+        position: absolute;
+        left: 0.75rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--bs-secondary-color);
+        font-size: 18px;
+        pointer-events: none;
+    }
+
+    .peers-search-input {
+        padding-left: 2.25rem;
+    }
+
+    .peers-search-clear {
+        position: absolute;
+        right: 0.5rem;
+        top: 50%;
+        transform: translateY(-50%);
+        background: none;
+        border: none;
+        padding: 0.25rem;
+        cursor: pointer;
+        color: var(--bs-secondary-color);
+        line-height: 1;
+        opacity: 0.7;
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    .peers-search-clear:hover {
+        opacity: 1;
+    }
+
+    .peers-search-clear .material-icons {
+        position: static;
+        transform: none;
+        font-size: 16px;
+    }
+
+    .peers-table td.peer-actions-cell .btn {
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    /* Peers container: page-level scrolling only (no inner scroll) */
+    .peers-scroll-container {
+        max-height: none;
+        overflow: visible;
+        overflow-x: hidden;
+    }
+
+    /* Sticky table header (desktop only, page scroll) */
+    @media (min-width: 768px) {
+        .peers-table thead th {
+            position: sticky;
+            top: 0;
+            z-index: 5;
+            background: var(--bs-body-bg);
+            background-clip: padding-box;
+            box-shadow: 0 1px 0 var(--bs-border-color);
+        }
+    }
+
+    .peer-row-hidden {
+        display: none !important;
+    }
+
+    .peers-no-results {
+        text-align: center;
+        padding: 2rem 1rem;
+        color: var(--bs-secondary-color);
+    }
+
+    .peers-empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 18rem;
+        text-align: center;
+        padding: 3rem 1.5rem;
+    }
+
+    .peers-empty-state .material-icons {
+        font-size: 3rem;
+    }

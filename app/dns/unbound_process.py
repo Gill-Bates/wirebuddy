@@ -30,9 +30,11 @@ _log = logging.getLogger(__name__)
 
 _START_TIMEOUT = 3.0  # seconds
 _START_POLL_INTERVAL = 0.15  # seconds
+_START_STABLE_SECONDS = 0.5  # seconds
 _KILL_POLL_INTERVAL = 0.15  # seconds
 _IS_RUNNING_CACHE_TTL = 5.0  # seconds
 _RESOLV_CONF = Path("/etc/resolv.conf")
+_RESOLV_MANAGED_MARKER = "# Configured by WireBuddy for local Unbound DNS"
 
 
 # ---------------------------------------------------------------------------
@@ -43,18 +45,23 @@ _RESOLV_CONF = Path("/etc/resolv.conf")
 _unbound_installed: bool | None = None
 
 
-def is_unbound_installed() -> bool:
+def is_unbound_installed(*, refresh: bool = False) -> bool:
 	"""Check if unbound binaries are available on the system.
-	
-	Result is cached after first check since binaries don't appear/disappear
-	at runtime. This prevents repeated shutil.which() calls in the watchdog.
+
+	Result is cached after first check unless ``refresh=True`` is passed.
 	"""
 	global _unbound_installed
-	if _unbound_installed is None:
+	if refresh or _unbound_installed is None:
 		_unbound_installed = shutil.which("unbound") is not None and shutil.which("unbound-checkconf") is not None
 		if not _unbound_installed:
 			_log.warning("DNS_INIT unbound not installed, DNS features disabled")
 	return _unbound_installed
+
+
+def _should_manage_resolv_conf() -> bool:
+	"""Return True when WireBuddy should mutate /etc/resolv.conf."""
+	value = os.getenv("WIREBUDDY_MANAGE_RESOLV_CONF", "0").strip().lower()
+	return value in {"1", "true", "yes", "on"}
 
 def _is_valid_ip(addr: str) -> bool:
 	"""Validate that addr is a well-formed IPv4 or IPv6 address."""
@@ -125,7 +132,7 @@ def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 
 		# Write new resolv.conf with WireGuard DNS
 		# Preserve search domains if present
-		lines = [f"# Configured by WireBuddy for local Unbound DNS", f"nameserver {dns_ip}"]
+		lines = [_RESOLV_MANAGED_MARKER, f"nameserver {dns_ip}"]
 		for line in current.splitlines():
 			if line.strip().startswith("search ") or line.strip().startswith("domain "):
 				lines.append(line.strip())
@@ -150,7 +157,7 @@ def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 # Process State
 # ---------------------------------------------------------------------------
 
-@dataclass
+@dataclass(slots=True)
 class _RunningState:
 	"""State tracking for is_running() cache."""
 	last_check: float = 0.0
@@ -216,22 +223,49 @@ def _pid_is_running(pid: int) -> bool:
 		return False
 
 
-def _pid_is_unbound(pid: int) -> bool:
-	"""Return True if the PID is an unbound process (verified by process name).
-	
-	This prevents false positives from PID reuse when an unrelated process
-	inherits the PID after unbound crashes. Falls back to simple PID check
-	on non-Linux systems or if /proc is unavailable.
-	"""
+def _pid_name_is_unbound(pid: int, *, fail_open: bool = False) -> bool:
+	"""Return True if PID belongs to unbound based on /proc process name."""
 	if not _pid_is_running(pid):
 		return False
 	try:
-		# Linux-specific: check process name in /proc
-		comm = Path(f"/proc/{pid}/comm").read_text().strip()
+		comm = Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip()
 		return comm == "unbound"
 	except Exception:
-		# Fallback for non-Linux or permission errors
-		return True  # Assume PID is correct if we can't verify
+		return fail_open
+
+
+def _pid_uses_wirebuddy_config(pid: int) -> bool:
+	"""Return True if pid is unbound started with WireBuddy's config path."""
+	if not _pid_name_is_unbound(pid, fail_open=False):
+		return False
+	try:
+		raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+	except OSError:
+		return False
+
+	args = [part.decode("utf-8", errors="replace") for part in raw.split(b"\x00") if part]
+	if not args:
+		return False
+
+	conf_path = str(UNBOUND_CONF)
+	return conf_path in args
+
+
+async def _find_wirebuddy_unbound_pids() -> list[int]:
+	"""Find running unbound PIDs that use WireBuddy's config."""
+	code, stdout, _ = await run_exec("pgrep", "-x", "unbound")
+	if code != 0:
+		return []
+
+	pids: list[int] = []
+	for line in stdout.strip().splitlines():
+		text = line.strip()
+		if not text.isdigit():
+			continue
+		pid = int(text)
+		if _pid_uses_wirebuddy_config(pid):
+			pids.append(pid)
+	return pids
 
 
 def _remove_stale_pid_file() -> None:
@@ -266,19 +300,31 @@ async def _reap_managed_proc() -> None:
 
 
 async def _kill_pid(pid: int, *, timeout: float = 3.0) -> bool:
-	"""SIGTERM then SIGKILL a PID; returns True when no longer running."""
+	"""SIGTERM then SIGKILL an unbound PID; returns True when no longer running."""
+	if not _pid_is_running(pid):
+		return True
+
+	if not _pid_name_is_unbound(pid, fail_open=False):
+		_log.warning("DNS_STOP refusing to kill non-unbound pid=%s", pid)
+		return False
+
 	try:
 		os.kill(pid, signal.SIGTERM)
 	except ProcessLookupError:
 		return True
 	except Exception as exc:
 		_log.debug("DNS_STOP failed to SIGTERM pid=%s: %s", pid, exc)
+		return False
 
 	deadline = time.monotonic() + timeout
 	while time.monotonic() < deadline:
 		if not _pid_is_running(pid):
 			return True
 		await asyncio.sleep(_KILL_POLL_INTERVAL)
+
+	if not _pid_name_is_unbound(pid, fail_open=False):
+		_log.warning("DNS_STOP refusing SIGKILL for reused/non-unbound pid=%s", pid)
+		return False
 
 	try:
 		os.kill(pid, signal.SIGKILL)
@@ -329,14 +375,13 @@ async def is_running() -> bool:
 
 		# Fast path: PID file check with process name verification
 		pid = _read_unbound_pid()
-		if pid and _pid_is_unbound(pid):
+		if pid and _pid_name_is_unbound(pid, fail_open=True):
 			_running_state.update(True)
 			return True
 
 		# Slow path: pgrep fallback (only when PID file is absent/stale)
 		_remove_stale_pid_file()
-		code, _, _ = await run_exec("pgrep", "-x", "unbound")
-		result = code == 0
+		result = bool(await _find_wirebuddy_unbound_pids())
 		_running_state.update(result)
 		return result
 
@@ -433,15 +478,18 @@ async def _start_impl() -> tuple[bool, str]:
 			start_new_session=True,
 		)
 
-		deadline = time.monotonic() + _START_TIMEOUT
+		started_at = time.monotonic()
+		deadline = started_at + _START_TIMEOUT
+		stable_after = started_at + _START_STABLE_SECONDS
 		while time.monotonic() < deadline:
 			# Fast-check managed process directly (avoid pgrep spam during startup)
-			if _unbound_proc is not None and _pid_is_running(_unbound_proc.pid):
+			if _unbound_proc is not None and time.monotonic() >= stable_after and _pid_is_running(_unbound_proc.pid):
 				_running_state.update(True)
 				_log.info("DNS_START unbound started")
 				# Configure /etc/resolv.conf so container can use local DNS
 				# (run in thread to avoid blocking event loop on slow filesystems)
-				await asyncio.to_thread(_configure_resolv_conf)
+				if _should_manage_resolv_conf():
+					await asyncio.to_thread(_configure_resolv_conf)
 				# Start supervisor task to reap process on unexpected exit
 				_ensure_supervisor_task()
 				return True, "Unbound started"
@@ -466,11 +514,19 @@ async def _start_impl() -> tuple[bool, str]:
 
 def _restore_resolv_conf() -> None:
 	"""Restore /etc/resolv.conf from backup created during start."""
+	if not _should_manage_resolv_conf():
+		return
+
 	backup_path = _RESOLV_CONF.with_suffix(".conf.backup")
 	if not backup_path.exists():
 		return
 	tmp_path = _RESOLV_CONF.with_suffix(".tmp")
 	try:
+		current = _RESOLV_CONF.read_text(encoding="utf-8", errors="replace")
+		if _RESOLV_MANAGED_MARKER not in current:
+			_log.debug("DNS_STOP resolv.conf no longer managed by WireBuddy, skipping restore")
+			return
+
 		backup_content = backup_path.read_text(encoding="utf-8")
 		tmp_path.write_text(backup_content, encoding="utf-8")
 		tmp_path.replace(_RESOLV_CONF)  # Atomic, matches _configure_resolv_conf
@@ -516,13 +572,12 @@ async def _stop_impl() -> tuple[bool, str]:
 			return True, "Unbound stopped"
 
 	# 3. Fallback: pgrep to find PID, then targeted kill
-	code, stdout, _ = await run_exec("pgrep", "-x", "unbound")
-	if code == 0:
+	pids = await _find_wirebuddy_unbound_pids()
+	if pids:
 		killed_all = True
-		for line in stdout.strip().splitlines():
-			if line.strip().isdigit():
-				if not await _kill_pid(int(line.strip())):
-					killed_all = False
+		for pid in pids:
+			if not await _kill_pid(pid):
+				killed_all = False
 		if not killed_all:
 			_log.warning("DNS_STOP some unbound processes could not be killed")
 		_remove_stale_pid_file()
@@ -580,14 +635,27 @@ async def _reload_impl() -> tuple[bool, str]:
 			return False, f"Reload failed: {e}"
 
 	invalidate_running_cache()
-	code, _, stderr = await run_exec("pkill", "-HUP", "-x", "unbound")
-	if code == 0:
+	pids = await _find_wirebuddy_unbound_pids()
+	if pids:
+		reloaded = False
+		for fallback_pid in pids:
+			try:
+				os.kill(fallback_pid, signal.SIGHUP)
+				reloaded = True
+			except ProcessLookupError:
+				continue
+			except Exception as exc:
+				_log.debug("DNS_RELOAD failed to signal pid=%d: %s", fallback_pid, exc)
+
+		if not reloaded:
+			return False, "Reload failed: no WireBuddy unbound process found"
+
 		await asyncio.sleep(0.5)
 		invalidate_running_cache()
 		if await is_running():
-			_log.info("DNS_RELOAD config reloaded (pkill fallback)")
+			_log.info("DNS_RELOAD config reloaded (pgrep fallback)")
 			return True, "Configuration reloaded"
-		_log.error("DNS_RELOAD unbound not running after pkill fallback reload")
+		_log.error("DNS_RELOAD unbound not running after pgrep fallback reload")
 		return False, "Reload failed: unbound stopped after SIGHUP"
 	return False, "Reload failed: unbound not running"
 
@@ -616,9 +684,11 @@ async def restart() -> tuple[bool, str]:
 	global _intentional_stop
 	async with _proc_lock:
 		_intentional_stop = True  # Signal supervisor not to warn
-		await _stop_impl()
-		result = await _start_impl()
-		_intentional_stop = False  # Always reset after restart completes
+		try:
+			await _stop_impl()
+			result = await _start_impl()
+		finally:
+			_intentional_stop = False  # Always reset even on exceptions
 		if result[0]:
 			_reset_watchdog_failures()
 		return result

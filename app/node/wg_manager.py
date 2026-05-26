@@ -12,11 +12,14 @@ interfaces and adds/removes peers.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import fcntl
 import ipaddress
 import logging
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import time
@@ -54,6 +57,7 @@ _TIMEOUT_WG_SHOW = 5
 _TIMEOUT_WG_SET = 15
 _TIMEOUT_WG_QUICK = 30
 _LOCK_TIMEOUT = 60  # Seconds to wait for file lock acquisition
+_LOCK_RETRY_INTERVAL = 0.2
 
 
 @dataclass(slots=True, frozen=True)
@@ -91,6 +95,8 @@ def _run(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         return result.returncode, result.stdout, _redact_keys(result.stderr)
@@ -135,6 +141,12 @@ def _validate_wg_key(key: Any, *, field_name: str) -> str:
     value = _sanitize_config_value(field_name, key)
     if _WG_KEY_RE.fullmatch(value) is None:
         raise ValueError(f"Invalid WireGuard key for {field_name!r}")
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except binascii.Error as exc:
+        raise ValueError(f"Invalid WireGuard key encoding for {field_name!r}") from exc
+    if len(decoded) != 32:
+        raise ValueError(f"Invalid WireGuard key length for {field_name!r}")
     return value
 
 
@@ -144,6 +156,7 @@ def _normalize_csv(value: Any, *, field_name: str) -> list[str]:
     items = [item.strip() for item in text.split(",") if item.strip()]
     if not items:
         raise ValueError(f"{field_name!r} must not be empty")
+    items = list(dict.fromkeys(items))
     if len(items) > _MAX_CSV_ITEMS:
         raise ValueError(f"{field_name!r} exceeds maximum of {_MAX_CSV_ITEMS} items")
     return items
@@ -209,9 +222,32 @@ def _validate_endpoint(value: Any, *, field_name: str) -> str:
         except ValueError:
             if not _HOSTNAME_RE.fullmatch(host_part):
                 raise ValueError(f"Invalid host in endpoint for {field_name!r}: {host_part!r}") from None
+            try:
+                host_ascii = host_part.encode("idna").decode("ascii")
+            except UnicodeError as exc:
+                raise ValueError(f"Invalid IDNA hostname in endpoint for {field_name!r}: {host_part!r}") from exc
+            if host_ascii.rsplit(".", 1)[-1].isdigit():
+                raise ValueError(f"Invalid numeric-only TLD in endpoint for {field_name!r}: {host_part!r}")
 
     _validate_port(port_str, field_name=f"{field_name} port")
     return text
+
+
+def _open_lock_file() -> int:
+    """Open the lock file securely and validate that it is a regular file."""
+    flags = os.O_CREAT | os.O_RDWR
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    lock_fd = os.open(str(_LOCK_PATH), flags, 0o600)
+    try:
+        st = os.fstat(lock_fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise RuntimeError("WireGuard lock path is not a regular file")
+        os.fchmod(lock_fd, 0o600)
+        return lock_fd
+    except Exception:
+        os.close(lock_fd)
+        raise
 
 
 def _validate_interface_config(raw: dict[str, Any]) -> InterfaceConfig:
@@ -284,9 +320,17 @@ def _get_default_route_iface() -> str | None:
 
 
 def _fw_rules(family: str, action: str, phy: str) -> list[str]:
-    return [
+    forward_rules = [
         f"{family} -{action} FORWARD 1 -i %i -j ACCEPT",
         f"{family} -{action} FORWARD 1 -o %i -j ACCEPT",
+    ]
+    if action == "D":
+        forward_rules = [
+            f"{family} -D FORWARD -i %i -j ACCEPT",
+            f"{family} -D FORWARD -o %i -j ACCEPT",
+        ]
+    return [
+        *forward_rules,
         f"{family} -t nat -{action.replace('I', 'A').replace('D', 'D')} POSTROUTING -o {phy} -j MASQUERADE",
     ]
 
@@ -428,20 +472,22 @@ def has_running_interfaces() -> bool:
 
 def apply_config(config: dict[str, Any]) -> str:
     """Apply a full configuration from the master."""
-    lock_fd = os.open(str(_LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o600)
+    lock_fd = _open_lock_file()
     try:
-        start_time = time.monotonic()
-        for attempt in range(_LOCK_TIMEOUT):
+        deadline = time.monotonic() + _LOCK_TIMEOUT
+        logged_wait = False
+        while True:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
-                if attempt == 0:
+                if not logged_wait:
                     _log.info("Waiting for WireGuard config lock...")
-                elapsed = time.monotonic() - start_time
-                if elapsed >= _LOCK_TIMEOUT:
+                    logged_wait = True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     raise RuntimeError(f"Failed to acquire WireGuard config lock after {_LOCK_TIMEOUT}s")
-                time.sleep(min(5.0, _LOCK_TIMEOUT - elapsed))
+                time.sleep(min(_LOCK_RETRY_INTERVAL, remaining))
         return _apply_config_locked(config)
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -591,9 +637,35 @@ def _ensure_routes_for_allowed_ips(iface_name: str, allowed_ips: str) -> None:
             timeout=_TIMEOUT_WG_SET
         )
         if code != 0:
-            _log.warning("Failed to add route %s dev %s: %s", ip_str, iface_name, stderr.strip())
-        else:
-            _log.debug("Added route %s dev %s", ip_str, iface_name)
+            raise RuntimeError(
+                f"Failed to add route {ip_str} dev {iface_name}: {stderr.strip() or 'unknown error'}"
+            )
+        _log.debug("Added route %s dev %s", ip_str, iface_name)
+
+
+def _wipe_and_unlink(path: Path) -> None:
+    """Best-effort wipe before unlinking short-lived secret material."""
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        _log.debug("Failed to stat tempfile %s for wipe: %s", path, exc)
+        size = 0
+
+    if size > 0:
+        try:
+            with path.open("wb", buffering=0) as handle:
+                handle.write(b"\x00" * size)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            _log.debug("Failed to wipe tempfile %s before unlink: %s", path, exc)
+
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        _log.debug("Failed to unlink tempfile %s: %s", path, exc)
 
 
 def _get_current_peer_state(iface_name: str) -> dict[str, PeerState]:
@@ -679,7 +751,7 @@ def _sync_peers_for_interface(iface_name: str, desired_peers: list[PeerConfig]) 
                 cmd.extend(["preshared-key", str(psk_path)])
                 _run_checked(cmd, timeout=_TIMEOUT_WG_SET)
             finally:
-                psk_path.unlink(missing_ok=True)
+                _wipe_and_unlink(psk_path)
         else:
             cmd.extend(["preshared-key", "/dev/null"])
             _run_checked(cmd, timeout=_TIMEOUT_WG_SET)
@@ -718,6 +790,7 @@ def get_wg_dump() -> dict[str, dict[str, Any]]:
             current_iface = parts[0]
             continue
         if len(parts) != 9:
+            _log.debug("Malformed wg dump line ignored: %r", line)
             continue
         pubkey = parts[1]
         try:

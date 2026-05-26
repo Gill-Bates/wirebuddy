@@ -11,23 +11,25 @@
     - extra_class: Additional CSS classes for wrapper div (default: 'mt-1')
 #}
 {% macro geo_badge(country_code, city, as_org, flag_size='md', extra_class='mt-1') %}
-{% set _sizes = {'sm': ('14', '10'), 'md': ('16', '12'), 'lg': ('20', '15')} %}
+{% set _sizes = {'sm': (14, 10), 'md': (16, 12), 'lg': (20, 15)} %}
 {% set _sz = _sizes.get(flag_size, _sizes['md']) %}
 {% set _cc = (country_code | lower | trim) if country_code else '' %}
 {% set _letters = 'abcdefghijklmnopqrstuvwxyz' %}
 {% set _valid_cc = _cc | length == 2 and _cc[0] in _letters and _cc[1] in _letters %}
-{% set _parts = [] %}
-{% if city %}{% set _ = _parts.append(city) %}{% endif %}
-{% if as_org %}{% set _ = _parts.append(as_org) %}{% endif %}
+{% set _parts = [city, as_org] | select | list %}
+{% set _extra_class = (extra_class | default('mt-1', true) | trim) %}
+{% if '"' in _extra_class or "'" in _extra_class or '<' in _extra_class or '>' in _extra_class %}
+{% set _extra_class = 'mt-1' %}
+{% endif %}
 
 {% if _valid_cc or _parts %}
-<div class="small text-muted d-flex align-items-center gap-2 {{ extra_class }}">
+<div class="small text-muted d-flex align-items-center gap-2 {{ _extra_class }}">
     {% if _valid_cc %}
-    <img alt="{{ _cc | upper }} flag"
+    <img alt=""
+      aria-hidden="true"
          src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ _cc }}.svg"
-         width="{{ _sz[0] }}"
-         height="{{ _sz[1] }}"
-         loading="lazy"
+      width="{{ _sz[0] }}"
+      height="{{ _sz[1] }}"
          decoding="async"
          class="flag-icon{{ ' flag-icon-sm' if flag_size == 'sm' else '' }}">
     {% endif %}

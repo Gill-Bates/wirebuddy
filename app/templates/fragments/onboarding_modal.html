@@ -16,8 +16,8 @@
                     <div class="d-flex align-items-start gap-3 p-3 border rounded bg-body-secondary">
                         <span class="badge bg-primary rounded-circle d-flex align-items-center justify-content-center wb-onboarding-step-badge">{{ loop.index }}</span>
                         <div>
-                            <strong>{{ step['title'] | e }}{% if step['show_default_badge'] %} <span class="badge bg-success-subtle text-success small">Enabled by Default</span>{% endif %}</strong>
-                            <p class="text-muted small mb-0">{{ step['body_pre'] | e }}<a href="{{ step['href'] | e }}">{{ step['link_label'] | e }}</a>{{ step['body_post'] | e }}</p>
+                            <strong>{{ step['title'] | e }}{% if step['show_default_badge'] %} <span class="badge bg-success-subtle text-success-emphasis small wb-onboarding-default-badge">Enabled by Default</span>{% endif %}</strong>
+                            <p class="text-muted small mb-0">{{ step['body_pre'] | e }}<a href="{{ step['href'] | e }}" class="link-body-emphasis text-decoration-underline wb-onboarding-link">{{ step['link_label'] | e }}</a>{{ step['body_post'] | e }}</p>
                         </div>
                     </div>
                     {% endfor %}

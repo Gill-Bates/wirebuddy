@@ -7,6 +7,14 @@
 """
 Fernet-based encryption for secrets at rest (private keys, preshared keys).
 
+Security model:
+- Fernet provides authenticated encryption.
+- Peppers must remain high-entropy secrets.
+- Vault payload integrity depends on Fernet MAC validation.
+- Fernet tokens expose encryption timestamps in plaintext metadata.
+- Secret material may exist in immutable Python objects during encrypt/decrypt
+	and rotation flows; memory zeroization is not guaranteed in CPython.
+
 Supported storage formats:
   - ``vault:1:<salt_hex>:<fernet_token>``
     PBKDF2-SHA256 directly on ``pepper + row_salt`` for every row
@@ -39,7 +47,16 @@ _VAULT_VERSION_2 = "2"
 _VAULT_CURRENT_VERSION = _VAULT_VERSION_2
 _VAULT_INFO_V2 = b"wirebuddy-vault-v2"
 _MASTER_SALT_V2 = b"wirebuddy-vault-master-v2"
-_PBKDF2_ITERATIONS = 480_000
+_PBKDF2_ITERATIONS = int(os.getenv("WIREBUDDY_PBKDF2_ITERATIONS", "480000"))
+_MAX_TOKEN_LENGTH = 16_384
+
+
+def _vault_info_v2() -> bytes:
+	"""Return deployment-scoped HKDF context when configured."""
+	deployment_id = os.getenv("WIREBUDDY_DEPLOYMENT_ID", "").strip()
+	if not deployment_id:
+		return _VAULT_INFO_V2
+	return f"{_VAULT_INFO_V2.decode('ascii')}:{deployment_id}".encode("utf-8")
 
 
 def _validate_pepper(pepper: str) -> None:
@@ -80,6 +97,8 @@ def _parse_value(stored: str) -> tuple[str, bytes, str]:
 		raise ValueError("invalid salt length")
 	if not fernet_token:
 		raise ValueError("missing fernet token")
+	if len(fernet_token) > _MAX_TOKEN_LENGTH:
+		raise ValueError("vault token too large")
 	return version, salt, fernet_token
 
 
@@ -112,7 +131,7 @@ def _derive_key_v2(pepper: str, salt: bytes) -> bytes:
 		algorithm=hashes.SHA256(),
 		length=32,
 		salt=salt,
-		info=_VAULT_INFO_V2,
+		info=_vault_info_v2(),
 	)
 	return base64.urlsafe_b64encode(hkdf.derive(_derive_master_key_v2(pepper)))
 
@@ -132,6 +151,8 @@ def encrypt(plaintext: str, pepper: str) -> str:
 	Returns a vault-formatted string using the current vault version.
 	"""
 	_validate_pepper(pepper)
+	if plaintext == "":
+		raise ValueError("Cannot encrypt empty secret")
 	if is_encrypted(plaintext):
 		raise ValueError("Refusing to double-encrypt a vault value")
 	salt = os.urandom(16)
@@ -157,6 +178,15 @@ def decrypt_if_needed(value: str | None, pepper: str) -> str | None:
 	return decrypt(value, pepper)
 
 
+def decrypt_required(value: str | None, pepper: str) -> str | None:
+	"""Decrypt a value that is expected to already be vault-encrypted."""
+	if value is None:
+		return None
+	if not is_encrypted(value):
+		raise ValueError("Expected encrypted vault value")
+	return decrypt(value, pepper)
+
+
 def decrypt(stored: str, pepper: str) -> str:
 	"""Decrypt a vault-formatted string back to plaintext.
 	"""
@@ -164,15 +194,18 @@ def decrypt(stored: str, pepper: str) -> str:
 	try:
 		version, salt, fernet_token = _parse_value(stored)
 	except ValueError as exc:
-		_log.warning("vault decrypt failed: corrupt payload (%s)", exc)
+		_log.warning("vault decrypt failed")
 		raise ValueError(f"Corrupt vault payload: {exc}") from exc
+
+	if version == _VAULT_VERSION_1:
+		_log.warning("Decrypting deprecated vault:1 payload")
 
 	try:
 		key = _derive_key(version, pepper, salt)
 		fernet = Fernet(key)
 		return fernet.decrypt(fernet_token.encode("ascii")).decode("utf-8")
 	except InvalidToken as exc:
-		_log.warning("vault decrypt failed: invalid token (wrong pepper?)")
+		_log.warning("vault decrypt failed")
 		raise ValueError("Cannot decrypt secret — wrong WIREBUDDY_SECRET_KEY?") from exc
 
 
@@ -190,4 +223,13 @@ def rotate(stored: str | None, old_pepper: str, new_pepper: str) -> str | None:
 
 def is_encrypted(value: str | None) -> bool:
 	"""Check whether a value is already vault-encrypted."""
-	return bool(value and value.startswith(_VAULT_PREFIX))
+	return bool(
+		value
+		and value.startswith(_VAULT_PREFIX)
+		and value.count(":") == 3
+	)
+
+
+def clear_cached_keys() -> None:
+	"""Clear cached derived master keys, e.g. during rotation or shutdown."""
+	_derive_master_key_v2.cache_clear()

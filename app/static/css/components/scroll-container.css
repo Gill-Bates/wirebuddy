@@ -1,0 +1,263 @@
+/**
+ * WireBuddy Scroll Container Component
+ * =====================================
+ * Centralized scroll container styling for consistent behavior.
+ * Replaces scattered overflow-y, scrollbar-gutter, iOS fixes.
+ *
+ * All scrollable areas should use these classes.
+ */
+
+/* ============================================
+ * Base Scroll Container
+ * ============================================ */
+
+/**
+ * Standard scroll container with stable scrollbar gutter.
+ * Use for most scrollable content areas.
+ */
+.wb-scroll-area {
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+    scrollbar-gutter: stable;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Horizontal scroll variant */
+.wb-scroll-area-x {
+    overflow-x: auto;
+    overflow-y: hidden;
+    min-width: 0;
+    scrollbar-gutter: stable;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Both directions */
+.wb-scroll-area-both {
+    overflow: auto;
+    min-width: 0;
+    min-height: 0;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* ============================================
+ * Scroll Area Variants
+ * ============================================ */
+
+/* Compact variant without scrollbar gutter (for small containers) */
+.wb-scroll-area-compact {
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Table scroll area (preserves table layout) */
+.wb-scroll-area-table {
+    overflow-x: auto;
+    overflow-y: auto;
+    min-height: 0;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Full-height scroll area (fills parent) */
+.wb-scroll-area-fill {
+    flex: 1 1 0%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+    scrollbar-gutter: stable;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* ============================================
+ * Scrollbar Styling
+ * ============================================ */
+
+/* Minimal scrollbar for all wb-scroll-area elements */
+.wb-scroll-area,
+.wb-scroll-area-x,
+.wb-scroll-area-both,
+.wb-scroll-area-compact,
+.wb-scroll-area-fill {
+    scrollbar-width: thin;
+    scrollbar-color: var(--wb-scroll-thumb-color) var(--wb-scroll-track-color);
+}
+
+/* WebKit scrollbar styling */
+.wb-scroll-area::-webkit-scrollbar,
+.wb-scroll-area-x::-webkit-scrollbar,
+.wb-scroll-area-both::-webkit-scrollbar,
+.wb-scroll-area-compact::-webkit-scrollbar,
+.wb-scroll-area-fill::-webkit-scrollbar {
+    width: var(--wb-scroll-track-width);
+    height: var(--wb-scroll-track-width);
+}
+
+.wb-scroll-area::-webkit-scrollbar-track,
+.wb-scroll-area-x::-webkit-scrollbar-track,
+.wb-scroll-area-both::-webkit-scrollbar-track,
+.wb-scroll-area-compact::-webkit-scrollbar-track,
+.wb-scroll-area-fill::-webkit-scrollbar-track {
+    background: var(--wb-scroll-track-color);
+    border-radius: var(--wb-scroll-track-width);
+}
+
+.wb-scroll-area::-webkit-scrollbar-thumb,
+.wb-scroll-area-x::-webkit-scrollbar-thumb,
+.wb-scroll-area-both::-webkit-scrollbar-thumb,
+.wb-scroll-area-compact::-webkit-scrollbar-thumb,
+.wb-scroll-area-fill::-webkit-scrollbar-thumb {
+    background: var(--wb-scroll-thumb-color);
+    border-radius: var(--wb-scroll-track-width);
+}
+
+.wb-scroll-area::-webkit-scrollbar-thumb:hover,
+.wb-scroll-area-x::-webkit-scrollbar-thumb:hover,
+.wb-scroll-area-both::-webkit-scrollbar-thumb:hover,
+.wb-scroll-area-compact::-webkit-scrollbar-thumb:hover,
+.wb-scroll-area-fill::-webkit-scrollbar-thumb:hover {
+    background: var(--wb-scroll-thumb-hover);
+}
+
+/* ============================================
+ * Scroll Padding (for sticky headers)
+ * ============================================ */
+
+.wb-scroll-padding-top {
+    scroll-padding-top: var(--wb-header-height, 60px);
+}
+
+.wb-scroll-padding-bottom {
+    scroll-padding-bottom: var(--wb-footer-height, 48px);
+}
+
+/* ============================================
+ * Scroll Snap
+ * ============================================ */
+
+.wb-scroll-snap-y {
+    scroll-snap-type: y mandatory;
+}
+
+.wb-scroll-snap-x {
+    scroll-snap-type: x mandatory;
+}
+
+.wb-scroll-snap-start {
+    scroll-snap-align: start;
+}
+
+.wb-scroll-snap-center {
+    scroll-snap-align: center;
+}
+
+/* ============================================
+ * iOS Safari Specific Fixes
+ * ============================================ */
+
+/**
+ * iOS momentum scrolling is already enabled via -webkit-overflow-scrolling.
+ * These additional fixes handle edge cases.
+ */
+
+/* Prevent elastic overscroll at page level */
+@supports (-webkit-touch-callout: none) {
+
+    .wb-scroll-area,
+    .wb-scroll-area-fill {
+        /* Prevent scroll bounce from propagating to parent */
+        overscroll-behavior: contain;
+    }
+}
+
+/* ============================================
+ * Scroll Fade Indicators
+ * ============================================ */
+
+/**
+ * Visual indicator that content is scrollable.
+ * Add .wb-scroll-fade to parent container.
+ */
+.wb-scroll-fade {
+    position: relative;
+}
+
+.wb-scroll-fade::before,
+.wb-scroll-fade::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 24px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--wb-transition-base);
+    z-index: 1;
+}
+
+.wb-scroll-fade::before {
+    top: 0;
+    background: linear-gradient(to bottom, var(--bs-body-bg) 0%, transparent 100%);
+}
+
+.wb-scroll-fade::after {
+    bottom: 0;
+    background: linear-gradient(to top, var(--bs-body-bg) 0%, transparent 100%);
+}
+
+/* Show fade when scrolled (requires JS to add these classes) */
+.wb-scroll-fade.has-scroll-top::before {
+    opacity: 1;
+}
+
+.wb-scroll-fade.has-scroll-bottom::after {
+    opacity: 1;
+}
+
+/* ============================================
+ * Nested Scroll Prevention
+ * ============================================ */
+
+/**
+ * Prevent scroll traps in nested scroll containers.
+ * Apply to outer container to isolate scroll behavior.
+ */
+.wb-scroll-isolate {
+    isolation: isolate;
+    overscroll-behavior: contain;
+}
+
+/* ============================================
+ * Empty Scroll Container
+ * ============================================ */
+
+/**
+ * Handles min-height when container is empty.
+ * Prevents collapse to zero height.
+ */
+.wb-scroll-area:empty,
+.wb-scroll-area-fill:empty {
+    min-height: 100px;
+}
+
+/* ============================================
+ * Print: Disable scroll containers
+ * ============================================ */
+
+@media print {
+
+    .wb-scroll-area,
+    .wb-scroll-area-x,
+    .wb-scroll-area-both,
+    .wb-scroll-area-compact,
+    .wb-scroll-area-fill {
+        overflow: visible !important;
+        max-height: none !important;
+    }
+}

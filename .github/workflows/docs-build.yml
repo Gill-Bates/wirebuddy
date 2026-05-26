@@ -16,16 +16,15 @@ on:
       - 'docs/**'
       - 'CHANGELOG.md'
       - 'LICENSE'
+      - '.github/workflows/docs-build.yml'
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: read
 
 # Allow one concurrent deployment
 concurrency:
-  group: "pages"
+  group: docs-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -51,12 +50,6 @@ jobs:
           pip install --upgrade pip
           pip install -r docs/requirements-docs.txt
 
-      - name: Configure Git for mike
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-
       - name: Copy root files to docs
         run: |
           cp CHANGELOG.md docs/changelog.md
@@ -67,17 +60,26 @@ jobs:
           mkdocs build -f docs/mkdocs.yml --strict
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
         with:
           path: ./site
 
   deploy:
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch') ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
-    needs: build
+      github.ref == 'refs/heads/main' &&
+      (
+        github.event_name == 'push' ||
+        github.event_name == 'workflow_dispatch'
+      )
+    needs:
+      - build
+      - link-check
+      - security-scan
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     environment:
@@ -86,7 +88,7 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
   link-check:
     runs-on: ubuntu-latest
@@ -112,7 +114,7 @@ jobs:
           cp LICENSE docs/license.md
 
       - name: Build documentation
-        run: mkdocs build -f docs/mkdocs.yml
+        run: mkdocs build -f docs/mkdocs.yml --strict
 
       - name: Check links
         uses: lycheeverse/lychee-action@v1
@@ -123,7 +125,7 @@ jobs:
             --exclude 'fonts\.gstatic\.com'
             --exclude 'gill-bates\.github\.io/wirebuddy'
             './site/**/*.html'
-          fail: false  # Don't fail on broken links, just report
+          fail: true
 
   security-scan:
     runs-on: ubuntu-latest

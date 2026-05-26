@@ -801,7 +801,9 @@
                 }
 
                 const clientIpsParam = _buildClientIpsParam();
-                const data = await api('GET', `/api/dns/top-domains?limit=15${clientIpsParam}`, null, { signal: _pageAbort.signal });
+                // Pass include_blocked=false when ad-blocker disabled to skip server-side blocked counting
+                const includeBlocked = _adBlockerEnabled ? 'true' : 'false';
+                const data = await api('GET', `/api/dns/top-domains?limit=15&hours=720&include_blocked=${includeBlocked}${clientIpsParam}`, null, { signal: _pageAbort.signal });
                 const topQueried = data.top_queried || [];
                 const topBlocked = data.top_blocked || [];
 

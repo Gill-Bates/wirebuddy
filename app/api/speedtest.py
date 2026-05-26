@@ -40,7 +40,7 @@ from ..speedtest import (
 )
 from ..utils.config import Config
 from ..utils.deps import get_conn, get_config
-from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, limiter
+from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, RATE_LIMIT_UI_HEAVY, limiter
 from ..utils.time import utcnow
 from ..utils.tsdb_helpers import build_latest_by_node
 from ..speedtest.tester import ProgressCallback, ProgressEvent, run_speedtest
@@ -83,10 +83,11 @@ async def _run_in_threadpool_with_timeout(
 	timeout_seconds: float,
 	func: Any,
 	*args: Any,
+	**kwargs: Any,
 ) -> Any:
 	"""Run blocking work in the threadpool with a bounded deadline."""
 	async with asyncio.timeout(timeout_seconds):
-		return await run_in_threadpool(func, *args)
+		return await run_in_threadpool(func, *args, **kwargs)
 
 
 def _update_speedtest_settings_sync(
@@ -299,6 +300,8 @@ async def _run_speedtest_core(
 	except asyncio.TimeoutError:
 		_log.error("SPEEDTEST_TIMEOUT: test exceeded %ss", SPEEDTEST_RUN_TIMEOUT_SECONDS)
 		raise HTTPException(status_code=504, detail="Speed test timed out") from None
+	except asyncio.CancelledError:
+		raise
 	except Exception:
 		_log.exception("SPEEDTEST_RUN_FAILED")
 		raise HTTPException(status_code=500, detail="Speed test failed") from None
@@ -373,7 +376,7 @@ async def trigger_speedtest_stream(
 
 
 @router.get("/speedtest/history")
-@limiter.limit(RATE_LIMIT_HEAVY)
+@limiter.limit(RATE_LIMIT_UI_HEAVY)
 async def get_speedtest_history(
 	request: Request,
 	range_key: str | None = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),

@@ -96,7 +96,7 @@
             return;
         }
         errorAlert.textContent = message;
-        errorAlert.classList.remove('d-none');
+        showElement(errorAlert);
 
         // Set aria-invalid on form inputs
         if (usernameField) usernameField.setAttribute('aria-invalid', 'true');
@@ -110,7 +110,7 @@
     function hideError() {
         if (!errorAlert) return;
         const wasFocused = document.activeElement === errorAlert;
-        errorAlert.classList.add('d-none');
+        hideElement(errorAlert);
 
         // Remove aria-invalid from form inputs
         if (usernameField) usernameField.removeAttribute('aria-invalid');

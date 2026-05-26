@@ -3,13 +3,13 @@
 {% block title %}Traffic – WireBuddy{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="/static/css/traffic.css">
+<link rel="stylesheet" href="/static/css/pages/traffic.css">
 
 {% endblock %}
 
 {% block content %}
 <!-- Data container for passing server-side values to JavaScript (CSP-compliant) -->
-<div id="traffic-app" data-is-admin="{{ 'true' if is_admin else 'false' }}" data-traffic-analysis-enabled="{{ 'true' if traffic_analysis_enabled else 'false' }}" style="display: none;"></div>
+<div id="traffic-app" data-is-admin="{{ 'true' if is_admin else 'false' }}" data-traffic-analysis-enabled="{{ 'true' if traffic_analysis_enabled else 'false' }}" hidden></div>
 
 <div class="container-fluid wb-page">
     <!-- Header -->
@@ -44,7 +44,7 @@
         <div class="col-12">
             <div class="card">
                 <div class="card-body text-center py-5">
-                    <span class="material-icons text-muted mb-3" style="font-size: 3rem;">show_chart</span>
+                    <span class="material-icons icon-xl text-muted mb-3" aria-hidden="true">show_chart</span>
                     <h3 class="h5 mb-2">Traffic Analysis Disabled</h3>
                     <p class="text-muted mb-3">Enable Traffic Analysis in Settings to use this feature.</p>
                     {% if is_admin %}

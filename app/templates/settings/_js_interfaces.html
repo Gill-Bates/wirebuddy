@@ -239,11 +239,11 @@
                 const deleteDisabled = !isAdmin || isActive;
                 
                 // Start: only enabled if admin and not active
-                const startBtn = `<button class="btn btn-sm btn-outline-success text-nowrap iface-action-btn" data-iface="${dataName}" data-action="up" title="${!isAdmin ? 'Admin privileges required' : 'Start'}" aria-label="Start"${startDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle icon-md">play_arrow</span></button>`;
+                const startBtn = `<button class="btn btn-sm btn-outline-success text-nowrap iface-action-btn" data-iface="${dataName}" data-action="up" title="${!isAdmin ? 'Admin privileges required' : 'Start'}" aria-label="Start"${startDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">play_arrow</span></button>`;
                 // Stop: only enabled if admin and active
-                const stopBtn = `<button class="btn btn-sm btn-outline-danger text-nowrap iface-action-btn" data-iface="${dataName}" data-action="down" title="${!isAdmin ? 'Admin privileges required' : 'Stop'}" aria-label="Stop"${stopDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle icon-md">stop</span></button>`;
+                const stopBtn = `<button class="btn btn-sm btn-outline-danger text-nowrap iface-action-btn" data-iface="${dataName}" data-action="down" title="${!isAdmin ? 'Admin privileges required' : 'Stop'}" aria-label="Stop"${stopDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">stop</span></button>`;
                 // Restart: only enabled if admin and active
-                const restartBtn = `<button class="btn btn-sm btn-outline-warning text-nowrap iface-action-btn" data-iface="${dataName}" data-action="restart" title="${!isAdmin ? 'Admin privileges required' : 'Restart'}" aria-label="Restart"${restartDisabled ? ' disabled' : ''}${!isAdmin ? ' style="pointer-events: none;"' : ''}><span class="material-icons align-middle icon-md">restart_alt</span></button>`;
+                const restartBtn = `<button class="btn btn-sm btn-outline-warning text-nowrap iface-action-btn" data-iface="${dataName}" data-action="restart" title="${!isAdmin ? 'Admin privileges required' : 'Restart'}" aria-label="Restart"${restartDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">restart_alt</span></button>`;
                 // Delete: only enabled if admin and not active
                 const deleteBtn = (isAdmin)
                     ? `<button class="btn btn-sm btn-outline-danger text-nowrap iface-delete-btn" data-iface="${dataName}" title="Delete" aria-label="Delete"${deleteDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">delete</span></button>`

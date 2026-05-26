@@ -16,6 +16,7 @@ import os
 import sqlite3
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -67,32 +68,49 @@ router = APIRouter(tags=["passkeys"])
 
 _AUTH_COOKIE = "auth_token"
 _RP_ID_OVERRIDE = os.environ.get("PASSKEY_RP_ID")
+_PUBLIC_ORIGIN = os.environ.get("WIREBUDDY_PUBLIC_ORIGIN", "").strip()
+
+
+def _is_local_dev_host(hostname: str) -> bool:
+	"""Return True for local-development hostnames/IPs."""
+	host = (hostname or "").strip().lower().strip("[]")
+	return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def _public_origin_hostname() -> str | None:
+	"""Extract hostname from configured WIREBUDDY_PUBLIC_ORIGIN."""
+	if not _PUBLIC_ORIGIN:
+		return None
+	parsed = urlparse(_PUBLIC_ORIGIN)
+	hostname = (parsed.hostname or "").strip()
+	return hostname or None
 
 
 def _get_rp_id(request: Request) -> str:
-	"""Get the Relying Party ID from the request host.
-	
-	For development with localhost, use 'localhost'.
-	For production, use the domain without port.
-	"""
+	"""Get RP ID from explicit config or trusted local-development fallback."""
 	if _RP_ID_OVERRIDE:
 		return _RP_ID_OVERRIDE
-	host = request.headers.get("host", "localhost")
-	# Handle IPv6 literals: [::1]:8080 -> [::1]
-	if host.startswith("["):
-		# IPv6 literal — strip optional trailing port after the closing bracket
-		bracket_end = host.find("]")
-		if bracket_end != -1:
-			return host[: bracket_end + 1]
-		return host
-	# Plain hostname or IPv4 — strip port if present
-	if ":" in host:
-		host = host.rsplit(":", 1)[0]
-	return host
+	if (origin_host := _public_origin_hostname()) is not None:
+		return origin_host
+	hostname = (request.url.hostname or "localhost").strip()
+	if _is_local_dev_host(hostname):
+		return hostname
+	raise HTTPException(
+		status_code=500,
+		detail="PASSKEY_RP_ID or WIREBUDDY_PUBLIC_ORIGIN must be configured",
+	)
 
 
 def _get_origin(request: Request) -> str:
-	"""Get the expected origin from the request."""
+	"""Get expected origin from explicit config or local-development fallback."""
+	if _PUBLIC_ORIGIN:
+		return _PUBLIC_ORIGIN.rstrip("/")
+	hostname = (request.url.hostname or "localhost").strip()
+	if not _is_local_dev_host(hostname):
+		raise HTTPException(
+			status_code=500,
+			detail="WIREBUDDY_PUBLIC_ORIGIN must be configured",
+		)
 	scheme = "https" if _is_https(request) else "http"
 	host = request.headers.get("host", "localhost")
 	return f"{scheme}://{host}"
@@ -552,7 +570,9 @@ def delete_passkey_endpoint(
 
 
 @router.post("/reset/{user_id}")
+@limiter.limit(RATE_LIMIT_AUTH)
 def reset_user_passkeys(
+	request: Request,
 	user_id: int,
 	admin: sqlite3.Row = Depends(require_admin),
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -608,7 +628,9 @@ def check_passkeys_available(conn: sqlite3.Connection = Depends(get_conn)):
 
 
 @router.post("/enable/{user_id}")
+@limiter.limit(RATE_LIMIT_AUTH)
 def enable_user_passkey(
+	request: Request,
 	user_id: int,
 	admin: sqlite3.Row = Depends(require_admin),
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -639,7 +661,9 @@ def enable_user_passkey(
 
 
 @router.post("/disable/{user_id}")
+@limiter.limit(RATE_LIMIT_AUTH)
 def disable_user_passkey(
+	request: Request,
 	user_id: int,
 	admin: sqlite3.Row = Depends(require_admin),
 	conn: sqlite3.Connection = Depends(get_conn),

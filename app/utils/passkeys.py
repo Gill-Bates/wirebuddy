@@ -9,6 +9,9 @@
 Challenge Storage: Uses SQLite-backed storage for multi-worker/multi-process
 deployments. Challenges are stored in the `passkey_challenges` table with
 automatic expiration cleanup.
+
+Security requirement:
+`passkey_challenges.challenge` MUST remain UNIQUE.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from webauthn import (
 	generate_authentication_options,
@@ -49,6 +53,10 @@ _log = logging.getLogger(__name__)
 
 # Configuration constants
 _MAX_PASSKEYS_PER_USER = int(os.environ.get("MAX_PASSKEYS_PER_USER", "20"))
+_MAX_B64URL_SIZE = 8192
+_MAX_TRANSPORTS = 16
+_MAX_TRANSPORT_ENTRY_LEN = 64
+_MAX_SERIALIZATION_NODES = 10_000
 
 
 # Custom exceptions
@@ -110,12 +118,42 @@ def _validate_base64url(value: str, name: str) -> None:
 	"""
 	if not value:
 		raise ValueError(f"{name} cannot be empty")
+	if len(value) > _MAX_B64URL_SIZE:
+		raise ValueError(f"{name} too large")
 	
 	try:
 		# Attempt decode - this validates format and character set
 		base64url_to_bytes(value)
 	except (binascii.Error, ValueError) as e:
 		raise ValueError(f"{name} is not valid base64url: {e}") from e
+
+
+def _normalize_expected_origin(expected_origin: str) -> str:
+	"""Canonicalize a WebAuthn origin for verification."""
+	if not isinstance(expected_origin, str):
+		raise ValueError("expected_origin must be a string")
+	raw = expected_origin.strip().rstrip("/")
+	if not raw:
+		raise ValueError("expected_origin must not be empty")
+	parsed = urlsplit(raw)
+	if not parsed.scheme or not parsed.hostname:
+		raise ValueError("expected_origin must include scheme and hostname")
+	host = parsed.hostname.rstrip(".").lower()
+	port = parsed.port
+	if (parsed.scheme.lower() == "https" and port == 443) or (parsed.scheme.lower() == "http" and port == 80):
+		port = None
+	netloc = host if port is None else f"{host}:{port}"
+	return urlunsplit((parsed.scheme.lower(), netloc, parsed.path or "", "", ""))
+
+
+def _normalize_expected_rp_id(expected_rp_id: str) -> str:
+	"""Canonicalize RP IDs for consistent verification."""
+	if not isinstance(expected_rp_id, str):
+		raise ValueError("expected_rp_id must be a string")
+	normalized = expected_rp_id.strip().rstrip(".").lower()
+	if not normalized:
+		raise ValueError("expected_rp_id must not be empty")
+	return normalized
 
 
 def _parse_registration_credential(credential_json: dict[str, Any]) -> RegistrationCredential:
@@ -157,9 +195,15 @@ def _parse_registration_credential(credential_json: dict[str, Any]) -> Registrat
 		transports = response.get("transports")
 		parsed_transports = None
 		if transports:
+			if not isinstance(transports, list):
+				raise ValueError("transports must be a list")
+			if len(transports) > _MAX_TRANSPORTS:
+				raise ValueError("Too many transports")
 			from webauthn.helpers.structs import AuthenticatorTransport
 			parsed_transports = []
 			for t in transports:
+				if not isinstance(t, str) or len(t) > _MAX_TRANSPORT_ENTRY_LEN:
+					raise ValueError("Invalid transport value")
 				try:
 					parsed_transports.append(AuthenticatorTransport(t))
 				except ValueError:
@@ -279,7 +323,7 @@ def consume_registration_challenge(
 	try:
 		user_id, username = consume_challenge(conn, challenge, "registration")
 	except KeyError:
-		_log.warning("Registration challenge not found (replay or expired)")
+		_log.warning("Registration challenge invalid")
 		raise InvalidChallengeError("Unknown or already-consumed challenge") from None
 	except ValueError as e:
 		_log.error("Challenge ceremony type mismatch: %s", e)
@@ -289,7 +333,7 @@ def consume_registration_challenge(
 		_log.error("Registration challenge missing user_id or username")
 		raise InvalidChallengeError("Invalid challenge data")
 	
-	_log.info("Registration challenge consumed for user_id=%d", user_id)
+	_log.info("Registration challenge consumed")
 	return (user_id, username)
 
 
@@ -332,13 +376,13 @@ def consume_authentication_challenge(
 	try:
 		user_id, _ = consume_challenge(conn, challenge, "authentication")
 	except KeyError:
-		_log.warning("Authentication challenge not found (replay or expired)")
+		_log.warning("Authentication challenge invalid")
 		raise InvalidChallengeError("Unknown or already-consumed challenge") from None
 	except ValueError as e:
 		_log.error("Challenge ceremony type mismatch: %s", e)
 		raise InvalidChallengeError(str(e)) from None
 	
-	_log.info("Authentication challenge consumed for user_id=%s", user_id)
+	_log.info("Authentication challenge consumed")
 	return AuthenticationChallengeResult(user_id=user_id)
 
 
@@ -428,6 +472,8 @@ def verify_registration(
 	"""
 	# Parse the credential from browser JSON (camelCase) to py-webauthn dataclass (snake_case)
 	credential = _parse_registration_credential(credential_json)
+	expected_origin = _normalize_expected_origin(expected_origin)
+	expected_rp_id = _normalize_expected_rp_id(expected_rp_id)
 
 	verification = verify_registration_response(
 		credential=credential,
@@ -519,6 +565,8 @@ def verify_authentication(
 	"""
 	# Parse the credential from browser JSON (camelCase) to py-webauthn dataclass (snake_case)
 	credential = _parse_authentication_credential(credential_json)
+	expected_origin = _normalize_expected_origin(expected_origin)
+	expected_rp_id = _normalize_expected_rp_id(expected_rp_id)
 
 	verification = verify_authentication_response(
 		credential=credential,
@@ -561,7 +609,12 @@ def _options_to_dict(options: Any) -> dict[str, Any]:
 	return _convert_bytes_recursive(data)
 
 
-def _convert_bytes_recursive(obj: Any, _depth: int = 0, _seen: set[int] | None = None) -> Any:
+def _convert_bytes_recursive(
+	obj: Any,
+	_depth: int = 0,
+	_seen: set[int] | None = None,
+	_node_count: list[int] | None = None,
+) -> Any:
 	"""Recursively convert bytes objects to base64url strings and dataclasses to dicts.
 	
 	Args:
@@ -572,6 +625,12 @@ def _convert_bytes_recursive(obj: Any, _depth: int = 0, _seen: set[int] | None =
 	Raises:
 		RecursionError: If maximum depth exceeded or circular reference detected
 	"""
+	if _node_count is None:
+		_node_count = [0]
+	_node_count[0] += 1
+	if _node_count[0] > _MAX_SERIALIZATION_NODES:
+		raise RecursionError("Maximum serialization node count exceeded in _convert_bytes_recursive")
+
 	# Protect against infinite recursion
 	if _depth > 100:
 		raise RecursionError("Maximum recursion depth exceeded in _convert_bytes_recursive")
@@ -591,14 +650,14 @@ def _convert_bytes_recursive(obj: Any, _depth: int = 0, _seen: set[int] | None =
 	if isinstance(obj, dict):
 		_seen.add(obj_id)
 		try:
-			return {k: _convert_bytes_recursive(v, _depth + 1, _seen) for k, v in obj.items()}
+			return {k: _convert_bytes_recursive(v, _depth + 1, _seen, _node_count) for k, v in obj.items()}
 		finally:
 			_seen.discard(obj_id)
 	
 	if isinstance(obj, list):
 		_seen.add(obj_id)
 		try:
-			return [_convert_bytes_recursive(item, _depth + 1, _seen) for item in obj]
+			return [_convert_bytes_recursive(item, _depth + 1, _seen, _node_count) for item in obj]
 		finally:
 			_seen.discard(obj_id)
 	
@@ -615,12 +674,9 @@ def _convert_bytes_recursive(obj: Any, _depth: int = 0, _seen: set[int] | None =
 			or hasattr(obj, "__dataclass_fields__")
 			or hasattr(obj, "model_fields")  # Pydantic
 		):
-			return {k: _convert_bytes_recursive(v, _depth + 1, _seen) for k, v in obj.__dict__.items()}
+			return {k: _convert_bytes_recursive(v, _depth + 1, _seen, _node_count) for k, v in obj.__dict__.items()}
 		# Unknown object type - log warning and skip
-		_log.warning(
-			"_convert_bytes_recursive: skipping unknown object type %s",
-			type(obj).__name__,
-		)
+		_log.debug("Skipping unsupported serialization object")
 	
 	return obj
 
@@ -630,15 +686,30 @@ def parse_transports(transports_json: str | None) -> list[str]:
 	if not transports_json:
 		return []
 	try:
-		return json.loads(transports_json)
+		value = json.loads(transports_json)
 	except (json.JSONDecodeError, TypeError):
 		return []
+	if not isinstance(value, list):
+		return []
+	if len(value) > _MAX_TRANSPORTS:
+		return []
+	parsed: list[str] = []
+	for item in value:
+		if not isinstance(item, str) or not item or len(item) > _MAX_TRANSPORT_ENTRY_LEN:
+			return []
+		parsed.append(item)
+	return parsed
 
 
 def serialize_transports(transports: list[str] | None) -> str | None:
 	"""Serialize transports list to JSON string for DB storage."""
 	if not transports:
 		return None
+	if len(transports) > _MAX_TRANSPORTS:
+		raise ValueError("Too many transports")
+	for item in transports:
+		if not isinstance(item, str) or not item or len(item) > _MAX_TRANSPORT_ENTRY_LEN:
+			raise ValueError("Invalid transport value")
 	return json.dumps(transports)
 
 
@@ -651,7 +722,13 @@ def _clear_challenge_cache(conn: sqlite3.Connection) -> None:
 	Raises:
 		RuntimeError: If not in test mode
 	"""
-	if not os.environ.get("TESTING"):
+	if not (
+		os.environ.get("TESTING")
+		and (
+			os.environ.get("WIREBUDDY_ENV", "").strip().lower() == "test"
+			or os.environ.get("PYTEST_CURRENT_TEST")
+		)
+	):
 		raise RuntimeError("Refusing to clear challenge cache outside test mode")
 	
 	from ..db.sqlite_runtime import transaction

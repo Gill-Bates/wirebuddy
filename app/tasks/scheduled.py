@@ -380,6 +380,8 @@ async def _execute_scheduled_speedtest_run(ctx: main.LifespanContext) -> None:
             # Persist failed runs as well so the UI can surface the failure and the
             # scheduler does not immediately retry on the next tick.
             await asyncio.to_thread(_persist_last_run_to_db, ctx.cfg.db_path)
+            if result.get("status") == "ok":
+                lease.mark_success()
             
             if result.get("status") == "ok":
                 _log.info(
@@ -421,7 +423,7 @@ async def run_scheduled_backup(ctx: main.LifespanContext) -> None:
         enabled = await asyncio.to_thread(is_scheduled_backup_enabled, ctx.cfg.db_path)
         if not enabled:
             return
-        result = await asyncio.to_thread(do_backup, ctx.cfg.data_dir, ctx.cfg.db_path)
+        result = await asyncio.to_thread(do_backup, ctx.cfg.data_dir, ctx.cfg.db_path, ctx.cfg.secret_key)
         _log.info("SCHEDULED_BACKUP completed: %s", result.get("filename"))
     except Exception as exc:
         _log.error("SCHEDULED_BACKUP failed: %s", exc, exc_info=True)

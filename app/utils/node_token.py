@@ -19,6 +19,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -28,8 +29,22 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 MAX_TOKEN_AGE = timedelta(hours=24)
+_CLOCK_SKEW = timedelta(minutes=5)
+_MAX_TOKEN_SIZE = 16_384
+_MAX_DECODED_TOKEN_SIZE = 65_536
+_MAX_CERT_PEM_SIZE = 65_536
+_MAX_NODE_ID_LENGTH = 64
+_MAX_NODE_NAME_LENGTH = 128
+_NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 
 _REQUIRED_PAYLOAD_FIELDS = frozenset({"master_url", "node_id", "node_name", "api_secret", "created_at"})
+_REQUIRED_PAYLOAD_FIELD_TYPES = {
+	"master_url": str,
+	"node_id": str,
+	"node_name": str,
+	"api_secret": str,
+	"created_at": str,
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -41,6 +56,44 @@ def _require_secret_key(secret_key: str) -> None:
 	"""Ensure the shared secret key is present."""
 	if not secret_key:
 		raise ValueError("secret_key must not be empty")
+
+
+def _normalize_master_url(master_url: str) -> str:
+	"""Normalize master_url consistently before signing."""
+	if not isinstance(master_url, str):
+		raise ValueError("master_url must be a string")
+	normalized = master_url.strip().rstrip("/")
+	if not normalized:
+		raise ValueError("master_url must not be empty")
+	return normalized
+
+
+def _validate_node_id(node_id: str) -> str:
+	"""Validate node identifiers used in tokens and certificate labels."""
+	if not isinstance(node_id, str):
+		raise ValueError("node_id must be a string")
+	normalized = node_id.strip()
+	if not normalized:
+		raise ValueError("node_id must not be empty")
+	if len(normalized) > _MAX_NODE_ID_LENGTH:
+		raise ValueError("node_id too long")
+	if _NODE_ID_RE.fullmatch(normalized) is None:
+		raise ValueError("node_id contains unsupported characters")
+	return normalized
+
+
+def _validate_node_name(node_name: str) -> str:
+	"""Validate human-readable node names for token payloads."""
+	if not isinstance(node_name, str):
+		raise ValueError("node_name must be a string")
+	normalized = node_name.strip()
+	if not normalized:
+		raise ValueError("node_name must not be empty")
+	if len(normalized) > _MAX_NODE_NAME_LENGTH:
+		raise ValueError("node_name too long")
+	if any(ch in normalized for ch in ("\n", "\r", "\x00")):
+		raise ValueError("node_name contains unsafe control characters")
+	return normalized
 
 
 def _serialize_payload(payload: dict[str, str]) -> str:
@@ -65,15 +118,26 @@ def _encode_token(payload_json: str, signature: str) -> str:
 
 def _decode_token(token_string: str) -> tuple[str, str]:
 	"""Decode a wire token into payload JSON and signature parts."""
+	if len(token_string) > _MAX_TOKEN_SIZE:
+		raise ValueError("Token too large")
 	try:
-		raw = base64.urlsafe_b64decode(token_string.encode("ascii")).decode("utf-8")
+		decoded = base64.urlsafe_b64decode(token_string.encode("ascii"))
 	except Exception as exc:
+		raise ValueError("Invalid token encoding") from exc
+	if len(decoded) > _MAX_DECODED_TOKEN_SIZE:
+		raise ValueError("Decoded token payload too large")
+	try:
+		raw = decoded.decode("utf-8")
+	except UnicodeDecodeError as exc:
 		raise ValueError("Invalid token encoding") from exc
 
 	if "." not in raw:
 		raise ValueError("Malformed token: missing signature separator")
 
-	return raw.rsplit(".", 1)
+	payload_json, signature = raw.rsplit(".", 1)
+	if len(signature) != 64:
+		raise ValueError("Malformed token signature")
+	return payload_json, signature
 
 
 def _parse_created_at(created_at_raw: str) -> datetime:
@@ -107,6 +171,9 @@ def generate_enrollment_token(
 		a one-time credential, not as a non-sensitive identifier.
 	"""
 	_require_secret_key(secret_key)
+	master_url = _normalize_master_url(master_url)
+	node_id = _validate_node_id(node_id)
+	node_name = _validate_node_name(node_name)
 
 	api_secret = secrets.token_urlsafe(32)
 	payload = {
@@ -142,14 +209,29 @@ def verify_enrollment_token(
 		payload = json.loads(payload_json)
 	except json.JSONDecodeError as exc:
 		raise ValueError("Token payload is not valid JSON") from exc
+	if not isinstance(payload, dict):
+		raise ValueError("Token payload must be a JSON object")
 
 	for field in _REQUIRED_PAYLOAD_FIELDS:
 		if field not in payload:
 			raise ValueError(f"Token missing required field: {field}")
+	for field, expected_type in _REQUIRED_PAYLOAD_FIELD_TYPES.items():
+		value = payload.get(field)
+		if not isinstance(value, expected_type):
+			raise ValueError(f"Invalid token field type: {field}")
+
+	payload["master_url"] = _normalize_master_url(payload["master_url"])
+	payload["node_id"] = _validate_node_id(payload["node_id"])
+	payload["node_name"] = _validate_node_name(payload["node_name"])
+	if not payload["api_secret"].strip():
+		raise ValueError("Token field 'api_secret' must not be empty")
 
 	created_at = _parse_created_at(payload["created_at"])
+	now = datetime.now(timezone.utc)
+	if created_at > now + _CLOCK_SKEW:
+		raise ValueError("Token created_at is in the future")
 
-	if max_age is not None and datetime.now(timezone.utc) - created_at > max_age:
+	if max_age is not None and now - created_at > max_age:
 		raise ValueError("Token has expired")
 
 	return payload
@@ -170,10 +252,12 @@ def generate_node_cert(node_id: str) -> tuple[bytes, bytes]:
 	Returns:
 		(cert_pem, key_pem) as bytes
 	"""
+	node_id = _validate_node_id(node_id)
 	key = ec.generate_private_key(ec.SECP256R1())
+	node_label = f"wirebuddy-node-{node_id[:8]}"
 
 	subject = issuer = x509.Name([
-		x509.NameAttribute(NameOID.COMMON_NAME, f"wirebuddy-node-{node_id[:8]}"),
+		x509.NameAttribute(NameOID.COMMON_NAME, node_label),
 		x509.NameAttribute(NameOID.ORGANIZATION_NAME, "WireBuddy"),
 	])
 
@@ -185,7 +269,11 @@ def generate_node_cert(node_id: str) -> tuple[bytes, bytes]:
 		.public_key(key.public_key())
 		.serial_number(x509.random_serial_number())
 		.not_valid_before(now)
-		.not_valid_after(now + timedelta(days=3650))
+		.not_valid_after(now + timedelta(days=365))
+		.add_extension(
+			x509.SubjectAlternativeName([x509.DNSName(node_label)]),
+			critical=False,
+		)
 		.sign(key, hashes.SHA256())
 	)
 
@@ -200,5 +288,7 @@ def generate_node_cert(node_id: str) -> tuple[bytes, bytes]:
 
 def get_cert_fingerprint(cert_pem: bytes) -> str:
 	"""Return the SHA-256 fingerprint of a PEM-encoded certificate."""
+	if len(cert_pem) > _MAX_CERT_PEM_SIZE:
+		raise ValueError("Certificate PEM too large")
 	cert = x509.load_pem_x509_certificate(cert_pem)
 	return cert.fingerprint(hashes.SHA256()).hex()

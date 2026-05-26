@@ -76,6 +76,11 @@ class Scheduler:
 		self._stop_event: asyncio.Event | None = None
 		self._started = False
 
+	@property
+	def running(self) -> bool:
+		"""Return whether the scheduler is currently started."""
+		return self._started
+
 	def add(
 		self,
 		name: str,

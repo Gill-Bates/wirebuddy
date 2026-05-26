@@ -217,7 +217,7 @@ async function initPasskeys() {
 
     const passkeySection = document.getElementById('passkey-section');
     if (passkeySection) {
-        passkeySection.classList.remove('hidden');
+        showElement(passkeySection);
     }
 
     const passkeyBtn = document.getElementById('passkey-login-btn');

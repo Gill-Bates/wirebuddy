@@ -24,7 +24,7 @@ from ..dns.unbound_config import write_local_data_overrides
 from ..dns import unbound_process as unbound
 from ..utils.conntrack import init_conntrack_accounting
 from ..utils.deps import get_conn, get_config
-from ..utils.rate_limit import limiter, RATE_LIMIT_CRITICAL
+from ..utils.rate_limit import limiter, RATE_LIMIT_CRITICAL, RATE_LIMIT_UI_HEAVY
 from ..utils.vault import decrypt as vault_decrypt, encrypt as vault_encrypt
 from ..utils.version import check_for_updates
 from .auth import get_current_user, require_admin
@@ -371,7 +371,7 @@ async def update_wg_settings(
 
 
 @router.get("/settings/psk")
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@limiter.limit(RATE_LIMIT_UI_HEAVY)
 async def get_global_psk(
 	request: Request,
 	reveal: bool = Query(False),
@@ -380,7 +380,7 @@ async def get_global_psk(
 ):
 	"""Get the current global PresharedKey (masked or full).
 	
-	Rate limited to prevent abuse of PSK reveal.
+	Uses UI-heavy rate limit because this read endpoint is polled by admin views.
 	"""
 	cfg = get_config(request)
 	enc_psk = get_setting(conn, "wg_global_psk")
@@ -413,6 +413,7 @@ async def get_global_psk(
 
 
 @router.post("/settings/generate-psk")
+@limiter.limit(RATE_LIMIT_CRITICAL)
 async def generate_global_psk(
 	request: Request,
 	_: sqlite3.Row = Depends(require_admin),
@@ -433,6 +434,7 @@ async def generate_global_psk(
 
 
 @router.put("/settings/psk")
+@limiter.limit(RATE_LIMIT_CRITICAL)
 async def set_global_psk(
 	request: Request,
 	payload: GlobalPskPayload,

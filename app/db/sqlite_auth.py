@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 import math
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -144,100 +146,143 @@ def delete_user_tokens(conn: sqlite3.Connection, user_id: int) -> None:
 # Login attempt tracking (exponential backoff)
 # ---------------------------------------------------------------------------
 
-MIN_FAILURES_FOR_LOCKOUT = 3  # Start lockout after 3 failed attempts
-BASE_LOCKOUT_SECONDS = 15  # First lockout: 15 seconds
-MAX_LOCKOUT_SECONDS = 86400  # Maximum lockout: 24 hours
+@dataclass(frozen=True, slots=True)
+class _LockoutPolicy:
+	key_prefix: str
+	min_failures: int
+	base_seconds: int
+	max_seconds: int
 
 
-def _calculate_lockout_seconds(failed_count: int) -> int:
+def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
+	"""Read a positive integer from env, falling back safely on invalid values."""
+	raw = os.environ.get(name)
+	if raw is None:
+		return default
+	try:
+		value = int(raw)
+	except ValueError:
+		_log.warning("Ignoring invalid %s=%r; using %d", name, raw, default)
+		return default
+	if value < minimum:
+		_log.warning("Ignoring %s=%r below minimum %d; using %d", name, raw, minimum, default)
+		return default
+	return value
+
+
+_IP_LOCKOUT_POLICY = _LockoutPolicy(
+	key_prefix="ip",
+	min_failures=_int_env("WIREBUDDY_LOGIN_IP_MIN_FAILURES", 5),
+	base_seconds=_int_env("WIREBUDDY_LOGIN_IP_BASE_LOCKOUT_SECONDS", 30),
+	max_seconds=_int_env("WIREBUDDY_LOGIN_IP_MAX_LOCKOUT_SECONDS", 86400),
+)
+_USER_IP_LOCKOUT_POLICY = _LockoutPolicy(
+	key_prefix="userip",
+	min_failures=_int_env("WIREBUDDY_LOGIN_USER_IP_MIN_FAILURES", 3),
+	base_seconds=_int_env("WIREBUDDY_LOGIN_USER_IP_BASE_LOCKOUT_SECONDS", 30),
+	max_seconds=_int_env("WIREBUDDY_LOGIN_USER_IP_MAX_LOCKOUT_SECONDS", 3600),
+)
+
+
+def _normalize_login_subject(username: str | None) -> str | None:
+	"""Return a normalized username token for composite lockout keys."""
+	if username is None:
+		return None
+	normalized = username.strip().casefold()
+	return normalized[:128] or None
+
+
+def _build_attempt_keys(ip_address: str, username: str | None) -> list[tuple[str, _LockoutPolicy]]:
+	"""Return all storage keys participating in login throttling."""
+	keys = [(f"{_IP_LOCKOUT_POLICY.key_prefix}:{ip_address}", _IP_LOCKOUT_POLICY)]
+	normalized_username = _normalize_login_subject(username)
+	if normalized_username is not None:
+		keys.append(
+			(
+				f"{_USER_IP_LOCKOUT_POLICY.key_prefix}:{normalized_username}:{ip_address}",
+				_USER_IP_LOCKOUT_POLICY,
+			)
+		)
+	return keys
+
+
+def _calculate_lockout_seconds(failed_count: int, policy: _LockoutPolicy) -> int:
 	"""Calculate exponential backoff lockout duration.
 
 	Formula: BASE * 2^(attempts - MIN_FAILURES)
-	- 3 failures: 15s
-	- 4 failures: 30s
-	- 5 failures: 60s (1 min)
-	- 6 failures: 120s (2 min)
-	- 7 failures: 240s (4 min)
-	- 8 failures: 480s (8 min)
-	- 9 failures: 960s (16 min)
-	- 10 failures: 1920s (32 min)
-	- 11 failures: 3840s (64 min)
+	- first lockout starts at the configured base seconds
+	- each subsequent failure doubles the duration
 	- higher failures are capped at 24 hours
 	"""
-	if failed_count < MIN_FAILURES_FOR_LOCKOUT:
+	if failed_count < policy.min_failures:
 		return 0
 
-	exponent = failed_count - MIN_FAILURES_FOR_LOCKOUT
-	max_exponent = math.floor(math.log2(MAX_LOCKOUT_SECONDS / BASE_LOCKOUT_SECONDS))
+	exponent = failed_count - policy.min_failures
+	max_exponent = math.floor(math.log2(policy.max_seconds / policy.base_seconds))
 	if exponent > max_exponent:
-		return MAX_LOCKOUT_SECONDS
-	lockout = BASE_LOCKOUT_SECONDS * (2**exponent)
-	return min(lockout, MAX_LOCKOUT_SECONDS)
+		return policy.max_seconds
+	lockout = policy.base_seconds * (2**exponent)
+	return min(lockout, policy.max_seconds)
 
 
-def is_ip_locked(conn: sqlite3.Connection, ip_address: str) -> tuple[bool, int]:
-	"""Check if an IP is locked out from login attempts.
+def is_ip_locked(conn: sqlite3.Connection, ip_address: str, username: str | None = None) -> tuple[bool, int]:
+	"""Check if an IP or username+IP pair is locked out from login attempts.
 
 	Returns:
 		Tuple of (is_locked, seconds_remaining)
 	"""
-	cur = conn.execute(
-		"SELECT failed_count, locked_until FROM login_attempts WHERE ip_address = ?",
-		(ip_address,),
-	)
-	row = cur.fetchone()
-	if not row:
-		return (False, 0)
-
-	locked_until = row["locked_until"]
-	locked_until = _parse_db_timestamp(locked_until)
-	if locked_until is None:
-		return (False, 0)
-
 	now = utcnow()
-	if now < locked_until:
-		remaining = int((locked_until - now).total_seconds())
-		return (True, remaining)
+	max_remaining = 0
+	for key, _policy in _build_attempt_keys(ip_address, username):
+		cur = conn.execute(
+			"SELECT locked_until FROM login_attempts WHERE ip_address = ?",
+			(key,),
+		)
+		row = cur.fetchone()
+		if not row:
+			continue
+		locked_until = _parse_db_timestamp(row["locked_until"])
+		if locked_until is None or now >= locked_until:
+			continue
+		max_remaining = max(max_remaining, int((locked_until - now).total_seconds()))
 
-	return (False, 0)
+	return (max_remaining > 0, max_remaining)
 
 
-def record_failed_login(conn: sqlite3.Connection, ip_address: str) -> None:
-	"""Record a failed login attempt for an IP with exponential backoff.
+def record_failed_login(conn: sqlite3.Connection, ip_address: str, username: str | None = None) -> None:
+	"""Record failed login attempts for the IP and username+IP lockout keys.
 
 	Uses immediate transaction to prevent race conditions.
 	"""
 	now = utcnow()
 
 	with transaction(conn, immediate=True):
-		# Get current failed_count to calculate the new lockout
-		cur = conn.execute(
-			"SELECT failed_count FROM login_attempts WHERE ip_address = ?",
-			(ip_address,),
-		)
-		row = cur.fetchone()
-		current_count = int(row["failed_count"] if row else 0)
-		new_count = current_count + 1
+		for key, policy in _build_attempt_keys(ip_address, username):
+			cur = conn.execute(
+				"SELECT failed_count FROM login_attempts WHERE ip_address = ?",
+				(key,),
+			)
+			row = cur.fetchone()
+			current_count = int(row["failed_count"] if row else 0)
+			new_count = current_count + 1
+			lockout_seconds = _calculate_lockout_seconds(new_count, policy)
+			locked_until = now + timedelta(seconds=lockout_seconds) if lockout_seconds > 0 else None
 
-		# Calculate lockout duration based on NEW count
-		lockout_seconds = _calculate_lockout_seconds(new_count)
-		locked_until = now + timedelta(seconds=lockout_seconds) if lockout_seconds > 0 else None
-
-		# Upsert with calculated lockout
-		conn.execute(
-			"""
-			INSERT INTO login_attempts (ip_address, failed_count, last_attempt_at, created_at, locked_until)
-			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(ip_address) DO UPDATE SET
-				failed_count = ?,
-				last_attempt_at = excluded.last_attempt_at,
-				locked_until = excluded.locked_until
-			""",
-			(ip_address, new_count, now, now, locked_until, new_count),
-		)
+			conn.execute(
+				"""
+				INSERT INTO login_attempts (ip_address, failed_count, last_attempt_at, created_at, locked_until)
+				VALUES (?, ?, ?, ?, ?)
+				ON CONFLICT(ip_address) DO UPDATE SET
+					failed_count = ?,
+					last_attempt_at = excluded.last_attempt_at,
+					locked_until = excluded.locked_until
+				""",
+				(key, new_count, now, now, locked_until, new_count),
+			)
 
 
-def clear_login_attempts(conn: sqlite3.Connection, ip_address: str) -> None:
-	"""Clear failed login attempts for an IP after successful login."""
+def clear_login_attempts(conn: sqlite3.Connection, ip_address: str, username: str | None = None) -> None:
+	"""Clear failed login attempts for all keys after successful login."""
 	with transaction(conn):
-		conn.execute("DELETE FROM login_attempts WHERE ip_address = ?", (ip_address,))
+		for key, _policy in _build_attempt_keys(ip_address, username):
+			conn.execute("DELETE FROM login_attempts WHERE ip_address = ?", (key,))

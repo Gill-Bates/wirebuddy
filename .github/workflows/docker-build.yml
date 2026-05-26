@@ -4,59 +4,72 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:  # Manual trigger (won't tag as :latest)
+  workflow_dispatch:
 
-# Minimal permissions - only what's needed
+concurrency:
+  group: docker-release
+  cancel-in-progress: false
+
 permissions:
-  contents: write  # Required for creating releases
+  contents: read
+
+env:
+  REGISTRY: docker.io
 
 jobs:
-  build:
+  meta:
+    name: Validate build metadata
     runs-on: ubuntu-latest
-    timeout-minutes: 60  # Realistic timeout; raise if arm64 consistently exceeds
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      build_date: ${{ steps.meta.outputs.build_date }}
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      image_name: ${{ steps.meta.outputs.image_name }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for robust changelog/release notes handling
+          fetch-depth: 1
 
-      - name: Generate BUILD_INFO
-        run: git rev-parse HEAD > BUILD_INFO
-
-      # Required for arm64 builds on GitHub runners
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Validate Docker Hub secrets
+        run: |
+          set -euo pipefail
+          test -n "${{ secrets.DOCKERHUB_USERNAME }}" || {
+            echo "ERROR: Missing DOCKERHUB_USERNAME secret"
+            exit 1
+          }
+          test -n "${{ secrets.DOCKERHUB_TOKEN }}" || {
+            echo "ERROR: Missing DOCKERHUB_TOKEN secret"
+            exit 1
+          }
 
       - name: Validate and set build metadata
         id: meta
         run: |
           set -euo pipefail
-          
-          # Validate VERSION file exists
+
+          DOCKERHUB_USERNAME="${{ secrets.DOCKERHUB_USERNAME }}"
+          if ! echo "$DOCKERHUB_USERNAME" | grep -qE '^[a-z0-9][a-z0-9_-]{2,}$'; then
+            echo "ERROR: Invalid Docker Hub username/namespace: '$DOCKERHUB_USERNAME'"
+            exit 1
+          fi
+
           if [ ! -f VERSION ]; then
             echo "ERROR: VERSION file not found"
             exit 1
           fi
-          
-          VERSION="$(cat VERSION | tr -d '[:space:]')"
-          
-          # Validate version format (semver with optional suffix)
+
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
             echo "ERROR: Invalid version format: '$VERSION' (expected: X.Y.Z or X.Y.Z-suffix)"
             exit 1
           fi
-          
-          # Validate tag matches VERSION on tag pushes
+
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             TAG_VERSION="${GITHUB_REF_NAME#v}"
             if [[ "$TAG_VERSION" != "$VERSION" ]]; then
@@ -64,97 +77,162 @@ jobs:
               exit 1
             fi
           fi
-          
+
           BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           TAG="v${VERSION}"
-          
+
           echo "build_date=${BUILD_DATE}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "image_name=${DOCKERHUB_USERNAME}/wirebuddy" >> "$GITHUB_OUTPUT"
 
-      - name: Build for local smoke test (amd64 only)
+  build:
+    name: Build ${{ matrix.arch }} image
+    needs: meta
+    env:
+      IMAGE_NAME: ${{ needs.meta.outputs.image_name }}
+      TEMP_TAG_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+            needs_qemu: false
+            cache_scope: amd64
+            test_image: wirebuddy:test-amd64
+            container_name: wirebuddy-test-amd64
+            image_suffix: amd64
+          - arch: arm64
+            runner: ubuntu-24.04
+            platform: linux/arm64
+            needs_qemu: true
+            cache_scope: arm64
+            test_image: wirebuddy:test-arm64
+            container_name: wirebuddy-test-arm64
+            image_suffix: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up QEMU (arm64 emulation)
+        if: matrix.needs_qemu
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Generate BUILD_INFO
+        run: git rev-parse HEAD > BUILD_INFO
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver-opts: |
+            image=moby/buildkit:v0.16.0
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build image for smoke tests
         run: |
           set -euo pipefail
           docker buildx build \
-            --platform linux/amd64 \
+            --pull \
+            --platform "${{ matrix.platform }}" \
             --target runtime \
             --load \
-            --cache-from type=gha,scope=amd64 \
-            --cache-to type=gha,mode=max,scope=amd64 \
-            --build-arg "APP_VERSION=${{ steps.meta.outputs.tag }}" \
-            --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
+            --cache-from type=gha,scope=${{ matrix.cache_scope }} \
+            --cache-to type=gha,mode=max,scope=${{ matrix.cache_scope }} \
+            --build-arg "APP_VERSION=${{ needs.meta.outputs.tag }}" \
+            --build-arg "BUILD_DATE=${{ needs.meta.outputs.build_date }}" \
             --build-arg "VCS_REF=${{ github.sha }}" \
-            -t wirebuddy:test \
+            -t "${{ matrix.test_image }}" \
             -f docker/Dockerfile \
             .
 
       - name: Smoke test (Master mode)
         run: |
           set -euo pipefail
-          
-          # Start container in background (no --rm so we can inspect logs on failure)
-          # Use dynamic port binding to avoid port collisions
-          docker run -d --name wirebuddy-test \
+
+          cleanup() {
+            docker rm -f "${{ matrix.container_name }}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          docker run -d --name "${{ matrix.container_name }}" \
             -p 127.0.0.1:0:8000 \
             -e WIREBUDDY_SECRET_KEY="ci-smoke-test-key-not-for-production" \
             -e WIREBUDDY_SKIP_NETWORK_CHECK="1" \
-            wirebuddy:test
-          
-          # Wait for startup with active polling (max 30s)
-          echo "Waiting for container to start..."
-          for i in $(seq 1 30); do
-            # Check if container is still running
-            if ! docker ps -q -f name=wirebuddy-test | grep -q .; then
+            "${{ matrix.test_image }}"
+
+          HOST_PORT="$(docker port "${{ matrix.container_name }}" 8000/tcp | awk -F: '{print $NF}')"
+          if [ -z "$HOST_PORT" ]; then
+            echo "✗ Could not resolve mapped host port"
+            docker logs "${{ matrix.container_name }}" 2>&1 || true
+            exit 1
+          fi
+
+          echo "Waiting for container on 127.0.0.1:${HOST_PORT}..."
+          for i in $(seq 1 45); do
+            if ! docker ps -q -f name="${{ matrix.container_name }}" | grep -q .; then
               echo "✗ Container exited during startup after ${i}s"
               echo "=== Container logs ==="
-              docker logs wirebuddy-test 2>&1 || echo "Could not retrieve logs"
-              docker rm -f wirebuddy-test 2>/dev/null || true
+              docker logs "${{ matrix.container_name }}" 2>&1 || echo "Could not retrieve logs"
               exit 1
             fi
-            
-            # Health check from inside container (avoids host header validation issues)
-            if docker exec wirebuddy-test curl -fsS --max-time 2 \
-                http://127.0.0.1:8000/api/system/status > /dev/null 2>&1; then
-              echo "✓ Master mode: Container ready after ${i}s"
-              docker stop wirebuddy-test
-              docker rm wirebuddy-test
+
+            if curl -fsS --max-time 2 \
+                "http://127.0.0.1:${HOST_PORT}/api/system/status" > /dev/null 2>&1; then
+              echo "✓ Master mode: Host-port check passed after ${i}s"
               exit 0
             fi
+
             sleep 1
           done
-          
-          # Timeout after 30s
-          echo "✗ Health check timeout after 30s"
+
+          echo "✗ Health check timeout after 45s"
           echo "=== Container logs ==="
-          docker logs wirebuddy-test 2>&1 || echo "Could not retrieve logs"
+          docker logs "${{ matrix.container_name }}" 2>&1 || echo "Could not retrieve logs"
           echo "=== Container status ==="
-          docker ps -a -f name=wirebuddy-test
-          docker stop wirebuddy-test 2>/dev/null || true
-          docker rm -f wirebuddy-test 2>/dev/null || true
+          docker ps -a -f name="${{ matrix.container_name }}"
           exit 1
 
       - name: Smoke test (Node mode)
         run: |
           set -euo pipefail
-          
-          # Test 1: Verify node daemon module can be imported (catches syntax errors)
+
           echo "Testing node daemon module import..."
-          docker run --rm --entrypoint python wirebuddy:test \
+          docker run --rm --entrypoint python "${{ matrix.test_image }}" \
             -c "from app.node.daemon import run, main; print('✓ Node daemon module imports OK')"
-          
-          # Test 2: Run node mode without enrollment token — should exit with code 1
-          # This validates the startup path executes without crashes
+
           echo "Testing node mode startup (expecting graceful exit)..."
           EXIT_CODE=0
-          LOGS=$(docker run --rm \
+          LOGS=$(timeout 30s docker run --rm \
             -e SERVER_MODE=node \
             -e LOG_LEVEL=DEBUG \
             -e WIREBUDDY_SECRET_KEY="ci-node-test-key" \
-            wirebuddy:test 2>&1) || EXIT_CODE=$?
-          
-          # Verify expected behavior: exit 1 with "WIREBUDDY_ENROLLMENT_TOKEN is required"
-          if [ $EXIT_CODE -eq 1 ] && echo "$LOGS" | grep -q "WIREBUDDY_ENROLLMENT_TOKEN is required"; then
+            "${{ matrix.test_image }}" 2>&1) || EXIT_CODE=$?
+
+          if [ "$EXIT_CODE" -eq 1 ] && echo "$LOGS" | grep -Eq "ENROLLMENT_TOKEN|enrollment token"; then
             echo "✓ Node mode: Startup path OK (expected exit: missing enrollment token)"
+          elif [ $EXIT_CODE -eq 124 ]; then
+            echo "✗ Node mode: Timed out after 30s"
+            echo "=== Logs ==="
+            echo "$LOGS"
+            exit 1
           else
             echo "✗ Node mode: Unexpected behavior"
             echo "=== Exit code: $EXIT_CODE (expected: 1) ==="
@@ -163,21 +241,15 @@ jobs:
             exit 1
           fi
 
-      - name: Trivy scan Python dependencies (requirements.txt)
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          scan-type: 'fs'
-          scan-ref: 'requirements.txt'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: true
-          severity: 'CRITICAL,HIGH'
-          timeout: '5m'
+      - name: Tag image for staging push
+        run: |
+          set -euo pipefail
+          docker tag "${{ matrix.test_image }}" "${IMAGE_NAME}:${TEMP_TAG_PREFIX}-${{ matrix.image_suffix }}"
 
-      - name: Trivy vulnerability scan (amd64)
+      - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          image-ref: 'wirebuddy:test'
+          image-ref: '${{ matrix.test_image }}'
           format: 'table'
           exit-code: '1'
           ignore-unfixed: true
@@ -186,177 +258,135 @@ jobs:
           timeout: '10m'
           trivyignores: '.trivyignore'
 
-      - name: Build for security scan (arm64)
+      - name: Push staging image
         run: |
           set -euo pipefail
-          docker buildx build \
-            --platform linux/arm64 \
-            --target runtime \
-            --load \
-            --cache-from type=gha,scope=arm64 \
-            --cache-to type=gha,mode=max,scope=arm64 \
-            --build-arg "APP_VERSION=${{ steps.meta.outputs.tag }}" \
-            --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
-            --build-arg "VCS_REF=${{ github.sha }}" \
-            -t wirebuddy:test-arm64 \
-            -f docker/Dockerfile \
-            .
+          docker push "${IMAGE_NAME}:${TEMP_TAG_PREFIX}-${{ matrix.image_suffix }}"
 
-      - name: Trivy vulnerability scan (arm64)
-        uses: aquasecurity/trivy-action@0.35.0
+  create-manifest:
+    name: Create multi-arch manifest
+    needs: [meta, build]
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    env:
+      IMAGE_NAME: ${{ needs.meta.outputs.image_name }}
+      TEMP_TAG_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
         with:
-          image-ref: 'wirebuddy:test-arm64'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
-          timeout: '10m'
-          trivyignores: '.trivyignore'
-
-      - name: Build & push multi-arch image (amd64 + arm64)
-        run: |
-          set -euo pipefail
-          
-          # Build tags array to prevent shell injection
-          TAGS=()
-          TAGS+=("-t" "${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy:${{ steps.meta.outputs.tag }}")
-          
-          # Only tag :latest on actual tag pushes (not workflow_dispatch)
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAGS+=("-t" "${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy:latest")
-            echo "Building release: tagging as :latest"
-          else
-            echo "Manual build: NOT tagging as :latest"
-          fi
-          
-          # Build and push (use both arch caches)
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --target runtime \
-            --cache-from type=gha,scope=amd64 \
-            --cache-from type=gha,scope=arm64 \
-            --cache-to type=gha,mode=max,scope=final \
-            --build-arg "APP_VERSION=${{ steps.meta.outputs.tag }}" \
-            --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
-            --build-arg "VCS_REF=${{ github.sha }}" \
-            "${TAGS[@]}" \
-            -f docker/Dockerfile \
-            --push \
-            .
-
-      - name: Cleanup old Docker Hub tags
-        if: startsWith(github.ref, 'refs/tags/v')
-        continue-on-error: true
-        env:
-          DH_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          
-          REPO="${DH_USERNAME}/wirebuddy"
-          CURRENT_TAG="${{ steps.meta.outputs.tag }}"
-          KEEP_COUNT=3  # Keep latest + 3 most recent version tags
-          
-          echo "Fetching Docker Hub token..."
-          TOKEN=$(jq -n \
-            --arg user "$DH_USERNAME" \
-            --arg pass "$DH_TOKEN" \
-            '{"username": $user, "password": $pass}' | \
-            curl -s -X POST \
-              -H "Content-Type: application/json" \
-              -d @- \
-              https://hub.docker.com/v2/users/login/ | jq -r .token)
-          
-          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "ERROR: Failed to authenticate with Docker Hub"
-            exit 1
-          fi
-          
-          # Fetch all tags with pagination
-          echo "Fetching all tags for ${REPO}..."
-          ALL_TAGS=""
-          NEXT_URL="https://hub.docker.com/v2/repositories/${REPO}/tags/?page_size=100"
-          
-          while [ -n "$NEXT_URL" ] && [ "$NEXT_URL" != "null" ]; do
-            RESPONSE=$(curl -s -H "Authorization: JWT ${TOKEN}" "$NEXT_URL")
-            PAGE_TAGS=$(echo "$RESPONSE" | jq -r '.results[].name')
-            ALL_TAGS="${ALL_TAGS}${PAGE_TAGS}\n"
-            NEXT_URL=$(echo "$RESPONSE" | jq -r '.next // empty')
-          done
-          
-          # Get version tags sorted by semver (newest first), keep top N
-          VERSIONED_TAGS=$(echo -e "$ALL_TAGS" | grep -E '^v[0-9]' | sort -Vr | head -n "$KEEP_COUNT")
-          
-          echo "Current tag: ${CURRENT_TAG}"
-          echo "Keeping version tags: ${VERSIONED_TAGS}"
-          
-          # Delete tags not in keep list (only touch version tags)
-          echo -e "$ALL_TAGS" | while read -r TAG; do
-            [ -z "$TAG" ] && continue
-            
-            # Only manage version tags (v*.*.* format), never delete other tags
-            if ! echo "$TAG" | grep -qE '^v[0-9]'; then
-              echo "Skipping non-version tag: ${TAG}"
-              continue
-            fi
-            
-            if [ "$TAG" = "$CURRENT_TAG" ] || echo "$VERSIONED_TAGS" | grep -qx "$TAG"; then
-              echo "Keeping version tag: ${TAG}"
-            else
-              echo "Deleting old version tag: ${TAG}"
-              curl -s -X DELETE \
-                -H "Authorization: JWT ${TOKEN}" \
-                "https://hub.docker.com/v2/repositories/${REPO}/tags/${TAG}/" || \
-                echo "Warning: Failed to delete ${TAG}"
-            fi
-          done
-          
-          echo "✓ Cleanup completed. Kept 'latest' + ${KEEP_COUNT} most recent versions."
-
-      - name: Generate Release Notes
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.meta.outputs.version }}"
-          
-          # Use simple string matching instead of regex escaping
-          awk -v ver="$VERSION" '
-            BEGIN { header = "## [" ver "]" }
-            index($0, header) == 1 { found=1 }
-            found {
-              if (found > 1 && $0 ~ /^## \[/) exit
-              if ($0 ~ /^<details/) exit
-              found++
-              print
-            }
-          ' CHANGELOG.md > RELEASE_NOTES.md
-          
-          # Fallback if no changelog entry found
-          if [ ! -s RELEASE_NOTES.md ]; then
-            echo "Release v${VERSION}" > RELEASE_NOTES.md
-            echo "" >> RELEASE_NOTES.md
-            echo "No changelog entry found for this version." >> RELEASE_NOTES.md
-          fi
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        # GitHub Release pinning handled by Renovate with digest
-        with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: ${{ steps.meta.outputs.tag }}
-          body_path: RELEASE_NOTES.md
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update Docker Hub description
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: peter-evans/dockerhub-description@v4
-        # DockerHub description update pinning handled by Renovate with digest
-        with:
+          registry: ${{ env.REGISTRY }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy
-          readme-filepath: ./docker/README_Docker.md
-          short-description: "Self-hosted WireGuard VPN with web UI, DNS ad-blocking, and real-time traffic analytics"
+
+      - name: Create and push manifest
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.meta.outputs.version }}"
+          STAGED_AMD64="${IMAGE_NAME}:${TEMP_TAG_PREFIX}-amd64"
+          STAGED_ARM64="${IMAGE_NAME}:${TEMP_TAG_PREFIX}-arm64"
+
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:${VERSION}-amd64" \
+            "${STAGED_AMD64}"
+
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:${VERSION}-arm64" \
+            "${STAGED_ARM64}"
+
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:${VERSION}" \
+            "${STAGED_AMD64}" \
+            "${STAGED_ARM64}"
+
+          if [[ "$VERSION" != *"-"* ]]; then
+            docker buildx imagetools create \
+              --tag "${IMAGE_NAME}:latest" \
+              "${STAGED_AMD64}" \
+              "${STAGED_ARM64}"
+          fi
+
+          echo "Pushed manifests:"
+          echo "  ${IMAGE_NAME}:${VERSION}"
+          if [[ "$VERSION" != *"-"* ]]; then
+            echo "  ${IMAGE_NAME}:latest"
+          fi
+
+  create-release:
+    name: Create GitHub Release
+    needs: [meta, create-manifest]
+    if: needs.create-manifest.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      IMAGE_NAME: ${{ needs.meta.outputs.image_name }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Create or update GitHub Release
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const version = process.env.VERSION;
+            const imageName = process.env.IMAGE_NAME;
+            const isPrerelease = version.includes('-');
+
+            const tags = [
+              '- `' + imageName + ':' + version + '` (multi-arch)',
+              '- `' + imageName + ':' + version + '-amd64`',
+              '- `' + imageName + ':' + version + '-arm64`'
+            ];
+
+            if (!isPrerelease) {
+              tags.push('- `' + imageName + ':latest`');
+            }
+
+            const body = [
+              '## WireBuddy ' + version,
+              '',
+              '**Docker Image:** `docker pull ' + imageName + ':' + version + '`',
+              '',
+              '### Available Tags',
+              ...tags,
+              '',
+              '**Source:** [WireBuddy Repository](https://github.com/' + context.repo.owner + '/' + context.repo.repo + ')'
+            ].join('\n');
+
+            try {
+              await github.rest.repos.createRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag_name: 'v' + version,
+                name: 'WireBuddy ' + version,
+                body: body,
+                draft: false,
+                prerelease: isPrerelease
+              });
+              console.log('Created release v' + version);
+            } catch (e) {
+              if (e.status === 422) {
+                console.log('Release v' + version + ' already exists, updating...');
+                const { data: release } = await github.rest.repos.getReleaseByTag({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  tag: 'v' + version
+                });
+                await github.rest.repos.updateRelease({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: release.id,
+                  tag_name: 'v' + version,
+                  name: 'WireBuddy ' + version,
+                  body: body,
+                  draft: false,
+                  prerelease: isPrerelease
+                });
+                console.log('Updated release v' + version);
+              } else {
+                throw e;
+              }
+            }

@@ -1,0 +1,64 @@
+.wb-kpi-card {
+  border-radius: var(--wb-radius-lg);
+  box-shadow: var(--wb-card-shadow);
+  min-height: 100%;
+}
+
+.wb-kpi-card .card-body {
+  display: flex;
+  align-items: stretch;
+}
+
+.wb-kpi-icon {
+  flex: 0 0 auto;
+}
+
+.wb-kpi-value,
+.wb-kpi-value-group {
+  min-height: 2.75rem;
+}
+
+.wb-kpi-value {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.wb-kpi-subtext,
+.dashboard-kpi-subtext {
+  display: block;
+  margin-top: var(--wb-spacing-xs);
+  white-space: nowrap;
+}
+
+.wb-kpi-card.is-loading .wb-kpi-value,
+.wb-kpi-card.is-loading .wb-kpi-value-group {
+  opacity: 0.72;
+}
+
+/* Mobile: compact layout for KPI cards */
+@media (max-width: 575.98px) {
+  .wb-kpi-card .card-body>.d-flex {
+    gap: 0.5rem !important;
+  }
+
+  .wb-kpi-card .wb-kpi-icon {
+    font-size: 1.5rem;
+  }
+
+  .wb-kpi-card .wb-kpi-label {
+    font-size: 0.7rem;
+    margin-bottom: 0.1rem !important;
+    line-height: 1.1;
+  }
+
+  .wb-kpi-card .wb-kpi-value,
+  .wb-kpi-card .h3 {
+    font-size: 1.1rem !important;
+    line-height: 1.1;
+  }
+
+  .wb-kpi-card .wb-kpi-subtext,
+  .wb-kpi-card .dashboard-kpi-subtext {
+    font-size: 0.65rem;
+  }
+}

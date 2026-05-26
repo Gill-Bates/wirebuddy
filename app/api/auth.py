@@ -410,14 +410,14 @@ def _sanitize_log_username(raw: str) -> str:
 	return cleaned[:128]
 
 
-def _enforce_ip_lockout(conn: sqlite3.Connection, client_ip: str) -> None:
-	"""Raise HTTP 429 if the IP is currently locked out."""
-	is_locked, seconds_remaining = is_ip_locked(conn, client_ip)
+def _enforce_ip_lockout(conn: sqlite3.Connection, client_ip: str, username: str | None = None) -> None:
+	"""Raise HTTP 429 if the IP or username+IP pair is currently locked out."""
+	is_locked, seconds_remaining = is_ip_locked(conn, client_ip, username)
 	if is_locked:
 		_log.info("LOGIN_LOCKED ip=%s remaining=%ds", client_ip, seconds_remaining)
 		raise HTTPException(
 			status_code=429,
-			detail="Too many failed attempts. Please try again later.",
+			detail=f"Too many login attempts. Please wait {max(1, seconds_remaining)} seconds.",
 			headers={"Retry-After": str(seconds_remaining)},
 		)
 
@@ -426,16 +426,22 @@ def _record_failed_and_raise(
 	conn: sqlite3.Connection,
 	client_ip: str,
 	log_username: str,
+	username: str | None = None,
 	detail: str = "Invalid username or password",
 	status_code: int = 401,
 ) -> None:
 	"""Record a failed login attempt, log the result, and raise HTTPException."""
-	record_failed_login(conn, client_ip)
-	is_now_locked, lockout_secs = is_ip_locked(conn, client_ip)
+	record_failed_login(conn, client_ip, username)
+	is_now_locked, lockout_secs = is_ip_locked(conn, client_ip, username)
 	if is_now_locked:
 		_log.warning(
 			"LOGIN_FAILED ip=%s username=%s locked_for=%ds",
 			client_ip, log_username, lockout_secs,
+		)
+		raise HTTPException(
+			status_code=429,
+			detail=f"Too many login attempts. Please wait {max(1, lockout_secs)} seconds.",
+			headers={"Retry-After": str(lockout_secs)},
 		)
 	else:
 		_log.info("LOGIN_FAILED ip=%s username=%s", client_ip, log_username)
@@ -548,7 +554,7 @@ def login(
 	client_ip = _get_client_ip(request)
 	log_username = _sanitize_log_username(payload.username)
 
-	_enforce_ip_lockout(conn, client_ip)
+	_enforce_ip_lockout(conn, client_ip, payload.username)
 
 	user = get_user_by_username(conn, payload.username)
 
@@ -561,9 +567,9 @@ def login(
 	# an attacker must not be able to distinguish "wrong password" from
 	# "correct password, account disabled" via HTTP status codes.
 	if not user or not password_valid or not coerce_db_bool(user["is_active"]):
-		_record_failed_and_raise(conn, client_ip, log_username)
+		_record_failed_and_raise(conn, client_ip, log_username, payload.username)
 
-	clear_login_attempts(conn, client_ip)
+	clear_login_attempts(conn, client_ip, payload.username)
 
 	# Check if OTP is fully enabled -> require MFA
 	if coerce_db_bool(user["otp_enabled"]):
@@ -596,18 +602,32 @@ def verify_mfa(
 	client_ip = _get_client_ip(request)
 	log_username = _sanitize_log_username(payload.username)
 
-	_enforce_ip_lockout(conn, client_ip)
+	_enforce_ip_lockout(conn, client_ip, payload.username)
 
 	challenge_user_id = _consume_mfa_challenge(payload.mfa_token, payload.username, client_ip)
 	if challenge_user_id is None:
-		record_failed_login(conn, client_ip)
+		record_failed_login(conn, client_ip, payload.username)
 		_log.warning("LOGIN_MFA_CHALLENGE_INVALID ip=%s username=%s", client_ip, log_username)
+		is_now_locked, lockout_secs = is_ip_locked(conn, client_ip, payload.username)
+		if is_now_locked:
+			raise HTTPException(
+				status_code=429,
+				detail=f"Too many login attempts. Please wait {max(1, lockout_secs)} seconds.",
+				headers={"Retry-After": str(lockout_secs)},
+			)
 		raise HTTPException(status_code=401, detail="Invalid or expired MFA challenge")
 
 	user = get_user_by_username(conn, payload.username)
 	if not user or int(user["id"]) != int(challenge_user_id):
-		record_failed_login(conn, client_ip)
+		record_failed_login(conn, client_ip, payload.username)
 		_log.warning("LOGIN_MFA_CHALLENGE_MISMATCH ip=%s username=%s", client_ip, log_username)
+		is_now_locked, lockout_secs = is_ip_locked(conn, client_ip, payload.username)
+		if is_now_locked:
+			raise HTTPException(
+				status_code=429,
+				detail=f"Too many login attempts. Please wait {max(1, lockout_secs)} seconds.",
+				headers={"Retry-After": str(lockout_secs)},
+			)
 		raise HTTPException(status_code=401, detail="Invalid or expired MFA challenge")
 
 	if not coerce_db_bool(user["is_active"]):
@@ -646,9 +666,9 @@ def verify_mfa(
 				log_username,
 			)
 		else:
-			_record_failed_and_raise(conn, client_ip, log_username, detail="Invalid MFA code")
+			_record_failed_and_raise(conn, client_ip, log_username, payload.username, detail="Invalid MFA code")
 
-	clear_login_attempts(conn, client_ip)
+	clear_login_attempts(conn, client_ip, payload.username)
 
 	token, expires_at = _issue_session(conn, request, response, user["id"], client_ip)
 

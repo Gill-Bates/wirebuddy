@@ -4,6 +4,10 @@
     /* reduce spacing below header */
 }
 
+.dns-page .wb-shell {
+    overflow: visible;
+}
+
 .dns-toolbar {
     width: auto;
     flex: 1;
@@ -65,7 +69,8 @@
    Ad-Blocker Button States (DRY pattern with CSS custom properties)
    ========================================================================== */
 .adblocker-dropdown .btn {
-    min-width: 180px;
+    min-width: 10.5rem;
+    max-width: 100%;
     font-weight: 500;
     transition: background-color 0.2s, border-color 0.2s;
 }
@@ -194,10 +199,6 @@
     /* Height handled by flex layout, no hardcoded values to avoid ghost scroll */
 }
 
-.log-table tr.log-empty-row .log-empty-cell .chart-empty-state {
-    /* Flex-grow handles height; min-height removed to prevent ghost scroll */
-}
-
 .log-table th.log-col-time,
 .log-table td.log-col-time {
     width: 100px;
@@ -308,24 +309,10 @@
     min-height: 0;
     /* verhindert flex collapse auf iOS */
     position: relative;
-    /* allow unavailable/overlay states to escape clipping when needed */
-    overflow: visible;
+    /* contain scroll - overlay uses position:absolute with inset:0 */
+    overflow: hidden;
     display: flex;
     flex-direction: column;
-}
-
-.log-card-body.dns-log-unavailable #log-table-wrap,
-.log-card-body.dns-log-unavailable #log-action-menu {
-    display: none;
-}
-
-.log-card-body.dns-log-unavailable #log-unavailable {
-    position: static !important;
-    inset: auto !important;
-    z-index: auto !important;
-    width: 100% !important;
-    height: auto !important;
-    min-height: 12rem;
 }
 
 /* Removed - log-search is now in card header */
@@ -572,15 +559,6 @@
         min-height: 0;
         display: flex;
         flex-direction: column;
-    }
-
-    .log-card-body.dns-log-unavailable {
-        height: auto;
-        min-height: 0;
-    }
-
-    .log-card-body.dns-log-unavailable #log-unavailable {
-        min-height: 10rem;
     }
 
     .top-domain-content {

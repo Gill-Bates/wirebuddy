@@ -81,22 +81,12 @@
 }
 
 .country-flag {
-    /*
-     * iOS Safari has rendering bugs with regional indicator emojis when using:
-     * - display: inline-flex (causes entire table row to vanish)
-     * - fixed width/height (breaks glyph bound calculations)
-     * Using inline-block with min-dimensions avoids these issues.
-     */
     display: inline-block;
-    min-width: 24px;
-    min-height: 18px;
+    width: 24px;
+    height: 18px;
     border-radius: 2px;
-    line-height: 18px;
-    font-size: 16px;
-    text-align: center;
+    object-fit: cover;
     vertical-align: middle;
-    background: var(--bs-tertiary-bg);
-    /* Subtle border effect; kept minimal for large table performance */
     box-shadow: 0 0 0 1px rgba(0, 0, 0, .08);
 }
 
@@ -111,13 +101,13 @@
 }
 
 .traffic-bar {
+    display: block;
     height: 6px;
     border-radius: 3px;
     min-width: 2px;
     transform-origin: left center;
     animation: traffic-bar-grow 0.45s cubic-bezier(0.22, 0.61, 0.36, 1) both;
-    /* Cap animation delay at 15 rows to prevent sluggish rendering for large tables */
-    animation-delay: calc(min(var(--row-i, 0), 15) * 30ms);
+    animation-delay: 0ms;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -127,11 +117,11 @@
 }
 
 .traffic-bar-rx {
-    background: var(--traffic-rx);
+    fill: var(--traffic-rx);
 }
 
 .traffic-bar-tx {
-    background: var(--traffic-tx);
+    fill: var(--traffic-tx);
 }
 
 .traffic-row td {
@@ -139,7 +129,7 @@
 }
 
 /* Prevent progress bar overflow */
-.traffic-table-wrap td>div.d-flex {
+.traffic-table-wrap td>.traffic-bar {
     max-width: 100%;
     overflow: hidden;
 }

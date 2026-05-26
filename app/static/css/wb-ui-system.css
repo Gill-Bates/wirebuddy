@@ -152,11 +152,14 @@ small {
     font-size: 0.8rem;
     font-weight: 600;
     color: var(--bs-secondary-color);
+    margin-bottom: 0.1rem;
+    line-height: 1.1;
 }
 
 .wb-kpi-value {
     font-size: 1.5rem;
     font-weight: 600;
+    line-height: 1.1;
 }
 
 /* Mobile: slightly smaller icon */
@@ -175,6 +178,10 @@ small {
     padding: 0.4rem 0.8rem;
     border-radius: var(--wb-radius-md);
     transition: var(--wb-transition-bg), var(--wb-transition-shadow);
+    /* Vertical centering for buttons with min-height */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .btn-sm {
@@ -221,11 +228,11 @@ small {
     justify-content: center;
 }
 
-/* Enforce consistent height for input-group elements (UI-lint requirement: 44px ±2px)
+/* Enforce consistent height for input-group elements.
    Base height is set globally on .form-control/.form-select (Section 8).
    This rule ensures .btn inside input-groups also matches. */
 .input-group .btn {
-    height: 44px;
+    height: var(--wb-input-height);
 }
 
 .input-group.input-group-sm .backup-browse-btn {
@@ -342,7 +349,7 @@ small {
 .form-control,
 .form-select {
     font-size: 0.85rem;
-    height: 44px;
+    height: var(--wb-input-height);
     border-radius: var(--wb-radius-md);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
@@ -437,12 +444,20 @@ summary {
     font-size: 1rem;
 }
 
+.material-icons.icon-xs {
+    font-size: 0.875rem;
+}
+
 .material-icons.icon-md {
     font-size: 1.25rem;
 }
 
 .material-icons.icon-lg {
     font-size: 1.5rem;
+}
+
+.material-icons.icon-xl {
+    font-size: 3rem;
 }
 
 /* Standard icon spacing in text */

@@ -21,8 +21,22 @@ from starlette.types import ASGIApp
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
-# UI path prefixes that require CSRF protection
-UI_PREFIXES = ("/ui/", "/login")
+# UI/API path prefixes that require CSRF protection.
+# API enforcement is only applied for cookie-authenticated browser requests.
+CSRF_PREFIXES = ("/ui/", "/login", "/api/")
+_AUTH_COOKIE_NAMES = ("auth_token",)
+_CSRF_EXEMPT_API_PATHS = frozenset({
+	"/api/login",
+	"/api/mfa/verify",
+	"/api/passkeys/login/start",
+	"/api/passkeys/login/finish",
+})
+
+
+def _is_bearer_request(request: Request) -> bool:
+	"""Return True when Authorization header uses Bearer scheme."""
+	auth = request.headers.get("Authorization", "").strip()
+	return auth.startswith("Bearer ")
 
 
 class CSRFMiddleware(BaseHTTPMiddleware):
@@ -41,9 +55,20 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 		"""Check if path requires CSRF protection."""
 		normalized = posixpath.normpath(path).lower()
 		
-		for prefix in UI_PREFIXES:
+		for prefix in CSRF_PREFIXES:
 			norm_prefix = posixpath.normpath(prefix).lower()
 			if normalized.startswith(norm_prefix + "/") or normalized == norm_prefix:
+				return True
+		return False
+
+	def _is_cookie_authenticated_api_request(self, request: Request) -> bool:
+		"""Return True when API request carries session-auth cookie(s)."""
+		if not request.url.path.startswith("/api/"):
+			return True
+		if request.url.path in _CSRF_EXEMPT_API_PATHS:
+			return False
+		for cookie_name in _AUTH_COOKIE_NAMES:
+			if request.cookies.get(cookie_name):
 				return True
 		return False
 
@@ -83,7 +108,12 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 		request.state.csrf_token = csrf_token
 
 		# 3. Validation for unsafe methods on protected paths
-		if request.method not in SAFE_METHODS and self._requires_csrf(request.url.path):
+		if (
+			request.method not in SAFE_METHODS
+			and self._requires_csrf(request.url.path)
+			and not _is_bearer_request(request)
+			and self._is_cookie_authenticated_api_request(request)
+		):
 			# Origin check
 			if not self._check_origin(request):
 				return JSONResponse(

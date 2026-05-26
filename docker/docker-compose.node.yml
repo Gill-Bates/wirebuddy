@@ -16,11 +16,14 @@ services:
     container_name: wirebuddy-node
     restart: always
     network_mode: host
+    cap_drop:
+      - ALL
     cap_add:
       - NET_ADMIN
     environment:
       SERVER_MODE: node
       WIREBUDDY_ENROLLMENT_TOKEN: "${WIREBUDDY_ENROLLMENT_TOKEN}"
+      WIREBUDDY_DATA_DIR: /app/data
       LOG_LEVEL: INFO
       TZ: ${TZ:-Etc/UTC}
     logging:

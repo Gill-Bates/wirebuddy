@@ -38,6 +38,7 @@ from ..db.sqlite_settings import (
 )
 from ..db.sqlite_runtime import close_connection, connect
 from ..utils.deps import get_conn, get_tsdb_dir
+from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, limiter
 from ..utils.geoip import lookup_ip
 from .auth import get_current_user, require_admin
 from .frontend_shared import CONNECTED_THRESHOLD_S
@@ -311,11 +312,10 @@ async def get_peer_locations(
 		if peer.interface:
 			peer_db_info[peer.public_key]["interface"] = peer.interface
 
-	# 2. Collect unique IPs that need resolution (skip peers with no IP / handshake / node tunnels)
+	# 2. Collect unique IPs that need resolution (skip peers with no IP / node tunnels)
 	ip_to_peers: dict[str, list[tuple[str, dict]]] = {}
 	skipped_tunnel = 0
 	skipped_no_ip = 0
-	skipped_no_handshake = 0
 	for pub_key, info in peer_db_info.items():
 		peer_id = info.get("peer_id")
 		if peer_id in tunnel_peer_ids:
@@ -324,9 +324,6 @@ async def get_peer_locations(
 		ip_str = info.get("last_client_ip")
 		if not ip_str:
 			skipped_no_ip += 1
-			continue
-		if not (info.get("last_handshake_at") or 0):
-			skipped_no_handshake += 1
 			continue
 		ip_to_peers.setdefault(ip_str, []).append((pub_key, info))
 
@@ -374,11 +371,10 @@ async def get_peer_locations(
 		})
 
 	_log.debug(
-		"PEER_LOC returning %d location(s), skipped tunnel=%d no_ip=%d no_handshake=%d",
+		"PEER_LOC returning %d location(s), skipped tunnel=%d no_ip=%d",
 		len(locations),
 		skipped_tunnel,
 		skipped_no_ip,
-		skipped_no_handshake,
 	)
 	return ok_response(data={"locations": locations})
 
@@ -570,7 +566,9 @@ async def get_tsdb_stats(
 
 
 @router.patch("/stats/tsdb/retention")
+@limiter.limit(RATE_LIMIT_CRITICAL)
 async def update_tsdb_retention(
+	request: Request,
 	request_body: TsdbRetentionUpdate,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
@@ -585,7 +583,9 @@ async def update_tsdb_retention(
 
 
 @router.delete("/stats/tsdb")
+@limiter.limit(RATE_LIMIT_CRITICAL)
 async def reset_tsdb(
+	request: Request,
 	tsdb_dir: Path = Depends(get_tsdb_dir),
 	_: sqlite3.Row = Depends(require_admin),
 ):
@@ -598,7 +598,9 @@ async def reset_tsdb(
 
 
 @router.post("/stats/tsdb/maintenance")
+@limiter.limit(RATE_LIMIT_HEAVY)
 async def run_tsdb_maintenance(
+	request: Request,
 	tsdb_dir: Path = Depends(get_tsdb_dir),
 	_: sqlite3.Row = Depends(require_admin),
 ):
@@ -625,7 +627,9 @@ async def get_peer_metrics_stats(
 
 
 @router.delete("/stats/peer-logs")
+@limiter.limit(RATE_LIMIT_CRITICAL)
 async def delete_peer_logs(
+	request: Request,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
 ):

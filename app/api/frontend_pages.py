@@ -38,7 +38,7 @@ from ..db.sqlite_users import get_all_users
 from ..dns import unbound
 from ..utils.config import get_config
 from ..utils.onboarding import ONBOARDING_STEPS
-from ..utils.rate_limit import RATE_LIMIT_DEFAULT, RATE_LIMIT_HEAVY, limiter
+from ..utils.rate_limit import RATE_LIMIT_DEFAULT, RATE_LIMIT_UI_HEAVY, limiter
 from ..utils.tsdb_helpers import build_latest_by_node
 from ..utils.version import BUILD_INFO, VERSION
 from .acme import get_certs_dir, get_challenge_response
@@ -98,6 +98,21 @@ async def _resolve_geo_fields_for_fqdns(fqdns: list[str | None]) -> dict[str, di
 	if not fqdns:
 		return {}
 
+	def _fallback_country_code(host_or_ip: str | None) -> str | None:
+		hostname = str(host_or_ip or "").strip().rstrip(".").lower()
+		if not hostname:
+			return None
+		try:
+			ipaddress.ip_address(hostname)
+			return None
+		except ValueError:
+			pass
+		labels = [label for label in hostname.split(".") if label]
+		if not labels:
+			return None
+		cc_tld = labels[-1]
+		return cc_tld if len(cc_tld) == 2 and cc_tld.isalpha() else None
+
 	resolved_ip_by_fqdn: dict[str, str | None] = {}
 	unique_ips: list[str] = []
 	for fqdn in fqdns:
@@ -110,10 +125,18 @@ async def _resolve_geo_fields_for_fqdns(fqdns: list[str | None]) -> dict[str, di
 			unique_ips.append(resolved_ip)
 
 	raw_geo = await _batch_geoip_lookup(list(dict.fromkeys(unique_ips)))
-	return {
-		fqdn_key: extract_geo_fields(raw_geo.get(resolved_ip)) if resolved_ip else extract_geo_fields(None)
-		for fqdn_key, resolved_ip in resolved_ip_by_fqdn.items()
-	}
+	resolved_fields: dict[str, dict] = {}
+	for fqdn_key, resolved_ip in resolved_ip_by_fqdn.items():
+		fields = extract_geo_fields(raw_geo.get(resolved_ip)) if resolved_ip else extract_geo_fields(None)
+		if not fields["country_code"]:
+			fallback_country = _fallback_country_code(fqdn_key)
+			if fallback_country:
+				fields = {
+					**fields,
+					"country_code": fallback_country,
+				}
+		resolved_fields[fqdn_key] = fields
+	return resolved_fields
 
 
 def _base_context(request: Request, user: sqlite3.Row, **extra) -> dict:
@@ -548,7 +571,7 @@ def dashboard(
 
 
 @router.get("/ui/peers", response_class=HTMLResponse)
-@limiter.limit(RATE_LIMIT_HEAVY)  # Expensive: DB query + geo-IP lookups
+@limiter.limit(RATE_LIMIT_UI_HEAVY)  # Expensive UI page: tolerate lint burst traffic
 async def peers_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -675,7 +698,22 @@ async def users_page(
 		with thread_connection(db_path) as conn:
 			return get_all_users(conn)
 
-	users = await asyncio.to_thread(_load_users)
+	user_rows = await asyncio.to_thread(_load_users)
+	users = [dict(row) for row in user_rows]
+
+	unique_login_ips = list({
+		ip
+		for row in users
+		if (ip := str(row.get("last_login_ip") or "").strip())
+	})
+	geoip_cache = await _batch_geoip_lookup(unique_login_ips)
+
+	for row in users:
+		login_ip = str(row.get("last_login_ip") or "").strip()
+		row["last_login_country_code"] = None
+		if login_ip:
+			row["last_login_country_code"] = extract_geo_fields(geoip_cache.get(login_ip))["country_code"]
+
 	return templates.TemplateResponse(
 		request,
 		name="users.html",

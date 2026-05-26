@@ -60,6 +60,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .utils.config import load_config, WG_CONFIG_PATH, Config
 from .utils.rate_limit import limiter
@@ -83,6 +84,8 @@ from .api import nodes_sync as nodes_sync_api
 from .db import tsdb
 from .dns import unbound
 from .dns import ingestion as dns_ingestion
+from .node.events import NodeEventBus
+from .node.notifier import configure_event_bus
 from .utils import migration
 from .tasks import scheduled as scheduled_tasks
 from .utils.subprocess import run_command
@@ -94,7 +97,7 @@ class StartupFatalError(RuntimeError):
 	"""Raised when the application cannot start safely."""
 
 
-@dataclass
+@dataclass(slots=True)
 class LifespanContext:
 	"""State passed between lifespan phases for testability and clarity.
 	
@@ -141,6 +144,36 @@ _DNS_WATCHDOG_INTERVAL_SECONDS = 30
 _ADBLOCKER_TIMER_CHECK_INTERVAL_SECONDS = 15
 _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS = 2.0
 _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS = 300.0
+_APP_SHUTDOWN_TIMEOUT_SECONDS = 30.0
+_PREPARED_RECORD_ATTR = "_wirebuddy_prepared"
+_WG_OPERATION_LOCK: asyncio.Lock | None = None
+
+
+def _get_wg_operation_lock() -> asyncio.Lock:
+	"""Return the lazily created process-local WireGuard mutation lock."""
+	global _WG_OPERATION_LOCK
+	if _WG_OPERATION_LOCK is None:
+		_WG_OPERATION_LOCK = asyncio.Lock()
+	return _WG_OPERATION_LOCK
+
+
+def _make_shutdown_handler(
+	loop: asyncio.AbstractEventLoop,
+	shutdown_event: asyncio.Event,
+	previous_handler: object,
+) -> Callable[[int, object], None]:
+	"""Build a signal handler that preserves the previous handler chain."""
+	def _handler(signum: int, frame: object) -> None:
+		loop.call_soon_threadsafe(shutdown_event.set)
+		if previous_handler in (None, signal.SIG_DFL, signal.SIG_IGN):
+			return
+		if previous_handler is signal.default_int_handler:
+			previous_handler(signum, frame)
+			return
+		if callable(previous_handler):
+			previous_handler(signum, frame)
+
+	return _handler
 
 
 def _install_shutdown_signal_handlers(
@@ -162,18 +195,8 @@ def _install_shutdown_signal_handlers(
 		except Exception:
 			continue
 
-		def _handler(signum: int, frame: object, *, _previous=previous_handler) -> None:
-			loop.call_soon_threadsafe(shutdown_event.set)
-			if _previous in (None, signal.SIG_DFL, signal.SIG_IGN):
-				return
-			if _previous is signal.default_int_handler:
-				_previous(signum, frame)
-				return
-			if callable(_previous):
-				_previous(signum, frame)
-
 		try:
-			signal.signal(sig, _handler)
+			signal.signal(sig, _make_shutdown_handler(loop, shutdown_event, previous_handler))
 		except (ValueError, RuntimeError) as exc:
 			_log.debug("Could not install shutdown signal hook for %s: %s", sig, exc)
 			continue
@@ -297,7 +320,8 @@ async def _cleanup_stale_interfaces() -> list[str]:
 			)
 			try:
 				# Delete the interface
-				del_res = await run_command("ip", "link", "delete", iface_name, timeout=5.0)
+				async with _get_wg_operation_lock():
+					del_res = await run_command("ip", "link", "delete", iface_name, timeout=5.0)
 				if del_res.returncode == 0:
 					_log.info("STALE_INTERFACE_REMOVED name=%s", iface_name)
 					removed.append(iface_name)
@@ -359,12 +383,16 @@ def _humanize_aiosqlite_message(message: str) -> str:
 	return message
 
 
-def _prepare_log_record(record: logging.LogRecord) -> logging.LogRecord:
+def _prepare_log_record(record: logging.LogRecord, *, clone: bool = False) -> logging.LogRecord:
 	"""Clone and normalize a log record before formatting."""
-	# Only copy records from loggers that need modification to reduce overhead
-	# (issue #16: modifying the shared LogRecord object is not thread-safe).
-	if record.name == "aiosqlite":
+	if getattr(record, _PREPARED_RECORD_ATTR, False):
+		return record
+	if clone or record.name == "aiosqlite":
 		record = logging.makeLogRecord(record.__dict__)
+		setattr(record, _PREPARED_RECORD_ATTR, True)
+	else:
+		setattr(record, _PREPARED_RECORD_ATTR, True)
+	if record.name == "aiosqlite":
 		record.msg = _humanize_aiosqlite_message(record.getMessage())
 		record.args = ()
 	return record
@@ -385,14 +413,12 @@ class _ColoredFormatter(_HumanizedFormatter):
 	"""Custom formatter that adds color to log levels in TTY."""
 
 	def format(self, record: logging.LogRecord) -> str:
-		record = self._prepare(record)
+		record = _prepare_log_record(record, clone=True)
 		if record.levelname in _LOG_COLORS:
-			record = logging.makeLogRecord(record.__dict__)
 			record.levelname = f"{_LOG_COLORS[record.levelname]}{record.levelname:<8}{_RESET}"
 		else:
-			record = logging.makeLogRecord(record.__dict__)
 			record.levelname = f"{record.levelname:<8}"
-		return super().format(record)
+		return logging.Formatter.format(self, record)
 
 
 def _extract_gateways(interfaces: list) -> tuple[list[str], list[str]]:
@@ -450,6 +476,7 @@ def _parse_wg_dump_counters(stdout: str) -> dict[str, tuple[int, int, int]]:
 			tx = _safe_int(parts[7])
 
 		if not public_key:
+			_log.debug("Malformed wg dump row ignored: %r", line)
 			continue
 		peers[public_key] = (rx, tx, latest_handshake)
 
@@ -845,7 +872,7 @@ def _setup_logging(log_level: str) -> None:
 		logger.propagate = True
 
 	# Quiet down noisy third-party libraries
-	for name in ("httpcore", "httpx", "hpack", "watchfiles"):
+	for name in ("aiosqlite", "httpcore", "httpx", "hpack", "watchfiles", "python_multipart", "python_multipart.multipart"):
 		logging.getLogger(name).setLevel(logging.WARNING)
 
 
@@ -917,7 +944,8 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 	if ctx.started_interfaces:
 		for iface_name in ctx.started_interfaces:
 			try:
-				res = await run_command("wg-quick", "down", iface_name, timeout=_WG_DOWN_TIMEOUT_SECONDS)
+				async with _get_wg_operation_lock():
+					res = await run_command("wg-quick", "down", iface_name, timeout=_WG_DOWN_TIMEOUT_SECONDS)
 				if res.returncode == 0:
 					_log.info("WireGuard interface %s stopped", iface_name)
 				else:
@@ -1028,7 +1056,8 @@ async def _phase_wireguard_start(ctx: LifespanContext) -> None:
 				_log.info("WireGuard interface %s already running", iface_name)
 				return None
 			
-			up_res = await run_command("wg-quick", "up", iface_name, timeout=_WG_UP_TIMEOUT_SECONDS)
+			async with _get_wg_operation_lock():
+				up_res = await run_command("wg-quick", "up", iface_name, timeout=_WG_UP_TIMEOUT_SECONDS)
 			if up_res.returncode == 0:
 				_log.info("WireGuard interface %s started", iface_name)
 				return iface_name
@@ -1129,6 +1158,9 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 		except asyncio.CancelledError:
 			_log.info("DNS_INGESTION shutdown requested")
 			raise
+		except (PermissionError, ValueError) as exc:
+			_log.critical("DNS_INGESTION permanent failure: %s", exc)
+			return
 		except Exception as exc:
 			retry_count += 1
 			# Exponential backoff with jitter to prevent thundering herd
@@ -1148,6 +1180,8 @@ async def _lifespan(app: FastAPI):
 	loop = asyncio.get_running_loop()
 	shutdown_signal_event = asyncio.Event()
 	app.state.shutdown_signal_event = shutdown_signal_event
+	app.state.node_event_bus = NodeEventBus()
+	configure_event_bus(app.state.node_event_bus)
 	previous_signal_handlers = _install_shutdown_signal_handlers(loop, shutdown_signal_event)
 	cfg = app.state.cfg
 	ctx = LifespanContext(
@@ -1170,8 +1204,17 @@ async def _lifespan(app: FastAPI):
 		yield
 	finally:
 		shutdown_signal_event.set()
+		node_event_bus = getattr(app.state, "node_event_bus", None)
+		if node_event_bus is not None:
+			await node_event_bus.aclose()
+			app.state.node_event_bus = None
+		configure_event_bus(None)
 		_restore_signal_handlers(previous_signal_handlers)
-		await _do_shutdown(ctx)
+		try:
+			async with asyncio.timeout(_APP_SHUTDOWN_TIMEOUT_SECONDS):
+				await _do_shutdown(ctx)
+		except TimeoutError:
+			_log.critical("Forced shutdown timeout exceeded after %.0fs", _APP_SHUTDOWN_TIMEOUT_SECONDS)
 
 def create_app() -> FastAPI:
 	"""Application factory for WireBuddy."""
@@ -1196,14 +1239,47 @@ def create_app() -> FastAPI:
 	app.state.tsdb_dir = cfg.tsdb_dir
 	app.state.dns_dir = cfg.dns_dir
 	app.state.peer_connection_state = OrderedDict()
+	app.state.node_event_bus = None
 	app.state.shutdown_signal_event = None
 	app.state.key_mismatch = False  # Set to True if SECRET_KEY doesn't match DB encryption
+	default_csp = (
+		"default-src 'self'; "
+		"script-src 'self'; "
+		"script-src-attr 'none'; "
+		"style-src 'self'; "
+		"img-src 'self' data: https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com https://cdn.jsdelivr.net; "
+		"font-src 'self'; "
+		"connect-src 'self'; "
+		"object-src 'none'; "
+		"base-uri 'self'; "
+		"frame-ancestors 'none'; "
+		"form-action 'self';"
+	)
 	
 	# ─── MIDDLEWARE ──────────────────────────────────────────
+	allowed_hosts = [
+		host.strip()
+		for host in os.getenv("WIREBUDDY_ALLOWED_HOSTS", "").split(",")
+		if host.strip()
+	]
+	if allowed_hosts:
+		app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+
 	app.add_middleware(RequestIDMiddleware)
 
 	from .middleware.csrf import CSRFMiddleware
 	app.add_middleware(CSRFMiddleware)
+
+	@app.middleware("http")
+	async def add_security_headers(request: Request, call_next):
+		response = await call_next(request)
+		response.headers.setdefault("Content-Security-Policy", default_csp)
+		response.headers.setdefault("X-Frame-Options", "DENY")
+		response.headers.setdefault("X-Content-Type-Options", "nosniff")
+		response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+		if request.url.scheme == "https":
+			response.headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		return response
 
 	app.state.limiter = limiter
 
@@ -1267,6 +1343,14 @@ def create_app() -> FastAPI:
 		# Check for key mismatch (critical security error)
 		if getattr(app.state, "key_mismatch", False):
 			errors.append("encryption key mismatch")
+
+		scheduler = getattr(app.state, "scheduler", None)
+		if scheduler is None or not scheduler.running:
+			errors.append("scheduler unavailable")
+
+		dns_task = getattr(app.state, "dns_task", None)
+		if dns_task is not None and dns_task.done():
+			errors.append("dns ingestion stopped")
 		
 		if errors:
 			return JSONResponse(
@@ -1310,7 +1394,6 @@ def _register_swagger_routes(app: FastAPI) -> None:
 	"""Register admin-protected Swagger UI at /swagger."""
 	import sqlite3
 	from .api.auth import require_admin
-	from .utils.deps import get_conn
 
 	_SWAGGER_ENABLE_KEY = "enable_swagger"
 	_SWAGGER_TRUTHY = {"1", "true", "yes", "on"}
@@ -1320,19 +1403,23 @@ def _register_swagger_routes(app: FastAPI) -> None:
 		value = get_setting(conn, _SWAGGER_ENABLE_KEY, "0")
 		return str(value or "").strip().lower() in _SWAGGER_TRUTHY
 
+	def _is_swagger_enabled_sync(db_path: Path) -> bool:
+		"""Read the Swagger-enabled setting off the event loop."""
+		return _with_conn(db_path, _is_swagger_enabled)
+
 	@app.get("/swagger/openapi.json", include_in_schema=False)
 	@limiter.limit("60/minute")
-	async def swagger_openapi_json(request: Request, _=Depends(require_admin), conn: sqlite3.Connection = Depends(get_conn)):
+	async def swagger_openapi_json(request: Request, _=Depends(require_admin)):
 		"""Serve OpenAPI schema (admin only, when enabled)."""
-		if not _is_swagger_enabled(conn):
+		if not await asyncio.to_thread(_is_swagger_enabled_sync, app.state.cfg.db_path):
 			raise HTTPException(status_code=404, detail="Swagger API disabled")
 		return JSONResponse(content=app.openapi())
 
 	@app.get("/swagger", include_in_schema=False)
 	@limiter.limit("60/minute")
-	async def swagger_ui(request: Request, _=Depends(require_admin), conn: sqlite3.Connection = Depends(get_conn)):
+	async def swagger_ui(request: Request, _=Depends(require_admin)):
 		"""Serve Swagger UI (admin only, when enabled)."""
-		if not _is_swagger_enabled(conn):
+		if not await asyncio.to_thread(_is_swagger_enabled_sync, app.state.cfg.db_path):
 			raise HTTPException(status_code=404, detail="Swagger API disabled")
 		
 		# Generate nonce for inline script/style (CSP security)

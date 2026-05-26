@@ -2,63 +2,44 @@
         try {
             const certs = await api('GET', '/api/acme/certificates');
             const guidanceEl = document.getElementById('letsencrypt-guidance');
-            let html = '';
+            const listEl = document.getElementById('certificates-list');
+            const { certificateRow, emptyState } = window.WB?.settingsComponents || {};
+            const { clearChildren } = window.WB?.dom || {};
 
-            for (const cert of certs) {
-                const safeDomain = esc(cert.domain);
-                const dataDomain = esc(cert.domain).replace(/"/g, '&quot;');
-                const staging = !!cert.is_staging;
-                const stagingBadge = staging ? '<span class="badge bg-warning text-dark ms-1">Staging</span>' : '';
-                const isExpired = cert.days_until_expiry !== null && cert.days_until_expiry < 0;
-                const needsRenewal = cert.needs_renewal && !isExpired;
-
-                let statusBadge = '<span class="badge bg-success">Valid</span>';
-                if (isExpired) {
-                    statusBadge = '<span class="badge bg-danger">Expired</span>';
-                } else if (needsRenewal) {
-                    statusBadge = '<span class="badge bg-warning text-dark">Renew</span>';
-                }
-
-                const expiresDate = cert.expires_at ? new Date(cert.expires_at) : null;
-                const expiresStr = expiresDate ? expiresDate.toLocaleDateString() : 'Unknown';
-                const daysStr = cert.days_until_expiry !== null ? ` (${cert.days_until_expiry}d)` : '';
-
-                html += `
-                    <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
-                        <div>
-                            <strong>${safeDomain}</strong>
-                            ${statusBadge}${stagingBadge}
-                            <br><small class="text-muted">Expires: ${expiresStr}${daysStr} • Issuer: ${esc(cert.issuer || 'Unknown')}</small>
-                        </div>
-                        <div class="d-flex gap-1">
-                            ${needsRenewal ? `<button class="btn btn-sm btn-outline-warning cert-renew-btn" data-domain="${dataDomain}" data-staging="${staging}" title="Renew"><span class="material-icons" style="font-size: 18px;">refresh</span></button>` : ''}
-                            <button class="btn btn-sm btn-outline-danger cert-delete-btn" data-domain="${dataDomain}" data-staging="${staging}" title="Delete">
-                                <span class="material-icons" style="font-size: 18px;">delete</span>
-                            </button>
-                        </div>
-                    </div>`;
+            if (!certificateRow || !emptyState || !clearChildren) {
+                throw new Error('Settings components unavailable');
             }
 
-            if (!html) {
-                html = '<p class="text-muted mb-0">No certificates found. Click + to request one.</p>';
+            clearChildren(listEl);
+
+            if (!certs.length) {
+                listEl.appendChild(emptyState('No certificates found. Click + to request one.'));
+            } else {
+                for (const cert of certs) {
+                    listEl.appendChild(certificateRow(cert));
+                }
             }
 
             if (guidanceEl) {
                 guidanceEl.classList.toggle('d-none', certs.length > 0);
             }
 
-            const listEl = document.getElementById('certificates-list');
-            listEl.innerHTML = html;
-
             // Event delegation for certificate buttons
             listEl.removeEventListener('click', handleCertificateClick);
             listEl.addEventListener('click', handleCertificateClick);
         } catch (error) {
             const guidanceEl = document.getElementById('letsencrypt-guidance');
+            const listEl = document.getElementById('certificates-list');
+            const { emptyState } = window.WB?.settingsComponents || {};
             if (guidanceEl) {
                 guidanceEl.classList.remove('d-none');
             }
-            document.getElementById('certificates-list').innerHTML = `<p class="text-danger mb-0">Failed to load certificates: ${esc(error.message)}</p>`;
+            if (emptyState) {
+                listEl.textContent = '';
+                listEl.appendChild(emptyState(`Failed to load certificates: ${error.message}`, 'danger'));
+            } else {
+                listEl.textContent = `Failed to load certificates: ${error.message}`;
+            }
         }
     }
 

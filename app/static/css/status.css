@@ -17,6 +17,14 @@
 }
 
 /* ── Navbar Actions ─────────────────────────────────────────────────────── */
+.status-disabled-main {
+    max-width: 640px;
+}
+
+.status-disabled-icon {
+    font-size: 48px;
+}
+
 .status-navbar-actions {
     gap: var(--wb-space-1, 0.45rem);
 }

@@ -1,0 +1,108 @@
+/**
+ * WireBuddy Semantic Tokens
+ * =========================
+ * Maps core tokens to semantic use cases.
+ * This layer sits between core tokens and components.
+ *
+ * Pattern: --wb-[context]-[property]
+ * Example: --wb-card-padding, --wb-toolbar-gap
+ */
+
+:root {
+    /* ============================================
+   * Layout Semantic Tokens
+   * ============================================ */
+    --wb-page-padding: var(--wb-spacing-lg);
+    --wb-page-padding-mobile: var(--wb-spacing-md);
+    --wb-section-gap: var(--wb-spacing-xl);
+    --wb-toolbar-gap: var(--wb-spacing-sm);
+    --wb-toolbar-padding: var(--wb-spacing-sm) var(--wb-spacing-md);
+    --wb-stack-gap: var(--wb-spacing-md);
+    --wb-inline-gap: var(--wb-spacing-sm);
+
+    /* ============================================
+   * Content Semantic Tokens
+   * ============================================ */
+    --wb-content-max-width: 1400px;
+    --wb-sidebar-width: 260px;
+    --wb-header-height: 60px;
+    --wb-footer-height: 48px;
+
+    /* ============================================
+   * Table Semantic Tokens
+   * ============================================ */
+    --wb-table-row-height: 48px;
+    --wb-table-row-height-compact: 40px;
+    --wb-table-cell-padding: var(--wb-spacing-sm) var(--wb-spacing-md);
+    --wb-table-header-bg: var(--wb-surface-muted);
+    --wb-table-border-color: var(--bs-border-color, #dee2e6);
+
+    /* ============================================
+   * Scroll Container Semantic Tokens
+   * ============================================ */
+    --wb-scroll-padding: var(--wb-spacing-sm);
+    --wb-scroll-track-width: 8px;
+    --wb-scroll-track-color: transparent;
+    --wb-scroll-thumb-color: rgba(0, 0, 0, 0.2);
+    --wb-scroll-thumb-hover: rgba(0, 0, 0, 0.35);
+
+    /* ============================================
+   * Empty State Semantic Tokens
+   * ============================================ */
+    --wb-empty-icon-size: 48px;
+    --wb-empty-icon-color: var(--bs-secondary);
+    --wb-empty-padding: var(--wb-spacing-xl);
+
+    /* ============================================
+   * Chart/Visualization Semantic Tokens
+   * ============================================ */
+    --wb-chart-height-sm: 200px;
+    --wb-chart-height-md: 300px;
+    --wb-chart-height-lg: 400px;
+    --wb-chart-height-map: clamp(400px, 50vh, 650px);
+
+    /* ============================================
+   * Status Indicator Semantic Tokens
+   * ============================================ */
+    --wb-status-dot-size: 8px;
+    --wb-status-online: var(--wb-success);
+    --wb-status-offline: var(--bs-secondary);
+    --wb-status-warning: var(--wb-warning);
+    --wb-status-error: var(--wb-danger);
+
+    /* ============================================
+   * Action Button Semantic Tokens
+   * ============================================ */
+    --wb-action-btn-size: var(--wb-touch-target-min);
+    --wb-action-btn-size-sm: 36px;
+    --wb-action-btn-gap: var(--wb-spacing-xs);
+
+    /* ============================================
+   * Notification/Alert Semantic Tokens
+   * ============================================ */
+    --wb-alert-padding: var(--wb-spacing-md);
+    --wb-alert-radius: var(--wb-radius-md);
+    --wb-toast-width: 350px;
+    --wb-toast-max-width: calc(100vw - var(--wb-spacing-lg) * 2);
+
+    /* ============================================
+   * Z-Index Layer Semantic Tokens
+   * ============================================ */
+    --wb-z-dropdown: 1000;
+    --wb-z-sticky: 1020;
+    --wb-z-fixed: 1030;
+    --wb-z-modal-backdrop: 1040;
+    --wb-z-modal: 1050;
+    --wb-z-popover: 1060;
+    --wb-z-tooltip: 1070;
+    --wb-z-banner: 1080;
+    --wb-z-toast: 1090;
+}
+
+/* Dark mode semantic overrides */
+[data-bs-theme="dark"] {
+    --wb-scroll-thumb-color: rgba(255, 255, 255, 0.2);
+    --wb-scroll-thumb-hover: rgba(255, 255, 255, 0.35);
+    --wb-table-header-bg: rgba(255, 255, 255, 0.05);
+    --wb-table-border-color: var(--bs-border-color, #495057);
+}

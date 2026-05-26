@@ -1,3 +1,16 @@
+## [1.5.0] - 2026-05-26
+
+- ``New`` A new feature allows each peer to connect to all available nodes.
+- ``New`` arm64 images are now built natively
+- ``Fix`` Massive Redesign of many the Frontend/GUI Elements
+- ``Fix`` Improved Caching behavior of DNS stats
+- ``Fix`` Severak Security Improvements
+- ``Fix`` Update Python dependencies
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.4.6] - 2026-05-10
 
 - ``Fix`` A rollback bug in the backup routine has been fixed
@@ -8,10 +21,6 @@
 - ``Fix`` General stability improvements in WireBuddy engine
 - ``Fix`` Several design improvements in the GUI
 - ``Fix`` Update Python dependencies
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.4.5] - 2026-04-26
 

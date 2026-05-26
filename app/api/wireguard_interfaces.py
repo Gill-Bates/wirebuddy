@@ -8,31 +8,87 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import sqlite3
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+
+from .auth import get_current_user, require_admin
+from .response import OkResponse
+from .wireguard_isolation import apply_client_isolation_runtime, cleanup_client_isolation
+from .wireguard_utils import run_wg_command, validate_interface_name
 from ..db.sqlite_interfaces import (
 	get_interface as db_get_interface,
 	list_interfaces as db_list_interfaces,
 )
-
-import logging
-import sqlite3
-
-from fastapi import APIRouter, Depends, HTTPException
-
-from .response import ok_response
-from ..utils.deps import get_conn
 from ..utils.config import WG_CONFIG_PATH
-from .auth import get_current_user, require_admin
-from .wireguard_utils import validate_interface_name, run_wg_command
-from .wireguard_isolation import apply_client_isolation_runtime, cleanup_client_isolation
+from ..utils.deps import get_conn
+from ..utils.rate_limit import RATE_LIMIT_HEAVY, limiter
 
 _log = logging.getLogger(__name__)
+_WG_COMMAND_TIMEOUT_SECONDS = 30.0
 
 router = APIRouter()
 
 __all__ = ["router"]
 
 
-@router.get("/interfaces")
+class InterfaceSummary(BaseModel):
+	name: str
+	in_database: bool
+	has_config_file: bool
+	is_configured: bool
+	is_active: bool
+
+
+class InterfaceListPayload(BaseModel):
+	interfaces: list[InterfaceSummary]
+
+
+class InterfacePeer(BaseModel):
+	public_key: str
+	endpoint: str | None = None
+	allowed_ips: str | None = None
+	latest_handshake: str | None = None
+	transfer: str | None = None
+
+
+class InterfaceDetailPayload(BaseModel):
+	name: str
+	is_active: bool
+	in_database: bool
+	has_config_file: bool
+	public_key: str | None = None
+	listen_port: int | None = None
+	address: str | None = None
+	address6: str | None = None
+	peers: list[InterfacePeer]
+
+
+class InterfaceConfigPayload(BaseModel):
+	name: str
+	address: str
+	address6: str | None = None
+	listen_port: int
+	dns: str | None = None
+	post_up: str | None = None
+	post_down: str | None = None
+	is_enabled: bool
+	show_on_dashboard: bool
+
+
+async def _run_wg_command_with_timeout(*args: str) -> tuple[int, str, str]:
+	command = " ".join(args)
+	try:
+		return await asyncio.wait_for(run_wg_command(*args), timeout=_WG_COMMAND_TIMEOUT_SECONDS)
+	except TimeoutError as exc:
+		_log.error("WG_COMMAND_TIMEOUT command=%s timeout=%ss", command, _WG_COMMAND_TIMEOUT_SECONDS)
+		raise HTTPException(status_code=504, detail=f"Command timed out: {command}") from exc
+
+
+@router.get("/interfaces", response_model=OkResponse[InterfaceListPayload])
 async def list_interfaces(
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(get_current_user),
@@ -41,11 +97,11 @@ async def list_interfaces(
 	config_path = WG_CONFIG_PATH
 	
 	db_interfaces: set[str] = set()
-	for row in db_list_interfaces(conn):
+	for row in await asyncio.to_thread(db_list_interfaces, conn):
 		db_interfaces.add(row["name"])
 	
 	active_interfaces: set[str] = set()
-	code, stdout, stderr = await run_wg_command("wg", "show", "interfaces")
+	code, stdout, _ = await _run_wg_command_with_timeout("wg", "show", "interfaces")
 	if code == 0 and stdout.strip():
 		active_interfaces = set(stdout.strip().split())
 	
@@ -67,10 +123,10 @@ async def list_interfaces(
 			"is_active": name in active_interfaces,
 		})
 	
-	return ok_response(data={"interfaces": result})
+	return OkResponse[InterfaceListPayload](data=InterfaceListPayload(interfaces=result))
 
 
-@router.get("/interfaces/{name}")
+@router.get("/interfaces/{name}", response_model=OkResponse[InterfaceDetailPayload])
 async def get_interface(
 	name: str,
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -79,12 +135,11 @@ async def get_interface(
 	"""Get details of a specific WireGuard interface."""
 	validate_interface_name(name)
 	
-
-	db_iface = db_get_interface(conn, name)
+	db_iface = await asyncio.to_thread(db_get_interface, conn, name)
 	config_file = WG_CONFIG_PATH / f"{name}.conf"
 	has_config = config_file.is_file()
 	
-	code, stdout, stderr = await run_wg_command("wg", "show", name)
+	code, stdout, _ = await _run_wg_command_with_timeout("wg", "show", name)
 	is_active = code == 0
 	
 	# If interface doesn't exist anywhere, return 404
@@ -99,6 +154,8 @@ async def get_interface(
 		"has_config_file": has_config,
 		"public_key": None,
 		"listen_port": None,
+		"address": db_iface["address"] if db_iface else None,
+		"address6": db_iface["address6"] if db_iface else None,
 		"peers": [],
 	}
 	
@@ -106,9 +163,7 @@ async def get_interface(
 	if not is_active:
 		if db_iface:
 			result["listen_port"] = db_iface["listen_port"]
-			result["address"] = db_iface["address"]
-			result["address6"] = db_iface["address6"]
-		return ok_response(data=result)
+		return OkResponse[InterfaceDetailPayload](data=InterfaceDetailPayload.model_validate(result))
 	
 	# Parse wg show output for active interface
 	lines = stdout.strip().split("\n")
@@ -142,11 +197,13 @@ async def get_interface(
 	if current_peer:
 		result["peers"].append(current_peer)
 	
-	return ok_response(data=result)
+	return OkResponse[InterfaceDetailPayload](data=InterfaceDetailPayload.model_validate(result))
 
 
-@router.post("/interfaces/{name}/up")
+@router.post("/interfaces/{name}/up", response_model=OkResponse[None])
+@limiter.limit(RATE_LIMIT_HEAVY)
 async def interface_up(
+	request: Request,
 	name: str,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
@@ -154,7 +211,7 @@ async def interface_up(
 	"""Bring up a WireGuard interface."""
 	validate_interface_name(name)
 	
-	code, stdout, stderr = await run_wg_command("wg-quick", "up", name)
+	code, _, stderr = await _run_wg_command_with_timeout("wg-quick", "up", name)
 	if code != 0:
 		raise HTTPException(status_code=500, detail=f"Failed to bring up interface: {stderr}")
 
@@ -163,25 +220,23 @@ async def interface_up(
 	
 	_log.info("INTERFACE_UP name=%s", name)
 	
-	# Warn if isolation rules failed (security concern)
 	if isolation_result.rules_failed > 0 or isolation_result.errors:
-		_log.warning(
-			"INTERFACE_UP isolation partial failure: name=%s failed=%d errors=%s",
+		_log.error(
+			"INTERFACE_UP isolation failure: name=%s failed=%d errors=%s",
 			name, isolation_result.rules_failed, isolation_result.errors,
 		)
-		return ok_response(
-			message=f"Interface {name} is up",
-			isolation_warnings={
-				"rules_failed": isolation_result.rules_failed,
-				"errors": isolation_result.errors,
-			},
+		raise HTTPException(
+			status_code=500,
+			detail=f"Interface up but client isolation failed: {isolation_result.errors}",
 		)
 	
-	return ok_response(message=f"Interface {name} is up")
+	return OkResponse[None](message=f"Interface {name} is up")
 
 
-@router.post("/interfaces/{name}/down")
+@router.post("/interfaces/{name}/down", response_model=OkResponse[None])
+@limiter.limit(RATE_LIMIT_HEAVY)
 async def interface_down(
+	request: Request,
 	name: str,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
@@ -193,7 +248,7 @@ async def interface_down(
 	config_file = WG_CONFIG_PATH / f"{name}.conf"
 	has_config = config_file.is_file()
 	
-	code, _, _ = await run_wg_command("wg", "show", name)
+	code, _, _ = await _run_wg_command_with_timeout("wg", "show", name)
 	is_active = code == 0
 	
 	if not is_active:
@@ -205,26 +260,28 @@ async def interface_down(
 	
 	if has_config:
 		# Normal case: config file exists, use wg-quick
-		code, stdout, stderr = await run_wg_command("wg-quick", "down", name)
+		code, _, stderr = await _run_wg_command_with_timeout("wg-quick", "down", name)
 		if code != 0:
 			raise HTTPException(status_code=500, detail=f"Failed to bring down interface: {stderr}")
 	else:
 		# Orphaned interface: config file missing (e.g. data dir was deleted)
 		# Use ip link commands directly since wg-quick needs the config
 		_log.warning("INTERFACE_DOWN_ORPHANED name=%s (no config file, using ip link)", name)
-		code, _, stderr = await run_wg_command("ip", "link", "set", name, "down")
+		code, _, stderr = await _run_wg_command_with_timeout("ip", "link", "set", name, "down")
 		if code != 0:
 			raise HTTPException(status_code=500, detail=f"Failed to set interface down: {stderr}")
-		code, _, stderr = await run_wg_command("ip", "link", "delete", name)
+		code, _, stderr = await _run_wg_command_with_timeout("ip", "link", "delete", name)
 		if code != 0:
 			raise HTTPException(status_code=500, detail=f"Failed to delete interface: {stderr}")
 	
 	_log.info("INTERFACE_DOWN name=%s", name)
-	return ok_response(message=f"Interface {name} is down")
+	return OkResponse[None](message=f"Interface {name} is down")
 
 
-@router.post("/interfaces/{name}/restart")
+@router.post("/interfaces/{name}/restart", response_model=OkResponse[None])
+@limiter.limit(RATE_LIMIT_HEAVY)
 async def interface_restart(
+	request: Request,
 	name: str,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
@@ -233,9 +290,12 @@ async def interface_restart(
 	validate_interface_name(name)
 	
 	await cleanup_client_isolation(name)
-	await run_wg_command("wg-quick", "down", name)
+	down_code, _, down_stderr = await _run_wg_command_with_timeout("wg-quick", "down", name)
+	if down_code != 0:
+		_log.error("INTERFACE_RESTART down failed: name=%s stderr=%s", name, down_stderr)
+		raise HTTPException(status_code=500, detail=f"Failed to stop interface: {down_stderr}")
 	
-	code, stdout, stderr = await run_wg_command("wg-quick", "up", name)
+	code, _, stderr = await _run_wg_command_with_timeout("wg-quick", "up", name)
 	if code != 0:
 		raise HTTPException(status_code=500, detail=f"Failed to restart interface: {stderr}")
 
@@ -243,22 +303,19 @@ async def interface_restart(
 	_log.info("INTERFACE_RESTART name=%s", name)
 	
 	if isolation_result.rules_failed > 0 or isolation_result.errors:
-		_log.warning(
-			"INTERFACE_RESTART isolation partial failure: name=%s failed=%d errors=%s",
+		_log.error(
+			"INTERFACE_RESTART isolation failure: name=%s failed=%d errors=%s",
 			name, isolation_result.rules_failed, isolation_result.errors,
 		)
-		return ok_response(
-			message=f"Interface {name} restarted",
-			isolation_warnings={
-				"rules_failed": isolation_result.rules_failed,
-				"errors": isolation_result.errors,
-			},
+		raise HTTPException(
+			status_code=500,
+			detail=f"Interface restart but client isolation failed: {isolation_result.errors}",
 		)
 	
-	return ok_response(message=f"Interface {name} restarted")
+	return OkResponse[None](message=f"Interface {name} restarted")
 
 
-@router.get("/interfaces/{name}/config")
+@router.get("/interfaces/{name}/config", response_model=OkResponse[InterfaceConfigPayload])
 async def get_interface_config(
 	name: str,
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -267,28 +324,20 @@ async def get_interface_config(
 	"""Get stored configuration fields for an interface (for UI editing)."""
 	validate_interface_name(name)
 
-	iface = db_get_interface(conn, name)
+	iface = await asyncio.to_thread(db_get_interface, conn, name)
 	if not iface:
 		raise HTTPException(status_code=404, detail=f"Interface '{name}' not found in database")
+	iface_data = dict(iface)
 
-	# Only expose safe fields at top level (not post_up/post_down shell commands)
-	return ok_response(
-		data={
-			"name": iface["name"],
-			"address": iface["address"],
-			"address6": iface["address6"],
-			"listen_port": iface["listen_port"],
-			"dns": iface["dns"],
-			"post_up": iface["post_up"],
-			"post_down": iface["post_down"],
-			"is_enabled": bool(iface["is_enabled"]),
-			"show_on_dashboard": bool(iface["show_on_dashboard"] if "show_on_dashboard" in iface.keys() else 1),
-		},
-		name=iface["name"],
-		address=iface["address"],
-		address6=iface["address6"],
-		listen_port=iface["listen_port"],
-		dns=iface["dns"],
-		is_enabled=bool(iface["is_enabled"]),
-		show_on_dashboard=bool(iface["show_on_dashboard"] if "show_on_dashboard" in iface.keys() else 1),
+	payload = InterfaceConfigPayload(
+		name=iface_data["name"],
+		address=iface_data["address"],
+		address6=iface_data["address6"],
+		listen_port=iface_data["listen_port"],
+		dns=iface_data["dns"],
+		post_up=iface_data["post_up"],
+		post_down=iface_data["post_down"],
+		is_enabled=bool(iface_data["is_enabled"]),
+		show_on_dashboard=bool(iface_data.get("show_on_dashboard", True)),
 	)
+	return OkResponse[InterfaceConfigPayload](data=payload)

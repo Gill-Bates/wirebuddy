@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { chromium, devices } from 'playwright';
+import { chromium, webkit, firefox, devices } from 'playwright';
 
 import {
     ABOUT_APPLICATION_DETAILS_FORBIDDEN_ROWS,
@@ -31,6 +31,7 @@ import {
     DETAILS_EXPAND_SETTLE_MS,
     FLEX_MIN_HEIGHT_ZERO_TOLERANCE_PX,
     FOOTER_OVERLAP_TOLERANCE_PX,
+    FOOTER_Z_INDEX,
     FORM_SWITCH_HEIGHT_TOLERANCE_PX,
     FORM_SWITCH_MAX_HEIGHT_PX,
     FULL_MOTION_RESET_CSS,
@@ -38,12 +39,11 @@ import {
     GHOST_SCROLL_MIN_HEIGHT_PX,
     INPUT_GROUP_HEIGHT_EXPECTED_PX,
     INPUT_GROUP_HEIGHT_TOLERANCE_PX,
-    KPI_CARD_PADDING_EXPECTED,
-    KPI_CARD_PADDING_TOLERANCE,
+    STANDARD_BUTTON_HEIGHT_EXPECTED_PX,
+    STANDARD_BUTTON_HEIGHT_TOLERANCE_PX,
     KPI_CONTEXTUAL_ICON_CLASSES,
     KPI_ICON_CENTER_TOLERANCE_PX,
     KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX,
-    KPI_ROW_VARIANCE_MAX,
     LOGIN_ERROR_SETTLE_MS,
     LOGIN_LOCKOUT_RESET_MS,
     LOGIN_TEST_STAGGER_MS,
@@ -56,6 +56,7 @@ import {
     MODAL_BACKDROP_SATURATE_TOLERANCE,
     MONOSPACE_PADDING_TOLERANCE_PX,
     MONOSPACE_RADIUS_TOLERANCE_PX,
+    MONOSPACE_VERTICAL_INSET_TOLERANCE_PX,
     OVERFLOW_TOLERANCE_PX,
     SCROLL_EDGE_CLEARANCE_MIN,
     SCREENSHOT_SETTLE_MS,
@@ -71,8 +72,6 @@ import {
     UI_EVAL_CONSTANTS,
     VERTICAL_GAP_MAX,
     VERTICAL_GAP_MIN,
-    VISUAL_DRIFT_THRESHOLD,
-    WCAG_CONTRAST,
 } from './lib/constants.mjs';
 import {
     captureKpiCards,
@@ -85,14 +84,34 @@ import {
     login,
     applyTheme,
     resetLayoutShiftMetric,
-    sanitize,
 } from './lib/browser-utils.mjs';
 import { summarizeFindings, isExpectedStatusUnavailable } from './lib/findings.mjs';
+import {
+    buildRunPaths,
+    getAuthenticatedContextOptions,
+    getLoginFailureContextOptions,
+} from './lib/runtime-config.mjs';
+import {
+    collectDOMStabilityMetrics,
+    collectPerformanceMetrics,
+    checkFontLoading,
+    computeSSIM,
+    filterConsoleEntries,
+    installDOMStabilityObserver,
+    installPerformanceObservers,
+    runAxeAudit,
+    scoreConsoleSeverity,
+} from './lib/orchestration/audit-runner.mjs';
+import { correlateConsoleEntries } from './lib/dom-health.mjs';
+import { buildUIHealthReport } from './lib/ui-health-score.mjs';
 import { LOGIN_FAILURE_VIEWS, VIEWS } from './lib/views.mjs';
 
 const BASE_URL = process.env.UI_LINT_BASE_URL || 'http://localhost:8000';
 const USERNAME = process.env.UI_LINT_USERNAME;
 const PASSWORD = process.env.UI_LINT_PASSWORD;
+const SPOOF_CLIENT_IP = process.env.UI_LINT_SPOOF_CLIENT_IP === '1';
+const RUN_LOGIN_FAILURE_TESTS = process.env.UI_LINT_LOGIN_FAILURE_TESTS === '1';
+const LOGIN_FAILURE_USERNAME = (process.env.UI_LINT_LOGIN_FAILURE_USERNAME || '').trim();
 
 if (!USERNAME || !PASSWORD) {
     console.error('Error: UI_LINT_USERNAME and UI_LINT_PASSWORD environment variables must be set');
@@ -100,16 +119,361 @@ if (!USERNAME || !PASSWORD) {
     process.exit(1);
 }
 
+// Browser matrix configuration
+// Set UI_LINT_BROWSERS=chromium,webkit,firefox to test all browsers
+// Default: chromium only for speed
+const AVAILABLE_BROWSERS = { chromium, webkit, firefox };
+
+function parseSelectedBrowsers(rawValue) {
+    const requested = (rawValue || 'chromium')
+        .split(',')
+        .map((browser) => browser.trim().toLowerCase())
+        .filter(Boolean);
+
+    const invalid = requested.filter((browser) => !(browser in AVAILABLE_BROWSERS));
+    if (invalid.length) {
+        throw new Error(
+            `Invalid UI_LINT_BROWSERS entries: ${invalid.join(', ')}. `
+            + `Available: ${Object.keys(AVAILABLE_BROWSERS).join(', ')}`,
+        );
+    }
+
+    if (!requested.length) {
+        throw new Error('UI_LINT_BROWSERS must select at least one browser');
+    }
+
+    return requested;
+}
+
+function parsePositiveIntegerEnv(rawValue, fallback, label) {
+    const value = Number.parseInt(String(rawValue ?? fallback), 10);
+    if (!Number.isFinite(value) || value <= 0) {
+        throw new Error(`${label} must be a positive integer`);
+    }
+    return value;
+}
+
+const SELECTED_BROWSERS = parseSelectedBrowsers(process.env.UI_LINT_BROWSERS);
+const BROWSER_CONCURRENCY = parsePositiveIntegerEnv(
+    process.env.UI_LINT_BROWSER_CONCURRENCY,
+    1,
+    'UI_LINT_BROWSER_CONCURRENCY',
+);
+const VIEW_DEVICE_CONCURRENCY = parsePositiveIntegerEnv(
+    process.env.UI_LINT_DEVICE_CONCURRENCY,
+    1,
+    'UI_LINT_DEVICE_CONCURRENCY',
+);
+
+const BROWSER_TEST_CLIENT_IPS = Object.freeze({
+    chromium: '198.18.0.11',
+    webkit: '198.18.0.12',
+    firefox: '198.18.0.13',
+});
+const BROWSER_OPTION_COMPAT_WARNED = new Set();
+
+const MUTATING_API_PATTERNS = [
+    /\/api\/nodes\/[^/]+\/speedtest$/,
+    /\/api\/nodes\/[^/]+\/restart$/,
+    /\/api\/nodes\/[^/]+\/token$/,
+];
+
+console.log(
+    `Browser matrix: ${SELECTED_BROWSERS.join(', ')} `
+    + `(browserConcurrency=${BROWSER_CONCURRENCY}, deviceConcurrency=${VIEW_DEVICE_CONCURRENCY})`,
+);
+
+function formatViewRunLabel(view, index, total) {
+    return `${index + 1}/${total} ${view.device}/${view.theme} ${view.name}`;
+}
+
+function formatPhaseLabel(kind, total) {
+    return kind === 'login-failure'
+        ? `login-failure phase (${total} cases)`
+        : `authenticated-view phase (${total} cases)`;
+}
+
+function normalizeContextOptionsForBrowser(contextOptions, browserName) {
+    const normalized = { ...(contextOptions || {}) };
+
+    if (browserName === 'firefox' && Object.prototype.hasOwnProperty.call(normalized, 'isMobile')) {
+        delete normalized.isMobile;
+        if (!BROWSER_OPTION_COMPAT_WARNED.has(browserName)) {
+            console.warn(`[${browserName}] Removed unsupported newContext option: isMobile`);
+            BROWSER_OPTION_COMPAT_WARNED.add(browserName);
+        }
+    }
+
+    return normalized;
+}
+
+function withBrowserClientIp(contextOptions, browserName) {
+    const normalizedOptions = normalizeContextOptionsForBrowser(contextOptions, browserName);
+
+    if (!SPOOF_CLIENT_IP) {
+        return normalizedOptions;
+    }
+
+    const clientIp = BROWSER_TEST_CLIENT_IPS[browserName];
+    if (!clientIp) {
+        return normalizedOptions;
+    }
+
+    return {
+        ...normalizedOptions,
+        extraHTTPHeaders: {
+            ...(normalizedOptions.extraHTTPHeaders || {}),
+            'X-Forwarded-For': clientIp,
+            'X-Real-IP': clientIp,
+        },
+    };
+}
+
+function assertLoginFailureSafety() {
+    if (!RUN_LOGIN_FAILURE_TESTS) {
+        return false;
+    }
+
+    if (!LOGIN_FAILURE_USERNAME || LOGIN_FAILURE_USERNAME === USERNAME) {
+        throw new Error(
+            'UI_LINT_LOGIN_FAILURE_USERNAME must be set and differ from UI_LINT_USERNAME when UI_LINT_LOGIN_FAILURE_TESTS=1',
+        );
+    }
+
+    return true;
+}
+
+function isSafeUiLintArtifact(fileName) {
+    return /^ui-lint-summary(?:\.[a-z0-9-]+)?\.json$/i.test(fileName)
+        || /^ui-lint-summary\.latest\.json$/i.test(fileName)
+        || /^ui-lint-.*\.json$/i.test(fileName)
+        || /^screenshot-.*\.png$/i.test(fileName)
+        || /^diff-.*\.png$/i.test(fileName);
+}
+
+function cleanOutputDir(outputDir) {
+    if (!fs.existsSync(outputDir)) return;
+
+    for (const fileName of fs.readdirSync(outputDir)) {
+        if (!isSafeUiLintArtifact(fileName)) {
+            continue;
+        }
+
+        const targetPath = path.join(outputDir, fileName);
+        const stat = fs.lstatSync(targetPath);
+        if (!stat.isFile()) {
+            continue;
+        }
+
+        fs.unlinkSync(targetPath);
+    }
+}
+
+function writeJsonAtomic(targetPath, payload) {
+    const tmpPath = `${targetPath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2));
+    fs.renameSync(tmpPath, targetPath);
+}
+
+async function gotoAppView(page, url, timeout = 30000) {
+    const response = await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout,
+    });
+
+    await page.waitForSelector('main.main-content, .wb-page, body', {
+        state: 'visible',
+        timeout,
+    });
+
+    return response;
+}
+
+async function blockUnexpectedMutations(page, allowedMutationPaths = new Set()) {
+    await page.route('**/api/**', async (route) => {
+        const request = route.request();
+        const method = request.method().toUpperCase();
+        if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+            await route.continue();
+            return;
+        }
+
+        let pathname = '';
+        try {
+            pathname = new URL(request.url()).pathname;
+        } catch {
+            await route.continue();
+            return;
+        }
+
+        const isBlockedPath = MUTATING_API_PATTERNS.some((pattern) => pattern.test(pathname));
+        if (!isBlockedPath || allowedMutationPaths.has(pathname)) {
+            await route.continue();
+            return;
+        }
+
+        await route.fulfill({
+            status: 409,
+            contentType: 'application/json',
+            body: JSON.stringify({
+                status: 'error',
+                detail: `UI lint blocked unmocked mutation: ${method} ${pathname}`,
+            }),
+        });
+    });
+}
+
+async function runWithConcurrency(items, concurrency, worker) {
+    const queue = [...items];
+    const workerCount = Math.max(1, Math.min(concurrency, queue.length || 1));
+    const workers = Array.from({ length: workerCount }, async () => {
+        while (queue.length > 0) {
+            const item = queue.shift();
+            if (item === undefined) {
+                return;
+            }
+            await worker(item);
+        }
+    });
+
+    await Promise.all(workers);
+}
+
+async function safeMetric(name, fn, fallback = {}) {
+    try {
+        return await fn();
+    } catch (error) {
+        return {
+            ...fallback,
+            __metricError: {
+                metric: name,
+                message: error instanceof Error ? error.message : String(error),
+            },
+        };
+    }
+}
+
+function ensureMetricsShape(metrics) {
+    const safeMetrics = metrics && typeof metrics === 'object' ? metrics : {};
+    const spacing = safeMetrics.spacing && typeof safeMetrics.spacing === 'object' ? safeMetrics.spacing : {};
+    return {
+        ...safeMetrics,
+        spacing,
+    };
+}
+
+function logViewStart(browserName, view, index, total, kind = 'view') {
+    console.log(`[${browserName}] Starting ${kind} ${formatViewRunLabel(view, index, total)} -> ${view.url}`);
+}
+
+function logViewDone(browserName, view, index, total, result, kind = 'view') {
+    const findingsCount = Array.isArray(result?.hardFindings)
+        ? result.hardFindings.length
+        : Array.isArray(result?.findings)
+            ? result.findings.length
+            : 0;
+    console.log(`[${browserName}] Finished ${kind} ${formatViewRunLabel(view, index, total)} (findings=${findingsCount})`);
+}
+
+function finalizeResult(result) {
+    const summarized = summarizeFindings(result);
+    result.findings = summarized.findings;
+    result.hardFindings = summarized.hardFindings;
+    result.warnings = summarized.warnings;
+    result.uiHealth = buildUIHealthReport(result);
+    return result;
+}
+
+function buildAuditErrorResult(view, browserName, message) {
+    return {
+        name: view.name,
+        browser: browserName,
+        url: view.url,
+        theme: view.theme,
+        error: message,
+        findings: ['auditError'],
+        hardFindings: ['auditError'],
+        warnings: [],
+        diff: { ratio: 0, sizeMismatch: false },
+        metrics: {},
+        network: { consoleEntries: [], pageErrors: [], requestFailures: [], badResponses: [], requests: [], duplicateRequests: [] },
+        uiHealth: null,
+    };
+}
+
+function writeResultsArtifacts(results) {
+    writeJsonAtomic(SUMMARY_PATH, results);
+    writeJsonAtomic(LATEST_SUMMARY_PATH, { summaryPath: SUMMARY_PATH });
+}
+
+let checkpointWriteQueue = Promise.resolve();
+
+async function emitBrowserCheckpoint(results, browserName) {
+    const writeTask = () => {
+        const browserResults = results.filter((result) => result.browser === browserName);
+        if (!browserResults.length) {
+            return;
+        }
+
+        const browserSummaryPath = path.join(OUTPUT_DIR, `ui-lint-summary.${browserName}.json`);
+        writeJsonAtomic(browserSummaryPath, browserResults);
+        writeResultsArtifacts(results);
+
+        const resultsWithFindings = browserResults.filter((result) =>
+            Boolean(result.error)
+            || (result.findings?.length || 0) > 0
+            || (result.hardFindings?.length || 0) > 0
+            || (result.warnings?.length || 0) > 0
+        );
+        const hardFindingsCount = browserResults.reduce((count, result) => count + (result.hardFindings?.length || 0), 0);
+        const warningCount = browserResults.reduce((count, result) => count + (result.warnings?.length || 0), 0);
+
+        console.log(
+            `[${browserName}] Browser checkpoint saved: ${browserSummaryPath} `
+            + `(cases=${browserResults.length}, withFindings=${resultsWithFindings.length}, hardFindings=${hardFindingsCount}, warnings=${warningCount})`,
+        );
+
+        if (!resultsWithFindings.length) {
+            console.log(`[${browserName}] Browser findings checkpoint: no findings`);
+            return;
+        }
+
+        console.log(`[${browserName}] Browser findings checkpoint start`);
+        for (const result of resultsWithFindings) {
+            console.log(JSON.stringify({
+                checkpoint: 'browser',
+                browser: browserName,
+                name: result.name,
+                theme: result.theme || null,
+                findings: result.findings || [],
+                hardFindings: result.hardFindings || [],
+                warnings: result.warnings || [],
+                error: result.error || null,
+                uiHealthScore: result.uiHealth?.score ?? null,
+                summaryPath: browserSummaryPath,
+            }));
+        }
+        console.log(`[${browserName}] Browser findings checkpoint end`);
+    };
+
+    checkpointWriteQueue = checkpointWriteQueue.then(writeTask, writeTask);
+    await checkpointWriteQueue;
+}
+
 // Generate unique session ID for this test run to avoid conflicts
 const SESSION_ID = Date.now();
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const OUTPUT_DIR = process.env.UI_LINT_OUTPUT_DIR || `/tmp/wirebuddy-ui-lint-${SESSION_ID}`;
-const SCREENSHOT_DIR = path.resolve(
-    OUTPUT_DIR,
-    process.env.UI_LINT_SCREENSHOT_DIR || 'screenshots'
-);
-// Results JSON stays in tools/ui-lint/, not in temp
-const RESULTS_DIR = SCRIPT_DIR;
+const {
+    outputDir: OUTPUT_DIR,
+    screenshotDir: SCREENSHOT_DIR,
+    summaryPath: SUMMARY_PATH,
+    latestSummaryPath: LATEST_SUMMARY_PATH,
+} = buildRunPaths({
+    scriptDir: SCRIPT_DIR,
+    sessionId: SESSION_ID,
+    outputDir: process.env.UI_LINT_OUTPUT_DIR,
+    screenshotDir: process.env.UI_LINT_SCREENSHOT_DIR,
+});
 
 async function collectPageMetrics(page, scope) {
     return page.evaluate(async ({ scope, constants }) => {
@@ -155,6 +519,7 @@ async function collectPageMetrics(page, scope) {
             '.badge.small',
             '.badge.rounded-circle',
         ].join(', ');
+        const badgeConsistencySelector = ['.badge', '.peer-card-routing-badge'].join(', ');
         const monospaceToneExcludeSelector = [
             'input',
             'textarea',
@@ -176,16 +541,31 @@ async function collectPageMetrics(page, scope) {
             return Boolean(pane && !pane.classList.contains('active'));
         };
 
+        const hasResponsiveHiddenAncestor = (el) => {
+            let current = el instanceof Element ? el : null;
+            while (current && current !== contentRoot.parentElement) {
+                const hasResponsiveDisplayNoneClass = Array.from(current.classList || [])
+                    .some((cls) => /^d(?:-(sm|md|lg|xl|xxl))?-none$/.test(cls));
+                if (hasResponsiveDisplayNoneClass && window.getComputedStyle(current).display === 'none') {
+                    return true;
+                }
+                current = current.parentElement;
+            }
+            return false;
+        };
+
         const isIntentionallyHidden = (el) => Boolean(
             el.closest('.modal:not(.show)')
             || el.closest('.collapse:not(.show)')
             || el.closest('.navbar-collapse:not(.show)')
+            || el.closest('.dropdown-menu:not(.show)')
+            || el.closest('.is-hidden')
             || el.closest('.hidden')
             || el.closest('.d-none')
             || el.closest('[hidden]')
             || el.closest('[aria-hidden="true"]')
             || el.closest('[role="presentation"]')
-        );
+        ) || hasResponsiveHiddenAncestor(el);
 
         const isVisible = (el) => {
             if (!el || !el.isConnected || isInsideInactivePane(el) || isIntentionallyHidden(el)) return false;
@@ -321,19 +701,38 @@ async function collectPageMetrics(page, scope) {
             String(value || '')
                 .toLowerCase()
                 .replace(/\s+/g, '');
-        const colorProbe = document.createElement('span');
-        colorProbe.setAttribute('aria-hidden', 'true');
-        colorProbe.style.position = 'fixed';
-        colorProbe.style.left = '-9999px';
-        colorProbe.style.top = '0';
-        colorProbe.style.pointerEvents = 'none';
-        colorProbe.style.visibility = 'hidden';
-        document.body.appendChild(colorProbe);
+        const colorParserCanvas = document.createElement('canvas');
+        colorParserCanvas.width = 1;
+        colorParserCanvas.height = 1;
+        const colorParserContext = colorParserCanvas.getContext('2d');
         const parseColor = (raw) => {
             const value = String(raw || '').trim();
             if (!value) return null;
 
             const parseComputedColor = (computed) => {
+                const hexMatch = computed.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+                if (hexMatch) {
+                    const hex = hexMatch[1];
+                    const normalizeHex = (segment) => Number.parseInt(segment.length === 1 ? `${segment}${segment}` : segment, 16);
+                    if (hex.length === 3) {
+                        return {
+                            r: normalizeHex(hex[0]),
+                            g: normalizeHex(hex[1]),
+                            b: normalizeHex(hex[2]),
+                            a: 1,
+                        };
+                    }
+                    if (hex.length === 6 || hex.length === 8) {
+                        const alpha = hex.length === 8 ? normalizeHex(hex.slice(6, 8)) / 255 : 1;
+                        return {
+                            r: normalizeHex(hex.slice(0, 2)),
+                            g: normalizeHex(hex.slice(2, 4)),
+                            b: normalizeHex(hex.slice(4, 6)),
+                            a: alpha,
+                        };
+                    }
+                }
+
                 const match = computed.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([0-9.]+))?\)/i);
                 if (!match) return null;
                 return {
@@ -347,10 +746,15 @@ async function collectPageMetrics(page, scope) {
             const directMatch = parseComputedColor(value);
             if (directMatch) return directMatch;
 
-            colorProbe.style.color = '';
-            colorProbe.style.color = value;
-            if (!colorProbe.style.color) return null;
-            return parseComputedColor(window.getComputedStyle(colorProbe).color || '');
+            if (typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && !CSS.supports('color', value)) {
+                return null;
+            }
+
+            if (!colorParserContext) return null;
+
+            colorParserContext.fillStyle = '#000000';
+            colorParserContext.fillStyle = value;
+            return parseComputedColor(colorParserContext.fillStyle || '');
         };
         const parseBackdropFilter = (value) => {
             const raw = String(value || '');
@@ -441,6 +845,73 @@ async function collectPageMetrics(page, scope) {
                 };
             });
 
+        const dropdownToggleClickFailures = [];
+        const dropdownToggleScopes = [
+            {
+                scope: 'nodes',
+                mediaQuery: '(max-width: 767.98px)',
+                selector: '.node-actions-more-toggle',
+                dropdownOptions: {
+                    popperConfig: {
+                        strategy: 'fixed',
+                        modifiers: [
+                            { name: 'preventOverflow', options: { boundary: 'viewport' } },
+                        ],
+                    },
+                },
+            },
+            {
+                scope: 'users',
+                mediaQuery: '(max-width: 991.98px)',
+                selector: '.users-mobile-actions-toggle',
+                dropdownOptions: {
+                    popperConfig: {
+                        strategy: 'fixed',
+                        modifiers: [
+                            { name: 'preventOverflow', options: { boundary: 'viewport' } },
+                        ],
+                    },
+                },
+            },
+        ];
+        const dropdownToggleScope = dropdownToggleScopes.find((entry) => entry.scope === scope);
+        if (dropdownToggleScope && window.matchMedia(dropdownToggleScope.mediaQuery).matches) {
+            const mobileDropdownToggles = Array.from(contentRoot.querySelectorAll(dropdownToggleScope.selector))
+                .filter((el) => isVisible(el) && isInContentRoot(el) && !isDisabled(el))
+                .slice(0, 6);
+
+            for (const trigger of mobileDropdownToggles) {
+                const rect = trigger.getBoundingClientRect();
+                const centerX = rect.left + rect.width / 2;
+                const centerY = rect.top + rect.height / 2;
+                const topEl = document.elementFromPoint(centerX, centerY);
+                const hitTargetBlocked = Boolean(topEl && topEl !== trigger && !trigger.contains(topEl) && !topEl.contains(trigger));
+                const dropdownRoot = trigger.closest('.dropdown');
+                const menu = dropdownRoot?.querySelector('.dropdown-menu');
+                let opensOnClick = false;
+
+                if (menu && typeof window.bootstrap?.Dropdown?.getOrCreateInstance === 'function') {
+                    const instance = window.bootstrap.Dropdown.getOrCreateInstance(trigger, dropdownToggleScope.dropdownOptions);
+                    instance.hide();
+                    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+                    trigger.click();
+                    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+                    opensOnClick = trigger.getAttribute('aria-expanded') === 'true' || menu.classList.contains('show');
+                    instance.hide();
+                    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+                }
+
+                if (hitTargetBlocked || !opensOnClick) {
+                    dropdownToggleClickFailures.push({
+                        ...rectInfo(trigger),
+                        text: norm(trigger.getAttribute('aria-label') || trigger.textContent).slice(0, 80) || null,
+                        hitTargetBlocked,
+                        opensOnClick,
+                    });
+                }
+            }
+        }
+
         // Deprecated button classes check (exclude input-group buttons where btn-icon is valid)
         const deprecatedButtonClasses = Array.from(contentRoot.querySelectorAll('.btn-icon, button.btn-icon, [role="button"].btn-icon'))
             .filter((el) => isVisible(el) && isInContentRoot(el))
@@ -452,6 +923,95 @@ async function collectPageMetrics(page, scope) {
                 deprecatedClass: 'btn-icon',
                 replacement: 'Use btn-outline-* with icon-md class instead of btn-icon',
             }));
+
+        // Button text vertical centering check
+        // Detects buttons where min-height is set but content is not vertically centered
+        // (missing flexbox/grid alignment)
+        const buttonTextNotCentered = Array.from(contentRoot.querySelectorAll('button, .btn, [role="button"]'))
+            .filter((el) => isVisible(el) && isInContentRoot(el) && !isDisabled(el))
+            .filter((el) => !el.closest('.input-group, .btn-group, .dropdown-menu'))
+            .filter((el) => {
+                const standardButtonHeightContract = (() => {
+                    const expectedHeight = Number(constants.STANDARD_BUTTON_HEIGHT_EXPECTED_PX || constants.INPUT_GROUP_HEIGHT_EXPECTED_PX || 38);
+                    const tolerance = Number(constants.STANDARD_BUTTON_HEIGHT_TOLERANCE_PX || 2);
+                    const selector = [
+                        '.btn:not(.btn-sm):not(.btn-lg):not(.btn-link):not(.btn-close)',
+                        '.wb-btn:not(.wb-btn-sm):not(.wb-btn-lg)',
+                    ].join(', ');
+
+                    const sample = Array.from(contentRoot.querySelectorAll(selector))
+                        .filter((el) => isVisible(el) && isInContentRoot(el))
+                        .filter((el) => !el.closest('#settingsTabs, .btn-group, .dropdown-menu'))
+                        .map((el) => {
+                            const rect = el.getBoundingClientRect();
+                            const style = window.getComputedStyle(el);
+                            const minHeight = Number.parseFloat(style.minHeight || '0') || 0;
+                            const height = rect.height;
+                            const heightMatchesToken = Math.abs(height - expectedHeight) <= tolerance;
+                            const minHeightMatchesToken = minHeight <= 0 || Math.abs(minHeight - expectedHeight) <= tolerance;
+
+                            return {
+                                ...rectInfo(el),
+                                text: norm(el.textContent).slice(0, 80) || null,
+                                height: round(height),
+                                minHeight: round(minHeight),
+                                expectedHeight: round(expectedHeight),
+                                tolerance,
+                                heightMatchesToken,
+                                minHeightMatchesToken,
+                                classes: typeof el.className === 'string' ? el.className.split(/\s+/).filter(Boolean) : [],
+                            };
+                        });
+
+                    const mismatches = sample.filter((button) => !button.heightMatchesToken || !button.minHeightMatchesToken);
+
+                    return {
+                        count: sample.length,
+                        expectedHeight: round(expectedHeight),
+                        tolerance,
+                        mismatchCount: mismatches.length,
+                        sample: mismatches.slice(0, 10),
+                    };
+                })();
+                const style = window.getComputedStyle(el);
+                const btnRect = el.getBoundingClientRect();
+                // Only check buttons with significant height (>= 36px, e.g. touch target)
+                if (btnRect.height < 36) return false;
+                // Skip buttons using flexbox/grid centering
+                if ((style.display === 'flex' || style.display === 'inline-flex') && style.alignItems === 'center') return false;
+                if ((style.display === 'grid' || style.display === 'inline-grid') && (style.alignItems === 'center' || style.placeItems?.includes('center'))) return false;
+
+                // Find the text node or inline content
+                const textContent = norm(el.textContent);
+                if (!textContent) return false;
+
+                // Get the first text-containing element or the button itself
+                const textEl = el.querySelector('span, .material-icons') || el;
+                const textRect = textEl.getBoundingClientRect();
+
+                // Calculate expected center vs actual center
+                const btnCenter = btnRect.top + btnRect.height / 2;
+                const textCenter = textRect.top + textRect.height / 2;
+                const offset = Math.abs(btnCenter - textCenter);
+
+                // Allow 2px tolerance
+                return offset > 2;
+            })
+            .slice(0, 20)
+            .map((el) => {
+                const btnRect = el.getBoundingClientRect();
+                const textEl = el.querySelector('span, .material-icons') || el;
+                const textRect = textEl.getBoundingClientRect();
+                const btnCenter = btnRect.top + btnRect.height / 2;
+                const textCenter = textRect.top + textRect.height / 2;
+                return {
+                    ...rectInfo(el),
+                    text: norm(el.textContent).slice(0, 60) || null,
+                    offset: round(textCenter - btnCenter),
+                    buttonHeight: round(btnRect.height),
+                    fix: 'Add display:flex; align-items:center; justify-content:center; to the button',
+                };
+            });
 
         const focusableElements = Array.from(contentRoot.querySelectorAll(focusableSelector))
             .filter((el) => isVisible(el) && isInContentRoot(el) && !isDisabled(el))
@@ -672,7 +1232,8 @@ async function collectPageMetrics(page, scope) {
                 if (nonColumnChildren.length) {
                     issues.push('nonColumnDirectChildren');
                 }
-                if (fixedSpanTotal > 12) {
+                const rowIsNoWrap = row.classList.contains('flex-nowrap');
+                if (spans.some((span) => span > 12) || (rowIsNoWrap && fixedSpanTotal > 12)) {
                     issues.push('columnSpanOverflow');
                 }
 
@@ -1061,31 +1622,46 @@ async function collectPageMetrics(page, scope) {
             }
             : null;
 
-        const referenceBadge = document.createElement('span');
-        referenceBadge.className = 'badge bg-secondary';
-        referenceBadge.textContent = 'Reference';
-        referenceBadge.setAttribute('aria-hidden', 'true');
-        referenceBadge.style.position = 'fixed';
-        referenceBadge.style.left = '-9999px';
-        referenceBadge.style.top = '0';
-        referenceBadge.style.pointerEvents = 'none';
-        referenceBadge.style.visibility = 'hidden';
-        document.body.appendChild(referenceBadge);
-
-        const referenceBadgeStyle = window.getComputedStyle(referenceBadge);
-        const badgeReference = {
-            fontFamily: normalizeFontFamily(referenceBadgeStyle.fontFamily),
-            fontSize: Number.parseFloat(referenceBadgeStyle.fontSize || '0'),
-            fontWeight: Number.parseInt(referenceBadgeStyle.fontWeight || '400', 10),
-            borderRadius: Number.parseFloat(referenceBadgeStyle.borderTopLeftRadius || '0'),
-            paddingTop: Number.parseFloat(referenceBadgeStyle.paddingTop || '0'),
-            paddingRight: Number.parseFloat(referenceBadgeStyle.paddingRight || '0'),
-            paddingBottom: Number.parseFloat(referenceBadgeStyle.paddingBottom || '0'),
-            paddingLeft: Number.parseFloat(referenceBadgeStyle.paddingLeft || '0'),
+        let badgeReference = {
+            fontFamily: '',
+            fontSize: 0,
+            fontWeight: 400,
+            borderRadius: 0,
+            paddingTop: 0,
+            paddingRight: 0,
+            paddingBottom: 0,
+            paddingLeft: 0,
         };
-        referenceBadge.remove();
+        {
+            const referenceBadge = document.createElement('span');
+            referenceBadge.className = 'badge bg-secondary';
+            referenceBadge.textContent = 'Reference';
+            referenceBadge.setAttribute('aria-hidden', 'true');
+            referenceBadge.style.position = 'fixed';
+            referenceBadge.style.left = '-9999px';
+            referenceBadge.style.top = '0';
+            referenceBadge.style.pointerEvents = 'none';
+            referenceBadge.style.visibility = 'hidden';
+            document.body.appendChild(referenceBadge);
 
-        const badgeStyleMismatches = Array.from(contentRoot.querySelectorAll('.badge'))
+            try {
+                const referenceBadgeStyle = window.getComputedStyle(referenceBadge);
+                badgeReference = {
+                    fontFamily: normalizeFontFamily(referenceBadgeStyle.fontFamily),
+                    fontSize: Number.parseFloat(referenceBadgeStyle.fontSize || '0'),
+                    fontWeight: Number.parseInt(referenceBadgeStyle.fontWeight || '400', 10),
+                    borderRadius: Number.parseFloat(referenceBadgeStyle.borderTopLeftRadius || '0'),
+                    paddingTop: Number.parseFloat(referenceBadgeStyle.paddingTop || '0'),
+                    paddingRight: Number.parseFloat(referenceBadgeStyle.paddingRight || '0'),
+                    paddingBottom: Number.parseFloat(referenceBadgeStyle.paddingBottom || '0'),
+                    paddingLeft: Number.parseFloat(referenceBadgeStyle.paddingLeft || '0'),
+                };
+            } finally {
+                referenceBadge.remove();
+            }
+        }
+
+        const badgeStyleMismatches = Array.from(contentRoot.querySelectorAll(badgeConsistencySelector))
             .filter((el) => isVisible(el) && isInContentRoot(el))
             .filter((el) => !el.matches(badgeConsistencyExcludeSelector))
             .map((el) => {
@@ -1149,28 +1725,42 @@ async function collectPageMetrics(page, scope) {
             .filter(Boolean)
             .slice(0, 20);
 
-        const referenceMonospace = document.createElement('span');
-        referenceMonospace.className = 'wb-monospace-value font-monospace';
-        referenceMonospace.textContent = 'Reference';
-        referenceMonospace.setAttribute('aria-hidden', 'true');
-        referenceMonospace.style.position = 'fixed';
-        referenceMonospace.style.left = '-9999px';
-        referenceMonospace.style.top = '0';
-        referenceMonospace.style.pointerEvents = 'none';
-        referenceMonospace.style.visibility = 'hidden';
-        document.body.appendChild(referenceMonospace);
-
-        const referenceMonospaceStyle = window.getComputedStyle(referenceMonospace);
-        const monospaceReference = {
-            color: normalizeColor(referenceMonospaceStyle.color),
-            backgroundColor: normalizeColor(referenceMonospaceStyle.backgroundColor),
-            borderRadius: Number.parseFloat(referenceMonospaceStyle.borderTopLeftRadius || '0'),
-            paddingTop: Number.parseFloat(referenceMonospaceStyle.paddingTop || '0'),
-            paddingRight: Number.parseFloat(referenceMonospaceStyle.paddingRight || '0'),
-            paddingBottom: Number.parseFloat(referenceMonospaceStyle.paddingBottom || '0'),
-            paddingLeft: Number.parseFloat(referenceMonospaceStyle.paddingLeft || '0'),
+        let monospaceReference = {
+            color: '',
+            backgroundColor: '',
+            borderRadius: 0,
+            paddingTop: 0,
+            paddingRight: 0,
+            paddingBottom: 0,
+            paddingLeft: 0,
         };
-        referenceMonospace.remove();
+        {
+            const referenceMonospace = document.createElement('span');
+            referenceMonospace.className = 'wb-monospace-value font-monospace';
+            referenceMonospace.textContent = 'Reference';
+            referenceMonospace.setAttribute('aria-hidden', 'true');
+            referenceMonospace.style.position = 'fixed';
+            referenceMonospace.style.left = '-9999px';
+            referenceMonospace.style.top = '0';
+            referenceMonospace.style.pointerEvents = 'none';
+            referenceMonospace.style.visibility = 'hidden';
+            document.body.appendChild(referenceMonospace);
+
+            try {
+                const referenceMonospaceStyle = window.getComputedStyle(referenceMonospace);
+                monospaceReference = {
+                    color: normalizeColor(referenceMonospaceStyle.color),
+                    backgroundColor: normalizeColor(referenceMonospaceStyle.backgroundColor),
+                    borderRadius: Number.parseFloat(referenceMonospaceStyle.borderTopLeftRadius || '0'),
+                    paddingTop: Number.parseFloat(referenceMonospaceStyle.paddingTop || '0'),
+                    paddingRight: Number.parseFloat(referenceMonospaceStyle.paddingRight || '0'),
+                    paddingBottom: Number.parseFloat(referenceMonospaceStyle.paddingBottom || '0'),
+                    paddingLeft: Number.parseFloat(referenceMonospaceStyle.paddingLeft || '0'),
+                };
+            } finally {
+                referenceMonospace.remove();
+            }
+        }
 
         const monospaceToneMismatches = Array.from(contentRoot.querySelectorAll('code, kbd, samp, .wb-monospace-value, .font-monospace, .asn-badge, .asn-inline, .blocklist-meta-mono'))
             .filter((el) => isVisible(el) && isInContentRoot(el))
@@ -1216,6 +1806,36 @@ async function collectPageMetrics(page, scope) {
             .filter(Boolean)
             .slice(0, 20);
 
+        const monospaceVerticalInsetMismatches = Array.from(contentRoot.querySelectorAll('.enrollment-token-box, .wb-monospace-value'))
+            .filter((el) => isVisible(el) && isInContentRoot(el))
+            .map((el) => {
+                const boxRect = el.getBoundingClientRect();
+                if (boxRect.height <= 0) return null;
+
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                const contentRects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+                if (!contentRects.length) return null;
+
+                const firstRect = contentRects[0];
+                const lastRect = contentRects[contentRects.length - 1];
+                const topInset = Math.max(0, firstRect.top - boxRect.top);
+                const bottomInset = Math.max(0, boxRect.bottom - lastRect.bottom);
+                if (Math.abs(topInset - bottomInset) <= constants.MONOSPACE_VERTICAL_INSET_TOLERANCE_PX) return null;
+
+                return {
+                    tag: el.tagName,
+                    id: el.id || null,
+                    className: typeof el.className === 'string' ? el.className : null,
+                    text: norm(el.textContent).slice(0, 60),
+                    topInset: round(topInset),
+                    bottomInset: round(bottomInset),
+                    delta: round(Math.abs(topInset - bottomInset)),
+                };
+            })
+            .filter(Boolean)
+            .slice(0, 20);
+
         const colorDistance = (c1, c2) => {
             if (!c1 || !c2) return null;
             return Math.sqrt(
@@ -1224,35 +1844,50 @@ async function collectPageMetrics(page, scope) {
                 Math.pow(c1.b - c2.b, 2)
             );
         };
-        const modalBackdropProbe = document.createElement('div');
-        modalBackdropProbe.className = 'modal-backdrop show';
-        modalBackdropProbe.setAttribute('aria-hidden', 'true');
-        modalBackdropProbe.style.position = 'fixed';
-        modalBackdropProbe.style.left = '-9999px';
-        modalBackdropProbe.style.top = '0';
-        modalBackdropProbe.style.pointerEvents = 'none';
-        modalBackdropProbe.style.opacity = '1';
-        document.body.appendChild(modalBackdropProbe);
-
-        const modalBackdropStyle = window.getComputedStyle(modalBackdropProbe);
-        const modalBackdropFilter = parseBackdropFilter(
-            modalBackdropStyle.backdropFilter || modalBackdropStyle.webkitBackdropFilter || ''
-        );
-        const modalBackdropColor = parseColor(modalBackdropStyle.backgroundColor || '');
-        const modalBackdrop = {
-            backgroundColor: normalizeColor(modalBackdropStyle.backgroundColor),
-            alpha: modalBackdropColor?.a ?? null,
-            blurPx: modalBackdropFilter.blurPx,
-            saturate: modalBackdropFilter.saturate,
-            filterRaw: modalBackdropFilter.raw,
-            blurMatchesReference: modalBackdropFilter.blurPx !== null &&
-                Math.abs(modalBackdropFilter.blurPx - constants.MODAL_BACKDROP_BLUR_EXPECTED_PX) <= constants.MODAL_BACKDROP_BLUR_TOLERANCE_PX,
-            saturateMatchesReference: modalBackdropFilter.saturate !== null &&
-                Math.abs(modalBackdropFilter.saturate - constants.MODAL_BACKDROP_SATURATE_EXPECTED) <= constants.MODAL_BACKDROP_SATURATE_TOLERANCE,
-            alphaMatchesReference: modalBackdropColor?.a != null &&
-                Math.abs(modalBackdropColor.a - constants.MODAL_BACKDROP_ALPHA_EXPECTED) <= constants.MODAL_BACKDROP_ALPHA_TOLERANCE,
+        let modalBackdrop = {
+            backgroundColor: null,
+            alpha: null,
+            blurPx: null,
+            saturate: null,
+            filterRaw: '',
+            blurMatchesReference: false,
+            saturateMatchesReference: false,
+            alphaMatchesReference: false,
         };
-        modalBackdropProbe.remove();
+        {
+            const modalBackdropProbe = document.createElement('div');
+            modalBackdropProbe.className = 'modal-backdrop show';
+            modalBackdropProbe.setAttribute('aria-hidden', 'true');
+            modalBackdropProbe.style.position = 'fixed';
+            modalBackdropProbe.style.left = '-9999px';
+            modalBackdropProbe.style.top = '0';
+            modalBackdropProbe.style.pointerEvents = 'none';
+            modalBackdropProbe.style.opacity = '1';
+            document.body.appendChild(modalBackdropProbe);
+
+            try {
+                const modalBackdropStyle = window.getComputedStyle(modalBackdropProbe);
+                const modalBackdropFilter = parseBackdropFilter(
+                    modalBackdropStyle.backdropFilter || modalBackdropStyle.webkitBackdropFilter || ''
+                );
+                const modalBackdropColor = parseColor(modalBackdropStyle.backgroundColor || '');
+                modalBackdrop = {
+                    backgroundColor: normalizeColor(modalBackdropStyle.backgroundColor),
+                    alpha: modalBackdropColor?.a ?? null,
+                    blurPx: modalBackdropFilter.blurPx,
+                    saturate: modalBackdropFilter.saturate,
+                    filterRaw: modalBackdropFilter.raw,
+                    blurMatchesReference: modalBackdropFilter.blurPx !== null &&
+                        Math.abs(modalBackdropFilter.blurPx - constants.MODAL_BACKDROP_BLUR_EXPECTED_PX) <= constants.MODAL_BACKDROP_BLUR_TOLERANCE_PX,
+                    saturateMatchesReference: modalBackdropFilter.saturate !== null &&
+                        Math.abs(modalBackdropFilter.saturate - constants.MODAL_BACKDROP_SATURATE_EXPECTED) <= constants.MODAL_BACKDROP_SATURATE_TOLERANCE,
+                    alphaMatchesReference: modalBackdropColor?.a != null &&
+                        Math.abs(modalBackdropColor.a - constants.MODAL_BACKDROP_ALPHA_EXPECTED) <= constants.MODAL_BACKDROP_ALPHA_TOLERANCE,
+                };
+            } finally {
+                modalBackdropProbe.remove();
+            }
+        }
 
         const toLuminance = (channel) => {
             const value = channel / 255;
@@ -1283,6 +1918,7 @@ async function collectPageMetrics(page, scope) {
                 if (!text || text.length < 2 || el.children.length > 0) return [];
                 if (el.classList.contains('material-icons') || el.closest('.material-icons')) return [];
                 if (el.closest('.navbar') || el.closest('.wb-footer')) return [];
+                if (el.classList.contains('visually-hidden') || el.closest('.visually-hidden')) return [];
                 const disabledAncestor = el.closest('button, [role="button"], input, select, textarea, .btn');
                 if (disabledAncestor && isDisabled(disabledAncestor)) return [];
                 const style = window.getComputedStyle(el);
@@ -1368,7 +2004,59 @@ async function collectPageMetrics(page, scope) {
         const spacing = {};
         const cardContainment = {
             cardsPastFooter: [],
+            overlaysAboveFooter: [],
+            unnecessaryScrollBoxes: [],
+            clippedDropdowns: [],
         };
+
+        // Detect boxes with max-height causing unnecessary scroll when content could fit
+        cardContainment.unnecessaryScrollBoxes = Array.from(contentRoot.querySelectorAll('[class*="box"], [class*="token"], pre, code'))
+            .filter((el) => isVisible(el))
+            .filter((el) => {
+                const style = getComputedStyle(el);
+                const maxHeight = parseFloat(style.maxHeight);
+                const overflowY = style.overflowY;
+                // Element has max-height constraint and scroll enabled
+                if (!maxHeight || isNaN(maxHeight) || (overflowY !== 'auto' && overflowY !== 'scroll')) return false;
+                // Check if content exceeds max-height (would need scrolling)
+                return el.scrollHeight > el.clientHeight + 2;
+            })
+            .slice(0, 20)
+            .map((el) => ({
+                ...rectInfo(el),
+                scrollHeight: el.scrollHeight,
+                clientHeight: el.clientHeight,
+                maxHeight: parseFloat(getComputedStyle(el).maxHeight),
+            }));
+
+        // Detect dropdowns inside overflow:hidden containers that could clip the menu
+        cardContainment.clippedDropdowns = Array.from(contentRoot.querySelectorAll('.dropdown, [data-bs-toggle="dropdown"]'))
+            .filter((el) => isVisible(el))
+            .filter((el) => {
+                // Walk up the DOM tree looking for overflow:hidden ancestors
+                let parent = el.parentElement;
+                while (parent && parent !== document.body) {
+                    const style = getComputedStyle(parent);
+                    const overflow = style.overflow + ' ' + style.overflowX + ' ' + style.overflowY;
+                    // Check if parent clips content and doesn't have position:static dropdown escape
+                    if ((overflow.includes('hidden') || overflow.includes('auto') || overflow.includes('scroll')) &&
+                        !parent.classList.contains('dropdown') &&
+                        style.position !== 'static') {
+                        // Check if dropdown menu uses position:fixed (escapes clipping)
+                        const menu = el.querySelector('.dropdown-menu') || el.nextElementSibling;
+                        if (menu && menu.classList?.contains('dropdown-menu')) {
+                            const menuStyle = getComputedStyle(menu);
+                            if (menuStyle.position !== 'fixed') {
+                                return true;
+                            }
+                        }
+                    }
+                    parent = parent.parentElement;
+                }
+                return false;
+            })
+            .slice(0, 20)
+            .map(rectInfo);
 
         spacing.mobileRowCardStackGaps = [];
         if (window.matchMedia('(max-width: 991.98px)').matches) {
@@ -1443,6 +2131,22 @@ async function collectPageMetrics(page, scope) {
                 .map(rectInfo);
         }
 
+        // Detect overlays with z-index higher than footer (can scroll over footer)
+        cardContainment.overlaysAboveFooter = Array.from(contentRoot.querySelectorAll('[class*="overlay"], [class*="empty-state"]'))
+            .filter((el) => isVisible(el))
+            .filter((el) => {
+                const style = getComputedStyle(el);
+                const zIndex = parseInt(style.zIndex, 10);
+                const position = style.position;
+                // Only flag absolutely/fixed positioned elements with z-index > footer
+                return (position === 'absolute' || position === 'fixed') && zIndex > constants.FOOTER_Z_INDEX;
+            })
+            .slice(0, 20)
+            .map((el) => ({
+                ...rectInfo(el),
+                zIndex: parseInt(getComputedStyle(el).zIndex, 10),
+            }));
+
         const measureStandardMainGridGap = () => {
             const mainGridRow = document.querySelector('.wb-main-grid');
             const statsRow = mainGridRow?.previousElementSibling;
@@ -1492,6 +2196,31 @@ async function collectPageMetrics(page, scope) {
                     recentTop: round(recentRect.top),
                 };
             }
+
+            const recentPeerRows = Array.from(document.querySelectorAll('#recent-peers .peer-row-clickable'))
+                .filter((row) => isVisible(row))
+                .map((row, index, rows) => {
+                    const rowRect = row.getBoundingClientRect();
+                    const afterStyle = window.getComputedStyle(row, '::after');
+                    const afterWidth = Number.parseFloat(afterStyle.width) || 0;
+                    const afterHeight = Number.parseFloat(afterStyle.height) || 0;
+                    const hasPseudoDivider = afterStyle.content !== 'none'
+                        && afterStyle.display !== 'none'
+                        && afterHeight >= 0.5
+                        && afterWidth >= Math.max(0, rowRect.width - 40);
+
+                    return {
+                        text: norm(row.textContent).slice(0, 80) || null,
+                        rowWidth: round(rowRect.width),
+                        dividerWidth: round(afterWidth),
+                        dividerHeight: round(afterHeight),
+                        dividerCoverage: rowRect.width ? round(afterWidth / rowRect.width) : 0,
+                        hasLegacyBorderBottom: row.classList.contains('border-bottom'),
+                        hasPseudoDivider,
+                        isLast: index === rows.length - 1,
+                    };
+                });
+            spacing.recentPeerRows = recentPeerRows;
 
             // Detect desktop-style layout using Bootstrap breakpoint
             if (mapCard && recentCard && speedCard && window.matchMedia('(min-width: 1200px)').matches) {
@@ -1797,6 +2526,118 @@ async function collectPageMetrics(page, scope) {
                     : 0,
                 sample: actionButtons.slice(0, 10),
             };
+
+            const rootStyle = window.getComputedStyle(document.documentElement);
+            const expectedButtonRadius = Number.parseFloat(rootStyle.getPropertyValue('--wb-btn-radius') || '0') || 0;
+            const expectedTouchTarget = Number(constants.CLICK_TARGET_MIN_SIZE_PX || 44);
+            const usersMobileActionToggles = Array.from(contentRoot.querySelectorAll('.users-mobile-actions-toggle'))
+                .filter((el) => isVisible(el) && isInContentRoot(el) && !isDisabled(el))
+                .map((toggle) => {
+                    const rect = toggle.getBoundingClientRect();
+                    const style = window.getComputedStyle(toggle);
+                    const row = toggle.closest('.wb-responsive-row');
+                    const rowRect = row ? row.getBoundingClientRect() : null;
+
+                    const width = rect.width;
+                    const height = rect.height;
+                    const borderRadius = Number.parseFloat(style.borderTopLeftRadius || '0') || 0;
+                    const topInset = rowRect ? rect.top - rowRect.top : null;
+                    const rightInset = rowRect ? rowRect.right - rect.right : null;
+
+                    return {
+                        ...rectInfo(toggle),
+                        width: round(width),
+                        height: round(height),
+                        borderRadius: round(borderRadius),
+                        topInset: topInset == null ? null : round(topInset),
+                        rightInset: rightInset == null ? null : round(rightInset),
+                        isSquare: Math.abs(width - height) <= 1,
+                        meetsTouchTarget: Math.min(width, height) >= (expectedTouchTarget - 0.5),
+                        radiusMatchesToken: expectedButtonRadius > 0 ? Math.abs(borderRadius - expectedButtonRadius) <= 1 : borderRadius > 0,
+                        anchoredTopRight: topInset != null && rightInset != null
+                            ? topInset >= -1 && rightInset >= -1 && topInset <= 18 && rightInset <= 18
+                            : true,
+                    };
+                });
+
+            spacing.usersMobileActionToggleContract = {
+                count: usersMobileActionToggles.length,
+                expectedTouchTarget: round(expectedTouchTarget),
+                expectedButtonRadius: round(expectedButtonRadius),
+                squareMismatchCount: usersMobileActionToggles.filter((toggle) => !toggle.isSquare).length,
+                touchTargetMismatchCount: usersMobileActionToggles.filter((toggle) => !toggle.meetsTouchTarget).length,
+                radiusMismatchCount: usersMobileActionToggles.filter((toggle) => !toggle.radiusMatchesToken).length,
+                anchorMismatchCount: usersMobileActionToggles.filter((toggle) => !toggle.anchoredTopRight).length,
+                sample: usersMobileActionToggles.slice(0, 10),
+            };
+
+            if (window.innerWidth < 992) {
+                const usersMetaRows = Array.from(contentRoot.querySelectorAll('.users-mobile-meta'))
+                    .filter((el) => isVisible(el) && isInContentRoot(el))
+                    .map((metaRow) => {
+                        const labelEl = metaRow.querySelector('.users-mobile-meta-label');
+                        const valueEl = metaRow.querySelector('.users-mobile-meta-value');
+                        const rowRect = metaRow.getBoundingClientRect();
+                        const labelRect = labelEl ? labelEl.getBoundingClientRect() : null;
+                        const valueRect = valueEl ? valueEl.getBoundingClientRect() : null;
+                        const valueStyle = valueEl ? window.getComputedStyle(valueEl) : null;
+
+                        const hasStructure = Boolean(labelEl && valueEl);
+                        const isInline = hasStructure && labelRect && valueRect
+                            ? Math.abs(labelRect.top - valueRect.top) <= 8
+                            : false;
+                        const labelBeforeValue = hasStructure && labelRect && valueRect
+                            ? labelRect.left <= valueRect.left
+                            : false;
+                        const valueAlignedRight = hasStructure && valueRect && rowRect
+                            ? (Math.abs(rowRect.right - valueRect.right) <= 8)
+                            || valueStyle?.textAlign === 'right'
+                            : false;
+
+                        const rowLabelText = norm(labelEl?.textContent || '').replace(':', '').toLowerCase();
+                        const isIpRow = rowLabelText === 'ip';
+                        let hasIpMarker = true;
+                        let hasIpCode = true;
+                        let ipMarkerBeforeCode = true;
+
+                        if (isIpRow && valueEl) {
+                            const marker = valueEl.querySelector('.users-mobile-ip-flag, .users-mobile-ip-flag-fallback');
+                            const ipCode = valueEl.querySelector('code.ipv6');
+                            hasIpMarker = Boolean(marker);
+                            hasIpCode = Boolean(ipCode);
+                            ipMarkerBeforeCode = Boolean(
+                                marker
+                                && ipCode
+                                && (marker.compareDocumentPosition(ipCode) & Node.DOCUMENT_POSITION_FOLLOWING)
+                            );
+                        }
+
+                        return {
+                            ...rectInfo(metaRow),
+                            rowLabel: rowLabelText || null,
+                            hasStructure,
+                            isInline,
+                            labelBeforeValue,
+                            valueAlignedRight,
+                            isIpRow,
+                            hasIpMarker,
+                            hasIpCode,
+                            ipMarkerBeforeCode,
+                        };
+                    });
+
+                const ipRows = usersMetaRows.filter((row) => row.isIpRow);
+                spacing.usersMobileMetaContract = {
+                    count: usersMetaRows.length,
+                    ipRowCount: ipRows.length,
+                    missingStructureCount: usersMetaRows.filter((row) => !row.hasStructure).length,
+                    inlineLayoutMismatchCount: usersMetaRows.filter((row) => row.hasStructure && (!row.isInline || !row.labelBeforeValue)).length,
+                    valueAlignmentMismatchCount: usersMetaRows.filter((row) => row.hasStructure && !row.valueAlignedRight).length,
+                    ipStructureMismatchCount: ipRows.filter((row) => !row.hasIpMarker || !row.hasIpCode).length,
+                    ipOrderMismatchCount: ipRows.filter((row) => row.hasIpMarker && row.hasIpCode && !row.ipMarkerBeforeCode).length,
+                    sample: usersMetaRows.slice(0, 12),
+                };
+            }
         }
 
         // Peers page: Modal form validation (required field markers)
@@ -2562,6 +3403,32 @@ async function collectPageMetrics(page, scope) {
 
         spacing.cardBorderRadiusIssues = cardBorderRadiusIssues;
 
+        if (scope === 'dashboard') {
+            spacing.chartEmptyStateCentering = Array.from(contentRoot.querySelectorAll('.chart-empty-state'))
+                .filter((state) => isVisible(state) && isInContentRoot(state))
+                .slice(0, 10)
+                .map((state) => {
+                    const container = state.closest('.speedtest-chart-wrap, .trend-chart-height, .card-body') || state.parentElement;
+                    const stateRect = state.getBoundingClientRect();
+                    const containerRect = container?.getBoundingClientRect() || null;
+                    const deltaX = containerRect
+                        ? round((stateRect.left + stateRect.width / 2) - (containerRect.left + containerRect.width / 2))
+                        : null;
+
+                    return {
+                        id: state.id || null,
+                        text: norm(state.textContent).slice(0, 120) || null,
+                        parentTag: container?.tagName || null,
+                        parentId: container?.id || null,
+                        parentClassName: norm(container?.className || '').slice(0, 120) || null,
+                        width: round(stateRect.width),
+                        parentWidth: containerRect ? round(containerRect.width) : null,
+                        deltaX,
+                        centered: deltaX == null ? true : Math.abs(deltaX) <= 4,
+                    };
+                });
+        }
+
         // DNS page: Chart empty state spacing validation
         // Validate that "DNS Unavailable" and "Unbound is not installed." have minimal gap
         if (scope === 'dns') {
@@ -3046,6 +3913,58 @@ async function collectPageMetrics(page, scope) {
             return issues.length ? issues : null;
         })();
 
+        const speedtestCanvasSizing = (() => {
+            if (scope !== 'dashboard') return null;
+
+            const canvas = document.getElementById('speedtest-chart');
+            const wrap = canvas?.parentElement;
+            if (!canvas || !wrap || !isVisible(canvas) || !isVisible(wrap)) {
+                return null;
+            }
+
+            const canvasRect = canvas.getBoundingClientRect();
+            const wrapRect = wrap.getBoundingClientRect();
+            if (canvasRect.width <= 0 || canvasRect.height <= 0 || wrapRect.width <= 0 || wrapRect.height <= 0) {
+                return null;
+            }
+
+            const dpr = window.devicePixelRatio || 1;
+            const intrinsicWidth = Number(canvas.width || 0);
+            const intrinsicHeight = Number(canvas.height || 0);
+            const widthFillRatio = canvasRect.width / wrapRect.width;
+            const heightFillRatio = canvasRect.height / wrapRect.height;
+            const widthBackingRatio = intrinsicWidth > 0 ? intrinsicWidth / canvasRect.width : 0;
+            const heightBackingRatio = intrinsicHeight > 0 ? intrinsicHeight / canvasRect.height : 0;
+            const maxExpectedBackingRatio = Math.max(2, dpr * 1.5);
+            const issues = [];
+
+            if (widthFillRatio < 0.9 || heightFillRatio < 0.9) {
+                issues.push({
+                    type: 'canvasUnderfillsWrapper',
+                    widthFillRatio: round(widthFillRatio),
+                    heightFillRatio: round(heightFillRatio),
+                    canvas: rectInfo(canvas),
+                    wrapper: rectInfo(wrap),
+                });
+            }
+
+            if (widthBackingRatio > maxExpectedBackingRatio || heightBackingRatio > maxExpectedBackingRatio) {
+                issues.push({
+                    type: 'canvasOverscaledBackingStore',
+                    devicePixelRatio: round(dpr),
+                    widthBackingRatio: round(widthBackingRatio),
+                    heightBackingRatio: round(heightBackingRatio),
+                    maxExpectedBackingRatio: round(maxExpectedBackingRatio),
+                    intrinsicWidth: round(intrinsicWidth),
+                    intrinsicHeight: round(intrinsicHeight),
+                    displayedWidth: round(canvasRect.width),
+                    displayedHeight: round(canvasRect.height),
+                });
+            }
+
+            return issues.length ? issues : null;
+        })();
+
         // Deprecated red color validation: ensure deprecated reds are not used
         // Only approved red is #ff6384 (rgb(255, 99, 132))
         // Deprecated reds: #ff6b6b (rgb(255, 107, 107)), #ff9cab (rgb(255, 156, 171))
@@ -3104,8 +4023,6 @@ async function collectPageMetrics(page, scope) {
 
             return issues.length ? issues : null;
         })();
-
-        colorProbe.remove();
 
         const trafficTableHealth = scope === 'traffic' ? (() => {
             const inspectTrafficTable = ({ tableId, tbodyId, contentId, emptyId, loadingId }) => {
@@ -3173,7 +4090,9 @@ async function collectPageMetrics(page, scope) {
             clippedButtons,
             clickTargetsTooSmall,
             iconButtonsTouchBlocked,
+            dropdownToggleClickFailures,
             deprecatedButtonClasses,
+            buttonTextNotCentered,
             hiddenInteractiveElements,
             bootstrapGridIssues,
             bootstrapColumnsOutsideRows,
@@ -3187,11 +4106,13 @@ async function collectPageMetrics(page, scope) {
             flexScrollTraps,
             badgeStyleMismatches,
             monospaceToneMismatches,
+            monospaceVerticalInsetMismatches,
             layoutShift,
             componentLayoutShift,
             contrastProblems,
             cardContainment,
             spacing,
+            standardButtonHeightContract,
             loginFailure,
             modalBackdrop,
             visualContainmentIssues,
@@ -3200,6 +4121,7 @@ async function collectPageMetrics(page, scope) {
             formSwitchHeightIssues,
             inputGroupHeightIssues,
             colorSchemeConsistency,
+            speedtestCanvasSizing,
             deprecatedColorUsage,
             trafficTableHealth,
         };
@@ -3215,6 +4137,7 @@ async function runNodesDynamicChecks(page, view) {
     };
 
     const testPage = await page.context().newPage();
+    const allowedMutationPaths = new Set();
 
     const getPathname = (url) => {
         try {
@@ -3233,7 +4156,8 @@ async function runNodesDynamicChecks(page, view) {
     };
 
     try {
-        await testPage.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 30000 });
+        await blockUnexpectedMutations(testPage, allowedMutationPaths);
+        await gotoAppView(testPage, `${BASE_URL}${view.url}`);
         await disableMotion(testPage, FULL_MOTION_RESET_CSS, `${view.name}-nodes-dynamic`);
         await testPage.waitForTimeout(SCREENSHOT_SETTLE_MS);
 
@@ -3275,6 +4199,7 @@ async function runNodesDynamicChecks(page, view) {
             const completionTs = new Date(Date.now() + 60_000).toISOString();
             const speedtestPath = `/api/nodes/${speedtestCandidate.nodeId}/speedtest`;
             const speedtestNodesPath = '/api/wireguard/speedtest/nodes';
+            allowedMutationPaths.add(speedtestPath);
 
             const speedtestStartHandler = async (route) => {
                 if (route.request().method() !== 'POST' || getPathname(route.request().url()) !== speedtestPath) {
@@ -3407,6 +4332,7 @@ async function runNodesDynamicChecks(page, view) {
             } finally {
                 await testPage.unroute(`**${speedtestPath}`, speedtestStartHandler);
                 await testPage.unroute(`**${speedtestNodesPath}`, speedtestHistoryHandler);
+                allowedMutationPaths.delete(speedtestPath);
             }
         } else {
             result.speedtestLock.reason = 'noOnlineRow';
@@ -3486,12 +4412,51 @@ async function runNodesDynamicChecks(page, view) {
     }
 }
 
-async function auditView(page, view) {
+async function exerciseSettingsWireguardModal(page) {
+    const openModalButton = page.locator('#btn-open-create-interface-modal');
+    const hasOpenButton = await openModalButton.count();
+    if (!hasOpenButton) {
+        return;
+    }
+
+    const canOpen = await openModalButton.isVisible().catch(() => false)
+        && await openModalButton.isEnabled().catch(() => false);
+    if (!canOpen) {
+        return;
+    }
+
+    await openModalButton.click();
+
+    const modal = page.locator('#ifaceModal');
+    const modalVisible = await modal.waitFor({ state: 'visible', timeout: 5000 })
+        .then(() => true)
+        .catch(() => false);
+    if (!modalVisible) {
+        return;
+    }
+
+    const closeButton = page.locator('#ifaceModal [data-bs-dismiss="modal"], #ifaceModal .btn-close').first();
+    const closedByButton = await closeButton.count()
+        ? await closeButton.click().then(() => true).catch(() => false)
+        : false;
+    if (!closedByButton) {
+        await page.keyboard.press('Escape').catch(() => { });
+    }
+
+    await page.waitForFunction(() => {
+        const modalEl = document.getElementById('ifaceModal');
+        return !modalEl || !modalEl.classList.contains('show');
+    }, { timeout: 5000 }).catch(() => { });
+
+    await page.waitForTimeout(TAB_SWITCH_SETTLE_MS);
+}
+
+async function auditView(page, view, browserName) {
     const detachNetwork = collectConsoleAndNetwork(page);
     let network = null;
     try {
         await applyTheme(page, { baseUrl: BASE_URL, theme: view.theme, label: view.name });
-        const response = await page.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 30000 });
+        const response = await gotoAppView(page, `${BASE_URL}${view.url}`);
         await disableMotion(page, FULL_MOTION_RESET_CSS, view.name);
         if (view.scope === 'about') {
             await page.evaluate(() => {
@@ -3503,6 +4468,9 @@ async function auditView(page, view) {
         if (view.tab) {
             await page.click(view.tab);
             await page.waitForTimeout(TAB_SWITCH_SETTLE_MS);
+        }
+        if (view.name === 'settings-wireguard') {
+            await exerciseSettingsWireguardModal(page);
         }
         if (view.scope === 'traffic') {
             await page.waitForFunction(() => {
@@ -3528,13 +4496,54 @@ async function auditView(page, view) {
             shotB: shots.shotB,
             screenshotDir: SCREENSHOT_DIR,
         });
-        const metrics = await collectPageMetrics(page, view.scope);
+
+        // SSIM perceptual diff (complementary to pixelmatch)
+        const ssimResult = await computeSSIM(shots.shotA, shots.shotB);
+        diff.ssim = ssimResult.ssim;
+        diff.mssim = ssimResult.mssim;
+
+        const metrics = ensureMetricsShape(await safeMetric(
+            'collectPageMetrics',
+            () => collectPageMetrics(page, view.scope),
+            {},
+        ));
+
+        // Extended audits: Axe, Performance, Fonts, DOM stability
+        const [axeResults, perfMetrics, fontMetrics, domStability] = await Promise.all([
+            safeMetric('axe', () => runAxeAudit(page), {}),
+            safeMetric('performance', () => collectPerformanceMetrics(page, { browserName }), {}),
+            safeMetric('fonts', () => checkFontLoading(page), {}),
+            safeMetric('domStability', () => collectDOMStabilityMetrics(page), {}),
+        ]);
+        metrics.axe = axeResults;
+        metrics.performance = perfMetrics;
+        metrics.fonts = fontMetrics;
+        metrics.domStability = domStability;
         if (view.scope === 'nodes') {
-            metrics.spacing.nodesDynamicBehavior = await runNodesDynamicChecks(page, view);
+            metrics.spacing.nodesDynamicBehavior = await safeMetric(
+                'nodesDynamicBehavior',
+                () => runNodesDynamicChecks(page, view),
+                {
+                    available: false,
+                    rowCount: 0,
+                    statusRefresh: { attempted: false, passed: false, reason: 'metricError' },
+                    speedtestLock: { attempted: false, passed: false, reason: 'metricError' },
+                },
+            );
         }
         network = detachNetwork();
         const statusUnavailableExpected = isExpectedStatusUnavailable(view, response);
         network.requestFailures = network.requestFailures.filter((entry) => entry.error !== 'net::ERR_ABORTED');
+
+        // Filter console noise and compute severity
+        network.consoleEntries = filterConsoleEntries(network.consoleEntries);
+        network.consoleEntries = correlateConsoleEntries(network.consoleEntries, metrics, {
+            route: view.url,
+            component: view.scope,
+            browser: browserName,
+            scope: view.scope,
+        });
+        network.consoleSeverity = scoreConsoleSeverity(network.consoleEntries);
         if (statusUnavailableExpected) {
             network.consoleEntries = network.consoleEntries.filter((entry) => {
                 const text = String(entry.text || '');
@@ -3560,6 +4569,15 @@ async function auditView(page, view) {
             findings: [],
             screenshots: { ...shots, diffPath: diff.diffPath },
             kpiShots,
+            uiHealth: buildUIHealthReport({
+                name: view.name,
+                url: page.url(),
+                browser: browserName,
+                scope: view.scope,
+                metrics,
+                diff,
+                network,
+            }),
         };
     } finally {
         // Always detach network listeners to prevent memory leaks
@@ -3567,16 +4585,16 @@ async function auditView(page, view) {
     }
 }
 
-async function auditLoginFailureView(page, view) {
+async function auditLoginFailureView(page, view, browserName) {
     const detachNetwork = collectConsoleAndNetwork(page);
     let network = null;
     try {
-        await page.goto(`${BASE_URL}${view.url}`, { waitUntil: 'networkidle', timeout: 10000 });
+        await gotoAppView(page, `${BASE_URL}${view.url}`, 10000);
         await disableMotion(page, FULL_MOTION_RESET_CSS, view.name);
         await applyTheme(page, { baseUrl: BASE_URL, theme: view.theme, label: view.name });
 
         const invalidPassword = `${PASSWORD}__ui_lint_invalid`;
-        await page.fill('#username', USERNAME);
+        await page.fill('#username', LOGIN_FAILURE_USERNAME || USERNAME);
         await page.fill('#password', invalidPassword);
 
         const [loginResponse] = await Promise.all([
@@ -3595,7 +4613,11 @@ async function auditLoginFailureView(page, view) {
         await page.waitForSelector('#error-alert:not(.d-none)', { state: 'attached', timeout: 30000 });
         await page.waitForTimeout(LOGIN_ERROR_SETTLE_MS);
 
-        const metrics = await collectPageMetrics(page, view.scope);
+        const metrics = ensureMetricsShape(await safeMetric(
+            'collectPageMetrics',
+            () => collectPageMetrics(page, view.scope),
+            {},
+        ));
         const shots = await captureStablePair(page, {
             motionResetCss: FULL_MOTION_RESET_CSS,
             name: view.name,
@@ -3610,9 +4632,17 @@ async function auditLoginFailureView(page, view) {
             screenshotDir: SCREENSHOT_DIR,
         });
         network = detachNetwork();
+        network.consoleEntries = filterConsoleEntries(network.consoleEntries);
         network.consoleEntries = network.consoleEntries.filter((entry) =>
             !(loginResponse.status() === 401 && entry.text.includes('401 (Unauthorized)'))
         );
+        network.consoleEntries = correlateConsoleEntries(network.consoleEntries, metrics, {
+            route: view.url,
+            component: view.scope,
+            browser: browserName,
+            scope: view.scope,
+        });
+        network.consoleSeverity = scoreConsoleSeverity(network.consoleEntries);
         network.requestFailures = network.requestFailures.filter((entry) => entry.error !== 'net::ERR_ABORTED');
         network.badResponses = network.badResponses.filter((entry) => {
             try {
@@ -3633,6 +4663,15 @@ async function auditLoginFailureView(page, view) {
             screenshots: { ...shots, diffPath: diff.diffPath },
             kpiShots,
             loginResponseStatus: loginResponse.status(),
+            uiHealth: buildUIHealthReport({
+                name: view.name,
+                url: page.url(),
+                browser: browserName,
+                scope: view.scope,
+                metrics,
+                diff,
+                network,
+            }),
         };
     } finally {
         // Always detach network listeners to prevent memory leaks
@@ -3641,175 +4680,198 @@ async function auditLoginFailureView(page, view) {
 }
 
 async function main() {
-    // Clean up old output files
-    if (fs.existsSync(OUTPUT_DIR)) {
-        const files = fs.readdirSync(OUTPUT_DIR);
-        for (const file of files) {
-            if (file.endsWith('.png') || file.endsWith('.json')) {
-                fs.unlinkSync(path.join(OUTPUT_DIR, file));
-            }
-        }
-    }
+    const runLoginFailureTests = assertLoginFailureSafety();
+
+    // Clean up known UI-lint artifacts only.
+    cleanOutputDir(OUTPUT_DIR);
     ensureDir(OUTPUT_DIR);
     fs.rmSync(SCREENSHOT_DIR, { recursive: true, force: true });
     ensureDir(SCREENSHOT_DIR);
 
     const results = [];
-    let browser;
+    let browserRunFailed = false;
 
-    try {
-        browser = await chromium.launch({ headless: true });
-        const authContext = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
-        await login(await authContext.newPage(), {
-            baseUrl: BASE_URL,
-            username: USERNAME,
-            password: PASSWORD,
-            motionResetCss: FULL_MOTION_RESET_CSS,
-        });
-        const authState = await authContext.storageState();
-        await authContext.close();
+    const browserEntries = SELECTED_BROWSERS.map((browserName, browserIndex) => [browserIndex, browserName]);
 
-        const desktopContext = await browser.newContext({
-            viewport: { width: 1440, height: 1100 },
-            storageState: authState,
-        });
-        const largeDesktopContext = await browser.newContext({
-            viewport: { width: 1600, height: 1100 },
-            storageState: authState,
-        });
-        const tabletContext = await browser.newContext({
-            ...devices['iPad Pro 11'],
-            storageState: authState,
-        });
-        const mobileContext = await browser.newContext({
-            ...devices['iPhone 13'],
-            storageState: authState,
-        });
-        await installLayoutShiftObserver(desktopContext);
-        await installLayoutShiftObserver(largeDesktopContext);
-        await installLayoutShiftObserver(tabletContext);
-        await installLayoutShiftObserver(mobileContext);
+    // Iterate over selected browsers with bounded concurrency.
+    await runWithConcurrency(browserEntries, BROWSER_CONCURRENCY, async ([browserIndex, browserName]) => {
+        console.log(`\n--- Testing with ${browserName} ---`);
+        const browserLauncher = AVAILABLE_BROWSERS[browserName];
+        let browser;
 
-        const desktopPage = await desktopContext.newPage();
-        const largeDesktopPage = await largeDesktopContext.newPage();
-        const tabletPage = await tabletContext.newPage();
-        const mobilePage = await mobileContext.newPage();
+        try {
+            browser = await browserLauncher.launch({ headless: true });
+            const authContext = await browser.newContext(withBrowserClientIp({ viewport: { width: 1440, height: 1100 } }, browserName));
+            await login(await authContext.newPage(), {
+                baseUrl: BASE_URL,
+                username: USERNAME,
+                password: PASSWORD,
+                motionResetCss: FULL_MOTION_RESET_CSS,
+            });
+            const authState = await authContext.storageState();
+            await authContext.close();
 
-        // Run authenticated view tests
-        for (const view of VIEWS) {
-            let page;
-            if (view.device === 'mobile') {
-                page = mobilePage;
-            } else if (view.device === 'tablet') {
-                page = tabletPage;
-            } else if (view.device === 'large-desktop') {
-                page = largeDesktopPage;
-            } else {
-                page = desktopPage;
+            const desktopContext = await browser.newContext(withBrowserClientIp(getAuthenticatedContextOptions('desktop', devices, authState), browserName));
+            const largeDesktopContext = await browser.newContext(withBrowserClientIp(getAuthenticatedContextOptions('large-desktop', devices, authState), browserName));
+            const tabletContext = await browser.newContext(withBrowserClientIp(getAuthenticatedContextOptions('tablet', devices, authState), browserName));
+            const mobileContext = await browser.newContext(withBrowserClientIp(getAuthenticatedContextOptions('mobile', devices, authState), browserName));
+            await installLayoutShiftObserver(desktopContext);
+            await installLayoutShiftObserver(largeDesktopContext);
+            await installLayoutShiftObserver(tabletContext);
+            await installLayoutShiftObserver(mobileContext);
+
+            // Extended observers: Performance (LCP/INP), DOM stability
+            await installPerformanceObservers(desktopContext);
+            await installPerformanceObservers(largeDesktopContext);
+            await installPerformanceObservers(tabletContext);
+            await installPerformanceObservers(mobileContext);
+            await installDOMStabilityObserver(desktopContext);
+            await installDOMStabilityObserver(largeDesktopContext);
+            await installDOMStabilityObserver(tabletContext);
+            await installDOMStabilityObserver(mobileContext);
+
+            const desktopPage = await desktopContext.newPage();
+            const largeDesktopPage = await largeDesktopContext.newPage();
+            const tabletPage = await tabletContext.newPage();
+            const mobilePage = await mobileContext.newPage();
+            const viewContexts = [desktopContext, largeDesktopContext, tabletContext, mobileContext];
+            const pageByDevice = {
+                desktop: desktopPage,
+                'large-desktop': largeDesktopPage,
+                tablet: tabletPage,
+                mobile: mobilePage,
+            };
+
+            // Run authenticated view tests
+            console.log(`[${browserName}] Entering ${formatPhaseLabel('view', VIEWS.length)}`);
+            const orderedViewResults = new Array(VIEWS.length);
+            const viewEntriesByDevice = {
+                desktop: [],
+                'large-desktop': [],
+                tablet: [],
+                mobile: [],
+            };
+            for (const entry of VIEWS.entries()) {
+                const [viewIndex, view] = entry;
+                const bucket = viewEntriesByDevice[view.device] || viewEntriesByDevice.desktop;
+                bucket.push([viewIndex, view]);
             }
+
             try {
-                const result = await auditView(page, view);
-                const summarized = summarizeFindings(result);
-                result.findings = summarized.findings;
-                result.hardFindings = summarized.hardFindings;
-                result.warnings = summarized.warnings;
-                results.push(result);
-            } catch (err) {
-                console.error(`[${view.name}] Audit failed: ${err.message}`);
-                results.push({
-                    name: view.name,
-                    url: view.url,
-                    theme: view.theme,
-                    error: err.message,
-                    findings: ['auditError'],
-                    hardFindings: ['auditError'],
-                    warnings: [],
-                    diff: { ratio: 0, sizeMismatch: false },
-                    metrics: {},
-                    network: { consoleEntries: [], pageErrors: [], requestFailures: [], badResponses: [], requests: [], duplicateRequests: [] },
-                });
-            }
-        }
-
-        // Run login-failure tests LAST to avoid rate limiting blocking the real login
-        for (const [index, view] of LOGIN_FAILURE_VIEWS.entries()) {
-            let page;
-            if (view.device === 'mobile') {
-                page = mobilePage;
-            } else if (view.device === 'tablet') {
-                page = tabletPage;
-            } else if (view.device === 'large-desktop') {
-                page = largeDesktopPage;
-            } else {
-                page = desktopPage;
-            }
-
-            // Retry logic for rate limiting: detect "too many attempts" and wait before retry
-            let result;
-            let attempt = 0;
-            const maxRetries = 3;
-
-            while (attempt < maxRetries) {
-                try {
-                    // Stagger login attempts to stay under 5/minute rate limit
-                    if (index > 0 && attempt === 0) {
-                        await new Promise((resolve) => setTimeout(resolve, LOGIN_TEST_STAGGER_MS));
-                    }
-
-                    result = await auditLoginFailureView(page, view);
-
-                    // Check if rate limited by examining error text
-                    const errorText = result?.metrics?.loginFailure?.errorText?.toLowerCase() || '';
-                    if (errorText.includes('too many') || errorText.includes('rate limit') || errorText.includes('locked')) {
-                        if (attempt < maxRetries - 1) {
-                            console.warn(`[${view.name}] Rate limited, waiting ${LOGIN_LOCKOUT_RESET_MS}ms before retry ${attempt + 1}/${maxRetries - 1}`);
-                            await new Promise((resolve) => setTimeout(resolve, LOGIN_LOCKOUT_RESET_MS));
-                            attempt++;
-                            continue;
+                await runWithConcurrency(
+                    Object.entries(pageByDevice),
+                    VIEW_DEVICE_CONCURRENCY,
+                    async ([device, page]) => {
+                        const entries = viewEntriesByDevice[device] || [];
+                        for (const [viewIndex, view] of entries) {
+                            try {
+                                logViewStart(browserName, view, viewIndex, VIEWS.length);
+                                const result = await auditView(page, view, browserName);
+                                result.browser = browserName;
+                                orderedViewResults[viewIndex] = finalizeResult(result);
+                                logViewDone(browserName, view, viewIndex, VIEWS.length, orderedViewResults[viewIndex]);
+                            } catch (err) {
+                                console.error(`[${browserName}/${view.name}] Audit failed: ${err.message}`);
+                                orderedViewResults[viewIndex] = buildAuditErrorResult(view, browserName, err.message);
+                            }
                         }
-                    }
+                    },
+                );
+            } finally {
+                await Promise.all(viewContexts.map((context) => context.close().catch(() => { })));
+            }
 
-                    // Success or non-rate-limit error
-                    break;
-                } catch (err) {
-                    if (attempt === maxRetries - 1) {
-                        console.error(`[${view.name}] Audit failed after ${maxRetries} attempts: ${err.message}`);
-                        result = {
-                            name: view.name,
-                            url: view.url,
-                            theme: view.theme,
-                            error: err.message,
-                            findings: ['auditError'],
-                            hardFindings: ['auditError'],
-                            warnings: [],
-                            diff: { ratio: 0, sizeMismatch: false },
-                            metrics: {},
-                            network: { consoleEntries: [], pageErrors: [], requestFailures: [], badResponses: [], requests: [], duplicateRequests: [] },
-                        };
+            results.push(...orderedViewResults.filter(Boolean));
+
+            // Run login-failure tests LAST to avoid rate limiting blocking the real login
+            console.log(`[${browserName}] Completed ${formatPhaseLabel('view', VIEWS.length)}`);
+            if (!runLoginFailureTests) {
+                console.log(`[${browserName}] Skipping ${formatPhaseLabel('login-failure', LOGIN_FAILURE_VIEWS.length)} (UI_LINT_LOGIN_FAILURE_TESTS != 1)`);
+                return;
+            }
+
+            console.log(`[${browserName}] Entering ${formatPhaseLabel('login-failure', LOGIN_FAILURE_VIEWS.length)}`);
+            for (const [index, view] of LOGIN_FAILURE_VIEWS.entries()) {
+                // Retry logic for rate limiting: detect "too many attempts" and wait before retry
+                let result;
+                let attempt = 0;
+                const maxRetries = 3;
+
+                while (attempt < maxRetries) {
+                    logViewStart(browserName, view, index, LOGIN_FAILURE_VIEWS.length, 'login-failure');
+                    const loginContext = await browser.newContext(withBrowserClientIp(getLoginFailureContextOptions(view.device, devices), browserName));
+                    await installLayoutShiftObserver(loginContext);
+                    const loginPage = await loginContext.newPage();
+
+                    try {
+                        // Stagger login attempts to stay under 5/minute rate limit
+                        if (index > 0 && attempt === 0) {
+                            await new Promise((resolve) => setTimeout(resolve, LOGIN_TEST_STAGGER_MS));
+                        }
+
+                        result = await auditLoginFailureView(loginPage, view, browserName);
+
+                        // Check if rate limited by examining error text
+                        const errorText = result?.metrics?.loginFailure?.errorText?.toLowerCase() || '';
+                        if (errorText.includes('too many') || errorText.includes('rate limit') || errorText.includes('locked')) {
+                            if (attempt < maxRetries - 1) {
+                                console.warn(
+                                    `[${browserName}] ${formatViewRunLabel(view, index, LOGIN_FAILURE_VIEWS.length)} rate limited, waiting ${LOGIN_LOCKOUT_RESET_MS}ms before retry ${attempt + 1}/${maxRetries - 1}`,
+                                );
+                                await new Promise((resolve) => setTimeout(resolve, LOGIN_LOCKOUT_RESET_MS));
+                                attempt++;
+                                continue;
+                            }
+                        }
+
+                        // Success or non-rate-limit error
+                        logViewDone(browserName, view, index, LOGIN_FAILURE_VIEWS.length, result, 'login-failure');
                         break;
+                    } catch (err) {
+                        if (attempt === maxRetries - 1) {
+                            console.error(`[${browserName}/${view.name}] Audit failed after ${maxRetries} attempts: ${err.message}`);
+                            result = {
+                                name: view.name,
+                                browser: browserName,
+                                url: view.url,
+                                theme: view.theme,
+                                error: err.message,
+                                findings: ['auditError'],
+                                hardFindings: ['auditError'],
+                                warnings: [],
+                                diff: { ratio: 0, sizeMismatch: false },
+                                metrics: {},
+                                network: { consoleEntries: [], pageErrors: [], requestFailures: [], badResponses: [], requests: [], duplicateRequests: [] },
+                                uiHealth: null,
+                            };
+                            break;
+                        }
+                        attempt++;
+                    } finally {
+                        await loginContext.close().catch(() => { });
                     }
-                    attempt++;
+                }
+
+                if (result) {
+                    result.browser = browserName;
+                    results.push(finalizeResult(result));
                 }
             }
-
-            if (result) {
-                const summarized = summarizeFindings(result);
-                result.findings = summarized.findings;
-                result.hardFindings = summarized.hardFindings;
-                result.warnings = summarized.warnings;
-                results.push(result);
+        } catch (error) {
+            browserRunFailed = true;
+            console.error(`[${browserName}] Browser run failed: ${error.message}`);
+        } finally {
+            await emitBrowserCheckpoint(results, browserName);
+            if (browser) {
+                await browser.close();
             }
         }
-    } finally {
-        if (browser) {
-            await browser.close();
-        }
-    }
+    });
 
-    const summaryPath = path.join(RESULTS_DIR, 'ui-lint-summary.json');
-    fs.writeFileSync(summaryPath, JSON.stringify(results, null, 2));
+    // Write results after all browsers complete
+    writeResultsArtifacts(results);
 
-    console.log(`\nResults saved to: ${summaryPath}`);
+    console.log(`\nResults saved to: ${SUMMARY_PATH}`);
     console.log(`Screenshots: ${SCREENSHOT_DIR}\n`);
 
     console.log('UI_LINT_START');
@@ -3820,6 +4882,7 @@ async function main() {
         const layoutShiftValue = Number(metrics.layoutShift?.value || 0);
         console.log(JSON.stringify({
             name: result.name,
+            browser: result.browser || 'chromium',
             url: result.url,
             theme: result.theme || null,
             findings: result.findings,
@@ -3829,8 +4892,14 @@ async function main() {
             layoutShift: Number(layoutShiftValue.toFixed(6)),
             overflowOffenders: horizontalOverflow.offenders?.length || 0,
             clippedButtons: metrics.clippedButtons?.length || 0,
+            buttonTextNotCentered: metrics.buttonTextNotCentered?.length || 0,
             clickTargetsTooSmall: metrics.clickTargetsTooSmall?.length || 0,
             iconButtonsTouchBlocked: metrics.iconButtonsTouchBlocked?.length || 0,
+            dropdownToggleClickFailures: metrics.dropdownToggleClickFailures?.length || 0,
+            usersMobileActionToggleSquareMismatch: spacing.usersMobileActionToggleContract?.squareMismatchCount || 0,
+            usersMobileActionToggleTouchTargetMismatch: spacing.usersMobileActionToggleContract?.touchTargetMismatchCount || 0,
+            usersMobileActionToggleRadiusMismatch: spacing.usersMobileActionToggleContract?.radiusMismatchCount || 0,
+            usersMobileActionToggleAnchorMismatch: spacing.usersMobileActionToggleContract?.anchorMismatchCount || 0,
             hiddenInteractive: metrics.hiddenInteractiveElements?.length || 0,
             bootstrapGridIssues: metrics.bootstrapGridIssues?.length || 0,
             bootstrapColumnsOutsideRows: metrics.bootstrapColumnsOutsideRows?.length || 0,
@@ -3847,11 +4916,13 @@ async function main() {
             flexScrollTraps: metrics.flexScrollTraps?.length || 0,
             badgeStyleMismatches: metrics.badgeStyleMismatches?.length || 0,
             monospaceToneMismatches: metrics.monospaceToneMismatches?.length || 0,
+            monospaceVerticalInsetMismatches: metrics.monospaceVerticalInsetMismatches?.length || 0,
             modalBackdropBlur: metrics.modalBackdrop?.blurPx ?? null,
             modalBackdropSaturate: metrics.modalBackdrop?.saturate ?? null,
             modalBackdropAlpha: metrics.modalBackdrop?.alpha ?? null,
             contrastProblems: metrics.contrastProblems?.length || 0,
             componentLayoutShift: metrics.componentLayoutShift?.length || 0,
+            speedtestCanvasSizing: metrics.speedtestCanvasSizing?.length || 0,
             visualContainmentIssues: metrics.visualContainmentIssues?.length || 0,
             sliderAlignment: spacing.sliderAlignment?.length || 0,
             sliderTickMisaligned: spacing.sliderAlignment?.filter((s) => s.tickMisaligned?.length)?.length || 0,
@@ -3865,7 +4936,7 @@ async function main() {
             logsPathWrapped: spacing.logsPathLayout?.filter((entry) => entry.wraps)?.length || 0,
             compactCardActionRows: spacing.compactCardActionRows?.length || 0,
             compactCardActionRowIssues: spacing.compactCardActionRows?.filter((entry) => !entry.isCompactMargin || !entry.isCompactPadding || !entry.isBorderless)?.length || 0,
-            duplicateRequests: result.network.duplicateRequests?.length || 0,
+            duplicateRequests: result.network?.duplicateRequests?.length || 0,
             kpiCards: spacing.kpiCards?.length || 0,
             dashboardKpiIcons: spacing.dashboardKpiIcons?.length || 0,
             dashboardKpiContextualIconColor: spacing.dashboardKpiIcons?.filter((card) => card.contextualClasses?.length)?.length || 0,
@@ -3875,6 +4946,7 @@ async function main() {
             cardBorderRadiusMismatch: spacing.cardBorderRadiusIssues?.length || 0,
             kpiHeightVariance: spacing.kpiHeightVariance || 0,
             dashboardTopRowVariance: spacing.dashboardTopRowAlignment?.variance || 0,
+            recentPeerDividerIssues: spacing.recentPeerRows?.filter((row) => row.hasLegacyBorderBottom || (!row.isLast && !row.hasPseudoDivider))?.length || 0,
             dnsUnavailableStates: spacing.dnsUnavailableStates?.length || 0,
             dnsUnavailableIncorrectSpacing: spacing.dnsUnavailableStates?.filter(s => !s.marginCompensatesGap || !s.visualGapExpected)?.length || 0,
             dnsMobileQuickfilters: spacing.dnsMobileQuickfilters ? 1 : 0,
@@ -3910,13 +4982,62 @@ async function main() {
             loginErrorVisible: Boolean(metrics.loginFailure?.alertVisible),
             loginShakeActive: Boolean(metrics.loginFailure?.cardAnimationActive),
             loginPasswordInvalid: Boolean(metrics.loginFailure?.passwordInvalidClass),
-            summaryPath,
+
+            // SSIM perceptual diff
+            ssim: result.diff.ssim ?? null,
+            mssim: result.diff.mssim ?? null,
+
+            // Axe accessibility
+            axeViolations: metrics.axe?.violations || 0,
+            axeCritical: metrics.axe?.critical?.length || 0,
+            axeSerious: metrics.axe?.serious?.length || 0,
+            axeModerate: metrics.axe?.moderate?.length || 0,
+            axeMinor: metrics.axe?.minor?.length || 0,
+            axePassed: metrics.axe?.passed || 0,
+
+            // Performance metrics
+            perfFCP: metrics.performance?.paint?.fcp ?? null,
+            perfLCP: metrics.performance?.lcp ?? null,
+            perfDOMContentLoaded: metrics.performance?.navigation?.domContentLoaded ?? null,
+            perfTTFB: metrics.performance?.navigation?.ttfb ?? null,
+            perfResourceCount: metrics.performance?.resourceCount || 0,
+            perfTransferSize: metrics.performance?.totalTransferSize || 0,
+            perfHeapUtilization: metrics.performance?.memory?.heapUtilization ?? null,
+
+            // Font loading
+            fontsReady: Boolean(metrics.fonts?.fontsReady),
+            materialIconsLoaded: Boolean(metrics.fonts?.materialIconsLoaded),
+            fontsMissing: metrics.fonts?.failedFonts?.length || 0,
+            iconsMissing: metrics.fonts?.iconMissing?.length || 0,
+            foutRisk: Boolean(metrics.fonts?.foutRisk),
+
+            // DOM stability
+            domMutationCount: metrics.domStability?.mutationCount || 0,
+            domMutationBursts: metrics.domStability?.mutationBursts || 0,
+            domMaxBurstSize: metrics.domStability?.maxBurstSize || 0,
+            domReconnectCount: metrics.domStability?.reconnectCount || 0,
+
+            // Console severity
+            consoleSeverityScore: result.network?.consoleSeverity?.score || 0,
+            consoleCritical: result.network?.consoleSeverity?.critical?.length || 0,
+            consoleSerious: result.network?.consoleSeverity?.serious?.length || 0,
+            uiHealthScore: result.uiHealth?.score ?? null,
+            uiHealthSeverity: result.uiHealth?.severity ?? null,
+            uiHealthCritical: result.uiHealth?.ux?.critical ?? 0,
+            uiHealthSerious: result.uiHealth?.ux?.serious ?? 0,
+            uiHealthMinor: result.uiHealth?.ux?.minor ?? 0,
+            uiHealthRoute: result.uiHealth?.route ?? null,
+            uiHealthComponent: result.uiHealth?.component ?? null,
+
+            summaryPath: SUMMARY_PATH,
         }));
     }
     console.log('UI_LINT_END');
 
     const hasHardFindings = results.some((result) => (result.hardFindings || []).length > 0);
-    process.exitCode = hasHardFindings ? 1 : 0;
+    const healthGateMin = Number(process.env.UI_LINT_HEALTH_MIN || '0');
+    const hasHealthGateFailure = healthGateMin > 0 && results.some((result) => (result.uiHealth?.score ?? 100) < healthGateMin);
+    process.exitCode = hasHardFindings || hasHealthGateFailure || browserRunFailed ? 1 : 0;
 }
 
 main().catch((error) => {

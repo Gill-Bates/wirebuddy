@@ -17,7 +17,9 @@ import re
 import socket
 import urllib.parse
 from collections.abc import Set as AbstractSet
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 try:
 	import httpx
@@ -42,7 +44,6 @@ from .custom_rules import (
 )
 from . import unbound_config
 from .unbound_constants import (
-	ALLOWED_BLOCKLIST_CONTENT_TYPES,
 	BLOCKLIST_MAX_BYTES,
 	BLOCKLIST_MAX_DOMAINS,
 	BLOCKLIST_MAX_LINES,
@@ -51,21 +52,25 @@ from .unbound_constants import (
 	DOMAIN_LABEL_RE,
 	atomic_write,
 	get_blocklist_file,
+	is_allowed_blocklist_content_type,
+	normalize_content_type,
 )
 
-# Acceptable text content types for blocklist downloads
-_ACCEPTABLE_TEXT_TYPES = frozenset([
-	"text/plain",
-	"text/x-hosts",
-	*ALLOWED_BLOCKLIST_CONTENT_TYPES,
-])
 _BLOCKLIST_URL_TO_ID = {
 	str(meta.get("url")): bid
 	for bid, meta in BLOCKLIST_REGISTRY.items()
 	if meta.get("url")
 }
+_ALLOWED_BLOCKLIST_HOSTS = frozenset({
+	parsed.hostname
+	for meta in BLOCKLIST_REGISTRY.values()
+	if (url := str(meta.get("url") or ""))
+	and (parsed := urllib.parse.urlparse(url)).scheme == "https"
+	and parsed.hostname
+})
 _BLOCKLIST_TAG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 CUSTOM_RULES_TAG = "custom"
+_MAX_REDIRECTS = 3
 
 _log = logging.getLogger(__name__)
 
@@ -75,6 +80,25 @@ _log = logging.getLogger(__name__)
 
 class _CapacityExceeded(Exception):
 	"""Domain/size/line cap hit — not worth retrying."""
+
+
+@dataclass(slots=True)
+class _DownloadResult:
+	"""Result of one blocklist download attempt."""
+	line_count: int
+	domains: set[str]
+	capacity_reached: bool = False
+	capacity_reason: str | None = None
+
+
+def _validate_static_tags() -> None:
+	"""Validate static blocklist tags at import time."""
+	for tag in (*BLOCKLIST_REGISTRY.keys(), CUSTOM_RULES_TAG):
+		if not _BLOCKLIST_TAG_RE.fullmatch(tag):
+			raise ValueError(f"Invalid blocklist tag: {tag!r}")
+
+
+_validate_static_tags()
 
 # ---------------------------------------------------------------------------
 # Domain Cache
@@ -190,9 +214,10 @@ def _extract_domains_from_hosts_line(line: str) -> list[str]:
 	if line.startswith("||"):
 		# Extract domain from AdGuard rule: ||domain.com^ or ||domain.com^$...
 		rule = line[2:]  # Strip leading ||
-		# Remove trailing ^ and any modifiers ($third-party, etc.)
-		if "^" in rule:
-			rule = rule.split("^", 1)[0]
+		# Remove trailing separators/modifiers (^ and $options)
+		for separator in ("^", "$"):
+			if separator in rule:
+				rule = rule.split(separator, 1)[0]
 		# Handle wildcard prefix: ||*.domain.com → domain.com
 		if rule.startswith("*."):
 			rule = rule[2:]
@@ -236,46 +261,67 @@ def _extract_domains_from_hosts_line(line: str) -> list[str]:
 async def _download_hosts_domains(
 	client: "httpx.AsyncClient",
 	url: str,
-	existing_domains: set[str],
-) -> tuple[int, set[str]]:
+	existing_domains: AbstractSet[str],
+) -> _DownloadResult:
 	"""Stream and parse domains from one hosts list URL."""
 	line_count = 0
 	size_bytes = 0
 	parsed_domains: set[str] = set()
 	unique_new_domains = 0  # Track count of domains not in existing_domains
 
-	async with client.stream("GET", url) as resp:
+	resp = await _open_safe_stream(client, url)
+	async with resp:
 		resp.raise_for_status()
-		content_type = resp.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+		content_type = normalize_content_type(resp.headers.get("Content-Type"))
 		# Allow missing Content-Type (common for plain-text file servers)
 		# but reject explicitly non-text types like application/zip
-		if content_type and content_type not in _ACCEPTABLE_TEXT_TYPES:
+		if content_type and not is_allowed_blocklist_content_type(content_type):
 			raise ValueError(f"Unsupported content type: {content_type!r}")
 
 		content_length = resp.headers.get("Content-Length")
 		if content_length and content_length.isdigit() and int(content_length) > BLOCKLIST_MAX_BYTES:
-			raise _CapacityExceeded(f"Blocklist too large ({content_length} bytes)")
+			return _DownloadResult(
+				line_count=line_count,
+				domains=parsed_domains,
+				capacity_reached=True,
+				capacity_reason=f"Blocklist too large ({content_length} bytes)",
+			)
 
 		async for raw_line in resp.aiter_lines():
 			line_count += 1
 			# Approximate size (ASCII-dominant content) to avoid per-line encoding overhead
 			size_bytes += len(raw_line) + 1
 			if line_count > BLOCKLIST_MAX_LINES:
-				raise _CapacityExceeded(f"Blocklist line limit exceeded ({BLOCKLIST_MAX_LINES})")
+				return _DownloadResult(
+					line_count=line_count,
+					domains=parsed_domains,
+					capacity_reached=True,
+					capacity_reason=f"Blocklist line limit exceeded ({BLOCKLIST_MAX_LINES})",
+				)
 			if size_bytes > BLOCKLIST_MAX_BYTES:
-				raise _CapacityExceeded(f"Blocklist size limit exceeded ({BLOCKLIST_MAX_BYTES} bytes)")
+				return _DownloadResult(
+					line_count=line_count,
+					domains=parsed_domains,
+					capacity_reached=True,
+					capacity_reason=f"Blocklist size limit exceeded ({BLOCKLIST_MAX_BYTES} bytes)",
+				)
 
 			domains = _extract_domains_from_hosts_line(raw_line)
 			for domain in domains:
 				# Track genuinely new domains (not in existing or already parsed)
 				if domain not in existing_domains and domain not in parsed_domains:
 					unique_new_domains += 1
-				parsed_domains.add(domain)
 				# Check capacity with accurate count (no double-counting)
 				if len(existing_domains) + unique_new_domains > BLOCKLIST_MAX_DOMAINS:
-					raise _CapacityExceeded(f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})")
+					return _DownloadResult(
+						line_count=line_count,
+						domains=parsed_domains,
+						capacity_reached=True,
+						capacity_reason=f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})",
+					)
+				parsed_domains.add(domain)
 
-	return line_count, parsed_domains
+	return _DownloadResult(line_count=line_count, domains=parsed_domains)
 
 
 def _is_ip_unsafe(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -305,6 +351,8 @@ def _is_safe_url(url: str) -> bool:
 	the hostname again. Mitigated by only allowing URLs from BLOCKLIST_REGISTRY.
 	"""
 	parsed = urllib.parse.urlparse(url)
+	if not _is_registry_host(url):
+		return False
 	# Require HTTPS to prevent MITM attacks on blocklist content
 	if parsed.scheme != "https" or not parsed.netloc:
 		return False
@@ -331,6 +379,12 @@ def _is_safe_url(url: str) -> bool:
 	return True
 
 
+def _is_registry_host(url: str) -> bool:
+	"""Check if URL targets a known registry host over HTTPS."""
+	parsed = urllib.parse.urlparse(url)
+	return parsed.scheme == "https" and parsed.hostname in _ALLOWED_BLOCKLIST_HOSTS
+
+
 async def _is_safe_url_async(url: str) -> bool:
 	"""Async wrapper for _is_safe_url to avoid blocking the event loop."""
 	try:
@@ -343,6 +397,73 @@ async def _is_safe_url_async(url: str) -> bool:
 def _url_to_blocklist_id(url: str) -> str | None:
 	"""Map a blocklist URL to its registry ID."""
 	return _BLOCKLIST_URL_TO_ID.get(url)
+
+
+def _parse_custom_rules(custom_rules_text: str) -> list[ParsedRule]:
+	"""Parse custom rules and log parse errors."""
+	if not custom_rules_text.strip():
+		return []
+
+	parsed_custom_rules, parse_errors = parse_rules(custom_rules_text)
+	for pe in parse_errors:
+		_log.warning("DNS_CUSTOM_RULE parse error line %d: %s – %s", pe.line, pe.text, pe.error)
+	return parsed_custom_rules
+
+
+async def _open_safe_stream(
+	client: "httpx.AsyncClient",
+	url: str,
+	*,
+	max_redirects: int = _MAX_REDIRECTS,
+) -> "httpx.Response":
+	"""Open a streaming GET and validate every redirect hop against SSRF rules."""
+	current_url = url
+
+	for _ in range(max_redirects + 1):
+		if not await _is_safe_url_async(current_url):
+			raise ValueError(f"Unsafe blocklist URL: {current_url}")
+
+		request = client.build_request("GET", current_url)
+		response = await client.send(request, stream=True, follow_redirects=False)
+
+		if response.is_redirect:
+			location = response.headers.get("Location")
+			await response.aclose()
+			if not location:
+				raise ValueError(f"Redirect without Location: {current_url}")
+
+			current_url = str(response.url.join(location))
+			continue
+
+		return response
+
+	raise ValueError(f"Too many redirects for blocklist URL: {url}")
+
+
+def _write_blocklist_file(
+	blocklist_path: Path,
+	domain_tags: dict[str, set[str]],
+	*,
+	custom_added: set[str] | None = None,
+	custom_removed: set[str] | None = None,
+) -> None:
+	"""Write tagged blocklist file atomically."""
+	added = custom_added or set()
+	removed = custom_removed or set()
+	active_tags = {tag for tag_set in domain_tags.values() for tag in tag_set}
+
+	with atomic_write(blocklist_path) as f:
+		f.write(f"# Auto-generated blocklist – {len(domain_tags)} domains\n")
+		f.write(f"# Updated: {datetime.now(timezone.utc).isoformat()}\n")
+		f.write(f"# Active tags: {' '.join(sorted(active_tags))}\n")
+		if added or removed:
+			f.write(f"# Custom rules: +{len(added)} blocked, -{len(removed)} allowed\n")
+		f.write("\n")
+		for domain in sorted(domain_tags):
+			tags = domain_tags[domain]
+			tag_str = _format_tag_string(tags)
+			f.write(f'local-zone: "{domain}." always_nxdomain\n')
+			f.write(f'local-zone-tag: "{domain}." "{tag_str}"\n')
 
 
 def _format_tag_string(tags: AbstractSet[str]) -> str:
@@ -378,19 +499,48 @@ async def update_blocklists(
 	# An empty list [] means user explicitly disabled all blocklists.
 	if urls is None:
 		urls = DEFAULT_BLOCKLISTS
+
+	parsed_custom_rules = _parse_custom_rules(custom_rules_text)
 	
-	# Handle empty URLs: clear blocklist and return early
+	# Handle empty URLs: custom-only mode without remote sources.
 	if not urls:
 		blocklist_path = get_blocklist_file()
-		def _write_empty_blocklist():
-			with atomic_write(blocklist_path) as f:
-				f.write("# Blocklist disabled – no sources enabled\n")
-				f.write(f"# Updated: {datetime.now(timezone.utc).isoformat()}\n")
-		await asyncio.to_thread(_write_empty_blocklist)
+		domain_tags: dict[str, set[str]] = {}
+		custom_added: set[str] = set()
+		custom_removed: set[str] = set()
+
+		if parsed_custom_rules:
+			all_domains: set[str] = set()
+			custom_added, custom_removed = apply_custom_rules(all_domains, parsed_custom_rules)
+			custom_added = {domain for domain in custom_added if domain in all_domains}
+			for domain in custom_added:
+				if len(domain_tags) >= BLOCKLIST_MAX_DOMAINS:
+					_log.warning("DNS_CUSTOM_RULES capacity limit: Domain cap exceeded (%d)", BLOCKLIST_MAX_DOMAINS)
+					break
+				domain_tags[domain] = {CUSTOM_RULES_TAG}
+
+		await asyncio.to_thread(
+			_write_blocklist_file,
+			blocklist_path,
+			domain_tags,
+			custom_added=custom_added,
+			custom_removed=custom_removed,
+		)
+
+		set_custom_rules_cache(parsed_custom_rules)
+		try:
+			unbound_config.write_custom_client_rules(parsed_custom_rules)
+		except Exception:
+			_log.exception("DNS_CUSTOM_CLIENT_RULES failed to write override file")
+
 		_invalidate_blocked_domains_cache()
-		set_custom_rules_cache([])  # Clear custom rules cache too
-		_log.info("DNS_BLOCKLIST cleared (no sources enabled)")
-		return 0, "Blocklist cleared: no sources enabled"
+
+		if parsed_custom_rules and not domain_tags:
+			_log.info("DNS_BLOCKLIST custom-only mode active with runtime-only rules")
+			return 0, "Blocklist updated: 0 static domains (runtime custom rules active)"
+
+		_log.info("DNS_BLOCKLIST custom-only mode wrote %d domains", len(domain_tags))
+		return len(domain_tags), f"Blocklist updated: {len(domain_tags)} custom domains"
 	
 	# Track domains and their source tags: domain -> set of blocklist IDs
 	domain_tags: dict[str, set[str]] = {}
@@ -420,8 +570,7 @@ async def update_blocklists(
 
 	async with httpx.AsyncClient(
 		timeout=30,
-		follow_redirects=True,
-		max_redirects=3,  # Limit redirects to mitigate SSRF via redirect chains
+		follow_redirects=False,
 		verify=True,
 		headers={"User-Agent": "WireBuddy/1.0 DNS-Blocker"},
 	) as client:
@@ -434,8 +583,10 @@ async def update_blocklists(
 			# Retry up to 3 times with exponential backoff
 			for attempt in range(3):
 				try:
-					existing_domains = set(domain_tags.keys())
-					line_count, parsed = await _download_hosts_domains(client, url, existing_domains)
+					existing_domains = domain_tags.keys()
+					result = await _download_hosts_domains(client, url, existing_domains)
+					line_count = result.line_count
+					parsed = result.domains
 					added = 0
 					for domain in parsed:
 						if domain not in domain_tags:
@@ -445,6 +596,12 @@ async def update_blocklists(
 							added += 1
 						domain_tags[domain].add(blocklist_id)
 					loaded_any = True
+					if result.capacity_reached:
+						_log.warning(
+							"DNS_BLOCKLIST capacity limit reached processing %s: %s",
+							url,
+							result.capacity_reason or "limit exceeded",
+						)
 					_log.info("DNS_BLOCKLIST loaded %s [%s] (%d lines, +%d domains)", url, blocklist_id, line_count, added)
 					break  # Success, move to next URL
 				except _CapacityExceeded as e:
@@ -466,65 +623,42 @@ async def update_blocklists(
 	# --- Apply custom rules (AdGuard syntax) ---
 	custom_added: set[str] = set()
 	custom_removed: set[str] = set()
-	parsed_custom_rules: list[ParsedRule] = []
-	if custom_rules_text.strip():
-		parsed_custom_rules, parse_errors = parse_rules(custom_rules_text)
-		if parse_errors:
-			for pe in parse_errors:
-				_log.warning("DNS_CUSTOM_RULE parse error line %d: %s – %s", pe.line, pe.text, pe.error)
+	if parsed_custom_rules:
+		# Apply rules: exact blocks are added, allows remove domains
+		all_domains = set(domain_tags)
+		custom_added, custom_removed = apply_custom_rules(all_domains, parsed_custom_rules)
+		# NOTE: apply_custom_rules mutates all_domains in-place (adds block domains, removes allow domains).
+		# Filter out domains that were added by a block rule but then removed by an allow rule in the same operation.
+		custom_added = {domain for domain in custom_added if domain in all_domains}
 
-		if parsed_custom_rules:
-			# Apply rules: exact blocks are added, allows remove domains
-			all_domains = set(domain_tags.keys())
-			custom_added, custom_removed = apply_custom_rules(all_domains, parsed_custom_rules)
-			# NOTE: apply_custom_rules mutates all_domains in-place (adds block domains, removes allow domains).
-			# Filter out domains that were added by a block rule but then removed by an allow rule in the same operation.
-			custom_added = {domain for domain in custom_added if domain in all_domains}
+		# Add new block domains to the tag map (tagged as "custom")
+		try:
+			for domain in custom_added:
+				if domain not in domain_tags:
+					if len(domain_tags) >= BLOCKLIST_MAX_DOMAINS:
+						raise _CapacityExceeded(f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})")
+					domain_tags[domain] = set()
+				domain_tags[domain].add(CUSTOM_RULES_TAG)
+		except _CapacityExceeded as exc:
+			_log.warning("DNS_CUSTOM_RULES capacity limit: %s", exc)
 
-			# Add new block domains to the tag map (tagged as "custom")
-			try:
-				for domain in custom_added:
-					if domain not in domain_tags:
-						if len(domain_tags) >= BLOCKLIST_MAX_DOMAINS:
-							raise _CapacityExceeded(f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})")
-						domain_tags[domain] = set()
-					domain_tags[domain].add(CUSTOM_RULES_TAG)
-			except _CapacityExceeded as exc:
-				_log.warning("DNS_CUSTOM_RULES capacity limit: %s", exc)
+		# Remove allowed domains from the tag map
+		for domain in custom_removed:
+			domain_tags.pop(domain, None)
 
-			# Remove allowed domains from the tag map
-			for domain in custom_removed:
-				domain_tags.pop(domain, None)
+		_log.info(
+			"DNS_CUSTOM_RULES applied %d rules: +%d blocked, -%d allowed",
+			len(parsed_custom_rules), len(custom_added), len(custom_removed),
+		)
 
-			_log.info(
-				"DNS_CUSTOM_RULES applied %d rules: +%d blocked, -%d allowed",
-				len(parsed_custom_rules), len(custom_added), len(custom_removed),
-			)
-
-	# Collect active tags for header documentation
-	active_tags = {tag for tag_set in domain_tags.values() for tag in tag_set}
-
-	# Write unbound local-zone file with tags (atomic replace)
-	# Offload heavy write/sort to thread pool to avoid blocking event loop
 	blocklist_path = get_blocklist_file()
-	def _write_blocklist_file() -> None:
-		with atomic_write(blocklist_path) as f:
-			f.write(f"# Auto-generated blocklist – {len(domain_tags)} domains\n")
-			f.write(f"# Updated: {datetime.now(timezone.utc).isoformat()}\n")
-			f.write(f"# Active tags: {' '.join(sorted(active_tags))}\n")
-			if custom_added or custom_removed:
-				f.write(f"# Custom rules: +{len(custom_added)} blocked, -{len(custom_removed)} allowed\n")
-			f.write("\n")
-			# Sort for deterministic output (helps with diffing/debugging)
-			for domain in sorted(domain_tags.keys()):
-				tags = domain_tags[domain]
-				tag_str = _format_tag_string(tags)
-				# tagged local-zone: domain is blocked only for clients with matching tag
-				# Domain normalization guarantees no " or \n characters (injection-safe)
-				f.write(f'local-zone: "{domain}." always_nxdomain\n')
-				f.write(f'local-zone-tag: "{domain}." "{tag_str}"\n')
-	
-	await asyncio.to_thread(_write_blocklist_file)
+	await asyncio.to_thread(
+		_write_blocklist_file,
+		blocklist_path,
+		domain_tags,
+		custom_added=custom_added,
+		custom_removed=custom_removed,
+	)
 
 	# Update runtime caches AFTER successful file write (state consistency)
 	set_custom_rules_cache(parsed_custom_rules)

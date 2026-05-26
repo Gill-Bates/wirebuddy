@@ -1,0 +1,257 @@
+/**
+ * WireBuddy Accessibility Foundation
+ * ===================================
+ * Centralized accessibility rules and policies.
+ * All accessibility-related CSS should reference or extend these patterns.
+ *
+ * WCAG 2.1 AA compliance targets:
+ * - Minimum touch target: 44x44px (WCAG 2.5.5)
+ * - Focus visible: 3px offset ring (WCAG 2.4.7)
+ * - Contrast: 4.5:1 normal, 3:1 large text (WCAG 1.4.3)
+ * - Reduced motion: respect prefers-reduced-motion (WCAG 2.3.3)
+ */
+
+/* ============================================
+ * Focus Ring System
+ * ============================================ */
+
+/**
+ * Default focus ring for interactive elements.
+ * Uses var(--wb-focus-ring-*) tokens from tokens.css
+ */
+:focus-visible {
+    outline: var(--wb-focus-ring-width) solid var(--wb-focus-ring-color);
+    outline-offset: var(--wb-focus-ring-offset);
+}
+
+/* Remove default outline when using :focus-visible */
+:focus:not(:focus-visible) {
+    outline: none;
+}
+
+/* High-contrast focus for form controls */
+.form-control:focus-visible,
+.form-select:focus-visible,
+.form-check-input:focus-visible {
+    outline: var(--wb-focus-ring-width) solid var(--wb-focus-ring-color);
+    outline-offset: 0;
+    box-shadow: 0 0 0 var(--wb-focus-ring-offset) var(--wb-focus-ring-color);
+}
+
+/* Button focus ring */
+.btn:focus-visible,
+.wb-btn:focus-visible,
+[role="button"]:focus-visible {
+    outline: var(--wb-focus-ring-width) solid var(--wb-focus-ring-color);
+    outline-offset: var(--wb-focus-ring-offset);
+}
+
+/* ============================================
+ * Touch Target Policy
+ * ============================================ */
+
+/**
+ * Minimum touch target sizing.
+ * Applied via .wb-touch-target class or directly to interactive elements.
+ */
+.wb-touch-target {
+    min-width: var(--wb-touch-target-min);
+    min-height: var(--wb-touch-target-min);
+}
+
+/* Comfortable touch target for primary actions */
+.wb-touch-target-lg {
+    min-width: var(--wb-touch-target-comfortable);
+    min-height: var(--wb-touch-target-comfortable);
+}
+
+/* Ensure standard buttons meet minimum height matching form controls.
+   Uses --wb-input-height (38px) for design consistency while remaining accessible.
+   Compact variants (.btn-sm) are excluded to keep their intended smaller size. */
+.btn:not(.btn-sm):not(.btn-link),
+.wb-btn,
+button:not(.btn):not(.btn-close):not(.accordion-button) {
+    min-height: var(--wb-input-height);
+}
+
+/* Form switches must be tappable */
+.form-switch .form-check-input {
+    min-width: 2.5rem;
+    min-height: var(--wb-touch-target-min);
+    cursor: pointer;
+}
+
+/* ============================================
+ * Reduced Motion Policy
+ * ============================================ */
+
+@media (prefers-reduced-motion: reduce) {
+
+    *,
+    *::before,
+    *::after {
+        animation-duration: var(--wb-reduced-motion-duration) !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: var(--wb-reduced-motion-duration) !important;
+        scroll-behavior: auto !important;
+    }
+
+    /* Exception: Progress indicators should still animate subtly */
+    .spinner-border,
+    .spinner-grow,
+    .progress-bar-animated {
+        animation-duration: 1.5s !important;
+    }
+}
+
+/* ============================================
+ * Screen Reader Utilities
+ * ============================================ */
+
+/* Visually hidden but accessible to screen readers */
+.sr-only,
+.visually-hidden {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+}
+
+/* Show on focus for skip links */
+.sr-only-focusable:focus,
+.visually-hidden-focusable:focus {
+    position: static !important;
+    width: auto !important;
+    height: auto !important;
+    padding: var(--wb-spacing-sm) var(--wb-spacing-md) !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    clip: auto !important;
+    white-space: normal !important;
+}
+
+/* ============================================
+ * Keyboard Navigation
+ * ============================================ */
+
+/* Skip link for keyboard users */
+.skip-link {
+    position: absolute;
+    top: -100%;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: calc(var(--wb-z-toast) + 10);
+    padding: var(--wb-spacing-sm) var(--wb-spacing-md);
+    background: var(--bs-body-bg);
+    border: 2px solid var(--wb-primary);
+    border-radius: var(--wb-radius-md);
+    text-decoration: none;
+    font-weight: var(--wb-font-weight-semibold);
+}
+
+.skip-link:focus {
+    top: var(--wb-spacing-md);
+}
+
+/* ============================================
+ * High Contrast Mode Support
+ * ============================================ */
+
+@media (forced-colors: active) {
+
+    /* Ensure borders are visible */
+    .btn,
+    .card,
+    .form-control,
+    .form-select {
+        border: 2px solid currentColor;
+    }
+
+    /* Focus indicators in high contrast */
+    :focus-visible {
+        outline: 3px solid currentColor;
+        outline-offset: 2px;
+    }
+
+    /* Status indicators must be distinguishable */
+    .badge,
+    .alert {
+        border: 2px solid currentColor;
+    }
+}
+
+/* ============================================
+ * Safe Area Insets (iOS)
+ * ============================================ */
+
+@supports (padding: env(safe-area-inset-bottom)) {
+    .wb-safe-bottom {
+        padding-bottom: max(var(--wb-spacing-md), env(safe-area-inset-bottom));
+    }
+
+    .wb-safe-left {
+        padding-left: max(var(--wb-spacing-md), env(safe-area-inset-left));
+    }
+
+    .wb-safe-right {
+        padding-right: max(var(--wb-spacing-md), env(safe-area-inset-right));
+    }
+
+    /* Fixed bottom elements need safe area */
+    .fixed-bottom,
+    .sticky-bottom {
+        padding-bottom: env(safe-area-inset-bottom);
+    }
+}
+
+/* ============================================
+ * Disabled State Styling
+ * ============================================ */
+
+/* Standard disabled appearance */
+[disabled],
+.disabled,
+[aria-disabled="true"] {
+    opacity: 0.65;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+/* Exception: Allow hover tooltips on disabled elements */
+[disabled][title],
+.disabled[title],
+[aria-disabled="true"][title] {
+    pointer-events: auto;
+}
+
+/* ============================================
+ * Loading State Accessibility
+ * ============================================ */
+
+/* Announce loading to screen readers */
+[aria-busy="true"] {
+    cursor: wait;
+}
+
+/* Visual loading indicator overlay */
+.wb-loading {
+    position: relative;
+    pointer-events: none;
+}
+
+.wb-loading::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 255, 255, 0.7);
+    z-index: 1;
+}
+
+[data-bs-theme="dark"] .wb-loading::after {
+    background: rgba(0, 0, 0, 0.5);
+}

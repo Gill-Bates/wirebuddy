@@ -19,6 +19,7 @@
     const MAX_BACKOFF_MS = 300000;
     const MAX_ALL_PEER_SERIES = 12;
     const MIN_VISIBLE_REFRESH_INTERVAL_MS = 5000;
+    const FLAG_ICON_BASE_URL = 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
     const RESIZE_FETCH_THRESHOLD = 0.2;
     const RANGE_LABELS = Object.freeze({
         '6h': 'last 6 hours',
@@ -221,32 +222,40 @@
      * Create traffic progress bars (RX + TX).
      */
     function createTrafficBars(rx, tx, total, maxTotal, unit) {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'd-flex gap-1 mt-1';
-
         // Defensive coercion: server may send strings for numeric fields
         const numTotal = Number(total) || 0;
         const numMax = Number(maxTotal) || 1;
         const numRx = Number(rx) || 0;
 
         const pct = numMax > 0 ? (numTotal / numMax) * 100 : 0;
-        wrapper.style.width = `${Math.max(pct, 3)}%`;
-
         const rxPct = numTotal > 0 ? (numRx / numTotal) * 100 : 50;
         const txPct = 100 - rxPct;
 
+        const svgNS = 'http://www.w3.org/2000/svg';
+        const wrapper = document.createElementNS(svgNS, 'svg');
+        wrapper.classList.add('traffic-bar');
+        wrapper.setAttribute('width', `${Math.max(pct, 3)}%`);
+        wrapper.setAttribute('height', '6');
+        wrapper.setAttribute('viewBox', '0 0 100 6');
+        wrapper.setAttribute('preserveAspectRatio', 'none');
+        wrapper.setAttribute('aria-hidden', 'true');
+
         // RX bar (decorative - data already in table)
-        const rxBar = document.createElement('div');
-        rxBar.className = 'traffic-bar traffic-bar-rx';
-        rxBar.style.width = `${rxPct}%`;
-        rxBar.setAttribute('aria-hidden', 'true');
+        const rxBar = document.createElementNS(svgNS, 'rect');
+        rxBar.classList.add('traffic-bar-rx');
+        rxBar.setAttribute('x', '0');
+        rxBar.setAttribute('y', '0');
+        rxBar.setAttribute('width', `${rxPct}`);
+        rxBar.setAttribute('height', '6');
         rxBar.setAttribute('title', `RX ${formatTrafficMetric(rx, unit)}`);
 
         // TX bar (decorative - data already in table)
-        const txBar = document.createElement('div');
-        txBar.className = 'traffic-bar traffic-bar-tx';
-        txBar.style.width = `${txPct}%`;
-        txBar.setAttribute('aria-hidden', 'true');
+        const txBar = document.createElementNS(svgNS, 'rect');
+        txBar.classList.add('traffic-bar-tx');
+        txBar.setAttribute('x', `${rxPct}`);
+        txBar.setAttribute('y', '0');
+        txBar.setAttribute('width', `${txPct}`);
+        txBar.setAttribute('height', '6');
         txBar.setAttribute('title', `TX ${formatTrafficMetric(tx, unit)}`);
 
         wrapper.appendChild(rxBar);
@@ -537,14 +546,24 @@
     function createCountryFirstCell(country) {
         const flagCell = createCell('td', 'text-center');
         const countryCode = String(country.code ?? '').trim().toLowerCase();
-        const flagEmoji = countryCodeToFlagEmoji(countryCode);
 
-        if (flagEmoji) {
-            const flag = document.createElement('span');
+        if (/^[a-z]{2}$/.test(countryCode)) {
+            const flag = document.createElement('img');
             flag.className = 'country-flag';
-            flag.setAttribute('role', 'img');
-            flag.setAttribute('aria-label', country.name ? `Flag of ${country.name}` : 'Country flag');
-            flag.textContent = flagEmoji;
+            flag.alt = country.name ? `Flag of ${country.name}` : 'Country flag';
+            flag.width = 24;
+            flag.height = 18;
+            flag.loading = 'lazy';
+            flag.decoding = 'async';
+            flag.src = `${FLAG_ICON_BASE_URL}/${countryCode}.svg`;
+            flag.addEventListener('error', () => {
+                flag.remove();
+                const icon = document.createElement('span');
+                icon.className = 'material-icons traffic-fallback-icon';
+                icon.setAttribute('aria-hidden', 'true');
+                icon.textContent = 'public';
+                flagCell.appendChild(icon);
+            }, { once: true });
             flagCell.appendChild(flag);
         } else {
             const icon = document.createElement('span');
@@ -694,7 +713,6 @@
         items.forEach((item, i) => {
             const row = document.createElement('tr');
             row.className = 'traffic-row';
-            row.style.setProperty('--row-i', i);
 
             // First cell (flag or ASN badge)
             const firstCell = createFirstCell(item);

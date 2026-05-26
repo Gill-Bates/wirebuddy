@@ -96,7 +96,7 @@ NotoSerif=$(stat -c%s /app/app/static/vendor/fonts/NotoSerif.woff2)B"
 # Create data and log directories + DNSSEC root key
 # Note: Container runs as root for WireGuard/iptables commands
 # Security is enforced via capabilities + no-new-privileges in compose
-RUN mkdir -p /data /var/log/unbound /etc/wireguard /var/lib/unbound && \
+RUN mkdir -p /app/data /var/log/unbound /etc/wireguard /var/lib/unbound && \
     chown -R unbound:unbound /var/log/unbound /var/lib/unbound && \
     # Try unbound-anchor first, fallback to dns-root-data package
     (/usr/sbin/unbound-anchor -a /var/lib/unbound/root.key 2>/dev/null || \
@@ -104,7 +104,7 @@ RUN mkdir -p /data /var/log/unbound /etc/wireguard /var/lib/unbound && \
     [ -f /var/lib/unbound/root.key ] && chown unbound:unbound /var/lib/unbound/root.key || true
 
 # Persistent data volume
-VOLUME ["/data"]
+VOLUME ["/app/data"]
 
 # Expose web UI, WireGuard, and DNS ports
 EXPOSE 8000/tcp

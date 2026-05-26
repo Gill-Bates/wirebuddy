@@ -17,7 +17,8 @@
 }
 
 /* Utility classes */
-.hidden {
+.hidden,
+.is-hidden {
     display: none !important;
 }
 

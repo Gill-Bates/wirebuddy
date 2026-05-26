@@ -1,0 +1,88 @@
+//
+// tools/ui-lint/lib/runtime/observers/mutation-observer.mjs
+// Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+//
+
+export async function installDOMStabilityObserver(context) {
+    await context.addInitScript(() => {
+        const RUNTIME_KEY = Symbol.for('uiLint.runtime');
+        const DOM_STATS_KEY = Symbol.for('uiLint.domStats');
+
+        function classifyMutationSeverity(stats = {}) {
+            const mutationCount = Number(stats.mutationCount || 0);
+            const mutationBursts = Number(stats.mutationBursts || 0);
+            const reconnectCount = Number(stats.reconnectCount || 0);
+            if (mutationBursts > 3 || reconnectCount > 25) return 'blocking';
+            if (mutationBursts > 1 || mutationCount > 500) return 'serious';
+            if (mutationCount > 50) return 'warning';
+            return 'diagnostic';
+        }
+
+        const runtime = window[RUNTIME_KEY] || {
+            version: 1,
+            performance: { webVitals: { lcp: 0, inp: 0, cls: 0 }, memory: null, scroll: { eventCount: 0, longFrames: 0, longTasks: 0, averageFrameTime: null } },
+            dom: { mutationCount: 0, mutationBursts: 0, maxBurstSize: 0, reconnectCount: 0, pollingDetected: false, severity: 'diagnostic' },
+            fonts: {},
+            interactions: {},
+            viewport: { width: window.innerWidth, height: window.innerHeight },
+        };
+        window[RUNTIME_KEY] = runtime;
+        window[DOM_STATS_KEY] = runtime.dom;
+        if (!('MutationObserver' in window)) return;
+
+        let burstCount = 0;
+        let burstTimeout = null;
+
+        const observer = new MutationObserver((mutations) => {
+            runtime.dom.mutationCount += mutations.length;
+            burstCount += mutations.length;
+
+            if (burstTimeout) clearTimeout(burstTimeout);
+            burstTimeout = setTimeout(() => {
+                if (burstCount > 50) {
+                    runtime.dom.mutationBursts += 1;
+                    runtime.dom.maxBurstSize = Math.max(runtime.dom.maxBurstSize, burstCount);
+                }
+                runtime.dom.severity = classifyMutationSeverity(runtime.dom);
+                burstCount = 0;
+            }, 100);
+
+            for (const mutation of mutations) {
+                if (mutation.type === 'childList') {
+                    for (const node of mutation.addedNodes) {
+                        if (node.nodeType === 1 && !document.body.contains(node)) {
+                            runtime.dom.reconnectCount += 1;
+                        }
+                    }
+                }
+            }
+        });
+
+        function attachObserver() {
+            if (!document.body) return;
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                characterData: true,
+            });
+        }
+
+        if (document.body) {
+            attachObserver();
+        } else {
+            document.addEventListener('DOMContentLoaded', attachObserver, { once: true });
+        }
+    });
+}
+
+export async function collectDOMStabilityMetrics(page) {
+    return page.evaluate(() => window[Symbol.for('uiLint.runtime')]?.dom || window[Symbol.for('uiLint.domStats')] || {
+        mutationCount: 0,
+        mutationBursts: 0,
+        maxBurstSize: 0,
+        reconnectCount: 0,
+        pollingDetected: false,
+        severity: 'diagnostic',
+    });
+}

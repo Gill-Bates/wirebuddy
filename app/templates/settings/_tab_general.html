@@ -4,7 +4,7 @@
     {% macro copyable_url(element_id, url, label) -%}
     <div class="mt-2 small text-muted d-flex align-items-center gap-2">
         <span id="{{ element_id }}" class="font-monospace wb-monospace-value">{{ url }}</span>
-        <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
+        <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1 settings-copy-btn"
             id="btn-copy-{{ element_id }}" aria-label="Copy {{ label }}" title="Copy URL">
             <span class="material-icons icon-sm" aria-hidden="true">content_copy</span>
         </button>
@@ -104,7 +104,7 @@
                             <input class="form-check-input" type="checkbox" id="speedtest-enabled" aria-describedby="speedtest-enabled-help"{% if settings.speedtest_enabled %} checked{% endif %} {{ disabled_attr }}>
                             <label class="form-check-label" for="speedtest-enabled">Scheduled</label>
                         </div>
-                        <small class="text-muted d-block mb-3" id="speedtest-enabled-help">Server is automatically selected by lowest latency (<a href="https://github.com/librespeed/speedtest" target="_blank" rel="noopener noreferrer">LibreSpeed</a>)</small>
+                        <small class="text-muted d-block mb-3" id="speedtest-enabled-help">Server is automatically selected by lowest latency (<a href="https://github.com/librespeed/speedtest" target="_blank" rel="noopener noreferrer" class="wb-inline-touch-target">LibreSpeed</a>)</small>
                         <div id="speedtest-result" class="mt-3 d-none">
                             <hr class="my-3">
                             <div class="row g-3">
