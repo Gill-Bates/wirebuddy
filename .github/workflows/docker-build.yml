@@ -91,7 +91,7 @@ jobs:
     needs: meta
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      TEMP_TAG_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      VERSION: ${{ needs.meta.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -228,12 +228,12 @@ jobs:
             exit 1
           fi
 
-      - name: Tag image for staging push
+      - name: Tag image for push
         run: |
           set -euo pipefail
           IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy"
           test -n "$IMAGE_NAME" || { echo "ERROR: IMAGE_NAME is empty"; exit 1; }
-          docker tag "${{ matrix.test_image }}" "${IMAGE_NAME}:${TEMP_TAG_PREFIX}-${{ matrix.image_suffix }}"
+          docker tag "${{ matrix.test_image }}" "${IMAGE_NAME}:${VERSION}-${{ matrix.image_suffix }}"
 
       - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@0.35.0
@@ -248,12 +248,12 @@ jobs:
           timeout: '10m'
           trivyignores: '.trivyignore'
 
-      - name: Push staging image
+      - name: Push arch-specific image
         run: |
           set -euo pipefail
           IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy"
           test -n "$IMAGE_NAME" || { echo "ERROR: IMAGE_NAME is empty"; exit 1; }
-          docker push "${IMAGE_NAME}:${TEMP_TAG_PREFIX}-${{ matrix.image_suffix }}"
+          docker push "${IMAGE_NAME}:${VERSION}-${{ matrix.image_suffix }}"
 
   create-manifest:
     name: Create multi-arch manifest
@@ -262,7 +262,6 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      TEMP_TAG_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
 
@@ -280,68 +279,24 @@ jobs:
           IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy"
           test -n "$IMAGE_NAME" || { echo "ERROR: IMAGE_NAME is empty"; exit 1; }
           VERSION="${{ needs.meta.outputs.version }}"
-          STAGED_AMD64="${IMAGE_NAME}:${TEMP_TAG_PREFIX}-amd64"
-          STAGED_ARM64="${IMAGE_NAME}:${TEMP_TAG_PREFIX}-arm64"
 
-          docker buildx imagetools create \
-            --tag "${IMAGE_NAME}:${VERSION}-amd64" \
-            "${STAGED_AMD64}"
-
-          docker buildx imagetools create \
-            --tag "${IMAGE_NAME}:${VERSION}-arm64" \
-            "${STAGED_ARM64}"
-
+          # Create multi-arch manifest from already-pushed arch-specific tags
           docker buildx imagetools create \
             --tag "${IMAGE_NAME}:${VERSION}" \
-            "${STAGED_AMD64}" \
-            "${STAGED_ARM64}"
+            "${IMAGE_NAME}:${VERSION}-amd64" \
+            "${IMAGE_NAME}:${VERSION}-arm64"
 
           if [[ "$VERSION" != *"-"* ]]; then
             docker buildx imagetools create \
               --tag "${IMAGE_NAME}:latest" \
-              "${STAGED_AMD64}" \
-              "${STAGED_ARM64}"
+              "${IMAGE_NAME}:${VERSION}-amd64" \
+              "${IMAGE_NAME}:${VERSION}-arm64"
           fi
 
           echo "Pushed manifests:"
           echo "  ${IMAGE_NAME}:${VERSION}"
           if [[ "$VERSION" != *"-"* ]]; then
             echo "  ${IMAGE_NAME}:latest"
-          fi
-
-          echo "Cleaning up temporary CI tags..."
-          docker buildx imagetools rm "${STAGED_AMD64}" || echo "Warning: could not remove ${STAGED_AMD64}"
-          docker buildx imagetools rm "${STAGED_ARM64}" || echo "Warning: could not remove ${STAGED_ARM64}"
-
-          # Docker Hub can keep tags visible when registry-side deletes are eventually consistent.
-          # Enforce deletion via Hub API as a second pass.
-          HUB_USER="${{ secrets.DOCKERHUB_USERNAME }}"
-          HUB_PASS="${{ secrets.DOCKERHUB_TOKEN }}"
-          HUB_REPO="wirebuddy"
-          HUB_TAG_AMD64="${TEMP_TAG_PREFIX}-amd64"
-          HUB_TAG_ARM64="${TEMP_TAG_PREFIX}-arm64"
-
-          HUB_JWT="$({
-            curl -fsS -X POST \
-              -H "Content-Type: application/json" \
-              -d "{\"username\":\"${HUB_USER}\",\"password\":\"${HUB_PASS}\"}" \
-              "https://hub.docker.com/v2/users/login/" || true
-          } | python3 -c "import json,sys; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)"
-
-          if [ -n "${HUB_JWT}" ]; then
-            for tag in "${HUB_TAG_AMD64}" "${HUB_TAG_ARM64}"; do
-              code="$(curl -sS -o /dev/null -w "%{http_code}" \
-                -X DELETE \
-                -H "Authorization: JWT ${HUB_JWT}" \
-                "https://hub.docker.com/v2/repositories/${HUB_USER}/${HUB_REPO}/tags/${tag}/" || true)"
-              if [ "${code}" = "204" ] || [ "${code}" = "404" ]; then
-                echo "✓ Docker Hub tag cleanup: ${tag} (HTTP ${code})"
-              else
-                echo "Warning: Docker Hub API cleanup failed for ${tag} (HTTP ${code})"
-              fi
-            done
-          else
-            echo "Warning: Docker Hub API login failed, skipped API tag cleanup"
           fi
 
   create-release:
