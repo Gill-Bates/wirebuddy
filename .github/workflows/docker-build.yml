@@ -20,6 +20,8 @@ jobs:
   meta:
     name: Validate build metadata
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     timeout-minutes: 10
     permissions:
       contents: read
@@ -90,6 +92,7 @@ jobs:
     name: Build ${{ matrix.arch }} image
     needs: meta
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       IMAGE_NAME: ${{ needs.meta.outputs.image_name }}
       TEMP_TAG_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
     strategy:
@@ -173,19 +176,11 @@ jobs:
           trap cleanup EXIT
 
           docker run -d --name "${{ matrix.container_name }}" \
-            -p 127.0.0.1:0:8000 \
             -e WIREBUDDY_SECRET_KEY="ci-smoke-test-key-not-for-production" \
             -e WIREBUDDY_SKIP_NETWORK_CHECK="1" \
             "${{ matrix.test_image }}"
 
-          HOST_PORT="$(docker port "${{ matrix.container_name }}" 8000/tcp | awk -F: '{print $NF}')"
-          if [ -z "$HOST_PORT" ]; then
-            echo "✗ Could not resolve mapped host port"
-            docker logs "${{ matrix.container_name }}" 2>&1 || true
-            exit 1
-          fi
-
-          echo "Waiting for container on 127.0.0.1:${HOST_PORT}..."
+          echo "Waiting for in-container health endpoint..."
           for i in $(seq 1 45); do
             if ! docker ps -q -f name="${{ matrix.container_name }}" | grep -q .; then
               echo "✗ Container exited during startup after ${i}s"
@@ -194,9 +189,9 @@ jobs:
               exit 1
             fi
 
-            if curl -fsS --max-time 2 \
-                "http://127.0.0.1:${HOST_PORT}/api/system/status" > /dev/null 2>&1; then
-              echo "✓ Master mode: Host-port check passed after ${i}s"
+            if docker exec "${{ matrix.container_name }}" \
+                curl -fsS --max-time 2 "http://127.0.0.1:8000/api/system/status" > /dev/null 2>&1; then
+              echo "✓ Master mode: in-container health check passed after ${i}s"
               exit 0
             fi
 
@@ -269,6 +264,7 @@ jobs:
     if: needs.build.result == 'success'
     runs-on: ubuntu-24.04
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       IMAGE_NAME: ${{ needs.meta.outputs.image_name }}
       TEMP_TAG_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
@@ -321,6 +317,7 @@ jobs:
     if: needs.create-manifest.result == 'success'
     runs-on: ubuntu-latest
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       VERSION: ${{ needs.meta.outputs.version }}
       IMAGE_NAME: ${{ needs.meta.outputs.image_name }}
     permissions:
