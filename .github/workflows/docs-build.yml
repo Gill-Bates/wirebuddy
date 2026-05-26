@@ -39,11 +39,9 @@ jobs:
           fetch-depth: 0  # Full history for git-based plugins
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-          cache: 'pip'
-          cache-dependency-path: 'docs/requirements-docs.txt'
 
       - name: Install dependencies
         run: |
@@ -99,7 +97,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -140,6 +138,7 @@ jobs:
       - name: Trivy scan docs dependencies
         uses: aquasecurity/trivy-action@0.35.0
         with:
+          cache: 'false'
           scan-type: 'fs'
           scan-ref: 'docs/requirements-docs.txt'
           format: 'table'
