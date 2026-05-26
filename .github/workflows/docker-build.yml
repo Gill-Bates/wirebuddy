@@ -29,11 +29,10 @@ jobs:
       build_date: ${{ steps.meta.outputs.build_date }}
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
-      image_name: ${{ steps.meta.outputs.image_name }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
@@ -86,14 +85,12 @@ jobs:
           echo "build_date=${BUILD_DATE}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "image_name=${DOCKERHUB_USERNAME}/wirebuddy" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.arch }} image
     needs: meta
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      IMAGE_NAME: ${{ needs.meta.outputs.image_name }}
       TEMP_TAG_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
     strategy:
       fail-fast: false
@@ -123,7 +120,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
@@ -239,6 +236,8 @@ jobs:
       - name: Tag image for staging push
         run: |
           set -euo pipefail
+          IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy"
+          test -n "$IMAGE_NAME" || { echo "ERROR: IMAGE_NAME is empty"; exit 1; }
           docker tag "${{ matrix.test_image }}" "${IMAGE_NAME}:${TEMP_TAG_PREFIX}-${{ matrix.image_suffix }}"
 
       - name: Trivy vulnerability scan
@@ -256,6 +255,8 @@ jobs:
       - name: Push staging image
         run: |
           set -euo pipefail
+          IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy"
+          test -n "$IMAGE_NAME" || { echo "ERROR: IMAGE_NAME is empty"; exit 1; }
           docker push "${IMAGE_NAME}:${TEMP_TAG_PREFIX}-${{ matrix.image_suffix }}"
 
   create-manifest:
@@ -265,7 +266,6 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      IMAGE_NAME: ${{ needs.meta.outputs.image_name }}
       TEMP_TAG_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -281,6 +281,8 @@ jobs:
       - name: Create and push manifest
         run: |
           set -euo pipefail
+          IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy"
+          test -n "$IMAGE_NAME" || { echo "ERROR: IMAGE_NAME is empty"; exit 1; }
           VERSION="${{ needs.meta.outputs.version }}"
           STAGED_AMD64="${IMAGE_NAME}:${TEMP_TAG_PREFIX}-amd64"
           STAGED_ARM64="${IMAGE_NAME}:${TEMP_TAG_PREFIX}-arm64"
@@ -319,7 +321,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       VERSION: ${{ needs.meta.outputs.version }}
-      IMAGE_NAME: ${{ needs.meta.outputs.image_name }}
+      IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
     permissions:
       contents: write
 
