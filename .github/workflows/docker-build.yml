@@ -321,6 +321,37 @@ jobs:
           docker buildx imagetools rm "${STAGED_AMD64}" || echo "Warning: could not remove ${STAGED_AMD64}"
           docker buildx imagetools rm "${STAGED_ARM64}" || echo "Warning: could not remove ${STAGED_ARM64}"
 
+          # Docker Hub can keep tags visible when registry-side deletes are eventually consistent.
+          # Enforce deletion via Hub API as a second pass.
+          HUB_USER="${{ secrets.DOCKERHUB_USERNAME }}"
+          HUB_PASS="${{ secrets.DOCKERHUB_TOKEN }}"
+          HUB_REPO="wirebuddy"
+          HUB_TAG_AMD64="${TEMP_TAG_PREFIX}-amd64"
+          HUB_TAG_ARM64="${TEMP_TAG_PREFIX}-arm64"
+
+          HUB_JWT="$({
+            curl -fsS -X POST \
+              -H "Content-Type: application/json" \
+              -d "{\"username\":\"${HUB_USER}\",\"password\":\"${HUB_PASS}\"}" \
+              "https://hub.docker.com/v2/users/login/" || true
+          } | python3 -c "import json,sys; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)"
+
+          if [ -n "${HUB_JWT}" ]; then
+            for tag in "${HUB_TAG_AMD64}" "${HUB_TAG_ARM64}"; do
+              code="$(curl -sS -o /dev/null -w "%{http_code}" \
+                -X DELETE \
+                -H "Authorization: JWT ${HUB_JWT}" \
+                "https://hub.docker.com/v2/repositories/${HUB_USER}/${HUB_REPO}/tags/${tag}/" || true)"
+              if [ "${code}" = "204" ] || [ "${code}" = "404" ]; then
+                echo "✓ Docker Hub tag cleanup: ${tag} (HTTP ${code})"
+              else
+                echo "Warning: Docker Hub API cleanup failed for ${tag} (HTTP ${code})"
+              fi
+            done
+          else
+            echo "Warning: Docker Hub API login failed, skipped API tag cleanup"
+          fi
+
   create-release:
     name: Create GitHub Release
     needs: [meta, create-manifest]
