@@ -104,7 +104,7 @@ jobs:
             container_name: wirebuddy-test-amd64
             image_suffix: amd64
           - arch: arm64
-            runner: ubuntu-24.04-arm64
+            runner: ubuntu-24.04-arm
             platform: linux/arm64
             cache_scope: arm64
             test_image: wirebuddy:test-arm64
