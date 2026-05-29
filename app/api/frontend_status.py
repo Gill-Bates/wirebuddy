@@ -415,7 +415,7 @@ async def _resolve_dns_probe_cached(iface: sqlite3.Row | None) -> tuple[bool, st
 async def _resolve_geo(ip_text: str | None) -> dict[str, str | None]:
 	"""Resolve GeoIP data with a safe empty fallback."""
 	if not ip_text:
-		return {"country_code": None, "city": None, "as_org": None}
+		return {"country_code": None, "city": None, "asn": None, "as_org": None}
 	return extract_geo_fields(await asyncio.to_thread(lookup_ip_cached, ip_text))
 
 

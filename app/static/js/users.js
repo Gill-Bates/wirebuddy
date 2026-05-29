@@ -753,6 +753,7 @@
                         deleteBtn.className = 'btn btn-sm btn-outline-danger btn-delete-passkey users-action-btn';
                         deleteBtn.dataset.passkeyId = String(pk.id);
                         deleteBtn.title = 'Delete passkey';
+                        deleteBtn.setAttribute('aria-label', `Delete passkey ${deviceName}`);
 
                         const icon = document.createElement('span');
                         icon.className = 'material-icons icon-md';

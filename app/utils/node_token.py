@@ -22,11 +22,12 @@ import json
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit, urlunsplit
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 MAX_TOKEN_AGE = timedelta(hours=24)
 _CLOCK_SKEW = timedelta(minutes=5)
@@ -36,6 +37,7 @@ _MAX_CERT_PEM_SIZE = 65_536
 _MAX_NODE_ID_LENGTH = 64
 _MAX_NODE_NAME_LENGTH = 128
 _NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+_API_SECRET_RE = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 
 _REQUIRED_PAYLOAD_FIELDS = frozenset({"master_url", "node_id", "node_name", "api_secret", "created_at"})
 _REQUIRED_PAYLOAD_FIELD_TYPES = {
@@ -65,7 +67,19 @@ def _normalize_master_url(master_url: str) -> str:
 	normalized = master_url.strip().rstrip("/")
 	if not normalized:
 		raise ValueError("master_url must not be empty")
-	return normalized
+	parsed = urlsplit(normalized)
+	if parsed.scheme != "https":
+		raise ValueError("master_url must use https")
+	if not parsed.hostname:
+		raise ValueError("master_url must include hostname")
+	if parsed.username or parsed.password:
+		raise ValueError("master_url must not contain credentials")
+	if parsed.query or parsed.fragment:
+		raise ValueError("master_url must not contain query or fragment")
+
+	host = parsed.hostname.rstrip(".").lower()
+	netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+	return urlunsplit(("https", netloc, parsed.path.rstrip("/"), "", ""))
 
 
 def _validate_node_id(node_id: str) -> str:
@@ -223,8 +237,8 @@ def verify_enrollment_token(
 	payload["master_url"] = _normalize_master_url(payload["master_url"])
 	payload["node_id"] = _validate_node_id(payload["node_id"])
 	payload["node_name"] = _validate_node_name(payload["node_name"])
-	if not payload["api_secret"].strip():
-		raise ValueError("Token field 'api_secret' must not be empty")
+	if _API_SECRET_RE.fullmatch(payload["api_secret"].strip()) is None:
+		raise ValueError("Token field 'api_secret' has invalid format")
 
 	created_at = _parse_created_at(payload["created_at"])
 	now = datetime.now(timezone.utc)
@@ -272,6 +286,25 @@ def generate_node_cert(node_id: str) -> tuple[bytes, bytes]:
 		.not_valid_after(now + timedelta(days=365))
 		.add_extension(
 			x509.SubjectAlternativeName([x509.DNSName(node_label)]),
+			critical=False,
+		)
+		.add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+		.add_extension(
+			x509.KeyUsage(
+				digital_signature=True,
+				content_commitment=False,
+				key_encipherment=False,
+				data_encipherment=False,
+				key_agreement=False,
+				key_cert_sign=False,
+				crl_sign=False,
+				encipher_only=False,
+				decipher_only=False,
+			),
+			critical=True,
+		)
+		.add_extension(
+			x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]),
 			critical=False,
 		)
 		.sign(key, hashes.SHA256())

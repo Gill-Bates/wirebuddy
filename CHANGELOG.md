@@ -1,15 +1,24 @@
+## [1.5.1] - 2026-05-29
+
+- ``Fix`` DNS statistics and DNS query logs are displayed reliably again in the GUI
+- ``Fix`` DNS blocklist updates, reloads and logging are more stable and no longer break as easily in daily use
+- ``Fix`` Speed tests now start more reliably and show live progress correctly again
+- ``Fix`` Dashboard KPIs and traffic cards were visually refined for clearer values, better empty states and improved mobile layout
+- ``Fix`` Login, MFA and passkey sign-in flows are more reliable
+- ``Fix`` Additional security hardening in the web UI and API
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.5.0] - 2026-05-26
 
 - ``New`` A new feature allows each peer to connect to all available nodes.
 - ``New`` arm64 images are now built natively
 - ``Fix`` Massive Redesign of many the Frontend/GUI Elements
 - ``Fix`` Improved Caching behavior of DNS stats
-- ``Fix`` Severak Security Improvements
+- ``Fix`` Several Security Improvements
 - ``Fix`` Update Python dependencies
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.4.6] - 2026-05-10
 

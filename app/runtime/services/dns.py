@@ -19,7 +19,9 @@ Manages:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
+import os
 import random
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -76,16 +78,22 @@ class DNSService(RuntimeService):
             return
 
         try:
-            await self._write_config()
-
-            if self._shutdown_event.is_set():
-                raise asyncio.CancelledError
-
-            if not self._config_ready:
-                _log.info("DNS_SKIPPED: No interfaces to bind to")
-                return
-
             async with self._reload_lock:
+                await self._write_config()
+
+                if self._shutdown_event.is_set():
+                    raise asyncio.CancelledError
+
+                if not self._config_ready:
+                    if await unbound.is_running():
+                        ok, msg = await unbound.stop()
+                        if ok:
+                            _log.info("DNS_UNBOUND_STOPPED")
+                        else:
+                            _log.warning("DNS_UNBOUND_STOP_FAILED: %s", msg)
+                    _log.info("DNS_SKIPPED: No interfaces to bind to")
+                    return
+
                 # Start or stop Unbound based on enabled setting
                 await self._sync_unbound_state()
 
@@ -146,6 +154,11 @@ class DNSService(RuntimeService):
         config_ready = self._config_ready
         ingestion_task = self._ingestion_task
         if ingestion_task and ingestion_task.done():
+            try:
+                ingestion_task.result()
+            except Exception as exc:
+                health.healthy = False
+                health.error = f"DNS ingestion failed: {exc}"
             self._ingestion_task = None
             ingestion_task = None
 
@@ -174,8 +187,10 @@ class DNSService(RuntimeService):
         """Write Unbound configuration files."""
         from ...dns import unbound
         from ...dns import ingestion as dns_ingestion
+        from ...dns.unbound_constants import UNBOUND_CONF
         from ...dns.unbound_blocklist import check_and_reset_stale_blocklist
         from ...api.wireguard_utils import safe_int
+        from ...db.sqlite_settings import DEFAULT_DNS_LOG_RETENTION_DAYS
 
         self._config_ready = False
 
@@ -190,6 +205,10 @@ class DNSService(RuntimeService):
 
         if not listen_addrs_ipv4:
             _log.info("DNS_CONFIG_SKIPPED: No WireGuard interfaces configured")
+            if UNBOUND_CONF.exists():
+                if UNBOUND_CONF.is_symlink():
+                    raise RuntimeError(f"Unbound config path must not be a symlink: {UNBOUND_CONF}")
+                UNBOUND_CONF.unlink(missing_ok=True)
             return
 
         # Write Unbound config
@@ -427,19 +446,26 @@ class DNSService(RuntimeService):
         """Ensure DNS ingestion offset path exists (sync, runs in thread)."""
         offset_path = self._config.data_dir / "dns" / "dns_tail.offset"
         offset_path.parent.mkdir(parents=True, exist_ok=True)
+        if offset_path.exists() and offset_path.is_symlink():
+            raise RuntimeError(f"DNS offset path must not be a symlink: {offset_path}")
 
         # Migrate legacy path
         legacy_path = self._config.data_dir / "runtime" / "dns_tail.offset"
         if not offset_path.exists() and legacy_path.exists():
             try:
+                if legacy_path.is_symlink():
+                    raise RuntimeError(f"Legacy DNS offset path must not be a symlink: {legacy_path}")
                 max_size = 64 * 1024
                 if legacy_path.stat().st_size > max_size:
                     raise ValueError("Legacy offset file is unexpectedly large")
 
-                offset_path.write_text(
-                    legacy_path.read_text(encoding="utf-8"),
-                    encoding="utf-8",
-                )
+                data = legacy_path.read_text(encoding="utf-8")
+                tmp_path = offset_path.with_name(f".{offset_path.name}.tmp")
+                with open(tmp_path, "w", encoding="utf-8") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp_path, offset_path)
                 legacy_path.unlink(missing_ok=True)
                 legacy_dir = legacy_path.parent
                 if legacy_dir.exists() and not any(legacy_dir.iterdir()):
@@ -458,12 +484,16 @@ class DNSService(RuntimeService):
         """Extract IPv4 and IPv6 gateway addresses from interfaces."""
         from ...dns import unbound
 
-        listen_addrs_ipv4 = []
+        listen_addrs_ipv4: list[str] = []
         seen_ipv4: set[str] = set()
         for iface in interfaces:
             addr4 = self._get_addr_field(iface, "address")
             if addr4:
-                ip4 = str(addr4).split("/")[0]
+                try:
+                    ip4 = str(ipaddress.ip_interface(str(addr4)).ip)
+                except ValueError:
+                    _log.warning("DNS_INVALID_INTERFACE_ADDRESS address=%r", addr4)
+                    continue
                 if ip4 not in seen_ipv4:
                     seen_ipv4.add(ip4)
                     listen_addrs_ipv4.append(ip4)
@@ -487,11 +517,18 @@ class DNSService(RuntimeService):
         """
         from ...dns import unbound
 
-        await self._write_config()
-        if not self._config_ready or self._shutdown_event.is_set():
-            return False
-
         async with self._reload_lock:
+            await self._write_config()
+            if self._shutdown_event.is_set():
+                return False
+            if not self._config_ready:
+                if await unbound.is_running():
+                    ok, msg = await unbound.stop()
+                    if ok:
+                        _log.info("DNS_UNBOUND_STOPPED")
+                    else:
+                        _log.warning("DNS_UNBOUND_STOP_FAILED: %s", msg)
+                return False
             try:
                 await unbound.reload_config()
                 _log.info("DNS_CONFIG_RELOADED")

@@ -20,11 +20,12 @@ from __future__ import annotations
 import inspect
 import io
 import logging
+import unicodedata
 from pathlib import Path
-from typing import Optional
 
 import qrcode
 import qrcode.constants
+import qrcode.exceptions
 from PIL import Image, ImageDraw, ImageFont
 
 _log = logging.getLogger(__name__)
@@ -35,18 +36,31 @@ _LOGO_PATH = _APP_DIR / "static" / "img" / "wirebuddy_1c.png"
 _FONT_PATH = _APP_DIR / "static" / "vendor" / "fonts" / "RobotoFlex.ttf"
 
 # Layout tunables
-_LOGO_SCALE = 0.6  # Logo width relative to QR code width
+_LOGO_WIDTH_RATIO = 0.6  # Logo width relative to QR image width; rendered below the QR code.
 _MAX_LABEL_LEN = 32  # Truncate peer names beyond this to avoid canvas overflow
 _BADGE_PAD_X = 22
 _BADGE_PAD_Y = 10
 _BADGE_SECTION_SPACING = 18
 _MAX_QR_CONFIG_SIZE = 8192
 _MAX_CANVAS_SIZE = 4096
+_MAX_PNG_SIZE = 2_000_000
+_BADGE_BACKGROUND = "#000000"
+_BADGE_TEXT = "#ffffff"
 _PNG_OPTIMIZE = False
 _SUPPORTS_DEFAULT_FONT_SIZE = "size" in inspect.signature(ImageFont.load_default).parameters
+_BIDI_CONTROL_CHARS = {
+	"\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
+	"\u2066", "\u2067", "\u2068", "\u2069",
+}
+
+QR_SECRET_RESPONSE_HEADERS = {
+	"Cache-Control": "no-store, max-age=0",
+	"Pragma": "no-cache",
+	"X-Content-Type-Options": "nosniff",
+}
 
 
-def _load_font(size: int, variation_name: Optional[str] = None) -> ImageFont.ImageFont:
+def _load_font(size: int, variation_name: str | None = None) -> ImageFont.ImageFont:
 	"""Load the bundled font with an optional variation, with Pillow fallbacks."""
 	try:
 		font = ImageFont.truetype(str(_FONT_PATH), size)
@@ -75,9 +89,28 @@ def _truncate_to_width(text: str, font: ImageFont.ImageFont, max_width: int) -> 
 	return truncated
 
 
+def _clean_label(value: str | None, *, fallback: str = "") -> str:
+	"""Normalize user-visible labels for safe single-line rendering."""
+	if not value:
+		return fallback
+
+	cleaned: list[str] = []
+	for ch in unicodedata.normalize("NFKC", value):
+		if ch in _BIDI_CONTROL_CHARS:
+			continue
+		if ch in "\r\n\t\u0085\u2028\u2029":
+			cleaned.append(" ")
+			continue
+		if unicodedata.category(ch).startswith("C"):
+			continue
+		cleaned.append(ch)
+
+	return " ".join("".join(cleaned).split()).strip() or fallback
+
+
 def _draw_node_badge(
-	draw: ImageDraw.Draw,
-	font: ImageFont.FreeTypeFont,
+	draw: ImageDraw.ImageDraw,
+	font: ImageFont.ImageFont,
 	node_name: str,
 	canvas_w: int,
 	y: int,
@@ -107,10 +140,10 @@ def _draw_node_badge(
 		draw.rounded_rectangle(
 			[x0, y0, x1, y1],
 			radius=radius,
-			fill="#000000",
+			fill=_BADGE_BACKGROUND,
 		)
 	else:
-		draw.rectangle([x0, y0, x1, y1], fill="#000000")
+		draw.rectangle([x0, y0, x1, y1], fill=_BADGE_BACKGROUND)
 
 	# Center text using anchor-based alignment for more consistent vertical centering.
 	cx = (x0 + x1) // 2
@@ -118,7 +151,7 @@ def _draw_node_badge(
 	draw.text(
 		(cx, cy),
 		badge_text,
-		fill="white",
+		fill=_BADGE_TEXT,
 		font=font,
 		anchor="mm",
 	)
@@ -129,7 +162,7 @@ def _draw_node_badge(
 def generate_qr_png(
 	config_text: str,
 	peer_name: str,
-	node_name: Optional[str] = None,
+	node_name: str | None = None,
 ) -> bytes:
 	"""Render a QR code PNG with an optional logo, peer name, and node badge.
 
@@ -142,7 +175,7 @@ def generate_qr_png(
 	Args:
 		config_text: The WireGuard configuration text to encode.
 		peer_name: Human-readable peer name rendered below the QR code.
-		node_name: Optional node display name. When set, a coloured badge
+		node_name: Optional node display name. When set, a dark badge
 			is rendered to indicate which node this config targets.
 
 	Returns:
@@ -153,7 +186,8 @@ def generate_qr_png(
 		raise ValueError("QR payload too large")
 
 	# Sanitise inputs
-	peer_name = peer_name or "Peer"
+	peer_name = _clean_label(peer_name, fallback="Peer")
+	node_name = _clean_label(node_name) if node_name else None
 
 	# version=1 is a minimum hint; fit=True auto-upgrades for larger payloads
 	qr = qrcode.QRCode(
@@ -162,20 +196,23 @@ def generate_qr_png(
 		border=4,
 		error_correction=qrcode.constants.ERROR_CORRECT_H,
 	)
-	qr.add_data(config_text)
-	qr.make(fit=True)
+	try:
+		qr.add_data(config_text)
+		qr.make(fit=True)
+	except qrcode.exceptions.DataOverflowError as exc:
+		raise ValueError("QR payload does not fit into a QR code") from exc
 
 	qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGBA")
 	qr_w, qr_h = qr_img.size
 
 	# --- load logo (optional – graceful fallback) ---
-	logo_img: Optional[Image.Image] = None
+	logo_img: Image.Image | None = None
 	if _LOGO_PATH.is_file():
 		try:
 			with Image.open(_LOGO_PATH) as raw:
 				logo_img = raw.convert("RGBA")
 			# Scale logo, preserve aspect ratio
-			target_w = int(qr_w * _LOGO_SCALE)
+			target_w = int(qr_w * _LOGO_WIDTH_RATIO)
 			scale = target_w / logo_img.width
 			target_h = int(logo_img.height * scale)
 			logo_img = logo_img.resize((target_w, target_h), Image.LANCZOS)
@@ -245,4 +282,7 @@ def generate_qr_png(
 
 	buffer = io.BytesIO()
 	canvas.save(buffer, format="PNG", optimize=_PNG_OPTIMIZE)
-	return buffer.getvalue()
+	png = buffer.getvalue()
+	if len(png) > _MAX_PNG_SIZE:
+		raise ValueError("QR image output too large")
+	return png

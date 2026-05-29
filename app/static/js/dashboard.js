@@ -118,6 +118,13 @@ function setCompactMetricText(el, text, options = {}) {
     el.replaceChildren(fragment);
 }
 
+function resetBandwidthMetric() {
+    const downEl = document.getElementById('speedtest-download');
+    const upEl = document.getElementById('speedtest-upload');
+    setCompactMetricText(downEl, '–');
+    setCompactMetricText(upEl, '–');
+}
+
 function setTrafficMetric(el, bytes, direction) {
     if (!el) return;
     const formatted = String(formatBytes(bytes) || '').trim();
@@ -132,8 +139,7 @@ function setBandwidthMetric(downloadMbit, uploadMbit) {
     if (!downEl || !upEl) return;
 
     if (!Number.isFinite(downloadMbit) || !Number.isFinite(uploadMbit)) {
-        downEl.textContent = '–';
-        upEl.textContent = '';
+        resetBandwidthMetric();
         return;
     }
 
@@ -345,16 +351,16 @@ async function refreshStats(signal) {
             if (IS_ADMIN) {
                 const nodes = unwrapList(nodesRes, null);
                 const onlineCount = nodes.filter(node => node?.status === 'online').length;
-                nodesCountEl.textContent = `${onlineCount}/${nodes.length}`;
+                setCompactMetricText(nodesCountEl, `${onlineCount}/${nodes.length}`);
             } else {
-                nodesCountEl.textContent = '–';
+                setCompactMetricText(nodesCountEl, '–');
             }
         }
 
         const allPeers = unwrapList(enrichedRes, 'peers');
         const onlineCount = allPeers.filter(p => p.connected).length;
         const totalPeers = allPeers.length;
-        if (peersCountEl) peersCountEl.textContent = `${onlineCount}/${totalPeers}`;
+        setCompactMetricText(peersCountEl, `${onlineCount}/${totalPeers}`);
         if (peersCountLabelEl) {
             peersCountLabelEl.textContent = onlineCount === 1 ? 'Peer Online' : 'Peers Online';
         }
@@ -1014,10 +1020,13 @@ function stopAutoRefresh() {
         }
     });
 
-    window.addEventListener('beforeunload', () => {
+    window.addEventListener('pagehide', () => {
         stopAutoRefresh();
         if (refreshScheduler) refreshScheduler.abortActive();
-        if (themeObserver) themeObserver.disconnect();
+        if (themeObserver) {
+            themeObserver.disconnect();
+            themeObserver = null;
+        }
         // Clear all timers/intervals to prevent leaks
         if (userZoomResetTimer) {
             clearTimeout(userZoomResetTimer);
@@ -1371,8 +1380,7 @@ async function refreshSpeedtestChart(signal) {
         if (!history.length) {
             if (canvas) canvas.hidden = true;
             if (emptyEl) emptyEl.classList.remove('d-none');
-            if (speedtestDownload) speedtestDownload.textContent = '–';
-            if (speedtestUpload) speedtestUpload.textContent = 'No data';
+            resetBandwidthMetric();
             return true;
         }
 
@@ -1385,8 +1393,7 @@ async function refreshSpeedtestChart(signal) {
 
         const okHistory = history.filter(h => h.status === 'ok');
         if (!okHistory.length) {
-            if (speedtestDownload) speedtestDownload.textContent = '–';
-            if (speedtestUpload) speedtestUpload.textContent = 'No Metrics available';
+            resetBandwidthMetric();
             return true;
         }
 
@@ -1484,10 +1491,7 @@ async function refreshSpeedtestChart(signal) {
     } catch (e) {
         if (isAbortError(e)) return true;
         console.error('Speedtest chart error:', e);
-        const speedtestDownload = document.getElementById('speedtest-download');
-        const speedtestUpload = document.getElementById('speedtest-upload');
-        if (speedtestDownload) speedtestDownload.textContent = '–';
-        if (speedtestUpload) speedtestUpload.textContent = '';
+        resetBandwidthMetric();
         return false;
     }
 }
@@ -2142,7 +2146,7 @@ if (networkGaugesContainer) {
     });
 
     // Cleanup on unload
-    window.addEventListener('beforeunload', () => {
+    window.addEventListener('pagehide', () => {
         stopNetworkStatsRefresh();
         if (networkResizeObserver) {
             networkResizeObserver.disconnect();

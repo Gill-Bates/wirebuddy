@@ -28,6 +28,8 @@ _log = logging.getLogger(__name__)
 
 # Maximum JSON payload size to prevent DB bloat / DoS
 _MAX_JSON_SETTING_LENGTH = 65_536
+_MAX_SETTING_VALUE_LENGTH = 262_144
+_SPEEDTEST_RESULT_BATCH_SIZE = 500
 
 # Shared retention choices across DNS, TSDB, and speedtest settings.
 _RETENTION_OPTIONS = (0, 7, 30, 90, 180, 365)
@@ -224,6 +226,8 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
 		# Always encrypt secrets (not idempotent - caller must provide plaintext)
 		cfg = get_config()
 		stored_value = vault.encrypt(value, cfg.secret_key)
+	if len(str(stored_value).encode("utf-8")) > _MAX_SETTING_VALUE_LENGTH:
+		raise ValueError(f"Setting value exceeds maximum allowed size ({_MAX_SETTING_VALUE_LENGTH} bytes)")
 	with transaction(conn):
 		conn.execute(
 			"""
@@ -528,7 +532,10 @@ def _set_json_dict(conn: sqlite3.Connection, key: str, value: dict[str, Any] | N
 		delete_setting(conn, key)
 		return
 	payload = {**value, "ts": value.get("ts") or utcnow().isoformat()}
-	set_setting(conn, key, json.dumps(payload, ensure_ascii=False, default=str))
+	raw = json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))
+	if len(raw.encode("utf-8")) > _MAX_JSON_SETTING_LENGTH:
+		raise ValueError(f"JSON payload exceeds maximum allowed size ({_MAX_JSON_SETTING_LENGTH} bytes)")
+	set_setting(conn, key, raw)
 
 
 def get_enabled_blocklists(conn: sqlite3.Connection) -> list[str]:
@@ -827,24 +834,25 @@ def get_node_speedtest_last_results(
 
 	keys = [_node_speedtest_last_result_key(nid) for nid in node_ids]
 	prefix = "speedtest_last_result:node:"
-	placeholders = ",".join("?" * len(keys))
-	rows = conn.execute(
-		f"SELECT key, value FROM settings WHERE key IN ({placeholders})",
-		tuple(keys),
-	).fetchall()
-
 	results: dict[str, dict[str, Any]] = {}
-	for row in rows:
-		node_id = row["key"].removeprefix(prefix) if isinstance(row, sqlite3.Row) else row[0].removeprefix(prefix)
-		raw_value = row["value"] if isinstance(row, sqlite3.Row) else row[1]
-		if raw_value is None:
-			continue
-		try:
-			parsed = json.loads(raw_value)
-			if isinstance(parsed, dict):
-				results[node_id] = parsed
-		except json.JSONDecodeError:
-			_log.warning("Corrupt speedtest JSON for node %s", node_id)
+	for offset in range(0, len(keys), _SPEEDTEST_RESULT_BATCH_SIZE):
+		batch = keys[offset : offset + _SPEEDTEST_RESULT_BATCH_SIZE]
+		placeholders = ",".join("?" * len(batch))
+		rows = conn.execute(
+			f"SELECT key, value FROM settings WHERE key IN ({placeholders})",
+			tuple(batch),
+		).fetchall()
+		for row in rows:
+			node_id = row["key"].removeprefix(prefix) if isinstance(row, sqlite3.Row) else row[0].removeprefix(prefix)
+			raw_value = row["value"] if isinstance(row, sqlite3.Row) else row[1]
+			if raw_value is None:
+				continue
+			try:
+				parsed = json.loads(raw_value)
+				if isinstance(parsed, dict):
+					results[node_id] = parsed
+			except json.JSONDecodeError:
+				_log.warning("Corrupt speedtest JSON for node %s", node_id)
 	return results
 
 

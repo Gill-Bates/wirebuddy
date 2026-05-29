@@ -34,6 +34,8 @@
 
     const _wbReconnectApi = Object.freeze({
         isActive: () => _wbReconnectState.active,
+        start: () => _startReconnectMode(true),
+        stop: _stopReconnectMode,
         destroy: destroyReconnect,
     });
 
@@ -44,9 +46,9 @@
         if (_wbReconnectModal) return _wbReconnectModal;
 
         const reconnectEl = document.getElementById('wbReconnectModal');
-        if (!reconnectEl) return null;
+        if (!reconnectEl || !window.bootstrap?.Modal) return null;
 
-        _wbReconnectModal = new bootstrap.Modal(reconnectEl);
+        _wbReconnectModal = new window.bootstrap.Modal(reconnectEl);
         return _wbReconnectModal;
     }
 

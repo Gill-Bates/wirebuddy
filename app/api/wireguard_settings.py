@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+from pathlib import Path
 import sqlite3
 from enum import Enum
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
@@ -22,7 +23,6 @@ from ..db.sqlite_runtime import transaction
 from ..db.sqlite_settings import delete_setting, get_setting, set_setting
 from ..dns.unbound_config import write_local_data_overrides
 from ..dns import unbound_process as unbound
-from ..utils.conntrack import init_conntrack_accounting
 from ..utils.deps import get_conn, get_config
 from ..utils.rate_limit import limiter, RATE_LIMIT_CRITICAL, RATE_LIMIT_UI_HEAVY
 from ..utils.vault import decrypt as vault_decrypt, encrypt as vault_encrypt
@@ -58,6 +58,12 @@ class _FieldAction(Enum):
 
 
 _REQUIRED_SETTINGS: frozenset[str] = frozenset({"wg_fqdn", "wg_port"})
+_SECRET_RESPONSE_HEADERS = {
+	"Cache-Control": "no-store",
+	"Pragma": "no-cache",
+	"X-Content-Type-Options": "nosniff",
+}
+_CONNTRACK_ACCT_PATH = Path("/proc/sys/net/netfilter/nf_conntrack_acct")
 
 
 def _mask_secret(value: str, *, reveal: int = 4) -> str:
@@ -83,6 +89,14 @@ def _mask_secret(value: str, *, reveal: int = 4) -> str:
 		mask_count = len(value) - reveal * 2
 		return value[:reveal] + "*" * mask_count + value[-reveal:]
 	return "*" * len(value)
+
+
+def _conntrack_accounting_requirements_met() -> bool:
+	"""Check conntrack accounting availability without mutating host state."""
+	try:
+		return _CONNTRACK_ACCT_PATH.read_text().strip() == "1"
+	except OSError:
+		return False
 
 
 class WgSettingsPayload(BaseModel):
@@ -374,11 +388,10 @@ async def update_wg_settings(
 @limiter.limit(RATE_LIMIT_UI_HEAVY)
 async def get_global_psk(
 	request: Request,
-	reveal: bool = Query(False),
-	current_user: sqlite3.Row = Depends(require_admin),  # named for audit log
+	_: sqlite3.Row = Depends(require_admin),
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
-	"""Get the current global PresharedKey (masked or full).
+	"""Get the current global PresharedKey in masked form.
 	
 	Uses UI-heavy rate limit because this read endpoint is polled by admin views.
 	"""
@@ -400,16 +413,46 @@ async def get_global_psk(
 	except Exception:
 		_log.exception("PSK_DECRYPT_UNEXPECTED_FAILURE")
 		raise HTTPException(status_code=500, detail="Failed to decrypt global PSK")
-
-	if reveal:
-		# Issue #1: audit log whenever the PSK is revealed in plaintext
-		_log.warning(
-			"PSK_REVEALED user=%s ip=%s",
-			current_user["username"],
-			request.client.host if request.client else "unknown",
-		)
-		return ok_response(data={"key": plain, "masked": _mask_secret(plain)})
 	return ok_response(data={"masked": _mask_secret(plain)})
+
+
+@router.post("/settings/psk/reveal")
+@limiter.limit(RATE_LIMIT_CRITICAL)
+async def reveal_global_psk(
+	request: Request,
+	response: Response,
+	current_user: sqlite3.Row = Depends(require_admin),
+	conn: sqlite3.Connection = Depends(get_conn),
+):
+	"""Reveal the current global PresharedKey in plaintext.
+
+	POST avoids secret-bearing GET URLs that may leak through logs, caches, or history.
+	"""
+	for header, value in _SECRET_RESPONSE_HEADERS.items():
+		response.headers[header] = value
+	cfg = get_config(request)
+	enc_psk = get_setting(conn, "wg_global_psk")
+	if not enc_psk:
+		return ok_response(data={"masked": None, "key": None})
+	try:
+		plain = vault_decrypt(enc_psk, cfg.secret_key)
+	except ValueError as exc:
+		_log.warning("PSK_DECRYPT_INVALID_DATA: %s", exc)
+		return ok_response(data={
+			"masked": None,
+			"key": None,
+			"invalid": True,
+			"message": "Stored PSK cannot be decrypted with current WIREBUDDY_SECRET_KEY",
+		})
+	except Exception:
+		_log.exception("PSK_DECRYPT_UNEXPECTED_FAILURE")
+		raise HTTPException(status_code=500, detail="Failed to decrypt global PSK")
+	_log.warning(
+		"PSK_REVEALED user=%s ip=%s",
+		current_user["username"],
+		request.client.host if request.client else "unknown",
+	)
+	return ok_response(data={"key": plain, "masked": _mask_secret(plain)})
 
 
 @router.post("/settings/generate-psk")
@@ -477,8 +520,7 @@ async def get_traffic_status(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Get traffic analysis status and host requirements."""
-	# Check if conntrack accounting is available
-	requirements_met = await run_in_threadpool(init_conntrack_accounting)
+	requirements_met = await run_in_threadpool(_conntrack_accounting_requirements_met)
 	# Get enabled setting (factory default: disabled)
 	enabled_str = get_setting(conn, "traffic_analysis_enabled")
 	enabled = enabled_str == "1"

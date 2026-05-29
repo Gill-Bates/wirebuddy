@@ -4,12 +4,12 @@ Comprehensive guide for securing your WireBuddy deployment.
 
 ## Initial Setup
 
-### Change Default Credentials
+### Set Bootstrap Admin Password
 
 !!! danger "Critical"
-    Change default `admin/admin` credentials immediately after first login.
+    Set `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD` before the first start of a new deployment. There is no built-in `admin/admin` fallback anymore.
 
-**Profile → Change Password**
+After first login, change the bootstrap password immediately via **Profile → Change Password**.
 
 - Minimum 12 characters
 - Mix of uppercase, lowercase, numbers, symbols
@@ -580,7 +580,7 @@ If admin device is lost/stolen:
 
 ### Initial Deployment
 
-- [ ] Change default credentials
+- [ ] Set `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD` before first boot
 - [ ] Generate strong `WIREBUDDY_SECRET_KEY`
 - [ ] Enable HTTPS (reverse proxy or ACME)
 - [ ] Configure firewall (allow only required ports)

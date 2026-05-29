@@ -711,8 +711,13 @@ async def users_page(
 	for row in users:
 		login_ip = str(row.get("last_login_ip") or "").strip()
 		row["last_login_country_code"] = None
+		row["last_login_city"] = None
+		row["last_login_as_org"] = None
 		if login_ip:
-			row["last_login_country_code"] = extract_geo_fields(geoip_cache.get(login_ip))["country_code"]
+			geo_fields = extract_geo_fields(geoip_cache.get(login_ip))
+			row["last_login_country_code"] = geo_fields["country_code"]
+			row["last_login_city"] = geo_fields["city"]
+			row["last_login_as_org"] = geo_fields["as_org"]
 
 	return templates.TemplateResponse(
 		request,

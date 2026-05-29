@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from .unbound_constants import (
 	BLOCKLIST_REGISTRY,
+	CUSTOM_RULES_TAG,
 	DNSSEC_ROOT_KEY,
 	HOST_LABEL_RE,
 	QUERY_LOG,
@@ -100,6 +101,11 @@ def _normalize_unbound_tag(tag: str) -> str:
 	if not value or any(c.isspace() for c in value):
 		raise ValueError(f"invalid unbound tag: {tag!r}")
 	return value
+
+
+def _quote_unbound_path(path: Path) -> str:
+	"""Return a safely quoted absolute path for unbound include directives."""
+	return f'"{_safe_unbound_value(str(path))}"'
 
 
 def _normalize_peer_host_network(value: str) -> str:
@@ -321,8 +327,12 @@ def generate_config(
 	interface_lines = [f"    interface: {addr}" for addr in listen_ips]
 	interface_block = "\n".join(interface_lines)
 
-	blocklist_tags = [_normalize_unbound_tag(tag) for tag in BLOCKLIST_REGISTRY]
+	blocklist_tags = [_normalize_unbound_tag(tag) for tag in (*BLOCKLIST_REGISTRY.keys(), CUSTOM_RULES_TAG)]
 	define_tags = " ".join(blocklist_tags)
+	peer_tags_include = _quote_unbound_path(UNBOUND_CONF_DIR / "peer-tags.conf")
+	blocklist_include = _quote_unbound_path(get_blocklist_file())
+	custom_rules_include = _quote_unbound_path(get_custom_client_rules_file())
+	local_data_include = _quote_unbound_path(get_local_data_file())
 
 	conf = f"""# WireBuddy Unbound Configuration
 # Auto-generated – do not edit manually
@@ -345,7 +355,7 @@ server:
 	define-tag: "{define_tags}"
 
     # Per-peer tag assignments (generated separately)
-    include: {UNBOUND_CONF_DIR / "peer-tags.conf"}
+	include: {peer_tags_include}
 
     # Performance
     num-threads: {num_threads}
@@ -400,9 +410,11 @@ server:
 		conf += """
     # Query logging
     use-syslog: no
-    log-queries: yes
-	log-replies: no
-	log-tag-queryreply: no
+	# The ingestion parser consumes reply-tagged lines only. Keep query logging off
+	# to avoid duplicate events and enable explicit reply tagging for stable parsing.
+	log-queries: no
+	log-replies: yes
+	log-tag-queryreply: yes
     logfile: /var/log/unbound/queries.log
     log-time-ascii: no
 	verbosity: 1
@@ -411,15 +423,15 @@ server:
 	if enable_blocklist:
 		conf += f"""
     # Ad-blocking
-    include: {get_blocklist_file()}
+	include: {blocklist_include}
 """
 
 	conf += f"""
     # Client-specific custom DNS overrides
-    include: {get_custom_client_rules_file()}
+	include: {custom_rules_include}
 
     # Split-DNS local-data overrides (auto-generated from WG interfaces)
-    include: {get_local_data_file()}
+	include: {local_data_include}
 """
 
 	conf += """
@@ -566,7 +578,7 @@ def write_peer_tags(peers: list[dict]) -> None:
 	UNBOUND_CONF_DIR.mkdir(parents=True, exist_ok=True)
 	peer_tags_path = UNBOUND_CONF_DIR / "peer-tags.conf"
 	
-	all_tags = [_normalize_unbound_tag(tag) for tag in BLOCKLIST_REGISTRY]
+	all_tags = [_normalize_unbound_tag(tag) for tag in (*BLOCKLIST_REGISTRY.keys(), CUSTOM_RULES_TAG)]
 	lines = [
 		"# Per-peer blocklist tag assignments",
 		f"# Auto-generated – {datetime.now(timezone.utc).isoformat()}",
@@ -597,6 +609,8 @@ def write_peer_tags(peers: list[dict]) -> None:
 					continue
 				if normalized in BLOCKLIST_REGISTRY:
 					tags.append(normalized)
+			if CUSTOM_RULES_TAG not in tags:
+				tags.append(CUSTOM_RULES_TAG)
 		
 		if not tags:
 			continue

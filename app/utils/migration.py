@@ -45,6 +45,17 @@ _log = logging.getLogger(__name__)
 SCHEMA_VERSION = 2
 
 
+def _current_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+	"""Return the set of current column names for a table."""
+	cur = conn.execute(f"PRAGMA table_info({table_name})")
+	return {row[1] for row in cur.fetchall()}
+
+
+def _looks_like_current_schema(conn: sqlite3.Connection) -> bool:
+	"""Best-effort check for a DB already matching the current baseline schema."""
+	return "show_on_dashboard" in _current_columns(conn, "interfaces")
+
+
 def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
 	"""Create schema_version table if it doesn't exist.
 
@@ -99,8 +110,7 @@ def _migrate_0001_add_show_on_dashboard(conn: sqlite3.Connection) -> None:
 	dashboard's network throughput gauges. Defaults to 1 (shown).
 	"""
 	# Check if column already exists (idempotent)
-	cur = conn.execute("PRAGMA table_info(interfaces)")
-	columns = [row[1] for row in cur.fetchall()]
+	columns = sorted(_current_columns(conn, "interfaces"))
 	if "show_on_dashboard" not in columns:
 		conn.execute(
 			"ALTER TABLE interfaces ADD COLUMN show_on_dashboard INTEGER NOT NULL DEFAULT 1"
@@ -115,8 +125,7 @@ def _migrate_0002_drop_peers_description(conn: sqlite3.Connection) -> None:
 	check the runtime version and use ALTER TABLE DROP COLUMN
 	when available, otherwise recreate the table.
 	"""
-	cur = conn.execute("PRAGMA table_info(peers)")
-	columns = [row[1] for row in cur.fetchall()]
+	columns = sorted(_current_columns(conn, "peers"))
 	if "description" not in columns:
 		return  # already removed
 
@@ -125,13 +134,7 @@ def _migrate_0002_drop_peers_description(conn: sqlite3.Connection) -> None:
 		conn.execute("ALTER TABLE peers DROP COLUMN description")
 		_log.info("Dropped description column from peers table")
 	else:
-		# Rebuild without the column
-		keep = [c for c in columns if c != "description"]
-		cols = ", ".join(keep)
-		conn.execute(f"CREATE TABLE peers_backup AS SELECT {cols} FROM peers")
-		conn.execute("DROP TABLE peers")
-		conn.execute(f"ALTER TABLE peers_backup RENAME TO peers")
-		_log.info("Rebuilt peers table without description column (SQLite < 3.35)")
+		raise RuntimeError("SQLite >= 3.35 is required to drop peers.description safely")
 
 
 _MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -200,7 +203,7 @@ def run_pending_migrations(conn: sqlite3.Connection) -> int:
 	# (init_schema already created tables with all current columns)
 	if current_version == 0:
 		user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-		if user_count == 0:
+		if user_count == 0 and _looks_like_current_schema(conn):
 			_log.info(
 				"MIGRATION Fresh installation detected, setting schema_version to v%d (skipping migrations)",
 				SCHEMA_VERSION,
@@ -286,8 +289,10 @@ def check_migration_status(conn: sqlite3.Connection) -> dict:
 	Returns:
 		Dict with schema version info and pending migrations
 	"""
-	_ensure_schema_version_table(conn)
-	current_version = get_schema_version(conn)
+	row = conn.execute(
+		"SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
+	).fetchone()
+	current_version = get_schema_version(conn) if row is not None else 0
 	
 	pending = [
 		{"version": ver, "name": func.__name__}

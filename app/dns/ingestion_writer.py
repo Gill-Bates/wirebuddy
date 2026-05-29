@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .ingestion_parser import DnsQueryPoint, parse_unbound_line
 from .ingestion_retention import DEFAULT_DNS_LOG_RETENTION_DAYS, normalize_dns_log_retention_days
-from .ingestion_tailer import OffsetTracker
+from .ingestion_tailer import OffsetTracker, TailItem
 from .unbound_blocklist import get_custom_rules_cache
 from ..db import tsdb
 from ..utils.network import parse_ip_str
@@ -78,7 +78,7 @@ class DnsTsdbWriter:
 		self._stop = stop_event
 		self._tsdb_dir = tsdb_dir
 		# Use deque for O(1) append and efficient maxlen dropping (vs O(n) list delete)
-		self.batch: deque[DnsQueryPoint] = deque(maxlen=MAX_BATCH_SIZE)
+		self.batch: deque[tuple[DnsQueryPoint, TailItem]] = deque(maxlen=MAX_BATCH_SIZE)
 		self.last_flush: float = time.monotonic()
 		self._blocked_domains: set[str] = set()
 		self._custom_allow_rules: list = []
@@ -88,10 +88,11 @@ class DnsTsdbWriter:
 		self._consecutive_flush_failures: int = 0
 		self._dns_logging_disabled_ips_func = dns_logging_disabled_ips_func
 		self._dns_logging_disabled_ips: set[str] = set()
+		self._pending_commit: TailItem | None = None
 		# Minute-bucket aggregates for TSDB (key: ISO minute string, value: {total, blocked})
 		self._minute_buckets: dict[str, dict[str, int]] = {}
 	
-	async def run(self, q: queue.Queue[str]) -> None:
+	async def run(self, q: queue.Queue[TailItem]) -> None:
 		"""Run writer loop until stopped."""
 		_log.info("DNS_WRITER starting")
 		
@@ -145,7 +146,7 @@ class DnsTsdbWriter:
 				_log.warning("DNS_WRITER failed to refresh logging-disabled IPs: %s", e)
 		self._last_settings_refresh = now
 
-	def _drain_and_process(self, q: queue.Queue[str]) -> bool:
+	def _drain_and_process(self, q: queue.Queue[TailItem]) -> bool:
 		"""Drain up to BATCH_SIZE lines from queue and process in one thread call.
 		
 		Time-bounded to avoid event loop starvation from expensive parsing.
@@ -160,23 +161,23 @@ class DnsTsdbWriter:
 				break
 			
 			try:
-				line = q.get_nowait()
+				item = q.get_nowait()
 			except queue.Empty:
 				break
-			self._process_line(line)
+			self._process_item(item)
 			processed = True
-		# Periodically save offset even when lines are skipped (no flush)
-		if processed:
+		if processed and not self.batch and self._pending_commit is not None:
+			self.tracker.commit(self._pending_commit.inode, self._pending_commit.end_offset)
 			self.tracker.save_if_needed(force=False)
 		return processed
 
-	def _process_line(self, line: str) -> None:
-		"""Parse and add line to batch (called from thread worker)."""
+	def _process_item(self, item: TailItem) -> None:
+		"""Parse one tailed item and track the latest safe commit offset."""
+		line = item.line
 
 		# "Keine Logs": skip persistence when retention=0.
-		# Use force=False to avoid data loss if retention toggles back to >0 before offset flush.
 		if self._log_retention_days == 0:
-			self.tracker.save_if_needed(force=False)
+			self._pending_commit = item
 			return
 		
 		point = parse_unbound_line(
@@ -187,23 +188,27 @@ class DnsTsdbWriter:
 		)
 		
 		if not point:
+			self._pending_commit = item
 			return
 		
 		# Only persist reply lines (skip queries)
 		# Replies have rcode and represent actual DNS resolutions
 		# Note: rcode=0 means NOERROR, which is valid - check for None explicitly
 		if point.rcode is None:
+			self._pending_commit = item
 			return
 		
 		# Skip logging for peers with DNS logging disabled
 		if point.client in self._dns_logging_disabled_ips:
+			self._pending_commit = item
 			return
 		
 		# deque with maxlen automatically drops oldest when full (O(1) operation)
 		if len(self.batch) >= MAX_BATCH_SIZE:
 			_log.warning("DNS_WRITER batch at capacity, oldest entry will be dropped")
 		
-		self.batch.append(point)
+		self.batch.append((point, item))
+		self._pending_commit = item
 		
 		# Update minute bucket aggregates for TSDB (independent of JSONL batching)
 		# Extract minute bucket from ISO timestamp: "2026-04-01T12:05:23Z" -> "2026-04-01T12:05"
@@ -244,7 +249,7 @@ class DnsTsdbWriter:
 			# Group by day for efficient writes
 			by_day: dict[str, list[dict]] = {}
 			
-			for point in self.batch:
+			for point, _item in self.batch:
 				# Extract date from ISO timestamp: 2026-02-19T10:15:23Z -> 2026-02-19
 				# Use split() instead of slicing for robustness against format changes
 				date_str = point.ts.split("T", 1)[0] if "T" in point.ts else point.ts[:10]
@@ -272,6 +277,8 @@ class DnsTsdbWriter:
 				self._write_day_file(date_str, points)
 			
 			# Persist offset AFTER fsync (crash-safe ordering)
+			if self._pending_commit is not None:
+				self.tracker.commit(self._pending_commit.inode, self._pending_commit.end_offset)
 			self.tracker.save_if_needed(force=True)
 			
 			# Flush aggregated minute buckets to TSDB for fast trend queries
@@ -281,6 +288,7 @@ class DnsTsdbWriter:
 			_log.debug("DNS_WRITER flushed %d queries in %.3fs (%d days)", count, elapsed, len(by_day))
 			# Clear deque
 			self.batch.clear()
+			self._pending_commit = None
 			self._consecutive_flush_failures = 0
 			# Update flush timer only on success
 			self.last_flush = time.monotonic()
@@ -293,7 +301,10 @@ class DnsTsdbWriter:
 				self._consecutive_flush_failures = 0
 				# Still save offset to prevent re-reading dropped data on restart
 				try:
+					if self._pending_commit is not None:
+						self.tracker.commit(self._pending_commit.inode, self._pending_commit.end_offset)
 					self.tracker.save_if_needed(force=True)
+					self._pending_commit = None
 				except Exception:
 					_log.warning("DNS_WRITER failed to save offset after dropping batch")
 			else:

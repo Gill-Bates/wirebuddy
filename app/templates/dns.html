@@ -10,8 +10,8 @@
 {% endblock %}
 
 {% block content %}
-{% macro dns_unavailable_state(extra_class='') -%}
-<div class="chart-empty-state d-flex flex-column align-items-center justify-content-center{{ ' ' ~ extra_class if extra_class else '' }}" role="status" aria-live="polite">
+{% macro dns_unavailable_state(extra_class='', id='') -%}
+<div{% if id %} id="{{ id }}"{% endif %} class="chart-empty-state d-flex flex-column align-items-center justify-content-center{{ ' ' ~ extra_class if extra_class else '' }}" role="status" aria-live="polite">
     <span class="material-icons" aria-hidden="true">block</span>
     <span class="chart-empty-state-text">DNS Unavailable</span>
     <span class="chart-empty-state-text small">Unbound is not installed.</span>
@@ -19,9 +19,9 @@
 {%- endmacro %}
 
 <div id="dns-app" class="container-fluid wb-page"
-     data-is-admin="{{ is_admin | tojson }}"
-     data-enable-blocklist="{{ enable_blocklist | tojson }}"
-     data-dns-unavailable="{{ dns_unavailable | default(false) | tojson }}">
+    data-is-admin='{{ is_admin | tojson }}'
+    data-enable-blocklist='{{ enable_blocklist | tojson }}'
+    data-dns-unavailable='{{ dns_unavailable | default(false) | tojson }}'>
 <div class="wb-page-header flex-wrap gap-2 dns-header">
     <h1 class="page-title"><span class="material-icons me-2" aria-hidden="true">dns</span>DNS Ad-Blocker</h1>
     <div class="d-flex gap-2 align-items-center flex-wrap dns-toolbar">
@@ -48,11 +48,11 @@
                 <span id="adblocker-countdown" class="adblocker-countdown ms-1 d-none"></span>
             </button>
             <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="adblocker-btn">
-                <li><a class="dropdown-item" href="#" data-adblocker-mode="enable"><span class="material-icons me-2">check_circle</span>Enable</a></li>
-                <li><a class="dropdown-item" href="#" data-adblocker-mode="disable"><span class="material-icons me-2">cancel</span>Disable</a></li>
+                <li><button type="button" class="dropdown-item" data-adblocker-mode="enable"><span class="material-icons me-2" aria-hidden="true">check_circle</span>Enable</button></li>
+                <li><button type="button" class="dropdown-item" data-adblocker-mode="disable"><span class="material-icons me-2" aria-hidden="true">cancel</span>Disable</button></li>
                 <li><hr class="dropdown-divider"></li>
-                <li><a class="dropdown-item" href="#" data-adblocker-mode="disable_1h"><span class="material-icons me-2">timer</span>Disable for 1h</a></li>
-                <li><a class="dropdown-item" href="#" data-adblocker-mode="disable_today"><span class="material-icons me-2">nights_stay</span>Disable for Today</a></li>
+                <li><button type="button" class="dropdown-item" data-adblocker-mode="disable_1h"><span class="material-icons me-2" aria-hidden="true">timer</span>Disable for 1h</button></li>
+                <li><button type="button" class="dropdown-item" data-adblocker-mode="disable_today"><span class="material-icons me-2" aria-hidden="true">nights_stay</span>Disable for Today</button></li>
             </ul>
         </div>
     </div>
@@ -115,7 +115,7 @@
                             <span class="material-icons" aria-hidden="true">show_chart</span>
                             <span class="chart-empty-state-text">No Data Available</span>
                         </div>
-                        {{ dns_unavailable_state('flex-grow-1' ~ (' d-none' if not dns_unavailable else '')) }}
+                        {{ dns_unavailable_state('flex-grow-1' ~ (' d-none' if not dns_unavailable else ''), 'top-queried-unavailable') }}
                     </div>
                 </div>
             </div>
@@ -145,7 +145,7 @@
                             <span class="chart-empty-state-text">Ad-Blocker Disabled</span>
                             <span class="chart-empty-state-text small">Enable the Ad-Blocker to see blocked domains.</span>
                         </div>
-                        {{ dns_unavailable_state('flex-grow-1' ~ (' d-none' if not dns_unavailable else '')) }}
+                        {{ dns_unavailable_state('flex-grow-1' ~ (' d-none' if not dns_unavailable else ''), 'top-blocked-unavailable') }}
                     </div>
                 </div>
             </div>
@@ -163,7 +163,7 @@
                             <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading blockrate trend…</span></div>
                         </div>
                         <div id="trend-chart-wrap" class="d-none trend-chart-height">
-                            <canvas id="dnsTrendChart"></canvas>
+                            <canvas id="dnsTrendChart" role="img" aria-describedby="trend-meta"></canvas>
                         </div>
                         <div id="trend-empty" class="chart-empty-state d-none trend-chart-height" role="status" aria-live="polite"></div>
                         <div id="trend-disabled" class="chart-empty-state d-none trend-chart-height" role="status" aria-live="polite">
@@ -171,14 +171,14 @@
                             <span class="chart-empty-state-text">Ad-Blocker Disabled</span>
                             <span class="chart-empty-state-text small">Enable the Ad-Blocker to see blockrate trends.</span>
                         </div>
-                        {{ dns_unavailable_state('trend-chart-height' ~ (' d-none' if not dns_unavailable else '')) }}
+                        {{ dns_unavailable_state('trend-chart-height' ~ (' d-none' if not dns_unavailable else ''), 'trend-unavailable') }}
                     </div>
                 </div>
             </div>
         </div>
     </div>
     <div class="col-12 col-lg-6 d-flex">
-        <div class="card d-flex flex-column h-100 flex-grow-1">
+        <div class="card d-flex flex-column h-100 flex-grow-1 dns-log-card">
             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <h2 class="h5 mb-0 dns-card-title">
                     <span class="material-icons" aria-hidden="true">receipt_long</span>
@@ -199,30 +199,31 @@
             <div class="card-body p-0 flex-grow-1 d-flex flex-column log-card-body position-relative">
                 <div class="table-responsive flex-grow-1" id="log-table-wrap" aria-busy="true">
                     <table class="table table-hover log-table mb-0">
-                    <caption class="visually-hidden">DNS query log entries</caption>
-                    <thead class="sticky-top bg-body">
-                        <tr>
-                            <th class="log-col-time">Time</th>
-                            <th class="log-col-domain">Domain</th>
-                            <th class="log-col-type">Type</th>
-                        </tr>
-                    </thead>
-                    <tbody id="log-body">
-                        <tr class="log-empty-row">
-                            <td colspan="3" class="py-5">
-                                <div class="d-flex justify-content-center align-items-center">
-                                    <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading query log…</span></div>
-                                </div>
-                            </td>
-                        </tr>
-                    </tbody>
+                        <caption class="visually-hidden">DNS query log entries</caption>
+                        <thead class="sticky-top bg-body">
+                            <tr>
+                                <th class="log-col-time">Time</th>
+                                <th class="log-col-domain">Domain</th>
+                                <th class="log-col-type">Type</th>
+                            </tr>
+                        </thead>
+                        <tbody id="log-body">
+                            <tr class="log-empty-row">
+                                <td colspan="3" class="py-5">
+                                    <div class="d-flex justify-content-center align-items-center">
+                                        <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading query log…</span></div>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
                     </table>
                 </div>
                 <div id="log-action-menu" class="dropdown-menu"></div>
                 <!-- Screen reader announcement for search results -->
                 <div id="log-sr-announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+                <div id="log-row-action-help" class="visually-hidden">Press Enter or Space for rule actions.</div>
                 <!-- DNS unavailable overlay (z-index higher than sticky header) -->
-                {{ dns_unavailable_state('wb-empty-state-overlay bg-body' ~ (' d-none' if not dns_unavailable else '')) }}
+                {{ dns_unavailable_state('wb-empty-state-overlay bg-body' ~ (' d-none' if not dns_unavailable else ''), 'log-unavailable') }}
             </div>
         </div>
     </div>
@@ -230,7 +231,7 @@
 </div>
 
 <template id="log-row-template">
-    <tr aria-description="Press Enter for rule actions">
+    <tr aria-describedby="log-row-action-help">
         <td data-label="Time" class="text-muted log-col-time">
             <div class="log-time-stack">
                 <span class="log-time-date"></span>

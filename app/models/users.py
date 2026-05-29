@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, IPvAnyAddress, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, IPvAnyAddress, field_validator, model_validator
 
 # Username: 3-64 chars, starts/ends with alphanumeric, allows _ or - in middle
 _USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$")
@@ -78,6 +78,9 @@ def _validate_password_strength(v: str) -> str:
 	# Enforce minimum length for adequate entropy
 	if len(v) < _PASSWORD_MIN_LENGTH:
 		raise ValueError(f"Password must be at least {_PASSWORD_MIN_LENGTH} characters")
+
+	if any(ord(char) < 32 or ord(char) == 127 for char in v):
+		raise ValueError("Password must not contain control characters")
 	
 	if len(v.encode("utf-8")) > _PASSWORD_MAX_BYTES:
 		raise ValueError("Password must be at most 72 bytes")
@@ -120,7 +123,7 @@ class MFAVerifyRequest(BaseModel):
 	@field_validator("username")
 	@classmethod
 	def normalize_username(cls, v: str) -> str:
-		return _normalize_username(v)
+		return _validate_username(v)
 
 	@field_validator("code")
 	@classmethod
@@ -169,13 +172,12 @@ class OTPDisableRequest(BaseModel):
 
 	@field_validator("current_password")
 	@classmethod
-	def normalize_current_password(cls, v: str | None) -> str | None:
+	def validate_current_password(cls, v: str | None) -> str | None:
 		if v is None:
 			return v
-		normalized = v.strip()
-		if not normalized:
+		if not v:
 			raise ValueError("Current password cannot be empty")
-		return normalized
+		return v
 
 	@field_validator("code")
 	@classmethod
@@ -214,7 +216,7 @@ class RecoveryDownloadRequest(BaseModel):
 class TokenResponse(BaseModel):
 	"""Authentication token response."""
 	token: str
-	expires_at: datetime
+	expires_at: AwareDatetime
 	token_type: Literal["Bearer"] = "Bearer"
 
 
@@ -260,8 +262,8 @@ class UserPublic(BaseModel):
 	is_admin: bool
 	is_active: bool
 	otp_enabled: bool
-	created_at: datetime
-	last_login_at: datetime | None = None
+	created_at: AwareDatetime
+	last_login_at: AwareDatetime | None = None
 	last_login_ip: IPvAnyAddress | None = None
 
 
@@ -278,8 +280,7 @@ class PasswordChangeRequest(BaseModel):
 	@model_validator(mode="after")
 	def validate_passwords_differ(self) -> PasswordChangeRequest:
 		"""Ensure new password is different from current password."""
-		# Normalize before comparison (strip whitespace)
-		if self.current_password.strip() == self.new_password.strip():
+		if self.current_password == self.new_password:
 			raise ValueError("New password must be different from current password")
 		return self
 

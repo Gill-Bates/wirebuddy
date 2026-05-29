@@ -108,14 +108,23 @@ async def _run_blocking(
 ) -> _T:
 	"""Run blocking work in a thread, optionally with a timeout."""
 	call = partial(fn, *args, **kwargs)
-	worker = asyncio.to_thread(call)
+	worker = asyncio.create_task(asyncio.to_thread(call))
 	if timeout is None:
 		return await worker
 	try:
-		return await asyncio.wait_for(worker, timeout=timeout)
+		return await asyncio.wait_for(asyncio.shield(worker), timeout=timeout)
 	except TimeoutError as exc:
+		def _log_late_completion(task: asyncio.Task[_T]) -> None:
+			with suppress(asyncio.CancelledError):
+				err = task.exception()
+				if err is None:
+					_log.warning("BACKUP_OPERATION_COMPLETED_AFTER_TIMEOUT operation=%s", operation)
+				else:
+					_log.warning("BACKUP_OPERATION_FAILED_AFTER_TIMEOUT operation=%s error=%s", operation, err)
+
+		worker.add_done_callback(_log_late_completion)
 		_log.error("BACKUP_OPERATION_TIMEOUT operation=%s timeout=%ss", operation, timeout)
-		raise HTTPException(status_code=504, detail=f"Operation timed out: {operation}") from exc
+		raise HTTPException(status_code=504, detail=f"Operation still running: {operation}") from exc
 
 
 async def _open_db_connection(db_path: Path) -> sqlite3.Connection:
@@ -458,18 +467,17 @@ def _apply_restored_backup(data_dir: Path, db_path: Path, extracted_data: Path) 
 	except Exception as exc:
 		_log.error("Restore failed: %s. Attempting rollback...", exc)
 		try:
-			if BACKUP_DATABASE_NAME in restored_items:
+			rollback_db = rollback_dir / BACKUP_DATABASE_NAME
+			if rollback_db.exists():
 				if db_path.exists():
 					db_path.unlink()
-				rollback_db = rollback_dir / BACKUP_DATABASE_NAME
-				if rollback_db.exists():
-					shutil.move(str(rollback_db), str(db_path))
+				shutil.move(str(rollback_db), str(db_path))
 
 			for subdir in BACKUP_DIRECTORIES:
 				target_subdir = data_dir / subdir
 				rollback_subdir = rollback_dir / subdir
 
-				if subdir in restored_items and target_subdir.exists():
+				if rollback_subdir.exists() and target_subdir.exists():
 					shutil.rmtree(target_subdir)
 				if rollback_subdir.exists():
 					shutil.move(str(rollback_subdir), str(target_subdir))
@@ -738,6 +746,9 @@ async def create_backup(
 			media_type="application/gzip",
 			headers={
 				"Content-Disposition": f'attachment; filename="{filename}"',
+				"Cache-Control": "no-store",
+				"Pragma": "no-cache",
+				"X-Content-Type-Options": "nosniff",
 			},
 		)
 		tmp_path = None

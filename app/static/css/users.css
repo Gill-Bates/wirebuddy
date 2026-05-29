@@ -33,11 +33,13 @@
     flex-wrap: wrap;
 }
 
-/* Compact action buttons for table rows (v1.3.3 style) */
+/* Desktop row action buttons follow the shared semantic action-button sizing. */
 .users-action-btn {
-    min-width: 0;
-    min-height: 0;
-    padding: 0.2rem 0.35rem;
+    width: var(--wb-action-btn-size-sm);
+    height: var(--wb-action-btn-size-sm);
+    min-width: var(--wb-action-btn-size-sm);
+    min-height: var(--wb-action-btn-size-sm);
+    padding: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -45,7 +47,8 @@
 }
 
 .users-action-btn .material-icons {
-    font-size: 18px;
+    font-size: 1rem;
+    line-height: 1;
     pointer-events: none;
 }
 
@@ -83,19 +86,107 @@
     gap: 2px;
 }
 
+.geo-country-flag {
+    width: 1rem;
+    height: 0.75rem;
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .15);
+    object-fit: cover;
+    flex: 0 0 auto;
+}
+
 .login-time {
     white-space: nowrap;
 }
 
-.login-ip {
+.login-ip,
+.geo-ip-main {
     overflow-x: auto;
     max-width: 100%;
 }
 
-.login-ip code {
+.login-ip code,
+.geo-ip-main code {
     white-space: nowrap;
     font-size: 0.8rem;
     display: inline-block;
+}
+
+.last-login .geo-ip-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.last-login .geo-ip-main {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+}
+
+.last-login .geo-ip-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin-left: 1.35rem;
+    font-size: 0.75rem;
+    color: var(--bs-secondary-color);
+}
+
+.last-login .geo-country-flag {
+    width: 1rem;
+    height: 0.75rem;
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .15);
+    object-fit: cover;
+    flex: 0 0 auto;
+}
+
+.last-login .geo-ip-meta .geo-meta-provider {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.users-mobile-geo-value {
+    overflow: visible;
+}
+
+.users-mobile-geo-value .geo-ip-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.15rem;
+}
+
+.users-mobile-geo-value .geo-ip-main {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+    max-width: 100%;
+}
+
+.users-mobile-geo-value .geo-ip-meta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--bs-secondary-color);
+    text-align: right;
+}
+
+.users-mobile-geo-value .geo-country-flag {
+    flex: 0 0 auto;
+    width: 1.05rem;
+    height: 0.78rem;
+    border-radius: 0.2rem;
+    object-fit: cover;
+    border: 1px solid rgba(255, 255, 255, 0.16);
 }
 
 .users-mobile-actions {

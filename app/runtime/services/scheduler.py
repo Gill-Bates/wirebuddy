@@ -38,13 +38,13 @@ class SchedulerService(RuntimeService):
     """
 
     name = "scheduler"
-    dependencies = ["sqlite", "tsdb"]  # Needs DB and metrics storage
+    dependencies = ("sqlite", "tsdb")  # Needs DB and metrics storage
     start_timeout = 30.0
     stop_timeout = 10.0
 
     def __init__(self, config: Config) -> None:
         super().__init__()
-        del config
+        self._config = config
         self._scheduler: Scheduler | None = None
 
     @property
@@ -69,7 +69,8 @@ class SchedulerService(RuntimeService):
             await scheduler.start()
         except Exception:
             try:
-                await scheduler.stop_graceful(timeout=self.stop_timeout)
+                if scheduler.running:
+                    await scheduler.stop_graceful(timeout=self.stop_timeout)
             except Exception:
                 _log.exception("SCHEDULER_START_CLEANUP_FAILED")
             raise
@@ -106,7 +107,10 @@ class SchedulerService(RuntimeService):
             status = self._scheduler.get_status()
             health.details["scheduler_initialized"] = True
             health.details["task_count"] = len(status)
-            health.details["running"] = any(item["is_running"] for item in status)
+            health.details["running"] = any(
+                bool(item.get("is_running"))
+                for item in status
+            )
         except Exception:
             _log.exception("SCHEDULER_HEALTH_CHECK_FAILED")
             health.healthy = False

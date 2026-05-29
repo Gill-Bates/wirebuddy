@@ -194,12 +194,12 @@
         setBusy(submitBtn, 'Signing in...');
 
         try {
-            const data = await api('POST', '/api/login', { username, password }, {
+            const auth = await api('POST', '/api/login', { username, password }, {
                 timeoutMs: 15000,
                 skipAuthRedirect: true,
             });
 
-            if (data?.data?.mfa_required) {
+            if (auth?.mfa_required) {
                 if (typeof showMfaForm !== 'function') {
                     console.error('Login page: MFA required but MFA UI is unavailable');
                     showError('Multi-factor authentication is required but unavailable. Please reload the page.');
@@ -207,18 +207,24 @@
                 }
                 clearBusy(submitBtn, 'Sign In');
                 shouldResetBusy = false;
-                showMfaForm(username, data.data.mfa_token);
+                showMfaForm(auth.username || username, auth.mfa_token);
                 return;
             }
 
-            const nextUrl = data?.data?.otp_setup_pending ? '/ui/otp-setup'
-                : data?.data?.passkey_setup_pending ? '/ui/passkey-setup'
+            const nextUrl = auth?.otp_setup_pending ? '/ui/otp-setup'
+                : auth?.passkey_setup_pending ? '/ui/passkey-setup'
                     : '/ui/dashboard';
             shouldResetBusy = false;
             window.location.assign(nextUrl);
 
         } catch (error) {
-            if (error?.code === 'TIMEOUT' || error?.code === 'ABORTED' || error?.name === 'AbortError') {
+            if (error?.code === 'TIMEOUT') {
+                showError('Login request timed out. Please try again.');
+                return;
+            }
+
+            if (error?.code === 'ABORTED' || error?.name === 'AbortError') {
+                showError('Login request was cancelled. Please try again.');
                 return;
             }
 

@@ -117,12 +117,12 @@ Or access from your network using the server's IP address:
 http://YOUR_SERVER_IP:8000
 ```
 
-!!! success "Default Credentials"
+!!! success "Bootstrap Credentials"
     - **Username:** `admin`
-    - **Password:** `admin`
+    - **Password:** value of `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD`
 
 !!! danger "Security Warning"
-    Change the default password immediately after first login!
+    Change the bootstrap password immediately after first login!
 
 ## Step 7: Secure with Reverse Proxy (Recommended)
 

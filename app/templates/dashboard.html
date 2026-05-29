@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% from "macros/kpi.html" import kpi_card %}
 
 {% block title %}Dashboard – WireBuddy{% endblock %}
 
@@ -13,7 +12,7 @@
 <div id="wb-page-config" data-is-admin="{{ 'true' if user['is_admin'] else 'false' }}" class="d-none" aria-hidden="true"></div>
 <div class="container-fluid wb-page dashboard-page">
 <div class="wb-page-header">
-    <h2 class="page-title compact-title"><span class="material-icons me-2" aria-hidden="true">dashboard</span>Dashboard</h2>
+    <h1 class="page-title compact-title"><span class="material-icons me-2" aria-hidden="true">dashboard</span>Dashboard</h1>
 </div>
 <div class="dashboard-page-body">
 
@@ -23,32 +22,87 @@
     <div class="col-lg-4 col-12">
         <div class="dashboard-kpi-grid">
             <div class="dashboard-kpi-tile">
-                {{ kpi_card('hub', 'Nodes', 'nodes-count') }}
-            </div>
+                <div class="card dashboard-kpi-card h-100">
+                    <div class="card-body">
+                        <div class="dashboard-kpi-header">
+                            <span class="material-icons dashboard-kpi-icon" aria-hidden="true">hub</span>
+                            <div class="dashboard-kpi-title">Nodes</div>
+                        </div>
 
-            <div class="dashboard-kpi-tile">
-                {% call kpi_card('cell_tower', 'Connections', 'peers-count') %}
-                <p class="h3 mb-0 wb-kpi-value" id="peers-count">-</p>
-                <small class="text-muted wb-kpi-subtext" id="peers-count-label">Peers Online</small>
-                {% endcall %}
-            </div>
+                        <div class="dashboard-kpi-primary">
+                            <div class="dashboard-kpi-value" id="nodes-count">-</div>
+                        </div>
 
-            <div class="dashboard-kpi-tile">
-                {% call kpi_card('swap_vert', 'Traffic', 'total-rx') %}
-                <div class="dashboard-bandwidth dashboard-traffic-summary">
-                    <p class="h3 mb-0 dashboard-bandwidth-main dashboard-traffic-metric wb-kpi-value" id="total-rx">↓ -</p>
-                    <small class="text-muted dashboard-kpi-subtext dashboard-bandwidth-sub dashboard-traffic-metric" id="total-tx">↑ -</small>
+                        <div class="dashboard-kpi-caption">Online</div>
+                    </div>
                 </div>
-                {% endcall %}
             </div>
 
             <div class="dashboard-kpi-tile">
-                {% call kpi_card('speed', 'Bandwidth', 'speedtest-download') %}
-                <div class="dashboard-bandwidth">
-                    <p class="h3 mb-0 dashboard-bandwidth-main wb-kpi-value" id="speedtest-download">–</p>
-                    <small class="text-muted dashboard-kpi-subtext dashboard-bandwidth-sub" id="speedtest-upload"></small>
+                <div class="card dashboard-kpi-card h-100">
+                    <div class="card-body">
+                        <div class="dashboard-kpi-header">
+                            <span class="material-icons dashboard-kpi-icon" aria-hidden="true">cell_tower</span>
+                            <div class="dashboard-kpi-title">Connections</div>
+                        </div>
+
+                        <div class="dashboard-kpi-primary">
+                            <div class="dashboard-kpi-value" id="peers-count">-</div>
+                        </div>
+
+                        <div class="dashboard-kpi-caption" id="peers-count-label">Peers Online</div>
+                    </div>
                 </div>
-                {% endcall %}
+            </div>
+
+            <div class="dashboard-kpi-tile">
+                <div class="card dashboard-kpi-card h-100">
+                    <div class="card-body">
+                        <div class="dashboard-kpi-header">
+                            <span class="material-icons dashboard-kpi-icon" aria-hidden="true">swap_vert</span>
+                            <div class="dashboard-kpi-title">Traffic</div>
+                        </div>
+
+                        <div class="dashboard-kpi-stack">
+                            <div class="dashboard-kpi-metric dashboard-kpi-metric--down">
+                                <div class="dashboard-kpi-metric-value" id="total-rx">↓ -</div>
+                                <div class="dashboard-kpi-metric-label">Downloaded</div>
+                            </div>
+
+                            <div class="dashboard-kpi-separator" aria-hidden="true"></div>
+
+                            <div class="dashboard-kpi-metric dashboard-kpi-metric--up">
+                                <div class="dashboard-kpi-metric-value" id="total-tx">↑ -</div>
+                                <div class="dashboard-kpi-metric-label">Uploaded</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dashboard-kpi-tile">
+                <div class="card dashboard-kpi-card h-100">
+                    <div class="card-body">
+                        <div class="dashboard-kpi-header">
+                            <span class="material-icons dashboard-kpi-icon" aria-hidden="true">speed</span>
+                            <div class="dashboard-kpi-title">Bandwidth</div>
+                        </div>
+
+                        <div class="dashboard-kpi-stack">
+                            <div class="dashboard-kpi-metric dashboard-kpi-metric--down">
+                                <div class="dashboard-kpi-metric-value" id="speedtest-download">–</div>
+                                <div class="dashboard-kpi-metric-label">Download</div>
+                            </div>
+
+                            <div class="dashboard-kpi-separator" aria-hidden="true"></div>
+
+                            <div class="dashboard-kpi-metric dashboard-kpi-metric--up">
+                                <div class="dashboard-kpi-metric-value" id="speedtest-upload">–</div>
+                                <div class="dashboard-kpi-metric-label">Upload</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -66,7 +120,7 @@
                 </div>
             </div>
             <div class="card-body d-flex flex-column">
-                <div id="network-gauges-container" class="network-gauges-grid w-100 flex-grow-1">
+                <div id="network-gauges-container" class="network-gauges-grid w-100 flex-grow-1" tabindex="0" aria-label="Network gauges">
                     <div class="text-center py-3">
                         <div class="spinner-border spinner-border-sm text-primary" role="status">
                             <span class="visually-hidden">Loading network stats...</span>
@@ -159,7 +213,7 @@
                     Recent Peer Activity
                 </h3>
             </div>
-            <div class="card-body flex-grow-1" data-ui-lint-allow="nested-scroll">
+            <div class="card-body flex-grow-1" data-ui-lint-allow="nested-scroll" tabindex="0" aria-label="Recent peer activity list">
                 <div id="recent-peers">
                     <div class="text-center py-4">
                         <div class="spinner-border text-primary" role="status">

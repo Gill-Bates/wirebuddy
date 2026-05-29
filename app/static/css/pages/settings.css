@@ -283,11 +283,11 @@
 
 #settingsTabs .nav-link:hover,
 #settingsTabs .nav-link:focus {
-    color: var(--wb-accent-red);
+    color: var(--wb-accent-red-strong);
 }
 
 #settingsTabs .nav-link.active {
-    color: var(--wb-accent-red);
+    color: var(--wb-accent-red-strong);
     font-weight: 600;
 }
 
@@ -298,7 +298,7 @@
 [data-bs-theme="dark"] #settingsTabs .nav-link:hover,
 [data-bs-theme="dark"] #settingsTabs .nav-link:focus,
 [data-bs-theme="dark"] #settingsTabs .nav-link.active {
-    color: var(--wb-accent-red);
+    color: var(--wb-accent-red-strong);
 }
 
 .blocklist-hero-grid {
@@ -406,7 +406,7 @@
 }
 
 [data-bs-theme="dark"] .settings-danger-label {
-    color: var(--wb-danger-strong) !important;
+    color: var(--wb-accent-red-strong) !important;
 }
 
 .settings-header-actions {

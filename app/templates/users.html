@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "macros/geo.html" import geo_ip_stack %}
 
 {% block title %}Users – WireBuddy{% endblock %}
 
@@ -132,15 +133,9 @@
                                 {% if u['last_login_ip'] %}
                                 <div class="users-mobile-meta">
                                     <span class="users-mobile-meta-label">IP:</span>
-                                    <span class="users-mobile-meta-value users-mobile-ip-value">
-                                        {% if u['last_login_country_code'] %}
-                                        <img class="users-mobile-ip-flag flag-icon flag-icon-sm" alt="{{ u['last_login_country_code']|upper }} flag"
-                                            src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ u['last_login_country_code'] }}.svg">
-                                        {% else %}
-                                        <span class="material-icons users-mobile-ip-flag users-mobile-ip-flag-fallback" aria-hidden="true">public</span>
-                                        {% endif %}
-                                        <code class="ipv6">{{ (u['last_login_ip'] or '').replace(':', ':&#8203;').replace('/', '/&#8203;') }}</code>
-                                    </span>
+                                    <div class="users-mobile-meta-value users-mobile-geo-value">
+                                        {{ geo_ip_stack(u['last_login_ip'], u['last_login_country_code'], u['last_login_city'], u['last_login_as_org']) }}
+                                    </div>
                                 </div>
                                 {% endif %}
 
@@ -169,9 +164,7 @@
                             <div class="last-login">
                                 <div class="login-time">{{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }}</div>
                                 {% if u['last_login_ip'] %}
-                                <div class="login-ip">
-                                    <code class="ipv6">{{ (u['last_login_ip'] or '').replace(':', ':\u200b').replace('/', '/\u200b') }}</code>
-                                </div>
+                                {{ geo_ip_stack(u['last_login_ip'], u['last_login_country_code'], u['last_login_city'], u['last_login_as_org']) }}
                                 {% endif %}
                             </div>
                             {% else %}
@@ -184,6 +177,7 @@
                                 <button type="button" class="btn btn-sm btn-outline-secondary btn-edit-user users-action-btn"
                                     data-user-id="{{ u['id'] }}"
                                     data-username="{{ u['username'] }}"
+                                    aria-label="Edit user {{ u['username'] }}"
                                     data-bs-toggle="tooltip" data-bs-title="Edit User">
                                     <span class="material-icons icon-md" aria-hidden="true">edit</span>
                                 </button>
@@ -193,6 +187,7 @@
                                     data-username="{{ u['username'] }}"
                                     data-otp-enabled="{{ 'true' if u['otp_enabled'] else 'false' }}"
                                     data-otp-secret="{{ 'true' if u['otp_secret'] else 'false' }}"
+                                    aria-label="Open OTP settings for {{ u['username'] }}"
                                     data-bs-toggle="tooltip" data-bs-title="OTP Settings">
                                     <span class="material-icons icon-md" aria-hidden="true">security</span>
                                 </button>
@@ -200,6 +195,7 @@
                                     id="passkey-settings-btn-{{ u['id'] }}"
                                     data-user-id="{{ u['id'] }}"
                                     data-username="{{ u['username'] }}"
+                                    aria-label="Open passkey settings for {{ u['username'] }}"
                                     data-bs-toggle="tooltip" data-bs-title="Passkey Settings">
                                     <span class="material-icons icon-md" aria-hidden="true">fingerprint</span>
                                 </button>
@@ -207,6 +203,7 @@
                                 <button type="button" class="btn btn-sm btn-outline-danger btn-delete-user users-action-btn"
                                     data-user-id="{{ u['id'] }}"
                                     data-username="{{ u['username'] }}"
+                                    aria-label="Delete user {{ u['username'] }}"
                                     data-bs-toggle="tooltip" data-bs-title="Delete User">
                                     <span class="material-icons icon-md" aria-hidden="true">delete</span>
                                 </button>

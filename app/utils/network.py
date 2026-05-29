@@ -19,6 +19,7 @@ __all__ = [
 ]
 
 _log = logging.getLogger(__name__)
+_MAX_DNS_SERVERS_FOR_ROUTES = 16
 
 
 def _split_comma_separated(value: str | None) -> list[str]:
@@ -105,17 +106,18 @@ def allowed_ips_with_dns_routes(
 
     items = _split_comma_separated(allowed_ips)
 
-    # Parse existing networks once; ignore malformed entries but keep them as-is.
+    # Parse existing networks once and fail fast on malformed entries.
     index = _NetworkIndex()
     for entry in items:
         try:
             network = ipaddress.ip_network(entry, strict=False)
-        except ValueError:
-            _log.warning("ALLOWED_IPS_MALFORMED entry=%r (kept as-is)", entry)
-            continue
+        except ValueError as exc:
+            raise ValueError(f"Malformed AllowedIPs entry: {entry!r}") from exc
         index.add(network)
 
     dns_items = _split_comma_separated(dns_servers)
+    if len(dns_items) > _MAX_DNS_SERVERS_FOR_ROUTES:
+        raise ValueError("Too many DNS servers for route injection")
     new_routes: list[str] = []
     for dns in dns_items:
         ip_obj = parse_ip(_strip_dns_decorators(dns))

@@ -35,32 +35,40 @@
     // API Helper
     // ============================================================================
 
-    async function api(method, url, body = null) {
-        const opts = {
-            method,
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRF-Token': csrfToken,
-            },
-            credentials: 'same-origin',
-        };
-        if (body) opts.body = JSON.stringify(body);
-        const resp = await fetch(url, opts);
-        let json;
+    async function api(method, url, body = null, timeoutMs = 15000) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
         try {
-            json = await resp.json();
-        } catch {
-            throw new Error('Server error. Please try again.');
+            const opts = {
+                method,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': csrfToken,
+                },
+                credentials: 'same-origin',
+                signal: controller.signal,
+            };
+            if (body) opts.body = JSON.stringify(body);
+            const resp = await fetch(url, opts);
+            let json;
+            try {
+                json = await resp.json();
+            } catch {
+                throw new Error('Server error. Please try again.');
+            }
+            if (!resp.ok) {
+                const detail = json?.detail || 'Request failed';
+                // Only pass through safe error messages
+                const safeDetail = typeof detail === 'string' && detail.length < 200
+                    ? detail
+                    : 'Request failed. Please try again.';
+                throw new Error(safeDetail);
+            }
+            return json.data;
+        } finally {
+            clearTimeout(timeoutId);
         }
-        if (!resp.ok) {
-            const detail = json?.detail || 'Request failed';
-            // Only pass through safe error messages
-            const safeDetail = typeof detail === 'string' && detail.length < 200
-                ? detail
-                : 'Request failed. Please try again.';
-            throw new Error(safeDetail);
-        }
-        return json.data;
     }
 
     // ============================================================================

@@ -88,11 +88,11 @@
 .adblocker-dropdown .btn[class*="btn-adblocker-"] {
     background-color: var(--btn-color);
     border-color: var(--btn-color);
-    color: #fff;
+    color: var(--bs-white);
 }
 
-.adblocker-dropdown .btn[class*="btn-adblocker-"]:hover,
-.adblocker-dropdown .btn[class*="btn-adblocker-"]:focus {
+.adblocker-dropdown .btn[class*="btn-adblocker-"]:not(:disabled):hover,
+.adblocker-dropdown .btn[class*="btn-adblocker-"]:not(:disabled):focus {
     filter: brightness(0.9);
 }
 
@@ -103,7 +103,7 @@
 
 .adblocker-dropdown .dropdown-item.active {
     background-color: var(--bs-primary);
-    color: #fff;
+    color: var(--bs-white);
 }
 
 .adblocker-countdown {
@@ -127,7 +127,7 @@
    Typography Scale (DNS page)
    Use these instead of magic numbers for consistent sizing
    ========================================================================== */
-:root {
+.dns-page {
     --dns-font-2xs: 0.65rem;
     /* tiny labels, badges */
     --dns-font-xs: 0.72rem;
@@ -299,20 +299,35 @@
 }
 
 
-.material-icons-18 {
-    font-size: 18px !important;
+.dns-page .material-icons-18 {
+    font-size: 1.125rem;
 }
 
 .log-card-body {
     flex: 1 1 auto;
     height: 100%;
     min-height: 0;
-    /* verhindert flex collapse auf iOS */
+    /* Prevent flex collapse on iOS. */
     position: relative;
     /* contain scroll - overlay uses position:absolute with inset:0 */
     overflow: hidden;
     display: flex;
     flex-direction: column;
+}
+
+/* Hide table and show unavailable overlay when DNS is unavailable */
+.log-card-body.dns-log-unavailable #log-table-wrap,
+.log-card-body.dns-log-unavailable #log-action-menu {
+    display: none;
+}
+
+.log-card-body.dns-log-unavailable #log-unavailable {
+    position: static !important;
+    inset: auto !important;
+    z-index: auto !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 12rem;
 }
 
 /* Removed - log-search is now in card header */
@@ -326,75 +341,11 @@
     transition: opacity 0.2s ease;
 }
 
-.top-domain-content {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-}
-
-.top-domain-chart-wrap {
-    --donut-size: clamp(120px, 14vw, 160px);
-    width: var(--donut-size);
-    height: var(--donut-size);
-    flex-shrink: 0;
-}
-
-/* Chart wrapper shared styles */
-#top-queried-chart-wrap,
-#top-blocked-chart-wrap {
-    width: 100%;
-    height: 100%;
-    max-height: 280px;
-}
-
-/* Custom chart legend with badges */
-.custom-chart-legend {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    width: 100%;
-    max-height: 100px;
-    overflow-y: auto;
-    font-size: var(--dns-font-xs);
-    padding: 0 4px;
-}
-
-.custom-chart-legend .legend-item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-}
-
-.custom-chart-legend .legend-dot {
-    flex-shrink: 0;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-}
-
-.custom-chart-legend .legend-label {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.custom-chart-legend .badge {
-    flex-shrink: 0;
-    font-size: calc(var(--dns-font-2xs) - 0.05rem);
-    padding: 1px 4px;
-}
-
 #log-table-wrap {
+    --dns-log-height: auto;
     flex: 1 1 auto;
     min-height: 0;
-    /* CRITICAL: verhindert iOS collapse */
+    /* Critical: prevent iOS collapse. */
     display: block;
     overflow: auto;
     overscroll-behavior: contain;
@@ -420,10 +371,6 @@
         flex: 1 1 0;
     }
 
-    .log-filters-container {
-        flex-wrap: nowrap !important;
-    }
-
     .log-table th.log-col-time,
     .log-table td.log-col-time {
         width: 6rem;
@@ -444,33 +391,6 @@
         height: clamp(250px, 31vh, 340px);
     }
 
-    .top-domain-chart-wrap {
-        --donut-size: clamp(140px, 12vw, 180px);
-    }
-
-    #top-queried-chart-wrap {
-        max-height: 300px;
-    }
-
-    .custom-chart-legend {
-        max-height: 120px;
-    }
-
-}
-
-.dns-ctrl-btn {
-    background: transparent;
-    border: 1px solid #6c757d;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-}
-
-.dns-ctrl-btn:hover:not(:disabled) {
-    background: rgba(0, 0, 0, 0.04);
-    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
-}
-
-.dns-ctrl-btn:disabled {
-    opacity: 0.5;
 }
 
 @media (max-width: 991.98px) {
@@ -498,34 +418,6 @@
         gap: 0.35rem;
     }
 
-    .dns-toolbar>button,
-    .dns-toolbar>#dns-controls {
-        width: auto;
-    }
-
-    .dns-toolbar>button {
-        min-width: 2.25rem;
-        padding: 0.25rem 0.4rem;
-    }
-
-    .dns-toolbar>#dns-controls {
-        display: flex !important;
-        gap: 0.35rem !important;
-    }
-
-    .dns-toolbar .dns-ctrl-btn {
-        padding: 0.25rem 0.4rem;
-        min-width: 2.25rem;
-    }
-
-    .dns-toolbar .dns-ctrl-btn .btn-label {
-        display: none;
-    }
-
-    .dns-toolbar .dns-ctrl-btn .material-icons {
-        margin: 0 !important;
-    }
-
     .dns-header+.mb-4 {
         margin-bottom: 0.75rem !important;
     }
@@ -537,7 +429,7 @@
             iOS Safari / WebKit collapses the card-body to 0 and clips it.
        FIX: Use auto height with min-height; ensure flex children can shrink.
        ------------------------------------------------------------------------- */
-    .wb-main-grid .col-12.col-lg-6>.card.h-100.d-flex.flex-column {
+    .dns-log-card {
         height: auto;
         min-height: 300px;
         min-height: min(300px, 50dvh);
@@ -559,23 +451,6 @@
         min-height: 0;
         display: flex;
         flex-direction: column;
-    }
-
-    .top-domain-content {
-        gap: 0.5rem;
-    }
-
-    .top-domain-chart-wrap {
-        --donut-size: clamp(100px, 28vw, 140px);
-    }
-
-    #top-queried-chart-wrap {
-        max-height: 240px;
-    }
-
-    .custom-chart-legend {
-        max-height: 80px;
-        font-size: 0.68rem;
     }
 
     #log-table-wrap {
@@ -621,79 +496,63 @@
 
     .log-table th,
     .log-table td {
-        display: table-cell;
-        border: 0;
-        padding: 0.3rem 0.45rem;
+        --dns-log-height: 60dvh;
+        /* dvh = dynamic viewport height for mobile address bars */
+        height: var(--dns-log-height);
         vertical-align: top;
     }
 
-    .log-table th.log-col-time,
-    .log-table td.log-col-time {
-        width: 5.5rem;
-        min-width: 5.5rem;
-        white-space: nowrap;
-    }
+    font-size: 0.7rem;
+}
 
-    .log-time-stack {
-        line-height: 1.2;
-    }
+.log-table th.log-col-type,
+.log-table td.log-col-type {
+    width: 3rem;
+    min-width: 3rem;
+    white-space: nowrap;
+    text-align: left;
+}
 
-    .log-time-date {
-        font-size: 0.75rem;
-    }
-
-    .log-time-clock {
-        font-size: 0.7rem;
-    }
-
-    .log-table th.log-col-type,
-    .log-table td.log-col-type {
-        width: 3rem;
-        min-width: 3rem;
-        white-space: nowrap;
-        text-align: left;
-    }
-
-    .log-table th.log-col-domain,
-    .log-table td[data-label="Domain"] {
-        width: auto;
-    }
+.log-table th.log-col-domain,
+.log-table td[data-label="Domain"] {
+    width: auto;
+}
 
 
 
-    .log-table td::before {
-        content: none;
-    }
+.log-table td::before {
+    content: none;
+}
 
-    .log-table td>* {
-        margin-left: 0;
-        text-align: left;
-        max-width: 100%;
-    }
+.log-table td>* {
+    margin-left: 0;
+    text-align: left;
+    max-width: 100%;
+}
 
-    .log-table td .log-domain {
-        display: block;
-        line-height: 1.2;
-        font-size: 0.75rem;
-        overflow-wrap: anywhere;
-    }
+.log-table td .log-domain {
+    display: block;
+    line-height: 1.2;
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
+}
 
-    .log-domain-stack {
-        line-height: 1.2;
-    }
+.log-domain-stack {
+    line-height: 1.2;
+}
 
-    .log-domain-client {
-        display: block;
-        font-size: 0.72rem;
-        line-height: 1.2;
-    }
+.log-domain-client {
+    display: block;
+    font-size: 0.72rem;
+    line-height: 1.2;
+}
 
 
 
-    .log-table td code {
-        font-size: 0.72rem;
-        white-space: nowrap;
-    }
+.log-table td code {
+    font-size: 0.72rem;
+    white-space: nowrap;
+}
 
 }
 
@@ -781,6 +640,15 @@
     .log-domain-client {
         font-size: 0.74rem;
     }
+
+    .log-card-body.dns-log-unavailable {
+        height: auto;
+        min-height: 0;
+    }
+
+    .log-card-body.dns-log-unavailable #log-unavailable {
+        min-height: 10rem;
+    }
 }
 
 .top-domain-card-fading {
@@ -794,7 +662,7 @@
     padding: 0.15em 0.45em;
     vertical-align: middle;
     background-color: var(--bs-purple);
-    color: #fff;
+    color: var(--bs-white);
     border-radius: 0.25rem;
     white-space: nowrap;
 }
@@ -804,17 +672,16 @@
 }
 
 /* ==========================================================================
-   iOS Safari Workarounds (Query Log Table)
+   WebKit touch workarounds (Query Log Table)
    
    Keep the real scroll container on #log-table-wrap for reliable
-   height calculation on iOS Safari.
-   
-   DETECTION: -webkit-touch-callout is iOS-only (not macOS Safari)
+   height calculation on touch-oriented WebKit layouts.
+   Do not treat this as a general Safari detector.
    ========================================================================== */
 @supports (-webkit-touch-callout: none) {
-    @media (max-width: 991.98px) {
+    @media (hover: none) and (pointer: coarse) and (max-width: 991.98px) {
         .log-card-body {
-            min-height: 280px !important;
+            min-height: 280px;
             height: auto;
             -webkit-box-flex: 1;
             -webkit-flex: 1 1 auto;
@@ -822,32 +689,16 @@
         }
 
         #log-table-wrap {
-            flex: none;
-            height: 50vh !important;
-            height: 50dvh !important;
-            min-height: 0 !important;
-            overflow-y: auto !important;
-        }
-
-        .log-table {
-            display: table !important;
-            width: 100% !important;
-        }
-
-        .log-table tbody tr {
-            display: table-row !important;
-            height: auto !important;
-            visibility: visible !important;
-        }
-
-        .log-table td {
-            display: table-cell !important;
+            --dns-log-height: 50dvh;
+            overflow-y: auto;
         }
     }
 
-    #log-table-wrap {
-        touch-action: pan-y;
-        -webkit-overflow-scrolling: touch;
+    @media (hover: none) and (pointer: coarse) {
+        #log-table-wrap {
+            touch-action: pan-y;
+            -webkit-overflow-scrolling: touch;
+        }
     }
 }
 
@@ -855,8 +706,3 @@
 #log-table-wrap.table-responsive {
     display: block;
 }
-
-/* ==========================================================================
-   Flex + Scroll Fix - Removed conflicting min-height: 0 rules
-   Tables need explicit min-height > 0 to prevent iOS Safari collapse
-   ========================================================================== */

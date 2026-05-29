@@ -12,6 +12,25 @@
     let submitting = false;
     let recoveryZipDownloaded = false;
 
+    /**
+     * Sanitize a filename from Content-Disposition header.
+     * Removes control characters, path separators, and limits length.
+     */
+    function sanitizeDownloadFilename(name, fallback) {
+        const cleaned = String(name || '')
+            .replace(/[\\/\x00-\x1F\x7F]/g, '_')
+            .trim()
+            .slice(0, 160);
+        return cleaned && !/^\.+$/.test(cleaned) ? cleaned : fallback;
+    }
+
+    /**
+     * Validate a QR code data URL - only allow PNG or SVG base64 data URIs.
+     */
+    function isSafeQrDataUrl(value) {
+        return /^data:image\/(png|svg\+xml);base64,/i.test(String(value || ''));
+    }
+
     async function api(method, url, body = null) {
         const opts = {
             method,
@@ -59,6 +78,9 @@
     async function loadSetup() {
         try {
             const data = await api('GET', '/api/me/otp/setup');
+            if (!isSafeQrDataUrl(data.qr_code_data_url)) {
+                throw new Error('Invalid QR code image received');
+            }
             document.getElementById('otp-qr-image').src = data.qr_code_data_url;
             document.getElementById('otp-secret').value = data.secret;
             hideElement(document.getElementById('qr-loading'));
@@ -212,7 +234,10 @@
             const match = disposition.match(/filename="([^"]+)"/i);
             const safeUsername = (username || 'user').replace(/[^a-zA-Z0-9_-]/g, '_');
             const fallback = `wirebuddy-recovery-codes-${safeUsername}.zip`;
-            const filename = match && match[1] ? match[1] : fallback;
+            const filename = sanitizeDownloadFilename(
+                match && match[1] ? match[1] : fallback,
+                fallback,
+            );
 
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');

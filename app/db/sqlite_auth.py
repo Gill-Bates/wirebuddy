@@ -259,11 +259,15 @@ def record_failed_login(conn: sqlite3.Connection, ip_address: str, username: str
 	with transaction(conn, immediate=True):
 		for key, policy in _build_attempt_keys(ip_address, username):
 			cur = conn.execute(
-				"SELECT failed_count FROM login_attempts WHERE ip_address = ?",
+				"SELECT failed_count, last_attempt_at FROM login_attempts WHERE ip_address = ?",
 				(key,),
 			)
 			row = cur.fetchone()
-			current_count = int(row["failed_count"] if row else 0)
+			current_count = 0
+			if row is not None:
+				last_attempt_at = _parse_db_timestamp(row["last_attempt_at"])
+				if last_attempt_at is not None and now - last_attempt_at <= timedelta(seconds=policy.max_seconds):
+					current_count = int(row["failed_count"] or 0)
 			new_count = current_count + 1
 			lockout_seconds = _calculate_lockout_seconds(new_count, policy)
 			locked_until = now + timedelta(seconds=lockout_seconds) if lockout_seconds > 0 else None

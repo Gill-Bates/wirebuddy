@@ -18,7 +18,6 @@ from .db.sqlite_interfaces import (
 	list_interfaces,
 )
 from .db.sqlite_peers import (
-	get_peer_by_public_key,
 	get_all_peers,
 )
 from .db.sqlite_runtime import (
@@ -84,6 +83,7 @@ from .api import nodes_sync as nodes_sync_api
 from .db import tsdb
 from .dns import unbound
 from .dns import ingestion as dns_ingestion
+from .dns.unbound_constants import atomic_write_text
 from .node.events import NodeEventBus
 from .node.notifier import configure_event_bus
 from .utils import migration
@@ -111,6 +111,9 @@ class LifespanContext:
 	peer_connection_state: OrderedDict[str, bool] = field(default_factory=OrderedDict)
 	dns_service_enabled: bool = False
 	dns_config_ready: bool = False
+	dns_config_error: str | None = None
+	dns_ingestion_expected: bool = False
+	unbound_started_by_app: bool = False
 	scheduler: Scheduler | None = None
 	dns_task: asyncio.Task[None] | None = None
 
@@ -147,6 +150,11 @@ _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS = 300.0
 _APP_SHUTDOWN_TIMEOUT_SECONDS = 30.0
 _PREPARED_RECORD_ATTR = "_wirebuddy_prepared"
 _WG_OPERATION_LOCK: asyncio.Lock | None = None
+_AUTO_CLEANUP_STALE_INTERFACES = os.getenv(
+	"WIREBUDDY_CLEANUP_STALE_INTERFACES",
+	"",
+).strip().lower() in {"1", "true", "yes"}
+_FORCE_HSTS = os.getenv("WIREBUDDY_FORCE_HSTS", "").strip().lower() in {"1", "true", "yes"}
 
 
 def _get_wg_operation_lock() -> asyncio.Lock:
@@ -165,10 +173,7 @@ def _make_shutdown_handler(
 	"""Build a signal handler that preserves the previous handler chain."""
 	def _handler(signum: int, frame: object) -> None:
 		loop.call_soon_threadsafe(shutdown_event.set)
-		if previous_handler in (None, signal.SIG_DFL, signal.SIG_IGN):
-			return
-		if previous_handler is signal.default_int_handler:
-			previous_handler(signum, frame)
+		if previous_handler in (None, signal.SIG_DFL, signal.SIG_IGN, signal.default_int_handler):
 			return
 		if callable(previous_handler):
 			previous_handler(signum, frame)
@@ -251,14 +256,15 @@ async def _verify_host_network_mode() -> None:
 	try:
 		res = await run_command("ip", "route", "show", "default", timeout=5.0)
 		if res.returncode != 0:
-			_log.warning("Could not verify network mode: 'ip route' exit code %s", res.returncode)
-			return
+			raise StartupFatalError(f"Cannot verify Docker network mode: 'ip route' exit code {res.returncode}")
 
 		routes = res.stdout
+		saw_default_route = False
 		for line in routes.splitlines():
 			parts = line.split()
 			if len(parts) < 3 or parts[0] != "default" or "via" not in parts:
 				continue
+			saw_default_route = True
 			via_idx = parts.index("via")
 			if via_idx + 1 >= len(parts):
 				continue
@@ -272,14 +278,22 @@ async def _verify_host_network_mode() -> None:
 					"WireBuddy requires Docker host networking mode. "
 					"Set 'network_mode: host' in your Docker configuration and try again."
 				)
-				raise SystemExit(1)
+				raise StartupFatalError("WireBuddy requires Docker host networking mode")
 
-	except FileNotFoundError:
-		_log.warning("'ip' command not found, cannot verify network mode")
-	except asyncio.TimeoutError:
-		_log.warning("Timeout checking network mode")
+		if not saw_default_route:
+			raise StartupFatalError("Cannot verify Docker network mode: no default route found")
+
+	except StartupFatalError:
+		raise
+	except FileNotFoundError as exc:
+		_log.critical("'ip' command not found, cannot verify Docker network mode")
+		raise StartupFatalError("Cannot verify Docker network mode") from exc
+	except asyncio.TimeoutError as exc:
+		_log.critical("Timeout checking Docker network mode")
+		raise StartupFatalError("Cannot verify Docker network mode") from exc
 	except Exception as exc:
-		_log.warning("Could not verify network mode: %s", exc)
+		_log.critical("Could not verify Docker network mode: %s", exc)
+		raise StartupFatalError("Cannot verify Docker network mode") from exc
 
 
 async def _cleanup_stale_interfaces() -> list[str]:
@@ -291,6 +305,12 @@ async def _cleanup_stale_interfaces() -> list[str]:
 	"""
 	removed: list[str] = []
 	config_path = WG_CONFIG_PATH
+	if not _AUTO_CLEANUP_STALE_INTERFACES:
+		_log.info(
+			"Stale WireGuard interface cleanup disabled; set "
+			"WIREBUDDY_CLEANUP_STALE_INTERFACES=1 to enable destructive cleanup"
+		)
+		return removed
 
 	try:
 		# Get list of active WireGuard interfaces from kernel
@@ -314,9 +334,10 @@ async def _cleanup_stale_interfaces() -> list[str]:
 				continue  # Has config, not orphaned
 
 			# Orphaned interface: active but no config file
-			_log.info(
-				"CLEANUP_STALE_INTERFACE name=%s (active in kernel but no config file)",
+			_log.warning(
+				"CLEANUP_STALE_INTERFACE deleting interface name=%s because no config exists at %s",
 				iface_name,
+				conf_file,
 			)
 			try:
 				# Delete the interface
@@ -424,13 +445,22 @@ class _ColoredFormatter(_HumanizedFormatter):
 def _extract_gateways(interfaces: list) -> tuple[list[str], list[str]]:
 	"""Extract unique IPv4 and IPv6 gateways from a list of interfaces."""
 	from .dns import unbound
-	listen_addrs_ipv4 = []
+	listen_addrs_ipv4: list[str] = []
 	for iface in interfaces:
 		addr4 = _get_addr_field(iface, "address")
-		if addr4:
-			ip4 = str(addr4).split("/")[0]
-			if ip4 not in listen_addrs_ipv4:
-				listen_addrs_ipv4.append(ip4)
+		if not addr4:
+			continue
+		raw_ip = str(addr4).split("/", 1)[0].strip()
+		try:
+			ip = ipaddress.ip_address(raw_ip)
+		except ValueError:
+			_log.warning("Ignoring invalid interface IPv4 address: %r", addr4)
+			continue
+		if ip.version != 4:
+			continue
+		ip4 = str(ip)
+		if ip4 not in listen_addrs_ipv4:
+			listen_addrs_ipv4.append(ip4)
 	return listen_addrs_ipv4, unbound.get_interface_ipv6_gateways(interfaces)
 
 
@@ -610,7 +640,10 @@ def _ensure_dns_offset_path_sync(data_dir: Path) -> Path:
 	legacy_offset_path = data_dir / "runtime" / "dns_tail.offset"
 	if not offset_path.exists() and legacy_offset_path.exists():
 		try:
-			offset_path.write_text(legacy_offset_path.read_text(encoding="utf-8"), encoding="utf-8")
+			atomic_write_text(
+				offset_path,
+				legacy_offset_path.read_text(encoding="utf-8"),
+			)
 			legacy_offset_path.unlink(missing_ok=True)
 			legacy_runtime_dir = legacy_offset_path.parent
 			if legacy_runtime_dir.exists() and not any(legacy_runtime_dir.iterdir()):
@@ -663,7 +696,9 @@ def _with_conn_or(db_path: Path, fn: Callable, *args, default=None, **kwargs):
 		return _with_conn(db_path, fn, *args, **kwargs)
 	except sqlite3.DatabaseError:
 		raise
-	except (OSError, RuntimeError, ValueError) as exc:
+	except ValueError:
+		raise
+	except (OSError, RuntimeError) as exc:
 		_log.warning("%s failed, returning default: %s", fn.__name__, exc)
 		return default
 
@@ -735,11 +770,13 @@ def _read_country_traffic_inputs_sync(db_path: Path) -> tuple[bool, dict[str, st
 
 def _load_peer_identity_map_sync(db_path: Path, public_keys: list[str]) -> dict[str, tuple[str, str]]:
 	"""Resolve peer name/interface by public key synchronously."""
+	wanted = set(public_keys)
+
 	def _resolve(conn) -> dict[str, tuple[str, str]]:
 		result: dict[str, tuple[str, str]] = {}
-		for public_key in public_keys:
-			peer_row = get_peer_by_public_key(conn, public_key)
-			if peer_row:
+		for peer_row in get_all_peers(conn):
+			public_key = peer_row["public_key"]
+			if public_key in wanted:
 				result[public_key] = (peer_row["name"], peer_row["interface"])
 		return result
 	
@@ -814,6 +851,8 @@ async def _reload_unbound_for_adblocker_async(db_path: Path) -> None:
 		await _unbound.reload_config()
 	except Exception:
 		_log.warning("ADBLOCKER_TIMER failed to reload Unbound", exc_info=True)
+
+
 def _sqlite_shutdown_sync(db_path: Path) -> tuple[dict[str, int | str | None], int]:
 	"""Run SQLite checkpoint + connection close synchronously."""
 	closed_connections = close_all_connections()
@@ -837,7 +876,9 @@ def _sqlite_shutdown_sync(db_path: Path) -> tuple[dict[str, int | str | None], i
 
 def _setup_logging(log_level: str) -> None:
 	"""Configure unified logging for the entire application."""
-	level = getattr(logging, log_level, logging.INFO)
+	level_name = str(log_level or "INFO").strip().upper()
+	resolved_level = getattr(logging, level_name, None)
+	level = resolved_level if isinstance(resolved_level, int) else logging.INFO
 	is_tty = sys.stdout.isatty()
 
 	# Choose formatter based on TTY detection
@@ -863,6 +904,9 @@ def _setup_logging(log_level: str) -> None:
 	# Apply the formatter to the root logger's handler
 	for handler in logging.root.handlers:
 		handler.setFormatter(formatter)
+
+	if not isinstance(resolved_level, int):
+		_log.warning("Invalid log level %r, falling back to INFO", log_level)
 
 	# Make sure uvicorn loggers use the root handler & level
 	for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
@@ -929,7 +973,7 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 	)
 
 	# 4. Stop Unbound DNS
-	if unbound.is_unbound_installed():
+	if ctx.unbound_started_by_app and unbound.is_unbound_installed():
 		try:
 			if await unbound.is_running():
 				ok, msg = await unbound.stop()
@@ -979,7 +1023,6 @@ async def _phase_bootstrap(ctx: LifespanContext) -> None:
 	app.state.key_mismatch = key_mismatch
 	if key_mismatch:
 		_log.critical("Aborting startup: WIREBUDDY_SECRET_KEY does not match database encryption key")
-		await _do_shutdown(ctx)
 		# Clean exit via StartupFatalError to allow cleanup/logging
 		msg = (
 			"\n"
@@ -1002,11 +1045,19 @@ async def _phase_bootstrap(ctx: LifespanContext) -> None:
 
 async def _phase_dns_config(ctx: LifespanContext) -> None:
 	from .dns import unbound
-	if not unbound.is_unbound_installed():
-		return
+	ctx.dns_config_ready = False
+	ctx.dns_config_error = None
+	ctx.app.state.dns_config_ready = False
+	ctx.app.state.dns_config_error = None
 	try:
 		dns_data = await asyncio.to_thread(_load_dns_startup_data_sync, ctx.cfg.db_path)
 		ctx.dns_service_enabled = bool(dns_data.get("dns_service_enabled", True))
+		ctx.app.state.dns_service_enabled = ctx.dns_service_enabled
+		if not unbound.is_unbound_installed():
+			if ctx.dns_service_enabled:
+				ctx.dns_config_error = "unbound not installed"
+				ctx.app.state.dns_config_error = ctx.dns_config_error
+			return
 		interfaces = dns_data.get("interfaces", [])
 		listen_addrs_ipv4, listen_addrs_ipv6 = _extract_gateways(interfaces)
 		if not listen_addrs_ipv4:
@@ -1038,9 +1089,16 @@ async def _phase_dns_config(ctx: LifespanContext) -> None:
 				except Exception as exc:
 					_log.warning("BLOCKLIST_MIGRATION update failed: %s", exc)
 			ctx.dns_config_ready = True
+			ctx.app.state.dns_config_ready = True
+			ctx.dns_config_error = None
+			ctx.app.state.dns_config_error = None
 	except FileNotFoundError as exc:
+		ctx.dns_config_error = f"unbound tools not found: {exc}"
+		ctx.app.state.dns_config_error = ctx.dns_config_error
 		_log.warning("DNS init skipped: unbound tools not found! Use Docker Image for full experience! (%s)", exc)
-	except Exception:
+	except Exception as exc:
+		ctx.dns_config_error = str(exc)
+		ctx.app.state.dns_config_error = ctx.dns_config_error
 		_log.exception("DNS config failed")
 
 async def _phase_wireguard_start(ctx: LifespanContext) -> None:
@@ -1086,6 +1144,8 @@ async def _phase_dns_start(ctx: LifespanContext) -> None:
 				if not unbound_running:
 					ok, msg = await unbound.start()
 					if ok:
+						ctx.unbound_started_by_app = True
+						ctx.app.state.unbound_started_by_app = True
 						_log.info("Unbound DNS started")
 						await asyncio.sleep(2)
 					else:
@@ -1195,26 +1255,33 @@ async def _lifespan(app: FastAPI):
 		await _phase_wireguard_start(ctx)
 		await _phase_dns_start(ctx)
 		await _phase_scheduler(ctx)
-		# Create DNS ingestion task with defensive handling
-		dns_task = asyncio.create_task(_phase_dns_ingestion(ctx))
-		ctx.dns_task = dns_task
-		app.state.dns_task = dns_task
+		ctx.dns_ingestion_expected = unbound.is_unbound_installed()
+		app.state.dns_ingestion_expected = ctx.dns_ingestion_expected
+		# Create DNS ingestion task with defensive handling only when Unbound support exists.
+		if ctx.dns_ingestion_expected:
+			dns_task = asyncio.create_task(_phase_dns_ingestion(ctx))
+			ctx.dns_task = dns_task
+			app.state.dns_task = dns_task
+		else:
+			ctx.dns_task = None
+			app.state.dns_task = None
 		app.state.started_interfaces = ctx.started_interfaces
 		_log.info("WireBuddy started successfully (pid=%d)", os.getpid())
 		yield
 	finally:
 		shutdown_signal_event.set()
-		node_event_bus = getattr(app.state, "node_event_bus", None)
-		if node_event_bus is not None:
-			await node_event_bus.aclose()
-			app.state.node_event_bus = None
-		configure_event_bus(None)
 		_restore_signal_handlers(previous_signal_handlers)
 		try:
 			async with asyncio.timeout(_APP_SHUTDOWN_TIMEOUT_SECONDS):
 				await _do_shutdown(ctx)
 		except TimeoutError:
 			_log.critical("Forced shutdown timeout exceeded after %.0fs", _APP_SHUTDOWN_TIMEOUT_SECONDS)
+		finally:
+			node_event_bus = getattr(app.state, "node_event_bus", None)
+			if node_event_bus is not None:
+				await node_event_bus.aclose()
+				app.state.node_event_bus = None
+			configure_event_bus(None)
 
 def create_app() -> FastAPI:
 	"""Application factory for WireBuddy."""
@@ -1242,12 +1309,17 @@ def create_app() -> FastAPI:
 	app.state.node_event_bus = None
 	app.state.shutdown_signal_event = None
 	app.state.key_mismatch = False  # Set to True if SECRET_KEY doesn't match DB encryption
+	app.state.dns_service_enabled = False
+	app.state.dns_config_ready = False
+	app.state.dns_config_error = None
+	app.state.dns_ingestion_expected = False
+	app.state.unbound_started_by_app = False
 	default_csp = (
 		"default-src 'self'; "
 		"script-src 'self'; "
 		"script-src-attr 'none'; "
 		"style-src 'self'; "
-		"img-src 'self' data: https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com https://cdn.jsdelivr.net; "
+		"img-src 'self' data: blob: https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com https://cdn.jsdelivr.net; "
 		"font-src 'self'; "
 		"connect-src 'self'; "
 		"object-src 'none'; "
@@ -1277,7 +1349,7 @@ def create_app() -> FastAPI:
 		response.headers.setdefault("X-Frame-Options", "DENY")
 		response.headers.setdefault("X-Content-Type-Options", "nosniff")
 		response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-		if request.url.scheme == "https":
+		if _FORCE_HSTS or request.url.scheme == "https":
 			response.headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
 		return response
 
@@ -1344,12 +1416,19 @@ def create_app() -> FastAPI:
 		if getattr(app.state, "key_mismatch", False):
 			errors.append("encryption key mismatch")
 
+		dns_config_error = getattr(app.state, "dns_config_error", None)
+		dns_service_enabled = bool(getattr(app.state, "dns_service_enabled", False))
+		dns_config_ready = bool(getattr(app.state, "dns_config_ready", False))
+		dns_ingestion_expected = bool(getattr(app.state, "dns_ingestion_expected", False))
+		if dns_service_enabled and dns_config_error:
+			errors.append("dns config unavailable")
+
 		scheduler = getattr(app.state, "scheduler", None)
 		if scheduler is None or not scheduler.running:
 			errors.append("scheduler unavailable")
 
 		dns_task = getattr(app.state, "dns_task", None)
-		if dns_task is not None and dns_task.done():
+		if dns_ingestion_expected and dns_service_enabled and dns_config_ready and (dns_task is None or dns_task.done()):
 			errors.append("dns ingestion stopped")
 		
 		if errors:

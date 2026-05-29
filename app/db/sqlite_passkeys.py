@@ -224,6 +224,17 @@ def get_credential_ids_for_user(conn: sqlite3.Connection, user_id: int) -> list[
 
 # Challenge TTL in seconds
 _CHALLENGE_TTL_SECONDS = 120
+_MAX_CHALLENGE_LENGTH = 1024
+
+
+def _validate_challenge(challenge: str) -> str:
+	"""Validate basic challenge size and emptiness before storage or lookup."""
+	challenge = str(challenge or "").strip()
+	if not challenge:
+		raise ValueError("challenge must not be empty")
+	if len(challenge.encode("utf-8")) > _MAX_CHALLENGE_LENGTH:
+		raise ValueError("challenge too large")
+	return challenge
 
 
 def store_challenge(
@@ -245,9 +256,15 @@ def store_challenge(
 		ValueError: If ceremony_type is invalid
 		sqlite3.IntegrityError: If challenge already exists (replay)
 	"""
+	challenge = _validate_challenge(challenge)
 
 	if ceremony_type not in ("registration", "authentication"):
 		raise ValueError(f"Invalid ceremony_type: {ceremony_type}")
+	if ceremony_type == "registration":
+		if not isinstance(user_id, int) or user_id <= 0:
+			raise ValueError("registration challenge requires a valid user_id")
+		if not str(username or "").strip():
+			raise ValueError("registration challenge requires a username")
 	
 	now = time.time()
 	expires_at = now + _CHALLENGE_TTL_SECONDS
@@ -289,26 +306,27 @@ def consume_challenge(
 		KeyError: If challenge not found (expired, used, or invalid)
 		ValueError: If ceremony_type doesn't match
 	"""
+	challenge = _validate_challenge(challenge)
+	if expected_ceremony_type not in ("registration", "authentication"):
+		raise ValueError(f"Invalid ceremony_type: {expected_ceremony_type}")
 	now = time.time()
 	
-	with transaction(conn):
-		cur = conn.execute(
+	with transaction(conn, immediate=True):
+		row = conn.execute(
 			"""
-			DELETE FROM passkey_challenges
+			SELECT ceremony_type, user_id, username
+			FROM passkey_challenges
 			WHERE challenge = ? AND expires_at > ?
-			RETURNING ceremony_type, user_id, username
 			""",
 			(challenge, now),
-		)
-		row = cur.fetchone()
-		
+		).fetchone()
+
 		if not row:
 			challenge_ref = hashlib.sha256(challenge.encode()).hexdigest()[:12]
 			_log.warning("Challenge not found (expired or already consumed): ref=%s", challenge_ref)
 			raise KeyError("Challenge not found")
-		
+
 		ceremony_type, user_id, username = row
-		
 		if ceremony_type != expected_ceremony_type:
 			_log.error(
 				"Challenge ceremony type mismatch: expected %s, got %s",
@@ -316,6 +334,20 @@ def consume_challenge(
 				ceremony_type,
 			)
 			raise ValueError(f"Challenge was not issued for {expected_ceremony_type}")
+
+		cur = conn.execute(
+			"""
+			DELETE FROM passkey_challenges
+			WHERE challenge = ? AND ceremony_type = ? AND expires_at > ?
+			RETURNING user_id, username
+			""",
+			(challenge, expected_ceremony_type, now),
+		)
+		consumed = cur.fetchone()
+		if not consumed:
+			challenge_ref = hashlib.sha256(challenge.encode()).hexdigest()[:12]
+			_log.warning("Challenge not found (expired or already consumed): ref=%s", challenge_ref)
+			raise KeyError("Challenge not found")
 
 		_log.info("Consumed %s challenge for user_id=%s", ceremony_type, user_id)
 	return (user_id, username)

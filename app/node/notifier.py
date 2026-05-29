@@ -4,17 +4,13 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-"""Node configuration change notifier — push mechanism for instant sync.
+"""Node configuration change notifier.
 
-Uses Server-Sent Events (SSE) to notify nodes of configuration changes.
-Nodes subscribe via GET /api/nodes/events and receive events when their
-config_version changes.
-
-Delivery guarantees:
-- At-most-once delivery (best-effort)
-- Latest config always prioritized (old events dropped under backpressure)
-- Per-client isolation (no shared queue contention)
-- SSE ping events every 25s to prevent proxy timeouts
+Delivery model:
+- Commands are first persisted in SQLite.
+- SSE is used as the low-latency delivery path for connected nodes.
+- Nodes ACK durable command IDs after successful handling.
+- Unacked commands may be replayed on reconnect.
 """
 
 from __future__ import annotations
@@ -37,6 +33,7 @@ _KEEPALIVE_INTERVAL = 25
 
 _MAX_NODE_ID_LEN = 64
 _NODE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+_SUPPORTED_DB_COMMANDS = frozenset({"config_changed", "restart", "speedtest", "removed"})
 
 
 def _validate_node_id(node_id: str) -> str:
@@ -49,6 +46,13 @@ def _validate_node_id(node_id: str) -> str:
 def _sanitize_sse_value(value: str) -> str:
     """Remove newlines from SSE data values to prevent protocol injection."""
     return value.replace("\n", " ").replace("\r", " ")
+
+
+def _validate_db_command(command: str) -> str:
+    """Validate durable node command names before queueing them."""
+    if command not in _SUPPORTED_DB_COMMANDS:
+        raise ValueError(f"Unsupported node command: {command!r}")
+    return command
 
 
 def _format_sse_event(event_type: str, data: str, event_id: str | None = None) -> str:
@@ -316,7 +320,6 @@ def is_node_connected_sync(node_id: str) -> bool:
 
 async def _notify_or_queue(
     node_id: str,
-    event_type: str,
     db_command: str,
     action_name: str,
     *,
@@ -326,7 +329,6 @@ async def _notify_or_queue(
     
     Args:
         node_id: Target node ID
-        event_type: SSE event type (e.g., "restart_requested")
         db_command: DB command to queue if SSE unavailable
         action_name: Human-readable action name for logging
         config_version: Optional config version payload for config change notifications
@@ -335,12 +337,12 @@ async def _notify_or_queue(
         Number of clients notified (>0 if delivered or queued)
     """
     node_id = _validate_node_id(node_id)
+    db_command = _validate_db_command(db_command)
     queue_payload = {"config_version": config_version} if config_version else None
     command_id = await _queue_db_command(node_id, db_command, payload=queue_payload)
     if command_id is None:
         _log.warning("Failed to queue durable %s command for node %s", action_name, node_id)
         return 0
-    payload_json = _command_event_data(command_id, db_command, config_version=config_version)
     
     # Try direct notification to SSE clients in current worker via lifecycle-scoped bus.
     bus = _event_bus
@@ -375,7 +377,6 @@ async def notify_config_changed(node_id: str, config_version: str) -> int:
     """
     return await _notify_or_queue(
         node_id=node_id,
-        event_type="config_changed",
         db_command="config_changed",
         action_name="config change",
         config_version=config_version,
@@ -393,7 +394,6 @@ async def notify_restart(node_id: str) -> int:
     """
     return await _notify_or_queue(
         node_id=node_id,
-        event_type="restart_requested",
         db_command="restart",
         action_name="restart",
     )
@@ -409,7 +409,6 @@ async def notify_run_speedtest(node_id: str) -> int:
     """
     return await _notify_or_queue(
         node_id=node_id,
-        event_type="run_speedtest",
         db_command="speedtest",
         action_name="speedtest",
     )
@@ -429,7 +428,6 @@ async def notify_node_removed(node_id: str) -> int:
     """
     return await _notify_or_queue(
         node_id=node_id,
-        event_type="node_removed",
         db_command="removed",
         action_name="removal",
     )

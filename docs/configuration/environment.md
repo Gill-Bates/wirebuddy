@@ -208,7 +208,30 @@ WIREBUDDY_SKIP_NETWORK_CHECK=1
 Default: Not set
 
 !!! warning
-    Only use for testing. WireBuddy requires host network mode for full functionality.
+  Only use for testing. In Docker, WireBuddy now fails startup closed when it cannot verify host networking.
+
+### WIREBUDDY_CLEANUP_STALE_INTERFACES
+
+Opt in to destructive cleanup of active WireGuard interfaces without matching config files.
+
+```bash
+WIREBUDDY_CLEANUP_STALE_INTERFACES=1
+```
+
+Default: Not set
+
+!!! warning
+  Disabled by default. Enable this only when you want WireBuddy to delete orphaned WireGuard interfaces during startup.
+
+### WIREBUDDY_FORCE_HSTS
+
+Always emit the HSTS response header, even when TLS terminates in a reverse proxy and the app sees plain HTTP upstream.
+
+```bash
+WIREBUDDY_FORCE_HSTS=1
+```
+
+Default: Not set
 
 ### DATABASE_PATH
 

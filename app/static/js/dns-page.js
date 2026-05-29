@@ -12,6 +12,11 @@
         console.error('[dns] Required DOM roots are missing.');
         return;
     }
+    if (window.__WB_DNS_APP_LOADED__) {
+        console.error('DNS page script loaded more than once');
+        return;
+    }
+    window.__WB_DNS_APP_LOADED__ = true;
 
     const requiredGlobals = [
         ['api', window.api],

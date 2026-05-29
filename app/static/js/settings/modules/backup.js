@@ -210,7 +210,8 @@ SettingsApp.registerModule('backup', (function () {
         try {
             const resp = await fetchWithAuth('/api/backup/download', {
                 method: 'POST',
-                credentials: 'same-origin'
+                credentials: 'same-origin',
+                timeoutMs: 120000, // 2 minutes for backup creation
             });
 
             if (!resp.ok) {
@@ -292,7 +293,8 @@ SettingsApp.registerModule('backup', (function () {
             const resp = await fetchWithAuth('/api/backup/restore', {
                 method: 'POST',
                 credentials: 'same-origin',
-                body: formData
+                body: formData,
+                timeoutMs: 180000, // 3 minutes for backup restore
             });
 
             if (!resp.ok) {

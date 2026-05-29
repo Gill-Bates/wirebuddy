@@ -8,18 +8,22 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Callable
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
 	"""Add a unique request ID to each request for tracing/debugging."""
 
 	async def dispatch(self, request: Request, call_next: Callable) -> Response:
-		request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+		raw_request_id = request.headers.get("X-Request-ID", "")
+		request_id = raw_request_id if _REQUEST_ID_RE.fullmatch(raw_request_id) else str(uuid.uuid4())
 		
 		request.state.request_id = request_id
 		

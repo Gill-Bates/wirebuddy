@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .unbound_constants import UNBOUND_CONF, UNBOUND_PID_FILE, run_exec
+from .unbound_constants import UNBOUND_CONF, UNBOUND_PID_FILE, atomic_write_text, run_exec
 
 _log = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 		backup_path = _RESOLV_CONF.with_suffix(".conf.backup")
 		if not backup_path.exists() and current.strip():
 			try:
-				backup_path.write_text(current, encoding="utf-8")
+				atomic_write_text(backup_path, current)
 			except Exception as exc:
 				_log.debug("DNS_RESOLV failed to backup resolv.conf: %s", exc)
 
@@ -137,10 +137,7 @@ def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 			if line.strip().startswith("search ") or line.strip().startswith("domain "):
 				lines.append(line.strip())
 		
-		# Atomic write using temporary file + rename to reduce TOCTOU window
-		tmp_path = _RESOLV_CONF.with_suffix(".tmp")
-		tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-		tmp_path.replace(_RESOLV_CONF)
+		atomic_write_text(_RESOLV_CONF, "\n".join(lines) + "\n")
 		_log.info("DNS_RESOLV configured /etc/resolv.conf to use %s", dns_ip)
 	except PermissionError:
 		_log.debug("DNS_RESOLV cannot write /etc/resolv.conf (read-only filesystem)")
@@ -304,8 +301,8 @@ async def _kill_pid(pid: int, *, timeout: float = 3.0) -> bool:
 	if not _pid_is_running(pid):
 		return True
 
-	if not _pid_name_is_unbound(pid, fail_open=False):
-		_log.warning("DNS_STOP refusing to kill non-unbound pid=%s", pid)
+	if not _pid_uses_wirebuddy_config(pid):
+		_log.warning("DNS_STOP refusing to kill unmanaged unbound pid=%s", pid)
 		return False
 
 	try:
@@ -322,8 +319,8 @@ async def _kill_pid(pid: int, *, timeout: float = 3.0) -> bool:
 			return True
 		await asyncio.sleep(_KILL_POLL_INTERVAL)
 
-	if not _pid_name_is_unbound(pid, fail_open=False):
-		_log.warning("DNS_STOP refusing SIGKILL for reused/non-unbound pid=%s", pid)
+	if not _pid_uses_wirebuddy_config(pid):
+		_log.warning("DNS_STOP refusing SIGKILL for unmanaged or reused pid=%s", pid)
 		return False
 
 	try:
@@ -373,9 +370,9 @@ async def is_running() -> bool:
 		if not _running_state.is_stale():
 			return _running_state.last_result
 
-		# Fast path: PID file check with process name verification
+		# Fast path: PID file check with managed-config verification
 		pid = _read_unbound_pid()
-		if pid and _pid_name_is_unbound(pid, fail_open=True):
+		if pid and _pid_uses_wirebuddy_config(pid):
 			_running_state.update(True)
 			return True
 
@@ -520,7 +517,6 @@ def _restore_resolv_conf() -> None:
 	backup_path = _RESOLV_CONF.with_suffix(".conf.backup")
 	if not backup_path.exists():
 		return
-	tmp_path = _RESOLV_CONF.with_suffix(".tmp")
 	try:
 		current = _RESOLV_CONF.read_text(encoding="utf-8", errors="replace")
 		if _RESOLV_MANAGED_MARKER not in current:
@@ -528,8 +524,7 @@ def _restore_resolv_conf() -> None:
 			return
 
 		backup_content = backup_path.read_text(encoding="utf-8")
-		tmp_path.write_text(backup_content, encoding="utf-8")
-		tmp_path.replace(_RESOLV_CONF)  # Atomic, matches _configure_resolv_conf
+		atomic_write_text(_RESOLV_CONF, backup_content)
 		backup_path.unlink()
 		_log.info("DNS_STOP restored /etc/resolv.conf from backup")
 	except OSError as exc:
@@ -540,12 +535,6 @@ def _restore_resolv_conf() -> None:
 			_log.debug("DNS_STOP failed to restore resolv.conf: %s", exc)
 	except Exception as exc:
 		_log.debug("DNS_STOP failed to restore resolv.conf: %s", exc)
-	finally:
-		# Clean up temp file on failure
-		try:
-			tmp_path.unlink(missing_ok=True)
-		except Exception:
-			pass
 
 
 async def _stop_impl() -> tuple[bool, str]:
@@ -614,7 +603,7 @@ async def _reload_impl() -> tuple[bool, str]:
 	if pid is None and _unbound_proc is not None and _unbound_proc.returncode is None:
 		pid = _unbound_proc.pid
 	
-	if pid and _pid_is_running(pid):
+	if pid and _pid_uses_wirebuddy_config(pid):
 		try:
 			os.kill(pid, signal.SIGHUP)
 			# Give unbound a moment to process the reload before declaring success
@@ -684,8 +673,11 @@ async def restart() -> tuple[bool, str]:
 	global _intentional_stop
 	async with _proc_lock:
 		_intentional_stop = True  # Signal supervisor not to warn
+		result: tuple[bool, str] = (False, "Restart aborted")
 		try:
-			await _stop_impl()
+			stop_ok, stop_msg = await _stop_impl()
+			if not stop_ok:
+				return False, f"Restart aborted: {stop_msg}"
 			result = await _start_impl()
 		finally:
 			_intentional_stop = False  # Always reset even on exceptions

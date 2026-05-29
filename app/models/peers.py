@@ -11,7 +11,6 @@ from __future__ import annotations
 import base64
 import ipaddress
 import re
-from datetime import datetime
 from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
@@ -43,10 +42,12 @@ def _validate_wg_key(value: str | None) -> str | None:
 	if value is None:
 		return value
 	value = value.strip()
+	if not _WG_KEY_RE.fullmatch(value):
+		raise ValueError("Invalid WireGuard key format")
 	try:
 		decoded = base64.b64decode(value, validate=True)
-	except Exception:
-		raise ValueError("Invalid WireGuard key format (must be valid base64)")
+	except Exception as exc:
+		raise ValueError("Invalid WireGuard key format") from exc
 	if len(decoded) != 32:
 		raise ValueError("WireGuard key must decode to exactly 32 bytes")
 	return value
@@ -145,7 +146,10 @@ def _validate_endpoint_value(value: str | None) -> str | None:
 		except ValueError:
 			_validate_hostname(host)
 
-	port = int(port_raw)
+	try:
+		port = int(port_raw)
+	except ValueError as exc:
+		raise ValueError(f"Endpoint port must be numeric: {port_raw!r}") from exc
 	if port < 1 or port > 65535:
 		raise ValueError(f"Endpoint port out of range: {port}")
 	return candidate
@@ -267,6 +271,13 @@ class PeerCreate(BaseModel):
 				raise ValueError("allowed_ips_mode='full' requires both 0.0.0.0/0 and ::/0 in allowed_ips")
 		return self
 
+	@model_validator(mode="after")
+	def validate_node_scope(self):
+		"""Disallow conflicting roaming and fixed-node assignments."""
+		if self.allow_all_nodes and self.node_id is not None:
+			raise ValueError("allow_all_nodes cannot be combined with node_id")
+		return self
+
 
 class PeerUpdate(BaseModel):
 	"""Peer update payload."""
@@ -332,12 +343,21 @@ class PeerUpdate(BaseModel):
 
 	@model_validator(mode="after")
 	def validate_mode_consistency(self):
-		"""Validate allowed_ips matches allowed_ips_mode when both are provided."""
-		if self.allowed_ips_mode == "full" and self.allowed_ips is not None:
+		"""Validate allowed_ips matches allowed_ips_mode when full tunnel is requested."""
+		if self.allowed_ips_mode == "full":
+			if self.allowed_ips is None:
+				raise ValueError("allowed_ips is required when changing allowed_ips_mode to 'full'")
 			expected = {"0.0.0.0/0", "::/0"}
 			actual = {ip.strip() for ip in self.allowed_ips.split(",")}
 			if not actual.issuperset(expected):
 				raise ValueError("allowed_ips_mode='full' requires both 0.0.0.0/0 and ::/0 in allowed_ips")
+		return self
+
+	@model_validator(mode="after")
+	def validate_node_scope(self):
+		"""Disallow conflicting roaming and fixed-node assignments."""
+		if self.allow_all_nodes is True and self.node_id is not None:
+			raise ValueError("allow_all_nodes cannot be combined with node_id")
 		return self
 
 
@@ -366,13 +386,13 @@ class PeerConfig(BaseModel):
 	"""Full peer configuration (for QR code / config file)."""
 	interface_name: str
 	private_key: str = Field(..., repr=False)
-	address: str
-	dns: str | None = None
+	address: str = Field(..., min_length=1, max_length=512)
+	dns: str | None = Field(None, max_length=256)
 	mtu: int = Field(default=1420, ge=1280, le=65535)
 	# Server details
 	server_public_key: str
-	server_endpoint: str
-	allowed_ips: str = "0.0.0.0/0, ::/0"
+	server_endpoint: str = Field(..., min_length=1, max_length=320)
+	allowed_ips: str = Field(default="0.0.0.0/0, ::/0", max_length=512)
 	persistent_keepalive: int = Field(default=25, ge=0, le=65535)
 	preshared_key: str | None = Field(None, repr=False)
 
@@ -459,10 +479,18 @@ class PeerStats(BaseModel):
 	"""Peer statistics from WireGuard."""
 	public_key: str
 	endpoint: str | None = None
-	latest_handshake: datetime | None = None
+	latest_handshake: AwareDatetime | None = None
 	transfer_rx: int = Field(default=0, ge=0)  # bytes received
 	transfer_tx: int = Field(default=0, ge=0)  # bytes transmitted
 	allowed_ips: str | None = None
+
+	@field_validator("public_key")
+	@classmethod
+	def public_key_valid(cls, v: str) -> str:
+		validated = _validate_wg_key(v)
+		if validated is None:
+			raise ValueError("public_key must not be empty")
+		return validated
 
 	@field_validator("endpoint")
 	@classmethod
@@ -471,3 +499,10 @@ class PeerStats(BaseModel):
 		if v in (None, "(none)", ""):
 			return None
 		return _validate_endpoint_value(v)
+
+	@field_validator("allowed_ips")
+	@classmethod
+	def allowed_ips_valid(cls, v: str | None) -> str | None:
+		if v is None:
+			return v
+		return _validate_cidr_list(v, field_name="allowed_ips")

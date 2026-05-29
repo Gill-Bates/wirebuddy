@@ -160,12 +160,12 @@ Open your browser to:
 http://localhost:8000
 ```
 
-Default credentials:
+Bootstrap credentials on first boot:
 - Username: `admin`
-- Password: `admin`
+- Password: value of `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD`
 
 !!! danger "Change Default Password"
-    Immediately change the default password after first login via **Settings → Users**!
+    Immediately change the bootstrap password after first login via **Settings → Users**!
 
 ---
 

@@ -16,6 +16,9 @@ import asyncio
 from collections import OrderedDict
 from collections.abc import Callable
 import logging
+import os
+from pathlib import Path
+import re
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +37,11 @@ _SPEEDTEST_EXECUTION_TIMEOUT_SECONDS = 600.0
 _WG_CHECK_TIMEOUT_SECONDS = 5.0
 _PEER_STATE_MAX_SIZE = 100_000
 _NETWORK_STATS_RETENTION_DAYS = 7
+_WG_KEY_RE = re.compile(r"\A[A-Za-z0-9+/]{43}=\Z")
+_WG_BINARY_CANDIDATES = (
+    Path("/usr/bin/wg"),
+    Path("/usr/local/bin/wg"),
+)
 
 
 def _evict_peer_state_entries(peer_connection_state: OrderedDict[str, bool]) -> int:
@@ -61,18 +69,26 @@ async def _sleep_with_cancellation_check(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
-def _db_read(db_path: str, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+def _db_call(db_path: str, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
     """Run ``fn(conn, *args, **kwargs)`` inside a managed SQLite connection context.
 
     The connection lifetime is controlled by ``thread_connection``; callers must
     not retain ``conn`` outside ``fn``. Designed for use with
     ``asyncio.to_thread``::
 
-        result = await asyncio.to_thread(_db_read, db_path, my_getter)
+        result = await asyncio.to_thread(_db_call, db_path, my_getter)
     """
     from ..db.sqlite_runtime import thread_connection
     with thread_connection(db_path) as conn:
         return fn(conn, *args, **kwargs)
+
+
+def _resolve_wg_binary() -> str | None:
+    """Resolve a trusted WireGuard binary path without PATH lookup."""
+    for candidate in _WG_BINARY_CANDIDATES:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
 
 
 async def update_blocklists(ctx: main.LifespanContext) -> None:
@@ -95,7 +111,10 @@ async def update_blocklists(ctx: main.LifespanContext) -> None:
             return
         
         urls, custom_rules_text = inputs
-        _, msg = await _unbound.update_blocklists(urls, custom_rules_text=custom_rules_text)
+        ok, msg = await _unbound.update_blocklists(urls, custom_rules_text=custom_rules_text)
+        if not ok:
+            _log.warning("BLOCKLIST_UPDATE failed: %s", msg)
+            return
         await _unbound.restart()
         _log.info("BLOCKLIST_UPDATE %s", msg)
     except Exception as exc:
@@ -160,6 +179,9 @@ async def sample_tsdb_metrics(ctx: main.LifespanContext) -> None:
             failures = 0
             candidates: list[tuple[str, bool]] = []
             for public_key, (rx, tx, latest_handshake) in peer_counters.items():
+                if _WG_KEY_RE.fullmatch(public_key) is None:
+                    _log.warning("TSDB_SAMPLE skipped invalid WireGuard public key: %r", public_key[:16])
+                    continue
                 try:
                     tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="rx_bytes", value=rx)
                     tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=public_key, metric="tx_bytes", value=tx)
@@ -286,7 +308,7 @@ async def get_speedtest_initial_delay(db_path: str) -> tuple[float, float | None
     delay = _seconds_until_night_window()
 
     def _read_last_run_from_db() -> float | None:
-        stored = _db_read(db_path, get_speedtest_last_run_at)
+        stored = _db_call(db_path, get_speedtest_last_run_at)
         return stored.timestamp() if stored is not None else None
 
     last_run_ts = await asyncio.to_thread(_read_last_run_from_db)
@@ -305,7 +327,11 @@ async def _get_wg_peer_counters() -> dict[str, tuple[int, int, float]] | None:
     """Get WireGuard peer counters via generic subprocess helper."""
     from ..main import _parse_wg_dump_counters
     try:
-        res = await run_command("wg", "show", "all", "dump", timeout=_WG_CHECK_TIMEOUT_SECONDS)
+        wg_binary = _resolve_wg_binary()
+        if wg_binary is None:
+            _log.warning("WG_COUNTERS skipped: trusted wg binary not found")
+            return None
+        res = await run_command(wg_binary, "show", "all", "dump", timeout=_WG_CHECK_TIMEOUT_SECONDS)
         if res.returncode != 0:
             return None
         return _parse_wg_dump_counters(res.stdout) if res.stdout.strip() else {}
@@ -319,22 +345,19 @@ async def run_scheduled_speedtest(ctx: main.LifespanContext) -> None:
     if not await _is_speedtest_enabled(ctx):
         return
 
-    # 1. Ensure we are in (or wait for) the nightly window (02:00-04:00)
+    # Let the scheduler decide when the daily job runs; don't block a job slot.
     delay = _seconds_until_night_window()
     if delay > 0:
-        _log.info("SPEEDTEST_SCHEDULED waiting %.0f seconds for night window", delay)
-        await _sleep_with_cancellation_check(delay)
-        # Re-check enabled state after potentially long sleep
-        if not await _is_speedtest_enabled(ctx):
-            return
+        _log.info("SPEEDTEST_SCHEDULED skipped: outside night window")
+        return
 
-    # 2. Execution (protected by cross-process lease)
+    # Execution (protected by cross-process lease)
     await _execute_scheduled_speedtest_run(ctx)
 
 
 async def _is_speedtest_enabled(ctx: main.LifespanContext) -> bool:
     from ..db.sqlite_settings import get_speedtest_enabled
-    return await asyncio.to_thread(_db_read, ctx.cfg.db_path, get_speedtest_enabled)
+    return await asyncio.to_thread(_db_call, ctx.cfg.db_path, get_speedtest_enabled)
 
 
 async def _execute_scheduled_speedtest_run(ctx: main.LifespanContext) -> None:
@@ -349,14 +372,13 @@ async def _execute_scheduled_speedtest_run(ctx: main.LifespanContext) -> None:
         DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
         SpeedtestBusyError,
         SpeedtestCooldownError,
-        acquire_speedtest_run_lease,
+        acquire_speedtest_run_lease_async,
     )
     from ..speedtest.tester import run_speedtest
     from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
     
     try:
-        # acquire_speedtest_run_lease uses LOCK_NB — safe to call directly in async code
-        lease = acquire_speedtest_run_lease(
+        lease = await acquire_speedtest_run_lease_async(
             ctx.cfg.tsdb_dir,
             cooldown_seconds=DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
         )
@@ -402,7 +424,7 @@ async def _execute_scheduled_speedtest_run(ctx: main.LifespanContext) -> None:
 def _persist_last_run_to_db(db_path: str) -> None:
     """Persist the current speedtest run timestamp, including failed runs."""
     from ..db.sqlite_settings import set_speedtest_last_run_at
-    _db_read(db_path, set_speedtest_last_run_at)
+    _db_call(db_path, set_speedtest_last_run_at)
 
 
 async def sample_network_stats(ctx: main.LifespanContext) -> None:
@@ -434,7 +456,7 @@ async def monitor_node_health(ctx: main.LifespanContext) -> None:
     from ..db.sqlite_nodes import mark_stale_nodes_offline
     try:
         count = await asyncio.to_thread(
-            _db_read, ctx.cfg.db_path,
+            _db_call, ctx.cfg.db_path,
             mark_stale_nodes_offline,
             stale_seconds=90,
         )

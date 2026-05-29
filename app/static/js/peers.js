@@ -53,7 +53,9 @@ if (!peersApp) {
     };
 
     const qrModalEl = document.getElementById('qrModal');
-    const qrModal = qrModalEl ? new bootstrap.Modal(qrModalEl) : null;
+    const qrModal = (qrModalEl && window.bootstrap?.Modal)
+        ? new window.bootstrap.Modal(qrModalEl)
+        : null;
     const searchInput = document.getElementById('peers-search-input');
     const searchClearBtn = document.getElementById('peers-search-clear');
     const visibleCountEl = document.getElementById('peers-visible-count');
@@ -1367,7 +1369,9 @@ if (!peersApp) {
             wbAlert('Only administrators can edit peers', 'warning');
             return;
         }
-        const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('editPeerModal'));
+        const editPeerModalEl = document.getElementById('editPeerModal');
+        if (!editPeerModalEl || !window.bootstrap?.Modal) return;
+        const modal = window.bootstrap.Modal.getOrCreateInstance(editPeerModalEl);
         document.getElementById('edit-peer-name')?.classList.remove('is-invalid');
 
         try {
@@ -1647,7 +1651,7 @@ if (!peersApp) {
             try {
                 const createdPeer = await api('POST', '/api/wireguard/peers', data);
                 document.activeElement?.blur();
-                bootstrap.Modal.getInstance(document.getElementById('addPeerModal')).hide();
+                window.bootstrap?.Modal?.getInstance(document.getElementById('addPeerModal'))?.hide();
                 wbToast('Peer created successfully', 'success');
 
                 try {
@@ -1733,7 +1737,7 @@ if (!peersApp) {
             try {
                 const updatedPeerResponse = await api('PATCH', `/api/wireguard/peers/${peerId}`, data);
                 document.activeElement?.blur();
-                bootstrap.Modal.getInstance(document.getElementById('editPeerModal')).hide();
+                window.bootstrap?.Modal?.getInstance(document.getElementById('editPeerModal'))?.hide();
                 wbToast('Peer updated successfully', 'success');
 
                 try {

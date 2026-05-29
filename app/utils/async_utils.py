@@ -30,10 +30,18 @@ async def interruptible_sleep(delay: float, shutdown_event: asyncio.Event) -> bo
 
 async def cancel_tasks(*tasks: asyncio.Task[Any]) -> None:
     """Cancel background tasks and collect any unexpected failures."""
+    if not tasks:
+        return
     for task in tasks:
         if not task.done():
             task.cancel()
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for task, result in zip(tasks, results):
-        if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
-            _log.error("Task %s crashed: %s", task.get_name(), result, exc_info=True)
+        if isinstance(result, asyncio.CancelledError):
+            continue
+        if isinstance(result, BaseException):
+            _log.error(
+                "Task %s crashed",
+                task.get_name(),
+                exc_info=(type(result), result, result.__traceback__),
+            )

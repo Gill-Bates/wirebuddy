@@ -57,7 +57,7 @@ class ServiceHealth:
             "healthy": self.healthy,
             "last_check": self.last_check.isoformat() if self.last_check else None,
             "error": self.error,
-            **self.details,
+            "details": dict(self.details),
         }
 
 
@@ -88,7 +88,7 @@ class RuntimeService(ABC):
     name: str = "unnamed"
 
     # Dependencies: list of service names that must start before this one
-    dependencies: list[str] = []
+    dependencies: tuple[str, ...] = ()
 
     # Timeout for start/stop operations
     start_timeout: float = 30.0
@@ -236,6 +236,39 @@ class RuntimeService(ABC):
         self._health.healthy = self._state == ServiceState.RUNNING
         return self._health
 
+    def _handle_background_task_done(self, task: asyncio.Task[object]) -> None:
+        """Track background task failures in service health and logs."""
+        self._background_tasks.discard(task)
+
+        if task.cancelled():
+            return
+
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+
+        if exc is None:
+            return
+
+        task_name = task.get_name()
+        _log.error(
+            "SERVICE_BACKGROUND_TASK_FAILED name=%s task=%s error=%s",
+            self.name,
+            task_name,
+            exc,
+        )
+        self._health = ServiceHealth(
+            state=self._state,
+            healthy=False,
+            last_check=datetime.now(UTC),
+            error=f"Background task failed: {task_name}",
+            details={
+                "failed_task": task_name,
+                "exception": str(exc),
+            },
+        )
+
     def create_background_task(self, coro, *, name: str | None = None) -> asyncio.Task:
         """Create a managed background task that is cancelled on stop.
 
@@ -248,7 +281,7 @@ class RuntimeService(ABC):
         """
         task = asyncio.create_task(coro, name=name or f"{self.name}-task")
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(self._handle_background_task_done)
         return task
 
     async def wait_for_shutdown(self, timeout: float | None = None) -> bool:

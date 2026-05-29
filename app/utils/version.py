@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -28,6 +29,8 @@ GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 _UPDATE_CHECK_CACHE: dict | None = None
 _UPDATE_CHECK_TIME: float = 0
 _UPDATE_CHECK_TTL = 3600  # 1 hour
+_UPDATE_CHECK_LOCK = threading.Lock()
+_MAX_RELEASE_NOTES = 20_000
 
 
 def get_build_info() -> str:
@@ -40,7 +43,14 @@ def get_build_info() -> str:
 		if not build_file.exists():
 			build_file = Path("/app/BUILD_INFO")
 		if build_file.exists():
-			_BUILD_INFO_CACHE = build_file.read_text(encoding="utf-8").strip()
+			content = build_file.read_text(encoding="utf-8")
+			# Parse key=value format to extract GIT_SHA
+			for line in content.splitlines():
+				if line.startswith("GIT_SHA="):
+					_BUILD_INFO_CACHE = line.split("=", 1)[1].strip()
+					return _BUILD_INFO_CACHE
+			# Fallback: use entire content if no GIT_SHA key found (legacy format)
+			_BUILD_INFO_CACHE = content.strip()
 		else:
 			_BUILD_INFO_CACHE = "dev"
 	except Exception:
@@ -119,11 +129,13 @@ def check_for_updates(force: bool = False) -> UpdateInfo:
 	global _UPDATE_CHECK_CACHE, _UPDATE_CHECK_TIME
 	
 	current_version = get_version()
-	
+	now = time.time()
+
 	# Return cached result if still valid (unless forced)
-	if not force and _UPDATE_CHECK_CACHE is not None:
-		if time.time() - _UPDATE_CHECK_TIME < _UPDATE_CHECK_TTL:
-			return _UPDATE_CHECK_CACHE
+	with _UPDATE_CHECK_LOCK:
+		if not force and _UPDATE_CHECK_CACHE is not None:
+			if now - _UPDATE_CHECK_TIME < _UPDATE_CHECK_TTL:
+				return _UPDATE_CHECK_CACHE
 	
 	result: UpdateInfo = {
 		"update_available": False,
@@ -160,7 +172,8 @@ def check_for_updates(force: bool = False) -> UpdateInfo:
 		latest_tag = data.get("tag_name", "").lstrip("v")
 		result["latest_version"] = latest_tag
 		result["release_url"] = data.get("html_url")
-		result["release_notes"] = data.get("body")
+		body = data.get("body")
+		result["release_notes"] = str(body)[:_MAX_RELEASE_NOTES] if body is not None else None
 		result["published_at"] = data.get("published_at")
 		
 		if _is_newer_version(current_version, latest_tag):
@@ -185,6 +198,7 @@ def check_for_updates(force: bool = False) -> UpdateInfo:
 		result["error"] = str(e)
 		_log.debug("Update check failed: %s", e)
 	
-	_UPDATE_CHECK_CACHE = result
-	_UPDATE_CHECK_TIME = time.time()
+	with _UPDATE_CHECK_LOCK:
+		_UPDATE_CHECK_CACHE = result
+		_UPDATE_CHECK_TIME = time.time()
 	return result

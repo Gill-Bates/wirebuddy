@@ -13,17 +13,14 @@ class ApiError extends Error {
 
 const MAX_API_ERROR_MESSAGE_LENGTH = 500;
 const LOGOUT_REQUEST_TIMEOUT_MS = 5000;
+const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 function startReconnectModeSafe() {
-    if (typeof _startReconnectMode === 'function') {
-        _startReconnectMode();
-    }
+    window.WBReconnect?.start?.();
 }
 
 function stopReconnectModeSafe() {
-    if (typeof _stopReconnectMode === 'function') {
-        _stopReconnectMode();
-    }
+    window.WBReconnect?.stop?.();
 }
 
 function getReconnectStateSafe() {
@@ -40,6 +37,14 @@ function getCsrfToken() {
         || '';
     if (!token) {
         console.error('CSRF token meta tag is missing; state-changing requests may fail.');
+    }
+    return token;
+}
+
+function getRequiredCsrfToken() {
+    const token = getCsrfToken();
+    if (!token) {
+        throw new ApiError('CSRF token is missing', 'CSRF_MISSING');
     }
     return token;
 }
@@ -66,7 +71,7 @@ async function logout() {
             await fetch('/api/logout', {
                 method: 'POST',
                 headers: {
-                    'X-CSRF-Token': getCsrfToken(),
+                    'X-CSRF-Token': getRequiredCsrfToken(),
                 },
                 credentials: 'same-origin',
                 signal: controller.signal,
@@ -102,9 +107,12 @@ async function api(method, url, data = null, opts = {}) {
         throw new ApiError('Cannot make API calls to external origins', 'INVALID_URL');
     }
 
-    const headers = {
-        'X-CSRF-Token': getCsrfToken(),
-    };
+    const normalizedMethod = String(method || 'GET').toUpperCase();
+
+    const headers = {};
+    if (UNSAFE_METHODS.has(normalizedMethod)) {
+        headers['X-CSRF-Token'] = getRequiredCsrfToken();
+    }
     if (data !== null && data !== undefined) {
         headers['Content-Type'] = 'application/json';
     }
@@ -136,12 +144,12 @@ async function api(method, url, data = null, opts = {}) {
         }, timeoutMs);
     }
 
-    const options = { method, headers, signal: controller.signal, credentials: 'same-origin' };
+    const options = { method: normalizedMethod, headers, signal: controller.signal, credentials: 'same-origin' };
     if (data !== null && data !== undefined) options.body = JSON.stringify(data);
 
     let res;
     try {
-        res = await fetch(url, options);
+        res = await fetch(targetUrl.toString(), options);
     } catch (err) {
         if (err?.name === 'AbortError' && externalSignal?.aborted && !timeoutAbort) {
             throw new ApiError('Request cancelled', 'ABORTED');

@@ -62,9 +62,34 @@ def _cooldown_path(tsdb_dir: Path) -> Path:
     return tsdb_dir / ".speedtest.last_run"
 
 
+def _ensure_guard_parent(path: Path) -> None:
+    """Ensure the guard file parent exists and is a real directory."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent.is_symlink() or not path.parent.is_dir():
+        raise RuntimeError(f"Guard parent must be a real directory: {path.parent}")
+
+
+def _open_lock_file(path: Path) -> IO[bytes]:
+    """Open the lock file without following symlinks when supported."""
+    _ensure_guard_parent(path)
+    if path.exists() and path.is_symlink():
+        raise RuntimeError(f"Refusing to open symlinked speedtest lock file: {path}")
+
+    flags = os.O_CREAT | os.O_RDWR | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        return os.fdopen(fd, "ab+", buffering=0)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def _read_last_run(path: Path) -> float | None:
     """Read last run timestamp from cooldown file with validation."""
     try:
+        if path.is_symlink():
+            _log.warning("Ignoring symlinked cooldown file: %s", path)
+            return None
         value = path.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         return None
@@ -89,7 +114,10 @@ def _read_last_run(path: Path) -> float | None:
 
 def _write_last_run(path: Path, timestamp: float) -> None:
     """Write cooldown timestamp with fsync for durability."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_guard_parent(path)
+    if path.exists() and path.is_symlink():
+        raise RuntimeError(f"Refusing to replace symlinked cooldown file: {path}")
+
     tmp_path: Path | None = None
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -106,7 +134,10 @@ def _write_last_run(path: Path, timestamp: float) -> None:
 
     try:
         os.replace(tmp_path, path)
-        dir_fd = os.open(path.parent, os.O_RDONLY)
+        dir_fd = os.open(
+            str(path.parent),
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
         try:
             os.fsync(dir_fd)
         finally:
@@ -216,8 +247,7 @@ def acquire_speedtest_run_lease(
             raise TimeoutError("Speedtest acquisition cancelled")
 
         lock_path = _lock_path(tsdb_dir)
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd_obj = lock_path.open("ab+")
+        fd_obj = _open_lock_file(lock_path)
 
         if cancel_event is not None and cancel_event.is_set():
             raise TimeoutError("Speedtest acquisition cancelled")
@@ -264,10 +294,10 @@ async def acquire_speedtest_run_lease_async(
     async_lock_acquired = False
 
     # 1. Async task-level lock
-    try:
-        await asyncio.wait_for(_local_async_lock.acquire(), timeout=0)
-    except asyncio.TimeoutError:
+    if _local_async_lock.locked():
         raise SpeedtestBusyError("Speed test already in progress (async lock)") from None
+
+    await _local_async_lock.acquire()
     async_lock_acquired = True
     
     try:

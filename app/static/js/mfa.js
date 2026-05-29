@@ -217,14 +217,16 @@ async function submitMfa(code) {
     setBusy(mfaSubmitBtn, 'Verifying...');
 
     try {
-        const result = await apiCall('/api/mfa/verify', {
+        const result = await api('POST', '/api/mfa/verify', {
             username: mfaUsername,
             mfa_token: mfaToken,
             code
+        }, {
+            skipAuthRedirect: true,
         });
 
         // Check if passkey setup is pending after MFA
-        if (result?.data?.passkey_setup_pending) {
+        if (result?.passkey_setup_pending) {
             window.location.href = '/ui/passkey-setup';
             return;
         }

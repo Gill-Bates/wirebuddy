@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections import deque
 import hashlib
 import json
 import logging
@@ -25,13 +26,15 @@ import random
 import signal
 import sqlite3
 import ssl
+import stat
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime as dt, timedelta
+from datetime import datetime as dt
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -60,9 +63,6 @@ SYNC_INTERVAL_FAST = max(1, int(os.environ.get("WIREBUDDY_NODE_SYNC_INTERVAL_FAS
 ENROLLMENT_RETRY_ATTEMPTS = max(1, int(os.environ.get("WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS", "3")))
 SESSION_PROPAGATION_DELAY = 0.5  # Delay after enrollment to ensure master has committed session secret
 
-# Speedtest scheduler constants (same window as master)
-_SPEEDTEST_NIGHT_WINDOW_START_HOUR = 2
-_SPEEDTEST_NIGHT_WINDOW_END_HOUR = 4
 _SPEEDTEST_RUN_TIMEOUT_SECONDS = 120
 _SPEEDTEST_LAST_RUN_FILE = "speedtest_last_run"
 DATA_DIR = Path("/app/data")
@@ -74,6 +74,37 @@ _MAX_RECONNECT_DELAY = 60  # Maximum SSE reconnection delay in seconds
 _MAX_DECODED_ENROLLMENT_TOKEN_SIZE = 65_536
 _MAX_SSE_EVENT_SIZE = 64 * 1024
 _MAX_CONFIG_SIZE = 5 * 1024 * 1024
+
+
+def _fsync_dir(path: Path) -> None:
+	"""Fsync a directory so preceding renames are durable across crashes."""
+	flags = os.O_RDONLY
+	if hasattr(os, "O_DIRECTORY"):
+		flags |= os.O_DIRECTORY
+	dir_fd = os.open(path, flags)
+	try:
+		os.fsync(dir_fd)
+	finally:
+		os.close(dir_fd)
+
+
+def _validate_master_url(raw_url: str) -> str:
+	"""Validate the master URL and forbid insecure HTTP by default."""
+	master_url = raw_url.strip().rstrip("/")
+	parsed = urlparse(master_url)
+	if parsed.scheme != "https":
+		allow_insecure_http = os.getenv("WIREBUDDY_ALLOW_INSECURE_MASTER_HTTP") == "1"
+		if parsed.scheme == "http" and allow_insecure_http:
+			_log.warning("Using insecure HTTP master URL because dev override is enabled")
+		else:
+			raise RuntimeError("master_url must use https://")
+	if not parsed.hostname:
+		raise RuntimeError("master_url must include a hostname")
+	if parsed.username or parsed.password:
+		raise RuntimeError("master_url must not contain embedded credentials")
+	if parsed.query or parsed.fragment:
+		raise RuntimeError("master_url must not contain query parameters or fragments")
+	return master_url
 
 
 
@@ -131,28 +162,34 @@ def _decode_enrollment_token_payload(token_string: str) -> dict[str, Any]:
 
 
 def _parse_enrollment_token(token_string: str, verify_key: str | None = None) -> dict[str, Any]:
-	"""Parse the enrollment token, verifying it when an HMAC key is provided."""
+	"""Parse the enrollment token and require local HMAC verification by default."""
 	if verify_key:
 		return verify_enrollment_token(token_string, verify_key)
 
-	env_name = os.getenv("WIREBUDDY_ENV", "").strip().lower()
-	if env_name in {"prod", "production"}:
-		raise ValueError("WIREBUDDY_ENROLLMENT_VERIFY_KEY is required in production")
+	if os.getenv("WIREBUDDY_ALLOW_UNVERIFIED_ENROLLMENT_TOKEN") == "1":
+		_log.warning("Enrollment token verification disabled by explicit dev override")
+		return _decode_enrollment_token_payload(token_string)
 
-	# Token signature is verified by the master during enrollment anyway,
-	# local verification is an optional extra security layer for paranoid setups
-	_log.debug("Enrollment token verification disabled — token signature will only be checked by master")
-	return _decode_enrollment_token_payload(token_string)
+	raise ValueError("WIREBUDDY_ENROLLMENT_VERIFY_KEY is required")
 
 
 def _load_state() -> dict[str, Any] | None:
 	"""Load persisted node runtime state."""
-	if not STATE_FILE.exists():
+	try:
+		state_stat = STATE_FILE.lstat()
+	except FileNotFoundError:
 		return None
 
-	mode = STATE_FILE.stat().st_mode & 0o777
+	if stat.S_ISLNK(state_stat.st_mode):
+		raise RuntimeError("Refusing to load node state from symlink")
+	if not stat.S_ISREG(state_stat.st_mode):
+		raise RuntimeError("Node state path is not a regular file")
+
+	mode = state_stat.st_mode & 0o777
 	if mode & 0o077:
 		raise RuntimeError("Insecure permissions on node state file")
+	if hasattr(os, "getuid") and state_stat.st_uid != os.getuid():
+		raise RuntimeError("Node state file is not owned by the current user")
 
 	try:
 		state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -183,12 +220,13 @@ def _save_state(state: dict[str, Any]) -> None:
 	)
 	tmp = Path(tmp_name)
 	try:
+		os.fchmod(fd, 0o600)
 		with os.fdopen(fd, "w", encoding="utf-8") as handle:
-			os.chmod(tmp, 0o600)
 			json.dump(state, handle, separators=(",", ":"), sort_keys=True)
 			handle.flush()
 			os.fsync(handle.fileno())
 		os.replace(tmp, STATE_FILE)
+		_fsync_dir(DATA_DIR)
 	except Exception:
 		try:
 			tmp.unlink(missing_ok=True)
@@ -300,10 +338,26 @@ def _read_last_speedtest_run() -> dt.date | None:
 def _write_last_speedtest_run(ts: float) -> None:
 	"""Write the timestamp of the last speedtest run."""
 	path = DATA_DIR / _SPEEDTEST_LAST_RUN_FILE
+	tmp_path = path.with_name(f".{path.name}.tmp")
 	try:
-		path.write_text(dt.fromtimestamp(ts).date().isoformat(), encoding="utf-8")
+		if path.exists() and path.is_symlink():
+			raise RuntimeError(f"Refusing to write speedtest timestamp through symlink: {path}")
+		fd = os.open(tmp_path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+		try:
+			with os.fdopen(fd, "w", encoding="utf-8") as handle:
+				fd = -1
+				handle.write(dt.fromtimestamp(ts).date().isoformat())
+				handle.flush()
+				os.fsync(handle.fileno())
+			os.replace(tmp_path, path)
+			_fsync_dir(DATA_DIR)
+		finally:
+			if fd != -1:
+				os.close(fd)
 	except OSError as exc:
 		_log.warning("Failed to write speedtest last run timestamp: %s", exc)
+	finally:
+		tmp_path.unlink(missing_ok=True)
 
 
 async def _send_speedtest_progress(
@@ -520,10 +574,25 @@ async def _speedtest_scheduler(
 			_log.exception("NODE_SPEEDTEST scheduler error")
 			# Wait a bit before retrying
 			try:
-					if await _interruptible_sleep(300, shutdown_event):
-						return
+				if await _interruptible_sleep(300, shutdown_event):
+					return
 			except asyncio.TimeoutError:
 				pass
+
+
+async def _ack_pending_command_ids(
+	command_ids: deque[int],
+	client: httpx.AsyncClient,
+	master_url: str,
+	api_secret: str,
+	cert_fingerprint: str,
+) -> None:
+	"""Acknowledge queued durable commands in order until one ACK fails."""
+	while command_ids:
+		command_id = command_ids[0]
+		if not await _ack_node_command(client, master_url, api_secret, cert_fingerprint, command_id):
+			return
+		command_ids.popleft()
 
 
 async def _speedtest_on_demand_handler(
@@ -532,12 +601,12 @@ async def _speedtest_on_demand_handler(
 	api_secret: str,
 	cert_fingerprint: str,
 	speedtest_requested_event: asyncio.Event,
+	speedtest_requested_command_ids: deque[int | None],
 	shutdown_event: asyncio.Event,
 ) -> None:
 	"""Background task that runs speedtests when requested via SSE.
 	
-	Waits for speedtest_requested_event to be set, then runs a speedtest
-	and clears the event. Can run multiple tests if event is set again.
+	Waits for speedtest_requested_event to be set, then runs queued speedtests.
 	"""
 	while not shutdown_event.is_set():
 		try:
@@ -558,9 +627,15 @@ async def _speedtest_on_demand_handler(
 				return
 			
 			if speedtest_requested_event.is_set():
-				speedtest_requested_event.clear()
+				command_id = speedtest_requested_command_ids.popleft() if speedtest_requested_command_ids else None
+				if not speedtest_requested_command_ids:
+					speedtest_requested_event.clear()
 				_log.info("NODE_SPEEDTEST on-demand request received from master")
 				await _run_node_speedtest(client, master_url, api_secret, cert_fingerprint)
+				if command_id is not None:
+					acked = await _ack_node_command(client, master_url, api_secret, cert_fingerprint, command_id)
+					if not acked:
+						_log.warning("Failed to ACK processed speedtest command_id=%s", command_id)
 		except asyncio.CancelledError:
 			return
 		except Exception:
@@ -571,9 +646,30 @@ async def _speedtest_on_demand_handler(
 @dataclass(frozen=True, slots=True)
 class EnrollResult:
 	success: bool
+	config: dict[str, Any] | None
 	config_version: str | None
 	session_secret: str | None
 	fatal: bool = False  # Permanent error — do not retry
+
+
+async def _read_limited_response(response: httpx.Response, limit: int) -> bytes:
+	"""Read a streamed HTTP response while enforcing a hard byte limit."""
+	content_length = response.headers.get("content-length")
+	if content_length is not None:
+		try:
+			if int(content_length) > limit:
+				raise RuntimeError("Config payload too large")
+		except ValueError:
+			pass
+
+	chunks: list[bytes] = []
+	total = 0
+	async for chunk in response.aiter_bytes():
+		total += len(chunk)
+		if total > limit:
+			raise RuntimeError("Config payload too large")
+		chunks.append(chunk)
+	return b"".join(chunks)
 
 
 async def main() -> None:
@@ -655,14 +751,22 @@ async def main() -> None:
 					_log.info("Ignoring WIREBUDDY_ENROLLMENT_TOKEN — already enrolled with this token")
 					payload = None  # Not needed, using existing state
 			except ValueError as exc:
-				_log.critical("Failed to parse enrollment token: %s", exc)
-				sys.exit(1)
+				# State exists but token verification failed (e.g. missing verify key).
+				# Continue with existing state rather than failing - the node was
+				# already enrolled successfully and can keep running.
+				_log.warning(
+					"Cannot verify enrollment token (%s) — continuing with existing enrollment (node=%s)",
+					exc,
+					state.get("node_id", "unknown"),
+				)
+				payload = None
 
 	# Use persisted state if available, otherwise use enrollment token payload
 	source = state if state is not None else payload
-	master_url = str(source["master_url"]).rstrip("/")
-	if not master_url.startswith(("http://", "https://")):
-		_log.critical("Invalid master_url %r: must start with http:// or https://", master_url)
+	try:
+		master_url = _validate_master_url(str(source["master_url"]))
+	except RuntimeError as exc:
+		_log.critical("%s", exc)
 		sys.exit(1)
 	node_id = str(source["node_id"])
 	api_secret = str(source["api_secret"])
@@ -706,6 +810,8 @@ async def main() -> None:
 		"node_id": node_id,
 		"node_name": node_name,
 	}
+	if state is not None and isinstance(state.get("enrollment_secret_hash"), str):
+		node_state["enrollment_secret_hash"] = state["enrollment_secret_hash"]
 
 	# Initialize metrics queue for reliable delivery
 	metrics_queue_conn = init_queue(DATA_DIR)
@@ -719,335 +825,376 @@ async def main() -> None:
 			queue_stats["oldest_ts"],
 		)
 
-	async with httpx.AsyncClient(
-		timeout=30.0,
-		verify=tls_verify,
-	) as client:
-		# Enrollment phase
-		if state is None:
-			current_config_version = None
-			session_secret: str | None = None
-			enrolled = False
-			for attempt in range(1, ENROLLMENT_RETRY_ATTEMPTS + 1):
-				enroll_res = await _enroll(
-					client,
+	remove_enrollment_state = False
+	try:
+		async with httpx.AsyncClient(
+			timeout=30.0,
+			verify=tls_verify,
+		) as client:
+			# Enrollment phase
+			if state is None:
+				current_config_version = None
+				enroll_config: dict[str, Any] | None = None
+				session_secret: str | None = None
+				enrolled = False
+				for attempt in range(1, ENROLLMENT_RETRY_ATTEMPTS + 1):
+					enroll_res = await _enroll(
+						client,
+						master_url,
+						token_str,
+						cert_pem,
+						api_secret,
+						cert_fingerprint,
+					)
+					if enroll_res.success:
+						enrolled = True
+						enroll_config = enroll_res.config
+						current_config_version = enroll_res.config_version
+						session_secret = enroll_res.session_secret
+						break
+					if enroll_res.fatal:
+						# Permanent error (token invalid, node deleted) — no point retrying
+						break
+					if attempt >= ENROLLMENT_RETRY_ATTEMPTS:
+						break
+
+					# Exponential backoff with jitter to avoid thundering herd
+					delay = min(2 ** (attempt - 1), 30) * random.uniform(0.8, 1.2)
+					_log.warning(
+						"Enrollment attempt %d/%d failed, retrying in %.1fs",
+						attempt,
+						ENROLLMENT_RETRY_ATTEMPTS,
+						delay,
+					)
+					if await _interruptible_sleep(delay, shutdown_event):
+						break
+
+				if not enrolled:
+					# No cached state (we're in enrollment phase where state is None) and enrollment failed — fatal
+					_log.critical("Enrollment failed and no cached state available — exiting")
+					sys.exit(1)
+				# Replace the enrollment api_secret with the session secret
+				# returned by the master.  This makes the enrollment token
+				# worthless — an attacker who captured it cannot authenticate.
+				if not session_secret:
+					if os.getenv("WIREBUDDY_ALLOW_LEGACY_NODE_SECRET") != "1":
+						_log.critical("Master did not return a session secret; refusing to persist enrollment secret")
+						sys.exit(1)
+					_log.warning("Using enrollment secret as node API secret due to explicit legacy override")
+				else:
+					# Store a hash of the original token secret so we can detect
+					# genuinely new tokens on future restarts.
+					node_state["enrollment_secret_hash"] = hashlib.sha256(
+						api_secret.encode("utf-8")
+					).hexdigest()
+					api_secret = session_secret
+					node_state["api_secret"] = api_secret
+					# Log first 8 chars of the new secret hash for debugging
+					new_secret_hash = hashlib.sha256(api_secret.encode("utf-8")).hexdigest()
+					_log.info("Switched to session secret (hash=%s...)", new_secret_hash[:8])
+
+				current_config_version = current_config_version or None
+				node_state["config_version"] = current_config_version
+				await asyncio.to_thread(_save_state, node_state)
+
+				if enroll_config is not None:
+					try:
+						current_config_version = await asyncio.to_thread(apply_config, enroll_config)
+						await asyncio.to_thread(_check_firewall_dns_rules)
+						if current_config_version is not None:
+							node_state["config_version"] = current_config_version
+							await asyncio.to_thread(_save_state, node_state)
+					except Exception as exc:
+						_log.warning("Initial config apply after enrollment failed: %s", exc)
+
+				if current_config_version is None:
+					_log.info("Enrollment completed without config payload, fetching full config...")
+					try:
+						for attempt in range(2):
+							try:
+								current_config_version = await _pull_config(
+									client,
+									master_url,
+									node_id,
+									None,
+									api_secret,
+									cert_fingerprint,
+								)
+								break
+							except httpx.HTTPStatusError as exc:
+								if attempt == 0 and exc.response.status_code == 401 and session_secret:
+									_log.info("Session secret not ready yet; retrying config pull once")
+									await asyncio.sleep(SESSION_PROPAGATION_DELAY)
+									continue
+								_log.warning("Initial config pull after enrollment failed: %s", exc)
+								break
+					except Exception as exc:
+						_log.exception("Unexpected error during initial config pull: %s", exc)
+					else:
+						if current_config_version is not None:
+							node_state["config_version"] = current_config_version
+							await asyncio.to_thread(_save_state, node_state)
+
+				_log.info("Enrollment successful, starting sync loop")
+			else:
+				if state.get("master_ca_file") != master_ca_file:
+					await asyncio.to_thread(_save_state, node_state)
+				_log.info("Already enrolled, resuming sync loop")
+				
+				# Check if we have a cached config but no running interfaces
+				# This can happen after container restart - state is preserved but WG is down
+				if current_config_version and not await asyncio.to_thread(has_running_interfaces):
+					_log.info("Cached config version exists but no WG interfaces running — forcing full config pull")
+					current_config_version = None
+
+				# Initial config pull on resume (before entering loop)
+				# This ensures we have config even if heartbeat fails
+				if current_config_version is None:
+					_log.info("Pulling initial config...")
+					try:
+						current_config_version = await _pull_config(
+							client,
+							master_url,
+							node_id,
+							None,  # Force full pull (no ETag)
+							api_secret,
+							cert_fingerprint,
+						)
+						if current_config_version:
+							node_state["config_version"] = current_config_version
+							await asyncio.to_thread(_save_state, node_state)
+					except Exception as exc:
+						_log.warning("Initial config pull failed: %s", exc)
+
+			# Debug: log which secret hash will be used for authentication
+			_log.debug(
+				"Using api_secret hash=%s... for sync requests",
+				hashlib.sha256(api_secret.encode("utf-8")).hexdigest()[:8],
+			)
+
+			# Start SSE listener for instant push notifications
+			config_changed_event = asyncio.Event()
+			config_command_ids: deque[int] = deque()
+			node_removed_event = asyncio.Event()  # Set when 401 auth failures indicate node removal
+			speedtest_requested_event = asyncio.Event()  # Set when master requests on-demand speedtest
+			speedtest_requested_command_ids: deque[int | None] = deque()
+			sse_connected_event = asyncio.Event()  # Tracks whether SSE is currently connected
+			sse_task = asyncio.create_task(
+				_sse_listener(
 					master_url,
-					token_str,
-					cert_pem,
 					api_secret,
 					cert_fingerprint,
+					tls_verify,
+					master_ca_file,
+					config_changed_event,
+					config_command_ids,
+					shutdown_event,
+					node_removed_event,
+					speedtest_requested_event,
+					speedtest_requested_command_ids,
+					sse_connected_event,
 				)
-				if enroll_res.success:
-					enrolled = True
-					current_config_version = enroll_res.config_version
-					session_secret = enroll_res.session_secret
-					break
-				if enroll_res.fatal:
-					# Permanent error (token invalid, node deleted) — no point retrying
-					break
-				if attempt >= ENROLLMENT_RETRY_ATTEMPTS:
-					break
+			)
 
-				# Exponential backoff with jitter to avoid thundering herd
-				delay = min(2 ** (attempt - 1), 30) * random.uniform(0.8, 1.2)
-				_log.warning(
-					"Enrollment attempt %d/%d failed, retrying in %.1fs",
-					attempt,
-					ENROLLMENT_RETRY_ATTEMPTS,
-					delay,
+			# Start daily speedtest scheduler
+			speedtest_task = asyncio.create_task(
+				_speedtest_scheduler(
+					client,
+					master_url,
+					api_secret,
+					cert_fingerprint,
+					shutdown_event,
 				)
-				if await _interruptible_sleep(delay, shutdown_event):
-					break
+			)
 
-			if not enrolled:
-				# No cached state (we're in enrollment phase where state is None) and enrollment failed — fatal
-				_log.critical("Enrollment failed and no cached state available — exiting")
-				sys.exit(1)
-			# Replace the enrollment api_secret with the session secret
-			# returned by the master.  This makes the enrollment token
-			# worthless — an attacker who captured it cannot authenticate.
-			if session_secret:
-				# Store a hash of the original token secret so we can detect
-				# genuinely new tokens on future restarts.
-				node_state["enrollment_secret_hash"] = hashlib.sha256(
-					api_secret.encode("utf-8")
-				).hexdigest()
-				api_secret = session_secret
-				node_state["api_secret"] = api_secret
-				# Log first 8 chars of the new secret hash for debugging
-				new_secret_hash = hashlib.sha256(api_secret.encode("utf-8")).hexdigest()
-				_log.info("Switched to session secret (hash=%s...)", new_secret_hash[:8])
+			# Start on-demand speedtest handler (triggered via SSE from master)
+			speedtest_on_demand_task = asyncio.create_task(
+				_speedtest_on_demand_handler(
+					client,
+					master_url,
+					api_secret,
+					cert_fingerprint,
+					speedtest_requested_event,
+					speedtest_requested_command_ids,
+					shutdown_event,
+				)
+			)
 
-			current_config_version = current_config_version or None
-			node_state["config_version"] = current_config_version
-			await asyncio.to_thread(_save_state, node_state)
+			# Sync loop
+			backoff = 1
+			consecutive_401_failures = 0  # Track auth failures to detect removal
+			last_saved_state = dict(node_state)  # Track for write guard
+			try:
+				while not shutdown_event.is_set():
+					# Check if node was removed (via SSE 401 or explicit event)
+					if node_removed_event.is_set():
+						_log.warning("Node removal detected (authentication failure) — scheduling local state cleanup")
+						remove_enrollment_state = True
+						shutdown_event.set()
+						break
 
-			if current_config_version is None:
-				_log.info("Enrollment completed without config payload, fetching full config...")
-				try:
-					for attempt in range(2):
+					_log.debug("Sync loop: iteration start")
+					heartbeat_failed = False
+					config_failed = False
+
+					# Check if SSE triggered a config change
+					config_push_received = config_changed_event.is_set()
+					if config_push_received:
+						config_changed_event.clear()
+						_log.info("Config push received via SSE — pulling config immediately")
+
+					# Sample WireGuard stats ONCE per iteration (avoid double syscalls)
+					# Note: Heartbeat will handle both queue delivery and live peer_stats submission
+					wg_dump: dict[str, Any] = {}
+					try:
+						wg_dump = await asyncio.to_thread(get_wg_dump)
+					except Exception as exc:
+						_log.debug("Failed to sample WG metrics: %s", exc)
+
+					# Build peer stats list once — used for both queue and heartbeat
+					peer_stats_list = [
+						{
+							"public_key": pub_key,
+							"endpoint": stats.get("endpoint"),
+							"latest_handshake": stats.get("latest_handshake"),
+							"transfer_rx": stats.get("transfer_rx", 0),
+							"transfer_tx": stats.get("transfer_tx", 0),
+						}
+						for pub_key, stats in wg_dump.items()
+					]
+					if peer_stats_list:
 						try:
-							current_config_version = await _pull_config(
+							await asyncio.to_thread(enqueue_peer_traffic, metrics_queue_conn, peer_stats_list)
+						except Exception as exc:
+							_log.debug("Failed to enqueue peer metrics: %s", exc)
+
+					try:
+						_log.debug("Sync loop: sending heartbeat...")
+						await _push_heartbeat(
+							client,
+							master_url,
+							node_id,
+							api_secret,
+							cert_fingerprint,
+							metrics_queue_conn,
+							peer_stats_list,  # Pass pre-built list (avoid duplicate comprehension)
+						)
+						_log.debug("Sync loop: heartbeat OK")
+						consecutive_401_failures = 0  # Reset on success
+					except httpx.HTTPStatusError as exc:
+						detail = _extract_error_detail(exc.response)
+						_log.warning("Heartbeat failed: HTTP %d (detail: %s)", exc.response.status_code, detail)
+						heartbeat_failed = True
+						if exc.response.status_code == 401:
+							consecutive_401_failures += 1
+							if consecutive_401_failures >= _MAX_AUTH_FAILURES:
+								_log.error(
+									"Multiple consecutive 401 errors (%d) — node likely removed from master",
+									consecutive_401_failures,
+								)
+								node_removed_event.set()
+						else:
+							consecutive_401_failures = 0  # Reset on non-auth errors
+					except httpx.HTTPError as exc:
+						_log.warning("Heartbeat failed: %s", exc)
+						heartbeat_failed = True
+					except Exception as exc:
+						_log.exception("Unexpected heartbeat failure: %s", exc)
+						heartbeat_failed = True
+
+					try:
+						# Always try to pull config, regardless of heartbeat status
+						# Config and heartbeat are separate concerns - a heartbeat failure
+						# shouldn't block getting the initial/updated configuration
+						_log.debug("Sync loop: pulling config...")
+						should_ack_config_commands = config_push_received or bool(config_command_ids)
+						new_version = await _pull_config(
+							client,
+							master_url,
+							node_id,
+							current_config_version,
+							api_secret,
+							cert_fingerprint,
+						)
+						if new_version is not None:
+							_log.debug("Sync loop: config updated to %s...", new_version[:16])
+							current_config_version = new_version
+							node_state["config_version"] = current_config_version
+							# Write guard: only save if state actually changed
+							if node_state != last_saved_state:
+								await asyncio.to_thread(_save_state, node_state)
+								last_saved_state = dict(node_state)
+						else:
+							_log.debug("Sync loop: config unchanged")
+						if should_ack_config_commands and config_command_ids:
+							await _ack_pending_command_ids(
+								config_command_ids,
 								client,
 								master_url,
-								node_id,
-								None,
 								api_secret,
 								cert_fingerprint,
 							)
-							break
-						except httpx.HTTPStatusError as exc:
-							if attempt == 0 and exc.response.status_code == 401 and session_secret:
-								_log.info("Session secret not ready yet; retrying config pull once")
-								await asyncio.sleep(SESSION_PROPAGATION_DELAY)
-								continue
-							_log.warning("Initial config pull after enrollment failed: %s", exc)
-							break
-				except Exception as exc:
-					_log.exception("Unexpected error during initial config pull: %s", exc)
-				else:
-					node_state["config_version"] = current_config_version
-					await asyncio.to_thread(_save_state, node_state)
 
-			_log.info("Enrollment successful, starting sync loop")
-		else:
-			if state.get("master_ca_file") != master_ca_file:
-				await asyncio.to_thread(_save_state, node_state)
-			_log.info("Already enrolled, resuming sync loop")
-			
-			# Check if we have a cached config but no running interfaces
-			# This can happen after container restart - state is preserved but WG is down
-			if current_config_version and not await asyncio.to_thread(has_running_interfaces):
-				_log.info("Cached config version exists but no WG interfaces running — forcing full config pull")
-				current_config_version = None
-
-			# Initial config pull on resume (before entering loop)
-			# This ensures we have config even if heartbeat fails
-			if current_config_version is None:
-				_log.info("Pulling initial config...")
-				try:
-					current_config_version = await _pull_config(
-						client,
-						master_url,
-						node_id,
-						None,  # Force full pull (no ETag)
-						api_secret,
-						cert_fingerprint,
-					)
-					if current_config_version:
-						node_state["config_version"] = current_config_version
-						await asyncio.to_thread(_save_state, node_state)
-				except Exception as exc:
-					_log.warning("Initial config pull failed: %s", exc)
-
-		# Debug: log which secret hash will be used for authentication
-		_log.debug("Using api_secret hash=%s... for sync requests",
-			hashlib.sha256(api_secret.encode("utf-8")).hexdigest()[:8])
-
-		# Start SSE listener for instant push notifications
-		config_changed_event = asyncio.Event()
-		node_removed_event = asyncio.Event()  # Set when 401 auth failures indicate node removal
-		speedtest_requested_event = asyncio.Event()  # Set when master requests on-demand speedtest
-		sse_connected_event = asyncio.Event()  # Tracks whether SSE is currently connected
-		sse_task = asyncio.create_task(
-			_sse_listener(
-				master_url,
-				api_secret,
-				cert_fingerprint,
-				tls_verify,
-				master_ca_file,
-				config_changed_event,
-				shutdown_event,
-				node_removed_event,
-				speedtest_requested_event,
-				sse_connected_event,
-			)
-		)
-		
-		# Start daily speedtest scheduler
-		speedtest_task = asyncio.create_task(
-			_speedtest_scheduler(
-				client,
-				master_url,
-				api_secret,
-				cert_fingerprint,
-				shutdown_event,
-			)
-		)
-		
-		# Start on-demand speedtest handler (triggered via SSE from master)
-		speedtest_on_demand_task = asyncio.create_task(
-			_speedtest_on_demand_handler(
-				client,
-				master_url,
-				api_secret,
-				cert_fingerprint,
-				speedtest_requested_event,
-				shutdown_event,
-			)
-		)
-
-		# Sync loop
-		backoff = 1
-		consecutive_401_failures = 0  # Track auth failures to detect removal
-		last_saved_state = dict(node_state)  # Track for write guard
-		try:
-			while not shutdown_event.is_set():
-				# Check if node was removed (via SSE 401 or explicit event)
-				if node_removed_event.is_set():
-					_log.warning("Node removal detected (authentication failure) — clearing state")
-					await asyncio.to_thread(_clear_enrollment_state)
-					break
-				
-				_log.debug("Sync loop: iteration start")
-				heartbeat_failed = False
-				config_failed = False
-				auth_failed = False  # Track 401 errors specifically
-				
-				# Check if SSE triggered a config change
-				config_push_received = config_changed_event.is_set()
-				if config_push_received:
-					config_changed_event.clear()
-					_log.info("Config push received via SSE — pulling config immediately")
-				
-				# Sample WireGuard stats ONCE per iteration (avoid double syscalls)
-				# Note: Heartbeat will handle both queue delivery and live peer_stats submission
-				wg_dump: dict[str, Any] = {}
-				try:
-					wg_dump = await asyncio.to_thread(get_wg_dump)
-				except Exception as exc:
-					_log.debug("Failed to sample WG metrics: %s", exc)
-				
-				# Build peer stats list once — used for both queue and heartbeat
-				peer_stats_list = [
-					{
-						"public_key": pub_key,
-						"endpoint": stats.get("endpoint"),
-						"latest_handshake": stats.get("latest_handshake"),
-						"transfer_rx": stats.get("transfer_rx", 0),
-						"transfer_tx": stats.get("transfer_tx", 0),
-					}
-					for pub_key, stats in wg_dump.items()
-				]
-				if peer_stats_list:
-					try:
-						await asyncio.to_thread(enqueue_peer_traffic, metrics_queue_conn, peer_stats_list)
+					except httpx.HTTPStatusError as exc:
+						detail = _extract_error_detail(exc.response)
+						_log.warning("Config sync error: HTTP %d (detail: %s)", exc.response.status_code, detail)
+						config_failed = True
+					except httpx.HTTPError as exc:
+						_log.warning("Config sync error: %s", exc)
+						config_failed = True
 					except Exception as exc:
-						_log.debug("Failed to enqueue peer metrics: %s", exc)
-				
-				try:
-					_log.debug("Sync loop: sending heartbeat...")
-					await _push_heartbeat(
-						client,
-						master_url,
-						node_id,
-						api_secret,
-						cert_fingerprint,
-						metrics_queue_conn,
-						peer_stats_list,  # Pass pre-built list (avoid duplicate comprehension)
-					)
-					_log.debug("Sync loop: heartbeat OK")
-					consecutive_401_failures = 0  # Reset on success
-				except httpx.HTTPStatusError as exc:
-					detail = _extract_error_detail(exc.response)
-					_log.warning("Heartbeat failed: HTTP %d (detail: %s)", exc.response.status_code, detail)
-					heartbeat_failed = True
-					if exc.response.status_code == 401:
-						auth_failed = True
-						consecutive_401_failures += 1
-						if consecutive_401_failures >= _MAX_AUTH_FAILURES:
-							_log.error(
-								"Multiple consecutive 401 errors (%d) — node likely removed from master",
-								consecutive_401_failures
-							)
-							node_removed_event.set()
+						_log.exception("Unexpected error while pulling config: %s", exc)
+						config_failed = True
+
+					if heartbeat_failed or config_failed:
+						# Exponential backoff with jitter
+						backoff = min(backoff * 2, 60)
+						wait_time = backoff * random.uniform(0.8, 1.2)
+						if config_failed:
+							_log.warning("Retrying config pull in %.1fs", wait_time)
 					else:
-						consecutive_401_failures = 0  # Reset on non-auth errors
-				except httpx.HTTPError as exc:
-					_log.warning("Heartbeat failed: %s", exc)
-					heartbeat_failed = True
-				except Exception as exc:
-					_log.exception("Unexpected heartbeat failure: %s", exc)
-					heartbeat_failed = True
+						backoff = 1  # Reset on success
+						# Adaptive polling: use fast interval when SSE is disconnected
+						# to ensure near-real-time config updates even without SSE push
+						if sse_connected_event.is_set():
+							wait_time = SYNC_INTERVAL
+						else:
+							wait_time = SYNC_INTERVAL_FAST
+							_log.debug("SSE disconnected — using fast polling interval (%ds)", SYNC_INTERVAL_FAST)
 
-				try:
-					# Always try to pull config, regardless of heartbeat status
-					# Config and heartbeat are separate concerns - a heartbeat failure
-					# shouldn't block getting the initial/updated configuration
-					_log.debug("Sync loop: pulling config...")
-					new_version = await _pull_config(
-						client,
-						master_url,
-						node_id,
-						current_config_version,
-						api_secret,
-						cert_fingerprint,
-					)
-					if new_version is not None:
-						_log.debug("Sync loop: config updated to %s...", new_version[:16])
-						current_config_version = new_version
-						node_state["config_version"] = current_config_version
-						# Write guard: only save if state actually changed
-						if node_state != last_saved_state:
-							await asyncio.to_thread(_save_state, node_state)
-							last_saved_state = dict(node_state)
-					else:
-						_log.debug("Sync loop: config unchanged")
+					_log.debug("Sync loop: waiting %.1fs (backoff=%d)", wait_time, backoff)
 
-				except httpx.HTTPStatusError as exc:
-					detail = _extract_error_detail(exc.response)
-					_log.warning("Config sync error: HTTP %d (detail: %s)", exc.response.status_code, detail)
-					config_failed = True
-				except httpx.HTTPError as exc:
-					_log.warning("Config sync error: %s", exc)
-					config_failed = True
-				except Exception as exc:
-					_log.exception("Unexpected error while pulling config: %s", exc)
-					config_failed = True
+					# Wait for interval with interruptible check for events
+					while wait_time > 0 and not shutdown_event.is_set() and not config_changed_event.is_set():
+						sleep_chunk = min(1.0, wait_time)
+						if await _interruptible_sleep(sleep_chunk, shutdown_event):
+							break  # Shutdown requested
+						wait_time -= sleep_chunk
 
-				if heartbeat_failed or config_failed:
-					# Exponential backoff with jitter
-					backoff = min(backoff * 2, 60)
-					wait_time = backoff * random.uniform(0.8, 1.2)
-					if config_failed:
-						_log.warning("Retrying config pull in %.1fs", wait_time)
-				else:
-					backoff = 1  # Reset on success
-					# Adaptive polling: use fast interval when SSE is disconnected
-					# to ensure near-real-time config updates even without SSE push
-					if sse_connected_event.is_set():
-						wait_time = SYNC_INTERVAL
-					else:
-						wait_time = SYNC_INTERVAL_FAST
-						_log.debug("SSE disconnected — using fast polling interval (%ds)", SYNC_INTERVAL_FAST)
-				
-				_log.debug("Sync loop: waiting %.1fs (backoff=%d)", wait_time, backoff)
-				
-				# Wait for interval with interruptible check for events
-				while wait_time > 0 and not shutdown_event.is_set() and not config_changed_event.is_set():
-					sleep_chunk = min(1.0, wait_time)
-					if await _interruptible_sleep(sleep_chunk, shutdown_event):
-						break  # Shutdown requested
-					wait_time -= sleep_chunk
-				
-				if shutdown_event.is_set():
-					_log.debug("Sync loop: shutdown requested")
-					break
-				# If config_changed_event is set, loop continues immediately
-				_log.debug("Sync loop: continuing iteration")
+					if shutdown_event.is_set():
+						_log.debug("Sync loop: shutdown requested")
+						break
+					# If config_changed_event is set, loop continues immediately
+					_log.debug("Sync loop: continuing iteration")
 
-		except Exception as exc:
-			_log.exception("Sync loop crashed with unexpected error: %s", exc)
-			raise
-		finally:
-			await _cancel_tasks(sse_task, speedtest_task, speedtest_on_demand_task)
-
-	# Graceful shutdown
-	_log.info("Closing metrics queue...")
-	close_queue(metrics_queue_conn)
-	_log.info("Shutting down WireGuard interfaces...")
-	await asyncio.to_thread(shutdown_all_interfaces)
-	_log.info("Node daemon stopped")
+			except Exception as exc:
+				_log.exception("Sync loop crashed with unexpected error: %s", exc)
+				raise
+			finally:
+				if node_removed_event.is_set():
+					remove_enrollment_state = True
+				await _cancel_tasks(sse_task, speedtest_task, speedtest_on_demand_task)
+	finally:
+		_log.info("Closing metrics queue...")
+		close_queue(metrics_queue_conn)
+		if remove_enrollment_state:
+			try:
+				await asyncio.to_thread(_clear_enrollment_state)
+			except Exception:
+				_log.exception("Failed to clear enrollment state during shutdown")
+		_log.info("Shutting down WireGuard interfaces...")
+		await asyncio.to_thread(shutdown_all_interfaces)
+		_log.info("Node daemon stopped")
 
 
 async def _enroll(
@@ -1080,19 +1227,15 @@ async def _enroll(
 				"Enrollment rejected: Node is enrolled with a different certificate. "
 				"Delete the node in the master UI and generate a new enrollment token."
 			)
-			return EnrollResult(success=False, config_version=None, session_secret=None, fatal=True)
+			return EnrollResult(success=False, config=None, config_version=None, session_secret=None, fatal=True)
 		resp.raise_for_status()
 		data = resp.json()
 		config = data.get("data", {})
 		session_secret = config.pop("session_secret", None) if config else None
-		version = ""
-		if config:
-			version = await asyncio.to_thread(apply_config, config)
-			# Check/fix firewall rules now that wg0 exists
-			await asyncio.to_thread(_check_firewall_dns_rules)
+		version = config.get("config_version") if isinstance(config, dict) else None
 		if session_secret:
 			_log.info("Received session secret from master (enrollment token is now invalidated)")
-		return EnrollResult(success=True, config_version=version, session_secret=session_secret)
+		return EnrollResult(success=True, config=config or None, config_version=version, session_secret=session_secret)
 	except httpx.HTTPStatusError as exc:
 		status_code = exc.response.status_code
 		detail = _extract_error_detail(exc.response)
@@ -1103,18 +1246,18 @@ async def _enroll(
 				status_code,
 				detail or "no details",
 			)
-			return EnrollResult(success=False, config_version=None, session_secret=None, fatal=True)
+			return EnrollResult(success=False, config=None, config_version=None, session_secret=None, fatal=True)
 		_log.error("Enrollment HTTP error %d: %s", status_code, detail or exc.response.text[:200])
-		return EnrollResult(success=False, config_version=None, session_secret=None)
+		return EnrollResult(success=False, config=None, config_version=None, session_secret=None)
 	except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.WriteTimeout) as exc:
 		_log.error("Enrollment timeout: %s", type(exc).__name__)
-		return EnrollResult(success=False, config_version=None, session_secret=None)
+		return EnrollResult(success=False, config=None, config_version=None, session_secret=None)
 	except httpx.ConnectError as exc:
 		_log.error("Enrollment connection failed: master unreachable")
-		return EnrollResult(success=False, config_version=None, session_secret=None)
+		return EnrollResult(success=False, config=None, config_version=None, session_secret=None)
 	except Exception as exc:
 		_log.exception("Enrollment failed: %s", exc)
-		return EnrollResult(success=False, config_version=None, session_secret=None)
+		return EnrollResult(success=False, config=None, config_version=None, session_secret=None)
 
 
 async def _push_heartbeat(
@@ -1187,24 +1330,26 @@ async def _sse_listener(
 	tls_verify: ssl.SSLContext | bool,
 	master_ca_file: str | None,
 	config_changed_event: asyncio.Event,
+	config_command_ids: deque[int],
 	shutdown_event: asyncio.Event,
 	node_removed_event: asyncio.Event,
 	speedtest_requested_event: asyncio.Event,
+	speedtest_requested_command_ids: deque[int | None],
 	sse_connected_event: asyncio.Event | None = None,
 ) -> None:
 	"""Listen for Server-Sent Events from master for instant config push.
 	
-	When a config_changed event is received, sets config_changed_event
-	to trigger an immediate config pull in the main sync loop.
+	When a config_changed event is received, queues its command id and
+	sets config_changed_event to trigger an immediate config pull.
 	
 	When a restart_requested event is received, sets shutdown_event
 	to trigger a graceful restart (Docker/systemd will restart the daemon).
 	
-	When a node_removed event is received, clears enrollment state and
-	sets shutdown_event to trigger a clean exit.
+	When a node_removed event is received, it signals the main task to
+	perform ordered cleanup and state removal.
 	
-	When a run_speedtest event is received, sets speedtest_requested_event
-	to trigger an immediate speedtest.
+	When a run_speedtest event is received, it queues the command for the
+	on-demand speedtest handler.
 	
 	Args:
 		master_ca_file: CA file path (if custom CA configured) for creating fresh SSL context
@@ -1220,10 +1365,11 @@ async def _sse_listener(
 	try:
 		# Create fresh SSL context for this client (avoid sharing state)
 		sse_tls_context, _ = _create_ssl_context(master_ca_file)
+		sse_timeout = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
 		
 		# Create client outside loop to reuse connections and avoid TLS overhead
 		async with httpx.AsyncClient(
-			timeout=None,  # SSE connections are long-lived
+			timeout=sse_timeout,
 			verify=sse_tls_context,  # Use fresh context
 		) as sse_client:
 			while not shutdown_event.is_set():
@@ -1252,50 +1398,51 @@ async def _sse_listener(
 
 						event_type: str | None = None
 						event_buffer: list[str] = []
-						async for line in response.aiter_lines():
-							if shutdown_event.is_set():
-								break
-							
-							line = line.rstrip("\n")
-							if line.startswith(":"):
-								continue  # Comment or keepalive
-							
-							if line.startswith("event:"):
-								event_type = line[6:].strip()
-							elif line.startswith("data:"):
-								chunk = line[5:].strip()
-								if sum(len(part) for part in event_buffer) + len(chunk) > _MAX_SSE_EVENT_SIZE:
-									raise RuntimeError("SSE event too large")
-								event_buffer.append(chunk)
-							elif line == "":
-								if event_type and event_buffer:
-									data = "\n".join(event_buffer)
-									command_id = _extract_command_id(data)
-									if event_type == "config_changed":
-										_log.info("Received config_changed event from master")
-										config_changed_event.set()
-										if command_id is not None:
-											await _ack_node_command(sse_client, master_url, api_secret, cert_fingerprint, command_id)
-									elif event_type == "restart_requested":
-										_log.warning("Received restart_requested event from master — initiating graceful shutdown")
-										if command_id is not None:
-											await _ack_node_command(sse_client, master_url, api_secret, cert_fingerprint, command_id)
-										shutdown_event.set()
-										return
-									elif event_type == "node_removed":
-										_log.warning("Received node_removed event from master — clearing state and exiting")
-										if command_id is not None:
-											await _ack_node_command(sse_client, master_url, api_secret, cert_fingerprint, command_id)
-										await asyncio.to_thread(_clear_enrollment_state)
-										shutdown_event.set()
-										return
-									elif event_type == "run_speedtest":
-										_log.info("Received run_speedtest event from master — triggering on-demand speedtest")
-										speedtest_requested_event.set()
-										if command_id is not None:
-											await _ack_node_command(sse_client, master_url, api_secret, cert_fingerprint, command_id)
-								event_type = None
-								event_buffer.clear()
+						try:
+							async for line in response.aiter_lines():
+								if shutdown_event.is_set():
+									break
+								
+								line = line.rstrip("\n")
+								if line.startswith(":"):
+									continue  # Comment or keepalive
+								
+								if line.startswith("event:"):
+									event_type = line[6:].strip()
+								elif line.startswith("data:"):
+									chunk = line[5:].strip()
+									if sum(len(part) for part in event_buffer) + len(chunk) > _MAX_SSE_EVENT_SIZE:
+										raise RuntimeError("SSE event too large")
+									event_buffer.append(chunk)
+								elif line == "":
+									if event_type and event_buffer:
+										data = "\n".join(event_buffer)
+										command_id = _extract_command_id(data)
+										if event_type == "config_changed":
+											_log.info("Received config_changed event from master")
+											if command_id is not None:
+												config_command_ids.append(command_id)
+											config_changed_event.set()
+										elif event_type == "restart_requested":
+											_log.warning("Received restart_requested event from master — initiating graceful shutdown")
+											if command_id is not None:
+												await _ack_node_command(sse_client, master_url, api_secret, cert_fingerprint, command_id)
+											shutdown_event.set()
+											return
+										elif event_type == "node_removed":
+											_log.warning("Received node_removed event from master — scheduling shutdown")
+											node_removed_event.set()
+											shutdown_event.set()
+											return
+										elif event_type == "run_speedtest":
+											_log.info("Received run_speedtest event from master — queueing on-demand speedtest")
+											speedtest_requested_command_ids.append(command_id)
+											speedtest_requested_event.set()
+									event_type = None
+									event_buffer.clear()
+						finally:
+							if sse_connected_event is not None:
+								sse_connected_event.clear()
 						
 				except httpx.HTTPStatusError as exc:
 					# Signal SSE disconnected so sync loop switches to fast polling
@@ -1362,15 +1509,15 @@ async def _pull_config(
 	if current_version:
 		params["version"] = current_version
 
-	resp = await client.get(
+	async with client.stream(
+		"GET",
 		f"{master_url}/api/nodes/config",
 		headers=_build_request_headers(api_secret, cert_fingerprint),
 		params=params,
-	)
-	resp.raise_for_status()
-	if len(resp.content) > _MAX_CONFIG_SIZE:
-		raise RuntimeError("Config payload too large")
-	data = resp.json()
+	) as resp:
+		resp.raise_for_status()
+		body = await _read_limited_response(resp, _MAX_CONFIG_SIZE)
+	data = json.loads(body)
 
 	config = data.get("data")
 	if config is None:

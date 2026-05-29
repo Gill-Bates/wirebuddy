@@ -286,23 +286,124 @@ jobs:
             "${IMAGE_NAME}:${VERSION}-amd64" \
             "${IMAGE_NAME}:${VERSION}-arm64"
 
-          if [[ "$VERSION" != *"-"* ]]; then
-            docker buildx imagetools create \
-              --tag "${IMAGE_NAME}:latest" \
-              "${IMAGE_NAME}:${VERSION}-amd64" \
-              "${IMAGE_NAME}:${VERSION}-arm64"
-          fi
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:latest" \
+            "${IMAGE_NAME}:${VERSION}-amd64" \
+            "${IMAGE_NAME}:${VERSION}-arm64"
 
           echo "Pushed manifests:"
           echo "  ${IMAGE_NAME}:${VERSION}"
-          if [[ "$VERSION" != *"-"* ]]; then
-            echo "  ${IMAGE_NAME}:latest"
+          echo "  ${IMAGE_NAME}:latest"
+
+  cleanup-dockerhub-tags:
+    name: Keep only latest and current version tag
+    needs: [meta, create-manifest]
+    if: needs.create-manifest.result == 'success'
+    runs-on: ubuntu-24.04
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    permissions:
+      contents: read
+
+    steps:
+      - name: Delete all non-current Docker Hub tags
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          REPOSITORY: wirebuddy
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "ERROR: jq is required for Docker Hub tag cleanup"
+            exit 1
           fi
+
+          keep_version="${VERSION}"
+          keep_latest="latest"
+          api_base="https://hub.docker.com/v2/namespaces/${DOCKERHUB_USERNAME}/repositories/${REPOSITORY}/tags"
+
+          echo "Keeping Docker Hub tags:"
+          echo "  ${DOCKERHUB_USERNAME}/${REPOSITORY}:${keep_version}"
+          echo "  ${DOCKERHUB_USERNAME}/${REPOSITORY}:${keep_latest}"
+
+          token_response="$(
+            jq -nc \
+              --arg username "$DOCKERHUB_USERNAME" \
+              --arg password "$DOCKERHUB_TOKEN" \
+              '{username: $username, password: $password}' \
+            | curl -fsSL \
+                -H 'Content-Type: application/json' \
+                -d @- \
+                'https://hub.docker.com/v2/users/login/'
+          )"
+
+          hub_token="$(printf '%s' "$token_response" | jq -r '.token // .access_token // empty')"
+          if [[ -z "$hub_token" ]]; then
+            echo "ERROR: Failed to obtain Docker Hub API token"
+            printf '%s\n' "$token_response"
+            exit 1
+          fi
+
+          declare -a tags_to_delete=()
+          next_url="${api_base}?page_size=100"
+          while [[ -n "$next_url" && "$next_url" != "null" ]]; do
+            response="$(curl -fsSL \
+              -H "Authorization: Bearer ${hub_token}" \
+              "$next_url")"
+
+            while IFS= read -r tag; do
+              [[ -n "$tag" ]] || continue
+
+              if [[ "$tag" == "$keep_version" || "$tag" == "$keep_latest" ]]; then
+                echo "Keeping tag: $tag"
+                continue
+              fi
+
+              tags_to_delete+=("$tag")
+            done < <(printf '%s' "$response" | jq -r '.results[].name')
+
+            next_url="$(printf '%s' "$response" | jq -r '.next // empty')"
+          done
+
+          for tag in "${tags_to_delete[@]}"; do
+            echo "Deleting tag: $tag"
+            status_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              -X DELETE \
+              -H "Authorization: Bearer ${hub_token}" \
+              "${api_base}/${tag}")"
+
+            case "$status_code" in
+              202|204)
+                echo "Deleted tag: $tag"
+                ;;
+              404)
+                echo "Tag already absent: $tag"
+                ;;
+              *)
+                echo "ERROR: Failed to delete tag '$tag' (HTTP $status_code)"
+                exit 1
+                ;;
+            esac
+          done
+
+          remaining_tags="$(curl -fsSL \
+            -H "Authorization: Bearer ${hub_token}" \
+            "${api_base}?page_size=100" | jq -r '.results[].name')"
+
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            if [[ "$tag" != "$keep_version" && "$tag" != "$keep_latest" ]]; then
+              echo "ERROR: Unexpected tag remained after cleanup: $tag"
+              exit 1
+            fi
+          done <<< "$remaining_tags"
 
   create-release:
     name: Create GitHub Release
-    needs: [meta, create-manifest]
-    if: needs.create-manifest.result == 'success'
+    needs: [meta, cleanup-dockerhub-tags]
+    if: needs.cleanup-dockerhub-tags.result == 'success'
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -362,13 +463,8 @@ jobs:
 
             const tags = [
               '- `' + imageName + ':' + version + '` (multi-arch)',
-              '- `' + imageName + ':' + version + '-amd64`',
-              '- `' + imageName + ':' + version + '-arm64`'
+              '- `' + imageName + ':latest` (multi-arch)'
             ];
-
-            if (!isPrerelease) {
-              tags.push('- `' + imageName + ':latest`');
-            }
 
             const body = [
               '## WireBuddy ' + version,

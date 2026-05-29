@@ -75,6 +75,9 @@ Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
 
 Enabled automatically when "Force HTTPS" is on.
 
+If TLS terminates in a reverse proxy and WireBuddy receives plain HTTP upstream,
+set `WIREBUDDY_FORCE_HSTS=1` to keep emitting the HSTS header.
+
 ## CSRF Protection
 
 **Settings → Security → CSRF**

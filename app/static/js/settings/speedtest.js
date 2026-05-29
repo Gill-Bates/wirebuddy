@@ -64,6 +64,10 @@
         return error?.code === 'ABORTED' || error?.name === 'AbortError';
     }
 
+    function isCurrentUserAdmin() {
+        return document.getElementById('wb-page-config')?.dataset.isAdmin === 'true';
+    }
+
     function refreshElements() {
         elements.enabledToggle = document.getElementById('speedtest-enabled');
         elements.runBtn = document.getElementById('btn-speedtest-run');
@@ -381,7 +385,7 @@
     }
 
     async function runSpeedtest() {
-        if (state.running || window.isAdmin !== true) return;
+        if (state.running || !isCurrentUserAdmin()) return;
         state.running = true;
 
         refreshElements();
@@ -407,11 +411,10 @@
     }
 
     function runSpeedtestWithSSE(statusEl, progressEl) {
-        return new Promise((resolve, reject) => {
-            const es = new EventSource('/api/wireguard/speedtest/run/stream');
-            state.activeEventSource = es;
+        return new Promise(async (resolve, reject) => {
             let completed = false;
             let safetyTimer = null;
+            let es = null;
 
             function finish(callback) {
                 if (completed) return;
@@ -423,8 +426,21 @@
                 if (state.activeEventSource === es) {
                     state.activeEventSource = null;
                 }
-                es.close();
+                es?.close();
                 callback();
+            }
+
+            try {
+                const startData = await api('POST', '/api/wireguard/speedtest/run');
+                const streamId = String(startData?.stream_id || '').trim();
+                if (!streamId) {
+                    throw new Error('Speedtest stream could not be started');
+                }
+                es = new EventSource(`/api/wireguard/speedtest/run/stream/${encodeURIComponent(streamId)}`);
+                state.activeEventSource = es;
+            } catch (error) {
+                reject(error);
+                return;
             }
 
             es.addEventListener('progress', (e) => {

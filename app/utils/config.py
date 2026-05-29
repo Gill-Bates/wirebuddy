@@ -22,6 +22,8 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 WG_CONFIG_PATH = Path("/etc/wireguard")
 WG_DEFAULT_DNS = "1.1.1.1,9.9.9.9"  # Cloudflare + Quad9 with DoT support
+_MAX_DOTENV_SIZE = 1024 * 1024
+_MIN_SECRET_KEY_BYTES = 32
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,16 @@ def _parse_value(raw: str) -> str:
 	return raw.strip()
 
 
+def _validate_secret_key(secret_key: str) -> str:
+	"""Validate the master secret key for minimum strength."""
+	secret = secret_key.strip()
+	if len(secret.encode("utf-8")) < _MIN_SECRET_KEY_BYTES:
+		raise ValueError(
+			f"WIREBUDDY_SECRET_KEY must be at least {_MIN_SECRET_KEY_BYTES} bytes"
+		)
+	return secret
+
+
 def load_dotenv(dotenv_path: Path | None = None) -> None:
 	"""Load simple KEY=VALUE pairs from .env.
 
@@ -68,6 +80,8 @@ def load_dotenv(dotenv_path: Path | None = None) -> None:
 	dotenv_path = dotenv_path or (project_root / "settings.env")
 	if not dotenv_path.exists():
 		return
+	if dotenv_path.stat().st_size > _MAX_DOTENV_SIZE:
+		raise RuntimeError(f"settings.env exceeds {_MAX_DOTENV_SIZE} bytes")
 	for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
 		line = raw_line.strip()
 		if not line or line.startswith("#"):
@@ -119,6 +133,7 @@ def load_config() -> Config:
 	allowed_levels = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 	log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 	if log_level not in allowed_levels:
+		_log.warning("Invalid LOG_LEVEL=%r; using INFO", log_level)
 		log_level = "INFO"
 
 	# Secret key (required for master mode, not for node mode)
@@ -141,6 +156,12 @@ def load_config() -> Config:
 			# Allow tests to run with a default
 			secret_key = "test-only-secret-do-not-use-in-production"
 			_log.debug("Using test-only secret key")
+	elif server_mode != "node":
+		try:
+			secret_key = _validate_secret_key(secret_key)
+		except ValueError as exc:
+			_log.critical(str(exc))
+			raise SystemExit(1) from exc
 
 	return Config(
 		base_dir=base_dir,

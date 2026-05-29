@@ -3,7 +3,23 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-(function() {
+(function () {
+    // -------------------- URL Validation --------------------
+    /**
+     * Validate and sanitize a release URL - only allow HTTPS URLs.
+     * @param {string | null | undefined} raw
+     * @returns {string | null}
+     */
+    function safeReleaseUrl(raw) {
+        try {
+            const url = new URL(String(raw || ''), window.location.origin);
+            if (url.protocol !== 'https:') return null;
+            return url.href;
+        } catch {
+            return null;
+        }
+    }
+
     // -------------------- Update Check --------------------
     function parseVersionParts(version) {
         if (!version || typeof version !== 'string') return [0];
@@ -46,19 +62,19 @@
         if (checkBtn) checkBtn.disabled = true;
 
         try {
-            const url = force 
+            const url = force
                 ? '/api/wireguard/settings/check-updates?force=true'
                 : '/api/wireguard/settings/check-updates';
             const res = await api('GET', url, null, { timeoutMs: 15000 });
-            
+
             // Hide loading, show result
             loadingEl.classList.add('d-none');
             resultEl.classList.remove('d-none');
-            
+
             // Populate version info
             currentVersionEl.textContent = res.current_version || '–';
             latestVersionEl.textContent = res.latest_version || '–';
-            
+
             // Show published date if available
             if (res.published_at) {
                 publishedRow.classList.remove('d-none');
@@ -69,7 +85,7 @@
             } else {
                 publishedRow.classList.add('d-none');
             }
-            
+
             // Status badge
             const currentVersion = res.current_version || '';
             const latestVersion = res.latest_version || '';
@@ -94,8 +110,12 @@
                 );
                 // Show release link
                 availableSectionEl.classList.remove('d-none');
-                if (res.release_url) {
-                    releaseLinkEl.href = res.release_url;
+                const releaseUrl = safeReleaseUrl(res.release_url);
+                if (releaseUrl) {
+                    releaseLinkEl.href = releaseUrl;
+                    releaseLinkEl.rel = 'noopener noreferrer';
+                } else {
+                    releaseLinkEl.removeAttribute('href');
                 }
             } else {
                 setUpdateStatusBadge(
@@ -107,14 +127,14 @@
                 );
                 availableSectionEl.classList.add('d-none');
             }
-            
+
             // Show error if any (but only for manual checks or critical errors)
             if (res.error) {
                 // Filter out non-critical network errors on auto-check
-                const isNetworkError = res.error.includes('Network error') || 
-                                      res.error.includes('Connection timeout') ||
-                                      res.error.includes('No address associated');
-                
+                const isNetworkError = res.error.includes('Network error') ||
+                    res.error.includes('Connection timeout') ||
+                    res.error.includes('No address associated');
+
                 if (isManualCheck || !isNetworkError) {
                     errorEl.classList.remove('d-none');
                     errorTextEl.textContent = res.error;
@@ -125,12 +145,12 @@
             } else {
                 errorEl.classList.add('d-none');
             }
-            
+
         } catch (error) {
             loadingEl.classList.add('d-none');
             resultEl.classList.remove('d-none');
             statusBadge.replaceChildren();
-            
+
             // Only show fetch errors on manual check
             if (isManualCheck) {
                 errorEl.classList.remove('d-none');
@@ -202,7 +222,7 @@
     const isAdmin = checkBtn?.dataset?.isAdmin === 'true';
     checkBtn?.addEventListener('click', () => checkForUpdates(isAdmin, true));
     initChangelogDetailsScroll();
-    
+
     // Auto-check on page load (silent network errors)
     checkForUpdates(false, false);
 })();

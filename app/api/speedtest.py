@@ -9,9 +9,11 @@
 import asyncio
 import logging
 import sqlite3
-from datetime import timedelta
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -46,7 +48,7 @@ from ..utils.tsdb_helpers import build_latest_by_node
 from ..speedtest.tester import ProgressCallback, ProgressEvent, run_speedtest
 from .auth import get_current_user, require_admin
 from .response import ok_response
-from .sse import stream_with_progress
+from .sse import broadcast_event_to_queues, format_sse_event, format_sse_keepalive
 
 _log = logging.getLogger(__name__)
 
@@ -62,6 +64,7 @@ SPEEDTEST_TSDB_FETCH_CAP = 10_000
 SPEEDTEST_PROGRESS_QUEUE_SIZE = 32  # SSE progress event queue capacity
 SPEEDTEST_SQLITE_TIMEOUT_SECONDS = 5.0
 SPEEDTEST_TSDB_TIMEOUT_SECONDS = 10.0
+SPEEDTEST_STREAM_SESSION_TTL = timedelta(minutes=5)
 
 # Time range mapping for history queries
 SPEEDTEST_RANGE_TO_HOURS = {
@@ -73,6 +76,130 @@ SPEEDTEST_RANGE_TO_HOURS = {
 	"180d": 180 * 24,
 	"y1": 365 * 24,
 }
+
+
+@dataclass(slots=True)
+class _SpeedtestStreamSession:
+	"""Track one started speedtest run and its SSE subscribers."""
+
+	stream_id: str
+	created_at: datetime
+	subscribers: set[asyncio.Queue[tuple[str, dict[str, Any]]]] = field(default_factory=set)
+	latest_progress: dict[str, Any] | None = None
+	result_payload: dict[str, Any] | None = None
+	error_payload: dict[str, Any] | None = None
+	finished_at: datetime | None = None
+	task: asyncio.Task[None] | None = None
+
+
+def _get_speedtest_stream_sessions(request: Request) -> dict[str, _SpeedtestStreamSession]:
+	"""Return the per-process registry of started speedtest streams."""
+	sessions = getattr(request.app.state, "speedtest_stream_sessions", None)
+	if sessions is None:
+		sessions = {}
+		request.app.state.speedtest_stream_sessions = sessions
+	return sessions
+
+
+def _prune_speedtest_stream_sessions(sessions: dict[str, _SpeedtestStreamSession]) -> None:
+	"""Drop finished sessions after a short grace window."""
+	now = utcnow()
+	expired_ids = [
+		stream_id
+		for stream_id, session in sessions.items()
+		if session.finished_at is not None and now - session.finished_at > SPEEDTEST_STREAM_SESSION_TTL
+	]
+	for stream_id in expired_ids:
+		sessions.pop(stream_id, None)
+
+
+def _record_speedtest_progress(session: _SpeedtestStreamSession, event: dict[str, Any]) -> None:
+	"""Store the latest progress snapshot and broadcast it to subscribers."""
+	session.latest_progress = event
+	broadcast_event_to_queues(list(session.subscribers), ("progress", event))
+
+
+def _record_speedtest_result(session: _SpeedtestStreamSession, result: dict[str, Any], stored: bool) -> None:
+	"""Store the final run result and notify subscribers."""
+	payload = {**result, "stored": stored}
+	session.result_payload = payload
+	broadcast_event_to_queues(list(session.subscribers), ("result", payload))
+
+
+def _record_speedtest_error(session: _SpeedtestStreamSession, reason: str) -> None:
+	"""Store the terminal error payload and notify subscribers."""
+	payload = {"reason": reason}
+	session.error_payload = payload
+	broadcast_event_to_queues(list(session.subscribers), ("error", payload))
+
+
+async def _run_speedtest_stream_session(
+	session: _SpeedtestStreamSession,
+	cfg: Config,
+	lease: Any,
+) -> None:
+	"""Run a started speedtest and fan out progress updates to SSE subscribers."""
+	loop = asyncio.get_running_loop()
+
+	def _on_progress(event: ProgressEvent) -> None:
+		loop.call_soon_threadsafe(_record_speedtest_progress, session, dict(event))
+
+	try:
+		async with lease:
+			result, stored = await _run_speedtest_core(
+				cfg,
+				progress_callback=_on_progress,
+				persist_last_run_on_failure=False,
+			)
+		_record_speedtest_result(session, result, stored)
+	except HTTPException as exc:
+		_record_speedtest_error(session, str(exc.detail))
+	except asyncio.CancelledError:
+		raise
+	except Exception:
+		_log.exception("SPEEDTEST_STREAM_SESSION_FAILED")
+		_record_speedtest_error(session, "Internal task failure")
+	finally:
+		session.finished_at = utcnow()
+
+
+async def _stream_speedtest_session(
+	request: Request,
+	session: _SpeedtestStreamSession,
+):
+	"""Yield SSE frames for one already-started speedtest session."""
+	queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue(maxsize=SPEEDTEST_PROGRESS_QUEUE_SIZE)
+	session.subscribers.add(queue)
+	try:
+		if session.latest_progress is not None:
+			yield format_sse_event("progress", session.latest_progress)
+		if session.error_payload is not None:
+			yield format_sse_event("error", session.error_payload)
+			return
+		if session.result_payload is not None:
+			yield format_sse_event("result", session.result_payload)
+			return
+
+		while True:
+			if await request.is_disconnected():
+				break
+			try:
+				event_type, payload = await asyncio.wait_for(queue.get(), timeout=30.0)
+			except asyncio.TimeoutError:
+				if session.error_payload is not None:
+					yield format_sse_event("error", session.error_payload)
+					break
+				if session.result_payload is not None:
+					yield format_sse_event("result", session.result_payload)
+					break
+				yield format_sse_keepalive()
+				continue
+
+			yield format_sse_event(event_type, payload)
+			if event_type in {"error", "result"}:
+				break
+	finally:
+		session.subscribers.discard(queue)
 
 class SpeedtestSettingsPayload(BaseModel):
 	"""Payload for updating speedtest settings."""
@@ -121,7 +248,7 @@ async def _persist_speedtest_state(
 	db_path: Path,
 	*,
 	result: dict[str, Any] | None = None,
-) -> None:
+):
 	"""Persist the latest run timestamp and optional successful result in SQLite."""
 	try:
 		await _run_in_threadpool_with_timeout(
@@ -326,23 +453,30 @@ async def trigger_speedtest(
 	request: Request,
 	_: sqlite3.Row = Depends(require_admin),
 ):
-	"""Trigger an immediate speed test (admin only)."""
+	"""Start an immediate speed test and return an SSE stream handle."""
 	# Note: We don't check get_speedtest_enabled() here because that setting
 	# controls the *scheduler* only. Manual admin-triggered tests should always work.
 	cfg = get_config(request)
+	sessions = _get_speedtest_stream_sessions(request)
+	_prune_speedtest_stream_sessions(sessions)
 	lease = await _acquire_speedtest_lease(cfg.tsdb_dir)
-	async with lease:
-		result, stored = await _run_speedtest_core(cfg, persist_last_run_on_failure=False)
-	return ok_response(data={**result, "stored": stored})
+	session = _SpeedtestStreamSession(stream_id=uuid4().hex, created_at=utcnow())
+	sessions[session.stream_id] = session
+	session.task = asyncio.create_task(
+		_run_speedtest_stream_session(session, cfg, lease),
+		name=f"speedtest-stream-{session.stream_id}",
+	)
+	return ok_response(data={"stream_id": session.stream_id})
 
 
-@router.get("/speedtest/run/stream")
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.get("/speedtest/run/stream/{stream_id}")
+@limiter.limit(RATE_LIMIT_UI_HEAVY)
 async def trigger_speedtest_stream(
+	stream_id: str,
 	request: Request,
 	_: sqlite3.Row = Depends(require_admin),
 ):
-	"""Trigger a speed test with real-time progress via Server-Sent Events.
+	"""Stream progress for an already-started speed test via Server-Sent Events.
 	
 	Returns a stream of SSE events with progress updates:
 	- event: progress (phase updates)
@@ -351,17 +485,16 @@ async def trigger_speedtest_stream(
 	
 	Each progress event contains: phase, progress (0-1), message, detail (optional)
 	"""
-	cfg = get_config(request)
-	lease = await _acquire_speedtest_lease(cfg.tsdb_dir)
+	sessions = _get_speedtest_stream_sessions(request)
+	_prune_speedtest_stream_sessions(sessions)
+	session = sessions.get(stream_id)
+	if session is None:
+		raise HTTPException(status_code=404, detail="Speed test stream not found")
 
 	async def event_generator():
 		"""Generate SSE events for speedtest progress."""
-		async with lease:
-			def _factory(cb):
-				return _run_speedtest_core(cfg, progress_callback=cb, persist_last_run_on_failure=False)
-
-			async for event in stream_with_progress(request, _factory, queue_size=SPEEDTEST_PROGRESS_QUEUE_SIZE):
-				yield event
+		async for event in _stream_speedtest_session(request, session):
+			yield event
 
 	return StreamingResponse(
 		event_generator(),

@@ -137,62 +137,48 @@ def update_user(
 		UpdateResult.LAST_ADMIN: Cannot demote/deactivate last admin
 	"""
 	try:
-		conn.execute("BEGIN IMMEDIATE")
+		with transaction(conn, immediate=True):
+			user = get_user_by_id(conn, user_id)
+			if not user:
+				return UpdateResult.NOT_FOUND
 
-		user = get_user_by_id(conn, user_id)
-		if not user:
-			conn.rollback()
-			return UpdateResult.NOT_FOUND
-
-		# Last-admin protection: prevent demoting or deactivating the last admin
-		is_currently_admin = bool(user["is_admin"]) and bool(user["is_active"])
-		will_lose_admin = (is_admin is False) or (is_active is False)
-		if is_currently_admin and will_lose_admin:
-			if count_admins(conn) <= 1:
-				conn.rollback()
+			# Last-admin protection: prevent demoting or deactivating the last admin
+			is_currently_admin = bool(user["is_admin"]) and bool(user["is_active"])
+			will_lose_admin = (is_admin is False) or (is_active is False)
+			if is_currently_admin and will_lose_admin and count_admins(conn) <= 1:
 				return UpdateResult.LAST_ADMIN
 
-		updates = []
-		params = []
+			updates = []
+			params = []
 
-		if username is not None:
-			normalized = username.strip().lower()
-			if not normalized:
-				conn.rollback()
-				raise ValueError("Username must not be blank")
-			updates.append("username = ?")
-			params.append(normalized)
-		if password is not None:
-			if not password:
-				conn.rollback()
-				raise ValueError("Password must not be blank")
-			updates.append("password_hash = ?")
-			params.append(hash_password(password))
-		if is_admin is not None:
-			updates.append("is_admin = ?")
-			params.append(int(is_admin))
-		if is_active is not None:
-			updates.append("is_active = ?")
-			params.append(int(is_active))
+			if username is not None:
+				normalized = username.strip().lower()
+				if not normalized:
+					raise ValueError("Username must not be blank")
+				updates.append("username = ?")
+				params.append(normalized)
+			if password is not None:
+				if not password:
+					raise ValueError("Password must not be blank")
+				updates.append("password_hash = ?")
+				params.append(hash_password(password))
+			if is_admin is not None:
+				updates.append("is_admin = ?")
+				params.append(int(is_admin))
+			if is_active is not None:
+				updates.append("is_active = ?")
+				params.append(int(is_active))
 
-		if not updates:
-			conn.rollback()
-			return UpdateResult.SUCCESS
+			if not updates:
+				return UpdateResult.SUCCESS
 
-		params.append(user_id)
-		sql = f"UPDATE users SET {', '.join(updates)} WHERE id = ?"
+			params.append(user_id)
+			sql = f"UPDATE users SET {', '.join(updates)} WHERE id = ?"
 
-		cur = conn.execute(sql, params)
-		conn.commit()
-		return UpdateResult.SUCCESS if cur.rowcount > 0 else UpdateResult.NOT_FOUND
+			cur = conn.execute(sql, params)
+			return UpdateResult.SUCCESS if cur.rowcount > 0 else UpdateResult.NOT_FOUND
 	except sqlite3.IntegrityError:
-		conn.rollback()
 		return UpdateResult.CONFLICT
-	except ValueError:
-		raise
-	except BaseException:
-		conn.rollback()
-		raise
 
 
 def delete_user(conn: sqlite3.Connection, user_id: int) -> bool:
@@ -248,7 +234,7 @@ def confirm_user_otp(conn: sqlite3.Connection, user_id: int, otp_recovery_codes:
 			"""
 			UPDATE users
 			SET otp_enabled = 1, otp_recovery_codes = ?
-			WHERE id = ?
+			WHERE id = ? AND otp_secret IS NOT NULL
 			""",
 			(otp_recovery_codes, user_id),
 		)
@@ -292,7 +278,7 @@ def update_user_auth_method(
 	user_id: int,
 	auth_method: str,
 	passkey_enabled: bool,
-) -> None:
+) -> bool:
 	"""Update user's authentication method.
 	
 	Args:
@@ -307,7 +293,7 @@ def update_user_auth_method(
 		raise ValueError(f"Invalid auth_method: {auth_method!r}")
 	
 	with transaction(conn):
-		conn.execute(
+		cur = conn.execute(
 			"""
 			UPDATE users
 			SET auth_method = ?, passkey_enabled = ?
@@ -321,6 +307,7 @@ def update_user_auth_method(
 			auth_method,
 			passkey_enabled,
 		)
+		return cur.rowcount > 0
 
 
 def get_user_auth_method(conn: sqlite3.Connection, user_id: int) -> tuple[str, bool] | None:

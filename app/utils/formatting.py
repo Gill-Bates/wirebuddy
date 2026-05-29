@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import math
+
 
 def format_bandwidth_mbit(value: float | int, gbit_digits: int = 2, mbit_digits: int | None = None) -> str:
 	"""Render a bandwidth value stored in Mbit/s as Mbit/s or Gbit/s.
@@ -21,6 +23,8 @@ def format_bandwidth_mbit(value: float | int, gbit_digits: int = 2, mbit_digits:
 	gb_digits = max(int(gbit_digits), 0)
 	mb_digits = gb_digits if mbit_digits is None else max(int(mbit_digits), 0)
 	numeric = float(value)
+	if not math.isfinite(numeric):
+		raise ValueError("Bandwidth must be finite")
 	if numeric >= 1000:
 		return f"{numeric / 1000:.{gb_digits}f} Gbit/s"
 	return f"{numeric:.{mb_digits}f} Mbit/s"

@@ -259,19 +259,26 @@ services:
 
 ## Health Checks
 
-Add a health check to Docker Compose:
+WireBuddy exposes two unauthenticated probe endpoints:
+
+- `/health` for a lightweight liveness check
+- `/ready` for readiness, including database connectivity, scheduler state, and expected DNS ingestion state
+
+For production, prefer `/ready`:
 
 ```yaml
 services:
   wirebuddy:
     # ... other config
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ready"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
 ```
+
+Use `/health` instead if you only want to know whether the web process is up.
 
 ## Resource Limits
 

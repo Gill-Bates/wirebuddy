@@ -245,6 +245,7 @@ class GeoFields(TypedDict):
     """Type-safe structure for extracted GeoIP fields."""
     country_code: str | None
     city: str | None
+    asn: str | None
     as_org: str | None
 
 
@@ -255,17 +256,18 @@ def extract_geo_fields(info: dict | None) -> GeoFields:
     when used in flag image paths.
     """
     if not info:
-        return {"country_code": None, "city": None, "as_org": None}
+        return {"country_code": None, "city": None, "asn": None, "as_org": None}
 
     country = str(info.get("country") or "").strip().lower()
     city = str(info.get("city") or "").strip() or None
+    try:
+        asn_number = int(info.get("asn") or 0)
+    except (ValueError, TypeError):
+        asn_number = 0
+    asn = f"AS{asn_number}" if asn_number > 0 else None
     as_org = str(info.get("as_org") or "").strip()
     if not as_org:
-        try:
-            asn = int(info.get("asn") or 0)
-        except (ValueError, TypeError):
-            asn = 0
-        as_org = f"AS{asn}" if asn > 0 else ""
+        as_org = asn or ""
 
     # Strict validation: exactly 2 lowercase letters, prevents path traversal
     validated_country = country if re.fullmatch(r"[a-z]{2}", country) else None
@@ -273,6 +275,7 @@ def extract_geo_fields(info: dict | None) -> GeoFields:
     return {
         "country_code": validated_country,
         "city": city,
+        "asn": asn,
         "as_org": as_org or None,
     }
 

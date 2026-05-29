@@ -8,15 +8,68 @@
 
 import asyncio
 import logging
+import os
+import signal
 from dataclasses import dataclass
 
 _log = logging.getLogger(__name__)
+
+_MAX_OUTPUT_BYTES = 5_000_000
+_READ_CHUNK_BYTES = 65_536
 
 @dataclass(slots=True)
 class ProcResult:
     stdout: str
     stderr: str
     returncode: int
+
+
+async def _read_stream_limited(
+    stream: asyncio.StreamReader | None,
+    *,
+    label: str,
+) -> bytes:
+    """Read one subprocess stream with a hard memory limit."""
+    if stream is None:
+        return b""
+
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await stream.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > _MAX_OUTPUT_BYTES:
+            raise RuntimeError(f"Subprocess {label} exceeded safety limit")
+        chunks.append(chunk)
+
+
+async def _terminate_process_group(
+    proc: asyncio.subprocess.Process,
+    *,
+    kill_timeout: float,
+) -> None:
+    """Terminate the full subprocess group with SIGTERM and SIGKILL fallback."""
+    if proc.pid is None:
+        return
+
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=kill_timeout)
+        return
+    except asyncio.TimeoutError:
+        _log.debug("Process group %s did not terminate, sending SIGKILL", proc.pid)
+
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    await proc.wait()
 
 async def run_command(
     *cmd: str,
@@ -41,23 +94,29 @@ async def run_command(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
-    
+
+    stdout_task = asyncio.create_task(_read_stream_limited(proc.stdout, label="stdout"))
+    stderr_task = asyncio.create_task(_read_stream_limited(proc.stderr, label="stderr"))
+    wait_task = asyncio.create_task(proc.wait())
+
     try:
-        stdout_raw, stderr_raw = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout
+        await asyncio.wait_for(
+            asyncio.gather(wait_task, stdout_task, stderr_task),
+            timeout=timeout,
         )
     except (asyncio.TimeoutError, asyncio.CancelledError):
-        # Attempt graceful termination first
-        proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=kill_timeout)
-        except asyncio.TimeoutError:
-            # Force kill if still running
-            _log.debug("Process %s did not terminate, sending SIGKILL", cmd[0])
-            proc.kill()
-            await proc.wait()
+        await _terminate_process_group(proc, kill_timeout=kill_timeout)
+        await asyncio.gather(wait_task, stdout_task, stderr_task, return_exceptions=True)
         raise
+    except Exception:
+        await _terminate_process_group(proc, kill_timeout=kill_timeout)
+        await asyncio.gather(wait_task, stdout_task, stderr_task, return_exceptions=True)
+        raise
+
+    stdout_raw = stdout_task.result()
+    stderr_raw = stderr_task.result()
         
     return ProcResult(
         stdout=stdout_raw.decode("utf-8", errors="replace"),

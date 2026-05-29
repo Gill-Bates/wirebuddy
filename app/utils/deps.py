@@ -84,9 +84,13 @@ def get_conn(request: Request) -> Generator[Connection, None, None]:
 		yield conn
 	finally:
 		try:
-			close_connection(conn)
-		except Exception:
-			_log.exception("Failed to close SQLite connection")
+			if conn.in_transaction:
+				conn.rollback()
+		finally:
+			try:
+				close_connection(conn)
+			except Exception:
+				_log.exception("Failed to close SQLite connection")
 
 
 def get_tsdb_dir(request: Request) -> Path:

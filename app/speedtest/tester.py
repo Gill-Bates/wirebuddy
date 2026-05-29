@@ -18,14 +18,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import ipaddress
 import json
 import logging
 import math
+import os
 import shlex
-import shutil
 from functools import cache
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 from urllib.parse import urlsplit
 
@@ -39,10 +41,15 @@ _log = logging.getLogger(__name__)
 _DEFAULT_DURATION = 8
 _DEFAULT_CONCURRENT = 4
 _DEFAULT_UPLOAD_SIZE_KIB = 4096
+_MAX_UPLOAD_SIZE_KIB = 65_536
 _CLI_HTTP_TIMEOUT_SECONDS = 30
 _SUBPROCESS_TIMEOUT_BUFFER_SECONDS = 30
 _PROGRESS_UPDATES_PER_SECOND = 2
 _SIMULATED_SERVER_SELECT_SECONDS = 5.0
+_ALLOWED_CLI_PATHS = (
+    Path("/usr/bin/librespeed-cli"),
+    Path("/usr/local/bin/librespeed-cli"),
+)
 
 class ProgressEvent(TypedDict):
     """Progress event emitted during speedtest execution."""
@@ -52,7 +59,7 @@ class ProgressEvent(TypedDict):
     detail: NotRequired[dict[str, Any] | None]  # Optional extra data
 
 # Type alias for progress callback
-ProgressCallback = Callable[[ProgressEvent], None]
+ProgressCallback = Callable[[ProgressEvent], None | Awaitable[None]]
 
 
 def _safe_float(value: Any) -> float | None:
@@ -137,8 +144,28 @@ def _resolve_librespeed_cli(override: str | None = None) -> str | None:
     the binary lazily on first use and caches the result.
     """
     if override is not None:
-        return override
-    return shutil.which("librespeed-cli")
+        path = Path(override)
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+        return None
+    for path in _ALLOWED_CLI_PATHS:
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    return None
+
+
+def _normalize_server_url(value: object) -> str | None:
+    """Return a bounded HTTP(S) server URL or None when invalid."""
+    raw = str(value or "").strip()[:2048]
+    if not raw:
+        return None
+
+    parsed = urlsplit(raw if "://" in raw else f"https://{raw}")
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if not parsed.hostname:
+        return None
+    return raw
 
 
 async def _error_result(
@@ -169,7 +196,9 @@ async def _emit(cb: ProgressCallback | None, phase: str, progress: float, messag
     if detail is not None:
         event["detail"] = detail
     try:
-        await asyncio.to_thread(cb, event)
+        result = cb(event)
+        if inspect.isawaitable(result):
+            await result
     except Exception:
         _log.warning("Progress callback failed", exc_info=True)
 
@@ -219,17 +248,17 @@ async def run_speedtest(
         upload_size,
         name="upload_size",
         minimum=1,
-        maximum=1_048_576,
+        maximum=_MAX_UPLOAD_SIZE_KIB,
         cb=progress_callback,
     )
     if validated_upload_size is None:
-        return {"status": "error", "reason": "upload_size must be 1-1048576 KiB"}
+        return {"status": "error", "reason": f"upload_size must be 1-{_MAX_UPLOAD_SIZE_KIB} KiB"}
 
     await _emit(progress_callback, "init", 0.0, "Starting librespeed-cli\u2026")
 
     resolved_cli = _resolve_librespeed_cli()
     if not resolved_cli:
-        return await _error_result("librespeed-cli not found in PATH", progress_callback, log_level=logging.WARNING)
+        return await _error_result("librespeed-cli not found in trusted locations", progress_callback, log_level=logging.WARNING)
 
     cmd = [
         resolved_cli, "--json", "--no-icmp", "--secure",
@@ -277,13 +306,13 @@ async def run_speedtest(
         server_data = data.get("server", "")
         if isinstance(server_data, dict):
             server_name = str(server_data.get("name") or "")[:256]
-            server_url = str(server_data.get("url") or "")[:2048]
+            server_url = _normalize_server_url(server_data.get("url"))
         else:
             server_name = str(server_data or "")[:256]
-            server_url = ""
+            server_url = _normalize_server_url(server_data)
 
         # Country lookup (async-safe)
-        country_code = await _lookup_country_from_url(server_url)
+        country_code = await _lookup_country_from_url(server_url or "")
 
         # Extract and validate metrics
         metrics = {
@@ -305,7 +334,7 @@ async def run_speedtest(
         return {
             "status": "ok",
             "server": server_name,
-            "server_url": server_url or None,
+            "server_url": server_url,
             "country_code": country_code,
             **metrics
         }

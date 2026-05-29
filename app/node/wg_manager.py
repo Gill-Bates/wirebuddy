@@ -81,6 +81,8 @@ class PeerConfig:
 class PeerState:
     allowed_ips: str
     endpoint: str | None
+    preshared_key: str | None
+    persistent_keepalive: int | None
 
 
 def _redact_keys(text: str) -> str:
@@ -295,12 +297,55 @@ def _get_interface_conf_path(name: str) -> Path:
 
 def _read_managed_config(path: Path) -> str | None:
     """Return file content when it belongs to WireBuddy, else None."""
-    if not path.exists():
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(st.st_mode):
+        raise RuntimeError(f"Refusing to read WireGuard config symlink: {path}")
+    if not stat.S_ISREG(st.st_mode):
         return None
     content = path.read_text(encoding="utf-8")
     if content.startswith(_MANAGED_HEADER):
         return content
     return None
+
+
+def _fsync_dir(path: Path) -> None:
+    """Fsync a directory so file replacement is durable across crashes."""
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    dir_fd = os.open(str(path), flags)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _write_raw_managed_config(conf_path: Path, content: str, *, suffix: str = ".tmp") -> None:
+    """Atomically write managed config content with durability guarantees."""
+    fd = -1
+    tmp_path: str | None = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=f".{conf_path.name}.",
+            suffix=suffix,
+            dir=str(conf_path.parent),
+        )
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(content.encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, conf_path)
+        _fsync_dir(conf_path.parent)
+    finally:
+        if fd != -1:
+            os.close(fd)
+        if tmp_path is not None:
+            Path(tmp_path).unlink(missing_ok=True)
 
 
 def _get_default_route_iface() -> str | None:
@@ -387,28 +432,7 @@ def _write_interface_config(name: str, config: InterfaceConfig, cached_phy: str 
     if existing_managed == new_content:
         return False
 
-    fd: int | None = None
-    tmp_path: str | None = None
-    try:
-        fd, tmp_path = tempfile.mkstemp(
-            prefix=f".{name}.",
-            suffix=".tmp",
-            dir=str(conf_path.parent),
-        )
-        os.fchmod(fd, 0o600)
-        os.write(fd, new_content.encode("utf-8"))
-        os.close(fd)
-        fd = None
-        os.replace(tmp_path, conf_path)
-    except Exception:
-        if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        if tmp_path is not None:
-            Path(tmp_path).unlink(missing_ok=True)
-        raise
+    _write_raw_managed_config(conf_path, new_content)
     _log.info("Wrote WireGuard config: %s", conf_path)
     return True
 
@@ -426,17 +450,24 @@ def _runtime_tmp_dir() -> Path:
 
 def _write_psk_tempfile(psk: str, iface_name: str) -> Path:
     """Write PSK to a secure temporary file and return its path."""
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=f"wg_psk_{iface_name}_",
-        dir=str(_runtime_tmp_dir()),
-    )
+    fd = -1
+    tmp_path: str | None = None
     try:
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=f"wg_psk_{iface_name}_",
+            dir=str(_runtime_tmp_dir()),
+        )
         os.fchmod(fd, 0o600)
         os.write(fd, (psk + "\n").encode("utf-8"))
+        os.fsync(fd)
+        return Path(tmp_path)
+    except BaseException:
+        if tmp_path is not None:
+            Path(tmp_path).unlink(missing_ok=True)
+        raise
     finally:
-        os.close(fd)
-        pass # Explicitly ignore, close is done and fd is collected.
-    return Path(tmp_path)
+        if fd != -1:
+            os.close(fd)
 
 
 def _is_managed_interface(name: str) -> bool:
@@ -462,7 +493,13 @@ def _get_running_interfaces() -> set[str]:
     if code != 0:
         _log.warning("Failed to query running WireGuard interfaces: %s", stderr.strip() or "unknown error")
         return set()
-    return set(stdout.strip().split())
+    interfaces: set[str] = set()
+    for item in stdout.strip().split():
+        if _INTERFACE_RE.fullmatch(item):
+            interfaces.add(item)
+        else:
+            _log.warning("Ignoring invalid WireGuard interface name from runtime: %r", item)
+    return interfaces
 
 
 def has_running_interfaces() -> bool:
@@ -582,7 +619,7 @@ def _sync_interface_states(
                 else:
                     _log.warning("Attempting to restore previous config for %s...", name)
                     try:
-                        conf_path.write_text(backup_content, encoding="utf-8")
+                        _write_raw_managed_config(conf_path, backup_content, suffix=".restore.tmp")
                         _run_checked(["wg-quick", "up", name], timeout=_TIMEOUT_WG_QUICK)
                         _log.warning("Successfully restored previous config for %s", name)
                     except Exception as restore_exc:
@@ -681,16 +718,80 @@ def _get_current_peer_state(iface_name: str) -> dict[str, PeerState]:
         if len(parts) == 4:
             continue
         if len(parts) == 8 and _WG_KEY_RE.fullmatch(parts[0]):
+            keepalive = int(parts[7]) if parts[7].isdigit() and int(parts[7]) > 0 else None
             state[parts[0]] = PeerState(
                 allowed_ips=parts[3],
-                endpoint=parts[2] if parts[2] != "(none)" else None
+                endpoint=parts[2] if parts[2] != "(none)" else None,
+                preshared_key=parts[1] if _WG_KEY_RE.fullmatch(parts[1]) else None,
+                persistent_keepalive=keepalive,
             )
     return state
+
+
+def _delete_routes_for_allowed_ips(iface_name: str, allowed_ips: str) -> None:
+    """Best-effort removal of routes for a peer's allowed IPs."""
+    for ip in allowed_ips.split(","):
+        ip = ip.strip()
+        if ip:
+            ip_family_flag = "-6" if ":" in ip else "-4"
+            _run(["ip", ip_family_flag, "route", "delete", ip, "dev", iface_name])
+
+
+def _restore_peer_state(iface_name: str, previous: dict[str, PeerState]) -> None:
+    """Best-effort restoration of peer runtime state after sync failure."""
+    current = _get_current_peer_state(iface_name)
+    for key, peer in current.items():
+        if key in previous:
+            continue
+        _delete_routes_for_allowed_ips(iface_name, peer.allowed_ips)
+        _run(["wg", "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
+
+    for key, peer in previous.items():
+        current_peer = current.get(key)
+        if current_peer is not None and current_peer.allowed_ips != peer.allowed_ips:
+            _delete_routes_for_allowed_ips(iface_name, current_peer.allowed_ips)
+
+        if current_peer is not None and current_peer.endpoint is not None and peer.endpoint is None:
+            _run_checked(["wg", "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
+
+        cmd = ["wg", "set", iface_name, "peer", key, "allowed-ips", peer.allowed_ips]
+        if peer.endpoint:
+            cmd.extend(["endpoint", peer.endpoint])
+        if peer.persistent_keepalive:
+            cmd.extend(["persistent-keepalive", str(peer.persistent_keepalive)])
+        if peer.preshared_key:
+            psk_path = _write_psk_tempfile(peer.preshared_key, iface_name)
+            try:
+                cmd.extend(["preshared-key", str(psk_path)])
+                _run_checked(cmd, timeout=_TIMEOUT_WG_SET)
+            finally:
+                _wipe_and_unlink(psk_path)
+        else:
+            cmd.extend(["preshared-key", "/dev/null"])
+            _run_checked(cmd, timeout=_TIMEOUT_WG_SET)
+        _ensure_routes_for_allowed_ips(iface_name, peer.allowed_ips)
 
 
 def _sync_peers_for_interface(iface_name: str, desired_peers: list[PeerConfig]) -> None:
     """Synchronise peers for an interface (diff-based). Handles additions and removals."""
     current_state = _get_current_peer_state(iface_name)
+    try:
+        _sync_peers_for_interface_unchecked(iface_name, desired_peers, current_state)
+    except Exception:
+        _log.exception("Peer sync failed for %s; attempting best-effort peer rollback", iface_name)
+        try:
+            _restore_peer_state(iface_name, current_state)
+        except Exception:
+            _log.exception("Peer rollback failed for %s", iface_name)
+        raise
+
+
+def _sync_peers_for_interface_unchecked(
+    iface_name: str,
+    desired_peers: list[PeerConfig],
+    current_state: dict[str, PeerState],
+) -> None:
+    """Synchronise peers without outer rollback handling."""
     current_keys = set(current_state)
 
     desired_keys: set[str] = set()
@@ -703,18 +804,13 @@ def _sync_peers_for_interface(iface_name: str, desired_peers: list[PeerConfig]) 
         _log.info("Removing peer %s... from %s", key[:8], iface_name)
         ip_str = current_state[key].allowed_ips
         _run_checked(["wg", "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
-        
-        for ip in ip_str.split(","):
-            ip = ip.strip()
-            if ip:
-                ip_family_flag = "-6" if ":" in ip else "-4"
-                _run(["ip", ip_family_flag, "route", "delete", ip, "dev", iface_name])
+        _delete_routes_for_allowed_ips(iface_name, ip_str)
 
     changed = 0
     for key in desired_keys:
         p = desired_map[key]
         desired_ips = p.peer_address.replace(" ", "")
-        current_peer = current_state.get(key, PeerState("", None))
+        current_peer = current_state.get(key, PeerState("", None, None, None))
         current_ips = current_peer.allowed_ips.replace(" ", "")
         current_endpoint = current_peer.endpoint
         endpoint_removed = key in current_keys and current_endpoint is not None and p.endpoint is None
@@ -730,11 +826,7 @@ def _sync_peers_for_interface(iface_name: str, desired_peers: list[PeerConfig]) 
             continue
 
         if key in current_keys and desired_ips != current_ips:
-            for ip in current_peer.allowed_ips.split(","):
-                ip = ip.strip()
-                if ip:
-                    ip_family_flag = "-6" if ":" in ip else "-4"
-                    _run(["ip", ip_family_flag, "route", "delete", ip, "dev", iface_name])
+            _delete_routes_for_allowed_ips(iface_name, current_peer.allowed_ips)
 
         if endpoint_removed:
             _run_checked(["wg", "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
@@ -756,7 +848,12 @@ def _sync_peers_for_interface(iface_name: str, desired_peers: list[PeerConfig]) 
             cmd.extend(["preshared-key", "/dev/null"])
             _run_checked(cmd, timeout=_TIMEOUT_WG_SET)
 
-        _ensure_routes_for_allowed_ips(iface_name, p.peer_address)
+        try:
+            _ensure_routes_for_allowed_ips(iface_name, p.peer_address)
+        except Exception:
+            _log.warning("Rolling back peer %s on %s after failed route/runtime update", key[:8], iface_name)
+            _run(["wg", "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
+            raise
         changed += 1
         _log.debug("Synced peer on %s: %s...", iface_name, key[:8])
 
@@ -793,6 +890,9 @@ def get_wg_dump() -> dict[str, dict[str, Any]]:
             _log.debug("Malformed wg dump line ignored: %r", line)
             continue
         pubkey = parts[1]
+        if _WG_KEY_RE.fullmatch(pubkey) is None:
+            _log.debug("Skipping wg dump line with invalid public key: %r", pubkey[:16])
+            continue
         try:
             if pubkey in result:
                 _log.warning(

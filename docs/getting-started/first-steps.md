@@ -9,9 +9,9 @@ Once WireBuddy is installed and running, follow these steps to get your VPN up a
 ## 1. Initial Login
 
 1. Navigate to `http://localhost:8000` (or your server IP)
-2. Login with default credentials:
+2. Login with the bootstrap admin credentials you configured via `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD`:
    - Username: `admin`
-   - Password: `admin`
+    - Password: your configured bootstrap password
 
 !!! danger "Change Default Password"
     Click your username (top right) → **Change Password** and set a secure password immediately!

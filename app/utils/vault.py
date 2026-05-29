@@ -34,6 +34,8 @@ import functools
 import hashlib
 import logging
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -47,12 +49,48 @@ _VAULT_VERSION_2 = "2"
 _VAULT_CURRENT_VERSION = _VAULT_VERSION_2
 _VAULT_INFO_V2 = b"wirebuddy-vault-v2"
 _MASTER_SALT_V2 = b"wirebuddy-vault-master-v2"
-_PBKDF2_ITERATIONS = int(os.getenv("WIREBUDDY_PBKDF2_ITERATIONS", "480000"))
+_MIN_PBKDF2_ITERATIONS = 310_000
+_DEFAULT_PBKDF2_ITERATIONS = 480_000
+_MAX_PBKDF2_ITERATIONS = 2_000_000
+_MIN_PEPPER_LENGTH = 32
+_MAX_PLAINTEXT_LENGTH = 4096
 _MAX_TOKEN_LENGTH = 16_384
+_warned_v1_decrypt = False
+
+
+def _read_pbkdf2_iterations() -> int:
+	raw = os.getenv("WIREBUDDY_PBKDF2_ITERATIONS", str(_DEFAULT_PBKDF2_ITERATIONS))
+	try:
+		value = int(raw)
+	except ValueError:
+		_log.warning("Invalid WIREBUDDY_PBKDF2_ITERATIONS=%r; using default", raw)
+		return _DEFAULT_PBKDF2_ITERATIONS
+	if value < _MIN_PBKDF2_ITERATIONS:
+		_log.warning(
+			"WIREBUDDY_PBKDF2_ITERATIONS=%d too low; using minimum %d",
+			value,
+			_MIN_PBKDF2_ITERATIONS,
+		)
+		return _MIN_PBKDF2_ITERATIONS
+	if value > _MAX_PBKDF2_ITERATIONS:
+		_log.warning(
+			"WIREBUDDY_PBKDF2_ITERATIONS=%d too high; using maximum %d",
+			value,
+			_MAX_PBKDF2_ITERATIONS,
+		)
+		return _MAX_PBKDF2_ITERATIONS
+	return value
+
+
+_PBKDF2_ITERATIONS = _read_pbkdf2_iterations()
 
 
 def _vault_info_v2() -> bytes:
-	"""Return deployment-scoped HKDF context when configured."""
+	"""Return deployment-scoped HKDF context when configured.
+
+	This remains unchanged for `vault:2` compatibility. Changing the configured
+	deployment id will change the derived key for existing `vault:2` payloads.
+	"""
 	deployment_id = os.getenv("WIREBUDDY_DEPLOYMENT_ID", "").strip()
 	if not deployment_id:
 		return _VAULT_INFO_V2
@@ -60,9 +98,19 @@ def _vault_info_v2() -> bytes:
 
 
 def _validate_pepper(pepper: str) -> None:
-	"""Reject missing peppers early at the vault boundary."""
+	"""Reject missing or implausibly weak peppers early at the vault boundary."""
 	if not pepper:
 		raise ValueError("WIREBUDDY_SECRET_KEY is not set")
+	if len(pepper.encode("utf-8")) < _MIN_PEPPER_LENGTH:
+		raise ValueError("WIREBUDDY_SECRET_KEY is too short; expected at least 32 bytes")
+
+
+def _warn_v1_once() -> None:
+	global _warned_v1_decrypt
+	if _warned_v1_decrypt:
+		return
+	_warned_v1_decrypt = True
+	_log.warning("Decrypting deprecated vault:1 payloads; rotate secrets to vault:2")
 
 
 def _format_value(version: str, salt: bytes, token: bytes) -> str:
@@ -145,6 +193,11 @@ def _derive_key(version: str, pepper: str, salt: bytes) -> bytes:
 	raise ValueError(f"unsupported vault version: {version}")
 
 
+def is_vault_payload(value: str | None) -> bool:
+	"""Check whether a value carries the vault prefix."""
+	return bool(value and value.startswith(_VAULT_PREFIX))
+
+
 def encrypt(plaintext: str, pepper: str) -> str:
 	"""Encrypt a plaintext secret.
 
@@ -153,7 +206,10 @@ def encrypt(plaintext: str, pepper: str) -> str:
 	_validate_pepper(pepper)
 	if plaintext == "":
 		raise ValueError("Cannot encrypt empty secret")
-	if is_encrypted(plaintext):
+	if len(plaintext.encode("utf-8")) > _MAX_PLAINTEXT_LENGTH:
+		raise ValueError("Secret too large")
+	if is_vault_payload(plaintext):
+		_parse_value(plaintext)
 		raise ValueError("Refusing to double-encrypt a vault value")
 	salt = os.urandom(16)
 	key = _derive_key(_VAULT_CURRENT_VERSION, pepper, salt)
@@ -166,14 +222,17 @@ def encrypt_if_needed(value: str | None, pepper: str) -> str | None:
 	"""Encrypt ``value`` unless it is empty or already vault-encrypted."""
 	if value is None or value == "":
 		return value
-	if is_encrypted(value):
+	if is_vault_payload(value):
+		_parse_value(value)
 		return value
 	return encrypt(value, pepper)
 
 
 def decrypt_if_needed(value: str | None, pepper: str) -> str | None:
-	"""Decrypt ``value`` if it is vault-encrypted, otherwise return it unchanged."""
-	if value is None or not is_encrypted(value):
+	"""Migration helper: decrypt vault values, pass plaintext through unchanged."""
+	if value is None:
+		return value
+	if not is_vault_payload(value):
 		return value
 	return decrypt(value, pepper)
 
@@ -188,8 +247,7 @@ def decrypt_required(value: str | None, pepper: str) -> str | None:
 
 
 def decrypt(stored: str, pepper: str) -> str:
-	"""Decrypt a vault-formatted string back to plaintext.
-	"""
+	"""Decrypt a vault-formatted string back to plaintext."""
 	_validate_pepper(pepper)
 	try:
 		version, salt, fernet_token = _parse_value(stored)
@@ -198,7 +256,7 @@ def decrypt(stored: str, pepper: str) -> str:
 		raise ValueError(f"Corrupt vault payload: {exc}") from exc
 
 	if version == _VAULT_VERSION_1:
-		_log.warning("Decrypting deprecated vault:1 payload")
+		_warn_v1_once()
 
 	try:
 		key = _derive_key(version, pepper, salt)
@@ -209,27 +267,49 @@ def decrypt(stored: str, pepper: str) -> str:
 		raise ValueError("Cannot decrypt secret — wrong WIREBUDDY_SECRET_KEY?") from exc
 
 
-def rotate(stored: str | None, old_pepper: str, new_pepper: str) -> str | None:
+def rotate(
+	stored: str | None,
+	old_pepper: str,
+	new_pepper: str,
+	*,
+	allow_plaintext: bool = False,
+) -> str | None:
 	"""Re-encrypt a stored value with a new pepper.
 
-	Plaintext values are accepted to simplify migration tooling.
 	Already-encrypted values are decrypted with ``old_pepper`` first.
+	Plaintext input is only accepted when ``allow_plaintext`` is enabled.
 	"""
 	if stored is None or stored == "":
 		return stored
-	plaintext = decrypt(stored, old_pepper) if is_encrypted(stored) else stored
+	if is_vault_payload(stored):
+		plaintext = decrypt(stored, old_pepper)
+	elif allow_plaintext:
+		plaintext = stored
+	else:
+		raise ValueError("Expected encrypted vault value during rotation")
 	return encrypt(plaintext, new_pepper)
 
 
 def is_encrypted(value: str | None) -> bool:
-	"""Check whether a value is already vault-encrypted."""
-	return bool(
-		value
-		and value.startswith(_VAULT_PREFIX)
-		and value.count(":") == 3
-	)
+	"""Check whether a value is a syntactically valid vault payload."""
+	if not is_vault_payload(value):
+		return False
+	try:
+		_parse_value(str(value))
+	except ValueError:
+		return False
+	return True
 
 
 def clear_cached_keys() -> None:
 	"""Clear cached derived master keys, e.g. during rotation or shutdown."""
 	_derive_master_key_v2.cache_clear()
+
+
+@contextmanager
+def vault_rotation_context() -> Iterator[None]:
+	"""Ensure cached derived keys are dropped after a rotation batch."""
+	try:
+		yield
+	finally:
+		clear_cached_keys()

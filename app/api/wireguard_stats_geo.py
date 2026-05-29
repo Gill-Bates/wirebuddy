@@ -193,6 +193,7 @@ async def _lookup_geo_cached(ip: str) -> tuple[str, dict | None]:
 	lookup (futures), preventing duplicate work on high-concurrency scenarios.
 	"""
 	now_mono = time.monotonic()
+	created_future = False
 	async with _geo_cache_lock:
 		cached = _geo_cache.get(ip)
 		if cached and (now_mono - cached[0]) < _GEO_CACHE_TTL_S:
@@ -203,33 +204,31 @@ async def _lookup_geo_cached(ip: str) -> tuple[str, dict | None]:
 		if ip in _geo_inflight:
 			future = _geo_inflight[ip]
 		else:
-			future = asyncio.get_event_loop().create_future()
+			future = asyncio.get_running_loop().create_future()
 			_geo_inflight[ip] = future
+			created_future = True
 
-	if not future.done():
+	if created_future:
 		async with _geo_lookup_sem:
 			try:
 				info = await run_in_threadpool(lookup_ip, ip)
 				future.set_result(info)
 			except Exception as exc:
 				future.set_exception(exc)
-				raise
-			finally:
 				async with _geo_cache_lock:
 					_geo_inflight.pop(ip, None)
-					_geo_cache[ip] = (time.monotonic(), info)
-					_geo_cache.move_to_end(ip)
-					# LRU eviction
-					while len(_geo_cache) > _GEO_CACHE_MAX_SIZE:
-						_geo_cache.popitem(last=False)
+				raise
+			finally:
+				if not future.cancelled() and future.exception() is None:
+					async with _geo_cache_lock:
+						_geo_inflight.pop(ip, None)
+						_geo_cache[ip] = (time.monotonic(), info)
+						_geo_cache.move_to_end(ip)
+						# LRU eviction
+						while len(_geo_cache) > _GEO_CACHE_MAX_SIZE:
+							_geo_cache.popitem(last=False)
 	else:
 		info = await asyncio.shield(future)
-		async with _geo_cache_lock:
-			# Cache the result from deduplication
-			_geo_cache[ip] = (time.monotonic(), info)
-			_geo_cache.move_to_end(ip)
-			while len(_geo_cache) > _GEO_CACHE_MAX_SIZE:
-				_geo_cache.popitem(last=False)
 	return ip, info
 
 

@@ -15,9 +15,32 @@
     const SPEEDTEST_STORAGE_KEY = 'wb_nodes_active_speedtests';
     const SPEEDTEST_LOCK_TIMEOUT_MS = 180000;
     const SPEEDTEST_STATUS_POLL_MS = 5000;
-    const FLAG_ICON_BASE_URL = document.getElementById('nodesPageRoot')?.dataset.flagIconBaseUrl
-        || 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
     const HOVER_MEDIA = window.matchMedia('(hover: hover) and (pointer: fine)');
+
+    // Flag icons base URL - validated to ensure safe origins only
+    const DEFAULT_FLAG_ICON_BASE = 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
+    const ALLOWED_FLAG_ORIGINS = new Set(['cdn.jsdelivr.net', 'unpkg.com', 'cdnjs.cloudflare.com']);
+
+    function safeFlagBaseUrl(raw) {
+        try {
+            const url = new URL(String(raw || DEFAULT_FLAG_ICON_BASE));
+            // Allow same-origin paths
+            if (url.origin === window.location.origin) {
+                return url.pathname.replace(/\/+$/, '');
+            }
+            // Allow known CDNs with HTTPS only
+            if (url.protocol === 'https:' && ALLOWED_FLAG_ORIGINS.has(url.hostname)) {
+                return url.href.replace(/\/+$/, '');
+            }
+            return DEFAULT_FLAG_ICON_BASE;
+        } catch {
+            return DEFAULT_FLAG_ICON_BASE;
+        }
+    }
+
+    const FLAG_ICON_BASE_URL = safeFlagBaseUrl(
+        document.getElementById('nodesPageRoot')?.dataset.flagIconBaseUrl,
+    );
 
     let pollTimer = null;
     let speedtestStatusTimer = null;

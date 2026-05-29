@@ -48,7 +48,6 @@ _PRAGMA_TABLE_INFO = {
 	"users": "PRAGMA table_info(users)",
 }
 _BOOTSTRAP_ADMIN_PASSWORD_ENV = "WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD"
-_BOOTSTRAP_ADMIN_DEFAULT_PASSWORD = "admin"
 _BOOTSTRAP_ADMIN_USERNAME = "admin"
 
 
@@ -564,25 +563,25 @@ def ensure_default_admin(conn: sqlite3.Connection) -> None:
 		with transaction(conn, immediate=True):
 			(count,) = conn.execute("SELECT COUNT(*) FROM users").fetchone()
 			if count == 0:
-				configured_password = os.environ.get(_BOOTSTRAP_ADMIN_PASSWORD_ENV)
-				bootstrap_password = configured_password or _BOOTSTRAP_ADMIN_DEFAULT_PASSWORD
+				configured_password = str(os.environ.get(_BOOTSTRAP_ADMIN_PASSWORD_ENV) or "").strip()
+				if not configured_password:
+					_log.critical(
+						"Refusing to create bootstrap admin user %r without %s being set.",
+						_BOOTSTRAP_ADMIN_USERNAME,
+						_BOOTSTRAP_ADMIN_PASSWORD_ENV,
+					)
+					return
 				conn.execute(
 					"""
 					INSERT INTO users (username, password_hash, is_admin, is_active, created_at)
 					VALUES (?, ?, 1, 1, ?)
 					""",
-					(_BOOTSTRAP_ADMIN_USERNAME, hash_password(bootstrap_password), utcnow()),
+					(_BOOTSTRAP_ADMIN_USERNAME, hash_password(configured_password), utcnow()),
 				)
-				if configured_password:
-					_log.warning(
-						"Created bootstrap admin user %r using password from %s. Change it immediately.",
-						_BOOTSTRAP_ADMIN_USERNAME,
-						_BOOTSTRAP_ADMIN_PASSWORD_ENV,
-					)
-				else:
-					_log.warning(
-						"Created bootstrap admin user %r with default credentials. Change the password immediately.",
-						_BOOTSTRAP_ADMIN_USERNAME,
-					)
+				_log.warning(
+					"Created bootstrap admin user %r using password from %s. Change it immediately.",
+					_BOOTSTRAP_ADMIN_USERNAME,
+					_BOOTSTRAP_ADMIN_PASSWORD_ENV,
+				)
 	except sqlite3.IntegrityError:
 		_log.debug("Default admin insert skipped because a user already exists")

@@ -61,6 +61,8 @@
 docker pull giiibates/wirebuddy:latest
 ```
 
+For production Docker deployments, WireBuddy expects Linux with `network_mode: host`.
+
 For installation, configuration, and security setup, see the **[Documentation](https://gill-bates.github.io/wirebuddy/)**.
 
 ---

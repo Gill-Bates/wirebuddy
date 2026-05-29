@@ -39,7 +39,7 @@ class TSDBService(RuntimeService):
     """
 
     name = "tsdb"
-    dependencies = []  # Standalone service
+    dependencies = ()  # Standalone service
     start_timeout = 30.0
     stop_timeout = 15.0
 
@@ -76,10 +76,7 @@ class TSDBService(RuntimeService):
         from ...db import tsdb
 
         try:
-            stats = await asyncio.wait_for(
-                asyncio.to_thread(tsdb.finalize_shutdown, self._tsdb_dir),
-                timeout=self.stop_timeout,
-            )
+            stats = await asyncio.to_thread(tsdb.finalize_shutdown, self._tsdb_dir)
 
             series = int(stats.get("series", 0))
             rotated = int(stats.get("rotated", 0))
@@ -102,7 +99,6 @@ class TSDBService(RuntimeService):
         """Check TSDB health."""
         health = await super().check_health()
         health.details = dict(health.details)
-        health.details["tsdb_dir"] = str(self._tsdb_dir)
 
         if not self.is_running:
             return health

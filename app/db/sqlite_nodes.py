@@ -370,9 +370,11 @@ def update_node_heartbeat(
 	meta_json = None
 	if metadata is not None:
 		try:
-			meta_json = json.dumps(metadata)
+			meta_json = json.dumps(metadata, allow_nan=False, separators=(",", ":"), sort_keys=True)
 		except TypeError as exc:
 			raise ValueError("Metadata must be JSON-serializable") from exc
+		except ValueError as exc:
+			raise ValueError("Metadata must contain only finite JSON values") from exc
 		if len(meta_json.encode("utf-8")) > _MAX_METADATA_SIZE:
 			raise ValueError(f"Metadata exceeds maximum size ({_MAX_METADATA_SIZE} bytes)")
 	with transaction(conn, immediate=True):
@@ -646,18 +648,43 @@ def set_node_pending_command(conn: sqlite3.Connection, node_id: str, command: st
 
 def get_and_clear_node_pending_command(conn: sqlite3.Connection, node_id: str) -> str | None:
 	"""Compatibility wrapper that returns one unacked durable command."""
-	commands = claim_pending_node_commands(conn, node_id, replay_after_seconds=0, limit=1)
-	if not commands:
-		return None
-		
-	return str(commands[0]["command_type"])
+	now = utcnow()
+	with transaction(conn, immediate=True):
+		row = conn.execute(
+			"""
+			SELECT id, command_type
+			FROM node_commands
+			WHERE node_id = ? AND acked_at IS NULL
+			ORDER BY created_at ASC, id ASC
+			LIMIT 1
+			""",
+			(node_id,),
+		).fetchone()
+		if row is None:
+			return None
+		conn.execute(
+			"""
+			UPDATE node_commands
+			SET delivered_at = COALESCE(delivered_at, ?), acked_at = ?
+			WHERE id = ? AND node_id = ? AND acked_at IS NULL
+			""",
+			(now, now, int(row["id"]), node_id),
+		)
+		return str(row["command_type"])
 
 
 def clear_node_pending_command(conn: sqlite3.Connection, node_id: str) -> None:
 	"""Compatibility helper that acks all currently replayable commands."""
-	commands = claim_pending_node_commands(conn, node_id, replay_after_seconds=0, limit=100)
-	for command in commands:
-		ack_node_command(conn, node_id, int(command["id"]))
+	now = utcnow()
+	with transaction(conn, immediate=True):
+		conn.execute(
+			"""
+			UPDATE node_commands
+			SET delivered_at = COALESCE(delivered_at, ?), acked_at = ?
+			WHERE node_id = ? AND acked_at IS NULL
+			""",
+			(now, now, node_id),
+		)
 
 
 def _clear_node_pending_command_locked(conn: sqlite3.Connection, node_id: str) -> None:

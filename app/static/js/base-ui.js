@@ -47,9 +47,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Mobile navbar: close menu when clicking a nav link
     const navbarCollapse = document.getElementById('navbarNav');
-    if (navbarCollapse) {
+    if (navbarCollapse && window.bootstrap?.Collapse) {
         const mobileNavLinks = navbarCollapse.querySelectorAll('.navbar-mobile-grid a.nav-link');
-        const bsCollapse = bootstrap.Collapse.getOrCreateInstance(navbarCollapse, { toggle: false });
+        const bsCollapse = window.bootstrap.Collapse.getOrCreateInstance(navbarCollapse, { toggle: false });
         let _pendingNavUrl = null;
 
         // Single hidden.bs.collapse listener to handle navigation

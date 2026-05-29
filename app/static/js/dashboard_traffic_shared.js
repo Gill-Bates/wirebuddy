@@ -204,6 +204,7 @@
 
         /**
          * Start periodic refresh.
+         * Only schedules the timer; refresh() handles rescheduling with backoff.
          * @param {number} [intervalMs]
          */
         start(intervalMs) {
@@ -217,11 +218,8 @@
             this.autoRefreshTimer = setTimeout(() => {
                 if (this._destroyed || timerId !== this._timerId) return;
                 this.autoRefreshTimer = null;
-                void this.refresh().finally(() => {
-                    if (!this._destroyed && timerId === this._timerId) {
-                        this.start(ms);
-                    }
-                });
+                // refresh() will call start() with the correct backoff interval
+                void this.refresh();
             }, ms);
         }
 

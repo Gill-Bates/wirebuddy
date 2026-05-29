@@ -105,8 +105,9 @@ function getLoginStartPayload() {
 }
 
 async function executePasskeyLogin(options = {}) {
-    const startData = await apiCall('/api/passkeys/login/start', getLoginStartPayload());
-    const serverOptions = startData?.data;
+    const serverOptions = await api('POST', '/api/passkeys/login/start', getLoginStartPayload(), {
+        skipAuthRedirect: true,
+    });
     const publicKeyOptions = prepareAuthOptions(serverOptions);
 
     const credentialOptions = { publicKey: publicKeyOptions };
@@ -118,7 +119,9 @@ async function executePasskeyLogin(options = {}) {
         throw new Error('Passkey authentication cancelled');
     }
 
-    await apiCall('/api/passkeys/login/finish', { credential: credentialToJSON(credential) });
+    await api('POST', '/api/passkeys/login/finish', { credential: credentialToJSON(credential) }, {
+        skipAuthRedirect: true,
+    });
     window.location.href = '/ui/dashboard';
 }
 
@@ -185,8 +188,8 @@ async function startConditionalPasskeyLogin() {
 // Initialize passkey support
 async function initPasskeys() {
     if (!isWebAuthnSupported || passkeysInitialized) return;
-    if (typeof apiCall !== 'function') {
-        console.error('Passkeys require apiCall() from base.html');
+    if (typeof api !== 'function') {
+        console.error('Passkeys require api() from api.js');
         return;
     }
 
@@ -195,17 +198,10 @@ async function initPasskeys() {
     // Check if any passkeys are configured in the system
     let passkeyAvailable = false;
     try {
-        const response = await fetch('/api/passkeys/available', {
-            method: 'GET',
-            credentials: 'same-origin',
-            headers: {
-                'Accept': 'application/json',
-            },
+        const availability = await api('GET', '/api/passkeys/available', null, {
+            skipAuthRedirect: true,
         });
-        if (response.ok) {
-            const json = await response.json();
-            passkeyAvailable = json?.data?.available === true;
-        }
+        passkeyAvailable = availability?.available === true;
         if (!passkeyAvailable) {
             console.debug('No passkeys configured in system');
             return;
@@ -238,10 +234,18 @@ async function initPasskeys() {
                     usernameField.setAttribute('autocomplete', 'username webauthn');
                 }
                 // Automatically start conditional passkey flow
-                await startConditionalPasskeyLogin();
+                void startConditionalPasskeyLogin();
             }
         } catch (error) {
             console.debug('Conditional mediation check failed:', error.message);
         }
     }
 }
+
+// Cleanup on page hide to prevent lingering WebAuthn credential requests
+window.addEventListener('pagehide', () => {
+    if (conditionalAbortController) {
+        conditionalAbortController.abort();
+        conditionalAbortController = null;
+    }
+});

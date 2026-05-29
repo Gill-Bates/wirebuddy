@@ -267,24 +267,28 @@
     }
 
     /* Client IP stacked layout */
-    .peer-client-ip-stack {
+    .peer-client-ip-stack,
+    .geo-ip-stack {
         display: flex;
         flex-direction: column;
         line-height: 1.15;
     }
 
-    .peer-client-ip-main {
+    .peer-client-ip-main,
+    .geo-ip-main {
         display: inline-flex;
         align-items: center;
         gap: var(--flag-gap);
         flex-wrap: wrap;
     }
 
-    .peer-client-ip-main code {
+    .peer-client-ip-main code,
+    .geo-ip-main code {
         color: var(--bs-secondary-color);
     }
 
-    .peer-client-ip-meta {
+    .peer-client-ip-meta,
+    .geo-ip-meta {
         display: flex;
         flex-wrap: wrap;
         gap: 0.25rem;
@@ -295,14 +299,16 @@
         white-space: normal;
     }
 
-    .peer-client-ip-meta .peer-meta-provider {
+    .peer-client-ip-meta .peer-meta-provider,
+    .geo-ip-meta .geo-meta-provider {
         max-width: 100%;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
 
-    .peer-country-flag {
+    .peer-country-flag,
+    .geo-country-flag {
         width: var(--flag-width);
         height: var(--flag-height);
         border-radius: 2px;

@@ -17,20 +17,24 @@ P3TERX GeoLite.mmdb mirror.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import functools
 import ipaddress
 import logging
 import os
+import re
+import stat
 import tempfile
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import formatdate
 from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, Any, Required, TypedDict
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 if TYPE_CHECKING:
@@ -42,7 +46,7 @@ _log = logging.getLogger(__name__)
 __all__ = [
     "GeoLocation", "IPInfo",
     "geolocate_ip", "lookup_asn", "lookup_ip",
-    "ensure_geoip_databases", "get_geoip_build_info",
+    "ensure_geoip_databases", "ensure_geoip_databases_async", "get_geoip_build_info",
     "close_readers", "eager_init",
     "resolve_country_from_url", "resolve_country_from_url_async",
 ]
@@ -78,21 +82,44 @@ _ABSOLUTE_MIN_SIZE = 100_000  # 100 KB safety floor
 _MIN_UPDATE_INTERVAL_HOURS = 12
 _LAST_CHECK_FILE = ".geoip_last_check"
 _MAX_DOWNLOAD_SIZE = 200_000_000  # 200 MB hard safety cap
-_GEOIP_CACHE_SIZE = max(128, int(os.getenv("WIREBUDDY_GEOIP_CACHE_SIZE", "4096")))
+_DEFAULT_GEOIP_CACHE_SIZE = 4096
+_MAX_GEOIP_CACHE_SIZE = 65_536
+_DEFAULT_GEOIP_ALLOWED_HOSTS = {
+    "github.com",
+    "raw.githubusercontent.com",
+    "objects.githubusercontent.com",
+}
+_HOSTNAME_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
+_GEOIP_DOWNLOAD_TOTAL_TIMEOUT_SECONDS = 120.0
+_GEOIP_DOWNLOAD_LOCK = RLock()
+
+
+def _read_geoip_cache_size() -> int:
+    raw = os.getenv("WIREBUDDY_GEOIP_CACHE_SIZE", str(_DEFAULT_GEOIP_CACHE_SIZE))
+    try:
+        value = int(raw)
+    except ValueError:
+        _log.warning("Invalid WIREBUDDY_GEOIP_CACHE_SIZE=%r; using default", raw)
+        return _DEFAULT_GEOIP_CACHE_SIZE
+    return min(max(value, 128), _MAX_GEOIP_CACHE_SIZE)
+
+
+_GEOIP_CACHE_SIZE = _read_geoip_cache_size()
 
 @dataclass(frozen=True, slots=True)
 class _DBSpec:
     name: str
     env_var: str
+    url_env_var: str
     filename: str
     url: str
     min_size: int
     expected_type: str
 
 _SPECS = {
-    "city": _DBSpec("City", "WIREBUDDY_GEOIP_DB_PATH", "GeoLite2-City.mmdb",
+    "city": _DBSpec("City", "WIREBUDDY_GEOIP_DB_PATH", "WIREBUDDY_GEOIP_CITY_DOWNLOAD_URL", "GeoLite2-City.mmdb",
                     GEOIP_CITY_DOWNLOAD_URL, _MIN_CITY_SIZE, "City"),
-    "asn": _DBSpec("ASN", "WIREBUDDY_ASN_DB_PATH", "GeoLite2-ASN.mmdb",
+    "asn": _DBSpec("ASN", "WIREBUDDY_ASN_DB_PATH", "WIREBUDDY_GEOIP_ASN_DOWNLOAD_URL", "GeoLite2-ASN.mmdb",
                    GEOIP_ASN_DOWNLOAD_URL, _MIN_ASN_SIZE, "ASN"),
 }
 
@@ -123,12 +150,78 @@ def _get_data_dir() -> Path:
     from app.utils.config import get_config
     return get_config().data_dir
 
+
+def _ensure_private_dir(path: Path) -> None:
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        path.mkdir(mode=0o700, parents=True)
+        st = path.lstat()
+
+    if path.is_symlink() or not stat.S_ISDIR(st.st_mode):
+        raise RuntimeError(f"GeoIP directory is not safe: {path}")
+
+    path.chmod(0o700)
+
+
+def _fsync_dir(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    dir_fd = os.open(str(path), flags)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _resolve_download_url(spec: _DBSpec) -> str:
+    return os.getenv(spec.url_env_var, spec.url).strip()
+
+
+def _allowed_geoip_hosts() -> set[str]:
+    """Return the explicit allowlist of GeoIP download hosts."""
+    raw = os.getenv("WIREBUDDY_GEOIP_ALLOWED_HOSTS", "")
+    hosts = {host.strip().lower() for host in raw.split(",") if host.strip()}
+    return set(_DEFAULT_GEOIP_ALLOWED_HOSTS) | hosts
+
+
+def _validate_download_response_target(url: str, *, requested_url: str) -> None:
+    requested_host = (urlparse(requested_url).hostname or "").lower()
+    parsed = urlparse(url)
+    allowed_hosts = _allowed_geoip_hosts()
+    if requested_host and requested_host not in allowed_hosts:
+        raise ValueError(f"Unexpected GeoIP download source host: {requested_url}")
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() not in allowed_hosts:
+        raise ValueError(f"Unexpected GeoIP download redirect target: {url}")
+
+
+@contextmanager
+def _acquire_geoip_file_lock(lock_path: Path):
+    """Acquire an exclusive cross-process GeoIP update lock."""
+    _ensure_private_dir(lock_path.parent)
+    if lock_path.exists() and lock_path.is_symlink():
+        raise RuntimeError(f"GeoIP lock path must not be a symlink: {lock_path}")
+
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(lock_path, flags, 0o600)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise RuntimeError(f"GeoIP lock path is not a regular file: {lock_path}")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        with suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
 def _get_geoip_dir(base_dir: Path | None = None) -> Path:
     """Return the GeoLite2 subdirectory, creating it if needed."""
     if base_dir is None:
         base_dir = _get_data_dir()
     d = base_dir / _GEOIP_SUBDIR
-    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _ensure_private_dir(d)
     return d
 
 def _public_ip(ip: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -166,17 +259,18 @@ def _get_http_date(path: Path) -> str:
 
 def _atomic_write_text(path: Path, content: str, *, mode: int = 0o644) -> None:
     """Atomically write small text files with fsync before replace."""
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _ensure_private_dir(path.parent)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     tmp_path = Path(tmp_name)
     try:
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(tmp_path, mode)
         tmp_path.replace(path)
         os.chmod(path, mode)
+        _fsync_dir(path.parent)
     finally:
         with suppress(OSError):
             tmp_path.unlink()
@@ -272,34 +366,65 @@ def _verify_mmdb(path: Path, spec: _DBSpec) -> bool:
             return False
     return True
 
-def _download_db(spec: _DBSpec, data_dir: Path | None = None, force: bool = False) -> bool:
-    """Download database if needed. Returns True if updated."""
+def _download_db(
+    spec: _DBSpec,
+    data_dir: Path | None = None,
+    *,
+    force: bool = False,
+    check_remote: bool = True,
+) -> bool:
+    """Download database if needed. Returns True if the local file was replaced."""
     target = (_city_mgr if spec.name == "City" else _asn_mgr).resolve_path(data_dir)
-    
-    if target.exists() and not force:
-        if _verify_mmdb(target, spec):
-            return False
 
-    _log.info("Downloading GeoIP %s from %s ...", spec.name, spec.url)
-    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    
-    temp_path = None
+    target_valid = False
+    if target.exists():
+        target_valid = _verify_mmdb(target, spec)
+        if target_valid and not force and not check_remote:
+            return False
+        if not target_valid:
+            _log.warning("GeoIP %s exists but failed verification; redownloading", spec.name)
+
+    download_url = _resolve_download_url(spec)
+    _log.info("Downloading GeoIP %s from %s ...", spec.name, download_url)
+    _ensure_private_dir(target.parent)
+
+    fd = -1
+    temp_path: Path | None = None
     try:
         fd, temp_path_str = tempfile.mkstemp(suffix=".mmdb.tmp", dir=str(target.parent))
         temp_path = Path(temp_path_str)
-        os.close(fd)
-        os.chmod(temp_path, 0o644)
-        
-        req = Request(spec.url, headers={"User-Agent": "WireBuddy/1.0", "If-Modified-Since": _get_http_date(target)})
+        os.fchmod(fd, 0o644)
+
+        headers = {"User-Agent": "WireBuddy/1.0"}
+        if target.exists() and not force:
+            http_date = _get_http_date(target)
+            if http_date:
+                headers["If-Modified-Since"] = http_date
+
+        req = Request(download_url, headers=headers)
+        deadline = time.monotonic() + _GEOIP_DOWNLOAD_TOTAL_TIMEOUT_SECONDS
         with urlopen(req, timeout=60) as resp:
+            _validate_download_response_target(getattr(resp, "url", download_url), requested_url=download_url)
             if "text/html" in resp.headers.get("Content-Type", "").lower():
                 _log.error("GeoIP download for %s returned HTML", spec.name)
                 return False
-            
+
+            content_length = resp.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    parsed_length = int(content_length)
+                except ValueError as exc:
+                    raise ValueError("Invalid Content-Length for GeoIP download") from exc
+                if parsed_length > _MAX_DOWNLOAD_SIZE:
+                    raise ValueError(f"Download exceeded safety limit ({_MAX_DOWNLOAD_SIZE} bytes)")
+
             downloaded = 0
-            with open(temp_path, "wb") as f:
+            with os.fdopen(fd, "wb") as f:
+                fd = -1
                 while True:
-                    chunk = resp.read(65536)
+                    if time.monotonic() > deadline:
+                        raise TimeoutError("GeoIP download exceeded total timeout")
+                    chunk = resp.read(65_536)
                     if not chunk:
                         break
                     f.write(chunk)
@@ -309,17 +434,12 @@ def _download_db(spec: _DBSpec, data_dir: Path | None = None, force: bool = Fals
                 f.flush()
                 os.fsync(f.fileno())
         
-        if not _verify_mmdb(temp_path, spec):
+        if temp_path is None or not _verify_mmdb(temp_path, spec):
             return False
-            
+
         temp_path.replace(target)
         os.chmod(target, 0o644)
-        with suppress(OSError):
-            dir_fd = os.open(str(target.parent), os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
+        _fsync_dir(target.parent)
         _HTTP_DATE_CACHE.pop(target, None)
         _log.info("GeoIP %s updated successfully (%d bytes)", spec.name, downloaded)
         return True
@@ -334,16 +454,19 @@ def _download_db(spec: _DBSpec, data_dir: Path | None = None, force: bool = Fals
         else:
             _log.error("GeoIP download failed for %s: %s", spec.name, e)
     finally:
+        if fd != -1:
+            os.close(fd)
         if temp_path and temp_path.exists():
             with suppress(OSError):
                 temp_path.unlink()
     return False
 
-def ensure_geoip_databases(data_dir: Path | None = None, force: bool = False) -> dict[str, bool]:
-    """Startup check for databases."""
+def _ensure_geoip_databases_locked(data_dir: Path | None = None, force: bool = False) -> dict[str, bool]:
+    """Internal GeoIP update implementation guarded by locks."""
     geoip_dir = _get_geoip_dir(data_dir)
     check_file = geoip_dir / _LAST_CHECK_FILE
-    
+    should_check_remote = force
+
     if not force:
         try:
             if check_file.exists():
@@ -353,23 +476,60 @@ def ensure_geoip_databases(data_dir: Path | None = None, force: bool = False) ->
                     a_ok = _verify_mmdb(_asn_mgr.resolve_path(data_dir), _SPECS["asn"])
                     if c_ok and a_ok:
                         return {"city": True, "asn": True}
+                else:
+                    should_check_remote = True
+            else:
+                should_check_remote = True
         except Exception:
-            pass
+            should_check_remote = True
 
-    c_up = _download_db(_SPECS["city"], data_dir, force=force)
-    a_up = _download_db(_SPECS["asn"], data_dir, force=force)
-    
+    c_up = _download_db(_SPECS["city"], data_dir, force=force, check_remote=should_check_remote)
+    a_up = _download_db(_SPECS["asn"], data_dir, force=force, check_remote=should_check_remote)
+
     if c_up or a_up:
         close_readers()
 
-    _atomic_write_text(check_file, str(time.time()))
-    return {
-        "city": _city_mgr.resolve_path(data_dir).exists(),
-        "asn": _asn_mgr.resolve_path(data_dir).exists()
+    result = {
+        "city": _verify_mmdb(_city_mgr.resolve_path(data_dir), _SPECS["city"]),
+        "asn": _verify_mmdb(_asn_mgr.resolve_path(data_dir), _SPECS["asn"]),
     }
 
+    if result["city"] and result["asn"]:
+        _atomic_write_text(check_file, str(time.time()))
+
+    return result
+
+
+def ensure_geoip_databases(data_dir: Path | None = None, force: bool = False) -> dict[str, bool]:
+    """Blocking startup check for GeoIP databases.
+
+    Do not call directly from an asyncio event loop; use
+    ensure_geoip_databases_async() instead.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError(
+            "ensure_geoip_databases() must not run on an active event loop; "
+            "use ensure_geoip_databases_async() instead."
+        )
+
+    geoip_dir = _get_geoip_dir(data_dir)
+    lock_path = geoip_dir / ".geoip-update.lock"
+    with _GEOIP_DOWNLOAD_LOCK:
+        with _acquire_geoip_file_lock(lock_path):
+            return _ensure_geoip_databases_locked(data_dir, force)
+
+
+async def ensure_geoip_databases_async(data_dir: Path | None = None, force: bool = False) -> dict[str, bool]:
+    """Async wrapper for ensure_geoip_databases()."""
+    return await asyncio.to_thread(ensure_geoip_databases, data_dir, force)
+
 def get_geoip_build_info(data_dir: Path | None = None) -> tuple[str, int] | None:
-    if not _HAS_GEOIP: return None
+    if not _HAS_GEOIP:
+        return None
     try:
         p = _city_mgr.resolve_path(data_dir)
         with geoip2.database.Reader(str(p)) as r:
@@ -386,7 +546,8 @@ def _cached_city_lookup(ip: str, generation: int) -> GeoLocation | None:
     # MaxMind C extension is thread-safe for parallel reads.
     _ = generation
     reader = _city_mgr.get()
-    if not reader: return None
+    if not reader:
+        return None
     try:
         r = reader.city(ip)
         lat, lon = r.location.latitude, r.location.longitude
@@ -406,7 +567,8 @@ def _cached_city_lookup(ip: str, generation: int) -> GeoLocation | None:
 def _cached_asn_lookup(ip: str, generation: int) -> tuple[int | None, str | None]:
     _ = generation
     reader = _asn_mgr.get()
-    if not reader: return None, None
+    if not reader:
+        return None, None
     try:
         r = reader.asn(ip)
         return r.autonomous_system_number, r.autonomous_system_organization
@@ -416,16 +578,19 @@ def _cached_asn_lookup(ip: str, generation: int) -> tuple[int | None, str | None
         return None, None
 
 def geolocate_ip(ip: str) -> GeoLocation | None:
-    if not _public_ip(ip): return None
+    if not _public_ip(ip):
+        return None
     return _cached_city_lookup(ip, _cache_generation)
 
 def lookup_asn(ip: str) -> tuple[int | None, str | None]:
-    if not _public_ip(ip): return None, None
+    if not _public_ip(ip):
+        return None, None
     return _cached_asn_lookup(ip, _cache_generation)
 
 def lookup_ip(ip: str) -> IPInfo | None:
     geo = geolocate_ip(ip)
-    if not geo: return None
+    if not geo:
+        return None
     asn, org = lookup_asn(ip)
     return IPInfo(
         lat=geo["lat"], lon=geo["lon"],
@@ -456,13 +621,17 @@ def resolve_country_from_url(url: str) -> str | None:
     hostname cannot be resolved or has no GeoIP record.
     """
     import socket
-    from urllib.parse import urlparse
 
     if not url:
         return None
     try:
         hostname = urlparse(url).hostname
         if not hostname:
+            return None
+        hostname = hostname.rstrip(".").lower()
+        if len(hostname) > 253 or not _HOSTNAME_RE.fullmatch(hostname):
+            return None
+        if "." not in hostname:
             return None
         addrinfo = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
         if not addrinfo:
@@ -485,4 +654,13 @@ def resolve_country_from_url(url: str) -> str | None:
 
 async def resolve_country_from_url_async(url: str) -> str | None:
     """Async wrapper that isolates blocking DNS resolution in a worker thread."""
-    return await asyncio.to_thread(resolve_country_from_url, url)
+    loop = asyncio.get_running_loop()
+    sem = getattr(loop, "_wirebuddy_geoip_dns_semaphore", None)
+    if sem is None:
+        sem = asyncio.Semaphore(8)
+        setattr(loop, "_wirebuddy_geoip_dns_semaphore", sem)
+    try:
+        async with sem:
+            return await asyncio.wait_for(asyncio.to_thread(resolve_country_from_url, url), timeout=3.0)
+    except TimeoutError:
+        return None

@@ -49,7 +49,7 @@ class WireGuardService(RuntimeService):
     """
 
     name = "wireguard"
-    dependencies = ["sqlite"]  # Needs DB to read interface config
+    dependencies = ("sqlite",)  # Needs DB to read interface config
     start_timeout = 60.0  # Multiple interfaces may need to start
     stop_timeout = 30.0
 
@@ -63,7 +63,7 @@ class WireGuardService(RuntimeService):
 
     @property
     def started_interfaces(self) -> list[str]:
-        """List of interface names that were started by this service."""
+        """List of managed interface names tracked by this service."""
         return self._started_interfaces.copy()
 
     @property
@@ -76,16 +76,7 @@ class WireGuardService(RuntimeService):
         self._interfaces_to_start = interfaces
 
     async def _do_start(self) -> None:
-        """Clean stale interfaces and start enabled ones."""
-        # Clean up stale interfaces first
-        self._stale_removed = await self._cleanup_stale_interfaces()
-        if self._stale_removed:
-            _log.info(
-                "WIREGUARD_STALE_CLEANUP removed=%d interfaces=%s",
-                len(self._stale_removed),
-                self._stale_removed,
-            )
-
+        """Clean stale managed interfaces and start enabled ones."""
         interfaces: list[str] = []
         for iface_name in dict.fromkeys(self._interfaces_to_start):
             if not _IFACE_NAME_RE.match(iface_name):
@@ -97,6 +88,14 @@ class WireGuardService(RuntimeService):
             interfaces.append(iface_name)
 
         self._interfaces_to_start = interfaces
+
+        self._stale_removed = await self._cleanup_stale_interfaces(set(self._interfaces_to_start))
+        if self._stale_removed:
+            _log.info(
+                "WIREGUARD_STALE_CLEANUP removed=%d interfaces=%s",
+                len(self._stale_removed),
+                self._stale_removed,
+            )
 
         if not self._interfaces_to_start:
             _log.info("WIREGUARD_NO_INTERFACES_TO_START")
@@ -127,13 +126,14 @@ class WireGuardService(RuntimeService):
         )
 
     async def _do_stop(self) -> None:
-        """Stop all interfaces that we started."""
+        """Stop all managed interfaces tracked by this service."""
         from ...utils.subprocess import run_command
 
         started_interfaces = tuple(self._started_interfaces)
         if not started_interfaces:
             return
 
+        remaining_interfaces: list[str] = []
         for iface_name in started_interfaces:
             try:
                 res = await run_command(
@@ -148,14 +148,18 @@ class WireGuardService(RuntimeService):
                         iface_name,
                         res.stderr,
                     )
+                    remaining_interfaces.append(iface_name)
             except asyncio.TimeoutError:
                 _log.warning("WIREGUARD_STOP_TIMEOUT name=%s", iface_name)
+                remaining_interfaces.append(iface_name)
             except FileNotFoundError:
                 _log.exception("WIREGUARD_TOOLS_MISSING name=%s", iface_name)
+                remaining_interfaces.append(iface_name)
             except Exception:
                 _log.exception("WIREGUARD_STOP_ERROR name=%s", iface_name)
+                remaining_interfaces.append(iface_name)
 
-        self._started_interfaces.clear()
+        self._started_interfaces = remaining_interfaces
 
     async def check_health(self) -> ServiceHealth:
         """Check WireGuard interface health via wg show."""
@@ -171,15 +175,29 @@ class WireGuardService(RuntimeService):
 
             res = await run_command("wg", "show", "interfaces", timeout=_WG_CHECK_TIMEOUT)
             if res.returncode == 0:
-                active = res.stdout.strip().split() if res.stdout.strip() else []
+                active: list[str] = []
+                invalid_active: list[str] = []
+                for iface_name in res.stdout.strip().split() if res.stdout.strip() else []:
+                    if _IFACE_NAME_RE.match(iface_name):
+                        active.append(iface_name)
+                    else:
+                        invalid_active.append(iface_name)
+
                 health.details["active_interfaces"] = active
                 health.details["managed_interfaces"] = list(started_interfaces)
+                if invalid_active:
+                    health.details["invalid_active_interfaces"] = invalid_active
 
                 # Check if all started interfaces are still active
                 missing = set(started_interfaces) - set(active)
+                errors: list[str] = []
+                if invalid_active:
+                    errors.append(f"Invalid interface names reported: {invalid_active}")
                 if missing:
+                    errors.append(f"Interfaces not active: {list(missing)}")
+                if errors:
                     health.healthy = False
-                    health.error = f"Interfaces not active: {list(missing)}"
+                    health.error = "; ".join(errors)
             else:
                 health.healthy = False
                 health.error = "wg show failed"
@@ -220,7 +238,7 @@ class WireGuardService(RuntimeService):
             )
             if check_res.returncode == 0:
                 _log.info("WIREGUARD_INTERFACE_ALREADY_RUNNING name=%s", iface_name)
-                return None  # Already running, don't track as "started by us"
+                return iface_name
 
             # Start the interface
             up_res = await run_command(
@@ -248,8 +266,8 @@ class WireGuardService(RuntimeService):
             _log.exception("WIREGUARD_START_ERROR name=%s", iface_name)
             return None
 
-    async def _cleanup_stale_interfaces(self) -> list[str]:
-        """Remove WireGuard interfaces active in kernel but without config file.
+    async def _cleanup_stale_interfaces(self, managed_candidates: set[str]) -> list[str]:
+        """Remove stale managed interfaces active in kernel but without config file.
 
         Returns:
             List of removed interface names.
@@ -257,6 +275,8 @@ class WireGuardService(RuntimeService):
         from ...utils.subprocess import run_command
 
         removed: list[str] = []
+        if not managed_candidates:
+            return removed
 
         try:
             # Get active interfaces from kernel
@@ -275,6 +295,9 @@ class WireGuardService(RuntimeService):
                         "WIREGUARD_STALE_INVALID_NAME name=%r",
                         iface_name,
                     )
+                    continue
+
+                if iface_name not in managed_candidates:
                     continue
 
                 # Check if config file exists

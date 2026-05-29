@@ -107,7 +107,18 @@ def setup_logging(log_level: str) -> None:
     Args:
         log_level: Log level name (DEBUG, INFO, WARNING, ERROR, CRITICAL).
     """
-    level = getattr(logging, log_level.upper(), logging.INFO)
+    valid_levels = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }
+    normalized_level = log_level.strip().upper()
+    if normalized_level not in valid_levels:
+        raise ValueError(f"Invalid log level: {log_level!r}")
+
+    level = valid_levels[normalized_level]
     is_tty = sys.stdout.isatty()
 
     # Choose formatter based on TTY detection
@@ -143,4 +154,8 @@ def setup_logging(log_level: str) -> None:
 
     # Quiet down noisy third-party libraries
     for name in ("aiosqlite", "httpcore", "httpx", "hpack", "watchfiles", "python_multipart", "python_multipart.multipart"):
-        logging.getLogger(name).setLevel(logging.WARNING)
+        logger = logging.getLogger(name)
+        if name == "aiosqlite" and level <= logging.DEBUG:
+            logger.setLevel(level)
+        else:
+            logger.setLevel(logging.WARNING)

@@ -6,6 +6,11 @@
 // Settings page core module - provides shared state, utilities, and module registry.
 //
 
+if (window.__WB_SETTINGS_BOOTSTRAP__ && window.__WB_SETTINGS_BOOTSTRAP__ !== 'modular') {
+    throw new Error('settings/core.js must not be loaded together with settings.js');
+}
+window.__WB_SETTINGS_BOOTSTRAP__ = 'modular';
+
 const SettingsApp = (function () {
     'use strict';
 
@@ -264,7 +269,7 @@ const SettingsApp = (function () {
     /**
      * Make a same-origin fetch request with shared auth defaults.
      * @param {string} url
-     * @param {RequestInit} [options]
+     * @param {RequestInit & {timeoutMs?: number}} [options]
      * @returns {Promise<Response>}
      */
     function fetchWithAuth(url, options = {}) {
@@ -272,6 +277,10 @@ const SettingsApp = (function () {
         if (targetUrl.origin !== window.location.origin) {
             throw new Error('Cannot make requests to external origins');
         }
+
+        const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 30000;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
         const method = String(options.method || 'GET').toUpperCase();
         const headers = new Headers(options.headers || {});
@@ -283,7 +292,8 @@ const SettingsApp = (function () {
             ...options,
             credentials: options.credentials || 'same-origin',
             headers,
-        });
+            signal: options.signal || controller.signal,
+        }).finally(() => clearTimeout(timeoutId));
     }
 
     // ========================================================================

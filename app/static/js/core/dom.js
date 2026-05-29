@@ -142,8 +142,20 @@
     }
 
     function safeHtml(html) {
+        return escapeHtml(String(html ?? ''));
+    }
+
+    /**
+     * Always sanitize HTML, then wrap with Trusted Types policy if available.
+     * Safari/iOS does not support Trusted Types; sanitizing first ensures security
+     * is not dependent on browser support.
+     * @param {string} html
+     * @returns {TrustedHTML|string}
+     */
+    function trustedHtml(html) {
+        const sanitized = sanitizeHtml(String(html ?? ''));
         const policy = getTrustedHtmlPolicy();
-        const sanitized = sanitizeHtml(html);
+        // If policy exists, createHTML will re-sanitize (harmless double-pass)
         return policy ? policy.createHTML(sanitized) : sanitized;
     }
 
@@ -1060,10 +1072,18 @@
             }
         }
 
+        if ('trustedHtml' in nextProps || 'trustedHtml' in previousProps) {
+            if (nextProps.trustedHtml != null) {
+                elm.innerHTML = trustedHtml(nextProps.trustedHtml);
+            } else if (!('children' in nextProps) && !('text' in nextProps) && !('html' in nextProps)) {
+                elm.innerHTML = '';
+            }
+        }
+
         if ('html' in nextProps || 'html' in previousProps) {
             if (nextProps.html != null) {
                 elm.innerHTML = safeHtml(nextProps.html);
-            } else if (!('children' in nextProps) && !('text' in nextProps)) {
+            } else if (!('children' in nextProps) && !('text' in nextProps) && !('trustedHtml' in nextProps)) {
                 elm.innerHTML = '';
             }
         }
@@ -1337,6 +1357,16 @@
             const sanitized = safeHtml(html);
             if (element.innerHTML !== String(sanitized)) {
                 element.innerHTML = sanitized;
+                runtime.metrics.mutationCount += 1;
+            }
+            return;
+        }
+
+        if (nextProps.trustedHtml != null) {
+            const html = String(nextProps.trustedHtml ?? '');
+            const trusted = trustedHtml(html);
+            if (element.innerHTML !== String(trusted)) {
+                element.innerHTML = trusted;
                 runtime.metrics.mutationCount += 1;
             }
             return;
@@ -1770,6 +1800,10 @@
             element.innerHTML = safeHtml(options.html);
         }
 
+        if (options.trustedHtml != null) {
+            element.innerHTML = trustedHtml(options.trustedHtml);
+        }
+
         if (options.attrs) {
             setAttributes(element, options.attrs, {});
         }
@@ -1878,6 +1912,7 @@
         replaceContent,
         fragment,
         safeHtml,
+        trustedHtml,
     };
 
     window.WB = window.WB || {};

@@ -11,7 +11,6 @@
 
 The ServiceContainer manages all runtime services, handling:
 - Dependency resolution and startup ordering
-- Parallel startup/shutdown where dependencies allow
 - Health aggregation
 - Graceful shutdown coordination
 """
@@ -131,12 +130,9 @@ class ServiceContainer:
         for name, service in self._services.items():
             for dep in service.dependencies:
                 if dep not in self._services:
-                    _log.warning(
-                        "SERVICE_MISSING_DEPENDENCY service=%s dependency=%s",
-                        name,
-                        dep,
+                    raise ValueError(
+                        f"Service {name!r} depends on unknown service {dep!r}"
                     )
-                    continue
                 in_degree[name] += 1
                 dependents[dep].append(name)
 
@@ -175,30 +171,45 @@ class ServiceContainer:
         self._start_order = self._resolve_start_order()
         _log.info("CONTAINER_START_ORDER services=%s", self._start_order)
 
-        # Group services by dependency level for parallel start
         started: set[str] = set()
+        failures: dict[str, str] = {}
 
         for name in self._start_order:
             service = self._services[name]
 
-            # Wait for dependencies (should already be started due to ordering)
             for dep in service.dependencies:
-                if dep not in started:
-                    dep_service = self._services.get(dep)
-                    if dep_service and dep_service.state != ServiceState.RUNNING:
-                        _log.warning(
-                            "SERVICE_DEPENDENCY_NOT_RUNNING service=%s dependency=%s state=%s",
-                            name,
-                            dep,
-                            dep_service.state if dep_service else "missing",
-                        )
+                dep_service = self._services[dep]
+                if dep not in started or dep_service.state != ServiceState.RUNNING:
+                    reason = (
+                        f"dependency {dep} not running "
+                        f"(state={dep_service.state.value})"
+                    )
+                    failures[name] = reason
+                    _log.error(
+                        "SERVICE_DEPENDENCY_NOT_RUNNING service=%s dependency=%s state=%s",
+                        name,
+                        dep,
+                        dep_service.state.value,
+                    )
+                    break
+            if name in failures:
+                continue
 
             try:
                 await service.start()
                 started.add(name)
             except Exception as exc:
+                failures[name] = str(exc)
                 _log.error("SERVICE_START_FAILED name=%s error=%s", name, exc)
-                # Continue with other services - partial startup is better than none
+
+        self._started = bool(started)
+
+        if failures:
+            failure_summary = ", ".join(
+                f"{service}={reason}" for service, reason in sorted(failures.items())
+            )
+            _log.error("CONTAINER_START_FAILED failures=%s", failure_summary)
+            raise RuntimeError(f"Container startup failed: {failure_summary}")
 
         self._started = True
         _log.info("CONTAINER_STARTED services=%d running=%d", len(self._services), len(started))
@@ -225,13 +236,23 @@ class ServiceContainer:
                 except Exception as exc:
                     _log.warning("SERVICE_STOP_FAILED name=%s error=%s", name, exc)
 
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*[_stop_service(name) for name in stop_order]),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            _log.warning("CONTAINER_STOP_TIMEOUT timeout=%.1fs", timeout)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
+        for name in stop_order:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                _log.warning("CONTAINER_STOP_TIMEOUT timeout=%.1fs", timeout)
+                break
+            try:
+                await asyncio.wait_for(_stop_service(name), timeout=remaining)
+            except asyncio.TimeoutError:
+                _log.warning(
+                    "CONTAINER_STOP_TIMEOUT timeout=%.1fs service=%s",
+                    timeout,
+                    name,
+                )
+                break
 
         self._started = False
         _log.info("CONTAINER_STOPPED")

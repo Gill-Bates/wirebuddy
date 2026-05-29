@@ -138,8 +138,10 @@ class LifecycleManager:
             yield ctx
         finally:
             self._shutdown_event.set()
-            self._signal_manager.restore()
-            await self._shutdown(ctx)
+            try:
+                await self._shutdown(ctx)
+            finally:
+                self._signal_manager.restore()
 
     async def _startup(self, ctx: LifecycleContext) -> None:
         """Execute startup sequence.
@@ -153,14 +155,14 @@ class LifecycleManager:
 
         Override in subclass for custom shutdown logic.
         """
+        del ctx
         _log.info("APPLICATION_SHUTTING_DOWN")
 
         try:
-            await asyncio.wait_for(
-                self._container.stop_all(),
-                timeout=self.SHUTDOWN_TIMEOUT,
-            )
+            await self._container.stop_all(timeout=self.SHUTDOWN_TIMEOUT)
         except asyncio.TimeoutError:
             _log.warning("SHUTDOWN_TIMEOUT timeout=%.1fs", self.SHUTDOWN_TIMEOUT)
+        finally:
+            self._started = False
 
         _log.info("APPLICATION_SHUTDOWN_COMPLETE")

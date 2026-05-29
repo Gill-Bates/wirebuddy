@@ -18,6 +18,8 @@ import pyotp
 
 _OTP_RE = re.compile(r"^\d{6,8}$")
 _SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
+_MAX_RECOVERY_CODES = 32
+_MAX_RECOVERY_CODE_BYTES = 32
 
 
 def _normalize_recovery_code(code: str) -> str:
@@ -51,14 +53,21 @@ def verify_otp(secret: str, code: str) -> bool:
 	"""Verify a TOTP code with a small clock skew window."""
 	if not _OTP_RE.fullmatch(str(code or "").strip()):
 		return False
-	totp = pyotp.TOTP(secret)
-	return bool(totp.verify(str(code).strip(), valid_window=0))
+	try:
+		totp = pyotp.TOTP(secret)
+		return bool(totp.verify(str(code).strip(), valid_window=0))
+	except Exception:
+		return False
 
 
 def generate_recovery_codes(n: int = 8, byte_length: int = 8) -> list[str]:
 	"""Generate one-time recovery codes."""
 	count = int(n)
 	length = int(byte_length)
+	if count > _MAX_RECOVERY_CODES:
+		raise ValueError("Too many recovery codes requested")
+	if length > _MAX_RECOVERY_CODE_BYTES:
+		raise ValueError("Recovery code byte length too large")
 	if count <= 0 or length <= 0:
 		return []
 	return [secrets.token_hex(length) for _ in range(count)]

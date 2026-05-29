@@ -27,6 +27,7 @@ from ..models.peers import PeerConfig, PeerStats
 from ..utils.config import WG_DEFAULT_DNS
 from ..utils.deps import get_conn, get_config
 from ..utils.network import allowed_ips_with_dns_routes
+from ..utils.rate_limit import RATE_LIMIT_CRITICAL, limiter
 from ..utils.vault import decrypt as vault_decrypt
 from .auth import require_admin
 from .response import ok_response
@@ -52,6 +53,11 @@ DUMP_PEER_MIN_FIELDS = 7  # columns 0..6 are required; keepalive (7) is optional
 
 # Security limits
 _MAX_FILENAME_LENGTH = 64
+_SECRET_RESPONSE_HEADERS = {
+	"Cache-Control": "no-store",
+	"Pragma": "no-cache",
+	"X-Content-Type-Options": "nosniff",
+}
 
 
 def _validate_port(port: int) -> None:
@@ -277,6 +283,7 @@ async def get_peer_stats(
 # TODO: Add rate limiting to config/QR endpoints to prevent bulk key exfiltration
 # e.g., @limiter.limit("10/minute") or similar
 @router.get("/peers/{peer_id}/qrcode")
+@limiter.limit(RATE_LIMIT_CRITICAL)
 async def get_peer_qrcode(
 	request: Request,
 	peer_id: int,
@@ -290,7 +297,7 @@ async def get_peer_qrcode(
 	config, peer, private_key_plain, preshared_key_plain = await _build_peer_config(request, peer_id, conn)
 	
 	try:
-		from ..utils.qrimage import generate_qr_png
+		from ..utils.qrimage import QR_SECRET_RESPONSE_HEADERS, generate_qr_png
 
 		# Serialize inside try – avoid decrypting for nothing when deps are missing
 		config_text = config.to_wg_config()
@@ -318,7 +325,10 @@ async def get_peer_qrcode(
 		result = Response(
 			content=png_bytes,
 			media_type="image/png",
-			headers={"Content-Disposition": f'inline; filename="{safe_name}.png"'},
+			headers={
+				**QR_SECRET_RESPONSE_HEADERS,
+				"Content-Disposition": f'inline; filename="{safe_name}.png"',
+			},
 		)
 
 		# NOTE: best-effort only; Python cannot guarantee scrubbing of immutable strings
@@ -334,6 +344,7 @@ async def get_peer_qrcode(
 
 # TODO: Add rate limiting to config/QR endpoints to prevent bulk key exfiltration
 @router.get("/peers/{peer_id}/config")
+@limiter.limit(RATE_LIMIT_CRITICAL)
 async def get_peer_config(
 	request: Request,
 	peer_id: int,
@@ -360,7 +371,10 @@ async def get_peer_config(
 	result = Response(
 		content=config_text,
 		media_type="text/plain",
-		headers={"Content-Disposition": f'attachment; filename="{safe_name}.conf"'},
+		headers={
+			**_SECRET_RESPONSE_HEADERS,
+			"Content-Disposition": f'attachment; filename="{safe_name}.conf"',
+		},
 	)
 	
 	# NOTE: best-effort only; Python cannot guarantee scrubbing of immutable strings

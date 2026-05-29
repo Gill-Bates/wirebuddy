@@ -289,7 +289,7 @@ def transaction(conn: sqlite3.Connection, *, immediate: bool = False):
 		try:
 			yield
 			conn.execute(f"RELEASE SAVEPOINT {savepoint}")
-		except Exception:
+		except BaseException:
 			rolled_back = False
 			try:
 				conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
@@ -308,7 +308,7 @@ def transaction(conn: sqlite3.Connection, *, immediate: bool = False):
 		try:
 			yield
 			conn.commit()
-		except Exception:
+		except BaseException:
 			if conn.in_transaction:
 				conn.rollback()
 			raise

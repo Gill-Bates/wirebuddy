@@ -19,7 +19,6 @@
     const MAX_BACKOFF_MS = 300000;
     const MAX_ALL_PEER_SERIES = 12;
     const MIN_VISIBLE_REFRESH_INTERVAL_MS = 5000;
-    const FLAG_ICON_BASE_URL = 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
     const RESIZE_FETCH_THRESHOLD = 0.2;
     const RANGE_LABELS = Object.freeze({
         '6h': 'last 6 hours',
@@ -30,6 +29,29 @@
         '180d': 'last 180 days',
         'y1': 'last year',
     });
+
+    // Flag icons base URL - validated to ensure safe origins only
+    const DEFAULT_FLAG_ICON_BASE = 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
+    const ALLOWED_FLAG_ORIGINS = new Set(['cdn.jsdelivr.net', 'unpkg.com', 'cdnjs.cloudflare.com']);
+
+    function safeFlagBaseUrl(raw) {
+        try {
+            const url = new URL(String(raw || DEFAULT_FLAG_ICON_BASE));
+            // Allow same-origin paths
+            if (url.origin === window.location.origin) {
+                return url.pathname.replace(/\/+$/, '');
+            }
+            // Allow known CDNs with HTTPS only
+            if (url.protocol === 'https:' && ALLOWED_FLAG_ORIGINS.has(url.hostname)) {
+                return url.href.replace(/\/+$/, '');
+            }
+            return DEFAULT_FLAG_ICON_BASE;
+        } catch {
+            return DEFAULT_FLAG_ICON_BASE;
+        }
+    }
+
+    const FLAG_ICON_BASE_URL = safeFlagBaseUrl(null);
 
     // Responsive data point settings
     const MIN_POINTS = 10;

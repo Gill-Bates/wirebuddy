@@ -15,7 +15,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from app.utils.config import get_config
+from ..utils.config import get_config
 
 _log = logging.getLogger(__name__)
 
@@ -48,9 +48,25 @@ async def sqlite_maintenance() -> None:
         async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
             # WAL checkpoint: RESTART mode is less aggressive than TRUNCATE.
             # It allows concurrent readers to continue from the old WAL file.
-            await db.execute("PRAGMA wal_checkpoint(RESTART)")
+            checkpoint_cursor = await db.execute("PRAGMA wal_checkpoint(RESTART)")
+            try:
+                checkpoint = await checkpoint_cursor.fetchone()
+            finally:
+                await checkpoint_cursor.close()
+
+            if checkpoint is not None:
+                busy, log_frames, checkpointed_frames = checkpoint
+                if busy:
+                    _log.warning(
+                        "MAINTENANCE SQLite checkpoint incomplete busy=%s log_frames=%s checkpointed_frames=%s",
+                        busy,
+                        log_frames,
+                        checkpointed_frames,
+                    )
+
             await db.execute("ANALYZE")
             await db.execute("PRAGMA optimize")
+            await db.commit()
             
             _log.info("MAINTENANCE SQLite maintenance completed (RESTART checkpoint)")
     except Exception:
@@ -66,13 +82,17 @@ async def sqlite_integrity_check() -> None:
     try:
         async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
             cursor = await db.execute("PRAGMA integrity_check")
-            result = await cursor.fetchone()
+            try:
+                result = await cursor.fetchone()
+            finally:
+                await cursor.close()
             
             if result and result[0] == "ok":
                 _log.info("MAINTENANCE SQLite integrity check passed")
             else:
                 failure_msg = result[0] if result else "unknown error"
                 _log.critical("MAINTENANCE SQLite integrity check FAILED: %s", failure_msg)
+                raise RuntimeError(f"SQLite integrity check failed: {failure_msg}")
     except Exception:
         _log.exception("MAINTENANCE SQLite integrity check error")
         raise
@@ -83,9 +103,9 @@ async def tsdb_retention_cleanup() -> None:
     Consolidates cleanup by delegating to tsdb.run_maintenance, which handles
     both file rotation and retention pruning correctly with locks.
     """
-    from app.db import tsdb
-    from app.db.sqlite_settings import get_tsdb_retention_days, DEFAULT_TSDB_RETENTION_DAYS
-    from app.db.sqlite_runtime import connect, close_connection
+    from ..db import tsdb
+    from ..db.sqlite_settings import get_tsdb_retention_days, DEFAULT_TSDB_RETENTION_DAYS
+    from ..db.sqlite_runtime import connect, close_connection
     
     cfg = get_config()
     tsdb_dir = Path(cfg.tsdb_dir)
@@ -129,10 +149,14 @@ async def cleanup_stale_sessions() -> None:
         async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
             now_iso = datetime.now(UTC).isoformat()
             cursor = await db.execute("DELETE FROM auth_tokens WHERE expires_at < ?", (now_iso,))
+            try:
+                deleted = cursor.rowcount
+            finally:
+                await cursor.close()
             await db.commit()
-            
-            if cursor.rowcount > 0:
-                _log.info("MAINTENANCE cleaned up %d expired auth tokens", cursor.rowcount)
+
+            if deleted > 0:
+                _log.info("MAINTENANCE cleaned up %d expired auth tokens", deleted)
     except Exception:
         _log.exception("MAINTENANCE auth token cleanup failed")
         raise

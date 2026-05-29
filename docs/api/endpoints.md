@@ -85,6 +85,7 @@ Authoritative route list generated from mounted FastAPI routers.
 | GET | `/api/wireguard/settings/check-updates` |
 | POST | `/api/wireguard/settings/generate-psk` |
 | GET | `/api/wireguard/settings/psk` |
+| POST | `/api/wireguard/settings/psk/reveal` |
 | PUT | `/api/wireguard/settings/psk` |
 | GET | `/api/wireguard/settings/traffic` |
 | GET | `/api/wireguard/speedtest/history` |

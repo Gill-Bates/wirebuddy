@@ -6,6 +6,12 @@
 void (async function () {
     'use strict';
 
+    if (window.__WB_SETTINGS_BOOTSTRAP__ && window.__WB_SETTINGS_BOOTSTRAP__ !== 'legacy') {
+        console.error('settings.js must not be loaded together with settings/core.js');
+        return;
+    }
+    window.__WB_SETTINGS_BOOTSTRAP__ = 'legacy';
+
     const pageConfig = document.getElementById('wb-page-config')?.dataset ?? {};
     const isAdmin = pageConfig.isAdmin === 'true';
     const { certificateRow, emptyState } = window.WB?.settingsComponents || {};
@@ -660,7 +666,7 @@ void (async function () {
             if (display.type === 'password') {
                 try {
                     if (!cachedRevealedPsk) {
-                        const res = await api('GET', '/api/wireguard/settings/psk?reveal=true');
+                        const res = await api('POST', '/api/wireguard/settings/psk/reveal');
                         cachedRevealedPsk = res.key || res.data?.key || '';
                     }
                     display.value = cachedRevealedPsk || display.value;
@@ -689,7 +695,7 @@ void (async function () {
             // If password is masked, fetch the actual key first
             if (display.type === 'password') {
                 try {
-                    const res = await api('GET', '/api/wireguard/settings/psk?reveal=true');
+                    const res = await api('POST', '/api/wireguard/settings/psk/reveal');
                     keyToCopy = res.key || res.data?.key || '';
                 } catch (e) {
                     wbToast('Cannot retrieve key', 'danger');

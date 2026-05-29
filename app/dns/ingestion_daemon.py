@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .ingestion_tailer import OffsetTracker, UnboundLogTailer
+from .ingestion_tailer import OffsetTracker, TailItem, UnboundLogTailer
 from .ingestion_writer import DnsTsdbWriter
 
 _log = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ async def run_dns_ingestion(
 		dns_logging_disabled_ips_func: Callable that returns set of IPs with DNS logging disabled
 		tsdb_dir: Optional TSDB directory for aggregated metrics (enables fast trend queries)
 	"""
-	q: queue.Queue[str] = queue.Queue(maxsize=DNS_QUEUE_SIZE)
+	q: queue.Queue[TailItem] = queue.Queue(maxsize=DNS_QUEUE_SIZE)
 	offset_tracker = OffsetTracker(offset_path)
 	stop_event = asyncio.Event()
 	
@@ -149,7 +149,7 @@ async def run_dns_ingestion(
 		await asyncio.gather(tailer_task, writer_task, monitor_task, return_exceptions=True)
 
 
-async def _monitor_queue_pressure(q: queue.Queue[str], stop_event: asyncio.Event) -> None:
+async def _monitor_queue_pressure(q: queue.Queue[TailItem], stop_event: asyncio.Event) -> None:
 	"""Monitor queue pressure and log warnings when near capacity."""
 	threshold = int(DNS_QUEUE_SIZE * QUEUE_PRESSURE_THRESHOLD)
 	last_warning = 0.0

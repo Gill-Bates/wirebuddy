@@ -111,10 +111,7 @@ class Scheduler:
 		if not callable(func):
 			raise TypeError(f"func must be callable, got {type(func).__name__}")
 		if not inspect.iscoroutinefunction(func):
-			_log.warning(
-				"SCHEDULER job=%s uses a non-coroutine callable; it must return an awaitable when called",
-				name,
-			)
+			raise TypeError(f"Job {name!r} must be an async callable")
 		
 		if self._started:
 			raise RuntimeError(f"Cannot add job {name!r} while scheduler is running")
@@ -442,7 +439,12 @@ class Scheduler:
 			job.last_attempt = datetime.now(timezone.utc)
 			job.fail_count += 1
 			limit = job.timeout if job.timeout is not None else 0.0
-			_log.error("SCHEDULER job=%s timed out after %.1fs (fail #%d)", job.name, limit, job.fail_count)
+			_log.error(
+				"SCHEDULER job=%s timed out after %.1fs; underlying thread work may still be running (fail #%d)",
+				job.name,
+				limit,
+				job.fail_count,
+			)
 			return False
 		except Exception:
 			job.last_attempt = datetime.now(timezone.utc)

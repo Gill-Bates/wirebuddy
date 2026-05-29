@@ -42,6 +42,19 @@ BACKUP_NIGHT_HOUR = 3
 _BLOCKLIST_STARTUP_DELAY_SECONDS = 15.0
 
 
+def _valid_timezone_or_none(value: str) -> str | None:
+    """Return a normalized timezone name or None when invalid."""
+    tz_name = value.strip()
+    if not tz_name:
+        return None
+    try:
+        ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        _log.warning("Ignoring invalid configured timezone: %r", value)
+        return None
+    return tz_name
+
+
 def _get_configured_backup_timezone() -> str:
     """Resolve the timezone used for scheduled backup wall-clock calculations.
 
@@ -51,13 +64,13 @@ def _get_configured_backup_timezone() -> str:
     3. ``/etc/localtime`` symlink relative to ``/usr/share/zoneinfo``
     4. ``UTC`` fallback
     """
-    tz_name = os.getenv("TZ", "").strip()
+    tz_name = _valid_timezone_or_none(os.getenv("TZ", ""))
     if tz_name:
         return tz_name
 
     tz_file = Path("/etc/timezone")
     try:
-        tz_text = tz_file.read_text(encoding="utf-8").strip()
+        tz_text = _valid_timezone_or_none(tz_file.read_text(encoding="utf-8"))
         if tz_text:
             return tz_text
     except OSError:
@@ -111,6 +124,14 @@ def _bind(
     async def _wrapper() -> None:
         await coro_fn(ctx)
     return _wrapper
+
+
+async def _init_country_traffic_accounting() -> None:
+    """Best-effort one-shot conntrack accounting initialization."""
+    try:
+        await asyncio.to_thread(init_conntrack_accounting)
+    except Exception as exc:
+        _log.warning("COUNTRY_TRAFFIC could not enable conntrack accounting: %s", exc)
 
 
 async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None:
@@ -183,10 +204,14 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
     )
 
     # 3. Traffic Analysis
-    try:
-        await asyncio.to_thread(init_conntrack_accounting)
-    except Exception as exc:
-        _log.warning("COUNTRY_TRAFFIC could not enable conntrack accounting: %s", exc)
+    scheduler.add(
+        "country-traffic-init",
+        interval_seconds=INTERVAL_DAILY,
+        func=_init_country_traffic_accounting,
+        run_on_start=True,
+        initial_delay=0.0,
+        timeout=30.0,
+    )
 
     scheduler.add(
         "country-traffic",
@@ -284,7 +309,7 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
         "speedtest",
         interval_seconds=INTERVAL_DAILY,
         func=_bind(ctx, scheduled_tasks.run_scheduled_speedtest),
-        run_on_start=True,
+        run_on_start=False,
         initial_delay=initial_speedtest_delay,
         timeout=7500.0,
         jitter_pct=0.05
@@ -299,7 +324,7 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
         "scheduled-backup",
         interval_seconds=INTERVAL_DAILY,
         func=_bind(ctx, scheduled_tasks.run_scheduled_backup),
-        run_on_start=True,
+        run_on_start=False,
         initial_delay=initial_backup_delay,
         timeout=300.0,
         jitter_pct=0.05

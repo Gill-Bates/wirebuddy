@@ -8,6 +8,15 @@
 
     // NOTE: Client-side only – backend must enforce authorization on all mutations
     const dnsApp = document.getElementById('dns-app');
+    if (!dnsApp) {
+        return;
+    }
+    if (window.__WB_DNS_APP_LOADED__) {
+        console.error('DNS page script loaded more than once');
+        return;
+    }
+    window.__WB_DNS_APP_LOADED__ = true;
+
     const WBShared = window.WBShared;
     if (!WBShared) {
         throw new Error('WBShared must be loaded before dns.js');
@@ -83,11 +92,19 @@
     };
     _stateEls.logCardBody = _stateEls.logUnavailable?.parentElement || null;
 
-    function _resetPageAbortController() {
+    function _abortPageRequests() {
         if (_pageAbort && !_pageAbort.signal.aborted) {
             _pageAbort.abort();
         }
+    }
+
+    function _newPageAbortController() {
         _pageAbort = new AbortController();
+    }
+
+    function _resetPageAbortController() {
+        _abortPageRequests();
+        _newPageAbortController();
     }
 
     function _showChartEmpty(container) {
@@ -191,7 +208,7 @@
         _logsLoadPending = false;
         _logsLoadPendingShowLoading = false;
         _isInitialTopDomainsRender = true;
-        _resetPageAbortController();
+        _abortPageRequests();
     }
 
     function _onPageShow(ev) {
@@ -199,7 +216,7 @@
             return;
         }
         if (_pageAbort.signal.aborted) {
-            _resetPageAbortController();
+            _newPageAbortController();
         }
         if (themeObserver) {
             themeObserver.observe(document.documentElement, {

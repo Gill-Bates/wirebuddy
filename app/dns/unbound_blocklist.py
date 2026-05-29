@@ -15,6 +15,7 @@ import os
 import random
 import re
 import socket
+import time
 import urllib.parse
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
@@ -48,6 +49,7 @@ from .unbound_constants import (
 	BLOCKLIST_MAX_DOMAINS,
 	BLOCKLIST_MAX_LINES,
 	BLOCKLIST_REGISTRY,
+	CUSTOM_RULES_TAG,
 	DEFAULT_BLOCKLISTS,
 	DOMAIN_LABEL_RE,
 	atomic_write,
@@ -69,8 +71,9 @@ _ALLOWED_BLOCKLIST_HOSTS = frozenset({
 	and parsed.hostname
 })
 _BLOCKLIST_TAG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-CUSTOM_RULES_TAG = "custom"
 _MAX_REDIRECTS = 3
+_BLOCKLIST_MAX_LINE_BYTES = 16 * 1024
+_BLOCKLIST_DOWNLOAD_DEADLINE = 60.0
 
 _log = logging.getLogger(__name__)
 
@@ -110,8 +113,7 @@ _BLOCKED_DOMAINS_CACHE_ENTRY: tuple[frozenset[str], int | None] | None = None
 
 # Runtime custom rules cache (for wildcard/regex matching at query time)
 # NOTE: Tuples are immutable, preventing accidental mutation via get_custom_rules_cache().
-_CUSTOM_ALLOW_RULES: tuple[ParsedRule, ...] = ()
-_CUSTOM_BLOCK_RULES: tuple[ParsedRule, ...] = ()
+_CUSTOM_RULES_CACHE: tuple[tuple[ParsedRule, ...], tuple[ParsedRule, ...]] = ((), ())
 
 
 def _invalidate_blocked_domains_cache() -> None:
@@ -122,9 +124,11 @@ def _invalidate_blocked_domains_cache() -> None:
 
 def set_custom_rules_cache(rules: list[ParsedRule]) -> None:
 	"""Update the runtime custom rules cache after a rules change."""
-	global _CUSTOM_ALLOW_RULES, _CUSTOM_BLOCK_RULES
-	_CUSTOM_ALLOW_RULES = tuple(get_custom_allow_rules(rules))
-	_CUSTOM_BLOCK_RULES = tuple(get_custom_block_rules(rules))
+	global _CUSTOM_RULES_CACHE
+	_CUSTOM_RULES_CACHE = (
+		tuple(get_custom_allow_rules(rules)),
+		tuple(get_custom_block_rules(rules)),
+	)
 
 
 def get_custom_rules_cache() -> tuple[tuple[ParsedRule, ...], tuple[ParsedRule, ...]]:
@@ -132,7 +136,7 @@ def get_custom_rules_cache() -> tuple[tuple[ParsedRule, ...], tuple[ParsedRule, 
 	
 	Returns immutable tuples to prevent accidental mutation of global state.
 	"""
-	return _CUSTOM_ALLOW_RULES, _CUSTOM_BLOCK_RULES
+	return _CUSTOM_RULES_CACHE
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +274,7 @@ async def _download_hosts_domains(
 	unique_new_domains = 0  # Track count of domains not in existing_domains
 
 	resp = await _open_safe_stream(client, url)
-	async with resp:
+	try:
 		resp.raise_for_status()
 		content_type = normalize_content_type(resp.headers.get("Content-Type"))
 		# Allow missing Content-Type (common for plain-text file servers)
@@ -287,41 +291,91 @@ async def _download_hosts_domains(
 				capacity_reason=f"Blocklist too large ({content_length} bytes)",
 			)
 
-		async for raw_line in resp.aiter_lines():
-			line_count += 1
-			# Approximate size (ASCII-dominant content) to avoid per-line encoding overhead
-			size_bytes += len(raw_line) + 1
-			if line_count > BLOCKLIST_MAX_LINES:
-				return _DownloadResult(
-					line_count=line_count,
-					domains=parsed_domains,
-					capacity_reached=True,
-					capacity_reason=f"Blocklist line limit exceeded ({BLOCKLIST_MAX_LINES})",
-				)
-			if size_bytes > BLOCKLIST_MAX_BYTES:
-				return _DownloadResult(
-					line_count=line_count,
-					domains=parsed_domains,
-					capacity_reached=True,
-					capacity_reason=f"Blocklist size limit exceeded ({BLOCKLIST_MAX_BYTES} bytes)",
-				)
-
-			domains = _extract_domains_from_hosts_line(raw_line)
-			for domain in domains:
-				# Track genuinely new domains (not in existing or already parsed)
-				if domain not in existing_domains and domain not in parsed_domains:
-					unique_new_domains += 1
-				# Check capacity with accurate count (no double-counting)
-				if len(existing_domains) + unique_new_domains > BLOCKLIST_MAX_DOMAINS:
+		try:
+			async for raw_line in _iter_response_lines(resp):
+				line_count += 1
+				# Track decoded size conservatively to preserve the global byte cap.
+				size_bytes += len(raw_line.encode("utf-8", errors="replace")) + 1
+				if line_count > BLOCKLIST_MAX_LINES:
 					return _DownloadResult(
 						line_count=line_count,
 						domains=parsed_domains,
 						capacity_reached=True,
-						capacity_reason=f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})",
+						capacity_reason=f"Blocklist line limit exceeded ({BLOCKLIST_MAX_LINES})",
 					)
-				parsed_domains.add(domain)
+				if size_bytes > BLOCKLIST_MAX_BYTES:
+					return _DownloadResult(
+						line_count=line_count,
+						domains=parsed_domains,
+						capacity_reached=True,
+						capacity_reason=f"Blocklist size limit exceeded ({BLOCKLIST_MAX_BYTES} bytes)",
+					)
+
+				domains = _extract_domains_from_hosts_line(raw_line)
+				for domain in domains:
+					# Track genuinely new domains (not in existing or already parsed)
+					if domain not in existing_domains and domain not in parsed_domains:
+						unique_new_domains += 1
+					# Check capacity with accurate count (no double-counting)
+					if len(existing_domains) + unique_new_domains > BLOCKLIST_MAX_DOMAINS:
+						return _DownloadResult(
+							line_count=line_count,
+							domains=parsed_domains,
+							capacity_reached=True,
+							capacity_reason=f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})",
+						)
+					parsed_domains.add(domain)
+		except _CapacityExceeded as exc:
+			return _DownloadResult(
+				line_count=line_count,
+				domains=parsed_domains,
+				capacity_reached=True,
+				capacity_reason=str(exc),
+			)
+	finally:
+		await resp.aclose()
 
 	return _DownloadResult(line_count=line_count, domains=parsed_domains)
+
+
+async def _iter_response_lines(resp: "httpx.Response"):
+	"""Yield decoded lines with a per-line cap and an overall streaming deadline."""
+	deadline = time.monotonic() + _BLOCKLIST_DOWNLOAD_DEADLINE
+	buffer = bytearray()
+	async for chunk in resp.aiter_bytes():
+		if time.monotonic() > deadline:
+			raise TimeoutError(f"Blocklist download exceeded {_BLOCKLIST_DOWNLOAD_DEADLINE:.0f}s deadline")
+		if not chunk:
+			continue
+		buffer.extend(chunk)
+		while True:
+			newline_index = buffer.find(b"\n")
+			if newline_index < 0:
+				if len(buffer) > _BLOCKLIST_MAX_LINE_BYTES:
+					raise _CapacityExceeded(
+						f"Blocklist line too long ({len(buffer)} bytes > {_BLOCKLIST_MAX_LINE_BYTES})"
+					)
+				break
+			raw_line = bytes(buffer[:newline_index])
+			del buffer[:newline_index + 1]
+			if raw_line.endswith(b"\r"):
+				raw_line = raw_line[:-1]
+			if len(raw_line) > _BLOCKLIST_MAX_LINE_BYTES:
+				raise _CapacityExceeded(
+					f"Blocklist line too long ({len(raw_line)} bytes > {_BLOCKLIST_MAX_LINE_BYTES})"
+				)
+			yield raw_line.decode("utf-8", errors="replace")
+
+	if time.monotonic() > deadline:
+		raise TimeoutError(f"Blocklist download exceeded {_BLOCKLIST_DOWNLOAD_DEADLINE:.0f}s deadline")
+	if buffer:
+		if len(buffer) > _BLOCKLIST_MAX_LINE_BYTES:
+			raise _CapacityExceeded(
+				f"Blocklist line too long ({len(buffer)} bytes > {_BLOCKLIST_MAX_LINE_BYTES})"
+			)
+		if buffer.endswith(b"\r"):
+			buffer = buffer[:-1]
+		yield buffer.decode("utf-8", errors="replace")
 
 
 def _is_ip_unsafe(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -527,11 +581,12 @@ async def update_blocklists(
 			custom_removed=custom_removed,
 		)
 
-		set_custom_rules_cache(parsed_custom_rules)
 		try:
 			unbound_config.write_custom_client_rules(parsed_custom_rules)
 		except Exception:
 			_log.exception("DNS_CUSTOM_CLIENT_RULES failed to write override file")
+		else:
+			set_custom_rules_cache(parsed_custom_rules)
 
 		_invalidate_blocked_domains_cache()
 
@@ -660,14 +715,13 @@ async def update_blocklists(
 		custom_removed=custom_removed,
 	)
 
-	# Update runtime caches AFTER successful file write (state consistency)
-	set_custom_rules_cache(parsed_custom_rules)
-	
-	# Write client-specific custom rule overrides (server include file)
+	# Write client-specific custom rule overrides before publishing runtime cache.
 	try:
 		unbound_config.write_custom_client_rules(parsed_custom_rules)
 	except Exception:
 		_log.exception("DNS_CUSTOM_CLIENT_RULES failed to write override file")
+	else:
+		set_custom_rules_cache(parsed_custom_rules)
 
 	_invalidate_blocked_domains_cache()
 	_log.info("DNS_BLOCKLIST wrote %d tagged domains to %s", len(domain_tags), blocklist_path)

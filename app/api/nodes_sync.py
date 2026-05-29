@@ -18,7 +18,9 @@ import hmac
 import ipaddress
 import json
 import logging
+import os
 from pathlib import Path
+import re
 import sqlite3
 import time
 from collections.abc import Callable
@@ -79,7 +81,29 @@ _NODE_RATE_LIMIT_EVENTS = "300/minute"
 _NODE_RATE_LIMIT_PROGRESS = "1800/minute"
 _NODE_COMMAND_REPLAY_AFTER_SECONDS = 30
 _NODE_COMMAND_CLAIM_LIMIT = 20
+_CLIENT_CERT_FP_HEADER = "X-Client-Cert-Fingerprint"
+_CLIENT_CERT_FP_RE = re.compile(r"^[a-f0-9]{64}$")
+_NODE_MTLS_PROXY_CIDRS_ENV = "WIREBUDDY_NODE_MTLS_PROXY_CIDRS"
 T = TypeVar("T")
+
+
+def _load_node_mtls_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+	"""Load explicitly trusted proxy CIDRs for node mTLS certificate headers."""
+	raw = str(os.environ.get(_NODE_MTLS_PROXY_CIDRS_ENV, "")).strip()
+	if not raw:
+		return ()
+	networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+	for item in (part.strip() for part in raw.split(",")):
+		if not item:
+			continue
+		try:
+			networks.append(ipaddress.ip_network(item, strict=False))
+		except ValueError:
+			_log.warning("Ignoring invalid %s entry: %r", _NODE_MTLS_PROXY_CIDRS_ENV, item)
+	return tuple(networks)
+
+
+_NODE_MTLS_PROXY_NETWORKS = _load_node_mtls_proxy_networks()
 
 
 def _get_socket_ip(request: Request) -> str | None:
@@ -88,6 +112,41 @@ def _get_socket_ip(request: Request) -> str | None:
 	if not scope_client or not scope_client[0]:
 		return None
 	return parse_ip_str(scope_client[0])
+
+
+def _socket_ip_is_trusted_mtls_proxy(request: Request) -> bool:
+	"""Return True when the request came through an explicitly trusted mTLS proxy."""
+	if not _NODE_MTLS_PROXY_NETWORKS:
+		return False
+	socket_ip = _get_socket_ip(request)
+	if not socket_ip:
+		return False
+	try:
+		ip_obj = ipaddress.ip_address(socket_ip)
+	except ValueError:
+		return False
+	return any(ip_obj.version == network.version and ip_obj in network for network in _NODE_MTLS_PROXY_NETWORKS)
+
+
+def _get_verified_client_cert_fingerprint(request: Request) -> str | None:
+	"""Return a verified client certificate fingerprint from a trusted proxy, if any.
+
+	Without an explicitly trusted mTLS proxy, self-asserted fingerprint headers are
+	ignored and node auth falls back to the bearer session secret alone.
+	"""
+	header_value = str(request.headers.get(_CLIENT_CERT_FP_HEADER, "") or "").strip().lower()
+	if not header_value:
+		return None
+	if not _socket_ip_is_trusted_mtls_proxy(request):
+		_log.warning(
+			"Ignoring %s from untrusted source ip=%s",
+			_CLIENT_CERT_FP_HEADER,
+			_get_socket_ip(request) or "unknown",
+		)
+		return None
+	if not _CLIENT_CERT_FP_RE.fullmatch(header_value):
+		raise HTTPException(status_code=403, detail="Invalid client certificate fingerprint")
+	return header_value
 
 
 def _parse_endpoint_ip(endpoint: str) -> str:
@@ -409,12 +468,12 @@ def get_current_node(
 	authorization: str = Header(..., alias="Authorization"),
 	conn: sqlite3.Connection = Depends(get_conn),
 ) -> sqlite3.Row:
-	"""Authenticate a node via Bearer api_secret + cert fingerprint.
+	"""Authenticate a node via Bearer session secret.
 
 	Security model:
-	- The api_secret (Bearer token) proves possession of the enrollment token
-	- The cert fingerprint is compared against the value stored at enrollment
-	- Both must match — an attacker needs the secret AND the original certificate
+	- The Bearer token proves possession of the current node session secret.
+	- An optional certificate fingerprint check is only applied when an explicitly
+	  trusted mTLS proxy injects the fingerprint header.
 	"""
 	scheme, _, token = authorization.partition(" ")
 	if scheme.lower() != "bearer" or not token:
@@ -432,26 +491,20 @@ def get_current_node(
 		_log.warning("Node auth failed: node=%s status is still 'pending'", node["id"])
 		raise HTTPException(status_code=403, detail="Node not yet enrolled")
 
-	# For enrolled nodes: verify certificate fingerprint
-	client_cert_fp = request.headers.get("X-Client-Cert-Fingerprint")
-	if not client_cert_fp:
-		_log.warning("Node auth failed: node=%s missing X-Client-Cert-Fingerprint header", node["id"])
-		raise HTTPException(status_code=403, detail="Missing client certificate fingerprint")
-
-	stored_cert_fp = (node["cert_fingerprint"] or "").strip().lower()
-	if not stored_cert_fp:
-		_log.error("Node %s is enrolled without a stored certificate fingerprint", node["id"])
-		raise HTTPException(status_code=500, detail="Node enrollment state is invalid")
-
-	client_cert_fp_normalized = client_cert_fp.strip().lower()
-	if len(client_cert_fp_normalized) != len(stored_cert_fp):
-		_log.warning("Cert fingerprint length mismatch for node=%s", node["id"])
-		raise HTTPException(status_code=403, detail="Certificate fingerprint mismatch")
-
-	if not hmac.compare_digest(client_cert_fp_normalized, stored_cert_fp):
-		_log.warning("Cert fingerprint mismatch for node=%s: got=%s... stored=%s...",
-			node["id"], client_cert_fp_normalized[:16], stored_cert_fp[:16])
-		raise HTTPException(status_code=403, detail="Certificate fingerprint mismatch")
+	client_cert_fp = _get_verified_client_cert_fingerprint(request)
+	if client_cert_fp is not None:
+		stored_cert_fp = (node["cert_fingerprint"] or "").strip().lower()
+		if not stored_cert_fp:
+			_log.error("Node %s is enrolled without a stored certificate fingerprint", node["id"])
+			raise HTTPException(status_code=500, detail="Node enrollment state is invalid")
+		if not hmac.compare_digest(client_cert_fp, stored_cert_fp):
+			_log.warning(
+				"Cert fingerprint mismatch for node=%s: got=%s... stored=%s...",
+				node["id"],
+				client_cert_fp[:16],
+				stored_cert_fp[:16],
+			)
+			raise HTTPException(status_code=403, detail="Certificate fingerprint mismatch")
 
 	return node
 
@@ -541,27 +594,16 @@ async def enroll_node_endpoint(
 		_log.warning("Node enrollment rejected due to invalid certificate for node=%s: %s", node_id, exc)
 		raise HTTPException(status_code=422, detail="Invalid certificate") from exc
 
-	# ── Recovery path: Node already enrolled but lost its state file ──
-	# The enrollment token's api_secret was rotated to a session_secret after
-	# first enrollment, so the token's api_secret no longer matches.
-	# Instead, verify the certificate fingerprint matches what we stored.
 	if node["status"] != "pending":
-		session_secret = new_token()
-		config = await run_in_threadpool(
-			_recover_node_enrollment_sync,
-			conn,
+		_log.warning(
+			"Rejecting enrollment reuse for already-enrolled node id=%s name=%s",
 			node_id,
-			fingerprint,
-			session_secret,
+			node["name"],
 		)
-
-		_log.info(
-			"Node re-enrollment recovery: id=%s, name=%s — same certificate, rotating session secret",
-			node_id, node["name"],
+		raise HTTPException(
+			status_code=409,
+			detail="Node is already enrolled; generate recovery credentials from the admin UI",
 		)
-		_warn_if_not_https(request, node_id, context="Enrollment recovery")
-		config["session_secret"] = session_secret
-		return ok_response(data=config)
 
 	# ── First enrollment path: Node is pending ──
 	# Verify api_secret matches stored hash (only for pending nodes)
@@ -697,14 +739,33 @@ def _process_heartbeat(
 			)
 
 		if new_metrics:
+			seqs = [m.seq for m in new_metrics]
+			expected = list(range(seqs[0], seqs[-1] + 1))
+			if seqs != expected:
+				_log.warning(
+					"Node %s submitted non-contiguous metric sequence: %s",
+					node_id,
+					seqs,
+				)
+				return {"acked_seq": None, "failed": True}
+
+			unsupported = [m.type for m in new_metrics if m.type not in _METRIC_WRITERS]
+			if unsupported:
+				_log.warning(
+					"Node %s submitted unsupported metric types: %s",
+					node_id,
+					sorted(set(unsupported)),
+				)
+				return {"acked_seq": None, "failed": True}
+
+		if new_metrics:
 			try:
 				points_written = 0
+				highest_written_seq: int | None = None
 				for m in new_metrics:
-					writer = _METRIC_WRITERS.get(m.type)
-					if writer is None:
-						_log.debug("Node %s: unknown metric type %r (skipped)", node_id, m.type)
-						continue
+					writer = _METRIC_WRITERS[m.type]
 					points_written += writer(tsdb_dir, m.data)
+					highest_written_seq = m.seq
 
 				_log.debug(
 					"Node %s: wrote %d TSDB points from %d metrics (seq %s-%s)",
@@ -713,13 +774,15 @@ def _process_heartbeat(
 				)
 			except Exception:
 				_log.warning("Failed to write TSDB metrics from node %s", node_id, exc_info=True)
-					# Heartbeat metadata and peer stats are idempotent, so a node retry is
-					# safe even though those writes already happened above.
-					# Do NOT ack — node will retry on next heartbeat.
+				# Heartbeat metadata and peer stats are idempotent, so a node retry is
+				# safe even though those writes already happened above.
+				# Do NOT ack — node will retry on next heartbeat.
 				return {"acked_seq": None, "failed": True}
+			if highest_written_seq is not None:
+				set_node_last_metric_seq(conn, node_id, highest_written_seq)
+				acked_seq = highest_written_seq
 
-		if batch.seq_to is not None:
-			set_node_last_metric_seq(conn, node_id, batch.seq_to)
+		elif batch.seq_to is not None and last_seq is not None and batch.seq_to <= last_seq:
 			acked_seq = batch.seq_to
 
 	return {"acked_seq": acked_seq, "failed": False}

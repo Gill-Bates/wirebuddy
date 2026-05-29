@@ -109,6 +109,7 @@ DEFAULT_BLOCKLISTS = [BLOCKLIST_REGISTRY[bid]["url"] for bid in DEFAULT_BLOCKLIS
 BLOCKLIST_MAX_BYTES = 25 * 1024 * 1024
 BLOCKLIST_MAX_LINES = 2_000_000
 BLOCKLIST_MAX_DOMAINS = 1_000_000
+CUSTOM_RULES_TAG = "custom"
 
 # Allowed content types for blocklist downloads
 ALLOWED_BLOCKLIST_CONTENT_TYPES: frozenset[str] = frozenset({
@@ -281,6 +282,7 @@ __all__ = [
 	"BLOCKLIST_MAX_BYTES",
 	"BLOCKLIST_MAX_LINES",
 	"BLOCKLIST_MAX_DOMAINS",
+	"CUSTOM_RULES_TAG",
 	"ALLOWED_BLOCKLIST_CONTENT_TYPES",
 	"normalize_content_type",
 	"is_allowed_blocklist_content_type",

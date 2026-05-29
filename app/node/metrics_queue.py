@@ -112,7 +112,13 @@ METRIC_PEER_HANDSHAKE = "peer_handshake"
 
 # Lock registry: one lock per queue database file
 _registry_lock = threading.Lock()
-_connection_locks: dict[str, threading.Lock] = {}
+_connection_locks: dict[str, "_LockEntry"] = {}
+
+
+@dataclass
+class _LockEntry:
+    lock: threading.Lock
+    refcount: int
 
 
 @dataclass(frozen=True)
@@ -201,27 +207,35 @@ def _get_connection_key(conn: sqlite3.Connection) -> str:
 
 def _register_connection_lock(connection_key: str) -> threading.Lock:
     """Register and return the lock for a queue database file."""
-    lock = threading.Lock()
     with _registry_lock:
-        _connection_locks[connection_key] = lock
-    return lock
+        entry = _connection_locks.get(connection_key)
+        if entry is None:
+            entry = _LockEntry(lock=threading.Lock(), refcount=0)
+            _connection_locks[connection_key] = entry
+        entry.refcount += 1
+        return entry.lock
 
 
 def _get_connection_lock(conn: sqlite3.Connection) -> threading.Lock:
     """Return the lock for a queue database file."""
     connection_key = _get_connection_key(conn)
     with _registry_lock:
-        lock = _connection_locks.get(connection_key)
-        if lock is None:
-            lock = threading.Lock()
-            _connection_locks[connection_key] = lock
-        return lock
+        entry = _connection_locks.get(connection_key)
+        if entry is None:
+            entry = _LockEntry(lock=threading.Lock(), refcount=0)
+            _connection_locks[connection_key] = entry
+        return entry.lock
 
 
 def _unregister_connection_lock(connection_key: str) -> None:
     """Remove the lock for a queue database file."""
     with _registry_lock:
-        _connection_locks.pop(connection_key, None)
+        entry = _connection_locks.get(connection_key)
+        if entry is None:
+            return
+        entry.refcount -= 1
+        if entry.refcount <= 0:
+            _connection_locks.pop(connection_key, None)
 
 
 def init_queue(data_dir: Path) -> sqlite3.Connection:
@@ -247,6 +261,7 @@ def init_queue(data_dir: Path) -> sqlite3.Connection:
     _init_schema(conn)
     _ensure_schema_version(conn)
     _reconcile_meta(conn)
+    conn.commit()
     _register_connection_lock(str(db_path.resolve()))
     _log.debug("Metrics queue initialized: %s", db_path)
     return conn
@@ -341,7 +356,7 @@ def enqueue_peer_traffic(
                         "public_key": public_key,
                         "rx_bytes": rx,
                         "tx_bytes": tx,
-                    }),
+                    }, allow_nan=False, separators=(",", ":")),
                 ))
 
             latest_handshake = ps.get("latest_handshake")
@@ -353,7 +368,7 @@ def enqueue_peer_traffic(
                         "public_key": public_key,
                         "latest_handshake": latest_handshake,
                         "endpoint": ps.get("endpoint"),
-                    }),
+                    }, allow_nan=False, separators=(",", ":")),
                 ))
 
         if not rows:
@@ -368,6 +383,7 @@ def enqueue_peer_traffic(
                 "UPDATE metrics_queue_meta SET pending_count = pending_count + ? WHERE id = 1",
                 (len(rows),),
             )
+            _enforce_queue_limit(conn)
         except Exception:
             raise
 
@@ -447,8 +463,8 @@ def ack_up_to_seq(conn: sqlite3.Connection, acked_seq: int) -> int:
             return 0
 
         if acked_seq > max_seq:
-            _log.warning("ACK seq %d exceeds queue max seq %d, clamping", acked_seq, max_seq)
-            acked_seq = int(max_seq)
+            _log.warning("Rejecting ACK seq %d because it exceeds queue max seq %d", acked_seq, max_seq)
+            return 0
 
         cursor = conn.execute(
             "DELETE FROM metrics_queue WHERE seq <= ?",

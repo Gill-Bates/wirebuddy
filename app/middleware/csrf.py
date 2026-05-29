@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import posixpath
 import secrets
 from typing import Callable
@@ -31,12 +32,46 @@ _CSRF_EXEMPT_API_PATHS = frozenset({
 	"/api/passkeys/login/start",
 	"/api/passkeys/login/finish",
 })
+_CSRF_FORM_MAX_BYTES = 16_384
 
 
-def _is_bearer_request(request: Request) -> bool:
-	"""Return True when Authorization header uses Bearer scheme."""
+def _default_port_for_scheme(scheme: str) -> int | None:
+	if scheme == "https":
+		return 443
+	if scheme == "http":
+		return 80
+	return None
+
+
+def _origin_tuple(parsed) -> tuple[str, str, int | None] | None:
+	scheme = (parsed.scheme or "").lower()
+	host = (parsed.hostname or "").lower()
+	if not scheme or not host:
+		return None
+	return scheme, host, parsed.port if parsed.port is not None else _default_port_for_scheme(scheme)
+
+
+def _has_auth_cookie(request: Request) -> bool:
+	"""Return True when any configured auth cookie is present."""
+	return any(request.cookies.get(cookie_name) for cookie_name in _AUTH_COOKIE_NAMES)
+
+
+def _is_header_only_bearer_request(request: Request) -> bool:
+	"""Return True for API Bearer requests that do not carry auth cookies."""
+	if not request.url.path.startswith("/api/"):
+		return False
 	auth = request.headers.get("Authorization", "").strip()
-	return auth.startswith("Bearer ")
+	return auth.startswith("Bearer ") and not _has_auth_cookie(request)
+
+
+def _is_secure_cookie_request(request: Request) -> bool:
+	"""Reuse auth-layer HTTPS detection for secure cookie handling."""
+	from ..api.auth import _is_https
+
+	try:
+		return _is_https(request)
+	except Exception:
+		return True
 
 
 class CSRFMiddleware(BaseHTTPMiddleware):
@@ -50,6 +85,16 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
 	def __init__(self, app: ASGIApp):
 		super().__init__(app)
+		origins_raw = os.environ.get("WIREBUDDY_CSRF_ALLOWED_ORIGINS", "").strip()
+		public_origin = os.environ.get("WIREBUDDY_PUBLIC_ORIGIN", "").strip()
+		configured = [item.strip() for item in origins_raw.split(",") if item.strip()]
+		if public_origin:
+			configured.append(public_origin)
+		self._allowed_origins = {
+			origin_tuple
+			for item in configured
+			if (origin_tuple := _origin_tuple(urlparse(item))) is not None
+		}
 
 	def _requires_csrf(self, path: str) -> bool:
 		"""Check if path requires CSRF protection."""
@@ -72,25 +117,28 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 				return True
 		return False
 
-	def _check_origin(self, request: Request) -> bool:
-		"""Validate Origin header matches request scheme and host."""
-		origin = request.headers.get("Origin")
-		if not origin:
-			return True
-
-		try:
-			origin_parsed = urlparse(origin)
-			req_scheme = request.url.scheme
-			req_host = (request.url.hostname or "").lower()
-			origin_scheme = (origin_parsed.scheme or "").lower()
-			origin_host = (origin_parsed.hostname or "").lower()
-			if not origin_scheme or not origin_host:
-				return False
-			if origin_scheme != req_scheme:
-				return False
-			return origin_host == req_host
-		except Exception:
+	def _is_allowed_origin(self, origin_value: str, request: Request) -> bool:
+		"""Validate origin against configured public origins or the current request origin."""
+		origin_tuple = _origin_tuple(urlparse(origin_value))
+		if origin_tuple is None:
 			return False
+		if self._allowed_origins:
+			return origin_tuple in self._allowed_origins
+		request_origin = _origin_tuple(request.url)
+		return request_origin is not None and origin_tuple == request_origin
+
+	def _check_origin_or_referer(self, request: Request) -> bool:
+		"""Require a matching Origin header or Referer origin for unsafe cookie requests."""
+		origin = request.headers.get("Origin")
+		if origin:
+			return self._is_allowed_origin(origin, request)
+
+		referer = request.headers.get("Referer")
+		if not referer:
+			return False
+		referer_parsed = urlparse(referer)
+		referer_origin = f"{referer_parsed.scheme}://{referer_parsed.netloc}"
+		return self._is_allowed_origin(referer_origin, request)
 
 	async def dispatch(self, request: Request, call_next: Callable) -> Response:
 		# 1. Get token from cookie, or generate new one
@@ -111,11 +159,11 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 		if (
 			request.method not in SAFE_METHODS
 			and self._requires_csrf(request.url.path)
-			and not _is_bearer_request(request)
+			and not _is_header_only_bearer_request(request)
 			and self._is_cookie_authenticated_api_request(request)
 		):
 			# Origin check
-			if not self._check_origin(request):
+			if not self._check_origin_or_referer(request):
 				return JSONResponse(
 					content={"detail": "Cross-origin request blocked"},
 					status_code=403
@@ -124,21 +172,36 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 			# CSRF token validation (constant-time comparison)
 			submitted_token = request.headers.get("X-CSRF-Token")
 			if not submitted_token:
-				content_type = request.headers.get("Content-Type", "")
+				content_type = request.headers.get("Content-Type", "").lower()
 				if "application/x-www-form-urlencoded" in content_type:
 					try:
+						content_length = int(request.headers.get("Content-Length") or "0")
+					except ValueError:
+						return JSONResponse(
+							content={"detail": "Invalid Content-Length header"},
+							status_code=400,
+						)
+					if content_length > _CSRF_FORM_MAX_BYTES:
+						return JSONResponse(
+							content={"detail": "CSRF form payload too large"},
+							status_code=413,
+						)
+					try:
 						raw_body = await request.body()
+						if len(raw_body) > _CSRF_FORM_MAX_BYTES:
+							return JSONResponse(
+								content={"detail": "CSRF form payload too large"},
+								status_code=413,
+							)
 						parsed = parse_qs(raw_body.decode("utf-8", errors="ignore"), keep_blank_values=True)
 						submitted_token = parsed.get("csrf_token", [None])[0]
 					except Exception:
 						submitted_token = None
 				elif "multipart/form-data" in content_type:
-					try:
-						form = await request.form()
-						val = form.get("csrf_token")
-						submitted_token = val if isinstance(val, str) else None
-					except Exception:
-						submitted_token = None
+					return JSONResponse(
+						content={"detail": "CSRF token header required for multipart requests"},
+						status_code=403,
+					)
 			
 			if not submitted_token or not secrets.compare_digest(csrf_token, submitted_token):
 				return JSONResponse(
@@ -149,15 +212,16 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 		# 4. Process request
 		response = await call_next(request)
 
-		# 5. Set cookie on new token or refresh existing
+		# 5. Set cookie only when a token was newly generated.
 		if new_token:
 			response.set_cookie(
 				key="csrf_token",
 				value=csrf_token,
 				httponly=False,  # Needs to be readable by JavaScript
-				secure=request.url.scheme == "https",
+				secure=_is_secure_cookie_request(request),
 				samesite="strict",
 				max_age=3600,
+				path="/",
 			)
 
 		return response

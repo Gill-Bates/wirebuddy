@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import logging
 import sqlite3
@@ -37,6 +38,30 @@ _ALLOWED_UPDATE_ASSIGNMENTS = frozenset({
 })
 
 _log = logging.getLogger(__name__)
+_MAX_BLOCKLIST_IDS = 128
+_MAX_BLOCKLIST_ID_LENGTH = 128
+_MAX_BLOCKLIST_IDS_BYTES = 8192
+_MAX_ALLOWED_IPS_ENTRIES = 64
+_MAX_PEER_ADDRESS_ENTRIES = 8
+
+
+def _normalize_cidr_csv(value: str, *, field: str, max_entries: int, interface_mode: bool = False) -> str:
+	"""Validate and normalize a comma-separated CIDR/interface list."""
+	parts = [part.strip() for part in str(value or "").split(",") if part.strip()]
+	if not parts:
+		raise ValueError(f"{field} must not be empty")
+	if len(parts) > max_entries:
+		raise ValueError(f"{field} exceeds maximum entry count")
+	normalized: list[str] = []
+	for part in parts:
+		try:
+			if interface_mode:
+				normalized.append(ipaddress.ip_interface(part).with_prefixlen)
+			else:
+				normalized.append(ipaddress.ip_network(part, strict=False).with_prefixlen)
+		except ValueError as exc:
+			raise ValueError(f"Invalid {field} entry: {part!r}") from exc
+	return ", ".join(normalized)
 
 
 def _validate_allowed_ips_mode(allowed_ips_mode: str) -> str:
@@ -65,7 +90,20 @@ def _serialize_blocklist_ids(blocklist_ids: list[str] | None) -> str | None:
 		return None
 	if not isinstance(blocklist_ids, list) or not all(isinstance(item, str) for item in blocklist_ids):
 		raise ValueError("blocklist_ids must be a list of strings")
-	return json.dumps(blocklist_ids)
+	if len(blocklist_ids) > _MAX_BLOCKLIST_IDS:
+		raise ValueError("blocklist_ids exceeds maximum entry count")
+	normalized: list[str] = []
+	for item in blocklist_ids:
+		value = item.strip()
+		if not value:
+			raise ValueError("blocklist_ids entries must be non-empty strings")
+		if len(value) > _MAX_BLOCKLIST_ID_LENGTH:
+			raise ValueError("blocklist_id too long")
+		normalized.append(value)
+	payload = json.dumps(normalized, separators=(",", ":"))
+	if len(payload.encode("utf-8")) > _MAX_BLOCKLIST_IDS_BYTES:
+		raise ValueError("blocklist_ids payload too large")
+	return payload
 
 
 def _assert_safe_update_assignments(assignments: list[str]) -> None:
@@ -123,6 +161,12 @@ def create_peer(
 	"""
 	now = utcnow()
 	public_key = _validate_public_key(public_key)
+	allowed_ips = _normalize_cidr_csv(allowed_ips, field="allowed_ips", max_entries=_MAX_ALLOWED_IPS_ENTRIES)
+	peer_address = (
+		_normalize_cidr_csv(peer_address, field="peer_address", max_entries=_MAX_PEER_ADDRESS_ENTRIES, interface_mode=True)
+		if peer_address is not None
+		else None
+	)
 	blocklist_ids_json = _serialize_blocklist_ids(blocklist_ids)
 	pepper = get_config().secret_key
 	private_key_stored = _maybe_encrypt(private_key, pepper)
@@ -216,7 +260,7 @@ def update_peer(
 	if allowed_ips is not UNSET:
 		_require_not_none(allowed_ips, "allowed_ips")
 		updates.append("allowed_ips = ?")
-		params.append(allowed_ips)
+		params.append(_normalize_cidr_csv(allowed_ips, field="allowed_ips", max_entries=_MAX_ALLOWED_IPS_ENTRIES))
 	if allowed_ips_mode is not UNSET:
 		_require_not_none(allowed_ips_mode, "allowed_ips_mode")
 		updates.append("allowed_ips_mode = ?")

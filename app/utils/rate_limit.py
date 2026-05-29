@@ -12,6 +12,7 @@ import os
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from starlette.requests import Request
 
 # Rate limit presets
 RATE_LIMIT_DEFAULT = "60/minute"
@@ -21,8 +22,17 @@ RATE_LIMIT_API = "120/minute"      # General API operations
 RATE_LIMIT_CRITICAL = "3/minute"   # For sensitive operations like PSK reveal
 RATE_LIMIT_UI_HEAVY = os.getenv("WIREBUDDY_RATE_LIMIT_UI_HEAVY", "60/minute")
 
+
+def rate_limit_key(request: Request) -> str:
+	"""Prefer authenticated user identity over remote address when available."""
+	user_id = getattr(request.state, "user_id", None)
+	if user_id is not None:
+		return f"user:{user_id}"
+	return get_remote_address(request)
+
+
 # Global limiter instance
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=rate_limit_key)
 
 __all__ = [
 	"RATE_LIMIT_AUTH",

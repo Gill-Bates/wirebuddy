@@ -39,3 +39,34 @@
 </div>
 {% endif %}
 {% endmacro %}
+
+{% macro geo_ip_stack(ip_text, country_code, city=None, as_org=None) %}
+{% set _ip = (ip_text | string | trim) if ip_text else '' %}
+{% set _cc = (country_code | lower | trim) if country_code else '' %}
+{% set _letters = 'abcdefghijklmnopqrstuvwxyz' %}
+{% set _valid_cc = _cc | length == 2 and _cc[0] in _letters and _cc[1] in _letters %}
+{% if _ip %}
+<div class="geo-ip-stack">
+  <div class="geo-ip-main">
+    {% if _valid_cc %}
+    <img class="geo-country-flag" alt="Country flag: {{ _cc | upper }}"
+      width="16"
+      height="12"
+      decoding="async"
+      src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ _cc }}.svg">
+    {% endif %}
+    <code class="ipv6">{{ _ip.replace(':', ':\u200b').replace('/', '/\u200b') }}</code>
+  </div>
+  {% if city or as_org %}
+  <div class="geo-ip-meta">
+    {% if city %}
+    <span class="geo-meta-city">{{ city }}</span>
+    {% endif %}
+    {% if as_org %}
+    <span class="geo-meta-provider">({{ as_org }})</span>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+{% endmacro %}

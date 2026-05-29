@@ -927,52 +927,53 @@ async function collectPageMetrics(page, scope) {
         // Button text vertical centering check
         // Detects buttons where min-height is set but content is not vertically centered
         // (missing flexbox/grid alignment)
+        const standardButtonHeightContract = (() => {
+            const expectedHeight = Number(constants.STANDARD_BUTTON_HEIGHT_EXPECTED_PX || constants.INPUT_GROUP_HEIGHT_EXPECTED_PX || 38);
+            const tolerance = Number(constants.STANDARD_BUTTON_HEIGHT_TOLERANCE_PX || 2);
+            const selector = [
+                '.btn:not(.btn-sm):not(.btn-lg):not(.btn-link):not(.btn-close)',
+                '.wb-btn:not(.wb-btn-sm):not(.wb-btn-lg)',
+            ].join(', ');
+
+            const sample = Array.from(contentRoot.querySelectorAll(selector))
+                .filter((el) => isVisible(el) && isInContentRoot(el))
+                .filter((el) => !el.closest('#settingsTabs, .btn-group, .dropdown-menu'))
+                .map((el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    const minHeight = Number.parseFloat(style.minHeight || '0') || 0;
+                    const height = rect.height;
+                    const heightMatchesToken = Math.abs(height - expectedHeight) <= tolerance;
+                    const minHeightMatchesToken = minHeight <= 0 || Math.abs(minHeight - expectedHeight) <= tolerance;
+
+                    return {
+                        ...rectInfo(el),
+                        text: norm(el.textContent).slice(0, 80) || null,
+                        height: round(height),
+                        minHeight: round(minHeight),
+                        expectedHeight: round(expectedHeight),
+                        tolerance,
+                        heightMatchesToken,
+                        minHeightMatchesToken,
+                        classes: typeof el.className === 'string' ? el.className.split(/\s+/).filter(Boolean) : [],
+                    };
+                });
+
+            const mismatches = sample.filter((button) => !button.heightMatchesToken || !button.minHeightMatchesToken);
+
+            return {
+                count: sample.length,
+                expectedHeight: round(expectedHeight),
+                tolerance,
+                mismatchCount: mismatches.length,
+                sample: mismatches.slice(0, 10),
+            };
+        })();
+
         const buttonTextNotCentered = Array.from(contentRoot.querySelectorAll('button, .btn, [role="button"]'))
             .filter((el) => isVisible(el) && isInContentRoot(el) && !isDisabled(el))
             .filter((el) => !el.closest('.input-group, .btn-group, .dropdown-menu'))
             .filter((el) => {
-                const standardButtonHeightContract = (() => {
-                    const expectedHeight = Number(constants.STANDARD_BUTTON_HEIGHT_EXPECTED_PX || constants.INPUT_GROUP_HEIGHT_EXPECTED_PX || 38);
-                    const tolerance = Number(constants.STANDARD_BUTTON_HEIGHT_TOLERANCE_PX || 2);
-                    const selector = [
-                        '.btn:not(.btn-sm):not(.btn-lg):not(.btn-link):not(.btn-close)',
-                        '.wb-btn:not(.wb-btn-sm):not(.wb-btn-lg)',
-                    ].join(', ');
-
-                    const sample = Array.from(contentRoot.querySelectorAll(selector))
-                        .filter((el) => isVisible(el) && isInContentRoot(el))
-                        .filter((el) => !el.closest('#settingsTabs, .btn-group, .dropdown-menu'))
-                        .map((el) => {
-                            const rect = el.getBoundingClientRect();
-                            const style = window.getComputedStyle(el);
-                            const minHeight = Number.parseFloat(style.minHeight || '0') || 0;
-                            const height = rect.height;
-                            const heightMatchesToken = Math.abs(height - expectedHeight) <= tolerance;
-                            const minHeightMatchesToken = minHeight <= 0 || Math.abs(minHeight - expectedHeight) <= tolerance;
-
-                            return {
-                                ...rectInfo(el),
-                                text: norm(el.textContent).slice(0, 80) || null,
-                                height: round(height),
-                                minHeight: round(minHeight),
-                                expectedHeight: round(expectedHeight),
-                                tolerance,
-                                heightMatchesToken,
-                                minHeightMatchesToken,
-                                classes: typeof el.className === 'string' ? el.className.split(/\s+/).filter(Boolean) : [],
-                            };
-                        });
-
-                    const mismatches = sample.filter((button) => !button.heightMatchesToken || !button.minHeightMatchesToken);
-
-                    return {
-                        count: sample.length,
-                        expectedHeight: round(expectedHeight),
-                        tolerance,
-                        mismatchCount: mismatches.length,
-                        sample: mismatches.slice(0, 10),
-                    };
-                })();
                 const style = window.getComputedStyle(el);
                 const btnRect = el.getBoundingClientRect();
                 // Only check buttons with significant height (>= 36px, e.g. touch target)

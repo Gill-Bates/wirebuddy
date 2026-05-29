@@ -41,7 +41,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from typing import Any
 from weakref import WeakValueDictionary
 
 # Platform check for fcntl (Unix-only)
@@ -94,6 +95,7 @@ FSYNC_BATCH_SIZE = 10  # Fsync every N appends (durability vs performance tradeo
 FSYNC_BATCH_INTERVAL = 5.0  # Or fsync after N seconds, whichever comes first
 MAX_VALUE_SIZE = 1024 * 1024  # 1 MiB per data point (DoS prevention)
 MAX_METRIC_NAME_LENGTH = 64  # Prevent excessively long metric names
+MAX_QUERY_POINTS = 10_000
 _RESERVED_METRIC_NAMES = frozenset(["prune", "lock", "tmp", "gz"])  # Reserved for internal files
 
 # Synthetic peer keys used for aggregated traffic statistics
@@ -415,30 +417,44 @@ class _FileLock:
 		else:
 			self._thread_lock.acquire_write()
 
-		# Then acquire file-level lock for inter-process safety
-		self._lock_path.parent.mkdir(parents=True, exist_ok=True)
-		self._fd = os.open(str(self._lock_path), os.O_CREAT | os.O_RDWR)
-		fcntl.flock(self._fd, fcntl.LOCK_SH if self._read_only else fcntl.LOCK_EX)
-		
-		# Cleanup orphaned temp files from previous crashes
-		if not self._read_only:
-			# CRITICAL FIX #2: Scope cleanup to THIS series only to avoid
-			# cross-metric race conditions (don't delete other metrics' temp files)
-			prefix = self._series_path.name  # e.g., "rx_bytes.jsonl"
-			for tmp in self._series_path.parent.glob(f"{prefix}*.tmp"):
-				try:
-					tmp.unlink(missing_ok=True)
-				except OSError:
-					pass
+		try:
+			# Then acquire file-level lock for inter-process safety
+			self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+			self._fd = os.open(str(self._lock_path), os.O_CREAT | os.O_RDWR)
+			fcntl.flock(self._fd, fcntl.LOCK_SH if self._read_only else fcntl.LOCK_EX)
 			
-			# CRITICAL FIX #1: Recover uncompressed rotations left by crashes
-			# FIX: Only run once per series to avoid redundant glob operations
-			with _recovered_series_lock:
-				if key not in _recovered_series:
-					_recover_uncompressed_rotations(self._series_path)
-					_recovered_series[key] = True
-		
-		return self
+			# Cleanup orphaned temp files from previous crashes
+			if not self._read_only:
+				# CRITICAL FIX #2: Scope cleanup to THIS series only to avoid
+				# cross-metric race conditions (don't delete other metrics' temp files)
+				prefix = self._series_path.name  # e.g., "rx_bytes.jsonl"
+				for tmp in self._series_path.parent.glob(f"{prefix}*.tmp"):
+					try:
+						tmp.unlink(missing_ok=True)
+					except OSError:
+						pass
+				
+				# CRITICAL FIX #1: Recover uncompressed rotations left by crashes
+				# FIX: Only run once per series to avoid redundant glob operations
+				with _recovered_series_lock:
+					if key not in _recovered_series:
+						_recover_uncompressed_rotations(self._series_path)
+						_recovered_series[key] = True
+			
+			return self
+		except BaseException:
+			try:
+				_safe_flock_unlock(self._fd)
+				_safe_close(self._fd)
+				self._fd = None
+			finally:
+				if self._thread_lock is not None:
+					if self._read_only:
+						self._thread_lock.release_read()
+					else:
+						self._thread_lock.release_write()
+					self._thread_lock = None
+			raise
 
 	def __exit__(self, exc_type, exc_val, exc_tb) -> None:
 		"""Release locks with guaranteed cleanup order to prevent deadlocks."""
@@ -1067,6 +1083,7 @@ def query(
 
 	since_u = ensure_utc(since) if since else None
 	until_u = ensure_utc(until) if until else None
+	limit = min(max(0, int(limit)), MAX_QUERY_POINTS)
 
 	# Use shared lock for reads to allow concurrent queries
 	with _FileLock(p, read_only=True):
@@ -1302,6 +1319,7 @@ def reset_all(tsdb_dir: Path, *, force: bool = False) -> int:
 		tsdb_dir / _PEERS_DIRNAME,
 		tsdb_dir / _TRAFFIC_DIRNAME,
 		tsdb_dir / _NETWORK_DIRNAME,
+		tsdb_dir / _DNS_DIRNAME,
 		tsdb_dir / _SPEEDTEST_DIRNAME,
 	):
 		if not bucket.exists():

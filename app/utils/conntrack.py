@@ -46,6 +46,7 @@ from collections import defaultdict
 from collections.abc import Iterator
 import json
 import logging
+import os
 import re
 import subprocess
 import threading
@@ -78,6 +79,7 @@ _MAX_IP_JSON_OUTPUT = 10_000_000
 _MAX_CONNTRACK_TOOL_OUTPUT = 20_000_000
 _MAX_TRACKED_CONNECTIONS = 500_000
 _MAX_PEER_NAME_LEN = 128
+_IFACE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,14}$")
 
 
 # Explicitly exclude ranges that may be treated inconsistently by
@@ -94,6 +96,18 @@ GEO_TRAFFIC_KEY = "__geo_traffic__"
 GEO_TRAFFIC_METRIC = "snapshot"
 ASN_TRAFFIC_KEY = "__asn_traffic__"
 ASN_TRAFFIC_METRIC = "snapshot"
+
+
+def _resolve_tool_path(*candidates: str) -> str | None:
+	"""Return the first trusted executable path from a fixed allowlist."""
+	for candidate in candidates:
+		if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+			return candidate
+	return None
+
+
+_BIN_IP = _resolve_tool_path("/usr/sbin/ip", "/usr/bin/ip")
+_BIN_WG = _resolve_tool_path("/usr/bin/wg", "/usr/local/bin/wg")
 
 # ---------------------------------------------------------------------------
 # Pre-compiled regexes
@@ -260,8 +274,10 @@ def _get_wireguard_subnets() -> tuple[
 
 		# Method 1: JSON output (iproute2 ≥ 4.14, kernel WireGuard only)
 		try:
+			if _BIN_IP is None:
+				raise FileNotFoundError("trusted ip binary not found")
 			result = subprocess.run(
-				["ip", "-j", "addr", "show", "type", "wireguard"],
+				[_BIN_IP, "-j", "addr", "show", "type", "wireguard"],
 				capture_output=True, text=True, timeout=5,
 			)
 			if result.returncode == 0:
@@ -296,14 +312,19 @@ def _get_wireguard_subnets() -> tuple[
 		# Method 2: text fallback — get interface names, then addresses
 		if not subnets:
 			try:
+				if _BIN_WG is None or _BIN_IP is None:
+					raise FileNotFoundError("trusted wg/ip binary not found")
 				iface_result = subprocess.run(
-					["wg", "show", "interfaces"],
+					[_BIN_WG, "show", "interfaces"],
 					capture_output=True, text=True, timeout=5,
 				)
 				if iface_result.returncode == 0:
 					for iface in iface_result.stdout.strip().split():
+						if _IFACE_RE.fullmatch(iface) is None:
+							_log.warning("COUNTRY_TRAFFIC ignoring invalid interface name: %r", iface)
+							continue
 						addr_result = subprocess.run(
-							["ip", "addr", "show", "dev", iface],
+							[_BIN_IP, "addr", "show", "dev", iface],
 							capture_output=True, text=True, timeout=5,
 						)
 						if addr_result.returncode == 0:
@@ -411,29 +432,7 @@ def _read_conntrack_lines() -> Iterator[str]:
 	except (OSError, PermissionError) as exc:
 		_log.debug("Cannot read %s: %s", _CONNTRACK_PROC, exc)
 
-	# Fallback: conntrack tool
-	try:
-		result = subprocess.run(
-			["conntrack", "-L", "-o", "extended"],
-			capture_output=True, text=True, timeout=10,
-		)
-		if result.returncode == 0:
-			if len(result.stdout) > _MAX_CONNTRACK_TOOL_OUTPUT:
-				_log.warning("COUNTRY_TRAFFIC conntrack output too large — skipping sample")
-				return
-			for line in result.stdout.splitlines():
-				if line:
-					yield line
-			return
-		_log.debug(
-			"COUNTRY_TRAFFIC 'conntrack -L -o extended' failed (rc=%d): %s",
-			result.returncode,
-			(result.stderr or "").strip(),
-		)
-	except FileNotFoundError:
-		_log.debug("COUNTRY_TRAFFIC conntrack tool not found")
-	except subprocess.TimeoutExpired:
-		_log.debug("COUNTRY_TRAFFIC conntrack command timed out")
+	_log.warning("COUNTRY_TRAFFIC /proc conntrack unavailable; skipping sample")
 
 
 def _parse_line(line: str) -> dict[str, Any] | None:

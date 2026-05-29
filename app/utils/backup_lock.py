@@ -37,11 +37,24 @@ class BackupLockBusyError(RuntimeError):
 	"""Raised when another worker already holds a backup-related lock."""
 
 
+def _ensure_private_lock_dir(path: Path) -> None:
+	"""Ensure the backup lock directory exists and is a real private directory."""
+	try:
+		st = path.lstat()
+	except FileNotFoundError:
+		path.mkdir(mode=0o700, parents=True)
+		st = path.lstat()
+
+	if path.is_symlink() or not stat.S_ISDIR(st.st_mode):
+		raise RuntimeError(f"Backup lock path is not a safe directory: {path}")
+
+	path.chmod(0o700)
+
+
 def _lock_path(data_dir: Path, lock_name: str) -> Path:
 	data_dir = data_dir.resolve(strict=False)
 	lock_dir = data_dir / BACKUP_LOCK_DIR_NAME
-	lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-	lock_dir.chmod(0o700)
+	_ensure_private_lock_dir(lock_dir)
 	return lock_dir / lock_name
 
 
@@ -87,6 +100,7 @@ def _acquire_lock_file(
 				f"pid={os.getpid()} host={socket.gethostname()} acquired_at={time.time():.6f}\n".encode("utf-8")
 			)
 			lock_file.flush()
+			os.fsync(lock_file.fileno())
 		yield lock_file
 	finally:
 		try:
@@ -111,12 +125,23 @@ def acquire_restore_guard(data_dir: Path) -> Iterator[BinaryIO]:
 		yield lock_file
 
 
-def is_restore_in_progress(data_dir: Path) -> bool:
+def is_restore_in_progress(data_dir: Path, *, create: bool = True) -> bool:
 	"""Advisory restore-state probe.
 
 	Result may become stale immediately after return.
 	"""
-	lock_path = _lock_path(data_dir, BACKUP_RESTORE_LOCK_NAME)
+	if create:
+		lock_path = _lock_path(data_dir, BACKUP_RESTORE_LOCK_NAME)
+	else:
+		data_dir = data_dir.resolve(strict=False)
+		lock_dir = data_dir / BACKUP_LOCK_DIR_NAME
+		try:
+			st = lock_dir.lstat()
+		except FileNotFoundError:
+			return False
+		if lock_dir.is_symlink() or not stat.S_ISDIR(st.st_mode):
+			raise RuntimeError(f"Backup lock path is not a safe directory: {lock_dir}")
+		lock_path = lock_dir / BACKUP_RESTORE_LOCK_NAME
 	try:
 		with _acquire_lock_file(lock_path, shared=True, update_metadata=False):
 			return False

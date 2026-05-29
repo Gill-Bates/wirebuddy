@@ -21,6 +21,8 @@ _log = logging.getLogger(__name__)
 
 
 LastSeenUpdate: TypeAlias = tuple[str, int, str]
+_MAX_PAGE_SIZE = 500
+_MAX_ALLOCATABLE_HOSTS = 65_536
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +60,7 @@ def get_peers_paginated(
 ) -> list[sqlite3.Row]:
 	"""Get peers paginated, optionally filtered by interface."""
 	page = max(1, page)
-	page_size = max(1, page_size)
+	page_size = min(max(1, page_size), _MAX_PAGE_SIZE)
 	offset = (page - 1) * page_size
 	if interface:
 		cur = conn.execute(
@@ -200,8 +202,7 @@ def get_peer_metrics_stats(conn: sqlite3.Connection) -> dict[str, int | str]:
 		"storage_type": "sqlite",
 		# Return basename only to avoid leaking absolute filesystem layout.
 		"path": Path(db_path).name if db_path else "peers.db",
-		# Full path for admin settings display.
-		"full_path": db_path if db_path else "peers.db",
+		"full_path": Path(db_path).name if db_path else "peers.db",
 		"size_bytes": size_bytes,
 	}
 
@@ -239,6 +240,14 @@ def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> str | Non
 		ipv4_server = ipv4_iface.ip
 	except ValueError as e:
 		_log.error("Invalid interface IPv4 address %s: %s", iface["address"], e)
+		return None
+	if ipv4_network.num_addresses > _MAX_ALLOCATABLE_HOSTS:
+		_log.error(
+			"Refusing peer allocation for interface=%s with oversized IPv4 pool %s (%d addresses)",
+			interface_name,
+			ipv4_network,
+			ipv4_network.num_addresses,
+		)
 		return None
 
 	# Parse IPv6 subnet (optional)

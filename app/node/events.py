@@ -18,6 +18,7 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 from pydantic import BaseModel, Field, JsonValue, StringConstraints
 
 _log = logging.getLogger(__name__)
+_MAX_LATEST_SPEEDTEST_ENTRIES = 1024
 
 NodeId = Annotated[
 	str,
@@ -199,8 +200,16 @@ class NodeEventBus:
 		payload_copy = payload.model_copy(deep=True)
 		async with self._lock:
 			self._ensure_open()
-			self._latest_speedtest[node_id] = payload_copy
 			streams_exist = bool(self._speedtest_subscribers.get(node_id))
+			if streams_exist:
+				self._latest_speedtest[node_id] = payload_copy
+			elif len(self._latest_speedtest) >= _MAX_LATEST_SPEEDTEST_ENTRIES:
+				oldest_node_id = next(iter(self._latest_speedtest), None)
+				if oldest_node_id is not None:
+					self._latest_speedtest.pop(oldest_node_id, None)
+				self._latest_speedtest[node_id] = payload_copy
+			else:
+				self._latest_speedtest[node_id] = payload_copy
 		if not streams_exist:
 			return
 		event = NodeEvent(node_id=node_id, type=NodeEventType.SPEEDTEST_PROGRESS, payload=payload_copy)

@@ -25,6 +25,19 @@ function _getModalEl() {
     return document.getElementById('wbModal');
 }
 
+/**
+ * Clear sensitive prompt input values from the modal DOM.
+ * Called after modal closes to prevent passwords/secrets from persisting.
+ */
+function _clearPromptInput() {
+    const inputEl = _getModalEl()?.querySelector('#wbModalInput');
+    if (inputEl) {
+        inputEl.value = '';
+        inputEl.type = 'text';
+        inputEl.placeholder = '';
+    }
+}
+
 function _getModalInstance() {
     const el = _getModalEl();
     if (!el || typeof bootstrap === 'undefined' || !bootstrap?.Modal) {
@@ -104,6 +117,7 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
         function safeResolve(val) {
             if (settled) return;
             settled = true;
+            _clearPromptInput();
             if (fallbackTimer) {
                 clearTimeout(fallbackTimer);
                 fallbackTimer = null;
@@ -246,6 +260,7 @@ window.addEventListener('pagehide', () => {
     if (typeof _wbModalPendingFinish === 'function') {
         _wbModalPendingFinish();
     }
+    _clearPromptInput();
     _clearModalPageState();
     if (_wbModalPendingAbort) {
         _wbModalPendingAbort.abort();

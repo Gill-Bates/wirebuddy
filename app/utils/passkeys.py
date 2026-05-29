@@ -52,11 +52,22 @@ from webauthn.helpers.structs import (
 _log = logging.getLogger(__name__)
 
 # Configuration constants
-_MAX_PASSKEYS_PER_USER = int(os.environ.get("MAX_PASSKEYS_PER_USER", "20"))
 _MAX_B64URL_SIZE = 8192
 _MAX_TRANSPORTS = 16
 _MAX_TRANSPORT_ENTRY_LEN = 64
 _MAX_SERIALIZATION_NODES = 10_000
+
+
+def _read_max_passkeys_per_user() -> int:
+	raw = os.environ.get("MAX_PASSKEYS_PER_USER", "20")
+	try:
+		value = int(raw)
+	except ValueError:
+		return 20
+	return min(max(value, 1), 100)
+
+
+_MAX_PASSKEYS_PER_USER = _read_max_passkeys_per_user()
 
 
 # Custom exceptions
@@ -128,6 +139,14 @@ def _validate_base64url(value: str, name: str) -> None:
 		raise ValueError(f"{name} is not valid base64url: {e}") from e
 
 
+def _decode_base64url_field(value: object, name: str) -> bytes:
+	"""Validate and decode a base64url field from WebAuthn payloads."""
+	if not isinstance(value, str):
+		raise ValueError(f"{name} must be a string")
+	_validate_base64url(value, name)
+	return base64url_to_bytes(value)
+
+
 def _normalize_expected_origin(expected_origin: str) -> str:
 	"""Canonicalize a WebAuthn origin for verification."""
 	if not isinstance(expected_origin, str):
@@ -181,6 +200,7 @@ def _parse_registration_credential(credential_json: dict[str, Any]) -> Registrat
 			raise ValueError("Missing credential id")
 		if not raw_id:
 			raise ValueError("Missing rawId")
+		_validate_base64url(str(cred_id), "credential id")
 		
 		# Parse response
 		client_data_json = response.get("clientDataJSON") or response.get("client_data_json")
@@ -211,20 +231,20 @@ def _parse_registration_credential(credential_json: dict[str, Any]) -> Registrat
 		
 		# Build the response object
 		attestation_response = AuthenticatorAttestationResponse(
-			client_data_json=base64url_to_bytes(client_data_json),
-			attestation_object=base64url_to_bytes(attestation_object),
+			client_data_json=_decode_base64url_field(client_data_json, "clientDataJSON"),
+			attestation_object=_decode_base64url_field(attestation_object, "attestationObject"),
 			transports=parsed_transports,
 		)
 		
 		return RegistrationCredential(
 			id=cred_id,
-			raw_id=base64url_to_bytes(raw_id),
+			raw_id=_decode_base64url_field(raw_id, "rawId"),
 			response=attestation_response,
 			type="public-key",
 		)
-	except Exception as e:
-		_log.warning("Failed to parse registration credential: %s", e)
-		raise ValueError(f"Invalid registration credential: {e}") from e
+	except Exception as exc:
+		_log.warning("Failed to parse registration credential")
+		raise ValueError("Invalid registration credential") from exc
 
 
 def _parse_authentication_credential(credential_json: dict[str, Any]) -> AuthenticationCredential:
@@ -252,6 +272,7 @@ def _parse_authentication_credential(credential_json: dict[str, Any]) -> Authent
 			raise ValueError("Missing credential id")
 		if not raw_id:
 			raise ValueError("Missing rawId")
+		_validate_base64url(str(cred_id), "credential id")
 		
 		# Parse response
 		client_data_json = response.get("clientDataJSON") or response.get("client_data_json")
@@ -268,21 +289,21 @@ def _parse_authentication_credential(credential_json: dict[str, Any]) -> Authent
 		
 		# Build the response object
 		assertion_response = AuthenticatorAssertionResponse(
-			client_data_json=base64url_to_bytes(client_data_json),
-			authenticator_data=base64url_to_bytes(authenticator_data),
-			signature=base64url_to_bytes(signature),
-			user_handle=base64url_to_bytes(user_handle) if user_handle else None,
+			client_data_json=_decode_base64url_field(client_data_json, "clientDataJSON"),
+			authenticator_data=_decode_base64url_field(authenticator_data, "authenticatorData"),
+			signature=_decode_base64url_field(signature, "signature"),
+			user_handle=_decode_base64url_field(user_handle, "userHandle") if user_handle else None,
 		)
 		
 		return AuthenticationCredential(
 			id=cred_id,
-			raw_id=base64url_to_bytes(raw_id),
+			raw_id=_decode_base64url_field(raw_id, "rawId"),
 			response=assertion_response,
 			type="public-key",
 		)
-	except Exception as e:
-		_log.warning("Failed to parse authentication credential: %s", e)
-		raise ValueError(f"Invalid authentication credential: {e}") from e
+	except Exception as exc:
+		_log.warning("Failed to parse authentication credential")
+		raise ValueError("Invalid authentication credential") from exc
 
 
 def store_registration_challenge(

@@ -80,6 +80,10 @@ class SignalManager:
             except Exception:
                 continue
 
+            if previous in (None, signal.SIG_DFL, signal.SIG_IGN):
+                _log.debug("Skipping signal override for %s with default/ignored handler", sig.name)
+                continue
+
             handler = self._create_handler(sig, previous)
 
             try:
@@ -89,7 +93,7 @@ class SignalManager:
                 _log.debug("Could not install signal handler for %s: %s", sig.name, exc)
                 continue
 
-        self._installed = True
+        self._installed = bool(self._previous_handlers)
         _log.debug("SIGNAL_HANDLERS_INSTALLED signals=%s", [s.name for s, _ in self._previous_handlers])
 
     def restore(self) -> None:
@@ -127,8 +131,11 @@ class SignalManager:
 
         def _handler(signum: int, frame: Any) -> None:
             # Notify shutdown event (thread-safe)
-            if self._loop is not None:
-                self._loop.call_soon_threadsafe(self._shutdown_event.set)
+            if self._loop is not None and not self._loop.is_closed():
+                try:
+                    self._loop.call_soon_threadsafe(self._shutdown_event.set)
+                except RuntimeError:
+                    _log.debug("Event loop closed while handling %s", sig.name)
 
             # Chain to previous handler
             if previous in (None, signal.SIG_DFL, signal.SIG_IGN):

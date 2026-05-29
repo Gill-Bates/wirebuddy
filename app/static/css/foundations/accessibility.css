@@ -70,7 +70,7 @@
    Compact variants (.btn-sm) are excluded to keep their intended smaller size. */
 .btn:not(.btn-sm):not(.btn-link),
 .wb-btn,
-button:not(.btn):not(.btn-close):not(.accordion-button) {
+button:not(.btn):not(.btn-close):not(.accordion-button):not(.network-page-dot) {
     min-height: var(--wb-input-height);
 }
 

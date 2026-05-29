@@ -46,6 +46,7 @@ from ..db.sqlite_users import (
 	update_last_login,
 	update_user_auth_method,
 )
+from ..db.sqlite_runtime import transaction
 from ..utils.crypto import generate_token_expiry, new_token
 from ..utils.deps import get_conn
 from ..utils.passkeys import (
@@ -326,24 +327,26 @@ def passkey_register_finish(
 		raise HTTPException(status_code=400, detail="Passkey registration verification failed")
 
 	# Store the credential
-	passkey_id = create_passkey(
-		conn=conn,
-		user_id=user["id"],
-		credential_id=result.credential_id,
-		public_key=result.public_key,
-		sign_count=result.sign_count,
-		device_name=payload.device_name,
-		transports=serialize_transports(result.transports),
-	)
+	with transaction(conn, immediate=True):
+		passkey_id = create_passkey(
+			conn=conn,
+			user_id=user["id"],
+			credential_id=result.credential_id,
+			public_key=result.public_key,
+			sign_count=result.sign_count,
+			device_name=payload.device_name,
+			transports=serialize_transports(result.transports),
+		)
 
-	# Complete onboarding if passkey_pending was set (admin-initiated setup)
-	if user["passkey_pending"]:
-		clear_passkey_onboarding(conn, user["id"])
-		_log.info("PASSKEY_ONBOARDING_COMPLETE user_id=%s", user["id"])
-	else:
-		# User-initiated registration: enable passkeys, keep MFA auth mode if OTP is enabled.
-		auth_method = "password_mfa" if user["otp_enabled"] else "passkey"
-		update_user_auth_method(conn, user["id"], auth_method, passkey_enabled=True)
+		# Complete onboarding if passkey_pending was set (admin-initiated setup)
+		if user["passkey_pending"]:
+			clear_passkey_onboarding(conn, user["id"])
+			_log.info("PASSKEY_ONBOARDING_COMPLETE user_id=%s", user["id"])
+		else:
+			# User-initiated registration: enable passkeys, keep MFA auth mode if OTP is enabled.
+			auth_method = "password_mfa" if user["otp_enabled"] else "passkey"
+			if not update_user_auth_method(conn, user["id"], auth_method, passkey_enabled=True):
+				raise HTTPException(status_code=500, detail="Failed to update user authentication method")
 
 	_log.info(
 		"PASSKEY_REGISTER_FINISH success user_id=%s passkey_id=%s device=%s",
@@ -391,12 +394,10 @@ def passkey_login_start(
 		# Username provided - fetch user's credentials
 		user = get_user_by_username(conn, payload.username)
 		if user and user["is_active"]:
-			user_id = user["id"]
-			credential_ids = get_credential_ids_for_user(conn, user_id)
-			if not credential_ids:
-				# User has no passkeys
-				_log.info("PASSKEY_LOGIN_START no passkeys for user=%s", payload.username)
-				raise HTTPException(status_code=400, detail="No passkeys registered for this user")
+			ids = get_credential_ids_for_user(conn, user["id"])
+			if ids:
+				user_id = user["id"]
+				credential_ids = ids
 		else:
 			# Don't reveal user existence - still generate options
 			_log.debug("PASSKEY_LOGIN_START unknown/inactive user=%s", payload.username)
@@ -507,7 +508,7 @@ def passkey_login_finish(
 		update_last_login(conn, user_id, client_ip)
 
 	# Set auth cookie
-	max_age = max(0, int((expires_at - now).total_seconds()))
+	max_age = max(0, int((max_expires_at - now).total_seconds()))
 	response.set_cookie(
 		key=_AUTH_COOKIE,
 		value=token,

@@ -3,10 +3,27 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
+// Safe localStorage access for iOS/Safari privacy mode compatibility
+function safeStorageGet(key) {
+    try {
+        return window.localStorage.getItem(key);
+    } catch {
+        return null;
+    }
+}
+
+function safeStorageSet(key, value) {
+    try {
+        window.localStorage.setItem(key, value);
+    } catch {
+        // Ignore storage failures (private browsing, quota exceeded, etc.)
+    }
+}
+
 // Theme management
 function getPreferredTheme() {
-    const stored = localStorage.getItem('theme');
-    if (stored) return stored;
+    const stored = safeStorageGet('theme');
+    if (stored === 'dark' || stored === 'light') return stored;
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
@@ -25,9 +42,10 @@ function updateThemeIcon(theme) {
 }
 
 function setTheme(theme) {
-    document.documentElement.setAttribute('data-bs-theme', theme);
-    localStorage.setItem('theme', theme);
-    updateThemeIcon(theme);
+    const normalized = theme === 'dark' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-bs-theme', normalized);
+    safeStorageSet('theme', normalized);
+    updateThemeIcon(normalized);
 }
 
 function toggleTheme() {

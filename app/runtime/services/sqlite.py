@@ -41,7 +41,7 @@ class SQLiteService(RuntimeService):
     """
 
     name = "sqlite"
-    dependencies = []  # No dependencies - foundational service
+    dependencies = ()  # No dependencies - foundational service
     start_timeout = 30.0
     stop_timeout = 15.0
 
@@ -166,12 +166,12 @@ class SQLiteService(RuntimeService):
             "attempts": 0,
         }
 
+        closed_connections = close_all_connections()
+
         for attempt in range(1, self.CHECKPOINT_MAX_ATTEMPTS + 1):
             checkpoint = checkpoint_wal(self._db_path, mode="RESTART")
             checkpoint["attempts"] = attempt
             if int(checkpoint.get("busy", -1)) == 0:
-                break
-            if self._shutdown_event.is_set():
                 break
             time.sleep(self.CHECKPOINT_RETRY_DELAY)
 
@@ -182,8 +182,6 @@ class SQLiteService(RuntimeService):
                 checkpoint.get("attempts"),
             )
 
-        closed_connections = close_all_connections()
-
         return checkpoint, closed_connections
 
     def _check_connectivity(self) -> bool:
@@ -192,11 +190,11 @@ class SQLiteService(RuntimeService):
 
         conn = connect(self._db_path)
         try:
-            cursor = conn.execute("PRAGMA quick_check")
+            cursor = conn.execute("SELECT 1")
             try:
                 result = cursor.fetchone()
             finally:
                 cursor.close()
-            return result is not None and str(result[0]).lower() == "ok"
+            return result is not None and int(result[0]) == 1
         finally:
             close_connection(conn)
