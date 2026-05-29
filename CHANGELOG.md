@@ -1,3 +1,9 @@
+## [1.5.2] - 2026-xx-xx
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.5.1] - 2026-05-29
 
 - ``Fix`` DNS statistics and DNS query logs are displayed reliably again in the GUI
@@ -6,10 +12,6 @@
 - ``Fix`` Dashboard KPIs and traffic cards were visually refined for clearer values, better empty states and improved mobile layout
 - ``Fix`` Login, MFA and passkey sign-in flows are more reliable
 - ``Fix`` Additional security hardening in the web UI and API
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.5.0] - 2026-05-26
 
