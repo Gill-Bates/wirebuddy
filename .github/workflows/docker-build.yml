@@ -324,6 +324,49 @@ jobs:
           keep_latest="latest"
           api_base="https://hub.docker.com/v2/namespaces/${DOCKERHUB_USERNAME}/repositories/${REPOSITORY}/tags"
 
+          list_tags() {
+            local next_url="${api_base}?page_size=100"
+            local response=""
+
+            while [[ -n "$next_url" && "$next_url" != "null" ]]; do
+              response="$(curl -fsSL \
+                -H "Authorization: Bearer ${hub_token}" \
+                "$next_url")"
+
+              printf '%s' "$response" | jq -r '.results[].name'
+              next_url="$(printf '%s' "$response" | jq -r '.next // empty')"
+            done
+          }
+
+          wait_for_tag_absent() {
+            local tag="$1"
+            local tag_url="${api_base}/${tag}"
+            local status_code=""
+
+            for _ in $(seq 1 12); do
+              status_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+                -H "Authorization: Bearer ${hub_token}" \
+                "$tag_url")"
+
+              case "$status_code" in
+                404)
+                  echo "Confirmed tag absent: $tag"
+                  return 0
+                  ;;
+                200)
+                  sleep 5
+                  ;;
+                *)
+                  echo "ERROR: Failed to verify deletion for '$tag' (HTTP $status_code)"
+                  return 1
+                  ;;
+              esac
+            done
+
+            echo "ERROR: Tag still visible after cleanup propagation: $tag"
+            return 1
+          }
+
           echo "Keeping Docker Hub tags:"
           echo "  ${DOCKERHUB_USERNAME}/${REPOSITORY}:${keep_version}"
           echo "  ${DOCKERHUB_USERNAME}/${REPOSITORY}:${keep_latest}"
@@ -347,25 +390,16 @@ jobs:
           fi
 
           declare -a tags_to_delete=()
-          next_url="${api_base}?page_size=100"
-          while [[ -n "$next_url" && "$next_url" != "null" ]]; do
-            response="$(curl -fsSL \
-              -H "Authorization: Bearer ${hub_token}" \
-              "$next_url")"
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
 
-            while IFS= read -r tag; do
-              [[ -n "$tag" ]] || continue
+            if [[ "$tag" == "$keep_version" || "$tag" == "$keep_latest" ]]; then
+              echo "Keeping tag: $tag"
+              continue
+            fi
 
-              if [[ "$tag" == "$keep_version" || "$tag" == "$keep_latest" ]]; then
-                echo "Keeping tag: $tag"
-                continue
-              fi
-
-              tags_to_delete+=("$tag")
-            done < <(printf '%s' "$response" | jq -r '.results[].name')
-
-            next_url="$(printf '%s' "$response" | jq -r '.next // empty')"
-          done
+            tags_to_delete+=("$tag")
+          done < <(list_tags)
 
           for tag in "${tags_to_delete[@]}"; do
             echo "Deleting tag: $tag"
@@ -377,6 +411,7 @@ jobs:
             case "$status_code" in
               202|204)
                 echo "Deleted tag: $tag"
+                wait_for_tag_absent "$tag"
                 ;;
               404)
                 echo "Tag already absent: $tag"
@@ -388,17 +423,23 @@ jobs:
             esac
           done
 
-          remaining_tags="$(curl -fsSL \
-            -H "Authorization: Bearer ${hub_token}" \
-            "${api_base}?page_size=100" | jq -r '.results[].name')"
-
+          declare -A remaining_tags=()
           while IFS= read -r tag; do
             [[ -n "$tag" ]] || continue
+            remaining_tags["$tag"]=1
+
             if [[ "$tag" != "$keep_version" && "$tag" != "$keep_latest" ]]; then
               echo "ERROR: Unexpected tag remained after cleanup: $tag"
               exit 1
             fi
-          done <<< "$remaining_tags"
+          done < <(list_tags | sort -u)
+
+          for tag in "$keep_latest" "$keep_version"; do
+            if [[ -z "${remaining_tags[$tag]:-}" ]]; then
+              echo "ERROR: Expected tag missing after cleanup: $tag"
+              exit 1
+            fi
+          done
 
   create-release:
     name: Create GitHub Release
