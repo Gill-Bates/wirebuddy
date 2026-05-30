@@ -121,7 +121,9 @@
     function setBadgeStatus(el, status) {
         if (!el) return;
         el.classList.remove('text-bg-success', 'text-bg-warning', 'text-bg-danger', 'text-bg-secondary');
-        el.classList.add(`text-bg-${status}`);
+        // Whitelist allowed statuses so an unexpected value cannot inject arbitrary classes.
+        const allowed = { success: 'text-bg-success', warning: 'text-bg-warning', danger: 'text-bg-danger', secondary: 'text-bg-secondary' };
+        el.classList.add(allowed[status] || allowed.secondary);
     }
 
     // Expose globally

@@ -75,7 +75,10 @@ async function logout() {
                 },
                 credentials: 'same-origin',
                 signal: controller.signal,
-            }).catch(() => { });
+            }).catch((err) => {
+                // Best-effort: redirect proceeds regardless, but surface the failure.
+                console.warn('Logout request failed (continuing to /login):', err);
+            });
         } finally {
             clearTimeout(timeoutId);
             window.location.href = '/login';

@@ -255,7 +255,9 @@
         }
 
         _enterReconnectMode();
-        void _probeReconnect();
+        _probeReconnect().catch((err) => {
+            console.warn('Reconnect probe failed to start:', err);
+        });
         return true;
     }
 
