@@ -136,9 +136,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 		referer = request.headers.get("Referer")
 		if not referer:
 			return False
-		referer_parsed = urlparse(referer)
-		referer_origin = f"{referer_parsed.scheme}://{referer_parsed.netloc}"
-		return self._is_allowed_origin(referer_origin, request)
+		return self._is_allowed_origin(referer, request)
 
 	async def dispatch(self, request: Request, call_next: Callable) -> Response:
 		# 1. Get token from cookie, or generate new one

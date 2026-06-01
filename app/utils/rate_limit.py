@@ -24,10 +24,13 @@ RATE_LIMIT_UI_HEAVY = os.getenv("WIREBUDDY_RATE_LIMIT_UI_HEAVY", "60/minute")
 
 
 def rate_limit_key(request: Request) -> str:
-	"""Prefer authenticated user identity over remote address when available."""
-	user_id = getattr(request.state, "user_id", None)
-	if user_id is not None:
-		return f"user:{user_id}"
+	"""Key rate limits by client address.
+
+	Authenticated per-user keying would require identity resolution before the
+	SlowAPI limiter runs. The current request pipeline does not populate a user
+	identity that early, so using the client address keeps runtime behavior
+	consistent with the configured limiter.
+	"""
 	return get_remote_address(request)
 
 
