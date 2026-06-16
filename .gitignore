@@ -27,7 +27,9 @@ app/static/vendor/fonts/
 app/static/vendor/images/flags/
 
 # Testing & Linting
+.mypy_cache/
 .pytest_cache/
+.ruff_cache/
 .tmp-playwright
 tools/ui-lint/node_modules/
 tools/ui-lint/ui-lint-output/
@@ -38,6 +40,7 @@ ui-lint-summary.latest.json
 
 # IDE
 .idea/
+.vscode/
 
 # OS
 .DS_Store

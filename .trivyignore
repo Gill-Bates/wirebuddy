@@ -1,6 +1,7 @@
-# Base image vulnerabilities (python:3.13-slim / Debian 13.3)
-# These are upstream issues - remove when base image is patched
-# Last checked: 2026-03-16
+# Base image vulnerabilities (python:3.13-slim / Debian 13)
+# These are upstream issues - remove once the base image ships the fix
+# Last checked: 2026-06-16 — Debian 13.5 shows 0 OS vulnerabilities; entry below
+# may be stale but kept until the next image rebuild confirms it is no longer reported.
 
 # glibc integer overflow in memalign (Debian libc6 2.41-12+deb13u1)
 # Fixed in: 2.41-12+deb13u2

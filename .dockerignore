@@ -20,11 +20,13 @@ app/static/vendor/fonts/
 app/static/vendor/images/flags/
 
 # IDE
-.vscode/
 .idea/
-*.swp
-*.swo
+.vscode/
 *.codex
+*.swo
+*.swp
+
+# Project meta (linting & ignore rules)
 .gitignore
 .prettierignore
 .trivyignore

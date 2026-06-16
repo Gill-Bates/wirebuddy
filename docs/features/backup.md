@@ -16,25 +16,46 @@ The Backup module provides:
 - 📅 **Configurable Retention** - Choose retention period: 1, 7, 14, 21, or 30 days
 - 🔐 **Integrity Protection** - HMAC signing prevents tampering and stays compatible with the configured `WIREBUDDY_SECRET_KEY`
 - ⚠️ **Disk Monitoring** - Warnings when disk space is low
+- 📊 **Backup Content Control** - Choose between settings only or include metrics history (7 days up to 1 year)
 
 ## What's Included
 
-Each backup contains a complete snapshot of your WireBuddy installation:
+Each backup (format v2) contains a signed `.tar.gz` with the following structure:
 
-| Component | Description |
-|-----------|-------------|
-| **Database** | All peers, interfaces, users, and settings (`wirebuddy.db`) |
-| **DNS Data** | Custom rules, blocklist state, and DNS configuration (`dns/`) |
-| **Certificates** | Let's Encrypt certificates and private keys (`certs/`) |
-| **Traffic Data** | Time-series metrics and statistics (`tsdb/`) |
+| Archive Path | Description |
+|---|---|
+| `backup.json` | Manifest with version, timestamp, HMAC, and options |
+| `data/schema.sql` | SQLite DDL (all tables, indexes, views, triggers) |
+| `data/data.sql` | INSERT statements for all configuration tables |
+| `data/tsdb/` | Time-series metrics — **only when a metrics range is selected** |
+
+**Configuration tables** captured in `data/data.sql`:
+`users`, `passkeys`, `settings`, `interfaces`, `peers`, `nodes`, `node_interfaces`, `schema_version`
 
 !!! note "Excluded Data"
-    GeoIP databases (GeoLite2) are **not** included in backups. They are automatically downloaded on startup and updated weekly.
+    Ephemeral tables (`auth_tokens`, `passkey_challenges`, `login_attempts`, `node_commands`) are excluded — they contain runtime-only state that would be stale after a restore.
+    GeoIP databases (GeoLite2) are also not included; they are re-downloaded on startup.
 
 !!! info "Backup Format"
     Backups are stored as `.tar.gz` archives with an HMAC signature embedded in the filename for integrity verification.
-    
+
     Filename format: `wirebuddy_backup_YYYYMMDD_HHMMSS_<hmac>.tar.gz`
+
+## Backup Content
+
+The **Backup content** selector (available in both the Download Backup and Scheduled Backups cards) controls what data is included:
+
+| Option | Description |
+|---|---|
+| **Settings only** | Schema + configuration data only. Smallest archive, fastest. |
+| **+ Metrics: last 7 days** | Adds TSDB metrics from the past 7 days |
+| **+ Metrics: last 30 days** | Adds TSDB metrics from the past 30 days |
+| **+ Metrics: last 90 days** | Adds TSDB metrics from the past 90 days |
+| **+ Metrics: last 180 days** | Adds TSDB metrics from the past 180 days |
+| **+ Metrics: last 1 year** | Adds TSDB metrics from the past year |
+
+!!! tip
+    Selecting a range longer than your configured metrics retention yields only what is still on disk — the backup is never padded with empty data.
 
 ## Manual Backup
 
@@ -140,7 +161,9 @@ Returns current backup configuration and statistics.
   "retention_days": 30,
   "backup_size_bytes": 52428800,
   "disk_free_bytes": 10737418240,
-  "disk_warning": false
+  "disk_warning": false,
+  "include_tsdb_metrics": true,
+  "tsdb_range": "30d"
 }
 ```
 
@@ -152,11 +175,17 @@ Content-Type: application/json
 
 {
   "scheduled_enabled": true,
-  "retention_days": 14
+  "retention_days": 14,
+  "include_tsdb_metrics": true,
+  "tsdb_range": "30d"
 }
 ```
 
 Valid `retention_days` values: `1`, `7`, `14`, `21`, `30`
+
+Valid `tsdb_range` values: `"7d"`, `"30d"`, `"90d"`, `"180d"`, `"1y"`
+
+Set `include_tsdb_metrics: false` to create settings-only backups (equivalent to "Settings only" in the UI).
 
 ### Create & Download Backup
 

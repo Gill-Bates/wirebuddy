@@ -236,7 +236,7 @@ jobs:
           docker tag "${{ matrix.test_image }}" "${IMAGE_NAME}:${VERSION}-${{ matrix.image_suffix }}"
 
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@master
         with:
           cache: 'false'
           image-ref: '${{ matrix.test_image }}'

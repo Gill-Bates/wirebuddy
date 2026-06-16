@@ -26,6 +26,23 @@ For exact behavior, validate against runtime configuration and route decorators.
 Repeated failed authentication attempts trigger temporary lockouts. Retry-After
 is provided on lockout responses where applicable.
 
+### Per-IP lockout
+
+Each client IP accumulates a progressive delay after failed login attempts.
+Delay increases with each failure; subsequent attempts from the same IP during
+the lockout window return 429.
+
+### Username-wide throttle
+
+In addition to IP-based lockout, WireBuddy tracks failed attempts per username
+across all source IPs. Once the threshold is reached, even a previously-unseen
+IP is throttled for that account — slowing distributed password guessing across
+rotating addresses.
+
+The throttle is intentionally **short-capped** (maximum ~5 minutes) to avoid
+creating a DoS-able permanent account lockout. A successful login from any IP
+immediately clears the throttle for that username.
+
 ## Response Semantics
 
 ### 429 Too Many Requests
