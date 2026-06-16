@@ -3,20 +3,18 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 *.egg
-dist/
-build/
-*BUILD_INFO*
-full_codebase_*
-.pytest_cache/
-*.backup
-*.codex
 
 # Virtual Environment
 .venv/
 .venv-docs/
-.tmp-playwright
-tools/ui-lint/node_modules/
-tools/ui-lint/ui-lint-output/
+
+# Build & Dev artifacts
+dist/
+build/
+*BUILD_INFO*
+full_codebase_*
+*.backup
+*.codex
 
 # Data
 data/
@@ -28,6 +26,16 @@ data_local/
 app/static/vendor/fonts/
 app/static/vendor/images/flags/
 
+# Testing & Linting
+.pytest_cache/
+.tmp-playwright
+tools/ui-lint/node_modules/
+tools/ui-lint/ui-lint-output/
+tools/ui-lint/test-results/
+tools/ui-lint/ui-lint-summary.json
+ui-lint-summary.latest.json
+*.log
+
 # IDE
 .idea/
 
@@ -35,18 +43,8 @@ app/static/vendor/images/flags/
 .DS_Store
 Thumbs.db
 
-# Docker
-BUILD_INFO*
-
 # Environment (keep settings.env as template)
 .env
-
-# Linting
-tools/ui-lint/node_modules/
-tools/ui-lint/test-results/
-tools/ui-lint/ui-lint-summary.json
-*.log
-ui-lint-summary.latest.json
 
 # Documentation
 site/

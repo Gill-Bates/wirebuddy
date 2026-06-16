@@ -50,3 +50,22 @@ def seconds_until_night_window(
     # Calculate delay with jitter (0-10 min)
     jitter = random.uniform(0.0, 600.0)
     return max(0.0, (start_next - now_time) + jitter)
+
+
+def seconds_until_next_day_window(
+    start_hour: int = 2,
+    now_ts: float | None = None,
+) -> float:
+    """Seconds until the *next* calendar day's window start.
+
+    Used after a run has already completed today: unlike
+    :func:`seconds_until_night_window`, this never returns 0.0 while inside the
+    current window, so the caller skips the rest of today's window instead of
+    re-running back-to-back.
+    """
+    now_time = time.time() if now_ts is None else now_ts
+    now_local = dt.fromtimestamp(now_time)
+    tomorrow = now_local.date() + timedelta(days=1)
+    start_next = local_wall_clock_timestamp(tomorrow, start_hour)
+    jitter = random.uniform(0.0, 600.0)
+    return max(0.0, (start_next - now_time) + jitter)

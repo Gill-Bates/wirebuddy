@@ -142,6 +142,17 @@ SettingsApp.registerModule('backup', (function () {
                     lastAtEl.textContent = 'No backups yet';
                 }
             }
+
+            // TSDB metrics inclusion + range
+            const includeTsdbEl = document.getElementById('backup-include-tsdb');
+            if (includeTsdbEl) {
+                includeTsdbEl.checked = data.include_tsdb_metrics || false;
+            }
+            const tsdbRangeEl = document.getElementById('backup-tsdb-range');
+            if (tsdbRangeEl && data.tsdb_range) {
+                tsdbRangeEl.value = data.tsdb_range;
+            }
+            updateTsdbRangeState();
         } catch (err) {
             console.error('Failed to load backup settings:', err);
             toast('Failed to load backup settings', 'danger');
@@ -189,6 +200,43 @@ SettingsApp.registerModule('backup', (function () {
             console.error('Failed to update backup retention:', err);
             toast('Failed to update backup retention: ' + err.message, 'danger');
             await loadBackupSettings(); // Revert slider
+        }
+    }
+
+    function updateTsdbRangeState() {
+        const includeTsdbEl = document.getElementById('backup-include-tsdb');
+        const tsdbRangeSectionEl = document.getElementById('backup-tsdb-range-section');
+        const tsdbRangeEl = document.getElementById('backup-tsdb-range');
+        if (!tsdbRangeEl || !tsdbRangeSectionEl) return;
+        const checked = !!(includeTsdbEl && includeTsdbEl.checked);
+        tsdbRangeSectionEl.classList.toggle('d-none', !checked);
+        tsdbRangeEl.disabled = !checked || !SettingsApp.state.isAdmin;
+    }
+
+    async function updateIncludeTsdb(enabled) {
+        if (!SettingsApp.state.isAdmin) return;
+        updateTsdbRangeState();
+        try {
+            await api('PATCH', '/api/backup/settings', { include_tsdb_metrics: enabled });
+            toast(enabled ? 'Metrics history will be included in backups' : 'Metrics history excluded from backups', 'success');
+        } catch (err) {
+            console.error('Failed to update TSDB backup option:', err);
+            const checkbox = document.getElementById('backup-include-tsdb');
+            if (checkbox) checkbox.checked = !enabled;
+            updateTsdbRangeState();
+            toast('Failed to update backup settings: ' + err.message, 'danger');
+        }
+    }
+
+    async function updateTsdbRange(range) {
+        if (!SettingsApp.state.isAdmin) return;
+        try {
+            await api('PATCH', '/api/backup/settings', { tsdb_range: range });
+            toast('Metrics time range updated', 'success');
+        } catch (err) {
+            console.error('Failed to update TSDB backup range:', err);
+            toast('Failed to update backup settings: ' + err.message, 'danger');
+            await loadBackupSettings(); // Revert select
         }
     }
 
@@ -355,6 +403,16 @@ SettingsApp.registerModule('backup', (function () {
         const downloadBtn = document.getElementById('btn-backup-download');
         if (downloadBtn) {
             bindOnce(downloadBtn, 'click', downloadBackup);
+        }
+
+        const includeTsdbEl = document.getElementById('backup-include-tsdb');
+        if (includeTsdbEl) {
+            bindOnce(includeTsdbEl, 'change', (e) => updateIncludeTsdb(e.target.checked));
+        }
+
+        const tsdbRangeEl = document.getElementById('backup-tsdb-range');
+        if (tsdbRangeEl) {
+            bindOnce(tsdbRangeEl, 'change', (e) => updateTsdbRange(e.target.value));
         }
 
         const restoreBtn = document.getElementById('btn-backup-restore');

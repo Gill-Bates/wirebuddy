@@ -322,8 +322,13 @@ async def run_speedtest(
             "jitter_ms": _extract_metric(data, "jitter"),
         }
 
-        if metrics["download_mbit"] == 0 and metrics["upload_mbit"] == 0:
-            return await _error_result("No download/upload speeds in JSON response", progress_callback)
+        # A complete measurement must report both download AND upload > 0. A zero
+        # in either metric means librespeed failed to measure that direction (e.g.
+        # the upload sub-test timed out). Persisting such a partial result would
+        # draw misleading "drop to zero" valleys in the history chart, so treat it
+        # as an error instead of a successful run.
+        if metrics["download_mbit"] == 0 or metrics["upload_mbit"] == 0:
+            return await _error_result("Incomplete speed measurement (download or upload reported 0)", progress_callback)
 
         await _emit(
             progress_callback, "complete", 1.0,

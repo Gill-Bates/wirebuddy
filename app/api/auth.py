@@ -55,6 +55,7 @@ from ..models.users import (
 	OTPConfirmRequest,
 	RecoveryDownloadRequest,
 )
+from ..utils.coerce import coerce_db_bool
 from ..utils.crypto import DUMMY_PASSWORD_HASH, generate_token_expiry, new_token, verify_password
 from ..utils.deps import get_conn
 from ..utils.network import parse_ip_str
@@ -373,24 +374,6 @@ def get_current_user(
 				return user
 
 	raise HTTPException(status_code=401, detail="Not authenticated")
-
-
-def coerce_db_bool(value: object) -> bool:
-	"""Coerce SQLite-style boolean-ish values into a strict bool.
-
-	Handles ints/bools and common string encodings ("1", "0", "true", "false").
-	"""
-	if isinstance(value, bool):
-		return value
-	if isinstance(value, int):
-		return value != 0
-	text = str(value or "").strip().lower()
-	if text in {"1", "true", "yes", "on"}:
-		return True
-	if text in {"0", "false", "no", "off", ""}:
-		return False
-	# Fail closed for unknown values.
-	return False
 
 
 def require_admin(user_row: sqlite3.Row = Depends(get_current_user)) -> sqlite3.Row:

@@ -115,6 +115,10 @@ async def stream_with_progress(
 			return
 
 		# Send final result to client
+		if not isinstance(result, dict):
+			_log.error("SSE task returned non-dict result: %s", type(result).__name__)
+			yield format_sse_event("error", {"reason": "Internal task failure"})
+			return
 		yield format_sse_event("result", {**result, "stored": stored})
 	finally:
 		queue_task.cancel()

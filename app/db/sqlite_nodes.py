@@ -15,12 +15,12 @@ import logging
 import re
 import sqlite3
 import unicodedata
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 
 from ..node.events import NodeCommandType
 from ..utils.config import get_config
-from ..utils.time import parse_utc, utcnow
+from ..utils.time import parse_db_timestamp, utcnow
 from ..utils import vault
 from .sqlite_interfaces import get_interface, list_interfaces
 from .sqlite_settings import get_setting
@@ -31,6 +31,7 @@ _log = logging.getLogger(__name__)
 # Input validation constants
 _MAX_METADATA_SIZE = 4096  # bytes
 _MAX_COMMAND_PAYLOAD_SIZE = 16_384  # bytes
+_MAX_COMMAND_CLAIM_LIMIT = 100  # upper bound on rows claimed/updated in one write txn
 _MAX_PORT = 65535
 _MIN_PORT = 1
 
@@ -53,17 +54,6 @@ def _parse_ip_or_none(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Addre
 		return ipaddress.ip_address(value.strip("[]"))
 	except ValueError:
 		return None
-
-
-def _parse_db_timestamp(value: Any) -> datetime | None:
-	"""Normalize a DB timestamp value to a UTC-aware datetime."""
-	if value is None:
-		return None
-	if isinstance(value, datetime):
-		return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-	if isinstance(value, str):
-		return parse_utc(value)
-	return None
 
 
 def _validate_fqdn_or_ip(fqdn: str) -> None:
@@ -378,16 +368,20 @@ def update_node_heartbeat(
 		if len(meta_json.encode("utf-8")) > _MAX_METADATA_SIZE:
 			raise ValueError(f"Metadata exceeds maximum size ({_MAX_METADATA_SIZE} bytes)")
 	with transaction(conn, immediate=True):
-		# Only set status to 'online' if not in error state
+		# Re-enliven already-enrolled nodes only. 'pending' (not yet enrolled)
+		# and 'error' are left untouched so a heartbeat can never promote a node
+		# into an online/enrolled-looking state — enroll_node() owns that
+		# transition. The route layer already rejects pending nodes; this is
+		# defense-in-depth at the persistence boundary.
 		cur = conn.execute(
 			"""
 			UPDATE nodes
 			SET last_seen = ?,
 			    metadata = COALESCE(?, metadata),
-			    status = CASE WHEN status != ? THEN ? ELSE status END
+			    status = CASE WHEN status IN (?, ?) THEN ? ELSE status END
 			WHERE id = ?
 			""",
-			(now, meta_json, STATUS_ERROR, STATUS_ONLINE, node_id),
+			(now, meta_json, STATUS_ONLINE, STATUS_OFFLINE, STATUS_ONLINE, node_id),
 		)
 		return cur.rowcount > 0
 
@@ -430,6 +424,10 @@ def mark_stale_nodes_offline(
 
 	Returns the number of nodes marked offline.
 	"""
+	if stale_seconds <= 0:
+		# A non-positive threshold would put the cutoff at/after now and could
+		# mark healthy online nodes offline.
+		raise ValueError("stale_seconds must be > 0")
 	cutoff = utcnow() - timedelta(seconds=stale_seconds)
 	with transaction(conn, immediate=True):
 		cur = conn.execute(
@@ -479,7 +477,7 @@ def is_node_sse_connected(conn: sqlite3.Connection, node_id: str, max_age_second
 	).fetchone()
 	if not row:
 		return False
-	ts = _parse_db_timestamp(row["sse_connected_at"])
+	ts = parse_db_timestamp(row["sse_connected_at"])
 	if ts is None:
 		return False
 	now = utcnow()
@@ -502,9 +500,13 @@ def _serialize_command_payload(payload: dict[str, Any] | None) -> str:
 	if payload is None:
 		return "{}"
 	try:
-		raw = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+		# allow_nan=False rejects NaN/Infinity, which are not valid JSON and
+		# would break strict node-side parsers. Mirrors metadata serialization.
+		raw = json.dumps(payload, allow_nan=False, separators=(",", ":"), sort_keys=True)
 	except TypeError as exc:
 		raise ValueError("Command payload must be JSON-serializable") from exc
+	except ValueError as exc:
+		raise ValueError("Command payload must contain only finite JSON values") from exc
 	if len(raw.encode("utf-8")) > _MAX_COMMAND_PAYLOAD_SIZE:
 		raise ValueError("Command payload too large")
 	return raw
@@ -558,6 +560,9 @@ def claim_pending_node_commands(
 	"""Claim replayable commands for SSE delivery and mark them as delivered."""
 	if limit <= 0:
 		return []
+	# Clamp so a bad caller cannot hold an immediate write transaction while
+	# selecting/updating an unbounded number of rows.
+	limit = min(limit, _MAX_COMMAND_CLAIM_LIMIT)
 
 	threshold = utcnow() - timedelta(seconds=max(0, replay_after_seconds))
 	now = utcnow()
@@ -603,7 +608,9 @@ def claim_pending_node_commands(
 				"command_type": str(row["command_type"]),
 				"payload": _parse_command_payload(row["payload"]),
 				"created_at": row["created_at"],
-				"delivered_at": row["delivered_at"],
+				# These rows were just stamped delivered in this transaction;
+				# return the new value rather than the stale pre-update one.
+				"delivered_at": now,
 				"acked_at": row["acked_at"],
 			}
 			for row in claimed_rows
@@ -812,8 +819,15 @@ def _build_peers_config(conn: sqlite3.Connection, node_id: str) -> list[dict[str
 	- Peers explicitly assigned to this node (node_id = ?)
 	- Peers with allow_all_nodes=1 (roaming peers available on all nodes)
 	"""
+	# ORDER BY public_key so the delivered peer list is stable and matches the
+	# order hashed by bump_node_config_version(); otherwise identical configs
+	# can arrive in different order and trigger needless node-side reloads.
 	peer_rows = conn.execute(
-		"SELECT * FROM peers WHERE (node_id = ? OR allow_all_nodes = 1) AND is_enabled = 1",
+		"""
+		SELECT * FROM peers
+		WHERE (node_id = ? OR allow_all_nodes = 1) AND is_enabled = 1
+		ORDER BY public_key
+		""",
 		(node_id,),
 	).fetchall()
 	return [

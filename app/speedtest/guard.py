@@ -292,6 +292,7 @@ async def acquire_speedtest_run_lease_async(
     """Asynchronously acquire a speedtest lease (event-loop safe)."""
     cancel_event = threading.Event()
     async_lock_acquired = False
+    acquire_task: asyncio.Task[SpeedtestRunLease] | None = None
 
     # 1. Async task-level lock
     if _local_async_lock.locked():
@@ -304,18 +305,35 @@ async def acquire_speedtest_run_lease_async(
         # 2. delegate to sync version for thread/process locks
         # We run this in a thread to avoid blocking the event loop on I/O (flock/file read)
         try:
-            lease = await asyncio.wait_for(
+            acquire_task = asyncio.create_task(
                 asyncio.to_thread(
                     acquire_speedtest_run_lease,
                     tsdb_dir,
                     cooldown_seconds=cooldown_seconds,
                     update_cooldown=update_cooldown,
                     cancel_event=cancel_event,
-                ),
+                )
+            )
+            lease = await asyncio.wait_for(
+                asyncio.shield(acquire_task),
                 timeout=5.0,
             )
         except asyncio.TimeoutError:
             cancel_event.set()
+
+            def _release_late_lease(task: asyncio.Task[SpeedtestRunLease]) -> None:
+                if task.cancelled():
+                    return
+                exc = task.exception()
+                if exc is not None:
+                    return
+                try:
+                    task.result().release()
+                except Exception:
+                    _log.warning("Failed to release late speedtest lease after timeout", exc_info=True)
+
+            if acquire_task is not None:
+                acquire_task.add_done_callback(_release_late_lease)
             raise SpeedtestBusyError("Speed test already in progress (acquisition timed out)") from None
 
         lease._async_acquired = True

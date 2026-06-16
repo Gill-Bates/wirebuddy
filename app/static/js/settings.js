@@ -154,6 +154,17 @@ void (async function () {
         return left.length === right.length && left.every((value, index) => value === right[index]);
     }
 
+    // Defense-in-depth guard for admin-only mutations. The real authorization
+    // boundary is the backend; this only prevents accidental calls when a
+    // control is re-enabled via DOM mutation or invoked through window.WBSettings.
+    function requireAdminAction() {
+        if (isAdmin) {
+            return true;
+        }
+        wbToast('Admin privileges required', 'warning');
+        return false;
+    }
+
     function renderStatusMessage(target, iconName, className, text) {
         if (!target) {
             return;
@@ -227,11 +238,13 @@ void (async function () {
 
             updateStatusPageUrlPreview();
             updateSwaggerUrlPreview();
+            // Only enable autosave after a successful hydration; otherwise a
+            // transient load failure could persist stale/default form values.
+            wgSettingsLoaded = true;
         } catch (error) {
+            wgSettingsLoaded = false;
             console.error('Failed to load WG settings:', error.message);
             wbToast('Failed to load WireGuard settings. Please refresh the page.', 'danger');
-        } finally {
-            wgSettingsLoaded = true;
         }
     }
 
@@ -264,11 +277,14 @@ void (async function () {
                 el.setAttribute('readonly', '');
                 el.className = 'visually-hidden';
                 document.body.appendChild(el);
-                el.select();
-                if (!document.execCommand('copy')) {
-                    throw new Error('Clipboard API unavailable');
+                try {
+                    el.select();
+                    if (!document.execCommand('copy')) {
+                        throw new Error('Clipboard API unavailable');
+                    }
+                } finally {
+                    el.remove();
                 }
-                document.body.removeChild(el);
             }
             wbToast('Status URL copied', 'success');
         } catch (error) {
@@ -305,11 +321,14 @@ void (async function () {
                 el.setAttribute('readonly', '');
                 el.className = 'visually-hidden';
                 document.body.appendChild(el);
-                el.select();
-                if (!document.execCommand('copy')) {
-                    throw new Error('Clipboard API unavailable');
+                try {
+                    el.select();
+                    if (!document.execCommand('copy')) {
+                        throw new Error('Clipboard API unavailable');
+                    }
+                } finally {
+                    el.remove();
                 }
-                document.body.removeChild(el);
             }
             wbToast('Swagger URL copied', 'success');
         } catch (error) {
@@ -452,11 +471,21 @@ void (async function () {
     }
 
     function parseOptionalInt(rawValue, min, max, label) {
-        if (rawValue === '' || rawValue === null || rawValue === undefined) {
+        const value = String(rawValue ?? '').trim();
+        if (value === '') {
             return { value: null, valid: true };
         }
-        const parsed = Number.parseInt(rawValue, 10);
-        if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+        // Require the full string to be an integer: Number.parseInt would accept
+        // malformed input like "443abc" (→443) or "1e3" (→1).
+        if (!/^\d+$/.test(value)) {
+            return {
+                value: null,
+                valid: false,
+                message: `${label} must be a number between ${min} and ${max}`,
+            };
+        }
+        const parsed = Number(value);
+        if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
             return {
                 value: null,
                 valid: false,
@@ -657,6 +686,7 @@ void (async function () {
     const pskVisBtn = document.getElementById('psk-toggle-visibility');
     if (pskVisBtn) {
         pskVisBtn.addEventListener('click', async (event) => {
+            if (!requireAdminAction()) return;
             const display = document.getElementById('wg-psk-display');
             const icon = event.currentTarget?.querySelector('.material-icons');
             if (!display) {
@@ -689,6 +719,7 @@ void (async function () {
     const pskCopyBtn = document.getElementById('psk-copy-btn');
     if (pskCopyBtn) {
         pskCopyBtn.addEventListener('click', async function () {
+            if (!requireAdminAction()) return;
             const display = document.getElementById('wg-psk-display');
             let keyToCopy = display.value;
 
@@ -716,6 +747,16 @@ void (async function () {
             }
         });
     }
+
+    // Auto-hide a revealed PSK when the tab is backgrounded, mirroring the
+    // pagehide cleanup so the secret is not left visible/cached while away.
+    // NOTE: bindOnce() is Element-only (uses get/setAttribute); document has
+    // neither, so bind directly. This runs once at module init.
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            hidePskValue();
+        }
+    }, { signal: pageAbortController.signal });
 
     // PSK generate button
     const pskGenBtn = document.getElementById('psk-generate-btn');
@@ -1002,6 +1043,8 @@ void (async function () {
     }
 
     async function dnsServiceAction(action) {
+        if (!requireAdminAction()) return;
+
         const validActions = ['start', 'stop', 'restart'];
         if (!validActions.includes(action)) {
             wbToast('Invalid DNS action', 'danger');
@@ -1249,11 +1292,17 @@ void (async function () {
         const name = document.getElementById('iface-name').value.trim();
         const address = document.getElementById('iface-address').value.trim();
         const address6 = document.getElementById('iface-address6').value.trim() || null;
-        const port = document.getElementById('iface-port').value || 51820;
+        const portResult = parseOptionalInt(
+            document.getElementById('iface-port').value.trim() || '51820', 1, 65535, 'Listen port');
         const dns = document.getElementById('iface-dns').value.trim() || null;
 
         if (!name || !address) {
             wbToast('Please fill in name and address', 'warning');
+            return;
+        }
+
+        if (!portResult.valid || portResult.value === null) {
+            wbToast(portResult.message || 'Listen port is required', 'warning');
             return;
         }
 
@@ -1280,7 +1329,7 @@ void (async function () {
                 name: name,
                 address: address,
                 address6: address6,
-                listen_port: Number.parseInt(port, 10),
+                listen_port: portResult.value,
                 dns: dns
             });
 
@@ -1344,13 +1393,19 @@ void (async function () {
 
         const address = document.getElementById('iface-address').value.trim();
         const address6 = document.getElementById('iface-address6').value.trim() || null;
-        const port = document.getElementById('iface-port').value || 51820;
+        const portResult = parseOptionalInt(
+            document.getElementById('iface-port').value.trim() || '51820', 1, 65535, 'Listen port');
         const dns = document.getElementById('iface-dns').value.trim() || null;
         const showOnDashboardToggle = document.getElementById('iface-show-on-dashboard');
         const showOnDashboard = showOnDashboardToggle ? showOnDashboardToggle.checked : true;
 
         if (!address) {
             wbToast('Please fill in an IPv4 address', 'warning');
+            return;
+        }
+
+        if (!portResult.valid || portResult.value === null) {
+            wbToast(portResult.message || 'Listen port is required', 'warning');
             return;
         }
 
@@ -1370,7 +1425,7 @@ void (async function () {
             const res = await api('PATCH', `/api/wireguard/interfaces/${encodeURIComponent(editingInterfaceName)}`, {
                 address: address,
                 address6: address6,
-                listen_port: Number.parseInt(port, 10),
+                listen_port: portResult.value,
                 dns: dns,
                 show_on_dashboard: showOnDashboard
             });
@@ -1539,6 +1594,8 @@ void (async function () {
     }
 
     async function requestCertificate() {
+        if (!requireAdminAction()) return;
+
         const domain = document.getElementById('cert-domain').value.trim();
         const email = document.getElementById('cert-email').value.trim();
         const staging = document.getElementById('cert-staging').checked;
@@ -1571,6 +1628,7 @@ void (async function () {
     }
 
     async function deleteCertificate(domain, isStaging) {
+        if (!requireAdminAction()) return;
         if (!await wbConfirm(`Delete certificate for ${domain}?`, 'danger')) return;
 
         try {
@@ -1583,6 +1641,7 @@ void (async function () {
     }
 
     async function renewCertificate(domain, isStaging) {
+        if (!requireAdminAction()) return;
         const email = await wbPrompt(`Enter email for renewal of ${domain}:`, 'admin@example.com');
         if (!email) return;
 
@@ -1767,7 +1826,9 @@ void (async function () {
     function scheduleRebuildPoll() {
         if (_rebuildPollTimer) return; // already polling
         _rebuildPollCount = 0;
+        let inFlight = false;  // skip a tick while the previous request is still running
         _rebuildPollTimer = setInterval(async () => {
+            if (inFlight) return;
             if (pageAbortController.signal.aborted || document.visibilityState === 'hidden') {
                 cancelRebuildPoll();
                 return;
@@ -1777,7 +1838,12 @@ void (async function () {
                 cancelRebuildPoll();
                 return;
             }
-            await loadBlocklistSources();
+            inFlight = true;
+            try {
+                await loadBlocklistSources();
+            } finally {
+                inFlight = false;
+            }
         }, _REBUILD_POLL_INTERVAL);
     }
 
@@ -1820,6 +1886,7 @@ void (async function () {
     }
 
     async function saveBlocklists() {
+        if (!requireAdminAction()) return;
         // Re-entrancy guard: if a save is already in-flight, queue another
         if (_blocklistSaving) {
             _blocklistSavePending = true;
@@ -1859,6 +1926,7 @@ void (async function () {
     }
 
     async function updateBlocklist() {
+        if (!requireAdminAction()) return;
         try {
             const res = await api('POST', '/api/dns/blocklist/update');
             wbToast(res?.message || 'Blocklist update started', 'success');
@@ -2346,6 +2414,7 @@ void (async function () {
     }
 
     async function saveCustomRules() {
+        if (!requireAdminAction()) return;
         const input = document.getElementById('custom-rules-input');
         const btn = document.getElementById('save-custom-rules-btn');
         const statusEl = document.getElementById('custom-rules-status');
@@ -2546,6 +2615,7 @@ void (async function () {
     }
 
     async function purgeTrafficLogs() {
+        if (!requireAdminAction()) return;
         if (!await wbConfirm('Delete all traffic metric data? This cannot be undone.', 'danger')) return;
         try {
             const res = await api('DELETE', '/api/wireguard/stats/tsdb');
@@ -2557,6 +2627,7 @@ void (async function () {
     }
 
     async function purgeDnsLogs() {
+        if (!requireAdminAction()) return;
         if (!await wbConfirm('Delete all DNS query data? This cannot be undone.', 'danger')) return;
         try {
             const res = await api('DELETE', '/api/dns/logs');
@@ -2568,6 +2639,7 @@ void (async function () {
     }
 
     async function purgePeerLogs() {
+        if (!requireAdminAction()) return;
         if (!await wbConfirm('Reset all peer connection tracking data? This cannot be undone.', 'danger')) return;
         try {
             const res = await api('DELETE', '/api/wireguard/stats/peer-logs');
@@ -2707,6 +2779,9 @@ void (async function () {
                     lastAtEl.textContent = 'No backups yet';
                 }
             }
+
+            // TSDB unified select: "none" = settings only, range value = include metrics
+            _syncTsdbSelects(data.include_tsdb_metrics ? (data.tsdb_range || '30d') : 'none');
         } catch (err) {
             console.error('Failed to load backup settings:', err);
         }
@@ -2777,6 +2852,34 @@ void (async function () {
         }
     }
 
+    // Sync both TSDB content selects to the same value.
+    function _syncTsdbSelects(value) {
+        for (const id of ['backup-tsdb-range', 'backup-tsdb-range-sched']) {
+            const el = document.getElementById(id);
+            if (el) el.value = value;
+        }
+    }
+
+    // Update backup content setting: "none" = settings only, range = include metrics.
+    async function updateTsdbRange(range) {
+        if (!isAdmin) return;
+
+        _syncTsdbSelects(range);
+        const patch = range === 'none'
+            ? { include_tsdb_metrics: false }
+            : { include_tsdb_metrics: true, tsdb_range: range };
+
+        try {
+            await api('PATCH', '/api/backup/settings', patch);
+            const label = range === 'none' ? 'Backup content: settings only' : `Backup content: metrics last ${range}`;
+            wbToast(label, 'success');
+        } catch (err) {
+            console.error('Failed to update backup content setting:', err);
+            wbToast('Failed to update backup settings: ' + err.message, 'danger');
+            await loadBackupSettings();
+        }
+    }
+
     // Download backup
     async function downloadBackup() {
         if (!isAdmin) return;
@@ -2843,8 +2946,9 @@ void (async function () {
             return;
         }
 
-        // Validate file extension
-        if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.gz')) {
+        // Validate file extension — backups are always .tar.gz (see backend
+        // _BACKUP_FILENAME_RE); a bare .gz never matches the advertised format.
+        if (!file.name.endsWith('.tar.gz')) {
             wbToast('Invalid file type. Please select a .tar.gz backup file.', 'warning');
             return;
         }
@@ -2905,9 +3009,11 @@ void (async function () {
     function pollForRestart() {
         let stopped = false;
         let sawDown = false;
+        let inFlight = false;  // avoid overlapping /health probes on a slow/stalled server
 
         const checkInterval = setInterval(async () => {
-            if (stopped || pageAbortController.signal.aborted || document.visibilityState === 'hidden') return;
+            if (inFlight || stopped || pageAbortController.signal.aborted || document.visibilityState === 'hidden') return;
+            inFlight = true;
             try {
                 const resp = await fetch('/health', { cache: 'no-store', signal: pageAbortController.signal });
                 if (!resp.ok) {
@@ -2921,6 +3027,8 @@ void (async function () {
                 }
             } catch (e) {
                 sawDown = true;
+            } finally {
+                inFlight = false;
             }
         }, 1000);
 
@@ -2953,6 +3061,15 @@ void (async function () {
             retentionSlider.addEventListener('change', (e) => {
                 updateBackupRetention(parseInt(e.target.value, 10));
             });
+        }
+
+        for (const id of ['backup-tsdb-range', 'backup-tsdb-range-sched']) {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('change', (e) => {
+                    updateTsdbRange(e.target.value);
+                });
+            }
         }
 
         const downloadBtn = document.getElementById('btn-backup-download');

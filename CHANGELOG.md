@@ -1,3 +1,14 @@
+## [1.5.2] - 2026-06-16
+
+- ``New`` Backups now include your full configuration (interfaces, peers, users, settings); restoring a backup brings back a working setup instead of an empty first-run database
+- ``New`` Backups can optionally export metrics history with a configurable time range from the last 7 days up to 1 year
+- ``Fix`` Speed test scheduling and result recording fixed: nodes run at most one scheduled test per day and failed measurements are no longer stored as valid results
+- ``Fix`` Live progress (SSE) and per-IP rate limiting corrected for edge cases
+- ``Security`` CSRF referer validation hardened; login protection now also throttles repeated failed attempts per username across changing IP addresses
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.5.1] - 2026-05-29
 
 - ``Fix`` DNS statistics and DNS query logs are displayed reliably again in the GUI
@@ -6,10 +17,6 @@
 - ``Fix`` Dashboard KPIs and traffic cards were visually refined for clearer values, better empty states and improved mobile layout
 - ``Fix`` Login, MFA and passkey sign-in flows are more reliable
 - ``Fix`` Additional security hardening in the web UI and API
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.5.0] - 2026-05-26
 

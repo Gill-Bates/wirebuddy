@@ -26,9 +26,6 @@
 ## Screenshots
 
 <p align="center">
-  <img src=".github/img/screen_1.png" alt="Dashboard" width="100%" style="border-radius: 12px; margin-bottom: 16px;">
-</p>
-<p align="center">
   <img src=".github/img/screen_2.png" alt="Peers" width="100%" style="border-radius: 12px; margin-bottom: 16px;">
 </p>
 <p align="center">
@@ -44,14 +41,14 @@
 
 | Category | Highlights |
 |---|---|
-| 🔒 **WireGuard VPN** | Multi-interface management, automatic keypair generation, routing presets, client isolation, QR codes for mobile setup |
-| � **Multi-Node** | Distributed VPN clusters, automatic peer sync, metrics aggregation, zero-config enrollment via SSE |
-| �🌍 **DNS Ad-Blocking** | Integrated Unbound resolver with blocklists, DNS-over-TLS, real-time query log, DNSSEC, and per-peer filtering |
-| 📊 **Monitoring** | Built-in time-series database, per-peer traffic charts, traffic analysis by country & ASN |
-| 🗺️ **GeoIP** | MaxMind GeoLite2 integration, interactive heatmap, country flags & ASN badges |
-| 🔐 **Let's Encrypt** | Built-in ACME client with HTTP-01 challenge, certificate management UI |
-| 👥 **User Management** | Multi-user roles, Passkeys (WebAuthn) & MFA (TOTP), login tracking |
-| 🎨 **Web UI** | Responsive Bootstrap 5, dark/light/auto theme, Material Icons |
+|  **WireGuard VPN** | Multi-interface management, automatic keypair generation, routing presets, client isolation, QR codes for mobile setup |
+|  **Multi-Node** | Distributed VPN clusters, automatic peer sync, metrics aggregation, zero-config enrollment via SSE |
+|  **DNS Ad-Blocking** | Integrated Unbound resolver with blocklists, DNS-over-TLS, real-time query log, DNSSEC, and per-peer filtering |
+|  **Monitoring** | Built-in time-series database, per-peer traffic charts, traffic analysis by country & ASN |
+|  **GeoIP** | MaxMind GeoLite2 integration, interactive heatmap, country flags & ASN badges |
+|  **Let's Encrypt** | Built-in ACME client with HTTP-01 challenge, certificate management UI |
+|  **User Management** | Multi-user roles, Passkeys (WebAuthn) & MFA (TOTP), login tracking |
+|  **Web UI** | Responsive Bootstrap 5, dark/light/auto theme, Material Icons |
 
 ---
 

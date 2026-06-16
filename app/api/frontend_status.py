@@ -28,6 +28,7 @@ from ..db import tsdb
 from ..db.sqlite_interfaces import list_interfaces
 from ..db.sqlite_settings import get_setting
 from ..dns import unbound
+from ..utils.coerce import BOOL_TRUE_VALUES
 from ..utils.config import get_config
 from ..utils.deps import get_conn
 from ..utils.formatting import format_optional_bandwidth_mbit
@@ -40,7 +41,7 @@ _log = logging.getLogger(__name__)
 
 _STATUS_ENABLE_KEY = "enable_status_page"
 _STATUS_PROBE_DOMAIN = "cloudflare.com"
-_STATUS_TRUTHY = {"1", "true", "yes", "on"}
+_STATUS_TRUTHY = BOOL_TRUE_VALUES
 _STATUS_OUTBOUND_IP_URLS = (
 	"https://api64.ipify.org?format=text",
 	"https://ifconfig.me/ip",

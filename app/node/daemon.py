@@ -4,13 +4,14 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-"""Node daemon — minimal WireGuard runtime that syncs with a master.
+"""Node daemon — WireGuard runtime that syncs with a master.
 
 Reads WIREBUDDY_ENROLLMENT_TOKEN from environment, enrolls with the
 master if not yet enrolled, then enters a sync loop polling for
 configuration changes and pushing heartbeats.
 
-No database, no web server, no DNS, no scheduler.
+Maintains a local SQLite-backed metrics queue for reliable delivery,
+listens for master SSE events, and runs scheduled and on-demand speedtests.
 """
 
 from __future__ import annotations
@@ -41,7 +42,10 @@ import httpx
 from ..utils.async_utils import cancel_tasks as _cancel_tasks, interruptible_sleep as _interruptible_sleep
 from ..utils.banner import print_banner_once
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
-from ..utils.speedtest_window import seconds_until_night_window as _seconds_until_night_window
+from ..utils.speedtest_window import (
+	seconds_until_night_window as _seconds_until_night_window,
+	seconds_until_next_day_window as _seconds_until_next_day_window,
+)
 from ..utils.version import get_version
 from .cert import clear_node_cert, ensure_node_cert
 from .firewall import check_firewall_dns_rules as _check_firewall_dns_rules
@@ -58,9 +62,21 @@ from .wg_manager import apply_config, get_wg_dump, has_running_interfaces, shutd
 
 _log = logging.getLogger(__name__)
 
-SYNC_INTERVAL = max(5, int(os.environ.get("WIREBUDDY_NODE_SYNC_INTERVAL", "30")))
-SYNC_INTERVAL_FAST = max(1, int(os.environ.get("WIREBUDDY_NODE_SYNC_INTERVAL_FAST", "5")))
-ENROLLMENT_RETRY_ATTEMPTS = max(1, int(os.environ.get("WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS", "3")))
+def _env_int(name: str, default: int, minimum: int) -> int:
+	raw = os.environ.get(name)
+	if raw is None:
+		return default
+	try:
+		return max(minimum, int(raw))
+	except ValueError:
+		raise ValueError(f"Environment variable {name} must be an integer, got: {raw!r}") from None
+
+try:
+	SYNC_INTERVAL = _env_int("WIREBUDDY_NODE_SYNC_INTERVAL", 30, 5)
+	SYNC_INTERVAL_FAST = _env_int("WIREBUDDY_NODE_SYNC_INTERVAL_FAST", 5, 1)
+	ENROLLMENT_RETRY_ATTEMPTS = _env_int("WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS", 3, 1)
+except ValueError as _env_err:
+	raise SystemExit(f"Configuration error: {_env_err}") from None
 SESSION_PROPAGATION_DELAY = 0.5  # Delay after enrollment to ensure master has committed session secret
 
 _SPEEDTEST_RUN_TIMEOUT_SECONDS = 120
@@ -70,6 +86,7 @@ STATE_FILE = DATA_DIR / "node_state.json"
 
 # Failure detection thresholds
 _MAX_AUTH_FAILURES = 3  # Consecutive 401 errors before assuming node removal
+_MAX_PENDING_SPEEDTEST_COMMANDS = 1  # Only one on-demand test may be queued at a time
 _MAX_RECONNECT_DELAY = 60  # Maximum SSE reconnection delay in seconds
 _MAX_DECODED_ENROLLMENT_TOKEN_SIZE = 65_536
 _MAX_SSE_EVENT_SIZE = 64 * 1024
@@ -175,26 +192,36 @@ def _parse_enrollment_token(token_string: str, verify_key: str | None = None) ->
 
 def _load_state() -> dict[str, Any] | None:
 	"""Load persisted node runtime state."""
+	o_nofollow = getattr(os, "O_NOFOLLOW", 0)
 	try:
-		state_stat = STATE_FILE.lstat()
+		fd = os.open(STATE_FILE, os.O_RDONLY | o_nofollow)
 	except FileNotFoundError:
 		return None
-
-	if stat.S_ISLNK(state_stat.st_mode):
-		raise RuntimeError("Refusing to load node state from symlink")
-	if not stat.S_ISREG(state_stat.st_mode):
-		raise RuntimeError("Node state path is not a regular file")
-
-	mode = state_stat.st_mode & 0o777
-	if mode & 0o077:
-		raise RuntimeError("Insecure permissions on node state file")
-	if hasattr(os, "getuid") and state_stat.st_uid != os.getuid():
-		raise RuntimeError("Node state file is not owned by the current user")
+	except OSError as exc:
+		raise RuntimeError(f"Refusing to load node state: {exc}") from exc
 
 	try:
-		state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-	except (OSError, json.JSONDecodeError) as exc:
-		raise RuntimeError(f"Failed to load node state from {STATE_FILE}: {exc}") from exc
+		state_stat = os.fstat(fd)
+		if stat.S_ISLNK(state_stat.st_mode):
+			raise RuntimeError("Refusing to load node state from symlink")
+		if not stat.S_ISREG(state_stat.st_mode):
+			raise RuntimeError("Node state path is not a regular file")
+		if state_stat.st_mode & 0o077:
+			raise RuntimeError("Insecure permissions on node state file")
+		if hasattr(os, "getuid") and state_stat.st_uid != os.getuid():
+			raise RuntimeError("Node state file is not owned by the current user")
+		try:
+			with os.fdopen(fd, "r", encoding="utf-8") as handle:
+				fd = -1
+				state = json.load(handle)
+		except (OSError, json.JSONDecodeError) as exc:
+			raise RuntimeError(f"Failed to load node state from {STATE_FILE}: {exc}") from exc
+	finally:
+		if fd != -1:
+			os.close(fd)
+
+	if not isinstance(state, dict):
+		raise RuntimeError("Persisted node state must be a JSON object")
 
 	required_fields = ("master_url", "node_id", "api_secret")
 	for field in required_fields:
@@ -338,25 +365,22 @@ def _read_last_speedtest_run() -> dt.date | None:
 def _write_last_speedtest_run(ts: float) -> None:
 	"""Write the timestamp of the last speedtest run."""
 	path = DATA_DIR / _SPEEDTEST_LAST_RUN_FILE
-	tmp_path = path.with_name(f".{path.name}.tmp")
+	fd, tmp_name = tempfile.mkstemp(dir=str(DATA_DIR), prefix=f".{path.name}.", suffix=".tmp")
+	tmp_path = Path(tmp_name)
 	try:
-		if path.exists() and path.is_symlink():
-			raise RuntimeError(f"Refusing to write speedtest timestamp through symlink: {path}")
-		fd = os.open(tmp_path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
-		try:
-			with os.fdopen(fd, "w", encoding="utf-8") as handle:
-				fd = -1
-				handle.write(dt.fromtimestamp(ts).date().isoformat())
-				handle.flush()
-				os.fsync(handle.fileno())
-			os.replace(tmp_path, path)
-			_fsync_dir(DATA_DIR)
-		finally:
-			if fd != -1:
-				os.close(fd)
+		os.fchmod(fd, 0o600)
+		with os.fdopen(fd, "w", encoding="utf-8") as handle:
+			fd = -1
+			handle.write(dt.fromtimestamp(ts).date().isoformat())
+			handle.flush()
+			os.fsync(handle.fileno())
+		os.replace(tmp_path, path)
+		_fsync_dir(DATA_DIR)
 	except OSError as exc:
 		_log.warning("Failed to write speedtest last run timestamp: %s", exc)
 	finally:
+		if fd != -1:
+			os.close(fd)
 		tmp_path.unlink(missing_ok=True)
 
 
@@ -546,23 +570,36 @@ async def _speedtest_scheduler(
 			# Check if we already ran a test today
 			last_run_date = await asyncio.to_thread(_read_last_speedtest_run)
 			today = dt.now().date()
-			wait_seconds = _seconds_until_night_window()
+
 			if last_run_date == today:
-				_log.debug("NODE_SPEEDTEST already ran today (%s), next in %.0fs", today.isoformat(), wait_seconds)
-			else:
-				_log.info(
-					"NODE_SPEEDTEST scheduled in %.0f seconds (last run: %s)",
+				# Already ran today. seconds_until_night_window() returns 0.0 for
+				# the whole night window, so without skipping here the loop would
+				# re-run speedtests back-to-back until the window closes. Sleep
+				# until the next day's window instead.
+				wait_seconds = _seconds_until_next_day_window()
+				_log.debug(
+					"NODE_SPEEDTEST already ran today (%s), next window in %.0fs",
+					today.isoformat(),
 					wait_seconds,
-					last_run_date.isoformat() if last_run_date else "never",
 				)
-			
+				if await _interruptible_sleep(wait_seconds, shutdown_event):
+					return
+				continue
+
+			wait_seconds = _seconds_until_night_window()
+			_log.info(
+				"NODE_SPEEDTEST scheduled in %.0f seconds (last run: %s)",
+				wait_seconds,
+				last_run_date.isoformat() if last_run_date else "never",
+			)
+
 			# Wait for the night window, checking for shutdown periodically
 			if await _interruptible_sleep(wait_seconds, shutdown_event):
 				return
-			
+
 			if shutdown_event.is_set():
 				return
-			
+
 			# Run the speedtest
 			success = await _run_node_speedtest(client, master_url, api_secret, cert_fingerprint)
 			if success:
@@ -631,11 +668,17 @@ async def _speedtest_on_demand_handler(
 				if not speedtest_requested_command_ids:
 					speedtest_requested_event.clear()
 				_log.info("NODE_SPEEDTEST on-demand request received from master")
-				await _run_node_speedtest(client, master_url, api_secret, cert_fingerprint)
+				success = await _run_node_speedtest(client, master_url, api_secret, cert_fingerprint)
 				if command_id is not None:
-					acked = await _ack_node_command(client, master_url, api_secret, cert_fingerprint, command_id)
-					if not acked:
-						_log.warning("Failed to ACK processed speedtest command_id=%s", command_id)
+					if success:
+						acked = await _ack_node_command(client, master_url, api_secret, cert_fingerprint, command_id)
+						if not acked:
+							_log.warning("Failed to ACK processed speedtest command_id=%s", command_id)
+					else:
+						_log.warning(
+							"Leaving speedtest command_id=%s unacked: no result was submitted",
+							command_id,
+						)
 		except asyncio.CancelledError:
 			return
 		except Exception:
@@ -1435,9 +1478,15 @@ async def _sse_listener(
 											shutdown_event.set()
 											return
 										elif event_type == "run_speedtest":
-											_log.info("Received run_speedtest event from master — queueing on-demand speedtest")
-											speedtest_requested_command_ids.append(command_id)
-											speedtest_requested_event.set()
+											if len(speedtest_requested_command_ids) >= _MAX_PENDING_SPEEDTEST_COMMANDS:
+												_log.warning(
+													"Ignoring run_speedtest event: %d already pending",
+													len(speedtest_requested_command_ids),
+												)
+											else:
+												_log.info("Received run_speedtest event from master — queueing on-demand speedtest")
+												speedtest_requested_command_ids.append(command_id)
+												speedtest_requested_event.set()
 									event_type = None
 									event_buffer.clear()
 						finally:
@@ -1518,14 +1567,22 @@ async def _pull_config(
 		resp.raise_for_status()
 		body = await _read_limited_response(resp, _MAX_CONFIG_SIZE)
 	data = json.loads(body)
+	if not isinstance(data, dict):
+		raise RuntimeError("Invalid config response: expected JSON object")
 
 	config = data.get("data")
 	if config is None:
 		# 304-equivalent: config unchanged
 		return None
+	if not isinstance(config, dict):
+		raise RuntimeError("Invalid config response: data must be an object")
 
-	peer_count = len(config.get("peers", []))
-	_log.info("Received config from master: peers=%d interfaces=%d", peer_count, len(config.get("interfaces", [])))
+	interfaces = config.get("interfaces", [])
+	peers = config.get("peers", [])
+	if not isinstance(interfaces, list) or not isinstance(peers, list):
+		raise RuntimeError("Invalid config response: interfaces and peers must be lists")
+
+	_log.info("Received config from master: peers=%d interfaces=%d", len(peers), len(interfaces))
 	new_version = await asyncio.to_thread(apply_config, config)
 	_log.info("Applied new config (version=%s...)", new_version[:16] if new_version else "none")
 	# Check/fix firewall rules now that wg0 exists

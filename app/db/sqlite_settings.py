@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..utils import vault
+from ..utils.coerce import BOOL_FALSE_VALUES, BOOL_TRUE_VALUES
 from ..utils.config import get_config
 from ..utils.time import ensure_utc, parse_utc, utcnow
 from .sqlite_runtime import transaction
@@ -267,9 +268,9 @@ def _normalize_recovery_value(key: str, value: str) -> str | None:
 
 	def _normalize_bool(raw: str) -> str | None:
 		lowered = raw.strip().lower()
-		if lowered in {"1", "true", "yes", "on"}:
+		if lowered in BOOL_TRUE_VALUES:
 			return "1"
-		if lowered in {"0", "false", "no", "off"}:
+		if lowered in BOOL_FALSE_VALUES:
 			return "0"
 		return None
 
@@ -458,7 +459,7 @@ def _setting_is_truthy(value: Any, default: bool = False) -> bool:
 	"""Parse boolean-ish setting values from strings."""
 	if value is None:
 		return default
-	return str(value).strip().lower() in {"1", "true", "yes", "on"}
+	return str(value).strip().lower() in BOOL_TRUE_VALUES
 
 
 def _get_bool_setting(conn: sqlite3.Connection, key: str, *, default: bool = False) -> bool:

@@ -13,33 +13,13 @@ import logging
 import math
 import os
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from ..utils.crypto import hash_token
-from ..utils.time import ensure_utc, utcnow
+from ..utils.time import ensure_utc, parse_db_timestamp, utcnow
 from .sqlite_runtime import transaction
 
 _log = logging.getLogger(__name__)
-
-
-def _parse_db_timestamp(value: object) -> datetime | None:
-	"""Normalize a database timestamp value to a timezone-aware UTC datetime."""
-	if value is None:
-		return None
-	if isinstance(value, datetime):
-		return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-	if isinstance(value, str):
-		text = value.strip()
-		if not text:
-			return None
-		if text.endswith("Z"):
-			text = text[:-1] + "+00:00"
-		try:
-			dt = datetime.fromisoformat(text)
-		except ValueError:
-			return None
-		return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-	return None
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +82,10 @@ def refresh_auth_token(conn: sqlite3.Connection, token: str, hours: int = 1) -> 
 
 	Returns True if a non-expired token was found and refreshed.
 	"""
+	if hours <= 0:
+		# A non-positive duration would shorten or expire an active session
+		# instead of refreshing it.
+		raise ValueError("hours must be > 0")
 	token_hash = hash_token(token)
 	now = utcnow()
 	new_expires = now + timedelta(hours=hours)
@@ -182,6 +166,16 @@ _USER_IP_LOCKOUT_POLICY = _LockoutPolicy(
 	base_seconds=_int_env("WIREBUDDY_LOGIN_USER_IP_BASE_LOCKOUT_SECONDS", 30),
 	max_seconds=_int_env("WIREBUDDY_LOGIN_USER_IP_MAX_LOCKOUT_SECONDS", 3600),
 )
+# Username-wide throttle: slows distributed password guessing against a known
+# account across rotating IPs. High threshold + short cap deliberately keep this
+# a brief throttle rather than a durable account lockout (which would be a DoS
+# vector against the admin login). Reset on success via clear_login_attempts().
+_USERNAME_LOCKOUT_POLICY = _LockoutPolicy(
+	key_prefix="user",
+	min_failures=_int_env("WIREBUDDY_LOGIN_USERNAME_MIN_FAILURES", 20),
+	base_seconds=_int_env("WIREBUDDY_LOGIN_USERNAME_BASE_LOCKOUT_SECONDS", 60),
+	max_seconds=_int_env("WIREBUDDY_LOGIN_USERNAME_MAX_LOCKOUT_SECONDS", 300),
+)
 
 
 def _normalize_login_subject(username: str | None) -> str | None:
@@ -197,6 +191,12 @@ def _build_attempt_keys(ip_address: str, username: str | None) -> list[tuple[str
 	keys = [(f"{_IP_LOCKOUT_POLICY.key_prefix}:{ip_address}", _IP_LOCKOUT_POLICY)]
 	normalized_username = _normalize_login_subject(username)
 	if normalized_username is not None:
+		keys.append(
+			(
+				f"{_USERNAME_LOCKOUT_POLICY.key_prefix}:{normalized_username}",
+				_USERNAME_LOCKOUT_POLICY,
+			)
+		)
 		keys.append(
 			(
 				f"{_USER_IP_LOCKOUT_POLICY.key_prefix}:{normalized_username}:{ip_address}",
@@ -233,7 +233,7 @@ def is_ip_locked(conn: sqlite3.Connection, ip_address: str, username: str | None
 	"""
 	now = utcnow()
 	max_remaining = 0
-	for key, _policy in _build_attempt_keys(ip_address, username):
+	for key, policy in _build_attempt_keys(ip_address, username):
 		cur = conn.execute(
 			"SELECT locked_until FROM login_attempts WHERE ip_address = ?",
 			(key,),
@@ -241,10 +241,13 @@ def is_ip_locked(conn: sqlite3.Connection, ip_address: str, username: str | None
 		row = cur.fetchone()
 		if not row:
 			continue
-		locked_until = _parse_db_timestamp(row["locked_until"])
+		locked_until = parse_db_timestamp(row["locked_until"])
 		if locked_until is None or now >= locked_until:
 			continue
 		max_remaining = max(max_remaining, int((locked_until - now).total_seconds()))
+		if policy is _USERNAME_LOCKOUT_POLICY:
+			# Observability only — never surfaced to the client (no enumeration).
+			_log.warning("Username-wide login throttle active for key=%s", key)
 
 	return (max_remaining > 0, max_remaining)
 
@@ -265,7 +268,7 @@ def record_failed_login(conn: sqlite3.Connection, ip_address: str, username: str
 			row = cur.fetchone()
 			current_count = 0
 			if row is not None:
-				last_attempt_at = _parse_db_timestamp(row["last_attempt_at"])
+				last_attempt_at = parse_db_timestamp(row["last_attempt_at"])
 				if last_attempt_at is not None and now - last_attempt_at <= timedelta(seconds=policy.max_seconds):
 					current_count = int(row["failed_count"] or 0)
 			new_count = current_count + 1

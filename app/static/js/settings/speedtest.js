@@ -248,12 +248,15 @@
             serverEl.title = data.server || '';
 
             const flag = createCountryFlagElement(data.country_code);
+            const label = document.createElement('span');
+            label.className = 'speedtest-result-server-label';
+            label.textContent = data.server || '–';
+
             const fragment = document.createDocumentFragment();
             if (flag) {
                 fragment.appendChild(flag);
-                fragment.appendChild(document.createTextNode(' '));
             }
-            fragment.appendChild(document.createTextNode(data.server || '–'));
+            fragment.appendChild(label);
             serverEl.replaceChildren(fragment);
         }
 

@@ -11,8 +11,21 @@
                     </div>
                     <div class="card-body">
                         <p class="text-muted small mb-3">
-                            Creates a full snapshot of the database, DNS settings, certificates and traffic data as a signed <code>.tar.gz</code> archive.
+                            Creates a signed <code>.tar.gz</code> containing the database <strong>schema and configuration data</strong> (interfaces, peers, users, settings). A restore replaces the live database and restarts the application.
                         </p>
+
+                        <div class="mb-3">
+                            <label for="backup-tsdb-range" class="form-label small mb-1">Backup content</label>
+                            <select class="form-select form-select-sm" id="backup-tsdb-range" data-testid="backup-tsdb-range"{% if not user['is_admin'] %} disabled{% endif %}>
+                                <option value="none">Settings only</option>
+                                <option value="7d">+ Metrics: last 7 days</option>
+                                <option value="30d">+ Metrics: last 30 days</option>
+                                <option value="90d">+ Metrics: last 90 days</option>
+                                <option value="180d">+ Metrics: last 180 days</option>
+                                <option value="1y">+ Metrics: last 1 year</option>
+                            </select>
+                            <div class="form-text">Applies to manual and scheduled backups.</div>
+                        </div>
 
                         <button class="btn btn-primary w-100" id="btn-backup-download"{% if not user['is_admin'] %} disabled{% endif %}
                             title="Create and download configuration backup">
@@ -34,6 +47,18 @@
                         <div class="form-check form-switch mb-3">
                             <input class="form-check-input" type="checkbox" id="backup-scheduled-enabled"{% if not user['is_admin'] %} disabled{% endif %}>
                             <label class="form-check-label" for="backup-scheduled-enabled">Daily Backups (03:00 local time)</label>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="backup-tsdb-range-sched" class="form-label small mb-1">Backup content</label>
+                            <select class="form-select form-select-sm" id="backup-tsdb-range-sched"{% if not user['is_admin'] %} disabled{% endif %}>
+                                <option value="none">Settings only</option>
+                                <option value="7d">+ Metrics: last 7 days</option>
+                                <option value="30d">+ Metrics: last 30 days</option>
+                                <option value="90d">+ Metrics: last 90 days</option>
+                                <option value="180d">+ Metrics: last 180 days</option>
+                                <option value="1y">+ Metrics: last 1 year</option>
+                            </select>
                         </div>
 
                         <div class="mb-3 backup-retention-scale d-none" id="backup-retention-section">
@@ -86,7 +111,7 @@
                     </div>
                     <div class="card-body">
                         <p class="text-muted small mb-3">
-                            Uploading a backup will <strong>overwrite all current configuration</strong> and restart the application.
+                            Uploading a backup <strong>replaces the current database</strong> with the backed-up schema and configuration, then restarts the application.
                             Only backups created by this WireBuddy instance are accepted (HMAC verified).
                         </p>
 
