@@ -127,7 +127,7 @@ jobs:
             --exclude 'fonts\.gstatic\.com'
             --exclude 'gill-bates\.github\.io/wirebuddy'
             --exclude 'www\.gnu\.org/licenses/?'
-            --exclude 'apps\.apple\.com/app/wireguard/id1451685025'
+            --exclude 'apps\.apple\.com'
             './site/**/*.html'
           fail: true
 
