@@ -240,13 +240,54 @@ jobs:
         with:
           cache: 'false'
           image-ref: '${{ matrix.test_image }}'
-          format: 'table'
+          format: 'json'
+          output: 'trivy-${{ matrix.image_suffix }}.json'
           exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
           timeout: '10m'
           trivyignores: '.trivyignore'
+
+      - name: Generate Trivy summary (${{ matrix.arch }})
+        if: always()
+        run: |
+          set -euo pipefail
+          ARCH="${{ matrix.image_suffix }}"
+          FILE="trivy-${ARCH}.json"
+
+          if [[ ! -f "$FILE" ]]; then
+            echo "### Trivy (${ARCH}): Scan failed — no results file" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "$FILE" 2>/dev/null || echo 0)
+          HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "$FILE" 2>/dev/null || echo 0)
+
+          if (( CRITICAL == 0 && HIGH == 0 )); then
+            SUMMARY="✅ No HIGH/CRITICAL vulnerabilities found"
+          else
+            SUMMARY="⚠️ ${CRITICAL} CRITICAL, ${HIGH} HIGH vulnerabilities"
+          fi
+
+          echo "### Trivy Scan Results (${ARCH})" >> "$GITHUB_STEP_SUMMARY"
+          if (( CRITICAL > 0 || HIGH > 0 )); then
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            jq -r '.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL" or .Severity == "HIGH") | "\(.Severity)\t\(.VulnerabilityID)\t\(.PkgName)\t\(.InstalledVersion)"' \
+              "$FILE" 2>/dev/null | head -20 >> "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Trivy findings (${{ matrix.arch }})
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-findings-${{ matrix.image_suffix }}
+          path: trivy-${{ matrix.image_suffix }}.json
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Push arch-specific image
         run: |
@@ -507,6 +548,8 @@ jobs:
               '- `' + imageName + ':latest` (multi-arch)'
             ];
 
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
             const body = [
               '## WireBuddy ' + version,
               '',
@@ -514,6 +557,15 @@ jobs:
               '',
               '### Available Tags',
               ...tags,
+              '',
+              '### Security Scan',
+              '',
+              '| Architecture | Findings |',
+              '|---|---|',
+              '| amd64 | [trivy-findings-amd64](' + runUrl + '#artifacts) |',
+              '| arm64 | [trivy-findings-arm64](' + runUrl + '#artifacts) |',
+              '',
+              '> Scanned with [Trivy](https://trivy.dev/) for HIGH and CRITICAL severity vulnerabilities (unfixed CVEs ignored).',
               '',
               '### Changelog',
               changelogSection || '_No matching CHANGELOG entry found for this version._',

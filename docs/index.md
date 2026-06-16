@@ -114,9 +114,6 @@ docker compose up -d
 
 ## Screenshots
 
-=== "Dashboard"
-    ![Dashboard](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_1.png)
-    
 === "Peer Management"
     ![Peers](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_2.png)
     
