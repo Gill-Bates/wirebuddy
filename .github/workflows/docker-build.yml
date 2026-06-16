@@ -37,23 +37,21 @@ jobs:
           fetch-depth: 1
 
       - name: Validate Docker Hub secrets
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "${{ secrets.DOCKERHUB_USERNAME }}" || {
-            echo "ERROR: Missing DOCKERHUB_USERNAME secret"
-            exit 1
-          }
-          test -n "${{ secrets.DOCKERHUB_TOKEN }}" || {
-            echo "ERROR: Missing DOCKERHUB_TOKEN secret"
-            exit 1
-          }
+          : "${DOCKERHUB_USERNAME:?Missing DOCKERHUB_USERNAME secret}"
+          : "${DOCKERHUB_TOKEN:?Missing DOCKERHUB_TOKEN secret}"
 
       - name: Validate and set build metadata
         id: meta
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -euo pipefail
 
-          DOCKERHUB_USERNAME="${{ secrets.DOCKERHUB_USERNAME }}"
           if ! echo "$DOCKERHUB_USERNAME" | grep -qE '^[a-z0-9][a-z0-9_-]{2,}$'; then
             echo "ERROR: Invalid Docker Hub username/namespace: '$DOCKERHUB_USERNAME'"
             exit 1
@@ -66,7 +64,7 @@ jobs:
 
           VERSION="$(tr -d '[:space:]' < VERSION)"
 
-          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
             echo "ERROR: Invalid version format: '$VERSION' (expected: X.Y.Z or X.Y.Z-suffix)"
             exit 1
           fi
@@ -92,6 +90,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       VERSION: ${{ needs.meta.outputs.version }}
+      IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
     strategy:
       fail-fast: false
       matrix:
@@ -231,8 +230,6 @@ jobs:
       - name: Tag image for push
         run: |
           set -euo pipefail
-          IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy"
-          test -n "$IMAGE_NAME" || { echo "ERROR: IMAGE_NAME is empty"; exit 1; }
           docker tag "${{ matrix.test_image }}" "${IMAGE_NAME}:${VERSION}-${{ matrix.image_suffix }}"
 
       - name: Trivy vulnerability scan
@@ -292,8 +289,6 @@ jobs:
       - name: Push arch-specific image
         run: |
           set -euo pipefail
-          IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy"
-          test -n "$IMAGE_NAME" || { echo "ERROR: IMAGE_NAME is empty"; exit 1; }
           docker push "${IMAGE_NAME}:${VERSION}-${{ matrix.image_suffix }}"
 
   create-manifest:
@@ -303,6 +298,8 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      VERSION: ${{ needs.meta.outputs.version }}
+      IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
     permissions:
       contents: read
 
@@ -317,9 +314,6 @@ jobs:
       - name: Create and push manifest
         run: |
           set -euo pipefail
-          IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/wirebuddy"
-          test -n "$IMAGE_NAME" || { echo "ERROR: IMAGE_NAME is empty"; exit 1; }
-          VERSION="${{ needs.meta.outputs.version }}"
 
           # Create multi-arch manifest from already-pushed arch-specific tags
           docker buildx imagetools create \
@@ -327,14 +321,19 @@ jobs:
             "${IMAGE_NAME}:${VERSION}-amd64" \
             "${IMAGE_NAME}:${VERSION}-arm64"
 
-          docker buildx imagetools create \
-            --tag "${IMAGE_NAME}:latest" \
-            "${IMAGE_NAME}:${VERSION}-amd64" \
-            "${IMAGE_NAME}:${VERSION}-arm64"
-
           echo "Pushed manifests:"
           echo "  ${IMAGE_NAME}:${VERSION}"
-          echo "  ${IMAGE_NAME}:latest"
+
+          # Only stable releases move the floating 'latest' tag.
+          if [[ "$VERSION" == *-* ]]; then
+            echo "Skipping 'latest' tag for prerelease ${VERSION}"
+          else
+            docker buildx imagetools create \
+              --tag "${IMAGE_NAME}:latest" \
+              "${IMAGE_NAME}:${VERSION}-amd64" \
+              "${IMAGE_NAME}:${VERSION}-arm64"
+            echo "  ${IMAGE_NAME}:latest"
+          fi
 
   cleanup-dockerhub-tags:
     name: Keep only latest and current version tag
@@ -493,6 +492,7 @@ jobs:
       IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
     permissions:
       contents: write
+      actions: read
 
     steps:
       - name: Checkout repository
@@ -500,14 +500,41 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Download Trivy findings
+        uses: actions/download-artifact@v7
+        with:
+          pattern: trivy-findings-*
+          path: trivy-reports/
+          merge-multiple: false
+
       - name: Create or update GitHub Release
         uses: actions/github-script@v9
         with:
           script: |
             const fs = require('node:fs');
+            const path = require('node:path');
             const version = process.env.VERSION;
             const imageName = process.env.IMAGE_NAME;
             const isPrerelease = version.includes('-');
+
+            function parseTrivyStatus(arch) {
+              const file = path.join('trivy-reports', `trivy-findings-${arch}`, `trivy-${arch}.json`);
+              try {
+                const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+                let critical = 0, high = 0;
+                for (const result of (data.Results || [])) {
+                  for (const vuln of (result.Vulnerabilities || [])) {
+                    if (vuln.Severity === 'CRITICAL') critical++;
+                    else if (vuln.Severity === 'HIGH') high++;
+                  }
+                }
+                return (critical === 0 && high === 0)
+                  ? '✅ No HIGH/CRITICAL vulnerabilities found'
+                  : `⚠️ ${critical} CRITICAL, ${high} HIGH vulnerabilities`;
+              } catch {
+                return '❓ Report unavailable';
+              }
+            }
 
             function extractVersionSection(markdown, targetVersion) {
               const headingPattern = /^## \[([^\]]+)\] - .+$/gm;
@@ -544,11 +571,15 @@ jobs:
             }
 
             const tags = [
-              '- `' + imageName + ':' + version + '` (multi-arch)',
-              '- `' + imageName + ':latest` (multi-arch)'
+              '- `' + imageName + ':' + version + '` (multi-arch)'
             ];
+            if (!isPrerelease) {
+              tags.push('- `' + imageName + ':latest` (multi-arch)');
+            }
 
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const trivyAmd64 = parseTrivyStatus('amd64');
+            const trivyArm64 = parseTrivyStatus('arm64');
 
             const body = [
               '## WireBuddy ' + version,
@@ -558,12 +589,13 @@ jobs:
               '### Available Tags',
               ...tags,
               '',
-              '### Security Scan',
+              '### Security Scan Results',
               '',
-              '| Architecture | Findings |',
-              '|---|---|',
-              '| amd64 | [trivy-findings-amd64](' + runUrl + '#artifacts) |',
-              '| arm64 | [trivy-findings-arm64](' + runUrl + '#artifacts) |',
+              '| Architecture | Status | Findings |',
+              '|---|---|---|',
+              '| amd64 | ' + trivyAmd64 + ' | [trivy-findings-amd64](' + runUrl + '#artifacts) |',
+              '| arm64 | ' + trivyArm64 + ' | [trivy-findings-arm64](' + runUrl + '#artifacts) |',
+              '| run | workflow details | [Actions Run](' + runUrl + ') |',
               '',
               '> Scanned with [Trivy](https://trivy.dev/) for HIGH and CRITICAL severity vulnerabilities (unfixed CVEs ignored).',
               '',
