@@ -21,6 +21,22 @@ from .sqlite_runtime import transaction
 
 _log = logging.getLogger(__name__)
 
+_USER_LIST_COLUMNS = """
+	id,
+	username,
+	is_admin,
+	is_active,
+	must_change_password,
+	CASE WHEN otp_secret IS NOT NULL THEN 1 ELSE 0 END AS otp_secret,
+	otp_enabled,
+	auth_method,
+	passkey_enabled,
+	passkey_pending,
+	created_at,
+	last_login_at,
+	last_login_ip
+"""
+
 
 class UpdateResult(enum.Enum):
 	"""Result of user update operations."""
@@ -71,8 +87,8 @@ def get_user_by_id(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row | None
 
 
 def get_all_users(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-	"""Get all users."""
-	cur = conn.execute("SELECT * FROM users ORDER BY username")
+	"""Get all users for admin list views without loading stored secrets."""
+	cur = conn.execute(f"SELECT {_USER_LIST_COLUMNS} FROM users ORDER BY username")
 	return cur.fetchall()
 
 
@@ -127,6 +143,7 @@ def update_user(
 	password: str | None = None,
 	is_admin: bool | None = None,
 	is_active: bool | None = None,
+	must_change_password: bool | None = None,
 ) -> UpdateResult:
 	"""Update a user.
 
@@ -168,6 +185,9 @@ def update_user(
 			if is_active is not None:
 				updates.append("is_active = ?")
 				params.append(int(is_active))
+			if must_change_password is not None:
+				updates.append("must_change_password = ?")
+				params.append(int(must_change_password))
 
 			if not updates:
 				return UpdateResult.SUCCESS
@@ -187,7 +207,7 @@ def delete_user(conn: sqlite3.Connection, user_id: int) -> bool:
 	Raises:
 		LastAdminError: If this is the last active admin user.
 	"""
-	with transaction(conn):
+	with transaction(conn, immediate=True):
 		# Last-admin protection
 		user = get_user_by_id(conn, user_id)
 		if user and bool(user["is_admin"]) and bool(user["is_active"]):
@@ -247,6 +267,26 @@ def update_user_recovery_codes(conn: sqlite3.Connection, user_id: int, otp_recov
 		cur = conn.execute(
 			"UPDATE users SET otp_recovery_codes = ? WHERE id = ?",
 			(otp_recovery_codes, user_id),
+		)
+		return cur.rowcount > 0
+
+
+def update_user_recovery_codes_if_current(
+	conn: sqlite3.Connection,
+	user_id: int,
+	*,
+	previous_codes: str,
+	new_codes: str,
+) -> bool:
+	"""Consume recovery codes only if the stored JSON still matches."""
+	with transaction(conn, immediate=True):
+		cur = conn.execute(
+			"""
+			UPDATE users
+			SET otp_recovery_codes = ?
+			WHERE id = ? AND otp_recovery_codes = ?
+			""",
+			(new_codes, user_id, previous_codes),
 		)
 		return cur.rowcount > 0
 

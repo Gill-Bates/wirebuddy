@@ -8,13 +8,30 @@ Once WireBuddy is installed and running, follow these steps to get your VPN up a
 
 ## 1. Initial Login
 
-1. Navigate to `http://localhost:8000` (or your server IP)
-2. Login with the bootstrap admin credentials you configured via `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD`:
-   - Username: `admin`
-    - Password: your configured bootstrap password
+On first boot, WireBuddy automatically creates an `admin` user with a randomly generated temporary password.
+Check the server log to retrieve it:
 
-!!! danger "Change Default Password"
-    Click your username (top right) → **Change Password** and set a secure password immediately!
+```
+docker logs wirebuddy
+```
+
+Look for a block like:
+
+```
+═══════════════════════════════════════════════════════════
+  Bootstrap admin created.
+  Username : admin
+  Password : Hegupu60
+  You will be prompted to change this password on first login.
+═══════════════════════════════════════════════════════════
+```
+
+1. Navigate to `http://localhost:8000` (or your server IP)
+2. Login with username `admin` and the temporary password from the log
+3. You will be redirected to a password change screen — set a secure password to continue
+
+!!! info "Forced Password Change"
+    The temporary password can only be used once. After setting a new password you are redirected to the login page.
 
 ## 2. Create Your First WireGuard Interface
 

@@ -39,11 +39,13 @@ from ..models.users import (
     OTPConfirmRequest,
     OTPDisableRequest,
     PasswordChangeRequest,
+    RequiredPasswordChangeRequest,
     UserCreate,
     UserPublic,
     UserUpdate,
 )
-from ..utils.crypto import verify_password
+from ..utils.coerce import coerce_db_bool
+from ..utils.crypto import hash_password, verify_password
 from ..utils.deps import get_conn
 from ..utils.otp import (
     build_provisioning_uri,
@@ -53,7 +55,7 @@ from ..utils.otp import (
     verify_otp,
 )
 from ..utils.rate_limit import RATE_LIMIT_AUTH, limiter
-from .auth import get_current_user, require_admin
+from .auth import get_current_user, require_admin, store_recovery_download
 from .response import ok_response
 
 logger = logging.getLogger(__name__)
@@ -105,13 +107,49 @@ def require_self_or_admin(
     return current_user
 
 
+def _is_self(user_id: int, current_user: sqlite3.Row) -> bool:
+    return int(current_user["id"]) == int(user_id)
+
+
+def _require_self(user_id: int, current_user: sqlite3.Row) -> None:
+    if not _is_self(user_id, current_user):
+        raise HTTPException(status_code=403, detail="OTP setup must be completed by the user")
+
+
+def _update_password_and_revoke_tokens(
+    conn: sqlite3.Connection,
+    user_id: int,
+    new_password: str,
+    *,
+    must_change_password: bool,
+) -> UpdateResult:
+    if not new_password:
+        raise ValueError("Password must not be blank")
+
+    cur = conn.execute(
+        """
+        UPDATE users
+        SET password_hash = ?, must_change_password = ?
+        WHERE id = ?
+        """,
+        (hash_password(new_password), int(must_change_password), user_id),
+    )
+    if cur.rowcount == 0:
+        return UpdateResult.NOT_FOUND
+
+    delete_user_tokens(conn, user_id)
+    return UpdateResult.SUCCESS
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # User CRUD
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @router.get("")
+@limiter.limit(RATE_LIMIT_AUTH)
 def list_users(
+    request: Request,
     conn: sqlite3.Connection = Depends(get_conn),
     _: sqlite3.Row = Depends(require_admin),
 ):
@@ -122,7 +160,9 @@ def list_users(
 
 
 @router.post("", status_code=201)
+@limiter.limit(RATE_LIMIT_AUTH)
 def create_user(
+    request: Request,
     payload: UserCreate,
     conn: sqlite3.Connection = Depends(get_conn),
     current_user: sqlite3.Row = Depends(require_admin),
@@ -165,7 +205,9 @@ def get_user(
 
 
 @router.patch("/{user_id}")
+@limiter.limit(RATE_LIMIT_AUTH)
 def update_user(
+    request: Request,
     user_id: int,
     payload: UserUpdate,
     conn: sqlite3.Connection = Depends(get_conn),
@@ -213,7 +255,9 @@ def update_user(
 
 
 @router.delete("/{user_id}", status_code=204, response_class=Response)
+@limiter.limit(RATE_LIMIT_AUTH)
 def delete_user(
+    request: Request,
     user_id: int,
     conn: sqlite3.Connection = Depends(get_conn),
     current_user: sqlite3.Row = Depends(require_admin),
@@ -257,13 +301,62 @@ def change_password(
         user = _get_user_or_404(conn, user_id)
         if not verify_password(payload.current_password, user["password_hash"]):
             raise HTTPException(status_code=422, detail="Current password incorrect")
-        result = db_update_user(conn, user_id, password=payload.new_password)
+        result = _update_password_and_revoke_tokens(
+            conn,
+            user_id,
+            payload.new_password,
+            must_change_password=False,
+        )
         if result == UpdateResult.NOT_FOUND:
             raise HTTPException(status_code=404, detail="User not found")
 
-    delete_user_tokens(conn, user_id)
-    
     logger.info("PASSWORD_CHANGED user_id=%d by_user=%d", user_id, current_user["id"])
+    release_bootstrap_gate = getattr(request.app.state, "bootstrap_gate_release", None)
+    if callable(release_bootstrap_gate) and getattr(request.app.state, "bootstrap_gate_active", False):
+        release_bootstrap_gate()
+    return ok_response(message="Password changed successfully")
+
+
+@router.post("/me/complete-required-change")
+@limiter.limit(RATE_LIMIT_AUTH)
+def complete_required_password_change(
+    request: Request,
+    payload: RequiredPasswordChangeRequest,
+    conn: sqlite3.Connection = Depends(get_conn),
+    current_user: sqlite3.Row = Depends(get_current_user),
+):
+    """Complete the mandatory first-login password change for the current user.
+
+    Only valid while the authenticated user still has ``must_change_password``
+    set (bootstrap or admin-reset flow). The session already authenticates the
+    user, so the temporary password is not re-entered. Normal self-service
+    changes must use ``/{user_id}/change-password`` and still require the
+    current password.
+    """
+    if not coerce_db_bool(current_user["must_change_password"]):
+        raise HTTPException(status_code=403, detail="No password change is required")
+
+    user_id = current_user["id"]
+    with transaction(conn, immediate=True):
+        user = _get_user_or_404(conn, user_id)
+        if verify_password(payload.new_password, user["password_hash"]):
+            raise HTTPException(
+                status_code=422,
+                detail="New password must be different from the temporary password",
+            )
+        result = _update_password_and_revoke_tokens(
+            conn,
+            user_id,
+            payload.new_password,
+            must_change_password=False,
+        )
+        if result == UpdateResult.NOT_FOUND:
+            raise HTTPException(status_code=404, detail="User not found")
+
+    logger.info("PASSWORD_CHANGED user_id=%d (required change completed)", user_id)
+    release_bootstrap_gate = getattr(request.app.state, "bootstrap_gate_release", None)
+    if callable(release_bootstrap_gate) and getattr(request.app.state, "bootstrap_gate_active", False):
+        release_bootstrap_gate()
     return ok_response(message="Password changed successfully")
 
 
@@ -280,13 +373,16 @@ def reset_password(
     if current_user["id"] == user_id:
         raise HTTPException(status_code=400, detail="Use change-password for your own account")
 
-    _get_user_or_404(conn, user_id)
-    
-    result = db_update_user(conn, user_id, password=payload.new_password)
-    if result == UpdateResult.NOT_FOUND:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    delete_user_tokens(conn, user_id)
+    with transaction(conn, immediate=True):
+        _get_user_or_404(conn, user_id)
+        result = _update_password_and_revoke_tokens(
+            conn,
+            user_id,
+            payload.new_password,
+            must_change_password=True,
+        )
+        if result == UpdateResult.NOT_FOUND:
+            raise HTTPException(status_code=404, detail="User not found")
     
     logger.info("PASSWORD_RESET user_id=%d by_admin=%d", user_id, current_user["id"])
     return ok_response(message="Password reset successfully")
@@ -307,11 +403,16 @@ def enable_user_otp(
 ):
     """Prepare OTP setup for a user and return provisioning details."""
     user = _get_user_or_404(conn, user_id)
+    is_self = _is_self(user_id, current_user)
 
     secret = generate_otp_secret()
     provisioning_uri = build_provisioning_uri(secret=secret, username=user["username"])
     if not set_user_otp_secret(conn, user_id, secret):
         raise HTTPException(status_code=500, detail="Unable to initialize OTP setup")
+
+    if not is_self:
+        logger.info("USER_OTP_SETUP_PENDING user_id=%d by_admin=%d", user_id, current_user["id"])
+        return ok_response(data={"otp_setup_pending": True})
 
     qr_code_data_url = _to_qr_data_url(provisioning_uri)
     logger.info("USER_OTP_SETUP_STARTED user_id=%d by_user=%d", user_id, current_user["id"])
@@ -333,6 +434,7 @@ def confirm_user_otp_setup(
     current_user: sqlite3.Row = Depends(require_self_or_admin),
 ):
     """Confirm OTP setup using first TOTP code and enable OTP."""
+    _require_self(user_id, current_user)
     user = _get_user_or_404(conn, user_id)
 
     # Decrypt OTP secret for verification
@@ -356,10 +458,11 @@ def confirm_user_otp_setup(
 
     delete_user_tokens(conn, user_id)
     logger.info("USER_OTP_ENABLED user_id=%d by_user=%d", user_id, current_user["id"])
+    recovery_download_token = store_recovery_download(user_id, user["username"], recovery_codes)
     return ok_response(
         data={
             "otp_enabled": True,
-            "recovery_codes": recovery_codes,
+            "recovery_download_token": recovery_download_token,
         }
     )
 

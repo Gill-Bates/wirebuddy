@@ -40,7 +40,12 @@ ui-lint-summary.latest.json
 
 # IDE
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Runtime tool state (Claude Code / agent framework)
+.omx/
 
 # OS
 .DS_Store

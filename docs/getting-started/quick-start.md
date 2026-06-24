@@ -119,10 +119,9 @@ http://YOUR_SERVER_IP:8000
 
 !!! success "Bootstrap Credentials"
     - **Username:** `admin`
-    - **Password:** value of `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD`
+    - **Password:** check the server log — run `docker logs wirebuddy` and look for the generated temporary password
 
-!!! danger "Security Warning"
-    Change the bootstrap password immediately after first login!
+WireBuddy will redirect you to a password change screen on first login. Set a secure password to continue.
 
 ## Step 7: Secure with Reverse Proxy (Recommended)
 

@@ -1,2 +1,8 @@
 # Jinja2 templates - formatter breaks template syntax
 app/templates/
+
+# Vendor assets - pre-minified, do not reformat
+app/static/vendor/
+
+# Generated documentation output
+site/

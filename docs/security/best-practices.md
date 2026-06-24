@@ -4,16 +4,20 @@ Comprehensive guide for securing your WireBuddy deployment.
 
 ## Initial Setup
 
-### Set Bootstrap Admin Password
+### Bootstrap Admin Password
 
-!!! danger "Critical"
-    Set `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD` before the first start of a new deployment. There is no built-in `admin/admin` fallback anymore.
+On first boot, WireBuddy automatically generates a random temporary password for the `admin` user and prints it to the log. Retrieve it with:
 
-After first login, change the bootstrap password immediately via **Profile → Change Password**.
+```bash
+docker logs wirebuddy 2>&1 | grep -A5 "Bootstrap admin created"
+```
 
-- Minimum 12 characters
-- Mix of uppercase, lowercase, numbers, symbols
-- Use password manager (1Password, Bitwarden)
+You will be redirected to a forced password change screen on first login. The temporary password cannot be reused after it has been changed.
+
+!!! tip "Password requirements"
+    - Minimum 10 characters
+    - At least 3 of: uppercase, lowercase, digit, special character
+    - Use a password manager (1Password, Bitwarden)
 
 ### Generate Strong Secret Key
 
@@ -580,7 +584,7 @@ If admin device is lost/stolen:
 
 ### Initial Deployment
 
-- [ ] Set `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD` before first boot
+- [ ] Retrieve bootstrap admin password from the server log after first boot
 - [ ] Generate strong `WIREBUDDY_SECRET_KEY`
 - [ ] Enable HTTPS (reverse proxy or ACME)
 - [ ] Configure firewall (allow only required ports)

@@ -162,10 +162,10 @@ http://localhost:8000
 
 Bootstrap credentials on first boot:
 - Username: `admin`
-- Password: value of `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD`
+- Password: auto-generated on first start and printed to the container log — run `docker compose logs wirebuddy` and look for the generated bootstrap password
 
 !!! danger "Change Default Password"
-    Immediately change the bootstrap password after first login via **Settings → Users**!
+    On first login WireBuddy redirects you to a mandatory password change screen; the temporary password is invalidated once you set a new one.
 
 ---
 

@@ -436,7 +436,7 @@ if (!peersApp) {
         });
 
         const existingSpan = lastSeenCell.querySelector('span');
-        const nextText = rel.active ? '' : rel.text;
+        const nextText = rel.text;
         if (existingSpan && existingSpan.className === rel.cls && existingSpan.textContent === nextText) {
             return;
         }
@@ -806,10 +806,18 @@ if (!peersApp) {
     }
 
     function isValidIpv6(ip) {
-        if (!ip.includes(':') || ip.length > 39) return false;
-        const groups = ip.split(':');
-        if (groups.length < 2 || groups.length > 8) return false;
-        return /^[0-9a-fA-F:]+$/.test(ip);
+        const value = String(ip || '').trim();
+        if (!value.includes(':') || value.length > 39) return false;
+        // At most one '::' compression is permitted.
+        if ((value.match(/::/g) || []).length > 1) return false;
+
+        const compressed = value.includes('::');
+        const parts = compressed
+            ? value.split('::').flatMap((part) => (part ? part.split(':') : []))
+            : value.split(':');
+
+        if (!parts.every((part) => /^[0-9a-fA-F]{1,4}$/.test(part))) return false;
+        return compressed ? parts.length < 8 : parts.length === 8;
     }
 
     function isValidCidrEntry(entry) {
@@ -867,8 +875,9 @@ if (!peersApp) {
 
         const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
         const diffMins = Math.floor(diffSec / 60);
-        if (diffSec < CONNECTED_THRESHOLD_SEC) return { text: '', cls: '', active: true };
-        if (diffMins < 60) return { text: `${diffMins}m ago`, cls: 'text-muted', active: false };
+        const active = diffSec < CONNECTED_THRESHOLD_SEC;
+        if (diffSec < 60) return { text: 'Now', cls: 'text-success fw-semibold', active };
+        if (diffMins < 60) return { text: `${diffMins}m ago`, cls: 'text-muted', active };
         if (diffMins < 1440) return { text: `${Math.floor(diffMins / 60)}h ago`, cls: 'text-muted', active: false };
         return { text: `${Math.floor(diffMins / 1440)}d ago`, cls: 'text-muted', active: false };
     }
@@ -1240,6 +1249,10 @@ if (!peersApp) {
     }
 
     async function showQR(peerId) {
+        if (!canManagePeers) {
+            wbAlert('Only administrators can view peer QR codes', 'warning');
+            return;
+        }
         if (!qrModal) return;
         const loading = document.getElementById('qr-loading');
         const image = document.getElementById('qr-image');
@@ -1253,7 +1266,13 @@ if (!peersApp) {
         loading.classList.remove('d-none');
         qrModal.show();
 
-        const qrTimeoutId = setTimeout(() => state.qrAbortController?.abort(), QR_FETCH_TIMEOUT_MS);
+        // Distinguish a timeout abort (show a deterministic error) from a
+        // supersede/close abort (silent), so the modal never sticks on the spinner.
+        let qrTimedOut = false;
+        const qrTimeoutId = setTimeout(() => {
+            qrTimedOut = true;
+            state.qrAbortController?.abort();
+        }, QR_FETCH_TIMEOUT_MS);
         try {
             const response = await fetch(`/api/wireguard/peers/${peerId}/qrcode`, {
                 signal: state.qrAbortController.signal,
@@ -1282,15 +1301,24 @@ if (!peersApp) {
             loading.classList.add('d-none');
             image.classList.remove('d-none');
         } catch (error) {
-            if (error?.name === 'AbortError') return;
+            if (error?.name === 'AbortError' && !qrTimedOut) return;
             qrModal.hide();
-            wbAlert('Failed to generate QR code: ' + safeErrorMessage(error), 'danger');
+            wbAlert(
+                qrTimedOut
+                    ? 'Failed to generate QR code: request timed out'
+                    : 'Failed to generate QR code: ' + safeErrorMessage(error),
+                'danger',
+            );
         } finally {
             clearTimeout(qrTimeoutId);
         }
     }
 
     async function downloadConfig(peerId) {
+        if (!canManagePeers) {
+            wbAlert('Only administrators can download peer configs', 'warning');
+            return;
+        }
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), DOWNLOAD_FETCH_TIMEOUT_MS);
         try {

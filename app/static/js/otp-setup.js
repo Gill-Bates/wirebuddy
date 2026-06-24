@@ -7,7 +7,6 @@
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
     const username = document.body.dataset.username || '';
     const OTP_LENGTH = 6;
-    let recoveryCodes = [];
     let recoveryDownloadToken = '';
     let submitting = false;
     let recoveryZipDownloaded = false;
@@ -69,10 +68,18 @@
     }
 
     function clearAllSensitiveData() {
-        recoveryCodes = [];
         recoveryDownloadToken = '';
         document.getElementById('recovery-codes').textContent = '';
         clearSensitiveData();
+    }
+
+    function extractSecretFromProvisioningUri(value) {
+        try {
+            const parsed = new URL(String(value || ''));
+            return parsed.searchParams.get('secret') || '';
+        } catch {
+            return '';
+        }
     }
 
     async function loadSetup() {
@@ -82,7 +89,7 @@
                 throw new Error('Invalid QR code image received');
             }
             document.getElementById('otp-qr-image').src = data.qr_code_data_url;
-            document.getElementById('otp-secret').value = data.secret;
+            document.getElementById('otp-secret').value = extractSecretFromProvisioningUri(data.provisioning_uri);
             hideElement(document.getElementById('qr-loading'));
             showElement(document.getElementById('otp-qr-image'));
             document.querySelector('.otp-digit[data-index="0"]').focus();
@@ -153,15 +160,17 @@
 
         try {
             const data = await api('POST', '/api/me/otp/confirm', { code });
-            recoveryCodes = data.recovery_codes;
             recoveryDownloadToken = String(data.recovery_download_token || '').trim();
+            if (!recoveryDownloadToken) {
+                throw new Error('Recovery download token missing');
+            }
 
             // Clear sensitive QR/secret data before showing recovery codes
             clearSensitiveData();
 
             hideElement(document.getElementById('step-qr'));
             showElement(document.getElementById('step-recovery'));
-            document.getElementById('recovery-codes').textContent = recoveryCodes.join('\n');
+            document.getElementById('recovery-codes').textContent = 'Recovery codes are ready. Download the ZIP now; it can only be downloaded once.';
             recoveryZipDownloaded = false;
             document.getElementById('continue-btn').disabled = true;
             document.getElementById('download-codes-btn').disabled = false;
@@ -265,7 +274,6 @@
             return;
         }
         // Clear sensitive data before navigation
-        recoveryCodes = [];
         recoveryDownloadToken = '';
         document.getElementById('recovery-codes').textContent = '';
         window.location.href = '/ui/dashboard';
@@ -279,4 +287,3 @@
     initOtpDigits();
     loadSetup();
 })();
-

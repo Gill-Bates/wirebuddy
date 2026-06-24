@@ -2,6 +2,9 @@
 .git/
 .github/
 
+# Runtime tool state
+.omx/
+
 # Python
 .venv/
 venv/
@@ -45,6 +48,7 @@ data/
 *.md
 !CHANGELOG.md
 docs/
+site/
 tools/
 
 # Build artifacts
