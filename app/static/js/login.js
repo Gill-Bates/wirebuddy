@@ -211,9 +211,10 @@
                 return;
             }
 
-            const nextUrl = auth?.otp_setup_pending ? '/ui/otp-setup'
+            const nextUrl = auth?.must_change_password ? '/ui/change-password'
+                : auth?.otp_setup_pending ? '/ui/otp-setup'
                 : auth?.passkey_setup_pending ? '/ui/passkey-setup'
-                    : '/ui/dashboard';
+                : '/ui/dashboard';
             shouldResetBusy = false;
             window.location.assign(nextUrl);
 

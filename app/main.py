@@ -54,11 +54,10 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .utils.config import load_config, WG_CONFIG_PATH, Config
@@ -82,7 +81,6 @@ from .api import nodes as nodes_api
 from .api import nodes_sync as nodes_sync_api
 from .db import tsdb
 from .dns import unbound
-from .dns import ingestion as dns_ingestion
 from .dns.unbound_constants import atomic_write_text
 from .node.events import NodeEventBus
 from .node.notifier import configure_event_bus
@@ -116,6 +114,7 @@ class LifespanContext:
 	unbound_started_by_app: bool = False
 	scheduler: Scheduler | None = None
 	dns_task: asyncio.Task[None] | None = None
+	deferred_startup_task: asyncio.Task[None] | None = None
 
 
 # Strict validation for interface names (prevents injection)
@@ -138,6 +137,18 @@ _WG_STARTUP_CONCURRENCY = 4  # Start up to 4 interfaces in parallel
 _TSDB_SAMPLE_INTERVAL_SECONDS = 30.0
 _BLOCKLIST_UPDATE_INTERVAL_SECONDS = 86400.0
 _TSDB_MAINTENANCE_INTERVAL_SECONDS = 21600
+_BOOTSTRAP_GATE_ALLOWED_EXACT_PATHS = frozenset({
+	"/",
+	"/health",
+	"/ready",
+	"/login",
+	"/api/login",
+	"/api/logout",
+	"/api/system/status",
+	"/api/passkeys/available",
+	"/api/users/me/complete-required-change",
+})
+_BOOTSTRAP_GATE_ALLOWED_PREFIXES = ("/static/",)
 _GEOIP_UPDATE_INTERVAL_SECONDS = 604800
 _SQLITE_MAINTENANCE_INTERVAL_SECONDS = 21600
 _SQLITE_INTEGRITY_INTERVAL_SECONDS = 604800
@@ -296,12 +307,26 @@ async def _verify_host_network_mode() -> None:
 		raise StartupFatalError("Cannot verify Docker network mode") from exc
 
 
-async def _cleanup_stale_interfaces() -> list[str]:
-	"""Remove WireGuard interfaces that are active in kernel but have no config file.
+def _load_managed_interface_names_sync(db_path: Path) -> set[str]:
+	"""Return the set of WireGuard interface names known to the WireBuddy DB."""
+	def _load(conn) -> set[str]:
+		return {
+			str(iface["name"])
+			for iface in list_interfaces(conn)
+			if _IFACE_NAME_RE.match(str(iface["name"]))
+		}
+	return _with_conn(db_path, _load)
+
+
+async def _cleanup_stale_interfaces(ctx: LifespanContext) -> list[str]:
+	"""Remove WireBuddy-managed WireGuard interfaces that are active in kernel but
+	have no config file.
 
 	This handles the case where the data directory was deleted but interfaces
-	remain active (common in Docker host network mode). Returns list of removed
-	interface names.
+	remain active (common in Docker host network mode). Deletion is restricted to
+	interfaces that are present in the WireBuddy database, so foreign WireGuard
+	interfaces sharing the host (host network mode) are never removed. Returns the
+	list of removed interface names.
 	"""
 	removed: list[str] = []
 	config_path = WG_CONFIG_PATH
@@ -313,6 +338,14 @@ async def _cleanup_stale_interfaces() -> list[str]:
 		return removed
 
 	try:
+		# Only ever touch interfaces this application manages.
+		managed_names = await asyncio.to_thread(
+			_load_managed_interface_names_sync,
+			ctx.cfg.db_path,
+		)
+		if not managed_names:
+			return removed
+
 		# Get list of active WireGuard interfaces from kernel
 		res = await run_command("wg", "show", "interfaces", timeout=5.0)
 		if res.returncode != 0 or not res.stdout:
@@ -326,6 +359,11 @@ async def _cleanup_stale_interfaces() -> list[str]:
 			# Validate interface name
 			if not _IFACE_NAME_RE.match(iface_name):
 				_log.warning("Skipping stale interface with invalid name: %r", iface_name)
+				continue
+
+			# Never delete interfaces that are not managed by WireBuddy.
+			if iface_name not in managed_names:
+				_log.debug("Skipping unmanaged WireGuard interface: %s", iface_name)
 				continue
 
 			# Check if config file exists
@@ -527,15 +565,16 @@ def _get_addr_field(iface: object, key: str) -> str | None:
 	return getattr(iface, key, None)
 
 
-def _bootstrap_sync(cfg: Config) -> tuple[list[str], bool]:
+def _bootstrap_sync(cfg: Config) -> tuple[list[str], bool, bool]:
 	"""Run startup DB/bootstrap work synchronously (for asyncio.to_thread).
 	
 	Returns:
-		Tuple of (interfaces_to_start, key_mismatch).
+		Tuple of (interfaces_to_start, key_mismatch, bootstrap_admin_created).
 	"""
 	conn = connect(cfg.db_path)
 	interfaces_to_start: list[str] = []
 	key_mismatch = False
+	bootstrap_admin_created = False
 	try:
 		init_schema(conn)
 
@@ -547,14 +586,14 @@ def _bootstrap_sync(cfg: Config) -> tuple[list[str], bool]:
 				"Please set the correct WIREBUDDY_SECRET_KEY environment variable."
 			)
 			# CRITICAL: Do not continue with wrong key — prevents data corruption
-			return interfaces_to_start, key_mismatch
+			return interfaces_to_start, key_mismatch, bootstrap_admin_created
 
 		# Insert default settings AFTER key validation (to avoid validation token conflicts)
 		insert_default_settings(conn)
 
 		migration.run_pending_migrations(conn)
 
-		ensure_default_admin(conn)
+		bootstrap_admin_created = ensure_default_admin(conn)
 
 		recovered = recover_missing_global_settings(
 			conn,
@@ -598,7 +637,7 @@ def _bootstrap_sync(cfg: Config) -> tuple[list[str], bool]:
 	finally:
 		close_connection(conn)
 
-	return interfaces_to_start, key_mismatch
+	return interfaces_to_start, key_mismatch, bootstrap_admin_created
 
 
 def _load_dns_startup_data_sync(db_path: Path) -> dict[str, object]:
@@ -874,6 +913,16 @@ def _sqlite_shutdown_sync(db_path: Path) -> tuple[dict[str, int | str | None], i
 	return checkpoint, closed_connections
 
 
+class _StaticFileAccessFilter(logging.Filter):
+	"""Downgrade uvicorn access-log records for /static/ paths to DEBUG."""
+
+	def filter(self, record: logging.LogRecord) -> bool:
+		if "/static/" in record.getMessage():
+			record.levelno = logging.DEBUG
+			record.levelname = "DEBUG"
+		return True
+
+
 def _setup_logging(log_level: str) -> None:
 	"""Configure unified logging for the entire application."""
 	level_name = str(log_level or "INFO").strip().upper()
@@ -914,6 +963,8 @@ def _setup_logging(log_level: str) -> None:
 		logger.handlers.clear()
 		logger.setLevel(level)
 		logger.propagate = True
+
+	logging.getLogger("uvicorn.access").addFilter(_StaticFileAccessFilter())
 
 	# Quiet down noisy third-party libraries
 	for name in ("aiosqlite", "httpcore", "httpx", "hpack", "watchfiles", "python_multipart", "python_multipart.multipart"):
@@ -1018,9 +1069,11 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 
 async def _phase_bootstrap(ctx: LifespanContext) -> None:
 	cfg, app = ctx.cfg, ctx.app
-	interfaces_to_start, key_mismatch = await asyncio.to_thread(_bootstrap_sync, cfg)
+	interfaces_to_start, key_mismatch, bootstrap_admin_created = await asyncio.to_thread(_bootstrap_sync, cfg)
 	ctx.interfaces_to_start = interfaces_to_start
 	app.state.key_mismatch = key_mismatch
+	app.state.bootstrap_gate_active = bootstrap_admin_created
+	app.state.bootstrap_gate_completed = not bootstrap_admin_created
 	if key_mismatch:
 		_log.critical("Aborting startup: WIREBUDDY_SECRET_KEY does not match database encryption key")
 		# Clean exit via StartupFatalError to allow cleanup/logging
@@ -1042,6 +1095,27 @@ async def _phase_bootstrap(ctx: LifespanContext) -> None:
 	from .db import tsdb
 	await asyncio.to_thread(tsdb.init_tsdb, cfg.tsdb_dir)
 	_log.info("GeoIP init scheduled in background (startup is non-blocking)")
+
+
+async def _continue_operational_startup(ctx: LifespanContext) -> None:
+	"""Run operational startup phases after bootstrap prerequisites are satisfied."""
+	await _phase_dns_config(ctx)
+	await _phase_wireguard_start(ctx)
+	await _phase_dns_start(ctx)
+	await _phase_scheduler(ctx)
+	ctx.dns_ingestion_expected = unbound.is_unbound_installed()
+	ctx.app.state.dns_ingestion_expected = ctx.dns_ingestion_expected
+	if ctx.dns_ingestion_expected:
+		dns_task = asyncio.create_task(_phase_dns_ingestion(ctx))
+		ctx.dns_task = dns_task
+		ctx.app.state.dns_task = dns_task
+	else:
+		ctx.dns_task = None
+		ctx.app.state.dns_task = None
+	ctx.app.state.started_interfaces = ctx.started_interfaces
+	ctx.app.state.bootstrap_gate_active = False
+	ctx.app.state.bootstrap_gate_completed = True
+	_log.info("WireBuddy operational startup complete (pid=%d)", os.getpid())
 
 async def _phase_dns_config(ctx: LifespanContext) -> None:
 	from .dns import unbound
@@ -1102,7 +1176,7 @@ async def _phase_dns_config(ctx: LifespanContext) -> None:
 		_log.exception("DNS config failed")
 
 async def _phase_wireguard_start(ctx: LifespanContext) -> None:
-	removed_stale = await _cleanup_stale_interfaces()
+	removed_stale = await _cleanup_stale_interfaces(ctx)
 	if removed_stale:
 		_log.info("Cleaned up %d stale interface(s): %s", len(removed_stale), removed_stale)
 	if not ctx.interfaces_to_start:
@@ -1251,26 +1325,60 @@ async def _lifespan(app: FastAPI):
 	)
 	try:
 		await _phase_bootstrap(ctx)
-		await _phase_dns_config(ctx)
-		await _phase_wireguard_start(ctx)
-		await _phase_dns_start(ctx)
-		await _phase_scheduler(ctx)
-		ctx.dns_ingestion_expected = unbound.is_unbound_installed()
-		app.state.dns_ingestion_expected = ctx.dns_ingestion_expected
-		# Create DNS ingestion task with defensive handling only when Unbound support exists.
-		if ctx.dns_ingestion_expected:
-			dns_task = asyncio.create_task(_phase_dns_ingestion(ctx))
-			ctx.dns_task = dns_task
-			app.state.dns_task = dns_task
-		else:
+		startup_lock = asyncio.Lock()
+
+		async def _release_bootstrap_gate() -> None:
+			async with startup_lock:
+				if not getattr(app.state, "bootstrap_gate_active", False):
+					return
+				_log.warning("BOOTSTRAP_GATE released: admin password changed; resuming startup.")
+				try:
+					await _continue_operational_startup(ctx)
+				except Exception:
+					_log.exception("BOOTSTRAP_GATE resume failed")
+					raise
+
+		def _release_bootstrap_gate_threadsafe() -> None:
+			if not getattr(app.state, "bootstrap_gate_active", False):
+				return
+			if ctx.deferred_startup_task and not ctx.deferred_startup_task.done():
+				return
+			def _schedule() -> None:
+				if ctx.deferred_startup_task and not ctx.deferred_startup_task.done():
+					return
+				ctx.deferred_startup_task = asyncio.create_task(_release_bootstrap_gate())
+				app.state.deferred_startup_task = ctx.deferred_startup_task
+				def _record_resume_result(task: asyncio.Task[None]) -> None:
+					try:
+						task.result()
+					except asyncio.CancelledError:
+						return
+					except Exception as exc:
+						app.state.bootstrap_gate_resume_error = str(exc)
+				ctx.deferred_startup_task.add_done_callback(_record_resume_result)
+			loop.call_soon_threadsafe(_schedule)
+
+		app.state.bootstrap_gate_release = _release_bootstrap_gate_threadsafe
+
+		if getattr(app.state, "bootstrap_gate_active", False):
 			ctx.dns_task = None
 			app.state.dns_task = None
-		app.state.started_interfaces = ctx.started_interfaces
-		_log.info("WireBuddy started successfully (pid=%d)", os.getpid())
+			app.state.started_interfaces = ctx.started_interfaces
+			_log.warning("WireBuddy HTTP bootstrap gate is open for login/password change only.")
+		else:
+			await _continue_operational_startup(ctx)
+			_log.info("WireBuddy started successfully (pid=%d)", os.getpid())
 		yield
 	finally:
+		app.state.bootstrap_gate_release = None
 		shutdown_signal_event.set()
 		_restore_signal_handlers(previous_signal_handlers)
+		if ctx.deferred_startup_task and not ctx.deferred_startup_task.done():
+			ctx.deferred_startup_task.cancel()
+			try:
+				await asyncio.wait_for(ctx.deferred_startup_task, timeout=5.0)
+			except (asyncio.CancelledError, asyncio.TimeoutError):
+				pass
 		try:
 			async with asyncio.timeout(_APP_SHUTDOWN_TIMEOUT_SECONDS):
 				await _do_shutdown(ctx)
@@ -1314,6 +1422,11 @@ def create_app() -> FastAPI:
 	app.state.dns_config_error = None
 	app.state.dns_ingestion_expected = False
 	app.state.unbound_started_by_app = False
+	app.state.bootstrap_gate_active = False
+	app.state.bootstrap_gate_completed = True
+	app.state.bootstrap_gate_release = None
+	app.state.bootstrap_gate_resume_error = None
+	app.state.deferred_startup_task = None
 	default_csp = (
 		"default-src 'self'; "
 		"script-src 'self'; "
@@ -1341,6 +1454,32 @@ def create_app() -> FastAPI:
 
 	from .middleware.csrf import CSRFMiddleware
 	app.add_middleware(CSRFMiddleware)
+
+	@app.middleware("http")
+	async def bootstrap_gate(request: Request, call_next):
+		if not getattr(request.app.state, "bootstrap_gate_active", False):
+			return await call_next(request)
+
+		path = request.url.path
+		allowed = (
+			path in _BOOTSTRAP_GATE_ALLOWED_EXACT_PATHS
+			or path == "/ui/change-password"
+			or any(path.startswith(prefix) for prefix in _BOOTSTRAP_GATE_ALLOWED_PREFIXES)
+		)
+		if allowed:
+			return await call_next(request)
+
+		if path.startswith("/ui/"):
+			return RedirectResponse(url="/login", status_code=302)
+
+		return JSONResponse(
+			status_code=423,
+			content={
+				"detail": "Bootstrap is waiting for the admin password change.",
+				"bootstrap_gate": True,
+			},
+			headers={"Retry-After": "30"},
+		)
 
 	@app.middleware("http")
 	async def add_security_headers(request: Request, call_next):
@@ -1391,12 +1530,14 @@ def create_app() -> FastAPI:
 		return conn.execute("SELECT 1").fetchone() is not None
 
 	@app.get("/ready", include_in_schema=False)
-	@limiter.limit("30/minute")
 	async def readiness(request: Request) -> JSONResponse:
 		"""Readiness probe that verifies database connectivity.
-		
+
 		Use this for Kubernetes/Docker readiness probes instead of /health.
 		Returns 503 if any critical component is unavailable.
+
+		Intentionally unrate-limited: orchestrator/load-balancer probes may poll
+		this frequently and must not receive 429 responses.
 		"""
 		cfg: Config = app.state.cfg
 		errors = []
@@ -1415,6 +1556,20 @@ def create_app() -> FastAPI:
 		# Check for key mismatch (critical security error)
 		if getattr(app.state, "key_mismatch", False):
 			errors.append("encryption key mismatch")
+
+		if getattr(app.state, "bootstrap_gate_active", False):
+			if errors:
+				return JSONResponse(
+					status_code=503,
+					content={"status": "unavailable", "errors": errors, "version": VERSION},
+				)
+			return JSONResponse(
+				content={
+					"status": "bootstrap_waiting",
+					"detail": "Waiting for admin login and password change.",
+					"version": VERSION,
+				}
+			)
 
 		dns_config_error = getattr(app.state, "dns_config_error", None)
 		dns_service_enabled = bool(getattr(app.state, "dns_service_enabled", False))
@@ -1510,7 +1665,13 @@ def _register_swagger_routes(app: FastAPI) -> None:
 			"default-src 'none'; "
 			f"script-src https://cdn.jsdelivr.net 'nonce-{nonce}'; "
 			f"style-src https://cdn.jsdelivr.net 'nonce-{nonce}'; "
-			"connect-src 'self'"
+			"img-src 'self' data:; "
+			"font-src 'self' data:; "
+			"connect-src 'self'; "
+			"object-src 'none'; "
+			"base-uri 'none'; "
+			"frame-ancestors 'none'; "
+			"form-action 'self'"
 		)
 		return response
 

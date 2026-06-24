@@ -63,7 +63,7 @@ host, leave `WIREBUDDY_TRUST_PROXY_HEADERS=1` enabled so HTTPS origin checks use
 the forwarded scheme correctly. If the proxy connects from a different IP or
 container network, also set `FORWARDED_ALLOW_IPS` to that proxy IP or CIDR.
 
-On first boot of a new database, set `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD` so WireBuddy can create the bootstrap `admin` user safely.
+On first boot of a new database, WireBuddy automatically creates a bootstrap `admin` user with a randomly generated temporary password. The password is printed to the container log — check `docker logs wirebuddy` after the first start to retrieve it. You will be prompted to set a permanent password on the first login.
 
 ---
 
@@ -87,8 +87,6 @@ services:
       LOG_LEVEL: INFO
       TZ: Etc/UTC
       WIREBUDDY_SECRET_KEY: ""  # Generate with: head -c 32 /dev/urandom | base64
-      # Required on first boot of a new database to create the bootstrap admin user
-      WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD: "change-me-now"
       WIREBUDDY_TRUST_PROXY_HEADERS: "1"
       # If your reverse proxy is not on 127.0.0.1, set its IP or CIDR here.
       # FORWARDED_ALLOW_IPS: "127.0.0.1,172.18.0.0/16"
@@ -117,7 +115,6 @@ services:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `WIREBUDDY_SECRET_KEY` | **Yes** | — | Encryption key for database secrets. Generate with: `head -c 32 /dev/urandom \| base64` |
-| `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD` | Required on first boot of a new DB | — | Initial password for the bootstrap `admin` user when the database is created |
 | `LOG_LEVEL` | No | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
 | `WIREBUDDY_PORT` | No | `8000` | HTTP port for the web UI |
 | `WIREBUDDY_TRUST_PROXY_HEADERS` | No | `1` in Docker entrypoint | Trust `X-Forwarded-*` headers from `FORWARDED_ALLOW_IPS` so CSRF and origin checks work behind HTTPS reverse proxies |

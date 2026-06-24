@@ -511,6 +511,26 @@ def login_page(
 	)
 
 
+@router.get("/ui/change-password", response_class=Response)
+@limiter.limit(RATE_LIMIT_DEFAULT)
+def change_password_page(
+	request: Request,
+	user: sqlite3.Row = Depends(require_user_or_redirect),
+) -> Response:
+	"""Forced password change page shown after first-boot bootstrap login.
+
+	Redirects to the dashboard if the user does not have ``must_change_password``
+	set, so the page cannot be accessed unnecessarily.
+	"""
+	if not coerce_db_bool(user["must_change_password"]):
+		return RedirectResponse(url="/ui/dashboard", status_code=303)
+	return templates.TemplateResponse(
+		request,
+		name="change_password.html",
+		context=_base_context(request, user),
+	)
+
+
 @router.get("/ui/otp-setup", response_class=Response)
 @limiter.limit(RATE_LIMIT_DEFAULT)
 def otp_setup_page(

@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import logging
-import os
+import secrets
 import sqlite3
 
 from ..utils.crypto import hash_password
@@ -47,8 +47,26 @@ _PRAGMA_TABLE_INFO = {
 	"settings": "PRAGMA table_info(settings)",
 	"users": "PRAGMA table_info(users)",
 }
-_BOOTSTRAP_ADMIN_PASSWORD_ENV = "WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD"
 _BOOTSTRAP_ADMIN_USERNAME = "admin"
+_PRONOUNCEABLE_VOWELS = "aeiou"
+_PRONOUNCEABLE_CONSONANTS = "bcdfghjklmnpqrstvwxyz"
+
+
+def _generate_pronounceable_password() -> str:
+	"""Generate an 8-character pronounceable password in 'Hegupu60' style.
+
+	Pattern: 3 consonant-vowel syllables with capitalised first letter, plus
+	a two-digit number suffix. Uses ``secrets.choice`` for cryptographic
+	randomness.
+	"""
+	syllables = [
+		secrets.choice(_PRONOUNCEABLE_CONSONANTS) + secrets.choice(_PRONOUNCEABLE_VOWELS)
+		for _ in range(3)
+	]
+	word = "".join(syllables)
+	word = word[0].upper() + word[1:]
+	number = str(secrets.randbelow(90) + 10)
+	return word + number
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -97,14 +115,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				username TEXT NOT NULL UNIQUE,
 				password_hash TEXT NOT NULL,
-				is_admin INTEGER NOT NULL DEFAULT 0,
-				is_active INTEGER NOT NULL DEFAULT 1,
+				is_admin INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
+				is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+				must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1)),
 				otp_secret TEXT,
-				otp_enabled INTEGER NOT NULL DEFAULT 0,
+				otp_enabled INTEGER NOT NULL DEFAULT 0 CHECK (otp_enabled IN (0, 1)),
 				otp_recovery_codes TEXT,
-				auth_method TEXT DEFAULT 'password',
-				passkey_enabled INTEGER DEFAULT 0,
-				passkey_pending INTEGER DEFAULT 0,
+				auth_method TEXT NOT NULL DEFAULT 'password' CHECK (auth_method IN ('password', 'password_mfa', 'passkey')),
+				passkey_enabled INTEGER NOT NULL DEFAULT 0 CHECK (passkey_enabled IN (0, 1)),
+				passkey_pending INTEGER NOT NULL DEFAULT 0 CHECK (passkey_pending IN (0, 1)),
 				last_login_at timestamp,
 				last_login_ip TEXT,
 				created_at timestamp NOT NULL
@@ -438,6 +457,16 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 	if not conn.in_transaction:
 		raise RuntimeError("_run_migrations must run inside an active transaction")
 
+	users_columns = _get_columns(conn, "users")
+	_add_column_if_missing(
+		conn,
+		table="users",
+		column="must_change_password",
+		definition="INTEGER NOT NULL DEFAULT 0",
+		existing_columns=users_columns,
+		log_message="Migrating users table: adding must_change_password column",
+	)
+
 	existing_columns = _get_columns(conn, "peers")
 	if _add_column_if_missing(
 		conn,
@@ -553,8 +582,12 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 	conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_api_secret_hash ON nodes(api_secret_hash)")
 
 
-def ensure_default_admin(conn: sqlite3.Connection) -> None:
-	"""Create a default admin user if no users exist.
+def ensure_default_admin(conn: sqlite3.Connection) -> bool:
+	"""Create a default admin user on first boot when no users exist.
+
+	Generates a random pronounceable password, stores it hashed with
+	``must_change_password = 1``, and prints the plaintext password to the
+	log so the operator can sign in once and immediately change it.
 
 	Uses ``transaction(immediate=True)`` to safely serialise against
 	concurrent workers without standalone BEGIN/commit/rollback calls.
@@ -563,25 +596,25 @@ def ensure_default_admin(conn: sqlite3.Connection) -> None:
 		with transaction(conn, immediate=True):
 			(count,) = conn.execute("SELECT COUNT(*) FROM users").fetchone()
 			if count == 0:
-				configured_password = str(os.environ.get(_BOOTSTRAP_ADMIN_PASSWORD_ENV) or "").strip()
-				if not configured_password:
-					_log.critical(
-						"Refusing to create bootstrap admin user %r without %s being set.",
-						_BOOTSTRAP_ADMIN_USERNAME,
-						_BOOTSTRAP_ADMIN_PASSWORD_ENV,
-					)
-					return
+				password = _generate_pronounceable_password()
 				conn.execute(
 					"""
-					INSERT INTO users (username, password_hash, is_admin, is_active, created_at)
-					VALUES (?, ?, 1, 1, ?)
+					INSERT INTO users
+						(username, password_hash, is_admin, is_active, must_change_password, created_at)
+					VALUES (?, ?, 1, 1, 1, ?)
 					""",
-					(_BOOTSTRAP_ADMIN_USERNAME, hash_password(configured_password), utcnow()),
+					(_BOOTSTRAP_ADMIN_USERNAME, hash_password(password), utcnow()),
 				)
 				_log.warning(
-					"Created bootstrap admin user %r using password from %s. Change it immediately.",
+					"\n  ════════════════════════════════════════════\n"
+					"  Username : %s\n"
+					"  Password : %s\n"
+					"  Change this password on first login.\n"
+					"  ════════════════════════════════════════════",
 					_BOOTSTRAP_ADMIN_USERNAME,
-					_BOOTSTRAP_ADMIN_PASSWORD_ENV,
+					password,
 				)
+				return True
 	except sqlite3.IntegrityError:
 		_log.debug("Default admin insert skipped because a user already exists")
+	return False

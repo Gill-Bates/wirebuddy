@@ -46,7 +46,7 @@ _COMMON_PASSWORDS = {
 # bcrypt truncates at 72 bytes, so enforce this limit
 _PASSWORD_MAX_BYTES = 72
 # Minimum password length for adequate entropy
-_PASSWORD_MIN_LENGTH = 10
+_PASSWORD_MIN_LENGTH = 8
 
 
 def _normalize_username(v: str) -> str:
@@ -224,7 +224,7 @@ class UserCreate(BaseModel):
 	"""User creation payload."""
 	username: str = Field(..., min_length=3, max_length=64)
 	# Note: Field max_length=256 for input convenience, but bcrypt truncates at 72 bytes
-	password: str = Field(..., min_length=10, max_length=256)
+	password: str = Field(..., min_length=8, max_length=256)
 	is_admin: bool = False
 
 	@field_validator("username")
@@ -270,7 +270,7 @@ class UserPublic(BaseModel):
 class PasswordChangeRequest(BaseModel):
 	"""Self-service password change request payload."""
 	current_password: str = Field(..., min_length=1, max_length=256)
-	new_password: str = Field(..., min_length=10, max_length=256)
+	new_password: str = Field(..., min_length=8, max_length=256)
 
 	@field_validator("new_password")
 	@classmethod
@@ -287,7 +287,22 @@ class PasswordChangeRequest(BaseModel):
 
 class AdminPasswordResetRequest(BaseModel):
 	"""Admin-initiated password reset payload."""
-	new_password: str = Field(..., min_length=10, max_length=256)
+	new_password: str = Field(..., min_length=8, max_length=256)
+
+	@field_validator("new_password")
+	@classmethod
+	def validate_new_password(cls, v: str) -> str:
+		return _validate_password_strength(v)
+
+
+class RequiredPasswordChangeRequest(BaseModel):
+	"""Forced first-login password change payload.
+
+	Used only for the mandatory password change after a bootstrap or admin-reset
+	login. The active session authenticates the user, so the temporary password
+	is not re-entered; only the new password is required.
+	"""
+	new_password: str = Field(..., min_length=8, max_length=256)
 
 	@field_validator("new_password")
 	@classmethod

@@ -55,6 +55,16 @@
     document.getElementById('traffic-analysis-toggle')?.addEventListener('change', toggleTrafficAnalysis);
 
     // DNS Service Control
+    function setDnsBtn(btn, isDisabled) {
+        if (!btn) return;
+        btn.disabled = isDisabled;
+        if (isDisabled) {
+            btn.setAttribute('aria-disabled', 'true');
+        } else {
+            btn.removeAttribute('aria-disabled');
+        }
+    }
+
     async function loadDnsServiceStatus() {
         const startBtn = document.getElementById('btn-dns-start');
         const stopBtn = document.getElementById('btn-dns-stop');
@@ -76,32 +86,24 @@
             // DNS unavailable (Unbound not installed) - disable all DNS controls
             if (dnsUnavailable) {
                 if (startBtn) {
-                    startBtn.disabled = true;
+                    setDnsBtn(startBtn, true);
                     startBtn.title = 'Unbound not installed';
                 }
-                if (stopBtn) {
-                    stopBtn.disabled = true;
-                    stopBtn.title = 'Unbound not installed';
-                }
-                if (restartBtn) {
-                    restartBtn.disabled = true;
-                    restartBtn.title = 'Unbound not installed';
-                }
+                setDnsBtn(stopBtn, true);
+                if (stopBtn) stopBtn.title = 'Unbound not installed';
+                setDnsBtn(restartBtn, true);
+                if (restartBtn) restartBtn.title = 'Unbound not installed';
                 return;
             }
             // Start only available if not running and interfaces exist.
-            if (startBtn) {
-                startBtn.disabled = !isAdmin || isRunning || !hasInterfaces;
-            }
-            if (stopBtn) stopBtn.disabled = !isAdmin || !isRunning;
-            if (restartBtn) restartBtn.disabled = !isAdmin || !isRunning;
+            setDnsBtn(startBtn, !isAdmin || isRunning || !hasInterfaces);
+            setDnsBtn(stopBtn, !isAdmin || !isRunning);
+            setDnsBtn(restartBtn, !isAdmin || !isRunning);
         } catch (e) {
-            if (startBtn) {
-                startBtn.disabled = true;
-                startBtn.title = 'DNS status unavailable';
-            }
-            if (stopBtn) stopBtn.disabled = true;
-            if (restartBtn) restartBtn.disabled = true;
+            if (startBtn) startBtn.title = 'DNS status unavailable';
+            setDnsBtn(startBtn, true);
+            setDnsBtn(stopBtn, true);
+            setDnsBtn(restartBtn, true);
         }
     }
 

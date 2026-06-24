@@ -43,11 +43,11 @@ from ..db.sqlite_auth import (
 	refresh_auth_token,
 )
 from ..db.sqlite_users import (
+	confirm_user_otp,
 	decrypt_otp_secret,
 	get_user_by_username,
-	update_user_recovery_codes,
 	update_last_login,
-	confirm_user_otp,
+	update_user_recovery_codes_if_current,
 )
 from ..models.users import (
 	LoginRequest,
@@ -174,7 +174,7 @@ def _consume_mfa_challenge(token: str, username: str, client_ip: str) -> int | N
 	return user_id
 
 
-def _store_recovery_download(user_id: int, username: str, codes: list[str]) -> str:
+def store_recovery_download(user_id: int, username: str, codes: list[str]) -> str:
 	"""Store one-time recovery download payload and return a token.
 	
 	Raises HTTPException(503) if cache is full.
@@ -480,6 +480,9 @@ def _build_login_response_data(
 		"expires_at": expires_at,
 		"token_type": "Bearer",
 	}
+	if coerce_db_bool(user["must_change_password"]):
+		_log.info("LOGIN_MUST_CHANGE_PASSWORD ip=%s username=%s", client_ip, log_username)
+		data["must_change_password"] = True
 	if include_otp_pending and _is_otp_setup_pending(user):
 		_log.info("LOGIN_OTP_SETUP_PENDING ip=%s username=%s", client_ip, log_username)
 		data["otp_setup_pending"] = True
@@ -639,9 +642,16 @@ def verify_mfa(
 	used_recovery = False
 
 	if not otp_valid:
-		recovery_ok, updated_recovery_json = use_recovery_code(payload.code, user["otp_recovery_codes"])
+		previous_recovery_json = user["otp_recovery_codes"]
+		recovery_ok, updated_recovery_json = use_recovery_code(payload.code, previous_recovery_json)
 		if recovery_ok:
-			update_user_recovery_codes(conn, user["id"], updated_recovery_json)
+			if not update_user_recovery_codes_if_current(
+				conn,
+				user["id"],
+				previous_codes=previous_recovery_json,
+				new_codes=updated_recovery_json,
+			):
+				_record_failed_and_raise(conn, client_ip, log_username, payload.username, detail="Invalid MFA code")
 			used_recovery = True
 			_log.warning(
 				"LOGIN_MFA_RECOVERY_USED ip=%s username=%s",
@@ -732,14 +742,13 @@ def get_otp_setup_info(request: Request, user: sqlite3.Row = Depends(get_current
 		username=user["username"],
 	)
 
-	# Generate QR code data URL (provisioning URI already contains the secret)
+	# SECURITY: provisioning_uri contains the OTP secret and must be treated as
+	# secret. It is returned only to the authenticated user during pending setup.
 	img = qrcode.make(provisioning_uri)
 	buffer = io.BytesIO()
 	img.save(buffer, format="PNG")
 	qr_code_data_url = f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode('ascii')}"
 
-	# SECURITY: Do not return plaintext secret in JSON - it's encoded in the QR code
-	# and provisioning_uri if manual entry is needed
 	return ok_response(
 		data={
 			"provisioning_uri": provisioning_uri,
@@ -768,7 +777,7 @@ def confirm_my_otp_setup(
 		raise HTTPException(status_code=500, detail="Unable to enable OTP")
 
 	_log.info("USER_OTP_SELF_CONFIRMED user_id=%d username=%s", user["id"], user["username"])
-	recovery_download_token = _store_recovery_download(user["id"], user["username"], recovery_codes)
+	recovery_download_token = store_recovery_download(user["id"], user["username"], recovery_codes)
 	# SECURITY: Do not return plaintext recovery codes in JSON - they should only
 	# be accessed via the secure ZIP download endpoint to prevent logging/caching
 	return ok_response(

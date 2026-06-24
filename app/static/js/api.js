@@ -51,7 +51,21 @@ function getRequiredCsrfToken() {
 
 // Ensure specific session cleanup rather than nuking all sessionStorage
 function clearSessionData() {
-    sessionStorage.removeItem('wb_onboarding_shown');
+    // Clear the onboarding "shown this session" marker so it reappears after the
+    // next login. The key is versioned (wb_onboarding_shown_<version>), so remove
+    // any matching marker rather than a single hard-coded key.
+    try {
+        const keysToRemove = [];
+        for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i);
+            if (key && key.startsWith('wb_onboarding_shown')) {
+                keysToRemove.push(key);
+            }
+        }
+        keysToRemove.forEach((key) => sessionStorage.removeItem(key));
+    } catch (_err) {
+        // Restricted browser modes may disable storage entirely.
+    }
     // Add targeted removeItem() calls here in the future
 }
 

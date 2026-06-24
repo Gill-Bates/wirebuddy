@@ -1,3 +1,17 @@
+## [1.5.3] - 2026-06-24
+
+- ``New`` Bootstrap password is now auto-generated on first start and printed to the container log — the `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD` environment variable has been removed
+- ``New`` First login, and any admin-initiated password reset, now forces a mandatory password change before continuing
+- ``Fix`` Redesigned password change screen that reliably validates strength and submits
+- ``Fix`` Peer list "Last Seen" no longer flickers, and DNS service controls (Start/Restart/Stop) are no longer stuck greyed out
+- ``Fix`` Readiness probes (`/ready`) are no longer rate limited, and startup/access logs are much quieter
+- ``Security`` Hardened user accounts and OTP recovery codes: brute-force rate limits on user management, recovery codes only via a one-time secure download, and no password hashes or recovery codes in API responses
+- ``Security`` Optional stale-interface cleanup now only removes WireGuard interfaces managed by WireBuddy
+- ``Security`` Stricter Content-Security-Policy and updated dependencies (fastapi 0.138.0, nh3 0.3.6, pydantic-settings 2.14.2)
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.5.2] - 2026-06-16
 
 - ``New`` Backups now include your full configuration (interfaces, peers, users, settings); restoring a backup brings back a working setup instead of an empty first-run database
@@ -5,9 +19,6 @@
 - ``Fix`` Speed test scheduling and result recording fixed: nodes run at most one scheduled test per day and failed measurements are no longer stored as valid results
 - ``Fix`` Live progress (SSE) and per-IP rate limiting corrected for edge cases
 - ``Security`` CSRF referer validation hardened; login protection now also throttles repeated failed attempts per username across changing IP addresses
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.5.1] - 2026-05-29
 

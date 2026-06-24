@@ -104,10 +104,10 @@ docker compose up -d
     Navigate to `http://localhost:8000` and login with:
     
     - **Username:** `admin`
-    - **Password:** `admin`
+    - **Password:** check the server log — run `docker logs wirebuddy` and look for the generated bootstrap password
     
     !!! warning
-        Change the default password immediately after first login!
+        On first login WireBuddy redirects you to a mandatory password change screen; the temporary password is invalidated once you set a new one.
 
 [:material-rocket-launch: Full Installation Guide](getting-started/installation.md){ .md-button .md-button--primary }
 [:material-book-open-page-variant: Quick Start](getting-started/quick-start.md){ .md-button }
