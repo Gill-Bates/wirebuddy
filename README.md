@@ -26,13 +26,13 @@
 ## Screenshots
 
 <p align="center">
-  <img src=".github/img/screen_2.png" alt="Peers" width="100%" style="border-radius: 12px; margin-bottom: 16px;">
+  <img src=".github/img/screen_2.png" alt="Peers" width="80%" style="border-radius: 6px; margin-bottom: 16px;">
 </p>
 <p align="center">
-  <img src=".github/img/screen_3.png" alt="DNS Ad-Blocker" width="100%" style="border-radius: 12px; margin-bottom: 16px;">
+  <img src=".github/img/screen_3.png" alt="DNS Ad-Blocker" width="80%" style="border-radius: 6px; margin-bottom: 16px;">
 </p>
 <p align="center">
-  <img src=".github/img/screen_4.png" alt="Settings" width="100%" style="border-radius: 12px;">
+  <img src=".github/img/screen_4.png" alt="Settings" width="80%" style="border-radius: 6px;">
 </p>
 
 ---
