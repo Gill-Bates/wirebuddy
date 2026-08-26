@@ -68,6 +68,9 @@ RUN set -eux; \
         candidate="$(apt-cache policy "$package" | awk '/Candidate:/ { print $2 }')"; \
         test "$candidate" = "(none)"; \
     done; \
+    # Pull latest security patches (e.g. openssl) even though the base image
+    # tag+digest above is pinned for reproducibility.
+    apt-get upgrade -y; \
     apt-get install -y --no-install-recommends \
         bash \
         iptables \
@@ -99,7 +102,10 @@ ARG VCS_REF
 COPY --from=builder /wheels /wheels
 COPY requirements.txt .
 RUN pip install --no-cache-dir --no-compile --no-index --find-links=/wheels -r requirements.txt && \
-    rm -rf /wheels requirements.txt
+    rm -rf /wheels requirements.txt && \
+    # pip is a build-time tool, not needed to run the app; removing it also
+    # drops its vendored setuptools/msgpack copies from the shipped image.
+    pip uninstall -y pip
 
 # Copy only application code (relies on .dockerignore)
 COPY app ./app
