@@ -50,6 +50,7 @@ import os
 import random
 import re
 import signal
+import sqlite3
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -224,9 +225,13 @@ def _install_shutdown_signal_handlers(
 def _restore_signal_handlers(previous_handlers: list[tuple[int, object]]) -> None:
 	"""Restore signal handlers replaced by _install_shutdown_signal_handlers."""
 	for sig, previous_handler in previous_handlers:
+		if previous_handler is None:
+			# getsignal() returned None: no Python-level handler was installed
+			# before ours, so there is nothing to restore.
+			continue
 		try:
-			signal.signal(sig, previous_handler)
-		except (ValueError, RuntimeError):
+			signal.signal(sig, previous_handler)  # type: ignore[arg-type]
+		except (ValueError, RuntimeError, TypeError):
 			continue
 
 
@@ -292,7 +297,13 @@ async def _verify_host_network_mode() -> None:
 				raise StartupFatalError("WireBuddy requires Docker host networking mode")
 
 		if not saw_default_route:
-			raise StartupFatalError("Cannot verify Docker network mode: no default route found")
+			# No default route is not evidence of bridge mode (the actual
+			# condition this check guards against, detected above); do not
+			# fail closed on it.
+			_log.warning(
+				"Could not verify Docker network mode: no default route found. "
+				"Ensure 'network_mode: host' is set if this container should reach the LAN."
+			)
 
 	except StartupFatalError:
 		raise
@@ -482,7 +493,6 @@ class _ColoredFormatter(_HumanizedFormatter):
 
 def _extract_gateways(interfaces: list) -> tuple[list[str], list[str]]:
 	"""Extract unique IPv4 and IPv6 gateways from a list of interfaces."""
-	from .dns import unbound
 	listen_addrs_ipv4: list[str] = []
 	for iface in interfaces:
 		addr4 = _get_addr_field(iface, "address")
@@ -725,12 +735,12 @@ def _with_conn(db_path: Path, fn: Callable, *args, **kwargs):
 
 
 def _with_conn_or(db_path: Path, fn: Callable, *args, default=None, **kwargs):
-	"""Like _with_conn but returns default for non-database runtime failures.
-	
-	``sqlite3.DatabaseError`` is re-raised so database corruption or persistent
-	locking problems do not get silently masked in watchdog-style checks.
+	"""Like _with_conn but returns default for transient OS/runtime failures.
+
+	``sqlite3.DatabaseError`` and ``ValueError`` are re-raised so database
+	corruption, persistent locking problems and programming errors do not get
+	silently masked in watchdog-style checks.
 	"""
-	import sqlite3
 	try:
 		return _with_conn(db_path, fn, *args, **kwargs)
 	except sqlite3.DatabaseError:
@@ -857,8 +867,6 @@ async def _reload_unbound_for_adblocker_async(db_path: Path) -> None:
 	All DB access is done synchronously via to_thread to avoid
 	sharing a connection across await boundaries.
 	"""
-	from .dns import unbound as _unbound
-	
 	try:
 		# Read all config values in one sync call
 		def _read_unbound_config_sync() -> tuple:
@@ -879,7 +887,7 @@ async def _reload_unbound_for_adblocker_async(db_path: Path) -> None:
 
 		# Offload sync file I/O to thread
 		await asyncio.to_thread(
-			_unbound.write_config,
+			unbound.write_config,
 			enable_logging=enable_logging,
 			enable_blocklist=enable_blocklist,
 			upstream_dns=upstream_dns,
@@ -887,7 +895,7 @@ async def _reload_unbound_for_adblocker_async(db_path: Path) -> None:
 			listen_addrs_ipv4=ipv4_gateways,
 			listen_addrs_ipv6=ipv6_gateways if ipv6_gateways else None,
 		)
-		await _unbound.reload_config()
+		await unbound.reload_config()
 	except Exception:
 		_log.warning("ADBLOCKER_TIMER failed to reload Unbound", exc_info=True)
 
@@ -999,7 +1007,6 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 
 	# 1b. Cancel DNS API background tasks (rebuild worker, etc.)
 	try:
-		from .api import dns as dns_api
 		await dns_api.shutdown_dns_tasks()
 	except Exception as exc:
 		_log.warning("DNS API tasks shutdown failed: %s", exc)
@@ -1009,19 +1016,24 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 		await ctx.scheduler.stop_graceful(timeout=5.0)
 
 	# 3. SQLite WAL checkpoint + close all connections before longer teardown.
-	checkpoint, closed_connections = await asyncio.to_thread(
-		_sqlite_shutdown_sync,
-		ctx.cfg.db_path,
-	)
-	_log.info(
-		"SQLITE_SHUTDOWN connections_closed=%d checkpoint_mode=%s busy=%s log_frames=%s checkpointed_frames=%s attempts=%s",
-		closed_connections,
-		checkpoint.get("mode"),
-		checkpoint.get("busy"),
-		checkpoint.get("log_frames"),
-		checkpoint.get("checkpointed_frames"),
-		checkpoint.get("attempts"),
-	)
+	# Isolated in try/except like the other steps: a failure here must not skip
+	# Unbound/WireGuard teardown and TSDB fsync below.
+	try:
+		checkpoint, closed_connections = await asyncio.to_thread(
+			_sqlite_shutdown_sync,
+			ctx.cfg.db_path,
+		)
+		_log.info(
+			"SQLITE_SHUTDOWN connections_closed=%d checkpoint_mode=%s busy=%s log_frames=%s checkpointed_frames=%s attempts=%s",
+			closed_connections,
+			checkpoint.get("mode"),
+			checkpoint.get("busy"),
+			checkpoint.get("log_frames"),
+			checkpoint.get("checkpointed_frames"),
+			checkpoint.get("attempts"),
+		)
+	except Exception as exc:
+		_log.error("SQLITE_SHUTDOWN failed: %s", exc)
 
 	# 4. Stop Unbound DNS
 	if ctx.unbound_started_by_app and unbound.is_unbound_installed():
@@ -1035,9 +1047,11 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 		except Exception as exc:
 			_log.warning("Unbound shutdown failed: %s", exc)
 
-	# 5. Bring down WireGuard interfaces we started
+	# 5. Bring down WireGuard interfaces we started. Run concurrently so the
+	# shutdown timeout budget doesn't grow linearly with interface count; the
+	# WG operation lock still serializes the actual wg-quick invocations.
 	if ctx.started_interfaces:
-		for iface_name in ctx.started_interfaces:
+		async def _stop_one(iface_name: str) -> None:
 			try:
 				async with _get_wg_operation_lock():
 					res = await run_command("wg-quick", "down", iface_name, timeout=_WG_DOWN_TIMEOUT_SECONDS)
@@ -1049,6 +1063,8 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 				_log.warning("Timeout while stopping interface %s", iface_name)
 			except Exception as e:
 				_log.warning("Failed to stop interface %s: %s", iface_name, e)
+
+		await asyncio.gather(*[_stop_one(name) for name in ctx.started_interfaces])
 
 	# 6. TSDB fsync
 	try:
@@ -1118,7 +1134,6 @@ async def _continue_operational_startup(ctx: LifespanContext) -> None:
 	_log.info("WireBuddy operational startup complete (pid=%d)", os.getpid())
 
 async def _phase_dns_config(ctx: LifespanContext) -> None:
-	from .dns import unbound
 	ctx.dns_config_ready = False
 	ctx.dns_config_error = None
 	ctx.app.state.dns_config_ready = False
@@ -1210,7 +1225,6 @@ async def _phase_wireguard_start(ctx: LifespanContext) -> None:
 	ctx.started_interfaces = [r for r in results if r]
 
 async def _phase_dns_start(ctx: LifespanContext) -> None:
-	from .dns import unbound
 	if unbound.is_unbound_installed() and ctx.dns_config_ready:
 		try:
 			unbound_running = await unbound.is_running()
@@ -1253,7 +1267,6 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 	The loop waits for Unbound readiness, tails the query log into the DNS data
 	store, and restarts with bounded exponential backoff after failures.
 	"""
-	from .dns import unbound
 	from .dns import ingestion as dns_ingestion
 	if not unbound.is_unbound_installed():
 		_log.info("DNS_INGESTION skipped: Unbound not installed")
@@ -1263,7 +1276,7 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 	while True:
 		should_run = await asyncio.to_thread(_should_unbound_run_sync, ctx.cfg.db_path)
 		if not should_run:
-			await scheduled_tasks._sleep_with_cancellation_check(30.0)
+			await scheduled_tasks.sleep_with_cancellation_check(30.0)
 			continue
 		for attempt in range(15):
 			if await unbound.is_running():
@@ -1286,9 +1299,10 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 				retention_days_func=_current_dns_retention_days,
 				tsdb_dir=ctx.cfg.tsdb_dir,
 			)
+			_log.warning("DNS_INGESTION returned unexpectedly; restarting in 5s")
+			# A clean return is not a crash: don't carry crash backoff forward.
 			retry_count = 0
-			_log.warning("DNS_INGESTION stopped unexpectedly; restarting in 5s")
-			await scheduled_tasks._sleep_with_cancellation_check(5.0)
+			await scheduled_tasks.sleep_with_cancellation_check(5.0)
 		except asyncio.CancelledError:
 			_log.info("DNS_INGESTION shutdown requested")
 			raise
@@ -1304,12 +1318,11 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 				_DNS_INGESTION_RESTART_MAX_DELAY_SECONDS
 			)
 			_log.error("DNS_INGESTION crashed (retry #%d in %.0fs): %s", retry_count, delay, exc)
-			await scheduled_tasks._sleep_with_cancellation_check(delay)
+			await scheduled_tasks.sleep_with_cancellation_check(delay)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
 	"""Application lifespan manager."""
-	import os
 	await _verify_host_network_mode()
 	loop = asyncio.get_running_loop()
 	shutdown_signal_event = asyncio.Event()
@@ -1449,6 +1462,11 @@ def create_app() -> FastAPI:
 	]
 	if allowed_hosts:
 		app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+	else:
+		_log.warning(
+			"WIREBUDDY_ALLOWED_HOSTS is unset; Host header is not validated. "
+			"Set it to your hostname(s) for defense-in-depth behind a reverse proxy."
+		)
 
 	app.add_middleware(RequestIDMiddleware)
 
@@ -1488,6 +1506,13 @@ def create_app() -> FastAPI:
 		response.headers.setdefault("X-Frame-Options", "DENY")
 		response.headers.setdefault("X-Content-Type-Options", "nosniff")
 		response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+		# publickey-credentials-get is intentionally left permissive; the app uses
+		# WebAuthn/passkeys and locking it down would break passkey sign-in.
+		response.headers.setdefault(
+			"Permissions-Policy",
+			"camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+		)
+		response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
 		if _FORCE_HSTS or request.url.scheme == "https":
 			response.headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
 		return response
@@ -1502,18 +1527,10 @@ def create_app() -> FastAPI:
 			status_code=429,
 			content={"detail": "Too many requests. Please try again later."},
 		)
-
-		limiter_instance = getattr(request.app.state, "limiter", None)
-		view_rate_limit = getattr(request.state, "view_rate_limit", None)
-		if limiter_instance is not None and view_rate_limit is not None:
-			try:
-				retry_after = getattr(exc, "retry_after", 60)
-				response.headers["Retry-After"] = str(retry_after)
-				response.headers["X-RateLimit-Limit"] = str(getattr(exc, "limit", ""))
-			except Exception as header_exc:
-				_log.debug("Rate limit header injection failed: %s", header_exc)
-
-		response.headers.setdefault("Retry-After", "60")
+		response.headers["Retry-After"] = str(getattr(exc, "retry_after", 60))
+		limit = getattr(exc, "limit", None)
+		if limit is not None:
+			response.headers["X-RateLimit-Limit"] = str(limit)
 		return response
 
 	app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
@@ -1539,9 +1556,9 @@ def create_app() -> FastAPI:
 		Intentionally unrate-limited: orchestrator/load-balancer probes may poll
 		this frequently and must not receive 429 responses.
 		"""
-		cfg: Config = app.state.cfg
+		cfg: Config = request.app.state.cfg
 		errors = []
-		
+
 		# Check database connectivity (offload to thread to avoid blocking event loop)
 		try:
 			await asyncio.to_thread(
@@ -1552,12 +1569,15 @@ def create_app() -> FastAPI:
 		except Exception as exc:
 			errors.append("database unavailable")
 			_log.warning("Readiness check failed: database: %s", exc)
-		
+
 		# Check for key mismatch (critical security error)
-		if getattr(app.state, "key_mismatch", False):
+		if getattr(request.app.state, "key_mismatch", False):
 			errors.append("encryption key mismatch")
 
-		if getattr(app.state, "bootstrap_gate_active", False):
+		if getattr(request.app.state, "bootstrap_gate_active", False):
+			resume_error = getattr(request.app.state, "bootstrap_gate_resume_error", None)
+			if resume_error:
+				errors.append("bootstrap resume failed")
 			if errors:
 				return JSONResponse(
 					status_code=503,
@@ -1571,18 +1591,18 @@ def create_app() -> FastAPI:
 				}
 			)
 
-		dns_config_error = getattr(app.state, "dns_config_error", None)
-		dns_service_enabled = bool(getattr(app.state, "dns_service_enabled", False))
-		dns_config_ready = bool(getattr(app.state, "dns_config_ready", False))
-		dns_ingestion_expected = bool(getattr(app.state, "dns_ingestion_expected", False))
+		dns_config_error = getattr(request.app.state, "dns_config_error", None)
+		dns_service_enabled = bool(getattr(request.app.state, "dns_service_enabled", False))
+		dns_config_ready = bool(getattr(request.app.state, "dns_config_ready", False))
+		dns_ingestion_expected = bool(getattr(request.app.state, "dns_ingestion_expected", False))
 		if dns_service_enabled and dns_config_error:
 			errors.append("dns config unavailable")
 
-		scheduler = getattr(app.state, "scheduler", None)
+		scheduler = getattr(request.app.state, "scheduler", None)
 		if scheduler is None or not scheduler.running:
 			errors.append("scheduler unavailable")
 
-		dns_task = getattr(app.state, "dns_task", None)
+		dns_task = getattr(request.app.state, "dns_task", None)
 		if dns_ingestion_expected and dns_service_enabled and dns_config_ready and (dns_task is None or dns_task.done()):
 			errors.append("dns ingestion stopped")
 		
@@ -1626,7 +1646,6 @@ def create_app() -> FastAPI:
 
 def _register_swagger_routes(app: FastAPI) -> None:
 	"""Register admin-protected Swagger UI at /swagger."""
-	import sqlite3
 	from .api.auth import require_admin
 
 	_SWAGGER_ENABLE_KEY = "enable_swagger"

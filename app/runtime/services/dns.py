@@ -305,7 +305,7 @@ class DNSService(RuntimeService):
                 self._read_runtime_settings_sync
             )
             if not should_run:
-                await scheduled_tasks._sleep_with_cancellation_check(30.0)
+                await scheduled_tasks.sleep_with_cancellation_check(30.0)
                 continue
 
             # Wait for Unbound to be ready
@@ -347,7 +347,7 @@ class DNSService(RuntimeService):
                 if self._shutdown_event.is_set():
                     return
                 _log.warning("DNS_INGESTION stopped unexpectedly; restarting in 5s")
-                await scheduled_tasks._sleep_with_cancellation_check(5.0)
+                await scheduled_tasks.sleep_with_cancellation_check(5.0)
 
             except asyncio.CancelledError:
                 _log.info("DNS_INGESTION shutdown requested")
@@ -372,7 +372,7 @@ class DNSService(RuntimeService):
                         retry_count,
                         delay,
                     )
-                await scheduled_tasks._sleep_with_cancellation_check(delay)
+                await scheduled_tasks.sleep_with_cancellation_check(delay)
 
     def _load_dns_config_sync(self) -> dict[str, object]:
         """Load DNS configuration from DB (sync, runs in thread)."""

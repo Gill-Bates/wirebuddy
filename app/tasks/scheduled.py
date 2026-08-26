@@ -60,7 +60,7 @@ def _evict_peer_state_entries(peer_connection_state: OrderedDict[str, bool]) -> 
     return evicted
 
 
-async def _sleep_with_cancellation_check(seconds: float) -> None:
+async def sleep_with_cancellation_check(seconds: float) -> None:
     """Sleep for the given number of seconds.
 
     ``CancelledError`` propagates immediately via asyncio task cancellation.

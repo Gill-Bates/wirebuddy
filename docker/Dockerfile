@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.13-slim@sha256:7e3a6aca9d74f93cca21a91d86a8dad8c34749afd5b4a98ee481c9c47b9f5ed4 AS builder
+FROM python:3.13-slim AS builder
 
 WORKDIR /build
 
@@ -12,7 +12,7 @@ RUN pip install --upgrade pip && \
 # Build the current upstream wireguard-tools master branch. BuildKit resolves
 # the mutable Git ref on every build, so a new upstream commit invalidates this
 # layer instead of silently reusing an old distribution package.
-FROM python:3.13-slim@sha256:7e3a6aca9d74f93cca21a91d86a8dad8c34749afd5b4a98ee481c9c47b9f5ed4 AS wireguard-tools-builder
+FROM python:3.13-slim AS wireguard-tools-builder
 
 WORKDIR /build
 
@@ -41,7 +41,7 @@ RUN set -eux; \
     test -x /out/usr/bin/wg-quick
 
 # ─────────────────────────────────────────────────────────────
-FROM python:3.13-slim@sha256:7e3a6aca9d74f93cca21a91d86a8dad8c34749afd5b4a98ee481c9c47b9f5ed4 AS runtime-base
+FROM python:3.13-slim AS runtime-base
 
 ARG APP_VERSION
 ARG BUILD_DATE
