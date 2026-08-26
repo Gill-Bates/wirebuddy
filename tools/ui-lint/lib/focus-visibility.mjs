@@ -47,8 +47,8 @@ export function getFocusIndicatorGeometry(style = {}) {
     };
 }
 
-export function isFocusVisibleEnough({ before, after, tokens, elementRect, focusRect }) {
-    const minContrast = tokens?.wcag?.contrastAALarge || 3;
+export function isFocusVisibleEnough({ before, after, tokens, elementRect, focusRect, minContrast: minContrastOverride }) {
+    const minContrast = minContrastOverride ?? (tokens?.wcag?.contrastAALarge || 3);
     const geometry = getFocusIndicatorGeometry(after);
     const borderDelta = before.borderColor !== after.borderColor;
     const backgroundDelta = before.backgroundColor !== after.backgroundColor;

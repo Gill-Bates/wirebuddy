@@ -110,7 +110,12 @@ export function evaluatePolicyRules(context, policy) {
 
         if (rule.kind === 'count') {
             const raw = getPath(context, rule.metricPath);
-            const count = toCount(raw);
+            // Some metric arrays are capped (e.g. at 20 entries) for report
+            // readability; a sibling "<metricPath>Total" field, when present,
+            // carries the real uncapped count so findings don't silently
+            // under-report how many elements actually failed.
+            const total = getPath(context, `${rule.metricPath}Total`);
+            const count = typeof total === 'number' ? total : toCount(raw);
             if (count <= 0) continue;
             findings.push(createFinding({
                 id: rule.id,

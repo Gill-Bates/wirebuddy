@@ -1,655 +1,223 @@
 # Security Best Practices
 
-Comprehensive guide for securing your WireBuddy deployment.
+This checklist complements WireBuddy's built-in controls. It reflects the
+current UI and deployment model; controls not exposed by WireBuddy should be
+implemented at the host or reverse-proxy layer.
 
-## Initial Setup
+## Protect the Secret Key
 
-### Bootstrap Admin Password
-
-On first boot, WireBuddy automatically generates a random temporary password for the `admin` user and prints it to the log. Retrieve it with:
-
-```bash
-docker logs wirebuddy 2>&1 | grep -A5 "Bootstrap admin created"
-```
-
-You will be redirected to a forced password change screen on first login. The temporary password cannot be reused after it has been changed.
-
-!!! tip "Password requirements"
-    - Minimum 10 characters
-    - At least 3 of: uppercase, lowercase, digit, special character
-    - Use a password manager (1Password, Bitwarden)
-
-### Generate Strong Secret Key
-
-Never use weak `WIREBUDDY_SECRET_KEY`:
+Generate a unique high-entropy `WIREBUDDY_SECRET_KEY` for every deployment:
 
 ```bash
-# Generate cryptographically secure key
-openssl rand -base64 32
-
-# Or use Python
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-Store securely:
+- Keep the value out of Git, images, screenshots, and logs.
+- Store a protected recovery copy alongside your data backup procedure.
+- Reuse the same key when recreating or upgrading the container.
+- Do not change the key after encrypted WireGuard, OTP, or ACME values exist.
 
-- ✅ Environment variable
-- ✅ Secret manager (HashiCorp Vault, AWS Secrets Manager)
-- ❌ Not in code
-- ❌ Not in version control
-
-## Authentication
-
-### Enable Multi-Factor Authentication
-
-**All admin accounts must use MFA:**
-
-1. Profile → Security → Enable 2FA
-2. Scan QR code with authenticator app
-3. Save recovery codes securely
-4. Verify with test login
-
-**Enforce MFA:**
-
-Settings → Security → Enforce MFA for Admins
-
-### Use Passkeys
-
-Passkeys are more secure than passwords:
-
-1. Register passkey (Touch ID, Windows Hello, YubiKey)
-2. Test passkey login
-3. Keep password as backup
-
-See [Passkeys Guide](passkeys.md).
-
-### Strong Password Policy
-
-**Settings → Security → Password Policy**
-
-```
-Minimum Length: 12 characters
-Require: Uppercase, lowercase, numbers, symbols
-History: Prevent reuse of last 5 passwords
-Expiration: 90 days (optional, for compliance)
-```
-
-## Network Security
-
-### Use HTTPS Always
-
-**Option 1: Reverse Proxy (Recommended)**
-
-=== "Caddy (Automatic HTTPS)"
-    ```caddyfile
-    # Production-ready Caddyfile (included in repository)
-    vpn.example.com {
-
-        # Common proxy settings (reused)
-        (proxy_common) {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Port 443
-            header_up X-Forwarded-Host {host}
-
-            transport http {
-                keepalive 30s
-            }
-        }
-
-        # SSE endpoint: disable buffering for real-time event streaming
-        @sse path /api/nodes/events
-        reverse_proxy @sse localhost:8000 {
-            import proxy_common
-            flush_interval -1
-        }
-
-        # Default reverse proxy
-        reverse_proxy localhost:8000 {
-            import proxy_common
-        }
-
-        # Compression
-        encode gzip
-
-        # Cache static assets (1 year)
-        @static path /static/*
-        header @static Cache-Control "public, max-age=31536000, immutable"
-
-        # Security headers
-        header {
-            Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-            X-Content-Type-Options nosniff
-            X-Frame-Options SAMEORIGIN
-            Referrer-Policy strict-origin-when-cross-origin
-            -Server
-            -X-Powered-By
-        }
-
-        # Request body limit
-        request_body {
-            max_size 100MB
-        }
-
-        # Logging
-        log {
-            output file /var/log/caddy/access.log {
-                roll_size 10mb
-            }
-        }
-    }
-    ```
-    
-    Caddy handles SSL automatically. The configuration above includes:
-    
-    - **SSE support** for real-time node events (`flush_interval -1`)
-    - **Security headers** (HSTS, X-Frame-Options, CSP)
-    - **Static asset caching** for optimal performance
-    - **Request body limits** (100MB for backups)
-    - **Access logging** with automatic rotation
-
-=== "Nginx + Certbot"
-    ```nginx
-    server {
-        listen 443 ssl http2;
-        server_name vpn.example.com;
-        
-        # SSL Configuration
-        ssl_certificate /etc/letsencrypt/live/vpn.example.com/fullchain.pem;
-        ssl_certificate_key /etc/letsencrypt/live/vpn.example.com/privkey.pem;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_ciphers HIGH:!aNULL:!MD5;
-        
-        # Security Headers
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-        add_header X-Content-Type-Options nosniff always;
-        add_header X-Frame-Options SAMEORIGIN always;
-        add_header Referrer-Policy strict-origin-when-cross-origin always;
-        
-        # Request body limit
-        client_max_body_size 100M;
-        
-        # SSE endpoint: disable buffering for real-time events
-        location /api/nodes/events {
-            proxy_pass http://localhost:8000;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_http_version 1.1;
-            proxy_set_header Connection '';
-            proxy_buffering off;
-            proxy_cache off;
-            chunked_transfer_encoding off;
-        }
-        
-        # Static assets: aggressive caching
-        location /static/ {
-            proxy_pass http://localhost:8000;
-            proxy_set_header Host $host;
-            add_header Cache-Control "public, max-age=31536000, immutable";
-        }
-        
-        # Default location
-        location / {
-            proxy_pass http://localhost:8000;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection $connection_upgrade;
-        }
-    }
-    
-    # WebSocket/SSE upgrade support
-    map $http_upgrade $connection_upgrade {
-        default upgrade;
-        '' close;
-    }
-    ```
-
-**Option 2: Built-in ACME**
-
-See [ACME Configuration](../features/acme.md).
-
-### Firewall Configuration
-
-Only expose required ports:
+Protect the environment file:
 
 ```bash
-# WireBuddy web interface (via reverse proxy)
-ufw allow 443/tcp
-
-# WireGuard
-ufw allow 51820/udp
-
-# Deny everything else
-ufw default deny incoming
-ufw default allow outgoing
-ufw enable
+chmod 600 .env
 ```
 
-### Rate Limiting
+## Replace the Bootstrap Password
 
-Keep rate limiting enabled:
-
-**Settings → Security → Rate Limiting → Enable**
-
-See [Rate Limiting](rate-limiting.md).
-
-### Trusted Proxies
-
-If behind reverse proxy, configure trusted proxies:
-
-**Settings → Security → Trusted Proxies**
-
-```
-192.168.1.1  # Reverse proxy IP
-```
-
-## Application Security
-
-### Disable Swagger in Production
-
-**Settings → General → API Documentation → Disable**
-
-Or via environment:
+On first startup, retrieve the generated temporary password from the log:
 
 ```bash
-SWAGGER_ENABLED=false
+docker compose --env-file .env -f docker/docker-compose.yml logs wirebuddy
 ```
 
-### Session Security
+Sign in as `admin` and complete the mandatory password change immediately. The
+temporary password is invalidated after replacement.
 
-**Settings → Security → Sessions**
+WireBuddy requires at least three character categories, rejects common
+passwords, and hashes passwords with PBKDF2-HMAC-SHA256. Prefer a password
+manager-generated value.
 
-```
-Timeout: 30 minutes (default)
-Secure Cookies: Enabled (HTTPS only)
-HttpOnly: Enabled (prevent XSS)
-SameSite: Lax (CSRF protection)
-```
+## Enable Strong Account Authentication
 
-### CSRF Protection
+Open the top-level **Users** page and configure each administrator account:
 
-Keep CSRF protection enabled (default):
+- register at least one passkey, ideally a second recovery authenticator
+- or enable TOTP and securely store the recovery-code ZIP
+- use a separate named account for every administrator
+- keep the number of administrators small
+- disable or remove accounts as soon as access is no longer needed
 
-**Settings → Security → CSRF → Enable**
+WireBuddy does not currently provide global MFA enforcement, active-session
+management, or a dedicated login-history page. Enforce organizational policy
+outside the application and monitor the structured authentication logs.
 
-### Security Headers
+## Use HTTPS
 
-Verify security headers are set:
+Expose production installations through HTTPS. A same-host reverse proxy can
+connect to WireBuddy on loopback; if the proxy is remote or containerized,
+configure exact trust boundaries:
 
 ```bash
-curl -I https://vpn.example.com
-
-# Expected headers:
-Strict-Transport-Security: max-age=31536000; includeSubDomains
-X-Content-Type-Options: nosniff
-X-Frame-Options: DENY
-X-XSS-Protection: 1; mode=block
-Referrer-Policy: strict-origin-when-cross-origin
+WIREBUDDY_TRUST_PROXY_HEADERS=1
+FORWARDED_ALLOW_IPS=192.168.1.10
+TRUSTED_PROXY_CIDRS=192.168.1.10/32
+WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
+WIREBUDDY_ALLOWED_HOSTS=vpn.example.com
 ```
 
-## Container Security
+- `FORWARDED_ALLOW_IPS` controls Uvicorn's forwarded-header trust.
+- `TRUSTED_PROXY_CIDRS` controls application client-IP and HTTPS detection.
+- `WIREBUDDY_PUBLIC_ORIGIN` makes CSRF and WebAuthn origin handling explicit.
+- `WIREBUDDY_ALLOWED_HOSTS` rejects unexpected Host headers.
 
-### Run as Non-Root
+Never use `FORWARDED_ALLOW_IPS=*`. See
+[Environment Variables](../configuration/environment.md#reverse-proxy-and-origin-handling).
 
-(Already implemented in official image)
+## Restrict Network Exposure
 
-Verify:
+Only expose the services you use:
+
+- GUI/reverse proxy: TCP 8000 or your configured port
+- WireGuard: configured UDP interface ports, commonly 51820
+- DNS: TCP/UDP 53 only when VPN clients need the integrated resolver
+
+Prefer firewall rules scoped to trusted management networks for the GUI. When
+using a same-host reverse proxy, enable **Settings → General → Server Settings
+→ Only listen on Localhost** and restart WireBuddy.
+
+The public `/status` page is disabled by default. If enabled, it is restricted
+to WireGuard client networks plus authenticated administrators. Treat its
+connectivity details as operational telemetry.
+
+## Keep Host Networking
+
+WireBuddy requires Docker host networking for WireGuard interface management
+and conntrack statistics. Do not weaken the startup check with
+`WIREBUDDY_SKIP_NETWORK_CHECK=1` in production.
+
+The supplied Compose service already:
+
+- drops all Linux capabilities except `NET_ADMIN`
+- enables `no-new-privileges`
+- mounts only `/dev/net/tun`
+- limits JSON log rotation
+
+Keep these controls when creating overrides. The current image is not designed
+to run as an arbitrary non-root UID or with a read-only root filesystem.
+
+## Harden WireGuard
+
+- Enable preshared keys unless interoperability requirements prevent it.
+- Use non-overlapping interface networks.
+- Keep peer `AllowedIPs` as narrow as the use case permits.
+- Disable or delete unused peers promptly.
+- Use peer isolation when clients must not communicate with one another.
+- Restrict custom PostUp/PostDown scripts to reviewed administrator input.
+
+WireGuard settings and interfaces are managed under **Settings → WireGuard**;
+peers are managed from **Peers**.
+
+## Secure DNS
+
+Under **Settings → DNS**:
+
+- enable DNSSEC when upstream compatibility permits it
+- use validated DNS-over-TLS upstream entries
+- review custom block/allow rules before applying them
+- limit DNS query retention to operational needs
+
+Retention and purge controls are under **Settings → Logs**. DNS query logs can
+contain client IPs and requested domains and should be treated as sensitive.
+
+## Limit Swagger Exposure
+
+Swagger is disabled by default. Enable it temporarily under
+**Settings → General → API Documentation** only when needed. Both `/swagger`
+and `/swagger/openapi.json` require an authenticated administrator.
+
+## Protect API Sessions
+
+WireBuddy automation uses normal session tokens; there is no separate
+long-lived API-token system.
+
+- Send tokens only in `Authorization: Bearer ...` over HTTPS.
+- Never write tokens to command history, logs, or source files.
+- Reauthenticate when the session expires instead of attempting to make it
+  permanent.
+- Use a read-only WireBuddy user for read-only automation.
+
+Browser session cookies are protected by CSRF validation. Do not copy browser
+cookies into automation scripts.
+
+## Back Up Safely
+
+Use **Settings → Backup** or take a filesystem backup while the container is
+stopped. Preserve:
+
+- `docker/data/`
+- the exact `WIREBUDDY_SECRET_KEY`
+- any custom reverse-proxy and firewall configuration
+
+Test restoration periodically in an isolated environment. Backup archives may
+contain user records, private keys, certificates, DNS data, and optional metric
+history; protect them accordingly.
+
+## Patch and Scan
+
+Keep the host, Docker Engine, WireBuddy image, and reverse proxy current:
 
 ```bash
-docker inspect wirebuddy | grep -A10 User
+docker compose --env-file .env -f docker/docker-compose.yml pull
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
-### Drop Unnecessary Capabilities
+Pin a full release tag when change control requires deterministic deployments.
+Review the release changelog before upgrading and use an image scanner such as
+Trivy or Grype in your deployment pipeline.
 
-```yaml
-# docker-compose.yml
-services:
-  wirebuddy:
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_ADMIN  # Required for WireGuard
-```
+## Monitor Logs and Health
 
-### Read-Only Filesystem
+Monitor:
 
-```yaml
-services:
-  wirebuddy:
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /run
-    volumes:
-      - ./data:/app/data  # Writable data directory
-```
+- repeated login failures and HTTP 429 responses
+- password, TOTP, and passkey changes
+- user, interface, peer, and node mutations
+- DNS and WireGuard startup failures
+- unexpected container restarts
+- `/ready` failures
 
-### Security Options
+The built-in application does not provide an audit-log dashboard or alerting
+engine. Forward Docker logs to your existing logging/SIEM platform and alert
+there.
 
-```yaml
-security_opt:
-  - no-new-privileges:true
-  - apparmor=docker-default
-```
-
-### Scan for Vulnerabilities
-
-Regularly scan Docker image:
+Example probes:
 
 ```bash
-# Trivy
-trivy image giiibates/wirebuddy:latest
-
-# Grype
-grype giiibates/wirebuddy:latest
+curl --fail --silent http://127.0.0.1:8000/health
+curl --fail --silent http://127.0.0.1:8000/ready
 ```
 
-## Data Security
-
-### Backup Encryption
-
-Encrypt backups:
-
-```bash
-# Backup with encryption
-tar cz data/ | gpg -e -r admin@example.com > backup.tar.gz.gpg
-
-# Restore
-gpg -d backup.tar.gz.gpg | tar xz
-```
-
-### File Permissions
-
-Protect configuration files:
-
-```bash
-# settings.env should be readable only by owner
-chmod 600 settings.env
-
-# Data directory
-chmod 700 data/
-
-# Verify
-ls -la settings.env data/
-```
-
-### Secret Rotation
-
-Rotate secrets regularly:
-
-```bash
-# Generate new WIREBUDDY_SECRET_KEY
-NEW_KEY=$(openssl rand -base64 32)
-
-# WARNING: This will invalidate all sessions and encrypted data
-# Plan downtime and re-configure encrypted values
-```
-
-!!! danger "Secret Key Rotation"
-    Changing `WIREBUDDY_SECRET_KEY` invalidates:
-    
-    - All user sessions
-    - Encrypted WireGuard keys
-    - Encrypted TOTP secrets
-    - Encrypted ACME keys
-    
-    Plan carefully and have recovery procedure.
-
-## WireGuard Security
-
-### Preshared Keys
-
-Post-quantum security is enabled by default in WireBuddy:
-
-**Settings → WireGuard → Use PresharedKey** (enabled by default)
-
-Ensure a global preshared key is generated for maximum protection.
-
-### Regular Key Rotation
-
-Rotate WireGuard keys annually:
-
-1. Generate new keypair
-2. Update peer configs
-3. Distribute new configs
-4. Remove old keys
-
-### IP Forwarding
-
-Ensure IP forwarding is needed:
-
-```bash
-# Disable if not using full tunnel
-sysctl -w net.ipv4.ip_forward=0
-```
-
-### Firewall Rules
-
-Restrict inter-peer communication:
-
-```bash
-# Block peer-to-peer (if not needed)
-iptables -A FORWARD -i wg0 -o wg0 -j DROP
-
-# Or allow only specific services
-iptables -A FORWARD -i wg0 -o wg0 -p tcp --dport 22 -j ACCEPT
-iptables -A FORWARD -i wg0 -o wg0 -j DROP
-```
-
-## DNS Security
-
-### DNS-over-TLS
-
-Enable encrypted upstream queries:
-
-**Settings → DNS → DNS-over-TLS → Enable**
-
-### DNSSEC
-
-Enable DNSSEC validation:
-
-**Settings → DNS → Security → DNSSEC → Enable**
-
-### Query Logging
-
-Consider privacy vs security:
-
-- ✅ Enable for security monitoring
-- ❌ Disable for maximum privacy
-
-**Settings → DNS → Query Logging**
-
-## Monitoring & Auditing
-
-### Enable Audit Logging
-
-**Settings → Security → Audit Log → Enable**
-
-Log:
-
-- Authentication events
-- Configuration changes
-- User management
-- API access
-
-### Review Logs Regularly
-
-Weekly review:
-
-```bash
-# Check failed logins
-docker compose logs wirebuddy | grep "Failed login"
-
-# Check API access
-docker compose logs wirebuddy | grep "API request"
-
-# Check rate limit violations
-docker compose logs wirebuddy | grep "rate_limit"
-```
-
-### Monitor Active Sessions
-
-**Profile → Security → Active Sessions**
-
-- Review regularly
-- Revoke suspicious sessions
-- Check for unusual geolocations
-
-### Failed Login Alerts
-
-(Future feature)
-
-Configure alerts for:
-
-- 5+ failed logins in 15 minutes
-- Login from new country
-- Multiple simultaneous sessions
-
-## Incident Response
-
-### Suspected Compromise
-
-1. **Immediately:**
-   - Change admin passwords
-    - Revoke all active sessions/auth tokens
-   - Revoke all user sessions
-   - Disable affected users
-
-2. **Investigate:**
-   - Review audit logs
-   - Check active sessions
-   - Review recent configuration changes
-   - Check for unauthorized peers
-
-3. **Recover:**
-   - Rotate secret key (if needed)
-   - Regenerate WireGuard keys
-   - Force MFA enrollment
-   - Update all client configs
-
-4. **Prevent:**
-   - Enable MFA (if not already)
-   - Implement IP whitelisting
-   - Review firewall rules
-   - Update WireBuddy
-
-### Lost Device
-
-If admin device is lost/stolen:
-
-1. **From another device:**
-   - Login to WireBuddy
-   - Profile → Security → Active Sessions
-   - Revoke lost device's session
-
-2. **No access:**
-   - SSH to server
-   - Disable user:
-     ```bash
-     docker compose exec wirebuddy sqlite3 data/wirebuddy.db \
-       "UPDATE users SET disabled = 1 WHERE username = 'compromised_user';"
-     ```
-
-## Compliance
-
-### GDPR
-
-- **Data minimization:** Only collect necessary data
-- **Right to erasure:** Provide data export/delete
-- **Consent:** Document user consent
-- **Data retention:** Set appropriate retention periods
-
-### SOC 2
-
-- **Access control:** RBAC implemented
-- **Encryption:** Data encrypted at rest and in transit
-- **Audit logging:** Comprehensive event logging
-- **Monitoring:** Real-time security monitoring
-
-### HIPAA
-
-(If handling healthcare data)
-
-- **Encryption:** Enable volume encryption
-- **Audit logs:** 6-year retention
-- **Access control:** Strong authentication required
-- **Incident response:** Document procedure
-
-## Security Checklist
-
-### Initial Deployment
-
-- [ ] Retrieve bootstrap admin password from the server log after first boot
-- [ ] Generate strong `WIREBUDDY_SECRET_KEY`
-- [ ] Enable HTTPS (reverse proxy or ACME)
-- [ ] Configure firewall (allow only required ports)
-- [ ] Enable MFA for admin accounts
-- [ ] Disable Swagger/API docs in production
-- [ ] Set session timeout (30 minutes)
-- [ ] Enable rate limiting
-- [ ] Configure trusted proxies (if applicable)
-- [ ] Review security headers
-
-### Ongoing Maintenance
-
-- [ ] Apply updates monthly (security patches immediately)
-- [ ] Review audit logs weekly
-- [ ] Check active sessions weekly
-- [ ] Rotate/reissue automation auth sessions regularly
-- [ ] Review user accounts monthly
-- [ ] Backup data weekly (encrypted)
-- [ ] Test restore procedure quarterly
-- [ ] Scan for vulnerabilities monthly
-- [ ] Review firewall rules quarterly
-- [ ] Update dependencies monthly
-
-### Before Going Public
-
-- [ ] Penetration testing completed
-- [ ] Security audit performed
-- [ ] Incident response plan documented
-- [ ] Backup and recovery tested
-- [ ] Monitoring and alerting configured
-- [ ] DDoS protection in place (Cloudflare, etc.)
-- [ ] Terms of Service and Privacy Policy published
-
-## Tools & Resources
-
-### Security Scanning
-
-- **Trivy:** Container vulnerability scanning
-- **Grype:** Vulnerability scanning
-- **Safety:** Python dependency checking
-- **Bandit:** Python security linting
-
-### Monitoring
-
-- **fail2ban:** Automatic IP banning
-- **CrowdSec:** Collaborative security
-- **Wazuh:** Host-based intrusion detection
-- **Prometheus + Grafana:** Metrics and alerting
-
-### Testing
-
-- **OWASP ZAP:** Web application security testing
-- **Burp Suite:** Security testing
-- **Nmap:** Network scanning
-- **Metasploit:** Penetration testing framework
-
-## Getting Help
-
-Security issues? **Do not open public GitHub issues.**
-
-Email: [security contact - update as needed]
-
-## Next Steps
-
-- [Security Overview](overview.md) - Complete security documentation
-- [Authentication](authentication.md) - Auth methods
-- [Rate Limiting](rate-limiting.md) - Brute-force protection
-- [Passkeys](passkeys.md) - Passwordless authentication
+## Production Checklist
+
+- [ ] Unique 32-byte-or-longer secret key stored securely
+- [ ] Bootstrap password changed
+- [ ] Separate administrator accounts
+- [ ] Passkey or TOTP configured for administrators
+- [ ] HTTPS enabled with exact trusted-proxy CIDRs
+- [ ] Host-header allowlist configured or enforced by the proxy
+- [ ] GUI restricted by firewall or loopback bind
+- [ ] Swagger disabled when not needed
+- [ ] Only required WireGuard and DNS ports exposed
+- [ ] DNS and metric retention reviewed
+- [ ] Data and secret key backed up together
+- [ ] Logs forwarded and health checks monitored
+- [ ] Updates and restore tests scheduled
+
+## Related
+
+- [Security Configuration](../configuration/security.md)
+- [Authentication](authentication.md)
+- [Passkeys](passkeys.md)
+- [Rate Limiting](rate-limiting.md)
+- [Docker Setup](../getting-started/docker.md)

@@ -259,14 +259,15 @@ async def _get_wg_dump_cached() -> list:
 	async def _fetch() -> list:
 		code, stdout, stderr = await run_wg_command(WG_BIN, "show", "all", "dump")
 		if code != 0:
-			# Raise exception instead of returning [] so _AsyncTTLCache doesn't cache the error
-			raise RuntimeError(f"wg show all dump failed (code={code}): {stderr.strip() if stderr else 'no output'}")
+			_log.warning("WG_SHOW_DUMP failed: code=%d stderr=%s", code, stderr.strip() if stderr else "no output")
+			# Raise instead of returning [] so _AsyncTTLCache doesn't cache the error
+			raise RuntimeError("wg show all dump failed")
 		return parse_wg_show_dump(stdout)
 
 	try:
 		return await _wg_dump_cache_obj.get_or_compute(_fetch)  # type: ignore[return-value]
-	except Exception:
-		_log.warning("wg show all dump failed", exc_info=True)
+	except Exception as exc:
+		_log.warning("PEER_LOC wg dump unavailable: %s", exc)
 		return []
 
 

@@ -4,409 +4,97 @@ title: WireGuard Management
 
 # WireGuard Management
 
-WireBuddy provides a comprehensive web interface for managing WireGuard VPN servers and clients.
-
-## Interface Management
-
-### Creating Interfaces
-
-WireGuard interfaces represent individual VPN servers running on your host.
-
-**Navigate to:** Settings → Interfaces → Add Interface
-
-| Setting | Description | Example |
-|---------|-------------|---------|
-| **Name** | Unique interface identifier (alphanumeric, hyphens, underscores) | `wg0`, `wg-vpn`, `wg_office` |
-| **Listen Port** | UDP port for incoming connections | `51820` (default) |
-| **Address** | VPN server IP address in CIDR notation | `10.8.0.1/24` |
-| **IPv6 Address** | Optional IPv6 address | `fd42::1/64` |
-| **DNS Servers** | DNS servers for clients | `1.1.1.1, 1.0.0.1` |
-
-### Advanced Interface Settings
-
-??? abstract "Advanced Options"
-    
-    **MTU (Maximum Transmission Unit)**
-    
-    - Default: `1420` (recommended for most networks)
-    - Lower values may be needed for constrained networks
-    - Formula: `Interface MTU - 80 bytes` (for WireGuard overhead)
-    
-    **Table**
-    
-    - Routing table number (default: `auto`)
-    - Set to `off` to disable automatic route management
-    
-    **Pre/Post Up/Down Commands**
-    
-    - Execute custom commands during interface lifecycle
-    - Examples:
-        ```bash
-        # PreUp: Configure routing
-        sysctl -w net.ipv4.ip_forward=1
-        
-        # PostUp: Configure firewall
-        iptables -A FORWARD -i %i -j ACCEPT
-        
-        # PreDown: Cleanup
-        iptables -D FORWARD -i %i -j ACCEPT
-        ```
-    
-    **SaveConfig**
-    
-    - Save runtime configuration to config file on shutdown
-    - Useful for dynamic peer additions
-
-### Starting/Stopping Interfaces
-
-Interfaces can be managed from the **Dashboard** or **Settings → Interfaces**:
-
-- 🟢 **Start:** Activate the interface
-- 🔴 **Stop:** Deactivate the interface
-- 🔄 **Restart:** Stop then start
-- ⚙️ **Reload:** Reload configuration without disrupting connections
-
-### Interface Status
-
-The Dashboard shows real-time interface status:
-
-- ✅ **Active:** Interface is running
-- ⏸️ **Inactive:** Interface is stopped
-- ⚠️ **Error:** Configuration issue (check logs)
-
-## Peer Management
-
-### Adding Peers
-
-Peers represent individual clients (laptops, phones, etc.) connecting to your VPN.
-
-**Navigate to:** Peers → Add Peer
-
-| Setting | Required | Description |
-|---------|----------|-------------|
-| **Device Name** | Yes | Descriptive label for the client device (1-128 chars: alphanumeric, `.`, `_`, `-`, `#`, space, `'`) |
-| **Interface** | Yes | Which WireGuard interface to use |
-| **Routing Mode** | Yes | `Recommended`, `Local network access`, or `Advanced` |
-| **Public Key** | No | Auto-generated if not provided |
-| **Use Ad-blocking DNS (WireBuddy)** | No | Route DNS through WireBuddy's resolver. When disabled, clients use Cloudflare (1.1.1.1) and Quad9 (9.9.9.9) |
-| **Active Blocklists** | No | Optional per-peer subset of the globally enabled blocklists |
-| **Client Isolation** | No | Prevent peer from communicating with other VPN peers |
-
-Peer VPN addresses are allocated automatically from the selected interface.
-
-### Routing Modes
-
-WireBuddy offers three routing presets:
-
-=== "Recommended"
-    **Routes all traffic through VPN**
-    
-    - Allowed IPs: `0.0.0.0/0, ::/0`
-    - DNS: Required (set to VPN server or public DNS)
-    - Use case: Maximum privacy, bypass geo-restrictions
-    
-    ```ini
-    [Peer]
-    AllowedIPs = 0.0.0.0/0, ::/0
-    ```
+WireBuddy manages routed WireGuard interfaces, client peers, generated client
+configurations, live status, and historical traffic from one web interface.
 
-=== "Local Network Access"
-    **Keep access to local devices while internet traffic still uses the VPN**
-    
-    ```ini
-    [Peer]
-    AllowedIPs = 0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1
-    ```
+## Interfaces
 
-=== "Advanced"
-    **Specify custom routes**
-    
-    - Allowed IPs: Manually defined
-    - DNS: As needed
-    - Use case: Split tunneling, specific subnets
-    
-    ```ini
-    [Peer]
-    AllowedIPs = 10.8.0.0/24, 192.168.1.0/24
-    ```
+Open **Settings → WireGuard → Interfaces**. Administrators can:
 
-### Client Configuration
+- create an interface with IPv4, optional IPv6, a unique UDP listen port, and
+  optional DNS servers;
+- start, stop, and restart it;
+- edit its addresses, listen port, DNS, and dashboard visibility; and
+- delete an inactive interface.
 
-After creating a peer, WireBuddy provides these actions in the peer list:
+WireBuddy generates a keypair for new interfaces and writes the corresponding
+WireGuard configuration. If custom hooks are not supplied, it also creates
+iptables NAT, forwarding, and DNS rules based on the host's default route.
+Interface subnets and listen ports cannot overlap those of another interface.
 
-#### QR Code
+The dashboard reports interface state and network gauges for interfaces marked
+**Show on Dashboard**.
 
-Click **Show QR Code** and scan with the WireGuard mobile app.
+## Peers
 
-Best for: iOS, Android devices
+Open **Peers → Add Peer**. A peer represents one client device. WireBuddy
+generates its key material, allocates the next free tunnel address, and associates
+it with the selected local interface or node.
 
-#### Download Config
+The peer form supports:
 
-Click **Download Config** to get a `.conf` file.
+- **Recommended**, **Local network access**, and **Advanced** routing modes;
+- WireBuddy DNS with a per-peer subset of globally enabled blocklists;
+- per-device DNS logging;
+- client isolation; and
+- enabling/disabling a peer without deleting it.
 
-Best for: Windows, macOS, Linux desktop
+In a multi-node deployment, the form also exposes node assignment and roaming
+where supported. See [Multi-Node Deployment](multi-node.md).
 
-??? example "Example Client Config"
-    ```ini
-    [Interface]
-    PrivateKey = <client-private-key>
-    Address = 10.8.0.2/32, fd42::2/128
-    DNS = 10.8.0.1
-    
-    [Peer]
-    PublicKey = <server-public-key>
-    Endpoint = vpn.example.com:51820
-    AllowedIPs = 0.0.0.0/0, ::/0
-    PersistentKeepalive = 25
-    ```
+## Client configuration
 
-### Peer Status
+Use **Show QR Code** for mobile WireGuard clients or **Download Config** for a
+`.conf` file. The generated file contains the private key, allocated address,
+DNS choice, server endpoint, allowed routes, persistent keepalive, and optional
+preshared key.
 
-Monitor peer status in the **Peers** page:
+Download or scan it again after changing any of those values. Treat the file and
+QR code as credentials because they contain the client's private key.
 
-| Status | Indicator | Description |
-|--------|-----------|-------------|
-| **Connected** | 🟢 Green | Recent handshake (< 3 minutes) |
-| **Idle** | Neutral text | No recent handshake but configured |
-| **Disabled** | ⚪ Gray | Peer manually disabled |
+## Routing modes
 
-**Handshake Information:**
+| UI mode | Client `AllowedIPs` behavior |
+|---|---|
+| Recommended | Full IPv4 and IPv6 tunnel (`0.0.0.0/0, ::/0`) |
+| Local network access | Split default routes that preserve local LAN access |
+| Advanced | Administrator-provided CIDR list |
 
-- **Last Seen:** Time since last WireGuard handshake
-- **Client IP:** Last observed client IP, country flag, city, and ASN when available
-- **Routing:** Current routing preset badge in the peer list
+`AllowedIPs` in the downloaded client file controls what the client sends into
+the tunnel. WireBuddy separately writes the peer's allocated tunnel address into
+the server interface configuration.
 
-### Peer Actions
+## DNS and isolation
 
-Available actions for each peer:
+When **Use Ad-blocking DNS (WireBuddy)** is enabled, generated configurations
+use the WireGuard interface address as DNS and can apply selected blocklists.
+When disabled, the configured fallback DNS servers are used.
 
-- **Edit:** Modify peer configuration
-- **Disable/Enable:** Temporarily disable without deleting
-- **Show QR:** Display QR code for mobile setup
-- **Download Config:** Get configuration file
-- **Delete:** Permanently remove peer
+**Client Isolation** installs server-side firewall rules that stop that peer from
+reaching other VPN clients while preserving internet and VPN-server access.
 
-### Search and Filter Peers
+## Status and traffic
 
-WireBuddy provides multiple ways to search and filter peers for easier management:
+The **Peers** page shows enabled state, handshake recency, transfer counters,
+interface/node assignment, and public endpoint enrichment when available. The
+**Traffic** page provides historical RX/TX charts and optional country/ASN
+destination aggregation. WireGuard and network sampling run every 30 seconds;
+retention is controlled under **Settings → Logs**.
 
-**Quick Search:**
+## Global preshared key
 
-1. Navigate to **Peers**
-2. Use the search box to filter by:
-   - Device name
-   - IP address (VPN or client IP)
-   - Status (Connected, Idle, Disabled)
-   - Interface name
-   - Country/ASN (when available)
+Under **Settings → WireGuard**, administrators can enable a global WireGuard
+preshared key for defense in depth. It is included in generated peer
+configurations. Regenerating it invalidates the old client configurations, so
+redistribute updated configurations immediately.
 
-**Advanced Filtering:**
+## Limits and host responsibilities
 
-Filter peers by:
+- WireBuddy implements routed VPN interfaces; there is no bridge-mode control.
+- The host must provide the WireGuard kernel support, `/dev/net/tun`, forwarding,
+  and the required firewall access.
+- With the supplied host-network Compose deployment, expose each WireGuard UDP
+  port on the host firewall rather than through Docker `ports:` mappings.
 
-- **Status:** Connected, Idle, or Disabled
-- **Interface:** Show peers from specific WireGuard interface
-- **Routing Mode:** Filter by Recommended, Local Network, or Advanced
-- **Client Isolation:** Show only isolated peers
-
-**Use Cases:**
-
-- Find inactive devices to disable
-- Quickly locate a specific client device
-- Review all peers using a particular DNS blocklist
-- Monitor peers from a specific geographic region
-
-## Traffic Statistics
-
-### Real-Time Monitoring
-
-The **Dashboard** shows real-time traffic for all peers:
-
-- Total sent/received per peer
-- Current transfer rate
-- Last handshake time
-- Connection uptime
-
-### Historical Data
-
-Navigate to **Traffic** for historical analytics:
-
-- **Time Range Presets:** `6h`, `24h`, `7d`, `30d`, `90d`, `180d`, `1y`
-- **Per-Peer Charts:** Individual RX/TX traffic graphs
-- **Total Throughput Views:** Country and ASN traffic breakdowns
-- **Responsive Bucketing:** Server-side bucket downsampling for mobile/desktop chart density
-
-## Advanced Features
-
-### Peer-to-Peer Communication
-
-Peers can communicate with each other by default on the same WireGuard interface.
-
-To isolate a device from other VPN devices:
-
-1. Navigate to **Peers**
-2. Click **Edit Peer**
-3. Enable **Client Isolation**
-
-This keeps internet access and server access available while blocking peer-to-peer traffic for that device.
-
-### NAT and Port Forwarding
-
-Configure NAT for full tunnel mode:
-
-```bash
-# Enable NAT for VPN traffic
-iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE
-
-# Allow forwarding
-iptables -A FORWARD -i wg0 -j ACCEPT
-iptables -A FORWARD -o wg0 -j ACCEPT
-```
-
-WireBuddy can auto-configure these rules via **PostUp** commands.
-
-### Endpoint Detection
-
-WireBuddy automatically detects your public IP for peer endpoint configuration.
-
-To override:
-
-1. Settings → General
-2. Set **Public Endpoint**
-3. This will be used in generated client configs
-
-### Preshared Keys
-
-WireBuddy uses preshared keys (PSK) by default for post-quantum security:
-
-1. Navigate to **Settings** → **WireGuard**
-2. **Use PresharedKey** is enabled by default
-3. Generate a global preshared key if not already set
-
-Newly created peers will include the preshared key in generated configs.
-
-!!! info "Enabled by Default"
-    Preshared keys provide defense-in-depth against theoretical quantum computer attacks on Curve25519. WireBuddy enables this by default for maximum security.
-
-## IPv6 Support
-
-WireBuddy fully supports IPv6:
-
-### Interface Configuration
-
-```
-Address: fd42::1/64
-```
-
-### Peer Configuration
-
-```
-Address: fd42::2/128
-AllowedIPs: ::/0  # Route all IPv6 traffic
-```
-
-### Dual-Stack (IPv4 + IPv6)
-
-```ini
-[Interface]
-Address = 10.8.0.1/24, fd42::1/64
-
-[Peer]
-Address = 10.8.0.2/32, fd42::2/128
-AllowedIPs = 0.0.0.0/0, ::/0
-```
-
-## Command-Line Integration
-
-WireBuddy provides a REST API for automation:
-
-```bash
-# List interfaces
-curl -H "Authorization: Bearer <token>" \
-  https://vpn.example.com/api/wireguard/interfaces
-
-# Create peer
-curl -X POST \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"new-peer","interface":"wg0","ip":"10.8.0.10"}' \
-  https://vpn.example.com/api/wireguard/peers
-```
-
-See [API Documentation](../api/endpoints.md) for details.
-
-## Best Practices
-
-### IP Address Management
-
-- Reserve `.1` for the server
-- Assign static IPs to peers starting from `.2`
-- Document IP assignments (use peer names)
-- Leave room for growth (use `/24` or larger subnets)
-
-### Port Selection
-
-- Use non-standard ports if under attack (not just `51820`)
-- Ensure UDP port is open in firewall
-- Consider using the same port for multiple interfaces with different IPs
-
-### Key Management
-
-- Never share private keys
-- Rotate keys annually for high-security deployments
-- Back up configurations securely
-- Use preshared keys for sensitive connections
-
-### Performance Tuning
-
-```bash
-# Increase UDP buffer sizes
-sysctl -w net.core.rmem_max=2500000
-sysctl -w net.core.wmem_max=2500000
-
-# Optimize conntrack table size
-sysctl -w net.netfilter.nf_conntrack_max=262144
-```
-
-## Troubleshooting
-
-### Peer Can't Connect
-
-1. Verify interface is running
-2. Check firewall allows UDP on WireGuard port
-3. Verify endpoint domain/IP resolves correctly
-4. Check client config matches server
-5. Review WireBuddy logs for errors
-
-### No Internet Access (Full Tunnel)
-
-1. Verify IP forwarding is enabled:
-   ```bash
-   cat /proc/sys/net/ipv4/ip_forward
-   # Should output: 1
-   ```
-2. Check NAT is configured:
-   ```bash
-   iptables -t nat -L POSTROUTING
-   ```
-3. Verify DNS is set correctly in client config
-
-### Slow Performance
-
-1. Check MTU settings (lower if needed)
-2. Verify CPU isn't maxed (WireGuard is efficient but not unlimited)
-3. Check network bandwidth at both ends
-4. Consider hardware acceleration (some CPUs have Curve25519 instructions)
-
-### Handshake Fails
-
-1. Check time sync (both client and server must have accurate clocks)
-2. Verify public keys match
-3. Check for firewall blocking UDP
-4. Review endpoint configuration
-
-## Next Steps
-
-- [DNS Ad-Blocking](dns.md) - Integrate DNS filtering
-- [Monitoring](monitoring.md) - Traffic analytics and GeoIP
-- [Configuration](../configuration/wireguard.md) - Advanced settings
+See [WireGuard Settings](../configuration/wireguard.md) for field-level details
+and [Troubleshooting](../troubleshooting.md) for connection diagnostics.

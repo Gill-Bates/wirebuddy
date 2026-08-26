@@ -22,10 +22,6 @@ data_local/
 *.db
 *.mmdb
 
-# Vendor Assets (downloaded during Docker build)
-app/static/vendor/fonts/
-app/static/vendor/images/flags/
-
 # Testing & Linting
 .mypy_cache/
 .pytest_cache/
@@ -51,8 +47,9 @@ ui-lint-summary.latest.json
 .DS_Store
 Thumbs.db
 
-# Environment (keep settings.env as template)
+# Environment (keep .env-example as template)
 .env
+settings.env
 
 # Documentation
 site/

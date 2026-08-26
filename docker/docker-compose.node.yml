@@ -1,15 +1,3 @@
-# WireBuddy Node — Docker Compose
-#
-# IMPORTANT: Enable IP forwarding on the host FIRST:
-#   sudo sysctl -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1
-#
-# Workflow:
-#   1. Create node in master UI → copy enrollment token
-#   2. Set WIREBUDDY_ENROLLMENT_TOKEN in .env file
-#   3. docker compose up -d
-#
-# Node runs WireGuard only — no web UI, no database, no DNS.
-
 services:
   wirebuddy-node:
     image: giiibates/wirebuddy:latest
@@ -22,7 +10,8 @@ services:
       - NET_ADMIN
     environment:
       SERVER_MODE: node
-      WIREBUDDY_ENROLLMENT_TOKEN: "${WIREBUDDY_ENROLLMENT_TOKEN}"
+      WIREBUDDY_ENROLLMENT_TOKEN: "${WIREBUDDY_ENROLLMENT_TOKEN:?Set WIREBUDDY_ENROLLMENT_TOKEN in .env}"
+      WIREBUDDY_ENROLLMENT_VERIFY_KEY: "${WIREBUDDY_ENROLLMENT_VERIFY_KEY:?Set WIREBUDDY_ENROLLMENT_VERIFY_KEY in .env}"
       WIREBUDDY_DATA_DIR: /app/data
       LOG_LEVEL: INFO
       TZ: ${TZ:-Etc/UTC}
@@ -36,4 +25,4 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     volumes:
-      - ./data:/app/data  # Stores node certificate and state
+      - ./data:/app/data

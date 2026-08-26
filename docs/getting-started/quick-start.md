@@ -29,8 +29,8 @@ cd wirebuddy
 Copy the example environment file and edit it:
 
 ```bash
-cp .env-example settings.env
-nano settings.env  # or use your preferred editor
+cp .env-example .env
+nano .env  # or use your preferred editor
 ```
 
 **Required:** Set a secure `WIREBUDDY_SECRET_KEY`:
@@ -43,7 +43,7 @@ openssl rand -base64 32
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-??? example "Example settings.env"
+??? example "Example .env"
     ```bash
     # Required: Encryption key for secrets & sessions
     WIREBUDDY_SECRET_KEY=your-generated-secret-key-here
@@ -94,13 +94,13 @@ cat /proc/sys/net/netfilter/nf_conntrack_acct
 ## Step 5: Start WireBuddy
 
 ```bash
-docker compose up -d
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
 Check the logs:
 
 ```bash
-docker compose logs -f wirebuddy
+docker compose --env-file .env -f docker/docker-compose.yml logs -f wirebuddy
 ```
 
 ## Step 6: Access the Web Interface
@@ -289,7 +289,7 @@ Now that WireBuddy is running:
     **Container won't start:**
     ```bash
     # Check logs
-    docker compose logs wirebuddy
+    docker compose --env-file .env -f docker/docker-compose.yml logs wirebuddy
     
     # Verify network mode
     docker inspect wirebuddy | grep NetworkMode
@@ -315,9 +315,9 @@ To update to the latest version:
 
 ```bash
 cd wirebuddy
-docker compose pull
-docker compose up -d
+docker compose --env-file .env -f docker/docker-compose.yml pull
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
 !!! info "Data Persistence"
-    Your configuration and data are stored in the `data/` directory and persist across updates.
+    Your configuration and data are stored in `docker/data/` and persist across updates.

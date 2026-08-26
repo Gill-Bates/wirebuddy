@@ -52,13 +52,8 @@ External hardware keys:
 
 ## Browser Support
 
-| Browser | Version | Support |
-|---------|---------|---------|
-| Chrome | 109+ | ✅ Full |
-| Edge | 109+ | ✅ Full |
-| Safari | 16+ | ✅ Full |
-| Firefox | 119+ | ✅ Full |
-| Brave | 1.51+ | ✅ Full |
+Use a current browser with WebAuthn support. Exact authenticator capabilities
+depend on the browser, operating system, and security key rather than WireBuddy.
 
 ## Setup and Usage
 
@@ -104,11 +99,15 @@ Passkeys are optional in the current implementation. Password login remains avai
 
 Passkey RP behavior is controlled by environment variables:
 
-- `PASSKEY_RP_ID`: Optional RP ID override. If unset, WireBuddy derives it from the request host.
+- `PASSKEY_RP_ID`: Optional RP ID override. For non-localhost deployments,
+  configure this or `WIREBUDDY_PUBLIC_ORIGIN`; localhost can use the request
+  host fallback.
 - `PASSKEY_RP_NAME`: Optional RP display name (default: `WireBuddy`).
 - `MAX_PASSKEYS_PER_USER`: Maximum passkeys per account (default: `20`).
 
-Origin is validated from the incoming request scheme and host.
+For non-localhost deployments, the expected origin comes from
+`WIREBUDDY_PUBLIC_ORIGIN`. The value must exactly match the browser-visible
+scheme, host, and port.
 
 ## API Endpoints (Current)
 
@@ -140,7 +139,7 @@ Origin is validated from the incoming request scheme and host.
 
 **Solutions:**
 
-- Use supported browser (Chrome 109+, Safari 16+, Firefox 119+)
+- Use a current browser with WebAuthn support
 - Access via HTTPS (not HTTP)
 - Check authenticator is available and functional
 

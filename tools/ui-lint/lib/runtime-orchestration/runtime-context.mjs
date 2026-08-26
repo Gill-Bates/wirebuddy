@@ -4,6 +4,7 @@
 //
 
 import crypto from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 
 import { createRuntimeScheduler } from './runtime-scheduler.mjs';
@@ -86,6 +87,15 @@ export function whyWasThisProfileChosen(runtimeProfile) {
 
 export function buildRunPaths({ scriptDir, sessionId, outputDir, screenshotDir = 'screenshots', runtimeProfile = null } = {}) {
     const resolvedOutputDir = path.resolve(outputDir || `/tmp/wirebuddy-ui-lint-${sessionId}`);
+
+    // The screenshot dir under this path gets recursively deleted at the end
+    // of a run (see run-ui-lint.mjs). Reject anything that isn't a plausible,
+    // dedicated output directory so a misconfigured UI_LINT_OUTPUT_DIR can't
+    // turn that cleanup into an accidental rm -rf of something real.
+    const forbiddenRoots = new Set([path.parse(resolvedOutputDir).root, os.homedir(), scriptDir].filter(Boolean));
+    if (forbiddenRoots.has(resolvedOutputDir)) {
+        throw new Error(`UI_LINT_OUTPUT_DIR must not be a filesystem root, the home directory, or the ui-lint script directory (got: ${resolvedOutputDir})`);
+    }
 
     if (path.isAbsolute(screenshotDir)) {
         throw new Error('UI_LINT_SCREENSHOT_DIR must be a relative path');

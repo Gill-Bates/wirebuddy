@@ -1,592 +1,432 @@
 # Environment Variables
 
-WireBuddy can be configured via environment variables in `settings.env` (Docker) or `.env` (local development).
+WireBuddy reads configuration from process environment variables. Local starts
+through `python run.py` also load `.env`; the configuration loader retains
+`settings.env` as a lower-precedence compatibility source. Docker Compose uses
+the root `.env` file explicitly in the documented commands.
 
-## Required Variables
-
-### WIREBUDDY_SECRET_KEY
-
-**Required** encryption key for secrets and session management.
-
-```bash
-WIREBUDDY_SECRET_KEY=your_generated_secret_key_here
-```
-
-**Generate a secure key:**
+## Quick Configuration
 
 ```bash
-# Using OpenSSL
-openssl rand -base64 32
-
-# Using Python
+cp .env-example .env
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-!!! danger "Security Critical"
-    - **Never commit this to version control**
-    - **Use a different key for each environment**
-    - **Regenerating this key will invalidate all sessions and encrypted data**
-
-## Optional Variables
-
-### LOG_LEVEL
-
-Logging verbosity level.
+Store the generated value in `.env`:
 
 ```bash
+WIREBUDDY_SECRET_KEY=<generated-value>
 LOG_LEVEL=INFO
+TZ=Etc/UTC
 ```
 
-Options:
-
-- `DEBUG` - Verbose logging (development only)
-- `INFO` - Standard logging (recommended)
-- `WARNING` - Warnings and errors only
-- `ERROR` - Errors only
-- `CRITICAL` - Critical errors only
-
-Default: `INFO`
-
-### PORT
-
-Web server port.
+Start the supplied Docker deployment with:
 
 ```bash
-PORT=8000
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
-Default: `8000`
+## Core Application
 
-!!! note
-    When using `network_mode: host`, the port must be available on the host.
+### `WIREBUDDY_SECRET_KEY`
 
-### HOST
-
-Web server bind address.
+Required in master mode. It encrypts WireGuard private keys, preshared keys,
+OTP secrets, and other sensitive values and must contain at least 32 UTF-8
+bytes.
 
 ```bash
-HOST=0.0.0.0
+WIREBUDDY_SECRET_KEY=<generated-value>
 ```
 
-Options:
-
-- `0.0.0.0` - Listen on all interfaces (default)
-- `127.0.0.1` - Localhost only
-- Specific IP - Bind to specific interface
-
-Default: `0.0.0.0`
-
-### UVICORN_WORKERS
-
-Number of Uvicorn worker processes.
+Generate it with either:
 
 ```bash
-UVICORN_WORKERS=1
+openssl rand -base64 32
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-Default: `1`
+!!! danger
+    Never commit, rotate casually, or lose this key. Existing encrypted data
+    cannot be recovered with a different key.
 
-WireBuddy web mode is single-worker only. Values greater than `1` are not
-supported and are forced back to `1` by the Docker entrypoint.
+The key is not required in node mode because enrolled nodes authenticate with
+their node credentials.
 
-### SERVER_MODE
+### `SERVER_MODE`
 
-Deployment mode for multi-node architecture.
+Selects the process role:
+
+- `master`: web UI, API, database, DNS, scheduling, and node management
+- `node`: remote WireGuard node daemon without the web UI
+
+Default: `master`.
+
+### `LOG_LEVEL`
+
+Accepted values: `CRITICAL`, `ERROR`, `WARNING`, `INFO`, and `DEBUG`.
+
+Default: `INFO`. Invalid values fall back to `INFO`.
+
+### `TZ`
+
+IANA time-zone name used by scheduled tasks and UI formatting.
 
 ```bash
-SERVER_MODE=master
+TZ=Europe/Berlin
 ```
 
-Options:
+Docker default: `Etc/UTC`.
 
-- `master` - Full application with web UI, database, and API (default)
-- `node` - Lightweight WireGuard-only mode for remote nodes
+### `WIREBUDDY_DATA_DIR`
 
-Default: `master`
+Base directory for persistent data. The database, TSDB, DNS files,
+certificates, and GeoIP databases live below it.
 
-!!! info "Multi-Node Deployment"
-    See [Multi-Node Deployment](../features/multi-node.md) for complete setup guide.
+- Local default: `<project>/data`
+- Supplied Docker Compose value: `/app/data`
 
-### WIREBUDDY_ENROLLMENT_TOKEN
+## Web Server
 
-Node enrollment token (node mode only).
+### `WIREBUDDY_HOST`
+
+Docker-entrypoint override for the web bind address.
+
+Without this override, the entrypoint reads **Only listen on Localhost** from
+the database and otherwise listens on `0.0.0.0` for a fresh installation.
 
 ```bash
-WIREBUDDY_ENROLLMENT_TOKEN=eyJub2RlX2lkIjoiYWJjZGVmIiwiZXhwIjoxNzQwMDAwMDAwfQ.a1b2c3d4...
+WIREBUDDY_HOST=127.0.0.1
 ```
 
-**Required when `SERVER_MODE=node`**. Obtain this token from the master's Nodes page.
+### `WIREBUDDY_PORT`
 
-!!! danger "Single-Use Token"
-    The token is invalidated after successful enrollment. Store securely.
+Docker-entrypoint override for the GUI port. Valid range: `1`–`65535`.
 
-### WIREBUDDY_MASTER_URL
-
-Master server API URL (node mode only).
+Without this override, the entrypoint uses the database setting **HTTP Port
+(GUI)**. Fresh-installation default: `8000`.
 
 ```bash
-WIREBUDDY_MASTER_URL=https://master.example.com
+WIREBUDDY_PORT=8080
 ```
 
-Legacy variable for node mode.
+`HOST` and `PORT` are not WireBuddy configuration variables.
 
-Current node enrollment tokens already include the master URL, so this
-variable is usually not needed.
+### `UVICORN_WORKERS`
 
-!!! tip "Firewall Configuration"
-    Ensure the node can reach the master's sync endpoints: `/api/nodes/enroll`, `/api/nodes/heartbeat`, `/api/nodes/config`, `/api/nodes/events`
+The web application supports one worker only. The Docker entrypoint forces any
+other value back to `1` because authentication and runtime coordination contain
+process-local state.
 
-### WIREBUDDY_ENROLLMENT_VERIFY_KEY
+Default: `1`.
 
-Optional enrollment token HMAC verification key (node mode only).
+### `UVICORN_GRACEFUL_SHUTDOWN_TIMEOUT`
+
+Docker Uvicorn graceful-shutdown timeout in seconds. Accepted range: `1`–`300`.
+
+Default: `8`.
+
+### `WIREBUDDY_DEV_RELOAD`
+
+Set to `true`, `1`, or `yes` to enable Uvicorn reload when starting through
+`python run.py`. Development only.
+
+## Reverse Proxy and Origin Handling
+
+Forwarded-header trust is intentionally split between Uvicorn and the
+application. Configure both layers for a proxy that does not connect through
+loopback.
+
+### `WIREBUDDY_TRUST_PROXY_HEADERS`
+
+Docker-entrypoint switch for Uvicorn's forwarded-header processing.
+
+Default in Docker: `1`.
+
+### `FORWARDED_ALLOW_IPS`
+
+Comma-separated proxy IPs or CIDRs that Uvicorn may trust for
+`X-Forwarded-*`. Default in the Docker entrypoint: `127.0.0.1`.
 
 ```bash
-WIREBUDDY_ENROLLMENT_VERIFY_KEY=your_hmac_verify_key
+FORWARDED_ALLOW_IPS=127.0.0.1,172.18.0.0/16
 ```
 
-If set, the node verifies enrollment token signatures locally before
-contacting the master. In production, this is required by the node daemon.
+`*` is rejected by the Docker entrypoint.
 
-### WIREBUDDY_MASTER_CA_FILE
+### `TRUSTED_PROXY_CIDRS`
 
-Path to a custom CA certificate file for master TLS verification (node mode only).
+Application-level proxy CIDRs used for client-IP extraction and HTTPS-cookie
+detection.
+
+Default: `127.0.0.0/8,::1/128`.
+
+### `WIREBUDDY_PUBLIC_ORIGIN`
+
+Canonical public origin used by CSRF and passkey origin handling.
+
+```bash
+WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
+```
+
+### `WIREBUDDY_CSRF_ALLOWED_ORIGINS`
+
+Comma-separated additional origins accepted by CSRF origin validation.
+
+```bash
+WIREBUDDY_CSRF_ALLOWED_ORIGINS=https://vpn.example.com
+```
+
+### `WIREBUDDY_ALLOWED_HOSTS`
+
+Optional comma-separated Host-header allowlist. When unset, Trusted Host
+middleware is not installed.
+
+```bash
+WIREBUDDY_ALLOWED_HOSTS=vpn.example.com,localhost
+```
+
+### `FORCE_HTTPS_COOKIES`
+
+Forces the `Secure` attribute on authentication and CSRF cookies when HTTPS
+detection through the proxy is unavailable.
+
+Default: disabled.
+
+### `WIREBUDDY_FORCE_HSTS`
+
+Always emits HSTS even when TLS terminates at a proxy and the upstream request
+appears as HTTP.
+
+Default: disabled. HSTS is otherwise emitted when the request is detected as
+HTTPS.
+
+### `WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS`
+
+Additional proxy CIDRs whose forwarded client IP is trusted specifically for
+the public `/status` page. Loopback is trusted automatically.
+
+```bash
+WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS=192.168.1.10/32
+```
+
+### `WIREBUDDY_NODE_MTLS_PROXY_CIDRS`
+
+Master-side CIDRs allowed to supply the node client-certificate fingerprint
+header for node synchronization. Configure this only when a trusted TLS proxy
+terminates node mutual TLS.
+
+## Passkeys
+
+### `PASSKEY_RP_ID`
+
+Optional WebAuthn relying-party ID. When unset, WireBuddy derives it from the
+request host.
+
+### `PASSKEY_RP_NAME`
+
+WebAuthn relying-party display name. Default: `WireBuddy`.
+
+### `MAX_PASSKEYS_PER_USER`
+
+Maximum registered passkeys per account. Values are clamped to `1`–`100`.
+
+Default: `20`.
+
+## Node Mode
+
+### `WIREBUDDY_ENROLLMENT_TOKEN`
+
+Required for first node enrollment. Create it from the master's **Nodes** page.
+The token contains the master URL, node ID, and bootstrap API secret.
+
+### `WIREBUDDY_ENROLLMENT_VERIFY_KEY`
+
+HMAC key used to verify the enrollment token locally. Required for normal
+first enrollment and generated alongside the enrollment token.
+
+### `WIREBUDDY_MASTER_CA_FILE`
+
+Optional path to a custom CA file used to verify the master's HTTPS
+certificate. System CAs are used when unset.
 
 ```bash
 WIREBUDDY_MASTER_CA_FILE=/app/data/certs/master-ca.pem
 ```
 
-If unset, system CA certificates are used.
+### `WIREBUDDY_NODE_SYNC_INTERVAL`
 
-### WIREBUDDY_NODE_SYNC_INTERVAL
+Normal synchronization interval in seconds. Minimum: `5`; default: `30`.
 
-Normal sync interval in seconds (node mode only).
+### `WIREBUDDY_NODE_SYNC_INTERVAL_FAST`
 
-```bash
-WIREBUDDY_NODE_SYNC_INTERVAL=30
-```
+Fallback interval while SSE is disconnected. Minimum: `1`; default: `5`.
 
-Default: `30`
+### `WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS`
 
-### WIREBUDDY_NODE_SYNC_INTERVAL_FAST
+Enrollment retries after transient failures. Minimum: `1`; default: `3`.
 
-Fast sync interval in seconds used when SSE is disconnected (node mode only).
+### `WIREBUDDY_NO_FIREWALL_FIX`
 
-```bash
-WIREBUDDY_NODE_SYNC_INTERVAL_FAST=5
-```
+Disables the node's automatic DNS-related firewall correction when set to
+`1`, `true`, or `yes`.
 
-Default: `5`
+Default: disabled, so the correction is active.
 
-### WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS
+### Node Development Overrides
 
-Number of enrollment retry attempts on transient errors (node mode only).
+The following switches weaken enrollment or transport validation and are for
+isolated development/migration scenarios only:
 
-```bash
-WIREBUDDY_ENROLLMENT_RETRY_ATTEMPTS=3
-```
+- `WIREBUDDY_ALLOW_INSECURE_MASTER_HTTP=1`
+- `WIREBUDDY_ALLOW_UNVERIFIED_ENROLLMENT_TOKEN=1`
+- `WIREBUDDY_ALLOW_LEGACY_NODE_SECRET=1`
 
-Default: `3` (minimum effective value: `1`)
+Do not enable them in production.
 
-### WIREBUDDY_NO_FIREWALL_FIX
+`WIREBUDDY_MASTER_URL` is not read by the current node daemon; the master URL
+is carried in the enrollment token and then persisted in node state.
 
-Disable automatic iptables DNS rule adjustments on node startup.
+## GeoIP
 
-```bash
-WIREBUDDY_NO_FIREWALL_FIX=1
-```
+### `WIREBUDDY_GEOIP_DB_PATH`
 
-Default: disabled (automatic firewall fix is enabled)
+Explicit GeoLite2 City database path. Default:
+`<WIREBUDDY_DATA_DIR>/geolite2/GeoLite2-City.mmdb`.
 
-### WIREBUDDY_SKIP_NETWORK_CHECK
+### `WIREBUDDY_ASN_DB_PATH`
 
-Skip container network mode verification (CI/CD only).
+Explicit GeoLite2 ASN database path. Default:
+`<WIREBUDDY_DATA_DIR>/geolite2/GeoLite2-ASN.mmdb`.
 
-```bash
-WIREBUDDY_SKIP_NETWORK_CHECK=1
-```
+### `WIREBUDDY_GEOIP_CITY_DOWNLOAD_URL`
 
-Default: Not set
+Optional HTTPS download URL for the City database.
 
-!!! warning
-  Only use for testing. In Docker, WireBuddy now fails startup closed when it cannot verify host networking.
+### `WIREBUDDY_GEOIP_ASN_DOWNLOAD_URL`
 
-### WIREBUDDY_CLEANUP_STALE_INTERFACES
+Optional HTTPS download URL for the ASN database.
 
-Opt in to destructive cleanup of active WireGuard interfaces without matching config files.
+### `WIREBUDDY_GEOIP_ALLOWED_HOSTS`
 
-```bash
-WIREBUDDY_CLEANUP_STALE_INTERFACES=1
-```
+Additional comma-separated HTTPS hosts allowed for custom GeoIP URLs and
+redirects. The built-in GitHub hosts remain allowed.
 
-Default: Not set
+### `WIREBUDDY_GEOIP_CACHE_SIZE`
 
-!!! warning
-  Disabled by default. Enable this only when you want WireBuddy to delete orphaned WireGuard interfaces during startup.
+In-memory GeoIP lookup cache size, clamped to `128`–`65536`.
 
-### WIREBUDDY_FORCE_HSTS
+Default: `4096`.
 
-Always emit the HSTS response header, even when TLS terminates in a reverse proxy and the app sees plain HTTP upstream.
+## Security and Runtime Tuning
 
-```bash
-WIREBUDDY_FORCE_HSTS=1
-```
+### `WIREBUDDY_CLEANUP_STALE_INTERFACES`
 
-Default: Not set
+Opt-in cleanup of active WireBuddy-managed WireGuard interfaces that no longer
+have matching configuration files. Disabled by default because cleanup is
+destructive.
 
-### DATABASE_PATH
+### `WIREBUDDY_MANAGE_RESOLV_CONF`
 
-Custom database location.
+Allows WireBuddy to point `/etc/resolv.conf` at its managed Unbound resolver.
 
-```bash
-DATABASE_PATH=/custom/path/wirebuddy.db
-```
+Default: disabled.
 
-Default: `data/wirebuddy.db`
+### `WIREBUDDY_RATE_LIMIT_UI_HEAVY`
 
-### DATA_DIR
+SlowAPI rate string for expensive UI routes. Default: `60/minute`.
 
-Base data directory.
+### Login Lockout Tuning
 
-```bash
-DATA_DIR=/custom/data
-```
+Login lockouts use three policies. Defaults are:
 
-Default: `data/`
+| Variable | Default |
+|---|---:|
+| `WIREBUDDY_LOGIN_IP_MIN_FAILURES` | `5` |
+| `WIREBUDDY_LOGIN_IP_BASE_LOCKOUT_SECONDS` | `30` |
+| `WIREBUDDY_LOGIN_IP_MAX_LOCKOUT_SECONDS` | `86400` |
+| `WIREBUDDY_LOGIN_USER_IP_MIN_FAILURES` | `3` |
+| `WIREBUDDY_LOGIN_USER_IP_BASE_LOCKOUT_SECONDS` | `30` |
+| `WIREBUDDY_LOGIN_USER_IP_MAX_LOCKOUT_SECONDS` | `3600` |
+| `WIREBUDDY_LOGIN_USERNAME_MIN_FAILURES` | `20` |
+| `WIREBUDDY_LOGIN_USERNAME_BASE_LOCKOUT_SECONDS` | `60` |
+| `WIREBUDDY_LOGIN_USERNAME_MAX_LOCKOUT_SECONDS` | `300` |
 
-### TSDB_PATH
+These values must be positive integers. Route-level request limits remain
+defined by the application.
 
-Time-series database location.
+### `WIREBUDDY_PBKDF2_ITERATIONS`
 
-```bash
-TSDB_PATH=/custom/tsdb
-```
+PBKDF2 work factor used by vault key derivation. Default: `480000`; values are
+clamped to `310000`–`2000000`.
 
-Default: `data/tsdb/`
+Changing this value after encrypted data has been written can prevent existing
+vault values from being decrypted. Treat it as an immutable deployment choice.
 
-### GEOIP_DATA_DIR
+### `WIREBUDDY_DEPLOYMENT_ID`
 
-GeoLite2 database directory.
+Optional deployment-specific vault derivation context. Changing or removing it
+after encrypted values exist makes those values unreadable.
 
-```bash
-GEOIP_DATA_DIR=/custom/geoip
-```
+### `WIREBUDDY_RUNTIME_DIR`
 
-Default: `data/geolite2/`
+Directory for the process banner lock. Default: `/run/wirebuddy`.
 
-### DNS_LOG_PATH
+## Development and CI
 
-Unbound DNS log file location.
+### `WIREBUDDY_SKIP_NETWORK_CHECK`
 
-```bash
-DNS_LOG_PATH=/var/log/unbound/queries.log
-```
+Skips Docker host-network verification. Use only in tests or CI; production
+Compose does not set it.
 
-Default: `data/dns/queries.log`
+### `WIREBUDDY_TEST_MODE` and `WIREBUDDY_MIN_GEOIP_SIZE`
 
-### CERT_DIR
+Relax GeoIP fixture size checks for tests. They are not production settings.
 
-ACME certificate storage directory.
+### `TESTING`
 
-```bash
-CERT_DIR=/custom/certs
-```
+Used by test helpers and passkey test paths. Do not enable in production.
 
-Default: `data/certs/`
+## Settings Managed in the UI
 
-## Advanced Variables
+The following are database settings, not environment variables:
 
-### WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS
+- GUI port and localhost-only binding (unless overridden by
+  `WIREBUDDY_PORT`/`WIREBUDDY_HOST` in Docker)
+- Swagger enablement
+- public status-page enablement
+- WireGuard, DNS, speed-test, backup, and retention settings
 
-Comma-separated list of trusted proxy CIDRs for the `/status` endpoint.
-
-```bash
-WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS=127.0.0.1/32,192.168.1.10/32
-```
-
-Default: unset
-
-Behavior:
-
-- Loopback proxy hops are trusted automatically
-- Other proxy hops are trusted only when listed here
-- Used for accepting `X-Forwarded-For` or `X-Real-IP` on `/status`
-
-### SESSION_COOKIE_NAME
-
-Custom session cookie name.
-
-```bash
-SESSION_COOKIE_NAME=wirebuddy_session
-```
-
-Default: `wirebuddy_session`
-
-### SESSION_COOKIE_SECURE
-
-Require HTTPS for session cookies.
-
-```bash
-SESSION_COOKIE_SECURE=true
-```
-
-Default: `false` (auto-detect when behind reverse proxy)
-
-### SESSION_COOKIE_HTTPONLY
-
-Prevent JavaScript access to session cookies.
-
-```bash
-SESSION_COOKIE_HTTPONLY=true
-```
-
-Default: `true` (recommended)
-
-### SESSION_COOKIE_SAMESITE
-
-SameSite cookie attribute.
-
-```bash
-SESSION_COOKIE_SAMESITE=Lax
-```
-
-Options:
-
-- `Strict` - Strictest (may break some workflows)
-- `Lax` - Balanced (recommended)
-- `None` - Least strict (requires `SESSION_COOKIE_SECURE=true`)
-
-Default: `Lax`
-
-### RATELIMIT_ENABLED
-
-Enable rate limiting.
-
-```bash
-RATELIMIT_ENABLED=true
-```
-
-Default: `true`
-
-### RATELIMIT_LOGIN_ATTEMPTS
-
-Maximum login attempts before lockout.
-
-```bash
-RATELIMIT_LOGIN_ATTEMPTS=5
-```
-
-Default: `5`
-
-### RATELIMIT_LOGIN_WINDOW
-
-Login rate limit window (minutes).
-
-```bash
-RATELIMIT_LOGIN_WINDOW=15
-```
-
-Default: `15`
-
-### SWAGGER_ENABLED
-
-Enable Swagger/OpenAPI documentation endpoint.
-
-```bash
-SWAGGER_ENABLED=false
-```
-
-Default: `true` (can disable in production)
-
-Access at: `http://localhost:8000/swagger`
-
-### CORS_ORIGINS
-
-Allowed CORS origins (comma-separated).
-
-```bash
-CORS_ORIGINS=https://vpn.example.com,https://admin.example.com
-```
-
-Default: Not set (CORS disabled)
-
-### TZ
-
-Timezone for scheduled tasks. Scheduled backups run at 03:00 in the resolved application timezone, using `TZ` when set and otherwise falling back to the system timezone configuration. Uses standard IANA timezone names.
-
-```bash
-TZ=America/New_York
-```
-
-See: [List of tz database time zones](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)
-
-Default: `Etc/UTC`
-
-## Example Configuration Files
-
-### Production (settings.env)
-
-```bash
-# Required
-WIREBUDDY_SECRET_KEY=<generated-secret-key>
-
-# Application
-LOG_LEVEL=INFO
-PORT=8000
-WORKERS=4
-
-# Security
-SESSION_COOKIE_SECURE=true
-RATELIMIT_ENABLED=true
-SWAGGER_ENABLED=false
-
-# Optional
-TZ=America/New_York
-```
-
-### Development (.env)
-
-```bash
-# Required
-WIREBUDDY_SECRET_KEY=dev-secret-key-change-me
-
-# Application
-LOG_LEVEL=DEBUG
-PORT=8000
-WORKERS=1
-
-# Security (relaxed for dev)
-SESSION_COOKIE_SECURE=false
-RATELIMIT_ENABLED=false
-SWAGGER_ENABLED=true
-
-# Optional
-DATA_DIR=./dev-data
-```
-
-### Docker Compose
-
-```yaml
-services:
-  wirebuddy:
-    image: giiibates/wirebuddy:latest
-    env_file:
-      - settings.env
-    environment:
-      - LOG_LEVEL=INFO
-      - PORT=8000
-```
+Variables such as `SWAGGER_ENABLED`, `SESSION_COOKIE_*`, `RATELIMIT_*`,
+`CORS_ORIGINS`, `HOST`, `PORT`, and `WORKERS` are not read by the current
+application.
 
 ## Precedence
 
-Environment variables follow this precedence (highest to lowest):
+### Local `python run.py`
 
-1. Docker Compose `environment` section
-2. Docker Compose `env_file`
-3. Shell environment
-4. `.env` file
-5. Application defaults
+1. Existing process environment
+2. Root `.env`
+3. Compatibility `settings.env`
+4. Application defaults and database settings
 
-## Security Best Practices
+### Docker Compose
 
-### Secret Management
+1. Compose `environment` entries
+2. Values interpolated from the file supplied with `--env-file`
+3. Image/entrypoint defaults and database settings
 
-**Don't:**
-
-- ❌ Commit secrets to Git
-- ❌ Use weak secrets (`admin`, `password123`)
-- ❌ Reuse secrets across environments
-- ❌ Share secrets in plain text (email, Slack)
-
-**Do:**
-
-- ✅ Generate strong random secrets
-- ✅ Use different secrets per environment
-- ✅ Store secrets in secure vault (1Password, Bitwarden, Vault)
-- ✅ Rotate secrets periodically
-- ✅ Use `.env.example` for documentation (no real secrets)
-
-### File Permissions
-
-Protect environment files:
+## Verifying Effective Configuration
 
 ```bash
-# settings.env should be readable only by owner
-chmod 600 settings.env
-
-# Verify
-ls -la settings.env
-# -rw------- 1 user user 123 Mar 15 10:00 settings.env
+docker compose --env-file .env -f docker/docker-compose.yml config
+docker compose --env-file .env -f docker/docker-compose.yml exec wirebuddy env | sort
 ```
 
-### Docker Secrets
+Be careful when sharing this output because it contains the secret key and
+possibly enrollment credentials.
 
-For Docker Swarm, use Docker secrets:
+## Related
 
-```yaml
-services:
-  wirebuddy:
-    secrets:
-      - wirebuddy_secret_key
-    environment:
-      - WIREBUDDY_SECRET_KEY_FILE=/run/secrets/wirebuddy_secret_key
-
-secrets:
-  wirebuddy_secret_key:
-    external: true
-```
-
-## Troubleshooting
-
-### Changes Not Applied
-
-**Problem:** Environment variable changes not taking effect
-
-**Solutions:**
-
-1. Restart container:
-   ```bash
-   docker compose restart wirebuddy
-   ```
-
-2. Verify variable is set:
-   ```bash
-   docker compose exec wirebuddy env | grep WIREBUDDY
-   ```
-
-3. Check for typos in variable names
-
-### Invalid Secret Key
-
-**Error:** `Failed to decrypt data`
-
-**Cause:** `WIREBUDDY_SECRET_KEY` changed or lost
-
-**Solutions:**
-
-1. Restore correct secret key from backup
-2. Or reinitialize database (loses encrypted data):
-   ```bash
-   docker compose down
-   rm data/wirebuddy.db
-   docker compose up -d
-   ```
-
-### Port Already in Use
-
-**Error:** `Address already in use`
-
-**Solutions:**
-
-1. Change `PORT` to unused port
-2. Or stop conflicting service:
-   ```bash
-   sudo lsof -i :8000
-   sudo kill <PID>
-   ```
-
-## Next Steps
-
-- [WireGuard Configuration](wireguard.md)
-- [DNS Configuration](dns.md)
+- [Docker Setup](../getting-started/docker.md)
 - [Security Configuration](security.md)
-- [Best Practices](../security/best-practices.md)
+- [Multi-Node Deployment](../features/multi-node.md)

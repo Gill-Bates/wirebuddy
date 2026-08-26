@@ -135,7 +135,7 @@ export function buildAccessibilityPolicy() {
                 category: 'accessibility',
                 build(context) {
                     const findings = [];
-                    const count = context.metrics.clickTargetsTooSmall?.length || 0;
+                    const count = context.metrics.clickTargetsTooSmallTotal ?? (context.metrics.clickTargetsTooSmall?.length || 0);
                     if (count) {
                         findings.push({
                             id: 'click-target-too-small',

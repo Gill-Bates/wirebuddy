@@ -478,14 +478,14 @@ const WireBuddy = {
         this.loadDashboard();
     },
     
-    async loadDashboard() {
-        const response = await fetch('/api/metrics/dashboard');
+    async loadPeers() {
+        const response = await fetch('/api/wireguard/stats/peers-enriched');
         const data = await response.json();
-        this.updateDashboard(data);
+        this.updatePeers(data.data);
     },
     
-    updateDashboard(data) {
-        document.getElementById('peer-count').textContent = data.peers.total;
+    updatePeers(peers) {
+        document.getElementById('peer-count').textContent = peers.length;
         // ...
     }
 };
@@ -540,7 +540,7 @@ RUN useradd -m wirebuddy
 USER wirebuddy
 
 # Start application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
 ### Docker Compose
@@ -554,8 +554,8 @@ services:
       - NET_ADMIN
     volumes:
       - ./data:/app/data
-    env_file:
-      - settings.env
+    environment:
+      WIREBUDDY_SECRET_KEY: "${WIREBUDDY_SECRET_KEY:?Set WIREBUDDY_SECRET_KEY in .env}"
 ```
 
 ## Performance Considerations

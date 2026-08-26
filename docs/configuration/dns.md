@@ -114,18 +114,16 @@ Custom rules use AdGuard filter syntax:
 
 ### Per-Client Rules
 
-Apply rules to specific clients using IP/CIDR scope:
+Apply rules to specific clients by appending an IP/CIDR scope to each rule:
 
 ```adblock
-! Client: John's Phone (10.13.13.2/32)
-! $client=10.13.13.2/32
-||facebook.com^
-||instagram.com^
-||tiktok.com^
+! John's Phone
+||facebook.com^$client=10.13.13.2/32
+||instagram.com^$client=10.13.13.2/32
+||tiktok.com^$client=10.13.13.2/32
 
-! Client: Work Laptop (10.13.13.3/32)
-! $client=10.13.13.3/32
-@@||corporate-analytics.work.com^
+! Work Laptop
+@@||corporate-analytics.work.com^$client=10.13.13.3/32
 ```
 
 ### Rule Priority
@@ -157,7 +155,7 @@ Specify both IPv4 and IPv6 upstream servers:
 
 Configure WireGuard interfaces with both IPv4 and IPv6:
 
-**Settings → Interfaces → [Interface Name]**
+**Settings → WireGuard → Interfaces → [Interface Name]**
 
 ```
 Address: 10.8.0.1/24
@@ -338,7 +336,7 @@ If DNS settings don't apply:
 
 1. Check Unbound logs:
    ```bash
-   docker compose logs wirebuddy | grep -i unbound
+   docker compose --env-file .env -f docker/docker-compose.yml logs wirebuddy | grep -i unbound
    ```
 
 2. Validate configuration:

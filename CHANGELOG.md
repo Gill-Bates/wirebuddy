@@ -1,3 +1,17 @@
+## [1.5.4] - 2026-08-26
+
+- ``New`` Docker images now build `wg` and `wg-quick` from the current official WireGuard tools source; WireGuard kernel support is provided by the host
+- ``New`` Material Icons, Roboto Flex, and Noto Serif are bundled locally for consistent UI rendering without build-time font downloads
+- ``Fix`` Dashboard counters and traffic metrics now show an em dash for empty values, and empty-card text uses the same muted tone as its icon
+- ``Fix`` Local Docker builds no longer depend on CI-generated build metadata; image health checks and DNSSEC root-key setup are more reliable
+- ``Security`` Debian WireGuard packages are blocked inside the image so only the intended upstream userspace tools are used with the host kernel
+- ``Security`` Local `settings.env` files are excluded from Git and Docker build contexts to prevent accidental inclusion of configuration secrets
+- ``Security`` Updated runtime dependencies, including `cbor2` for WebAuthn, `cryptography`, `fastapi`, `uvicorn`, and `webauthn`
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.5.3] - 2026-06-24
 
 - ``New`` Bootstrap password is now auto-generated on first start and printed to the container log — the `WIREBUDDY_BOOTSTRAP_ADMIN_PASSWORD` environment variable has been removed
@@ -8,9 +22,6 @@
 - ``Security`` Hardened user accounts and OTP recovery codes: brute-force rate limits on user management, recovery codes only via a one-time secure download, and no password hashes or recovery codes in API responses
 - ``Security`` Optional stale-interface cleanup now only removes WireGuard interfaces managed by WireBuddy
 - ``Security`` Stricter Content-Security-Policy and updated dependencies (fastapi 0.138.0, nh3 0.3.6, pydantic-settings 2.14.2)
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.5.2] - 2026-06-16
 
@@ -224,5 +235,4 @@
 
 ## [1.0.0] - 2026-02-19
 - Project initialization
-
 

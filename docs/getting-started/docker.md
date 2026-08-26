@@ -4,456 +4,218 @@ title: Docker Setup
 
 # Docker Setup Guide
 
-Detailed guide for running WireBuddy with Docker.
+WireBuddy's supported container deployment uses Docker host networking on a
+Linux host. The repository contains the master Compose file at
+`docker/docker-compose.yml` and the node Compose file at
+`docker/docker-compose.node.yml`.
 
-## Docker Compose Setup
+## Prerequisites
 
-### Basic Configuration
+- Linux host (amd64 or arm64)
+- Docker Engine and Docker Compose
+- WireGuard support in the host kernel (Linux 5.6+ or a compatible module)
+- `/dev/net/tun`
+- IP forwarding enabled on the host
 
-The included `docker-compose.yml` provides a basic setup:
+Containers share the host kernel. The image therefore supplies `wg` and
+`wg-quick`, but it cannot supply the WireGuard kernel implementation.
 
-```yaml
-services:
-  wirebuddy:
-    image: giiibates/wirebuddy:latest
-    container_name: wirebuddy
-    restart: unless-stopped
-    network_mode: host
-    cap_add:
-      - NET_ADMIN
-    env_file:
-      - settings.env
-    volumes:
-      - ./data:/app/data
-    security_opt:
-      - no-new-privileges:true
-```
+## Docker Compose
 
-### Environment Variables
-
-Create `settings.env`:
+Clone the repository and create the environment file:
 
 ```bash
-# Required: Secret key for encryption
-WIREBUDDY_SECRET_KEY=your_generated_key_here
-
-# Optional: Logging level (DEBUG, INFO, WARNING, ERROR)
-LOG_LEVEL=INFO
-
-# Optional: Skip network mode check (for CI/CD only)
-# WIREBUDDY_SKIP_NETWORK_CHECK=1
+git clone https://github.com/Gill-Bates/wirebuddy.git
+cd wirebuddy
+cp .env-example .env
 ```
 
-## Network Mode: Host
-
-WireBuddy requires `network_mode: host` for several reasons:
-
-1. **WireGuard Interface Management:** Direct access to host network stack
-2. **Conntrack Statistics:** Access to `/proc/net/nf_conntrack` for traffic analytics
-3. **Port Binding:** WireGuard peers connect directly to host interface
-
-!!! warning "Linux Only"
-    `network_mode: host` is fully supported only on Linux. For Windows/macOS, run WireBuddy in a Linux VM.
-
-### Alternative: macvlan Network
-
-For advanced users who need isolated networking:
-
-```yaml
-services:
-  wirebuddy:
-    image: giiibates/wirebuddy:latest
-    networks:
-      - macvlan_net
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-    # ... other config
-
-networks:
-  macvlan_net:
-    driver: macvlan
-    driver_opts:
-      parent: eth0
-    ipam:
-      config:
-        - subnet: 192.168.1.0/24
-          gateway: 192.168.1.1
-```
-
-!!! caution
-    macvlan requires manual configuration and may not support all features.
-
-## Custom Port
-
-To change the web UI port (default: 8000):
-
-### Using Host Network
-
-Edit `settings.env` and add:
+Generate a key and store it as `WIREBUDDY_SECRET_KEY` in `.env`:
 
 ```bash
-PORT=8080
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-Or pass directly in docker-compose.yml:
+The key must contain at least 32 UTF-8 bytes. Keep it unchanged across
+container recreations; changing or losing it makes encrypted WireGuard and OTP
+secrets unreadable.
 
-```yaml
-environment:
-  - PORT=8080
+Start WireBuddy from the repository root:
+
+```bash
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
-### Using Bridge Network (Not Recommended)
+View the bootstrap password and startup status:
 
-```yaml
-services:
-  wirebuddy:
-    image: giiibates/wirebuddy:latest
-    network_mode: bridge
-    ports:
-      - "8080:8000"
-    # ... other config
+```bash
+docker compose --env-file .env -f docker/docker-compose.yml logs -f wirebuddy
 ```
 
-!!! warning
-    Bridge mode limits functionality. Use only if you understand the implications.
+Open `http://<server-ip>:8000` and sign in as `admin` with the generated
+temporary password from the log. The first login requires a password change.
 
-## Volume Mounts
+!!! note "Why the full Compose command?"
+    The Compose file lives in `docker/`, while `.env` lives in the repository
+    root. Passing both paths explicitly makes configuration resolution
+    independent of the current working directory.
 
-### Data Directory
+## Included Compose Security
 
-WireBuddy stores all persistent data in `/app/data`:
+The supplied Compose service uses:
 
-```yaml
-volumes:
-  - ./data:/app/data
+- `network_mode: host`
+- all capabilities dropped except `NET_ADMIN`
+- `no-new-privileges:true`
+- `/dev/net/tun`
+- a 20-second stop grace period
+- bounded JSON-file log rotation
+- a liveness health check against `/health`
+
+Do not switch the service to bridge or macvlan networking. WireBuddy verifies
+host networking at startup because interface management and conntrack
+statistics require the host network namespace.
+
+`WIREBUDDY_SKIP_NETWORK_CHECK=1` is a development/CI escape hatch, not a
+production setting.
+
+## Persistent Data
+
+The Compose file mounts `docker/data/` at `/app/data` in the container.
+
+| Path | Content |
+|---|---|
+| `wirebuddy.db` | Users, interfaces, peers, settings, and node state |
+| `certs/` | ACME certificates and account material |
+| `dns/` | Generated Unbound configuration and DNS query data |
+| `tsdb/` | Traffic, DNS trend, network, and speed-test metrics |
+| `geolite2/` | Downloaded GeoLite2 City and ASN databases |
+
+Back up both `docker/data/` and the secret key. The application also provides
+backup and restore controls under **Settings → Backup**.
+
+## Custom Web Port or Bind Address
+
+The GUI port and localhost-only setting are normally managed under
+**Settings → General → Server Settings** and take effect after restart.
+
+Docker deployments can override them in `.env`:
+
+```bash
+WIREBUDDY_HOST=0.0.0.0
+WIREBUDDY_PORT=8080
 ```
 
-Contents:
+Because host networking is used, no Docker `ports:` mapping is required. The
+selected port must be free on the host.
 
-- `wirebuddy.db` - SQLite database (configuration, users, peers)
-- `certs/` - ACME certificates
-- `dns/` - DNS configuration and logs
-- `tsdb/` - Time-series database (metrics)
-- `geolite2/` - GeoIP databases
+## Reverse Proxy
 
-### Read-Only Root Filesystem (Optional)
+The Docker entrypoint trusts forwarded headers from loopback by default. For a
+same-host Caddy or nginx proxy, keep:
 
-For enhanced security:
-
-```yaml
-services:
-  wirebuddy:
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /run
-    volumes:
-      - ./data:/app/data  # Must be writable
+```bash
+WIREBUDDY_TRUST_PROXY_HEADERS=1
+FORWARDED_ALLOW_IPS=127.0.0.1
 ```
 
-## Docker CLI
+If the proxy connects from another address, replace or extend
+`FORWARDED_ALLOW_IPS` with the exact proxy IP or CIDR. A wildcard (`*`) is
+rejected. Also configure the application-level trusted proxy range used for
+client-IP and HTTPS-cookie detection:
 
-### Basic Run Command
+```bash
+TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1/128
+WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
+```
+
+See [Environment Variables](../configuration/environment.md) and the
+[Installation Guide](installation.md#reverse-proxy) for complete proxy
+examples.
+
+## Docker Run
+
+Compose is recommended. An equivalent basic container can be started with:
 
 ```bash
 docker run -d \
   --name wirebuddy \
   --network host \
+  --cap-drop ALL \
   --cap-add NET_ADMIN \
   --security-opt no-new-privileges:true \
-  -e WIREBUDDY_SECRET_KEY="your_secret_key_here" \
-  -v $(pwd)/data:/app/data \
-  --restart unless-stopped \
+  --stop-timeout 20 \
+  --device /dev/net/tun:/dev/net/tun \
+  -e TZ=Etc/UTC \
+  -e WIREBUDDY_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+  -e WIREBUDDY_DATA_DIR=/app/data \
+  -v wirebuddy-data:/app/data \
+  --restart always \
   giiibates/wirebuddy:latest
 ```
 
-### With Custom Configuration
-
-```bash
-docker run -d \
-  --name wirebuddy \
-  --network host \
-  --cap-add NET_ADMIN \
-  --security-opt no-new-privileges:true \
-  --env-file settings.env \
-  -v $(pwd)/data:/app/data \
-  -v $(pwd)/custom-config.yaml:/app/config.yaml:ro \
-  --restart unless-stopped \
-  giiibates/wirebuddy:latest
-```
-
-## Managing the Container
-
-### Start/Stop
-
-```bash
-# Using Docker Compose
-docker compose start
-docker compose stop
-docker compose restart
-
-# Using Docker CLI
-docker start wirebuddy
-docker stop wirebuddy
-docker restart wirebuddy
-```
-
-### View Logs
-
-```bash
-# Follow logs
-docker compose logs -f wirebuddy
-
-# Last 100 lines
-docker logs --tail 100 wirebuddy
-
-# Since specific time
-docker logs --since 30m wirebuddy
-```
-
-### Access Container Shell
-
-```bash
-# For debugging
-docker compose exec wirebuddy bash
-
-# Or with Docker CLI
-docker exec -it wirebuddy bash
-```
-
-### Update Container
-
-```bash
-# Pull latest image
-docker compose pull
-
-# Restart with new image
-docker compose up -d
-
-# Or with Docker CLI
-docker pull giiibates/wirebuddy:latest
-docker stop wirebuddy
-docker rm wirebuddy
-# Then run with same command as before
-```
-
-## Docker Image Tags
-
-WireBuddy images are available with multiple tags:
-
-| Tag | Description | Use Case |
-|-----|-------------|----------|
-| `latest` | Latest stable release | Production |
-| `1.3` | Major.minor version | Pin to specific version |
-| `1.3.2` | Full version tag | Pin to exact release |
-| `dev` | Development branch | Testing only |
-
-Example:
-
-```yaml
-services:
-  wirebuddy:
-    image: giiibates/wirebuddy:1.3.2  # Pin to specific version
-```
+Persist the generated secret separately before relying on this example for a
+production installation.
 
 ## Health Checks
 
-WireBuddy exposes two unauthenticated probe endpoints:
+Two unauthenticated probes are available:
 
-- `/health` for a lightweight liveness check
-- `/ready` for readiness, including database connectivity, scheduler state, and expected DNS ingestion state
+- `/health`: lightweight liveness check
+- `/ready`: readiness including database, scheduler, and expected DNS
+  ingestion state
 
-For production, prefer `/ready`:
+The supplied Compose file uses `/health`. External orchestration should prefer
+`/ready` when it must wait until application services are operational.
 
-```yaml
-services:
-  wirebuddy:
-    # ... other config
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/ready"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-```
-
-Use `/health` instead if you only want to know whether the web process is up.
-
-## Resource Limits
-
-Limit container resources:
-
-```yaml
-services:
-  wirebuddy:
-    # ... other config
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 256M
-```
-
-## Multi-Stage Setup
-
-For running multiple WireBuddy instances (e.g., dev/staging/prod):
+## Updating
 
 ```bash
-# Directory structure
-wirebuddy/
-├── docker-compose.yml
-├── dev/
-│   ├── settings.env
-│   └── data/
-├── staging/
-│   ├── settings.env
-│   └── data/
-└── prod/
-    ├── settings.env
-    └── data/
+docker compose --env-file .env -f docker/docker-compose.yml pull
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
-```yaml
-# docker-compose.yml
-services:
-  wirebuddy-dev:
-    image: giiibates/wirebuddy:dev
-    env_file: dev/settings.env
-    volumes:
-      - ./dev/data:/app/data
-    environment:
-      - PORT=8001
+Use `latest` for the current stable release or pin an existing full release
+tag from [Docker Hub](https://hub.docker.com/r/giiibates/wirebuddy/tags).
 
-  wirebuddy-staging:
-    image: giiibates/wirebuddy:latest
-    env_file: staging/settings.env
-    volumes:
-      - ./staging/data:/app/data
-    environment:
-      - PORT=8002
-
-  wirebuddy-prod:
-    image: giiibates/wirebuddy:1.3.2
-    env_file: prod/settings.env
-    volumes:
-      - ./prod/data:/app/data
-    environment:
-      - PORT=8000
-```
-
-## Backup and Restore
-
-### Backup Data
+## Managing the Container
 
 ```bash
-# Stop container
-docker compose stop wirebuddy
+# Status
+docker compose --env-file .env -f docker/docker-compose.yml ps
 
-# Create backup
-tar czf wirebuddy-backup-$(date +%Y%m%d).tar.gz data/
+# Restart
+docker compose --env-file .env -f docker/docker-compose.yml restart wirebuddy
 
-# Or using Docker
-docker run --rm \
-  -v $(pwd)/data:/data \
-  -v $(pwd)/backups:/backups \
-  alpine tar czf /backups/backup-$(date +%Y%m%d).tar.gz /data
+# Shell
+docker compose --env-file .env -f docker/docker-compose.yml exec wirebuddy bash
 
-# Restart container
-docker compose start wirebuddy
+# WireGuard status
+docker compose --env-file .env -f docker/docker-compose.yml exec wirebuddy wg show
 ```
 
-### Restore Data
+## Remote Node
 
-```bash
-# Stop container
-docker compose stop wirebuddy
-
-# Restore backup
-tar xzf wirebuddy-backup-YYYYMMDD.tar.gz
-
-# Restart container
-docker compose start wirebuddy
-```
+Remote nodes use `docker/docker-compose.node.yml` and an enrollment token plus
+verification key created by the master. Follow the
+[Multi-Node Deployment](../features/multi-node.md) guide rather than adapting
+the master Compose service.
 
 ## Troubleshooting
 
-### Container Won't Start
+If the container exits during startup:
 
 ```bash
-# Check logs
-docker compose logs wirebuddy
-
-# Verify network mode
-docker inspect wirebuddy | grep NetworkMode
-
-# Check permissions
-ls -la data/
+docker compose --env-file .env -f docker/docker-compose.yml logs wirebuddy
+docker compose --env-file .env -f docker/docker-compose.yml config
+docker inspect wirebuddy --format '{{.HostConfig.NetworkMode}}'
 ```
 
-### Permission Issues
-
-```bash
-# Fix data directory permissions
-chown -R 1000:1000 data/
-
-# Or run as root (not recommended)
-docker compose run --user root wirebuddy bash
-```
-
-### Network Issues
-
-```bash
-# Verify host networking
-docker run --rm --network host alpine ip addr
-
-# Check WireGuard interface
-docker compose exec wirebuddy wg show
-
-# Verify conntrack
-cat /proc/net/nf_conntrack | head
-```
-
-## Security Hardening
-
-### AppArmor Profile
-
-Create custom AppArmor profile:
-
-```yaml
-services:
-  wirebuddy:
-    security_opt:
-      - apparmor=wirebuddy-profile
-```
-
-### Seccomp Profile
-
-Use custom seccomp profile:
-
-```yaml
-services:
-  wirebuddy:
-    security_opt:
-      - seccomp=wirebuddy-seccomp.json
-```
-
-### Drop Dangerous Capabilities
-
-```yaml
-services:
-  wirebuddy:
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_ADMIN  # Only add required capabilities
-```
+The final command must print `host`. Also verify that `/dev/net/tun` exists,
+the configured GUI port is free, and the secret key has at least 32 bytes.
 
 ## Next Steps
 
-- [First Steps Guide](first-steps.md)
-- [Configuration Options](../configuration/environment.md)
+- [First Steps](first-steps.md)
+- [Environment Variables](../configuration/environment.md)
 - [Security Best Practices](../security/best-practices.md)

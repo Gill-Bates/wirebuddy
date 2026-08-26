@@ -95,9 +95,9 @@ Get WireBuddy up and running in minutes:
 ```bash
 git clone https://github.com/Gill-Bates/wirebuddy.git
 cd wirebuddy
-cp .env-example settings.env
-# Edit settings.env - set WIREBUDDY_SECRET_KEY!
-docker compose up -d
+cp .env-example .env
+# Edit .env and set WIREBUDDY_SECRET_KEY.
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
 !!! success "Default Access"

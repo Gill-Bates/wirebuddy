@@ -1,355 +1,224 @@
 # Security Configuration
 
-Advanced security settings in WireBuddy.
+WireBuddy applies its core security controls by default. There is no separate
+**Settings → Security** tab in the current UI. Account security is managed from
+**Users**, while deployment controls are configured through environment
+variables and the reverse proxy.
 
-## Password Policy
+## Passwords
 
-Configure password requirements:
+Passwords are hashed with PBKDF2-HMAC-SHA256 using 600,000 iterations and a
+random per-password salt.
 
-**Settings → Security → Password Policy**
+The enforced password policy is:
 
-- **Minimum Length:** 8-32 characters
-- **Complexity:** Require uppercase, lowercase, numbers, special characters
-- **Password History:** Prevent reuse of last N passwords
-- **Expiration:** Force password changes every N days (optional)
+- minimum 8 characters
+- maximum 72 UTF-8 bytes
+- no control characters or known common passwords
+- at least three of uppercase, lowercase, number, and special character
 
-## Session Configuration
+The bootstrap administrator receives a random temporary password in the first
+startup log and must replace it at first login. Administrator password resets
+also force a change at next login and revoke existing sessions.
 
-**Settings → Security → Sessions**
+Password policy parameters are not configurable in the current UI.
 
-### Session Timeout
+## Sessions and Cookies
 
-- **15 minutes:** High security environments
-- **30 minutes:** Default, balanced security
-- **1 hour:** Convenience
-- **4 hours:** Maximum allowed
+Authentication uses opaque random session tokens. Only SHA-256 token hashes are
+stored in SQLite.
 
-### Session Renewal
+- Idle validity starts at 1 hour.
+- Cookie-authenticated activity extends the idle expiry.
+- Absolute session lifetime is 24 hours.
+- The authentication cookie is `HttpOnly` and `SameSite=Lax`.
+- The `Secure` flag is enabled when HTTPS is detected or
+  `FORCE_HTTPS_COOKIES` is set.
 
-- **On Activity:** Extend session on each request
-- **Manual:** Require explicit renewal
+There is currently no session-duration setting or active-session management
+screen.
 
-### Concurrent Sessions
+## HTTPS and Reverse Proxies
 
-- **Allow:** Users can have multiple active sessions
-- **Deny:** Only one session per user
+Terminate TLS in Caddy, nginx, Traefik, or another trusted reverse proxy. For a
+same-host proxy, the Docker defaults trust loopback. For other proxy addresses,
+configure both:
 
-## HTTPS Configuration
-
-### Force HTTPS
-
-**Settings → Security → HTTPS**
-
-Enable "Force HTTPS" to redirect all HTTP requests to HTTPS.
-
-Required for:
-
-- HSTS
-- Secure cookies
-- WebAuthn (passkeys)
-
-### SSL/TLS Settings
-
-**Reverse Proxy (Recommended):**
-
-Configure TLS in your reverse proxy (Caddy, nginx):
-
-```nginx
-# nginx
-ssl_protocols TLSv1.2 TLSv1.3;
-ssl_ciphers HIGH:!aNULL:!MD5;
-ssl_prefer_server_ciphers on;
+```bash
+WIREBUDDY_TRUST_PROXY_HEADERS=1
+FORWARDED_ALLOW_IPS=192.168.1.10
+TRUSTED_PROXY_CIDRS=192.168.1.10/32
+WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
 ```
 
-**Built-in ACME:**
+`FORWARDED_ALLOW_IPS` controls which peers Uvicorn trusts for
+`X-Forwarded-*`; `TRUSTED_PROXY_CIDRS` controls application-level client-IP and
+HTTPS detection. Do not use broad CIDRs unless the complete range is controlled
+by your proxy infrastructure.
 
-See [Let's Encrypt Configuration](../features/acme.md).
+HSTS is emitted for requests detected as HTTPS. Set
+`WIREBUDDY_FORCE_HSTS=1` only when TLS terminates upstream and scheme detection
+cannot be made reliable.
 
-### HSTS
+See [Environment Variables](environment.md#reverse-proxy-and-origin-handling)
+and [Installation](../getting-started/installation.md#reverse-proxy).
 
-HTTP Strict Transport Security header:
+## Host Validation
 
-```http
-Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+Enable Starlette's Trusted Host middleware with an explicit allowlist:
+
+```bash
+WIREBUDDY_ALLOWED_HOSTS=vpn.example.com,localhost
 ```
 
-Enabled automatically when "Force HTTPS" is on.
-
-If TLS terminates in a reverse proxy and WireBuddy receives plain HTTP upstream,
-set `WIREBUDDY_FORCE_HSTS=1` to keep emitting the HSTS header.
+Leave this unset only when Host-header validation is handled by a trusted
+front-end proxy.
 
 ## CSRF Protection
 
-**Settings → Security → CSRF**
+Browser mutations use a double-submit CSRF cookie plus Origin/Referer
+validation. Cookie-authenticated API requests are protected; header-only Bearer
+requests do not rely on cookies and are exempt from CSRF token matching.
 
-- **Enabled:** Double-submit cookie pattern (recommended)
-- **SameSite:** Lax (default), Strict, or None
-- **Origin Validation:** Verify Origin/Referer headers
+For a reverse-proxy deployment, set the canonical origin:
 
-## Rate Limiting
-
-**Settings → Security → Rate Limiting**
-
-### Login Rate Limiting
-
-- **Attempts:** Maximum failed login attempts (default: 5)
-- **Window:** Time window in minutes (default: 15)
-- **Lockout Duration:** Initial lockout (default: 1 minute)
-- **Exponential Backoff:** Increase lockout on repeated violations
-
-### API Rate Limiting
-
-- **Authenticated:** Requests per minute (default: 100)
-- **Unauthenticated:** Requests per minute (default: 10)
-
-See [Rate Limiting Guide](../security/rate-limiting.md) for details.
-
-## IP Whitelisting
-
-**Settings → Security → IP Whitelist**
-
-Restrict access to specific IP ranges:
-
-```
-# Allow office network
-Allow: 203.0.113.0/24
-
-# Allow VPN clients
-Allow: 10.8.0.0/24
-
-# Block all others (implicit)
+```bash
+WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
 ```
 
-!!! warning
-    Ensure you don't lock yourself out. Always test from allowed IP first.
-
-## Passkey Configuration
-
-Passkeys are managed per user (via user management UI and passkey API), not via a global passkey policy screen in Settings.
-
-Current behavior:
-
-- Users can register/login with WebAuthn passkeys.
-- Admins can enable onboarding, disable passkeys, and reset all passkeys per user.
-- RP identity is controlled via environment (`PASSKEY_RP_ID`, `PASSKEY_RP_NAME`).
-
-See [Passkeys Guide](../security/passkeys.md).
-
-## MFA Configuration
-
-**Settings → Security → Multi-Factor Authentication**
-
-- **Enforce MFA:** Require MFA for all admin accounts
-- **Grace Period:** Days before MFA is required (default: 7)
-- **Recovery Codes:** Number of backup codes (default: 10)
-
-## Audit Logging
-
-**Settings → Security → Audit Log**
-
-Log security-sensitive events:
-
-- ✅ Authentication (login/logout)
-- ✅ Failed login attempts
-- ✅ Password changes
-- ✅ MFA enrollment/use
-- ✅ User creation/deletion
-- ✅ Settings changes
-- ✅ Peer/interface modifications
-
-### Log Retention
-
-- **30 days:** Minimum recommended
-- **90 days:** Compliance requirement (varies)
-- **1 year:** Long-term auditing
-
-### Export Logs
-
-Export audit logs for external analysis:
-
-**Settings → Security → Audit Log → Export**
-
-Formats: CSV, JSON, Syslog
+Additional legitimate origins can be listed in
+`WIREBUDDY_CSRF_ALLOWED_ORIGINS`. CSRF protection cannot be disabled through
+the UI.
 
 ## Security Headers
 
-WireBuddy automatically sets security headers:
+WireBuddy sends these headers by default:
 
 ```http
-X-Content-Type-Options: nosniff
-X-Frame-Options: DENY
-X-XSS-Protection: 1; mode=block
-Referrer-Policy: strict-origin-when-cross-origin
-Permissions-Policy: geolocation=(), microphone=(), camera=()
 Content-Security-Policy: default-src 'self'; ...
+X-Frame-Options: DENY
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
 ```
 
-### Custom CSP
+The CSP permits the explicitly used map tiles, jsDelivr-hosted country flags,
+and local application assets. There is no custom-CSP editor in the UI.
 
-**Settings → Security → Content Security Policy**
+## Rate Limiting and Login Lockouts
 
-Add custom CSP directives for third-party integrations.
+SlowAPI route limits protect login, sensitive writes, expensive operations,
+and general API traffic. Exceeded route limits return HTTP `429` with
+`Retry-After`.
 
-## Trusted Proxies
+Failed logins are additionally tracked across:
 
-WireBuddy trusts proxy headers only from explicitly trusted proxy sources.
+- source IP
+- username plus source IP
+- username across changing source IPs
 
-For the public status page (`/status`), trusted proxy CIDRs are configured with:
+The progressive delays and thresholds can be tuned through the
+`WIREBUDDY_LOGIN_*` variables documented under
+[Login Lockout Tuning](environment.md#login-lockout-tuning). There is no
+rate-limit toggle in the UI.
 
-```bash
-WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS=127.0.0.1/32,192.168.1.10/32
-```
+See [Rate Limiting](../security/rate-limiting.md).
 
-Notes:
+## TOTP and Passkeys
 
-- Loopback hops are always trusted for `/status`
-- Private IP ranges are **not** auto-trusted for `/status`
-- If a reverse proxy is on a LAN address, add that CIDR explicitly
+TOTP and passkeys are managed per account from the administrator-only
+**Users** page.
 
-## Secrets Encryption
+- TOTP enrollment requires confirmation before activation.
+- Eight one-time recovery codes are delivered through a short-lived download.
+- Disabling TOTP requires reauthentication.
+- Passkeys support usernameless login and multiple credentials per account.
+- Administrators can initiate onboarding and reset another user's passkeys.
 
-WireBuddy encrypts sensitive data at rest:
+There is no global MFA-enforcement or passkey-policy screen. See
+[User Management](../features/users.md) and [Passkeys](../security/passkeys.md).
 
-- **Algorithm:** Fernet (AES-128-CBC + HMAC-SHA256)
-- **Key Derivation:** PBKDF2 with `WIREBUDDY_SECRET_KEY`
-- **Per-Row Salt:** Unique salt per encrypted field
+## Swagger
 
-Encrypted fields:
+Swagger is disabled by default. Administrators can enable it under
+**Settings → General → API Documentation**.
 
-- WireGuard private keys
-- TOTP secrets
-- ACME account keys
-- API tokens (SHA-256 hash, not encrypted)
+- UI: `/swagger`
+- Schema: `/swagger/openapi.json`
+- Access: authenticated administrators only
 
-!!! danger "Secret Key Security"
-    Never change `WIREBUDDY_SECRET_KEY` after deployment. All encrypted data will become unrecoverable.
+`SWAGGER_ENABLED` is not an environment variable in the current application.
 
-## Database Security
+## Public Status Page
 
-### SQLite Security
+The status page is disabled by default and can be enabled under
+**Settings → General → Public Status Page**. It is intended for WireGuard
+clients; authenticated administrators have an override.
 
-- **Location:** `data/wirebuddy.db` (inside Docker volume)
-- **Permissions:** 600 (owner read/write only)
-- **Encryption:** Not encrypted by default (use dm-crypt for volume encryption)
+When a reverse proxy fronts `/status`, list non-loopback proxy CIDRs in
+`WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS`. See
+[Status Page](status-page.md).
 
-### Backup Encryption
+## Secrets at Rest
 
-Encrypt backups:
+Sensitive values are wrapped with Fernet authenticated encryption. New values
+use the vault v2 derivation scheme:
 
-```bash
-# Backup with GPG encryption
-tar cz data/ | gpg -e -r your-key@example.com > backup.tar.gz.gpg
+1. PBKDF2-HMAC-SHA256 derives a deployment master key from
+   `WIREBUDDY_SECRET_KEY`.
+2. HKDF-SHA256 plus a random per-row salt derives the row key.
+3. Fernet encrypts and authenticates the value.
 
-# Restore
-gpg -d backup.tar.gz.gpg | tar xz
-```
+The default vault PBKDF2 work factor is 480,000. Do not change
+`WIREBUDDY_SECRET_KEY`, `WIREBUDDY_PBKDF2_ITERATIONS`, or
+`WIREBUDDY_DEPLOYMENT_ID` after encrypted data exists unless performing a
+supported migration.
 
-## Container Security
+Encrypted data includes WireGuard private keys, preshared keys, OTP secrets,
+and ACME account material. Session and recovery tokens are stored as hashes.
+The SQLite file itself is not whole-database encrypted; use encrypted storage
+when that threat model requires it.
 
-### Hardening
+## Container Hardening
 
-```yaml
-# docker-compose.yml
-services:
-  wirebuddy:
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_ADMIN
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /run
-```
+The supplied Compose service:
 
-### User Namespace
+- drops all capabilities and adds back only `NET_ADMIN`
+- enables `no-new-privileges`
+- mounts `/dev/net/tun`
+- uses host networking as required by WireGuard
+- limits JSON log-file growth
 
-Run container as non-root:
+The container runs as root because WireGuard, iptables, Unbound, and network
+namespace operations require privileges. Running the current image as an
+arbitrary non-root UID or with a read-only root filesystem is not a supported
+drop-in configuration.
 
-```yaml
-user: "1000:1000"
-```
+## Operational Logging
 
-## Firewall Integration
+WireBuddy emits structured security-relevant log events for authentication,
+password changes, OTP/passkey changes, and administrative mutations. There is
+no built-in audit-log browser or CSV/syslog export page. Forward container logs
+to your logging system when centralized retention or alerting is required.
 
-### fail2ban
+## Not Currently Implemented
 
-Automatically ban IPs with failed login attempts:
+The current release does not provide:
 
-```ini
-# /etc/fail2ban/filter.d/wirebuddy.conf
-[Definition]
-failregex = ^.*Failed login attempt for user .* from <HOST>$
-ignoreregex =
+- a Security settings tab
+- configurable password history or expiry
+- a built-in application IP whitelist
+- active-session browsing or individual remote-session revocation
+- global MFA enforcement
+- custom CSP editing
+- a dedicated API-token subsystem
+- built-in CrowdSec/fail2ban integration
 
-# /etc/fail2ban/jail.d/wirebuddy.conf
-[wirebuddy]
-enabled = true
-port = http,https
-filter = wirebuddy
-logpath = /var/log/wirebuddy/auth.log
-maxretry = 5
-bantime = 3600
-```
+Implement these controls at the reverse proxy, firewall, identity, or logging
+layer where needed.
 
-### CrowdSec
-
-Integrate with CrowdSec for collaborative security:
-
-```bash
-# Install CrowdSec bouncer
-docker run -d --name crowdsec-bouncer \
-  -e CROWDSEC_AGENT_HOST=crowdsec:8080 \
-  crowdsecurity/nginx-crowdsec-bouncer
-```
-
-## Compliance
-
-### GDPR
-
-- **Data Minimization:** Only collect necessary data
-- **Right to Deletion:** Users can request account deletion
-- **Export:** Users can export their data
-- **Consent:** Explicit consent for data processing
-
-### SOC 2
-
-- **Access Control:** Role-based permissions
-- **Audit Logging:** Comprehensive event logging
-- **Encryption:** Data encrypted at rest and in transit
-- **Monitoring:** Real-time security event monitoring
-
-## Security Scanning
-
-### Vulnerability Scanning
-
-Scan Docker image:
-
-```bash
-# Trivy
-trivy image giiibates/wirebuddy:latest
-
-# Grype
-grype giiibates/wirebuddy:latest
-```
-
-### Dependency Scanning
-
-Check Python dependencies:
-
-```bash
-# Safety
-safety check -r requirements.txt
-
-# Bandit (static analysis)
-bandit -r app/
-```
-
-## Next Steps
+## Related
 
 - [Security Overview](../security/overview.md)
-- [Best Practices](../security/best-practices.md)
-- [Rate Limiting](../security/rate-limiting.md)
-- [Passkeys](../security/passkeys.md)
+- [Security Best Practices](../security/best-practices.md)
+- [Environment Variables](environment.md)
+- [API Authentication](../api/authentication.md)

@@ -77,17 +77,13 @@ WIREBUDDY_SECRET_KEY=dev-secret-key-change-me
 
 # Development settings
 LOG_LEVEL=DEBUG
-PORT=8000
-HOST=0.0.0.0
+WIREBUDDY_DEV_RELOAD=true
 
 # Database (dev)
-DATABASE_PATH=dev-data/wirebuddy.db
-DATA_DIR=./dev-data
+WIREBUDDY_DATA_DIR=./dev-data
 
-# Disable security for dev
-SESSION_COOKIE_SECURE=false
-RATELIMIT_ENABLED=false
-SWAGGER_ENABLED=true
+# Optional bind overrides are available in Docker as WIREBUDDY_HOST and
+# WIREBUDDY_PORT. Local run.py reads host and port from the application DB.
 ```
 
 ### System Configuration
@@ -119,11 +115,7 @@ This creates `dev-data/wirebuddy.db` with schema and default admin user.
 python run.py
 ```
 
-Or with hot reload:
-
-```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
+Hot reload is enabled by `WIREBUDDY_DEV_RELOAD=true` in `.env`.
 
 Access: `http://localhost:8000`
 
@@ -302,7 +294,8 @@ Create Pull Request on GitHub.
       "request": "launch",
       "module": "uvicorn",
       "args": [
-        "app.main:app",
+        "app:create_app",
+        "--factory",
         "--reload",
         "--host", "0.0.0.0",
         "--port", "8000"
@@ -458,10 +451,14 @@ Templates auto-reload on save (development mode).
 
 ```bash
 # Install docs dependencies
-pip install -r requirements-docs.txt
+pip install -r docs/requirements-docs.txt
+
+# The CI workflow publishes these two root files as documentation pages.
+cp CHANGELOG.md docs/changelog.md
+cp LICENSE docs/license.md
 
 # Serve docs
-mkdocs serve
+mkdocs serve -f docs/mkdocs.yml
 
 # Open http://127.0.0.1:8000
 ```
@@ -469,8 +466,8 @@ mkdocs serve
 ### Add Documentation
 
 1. Create markdown file in `docs/`
-2. Add to `mkdocs.yml` navigation
-3. Preview with `mkdocs serve`
+2. Add to `docs/mkdocs.yml` navigation
+3. Preview with `mkdocs serve -f docs/mkdocs.yml`
 4. Commit changes
 
 ## Building Docker Image

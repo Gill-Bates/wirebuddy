@@ -69,13 +69,15 @@ WireBuddy includes four curated blocklists:
 - The ad-blocker is auto-enabled when blocklists are selected
 
 ??? info "Blocklist Update Schedule"
-    WireBuddy automatically updates blocklists weekly. Force update anytime via the **Update Blocklists** button.
+    WireBuddy updates enabled blocklists about every 24 hours with scheduling
+    jitter. If no cached list exists at startup, the first update is scheduled
+    immediately. Force an update anytime with **Update Blocklists**.
 
 ### Per-Peer DNS Query Logging
 
 Control DNS query logging for individual peers:
 
-**Peers → Edit Peer → DNS Settings**
+**Peers → Edit Peer → DNS & Filtering**
 
 - **Enabled (default):** DNS queries from this peer appear in the DNS log
 - **Disabled:** DNS queries are resolved but not logged
@@ -86,7 +88,7 @@ This is useful for privacy-sensitive devices or to reduce log volume for high-tr
 
 Assign different blocklist combinations to individual peers:
 
-**Peers → Edit Peer → Blocklist Settings**
+**Peers → Edit Peer → DNS & Filtering**
 
 - **Default:** Use globally enabled blocklists
 - **Custom:** Select specific blocklists for this peer only
@@ -143,15 +145,13 @@ This whitelists a domain even if it's in blocklists (useful for false positives)
 
 ### Per-Client Rules
 
-Apply rules to specific clients using the `$client` modifier in a comment:
+Apply a rule to a specific client by appending the `$client=CIDR` option to that
+rule:
 
 ```adblock
-! $client=10.13.13.2/32
-||facebook.com^
-||instagram.com^
-
-! $client=10.13.13.3/32
-@@||work-tracker.company.com^
+||facebook.com^$client=10.13.13.2/32
+||instagram.com^$client=10.13.13.2/32
+@@||work-tracker.company.com^$client=10.13.13.3/32
 ```
 
 ### Query Log Actions

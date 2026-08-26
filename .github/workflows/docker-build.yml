@@ -20,8 +20,6 @@ jobs:
   meta:
     name: Validate build metadata
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     timeout-minutes: 10
     permissions:
       contents: read
@@ -69,12 +67,21 @@ jobs:
             exit 1
           fi
 
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAG_VERSION="${GITHUB_REF_NAME#v}"
-            if [[ "$TAG_VERSION" != "$VERSION" ]]; then
-              echo "ERROR: Git tag (v${TAG_VERSION}) does not match VERSION file (${VERSION})"
-              exit 1
-            fi
+          # A release must always run from the v<VERSION> tag. Previously this
+          # check was skipped for workflow_dispatch, so a manual run on a branch
+          # could republish an existing ${VERSION} image from a different commit
+          # and move 'latest' with it. Re-runs are still possible: pick the tag
+          # as the ref when dispatching manually.
+          if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
+            echo "ERROR: This workflow must run from a tag, but ref '${GITHUB_REF_NAME}' is a ${GITHUB_REF_TYPE}."
+            echo "Push tag v${VERSION}, or re-run this workflow selecting that tag as the ref."
+            exit 1
+          fi
+
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$TAG_VERSION" != "$VERSION" ]]; then
+            echo "ERROR: Git tag (${GITHUB_REF_NAME}) does not match VERSION file (${VERSION})"
+            exit 1
           fi
 
           BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -88,7 +95,6 @@ jobs:
     name: Build ${{ matrix.arch }} image
     needs: meta
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       VERSION: ${{ needs.meta.outputs.version }}
       IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
     strategy:
@@ -121,15 +127,10 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Generate BUILD_INFO
-        run: git rev-parse HEAD > BUILD_INFO
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
           cache-binary: false
-          driver-opts: |
-            image=moby/buildkit:v0.16.0
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
@@ -233,7 +234,11 @@ jobs:
           docker tag "${{ matrix.test_image }}" "${IMAGE_NAME}:${VERSION}-${{ matrix.image_suffix }}"
 
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
+        # Pinned to an immutable commit SHA, not a mutable ref. In March 2026
+        # (GHSA-69fq-xp46-6x23) an attacker force-pushed 76 of 77 trivy-action
+        # tags to a credential-stealing commit; this step runs after the Docker
+        # Hub login, so a compromised action would see those credentials.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           cache: 'false'
           image-ref: '${{ matrix.test_image }}'
@@ -296,8 +301,8 @@ jobs:
     needs: [meta, build]
     if: needs.build.result == 'success'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       VERSION: ${{ needs.meta.outputs.version }}
       IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
     permissions:
@@ -340,8 +345,8 @@ jobs:
     needs: [meta, create-manifest]
     if: needs.create-manifest.result == 'success'
     runs-on: ubuntu-24.04
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    # Deletion is verified with polling loops, so cap the total runtime.
+    timeout-minutes: 30
     permissions:
       contents: read
 
@@ -474,7 +479,15 @@ jobs:
             fi
           done < <(list_tags | sort -u)
 
-          for tag in "$keep_latest" "$keep_version"; do
+          # Prereleases never publish 'latest' (see create-manifest), so only
+          # require it for stable releases. Demanding it unconditionally made
+          # the first prerelease fail here, after the images were already pushed.
+          declare -a expected_tags=("$keep_version")
+          if [[ "$VERSION" != *-* ]]; then
+            expected_tags+=("$keep_latest")
+          fi
+
+          for tag in "${expected_tags[@]}"; do
             if [[ -z "${remaining_tags[$tag]:-}" ]]; then
               echo "ERROR: Expected tag missing after cleanup: $tag"
               exit 1
@@ -486,8 +499,8 @@ jobs:
     needs: [meta, cleanup-dockerhub-tags]
     if: needs.cleanup-dockerhub-tags.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       VERSION: ${{ needs.meta.outputs.version }}
       IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
     permissions:
@@ -516,6 +529,7 @@ jobs:
             const version = process.env.VERSION;
             const imageName = process.env.IMAGE_NAME;
             const isPrerelease = version.includes('-');
+            const tagName = 'v' + version;
 
             function parseTrivyStatus(arch) {
               const file = path.join('trivy-reports', `trivy-findings-${arch}`, `trivy-${arch}.json`);
@@ -578,6 +592,8 @@ jobs:
             }
 
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            // Reports are attached to the release below; run artifacts expire.
+            const assetBase = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tagName}`;
             const trivyAmd64 = parseTrivyStatus('amd64');
             const trivyArm64 = parseTrivyStatus('arm64');
 
@@ -593,8 +609,8 @@ jobs:
               '',
               '| Architecture | Status | Findings |',
               '|---|---|---|',
-              '| amd64 | ' + trivyAmd64 + ' | [trivy-findings-amd64](' + runUrl + '#artifacts) |',
-              '| arm64 | ' + trivyArm64 + ' | [trivy-findings-arm64](' + runUrl + '#artifacts) |',
+              '| amd64 | ' + trivyAmd64 + ' | [trivy-amd64.json](' + assetBase + '/trivy-amd64.json) |',
+              '| arm64 | ' + trivyArm64 + ' | [trivy-arm64.json](' + assetBase + '/trivy-arm64.json) |',
               '| run | workflow details | [Actions Run](' + runUrl + ') |',
               '',
               '> Scanned with [Trivy](https://trivy.dev/) for HIGH and CRITICAL severity vulnerabilities (unfixed CVEs ignored).',
@@ -605,37 +621,70 @@ jobs:
               '**Source:** [WireBuddy Repository](https://github.com/' + context.repo.owner + '/' + context.repo.repo + ')'
             ].join('\n');
 
+            const releaseFields = {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tagName,
+              name: 'WireBuddy ' + version,
+              body: body,
+              draft: false,
+              prerelease: isPrerelease
+            };
+
+            // Look the release up first. Treating every 422 as "already exists"
+            // also swallowed unrelated validation errors and then failed in a
+            // confusing way inside the recovery path.
+            let release = null;
             try {
-              await github.rest.repos.createRelease({
+              ({ data: release } = await github.rest.repos.getReleaseByTag({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                tag_name: 'v' + version,
-                name: 'WireBuddy ' + version,
-                body: body,
-                draft: false,
-                prerelease: isPrerelease
-              });
-              console.log('Created release v' + version);
+                tag: tagName
+              }));
             } catch (e) {
-              if (e.status === 422) {
-                console.log('Release v' + version + ' already exists, updating...');
-                const { data: release } = await github.rest.repos.getReleaseByTag({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  tag: 'v' + version
-                });
-                await github.rest.repos.updateRelease({
+              if (e.status !== 404) throw e;
+            }
+
+            if (release) {
+              ({ data: release } = await github.rest.repos.updateRelease({
+                ...releaseFields,
+                release_id: release.id
+              }));
+              console.log('Updated release ' + tagName);
+            } else {
+              ({ data: release } = await github.rest.repos.createRelease(releaseFields));
+              console.log('Created release ' + tagName);
+            }
+
+            // Attach the scan reports to the release. The body links to them,
+            // but run artifacts expire after retention-days, which left older
+            // releases pointing at downloads that no longer exist.
+            for (const arch of ['amd64', 'arm64']) {
+              const assetName = `trivy-${arch}.json`;
+              const file = path.join('trivy-reports', `trivy-findings-${arch}`, assetName);
+              try {
+                const data = fs.readFileSync(file);
+                const existing = (release.assets || []).find(a => a.name === assetName);
+                if (existing) {
+                  await github.rest.repos.deleteReleaseAsset({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    asset_id: existing.id
+                  });
+                }
+                await github.rest.repos.uploadReleaseAsset({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   release_id: release.id,
-                  tag_name: 'v' + version,
-                  name: 'WireBuddy ' + version,
-                  body: body,
-                  draft: false,
-                  prerelease: isPrerelease
+                  name: assetName,
+                  data: data,
+                  headers: {
+                    'content-type': 'application/json',
+                    'content-length': data.length
+                  }
                 });
-                console.log('Updated release v' + version);
-              } else {
-                throw e;
+                console.log('Attached ' + assetName);
+              } catch (err) {
+                console.log('Could not attach ' + assetName + ': ' + err.message);
               }
             }

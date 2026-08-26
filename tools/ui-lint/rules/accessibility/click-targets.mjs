@@ -35,52 +35,28 @@ export const meta = {
 };
 
 /**
- * Selectors that should meet minimum click target size.
- */
-const CLICK_TARGET_SELECTORS = [
-    'button',
-    '.btn',
-    '[role="button"]',
-    'summary',
-    'input[type="button"]',
-    'input[type="submit"]',
-    'input[type="reset"]',
-    'select.form-select:not(.form-select-sm)',
-];
-
-/**
- * Elements that are intentionally compact.
- */
-const COMPACT_CONTROL_EXCEPTIONS = [
-    '.leaflet-control-zoom a',
-    '.leaflet-bar a',
-    '.form-select-sm',
-    '.btn-close',
-];
-
-/**
  * Inline links are not treated as button-like touch targets.
  */
 function isInlineLink(el) {
     if (el.tag !== 'A') return false;
     if (el.classList?.includes('btn')) return false;
     if (el.role === 'button') return false;
-    // Footer links are intentionally compact
-    if (el.classList?.includes('wb-footer-link')) return true;
-    return false;
+    // Footer links and links inside text flow (paragraphs, lists, tables,
+    // menus) are intentionally compact.
+    if (el.classList?.includes('wb-footer-link') || el.ancestry?.insideFooter) return true;
+    return Boolean(el.ancestry?.insideTextFlow);
 }
 
 /**
- * Check if element is a compact control exception.
+ * Check if element is a compact control exception. Ancestor-scoped selectors
+ * (e.g. ".leaflet-bar a") describe a class on a *container*, not on the
+ * element itself, so they're resolved via the snapshot's precomputed
+ * ancestry flags rather than the element's own classList.
  */
 function isCompactException(el) {
-    for (const selector of COMPACT_CONTROL_EXCEPTIONS) {
-        // Simplified check using class matching
-        const parts = selector.split(/[.\s]+/).filter(Boolean);
-        for (const part of parts) {
-            if (el.classList?.includes(part)) return true;
-        }
-    }
+    if (el.ancestry?.insideLeafletControl) return true;
+    if (el.classList?.includes('form-select-sm')) return true;
+    if (el.classList?.includes('btn-close')) return true;
     return false;
 }
 
@@ -142,7 +118,14 @@ const clickTargetRule = RuleBuilder.accessibility(
             if (!tooSmall && !interactionFailure) continue;
 
             const severity = interactionFailure || importance === 'primary' || smaller < required - 10 ? 'error' : 'warning';
-            const kind = interactionFailure ? 'click-target-occluded' : 'click-target-too-small';
+            // interactionFailure covers several distinct causes; report the
+            // one that actually applies instead of always naming it "occluded".
+            const kind = target.hidden ? 'click-target-hidden'
+                : target.disabled || target.inert ? 'click-target-inert'
+                : target.pointerEvents === 'none' ? 'click-target-pointer-events-none'
+                : target.occluded ? 'click-target-occluded'
+                : interactionFailure ? 'click-target-unclickable'
+                : 'click-target-too-small';
 
             findings.push({
                 severity,
@@ -164,7 +147,14 @@ const clickTargetRule = RuleBuilder.accessibility(
                     pointerEvents: target.pointerEvents,
                     viewport: viewport.width ? (viewport.width < 768 ? 'mobile' : viewport.width < 992 ? 'tablet' : 'desktop') : 'desktop',
                     text: target.text?.slice(0, 30),
-                    target,
+                    // Position only (not the full inspected target: pointHits
+                    // and the rest just duplicated fields already listed above).
+                    id: target.id || null,
+                    classList: target.classList || [],
+                    left: target.left,
+                    top: target.top,
+                    right: target.right,
+                    bottom: target.bottom,
                 },
             });
         }

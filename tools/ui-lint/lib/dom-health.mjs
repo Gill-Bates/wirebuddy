@@ -40,7 +40,9 @@ export function buildDomHealthState(metrics = {}) {
             offenders: horizontalOverflow.offenders || [],
         },
         clippedButtonCount: clippedButtons.length,
-        touchTargetViolationCount: clickTargetsTooSmall.length,
+        // clickTargetsTooSmall is capped at 20 entries for report readability;
+        // the Total field (when present) carries the real, uncapped count.
+        touchTargetViolationCount: metrics.clickTargetsTooSmallTotal ?? clickTargetsTooSmall.length,
         hiddenInteractiveCount: hiddenInteractiveElements.length,
         layoutShiftValue: Number(layoutShift.value || 0),
         layoutShiftCount: Number(layoutShift.count || 0),

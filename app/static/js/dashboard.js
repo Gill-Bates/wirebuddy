@@ -65,6 +65,7 @@ const formatTrafficMetric = WBShared.formatTrafficMetric;
 const formatBandwidthMetric = WBShared.formatBandwidthMetric;
 const getChartColors = WBShared.getChartColors;
 const RefreshScheduler = WBShared.RefreshScheduler;
+const EMPTY_DASHBOARD_METRIC = '–';
 
 /**
  * Sanitize string for use in HTML element IDs
@@ -121,15 +122,27 @@ function setCompactMetricText(el, text, options = {}) {
 function resetBandwidthMetric() {
     const downEl = document.getElementById('speedtest-download');
     const upEl = document.getElementById('speedtest-upload');
-    setCompactMetricText(downEl, '–');
-    setCompactMetricText(upEl, '–');
+    setCompactMetricText(downEl, EMPTY_DASHBOARD_METRIC);
+    setCompactMetricText(upEl, EMPTY_DASHBOARD_METRIC);
 }
 
 function setTrafficMetric(el, bytes, direction) {
     if (!el) return;
-    const formatted = String(formatBytes(bytes) || '').trim();
     const prefix = direction === 'rx' ? '↓' : direction === 'tx' ? '↑' : '';
-    setCompactMetricText(el, prefix ? `${prefix} ${formatted || '-'}` : formatted || '-');
+    const value = Number(bytes);
+    if (!Number.isFinite(value) || value <= 0) {
+        setCompactMetricText(el, prefix ? `${prefix} ${EMPTY_DASHBOARD_METRIC}` : EMPTY_DASHBOARD_METRIC);
+        return;
+    }
+
+    const formatted = String(formatBytes(value) || '').trim();
+    setCompactMetricText(el, prefix ? `${prefix} ${formatted}` : formatted);
+}
+
+function formatDashboardCount(online, total) {
+    return online === 0 && total === 0
+        ? EMPTY_DASHBOARD_METRIC
+        : `${online}/${total}`;
 }
 
 function setBandwidthMetric(downloadMbit, uploadMbit) {
@@ -351,16 +364,16 @@ async function refreshStats(signal) {
             if (IS_ADMIN) {
                 const nodes = unwrapList(nodesRes, null);
                 const onlineCount = nodes.filter(node => node?.status === 'online').length;
-                setCompactMetricText(nodesCountEl, `${onlineCount}/${nodes.length}`);
+                setCompactMetricText(nodesCountEl, formatDashboardCount(onlineCount, nodes.length));
             } else {
-                setCompactMetricText(nodesCountEl, '–');
+                setCompactMetricText(nodesCountEl, EMPTY_DASHBOARD_METRIC);
             }
         }
 
         const allPeers = unwrapList(enrichedRes, 'peers');
         const onlineCount = allPeers.filter(p => p.connected).length;
         const totalPeers = allPeers.length;
-        setCompactMetricText(peersCountEl, `${onlineCount}/${totalPeers}`);
+        setCompactMetricText(peersCountEl, formatDashboardCount(onlineCount, totalPeers));
         if (peersCountLabelEl) {
             peersCountLabelEl.textContent = onlineCount === 1 ? 'Peer Online' : 'Peers Online';
         }

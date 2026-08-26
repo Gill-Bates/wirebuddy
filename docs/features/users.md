@@ -1,283 +1,162 @@
 # User Management
 
-WireBuddy supports multi-user environments with role-based access control.
+WireBuddy supports multiple local accounts with administrator and read-only
+roles. Administrators manage accounts from the top-level **Users** page.
 
-## User Roles
+## Roles
 
-| Role | Permissions |
-|------|-------------|
-| **Admin** | Full access: create/modify/delete interfaces, peers, users, and settings |
-| **User** | Read-only: view dashboard, peers, DNS logs; cannot modify configuration |
+| Role | Access |
+|---|---|
+| **Administrator** | Full UI and API access, including users, interfaces, peers, DNS, nodes, and settings |
+| **User** | Read-only operational access; configuration-changing API calls remain restricted |
 
-## User Administration
+The last administrator cannot be demoted or deleted. Administrators also
+cannot demote, deactivate, or delete their own account through user management.
 
-### Adding Users
+## Creating a User
 
-**Navigate to:** Settings → Users → Add User
+Open **Users → Add User**. A user consists of:
 
-**Required:**
+- a unique username
+- a password
+- the administrator-role switch
 
-- **Username:** Unique alphanumeric identifier (3-32 characters)
-- **Email:** Valid email address (used for notifications, future MFA recovery)
-- **Password:** Must meet complexity requirements
-- **Role:** Admin or User
+WireBuddy does not currently store user email addresses, full names, or profile
+descriptions.
 
-**Optional:**
+Usernames are normalized to lowercase and must:
 
-- **Full Name:** Display name
-- **Description:** Notes about the user
+- contain 3–64 characters
+- start and end with a letter or number
+- contain only letters, numbers, `-`, or `_`
+- avoid consecutive `-`/`_` characters
 
-### Password Requirements
+## Password Policy
 
-Passwords must meet these criteria:
+Passwords must:
 
-- Minimum 8 characters
-- At least one uppercase letter (A-Z)
-- At least one lowercase letter (a-z)
-- At least one number (0-9)
-- At least one special character (!@#$%^&*)
+- contain at least 8 characters
+- fit within 72 UTF-8 bytes
+- avoid control characters and known common passwords
+- satisfy at least three of these four categories:
+  - uppercase letter
+  - lowercase letter
+  - number
+  - supported special character
 
-### Editing Users
+The initial `admin` password is generated on first startup and written once to
+the application log. First login requires replacing it.
 
-**Settings → Users → [Select User] → Edit**
+An administrator reset also invalidates the user's sessions and requires the
+user to choose a different password at next login. A user changing their own
+password must provide the current password.
 
-Admins can modify:
+## Editing and Deleting
 
-- Email address
-- Full name
-- Role
-- Password (force reset)
+Administrators can change another account's username, role, and active status.
+Deleting or deactivating an account invalidates its access. Deletion also
+removes the account's OTP and passkey records through database relationships.
 
-Users cannot:
+Users may update their own username through the API, but the current web user
+management page is administrator-only.
 
-- Change their own role
-- Delete their own account (requires another admin)
+## TOTP Multi-Factor Authentication
 
-### Deleting Users
+Users can enroll TOTP with an authenticator application. Administrators can
+initiate enrollment for another user; that user completes setup on their next
+login.
 
-**Settings → Users → [Select User] → Delete**
+Enrollment flow:
 
-- Permanently removes user account
-- Invalidates all sessions
-- Disables MFA and passkeys
-- Cannot be undone
+1. Open **Users → OTP Settings** for the account.
+2. Start OTP enrollment.
+3. The account owner scans the QR code on the OTP setup page.
+4. Confirm with a valid 6–8 digit TOTP code.
+5. Download and store the one-time recovery-code ZIP.
 
-!!! warning "Admin Account"
-    At least one admin account must exist. You cannot delete the last admin.
+WireBuddy generates eight single-use recovery codes. Recovery codes are not
+returned by later API calls and cannot be regenerated from stored hashes.
 
-## Multi-Factor Authentication (MFA)
+Disabling OTP requires reauthentication:
 
-### TOTP (Time-based One-Time Password)
+- Account owner: current password or a valid OTP code
+- Administrator acting on another user: the administrator's own password
 
-**Setup:**
+Enabling, confirming, or disabling OTP revokes existing sessions where needed.
 
-1. User navigates to **Profile → Security → Enable 2FA**
-2. Scan QR code with authenticator app:
-   - Google Authenticator
-   - Authy
-   - Microsoft Authenticator
-   - 1Password
-   - Bitwarden
-3. Enter 6-digit code to verify
-4. Save recovery codes (10 single-use codes)
+## Passkeys
 
-**Login with MFA:**
+From **Users → Passkey Settings**, an account owner can register and remove
+passkeys and optionally assign a device name. Administrators can initiate
+passkey onboarding, inspect a user's registered passkeys, disable onboarding,
+or reset all passkeys for another user.
 
-1. Enter username and password
-2. Enter 6-digit TOTP code
-3. Optionally check "Trust this device for 30 days"
+The maximum is controlled by `MAX_PASSKEYS_PER_USER` and defaults to 20.
 
-**Disable MFA:**
+See [Passkeys](../security/passkeys.md) for setup and environment options.
 
-- User: Profile → Security → Disable 2FA (requires current code)
-- Admin: Settings → Users → [Select User] → Disable MFA
+## Sessions
 
-### Passkeys (WebAuthn)
+Login creates an opaque session token stored as a hash in SQLite and delivered
+to the browser in the `auth_token` cookie.
 
-For passwordless authentication, see [Passkeys Documentation](../security/passkeys.md).
+- Initial idle expiry: 1 hour
+- Cookie-authenticated activity extends the idle expiry
+- Absolute lifetime: 24 hours from login
+- Bearer-token API use does not refresh expiry
 
-## Recovery Codes
+Logging out removes the current token. Password changes, password resets, and
+security-state changes revoke relevant account sessions.
 
-When enabling MFA, users receive 10 recovery codes.
+There is currently no UI for listing devices, revoking an individual remote
+session, or changing session duration.
 
-**Usage:**
+## Login Information
 
-- Each code can be used once
-- Used in place of TOTP code during login
-- Example: `ABCD-1234-EFGH`
+The user table shows the most recent login timestamp and IP address, including
+available GeoIP details. WireBuddy does not currently provide a per-user login
+history page or a general audit-log export UI.
 
-**Lost Recovery Codes:**
+## API Access
 
-1. Login with passkey or password+TOTP
-2. Navigate to Profile → Security → Recovery Codes
-3. Click **Regenerate** (invalidates old codes)
-
-**Admin Recovery:**
-
-Admins can disable MFA for locked-out users:
-
-1. Settings → Users → [Select User]
-2. Click **Disable MFA**
-3. User can login with password only
-4. User should re-enable MFA immediately
-
-## Session Management
-
-### Session Duration
-
-**Settings → Security → Session Timeout**
-
-Options:
-
-- 15 minutes (high security)
-- 30 minutes (default)
-- 1 hour (convenience)
-- 4 hours (maximum)
-
-Sessions automatically renew on activity.
-
-### Active Sessions
-
-**Profile → Security → Active Sessions**
-
-View all active login sessions:
-
-| Device | Location | IP Address | Last Activity | Actions |
-|--------|----------|------------|---------------|---------|
-| Chrome (Linux) | San Francisco | 203.0.113.42 | 2 minutes ago | Current |
-| Firefox (Windows) | New York | 198.51.100.10 | 1 hour ago | [Revoke] |
-
-**Revoke Session:**
-
-Click **Revoke** to immediately log out that session.
-
-**Revoke All:**
-
-Click **Revoke All Other Sessions** to keep only current session active.
-
-## Login Tracking
-
-WireBuddy logs all authentication events:
-
-- Successful logins
-- Failed login attempts
-- Password changes
-- MFA enrollment/disable
-- Passkey registration/use
-
-**View Login History:**
-
-**Profile → Security → Login History**
-
-| Timestamp | Event | IP Address | Status | Details |
-|-----------|-------|------------|--------|---------|
-| 2026-03-15 14:23 | Login | 203.0.113.42 | Success | Password + TOTP |
-| 2026-03-15 09:15 | Login | 203.0.113.42 | Success | Passkey |
-| 2026-03-14 22:10 | Login | 198.51.100.99 | Failed | Invalid password |
-
-## API Tokens
-
-For programmatic access, users can generate API tokens.
-
-### Creating API Tokens
-
-**Profile → API Tokens → Create Token**
-
-**Configuration:**
-
-- **Name:** Descriptive label (e.g., "Ansible Automation")
-- **Expiration:** Never, 30 days, 90 days, 1 year
-- **Permissions:** Read-only or Full access (admin only)
-- **IP Whitelist:** Optional IP restrictions
-
-**Token Security:**
-
-- Tokens are shown only once after creation
-- Stored as SHA-256 hash in database
-- Cannot be retrieved after initial display
-
-### Using API Tokens
-
-Include token in `Authorization` header:
+WireBuddy does not have a separate long-lived API-token subsystem. Automation
+uses the same opaque session token returned by login:
 
 ```bash
-curl -H "Authorization: Bearer your_token_here" \
+curl -H "Authorization: Bearer SESSION_TOKEN" \
   https://vpn.example.com/api/wireguard/peers
 ```
 
-### Revoking Tokens
+Bearer use is subject to the same session expiry and account permissions as
+browser authentication. See [API Authentication](../api/authentication.md).
 
-**Profile → API Tokens → [Select Token] → Revoke**
+## Current User Endpoints
 
-Immediately invalidates the token.
+- `GET /api/users`
+- `POST /api/users`
+- `GET /api/users/{user_id}`
+- `PATCH /api/users/{user_id}`
+- `DELETE /api/users/{user_id}`
+- `POST /api/users/{user_id}/change-password`
+- `POST /api/users/me/complete-required-change`
+- `POST /api/users/{user_id}/reset-password`
+- `POST /api/users/{user_id}/otp/enable`
+- `POST /api/users/{user_id}/otp/confirm`
+- `POST /api/users/{user_id}/otp/disable`
 
-## Read-Only Users
-
-Users with "User" role have read-only access:
-
-**Allowed:**
-
-- ✅ View dashboard
-- ✅ View peer list and status
-- ✅ View traffic statistics
-- ✅ View DNS logs
-- ✅ Export data
-
-**Denied:**
-
-- ❌ Create/edit/delete peers
-- ❌ Start/stop interfaces
-- ❌ Modify settings
-- ❌ Manage users
-- ❌ Access API with write permissions
-
-This is useful for:
-
-- NOC (Network Operations Center) monitoring
-- Helpdesk support staff
-- Auditors
-- Customers (in managed VPN scenarios)
+Permissions differ by endpoint; consult [API Endpoints](../api/endpoints.md)
+and Swagger for schemas.
 
 ## Best Practices
 
-### Admin Accounts
+- Use a separate account for each administrator.
+- Register passkeys or enable TOTP for administrator accounts.
+- Keep recovery-code downloads offline and protected.
+- Disable accounts immediately when access is no longer needed.
+- Use HTTPS and configure trusted proxy CIDRs precisely.
 
-- Limit number of admin accounts (principle of least privilege)
-- Each admin should have their own account (no shared accounts)
-- Enable MFA on all admin accounts
-- Regularly review admin access
+## Related
 
-### Password Policy
-
-- Enforce strong passwords (WireBuddy does this by default)
-- Require password changes after suspected compromise
-- Use passkeys where possible (more secure than passwords)
-
-### Session Security
-
-- Use 30-minute session timeout (default)
-- Revoke unused sessions regularly
-- Enable "Remember this device" only on trusted devices
-- Always log out on shared computers
-
-### API Token Management
-
-- Use minimal permissions (read-only when possible)
-- Set expiration dates (avoid "never expire")
-- Use IP whitelisting for automated systems
-- Rotate tokens annually
-- Revoke tokens immediately when no longer needed
-
-### Audit
-
-- Review login history regularly
-- Investigate failed login attempts
-- Monitor for unusual activity patterns
-- Enable alerts for suspicious logins (future feature)
-
-## Next Steps
-
-- [Passkeys (WebAuthn)](../security/passkeys.md) - Passwordless authentication
-- [Authentication Guide](../security/authentication.md) - Technical details
-- [Security Best Practices](../security/best-practices.md) - Hardening guide
-- [API Reference](../api/authentication.md) - API token usage
+- [Authentication](../security/authentication.md)
+- [Passkeys](../security/passkeys.md)
+- [Security Best Practices](../security/best-practices.md)

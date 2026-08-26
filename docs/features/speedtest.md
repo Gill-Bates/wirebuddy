@@ -77,17 +77,17 @@ If the scheduler reaches the nightly window while speed tests are enabled, the r
 
 ### Via API
 
-**Trigger test:**
+**Start the test and obtain a stream ID:**
 
 ```bash
 curl -X POST https://vpn.example.com/api/wireguard/speedtest/run \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
-**Trigger test with streaming progress (SSE):**
+The response contains `data.stream_id`. Open the corresponding SSE stream:
 
 ```bash
-curl -N https://vpn.example.com/api/wireguard/speedtest/run/stream \
+curl -N https://vpn.example.com/api/wireguard/speedtest/run/stream/STREAM_ID \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
@@ -196,7 +196,7 @@ Check outbound HTTPS connectivity from the server. LibreSpeed servers use HTTPS 
 | `/api/wireguard/speedtest/settings` | GET | Get settings |
 | `/api/wireguard/speedtest/settings` | PATCH | Update settings (admin) |
 | `/api/wireguard/speedtest/run` | POST | Trigger test (admin) |
-| `/api/wireguard/speedtest/run/stream` | GET | Trigger test with SSE progress (admin) |
+| `/api/wireguard/speedtest/run/stream/{stream_id}` | GET | Stream progress for a started test (admin) |
 | `/api/wireguard/speedtest/history` | GET | Get historical results |
 | `/api/wireguard/speedtest/storage` | GET | Get storage stats |
 | `/api/wireguard/speedtest/storage/retention` | PATCH | Update retention (admin) |

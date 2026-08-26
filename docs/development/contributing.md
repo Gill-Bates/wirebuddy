@@ -70,7 +70,7 @@ DNS ad-blocking is not working. All queries are allowed even with blocklists ena
 **Actual:** Query resolves to IP address
 
 **Environment:**
-- WireBuddy: 1.3.2
+- WireBuddy: 1.5.4
 - Docker: 24.0.7
 - Host OS: Ubuntu 22.04
 - Browser: Chrome 120

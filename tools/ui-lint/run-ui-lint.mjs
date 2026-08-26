@@ -105,6 +105,11 @@ import {
 import { correlateConsoleEntries } from './lib/dom-health.mjs';
 import { buildUIHealthReport } from './lib/ui-health-score.mjs';
 import { LOGIN_FAILURE_VIEWS, VIEWS } from './lib/views.mjs';
+// Importing this also registers the click-targets, focus-indicators,
+// horizontal-overflow, scroll-traps and settings-logs-layout rules (each
+// module calls registerRule() as a side effect on import) into the shared
+// registry in lib/rule-registry.mjs.
+import { collectDOMSnapshot, createContext, runRules, tokens as registryTokens } from './rules/index.mjs';
 
 const BASE_URL = process.env.UI_LINT_BASE_URL || 'http://localhost:8000';
 const USERNAME = process.env.UI_LINT_USERNAME;
@@ -125,10 +130,12 @@ if (!USERNAME || !PASSWORD) {
 const AVAILABLE_BROWSERS = { chromium, webkit, firefox };
 
 function parseSelectedBrowsers(rawValue) {
-    const requested = (rawValue || 'chromium')
-        .split(',')
-        .map((browser) => browser.trim().toLowerCase())
-        .filter(Boolean);
+    const requested = [...new Set(
+        (rawValue || 'chromium')
+            .split(',')
+            .map((browser) => browser.trim().toLowerCase())
+            .filter(Boolean),
+    )];
 
     const invalid = requested.filter((browser) => !(browser in AVAILABLE_BROWSERS));
     if (invalid.length) {
@@ -146,7 +153,11 @@ function parseSelectedBrowsers(rawValue) {
 }
 
 function parsePositiveIntegerEnv(rawValue, fallback, label) {
-    const value = Number.parseInt(String(rawValue ?? fallback), 10);
+    const raw = String(rawValue ?? fallback);
+    if (!/^\d+$/.test(raw)) {
+        throw new Error(`${label} must be a positive integer`);
+    }
+    const value = Number.parseInt(raw, 10);
     if (!Number.isFinite(value) || value <= 0) {
         throw new Error(`${label} must be a positive integer`);
     }
@@ -172,11 +183,6 @@ const BROWSER_TEST_CLIENT_IPS = Object.freeze({
 });
 const BROWSER_OPTION_COMPAT_WARNED = new Set();
 
-const MUTATING_API_PATTERNS = [
-    /\/api\/nodes\/[^/]+\/speedtest$/,
-    /\/api\/nodes\/[^/]+\/restart$/,
-    /\/api\/nodes\/[^/]+\/token$/,
-];
 
 console.log(
     `Browser matrix: ${SELECTED_BROWSERS.join(', ')} `
@@ -290,6 +296,11 @@ async function gotoAppView(page, url, timeout = 30000) {
 }
 
 async function blockUnexpectedMutations(page, allowedMutationPaths = new Set()) {
+    // Deny-by-default: every write request to the API is blocked unless its
+    // pathname was explicitly allow-listed by the caller (e.g. the speedtest
+    // trigger, which is mocked separately). Previously this only blocked a
+    // fixed set of "known dangerous" paths and let every other POST/PUT/
+    // PATCH/DELETE reach the real backend unmocked.
     await page.route('**/api/**', async (route) => {
         const request = route.request();
         const method = request.method().toUpperCase();
@@ -306,8 +317,7 @@ async function blockUnexpectedMutations(page, allowedMutationPaths = new Set()) 
             return;
         }
 
-        const isBlockedPath = MUTATING_API_PATTERNS.some((pattern) => pattern.test(pathname));
-        if (!isBlockedPath || allowedMutationPaths.has(pathname)) {
+        if (allowedMutationPaths.has(pathname)) {
             await route.continue();
             return;
         }
@@ -407,6 +417,18 @@ function writeResultsArtifacts(results) {
 }
 
 let checkpointWriteQueue = Promise.resolve();
+
+// Serializes the login-failure phase across concurrently-running browsers.
+// The in-phase stagger/backoff (LOGIN_TEST_STAGGER_MS / LOGIN_LOCKOUT_RESET_MS)
+// only spaces out attempts within a single browser; with
+// UI_LINT_BROWSER_CONCURRENCY > 1, chromium/firefox/webkit previously started
+// their login-failure phases at the same time and thrashed against the same
+// per-username rate limit.
+let loginFailurePhaseQueue = Promise.resolve();
+function runLoginFailurePhaseSerialized(phase) {
+    loginFailurePhaseQueue = loginFailurePhaseQueue.then(phase, phase);
+    return loginFailurePhaseQueue;
+}
 
 async function emitBrowserCheckpoint(results, browserName) {
     const writeTask = () => {
@@ -592,8 +614,10 @@ async function collectPageMetrics(page, scope) {
         };
 
         const shouldSkipCompactControlClickTarget = (el) => {
-            if (el.tagName === 'BUTTON' || el.tagName === 'SUMMARY') return true;
-            if (el.classList.contains('btn')) return true;
+            // Only real, deliberately-compact exceptions belong here. Skipping
+            // by tag/class alone (BUTTON, SUMMARY, .btn) used to exempt nearly
+            // every normal button and .btn link from the size check entirely.
+            if (el.matches('.btn-close, .form-select-sm, .form-control-sm, .btn-sm')) return true;
             if (el.matches('.leaflet-control-zoom a, .leaflet-bar a')) return true;
             return false;
         };
@@ -811,14 +835,18 @@ async function collectPageMetrics(page, scope) {
             })
             .map(rectInfo);
 
-        const clickTargetsTooSmall = Array.from(contentRoot.querySelectorAll(clickTargetSelector))
+        const clickTargetsTooSmallMatches = Array.from(contentRoot.querySelectorAll(clickTargetSelector))
             .filter((el) => isVisible(el) && isInContentRoot(el) && !isDisabled(el))
             .filter((el) => !shouldSkipInlineClickTarget(el))
             .filter((el) => !shouldSkipCompactControlClickTarget(el))
             .filter((el) => {
                 const rect = el.getBoundingClientRect();
                 return rect.width < constants.CLICK_TARGET_MIN_SIZE_PX || rect.height < constants.CLICK_TARGET_MIN_SIZE_PX;
-            })
+            });
+        // Reported list is capped at 20 for readability; Total keeps the real count
+        // so a page with e.g. 57 offenders doesn't get silently reported as 20.
+        const clickTargetsTooSmallTotal = clickTargetsTooSmallMatches.length;
+        const clickTargetsTooSmall = clickTargetsTooSmallMatches
             .slice(0, 20)
             .map((el) => ({
                 ...rectInfo(el),
@@ -1034,10 +1062,13 @@ async function collectPageMetrics(page, scope) {
             }
         }
 
-        const focusIndicatorMissing = [];
-        const focusSample = focusableElements.slice(0, 20);
+        const focusIndicatorMissingMatches = [];
+        // Test every focusable element, not just the first 20: slicing before
+        // the check (rather than before reporting) meant nothing past the
+        // 20th tab stop was ever tested, so a page with 21+ focusable
+        // elements could report zero issues while later controls were broken.
         const priorFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-        for (const el of focusSample) {
+        for (const el of focusableElements) {
             const before = focusStyleSnapshot(el);
             try {
                 el.focus({ preventScroll: true });
@@ -1047,12 +1078,14 @@ async function collectPageMetrics(page, scope) {
 
             const after = focusStyleSnapshot(el);
             if (document.activeElement === el && !hasVisibleFocusIndicator(before, after)) {
-                focusIndicatorMissing.push({
+                focusIndicatorMissingMatches.push({
                     ...rectInfo(el),
                     text: norm(el.textContent).slice(0, 60) || null,
                 });
             }
         }
+        const focusIndicatorMissingTotal = focusIndicatorMissingMatches.length;
+        const focusIndicatorMissing = focusIndicatorMissingMatches.slice(0, 20);
         if (priorFocused && typeof priorFocused.focus === 'function') {
             priorFocused.focus({ preventScroll: true });
         } else if (document.activeElement instanceof HTMLElement) {
@@ -4090,6 +4123,7 @@ async function collectPageMetrics(page, scope) {
             horizontalOverflow,
             clippedButtons,
             clickTargetsTooSmall,
+            clickTargetsTooSmallTotal,
             iconButtonsTouchBlocked,
             dropdownToggleClickFailures,
             deprecatedButtonClasses,
@@ -4101,6 +4135,7 @@ async function collectPageMetrics(page, scope) {
             navbarCollapseIssues,
             focusOrderIssues,
             focusIndicatorMissing,
+            focusIndicatorMissingTotal,
             scrollEdgeCrowding,
             scrollBottomCrowding,
             nestedScrollContainers,
@@ -4452,6 +4487,131 @@ async function exerciseSettingsWireguardModal(page) {
     await page.waitForTimeout(TAB_SWITCH_SETTLE_MS);
 }
 
+// Rules declare which devices they've been validated against (e.g.
+// scroll-traps only runs on tablet/mobile); 'large-desktop' is just a wider
+// desktop viewport for this purpose.
+function normalizeRegistryDevice(device) {
+    return device === 'large-desktop' ? 'desktop' : device;
+}
+
+const REGISTRY_RULE_IDS = ['click-targets', 'focus-indicators', 'horizontal-overflow', 'scroll-traps'];
+
+async function collectRegistryFindings(page, view, browserName) {
+    try {
+        const snapshot = await collectDOMSnapshot(page);
+        const context = createContext({
+            page,
+            snapshot,
+            tokens: registryTokens,
+            scope: view.scope,
+            options: {
+                browser: browserName,
+                device: normalizeRegistryDevice(view.device),
+                environment: 'local',
+                // Settings' tabs all share scope 'settings', so this is the
+                // only reliable signal that the Logs tab is actually active
+                // right now (see settings-logs-layout.mjs).
+                expectPresent: view.name === 'settings-logs',
+            },
+        });
+        const ruleIds = view.name === 'settings-logs'
+            ? [...REGISTRY_RULE_IDS, 'settings-logs-layout']
+            : REGISTRY_RULE_IDS;
+        return await runRules(ruleIds, context);
+    } catch (err) {
+        return [{
+            rule: 'registry',
+            ruleId: 'registry',
+            severity: 'warning',
+            kind: 'registry-execution-failed',
+            message: `Rule registry execution failed: ${err.message}`,
+            selector: null,
+            details: {},
+        }];
+    }
+}
+
+// Converts a grouped click-targets finding's items into the same rect-shaped
+// entries collectPageMetrics() used to build inline, so downstream consumers
+// (dom-health.mjs, accessibility-policy.mjs, the JSON summary) keep working
+// unchanged - just fed by the registry's more thorough computation instead.
+//
+// Only genuinely too-small items are folded in here: metrics.clickTargetsTooSmall
+// feeds ui-health-score.mjs's hardBlock (the run's pass/fail signal), and that
+// gate historically only tripped on touch-target size, not on a control being
+// occluded/hidden/disabled - those still surface, just as supplementary
+// findings (see appendSupplementaryRegistryFindings) rather than a hard block.
+function buildLegacyClickTargetMetrics(registryFindings) {
+    const items = registryFindings
+        .filter((finding) => finding.ruleId === 'click-targets')
+        .flatMap((finding) => finding.details?.items || [])
+        .filter((item) => item.kind === 'click-target-too-small');
+
+    return {
+        clickTargetsTooSmallTotal: items.length,
+        clickTargetsTooSmall: items.slice(0, 20).map((item) => ({
+            tag: item.details?.tag || null,
+            id: item.details?.id || null,
+            className: Array.isArray(item.details?.classList) ? item.details.classList.join(' ') : null,
+            left: item.details?.left ?? null,
+            top: item.details?.top ?? null,
+            right: item.details?.right ?? null,
+            bottom: item.details?.bottom ?? null,
+            width: item.details?.width ?? null,
+            height: item.details?.height ?? null,
+            text: item.details?.text || null,
+        })),
+    };
+}
+
+// Only true "focus indicator not visible enough" findings are folded into
+// metrics.focusIndicatorMissing, matching what the inline check used to
+// cover. 'focus-hidden' (control vanished mid keyboard-nav) and
+// 'modal-focus-escape' are a different failure mode and surface instead as
+// supplementary findings.
+function buildLegacyFocusMetrics(registryFindings) {
+    const items = registryFindings.filter((finding) => finding.ruleId === 'focus-indicators' && finding.kind === 'focus-visibility');
+
+    return {
+        focusIndicatorMissingTotal: items.length,
+        focusIndicatorMissing: items.slice(0, 20).map((finding) => ({
+            tag: finding.details?.tag || null,
+            id: finding.details?.id || null,
+            className: null,
+            left: finding.details?.left ?? null,
+            top: finding.details?.top ?? null,
+            right: finding.details?.right ?? null,
+            bottom: finding.details?.bottom ?? null,
+            width: finding.details?.width ?? null,
+            height: finding.details?.height ?? null,
+            text: finding.details?.text || null,
+        })),
+    };
+}
+
+// Every registry finding is surfaced here as an extra legacy-key string,
+// appended after finalizeResult() runs (which would otherwise overwrite
+// result.findings/hardFindings/warnings from scratch). horizontal-overflow,
+// scroll-traps and settings-logs-layout have no legacy metric equivalent at
+// all, so this is their only path into the report. click-targets/
+// focus-indicators findings appear here too even though their
+// too-small/focus-visibility cases already drive metrics.clickTargetsTooSmall
+// / metrics.focusIndicatorMissing (and, through those, the existing
+// accessibility-policy findings) - the duplicate description is harmless
+// since only the metrics arrays feed hardBlock/scoring, not this list, and it
+// guarantees no registry finding is ever silently dropped.
+function appendSupplementaryRegistryFindings(result, registryFindings) {
+    for (const finding of registryFindings) {
+        const legacyKey = `registry:${finding.ruleId}:${finding.kind}`;
+        result.findings.push(legacyKey);
+        if (finding.severity === 'error' || finding.severity === 'critical') {
+            result.hardFindings.push(legacyKey);
+        } else {
+            result.warnings.push(legacyKey);
+        }
+    }
+}
+
 async function auditView(page, view, browserName) {
     const detachNetwork = collectConsoleAndNetwork(page);
     let network = null;
@@ -4520,6 +4680,16 @@ async function auditView(page, view, browserName) {
         metrics.performance = perfMetrics;
         metrics.fonts = fontMetrics;
         metrics.domStability = domStability;
+
+        // collectRegistryFindings() already catches its own errors and always
+        // resolves with an array (never rejects), so it isn't wrapped in
+        // safeMetric() here: that helper's error path spreads its fallback as
+        // an object ({...fallback}), which would silently turn an array
+        // fallback into {} instead.
+        const registryFindings = await collectRegistryFindings(page, view, browserName);
+        Object.assign(metrics, buildLegacyClickTargetMetrics(registryFindings));
+        Object.assign(metrics, buildLegacyFocusMetrics(registryFindings));
+
         if (view.scope === 'nodes') {
             metrics.spacing.nodesDynamicBehavior = await safeMetric(
                 'nodesDynamicBehavior',
@@ -4566,19 +4736,14 @@ async function auditView(page, view, browserName) {
             diff,
             metrics,
             network,
+            registryFindings,
             statusUnavailableExpected,
             findings: [],
             screenshots: { ...shots, diffPath: diff.diffPath },
             kpiShots,
-            uiHealth: buildUIHealthReport({
-                name: view.name,
-                url: page.url(),
-                browser: browserName,
-                scope: view.scope,
-                metrics,
-                diff,
-                network,
-            }),
+            // finalizeResult() always recomputes this after findings are
+            // summarized, so building it here would only be thrown away.
+            uiHealth: null,
         };
     } finally {
         // Always detach network listeners to prevent memory leaks
@@ -4619,6 +4784,14 @@ async function auditLoginFailureView(page, view, browserName) {
             () => collectPageMetrics(page, view.scope),
             {},
         ));
+        // collectRegistryFindings() already catches its own errors and always
+        // resolves with an array (never rejects), so it isn't wrapped in
+        // safeMetric() here: that helper's error path spreads its fallback as
+        // an object ({...fallback}), which would silently turn an array
+        // fallback into {} instead.
+        const registryFindings = await collectRegistryFindings(page, view, browserName);
+        Object.assign(metrics, buildLegacyClickTargetMetrics(registryFindings));
+        Object.assign(metrics, buildLegacyFocusMetrics(registryFindings));
         const shots = await captureStablePair(page, {
             motionResetCss: FULL_MOTION_RESET_CSS,
             name: view.name,
@@ -4660,19 +4833,14 @@ async function auditLoginFailureView(page, view, browserName) {
             diff,
             metrics,
             network,
+            registryFindings,
             findings: [],
             screenshots: { ...shots, diffPath: diff.diffPath },
             kpiShots,
             loginResponseStatus: loginResponse.status(),
-            uiHealth: buildUIHealthReport({
-                name: view.name,
-                url: page.url(),
-                browser: browserName,
-                scope: view.scope,
-                metrics,
-                diff,
-                network,
-            }),
+            // finalizeResult() always recomputes this after findings are
+            // summarized, so building it here would only be thrown away.
+            uiHealth: null,
         };
     } finally {
         // Always detach network listeners to prevent memory leaks
@@ -4686,6 +4854,18 @@ async function main() {
     // Clean up known UI-lint artifacts only.
     cleanOutputDir(OUTPUT_DIR);
     ensureDir(OUTPUT_DIR);
+
+    // buildRunPaths() already validates OUTPUT_DIR/SCREENSHOT_DIR, but this is
+    // the one genuinely recursive delete in the whole tool, so re-check right
+    // at the call site too before wiping it.
+    const screenshotDirRelative = path.relative(OUTPUT_DIR, SCREENSHOT_DIR);
+    if (
+        SCREENSHOT_DIR === OUTPUT_DIR
+        || screenshotDirRelative.startsWith('..')
+        || path.isAbsolute(screenshotDirRelative)
+    ) {
+        throw new Error(`Refusing to delete SCREENSHOT_DIR outside of OUTPUT_DIR: ${SCREENSHOT_DIR}`);
+    }
     fs.rmSync(SCREENSHOT_DIR, { recursive: true, force: true });
     ensureDir(SCREENSHOT_DIR);
 
@@ -4770,6 +4950,7 @@ async function main() {
                                 const result = await auditView(page, view, browserName);
                                 result.browser = browserName;
                                 orderedViewResults[viewIndex] = finalizeResult(result);
+                                appendSupplementaryRegistryFindings(orderedViewResults[viewIndex], result.registryFindings || []);
                                 logViewDone(browserName, view, viewIndex, VIEWS.length, orderedViewResults[viewIndex]);
                             } catch (err) {
                                 console.error(`[${browserName}/${view.name}] Audit failed: ${err.message}`);
@@ -4792,6 +4973,7 @@ async function main() {
             }
 
             console.log(`[${browserName}] Entering ${formatPhaseLabel('login-failure', LOGIN_FAILURE_VIEWS.length)}`);
+            await runLoginFailurePhaseSerialized(async () => {
             for (const [index, view] of LOGIN_FAILURE_VIEWS.entries()) {
                 // Retry logic for rate limiting: detect "too many attempts" and wait before retry
                 let result;
@@ -4855,9 +5037,12 @@ async function main() {
 
                 if (result) {
                     result.browser = browserName;
-                    results.push(finalizeResult(result));
+                    const finalized = finalizeResult(result);
+                    appendSupplementaryRegistryFindings(finalized, result.registryFindings || []);
+                    results.push(finalized);
                 }
             }
+            });
         } catch (error) {
             browserRunFailed = true;
             console.error(`[${browserName}] Browser run failed: ${error.message}`);
@@ -4894,7 +5079,7 @@ async function main() {
             overflowOffenders: horizontalOverflow.offenders?.length || 0,
             clippedButtons: metrics.clippedButtons?.length || 0,
             buttonTextNotCentered: metrics.buttonTextNotCentered?.length || 0,
-            clickTargetsTooSmall: metrics.clickTargetsTooSmall?.length || 0,
+            clickTargetsTooSmall: metrics.clickTargetsTooSmallTotal ?? (metrics.clickTargetsTooSmall?.length || 0),
             iconButtonsTouchBlocked: metrics.iconButtonsTouchBlocked?.length || 0,
             dropdownToggleClickFailures: metrics.dropdownToggleClickFailures?.length || 0,
             usersMobileActionToggleSquareMismatch: spacing.usersMobileActionToggleContract?.squareMismatchCount || 0,
@@ -4907,7 +5092,7 @@ async function main() {
             breakpointDisplayConflicts: metrics.breakpointDisplayConflicts?.length || 0,
             navbarCollapseIssues: metrics.navbarCollapseIssues?.length || 0,
             focusOrderIssues: metrics.focusOrderIssues?.length || 0,
-            focusIndicatorMissing: metrics.focusIndicatorMissing?.length || 0,
+            focusIndicatorMissing: metrics.focusIndicatorMissingTotal ?? (metrics.focusIndicatorMissing?.length || 0),
             scrollEdgeCrowding: metrics.scrollEdgeCrowding?.length || 0,
             scrollBottomCrowding: metrics.scrollBottomCrowding?.length || 0,
             ghostScrollContainers: metrics.ghostScrollContainers?.length || 0,

@@ -1,182 +1,116 @@
-# Monitoring & Analytics
+# Monitoring and Analytics
 
-WireBuddy includes a built-in time-series database for comprehensive VPN traffic monitoring and analytics.
+WireBuddy records WireGuard, network, GeoIP, DNS trend, and speed-test metrics
+in its embedded file-based time-series database (TSDB).
 
-## Dashboard Overview
+## Dashboard
 
-The main dashboard provides real-time insights:
+The dashboard summarizes the current deployment with:
 
-### KPI Cards
+- interface and peer counts
+- active peer state and recent activity
+- aggregate WireGuard traffic
+- current network-interface rates for interfaces selected for dashboard display
+- latest and historical speed-test results
+- GeoIP map and traffic summaries when traffic analysis is enabled
 
-- **Active Interfaces:** Number of running WireGuard interfaces
-- **Total Peers:** Connected and configured peers
-- **Total Traffic:** Aggregate data transfer
-- **Active Connections:** Current handshakes
+Values are refreshed by the UI from the authenticated API. A missing metric is
+shown as unavailable rather than inferred from unrelated data.
 
-### Real-Time Metrics
+## Traffic Page
 
-- **Traffic Rate:** Live upload/download speeds
-- **Connection Status:** Peer connection states
-- **Last Handshake:** Time since last WireGuard handshake
-- **Endpoint Information:** Client public IPs and ports
+The **Traffic** page provides:
 
-## Traffic Analytics
+- per-peer historical traffic charts for administrators
+- country traffic totals
+- ASN/provider traffic totals
+- optional peer filtering
+- ranges of 6 hours, 24 hours, 7, 30, 90, and 180 days, or 1 year
 
-### Per-Peer Statistics
+Traffic analysis must be enabled under **Settings → WireGuard → Traffic
+Analysis**. Country and ASN accounting additionally requires host conntrack byte
+accounting and the GeoLite2 databases.
 
-**Navigate to:** Traffic page
+The all-peer chart limits visual density on large installations; selecting a
+single peer shows separate receive and transmit series.
 
-View detailed statistics for each peer:
+## Collection Intervals
 
-- **Historical Charts:** Traffic over time (hourly, daily, weekly)
-- **Total Transfer:** Sent and received bytes
-- **Average Rate:** Mean transfer rate
-- **Peak Usage:** Maximum observed bandwidth
-- **Active Time:** Total connection duration
+The master scheduler currently samples every 30 seconds:
 
-### Time Range Selection
+- WireGuard peer transfer counters and handshakes
+- conntrack traffic grouped by country and ASN
+- selected network-interface counters
 
-Select time ranges for traffic analysis:
+TSDB maintenance runs every six hours. GeoIP database updates are checked
+weekly. These intervals are application constants rather than UI-configurable
+settings.
 
-| Range | Description |
-|-------|-------------|
-| **6 h** | Last 6 hours |
-| **24 h** | Last 24 hours (default) |
-| **7 d** | Last 7 days |
-| **30 d** | Last 30 days |
-| **90 d** | Last 90 days |
-| **180 d** | Last 180 days |
-| **1 y** | Last year |
+## Storage and Retention
 
-These ranges are available on:
+Metrics are stored below `<WIREBUDDY_DATA_DIR>/tsdb/`. Raw DNS query files live
+below `<WIREBUDDY_DATA_DIR>/dns/`; aggregated DNS trend series are stored in the
+TSDB.
 
-- **Traffic page:** Per-peer traffic analysis
-- **Dashboard charts:** Speedtest and network metrics
+Administrators manage retention under **Settings → Logs**:
 
-!!! tip "Data Granularity"
-    Charts automatically adjust data point density based on the selected range and viewport size to ensure optimal performance and readability.
+| Data | Default | Available values |
+|---|---:|---|
+| Traffic TSDB | 7 days | Off, 7, 30, 90, 180, 365 days |
+| DNS logs/metrics | 7 days | Off, 7, 30, 90, 180, 365 days |
+| Speed-test history | 365 days | Off, 7, 30, 90, 180, 365 days |
 
-### Export Data
+The same page shows storage paths and sizes and provides explicit purge/reset
+actions for traffic, DNS, peer connection, and speed-test data.
 
-Export traffic data for external analysis:
+Setting retention to **Off** removes or suppresses the corresponding retained
+history; it does not disable unrelated WireGuard operation.
 
-- **CSV Format:** Import into Excel, Google Sheets
-- **JSON Format:** Programmatic access
-- **Filtered Exports:** Specific peers or time ranges
+## Remote Nodes
 
-## GeoIP Features
-
-See [GeoIP & Maps](geoip.md) for geographic traffic analysis.
-
-## Time-Series Database
-
-WireBuddy uses an embedded time-series database for metrics storage.
-
-### Configuration
-
-**Settings → General → Metrics**
-
-- **Retention Period:** How long to keep historical data (default: 90 days)
-- **Sample Interval:** Data collection frequency (default: 60 seconds)
-- **Compression:** Enable data compression (saves disk space)
-
-### Storage Location
-
-Metrics are stored in `data/tsdb/` directory.
-
-This also includes aggregated DNS trend metrics written by the DNS ingestion pipeline. Raw DNS query logs remain in the separate `data/dns/queries/` JSONL store.
-
-### Maintenance
-
-Automatic tasks:
-
-- **Cleanup:** Removes data older than retention period (daily)
-- **Compression:** Compresses old data (weekly)
-- **Vacuum:** Optimizes database (monthly)
-
-## Performance Monitoring
-
-### System Resources
-
-Monitor WireBuddy's resource usage:
-
-- **CPU Usage:** Application CPU consumption
-- **Memory Usage:** RAM utilization
-- **Disk Usage:** Database size
-- **Network I/O:** WireBuddy traffic (not VPN traffic)
-
-### WireGuard Performance
-
-Track WireGuard-specific metrics:
-
-- **Handshake Success Rate:** Connection reliability
-- **Average Handshake Time:** Performance indicator
-- **Packet Loss:** Network quality metric
-- **Interface Errors:** Configuration issues
-
-## Alerts & Notifications
-
-(Planned feature - coming in v1.4)
-
-Configure alerts for:
-
-- Peer disconnections
-- High traffic usage
-- Interface errors
-- Certificate expiry
-- System resource limits
+Nodes send peer traffic and handshake metrics to the master through a durable
+local queue. The master acknowledges accepted batches. Dashboard and traffic
+views aggregate local and node data where supported.
 
 ## API Access
 
-Access metrics programmatically via REST API:
+Current monitoring endpoints include:
 
-```bash
-# Get peer traffic stats
-curl -H "Authorization: Bearer TOKEN" \
-  https://vpn.example.com/api/metrics/peers/PEER_ID
+- `GET /api/wireguard/stats/traffic`
+- `GET /api/wireguard/stats/connections`
+- `GET /api/wireguard/stats/traffic-by-country`
+- `GET /api/wireguard/stats/traffic-by-asn`
+- `GET /api/wireguard/stats/peer-locations`
+- `GET /api/wireguard/stats/peers-enriched`
+- `GET /api/wireguard/stats/tsdb`
+- `GET /api/wireguard/stats/peer-metrics`
+- `GET /api/network/stats`
+- `GET /api/network/stats/history`
+- `GET /api/wireguard/speedtest/history`
 
-# Get interface metrics
-curl -H "Authorization: Bearer TOKEN" \
-  https://vpn.example.com/api/metrics/interfaces/INTERFACE_NAME
-```
+Retention and purge endpoints are listed in [API Endpoints](../api/endpoints.md).
+There is no `/api/metrics/*` family in the current release.
 
-See [API Documentation](../api/endpoints.md) for details.
+## Export and Integrations
 
-## Prometheus Integration
+The current UI does not provide general CSV/JSON traffic export, a Prometheus
+exporter, Grafana dashboards, InfluxDB storage, or built-in alerting. Use the
+authenticated REST endpoints for custom integrations and forward application
+logs to an external monitoring platform for alerts.
 
-(Planned feature)
+## Troubleshooting
 
-Export metrics to Prometheus for integration with existing monitoring:
+If traffic history is empty:
 
-- Prometheus exporter endpoint
-- Grafana dashboard templates
-- Pre-configured alerts
+1. Confirm **Settings → WireGuard → Traffic Analysis** is enabled.
+2. Confirm interfaces and peers are active and transferring data.
+3. Verify `net.netfilter.nf_conntrack_acct=1` for country/ASN data.
+4. Check retention under **Settings → Logs** is not set to Off.
+5. Review `/ready` and container logs for scheduler or TSDB errors.
 
-## Best Practices
+## Related
 
-### Data Retention
-
-- **Short-term:** 7-30 days for detailed analysis
-- **Long-term:** 90+ days for trend analysis
-- **Archive:** Export and backup for compliance
-
-### Storage Planning
-
-Estimate storage requirements:
-
-```
-Storage per day ≈ (Number of peers × Samples per day × 100 bytes)
-Example: 50 peers × 1440 samples × 100 bytes = ~7 MB/day
-```
-
-### Performance Tuning
-
-- Reduce sample interval for high-peer-count deployments
-- Enable compression to save disk space
-- Regular database vacuum for optimal performance
-
-## Next Steps
-
-- [GeoIP & Maps](geoip.md) - Geographic traffic analysis
-- [Traffic Guide](../configuration/monitoring.md) - Advanced configuration
-- [API Reference](../api/endpoints.md) - Programmatic access
+- [Monitoring Configuration](../configuration/monitoring.md)
+- [GeoIP and Maps](geoip.md)
+- [Speed Test](speedtest.md)
+- [API Endpoints](../api/endpoints.md)

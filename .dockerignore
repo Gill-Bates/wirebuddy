@@ -20,7 +20,6 @@ tests/
 
 # Vendor Assets (built inside image)
 app/static/vendor/fonts/
-app/static/vendor/images/flags/
 
 # IDE
 .idea/
@@ -38,6 +37,7 @@ app/static/vendor/images/flags/
 .env
 .env.*
 .env-example
+settings.env
 
 # Local data
 data/

@@ -28,8 +28,14 @@ export const meta = {
 const settingsLogsLayoutRule = RuleBuilder.layout(
     'settings-logs-layout',
     'Settings logs layout stability',
-    async ({ page, scope, browser }) => {
+    async ({ page, scope, browser, options }) => {
         const findings = [];
+        // The Settings page's tabs all share scope 'settings', so this flag -
+        // not scope - is what tells the rule the Logs tab is the one actually
+        // being audited right now. Without it, a missing #logs-pane could
+        // mean either "regression" or "this run isn't even looking at the
+        // Logs tab", and the rule can't tell those apart on its own.
+        const expectPresent = Boolean(options?.expectPresent);
 
         const diagnostics = await page.evaluate(() => {
             const root = document.querySelector('#logs-pane');
@@ -78,9 +84,34 @@ const settingsLogsLayoutRule = RuleBuilder.layout(
             };
         });
 
-        if (!diagnostics.present) return findings;
+        if (!diagnostics.present) {
+            if (expectPresent) {
+                findings.push({
+                    severity: 'error',
+                    kind: 'settings-logs-structure-missing',
+                    message: 'Settings > Logs pane markup is missing (#logs-pane not found)',
+                    selector: '#logs-pane',
+                    details: {
+                        component: 'settings-logs',
+                        browser: browser || null,
+                        scope: scope || null,
+                    },
+                });
+            }
+            return findings;
+        }
 
         const desktopLike = diagnostics.viewportWidth >= 768;
+
+        if (expectPresent && diagnostics.rows.length === 0) {
+            findings.push({
+                severity: 'error',
+                kind: 'settings-logs-metrics-rows-missing',
+                message: 'Settings > Logs pane has no .logs-metrics-row elements',
+                selector: '#logs-pane .logs-metrics-row',
+                details: { component: 'settings-logs', browser: browser || null, scope: scope || null },
+            });
+        }
 
         for (const row of diagnostics.rows) {
             if (row.display !== 'flex') {
@@ -136,6 +167,26 @@ const settingsLogsLayoutRule = RuleBuilder.layout(
         }
 
         for (const block of diagnostics.deleteBlocks) {
+            if (expectPresent && !block.hasHr) {
+                findings.push({
+                    severity: 'error',
+                    kind: 'settings-logs-delete-hairline-missing',
+                    message: 'Logs delete block is missing its divider hairline',
+                    selector: '#logs-pane .metrics-delete hr',
+                    details: { component: 'settings-logs', browser: browser || null, scope: scope || null, blockIndex: block.blockIndex },
+                });
+            }
+
+            if (expectPresent && !block.hasInner) {
+                findings.push({
+                    severity: 'error',
+                    kind: 'settings-logs-delete-inner-missing',
+                    message: 'Logs delete block is missing its .metrics-delete-inner wrapper',
+                    selector: '#logs-pane .metrics-delete-inner',
+                    details: { component: 'settings-logs', browser: browser || null, scope: scope || null, blockIndex: block.blockIndex },
+                });
+            }
+
             if (block.hasHr && block.hrMarginBottom !== null && block.hrMarginBottom < MIN_HAIRLINE_MARGIN_BOTTOM_PX) {
                 findings.push({
                     severity: 'warning',

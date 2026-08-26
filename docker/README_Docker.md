@@ -140,7 +140,18 @@ services:
 - **Host network mode** (`--network host`) — Required for WireGuard to manage network interfaces
 - **NET_ADMIN capability** — Required for creating WireGuard interfaces
 - **TUN device** (`/dev/net/tun`) — Required for VPN tunnels
-- Linux host with kernel 5.6+ (WireGuard built-in) or wireguard-dkms installed
+- Linux host with kernel 5.6+ (WireGuard built in) or a compatible WireGuard kernel module installed on the host
+
+### WireGuard source policy
+
+The image builds `wg` and `wg-quick` from the current `master` branch of the official
+[`wireguard-tools`](https://git.zx2c4.com/wireguard-tools/) repository whenever the image is built.
+The Debian `wireguard`, `wireguard-tools`, and `wireguard-dkms` packages are pinned with APT priority `-1`
+and cannot be installed into the image.
+
+Containers share the host kernel, so an upstream Linux kernel module cannot be baked into a portable image.
+The host must provide the WireGuard implementation. Rebuild the image to pick up newer upstream
+`wireguard-tools` revisions.
 
 ---
 

@@ -51,6 +51,8 @@
    * ============================================ */
     --wb-empty-icon-size: 48px;
     --wb-empty-icon-color: var(--bs-secondary);
+    --wb-empty-state-color: var(--bs-secondary-color);
+    --wb-empty-state-opacity: 0.58;
     --wb-empty-padding: var(--wb-spacing-xl);
 
     /* ============================================

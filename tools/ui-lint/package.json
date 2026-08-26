@@ -15,12 +15,12 @@
         "@playwright/test": "latest",
         "chalk": "latest",
         "fast-glob": "latest",
-        "lighthouse": "latest",
+        "lighthouse": "^13.4.1",
         "mime-types": "latest",
         "pixelmatch": "latest",
         "pngjs": "latest",
         "postcss": "^8.5.15",
-        "sharp": "latest",
+        "sharp": "^0.35.4",
         "ssim.js": "latest",
         "zod": "latest"
     }

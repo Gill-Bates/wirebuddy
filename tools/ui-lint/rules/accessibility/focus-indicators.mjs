@@ -46,13 +46,14 @@ const focusIndicatorRule = RuleBuilder.accessibility(
         const isTablet = viewport.width >= 768 && viewport.width < 992;
         const baseMinSize = getViewportAwareTouchTarget(tokens, viewport);
 
-        const focusable = snapshot.collections.focusable
-            .filter((el) => !el.disabled && el.tabIndex !== -1)
-            .filter((el) => {
-                const matchesSelector = el.id || el.dataAction || el.dataUiComponent || el.dataUiRole;
-                return Boolean(matchesSelector);
-            })
-            .slice(0, 50);
+        // This only sizes the tab-press budget below; simulateTabNavigation
+        // walks the real, live tab order regardless of which elements are in
+        // this list. The previous filter checked el.dataAction/dataUiComponent/
+        // dataUiRole, but those live under el.semantic.* in the snapshot, not
+        // at the top level, so it silently matched almost nothing but el.id -
+        // undercounting the budget long before the separate 50/30 caps even
+        // applied.
+        const focusable = snapshot.collections.focusable.filter((el) => !el.disabled && el.tabIndex !== -1);
 
         if (!focusable.length) return findings;
 
@@ -63,7 +64,10 @@ const focusIndicatorRule = RuleBuilder.accessibility(
             }
         }).catch(() => { });
 
-        const tabStates = await simulateTabNavigation(page, Math.min(focusable.length + 2, 30));
+        // Cover every focusable element, not just the first 30 tab stops;
+        // keep a generous ceiling only as a runaway guard against a focus
+        // trap bug turning this into an unbounded loop.
+        const tabStates = await simulateTabNavigation(page, Math.min(focusable.length + 2, 300));
 
         for (const state of tabStates) {
             if (!state || state.hidden || state.disabled || state.inert) {
@@ -73,6 +77,9 @@ const focusIndicatorRule = RuleBuilder.accessibility(
                     message: 'Focusable control is hidden or removed from the keyboard flow',
                     selector: state?.selector || null,
                     details: {
+                        tag: state?.tag || null,
+                        id: state?.id || null,
+                        text: state?.text || null,
                         component: state?.component || null,
                         importance: state?.importance || null,
                         viewport: isMobile ? 'mobile' : isTablet ? 'tablet' : 'desktop',
@@ -81,6 +88,10 @@ const focusIndicatorRule = RuleBuilder.accessibility(
                         inert: state?.inert ?? false,
                         focusVisible: state?.focusVisible ?? false,
                         tabIndex: state?.tabIndex ?? null,
+                        left: state?.rect?.left ?? 0,
+                        top: state?.rect?.top ?? 0,
+                        right: state?.rect?.right ?? 0,
+                        bottom: state?.rect?.bottom ?? 0,
                         width: state?.rect?.width ?? 0,
                         height: state?.rect?.height ?? 0,
                         required: baseMinSize,
@@ -89,23 +100,25 @@ const focusIndicatorRule = RuleBuilder.accessibility(
                 continue;
             }
 
+            const importanceMultiplier = FOCUS_IMPORTANCE_MULTIPLIER[state.importance || 'secondary'] || 1;
+            const requiredContrast = (tokens?.wcag?.contrastAALarge || 3) * importanceMultiplier;
+
             const visibleEnough = isFocusVisibleEnough({
-                before: {
-                    outlineStyle: 'none',
-                    outlineWidth: 0,
-                    outlineColor: 'rgba(0, 0, 0, 0)',
-                    boxShadow: 'none',
-                    borderColor: state.computed.borderColor,
-                    backgroundColor: state.computed.backgroundColor,
-                },
+                // Real unfocused baseline (captured by briefly blurring the
+                // element), not a fabricated "no outline/shadow" stand-in -
+                // that fake baseline missed indicators built from border or
+                // background changes and could mistake a permanent box-shadow
+                // for a focus indicator.
+                before: state.unfocusedComputed || state.computed,
                 after: state.computed,
                 tokens,
                 elementRect: state.rect,
                 focusRect: state.rect,
+                // Weight the pass/fail threshold by importance so it actually
+                // affects the outcome, not just the reported number.
+                minContrast: requiredContrast,
             });
 
-            const importanceMultiplier = FOCUS_IMPORTANCE_MULTIPLIER[state.importance || 'secondary'] || 1;
-            const requiredContrast = (tokens?.wcag?.contrastAALarge || 3) * importanceMultiplier;
             const contrastRatio = visibleEnough.contrastRatio ?? 0;
             const focusArea = visibleEnough.focusRingArea || 0;
             const minArea = Math.max(16, Math.round(state.rect.width + state.rect.height));
@@ -123,6 +136,8 @@ const focusIndicatorRule = RuleBuilder.accessibility(
                     : 'Missing visible focus indicator',
                 selector: state.selector || null,
                 details: {
+                    tag: state.tag || null,
+                    id: state.id || null,
                     component: state.component || null,
                     importance: state.importance || null,
                     viewport: isMobile ? 'mobile' : isTablet ? 'tablet' : 'desktop',
@@ -141,6 +156,10 @@ const focusIndicatorRule = RuleBuilder.accessibility(
                     boxShadow: state.computed.boxShadow,
                     backgroundColor: state.computed.backgroundColor,
                     borderColor: state.computed.borderColor,
+                    left: state.rect.left,
+                    top: state.rect.top,
+                    right: state.rect.right,
+                    bottom: state.rect.bottom,
                     width: state.rect.width,
                     height: state.rect.height,
                     tabIndex: state.tabIndex,
@@ -149,10 +168,19 @@ const focusIndicatorRule = RuleBuilder.accessibility(
             });
         }
 
-        const hasModal = await page.evaluate(() => Boolean(document.querySelector('.modal.show, .modal:not(.d-none)')));
-        const modalComponent = hasModal
-            ? await page.evaluate(() => document.querySelector('.modal.show, .modal:not(.d-none)')?.getAttribute('data-ui-component') || 'modal')
-            : null;
+        // Bootstrap modals sit in the DOM at all times and only gain `.show`
+        // (plus display:block) once opened; `.modal:not(.d-none)` matches a
+        // closed modal too, since Bootstrap never adds `.d-none` to it. Also
+        // confirm the element is actually rendered, not just class-flagged.
+        const activeModalComponent = await page.evaluate(() => {
+            const modal = document.querySelector('.modal.show[aria-modal="true"], .modal.show');
+            if (!modal) return null;
+            const style = window.getComputedStyle(modal);
+            if (style.display === 'none' || style.visibility === 'hidden') return null;
+            return modal.getAttribute('data-ui-component') || 'modal';
+        });
+        const hasModal = activeModalComponent !== null;
+        const modalComponent = activeModalComponent;
         const modalIssue = hasModal && tabStates.find((state) => state?.insideModal === false && !state.hidden && !state.disabled && !state.inert);
         if (modalIssue) {
             findings.push({

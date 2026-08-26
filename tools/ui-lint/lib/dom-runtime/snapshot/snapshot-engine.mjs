@@ -188,6 +188,16 @@ export async function collectDOMSnapshot(page, options = {}) {
                         dataPeerId: element.getAttribute('data-peer-id'),
                         dataNodeId: element.getAttribute('data-node-id'),
                     },
+                    // Ancestor context that can only be read from a live DOM node
+                    // (rule modules only ever see the serialized snapshot, so
+                    // string-matching a selector like ".leaflet-bar a" against
+                    // just the element's own classList can never find a class
+                    // that actually lives on an ancestor).
+                    ancestry: {
+                        insideLeafletControl: Boolean(element.closest('.leaflet-control-zoom, .leaflet-bar')),
+                        insideTextFlow: Boolean(element.closest('p, li, td, th, .table, .dropdown-menu, .breadcrumb, .pagination')),
+                        insideFooter: Boolean(element.closest('.wb-footer')),
+                    },
                 };
 
                 node.mutationFingerprint = buildFingerprint(node);

@@ -100,7 +100,7 @@ cd wirebuddy
 ### 4. Configure Environment
 
 ```bash
-cp .env-example settings.env
+cp .env-example .env
 ```
 
 Generate a secure secret key:
@@ -109,7 +109,7 @@ Generate a secure secret key:
 openssl rand -base64 32
 ```
 
-Edit `settings.env` and set:
+Edit `.env` and set:
 
 ```bash
 WIREBUDDY_SECRET_KEY=your_generated_key_here
@@ -118,19 +118,25 @@ LOG_LEVEL=INFO
 
 ### 5. Review Docker Compose Configuration
 
-The included `docker-compose.yml`:
+The included `docker/docker-compose.yml`:
 
 ```yaml
 services:
   wirebuddy:
     image: giiibates/wirebuddy:latest
     container_name: wirebuddy
-    restart: unless-stopped
+    restart: always
+    stop_grace_period: 20s
     network_mode: host  # Required for WireGuard
+    cap_drop:
+      - ALL
     cap_add:
       - NET_ADMIN       # Required for network configuration
-    env_file:
-      - settings.env
+    environment:
+      WIREBUDDY_SECRET_KEY: "${WIREBUDDY_SECRET_KEY:?Set WIREBUDDY_SECRET_KEY in .env}"
+      WIREBUDDY_DATA_DIR: /app/data
+    devices:
+      - /dev/net/tun:/dev/net/tun
     volumes:
       - ./data:/app/data
     security_opt:
@@ -143,13 +149,13 @@ services:
 ### 6. Start WireBuddy
 
 ```bash
-docker compose up -d
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
 View logs:
 
 ```bash
-docker compose logs -f wirebuddy
+docker compose --env-file .env -f docker/docker-compose.yml logs -f wirebuddy
 ```
 
 ### 7. Access Web Interface
@@ -162,7 +168,7 @@ http://localhost:8000
 
 Bootstrap credentials on first boot:
 - Username: `admin`
-- Password: auto-generated on first start and printed to the container log — run `docker compose logs wirebuddy` and look for the generated bootstrap password
+- Password: auto-generated on first start and printed to the container log — run `docker compose --env-file .env -f docker/docker-compose.yml logs wirebuddy` and look for the generated bootstrap password
 
 !!! danger "Change Default Password"
     On first login WireBuddy redirects you to a mandatory password change screen; the temporary password is invalidated once you set a new one.
@@ -177,8 +183,10 @@ For manual Docker container management:
 docker run -d \
   --name wirebuddy \
   --network host \
+  --cap-drop ALL \
   --cap-add NET_ADMIN \
   --security-opt no-new-privileges:true \
+  --device /dev/net/tun:/dev/net/tun \
   -e WIREBUDDY_SECRET_KEY="your_secret_key_here" \
   -e LOG_LEVEL=INFO \
   -v $(pwd)/data:/app/data \
@@ -257,10 +265,10 @@ pip install -r requirements.txt
 cp .env-example .env
 ```
 
-Edit `.env` and set your `WIREBUDDY_SECRET_KEY`:
+Edit `.env` and set your `WIREBUDDY_SECRET_KEY`. To enable hot reload, also set:
 
 ```bash
-export WIREBUDDY_SECRET_KEY=$(openssl rand -base64 32)
+WIREBUDDY_DEV_RELOAD=true
 ```
 
 ### 6. System Configuration
@@ -282,16 +290,16 @@ python run.py
 Or use uvicorn directly:
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
 For production, keep a single worker:
 
 ```bash
-uvicorn app.main:app \
+uvicorn app:create_app --factory \
   --host 0.0.0.0 \
   --port 8000 \
-    --workers 1 \
+  --workers 1 \
   --log-level info
 ```
 
@@ -314,12 +322,12 @@ To update to the latest version:
 
 ```bash
 cd wirebuddy
-docker compose pull
-docker compose up -d
+docker compose --env-file .env -f docker/docker-compose.yml pull
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
 !!! info "Data Persistence"
-    Your configuration and data are stored in the `data/` directory and persist across updates.
+    Your configuration and data are stored in `docker/data/` and persist across updates.
 
 ## Reverse Proxy
 

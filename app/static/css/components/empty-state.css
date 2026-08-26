@@ -13,21 +13,22 @@
     gap: var(--wb-spacing-md);
     padding: var(--wb-empty-padding);
     text-align: center;
-    color: var(--bs-secondary-color);
+    color: var(--wb-empty-state-color);
 }
 
 /* Icon */
 .wb-empty-state-icon {
     font-size: var(--wb-empty-icon-size);
-    color: var(--wb-empty-icon-color);
-    opacity: 0.6;
+    color: var(--wb-empty-state-color);
+    opacity: var(--wb-empty-state-opacity);
 }
 
 /* Title */
 .wb-empty-state-title {
     font-size: var(--wb-font-size-lg);
     font-weight: var(--wb-font-weight-medium);
-    color: var(--bs-body-color);
+    color: var(--wb-empty-state-color);
+    opacity: var(--wb-empty-state-opacity);
     margin: 0;
 }
 
@@ -35,6 +36,8 @@
 .wb-empty-state-desc {
     font-size: var(--wb-font-size-sm);
     max-width: 300px;
+    color: var(--wb-empty-state-color);
+    opacity: var(--wb-empty-state-opacity);
     margin: 0;
 }
 

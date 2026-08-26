@@ -2,8 +2,8 @@
 
 Authoritative route list generated from mounted FastAPI routers.
 
-- Generated: 2026-04-26 13:42:50Z
-- Total endpoints: 128
+- Generated: 2026-08-26
+- Total endpoints: 131
 
 ## Authentication Model
 
@@ -31,6 +31,7 @@ Authoritative route list generated from mounted FastAPI routers.
 |---|---|
 | GET | `/api/users` |
 | POST | `/api/users` |
+| POST | `/api/users/me/complete-required-change` |
 | DELETE | `/api/users/{user_id}` |
 | GET | `/api/users/{user_id}` |
 | PATCH | `/api/users/{user_id}` |
@@ -91,7 +92,7 @@ Authoritative route list generated from mounted FastAPI routers.
 | GET | `/api/wireguard/speedtest/history` |
 | GET | `/api/wireguard/speedtest/nodes` |
 | POST | `/api/wireguard/speedtest/run` |
-| GET | `/api/wireguard/speedtest/run/stream` |
+| GET | `/api/wireguard/speedtest/run/stream/{stream_id}` |
 | GET | `/api/wireguard/speedtest/settings` |
 | PATCH | `/api/wireguard/speedtest/settings` |
 | DELETE | `/api/wireguard/speedtest/storage` |
@@ -166,6 +167,7 @@ Authoritative route list generated from mounted FastAPI routers.
 | GET | `/api/nodes` |
 | POST | `/api/nodes` |
 | GET | `/api/nodes/config` |
+| POST | `/api/nodes/commands/{command_id}/ack` |
 | POST | `/api/nodes/enroll` |
 | GET | `/api/nodes/events` |
 | POST | `/api/nodes/heartbeat` |

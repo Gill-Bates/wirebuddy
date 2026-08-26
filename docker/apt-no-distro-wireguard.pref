@@ -1,0 +1,5 @@
+# WireBuddy builds wireguard-tools directly from the official upstream source.
+# The WireGuard implementation belongs to the Docker host kernel.
+Package: wireguard wireguard-tools wireguard-dkms
+Pin: release *
+Pin-Priority: -1

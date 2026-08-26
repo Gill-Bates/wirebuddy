@@ -20,23 +20,43 @@ export async function snapshotFocusState(page) {
         const active = document.activeElement;
         if (!active) return null;
 
-        const style = window.getComputedStyle(active);
+        const captureStyle = (el) => {
+            const style = window.getComputedStyle(el);
+            return {
+                outlineStyle: style.outlineStyle,
+                outlineWidth: style.outlineWidth,
+                outlineColor: style.outlineColor,
+                outlineOffset: style.outlineOffset,
+                boxShadow: style.boxShadow,
+                borderColor: style.borderTopColor,
+                backgroundColor: style.backgroundColor,
+                color: style.color,
+                visibility: style.visibility,
+                display: style.display,
+                opacity: style.opacity,
+            };
+        };
+
+        // Capture everything that depends on the real, keyboard-driven focus
+        // (style, :focus-visible, pointer-events) before touching focus at
+        // all. Only then blur to read the true unfocused baseline, and
+        // immediately restore focus to the same element so the tab sequence
+        // continues from the right place. The previous version faked
+        // "before" as a fixed no-outline/no-shadow baseline, which missed
+        // indicators built from border/background changes and could treat a
+        // permanent box-shadow as a focus indicator.
+        const afterStyle = captureStyle(active);
+        const rawStyle = window.getComputedStyle(active);
+        const pointerEvents = rawStyle.pointerEvents;
+        const focusVisible = active.matches(':focus-visible');
+        const focusWithin = active.matches(':focus-within');
+
+        active.blur();
+        const beforeStyle = captureStyle(active);
+        active.focus({ preventScroll: true });
+
         const rect = active.getBoundingClientRect();
         const parent = active.closest('[role="dialog"], .modal, .dropdown-menu, .offcanvas, [data-ui-component]');
-
-        const beforeAfter = {
-            outlineStyle: style.outlineStyle,
-            outlineWidth: style.outlineWidth,
-            outlineColor: style.outlineColor,
-            outlineOffset: style.outlineOffset,
-            boxShadow: style.boxShadow,
-            borderColor: style.borderTopColor,
-            backgroundColor: style.backgroundColor,
-            color: style.color,
-            visibility: style.visibility,
-            display: style.display,
-            opacity: style.opacity,
-        };
 
         const role = active.getAttribute('role');
         const importance = active.getAttribute('data-ui-importance');
@@ -45,9 +65,9 @@ export async function snapshotFocusState(page) {
 
         const isHidden = Boolean(
             active.closest('[hidden], [aria-hidden="true"], .d-none, .invisible, .visually-hidden, [inert]') ||
-            beforeAfter.visibility === 'hidden' ||
-            beforeAfter.display === 'none' ||
-            beforeAfter.opacity === '0'
+            afterStyle.visibility === 'hidden' ||
+            afterStyle.display === 'none' ||
+            afterStyle.opacity === '0'
         );
 
         return {
@@ -67,18 +87,19 @@ export async function snapshotFocusState(page) {
                 width: Math.round(rect.width),
                 height: Math.round(rect.height),
             },
-            style: beforeAfter,
+            style: afterStyle,
             hidden: isHidden,
             disabled: Boolean(active.disabled || active.getAttribute('aria-disabled') === 'true'),
             inert: Boolean(active.closest('[inert]') || active.hasAttribute('inert')),
-            pointerEvents: style.pointerEvents,
+            pointerEvents,
             tabIndex: active.tabIndex,
             insideModal: Boolean(active.closest('.modal')),
             insideDropdown: Boolean(active.closest('.dropdown-menu')),
             insideOffcanvas: Boolean(active.closest('.offcanvas')),
-            focusVisible: active.matches(':focus-visible'),
-            focusWithin: active.matches(':focus-within'),
-            computed: beforeAfter,
+            focusVisible,
+            focusWithin,
+            computed: afterStyle,
+            unfocusedComputed: beforeStyle,
         };
     });
 }
