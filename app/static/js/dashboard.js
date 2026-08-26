@@ -30,12 +30,6 @@ let refreshScheduler = null;
 let mapResizeBound = false;
 let dashboardResizeTimer = null;
 let themeObserver = null;
-let activeTileSources = [];
-let activeTileIndex = 0;
-let tileErrorCount = 0;
-let tileFallbackSwitching = false;
-let tileWatchdogTimer = null;
-let tileLoadedSinceSwitch = false;
 let lastVisibleRefresh = 0;
 let peerMapResizeObserver = null;
 // Internal state for speedtest server names (used in chart tooltip)
@@ -578,83 +572,19 @@ async function refreshStats(signal) {
     }
 }
 
-function getMapTileSources() {
+function getMapTileSource() {
     // Esri's Light/Dark Gray Canvas basemaps are deliberately unlabeled and
     // low-detail so peer markers stay legible; labels come from a separate
     // reference overlay (see getMapReferenceSource). No API key required.
     const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
     const style = dark ? 'World_Dark_Gray_Base' : 'World_Light_Gray_Base';
-    return [
-        `https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/${style}/MapServer/tile/{z}/{y}/{x}`,
-    ];
+    return `https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/${style}/MapServer/tile/{z}/{y}/{x}`;
 }
 
 function getMapReferenceSource() {
     const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
     const style = dark ? 'World_Dark_Gray_Reference' : 'World_Light_Gray_Reference';
     return `https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/${style}/MapServer/tile/{z}/{y}/{x}`;
-}
-
-function createLocalBackdropLayer() {
-    const backdrop = L.gridLayer({
-        minZoom: 2,
-        maxZoom: 6,
-        tileSize: 256,
-        attribution: '',
-    });
-    backdrop.createTile = function () {
-        const tile = document.createElement('div');
-        tile.className = 'wb-map-tile';
-        return tile;
-    };
-    return backdrop;
-}
-
-function applyCurrentTileSource() {
-    if (!tileLayer || !activeTileSources.length) return;
-    if (tileWatchdogTimer) {
-        clearTimeout(tileWatchdogTimer);
-        tileWatchdogTimer = null;
-    }
-    tileLoadedSinceSwitch = false;
-    const nextUrl = activeTileSources[Math.min(activeTileIndex, activeTileSources.length - 1)];
-    tileLayer.setUrl(nextUrl);
-    tileLayer.redraw();
-    tileWatchdogTimer = setTimeout(() => {
-        // Some environments never emit tileerror (blocked requests/extensions).
-        // If no tile loaded within timeout, advance fallback source.
-        if (tileLoadedSinceSwitch || tileFallbackSwitching) return;
-        if (activeTileIndex >= activeTileSources.length - 1) return;
-        tileFallbackSwitching = true;
-        activeTileIndex += 1;
-        applyCurrentTileSource();
-        setTimeout(() => {
-            tileFallbackSwitching = false;
-        }, 800);
-    }, 3500);
-}
-
-function handleTileError() {
-    if (!tileLayer || tileFallbackSwitching) return;
-    tileErrorCount += 1;
-    // Avoid switching source on transient single-tile failures.
-    if (tileErrorCount < 6) return;
-    tileErrorCount = 0;
-    if (activeTileIndex >= activeTileSources.length - 1) return;
-    tileFallbackSwitching = true;
-    activeTileIndex += 1;
-    applyCurrentTileSource();
-    setTimeout(() => {
-        tileFallbackSwitching = false;
-    }, 800);
-}
-
-function handleTileLoad() {
-    tileLoadedSinceSwitch = true;
-    if (tileWatchdogTimer) {
-        clearTimeout(tileWatchdogTimer);
-        tileWatchdogTimer = null;
-    }
 }
 
 function initMap() {
@@ -685,35 +615,24 @@ function initMap() {
         gestureHandling: true, // Requires Leaflet.GestureHandling plugin
     }).setView([50, 10], 4);
 
-    activeTileSources = getMapTileSources();
-    activeTileIndex = 0;
-    tileErrorCount = 0;
+    const tileOpts = {
+        minZoom: 2,
+        maxZoom: 18,
+        tileSize: 256,
+        attribution: '&copy; Esri, HERE, Garmin, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    };
+    tileLayer = L.tileLayer(getMapTileSource(), tileOpts).addTo(peerMap);
 
-    if (activeTileSources.length) {
-        const tileOpts = {
-            minZoom: 2,
-            maxZoom: 18,
-            tileSize: 256,
-            attribution: '&copy; Esri, HERE, Garmin, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-        };
-        tileLayer = L.tileLayer(activeTileSources[0], tileOpts).addTo(peerMap);
-        tileLayer.on('tileerror', handleTileError);
-        tileLayer.on('tileload', handleTileLoad);
-        tileLayer.on('load', handleTileLoad);
-        applyCurrentTileSource();
+    // Separate labels-only overlay (country/city names) kept on top of
+    // the unlabeled base layer so the peer markers stay easy to spot.
+    referenceLayer = L.tileLayer(getMapReferenceSource(), {
+        minZoom: 2,
+        maxZoom: 18,
+        tileSize: 256,
+        pane: 'shadowPane', // renders above tiles, below markers/overlayPane
+        attribution: '',
+    }).addTo(peerMap);
 
-        // Separate labels-only overlay (country/city names) kept on top of
-        // the unlabeled base layer and the peer markers stay easy to spot.
-        referenceLayer = L.tileLayer(getMapReferenceSource(), {
-            minZoom: 2,
-            maxZoom: 18,
-            tileSize: 256,
-            pane: 'shadowPane', // renders above tiles, below markers/overlayPane
-            attribution: '',
-        }).addTo(peerMap);
-    } else {
-        tileLayer = createLocalBackdropLayer().addTo(peerMap);
-    }
     markerLayer = L.layerGroup().addTo(peerMap);
     // Defer invalidateSize to ensure map panes are fully initialized
     const invalidatePeerMapSize = () => {
@@ -748,10 +667,8 @@ function initMap() {
 
 function updateMapTiles() {
     if (!peerMap || !tileLayer) return;
-    activeTileSources = getMapTileSources();
-    activeTileIndex = 0;
-    tileErrorCount = 0;
-    applyCurrentTileSource();
+    tileLayer.setUrl(getMapTileSource());
+    tileLayer.redraw();
     if (referenceLayer) {
         referenceLayer.setUrl(getMapReferenceSource());
         referenceLayer.redraw();
@@ -1070,10 +987,6 @@ function stopAutoRefresh() {
         if (userZoomResetTimer) {
             clearTimeout(userZoomResetTimer);
             userZoomResetTimer = null;
-        }
-        if (tileWatchdogTimer) {
-            clearTimeout(tileWatchdogTimer);
-            tileWatchdogTimer = null;
         }
         if (dashboardResizeTimer) {
             clearTimeout(dashboardResizeTimer);
