@@ -2,6 +2,8 @@
 
 - ``New`` Docker images now build `wg` and `wg-quick` from the current official WireGuard tools source; WireGuard kernel support is provided by the host
 - ``New`` Material Icons, Roboto Flex, and Noto Serif are bundled locally for consistent UI rendering without build-time font downloads
+- ``Fix`` Peer Locations map now uses Esri's Light/Dark Gray Canvas basemaps instead of CARTO, which started requiring an API key; the new tiles also show less clutter so peer markers stand out
+- ``Fix`` Vendor fonts are no longer accidentally excluded from Docker builds, fixing 404s for Material Icons and Roboto Flex
 - ``Fix`` Dashboard counters and traffic metrics now show an em dash for empty values, and empty-card text uses the same muted tone as its icon
 - ``Fix`` Local Docker builds no longer depend on CI-generated build metadata; image health checks and DNSSEC root-key setup are more reliable
 - ``Security`` Debian WireGuard packages are blocked inside the image so only the intended upstream userspace tools are used with the host kernel

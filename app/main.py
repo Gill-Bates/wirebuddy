@@ -1432,7 +1432,7 @@ def create_app() -> FastAPI:
 		"script-src 'self'; "
 		"script-src-attr 'none'; "
 		"style-src 'self'; "
-		"img-src 'self' data: blob: https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com https://cdn.jsdelivr.net; "
+		"img-src 'self' data: blob: https://services.arcgisonline.com https://cdn.jsdelivr.net; "
 		"font-src 'self'; "
 		"connect-src 'self'; "
 		"object-src 'none'; "

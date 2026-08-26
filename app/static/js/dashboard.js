@@ -24,6 +24,7 @@ let userZoomResetTimer = null;
 let peerMap = null;
 let markerLayer = null;
 let tileLayer = null;
+let referenceLayer = null;
 let leafletReady = false;
 let refreshScheduler = null;
 let mapResizeBound = false;
@@ -68,11 +69,16 @@ const RefreshScheduler = WBShared.RefreshScheduler;
 const EMPTY_DASHBOARD_METRIC = '–';
 
 /**
- * Sanitize string for use in HTML element IDs
- * Replaces any character that isn't alphanumeric, hyphen, or underscore
+ * Encode an arbitrary string into a collision-free HTML id fragment.
+ * Every character outside [A-Za-z0-9-] is hex-escaped, so distinct
+ * interface names (e.g. "wg.0" vs "wg_0" vs "wg 0") can never map onto
+ * the same id.
  */
 function toSafeId(value) {
-    return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    return String(value ?? '').replace(
+        /[^a-zA-Z0-9-]/g,
+        (ch) => `_${ch.codePointAt(0).toString(16)}_`,
+    );
 }
 
 function setCompactMetricText(el, text, options = {}) {
@@ -540,23 +546,25 @@ async function refreshStats(signal) {
             row.appendChild(left);
             frag.appendChild(row);
         });
-        recentPeersEl.appendChild(frag);
+        if (recentPeersEl) {
+            recentPeersEl.appendChild(frag);
 
-        if (!activePeers.length) {
-            const emptyState = document.createElement('div');
-            emptyState.className = 'chart-empty-state';
+            if (!activePeers.length) {
+                const emptyState = document.createElement('div');
+                emptyState.className = 'chart-empty-state';
 
-            const icon = document.createElement('span');
-            icon.className = 'material-icons';
-            icon.textContent = 'show_chart';
+                const icon = document.createElement('span');
+                icon.className = 'material-icons';
+                icon.textContent = 'show_chart';
 
-            const text = document.createElement('span');
-            text.className = 'chart-empty-state-text';
-            text.textContent = 'No Data Available';
+                const text = document.createElement('span');
+                text.className = 'chart-empty-state-text';
+                text.textContent = 'No Data Available';
 
-            emptyState.appendChild(icon);
-            emptyState.appendChild(text);
-            recentPeersEl.appendChild(emptyState);
+                emptyState.appendChild(icon);
+                emptyState.appendChild(text);
+                recentPeersEl.appendChild(emptyState);
+            }
         }
 
         setTrafficMetric(totalRxEl, totalRx, 'rx');
@@ -571,15 +579,20 @@ async function refreshStats(signal) {
 }
 
 function getMapTileSources() {
+    // Esri's Light/Dark Gray Canvas basemaps are deliberately unlabeled and
+    // low-detail so peer markers stay legible; labels come from a separate
+    // reference overlay (see getMapReferenceSource). No API key required.
     const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
-    if (dark) {
-        return [
-            'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-        ];
-    }
+    const style = dark ? 'World_Dark_Gray_Base' : 'World_Light_Gray_Base';
     return [
-        'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+        `https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/${style}/MapServer/tile/{z}/{y}/{x}`,
     ];
+}
+
+function getMapReferenceSource() {
+    const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+    const style = dark ? 'World_Dark_Gray_Reference' : 'World_Light_Gray_Reference';
+    return `https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/${style}/MapServer/tile/{z}/{y}/{x}`;
 }
 
 function createLocalBackdropLayer() {
@@ -681,14 +694,23 @@ function initMap() {
             minZoom: 2,
             maxZoom: 18,
             tileSize: 256,
-            detectRetina: true,
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            attribution: '&copy; Esri, HERE, Garmin, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
         };
         tileLayer = L.tileLayer(activeTileSources[0], tileOpts).addTo(peerMap);
         tileLayer.on('tileerror', handleTileError);
         tileLayer.on('tileload', handleTileLoad);
         tileLayer.on('load', handleTileLoad);
         applyCurrentTileSource();
+
+        // Separate labels-only overlay (country/city names) kept on top of
+        // the unlabeled base layer and the peer markers stay easy to spot.
+        referenceLayer = L.tileLayer(getMapReferenceSource(), {
+            minZoom: 2,
+            maxZoom: 18,
+            tileSize: 256,
+            pane: 'shadowPane', // renders above tiles, below markers/overlayPane
+            attribution: '',
+        }).addTo(peerMap);
     } else {
         tileLayer = createLocalBackdropLayer().addTo(peerMap);
     }
@@ -730,6 +752,10 @@ function updateMapTiles() {
     activeTileIndex = 0;
     tileErrorCount = 0;
     applyCurrentTileSource();
+    if (referenceLayer) {
+        referenceLayer.setUrl(getMapReferenceSource());
+        referenceLayer.redraw();
+    }
 }
 
 function resetMapToWorld() {
@@ -1011,7 +1037,7 @@ function stopAutoRefresh() {
         updateSpeedtestChartColors();
     });
     // Initial load of speedtest chart (only once, not periodic)
-    refreshSpeedtestChart(new AbortController().signal).catch(e => {
+    requestSpeedtestChart().catch(e => {
         console.error('Failed to load initial speedtest chart:', e);
     });
 
@@ -1061,11 +1087,21 @@ function stopAutoRefresh() {
             clearTimeout(speedtestChartResizeTimer);
             speedtestChartResizeTimer = null;
         }
+        speedtestAbort?.abort();
         if (refreshScheduler) {
             refreshScheduler.destroy();
             refreshScheduler = null;
         }
         try { if (peerMap) peerMap.remove(); } catch (_) { }
+    });
+
+    // iOS Safari (and other browsers) restore the page from bfcache on back/
+    // forward navigation without re-running this IIFE. The pagehide handler
+    // above tears down the map, scheduler and timers irreversibly, so without
+    // this the restored page would be permanently dead. A reload is the
+    // simplest reliable recovery.
+    window.addEventListener('pageshow', (event) => {
+        if (event.persisted) window.location.reload();
     });
 
     // Initial data load – start auto-refresh only after first attempt
@@ -1079,10 +1115,20 @@ function stopAutoRefresh() {
 
 // ─── SPEEDTEST CHART ─────────────────────────────────────────
 let speedtestChart = null;
+let speedtestAbort = null;
+
+// Aborts any in-flight speedtest chart request before starting a new one, so
+// fast range/node switches can't race and render a stale response over a
+// newer selection.
+function requestSpeedtestChart() {
+    speedtestAbort?.abort();
+    speedtestAbort = new AbortController();
+    return refreshSpeedtestChart(speedtestAbort.signal);
+}
 
 // Listen for speedtest completion events to refresh chart
 document.addEventListener('speedtest-completed', () => {
-    refreshSpeedtestChart(new AbortController().signal).catch(e => {
+    requestSpeedtestChart().catch(e => {
         console.error('Failed to refresh speedtest chart:', e);
     });
 });
@@ -1100,7 +1146,7 @@ const speedtestNode = document.getElementById('speedtest-node');
 
 if (speedtestRange) {
     speedtestRange.addEventListener('change', () => {
-        refreshSpeedtestChart(new AbortController().signal).catch(e => {
+        requestSpeedtestChart().catch(e => {
             console.error('Failed to refresh speedtest chart:', e);
         });
     });
@@ -1109,7 +1155,7 @@ if (speedtestRange) {
 // Listen for node selector changes
 if (speedtestNode) {
     speedtestNode.addEventListener('change', () => {
-        refreshSpeedtestChart(new AbortController().signal).catch(e => {
+        requestSpeedtestChart().catch(e => {
             console.error('Failed to refresh speedtest chart:', e);
         });
     });
@@ -1147,7 +1193,11 @@ function updateSpeedtestChartColors() {
     if (!speedtestChart) return;
     const colors = getChartColors();
 
-    if (speedtestChart.data.datasets.length > 0) {
+    // In "All Nodes" mode, datasets[0]/[1] hold a per-node palette color
+    // (see buildAllNodeDatasets) rather than the fixed download/upload
+    // colors — leave them alone so a theme switch doesn't clobber the
+    // node palette.
+    if (speedtestNode?.value !== 'all' && speedtestChart.data.datasets.length > 0) {
         if (speedtestChart.data.datasets[0]) {
             speedtestChart.data.datasets[0].borderColor = colors.dlColor;
             speedtestChart.data.datasets[0].backgroundColor = colors.dlBg;
@@ -1377,10 +1427,9 @@ async function refreshSpeedtestChart(signal) {
     try {
         const range = speedtestRange?.value || '7d';
         const nodeId = speedtestNode?.value || '';
-        let url = `/api/wireguard/speedtest/history?range_key=${range}`;
-        if (nodeId) {
-            url += `&node_id=${encodeURIComponent(nodeId)}`;
-        }
+        const params = new URLSearchParams({ range_key: range });
+        if (nodeId) params.set('node_id', nodeId);
+        const url = `/api/wireguard/speedtest/history?${params}`;
         const res = await api('GET', url, null, { signal, timeoutMs: API_TIMEOUT_MS });
         const data = res?.data || res || {};
         const history = data.history || [];
@@ -1519,9 +1568,26 @@ let networkHistory = {}; // { interfaceName: [totalRateValues] }
 let networkTargetHistory = {}; // { interfaceName: [targetValues] } for animation
 let networkAnimationFrames = {}; // { interfaceName: requestAnimationFrame ID }
 let networkHistoryLoaded = {}; // { interfaceName: true } - track which interfaces have loaded history
+let networkLiveSamples = {}; // { interfaceName: count } - live ticks seen since interface first appeared
 let networkStatsTimer = null;
 let networkStatsAbort = null;
 let networkResizeObserver = null;
+
+/**
+ * Global max across every interface's rolling target history, used to keep
+ * all sparklines on the same scale. Computed with a plain loop (not
+ * Math.max(...arr.flat())) since a spread over many long-lived interfaces'
+ * histories can both blow the call stack and cost O(n^2) per refresh tick.
+ */
+function computeSparklineMax() {
+    let max = 1024;
+    for (const series of Object.values(networkTargetHistory)) {
+        for (const value of series) {
+            if (value > max) max = value;
+        }
+    }
+    return max;
+}
 
 const networkGaugesContainer = document.getElementById('network-gauges-container');
 const networkStatsStatus = document.getElementById('network-stats-status');
@@ -1827,8 +1893,9 @@ function animateSparkline(ifaceName, canvas, globalMax) {
  * @param {Object} iface - Interface data
  * @param {HTMLElement} container - Container element
  * @param {number} globalMax - Global max rate for consistent scaling
+ * @param {number} sparklineMax - Pre-computed global sparkline max (see computeSparklineMax)
  */
-function updateGaugeElement(iface, container, globalMax) {
+function updateGaugeElement(iface, container, globalMax, sparklineMax) {
     const safeId = toSafeId(iface.name);
     let el = document.getElementById(`net-${safeId}`);
 
@@ -1911,19 +1978,26 @@ function updateGaugeElement(iface, container, globalMax) {
 
         container.appendChild(el);
 
-        // Load historical data for new interface (async, non-blocking)
+        // Load historical data for new interface (async, non-blocking). By the
+        // time this resolves, live polling may already have pushed several
+        // samples into networkTargetHistory — keep that tail instead of
+        // discarding it, or the sparkline visibly jumps back on load.
         loadNetworkHistory(iface.name).then(history => {
             if (history && history.length > 0) {
-                networkHistory[iface.name] = history;
-                networkTargetHistory[iface.name] = [...history];
+                const liveTail = Math.min(SPARKLINE_HISTORY_LENGTH, networkLiveSamples[iface.name] || 0);
+                const currentTarget = networkTargetHistory[iface.name];
+                const merged = (liveTail > 0 && currentTarget)
+                    ? [
+                        ...history.slice(0, SPARKLINE_HISTORY_LENGTH - liveTail),
+                        ...currentTarget.slice(SPARKLINE_HISTORY_LENGTH - liveTail),
+                    ]
+                    : history;
+                networkHistory[iface.name] = [...merged];
+                networkTargetHistory[iface.name] = merged;
                 // Redraw sparkline with historical data
                 const sparkCanvas = document.getElementById(`net-spark-${safeId}`);
                 if (sparkCanvas) {
-                    const sparklineGlobalMax = Math.max(
-                        1024,
-                        ...Object.values(networkTargetHistory).flat()
-                    );
-                    drawSparkline(sparkCanvas, history, sparklineGlobalMax);
+                    drawSparkline(sparkCanvas, merged, computeSparklineMax());
                 }
             }
         });
@@ -1931,17 +2005,12 @@ function updateGaugeElement(iface, container, globalMax) {
 
     const total = iface.rx_rate + iface.tx_rate;
 
-    // Initialize history arrays if needed (only if not loaded from history)
+    // networkTargetHistory is already updated for this tick by the caller
+    // (refreshNetworkStats); only the "currently displayed" array needs a
+    // fallback init here.
     if (!networkHistory[iface.name]) {
         networkHistory[iface.name] = new Array(SPARKLINE_HISTORY_LENGTH).fill(0);
     }
-    if (!networkTargetHistory[iface.name]) {
-        networkTargetHistory[iface.name] = new Array(SPARKLINE_HISTORY_LENGTH).fill(0);
-    }
-
-    // Shift target history left and add new value (creates scrolling effect)
-    networkTargetHistory[iface.name].shift();
-    networkTargetHistory[iface.name].push(total);
 
     const totalEl = document.getElementById(`net-total-${safeId}`);
     const rxEl = document.getElementById(`net-rx-${safeId}`);
@@ -1981,15 +2050,10 @@ function updateGaugeElement(iface, container, globalMax) {
     el.classList.toggle('active', total > 0);
     el.title = `Interface: ${iface.name}\n${iface.is_wg ? 'WireGuard' : 'Host'} Interface`;
 
-    // Animate sparkline with global max for comparison
+    // Animate sparkline with the pre-computed global max for comparison
     const sparkCanvas = document.getElementById(`net-spark-${safeId}`);
     if (sparkCanvas && networkTargetHistory[iface.name]) {
-        // Compute global sparkline max from all interface target histories
-        const sparklineGlobalMax = Math.max(
-            1024,
-            ...Object.values(networkTargetHistory).flat()
-        );
-        animateSparkline(iface.name, sparkCanvas, sparklineGlobalMax);
+        animateSparkline(iface.name, sparkCanvas, sparklineMax);
     }
 
     return el;
@@ -2033,12 +2097,22 @@ async function refreshNetworkStats() {
         // Track existing gauges
         const currentInterfaces = new Set(interfaces.map(i => i.name));
 
-        // Remove items for interfaces that no longer exist
+        // Remove items for interfaces that no longer exist, and drop all of
+        // their per-interface state so it doesn't leak or keep skewing the
+        // global sparkline max after the interface is gone.
         for (const name of Object.keys(networkGauges)) {
             if (!currentInterfaces.has(name)) {
                 const el = document.getElementById(`net-${toSafeId(name)}`);
                 if (el) el.remove();
+                if (networkAnimationFrames[name]) {
+                    cancelAnimationFrame(networkAnimationFrames[name]);
+                    delete networkAnimationFrames[name];
+                }
                 delete networkGauges[name];
+                delete networkHistory[name];
+                delete networkTargetHistory[name];
+                delete networkHistoryLoaded[name];
+                delete networkLiveSamples[name];
             }
         }
 
@@ -2055,9 +2129,24 @@ async function refreshNetworkStats() {
             ...interfaces.map(i => (i.rx_rate || 0) + (i.tx_rate || 0))
         );
 
+        // First pass: push this tick's sample into each interface's rolling
+        // target history. Doing this before computing the sparkline max means
+        // every interface is drawn against the same consistent snapshot,
+        // instead of the max drifting mid-loop as each one gets its turn.
+        for (const iface of sortedInterfaces) {
+            const total = iface.rx_rate + iface.tx_rate;
+            if (!networkTargetHistory[iface.name]) {
+                networkTargetHistory[iface.name] = new Array(SPARKLINE_HISTORY_LENGTH).fill(0);
+            }
+            networkTargetHistory[iface.name].shift();
+            networkTargetHistory[iface.name].push(total);
+            networkLiveSamples[iface.name] = (networkLiveSamples[iface.name] || 0) + 1;
+        }
+        const sparklineGlobalMax = computeSparklineMax();
+
         // Update/create network items for each interface
         for (const iface of sortedInterfaces) {
-            updateGaugeElement(iface, networkGaugesContainer, globalMax);
+            updateGaugeElement(iface, networkGaugesContainer, globalMax, sparklineGlobalMax);
             networkGauges[iface.name] = true;
         }
 
@@ -2132,6 +2221,7 @@ if (networkGaugesContainer) {
     if ('ResizeObserver' in window) {
         networkResizeObserver = new ResizeObserver(() => {
             // Trigger redraw of all visible sparklines
+            const globalMax = computeSparklineMax();
             networkGaugesContainer.querySelectorAll('.network-sparkline').forEach(canvas => {
                 // Retrieve interface name from parent element's data attribute
                 // (safe from toSafeId() roundtrip errors and XSS)
@@ -2140,7 +2230,6 @@ if (networkGaugesContainer) {
                 if (!ifaceName) return; // Skip if name not found
 
                 const history = networkHistory[ifaceName];
-                const globalMax = Math.max(1024, ...Object.values(networkTargetHistory).flat());
                 if (history && history.length > 0) {
                     drawSparkline(canvas, history, globalMax);
                 }

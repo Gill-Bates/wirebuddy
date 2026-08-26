@@ -18,9 +18,6 @@ __pycache__/
 .ruff_cache/
 tests/
 
-# Vendor Assets (built inside image)
-app/static/vendor/fonts/
-
 # IDE
 .idea/
 .vscode/
