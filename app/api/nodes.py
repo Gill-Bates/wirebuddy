@@ -585,11 +585,10 @@ async def delete_node_endpoint(
 	if notified > 0:
 		_log.info("Sent removal signal to %d SSE client(s) for node %s", notified, node_id)
 
-	unassigned_peer_count = delete_node(conn, node_id)
-	if unassigned_peer_count is None:
-		raise HTTPException(status_code=404, detail="Node not found")
-
-	# Remove tunnel peer from live WireGuard interface (best-effort, don't fail the delete)
+	# Revoke live WireGuard access BEFORE removing the database row. Doing this
+	# afterwards leaves a window (and, on failure, a permanent state) where the
+	# node is gone from the UI but its key is still loaded in the kernel and can
+	# keep forwarding traffic.
 	if tunnel_peer_info:
 		public_key, interface_name = tunnel_peer_info
 		code, _, stderr = await run_wg_command(
@@ -600,11 +599,31 @@ async def delete_node_endpoint(
 		if code == 0:
 			_log.info("Removed tunnel peer from WG: node=%s iface=%s", node_id, interface_name)
 		else:
+			# The command can legitimately fail when the interface is not
+			# running - there is no live access to revoke in that case. Only
+			# refuse the delete while the interface is actually up, otherwise a
+			# node on a stopped interface could never be removed.
+			iface_code, _, _ = await run_wg_command("wg", "show", interface_name)
+			if iface_code == 0:
+				_log.error(
+					"Refusing node delete: tunnel peer still active on WG: node=%s iface=%s err=%s",
+					node_id, interface_name, stderr.strip(),
+				)
+				raise HTTPException(
+					status_code=503,
+					detail="Node access could not be revoked from WireGuard; node not deleted",
+				)
 			_log.warning(
-				"Failed to remove tunnel peer from WG (may not exist): node=%s iface=%s err=%s",
-				node_id, interface_name, stderr.strip(),
+				"Tunnel peer removal skipped, interface %s is not active: node=%s err=%s",
+				interface_name, node_id, stderr.strip(),
 			)
 
+	unassigned_peer_count = delete_node(conn, node_id)
+	if unassigned_peer_count is None:
+		raise HTTPException(status_code=404, detail="Node not found")
+
+	if tunnel_peer_info:
+		_, interface_name = tunnel_peer_info
 		# Sync config file to reflect tunnel peer removal
 		cfg = get_config()
 		try:

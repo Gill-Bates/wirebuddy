@@ -50,7 +50,7 @@ def build_provisioning_uri(secret: str, username: str, issuer: str = "WireBuddy"
 
 
 def verify_otp(secret: str, code: str) -> bool:
-	"""Verify a TOTP code with a small clock skew window."""
+	"""Verify a TOTP code for the current time step only."""
 	if not _OTP_RE.fullmatch(str(code or "").strip()):
 		return False
 	try:

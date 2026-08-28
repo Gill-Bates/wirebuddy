@@ -34,9 +34,15 @@ Common causes are:
 - a read-only/unwritable `docker/data/` directory; or
 - unsupported Docker/Compose versions.
 
-The container intentionally uses host networking, `NET_ADMIN`, and
-`/dev/net/tun`. Its health endpoint is `http://127.0.0.1:8000/health` unless
-`WIREBUDDY_PORT` changes the listener.
+The container intentionally uses host networking, `/dev/net/tun`, and a
+capability set of `NET_ADMIN`, `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN`,
+and `DAC_OVERRIDE`. Dropping any of the last five leaves the web UI running but
+breaks DNS — see [DNS does not resolve or block](#dns-does-not-resolve-or-block).
+
+Its health endpoint is `http://127.0.0.1:8000/health` unless `WIREBUDDY_PORT`
+changes the listener. Pass that variable into the container, not just into the
+Compose healthcheck, or the probe and the application can target different
+ports and the container stays permanently unhealthy.
 
 ## Web UI or reverse proxy
 
@@ -58,6 +64,59 @@ or CSRF problems behind a proxy, verify:
 
 Clear stale site cookies after changing origins. Session lifetimes are fixed at
 one hour idle and 24 hours absolute; there is no session-timeout UI setting.
+
+## Built-in HTTPS
+
+These apply when **Settings → General → Serve GUI over HTTPS** is enabled. The
+setting is read at startup, so every change needs a restart.
+
+### Browser warns the certificate is not trusted
+
+WireBuddy is serving the self-signed fallback, because no valid Let's Encrypt
+certificate exists for the configured Server FQDN. Check which one is active:
+
+```bash
+echo | openssl s_client -connect 127.0.0.1:8000 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+```
+
+An issuer of `O=WireBuddy` is the self-signed fallback. Request a certificate in
+**Settings → Let's Encrypt** and restart. The Settings page also shows which
+certificate would be served.
+
+### Certificate was issued but the old one is still served
+
+Certificates are read only at startup. Restart WireBuddy. There is no automated
+renewal job — see [Let's Encrypt](features/acme.md#with-the-built-in-https-listener).
+
+### Let's Encrypt validation fails while HTTPS is on
+
+HTTP-01 always validates over plain HTTP on port 80. WireBuddy runs a plaintext
+listener for that, but it must be reachable from the internet:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  http://DOMAIN/.well-known/acme-challenge/test
+```
+
+`404` is the healthy answer for an unknown token — it proves the listener is
+reachable. A timeout or TLS error means port 80 does not reach it. If the log
+shows `Could not bind plaintext ACME listener`, the port is taken or the
+container lacks `NET_BIND_SERVICE`; HTTPS still runs, only validation is
+affected. Set `gui_acme_http_port` to `0` if another service owns port 80.
+
+### Login is rejected with "requires HTTPS"
+
+Expected: with HTTPS enabled, logins and node enrollments over plain HTTP are
+refused so credentials are never sent in clear text. Reach the GUI over
+`https://`. Behind a reverse proxy that terminates TLS, leave this setting off
+and let the proxy handle TLS.
+
+### Node cannot enroll over HTTPS
+
+A node rejecting the master's self-signed certificate must either trust it or
+enroll against a master using a Let's Encrypt certificate. The master log shows
+the rejected enrollment.
 
 ## Peer cannot handshake
 
@@ -112,6 +171,51 @@ sources. Per-peer list selection and DNS logging are configured in the peer form
 
 For DNSSEC issues, verify that the image's `/var/lib/unbound/root.key` exists and
 that the upstream DNS-over-TLS hostnames and port 853 are reachable.
+
+### `Permission denied: '/var/log/unbound/queries.log'`
+
+The container's capability set is incomplete. `cap_drop: ALL` also removes
+root's `DAC_OVERRIDE`, so normal file permissions apply to uid 0 — and
+`/var/log/unbound` is owned by `unbound:unbound`. Writing the config aborts,
+Unbound never starts, and the web UI comes up without DNS.
+
+Related failures from the same cause, visible in the container log:
+
+| Log line | Missing capability |
+|----------|--------------------|
+| `PermissionError: ... '/var/log/unbound/queries.log'` | `DAC_OVERRIDE` |
+| `fatal error: unable to set group id of unbound` | `SETUID`, `SETGID` |
+| `Could not open logfile ...` (Unbound runs, query log stays empty) | `CHOWN` |
+| `can't bind socket` on port 53 | `NET_BIND_SERVICE` |
+
+Compare the running container against the shipped Compose file:
+
+```bash
+docker inspect wirebuddy --format '{{.HostConfig.CapAdd}}'
+```
+
+It must list all six capabilities. Recreate the container after correcting them;
+`docker compose restart` does not apply capability changes.
+
+### `Port conflict: UDP <address>:53 is already in use`
+
+Unbound binds only the WireGuard gateway addresses, never `127.0.0.1`, so
+`systemd-resolved` on `127.0.0.53` does not conflict with it. A conflict means
+another resolver holds the same address — or a wildcard bind on `0.0.0.0:53`
+that covers it. Identify the holder on the host:
+
+```bash
+ss -lntupn 'sport = :53'
+```
+
+Let `ss` filter by port rather than piping into `grep -w ':53'` — the `-w` flag
+never matches, because the character preceding `:53` in an address such as
+`10.13.13.1:53` is a word character, so every match is rejected.
+
+!!! note "Host networking has no separate port namespace"
+    With `network_mode: host` the container shares the host's network stack.
+    Port 53 *is* the host's port 53; the `EXPOSE 53/udp` line in the image is
+    documentation only and allocates nothing.
 
 ## Traffic or GeoIP analytics are empty
 

@@ -254,10 +254,10 @@ async def interface_down(
 	if not is_active:
 		raise HTTPException(status_code=400, detail=f"Interface {name} is not active")
 	
-	# Clean up isolation chains before bringing interface down
-	# (uses database as source of truth, not PostDown scripts)
-	await cleanup_client_isolation(name)
-	
+	# Isolation chains are torn down only AFTER the interface is confirmed down.
+	# Removing them first would leave a still-running interface without client
+	# isolation if the shutdown fails, silently granting connected clients
+	# access to each other.
 	if has_config:
 		# Normal case: config file exists, use wg-quick
 		code, _, stderr = await _run_wg_command_with_timeout("wg-quick", "down", name)
@@ -274,6 +274,10 @@ async def interface_down(
 		if code != 0:
 			raise HTTPException(status_code=500, detail=f"Failed to delete interface: {stderr}")
 	
+	# Interface is down: now it is safe to drop the isolation chains
+	# (uses database as source of truth, not PostDown scripts)
+	await cleanup_client_isolation(name)
+	
 	_log.info("INTERFACE_DOWN name=%s", name)
 	return OkResponse[None](message=f"Interface {name} is down")
 
@@ -289,15 +293,24 @@ async def interface_restart(
 	"""Restart a WireGuard interface."""
 	validate_interface_name(name)
 	
-	await cleanup_client_isolation(name)
+	# Stop first, then clear isolation: a failed shutdown must never leave a
+	# running interface with its isolation rules already removed.
 	down_code, _, down_stderr = await _run_wg_command_with_timeout("wg-quick", "down", name)
 	if down_code != 0:
 		_log.error("INTERFACE_RESTART down failed: name=%s stderr=%s", name, down_stderr)
 		raise HTTPException(status_code=500, detail=f"Failed to stop interface: {down_stderr}")
 	
+	await cleanup_client_isolation(name)
+	
 	code, _, stderr = await _run_wg_command_with_timeout("wg-quick", "up", name)
 	if code != 0:
-		raise HTTPException(status_code=500, detail=f"Failed to restart interface: {stderr}")
+		# Interface is stopped and isolation is cleared - a consistent, safe
+		# "down" state. Surface it as such instead of implying it still runs.
+		_log.error("INTERFACE_RESTART up failed: name=%s stderr=%s", name, stderr)
+		raise HTTPException(
+			status_code=500,
+			detail=f"Interface stopped but could not be restarted: {stderr}",
+		)
 
 	isolation_result = await apply_client_isolation_runtime(name, conn)
 	_log.info("INTERFACE_RESTART name=%s", name)

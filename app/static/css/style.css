@@ -207,6 +207,17 @@ html.login-page[data-bs-theme="dark"] body {
     background: linear-gradient(135deg, #581012 0%, #88171a 100%);
 }
 
+/* auth_base.html wraps every auth page in <main> for the landmark. The body is
+   already a centering flex container, so <main> has to pass that centering
+   through instead of shrinking to its content. */
+html.login-page main {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-width: 0;
+}
+
 .login-card {
     max-width: 400px;
     width: calc(100% - 2rem);

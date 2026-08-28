@@ -34,6 +34,7 @@ _CLOCK_SKEW = timedelta(minutes=5)
 _MAX_TOKEN_SIZE = 16_384
 _MAX_DECODED_TOKEN_SIZE = 65_536
 _MAX_CERT_PEM_SIZE = 65_536
+_MIN_SECRET_KEY_BYTES = 32
 _MAX_NODE_ID_LENGTH = 64
 _MAX_NODE_NAME_LENGTH = 128
 _NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
@@ -55,9 +56,11 @@ _REQUIRED_PAYLOAD_FIELD_TYPES = {
 
 
 def _require_secret_key(secret_key: str) -> None:
-	"""Ensure the shared secret key is present."""
-	if not secret_key:
+	"""Ensure the shared secret key has sufficient length."""
+	if not isinstance(secret_key, str) or not secret_key:
 		raise ValueError("secret_key must not be empty")
+	if len(secret_key.encode("utf-8")) < _MIN_SECRET_KEY_BYTES:
+		raise ValueError(f"secret_key must be at least {_MIN_SECRET_KEY_BYTES} bytes")
 
 
 def _normalize_master_url(master_url: str) -> str:

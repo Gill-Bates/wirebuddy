@@ -89,9 +89,11 @@ def create_passkey(
 		The new passkey ID.
 		
 	Raises:
-		ValueError: If credential_id is already registered
+		ValueError: If credential_id is already registered, or sign_count is negative
 		RuntimeError: If INSERT did not return a row ID
 	"""
+	if type(sign_count) is not int or sign_count < 0:
+		raise ValueError("sign_count must be a non-negative integer")
 	now = utcnow()
 	with transaction(conn):
 		try:

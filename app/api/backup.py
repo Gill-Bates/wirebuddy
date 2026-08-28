@@ -150,8 +150,10 @@ _T = TypeVar("_T")
 _DB_CONNECT_TIMEOUT_SECONDS = 10.0
 _VERIFY_PASSWORD_TIMEOUT_SECONDS = 15.0
 _BACKUP_HMAC_TIMEOUT_SECONDS = 60.0
-_BACKUP_CREATE_TIMEOUT_SECONDS = 300.0
-_TAR_EXTRACT_TIMEOUT_SECONDS = 120.0
+# NOTE: archive creation and tar extraction intentionally run without a
+# deadline. _run_blocking shields its worker thread, so a timeout would only
+# abandon the await - the mutation continues while the caller releases the
+# backup operation lock. Bounding them safely needs a cancellable subprocess.
 _DB_INTEGRITY_CHECK_TIMEOUT_SECONDS = 30.0
 _BACKUP_HMAC_CONTEXT = b"wirebuddy-backup-hmac\0"
 MAX_BACKUP_EXTRACTED_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
@@ -241,13 +243,29 @@ def _get_backup_tsdb_range(conn: sqlite3.Connection) -> BackupMetricsRange:
     return cast(BackupMetricsRange, raw)
 
 
-def _get_backup_create_options(conn: sqlite3.Connection) -> BackupCreateOptions:
-    """Read backup content options (TSDB inclusion + range) from settings."""
-    include_tsdb = get_setting(conn, SETTING_BACKUP_INCLUDE_TSDB, "0") == "1"
-    return BackupCreateOptions(
-        include_tsdb_metrics=include_tsdb,
-        tsdb_range=_get_backup_tsdb_range(conn),
-    )
+def _get_backup_create_options(
+	conn: sqlite3.Connection,
+	requested_range: str | None = None,
+) -> BackupCreateOptions:
+	"""Read backup content options, optionally overriding them for one download."""
+	if requested_range == "none":
+		return BackupCreateOptions(
+			include_tsdb_metrics=False,
+			tsdb_range=cast(BackupMetricsRange, BACKUP_TSDB_RANGE_DEFAULT),
+		)
+	if requested_range is not None:
+		if requested_range not in BACKUP_TSDB_RANGE_OPTIONS:
+			raise HTTPException(status_code=422, detail="Invalid backup metrics range")
+		return BackupCreateOptions(
+			include_tsdb_metrics=True,
+			tsdb_range=cast(BackupMetricsRange, requested_range),
+		)
+
+	include_tsdb = get_setting(conn, SETTING_BACKUP_INCLUDE_TSDB, "0") == "1"
+	return BackupCreateOptions(
+		include_tsdb_metrics=include_tsdb,
+		tsdb_range=_get_backup_tsdb_range(conn),
+	)
 
 
 def _iter_backup_files(backup_dir: Path) -> Iterator[Path]:
@@ -709,6 +727,25 @@ def _apply_restored_backup(
 				_log.warning("Failed to clean up rollback: %s", cleanup_error)
 
 
+def _create_sqlite_snapshot(source: Path, target: Path) -> None:
+	"""Copy the live database to a consistent point-in-time snapshot.
+
+	The schema and data exports open separate connections and run many
+	independent queries. Without a snapshot, concurrent writes can change the
+	relationships between nodes/peers/interfaces/users mid-export, producing an
+	archive that is syntactically valid but internally inconsistent.
+	"""
+	src = sqlite3.connect(str(source))
+	try:
+		dst = sqlite3.connect(str(target))
+		try:
+			src.backup(dst)
+		finally:
+			dst.close()
+	finally:
+		src.close()
+
+
 def _export_sqlite_schema(db_path: Path) -> str:
 	"""Export the SQLite schema (DDL only, no row data).
 
@@ -917,13 +954,20 @@ def _create_backup_archive(
 
 			if not db_path.exists():
 				raise HTTPException(status_code=404, detail="Database not found")
-			schema_bytes = _export_sqlite_schema(db_path).encode("utf-8")
-			_add_bytes_to_tar(tar, _BACKUP_SCHEMA_MEMBER, schema_bytes, mtime)
-			_log.debug("Added SQLite schema (%d bytes) to backup", len(schema_bytes))
 
-			data_bytes = _export_sqlite_data(db_path).encode("utf-8")
-			_add_bytes_to_tar(tar, _BACKUP_DATA_MEMBER, data_bytes, mtime)
-			_log.debug("Added SQLite data (%d bytes) to backup", len(data_bytes))
+			# Export schema and data from one consistent snapshot rather than
+			# from the live database (see _create_sqlite_snapshot).
+			with tempfile.TemporaryDirectory() as snap_dir:
+				snapshot_path = Path(snap_dir) / "wirebuddy.snapshot.db"
+				_create_sqlite_snapshot(db_path, snapshot_path)
+
+				schema_bytes = _export_sqlite_schema(snapshot_path).encode("utf-8")
+				_add_bytes_to_tar(tar, _BACKUP_SCHEMA_MEMBER, schema_bytes, mtime)
+				_log.debug("Added SQLite schema (%d bytes) to backup", len(schema_bytes))
+
+				data_bytes = _export_sqlite_data(snapshot_path).encode("utf-8")
+				_add_bytes_to_tar(tar, _BACKUP_DATA_MEMBER, data_bytes, mtime)
+				_log.debug("Added SQLite data (%d bytes) to backup", len(data_bytes))
 
 			if options.include_tsdb_metrics:
 				_export_tsdb_range_to_tar(
@@ -1111,6 +1155,7 @@ def update_backup_settings(
 async def create_backup(
 	request: Request,
 	background_tasks: BackgroundTasks,
+	tsdb_range: str | None = Form(default=None),
 	admin: sqlite3.Row = Depends(require_admin),
 ):
 	"""Create and download a backup of the configuration.
@@ -1135,6 +1180,7 @@ async def create_backup(
 					options = await _run_blocking(
 						_get_backup_create_options,
 						conn,
+						tsdb_range,
 						timeout=_DB_CONNECT_TIMEOUT_SECONDS,
 						operation="read backup options",
 					)
@@ -1144,7 +1190,11 @@ async def create_backup(
 						db_path,
 						request.app.state.cfg.secret_key,
 						options,
-						timeout=_BACKUP_CREATE_TIMEOUT_SECONDS,
+						# No timeout: _run_blocking shields the worker, so a
+						# timeout would return 504 and release the backup
+						# operation lock while the thread keeps writing the
+						# archive, letting a second run start concurrently.
+						timeout=None,
 						operation="create backup archive",
 					)
 
@@ -1293,7 +1343,10 @@ async def restore_backup(  # async: uses await for file I/O
 					try:
 						await _run_blocking(
 							_extract_tar,
-							timeout=_TAR_EXTRACT_TIMEOUT_SECONDS,
+							# No timeout: on timeout the enclosing
+							# TemporaryDirectory would be removed while the
+							# shielded thread is still extracting into it.
+							timeout=None,
 							operation="extract backup archive",
 						)
 					except ValueError as e:

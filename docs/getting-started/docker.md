@@ -65,7 +65,9 @@ temporary password from the log. The first login requires a password change.
 The supplied Compose service uses:
 
 - `network_mode: host`
-- all capabilities dropped except `NET_ADMIN`
+- all capabilities dropped, then re-added individually: `NET_ADMIN` for
+  WireGuard, plus `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN`, and
+  `DAC_OVERRIDE` for the bundled Unbound resolver
 - `no-new-privileges:true`
 - `/dev/net/tun`
 - a 20-second stop grace period
@@ -143,6 +145,11 @@ docker run -d \
   --network host \
   --cap-drop ALL \
   --cap-add NET_ADMIN \
+  --cap-add NET_BIND_SERVICE \
+  --cap-add SETUID \
+  --cap-add SETGID \
+  --cap-add CHOWN \
+  --cap-add DAC_OVERRIDE \
   --security-opt no-new-privileges:true \
   --stop-timeout 20 \
   --device /dev/net/tun:/dev/net/tun \

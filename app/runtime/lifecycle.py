@@ -48,9 +48,6 @@ class LifecycleContext:
     signal_manager: SignalManager
     shutdown_event: asyncio.Event = field(default_factory=asyncio.Event)
 
-    # Legacy fields - migrate to services
-    key_mismatch: bool = False
-
 
 class LifecycleManager:
     """Manages application startup and shutdown lifecycle.
@@ -158,11 +155,19 @@ class LifecycleManager:
         del ctx
         _log.info("APPLICATION_SHUTTING_DOWN")
 
+        completed = False
         try:
-            await self._container.stop_all(timeout=self.SHUTDOWN_TIMEOUT)
+            completed = await self._container.stop_all(timeout=self.SHUTDOWN_TIMEOUT)
         except asyncio.TimeoutError:
             _log.warning("SHUTDOWN_TIMEOUT timeout=%.1fs", self.SHUTDOWN_TIMEOUT)
         finally:
             self._started = False
 
-        _log.info("APPLICATION_SHUTDOWN_COMPLETE")
+        if completed:
+            _log.info("APPLICATION_SHUTDOWN_COMPLETE")
+        else:
+            _log.error(
+                "APPLICATION_SHUTDOWN_INCOMPLETE timeout=%.1fs "
+                "(services may still hold processes, interfaces or connections)",
+                self.SHUTDOWN_TIMEOUT,
+            )

@@ -29,6 +29,10 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
+# Inner graceful-drain budget, kept below the base service stop_timeout so the
+# scheduler's own two-phase drain can finish before the outer wait_for fires.
+_SCHEDULER_DRAIN_TIMEOUT = 8.0
+
 
 class SchedulerService(RuntimeService):
     """Background task scheduler lifecycle management.
@@ -86,7 +90,7 @@ class SchedulerService(RuntimeService):
             return
 
         try:
-            await scheduler.stop_graceful(timeout=self.stop_timeout)
+            await scheduler.stop_graceful(timeout=_SCHEDULER_DRAIN_TIMEOUT)
             _log.info("SCHEDULER_STOPPED")
         except Exception:
             _log.exception("SCHEDULER_STOP_FAILED")

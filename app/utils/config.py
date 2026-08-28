@@ -35,7 +35,7 @@ class Config:
 	dns_dir: Path
 	data_dir: Path
 	log_level: str = "INFO"
-	secret_key: str = ""
+	secret_key: str | None = None
 
 
 def _parse_value(raw: str) -> str:
@@ -121,10 +121,12 @@ def load_config() -> Config:
 	# Note: dns_dir is created on-demand only when Unbound is installed
 	try:
 		for d in (data_dir, tsdb_dir):
-			if d.exists() and not d.is_dir():
-				_log.critical("Path exists but is not a directory: %s", d)
+			d.mkdir(mode=0o700, parents=True, exist_ok=True)
+			st = d.lstat()
+			if d.is_symlink() or not d.is_dir():
+				_log.critical("Path exists but is not a safe directory: %s", d)
 				raise SystemExit(1)
-			d.mkdir(parents=True, exist_ok=True)
+			d.chmod(0o700)
 	except OSError as exc:
 		_log.critical("Cannot create data directories: %s", exc)
 		raise SystemExit(1) from exc
@@ -143,7 +145,7 @@ def load_config() -> Config:
 		import sys
 		if server_mode == "node":
 			# Nodes don't need secret_key - they use enrollment token
-			secret_key = "node-mode-no-secret-needed"
+			secret_key = None
 			_log.debug("Node mode: secret key not required")
 		elif "pytest" not in sys.modules and "PYTEST_CURRENT_TEST" not in os.environ:
 			_log.critical(

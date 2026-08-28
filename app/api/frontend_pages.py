@@ -41,6 +41,7 @@ from ..utils.onboarding import ONBOARDING_STEPS
 from ..utils.rate_limit import RATE_LIMIT_DEFAULT, RATE_LIMIT_UI_HEAVY, limiter
 from ..utils.tsdb_helpers import build_latest_by_node
 from ..utils.version import BUILD_INFO, VERSION
+from ..utils.tls import describe_gui_certificate
 from .acme import get_certs_dir, get_challenge_response
 from .auth import coerce_db_bool, get_current_user_optional
 from .frontend_shared import (
@@ -453,7 +454,16 @@ async def _get_about_data_cached() -> dict:
 
 
 def _is_loopback_request(request: Request) -> bool:
-	"""Check if request originates from loopback address."""
+	"""Check if request originates from loopback address.
+
+	NOTE: ``request.client`` is rewritten by Uvicorn's proxy-headers middleware
+	from X-Forwarded-For when the peer is covered by FORWARDED_ALLOW_IPS. A
+	forwarded request therefore must not be accepted as loopback just because
+	the rewritten value looks local, so a request carrying forwarding headers is
+	rejected outright.
+	"""
+	if request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP"):
+		return False
 	client_host = request.client.host if request.client else None
 	if not client_host:
 		return False
@@ -954,6 +964,11 @@ async def settings_page(
 				"gui_localhost_only": _get_bool_setting(conn, "gui_localhost_only"),
 				"wg_use_psk": _get_bool_setting(conn, "wg_use_psk", "1"),  # Default: enabled
 				"traffic_analysis_enabled": _get_bool_setting(conn, "traffic_analysis_enabled"),
+				"gui_https_enabled": _get_bool_setting(conn, "gui_https_enabled"),
+				"tls_certificate": describe_gui_certificate(
+					get_certs_dir(get_config()),
+					wg_fqdn,
+				),
 				"speedtest_enabled": get_speedtest_enabled(conn),
 				"status_page_url": f"https://{url_host}/status",
 				"swagger_url": f"https://{url_host}/swagger",
@@ -1001,7 +1016,7 @@ def acme_challenge(request: Request, token: str) -> PlainTextResponse:
 	``get_challenge_response`` performs file I/O and should not block the event loop.
 	"""
 	# Always return 404 for invalid or missing tokens to prevent timing attacks
-	if not _ACME_TOKEN_RE.match(token):
+	if not _ACME_TOKEN_RE.fullmatch(token):
 		_log.warning("ACME challenge: invalid token format rejected")
 		return PlainTextResponse("Challenge not found", status_code=404)
 

@@ -147,6 +147,10 @@ def _parse_value(stored: str) -> tuple[str, bytes, str]:
 		raise ValueError("missing fernet token")
 	if len(fernet_token) > _MAX_TOKEN_LENGTH:
 		raise ValueError("vault token too large")
+	if not fernet_token.isascii():
+		# Caught here so decrypt() reports a corrupt payload rather than
+		# letting a bare UnicodeEncodeError escape from the .encode() below.
+		raise ValueError("invalid fernet token encoding")
 	return version, salt, fernet_token
 
 

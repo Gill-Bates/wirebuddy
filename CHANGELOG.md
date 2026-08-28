@@ -1,3 +1,18 @@
+## [1.6.0] - 2026-08-28
+
+- ``New`` Built-in HTTPS for the GUI with automatic self-signed certificates and Let's Encrypt support, including HTTP-01 validation and HTTP-to-HTTPS redirects.
+- ``Fix`` Backups now use a consistent database snapshot, and backup/restore operations no longer release their lock while work is still running.
+- ``Fix`` WireGuard, DNS, and speed-test operations recover more reliably from failures and timeouts, avoiding orphaned processes, partial network state, and stalled updates.
+- ``Fix`` Fixed concurrent password/passkey updates and improved the reliability of login, MFA, and passkey setup flows, including mobile OTP autofill.
+- ``Fix`` Corrected network-history range handling and multi-worker statistics/rate-limit behavior.
+- ``Security`` HTTPS can now be enforced for logins and node enrollment, with secure session cookies when enabled.
+- ``Security`` WireGuard hook validation blocks shell injection and other privileged command pivots.
+- ``Security`` Node deletion revokes live WireGuard access before removing the node; interface isolation is retained until shutdown succeeds.
+- ``Security`` Strengthened MFA brute-force protection, passkey registration rate limiting, WebAuthn origin validation, and resource/input limits.
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.5.4] - 2026-08-26
 
 - ``New`` Docker images now build `wg` and `wg-quick` from the current official WireGuard tools source; WireGuard kernel support is provided by the host
@@ -8,10 +23,6 @@
 - ``Security`` Debian WireGuard packages are blocked inside the image so only the intended upstream userspace tools are used with the host kernel
 - ``Security`` Local `settings.env` files are excluded from Git and Docker build contexts to prevent accidental inclusion of configuration secrets
 - ``Security`` Updated runtime dependencies, including `cbor2` for WebAuthn, `cryptography`, `fastapi`, `uvicorn`, and `webauthn`
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.5.3] - 2026-06-24
 
@@ -236,4 +247,3 @@
 
 ## [1.0.0] - 2026-02-19
 - Project initialization
-

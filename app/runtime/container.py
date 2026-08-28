@@ -214,14 +214,20 @@ class ServiceContainer:
         self._started = True
         _log.info("CONTAINER_STARTED services=%d running=%d", len(self._services), len(started))
 
-    async def stop_all(self, timeout: float = 30.0) -> None:
+    async def stop_all(self, timeout: float = 30.0) -> bool:
         """Stop all services in reverse dependency order.
 
         Args:
             timeout: Maximum total time for all services to stop.
+
+        Returns:
+            True if every service was stopped within the timeout. False if the
+            deadline was reached with services still not stopped; in that case
+            the container stays ``started`` so a later ``stop_all()`` retry
+            still targets the remaining services.
         """
         if not self._started:
-            return
+            return True
 
         # Stop in reverse order
         stop_order = list(reversed(self._start_order)) if self._start_order else list(self._services)
@@ -238,15 +244,18 @@ class ServiceContainer:
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        incomplete: list[str] = []
 
-        for name in stop_order:
+        for index, name in enumerate(stop_order):
             remaining = deadline - loop.time()
             if remaining <= 0:
+                incomplete = stop_order[index:]
                 _log.warning("CONTAINER_STOP_TIMEOUT timeout=%.1fs", timeout)
                 break
             try:
                 await asyncio.wait_for(_stop_service(name), timeout=remaining)
             except asyncio.TimeoutError:
+                incomplete = stop_order[index:]
                 _log.warning(
                     "CONTAINER_STOP_TIMEOUT timeout=%.1fs service=%s",
                     timeout,
@@ -254,8 +263,14 @@ class ServiceContainer:
                 )
                 break
 
-        self._started = False
+        self._started = bool(incomplete)
+
+        if incomplete:
+            _log.error("CONTAINER_STOP_INCOMPLETE services=%s", incomplete)
+            return False
+
         _log.info("CONTAINER_STOPPED")
+        return True
 
     async def check_health(self) -> ContainerHealth:
         """Check health of all services.

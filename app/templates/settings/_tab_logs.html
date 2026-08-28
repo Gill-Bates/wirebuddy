@@ -5,9 +5,9 @@
             <div class="col-lg-6 col-xl-6">
                 <div class="card h-100">
                     <div class="card-header">
-                        <h3 class="h5 mb-0">
+                        <h2 class="h5 mb-0">
                             <span class="material-icons icon-md align-middle me-1" aria-hidden="true">show_chart</span>Traffic Metrics
-                        </h3>
+                        </h2>
                     </div>
                     <div class="card-body">
                         <div class="settings-storage-path-row mb-2">
@@ -64,7 +64,7 @@
                                         <div class="fw-semibold text-danger settings-danger-label">Delete all Traffic Metrics</div>
                                         <div class="small text-muted">Permanently removes all stored traffic metric data (TSDB).</div>
                                     </div>
-                                    <button class="btn btn-sm btn-outline-danger" id="btn-purge-traffic-logs"{% if not user['is_admin'] %} disabled{% endif %}>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" id="btn-purge-traffic-logs"{% if not user['is_admin'] %} disabled{% endif %}>
                                         <span class="material-icons icon-sm align-middle me-1" aria-hidden="true">delete_forever</span>Purge
                                     </button>
                                 </div>
@@ -78,9 +78,9 @@
             <div class="col-lg-6 col-xl-6">
                 <div class="card h-100">
                     <div class="card-header">
-                        <h3 class="h5 mb-0">
+                        <h2 class="h5 mb-0">
                             <span class="material-icons icon-md align-middle me-1" aria-hidden="true">dns</span>DNS Metrics
-                        </h3>
+                        </h2>
                     </div>
                     <div class="card-body">
                         <div class="settings-storage-path-row mb-2">
@@ -129,7 +129,7 @@
                                         <div class="fw-semibold text-danger settings-danger-label">Delete all DNS Metrics</div>
                                         <div class="small text-muted">Permanently removes all stored DNS query data.</div>
                                     </div>
-                                    <button class="btn btn-sm btn-outline-danger" id="btn-purge-dns-logs"{% if not user['is_admin'] %} disabled{% endif %}>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" id="btn-purge-dns-logs"{% if not user['is_admin'] %} disabled{% endif %}>
                                         <span class="material-icons icon-sm align-middle me-1" aria-hidden="true">delete_forever</span>Purge
                                     </button>
                                 </div>
@@ -143,9 +143,9 @@
             <div class="col-lg-6 col-xl-6">
                 <div class="card h-100">
                     <div class="card-header">
-                        <h3 class="h5 mb-0">
+                        <h2 class="h5 mb-0">
                             <span class="material-icons icon-md align-middle me-1" aria-hidden="true">people</span>Peer Metrics
-                        </h3>
+                        </h2>
                     </div>
                     <div class="card-body">
                         <div class="settings-storage-path-row mb-2">
@@ -175,7 +175,7 @@
                                         <div class="fw-semibold text-danger settings-danger-label">Reset all Peer Metrics</div>
                                         <div class="small text-muted">Resets all peer connection tracking</div>
                                     </div>
-                                    <button class="btn btn-sm btn-outline-danger" id="btn-purge-peer-logs"{% if not user['is_admin'] %} disabled{% endif %}>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" id="btn-purge-peer-logs"{% if not user['is_admin'] %} disabled{% endif %}>
                                         <span class="material-icons icon-sm align-middle me-1" aria-hidden="true">delete_forever</span>Reset
                                     </button>
                                 </div>
@@ -189,9 +189,9 @@
             <div class="col-lg-6 col-xl-6">
                 <div class="card h-100">
                     <div class="card-header">
-                        <h3 class="h5 mb-0">
+                        <h2 class="h5 mb-0">
                             <span class="material-icons icon-md align-middle me-1" aria-hidden="true">speed</span>Speedtest Metrics
-                        </h3>
+                        </h2>
                     </div>
                     <div class="card-body">
                         <div class="settings-storage-path-row mb-2">
@@ -240,7 +240,7 @@
                                         <div class="fw-semibold text-danger settings-danger-label">Delete all Speedtest Data</div>
                                         <div class="small text-muted">Permanently removes all stored bandwidth test history.</div>
                                     </div>
-                                    <button class="btn btn-sm btn-outline-danger" id="btn-purge-speedtest-logs"{% if not user['is_admin'] %} disabled{% endif %}>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" id="btn-purge-speedtest-logs"{% if not user['is_admin'] %} disabled{% endif %}>
                                         <span class="material-icons icon-sm align-middle me-1" aria-hidden="true">delete_forever</span>Purge
                                     </button>
                                 </div>

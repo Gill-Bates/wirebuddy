@@ -20,6 +20,9 @@ _MIN_PBKDF2_ITERATIONS = 100_000
 _MAX_PBKDF2_ITERATIONS = 1_000_000
 _PASSWORD_SALT_BYTES = 16
 _PASSWORD_HASH_BYTES = hashlib.new(_PBKDF2_ALGORITHM).digest_size
+# Bound direct helper calls as well as API-model validation.
+_MAX_PASSWORD_CHARS = 1024
+_MAX_PASSWORD_BYTES = 4096
 _MAX_TOKEN_HOURS = 24 * 30
 
 # Dummy hash for timing attack prevention when username doesn't exist
@@ -29,6 +32,18 @@ DUMMY_PASSWORD_HASH = (
 	"$00000000000000000000000000000000"
 	"$0000000000000000000000000000000000000000000000000000000000000000"
 )
+
+
+def _password_bytes(password: str) -> bytes:
+	"""Encode a password after enforcing bounded input size."""
+	if not isinstance(password, str):
+		raise TypeError("password must be a string")
+	if len(password) > _MAX_PASSWORD_CHARS:
+		raise ValueError("password is too long")
+	encoded = password.encode("utf-8")
+	if len(encoded) > _MAX_PASSWORD_BYTES:
+		raise ValueError("password is too large")
+	return encoded
 
 
 def hash_password(password: str) -> str:
@@ -42,7 +57,7 @@ def hash_password(password: str) -> str:
 	
 	dk = hashlib.pbkdf2_hmac(
 		_PBKDF2_ALGORITHM,
-		password.encode("utf-8"),
+		_password_bytes(password),
 		salt,
 		iterations,
 	)
@@ -87,7 +102,7 @@ def verify_password(password: str, password_hash: str) -> bool:
 		# Compute hash of provided password
 		dk = hashlib.pbkdf2_hmac(
 			algorithm,
-			password.encode("utf-8"),
+			_password_bytes(password),
 			salt,
 			iterations,
 		)

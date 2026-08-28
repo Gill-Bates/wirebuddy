@@ -117,6 +117,7 @@ class WgSettingsPayload(BaseModel):
 	enable_status_page: bool | None = Field(None, description="Enable public internal status page")
 	enable_swagger: bool | None = Field(None, description="Enable Swagger API documentation")
 	traffic_analysis_enabled: bool | None = Field(None, description="Enable traffic country analysis")
+	gui_https_enabled: bool | None = Field(None, description="Terminate TLS directly on the GUI port (requires restart)")
 
 	def get_db_value(self, field: str) -> str | None:
 		"""Return the DB-storable string for ``field`` (converts bool → '0'/'1')."""
@@ -492,6 +493,18 @@ async def update_wg_settings(
 	if "wg_fqdn" in updated:
 		if not await _regenerate_split_dns(conn, committed_fqdn):
 			warnings.append("Settings saved but split-DNS regeneration failed")
+
+		# master_peer's endpoint is derived from wg_fqdn; every node's
+		# config_version must change so a conditional config pull notices.
+		try:
+			from ..db.sqlite_nodes import bump_config_version_for_all_nodes
+			from ..node import notifier as node_notifier
+
+			bumped = await run_in_threadpool(bump_config_version_for_all_nodes, conn)
+			for node_id, new_version in bumped.items():
+				await node_notifier.notify_config_changed(node_id, new_version)
+		except Exception:
+			_log.warning("Failed to bump node config_version after wg_fqdn change", exc_info=True)
 
 	data = {"updated": updated, "settings": settings, "warnings": warnings}
 	return ok_response(data=data)

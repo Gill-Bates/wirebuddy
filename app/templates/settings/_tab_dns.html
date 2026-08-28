@@ -3,18 +3,18 @@
         <!-- DNS Service Control -->
         <div class="card mb-3">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h3 class="h5 mb-0">DNS Service</h3>
+                <h2 class="h5 mb-0">DNS Service</h2>
                 <div class="d-flex gap-2 flex-wrap align-items-center" id="dns-service-controls">
-                    <button class="btn btn-sm btn-outline-success flex-grow-1" id="btn-dns-start" disabled aria-disabled="true" title="Start DNS" aria-label="Start DNS">
-                        <span class="material-icons align-middle icon-md">play_arrow</span>
+                    <button type="button" class="btn btn-sm btn-outline-success flex-grow-1" id="btn-dns-start" disabled aria-disabled="true" title="Start DNS" aria-label="Start DNS">
+                        <span class="material-icons align-middle icon-md" aria-hidden="true">play_arrow</span>
                         <span class="dns-btn-label">Start</span>
                     </button>
-                    <button class="btn btn-sm btn-outline-warning flex-grow-1" id="btn-dns-restart" disabled aria-disabled="true" title="Restart DNS" aria-label="Restart DNS">
-                        <span class="material-icons align-middle icon-md">restart_alt</span>
+                    <button type="button" class="btn btn-sm btn-outline-warning flex-grow-1" id="btn-dns-restart" disabled aria-disabled="true" title="Restart DNS" aria-label="Restart DNS">
+                        <span class="material-icons align-middle icon-md" aria-hidden="true">restart_alt</span>
                         <span class="dns-btn-label">Restart</span>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger flex-grow-1" id="btn-dns-stop" disabled aria-disabled="true" title="Stop DNS" aria-label="Stop DNS">
-                        <span class="material-icons align-middle icon-md">stop</span>
+                    <button type="button" class="btn btn-sm btn-outline-danger flex-grow-1" id="btn-dns-stop" disabled aria-disabled="true" title="Stop DNS" aria-label="Stop DNS">
+                        <span class="material-icons align-middle icon-md" aria-hidden="true">stop</span>
                         <span class="dns-btn-label">Stop</span>
                     </button>
                 </div>
@@ -24,7 +24,7 @@
         <!-- DNS Filtering -->
         <div class="card mb-3">
             <div class="card-header d-flex align-items-center justify-content-between">
-                <h3 class="h5 mb-0">DNS Filtering</h3>
+                <h2 class="h5 mb-0">DNS Filtering</h2>
             </div>
             <div class="card-body">
 
@@ -41,8 +41,8 @@
                 </div>
 
                 <div class="d-flex justify-content-end align-items-center mt-1">
-                    <button class="btn btn-sm btn-outline-secondary" id="btn-update-blocklist">
-                        <span class="material-icons align-middle me-1 icon-sm">cached</span>Update Blocklists
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-update-blocklist">
+                        <span class="material-icons align-middle me-1 icon-sm" aria-hidden="true">cached</span>Update Blocklists
                     </button>
                 </div>
 
@@ -55,7 +55,7 @@
             <div class="col-xl-6">
                 <div class="card h-100">
                     <div class="card-header">
-                        <h3 class="h5 mb-0">Custom Rules</h3>
+                        <h2 class="h5 mb-0">Custom Rules</h2>
                     </div>
                     <div class="card-body">
 
@@ -76,8 +76,8 @@
                             <span class="small text-muted" id="custom-rules-count">0 rules</span>
                             <div class="d-flex align-items-center gap-2 settings-header-actions">
                                 <span id="custom-rules-status" class="small text-muted" aria-live="polite"></span>
-                                <button class="btn btn-sm btn-primary text-nowrap" id="save-custom-rules-btn">
-                                    <span class="material-icons align-middle me-1 icon-sm">save</span>Save Rules
+                                <button type="button" class="btn btn-sm btn-primary text-nowrap" id="save-custom-rules-btn" disabled aria-disabled="true" title="Loading custom DNS rules">
+                                    <span class="material-icons align-middle me-1 icon-sm" aria-hidden="true">save</span>Save Rules
                                 </button>
                             </div>
                         </div>
@@ -95,7 +95,7 @@
                                    rel="noopener noreferrer"
                                               class="small text-muted text-decoration-none settings-doc-link">
                                     Full syntax documentation
-                                    <span class="material-icons align-middle ms-1 icon-external">open_in_new</span>
+                                    <span class="material-icons align-middle ms-1 icon-external" aria-hidden="true">open_in_new</span>
                                 </a>
                             </div>
                         </details>
@@ -108,7 +108,7 @@
             <div class="col-xl-6">
                 <div class="card h-100">
                     <div class="card-header">
-                        <h3 class="h5 mb-0">DNS Resolver</h3>
+                        <h2 class="h5 mb-0">DNS Resolver</h2>
                     </div>
                     <div class="card-body">
 
@@ -144,8 +144,8 @@
                             <span id="dns-validation-status"
                                   class="small"
                                   aria-live="polite"></span>
-                            <button class="btn btn-sm btn-outline-secondary text-nowrap" id="validate-dns-btn">
-                                <span class="material-icons align-middle me-1 icon-sm">verified</span>Validate
+                            <button type="button" class="btn btn-sm btn-outline-secondary text-nowrap" id="validate-dns-btn">
+                                <span class="material-icons align-middle me-1 icon-sm" aria-hidden="true">verified</span>Validate
                             </button>
                         </div>
 

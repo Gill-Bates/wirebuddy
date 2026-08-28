@@ -16,6 +16,11 @@ Before requesting a certificate:
 3. `http://DOMAIN/.well-known/acme-challenge/...` must reach WireBuddy.
 4. The signed-in user must be an administrator.
 
+HTTP-01 validation always connects over **plain HTTP on port 80**, regardless of
+how the GUI itself is reached. That requirement does not change when the
+built-in HTTPS listener is enabled — see
+[With the built-in HTTPS listener](#with-the-built-in-https-listener) below.
+
 If a reverse proxy terminates HTTP, forward the challenge path to WireBuddy:
 
 ```nginx
@@ -31,6 +36,29 @@ from receiving WireBuddy's token response.
     Caddy and Traefik can obtain and renew certificates themselves. When the
     reverse proxy already manages TLS, use its ACME support instead of maintaining
     a second certificate lifecycle in WireBuddy.
+
+## With the built-in HTTPS listener
+
+When **Settings → General → Serve GUI over HTTPS** is enabled, WireBuddy
+terminates TLS on the GUI port. Because HTTP-01 still has to arrive as plain
+HTTP, WireBuddy additionally starts a small plaintext listener that:
+
+- answers `/.well-known/acme-challenge/…` directly, and
+- redirects every other request to HTTPS.
+
+No authenticated surface is served in clear text, so issuing and renewing
+certificates keeps working with HTTPS switched on. That listener defaults to
+port 80 and is controlled by the `gui_acme_http_port` setting; set it to `0` to
+disable it if something else already handles port 80.
+
+Certificates issued this way are picked up automatically: a valid Let's Encrypt
+certificate for the configured Server FQDN replaces the self-signed fallback.
+
+!!! important "Restart required"
+    Certificates are read only at startup. **Restart WireBuddy after issuing or
+    renewing a certificate** for the new one to be served. There is no automated
+    renewal job — use `GET /api/acme/certificates/renewal-check` to find
+    certificates that are close to expiry.
 
 ## Request a certificate
 

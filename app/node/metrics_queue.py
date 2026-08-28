@@ -275,7 +275,10 @@ def close_queue(conn: sqlite3.Connection) -> None:
     connection_key = _get_connection_key(conn)
     with _get_connection_lock(conn):
         try:
-            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            try:
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except Exception as exc:
+                _log.warning("Metrics queue checkpoint failed: %s", exc)
             conn.close()
         except Exception as exc:
             _log.warning("Error closing metrics queue: %s", exc)
@@ -413,12 +416,15 @@ def get_pending_batch(conn: sqlite3.Connection) -> list[QueuedMetric]:
         corrupt_seqs: list[int] = []
         for row in cursor:
             try:
+                data = json.loads(row["data"])
+                if not isinstance(data, dict):
+                    raise ValueError("Metric data must be a JSON object")
                 metrics.append(
                     QueuedMetric(
                         seq=row["seq"],
                         ts=row["ts"],
                         metric_type=row["metric_type"],
-                        data=json.loads(row["data"]),
+                        data=data,
                     )
                 )
             except (TypeError, ValueError, json.JSONDecodeError):

@@ -28,9 +28,11 @@ async function installMotionResetStylesheet(page, cssText, viewName, label) {
         state.routes.add(routePath);
     }
 
-    await page.evaluate((attributeName) => {
-        document.documentElement.setAttribute(attributeName, 'true');
-    }, MOTION_SCOPE_ATTRIBUTE).catch((err) => console.warn(`[${viewName}] Failed to set ${label} scope attribute: ${err.message}`));
+    if (typeof page.evaluate === 'function') {
+        await page.evaluate((attributeName) => {
+            document.documentElement.setAttribute(attributeName, 'true');
+        }, MOTION_SCOPE_ATTRIBUTE).catch((err) => console.warn(`[${viewName}] Failed to set ${label} scope attribute: ${err.message}`));
+    }
 
     await page.addStyleTag({ url: routePath })
         .catch((err) => console.warn(`[${viewName}] Failed to inject ${label} stylesheet: ${err.message}`));

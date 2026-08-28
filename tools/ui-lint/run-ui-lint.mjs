@@ -105,10 +105,9 @@ import {
 import { correlateConsoleEntries } from './lib/dom-health.mjs';
 import { buildUIHealthReport } from './lib/ui-health-score.mjs';
 import { LOGIN_FAILURE_VIEWS, VIEWS } from './lib/views.mjs';
-// Importing this also registers the click-targets, focus-indicators,
-// horizontal-overflow, scroll-traps and settings-logs-layout rules (each
-// module calls registerRule() as a side effect on import) into the shared
-// registry in lib/rule-registry.mjs.
+// Importing this also registers all manifest rules (each module calls
+// registerRule() as a side effect on import) into the shared registry in
+// lib/rule-registry.mjs.
 import { collectDOMSnapshot, createContext, runRules, tokens as registryTokens } from './rules/index.mjs';
 
 const BASE_URL = process.env.UI_LINT_BASE_URL || 'http://localhost:8000';
@@ -3729,32 +3728,39 @@ async function collectPageMetrics(page, scope) {
             }
         }
 
-        // Form-switch margin consistency: expect mb-2 (12px) for proper card spacing
-        // Exception: switches in mb-3 wrappers (no direct margin) are also valid
-        const FORM_SWITCH_EXPECTED_MARGIN_PX = 12;
-        const FORM_SWITCH_MARGIN_TOLERANCE_PX = 2;
+        // Switches with an immediately following description must not add
+        // margin between the 44px switch row and its helper text. Section
+        // spacing belongs on the surrounding field wrapper instead.
+        const FORM_SWITCH_DESCRIPTION_MARGIN_MAX_PX = 1;
         const formSwitchMarginIssues = Array.from(contentRoot.querySelectorAll('.form-check.form-switch'))
             .filter((el) => isVisible(el) && isInContentRoot(el))
             .map((el) => {
                 const style = window.getComputedStyle(el);
                 const marginBottom = Number.parseFloat(style.marginBottom || '0');
-                const hasMb0 = el.classList.contains('mb-0');
-                const hasMb2 = el.classList.contains('mb-2');
-                const marginOk = Math.abs(marginBottom - FORM_SWITCH_EXPECTED_MARGIN_PX) <= FORM_SWITCH_MARGIN_TOLERANCE_PX;
+                const input = el.querySelector('.form-check-input');
+                const description = el.nextElementSibling;
+                const describedIds = (input?.getAttribute('aria-describedby') || '')
+                    .split(/\s+/)
+                    .filter(Boolean);
+                const isDescription = Boolean(description && (
+                    description.matches('small, .form-text')
+                    || (description.id && describedIds.includes(description.id))
+                ));
 
-                // Check if switch is in an mb-3 wrapper (valid pattern)
-                const parentHasMb3 = el.parentElement?.classList.contains('mb-3');
-                const isInMb3Wrapper = parentHasMb3 && marginBottom <= FORM_SWITCH_MARGIN_TOLERANCE_PX;
+                if (!isDescription) return null;
 
-                // Valid patterns: mb-2 on switch, mb-0 on switch, or switch in mb-3 wrapper
-                if (marginOk || hasMb0 || isInMb3Wrapper) return null;
+                const descriptionStyle = window.getComputedStyle(description);
+                const descriptionMarginTop = Number.parseFloat(descriptionStyle.marginTop || '0');
+                if (
+                    marginBottom <= FORM_SWITCH_DESCRIPTION_MARGIN_MAX_PX
+                    && descriptionMarginTop <= FORM_SWITCH_DESCRIPTION_MARGIN_MAX_PX
+                ) return null;
 
                 return {
                     ...rectInfo(el),
                     marginBottom: round(marginBottom),
-                    hasMb0,
-                    hasMb2,
-                    parentHasMb3,
+                    descriptionMarginTop: round(descriptionMarginTop),
+                    descriptionId: description.id || null,
                     label: el.querySelector('.form-check-label')?.textContent?.trim().slice(0, 40) || null,
                 };
             })
@@ -4494,7 +4500,7 @@ function normalizeRegistryDevice(device) {
     return device === 'large-desktop' ? 'desktop' : device;
 }
 
-const REGISTRY_RULE_IDS = ['click-targets', 'focus-indicators', 'horizontal-overflow', 'scroll-traps'];
+const REGISTRY_RULE_IDS = ['click-targets', 'focus-indicators', 'form-switch-spacing', 'horizontal-overflow', 'scroll-traps'];
 
 async function collectRegistryFindings(page, view, browserName) {
     try {
@@ -4593,13 +4599,12 @@ function buildLegacyFocusMetrics(registryFindings) {
 // appended after finalizeResult() runs (which would otherwise overwrite
 // result.findings/hardFindings/warnings from scratch). horizontal-overflow,
 // scroll-traps and settings-logs-layout have no legacy metric equivalent at
-// all, so this is their only path into the report. click-targets/
-// focus-indicators findings appear here too even though their
-// too-small/focus-visibility cases already drive metrics.clickTargetsTooSmall
-// / metrics.focusIndicatorMissing (and, through those, the existing
-// accessibility-policy findings) - the duplicate description is harmless
-// since only the metrics arrays feed hardBlock/scoring, not this list, and it
-// guarantees no registry finding is ever silently dropped.
+// all, so this is their only path into the report. click-targets,
+// focus-indicators and form-switch-spacing findings appear here too even
+// though their corresponding cases already drive legacy metrics (and,
+// through those, existing policy findings). The duplicate description is
+// harmless since only the metrics arrays feed hardBlock/scoring, not this
+// list, and it guarantees no registry finding is ever silently dropped.
 function appendSupplementaryRegistryFindings(result, registryFindings) {
     for (const finding of registryFindings) {
         const legacyKey = `registry:${finding.ruleId}:${finding.kind}`;

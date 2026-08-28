@@ -25,11 +25,8 @@ _BANNER_LOCK_FILE = _BANNER_RUNTIME_DIR / "banner.lock"
 
 def _ensure_runtime_dir(path: Path) -> None:
 	"""Ensure the banner runtime directory exists and is not symlinked."""
-	try:
-		st = path.lstat()
-	except FileNotFoundError:
-		path.mkdir(mode=0o750, parents=True)
-		st = path.lstat()
+	path.mkdir(mode=0o750, parents=True, exist_ok=True)
+	st = path.lstat()
 
 	if path.is_symlink() or not stat.S_ISDIR(st.st_mode):
 		raise RuntimeError(f"Banner runtime path is not a safe directory: {path}")

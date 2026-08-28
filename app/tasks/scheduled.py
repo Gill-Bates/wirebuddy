@@ -232,13 +232,25 @@ async def sample_tsdb_metrics(ctx: main.LifespanContext) -> None:
 
 
 async def sample_country_traffic(ctx: main.LifespanContext) -> None:
-    """Scheduled task: sample conntrack -> country + ASN traffic -> TSDB."""
-    from ..utils.conntrack import sample_country_traffic as do_sample, ASN_TRAFFIC_KEY, ASN_TRAFFIC_METRIC
+    """Scheduled task: sample conntrack -> country + ASN traffic -> TSDB.
+
+    The conntrack sampler keeps a process-local byte baseline, so only the
+    process holding sampler leadership reads conntrack and writes TSDB points.
+    Every other worker returns early.
+    """
+    from ..utils.conntrack import (
+        sample_country_traffic as do_sample,
+        acquire_sampler_leadership,
+        ASN_TRAFFIC_KEY,
+        ASN_TRAFFIC_METRIC,
+    )
     from ..api.wireguard_stats_country import GEO_TRAFFIC_KEY, GEO_TRAFFIC_METRIC
     from ..main import _read_country_traffic_inputs_sync
-    
+
     try:
         def _run():
+            if not acquire_sampler_leadership(ctx.cfg.data_dir):
+                return
             enabled, peer_ip_map = _read_country_traffic_inputs_sync(ctx.cfg.db_path)
             if not enabled:
                 return

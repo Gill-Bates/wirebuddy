@@ -104,13 +104,29 @@ def update_peers_last_seen_batch(
 	"""Batch-persist last_client_ip and last_handshake_at for multiple peers.
 
 	*updates* is a list of ``(client_ip, handshake_at, public_key)`` tuples.
+
+	Monotonic on handshake_at: a roaming peer (allow_all_nodes) can be
+	reported by multiple nodes concurrently, and a delayed or reordered
+	update must not roll the peer back to "less recently seen" than an
+	already-recorded newer observation, or overwrite its IP with a stale one.
 	"""
 	if not updates:
 		return
 	with transaction(conn):
 		conn.executemany(
-			"UPDATE peers SET last_client_ip = ?, last_handshake_at = ? WHERE public_key = ?",
-			updates,
+			"""
+			UPDATE peers
+			SET last_client_ip = CASE
+					WHEN ? >= COALESCE(last_handshake_at, 0) THEN ?
+					ELSE last_client_ip
+				END,
+				last_handshake_at = MAX(COALESCE(last_handshake_at, 0), ?)
+			WHERE public_key = ?
+			""",
+			[
+				(handshake_at, client_ip, handshake_at, public_key)
+				for client_ip, handshake_at, public_key in updates
+			],
 		)
 
 

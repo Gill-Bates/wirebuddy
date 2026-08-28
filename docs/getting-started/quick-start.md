@@ -130,21 +130,19 @@ For production use, place WireBuddy behind a reverse proxy with HTTPS.
 === "Caddy"
     ```caddyfile
     # Caddyfile (included in repository)
-    vpn.example.com {
+    (proxy_common) {
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-Port 443
 
-        # Common proxy settings (reused)
-        (proxy_common) {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Port 443
-            header_up X-Forwarded-Host {host}
-
-            transport http {
-                keepalive 30s
-            }
+        transport http {
+            keepalive 30s
         }
+    }
 
-        # SSE endpoint: disable buffering for real-time event streaming
-        @sse path /api/nodes/events
+    vpn.example.com {
+        # Live event streams used by nodes and the admin UI: disable buffering so
+        # speedtest progress and node events reach users in real time.
+        @sse path_regexp sse ^(?:/api/nodes/events|/api/wireguard/speedtest/run/stream/[^/]+|/api/nodes/[^/]+/speedtest/stream)$
         reverse_proxy @sse localhost:8000 {
             import proxy_common
             flush_interval -1

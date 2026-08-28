@@ -68,7 +68,7 @@
     border-radius: 1.15rem;
     background:
         linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)),
-        var(--wb-bg-surface, var(--bs-dark));
+        var(--wb-bg-surface, var(--bs-card-bg, var(--bs-body-bg)));
     box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
 }
 

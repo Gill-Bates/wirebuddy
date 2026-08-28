@@ -112,10 +112,10 @@
         <div class="card h-100">
             <div class="card-header">
                 <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-                    <h3 class="h5 mb-0">
+                    <h2 class="h5 mb-0">
                         <span class="material-icons align-middle me-1" aria-hidden="true">speed</span>
                         Network
-                    </h3>
+                    </h2>
                     <span class="badge bg-secondary" id="network-stats-status">Loading...</span>
                 </div>
             </div>
@@ -138,10 +138,10 @@
     <div class="dashboard-speedtest-col">
         <div class="card speedtest-card">
             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <h3 class="h5 mb-0">
+                <h2 class="h5 mb-0">
                     <span class="material-icons align-middle me-1" aria-hidden="true">speed</span>
                     Speedtest
-                </h3>
+                </h2>
                 <div class="d-flex gap-2 align-items-center">
                     <select id="speedtest-node" class="form-select form-select-sm speedtest-node-select" aria-label="Filter by node" data-ui-component="speedtest-controls" data-ui-density="compact" data-ui-importance="secondary">
                         <option value="" selected>Master</option>
@@ -160,7 +160,7 @@
                 <div class="speedtest-chart-wrap">
                     <canvas id="speedtest-chart"></canvas>
                     <div id="speedtest-chart-empty" class="chart-empty-state wb-empty-state-overlay d-none">
-                        <span class="material-icons">show_chart</span>
+                        <span class="material-icons" aria-hidden="true">show_chart</span>
                         <span class="chart-empty-state-text">No Data Available</span>
                     </div>
                 </div>
@@ -177,10 +177,10 @@
         <div class="card h-100">
             <div class="card-header">
                 <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-                    <h3 class="h5 mb-0">
+                    <h2 class="h5 mb-0">
                         <span class="material-icons align-middle me-1" aria-hidden="true">public</span>
                         Peer Locations
-                    </h3>
+                    </h2>
                     <div class="d-flex gap-3 align-items-center map-kpis">
                         <span class="map-kpi" title="Online Peers">
                             <span class="material-icons icon-sm text-primary" aria-hidden="true">fiber_manual_record</span>
@@ -208,10 +208,10 @@
     <div class="dashboard-recent-peers-col">
         <div class="card d-flex flex-column recent-peers-card">
             <div class="card-header">
-                <h3 class="h5 mb-0">
+                <h2 class="h5 mb-0">
                     <span class="material-icons align-middle me-1" aria-hidden="true">history</span>
                     Recent Peer Activity
-                </h3>
+                </h2>
             </div>
             <div class="card-body flex-grow-1" data-ui-lint-allow="nested-scroll" tabindex="0" aria-label="Recent peer activity list">
                 <div id="recent-peers">

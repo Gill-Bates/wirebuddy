@@ -63,7 +63,9 @@
 
     function clearSensitiveData() {
         document.getElementById('otp-secret').value = '';
-        document.getElementById('otp-qr-image').src = '';
+        // removeAttribute, not src='': an empty src resolves to the page URL and
+        // the browser would fetch the document again as an image.
+        document.getElementById('otp-qr-image').removeAttribute('src');
         document.querySelectorAll('.otp-digit').forEach(d => d.value = '');
     }
 
@@ -112,14 +114,27 @@
             confirmBtn.disabled = submitting || code.length !== OTP_LENGTH || !new RegExp(`^\\d{${OTP_LENGTH}}$`).test(code);
         }
 
+        /**
+         * Write `value` into the boxes starting at `startIdx`, one character
+         * each, and move focus to the first still-empty box.
+         */
+        function fillFrom(startIdx, value) {
+            const count = Math.min(value.length, digits.length - startIdx);
+            if (count === 0) {
+                digits[startIdx].value = '';
+                return;
+            }
+            for (let i = 0; i < count; i++) {
+                digits[startIdx + i].value = value[i];
+            }
+            digits[Math.min(startIdx + count, digits.length - 1)].focus();
+        }
+
         digits.forEach((input, idx) => {
             input.addEventListener('input', (e) => {
-                const val = e.target.value.replace(/\D/g, '');
-                e.target.value = val.slice(-1);
-
-                if (val && idx < OTP_LENGTH - 1) {
-                    digits[idx + 1].focus();
-                }
+                // Autofill drops the whole code into one box without firing a
+                // paste event, so spread it instead of keeping the last character.
+                fillFrom(idx, e.target.value.replace(/\D/g, ''));
 
                 updateButton();
 
@@ -138,9 +153,7 @@
             input.addEventListener('paste', (e) => {
                 e.preventDefault();
                 const paste = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, OTP_LENGTH);
-                paste.split('').forEach((char, i) => {
-                    if (digits[i]) digits[i].value = char;
-                });
+                fillFrom(0, paste);
                 updateButton();
                 // Do not auto-submit on paste; allow user to verify before submit.
             });

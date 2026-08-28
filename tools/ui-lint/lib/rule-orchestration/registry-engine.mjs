@@ -6,7 +6,7 @@
 import { buildRuleExplanation, whyDidRuleFail } from './explainability.mjs';
 import { createResourceManager } from './resource-manager.mjs';
 import { createRuleTelemetry, finalizeRuleTelemetry, classifyFailure } from './telemetry.mjs';
-import { normalizeSeverity, normalizeSeverityByBrowser, severityWeight } from './severity-normalizer.mjs';
+import { normalizeSeverity, severityWeight } from './severity-normalizer.mjs';
 import { planExecution } from './execution-planner.mjs';
 
 function normalizeArray(value) {
@@ -94,7 +94,10 @@ function normalizeRuleMeta(rule) {
 }
 
 function normalizeFinding(rule, finding, context, telemetry) {
-    const normalizedSeverity = normalizeSeverityByBrowser(rule.meta, context.browser, finding.severity || rule.meta.severity || 'warning');
+    const browserOverride = context.browser ? rule.meta.severityByBrowser?.[context.browser] : null;
+    const normalizedSeverity = normalizeSeverity(
+        browserOverride || finding.severity || rule.meta.severity || 'warning',
+    );
     const confidence = clampConfidence(finding.confidence ?? rule.meta.confidence);
     const remediation = finding.remediation || finding.suggestion || rule.meta.remediation[0] || null;
 

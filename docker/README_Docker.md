@@ -46,6 +46,11 @@ docker run -d \
   --network host \
   --cap-drop ALL \
   --cap-add NET_ADMIN \
+  --cap-add NET_BIND_SERVICE \
+  --cap-add SETUID \
+  --cap-add SETGID \
+  --cap-add CHOWN \
+  --cap-add DAC_OVERRIDE \
   --security-opt no-new-privileges:true \
   --stop-timeout 20 \
   --device /dev/net/tun:/dev/net/tun \
@@ -80,7 +85,12 @@ services:
     cap_drop:
       - ALL
     cap_add:
-      - NET_ADMIN
+      - NET_ADMIN          # WireGuard interfaces, iptables/nft rules
+      - NET_BIND_SERVICE   # Unbound binds the privileged DNS port 53
+      - SETUID             # Unbound drops privileges to the 'unbound' user
+      - SETGID
+      - CHOWN              # hands the DNS query log to that user
+      - DAC_OVERRIDE       # root writes into the unbound-owned log directory
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:
@@ -88,6 +98,7 @@ services:
       TZ: Etc/UTC
       WIREBUDDY_SECRET_KEY: ""  # Generate with: head -c 32 /dev/urandom | base64
       WIREBUDDY_TRUST_PROXY_HEADERS: "1"
+      WIREBUDDY_PORT: "8000"   # must match the healthcheck URL below
       # If your reverse proxy is not on 127.0.0.1, set its IP or CIDR here.
       # FORWARDED_ALLOW_IPS: "127.0.0.1,172.18.0.0/16"
       WIREBUDDY_DATA_DIR: /app/data
@@ -138,7 +149,7 @@ services:
 ## Requirements
 
 - **Host network mode** (`--network host`) — Required for WireGuard to manage network interfaces
-- **NET_ADMIN capability** — Required for creating WireGuard interfaces
+- **Capabilities** — `NET_ADMIN` for WireGuard interfaces and iptables rules. With `--cap-drop ALL` the DNS resolver additionally needs `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN`, and `DAC_OVERRIDE`; without a full drop, Docker's default set already covers those
 - **TUN device** (`/dev/net/tun`) — Required for VPN tunnels
 - Linux host with kernel 5.6+ (WireGuard built in) or a compatible WireGuard kernel module installed on the host
 

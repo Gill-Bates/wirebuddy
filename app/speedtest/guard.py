@@ -185,21 +185,30 @@ class SpeedtestRunLease:
             _log.warning("Failed to release speedtest thread lock: %s", exc)
 
     def release(self) -> None:
-        """Release the lease (sync version)."""
+        """Release the lease (sync version).
+
+        The fcntl lock and thread lock are always released even if writing the
+        cooldown timestamp fails (e.g. a RuntimeError from the symlink guard),
+        otherwise every later speedtest would be permanently rejected as busy.
+        """
         if self.released:
             return
-        self.released = True
 
-        # 1. Record cooldown only after successful runs
-        if self.success:
-            self._persist_cooldown()
+        try:
+            # 1. Record cooldown only after successful runs.
+            if self.success:
+                try:
+                    self._persist_cooldown()
+                except Exception:
+                    _log.warning("Failed to persist speedtest cooldown", exc_info=True)
+        finally:
+            # 2. Release fcntl lock, then 3. the thread lock - unconditionally.
+            try:
+                self._close_fd()
+            finally:
+                self._release_thread_lock()
+                self.released = True
 
-        # 2. Release fcntl lock
-        self._close_fd()
-
-        # 3. Release thread lock
-        self._release_thread_lock()
-            
         # Note: asyncio.Lock must be released via 'async with' or manual release()
         # if acquired. This class handles it in __aexit__.
 
@@ -207,10 +216,13 @@ class SpeedtestRunLease:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
-        if not self.released:
-            await asyncio.to_thread(self.release)
-        if self._async_acquired:
-            _local_async_lock.release()
+        try:
+            if not self.released:
+                await asyncio.to_thread(self.release)
+        finally:
+            if self._async_acquired and _local_async_lock.locked():
+                _local_async_lock.release()
+                self._async_acquired = False
 
     def __enter__(self) -> SpeedtestRunLease:
         return self
@@ -283,6 +295,30 @@ def acquire_speedtest_run_lease(
         raise
 
 
+def _release_orphaned_lease(task: asyncio.Task[SpeedtestRunLease]) -> None:
+    """Release a lease produced by a background acquisition nobody awaited."""
+    if task.cancelled():
+        return
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    if exc is not None:
+        return
+    try:
+        task.result().release()
+    except Exception:
+        _log.warning("Failed to release orphaned speedtest lease", exc_info=True)
+
+
+def _discard_pending_lease(task: asyncio.Task[SpeedtestRunLease]) -> None:
+    """Ensure a shielded acquisition can never leak its thread/process lock."""
+    if task.done():
+        _release_orphaned_lease(task)
+    else:
+        task.add_done_callback(_release_orphaned_lease)
+
+
 async def acquire_speedtest_run_lease_async(
     tsdb_dir: Path,
     *,
@@ -300,45 +336,39 @@ async def acquire_speedtest_run_lease_async(
 
     await _local_async_lock.acquire()
     async_lock_acquired = True
-    
+
     try:
-        # 2. delegate to sync version for thread/process locks
-        # We run this in a thread to avoid blocking the event loop on I/O (flock/file read)
-        try:
-            acquire_task = asyncio.create_task(
-                asyncio.to_thread(
-                    acquire_speedtest_run_lease,
-                    tsdb_dir,
-                    cooldown_seconds=cooldown_seconds,
-                    update_cooldown=update_cooldown,
-                    cancel_event=cancel_event,
-                )
+        # 2. Delegate to the sync version for the thread/process locks. Run it in
+        #    a thread so the event loop is not blocked on flock/file I/O.
+        acquire_task = asyncio.create_task(
+            asyncio.to_thread(
+                acquire_speedtest_run_lease,
+                tsdb_dir,
+                cooldown_seconds=cooldown_seconds,
+                update_cooldown=update_cooldown,
+                cancel_event=cancel_event,
             )
-            lease = await asyncio.wait_for(
-                asyncio.shield(acquire_task),
-                timeout=5.0,
-            )
-        except asyncio.TimeoutError:
-            cancel_event.set()
-
-            def _release_late_lease(task: asyncio.Task[SpeedtestRunLease]) -> None:
-                if task.cancelled():
-                    return
-                exc = task.exception()
-                if exc is not None:
-                    return
-                try:
-                    task.result().release()
-                except Exception:
-                    _log.warning("Failed to release late speedtest lease after timeout", exc_info=True)
-
-            if acquire_task is not None:
-                acquire_task.add_done_callback(_release_late_lease)
-            raise SpeedtestBusyError("Speed test already in progress (acquisition timed out)") from None
-
+        )
+        lease = await asyncio.wait_for(
+            asyncio.shield(acquire_task),
+            timeout=5.0,
+        )
         lease._async_acquired = True
         return lease
-    except Exception:
+    except asyncio.TimeoutError:
+        cancel_event.set()
+        if acquire_task is not None:
+            _discard_pending_lease(acquire_task)
+        if async_lock_acquired:
+            _local_async_lock.release()
+        raise SpeedtestBusyError("Speed test already in progress (acquisition timed out)") from None
+    except BaseException:
+        # Includes CancelledError: the shielded task may still be running or may
+        # already hold the thread/process lock, so make sure it can never leak a
+        # lease, and always drop the async lock.
+        cancel_event.set()
+        if acquire_task is not None:
+            _discard_pending_lease(acquire_task)
         if async_lock_acquired:
             _local_async_lock.release()
         raise

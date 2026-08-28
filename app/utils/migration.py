@@ -26,7 +26,8 @@ Adding a new migration:
 Factory-default baseline note:
 The current schema baseline is fully defined in `init_schema()`.
 Migration history up to this baseline was intentionally absorbed into
-factory defaults, so migration versioning is reset to 0.
+factory defaults, while the recorded baseline remains v2 for existing
+databases. New migrations must therefore start at v3.
 """
 
 from __future__ import annotations
@@ -40,8 +41,8 @@ from ..db.sqlite_runtime import transaction
 _log = logging.getLogger(__name__)
 
 # Current schema version.
-# Baseline is reset to v0 because all previous schema changes are now
-# integrated into init_schema() factory defaults.
+# Existing databases and fresh factory schemas use v2 as their current
+# baseline; migrations 1 and 2 remain available for older databases.
 SCHEMA_VERSION = 2
 
 
@@ -53,7 +54,10 @@ def _current_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
 
 def _looks_like_current_schema(conn: sqlite3.Connection) -> bool:
 	"""Best-effort check for a DB already matching the current baseline schema."""
-	return "show_on_dashboard" in _current_columns(conn, "interfaces")
+	return (
+		"show_on_dashboard" in _current_columns(conn, "interfaces")
+		and "description" not in _current_columns(conn, "peers")
+	)
 
 
 def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
@@ -99,8 +103,8 @@ def _set_schema_version(conn: sqlite3.Connection, version: int) -> None:
 	)
 
 
-# Historical migrations are now part of the factory-default schema.
-# Start a new migration history from 0 for future schema changes.
+# Historical migrations remain available for older databases, even though
+# fresh factory schemas already contain their result.
 
 
 def _migrate_0001_add_show_on_dashboard(conn: sqlite3.Connection) -> None:
@@ -214,29 +218,18 @@ def run_pending_migrations(conn: sqlite3.Connection) -> int:
 
 	# Handle version downgrade scenarios
 	if current_version > SCHEMA_VERSION:
-		# Special case: Allow downgrade to v0 (baseline reset)
-		# This happens when migration history is absorbed into init_schema() factory defaults
-		if SCHEMA_VERSION == 0:
-			_log.warning(
-				"MIGRATION baseline reset: database at v%d, normalizing to v0 "
-				"(all schema changes now in factory defaults)",
-				current_version,
-			)
-			with transaction(conn, immediate=True):
-				_set_schema_version(conn, 0)
-			return 0
-		else:
-			# Refuse downgrade in all other cases (application rollback detected)
-			_log.error(
-				"MIGRATION database is at v%d but application only knows v%d — "
-				"refusing to downgrade. Was the application rolled back?",
-				current_version,
-				SCHEMA_VERSION,
-			)
-			raise RuntimeError(
-				f"Schema version {current_version} is ahead of application version {SCHEMA_VERSION}. "
-				f"Database may have been modified by a newer version of the application."
-			)
+		# Refuse downgrade: silently rewriting the marker can make a rollback
+		# apply incompatible migrations to a newer database.
+		_log.error(
+			"MIGRATION database is at v%d but application only knows v%d — "
+			"refusing to downgrade. Was the application rolled back?",
+			current_version,
+			SCHEMA_VERSION,
+		)
+		raise RuntimeError(
+			f"Schema version {current_version} is ahead of application version {SCHEMA_VERSION}. "
+			"Database may have been modified by a newer version of the application."
+		)
 
 	# Filter and sort migrations that need to run
 	pending = [

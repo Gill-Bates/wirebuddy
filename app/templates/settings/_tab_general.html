@@ -15,10 +15,10 @@
             <div class="col-lg-6 settings-general-col settings-general-col-left">
                 <div class="card mb-3">
                     <div class="card-header">
-                        <h3 class="h5 mb-0">Public Status Page</h3>
+                        <h2 class="h5 mb-0">Public Status Page</h2>
                     </div>
                     <div class="card-body">
-                        <div class="form-check form-switch mb-2">
+                        <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="enable-status-page" aria-describedby="enable-status-page-help"{% if settings.enable_status_page %} checked{% endif %} {{ disabled_attr }}>
                             <label class="form-check-label" for="enable-status-page">Enable Status Page</label>
                         </div>
@@ -29,10 +29,10 @@
 
                 <div class="card mb-3">
                     <div class="card-header">
-                        <h3 class="h5 mb-0">API Documentation</h3>
+                        <h2 class="h5 mb-0">API Documentation</h2>
                     </div>
                     <div class="card-body">
-                        <div class="form-check form-switch mb-2">
+                        <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="enable-swagger" aria-describedby="enable-swagger-help"{% if settings.enable_swagger %} checked{% endif %} {{ disabled_attr }}>
                             <label class="form-check-label" for="enable-swagger">Enable Swagger UI</label>
                         </div>
@@ -45,7 +45,7 @@
             <div class="col-lg-6 settings-general-col settings-general-col-right">
                 <div class="card mb-3">
                     <div class="card-header">
-                        <h3 class="h5 mb-0">Server Settings</h3>
+                        <h2 class="h5 mb-0">Server Settings</h2>
                     </div>
                     <div class="card-body">
                         <div class="mb-3">
@@ -79,6 +79,24 @@
                             </div>
                             <small class="text-muted" id="gui-localhost-only-help">When enabled, the GUI is only accessible from 127.0.0.1 (requires restart).</small>
                         </div>
+                        <div class="mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="gui-https-enabled" aria-describedby="gui-https-enabled-help"{% if settings.gui_https_enabled %} checked{% endif %} {{ disabled_attr }}>
+                                <label class="form-check-label" for="gui-https-enabled">Serve GUI over HTTPS</label>
+                            </div>
+                            <small class="text-muted" id="gui-https-enabled-help">
+                                Terminates TLS on the GUI port (requires restart).
+                                {%- if settings.tls_certificate %}
+                                Certificate:
+                                {%- if settings.tls_certificate.source == 'letsencrypt' %}
+                                <span class="text-success">Let&rsquo;s Encrypt</span>
+                                {%- if settings.tls_certificate.expires_at %}, expires {{ settings.tls_certificate.expires_at[:10] }}{% endif %}.
+                                {%- else %}
+                                <span class="text-warning">self-signed</span>.
+                                {%- endif %}
+                                {%- endif %}
+                            </small>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -89,18 +107,18 @@
             <div class="col-12">
                 <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                        <h3 class="h5 mb-0">
+                        <h2 class="h5 mb-0">
                             Speedtest
-                        </h3>
+                        </h2>
                         <div class="settings-header-actions">
-                            <button class="btn btn-sm btn-outline-secondary text-nowrap" id="btn-speedtest-run" {{ disabled_attr }}
+                            <button type="button" class="btn btn-sm btn-outline-secondary text-nowrap" id="btn-speedtest-run" {{ disabled_attr }}
                                 title="Run speed test now">
                                 <span class="material-icons align-middle me-1 icon-sm" aria-hidden="true">play_arrow</span>Run Now
                             </button>
                         </div>
                     </div>
                     <div class="card-body">
-                        <div class="form-check form-switch mb-2">
+                        <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="speedtest-enabled" aria-describedby="speedtest-enabled-help"{% if settings.speedtest_enabled %} checked{% endif %} {{ disabled_attr }}>
                             <label class="form-check-label" for="speedtest-enabled">Scheduled</label>
                         </div>

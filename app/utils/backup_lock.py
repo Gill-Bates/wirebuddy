@@ -39,11 +39,10 @@ class BackupLockBusyError(RuntimeError):
 
 def _ensure_private_lock_dir(path: Path) -> None:
 	"""Ensure the backup lock directory exists and is a real private directory."""
-	try:
-		st = path.lstat()
-	except FileNotFoundError:
-		path.mkdir(mode=0o700, parents=True)
-		st = path.lstat()
+	# Close the check-then-create race between workers.  The post-create lstat
+	# still validates the final path and rejects symlinks/non-directories.
+	path.mkdir(mode=0o700, parents=True, exist_ok=True)
+	st = path.lstat()
 
 	if path.is_symlink() or not stat.S_ISDIR(st.st_mode):
 		raise RuntimeError(f"Backup lock path is not a safe directory: {path}")
@@ -82,7 +81,10 @@ def _acquire_lock_file(
 		while True:
 			try:
 				base_lock = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
-				lock_mode = base_lock if blocking else (base_lock | fcntl.LOCK_NB)
+				# A timed blocking lock must be polled; a blocking flock() call
+				# otherwise waits in the kernel beyond our deadline.
+				poll = not blocking or timeout is not None
+				lock_mode = base_lock | fcntl.LOCK_NB if poll else base_lock
 				fcntl.flock(lock_file.fileno(), lock_mode)
 				break
 			except BlockingIOError as exc:
@@ -122,6 +124,17 @@ def acquire_backup_operation_lock(data_dir: Path) -> Iterator[BinaryIO]:
 def acquire_restore_guard(data_dir: Path) -> Iterator[BinaryIO]:
 	"""Hold the cross-process restore guard while replacing on-disk state."""
 	with _acquire_lock_file(_lock_path(data_dir, BACKUP_RESTORE_LOCK_NAME)) as lock_file:
+		yield lock_file
+
+
+@contextmanager
+def acquire_restore_read_guard(data_dir: Path) -> Iterator[BinaryIO]:
+	"""Hold a shared restore guard for the lifetime of a read connection."""
+	with _acquire_lock_file(
+		_lock_path(data_dir, BACKUP_RESTORE_LOCK_NAME),
+		shared=True,
+		update_metadata=False,
+	) as lock_file:
 		yield lock_file
 
 

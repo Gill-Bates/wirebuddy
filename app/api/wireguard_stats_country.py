@@ -12,7 +12,8 @@ is resolved to a country via GeoLite2-City.
 
 Data pipeline
 ~~~~~~~~~~~~~
-1. Scheduler task (``_sample_country_traffic`` in main.py, every 30 s):
+1. Scheduler task (``sample_country_traffic`` in ``app/tasks/scheduled.py``,
+   every 30 s, single elected worker):
    - Reads ``/proc/net/nf_conntrack``
    - Filters connections originating from WireGuard subnets
    - Computes byte deltas per destination country since last sample

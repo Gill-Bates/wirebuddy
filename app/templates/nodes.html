@@ -17,9 +17,9 @@
 {% block content %}
 <div class="container-fluid wb-page" id="nodesPageRoot" data-flag-icon-base-url="{{ flag_icon_base_url }}">
 <div class="wb-page-header flex-wrap gap-2">
-    <h1 class="page-title"><span class="material-icons me-2">hub</span>Remote Nodes</h1>
+    <h1 class="page-title"><span class="material-icons me-2" aria-hidden="true">hub</span>Remote Nodes</h1>
     <button type="button" class="btn btn-primary nodes-primary-trigger" data-bs-toggle="modal" data-bs-target="#addNodeModal">
-        <span class="material-icons me-2">add_circle</span>
+        <span class="material-icons me-2" aria-hidden="true">add_circle</span>
         Add Node
     </button>
 </div>
@@ -275,7 +275,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="addNodeModalLabel">
-                    <span class="material-icons me-2 align-middle text-primary">add_circle</span>Add Remote Node
+                    <span class="material-icons me-2 align-middle text-primary" aria-hidden="true">add_circle</span>Add Remote Node
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
@@ -306,7 +306,7 @@
                 <!-- Step 2: Token Display -->
                 <div id="addNodeStep2" class="wb-step-hidden">
                     <div class="alert alert-success mb-3">
-                        <span class="material-icons align-middle me-1">check_circle</span>
+                        <span class="material-icons align-middle me-1" aria-hidden="true">check_circle</span>
                         Node created successfully!
                     </div>
                     <p class="mb-2"><strong>Enrollment Token</strong></p>
@@ -334,7 +334,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="editNodeModalLabel">
-                    <span class="material-icons me-2 align-middle">edit</span>Edit Node
+                    <span class="material-icons me-2 align-middle" aria-hidden="true">edit</span>Edit Node
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
@@ -379,13 +379,13 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="tokenModalLabel">
-                    <span class="material-icons me-2 align-middle text-warning">vpn_key</span>New Enrollment Token
+                    <span class="material-icons me-2 align-middle text-warning" aria-hidden="true">vpn_key</span>New Enrollment Token
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <div class="alert alert-warning mb-3">
-                    <span class="material-icons align-middle me-1">warning</span>
+                    <span class="material-icons align-middle me-1" aria-hidden="true">warning</span>
                     The node must re-enroll with this new token. The old token is invalidated.
                 </div>
                 <div class="enrollment-token-box" id="regenTokenDisplay"></div>

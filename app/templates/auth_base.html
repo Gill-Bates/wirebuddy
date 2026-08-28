@@ -1,0 +1,50 @@
+{#
+  Shared shell for the unauthenticated / forced-setup pages
+  (login, change_password, otp_setup, passkey_setup).
+
+  Before this template existed each of those pages carried its own copy of the
+  HTML shell and loaded the design-system stylesheets in a different order (and
+  in one case not at all), so cascade, focus rings and dark-mode behaviour drifted
+  apart. Keep the shell here and let pages contribute only their own page CSS.
+
+  Blocks:
+    - title       page <title>
+    - body_attrs  extra attributes rendered onto <body>
+    - extra_css   page stylesheet(s), loaded after the design system
+    - content     page markup, rendered inside <main>
+    - extra_js    page scripts
+#}
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light" class="login-page">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{ csrf_token | e }}">
+    {# Advisory only - the server sends the authoritative Cache-Control header. #}
+    <meta http-equiv="Cache-Control" content="no-store">
+    <meta http-equiv="Pragma" content="no-cache">
+    <title>{% block title %}WireBuddy{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/img/wirebuddy_1c.svg">
+    <!-- Theme Script in <head> prevents FOUC - must stay synchronous -->
+    <script src="/static/js/theme.js"></script>
+    <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/vendor/material-icons.css" rel="stylesheet">
+    <!-- Design System: Core Tokens -->
+    <link href="/static/css/core/tokens.css" rel="stylesheet">
+    <!-- Utilities & Overrides -->
+    <link href="/static/css/utilities/wb-state.css" rel="stylesheet">
+    <link href="/static/css/style.css" rel="stylesheet">
+    <link href="/static/css/wb-ui-system.css" rel="stylesheet">
+    {% block extra_css %}{% endblock %}
+</head>
+
+<body{% block body_attrs %}{% endblock %}>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    {% block extra_js %}{% endblock %}
+</body>
+
+</html>

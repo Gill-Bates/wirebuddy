@@ -237,6 +237,7 @@ class PasskeyPublic(BaseModel):
 
 
 @router.post("/register/start")
+@limiter.limit(RATE_LIMIT_AUTH)
 def passkey_register_start(
 	request: Request,
 	user: sqlite3.Row = Depends(get_current_user),
@@ -271,6 +272,7 @@ def passkey_register_start(
 
 
 @router.post("/register/finish")
+@limiter.limit(RATE_LIMIT_AUTH)
 def passkey_register_finish(
 	request: Request,
 	payload: PasskeyRegisterFinishRequest,
@@ -550,15 +552,19 @@ def delete_passkey_endpoint(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Delete a passkey belonging to the current user."""
-	if not delete_passkey(conn, passkey_id, user["id"]):
-		raise HTTPException(status_code=404, detail="Passkey not found")
+	# Delete, re-count and flip the auth method in one transaction. Split across
+	# separate statements, a failure or a concurrent delete could leave the user
+	# with passkey_enabled=True and no passkey left to authenticate with.
+	with transaction(conn, immediate=True):
+		if not delete_passkey(conn, passkey_id, user["id"]):
+			raise HTTPException(status_code=404, detail="Passkey not found")
 
-	# Check if user has any remaining passkeys
-	remaining = count_user_passkeys(conn, user["id"])
-	if remaining == 0:
-		# Disable passkey auth method
-		auth_method = "password_mfa" if user["otp_enabled"] else "password"
-		update_user_auth_method(conn, user["id"], auth_method, passkey_enabled=False)
+		# Check if user has any remaining passkeys
+		remaining = count_user_passkeys(conn, user["id"])
+		if remaining == 0:
+			# Disable passkey auth method
+			auth_method = "password_mfa" if user["otp_enabled"] else "password"
+			update_user_auth_method(conn, user["id"], auth_method, passkey_enabled=False)
 
 	_log.info(
 		"PASSKEY_DELETE user_id=%s passkey_id=%s remaining=%s",

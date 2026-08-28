@@ -185,10 +185,17 @@ class SQLiteService(RuntimeService):
         return checkpoint, closed_connections
 
     def _check_connectivity(self) -> bool:
-        """Synchronous connectivity check (runs in thread)."""
-        from ...db.sqlite_runtime import connect, close_connection
+        """Synchronous connectivity check (runs in thread).
 
-        conn = connect(self._db_path)
+        Uses a short-lived read-only connection with a small busy timeout so a
+        temporarily locked database cannot pin a threadpool worker for the full
+        30s busy_timeout of the shared connection factory (which is what the
+        5s health-check ``wait_for`` would otherwise leak on every check).
+        """
+        import sqlite3
+
+        uri = f"file:{self._db_path}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
         try:
             cursor = conn.execute("SELECT 1")
             try:
@@ -197,4 +204,4 @@ class SQLiteService(RuntimeService):
                 cursor.close()
             return result is not None and int(result[0]) == 1
         finally:
-            close_connection(conn)
+            conn.close()

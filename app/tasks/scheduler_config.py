@@ -19,7 +19,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..dns import unbound
 from . import scheduled as scheduled_tasks
-from .maintenance import cleanup_stale_sessions, sqlite_integrity_check, sqlite_maintenance, tsdb_retention_cleanup
+from .maintenance import (
+    cleanup_acked_node_commands,
+    cleanup_login_attempts,
+    cleanup_stale_sessions,
+    sqlite_integrity_check,
+    sqlite_maintenance,
+    tsdb_retention_cleanup,
+)
 from ..utils.conntrack import init_conntrack_accounting
 
 if TYPE_CHECKING:
@@ -269,6 +276,22 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
         func=cleanup_stale_sessions,
         run_on_start=True,
         initial_delay=120.0,
+        timeout=30.0
+    )
+    scheduler.add(
+        "login-attempts-cleanup",
+        interval_seconds=INTERVAL_HOURLY,
+        func=cleanup_login_attempts,
+        run_on_start=True,
+        initial_delay=150.0,
+        timeout=30.0
+    )
+    scheduler.add(
+        "node-commands-cleanup",
+        interval_seconds=INTERVAL_DAILY,
+        func=cleanup_acked_node_commands,
+        run_on_start=True,
+        initial_delay=180.0,
         timeout=30.0
     )
 

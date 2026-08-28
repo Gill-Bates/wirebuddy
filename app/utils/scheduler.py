@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
 import random
 import warnings
 from dataclasses import dataclass
@@ -106,6 +107,7 @@ class Scheduler:
 		Raises:
 			RuntimeError: If scheduler is already running
 			ValueError: If name is duplicate or interval/timing inputs are invalid
+				(non-finite values are rejected)
 			TypeError: If func is not callable
 		"""
 		if not callable(func):
@@ -119,13 +121,17 @@ class Scheduler:
 		if name in self._jobs:
 			raise ValueError(f"Job {name!r} is already registered")
 		
-		if interval_seconds < _MIN_INTERVAL:
+		# NaN fails every comparison below, so finiteness is checked first.
+		if not math.isfinite(interval_seconds) or interval_seconds < _MIN_INTERVAL:
 			raise ValueError(
-				f"interval_seconds must be ≥ {_MIN_INTERVAL}, got {interval_seconds}"
+				f"interval_seconds must be finite and ≥ {_MIN_INTERVAL}, got {interval_seconds}"
 			)
 		
-		if initial_delay < 0:
-			raise ValueError(f"initial_delay must be ≥ 0, got {initial_delay}")
+		if not math.isfinite(initial_delay) or initial_delay < 0:
+			raise ValueError(f"initial_delay must be finite and ≥ 0, got {initial_delay}")
+		
+		if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
+			raise ValueError(f"timeout must be finite and > 0, got {timeout}")
 		
 		if not 0.0 <= jitter_pct <= 0.5:
 			raise ValueError(f"jitter_pct must be between 0.0 and 0.5, got {jitter_pct}")

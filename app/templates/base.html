@@ -52,7 +52,7 @@
     {% if key_mismatch %}
     <div id="keyMismatchBanner" class="alert alert-danger mb-0 rounded-0 py-2" role="alert">
         <div class="container-fluid d-flex align-items-center justify-content-center gap-2">
-            <span class="material-icons text-danger">error</span>
+            <span class="material-icons text-danger" aria-hidden="true">error</span>
             <strong>Critical:</strong> WIREBUDDY_SECRET_KEY does not match the database encryption key. 
             WireGuard configurations cannot be decrypted. Please restart with the correct key.
         </div>
@@ -72,11 +72,11 @@
                     <span class="text-white navbar-user-label d-none d-lg-inline">{{ user['username'] | e }}</span>
                     <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn" id="themeToggle"
                         aria-label="Toggle theme">
-                        <span class="material-icons" id="theme-icon">dark_mode</span>
+                        <span class="material-icons" id="theme-icon" aria-hidden="true">dark_mode</span>
                     </button>
-                    <button class="btn btn-sm btn-outline-light d-inline-flex align-items-center navbar-logout-btn"
+                    <button type="button" class="btn btn-sm btn-outline-light d-inline-flex align-items-center navbar-logout-btn"
                         id="logoutBtn" title="Logout" aria-label="Logout">
-                        <span class="material-icons navbar-logout-icon">logout</span>
+                        <span class="material-icons navbar-logout-icon" aria-hidden="true">logout</span>
                         <span class="navbar-logout-label d-none d-lg-inline">Logout</span>
                     </button>
                 </div>
@@ -145,11 +145,16 @@
                 </div>
                 <div class="modal-body">
                     <div class="d-flex align-items-start gap-3">
-                        <span class="material-icons fs-3 wb-modal-icon" id="wbModalIcon">info</span>
+                        <span class="material-icons fs-3 wb-modal-icon" id="wbModalIcon" aria-hidden="true">info</span>
                         <div class="flex-grow-1">
                             <p class="mb-0" id="wbModalMessage" aria-live="polite"></p>
+                            {# modal.js rewrites the label text per prompt so the
+                               field always has a name that matches what is asked. #}
                             <div class="mt-3 d-none" id="wbModalInputWrap">
-                                <input type="text" class="form-control" id="wbModalInput">
+                                <label for="wbModalInput" id="wbModalInputLabel"
+                                    class="visually-hidden">Value</label>
+                                <input type="text" class="form-control" id="wbModalInput"
+                                    aria-describedby="wbModalMessage">
                             </div>
                         </div>
                     </div>
@@ -175,7 +180,7 @@
                             <h5 id="wbReconnectTitle" class="mb-2">Connection Lost</h5>
                             <p aria-live="assertive" aria-atomic="true" class="text-muted small mb-3">Trying to reconnect to the server...</p>
                             <div class="mt-3 d-none" id="wbReconnectFailsafeWrap">
-                                <button class="btn btn-sm btn-outline-secondary" id="wbReconnectReload">Reload Page</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" id="wbReconnectReload">Reload Page</button>
                             </div>
                         </div>
                     </div>

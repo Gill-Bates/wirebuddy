@@ -1,10 +1,10 @@
-Die Kritik ist korrekt. Die letzte echte Inkonsistenz ist die Selbst-Duplizierung in den drei Gate-Listen. Ich würde sie so entkoppeln:
+The criticism is correct. The last real inconsistency is self-duplication in the three gate lists. I would decouple them as follows:
 
-* **Step 2:** Nur klären, ob es überhaupt duplicated knowledge ist.
-* **Step 3:** Nur klären, ob eine gemeinsame Implementierung verhaltensgleich wäre.
-* **Safety Rules:** Nur klären, ob die konkrete Extraktion sicher und klein genug ist.
+* **Step 2:** Only determine whether it is duplicated knowledge at all.
+* **Step 3:** Only determine whether a shared implementation would preserve behavior.
+* **Safety Rules:** Only determine whether the concrete extraction is safe and small enough.
 
-Zusätzlich: volles Format für alle Findings mit Refactor-Empfehlung, Null-Findings-Regel, kompakte Formate für Incomplete/Partial/Similar.
+Additionally: use the full format for all findings with a refactor recommendation, apply the zero-findings rule, and use compact formats for Incomplete/Partial/Similar.
 
 # Safe DRY Analysis Agent
 

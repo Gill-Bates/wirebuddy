@@ -15,7 +15,7 @@
         ('special', 'Special character'),
         ('strength', 'At least 3 of the above categories'),
     ] %}
-    <div class="req" data-req="{{ req }}"><span class="material-icons">radio_button_unchecked</span> {{ label }}</div>
+    <div class="req" data-req="{{ req }}"><span class="material-icons" aria-hidden="true">radio_button_unchecked</span> {{ label }}</div>
     {% endfor %}
 </div>
 {%- endmacro %}
@@ -29,8 +29,8 @@
 <div class="container-fluid wb-page">
 <div class="wb-page-header">
     <h1 class="page-title"><span class="material-icons me-2" aria-hidden="true">people</span>User Management</h1>
-    <button class="btn btn-primary users-add-btn" data-bs-toggle="modal" data-bs-target="#addUserModal">
-        <span class="material-icons me-2">person_add</span>
+    <button type="button" class="btn btn-primary users-add-btn" data-bs-toggle="modal" data-bs-target="#addUserModal">
+        <span class="material-icons me-2" aria-hidden="true">person_add</span>
         Add User
     </button>
 </div>
@@ -299,7 +299,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="otpSettingsModalTitle">
-                    <span class="material-icons align-middle me-2">security</span>
+                    <span class="material-icons align-middle me-2" aria-hidden="true">security</span>
                     OTP Settings
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -319,7 +319,7 @@
                 <div id="otp-action-section">
                     <p class="text-muted" id="otp-action-help">Enable or disable two-factor authentication for this user.</p>
                     <button type="button" class="btn w-100" id="otp-toggle-btn">
-                        <span class="material-icons align-middle me-1" id="otp-toggle-icon">security</span>
+                        <span class="material-icons align-middle me-1" id="otp-toggle-icon" aria-hidden="true">security</span>
                         <span id="otp-toggle-label">Toggle OTP</span>
                     </button>
                 </div>
@@ -337,7 +337,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="passkeySettingsModalTitle">
-                    <span class="material-icons align-middle me-2">fingerprint</span>
+                    <span class="material-icons align-middle me-2" aria-hidden="true">fingerprint</span>
                     Passkey Settings
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -384,7 +384,7 @@
                             <small class="text-muted">A friendly name to identify this passkey</small>
                         </div>
                         <button type="button" class="btn btn-primary w-100" id="passkey-register-btn">
-                            <span class="material-icons align-middle me-1">add</span>
+                            <span class="material-icons align-middle me-1" aria-hidden="true">add</span>
                             Add Passkey
                         </button>
                     </div>
@@ -392,7 +392,7 @@
                     <!-- Admin reset button (only for other users) -->
                     <div id="passkey-admin-section" class="mt-3 pt-3 border-top d-none">
                         <button type="button" class="btn btn-outline-danger w-100" id="passkey-reset-btn">
-                            <span class="material-icons align-middle me-1">restart_alt</span>
+                            <span class="material-icons align-middle me-1" aria-hidden="true">restart_alt</span>
                             Reset All Passkeys
                         </button>
                         <small class="text-muted d-block mt-1">Remove all passkeys for this user (admin action)</small>

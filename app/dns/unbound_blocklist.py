@@ -622,6 +622,7 @@ async def update_blocklists(
 	if not safe_sources:
 		return 0, "No valid blocklist URLs provided"
 	loaded_any = False
+	failed_sources: list[str] = []
 
 	async with httpx.AsyncClient(
 		timeout=30,
@@ -670,10 +671,26 @@ async def update_blocklists(
 						await asyncio.sleep(wait)
 					else:
 						_log.warning("DNS_BLOCKLIST failed to load %s: %s", url, e)
+						failed_sources.append(blocklist_id)
 	if not loaded_any:
 		return 0, "No blocklist could be downloaded; existing blocklist kept"
 	if not domain_tags:
 		return 0, "Downloaded blocklists contained no domains; existing blocklist kept"
+	if failed_sources:
+		# A source that failed to download is NOT the same as one that hit
+		# BLOCKLIST_MAX_DOMAINS (a deliberate, admin-configurable cap that
+		# would otherwise permanently block every future update once
+		# reached). Publishing here would silently drop every domain that
+		# only existed in the failed source(s), so keep the existing file
+		# and retry on the next scheduled update instead.
+		_log.error(
+			"DNS_BLOCKLIST update incomplete; existing blocklist retained (failed sources: %s)",
+			", ".join(failed_sources),
+		)
+		return (
+			await asyncio.to_thread(get_blocklist_count),
+			f"Blocklist update incomplete (failed: {', '.join(failed_sources)}); existing list retained",
+		)
 
 	# --- Apply custom rules (AdGuard syntax) ---
 	custom_added: set[str] = set()
@@ -784,8 +801,18 @@ def get_blocklist_source_counts() -> dict[str, int]:
 
 
 def _load_blocked_domains() -> frozenset[str]:
-	"""Load the set of blocked domains for fast lookup."""
+	"""Load the set of blocked domains for fast lookup.
+
+	A transient read/stat failure must not fail open: it keeps serving the
+	last-known-good cached set (if one exists) instead of an empty set, which
+	would silently let every domain through. Only a genuinely empty/never-
+	loaded blocklist returns empty.
+	"""
 	global _BLOCKED_DOMAINS_CACHE_ENTRY
+
+	# Snapshot the cache entry once up front: used both as the TOCTOU-safe
+	# comparison baseline below and as the fallback on any failure path.
+	entry = _BLOCKED_DOMAINS_CACHE_ENTRY
 
 	blocklist_path = get_blocklist_file()
 	blocked: set[str] = set()
@@ -796,11 +823,12 @@ def _load_blocked_domains() -> frozenset[str]:
 	try:
 		mtime_ns = blocklist_path.stat().st_mtime_ns
 	except OSError:
+		if entry is not None:
+			_log.warning("Failed to stat blocklist file, serving cached domain set", exc_info=True)
+			return entry[0]
+		_log.warning("Failed to stat blocklist file and no cached domain set exists", exc_info=True)
 		return frozenset()
 
-	# Snapshot cache entry to prevent TOCTOU race if another thread invalidates
-	# the cache between the None check and the index access.
-	entry = _BLOCKED_DOMAINS_CACHE_ENTRY
 	if entry is not None and entry[1] == mtime_ns:
 		return entry[0]
 
@@ -819,6 +847,9 @@ def _load_blocked_domains() -> frozenset[str]:
 			# Cache against the file we actually read (avoids stat/open replacement race)
 			read_mtime_ns = os.fstat(f.fileno()).st_mtime_ns
 	except Exception:
+		if entry is not None:
+			_log.warning("Failed to load blocked domains from blocklist, serving cached domain set", exc_info=True)
+			return entry[0]
 		_log.debug("Failed to load blocked domains from blocklist", exc_info=True)
 		return frozenset()
 	cached = frozenset(blocked)

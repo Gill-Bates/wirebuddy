@@ -14,7 +14,8 @@ from typing import Any, Iterable
 def build_latest_by_node(points: Iterable[Any]) -> dict[str | None, dict]:
 	"""Build node_id -> latest speedtest record mapping from TSDB points.
 
-	Later points overwrite earlier ones to keep the newest record per node.
+	Expects the chronologically sorted output of :func:`app.db.tsdb.query`, so
+	later points overwrite earlier ones to keep the newest record per node.
 	node_id is None for master speedtests.
 	"""
 	latest_by_node: dict[str | None, dict] = {}  # None = master
@@ -24,8 +25,10 @@ def build_latest_by_node(points: Iterable[Any]) -> dict[str | None, dict]:
 		if not isinstance(val, dict) or ts is None:
 			continue
 		node_id = val.get("node_id")
+		# The point timestamp wins: a node reports its own "ts" inside the
+		# value, and its clock is not authoritative for when we recorded it.
 		latest_by_node[node_id] = {
-			"ts": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
 			**val,
+			"ts": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
 		}
 	return latest_by_node

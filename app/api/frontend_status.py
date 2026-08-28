@@ -199,7 +199,14 @@ def _pick_forwarded_client_ip(
 	x_forwarded_for: str,
 	trusted_proxies: set[str],
 ) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
-	"""Return nearest untrusted client IP from X-Forwarded-For chain."""
+	"""Return nearest untrusted client IP from X-Forwarded-For chain.
+
+	A hop is skipped when it is either listed in ``trusted_proxies`` (the
+	string form of the current socket peer) or matches the same CIDR trust
+	rules used for the socket hop. Comparing only against the socket peer would
+	stop at the first internal proxy in a multi-proxy chain and report that
+	proxy as the client.
+	"""
 	if not x_forwarded_for:
 		return None
 	chain: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
@@ -208,8 +215,11 @@ def _pick_forwarded_client_ip(
 		if ip_obj is not None:
 			chain.append(ip_obj)
 	for ip_obj in reversed(chain):
-		if str(ip_obj) not in trusted_proxies:
-			return ip_obj
+		if str(ip_obj) in trusted_proxies:
+			continue
+		if _is_trusted_status_proxy_hop(ip_obj):
+			continue
+		return ip_obj
 	return None
 
 

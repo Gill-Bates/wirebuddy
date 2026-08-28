@@ -1,5 +1,5 @@
 /*
- * app/static/css/passkey-setup.css
+ * app/static/css/pages/passkey-setup.css
  * Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
  */
 
@@ -34,4 +34,10 @@
     font-size: 20px;
     flex-shrink: 0;
     margin-top: 2px;
+}
+
+/* Success icon: was an inline style attribute, which a strict style-src-attr
+   CSP would block. */
+.passkey-success-icon {
+    font-size: 64px;
 }

@@ -212,7 +212,13 @@ async def _run_in_threadpool_with_timeout(
 	*args: Any,
 	**kwargs: Any,
 ) -> Any:
-	"""Run blocking work in the threadpool with a bounded deadline."""
+	"""Run blocking work in the threadpool with a bounded deadline.
+
+	WARNING: the deadline only abandons the await - it cannot cancel the
+	worker thread. Use this for read-only work only. For mutations, a timeout
+	would report failure (504) while the write still lands afterwards, and
+	would release any lease held around the call.
+	"""
 	async with asyncio.timeout(timeout_seconds):
 		return await run_in_threadpool(func, *args, **kwargs)
 
@@ -345,15 +351,14 @@ async def update_speedtest_settings(
 	"""Update speedtest settings (admin only)."""
 	_ = request
 	try:
-		result = await _run_in_threadpool_with_timeout(
-			SPEEDTEST_SQLITE_TIMEOUT_SECONDS,
+		# Mutation: awaited without a deadline so a 504 can never be returned
+		# for a write that still commits afterwards. SQLite's own busy timeout
+		# bounds this call.
+		result = await run_in_threadpool(
 			_update_speedtest_settings_sync,
 			conn,
 			payload.enabled,
 		)
-	except TimeoutError:
-		_log.warning("SPEEDTEST_SETTINGS_UPDATE_TIMEOUT")
-		raise HTTPException(status_code=504, detail="Timed out updating speedtest settings") from None
 	except ValueError as exc:
 		raise HTTPException(status_code=422, detail=str(exc)) from None
 	except (sqlite3.OperationalError, sqlite3.IntegrityError):
@@ -713,15 +718,15 @@ async def update_speedtest_retention(
 	_ = request
 	days = payload.retention_days
 	try:
-		result_days = await _run_in_threadpool_with_timeout(
-			SPEEDTEST_SQLITE_TIMEOUT_SECONDS,
+		# Mutation: see _update_speedtest_settings_sync above.
+		result_days = await run_in_threadpool(
 			_update_speedtest_retention_sync,
 			conn,
 			days,
 		)
-	except TimeoutError:
-		_log.warning("SPEEDTEST_RETENTION_UPDATE_TIMEOUT")
-		raise HTTPException(status_code=504, detail="Timed out updating speedtest retention") from None
+	except sqlite3.OperationalError:
+		_log.exception("SPEEDTEST_RETENTION_UPDATE_FAILED")
+		raise HTTPException(status_code=500, detail="Failed to persist speedtest retention") from None
 	return ok_response(data={
 		"retention_days": result_days,
 	})
@@ -744,16 +749,15 @@ async def purge_speedtest_data(
 	# Use async context manager for consistent lease handling
 	async with lease:
 		try:
-			deleted_bytes = await _run_in_threadpool_with_timeout(
-				SPEEDTEST_TSDB_TIMEOUT_SECONDS,
+			# Awaited without a deadline on purpose: the timeout only abandons
+			# the await, it cannot cancel the thread. Returning 504 here would
+			# release the speedtest lease while the deletion is still running.
+			deleted_bytes = await run_in_threadpool(
 				tsdb.purge_synthetic_data,
 				cfg.tsdb_dir,
 				SPEEDTEST_TSDB_KEY,
 				force=True,
 			)
-		except TimeoutError:
-			_log.warning("SPEEDTEST_STORAGE_PURGE_TIMEOUT")
-			raise HTTPException(status_code=504, detail="Timed out deleting speedtest data") from None
 		except OSError as exc:
 			_log.warning("Failed to delete speedtest data: %s", exc)
 			raise HTTPException(status_code=500, detail="Failed to delete speedtest data") from None

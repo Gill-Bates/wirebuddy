@@ -119,21 +119,42 @@ def _require_self(user_id: int, current_user: sqlite3.Row) -> None:
 def _update_password_and_revoke_tokens(
     conn: sqlite3.Connection,
     user_id: int,
-    new_password: str,
+    new_password_hash: str,
     *,
     must_change_password: bool,
+    expected_hash: str | None = None,
 ) -> UpdateResult:
-    if not new_password:
-        raise ValueError("Password must not be blank")
+    """Persist an already-computed password hash and revoke active sessions.
 
-    cur = conn.execute(
-        """
-        UPDATE users
-        SET password_hash = ?, must_change_password = ?
-        WHERE id = ?
-        """,
-        (hash_password(new_password), int(must_change_password), user_id),
-    )
+    Takes the finished hash rather than the plaintext: hashing is deliberately
+    expensive and must not run inside the write transaction, where it would
+    hold the SQLite writer lock against every other request.
+
+    If ``expected_hash`` is given the update is conditional on the stored hash
+    still matching, so a concurrent password change is detected instead of
+    being silently overwritten.
+    """
+    if not new_password_hash:
+        raise ValueError("Password hash must not be blank")
+
+    if expected_hash is None:
+        cur = conn.execute(
+            """
+            UPDATE users
+            SET password_hash = ?, must_change_password = ?
+            WHERE id = ?
+            """,
+            (new_password_hash, int(must_change_password), user_id),
+        )
+    else:
+        cur = conn.execute(
+            """
+            UPDATE users
+            SET password_hash = ?, must_change_password = ?
+            WHERE id = ? AND password_hash = ?
+            """,
+            (new_password_hash, int(must_change_password), user_id, expected_hash),
+        )
     if cur.rowcount == 0:
         return UpdateResult.NOT_FOUND
 
@@ -297,18 +318,27 @@ def change_password(
     if current_user["id"] != user_id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    # Verify and hash outside the write transaction: both are intentionally
+    # slow, and doing them under BEGIN IMMEDIATE blocks every other writer.
+    user = _get_user_or_404(conn, user_id)
+    current_hash = str(user["password_hash"])
+    if not verify_password(payload.current_password, current_hash):
+        raise HTTPException(status_code=422, detail="Current password incorrect")
+    new_hash = hash_password(payload.new_password)
+
     with transaction(conn, immediate=True):
-        user = _get_user_or_404(conn, user_id)
-        if not verify_password(payload.current_password, user["password_hash"]):
-            raise HTTPException(status_code=422, detail="Current password incorrect")
         result = _update_password_and_revoke_tokens(
             conn,
             user_id,
-            payload.new_password,
+            new_hash,
             must_change_password=False,
+            expected_hash=current_hash,
         )
         if result == UpdateResult.NOT_FOUND:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(
+                status_code=409,
+                detail="Password was changed concurrently; please retry",
+            )
 
     logger.info("PASSWORD_CHANGED user_id=%d by_user=%d", user_id, current_user["id"])
     release_bootstrap_gate = getattr(request.app.state, "bootstrap_gate_release", None)
@@ -337,21 +367,29 @@ def complete_required_password_change(
         raise HTTPException(status_code=403, detail="No password change is required")
 
     user_id = current_user["id"]
+    # Verify/hash before opening the write transaction (see change_password).
+    user = _get_user_or_404(conn, user_id)
+    current_hash = str(user["password_hash"])
+    if verify_password(payload.new_password, current_hash):
+        raise HTTPException(
+            status_code=422,
+            detail="New password must be different from the temporary password",
+        )
+    new_hash = hash_password(payload.new_password)
+
     with transaction(conn, immediate=True):
-        user = _get_user_or_404(conn, user_id)
-        if verify_password(payload.new_password, user["password_hash"]):
-            raise HTTPException(
-                status_code=422,
-                detail="New password must be different from the temporary password",
-            )
         result = _update_password_and_revoke_tokens(
             conn,
             user_id,
-            payload.new_password,
+            new_hash,
             must_change_password=False,
+            expected_hash=current_hash,
         )
         if result == UpdateResult.NOT_FOUND:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(
+                status_code=409,
+                detail="Password was changed concurrently; please retry",
+            )
 
     logger.info("PASSWORD_CHANGED user_id=%d (required change completed)", user_id)
     release_bootstrap_gate = getattr(request.app.state, "bootstrap_gate_release", None)
@@ -373,12 +411,15 @@ def reset_password(
     if current_user["id"] == user_id:
         raise HTTPException(status_code=400, detail="Use change-password for your own account")
 
+    _get_user_or_404(conn, user_id)
+    # Hash before the write transaction (see change_password).
+    new_hash = hash_password(payload.new_password)
+
     with transaction(conn, immediate=True):
-        _get_user_or_404(conn, user_id)
         result = _update_password_and_revoke_tokens(
             conn,
             user_id,
-            payload.new_password,
+            new_hash,
             must_change_password=True,
         )
         if result == UpdateResult.NOT_FOUND:

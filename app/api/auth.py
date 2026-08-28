@@ -55,6 +55,7 @@ from ..models.users import (
 	OTPConfirmRequest,
 	RecoveryDownloadRequest,
 )
+from ..db.sqlite_settings import get_gui_https_enabled
 from ..utils.coerce import coerce_db_bool
 from ..utils.crypto import DUMMY_PASSWORD_HASH, generate_token_expiry, new_token, verify_password
 from ..utils.deps import get_conn
@@ -291,6 +292,36 @@ def _is_https(request: Request) -> bool:
 	return False
 
 
+def _enforce_https_transport(conn: sqlite3.Connection, request: Request, context: str) -> bool:
+	"""Reject plaintext transport when the GUI is configured for HTTPS.
+
+	Returns the detected HTTPS state so callers can reuse it for cookie flags.
+	When HTTPS is off, plain-HTTP deployments keep working and only get a
+	warning, matching the historical behaviour.
+	"""
+	try:
+		is_https = _is_https(request)
+	except HTTPException:
+		# Client IP undeterminable -> cannot prove a secure transport.
+		is_https = False
+
+	if is_https:
+		return True
+
+	if get_gui_https_enabled(conn):
+		_log.warning("HTTPS_REQUIRED_REJECTED context=%s", context)
+		raise HTTPException(
+			status_code=400,
+			detail="This server requires HTTPS for authentication. Contact your administrator.",
+		)
+
+	_log.warning(
+		"INSECURE_TRANSPORT context=%s - session cookie sent without Secure flag",
+		context,
+	)
+	return False
+
+
 # ---------------------------------------------------------------------------
 # Authentication Dependencies
 # ---------------------------------------------------------------------------
@@ -503,6 +534,7 @@ def _issue_session(
 
 	Returns (token, expires_at).
 	"""
+	is_https = _enforce_https_transport(conn, request, context="session issuance")
 	now = datetime.now(timezone.utc)
 	token = new_token()
 	expires_at, max_expires_at = generate_token_expiry(now=now)
@@ -516,7 +548,7 @@ def _issue_session(
 		key=_AUTH_COOKIE,
 		value=token,
 		httponly=True,
-		secure=_is_https(request),
+		secure=is_https,
 		samesite="lax",  # Allow cross-site navigation for passkey/WebAuthn flows
 		max_age=max_age,
 		path="/",
@@ -555,7 +587,11 @@ def login(
 	if not user or not password_valid or not coerce_db_bool(user["is_active"]):
 		_record_failed_and_raise(conn, client_ip, log_username, payload.username)
 
-	clear_login_attempts(conn, client_ip, payload.username)
+	# NOTE: login attempts are intentionally NOT cleared here. Clearing them
+	# after only the password factor would let an attacker who knows the
+	# password reset the MFA brute-force counter at will by re-running the
+	# password step between OTP guesses. The counter is cleared once
+	# authentication is fully complete (below, and in the MFA success path).
 
 	# Check if OTP is fully enabled -> require MFA
 	if coerce_db_bool(user["otp_enabled"]):
@@ -569,6 +605,7 @@ def login(
 		)
 
 	token, expires_at = _issue_session(conn, request, response, user["id"], client_ip)
+	clear_login_attempts(conn, client_ip, payload.username)
 
 	_log.info("LOGIN_SUCCESS ip=%s username=%s", client_ip, log_username)
 	data = _build_login_response_data(token, expires_at, user, client_ip, log_username, include_otp_pending=True)

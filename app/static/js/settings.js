@@ -24,12 +24,6 @@ void (async function () {
         return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
     }
 
-    function esc(value) {
-        const node = document.createElement('div');
-        node.textContent = value ?? '';
-        return node.innerHTML;
-    }
-
     function detectHostname() {
         const hostname = window.location.hostname;
         if (!hostname) {
@@ -215,6 +209,11 @@ void (async function () {
                 localhostToggle.checked = toBool(settings.gui_localhost_only);
             }
 
+            const guiHttpsToggle = document.getElementById('gui-https-enabled');
+            if (guiHttpsToggle) {
+                guiHttpsToggle.checked = toBool(settings.gui_https_enabled);
+            }
+
             const pskToggle = document.getElementById('wg-use-psk');
             if (pskToggle) {
                 pskToggle.checked = toBool(settings.wg_use_psk);
@@ -227,13 +226,11 @@ void (async function () {
             const statusToggle = document.getElementById('enable-status-page');
             if (statusToggle) {
                 statusToggle.checked = toBool(settings.enable_status_page);
-                statusToggle.offsetHeight;
             }
 
             const swaggerToggle = document.getElementById('enable-swagger');
             if (swaggerToggle) {
                 swaggerToggle.checked = toBool(settings.enable_swagger);
-                swaggerToggle.offsetHeight;
             }
 
             updateStatusPageUrlPreview();
@@ -366,18 +363,14 @@ void (async function () {
         feedback.textContent = message;
     }
 
-    let lastSavedCustomPsk = null;
     let cachedMaskedPsk = '';
-    let cachedRevealedPsk = '';
 
     function hidePskValue() {
         const display = document.getElementById('wg-psk-display');
         const icon = document.querySelector('#psk-toggle-visibility .material-icons');
 
         if (display) {
-            if (cachedMaskedPsk) {
-                display.value = cachedMaskedPsk;
-            }
+            display.value = cachedMaskedPsk;
             display.type = 'password';
         }
 
@@ -385,7 +378,6 @@ void (async function () {
             icon.textContent = 'visibility';
         }
 
-        cachedRevealedPsk = '';
     }
 
     async function saveCustomPsk(rawValue, options = {}) {
@@ -398,10 +390,6 @@ void (async function () {
             }
             return false;
         }
-        if (lastSavedCustomPsk && psk === lastSavedCustomPsk) {
-            setPskValidationState(false);
-            return true;
-        }
         try {
             const res = await api('PUT', '/api/wireguard/settings/psk', { psk });
             const display = document.getElementById('wg-psk-display');
@@ -410,9 +398,7 @@ void (async function () {
                 display.value = maskedValue;
                 display.type = 'password';
             }
-            lastSavedCustomPsk = psk;
             cachedMaskedPsk = maskedValue;
-            cachedRevealedPsk = '';
             setPskValidationState(false);
             if (!silentSuccess) {
                 wbToast('PresharedKey saved', 'success');
@@ -436,7 +422,6 @@ void (async function () {
                 display.type = 'password';
             }
             cachedMaskedPsk = maskedValue;
-            cachedRevealedPsk = '';
             setPskValidationState(false);
         } catch (error) {
             console.warn('Failed to load PSK:', error.message);
@@ -557,6 +542,10 @@ void (async function () {
         const localhostToggle = document.getElementById('gui-localhost-only');
         if (localhostToggle && includeField('gui_localhost_only')) payload.gui_localhost_only = localhostToggle.checked ? '1' : '0';
 
+        // Include built-in HTTPS listener toggle state
+        const guiHttpsToggle = document.getElementById('gui-https-enabled');
+        if (guiHttpsToggle && includeField('gui_https_enabled')) payload.gui_https_enabled = guiHttpsToggle.checked ? '1' : '0';
+
         // Include PSK toggle state
         const pskToggle = document.getElementById('wg-use-psk');
         if (pskToggle && includeField('wg_use_psk')) payload.wg_use_psk = pskToggle.checked ? '1' : '0';
@@ -622,7 +611,6 @@ void (async function () {
 
     function handlePageHide(event) {
         clearTimeout(wgSettingsSaveTimeout);
-        clearTimeout(pskSaveTimeout);
         clearTimeout(blocklistSaveTimeout);
         clearTimeout(dnsConfigSaveTimeout);
         cancelRebuildPoll();
@@ -662,7 +650,6 @@ void (async function () {
                             display.value = maskedValue;
                             display.type = 'password';
                             cachedMaskedPsk = maskedValue;
-                            cachedRevealedPsk = '';
                             wbToast('PresharedKey generated', 'success');
                         }
                     } catch (err) {
@@ -695,11 +682,10 @@ void (async function () {
 
             if (display.type === 'password') {
                 try {
-                    if (!cachedRevealedPsk) {
-                        const res = await api('POST', '/api/wireguard/settings/psk/reveal');
-                        cachedRevealedPsk = res.key || res.data?.key || '';
-                    }
-                    display.value = cachedRevealedPsk || display.value;
+                    const res = await api('POST', '/api/wireguard/settings/psk/reveal');
+                    const revealedKey = res.key || res.data?.key || '';
+                    if (!revealedKey) throw new Error('Empty PSK response');
+                    display.value = revealedKey;
                     display.type = 'text';
                     setPskValidationState(false);
                     if (icon) {
@@ -741,6 +727,7 @@ void (async function () {
 
             try {
                 await navigator.clipboard.writeText(keyToCopy);
+                keyToCopy = '';
                 wbToast('PresharedKey copied to clipboard', 'success');
             } catch (e) {
                 wbToast('Failed to copy to clipboard', 'danger');
@@ -762,6 +749,7 @@ void (async function () {
     const pskGenBtn = document.getElementById('psk-generate-btn');
     if (pskGenBtn) {
         pskGenBtn.addEventListener('click', async function () {
+            if (!requireAdminAction()) return;
             if (!await wbConfirm(
                 'Generate a new PresharedKey? Existing client configurations will need to be re-downloaded.',
                 'warning'
@@ -776,7 +764,6 @@ void (async function () {
                 display.value = maskedValue;
                 display.type = 'password';
                 cachedMaskedPsk = maskedValue;
-                cachedRevealedPsk = '';
                 setPskValidationState(false);
                 wbToast('New PresharedKey generated', 'success');
             } catch (err) {
@@ -785,14 +772,11 @@ void (async function () {
         });
     }
 
-    // PSK autosave for custom input (validated)
-    let pskSaveTimeout = null;
+    // PSK custom input is saved explicitly so typing never writes a secret to
+    // the backend without an intentional user action.
     const pskDisplayInput = document.getElementById('wg-psk-display');
     if (pskDisplayInput) {
         pskDisplayInput.addEventListener('input', function () {
-            const pskToggleInput = document.getElementById('wg-use-psk');
-            if (!pskToggleInput?.checked) return;
-
             const candidate = this.value.trim();
             if (!candidate || isMaskedPskValue(candidate)) {
                 setPskValidationState(false);
@@ -800,25 +784,19 @@ void (async function () {
             }
 
             setPskValidationState(!isValidWgPsk(candidate));
-
-            clearTimeout(pskSaveTimeout);
-            pskSaveTimeout = setTimeout(async () => {
-                await saveCustomPsk(candidate, { silentSuccess: false, silentInvalid: true });
-            }, 800);
         });
+    }
 
-        pskDisplayInput.addEventListener('blur', async function () {
-            const pskToggleInput = document.getElementById('wg-use-psk');
-            if (!pskToggleInput?.checked) return;
-
-            const candidate = this.value.trim();
-            if (!candidate || isMaskedPskValue(candidate)) {
-                setPskValidationState(false);
+    const pskSaveBtn = document.getElementById('psk-save-btn');
+    if (pskSaveBtn) {
+        pskSaveBtn.addEventListener('click', async () => {
+            if (!requireAdminAction() || !pskDisplayInput) return;
+            const candidate = pskDisplayInput.value.trim();
+            if (pskDisplayInput.type === 'password' || isMaskedPskValue(candidate)) {
+                wbToast('Reveal or enter a complete PSK before saving', 'warning');
                 return;
             }
-
-            clearTimeout(pskSaveTimeout);
-            await saveCustomPsk(candidate, { silentSuccess: false, silentInvalid: true });
+            await saveCustomPsk(candidate);
         });
     }
 
@@ -852,6 +830,20 @@ void (async function () {
     }
     if (guiLocalhostOnly) {
         guiLocalhostOnly.addEventListener('change', () => saveWgSettings({ fields: ['gui_localhost_only'] }));
+    }
+    const guiHttpsEnabled = document.getElementById('gui-https-enabled');
+    if (guiHttpsEnabled) {
+        guiHttpsEnabled.addEventListener('change', async () => {
+            const ok = await saveWgSettings({ fields: ['gui_https_enabled'] });
+            if (ok !== false) {
+                wbToast(
+                    guiHttpsEnabled.checked
+                        ? 'HTTPS enabled. Restart WireBuddy to start the TLS listener.'
+                        : 'HTTPS disabled. Restart WireBuddy to return to plain HTTP.',
+                    'info'
+                );
+            }
+        });
     }
     if (wgMtu) wgMtu.addEventListener('change', saveWgSettingsDebounced);
     if (wgKeepalive) wgKeepalive.addEventListener('change', saveWgSettingsDebounced);
@@ -1077,16 +1069,20 @@ void (async function () {
         bindOnce(dnsRestartBtn, 'click', () => dnsServiceAction('restart'));
     }
 
-    const requestCertificateBtn = document.getElementById('btn-request-certificate');
-    if (requestCertificateBtn) {
-        bindOnce(requestCertificateBtn, 'click', () => {
+    const certForm = document.getElementById('cert-form');
+    if (certForm) {
+        bindOnce(certForm, 'submit', (event) => {
+            event.preventDefault();
+            if (!certForm.reportValidity()) return;
             void requestCertificate();
         });
     }
 
-    const ifaceSubmitBtn = document.getElementById('btn-iface-submit');
-    if (ifaceSubmitBtn) {
-        bindOnce(ifaceSubmitBtn, 'click', () => {
+    const ifaceForm = document.getElementById('iface-form');
+    if (ifaceForm) {
+        bindOnce(ifaceForm, 'submit', (event) => {
+            event.preventDefault();
+            if (!ifaceForm.reportValidity()) return;
             void submitInterfaceForm();
         });
     }
@@ -1118,7 +1114,6 @@ void (async function () {
         const address6Input = document.getElementById('iface-address6');
         const portInput = document.getElementById('iface-port');
         const dnsInput = document.getElementById('iface-dns');
-        const wbDnsToggle = document.getElementById('iface-use-wb-dns');
         const showOnDashboardToggle = document.getElementById('iface-show-on-dashboard');
         const form = document.getElementById('iface-form');
 
@@ -1152,7 +1147,6 @@ void (async function () {
             dnsInput.value = interfaceDefaults.dns;
             dnsInput.readOnly = false;
         }
-        if (wbDnsToggle) wbDnsToggle.checked = false;
         if (showOnDashboardToggle) showOnDashboardToggle.checked = true;  // Default to showing on dashboard
     }
 
@@ -1179,54 +1173,68 @@ void (async function () {
                     }
                 }
             } else {
-                // Fallback to HTML strings
-                let html = '';
+                // Safe fallback for an unavailable component bundle. Keep this
+                // DOM-based as well: interface names and API errors are data.
+                const fallbackFragment = document.createDocumentFragment();
                 for (const iface of res.interfaces) {
-                    const safeName = esc(iface.name);
-                    const dataName = esc(iface.name).replace(/"/g, '&quot;');
-                    const statusBadge = iface.is_active
-                        ? '<span class="badge bg-success">Active</span>'
-                        : '<span class="badge bg-secondary">Inactive</span>';
-
-                    // Button states
                     const isActive = !!iface.is_active;
                     const isConfigured = !!(iface.is_configured ?? (iface.in_database || iface.has_config_file));
 
-                    // Action buttons - disabled for non-admins or based on state
-                    const startDisabled = !isAdmin || isActive;
-                    const stopDisabled = !isAdmin || !isActive;
-                    const restartDisabled = !isAdmin || !isActive;
-                    const deleteDisabled = !isAdmin || isActive;
+                    const row = document.createElement('div');
+                    row.className = 'settings-interface-row';
+                    const info = document.createElement('div');
+                    const nameEl = document.createElement('strong');
+                    nameEl.textContent = String(iface.name || '');
+                    const status = document.createElement('span');
+                    status.className = 'ms-2';
+                    const statusBadge = document.createElement('span');
+                    statusBadge.className = `badge ${isActive ? 'bg-success' : 'bg-secondary'}`;
+                    statusBadge.textContent = isActive ? 'Active' : 'Inactive';
+                    status.appendChild(statusBadge);
+                    info.append(nameEl, status);
 
-                    // Start: only enabled if admin and not active
-                    const startBtn = `<button class="btn btn-sm btn-outline-success text-nowrap iface-action-btn" data-iface="${dataName}" data-action="up" title="${!isAdmin ? 'Admin privileges required' : 'Start'}" aria-label="Start"${startDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">play_arrow</span></button>`;
-                    // Stop: only enabled if admin and active
-                    const stopBtn = `<button class="btn btn-sm btn-outline-danger text-nowrap iface-action-btn" data-iface="${dataName}" data-action="down" title="${!isAdmin ? 'Admin privileges required' : 'Stop'}" aria-label="Stop"${stopDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">stop</span></button>`;
-                    // Restart: only enabled if admin and active
-                    const restartBtn = `<button class="btn btn-sm btn-outline-warning text-nowrap iface-action-btn" data-iface="${dataName}" data-action="restart" title="${!isAdmin ? 'Admin privileges required' : 'Restart'}" aria-label="Restart"${restartDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">restart_alt</span></button>`;
-                    // Delete: only enabled if admin and not active
-                    const deleteBtn = (isAdmin)
-                        ? `<button class="btn btn-sm btn-outline-danger text-nowrap iface-delete-btn" data-iface="${dataName}" title="Delete" aria-label="Delete"${deleteDisabled ? ' disabled' : ''}><span class="material-icons align-middle icon-md">delete</span></button>`
-                        : '';
-                    const editBtn = (isAdmin && isConfigured)
-                        ? `<button class="btn btn-sm btn-outline-secondary text-nowrap iface-edit-btn" data-iface="${dataName}" title="Edit" aria-label="Edit"><span class="material-icons align-middle icon-md">edit</span></button>`
-                        : '';
+                    const actions = document.createElement('div');
+                    actions.className = 'settings-interface-actions';
+                    const addAction = ({ action, icon, variant, label, disabled, className }) => {
+                        const button = document.createElement('button');
+                        button.type = 'button';
+                        button.className = `btn btn-sm btn-outline-${variant} text-nowrap ${className}`;
+                        button.dataset.iface = String(iface.name || '');
+                        if (action) button.dataset.action = action;
+                        button.title = label;
+                        button.setAttribute('aria-label', label);
+                        button.disabled = disabled;
+                        const iconEl = document.createElement('span');
+                        iconEl.className = 'material-icons align-middle icon-md';
+                        iconEl.setAttribute('aria-hidden', 'true');
+                        iconEl.textContent = icon;
+                        button.appendChild(iconEl);
+                        actions.appendChild(button);
+                    };
 
-                    html += `
-                        <div class="settings-interface-row">
-                            <div>
-                                <strong>${safeName}</strong>
-                                <span class="ms-2">${statusBadge}</span>
-                            </div>
-                            <div class="settings-interface-actions">${startBtn}${stopBtn}${restartBtn}${editBtn}${deleteBtn}</div>
-                        </div>`;
+                    addAction({ action: 'up', icon: 'play_arrow', variant: 'success', label: isAdmin ? 'Start' : 'Admin privileges required', disabled: !isAdmin || isActive, className: 'iface-action-btn' });
+                    addAction({ action: 'down', icon: 'stop', variant: 'danger', label: isAdmin ? 'Stop' : 'Admin privileges required', disabled: !isAdmin || !isActive, className: 'iface-action-btn' });
+                    addAction({ action: 'restart', icon: 'restart_alt', variant: 'warning', label: isAdmin ? 'Restart' : 'Admin privileges required', disabled: !isAdmin || !isActive, className: 'iface-action-btn' });
+                    if (isAdmin && isConfigured) {
+                        addAction({ icon: 'edit', variant: 'secondary', label: 'Edit', disabled: false, className: 'iface-edit-btn' });
+                    }
+                    if (isAdmin) {
+                        addAction({ icon: 'delete', variant: 'danger', label: 'Delete', disabled: isActive, className: 'iface-delete-btn' });
+                    }
+                    row.append(info, actions);
+                    fallbackFragment.appendChild(row);
                 }
-                if (!html) {
-                    html = isAdmin
-                        ? '<p class="text-muted mb-0">No WireGuard interfaces. Click <strong>+</strong> to create one.</p>'
-                        : '<p class="text-muted mb-0">No WireGuard interfaces configured.</p>';
+                listEl.replaceChildren();
+                if (res.interfaces.length) {
+                    listEl.appendChild(fallbackFragment);
+                } else {
+                    const empty = document.createElement('p');
+                    empty.className = 'text-muted mb-0';
+                    empty.textContent = isAdmin
+                        ? 'No WireGuard interfaces. Click + to create one.'
+                        : 'No WireGuard interfaces configured.';
+                    listEl.appendChild(empty);
                 }
-                listEl.innerHTML = html;
             }
 
             // Event delegation for interface buttons
@@ -1239,7 +1247,11 @@ void (async function () {
                 listEl.textContent = '';
                 listEl.appendChild(emptyState(`Failed to load interfaces: ${error.message}`, 'danger'));
             } else {
-                listEl.innerHTML = `<p class="text-danger mb-0">Failed to load interfaces: ${esc(error.message)}</p>`;
+                listEl.textContent = '';
+                const errorEl = document.createElement('p');
+                errorEl.className = 'text-danger mb-0';
+                errorEl.textContent = `Failed to load interfaces: ${error.message}`;
+                listEl.appendChild(errorEl);
             }
         }
     }
@@ -1295,6 +1307,7 @@ void (async function () {
         const portResult = parseOptionalInt(
             document.getElementById('iface-port').value.trim() || '51820', 1, 65535, 'Listen port');
         const dns = document.getElementById('iface-dns').value.trim() || null;
+        const showOnDashboard = document.getElementById('iface-show-on-dashboard')?.checked ?? true;
 
         if (!name || !address) {
             wbToast('Please fill in name and address', 'warning');
@@ -1330,7 +1343,8 @@ void (async function () {
                 address: address,
                 address6: address6,
                 listen_port: portResult.value,
-                dns: dns
+                dns: dns,
+                show_on_dashboard: showOnDashboard
             });
 
             document.activeElement?.blur();
@@ -1371,14 +1385,6 @@ void (async function () {
             if (showOnDashboardToggle) {
                 showOnDashboardToggle.checked = iface.show_on_dashboard !== false;
             }
-
-            // Optional WireBuddy DNS toggle (may not exist in all versions)
-            const serverIp = (iface.address || '').split('/')[0];
-            const wbDnsToggle = document.getElementById('iface-use-wb-dns');
-            const dnsInput = document.getElementById('iface-dns');
-            const isWireBuddyDns = Boolean(iface.dns) && iface.dns === serverIp;
-            if (wbDnsToggle) wbDnsToggle.checked = isWireBuddyDns;
-            if (dnsInput) dnsInput.readOnly = isWireBuddyDns;
 
             const modalEl = document.getElementById('ifaceModal');
             const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
@@ -1523,10 +1529,6 @@ void (async function () {
             ifaceModalReturnFocusEl = null;
         });
     }
-
-    document.getElementById('iface-use-frontend-port')?.addEventListener('change', function () {
-        toggleFrontendPortField(this.checked);
-    });
 
     // Interfaces are loaded by tab system (initTabs)
 
@@ -1745,10 +1747,13 @@ void (async function () {
                     updateBlocklistBtn.title = 'Unbound not installed';
                 }
                 if (saveCustomRulesBtn) {
-                    saveCustomRulesBtn.disabled = !isAdmin;
-                    saveCustomRulesBtn.title = isAdmin
-                        ? 'Unbound not installed: rules are saved but not applied'
-                        : 'Admin privileges required';
+                    saveCustomRulesBtn.disabled = !isAdmin || !customRulesLoaded;
+                    saveCustomRulesBtn.setAttribute('aria-disabled', String(saveCustomRulesBtn.disabled));
+                    saveCustomRulesBtn.title = !isAdmin
+                        ? 'Admin privileges required'
+                        : !customRulesLoaded
+                            ? 'Custom DNS rules are not loaded'
+                            : 'Unbound not installed: rules are saved but not applied';
                 }
                 if (customRulesInput) {
                     customRulesInput.disabled = false;
@@ -1763,8 +1768,11 @@ void (async function () {
                     updateBlocklistBtn.title = !isAdmin ? 'Admin privileges required' : '';
                 }
                 if (saveCustomRulesBtn) {
-                    saveCustomRulesBtn.disabled = !isAdmin;
-                    saveCustomRulesBtn.title = !isAdmin ? 'Admin privileges required' : '';
+                    saveCustomRulesBtn.disabled = !isAdmin || !customRulesLoaded;
+                    saveCustomRulesBtn.setAttribute('aria-disabled', String(saveCustomRulesBtn.disabled));
+                    saveCustomRulesBtn.title = !isAdmin
+                        ? 'Admin privileges required'
+                        : !customRulesLoaded ? 'Custom DNS rules are not loaded' : '';
                 }
                 if (customRulesInput) {
                     customRulesInput.disabled = false;
@@ -1825,10 +1833,8 @@ void (async function () {
 
     function scheduleRebuildPoll() {
         if (_rebuildPollTimer) return; // already polling
-        _rebuildPollCount = 0;
-        let inFlight = false;  // skip a tick while the previous request is still running
-        _rebuildPollTimer = setInterval(async () => {
-            if (inFlight) return;
+        const poll = async () => {
+            _rebuildPollTimer = null;
             if (pageAbortController.signal.aborted || document.visibilityState === 'hidden') {
                 cancelRebuildPoll();
                 return;
@@ -1838,18 +1844,18 @@ void (async function () {
                 cancelRebuildPoll();
                 return;
             }
-            inFlight = true;
             try {
                 await loadBlocklistSources();
-            } finally {
-                inFlight = false;
+            } catch (error) {
+                console.debug('Blocklist rebuild poll failed:', error);
             }
-        }, _REBUILD_POLL_INTERVAL);
+        };
+        _rebuildPollTimer = setTimeout(poll, _REBUILD_POLL_INTERVAL);
     }
 
     function cancelRebuildPoll() {
         if (_rebuildPollTimer) {
-            clearInterval(_rebuildPollTimer);
+            clearTimeout(_rebuildPollTimer);
             _rebuildPollTimer = null;
         }
         _rebuildPollCount = 0;
@@ -2363,7 +2369,24 @@ void (async function () {
 
     /* ── Custom DNS Rules ──────────────────────────────────── */
 
+    let customRulesLoaded = false;
+
+    function setCustomRulesLoaded(loaded) {
+        customRulesLoaded = loaded;
+        const input = document.getElementById('custom-rules-input');
+        const btn = document.getElementById('save-custom-rules-btn');
+        if (input && isAdmin) input.readOnly = !loaded;
+        if (btn) {
+            btn.disabled = !isAdmin || !loaded;
+            btn.setAttribute('aria-disabled', String(btn.disabled));
+            btn.title = !isAdmin
+                ? 'Admin privileges required'
+                : loaded ? '' : 'Custom DNS rules are not loaded';
+        }
+    }
+
     async function loadCustomRules() {
+        setCustomRulesLoaded(false);
         try {
             const res = await api('GET', '/api/dns/custom-rules');
             const data = res.data || res;
@@ -2374,8 +2397,17 @@ void (async function () {
             }
             updateCustomRulesCount(data.rule_count || 0);
             showCustomRulesErrors(data.errors || []);
+            setCustomRulesLoaded(true);
         } catch (e) {
-            // Silently ignore — custom rules are optional
+            const input = document.getElementById('custom-rules-input');
+            const statusEl = document.getElementById('custom-rules-status');
+            if (input && isAdmin) input.readOnly = true;
+            showCustomRulesErrors([{ line: '–', error: 'Failed to load custom DNS rules.' }]);
+            if (statusEl) {
+                renderStatusMessage(statusEl, 'error', 'text-danger', 'Failed to load custom rules');
+                statusEl.className = 'small text-danger';
+            }
+            wbToast('Failed to load custom DNS rules: ' + e.message, 'danger');
         }
     }
 
@@ -2398,6 +2430,7 @@ void (async function () {
 
             const icon = document.createElement('span');
             icon.className = 'material-icons icon-xs align-middle me-1';
+            icon.setAttribute('aria-hidden', 'true');
             icon.textContent = 'error';
 
             div.appendChild(icon);
@@ -2414,6 +2447,10 @@ void (async function () {
     }
 
     async function saveCustomRules() {
+        if (!customRulesLoaded) {
+            wbToast('Custom DNS rules are not loaded yet', 'warning');
+            return;
+        }
         if (!requireAdminAction()) return;
         const input = document.getElementById('custom-rules-input');
         const btn = document.getElementById('save-custom-rules-btn');
@@ -2459,7 +2496,10 @@ void (async function () {
             });
             updateCustomRulesCount(lines.length);
         } finally {
-            if (btn) btn.disabled = false;
+            if (btn) {
+                btn.disabled = !isAdmin || !customRulesLoaded;
+                btn.setAttribute('aria-disabled', String(btn.disabled));
+            }
         }
     }
 
@@ -2712,6 +2752,25 @@ void (async function () {
         return error.detail || 'Unknown error';
     }
 
+    async function pageFetch(url, options = {}, timeoutMs = 15000) {
+        const controller = new AbortController();
+        const externalSignal = options.signal;
+        let timeoutId = null;
+        const abortFromPage = () => controller.abort();
+        if (externalSignal?.aborted) {
+            controller.abort();
+        } else {
+            externalSignal?.addEventListener('abort', abortFromPage, { once: true });
+        }
+        timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            return await fetch(url, { ...options, signal: controller.signal });
+        } finally {
+            window.clearTimeout(timeoutId);
+            externalSignal?.removeEventListener('abort', abortFromPage);
+        }
+    }
+
     function updateBackupRetentionBadge(sliderValue) {
         const badge = document.getElementById('backup-retention-value');
         if (badge) {
@@ -2880,57 +2939,56 @@ void (async function () {
         }
     }
 
-    // Download backup
-    async function downloadBackup() {
+    // Download backup directly through a browser form so the archive is
+    // streamed to disk instead of being held as a full Blob in page memory.
+    function downloadBackup() {
         if (!isAdmin) return;
 
         const btn = document.getElementById('btn-backup-download');
         if (!btn) return;
         const originalHtml = btn.innerHTML;
 
-        try {
-            btn.disabled = true;
-            btn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-1" role="status"></span>Creating...';
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm align-middle me-1" role="status"></span>Creating...';
 
-            const resp = await fetch('/api/backup/download', {
-                method: 'POST',
-                headers: { 'X-CSRF-Token': getCsrfToken() },
-                credentials: 'same-origin',
-                signal: pageAbortController.signal
-            });
+        const targetName = `wb-backup-download-${Date.now()}`;
+        const iframe = document.createElement('iframe');
+        iframe.name = targetName;
+        iframe.hidden = true;
+        iframe.title = 'Backup download';
 
-            if (!resp.ok) {
-                throw new Error(await parseBackupApiError(resp));
-            }
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.action = '/api/backup/download';
+        form.target = targetName;
+        form.hidden = true;
 
-            // Get filename from Content-Disposition header
-            const disposition = resp.headers.get('Content-Disposition');
-            let filename = 'wirebuddy_backup.tar.gz';
-            if (disposition) {
-                const match = disposition.match(/filename="?([^";]+)"?/);
-                if (match) filename = match[1].trim();
-            }
+        const csrfInput = document.createElement('input');
+        csrfInput.type = 'hidden';
+        csrfInput.name = 'csrf_token';
+        csrfInput.value = getCsrfToken();
+        form.appendChild(csrfInput);
 
-            // Download the file
-            const blob = await resp.blob();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
+        const rangeInput = document.createElement('input');
+        rangeInput.type = 'hidden';
+        rangeInput.name = 'tsdb_range';
+        rangeInput.value = document.getElementById('backup-tsdb-range')?.value || 'none';
+        form.appendChild(rangeInput);
 
-            // Reload settings to update last backup time
-            await loadBackupSettings();
-        } catch (err) {
-            console.error('Failed to download backup:', err);
-            wbToast('Failed to create backup: ' + err.message, 'danger');
-        } finally {
+        document.body.append(iframe, form);
+        const finish = () => {
+            window.clearTimeout(cleanupTimer);
+            iframe.remove();
+            form.remove();
             btn.disabled = false;
             btn.innerHTML = originalHtml;
-        }
+            void loadBackupSettings();
+        };
+        const cleanupTimer = window.setTimeout(finish, 300000);
+        form.submit();
+        // Register after submit so the initial about:blank iframe load cannot
+        // re-enable the button before the download request is dispatched.
+        iframe.addEventListener('load', finish, { once: true });
     }
 
     // Restore backup
@@ -2972,13 +3030,13 @@ void (async function () {
             restoreFormData.append('file', file);
             restoreFormData.append('password', password);
 
-            const resp = await fetch('/api/backup/restore', {
+            const resp = await pageFetch('/api/backup/restore', {
                 method: 'POST',
                 headers: { 'X-CSRF-Token': getCsrfToken() },
                 credentials: 'same-origin',
                 body: restoreFormData,
                 signal: pageAbortController.signal
-            });
+            }, 600000);
 
             if (!resp.ok) {
                 throw new Error(await parseBackupApiError(resp));
@@ -3009,34 +3067,48 @@ void (async function () {
     function pollForRestart() {
         let stopped = false;
         let sawDown = false;
-        let inFlight = false;  // avoid overlapping /health probes on a slow/stalled server
+        let checkTimer = null;
+        let giveUpTimer = null;
 
-        const checkInterval = setInterval(async () => {
-            if (inFlight || stopped || pageAbortController.signal.aborted || document.visibilityState === 'hidden') return;
-            inFlight = true;
+        const stop = () => {
+            stopped = true;
+            if (checkTimer !== null) clearTimeout(checkTimer);
+            if (giveUpTimer !== null) clearTimeout(giveUpTimer);
+            checkTimer = null;
+            giveUpTimer = null;
+        };
+
+        const check = async () => {
+            if (stopped || pageAbortController.signal.aborted) return;
+            if (document.visibilityState === 'hidden') {
+                checkTimer = setTimeout(check, 1000);
+                return;
+            }
             try {
-                const resp = await fetch('/health', { cache: 'no-store', signal: pageAbortController.signal });
+                const resp = await pageFetch('/health', {
+                    cache: 'no-store',
+                    signal: pageAbortController.signal,
+                }, 3000);
                 if (!resp.ok) {
                     sawDown = true;
                     return;
                 }
                 if (sawDown) {
-                    stopped = true;
-                    clearInterval(checkInterval);
+                    stop();
                     window.location.reload();
                 }
             } catch (e) {
                 sawDown = true;
-            } finally {
-                inFlight = false;
             }
-        }, 1000);
+            if (!stopped) checkTimer = setTimeout(check, 1000);
+        };
+
+        checkTimer = setTimeout(check, 0);
 
         // Give up after 60 seconds
-        setTimeout(() => {
+        giveUpTimer = setTimeout(() => {
             if (!stopped) {
-                stopped = true;
-                clearInterval(checkInterval);
+                stop();
                 wbAlert('Server restart took too long. Please refresh the page manually.', 'warning');
             }
         }, 60000);
@@ -3107,4 +3179,3 @@ void (async function () {
     await initTabs();
 
 })();
-

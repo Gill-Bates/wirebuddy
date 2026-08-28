@@ -16,6 +16,7 @@ from ..utils.config import get_config
 from ..utils.crypto import hash_password
 from ..utils.time import utcnow
 from ..utils import vault
+from .sqlite_auth import delete_user_tokens
 from .sqlite_runtime import transaction
 
 
@@ -196,7 +197,16 @@ def update_user(
 			sql = f"UPDATE users SET {', '.join(updates)} WHERE id = ?"
 
 			cur = conn.execute(sql, params)
-			return UpdateResult.SUCCESS if cur.rowcount > 0 else UpdateResult.NOT_FOUND
+			if cur.rowcount == 0:
+				return UpdateResult.NOT_FOUND
+			if password is not None:
+				# A stolen session token must not survive its own password
+				# change. The current caller (app/api/users.py) already routes
+				# password changes through its own revoke-on-change helper
+				# instead of here — this is a defensive backstop for any
+				# future caller that updates the password through this path.
+				delete_user_tokens(conn, user_id)
+			return UpdateResult.SUCCESS
 	except sqlite3.IntegrityError:
 		return UpdateResult.CONFLICT
 

@@ -46,6 +46,10 @@ _CLI_HTTP_TIMEOUT_SECONDS = 30
 _SUBPROCESS_TIMEOUT_BUFFER_SECONDS = 30
 _PROGRESS_UPDATES_PER_SECOND = 2
 _SIMULATED_SERVER_SELECT_SECONDS = 5.0
+# Helper phases that run outside the subprocess timeout must not be able to
+# stall a run (and hold the speedtest lease) indefinitely.
+_PROGRESS_CALLBACK_TIMEOUT = 2.0
+_GEOIP_LOOKUP_TIMEOUT = 3.0
 _ALLOWED_CLI_PATHS = (
     Path("/usr/bin/librespeed-cli"),
     Path("/usr/local/bin/librespeed-cli"),
@@ -92,7 +96,12 @@ async def _lookup_country_from_url(server_url: str) -> str | None:
     if not server_url:
         return None
 
-    country_code = await asyncio.to_thread(_resolve_country_from_url, server_url)
+    try:
+        async with asyncio.timeout(_GEOIP_LOOKUP_TIMEOUT):
+            country_code = await asyncio.to_thread(_resolve_country_from_url, server_url)
+    except TimeoutError:
+        _log.warning("GeoIP country lookup timed out after %.1fs", _GEOIP_LOOKUP_TIMEOUT)
+        return None
     if country_code:
         return country_code
 
@@ -198,7 +207,13 @@ async def _emit(cb: ProgressCallback | None, phase: str, progress: float, messag
     try:
         result = cb(event)
         if inspect.isawaitable(result):
-            await result
+            try:
+                async with asyncio.timeout(_PROGRESS_CALLBACK_TIMEOUT):
+                    await result
+            except TimeoutError:
+                _log.warning(
+                    "Progress callback timed out after %.1fs", _PROGRESS_CALLBACK_TIMEOUT
+                )
     except Exception:
         _log.warning("Progress callback failed", exc_info=True)
 
@@ -327,8 +342,10 @@ async def run_speedtest(
         # the upload sub-test timed out). Persisting such a partial result would
         # draw misleading "drop to zero" valleys in the history chart, so treat it
         # as an error instead of a successful run.
-        if metrics["download_mbit"] == 0 or metrics["upload_mbit"] == 0:
+        if metrics["download_mbit"] <= 0 or metrics["upload_mbit"] <= 0:
             return await _error_result("Incomplete speed measurement (download or upload reported 0)", progress_callback)
+        if metrics["rtt_ms"] < 0 or metrics["jitter_ms"] < 0:
+            return await _error_result("Invalid speed measurement (negative latency values)", progress_callback)
 
         await _emit(
             progress_callback, "complete", 1.0,

@@ -18,12 +18,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from collections.abc import AsyncGenerator
 
 from anyio import EndOfStream
+from pydantic import TypeAdapter, ValidationError
 
-from .events import NodeCommandPayload, NodeEventBus, NodeEventType
+from .events import NodeCommandPayload, NodeEventBus, NodeEventType, NodeId
 
 _log = logging.getLogger(__name__)
 
@@ -31,16 +31,33 @@ _event_bus: NodeEventBus | None = None
 # SSE keepalive interval to prevent proxy timeouts
 _KEEPALIVE_INTERVAL = 25
 
-_MAX_NODE_ID_LEN = 64
-_NODE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+_node_id_adapter = TypeAdapter(NodeId)
 _SUPPORTED_DB_COMMANDS = frozenset({"config_changed", "restart", "speedtest", "removed"})
+_MAX_CONFIG_VERSION_LEN = 128
 
 
 def _validate_node_id(node_id: str) -> str:
-    """Validate node ID to prevent injection and memory issues."""
-    if len(node_id) > _MAX_NODE_ID_LEN or not _NODE_ID_RE.fullmatch(node_id):
-        raise ValueError(f"Invalid node_id: {node_id!r}")
-    return node_id
+    """Validate node ID to prevent injection and memory issues.
+
+    Reuses events.NodeId's format so this module can't drift out of sync
+    with what the event bus itself accepts (a mismatch here previously
+    rejected node_ids the bus considered valid).
+    """
+    try:
+        return _node_id_adapter.validate_python(node_id)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid node_id: {node_id!r}") from exc
+
+
+def _validate_config_version(version: str) -> str:
+    """Validate a config_version payload before it is persisted or sent."""
+    if not 1 <= len(version) <= _MAX_CONFIG_VERSION_LEN:
+        raise ValueError(
+            f"config_version must be between 1 and {_MAX_CONFIG_VERSION_LEN} characters"
+        )
+    if any(ch in version for ch in ("\r", "\n", "\x00")):
+        raise ValueError("config_version contains control characters")
+    return version
 
 
 def _sanitize_sse_value(value: str) -> str:
@@ -298,9 +315,8 @@ async def is_node_connected(node_id: str) -> bool:
 
 def is_node_connected_sync(node_id: str) -> bool:
     """Synchronous version of is_node_connected() for non-async callers.
-    
+
     WARNING: Blocks the calling thread. Prefer is_node_connected() in async code.
-    Thread-safe: Uses threading.Lock for safe access from sync contexts.
     """
     from ..db.sqlite_runtime import close_connection, connect
     from ..db.sqlite_nodes import is_node_sse_connected
@@ -338,6 +354,8 @@ async def _notify_or_queue(
     """
     node_id = _validate_node_id(node_id)
     db_command = _validate_db_command(db_command)
+    if config_version is not None:
+        config_version = _validate_config_version(config_version)
     queue_payload = {"config_version": config_version} if config_version else None
     command_id = await _queue_db_command(node_id, db_command, payload=queue_payload)
     if command_id is None:

@@ -117,6 +117,10 @@ class WireGuardService(RuntimeService):
             *[_start_one(name) for name in self._interfaces_to_start]
         )
         self._started_interfaces = [r for r in results if r]
+        failed = [
+            name for name in self._interfaces_to_start
+            if name not in self._started_interfaces
+        ]
 
         _log.info(
             "WIREGUARD_STARTED requested=%d started=%d interfaces=%s",
@@ -124,6 +128,19 @@ class WireGuardService(RuntimeService):
             len(self._started_interfaces),
             self._started_interfaces,
         )
+
+        if failed and not self._started_interfaces:
+            # Every requested interface failed - do not report the service as
+            # running (dependent services like DNS would start against nothing).
+            raise RuntimeError(
+                f"No WireGuard interfaces could be started: {failed}"
+            )
+        if failed:
+            _log.error(
+                "WIREGUARD_PARTIAL_START failed=%d interfaces=%s",
+                len(failed),
+                failed,
+            )
 
     async def _do_stop(self) -> None:
         """Stop all managed interfaces tracked by this service."""

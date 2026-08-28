@@ -25,9 +25,10 @@ APP_NAME = "WireBuddy"
 GITHUB_REPO = "Gill-Bates/wirebuddy"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
-# Cache update check result for 1 hour
-_UPDATE_CHECK_CACHE: dict | None = None
-_UPDATE_CHECK_TIME: float = 0
+# Cache update check result for 1 hour. Timed on the monotonic clock so an
+# NTP step cannot extend or expire the TTL.
+_UPDATE_CHECK_CACHE: UpdateInfo | None = None
+_UPDATE_CHECK_TIME: float = 0.0
 _UPDATE_CHECK_TTL = 3600  # 1 hour
 _UPDATE_CHECK_LOCK = threading.Lock()
 _MAX_RELEASE_NOTES = 20_000
@@ -105,7 +106,11 @@ def _parse_version(version_str: str) -> tuple[int, ...]:
 	if not match:
 		return (0,)
 	parts = match.group(1).split('.')
-	return tuple(int(p) for p in parts)
+	# Pad to a fixed width so '1.2' and '1.2.0' compare equal instead of the
+	# shorter tuple sorting first.
+	numbers = [int(p) for p in parts][:3]
+	numbers += [0] * (3 - len(numbers))
+	return tuple(numbers)
 
 
 def _is_newer_version(current: str, latest: str) -> bool:
@@ -129,13 +134,15 @@ def check_for_updates(force: bool = False) -> UpdateInfo:
 	global _UPDATE_CHECK_CACHE, _UPDATE_CHECK_TIME
 	
 	current_version = get_version()
-	now = time.time()
+	now = time.monotonic()
 
-	# Return cached result if still valid (unless forced)
+	# Return cached result if still valid (unless forced). Callers get a copy:
+	# handing out the cached dict lets one caller's edit poison every later
+	# cache hit.
 	with _UPDATE_CHECK_LOCK:
 		if not force and _UPDATE_CHECK_CACHE is not None:
 			if now - _UPDATE_CHECK_TIME < _UPDATE_CHECK_TTL:
-				return _UPDATE_CHECK_CACHE
+				return _UPDATE_CHECK_CACHE.copy()
 	
 	result: UpdateInfo = {
 		"update_available": False,
@@ -150,8 +157,9 @@ def check_for_updates(force: bool = False) -> UpdateInfo:
 	# Don't check for dev versions
 	if current_version == "dev":
 		result["error"] = "Development version - update check disabled"
-		_UPDATE_CHECK_CACHE = result
-		_UPDATE_CHECK_TIME = time.time()
+		with _UPDATE_CHECK_LOCK:
+			_UPDATE_CHECK_CACHE = result.copy()
+			_UPDATE_CHECK_TIME = time.monotonic()
 		return result
 	
 	import httpx
@@ -199,6 +207,6 @@ def check_for_updates(force: bool = False) -> UpdateInfo:
 		_log.debug("Update check failed: %s", e)
 	
 	with _UPDATE_CHECK_LOCK:
-		_UPDATE_CHECK_CACHE = result
-		_UPDATE_CHECK_TIME = time.time()
+		_UPDATE_CHECK_CACHE = result.copy()
+		_UPDATE_CHECK_TIME = time.monotonic()
 	return result

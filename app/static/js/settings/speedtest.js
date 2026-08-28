@@ -20,6 +20,7 @@
     const state = {
         running: false,
         retentionSaving: false,
+        retentionPendingDays: null,
         activeEventSource: null,
         requestController: null,
     };
@@ -522,14 +523,21 @@
         }
     }
 
-    async function saveRetention() {
-        if (state.retentionSaving) return;
+    async function saveRetention(requestedDays = null) {
+        refreshElements();
+        const slider = elements.retentionSlider || document.getElementById('speedtest-retention-slider');
+        const selectedDays = requestedDays == null
+            ? speedtestRetentionDaysFromSlider(slider?.value ?? 5)
+            : Number(requestedDays);
+
+        if (state.retentionSaving) {
+            state.retentionPendingDays = selectedDays;
+            return;
+        }
         state.retentionSaving = true;
         const controller = getRequestController();
 
-        refreshElements();
-        const slider = elements.retentionSlider || document.getElementById('speedtest-retention-slider');
-        const days = speedtestRetentionDaysFromSlider(slider?.value ?? 5);
+        const days = selectedDays;
 
         if (days === 0) {
             const ok = await wbConfirm(
@@ -554,6 +562,13 @@
             wbToast('Failed to update speedtest retention', 'danger');
         } finally {
             state.retentionSaving = false;
+            const pendingDays = state.retentionPendingDays;
+            state.retentionPendingDays = null;
+            if (pendingDays != null && pendingDays !== days) {
+                window.setTimeout(() => {
+                    void saveRetention(pendingDays);
+                }, 50);
+            }
         }
     }
 
@@ -578,6 +593,7 @@
     function cleanup() {
         state.running = false;
         state.retentionSaving = false;
+        state.retentionPendingDays = null;
         abortRequests();
 
         if (state.activeEventSource) {

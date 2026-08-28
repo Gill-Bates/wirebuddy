@@ -11,10 +11,10 @@
 <div id="peers-app" data-can-manage-peers="{{ '1' if user['is_admin'] else '0' }}" data-flag-icon-base-url="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3" hidden></div>
 <div class="container-fluid wb-page">
 <div class="wb-page-header">
-    <h1 class="page-title"><span class="material-icons me-2">devices</span>Peers</h1>
+    <h1 class="page-title"><span class="material-icons me-2" aria-hidden="true">devices</span>Peers</h1>
     {% if user['is_admin'] %}
-    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addPeerModal">
-        <span class="material-icons me-2">add_circle</span>
+    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addPeerModal">
+        <span class="material-icons me-2" aria-hidden="true">add_circle</span>
         Add Peer
     </button>
     {% endif %}
@@ -321,7 +321,7 @@
             {% endif %}
 
             <div class="peers-no-results d-none" id="peers-no-results">
-                <span class="material-icons mb-2 peers-empty-state-icon-lg">search_off</span>
+                <span class="material-icons mb-2 peers-empty-state-icon-lg" aria-hidden="true">search_off</span>
                 <div>No peers match your search</div>
             </div>
         </div><!-- /.peers-scroll-container -->
@@ -419,7 +419,7 @@
                                 Allow on all Nodes
                                 <a class="text-muted ms-1" data-bs-toggle="collapse" href="#allowAllNodesHelp"
                                     role="button" aria-expanded="false" aria-controls="allowAllNodesHelp">
-                                    <span class="material-icons peer-help-icon">help_outline</span>
+                                    <span class="material-icons peer-help-icon" aria-hidden="true">help_outline</span>
                                 </a>
                             </label>
                         </div>
@@ -444,7 +444,7 @@
                             Routing Mode
                             <a class="text-muted ms-1" data-bs-toggle="collapse" href="#routingModeHelp" role="button"
                                 aria-expanded="false" aria-controls="routingModeHelp">
-                                <span class="material-icons peer-help-icon">help_outline</span>
+                                <span class="material-icons peer-help-icon" aria-hidden="true">help_outline</span>
                             </a>
                         </label>
                         <div class="collapse mb-2" id="routingModeHelp">
@@ -511,7 +511,7 @@
                                 Client Isolation
                                 <a class="text-muted ms-1" data-bs-toggle="collapse" href="#clientIsolationHelp"
                                     role="button" aria-expanded="false" aria-controls="clientIsolationHelp">
-                                    <span class="material-icons peer-help-icon">help_outline</span>
+                                    <span class="material-icons peer-help-icon" aria-hidden="true">help_outline</span>
                                 </a>
                             </label>
                         </div>
@@ -638,7 +638,7 @@
                                 Allow on all Nodes
                                 <a class="text-muted ms-1" data-bs-toggle="collapse" href="#editAllowAllNodesHelp"
                                     role="button" aria-expanded="false" aria-controls="editAllowAllNodesHelp">
-                                    <span class="material-icons peer-help-icon">help_outline</span>
+                                    <span class="material-icons peer-help-icon" aria-hidden="true">help_outline</span>
                                 </a>
                             </label>
                         </div>
@@ -663,7 +663,7 @@
                             Routing Mode
                             <a class="text-muted ms-1" data-bs-toggle="collapse" href="#editRoutingModeHelp"
                                 role="button" aria-expanded="false" aria-controls="editRoutingModeHelp">
-                                <span class="material-icons peer-help-icon">help_outline</span>
+                                <span class="material-icons peer-help-icon" aria-hidden="true">help_outline</span>
                             </a>
                         </label>
                         <div class="collapse mb-2" id="editRoutingModeHelp">
@@ -730,7 +730,7 @@
                                 Client Isolation
                                 <a class="text-muted ms-1" data-bs-toggle="collapse" href="#editClientIsolationHelp"
                                     role="button" aria-expanded="false" aria-controls="editClientIsolationHelp">
-                                    <span class="material-icons peer-help-icon">help_outline</span>
+                                    <span class="material-icons peer-help-icon" aria-hidden="true">help_outline</span>
                                 </a>
                             </label>
                         </div>

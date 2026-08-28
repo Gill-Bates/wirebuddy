@@ -98,7 +98,9 @@ and conntrack statistics. Do not weaken the startup check with
 
 The supplied Compose service already:
 
-- drops all Linux capabilities except `NET_ADMIN`
+- drops all Linux capabilities, then re-adds only the six the service needs:
+  `NET_ADMIN` (WireGuard, iptables) plus `NET_BIND_SERVICE`, `SETUID`,
+  `SETGID`, `CHOWN`, and `DAC_OVERRIDE` (bundled Unbound resolver)
 - enables `no-new-privileges`
 - mounts only `/dev/net/tun`
 - limits JSON log rotation

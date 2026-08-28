@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -22,7 +23,12 @@ __all__ = [
 ]
 
 DNS_LOG_RETENTION_OPTIONS = {0, 7, 30, 90, 180, 365}
-DEFAULT_DNS_LOG_RETENTION_DAYS = 30
+# Must match sqlite_settings.DEFAULT_DNS_LOG_RETENTION_DAYS. Not imported from
+# there directly: app/dns/* deliberately stays decoupled from app/db/* here,
+# taking the persisted setting via an injected callable instead (see
+# retention_days_func in ingestion_daemon.run_dns_ingestion). This is only the
+# fallback used if that value is ever missing or invalid.
+DEFAULT_DNS_LOG_RETENTION_DAYS = 7
 # Safety limit to prevent runaway deletion on corrupted setups
 MAX_DELETE_PER_RUN = 10_000
 
@@ -36,12 +42,21 @@ def normalize_dns_log_retention_days(value: int | str | None) -> int:
 	return parsed if parsed in DNS_LOG_RETENTION_OPTIONS else DEFAULT_DNS_LOG_RETENTION_DAYS
 
 
-def _extract_day_prefix(name: str) -> date | None:
-	"""Extract YYYY-MM-DD prefix from dns_queries filenames."""
-	if len(name) < 10:
+_DAY_FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.jsonl$")
+
+
+def _extract_day(name: str) -> date | None:
+	"""Return the calendar day for an exact 'YYYY-MM-DD.jsonl' filename, else None.
+
+	Full-match only, not a prefix check: ingestion_writer.py always writes
+	exactly this filename shape, so a prefix match would also sweep up
+	unrelated files that merely start with a date-like string (e.g. a manual
+	backup or export dropped into the same directory).
+	"""
+	if _DAY_FILE_RE.fullmatch(name) is None:
 		return None
 	try:
-		return date.fromisoformat(name[:10])
+		return date.fromisoformat(name.removesuffix(".jsonl"))
 	except ValueError:
 		return None
 
@@ -73,7 +88,7 @@ def enforce_dns_log_retention(dns_dir: Path, retention_days: int) -> dict[str, i
 			continue
 		if path.suffix != ".jsonl":
 			continue
-		day = _extract_day_prefix(path.name)
+		day = _extract_day(path.name)
 		if day is None:
 			remaining += 1
 			continue

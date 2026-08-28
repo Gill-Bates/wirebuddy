@@ -99,6 +99,17 @@ base64url(JSON_PAYLOAD.HMAC_SHA256_SIGNATURE)
 
 Signed with `WIREBUDDY_SECRET_KEY` — cannot be forged without access to the master.
 
+!!! warning "Enrollment transport"
+    Enrollment is the one time the master hands the node its long-lived
+    `session_secret`. When the master has **Serve GUI over HTTPS** enabled,
+    enrollment over plain HTTP is rejected with `400` and the node must reach the
+    master over `https://`. With HTTPS disabled the request is still accepted for
+    plain-HTTP LAN setups, but the master logs an error, because the secret is
+    then transmitted in clear text.
+
+    If the master uses the self-signed fallback certificate, the node must trust
+    it — see [Node cannot enroll over HTTPS](../troubleshooting.md#node-cannot-enroll-over-https).
+
 ### Mutual Authentication
 
 After enrollment, all sync traffic uses **mutual certificate authentication**:
@@ -122,7 +133,6 @@ Standard WireBuddy installation with `SERVER_MODE=master` (default):
 
 ```yaml
 # docker-compose.yml
-version: '3.8'
 services:
   wirebuddy:
     image: giiibates/wirebuddy:latest
@@ -186,14 +196,19 @@ services:
     image: giiibates/wirebuddy:latest
     container_name: wirebuddy-node
     restart: always
+    stop_grace_period: 20s
     network_mode: host
+    cap_drop:
+      - ALL
     cap_add:
-      - NET_ADMIN
+      - NET_ADMIN   # node mode runs no resolver, so NET_ADMIN alone is enough
     environment:
       SERVER_MODE: node
       WIREBUDDY_ENROLLMENT_TOKEN: "${WIREBUDDY_ENROLLMENT_TOKEN}"
-      LOG_LEVEL: INFO
-      TZ: ${TZ:-Etc/UTC}
+      WIREBUDDY_ENROLLMENT_VERIFY_KEY: "${WIREBUDDY_ENROLLMENT_VERIFY_KEY}"
+      WIREBUDDY_DATA_DIR: /app/data
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      TZ: "${TZ:-Etc/UTC}"
     logging:
       driver: json-file
       options:
@@ -205,6 +220,11 @@ services:
       - /dev/net/tun:/dev/net/tun
     volumes:
       - ./data:/app/data
+    # Node mode runs the enrollment daemon, not uvicorn. There is no HTTP server
+    # for the image's built-in HEALTHCHECK to reach, so it would report unhealthy
+    # forever unless it is disabled here.
+    healthcheck:
+      disable: true
 ```
 
 **Environment Variables:**
@@ -213,6 +233,8 @@ services:
 |----------|----------|-------------|
 | `SERVER_MODE` | Yes | Must be `node` |
 | `WIREBUDDY_ENROLLMENT_TOKEN` | Yes | Token from master UI (contains master URL) |
+| `WIREBUDDY_ENROLLMENT_VERIFY_KEY` | Yes | Master's public key used to verify the token signature. Without it the daemon aborts the first bootstrap |
+| `WIREBUDDY_DATA_DIR` | No | Data directory inside the container (default: `/app/data`) |
 | `LOG_LEVEL` | No | Logging verbosity (default: `INFO`) |
 | `TZ` | No | Timezone (default: `Etc/UTC`) |
 
@@ -294,9 +316,18 @@ For peers assigned to a remote node, the QR code image includes a **coloured bad
 
 **Delete Node:**
 
+- Revokes the node's tunnel peer from the running WireGuard interface **before**
+  the database row is removed
 - Removes node from database
 - All peers on that node are **unassigned** (node_id set to NULL)
 - Node will fail authentication on next sync attempt
+
+!!! note "Revocation is enforced"
+    If the tunnel peer cannot be removed while its interface is up, the delete
+    is refused with `503` and the node is kept. This prevents a deleted node
+    from continuing to forward traffic with a key that is still loaded in the
+    kernel. When the interface is not running there is no live access to revoke,
+    so the delete proceeds.
 
 !!! danger "Peer Handling"
     Deleting a node does **not** delete its peers. Update peer assignments before deletion.

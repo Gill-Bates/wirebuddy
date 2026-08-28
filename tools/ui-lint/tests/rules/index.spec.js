@@ -25,6 +25,12 @@ test('rule manifest and catalog stay aligned', async () => {
         performanceCost: 'cheap',
         executionMode: 'parallel',
     });
+    expect(catalog.find((entry) => entry.id === 'form-switch-spacing')).toMatchObject({
+        category: 'layout',
+        performanceCost: 'cheap',
+        executionMode: 'parallel',
+        tags: expect.arrayContaining(['forms', 'switches', 'spacing']),
+    });
     expect(catalog.find((entry) => entry.id === 'scroll-traps')).toMatchObject({
         category: 'mobile',
         tags: expect.arrayContaining(['mobile', 'ios', 'scroll']),
@@ -35,5 +41,21 @@ test('rule manifest and catalog stay aligned', async () => {
         performanceCost: 'cheap',
         executionMode: 'parallel',
         tags: expect.arrayContaining(['settings', 'logs']),
+    });
+    expect(catalog.find((entry) => entry.id === 'control-contracts')).toMatchObject({
+        category: 'accessibility',
+        performanceCost: 'cheap',
+        executionMode: 'parallel',
+        tags: expect.arrayContaining(['buttons', 'icons']),
+    });
+    expect(catalog.find((entry) => entry.id === 'changelog-details')).toMatchObject({
+        category: 'component',
+        executionMode: 'parallel',
+        tags: expect.arrayContaining(['changelog', 'disclosure']),
+    });
+    expect(catalog.find((entry) => entry.id === 'dashboard-light-surfaces')).toMatchObject({
+        category: 'component',
+        executionMode: 'parallel',
+        tags: expect.arrayContaining(['dashboard', 'light-mode']),
     });
 });

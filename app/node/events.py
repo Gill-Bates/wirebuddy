@@ -15,15 +15,30 @@ from typing import Annotated
 
 from anyio import BrokenResourceError, ClosedResourceError, Lock, WouldBlock, create_memory_object_stream
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from pydantic import BaseModel, Field, JsonValue, StringConstraints
+from pydantic import BaseModel, Field, JsonValue, StringConstraints, TypeAdapter, ValidationError
 
 _log = logging.getLogger(__name__)
 _MAX_LATEST_SPEEDTEST_ENTRIES = 1024
+_MAX_SUBSCRIPTIONS_PER_NODE = 8
 
 NodeId = Annotated[
 	str,
 	StringConstraints(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9._-]+$"),
 ]
+_node_id_adapter = TypeAdapter(NodeId)
+
+
+def _validate_node_id(node_id: str) -> str:
+	"""Validate a node_id at the event bus's public entry points.
+
+	The NodeId type documents the intended format, but pydantic only
+	enforces it where a NodeEvent is actually constructed. Validating here
+	too means callers can't bypass it by going straight to subscribe/publish.
+	"""
+	try:
+		return _node_id_adapter.validate_python(node_id)
+	except ValidationError as exc:
+		raise ValueError(f"Invalid node_id: {node_id!r}") from exc
 
 
 class NodeEventType(StrEnum):
@@ -104,10 +119,16 @@ class NodeEventBus:
 
 	async def subscribe_commands(self, node_id: str) -> NodeEventSubscription:
 		"""Subscribe to live ephemeral command events for one node."""
+		node_id = _validate_node_id(node_id)
 		self._ensure_open()
 		send_stream, receive_stream = create_memory_object_stream[NodeEvent](self._buffer_size)
 		async with self._lock:
 			self._ensure_open()
+			streams = self._command_subscribers.get(node_id)
+			if streams is not None and len(streams) >= _MAX_SUBSCRIPTIONS_PER_NODE:
+				await send_stream.aclose()
+				await receive_stream.aclose()
+				raise RuntimeError(f"Too many command subscriptions for node {node_id!r}")
 			self._command_subscribers.setdefault(node_id, set()).add(send_stream)
 		return NodeEventSubscription(
 			node_id=node_id,
@@ -119,10 +140,16 @@ class NodeEventBus:
 
 	async def subscribe_speedtest(self, node_id: str) -> NodeEventSubscription:
 		"""Subscribe to ephemeral speedtest progress events for one node."""
+		node_id = _validate_node_id(node_id)
 		self._ensure_open()
 		send_stream, receive_stream = create_memory_object_stream[NodeEvent](self._buffer_size)
 		async with self._lock:
 			self._ensure_open()
+			streams = self._speedtest_subscribers.get(node_id)
+			if streams is not None and len(streams) >= _MAX_SUBSCRIPTIONS_PER_NODE:
+				await send_stream.aclose()
+				await receive_stream.aclose()
+				raise RuntimeError(f"Too many speedtest subscriptions for node {node_id!r}")
 			self._speedtest_subscribers.setdefault(node_id, set()).add(send_stream)
 			latest = self._latest_speedtest.get(node_id)
 			latest_copy = latest.model_copy(deep=True) if latest is not None else None
@@ -196,6 +223,7 @@ class NodeEventBus:
 
 	async def publish_speedtest(self, node_id: str, payload: SpeedtestProgressPayload) -> None:
 		"""Publish a speedtest progress event to all current local subscribers."""
+		node_id = _validate_node_id(node_id)
 		self._ensure_open()
 		payload_copy = payload.model_copy(deep=True)
 		async with self._lock:
@@ -217,6 +245,7 @@ class NodeEventBus:
 
 	async def publish_command(self, node_id: str, payload: NodeCommandPayload) -> int:
 		"""Publish a live command event to current local subscribers."""
+		node_id = _validate_node_id(node_id)
 		self._ensure_open()
 		event = NodeEvent(node_id=node_id, type=NodeEventType.COMMAND, payload=payload)
 		return await self._publish(node_id, event, subscribers=self._command_subscribers)

@@ -240,7 +240,7 @@
         #peer-map {
             height: 100%;
             min-height: 500px;
-            /* 🔥 Map sichtbar größer */
+            /* Increase map height for better visibility */
         }
 
         /* Speedtest: compact, fixed height */
@@ -254,7 +254,7 @@
         .dashboard-speedtest-col .card {
             flex: 1 1 auto;
             min-height: 260px;
-            /* 🔥 höher */
+            /* Increase speedtest card height */
         }
 
         .dashboard-speedtest-col .speedtest-chart-wrap {

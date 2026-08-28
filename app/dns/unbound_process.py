@@ -9,12 +9,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
+import inspect
 import ipaddress
 import logging
 import os
+import re
 import shutil
 import signal
+import socket
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -430,6 +434,111 @@ def _ensure_supervisor_task() -> None:
 	)
 
 # ---------------------------------------------------------------------------
+# Listen Socket Preflight
+# ---------------------------------------------------------------------------
+
+# Matches the users:(("name",pid=123,fd=4)) column of `ss -p`.
+_SS_USERS_RE = re.compile(r'\(\("([^"]+)",pid=(\d+)')
+
+
+def _parse_listen_sockets(conf_text: str) -> tuple[list[str], int]:
+	"""Extract the (interface IPs, port) unbound is configured to bind."""
+	ips: list[str] = []
+	port = 53
+	for line in conf_text.splitlines():
+		line = line.strip()
+		if line.startswith("#"):
+			continue
+		if line.startswith("interface:"):
+			# Split on the first colon only - IPv6 literals contain colons.
+			value = line.split(":", 1)[1].strip().split("@")[0].split("#")[0].strip()
+			if value:
+				ips.append(value)
+		elif line.startswith("port:"):
+			value = line.split(":", 1)[1].strip().split("#")[0].strip()
+			if value.isdigit():
+				port = int(value)
+	return ips, port
+
+
+def _probe_listen_socket(ip: str, port: int) -> str | None:
+	"""Return a conflict description if ip:port cannot be bound, else None.
+
+	A real bind() is used rather than parsing `ss` output: it answers exactly
+	the question that matters - will unbound's own bind succeed - and requires
+	no reasoning about wildcard vs. host-specific binds, IPv4-mapped IPv6 or
+	SO_REUSEPORT sharing. The socket options mirror the generated config
+	(so-reuseport: yes) so the probe cannot disagree with unbound.
+	"""
+	try:
+		family = socket.AF_INET6 if ipaddress.ip_address(ip).version == 6 else socket.AF_INET
+	except ValueError:
+		return None
+
+	for sock_type, proto in ((socket.SOCK_DGRAM, "UDP"), (socket.SOCK_STREAM, "TCP")):
+		try:
+			with socket.socket(family, sock_type) as sock:
+				with contextlib.suppress(OSError):
+					sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+				if family == socket.AF_INET6:
+					with contextlib.suppress(OSError):
+						sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+				sock.bind((ip, port))
+		except OSError as exc:
+			if exc.errno == errno.EADDRNOTAVAIL:
+				# Interface not up yet (wg0 may start later) - not a port conflict.
+				_log.debug("DNS_PREFLIGHT %s:%d not assigned to any interface yet", ip, port)
+				return None
+			if exc.errno == errno.EADDRINUSE:
+				return f"{proto} {ip}:{port} is already in use"
+			if exc.errno in (errno.EACCES, errno.EPERM):
+				return f"{proto} {ip}:{port} bind denied - is CAP_NET_BIND_SERVICE granted?"
+			return f"{proto} {ip}:{port} bind failed: {exc}"
+	return None
+
+
+async def _describe_port_users(port: int) -> str:
+	"""Best-effort: name the processes holding *port*, for the error message."""
+	code, stdout, _ = await run_exec("ss", "-lntupnH", f"sport = :{port}", timeout=5.0)
+	if code != 0 or not stdout.strip():
+		return ""
+	holders: list[str] = []
+	for name, pid in _SS_USERS_RE.findall(stdout):
+		entry = f"{name} (pid {pid})"
+		if entry not in holders:
+			holders.append(entry)
+	return ", ".join(holders)
+
+
+async def _preflight_listen_sockets() -> str | None:
+	"""Return an error message when unbound's configured sockets are taken.
+
+	Turns the bare "exit code 1" a failed unbound start would otherwise report
+	into an actionable reason naming the address and the offending process.
+	"""
+	try:
+		conf_text = UNBOUND_CONF.read_text(encoding="utf-8")
+	except OSError as exc:
+		_log.debug("DNS_PREFLIGHT could not read %s: %s", UNBOUND_CONF, exc)
+		return None
+
+	ips, port = _parse_listen_sockets(conf_text)
+	if not ips:
+		return None
+
+	conflicts = await asyncio.to_thread(
+		lambda: [msg for msg in (_probe_listen_socket(ip, port) for ip in ips) if msg]
+	)
+	if not conflicts:
+		_log.debug("DNS_PREFLIGHT %d listen socket(s) on port %d are free", len(ips), port)
+		return None
+
+	holders = await _describe_port_users(port)
+	detail = f" - port {port} held by: {holders}" if holders else ""
+	return f"{'; '.join(conflicts)}{detail}"
+
+
+# ---------------------------------------------------------------------------
 # Process Control (Internal Implementations)
 # ---------------------------------------------------------------------------
 
@@ -463,6 +572,13 @@ async def _start_impl() -> tuple[bool, str]:
 	code, _, stderr = await run_exec("unbound-checkconf", str(UNBOUND_CONF), timeout=30.0)
 	if code != 0:
 		return False, f"Config check failed: {stderr}"
+	
+	# Preflight the listen sockets so a busy port reports a precise reason
+	# instead of unbound dying with a bare exit code.
+	conflict = await _preflight_listen_sockets()
+	if conflict:
+		_log.error("DNS_START listen socket conflict: %s", conflict)
+		return False, f"Port conflict: {conflict}"
 	
 	# Start unbound in foreground mode
 	# NOTE: stderr=DEVNULL to prevent pipe deadlock (Unbound logs continuously
@@ -504,6 +620,21 @@ async def _start_impl() -> tuple[bool, str]:
 			await _kill_pid(_unbound_proc.pid)
 		await _reap_managed_proc()
 		return False, "Unbound failed to start (timeout)"
+	except asyncio.CancelledError:
+		# CancelledError is a BaseException, not caught below. If this task is
+		# cancelled (e.g. shutdown, or a scheduler timeout) after the subprocess
+		# was spawned but before _ensure_supervisor_task() ran, nothing would
+		# ever reap it — an unsupervised unbound process would keep running.
+		proc = _unbound_proc
+		if proc is not None and proc.returncode is None:
+			try:
+				proc.kill()
+				await asyncio.shield(proc.wait())
+			except Exception:
+				_log.warning("DNS_START failed to kill unbound after cancellation", exc_info=True)
+		_unbound_proc = None
+		invalidate_running_cache()
+		raise
 	except Exception as e:
 		_log.exception("DNS_START unexpected error")
 		return False, f"Failed to start: {e}"
@@ -724,8 +855,10 @@ async def watchdog(should_be_running_func: Callable[[], bool | Awaitable[bool]])
 	
 	# Check if DNS service should be running
 	result = should_be_running_func()
-	# Handle both sync and async callables
-	if asyncio.iscoroutine(result):
+	# Handle both sync and async callables. isawaitable (not iscoroutine) so
+	# Futures/Tasks/custom awaitables match the declared Awaitable[bool]
+	# contract too, not just plain coroutine objects.
+	if inspect.isawaitable(result):
 		should_run = await result
 	else:
 		should_run = result

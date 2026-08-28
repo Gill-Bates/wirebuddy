@@ -77,21 +77,24 @@ class SignalManager:
         for sig in self.SHUTDOWN_SIGNALS:
             try:
                 previous = signal.getsignal(sig)
-            except Exception:
+            except (OSError, ValueError):
                 continue
 
-            if previous in (None, signal.SIG_DFL, signal.SIG_IGN):
-                _log.debug("Skipping signal override for %s with default/ignored handler", sig.name)
+            # Respect an explicit "ignore this signal" from the environment;
+            # everything else (SIG_DFL, Python's default_int_handler, or a real
+            # server handler) gets wrapped so the shutdown event is always set.
+            if previous is signal.SIG_IGN:
+                _log.debug("Not overriding ignored signal %s", sig.name)
                 continue
 
             handler = self._create_handler(sig, previous)
 
             try:
                 signal.signal(sig, handler)
-                self._previous_handlers.append((sig, previous))
             except (ValueError, RuntimeError) as exc:
                 _log.debug("Could not install signal handler for %s: %s", sig.name, exc)
                 continue
+            self._previous_handlers.append((sig, previous))
 
         self._installed = bool(self._previous_handlers)
         _log.debug("SIGNAL_HANDLERS_INSTALLED signals=%s", [s.name for s, _ in self._previous_handlers])
@@ -137,16 +140,11 @@ class SignalManager:
                 except RuntimeError:
                     _log.debug("Event loop closed while handling %s", sig.name)
 
-            # Chain to previous handler
-            if previous in (None, signal.SIG_DFL, signal.SIG_IGN):
-                return
-
-            if previous is signal.default_int_handler:
-                # This will raise KeyboardInterrupt
-                previous(signum, frame)
-                return
-
-            if callable(previous):
+            # Chain only to a real pre-existing handler (e.g. Uvicorn's). We
+            # deliberately do NOT chain to Python's defaults: SIG_DFL / SIG_IGN
+            # are no-ops here, and default_int_handler would raise
+            # KeyboardInterrupt before the lifecycle shutdown can run.
+            if callable(previous) and previous is not signal.default_int_handler:
                 previous(signum, frame)
 
         return _handler

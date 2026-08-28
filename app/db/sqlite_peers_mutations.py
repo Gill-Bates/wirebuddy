@@ -17,6 +17,7 @@ import sqlite3
 from ..utils.config import get_config
 from ..utils.time import utcnow
 from ..utils import vault
+from .sqlite_interfaces import get_interface
 from .sqlite_runtime import UNSET, UnsetType, transaction
 
 _VALID_ALLOWED_IPS_MODES = frozenset({"full", "split", "custom"})
@@ -180,6 +181,8 @@ def create_peer(
 	with transaction(conn, immediate=True):
 		if conn.execute("SELECT 1 FROM peers WHERE public_key = ?", (public_key,)).fetchone():
 			raise ValueError(f"Peer with public_key {public_key!r} already exists")
+		if get_interface(conn, interface) is None:
+			raise ValueError(f"Unknown interface: {interface!r}")
 		cur = conn.execute(
 			"""
 			INSERT INTO peers (

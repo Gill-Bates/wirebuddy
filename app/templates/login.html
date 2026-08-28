@@ -1,122 +1,115 @@
-<!DOCTYPE html>
-<html lang="en" data-bs-theme="light" class="login-page">
+{% extends "auth_base.html" %}
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="csrf-token" content="{{ csrf_token | e }}">
-    <meta http-equiv="Cache-Control" content="no-store">
-    <meta http-equiv="Pragma" content="no-cache">
-    <title>Login – WireBuddy</title>
-    <link rel="icon" type="image/svg+xml" href="/static/img/wirebuddy_1c.svg">
-    <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
-    <link href="/static/css/style.css" rel="stylesheet">
-    <link href="/static/css/wb-ui-system.css" rel="stylesheet">
-    <link href="/static/css/pages/login.css" rel="stylesheet">
-    <link href="/static/vendor/material-icons.css" rel="stylesheet">
-    <script src="/static/js/theme.js"></script>
-</head>
+{% block title %}Login – WireBuddy{% endblock %}
 
-<body data-csrf-token="{{ csrf_token }}">
-    <div class="card login-card">
-        <div class="card-body p-4 p-sm-5">
-            <div class="text-center mb-4">
-                <div class="logo-icon mb-2 d-flex justify-content-center">
-                    <img src="/static/img/wirebuddy_1c.svg" alt="WireBuddy" class="logo-main logo-themed">
-                </div>
-                <p class="login-tagline small mb-2">Use WireGuard with ease!</p>
+{% block extra_css %}
+<link href="/static/css/pages/login.css" rel="stylesheet">
+{% endblock %}
+
+{% block body_attrs %} data-csrf-token="{{ csrf_token }}"{% endblock %}
+
+{% block content %}
+<div class="card login-card">
+    <div class="card-body p-4 p-sm-5">
+        <div class="text-center mb-4">
+            <div class="logo-icon mb-2 d-flex justify-content-center">
+                <img src="/static/img/wirebuddy_1c.svg" alt="WireBuddy" class="logo-main logo-themed">
+            </div>
+            <h1 class="visually-hidden">Sign in to WireBuddy</h1>
+            <p class="login-tagline small mb-2">Use WireGuard with ease!</p>
+        </div>
+
+        <div class="alert alert-danger is-hidden" id="error-alert" role="alert" aria-live="assertive" aria-atomic="true"></div>
+
+        <div id="passkey-section" class="is-hidden mb-4">
+            <p class="text-muted small mb-2 text-center">Use a passkey first when available.</p>
+            <button type="button" class="btn btn-outline-secondary btn-lg w-100" id="passkey-login-btn">
+                <span class="material-icons align-middle me-2 icon-sm" aria-hidden="true">fingerprint</span>
+                Sign in with Passkey
+            </button>
+            <div class="d-flex align-items-center my-3">
+                <hr class="flex-grow-1">
+                <span class="px-3 text-muted small">or continue with password</span>
+                <hr class="flex-grow-1">
+            </div>
+        </div>
+
+        <form id="login-form" aria-describedby="error-alert">
+            <div class="mb-3">
+                <label for="username" class="form-label">Username</label>
+                <input type="text" class="form-control form-control-lg" id="username" name="username"
+                    autocomplete="username" autocapitalize="off" autocorrect="off" required autofocus
+                    aria-describedby="error-alert">
             </div>
 
-            <div class="alert alert-danger is-hidden" id="error-alert" role="alert" aria-live="assertive" aria-atomic="true"></div>
+            <div class="mb-4">
+                <label for="password" class="form-label">Password</label>
+                <input type="password" class="form-control form-control-lg" id="password" name="password"
+                    autocomplete="current-password" required
+                    aria-describedby="error-alert">
+            </div>
 
-            <div id="passkey-section" class="is-hidden mb-4">
-                <p class="text-muted small mb-2 text-center">Use a passkey first when available.</p>
-                <button type="button" class="btn btn-outline-secondary btn-lg w-100" id="passkey-login-btn">
-                    <span class="material-icons align-middle me-2 icon-sm">fingerprint</span>
-                    Sign in with Passkey
+            <button type="submit" class="btn btn-primary btn-lg w-100" id="submit-btn">
+                Sign In
+            </button>
+        </form>
+
+        <div id="mfa-form" class="is-hidden">
+            <div class="text-center mb-3" id="mfa-header">
+                <span class="material-icons icon-lg text-primary" aria-hidden="true">security</span>
+                <h2 class="h5 mt-2 mb-1">Two-Factor Authentication</h2>
+                <p class="text-muted small mb-0" id="otp-digits-hint">Enter the 6-digit code from your authenticator app</p>
+            </div>
+
+            {# One-time-code autofill only ever targets the first field; the paste/input
+               handlers in mfa.js spread a multi-character value across the remaining boxes. #}
+            <div class="otp-digits-container mb-3" id="otp-digits" role="group" aria-labelledby="otp-digits-hint">
+                <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="one-time-code" enterkeyhint="done" data-index="0" aria-label="Digit 1 of 6">
+                <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" enterkeyhint="done" data-index="1" aria-label="Digit 2 of 6">
+                <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" enterkeyhint="done" data-index="2" aria-label="Digit 3 of 6">
+                <span class="otp-separator" aria-hidden="true">–</span>
+                <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" enterkeyhint="done" data-index="3" aria-label="Digit 4 of 6">
+                <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" enterkeyhint="done" data-index="4" aria-label="Digit 5 of 6">
+                <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" enterkeyhint="done" data-index="5" aria-label="Digit 6 of 6">
+            </div>
+
+            <button type="button" class="btn btn-primary btn-lg w-100" id="mfa-submit-btn" disabled>
+                Verify
+            </button>
+
+            <div class="text-center mt-3">
+                <button type="button" class="btn btn-link btn-sm text-muted" id="use-recovery-btn">
+                    Use recovery code instead
                 </button>
-                <div class="d-flex align-items-center my-3">
-                    <hr class="flex-grow-1">
-                    <span class="px-3 text-muted small">or continue with password</span>
-                    <hr class="flex-grow-1">
-                </div>
             </div>
 
-            <form id="login-form" aria-describedby="error-alert">
+            <div id="recovery-form" class="is-hidden mt-3">
                 <div class="mb-3">
-                    <label for="username" class="form-label">Username</label>
-                    <input type="text" class="form-control form-control-lg" id="username" name="username"
-                        autocomplete="username" autocapitalize="off" autocorrect="off" required autofocus
-                        aria-describedby="error-alert">
+                    <label for="recovery-code" class="form-label">Recovery Code</label>
+                    <input type="text" class="form-control form-control-lg" id="recovery-code"
+                        placeholder="Enter recovery code" autocomplete="off"
+                        aria-label="Enter your recovery code">
                 </div>
-
-                <div class="mb-4">
-                    <label for="password" class="form-label">Password</label>
-                    <input type="password" class="form-control form-control-lg" id="password" name="password"
-                        autocomplete="current-password" required
-                        aria-describedby="error-alert">
-                </div>
-
-                <button type="submit" class="btn btn-primary btn-lg w-100" id="submit-btn">
-                    Sign In
-                </button>
-            </form>
-
-            <div id="mfa-form" class="is-hidden">
-                <div class="text-center mb-3" id="mfa-header">
-                    <span class="material-icons icon-lg text-primary">security</span>
-                    <h5 class="mt-2 mb-1">Two-Factor Authentication</h5>
-                    <p class="text-muted small mb-0">Enter the 6-digit code from your authenticator app</p>
-                </div>
-
-                <div class="otp-digits-container mb-3" id="otp-digits">
-                    <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="0">
-                    <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="1">
-                    <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="2">
-                    <span class="otp-separator">–</span>
-                    <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="3">
-                    <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="4">
-                    <input type="text" class="form-control otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="5">
-                </div>
-
-                <button type="button" class="btn btn-primary btn-lg w-100" id="mfa-submit-btn" disabled>
-                    Verify
-                </button>
-
-                <div class="text-center mt-3">
-                    <button type="button" class="btn btn-link btn-sm text-muted" id="use-recovery-btn">
-                        Use recovery code instead
-                    </button>
-                </div>
-
-                <div id="recovery-form" class="is-hidden mt-3">
-                    <div class="mb-3">
-                        <label for="recovery-code" class="form-label">Recovery Code</label>
-                        <input type="text" class="form-control form-control-lg" id="recovery-code" 
-                            placeholder="Enter recovery code" autocomplete="off"
-                            aria-label="Enter your recovery code">
-                    </div>
-                    <button type="button" class="btn btn-warning btn-lg w-100" id="recovery-submit-btn">
-                        Verify Recovery Code
-                    </button>
-                </div>
-            </div>
-
-            <div class="text-center mt-4">
-                <button type="button" class="btn btn-sm btn-outline-secondary theme-toggle-btn"
-                    id="theme-toggle-btn" aria-label="Toggle theme">
-                    <span class="material-icons theme-icon" id="theme-icon-login">dark_mode</span>
+                <button type="button" class="btn btn-warning btn-lg w-100" id="recovery-submit-btn">
+                    Verify Recovery Code
                 </button>
             </div>
         </div>
+
+        <div class="text-center mt-4">
+            <button type="button" class="btn btn-sm btn-outline-secondary theme-toggle-btn"
+                id="theme-toggle-btn" aria-label="Toggle theme">
+                <span class="material-icons theme-icon" id="theme-icon-login" aria-hidden="true">dark_mode</span>
+            </button>
+        </div>
     </div>
+</div>
+{% endblock %}
 
-    <!-- External JavaScript -->
-    <script src="/static/js/api.js" defer></script>
-    <script src="/static/js/ui-state.js" defer></script>
-    <script src="/static/js/passkeys.js" defer></script>
-    <script src="/static/js/mfa.js" defer></script>
-    <script src="/static/js/login.js" defer></script>
-</body>
-
-</html>
+{% block extra_js %}
+<script src="/static/js/api.js" defer></script>
+<script src="/static/js/ui-state.js" defer></script>
+<script src="/static/js/passkeys.js" defer></script>
+<script src="/static/js/mfa.js" defer></script>
+<script src="/static/js/login.js" defer></script>
+{% endblock %}

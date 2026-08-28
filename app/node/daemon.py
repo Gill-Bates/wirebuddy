@@ -87,6 +87,7 @@ STATE_FILE = DATA_DIR / "node_state.json"
 # Failure detection thresholds
 _MAX_AUTH_FAILURES = 3  # Consecutive 401 errors before assuming node removal
 _MAX_PENDING_SPEEDTEST_COMMANDS = 1  # Only one on-demand test may be queued at a time
+_MAX_PENDING_CONFIG_COMMANDS = 256  # Cap unacked config_changed command ids awaiting ACK
 _MAX_RECONNECT_DELAY = 60  # Maximum SSE reconnection delay in seconds
 _MAX_DECODED_ENROLLMENT_TOKEN_SIZE = 65_536
 _MAX_SSE_EVENT_SIZE = 64 * 1024
@@ -892,7 +893,6 @@ async def main() -> None:
 					if enroll_res.success:
 						enrolled = True
 						enroll_config = enroll_res.config
-						current_config_version = enroll_res.config_version
 						session_secret = enroll_res.session_secret
 						break
 					if enroll_res.fatal:
@@ -1069,9 +1069,9 @@ async def main() -> None:
 			last_saved_state = dict(node_state)  # Track for write guard
 			try:
 				while not shutdown_event.is_set():
-					# Check if node was removed (via SSE 401 or explicit event)
+					# Check if the master explicitly signalled node removal
 					if node_removed_event.is_set():
-						_log.warning("Node removal detected (authentication failure) — scheduling local state cleanup")
+						_log.warning("Node removal signal received from master — scheduling local state cleanup")
 						remove_enrollment_state = True
 						shutdown_event.set()
 						break
@@ -1131,11 +1131,17 @@ async def main() -> None:
 						if exc.response.status_code == 401:
 							consecutive_401_failures += 1
 							if consecutive_401_failures >= _MAX_AUTH_FAILURES:
-								_log.error(
-									"Multiple consecutive 401 errors (%d) — node likely removed from master",
+								# Do NOT treat this as node removal: a stale session
+								# secret, clock skew, or a transient master-side auth
+								# issue looks identical to removal here. Fail closed
+								# (stop syncing) but keep local state/cert intact —
+								# only an explicit node_removed event should wipe them.
+								_log.critical(
+									"Multiple consecutive 401 errors (%d) — authentication "
+									"repeatedly rejected; stopping with local state intact",
 									consecutive_401_failures,
 								)
-								node_removed_event.set()
+								shutdown_event.set()
 						else:
 							consecutive_401_failures = 0  # Reset on non-auth errors
 					except httpx.HTTPError as exc:
@@ -1366,6 +1372,30 @@ async def _push_heartbeat(
 		_log.warning("Failed to process heartbeat ACK: %s", exc)
 
 
+async def _aiter_bounded_lines(response: httpx.Response, max_line_size: int):
+	"""Yield decoded text lines from a streaming response with a bounded buffer.
+
+	httpx's aiter_lines() buffers a full line in memory before yielding it,
+	so a line with no newline could grow unboundedly before any size check
+	runs. This reads raw bytes instead and enforces max_line_size on the
+	in-progress buffer as data arrives.
+	"""
+	buf = bytearray()
+	async for chunk in response.aiter_bytes():
+		buf.extend(chunk)
+		while True:
+			newline_idx = buf.find(b"\n")
+			if newline_idx == -1:
+				break
+			raw_line = bytes(buf[:newline_idx])
+			del buf[: newline_idx + 1]
+			yield raw_line.decode("utf-8", errors="replace")
+		if len(buf) > max_line_size:
+			raise RuntimeError("SSE line exceeds maximum size")
+	if buf:
+		yield bytes(buf).decode("utf-8", errors="replace")
+
+
 async def _sse_listener(
 	master_url: str,
 	api_secret: str,
@@ -1442,7 +1472,7 @@ async def _sse_listener(
 						event_type: str | None = None
 						event_buffer: list[str] = []
 						try:
-							async for line in response.aiter_lines():
+							async for line in _aiter_bounded_lines(response, _MAX_SSE_EVENT_SIZE):
 								if shutdown_event.is_set():
 									break
 								
@@ -1464,7 +1494,14 @@ async def _sse_listener(
 										if event_type == "config_changed":
 											_log.info("Received config_changed event from master")
 											if command_id is not None:
-												config_command_ids.append(command_id)
+												if len(config_command_ids) < _MAX_PENDING_CONFIG_COMMANDS:
+													config_command_ids.append(command_id)
+												else:
+													_log.warning(
+														"Too many pending config_changed acks (%d) — dropping ack for command_id=%s",
+														len(config_command_ids),
+														command_id,
+													)
 											config_changed_event.set()
 										elif event_type == "restart_requested":
 											_log.warning("Received restart_requested event from master — initiating graceful shutdown")
@@ -1503,8 +1540,10 @@ async def _sse_listener(
 						detail_msg = f": {detail}" if detail else ""
 						_log.error("SSE authentication failed (consecutive: %d)%s", consecutive_401_count, detail_msg)
 						if consecutive_401_count >= _MAX_AUTH_FAILURES:
-							_log.error("Multiple SSE auth failures — node likely removed from master")
-							node_removed_event.set()
+							# See heartbeat 401 handling above: repeated auth failures
+							# are not proof of removal, so stop without wiping state.
+							_log.critical("Multiple SSE auth failures — stopping with local state intact")
+							shutdown_event.set()
 							return
 					else:
 						consecutive_401_count = 0  # Reset on non-auth errors

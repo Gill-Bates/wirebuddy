@@ -136,6 +136,10 @@ class InterfaceCreate(BaseModel):
 	dns: Optional[str] = Field(default=None, description="DNS servers for clients")
 	post_up: Optional[str] = Field(default=None, description="PostUp script")
 	post_down: Optional[str] = Field(default=None, description="PostDown script")
+	show_on_dashboard: bool = Field(
+		default=True,
+		description="Show this interface on dashboard network gauges",
+	)
 
 
 class InterfaceUpdate(BaseModel):
@@ -373,6 +377,7 @@ async def create_interface(
 			dns=payload.dns,
 			post_up=post_up,
 			post_down=post_down,
+			show_on_dashboard=payload.show_on_dashboard,
 		)
 	except sqlite3.IntegrityError:
 		raise HTTPException(status_code=409, detail=f"Interface '{payload.name}' already exists")
@@ -695,6 +700,20 @@ async def update_interface(
 	
 	# Only require restart if interface is active AND config was actually changed
 	restart_required = (code == 0) and config_changed
+
+	# Node config_version must reflect interface-level fields (dns/post_up/
+	# post_down/listen_port/address), not just peer changes, or nodes with a
+	# conditional config pull never notice this update.
+	if config_changed:
+		try:
+			from ..db.sqlite_nodes import bump_config_version_for_interface
+			from ..node import notifier as node_notifier
+
+			bumped = await run_in_threadpool(bump_config_version_for_interface, conn, name)
+			for node_id, new_version in bumped.items():
+				await node_notifier.notify_config_changed(node_id, new_version)
+		except Exception:
+			_log.warning("Failed to bump node config_version after interface update: %s", name, exc_info=True)
 
 	data = {
 		"name": name,

@@ -23,9 +23,13 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 
 	async def dispatch(self, request: Request, call_next: Callable) -> Response:
 		raw_request_id = request.headers.get("X-Request-ID", "")
-		request_id = raw_request_id if _REQUEST_ID_RE.fullmatch(raw_request_id) else str(uuid.uuid4())
-		
+		# Client input may be retained for correlation, but never becomes the
+		# server's internal tracing/security identifier.
+		request_id = str(uuid.uuid4())
+		external_request_id = raw_request_id if _REQUEST_ID_RE.fullmatch(raw_request_id) else None
+
 		request.state.request_id = request_id
+		request.state.external_request_id = external_request_id
 		
 		response = await call_next(request)
 		

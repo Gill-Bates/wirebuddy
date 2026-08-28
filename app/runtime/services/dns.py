@@ -324,7 +324,11 @@ class DNSService(RuntimeService):
                 _log.warning("DNS_INGESTION Unbound not ready; starting anyway")
 
             def _current_retention_days() -> int:
-                return dns_retention_days_cache
+                # Re-read from the DB (called from the writer's worker thread on
+                # a fixed refresh interval) so retention changes take effect
+                # without waiting for an ingestion restart.
+                _enabled, retention_days = self._read_runtime_settings_sync()
+                return retention_days
 
             try:
                 # Ensure offset path exists
@@ -339,6 +343,7 @@ class DNSService(RuntimeService):
                     dns_dir=self._config.dns_dir,
                     blocked_domains_func=unbound.get_blocked_domains,
                     retention_days_func=_current_retention_days,
+                    dns_logging_disabled_ips_func=self._load_dns_logging_disabled_ips_sync,
                     tsdb_dir=self._config.tsdb_dir,
                 )
 
@@ -424,6 +429,17 @@ class DNSService(RuntimeService):
         try:
             regenerate_all_peer_tags(conn)
             return len(get_all_peers(conn))
+        finally:
+            close_connection(conn)
+
+    def _load_dns_logging_disabled_ips_sync(self) -> set[str]:
+        """Load peer IPs that opted out of DNS query logging (sync, runs in thread)."""
+        from ...db.sqlite_runtime import connect, close_connection
+        from ...db.sqlite_peers import get_dns_logging_disabled_ips
+
+        conn = connect(self._config.db_path)
+        try:
+            return get_dns_logging_disabled_ips(conn)
         finally:
             close_connection(conn)
 
@@ -513,7 +529,8 @@ class DNSService(RuntimeService):
         """Reload DNS configuration without restart.
 
         Returns:
-            True if reload succeeded.
+            True only if the resulting Unbound state matches the written config
+            (reloaded and running while enabled, stopped while disabled).
         """
         from ...dns import unbound
 
@@ -529,10 +546,32 @@ class DNSService(RuntimeService):
                     else:
                         _log.warning("DNS_UNBOUND_STOP_FAILED: %s", msg)
                 return False
+
+            # Honor a changed dns_service_enabled setting: start or stop Unbound
+            # to match before attempting a live reload.
             try:
-                await unbound.reload_config()
-                _log.info("DNS_CONFIG_RELOADED")
-                return True
+                await self._sync_unbound_state()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.exception("DNS_RELOAD_FAILED could not sync Unbound state")
+                return False
+
+            if not self._service_enabled:
+                return not await unbound.is_running()
+
+            if not await unbound.is_running():
+                _log.warning("DNS_RELOAD_FAILED Unbound is not running")
+                return False
+
+            try:
+                ok, msg = await unbound.reload_config()
             except Exception:
                 _log.exception("DNS_RELOAD_FAILED runtime state may not match written config")
                 return False
+
+            if ok:
+                _log.info("DNS_CONFIG_RELOADED")
+            else:
+                _log.error("DNS_RELOAD_FAILED error=%s", msg)
+            return ok

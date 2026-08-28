@@ -75,10 +75,13 @@
     // UI Helpers
     // ============================================================================
 
+    // Visibility goes through the shared .is-hidden state class rather than
+    // inline style.display, so the page keeps working under a CSP that sets
+    // style-src-attr 'none'.
     function _toggleError(show, msg = '') {
         if (!_ui.errorAlert) return;
         _ui.errorAlert.textContent = msg;
-        _ui.errorAlert.style.display = show ? 'block' : 'none';
+        _ui.errorAlert.classList.toggle('is-hidden', !show);
     }
 
     function _showStep(visibleStep) {
@@ -90,7 +93,7 @@
 
         for (const [stepName, el] of Object.entries(steps)) {
             if (!el) continue;
-            el.style.display = stepName === visibleStep ? 'block' : 'none';
+            el.classList.toggle('is-hidden', stepName !== visibleStep);
         }
     }
 

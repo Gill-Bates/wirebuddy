@@ -18,7 +18,7 @@ from ..utils import vault
 from .sqlite_runtime import transaction
 
 
-_INTERFACE_NAME_RE = re.compile(r"^[A-Za-z0-9_.=-]{1,32}$")
+_INTERFACE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,14}$")
 
 
 def _validate_interface_name(name: str) -> str:
@@ -74,6 +74,7 @@ def create_interface(
 	post_up: str | None = None,
 	post_down: str | None = None,
 	address6: str | None = None,
+	show_on_dashboard: bool = True,
 ) -> int:
 	"""Create a new WireGuard interface in the database."""
 	now = utcnow()
@@ -87,9 +88,9 @@ def create_interface(
 			"""
 			INSERT INTO interfaces (
 				name, private_key, public_key, address, address6, listen_port,
-				client_endpoint_port, dns, post_up, post_down, is_enabled, created_at, updated_at
+				client_endpoint_port, dns, post_up, post_down, show_on_dashboard, is_enabled, created_at, updated_at
 			)
-			VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 1, ?, ?)
 			""",
 			(
 				name,
@@ -101,6 +102,7 @@ def create_interface(
 				dns,
 				post_up,
 				post_down,
+				int(show_on_dashboard),
 				now,
 				now,
 			),

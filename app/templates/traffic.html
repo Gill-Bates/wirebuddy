@@ -15,7 +15,7 @@
     <!-- Header -->
     <div class="wb-page-header">
         <h1 class="page-title">
-            <span class="material-icons me-2">show_chart</span>
+            <span class="material-icons me-2" aria-hidden="true">show_chart</span>
             Traffic
         </h1>
         <div class="traffic-controls{% if not traffic_analysis_enabled %} d-none{% endif %}" id="traffic-controls">
@@ -45,11 +45,11 @@
             <div class="card">
                 <div class="card-body text-center py-5">
                     <span class="material-icons icon-xl text-muted mb-3" aria-hidden="true">show_chart</span>
-                    <h3 class="h5 mb-2">Traffic Analysis Disabled</h3>
+                    <h2 class="h5 mb-2">Traffic Analysis Disabled</h2>
                     <p class="text-muted mb-3">Enable Traffic Analysis in Settings to use this feature.</p>
                     {% if is_admin %}
                     <a href="/ui/settings#wireguard" class="btn btn-primary">
-                        <span class="material-icons align-middle me-1">settings</span>
+                        <span class="material-icons align-middle me-1" aria-hidden="true">settings</span>
                         Go to Settings
                     </a>
                     {% else %}
@@ -69,7 +69,7 @@
         <div class="col-12">
             <div class="card h-100">
                 <div class="card-header">
-                    <h3 class="h5 mb-0">Per-Peer</h3>
+                    <h2 class="h5 mb-0">Per-Peer</h2>
                 </div>
                 <div class="card-body">
                     <div id="traffic-combined-loading" class="d-flex justify-content-center align-items-center traffic-loading-height">

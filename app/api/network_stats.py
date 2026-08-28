@@ -18,7 +18,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 from starlette.concurrency import run_in_threadpool
@@ -53,6 +53,8 @@ _prev_stats_lock = threading.Lock()
 # Response cache to prevent hammering sysfs
 _cache: dict[str, Any] = {"interfaces": []}
 _cache_ts: float = 0.0
+# Guards _cache/_cache_ts and serialises the sysfs sampling that fills them.
+_cache_lock = threading.Lock()
 _CACHE_TTL = 0.5  # seconds - minimum interval between sysfs reads
 
 # Cache for primary interface detection (changes rarely)
@@ -140,7 +142,13 @@ def _is_wg_interface(name: str) -> bool:
 
 
 def _get_all_interface_stats(wg_visibility: dict[str, bool] | None = None) -> dict[str, Any]:
-    """Get statistics for all relevant interfaces.
+    """Get statistics for all relevant interfaces (thread-safe wrapper)."""
+    with _cache_lock:
+        return _collect_interface_stats(wg_visibility)
+
+
+def _collect_interface_stats(wg_visibility: dict[str, bool] | None = None) -> dict[str, Any]:
+    """Collect interface statistics. Caller must hold _cache_lock.
     
     Thread-safe: Uses lock to protect shared _prev_stats dict.
     Caches results for _CACHE_TTL seconds to prevent hammering sysfs.
@@ -246,11 +254,15 @@ def _get_all_interface_stats(wg_visibility: dict[str, bool] | None = None) -> di
     # Sort: WireGuard interfaces first, then by name
     results.sort(key=lambda x: (not x["is_wg"], x["name"]))
     
-    # Update cache
+    # Only cache UNFILTERED results. Storing a visibility-filtered snapshot
+    # here would let a dashboard request poison the cache that the scheduler
+    # reads as "all interfaces", silently dropping hidden interfaces from the
+    # recorded time series depending on request timing.
     result = {"interfaces": results}
-    _cache.clear()
-    _cache.update(result)
-    _cache_ts = now
+    if wg_visibility is None:
+        _cache.clear()
+        _cache.update(result)
+        _cache_ts = now
     
     return result
 
@@ -328,8 +340,8 @@ def sample_network_stats(tsdb_dir: Path) -> int:
 @router.get("/network/stats/history")
 async def get_network_stats_history(
     request: Request,
-    interface: str = Query(..., description="Interface name (e.g., wg0, eth0)"),
-    range: str = Query("1h", description="Time range: 1h, 6h, 24h, 7d"),
+    interface: str = Query(..., min_length=1, max_length=15, description="Interface name (e.g., wg0, eth0)"),
+    range: Literal["1h", "6h", "24h", "7d"] = Query("1h", description="Time range: 1h, 6h, 24h, 7d"),
     user: Any = Depends(get_current_user),
 ):
     """Get historical network stats for sparkline display.
@@ -355,9 +367,13 @@ async def get_network_stats_history(
     
     cfg = get_config(request)
     
-    # Validate range
-    hours = NETWORK_RANGE_TO_HOURS.get(range, 1)
+    # `range` is constrained by the Literal above, so an unknown value is
+    # rejected with 422 instead of silently degrading to 1h.
+    hours = NETWORK_RANGE_TO_HOURS[range]
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    # Derive the point cap from the requested window (30s sampling = 120/h)
+    # plus headroom. A fixed 7200 silently truncated 7d to ~2.5 days.
+    point_limit = min(hours * 120 + 120, 21_000)
     
     # Query TSDB
     metric_name = f"iface_{interface}"
@@ -369,7 +385,7 @@ async def get_network_stats_history(
                 peer_key=NETWORK_STATS_KEY,
                 metric=metric_name,
                 since=since,
-                limit=7200,  # 1h @ 30s = 120, 7d @ 30s = 20160 - cap at reasonable limit
+                limit=point_limit,  # 30s sampling: 120 points/hour + headroom
             )
             return [
                 {

@@ -50,6 +50,13 @@ for HTTPS requests or when explicitly forced. Cookie `Secure` handling depends
 on trustworthy HTTPS detection; do not trust forwarded headers from arbitrary
 clients.
 
+TLS can be terminated either by a trusted reverse proxy or by WireBuddy itself
+via **Settings → General → Serve GUI over HTTPS**. With the built-in listener
+the request scheme is `https` directly, so `Secure` cookies do not depend on
+forwarded-header trust, and logins and node enrollments over plain HTTP are
+rejected. See
+[Built-in HTTPS Listener](../configuration/security.md#built-in-https-listener).
+
 ## Secrets at rest
 
 `WIREBUDDY_SECRET_KEY` is required in master mode and must contain at least 32
@@ -108,12 +115,23 @@ network_mode: host
 cap_drop:
   - ALL
 cap_add:
-  - NET_ADMIN
+  - NET_ADMIN          # WireGuard interfaces, iptables/nft rules
+  - NET_BIND_SERVICE   # Unbound binds the privileged DNS port 53
+  - SETUID             # Unbound drops privileges to the 'unbound' user
+  - SETGID
+  - CHOWN              # hands the DNS query log to that user
+  - DAC_OVERRIDE       # root writes into the unbound-owned log directory
 security_opt:
   - no-new-privileges:true
 devices:
   - /dev/net/tun:/dev/net/tun
 ```
+
+The capability set is deliberately explicit rather than a single `NET_ADMIN`:
+`cap_drop: ALL` also strips root's DAC and ID-change privileges, so the
+bundled Unbound resolver cannot bind port 53, drop to the `unbound` user, or
+write its query log without the four additional capabilities above. Removing
+any of them makes DNS fail at startup.
 
 The process runs as root inside the container because WireGuard and iptables
 management require network administration. It does not run as an unprivileged
@@ -132,14 +150,16 @@ ports with the host and upstream firewalls.
 - Backups omit active sessions and login-attempt state. Their integrity key is
   derived from `WIREBUDDY_SECRET_KEY`; transport/storage encryption is the
   operator's responsibility.
-- The built-in ACME client stores certificates but does not automatically renew
-  them or configure a TLS listener.
+- The built-in ACME client stores certificates and, when **Serve GUI over HTTPS**
+  is enabled, WireBuddy presents them on its own TLS listener. It does not renew
+  them automatically, and a restart is required to pick up a new certificate.
 
 ## Current product boundaries
 
 The current release does not include an active-session manager, login-history
 UI, separate API-token subsystem, Security settings tab, automatic certificate
-renewal, SIEM export, or built-in vulnerability/compliance certification.
+renewal or hot certificate reload, SIEM export, or built-in
+vulnerability/compliance certification.
 
 For a deployment checklist, continue with
 [Security Best Practices](best-practices.md) and

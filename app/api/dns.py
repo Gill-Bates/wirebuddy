@@ -1496,14 +1496,27 @@ def _append_action_rule(
 	return updated_text, canonical, True, False
 
 
+# Upper bound for a full blocklist rebuild + Unbound restart.
+_DNS_REBUILD_TIMEOUT_SECONDS = 300.0
+
+
 async def _rebuild_dns_background(urls: list[str], rules_text: str) -> None:
 	"""Background task to rebuild blocklist + restart Unbound (fire-and-forget)."""
 	global _rebuild_in_progress
 	_rebuild_in_progress = True
 	try:
-		count, msg = await unbound.update_blocklists(urls, custom_rules_text=rules_text)
-		reloaded, _ = await unbound.restart()
+		# Bounded: this is the single latest-wins worker. A hanging blocklist
+		# download or service call would otherwise block it forever, so later
+		# config changes would be accepted but never applied.
+		async with asyncio.timeout(_DNS_REBUILD_TIMEOUT_SECONDS):
+			count, msg = await unbound.update_blocklists(urls, custom_rules_text=rules_text)
+			reloaded, _ = await unbound.restart()
 		_log.info("DNS_BACKGROUND rebuild complete: %s domains, reloaded=%s, %s", count, reloaded, msg)
+	except TimeoutError:
+		_log.error(
+			"DNS_BACKGROUND rebuild timed out after %ss",
+			_DNS_REBUILD_TIMEOUT_SECONDS,
+		)
 	except Exception:
 		_log.exception("DNS_BACKGROUND rebuild failed")
 	finally:

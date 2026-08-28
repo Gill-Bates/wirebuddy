@@ -62,6 +62,41 @@ def _opts(include_tsdb: bool = False, rng: str = "30d") -> backup.BackupCreateOp
     return backup.BackupCreateOptions(include_tsdb_metrics=include_tsdb, tsdb_range=rng)
 
 
+def test_backup_download_range_override_is_independent_of_saved_settings(tmp_path: Path) -> None:
+    db = tmp_path / "wirebuddy.db"
+    _make_db(db)
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?)",
+            (backup.SETTING_BACKUP_INCLUDE_TSDB, "0"),
+        )
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?)",
+            (backup.SETTING_BACKUP_TSDB_RANGE, "7d"),
+        )
+        conn.commit()
+
+        options = backup._get_backup_create_options(conn, "90d")
+        settings_only = backup._get_backup_create_options(conn, "none")
+    finally:
+        conn.close()
+
+    assert options == backup.BackupCreateOptions(include_tsdb_metrics=True, tsdb_range="90d")
+    assert settings_only == backup.BackupCreateOptions(include_tsdb_metrics=False, tsdb_range="30d")
+
+
+def test_backup_download_range_override_rejects_invalid_value(tmp_path: Path) -> None:
+    db = tmp_path / "wirebuddy.db"
+    _make_db(db)
+    conn = sqlite3.connect(str(db))
+    try:
+        with pytest.raises(HTTPException, match="Invalid backup metrics range"):
+            backup._get_backup_create_options(conn, "all")
+    finally:
+        conn.close()
+
+
 # ─── Schema export ───────────────────────────────────────────────────────────
 
 

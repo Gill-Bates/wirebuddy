@@ -33,16 +33,61 @@ stored in SQLite.
 - Absolute session lifetime is 24 hours.
 - The authentication cookie is `HttpOnly` and `SameSite=Lax`.
 - The `Secure` flag is enabled when HTTPS is detected or
-  `FORCE_HTTPS_COOKIES` is set.
+  `FORCE_HTTPS_COOKIES` is set. With the built-in HTTPS listener it is always
+  set, because the request scheme is `https` directly.
 
 There is currently no session-duration setting or active-session management
 screen.
 
+## Built-in HTTPS Listener
+
+WireBuddy can terminate TLS itself instead of relying on a reverse proxy.
+Enable **Settings → General → Serve GUI over HTTPS**. The setting is read at
+startup, so restart WireBuddy afterwards.
+
+This is a single, all-or-nothing switch (`gui_https_enabled`, also settable via
+`PATCH /api/wireguard/settings`). Enabling it does two things: the GUI port
+serves TLS, and logins and node enrollments reject plain-HTTP transports, so
+session cookies and node secrets are never sent in clear text. There is no
+separate policy toggle. The ACME challenge path is never affected.
+
+Which certificate is presented is decided automatically:
+
+1. A **Let's Encrypt** certificate for the configured Server FQDN, if one exists
+   under `data/certs/<fqdn>/` and has not expired. Staging certificates are
+   ignored.
+2. Otherwise a **self-signed** certificate, generated on demand into
+   `data/certs/_selfsigned/`. Browsers show a trust warning for it.
+
+Request a certificate in **Settings → Let's Encrypt** and restart; the ACME
+certificate then replaces the self-signed one automatically. Nothing needs to be
+copied by hand, and the two never share files. The Settings page shows which
+certificate would be served.
+
+### Let's Encrypt while HTTPS is enabled
+
+ACME HTTP-01 validation always connects to **port 80 over plain HTTP**. Once the
+GUI port speaks TLS, WireBuddy therefore also starts a small plaintext listener
+that answers only `/.well-known/acme-challenge/…` and redirects everything else
+to HTTPS. Certificate issue and renewal keep working, and no authenticated
+surface is exposed in clear text.
+
+That listener defaults to port 80 and is configured with the `gui_acme_http_port`
+setting; set it to `0` to disable it. Make sure the port is reachable from the
+internet, otherwise validation fails.
+
+Certificates are read at startup only. **Restart WireBuddy after issuing or
+renewing a certificate** for the new one to be served.
+
 ## HTTPS and Reverse Proxies
 
-Terminate TLS in Caddy, nginx, Traefik, or another trusted reverse proxy. For a
-same-host proxy, the Docker defaults trust loopback. For other proxy addresses,
-configure both:
+If you prefer to terminate TLS upstream instead of using the built-in listener,
+leave **Serve GUI over HTTPS** off and terminate in Caddy, nginx, Traefik, or
+another trusted reverse proxy. Do not enable both — WireBuddy would then expect
+a TLS connection on a port the proxy speaks plain HTTP to.
+
+For a same-host proxy, the Docker defaults trust loopback. For other proxy
+addresses, configure both:
 
 ```bash
 WIREBUDDY_TRUST_PROXY_HEADERS=1
@@ -182,7 +227,9 @@ when that threat model requires it.
 
 The supplied Compose service:
 
-- drops all capabilities and adds back only `NET_ADMIN`
+- drops all capabilities and adds back only the six that are required:
+  `NET_ADMIN` for WireGuard and iptables, and `NET_BIND_SERVICE`, `SETUID`,
+  `SETGID`, `CHOWN`, `DAC_OVERRIDE` for the bundled Unbound resolver
 - enables `no-new-privileges`
 - mounts `/dev/net/tun`
 - uses host networking as required by WireGuard

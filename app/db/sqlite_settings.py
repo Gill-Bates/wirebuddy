@@ -540,14 +540,30 @@ def _set_json_dict(conn: sqlite3.Connection, key: str, value: dict[str, Any] | N
 
 
 def get_enabled_blocklists(conn: sqlite3.Connection) -> list[str]:
-	"""Get list of enabled blocklist URLs from settings."""
-	value = _get_json_list(conn, "dns_blocklists")
-	if value:
-		return value
-	# Return default blocklists if not set or invalid
-	from ..dns import constants as dns_constants
+	"""Get list of enabled blocklist URLs from settings.
 
-	return list(dns_constants.DEFAULT_BLOCKLISTS)
+	Distinguishes "never configured" (falls back to defaults) from
+	"explicitly set to an empty list" (all blocklists disabled) — an empty
+	list is a valid, intentional admin choice, not equivalent to "unset".
+	"""
+	raw = get_setting(conn, "dns_blocklists")
+	if raw is None:
+		from ..dns import constants as dns_constants
+
+		return list(dns_constants.DEFAULT_BLOCKLISTS)
+
+	try:
+		parsed = json.loads(raw)
+	except json.JSONDecodeError:
+		_log.warning("Failed to parse JSON list setting dns_blocklists")
+		parsed = None
+
+	if not isinstance(parsed, list):
+		from ..dns import constants as dns_constants
+
+		return list(dns_constants.DEFAULT_BLOCKLISTS)
+
+	return [str(item).strip() for item in parsed if str(item).strip()]
 
 
 def set_enabled_blocklists(conn: sqlite3.Connection, urls: list[str]) -> None:
@@ -781,6 +797,22 @@ def set_dns_custom_rules(conn: sqlite3.Connection, rules_text: str) -> None:
 # ---------------------------------------------------------------------------
 # Speedtest / Bandwidth Measurement
 # ---------------------------------------------------------------------------
+
+def get_gui_https_enabled(conn: sqlite3.Connection) -> bool:
+	"""Return True if WireBuddy serves the GUI over HTTPS.
+
+	This is the single HTTPS switch: it makes run.py terminate TLS on the GUI
+	port (see app/utils/tls.py for certificate selection) and makes login and
+	node enrollment reject plaintext transports. Read at startup by run.py, so
+	changing it requires a restart.
+	"""
+	return _get_bool_setting(conn, "gui_https_enabled", default=False)
+
+
+def set_gui_https_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
+	"""Persist the built-in HTTPS listener setting."""
+	_set_bool_setting(conn, "gui_https_enabled", enabled)
+
 
 def get_speedtest_enabled(conn: sqlite3.Connection) -> bool:
 	"""Return True if scheduled speed tests are enabled."""

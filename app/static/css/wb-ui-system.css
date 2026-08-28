@@ -1,6 +1,6 @@
 /* =========================================
    WireBuddy UI System
-   Zentrale Design-Definition für konsistentes UI
+   Central design definition for a consistent UI
    ========================================= */
 
 /* ---------- 1. Design Tokens ---------- */
@@ -703,10 +703,10 @@ html body .my-4 {
 
 /* ---------- 24. Mobile Optimizations ---------- */
 
-/* Reduzierte Seitenabstände für bessere Viewport-Nutzung auf mobilen Geräten */
+/* Reduced page spacing for better viewport usage on mobile devices */
 @media (max-width: 767.98px) {
 
-    /* Main content area - reduziertes Padding (consistent bottom for footer spacing) */
+    /* Main content area - reduced padding (consistent bottom for footer spacing) */
     .main-content {
         padding-top: 0.75rem;
         padding-left: 0.75rem;
@@ -714,53 +714,53 @@ html body .my-4 {
         padding-bottom: calc(1rem + var(--wb-footer-height));
     }
 
-    /* Grid Rows - nur horizontale Gutters reduziert; vertikale bleiben
-       beim Layout-Standard (24px) für konsistente Kachelabstände. */
+    /* Grid rows - only horizontal gutters are reduced; vertical gutters remain
+       at the layout standard (24px) for consistent card spacing. */
     .row.g-3,
     .row.g-4 {
         --bs-gutter-x: 0.75rem;
     }
 
-    /* Container - minimales Padding für mehr Platz */
+    /* Container - minimal padding for more space */
     .container-fluid {
         padding-left: 0.5rem;
         padding-right: 0.5rem;
     }
 
-    /* Navbar container - Logo bündig mit Kacheln, Buttons mit Abstand vom Rand */
+    /* Navbar container - align the logo with the tiles and keep buttons away from the edge */
     .navbar .container-fluid {
         padding-left: 0.5rem !important;
         padding-right: 1rem !important;
     }
 
-    /* Navbar controls - zusätzlicher Abstand vom rechten Rand */
+    /* Navbar controls - additional spacing from the right edge */
     .navbar .navbar-controls {
         margin-right: 0.5rem;
     }
 
-    /* Navbar brand - Logo mit leichtem Einzug vom linken Viewport-Rand */
+    /* Navbar brand - slight inset from the left viewport edge */
     .navbar .navbar-brand {
         margin-left: 0.8rem;
     }
 
-    /* Page wrapper - angepasstes vertikales Padding (spacing-2 = 12px) */
+    /* Page wrapper - adjusted vertical padding (spacing-2 = 12px) */
     .wb-page {
         padding-top: var(--wb-space-2);
         padding-bottom: var(--wb-space-2);
     }
 
-    /* Page header - kompakteres Layout */
+    /* Page header - more compact layout */
     .wb-page-header {
         margin-bottom: var(--wb-space-2);
         gap: 0.5rem;
     }
 
-    /* Sections - reduzierter Abstand */
+    /* Sections - reduced spacing */
     .wb-section {
         margin-bottom: var(--wb-space-2);
     }
 
-    /* Cards - kompakteres Padding */
+    /* Cards - more compact padding */
     .card-header {
         padding: 0.5rem 0.75rem;
     }
@@ -777,17 +777,17 @@ html body .my-4 {
     }
 }
 
-/* Tablet-Optimierungen für mittlere Bildschirmgrößen */
+/* Tablet optimizations for medium-sized screens */
 @media (min-width: 768px) and (max-width: 991.98px) {
 
-    /* Grid Rows - nur horizontale Gutters angepasst; vertikale bleiben
-       beim Layout-Standard (24px) für konsistente Kachelabstände. */
+    /* Grid rows - only horizontal gutters are adjusted; vertical gutters remain
+       at the layout standard (24px) for consistent card spacing. */
     .row.g-3,
     .row.g-4 {
         --bs-gutter-x: 1rem;
     }
 
-    /* Main content - leicht reduziertes Padding (consistent bottom for footer spacing) */
+    /* Main content - slightly reduced padding (consistent bottom for footer spacing) */
     .main-content {
         padding-top: 1rem;
         padding-left: 1rem;
@@ -795,7 +795,7 @@ html body .my-4 {
         padding-bottom: calc(1.25rem + var(--wb-footer-height));
     }
 
-    /* Container - moderates Padding */
+    /* Container - moderate padding */
     .container-fluid {
         padding-left: 0.75rem;
         padding-right: 0.75rem;
@@ -807,7 +807,7 @@ html body .my-4 {
         padding-right: 1.25rem !important;
     }
 
-    /* Navbar controls - moderater Abstand */
+    /* Navbar controls - moderate spacing */
     .navbar .navbar-controls {
         margin-right: 0.5rem;
     }

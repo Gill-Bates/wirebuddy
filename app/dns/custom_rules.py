@@ -210,6 +210,11 @@ _VALID_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$|^[a-z0-9]
 # Heuristic guard against catastrophic backtracking patterns like /(a+)+b/
 _NESTED_REGEX_QUANTIFIER_RE = re.compile(r"\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)[+*]")
 
+# Complementary heuristic: quantified alternation groups like /(a|a)+b/ are
+# also classic catastrophic-backtracking patterns, but have no quantifier
+# *inside* the parens, so _NESTED_REGEX_QUANTIFIER_RE alone cannot catch them.
+_QUANTIFIED_ALTERNATION_RE = re.compile(r"\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)*\)[+*]")
+
 
 def _parse_rule_options(options_raw: str, *, lineno: int, text: str) -> tuple[str | None, ParseError | None]:
 	"""Parse optional rule suffix options (currently only client=...)."""
@@ -343,6 +348,12 @@ def _parse_single_rule(text: str, lineno: int) -> ParsedRule | ParseError:
 				line=lineno,
 				text=text,
 				error="Potentially unsafe regex (nested quantifiers)",
+			)
+		if _QUANTIFIED_ALTERNATION_RE.search(pattern):
+			return ParseError(
+				line=lineno,
+				text=text,
+				error="Potentially unsafe regex (quantified alternation)",
 			)
 		
 		try:

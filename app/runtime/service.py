@@ -162,6 +162,18 @@ class RuntimeService(ABC):
             )
             _log.error("SERVICE_START_TIMEOUT name=%s timeout=%.1fs", self.name, self.start_timeout)
             raise
+        except asyncio.CancelledError:
+            # Don't leave the service stuck in STARTING - mark it failed so a
+            # later stop() runs domain cleanup for anything already started.
+            self._state = ServiceState.FAILED
+            self._health = ServiceHealth(
+                state=self._state,
+                healthy=False,
+                error="Start cancelled",
+            )
+            self._shutdown_event.set()
+            _log.warning("SERVICE_START_CANCELLED name=%s", self.name)
+            raise
         except Exception as exc:
             self._state = ServiceState.FAILED
             self._health = ServiceHealth(
@@ -192,11 +204,31 @@ class RuntimeService(ABC):
                 task.cancel()
 
         if self._background_tasks:
-            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            # A task that swallows CancelledError or is stuck in non-cancellable
+            # to_thread() I/O must not block stop() forever - bound the wait.
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*self._background_tasks, return_exceptions=True),
+                    timeout=self.stop_timeout,
+                )
+            except asyncio.TimeoutError:
+                pending = sum(1 for task in self._background_tasks if not task.done())
+                _log.warning(
+                    "SERVICE_STOP_TASKS_TIMEOUT name=%s timeout=%.1fs pending=%d",
+                    self.name,
+                    self.stop_timeout,
+                    pending,
+                )
             self._background_tasks.clear()
 
         try:
-            if previous_state == ServiceState.RUNNING:
+            # Also run domain cleanup for a service that only partially started
+            # (STARTING / FAILED) so processes and interfaces are not left behind.
+            if previous_state in (
+                ServiceState.RUNNING,
+                ServiceState.STARTING,
+                ServiceState.FAILED,
+            ):
                 await asyncio.wait_for(self._do_stop(), timeout=self.stop_timeout)
             self._state = ServiceState.STOPPED
             self._stopped_at = datetime.now(UTC)

@@ -12,14 +12,23 @@ to a country via GeoLite2.
 
 Data flow
 ~~~~~~~~~
-1. ``/proc/net/nf_conntrack`` (primary) or ``conntrack -L`` (fallback)
-2. Filter entries whose **source** is inside a WireGuard subnet
-3. Resolve **destination** IPs → country via GeoIP (cached)
-4. Compute byte deltas since last sample (per-connection tracking)
-5. Return aggregated ``{country_code: {"rx": bytes, "tx": bytes}}``
+1. ``/proc/net/nf_conntrack``
+2. If the proc table is unavailable, sampling is skipped.
+3. Filter entries whose **source** is inside a WireGuard subnet
+4. Resolve **destination** IPs → country via GeoIP (cached)
+5. Compute byte deltas since last sample (per-connection tracking)
+6. Return aggregated ``{country_code: {"rx": bytes, "tx": bytes}}``
 
 The caller (scheduler task) stores the result in TSDB for historical
 queries.
+
+Multi-worker safety
+~~~~~~~~~~~~~~~~~~~
+The per-connection baseline (``_ct_prev``) lives in process memory.  If more
+than one process sampled the same kernel table and wrote to TSDB, the stored
+totals would be inflated by roughly the process count.
+``acquire_sampler_leadership()`` elects exactly one sampler process via a held
+advisory file lock; every other process skips sampling.
 
 Requirements
 ~~~~~~~~~~~~
@@ -44,10 +53,12 @@ from __future__ import annotations
 import ipaddress
 from collections import defaultdict
 from collections.abc import Iterator
+import fcntl
 import json
 import logging
 import os
 import re
+import stat
 import subprocess
 import threading
 import time
@@ -61,6 +72,8 @@ _log = logging.getLogger(__name__)
 __all__ = [
 	"init_conntrack_accounting",
 	"sample_country_traffic",
+	"acquire_sampler_leadership",
+	"release_sampler_leadership",
 	"reset_state",
 	"GEO_TRAFFIC_KEY",
 	"GEO_TRAFFIC_METRIC",
@@ -76,7 +89,6 @@ _CONNTRACK_PROC = Path("/proc/net/nf_conntrack")
 _CONNTRACK_ACCT = Path("/proc/sys/net/netfilter/nf_conntrack_acct")
 _MAX_CONNTRACK_LINE = 16_384
 _MAX_IP_JSON_OUTPUT = 10_000_000
-_MAX_CONNTRACK_TOOL_OUTPUT = 20_000_000
 _MAX_TRACKED_CONNECTIONS = 500_000
 _MAX_PEER_NAME_LEN = 128
 _IFACE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,14}$")
@@ -417,7 +429,7 @@ def _get_subnets_from_db() -> tuple[
 # ---------------------------------------------------------------------------
 
 def _read_conntrack_lines() -> Iterator[str]:
-	"""Read conntrack entries from /proc or the conntrack tool.
+	"""Read conntrack entries from /proc.
 
 	Streams /proc/net/nf_conntrack to avoid memory spikes on large systems.
 	"""
@@ -557,6 +569,83 @@ def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Sampler leadership (multi-worker safety)
+# ---------------------------------------------------------------------------
+
+_SAMPLER_LOCK_NAME = ".conntrack-sampler.lock"
+_sampler_lock = threading.Lock()
+_sampler_lock_fd: int | None = None
+
+
+def acquire_sampler_leadership(lock_dir: Path) -> bool:
+	"""Return ``True`` when this process is the elected conntrack sampler.
+
+	The first process to take the advisory lock keeps it for its whole
+	lifetime; the fd is only released when the process exits (or via
+	``release_sampler_leadership()``), at which point another process can take
+	over on its next tick with a fresh baseline.  Safe to call on every
+	scheduler tick — once leadership is held the call is a cheap no-op.
+	"""
+	global _sampler_lock_fd
+
+	with _sampler_lock:
+		if _sampler_lock_fd is not None:
+			return True
+
+		try:
+			lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+			lock_path = lock_dir / _SAMPLER_LOCK_NAME
+			flags = os.O_RDWR | os.O_CREAT
+			flags |= getattr(os, "O_CLOEXEC", 0)
+			flags |= getattr(os, "O_NOFOLLOW", 0)
+			fd = os.open(lock_path, flags, 0o600)
+		except OSError as exc:
+			_log.warning("COUNTRY_TRAFFIC cannot open sampler lock: %s", exc)
+			return False
+
+		try:
+			if not stat.S_ISREG(os.fstat(fd).st_mode):
+				raise RuntimeError("sampler lock path is not a regular file")
+			fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+		except RuntimeError as exc:
+			os.close(fd)
+			_log.error("COUNTRY_TRAFFIC %s", exc)
+			return False
+		except OSError:
+			os.close(fd)
+			_log.debug("COUNTRY_TRAFFIC sampler leadership held by another process")
+			return False
+
+		try:
+			os.ftruncate(fd, 0)
+			os.write(fd, f"pid={os.getpid()}\n".encode("utf-8"))
+		except OSError:
+			pass
+
+		_sampler_lock_fd = fd
+		_log.info("COUNTRY_TRAFFIC sampler leadership acquired (pid=%d)", os.getpid())
+		return True
+
+
+def release_sampler_leadership() -> None:
+	"""Drop sampler leadership. Intended for shutdown paths and tests."""
+	global _sampler_lock_fd
+
+	with _sampler_lock:
+		if _sampler_lock_fd is None:
+			return
+		try:
+			fcntl.flock(_sampler_lock_fd, fcntl.LOCK_UN)
+		except OSError:
+			pass
+		try:
+			os.close(_sampler_lock_fd)
+		except OSError:
+			pass
+		_sampler_lock_fd = None
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -582,6 +671,11 @@ def sample_country_traffic(
 	Note:
 		Connections that disappear between two samples lose their final
 		delta — this is an inherent limitation of polling conntrack.
+
+	Multi-worker:
+		This keeps a process-local baseline and must run in a single process.
+		Callers that may run under multiple workers must gate this behind
+		``acquire_sampler_leadership()``.
 	"""
 	global _ct_initialized, _ct_prev, _acct_warned, _ct_overflow_warned
 
@@ -714,6 +808,8 @@ def reset_state() -> None:
 	Intended for testing or startup paths where sampling is not running concurrently.
 	"""
 	global _ct_initialized, _ct_prev, _wg_subnets_cache, _wg_gateway_ips_cache, _wg_subnets_ts, _acct_warned
+
+	release_sampler_leadership()
 
 	# Acquire both locks in consistent order (wg_lock → ct_lock)
 	with _wg_lock:

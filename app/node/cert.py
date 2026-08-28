@@ -75,10 +75,8 @@ def _ensure_node_cert_unlocked(data_dir: Path, node_id: str) -> tuple[bytes, byt
 
 	# Attempt to read existing cert/key directly (avoid TOCTOU race)
 	try:
-		if cert_path.is_symlink() or key_path.is_symlink():
-			raise ValueError("Certificate files must not be symlinks")
-		cert_pem = cert_path.read_bytes()
-		key_pem = key_path.read_bytes()
+		cert_pem = _read_regular_file_nofollow(cert_path)
+		key_pem = _read_regular_file_nofollow(key_path)
 		_validate_cert_key_pair(cert_pem, key_pem)
 		fp = get_cert_fingerprint(cert_pem)
 		_log.info("Using existing node certificate (fingerprint=%s...)", fp[:16])
@@ -130,8 +128,13 @@ def _cert_lock(data_dir: Path) -> Iterator[None]:
 	flags = os.O_RDWR | os.O_CREAT
 	if hasattr(os, "O_CLOEXEC"):
 		flags |= os.O_CLOEXEC
+	if hasattr(os, "O_NOFOLLOW"):
+		flags |= os.O_NOFOLLOW
 	fd = os.open(lock_path, flags, 0o600)
 	try:
+		st = os.fstat(fd)
+		if not stat.S_ISREG(st.st_mode):
+			raise RuntimeError(f"Certificate lock path is not a regular file: {lock_path}")
 		os.fchmod(fd, 0o600)
 		with _CERT_LOCK:
 			fcntl.flock(fd, fcntl.LOCK_EX)
@@ -139,6 +142,30 @@ def _cert_lock(data_dir: Path) -> Iterator[None]:
 				yield
 			finally:
 				fcntl.flock(fd, fcntl.LOCK_UN)
+	finally:
+		if fd != -1:
+			os.close(fd)
+
+
+def _read_regular_file_nofollow(path: Path) -> bytes:
+	"""Read a file by descriptor, refusing symlinks and non-regular files.
+
+	Opening with O_NOFOLLOW and checking via fstat() (rather than a prior
+	is_symlink()/exists() check followed by a path-based read) avoids a
+	TOCTOU window where the path could be swapped for a symlink between
+	the check and the read.
+	"""
+	flags = os.O_RDONLY
+	if hasattr(os, "O_NOFOLLOW"):
+		flags |= os.O_NOFOLLOW
+	fd = os.open(path, flags)
+	try:
+		st = os.fstat(fd)
+		if not stat.S_ISREG(st.st_mode):
+			raise RuntimeError(f"Refusing to read non-regular file: {path}")
+		with os.fdopen(fd, "rb") as handle:
+			fd = -1
+			return handle.read()
 	finally:
 		if fd != -1:
 			os.close(fd)

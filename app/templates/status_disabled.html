@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>WireBuddy Status</title>
     <link rel="icon" href="/static/img/wirebuddy_1c.svg" type="image/svg+xml">
-    <script src="/static/js/theme.js" defer></script>
+    <!-- Theme Script in <head> prevents FOUC - must stay synchronous (see base.html) -->
+    <script src="/static/js/theme.js"></script>
     <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
     <link href="/static/vendor/material-icons.css" rel="stylesheet">
     <link href="/static/css/style.css" rel="stylesheet">
@@ -21,7 +22,7 @@
             <div class="d-flex align-items-center status-navbar-actions">
                 <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn status-icon-btn"
                     data-action="toggle-theme" aria-label="Toggle theme" title="Toggle theme">
-                    <span class="material-icons" id="theme-icon">dark_mode</span>
+                    <span class="material-icons" id="theme-icon" aria-hidden="true">dark_mode</span>
                 </button>
             </div>
         </div>

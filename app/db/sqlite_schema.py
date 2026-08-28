@@ -53,19 +53,23 @@ _PRONOUNCEABLE_CONSONANTS = "bcdfghjklmnpqrstvwxyz"
 
 
 def _generate_pronounceable_password() -> str:
-	"""Generate an 8-character pronounceable password in 'Hegupu60' style.
+	"""Generate a pronounceable password in 'Hegupuxademu4172' style.
 
-	Pattern: 3 consonant-vowel syllables with capitalised first letter, plus
-	a two-digit number suffix. Uses ``secrets.choice`` for cryptographic
-	randomness.
+	Pattern: 5 consonant-vowel syllables (~6.7 bits each) with capitalised
+	first letter, plus a four-digit number suffix (~13.1 bits) — about 47
+	bits total, versus ~27 bits for the previous 3-syllable/2-digit form.
+	This is a one-time bootstrap credential (must_change_password=1 forces
+	an immediate change), so the goal is to comfortably outlast that window
+	against online brute-force while staying easy to type once. Uses
+	``secrets.choice`` for cryptographic randomness.
 	"""
 	syllables = [
 		secrets.choice(_PRONOUNCEABLE_CONSONANTS) + secrets.choice(_PRONOUNCEABLE_VOWELS)
-		for _ in range(3)
+		for _ in range(5)
 	]
 	word = "".join(syllables)
 	word = word[0].upper() + word[1:]
-	number = str(secrets.randbelow(90) + 10)
+	number = str(secrets.randbelow(9000) + 1000)
 	return word + number
 
 
@@ -332,7 +336,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status)")
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_last_seen ON nodes(last_seen)")
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_status_last_seen ON nodes(status, last_seen)")
-		conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_api_secret_hash ON nodes(api_secret_hash)")
+		# api_secret_hash's unique index is created by _run_migrations() below
+		# (always runs, even for a fresh install) via
+		# _create_unique_index_if_no_duplicates, the same retroactive-safe
+		# pattern used for name/fqdn.
 
 		# Durable node command queue for replay-safe control-plane delivery
 		conn.execute(
@@ -578,8 +585,29 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 		ddl="CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_fqdn_unique ON nodes(fqdn)",
 		label="idx_nodes_fqdn_unique",
 	)
+	# A shared api_secret_hash would let get_node_by_api_secret() authenticate
+	# a request as the wrong node (fetchone() picks one of several matches
+	# arbitrarily); a shared tunnel_peer_id would let deleting one node's
+	# tunnel peer silently break another node's DNS tunnel. Both should be
+	# structurally impossible, not just conventionally avoided by callers.
+	_create_unique_index_if_no_duplicates(
+		conn,
+		table="nodes",
+		column="api_secret_hash",
+		ddl="CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_api_secret_hash_unique ON nodes(api_secret_hash)",
+		label="idx_nodes_api_secret_hash_unique",
+	)
+	_create_unique_index_if_no_duplicates(
+		conn,
+		table="nodes",
+		column="tunnel_peer_id",
+		ddl=(
+			"CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_tunnel_peer_unique "
+			"ON nodes(tunnel_peer_id) WHERE tunnel_peer_id IS NOT NULL"
+		),
+		label="idx_nodes_tunnel_peer_unique",
+	)
 	conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_status_last_seen ON nodes(status, last_seen)")
-	conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_api_secret_hash ON nodes(api_secret_hash)")
 
 
 def ensure_default_admin(conn: sqlite3.Connection) -> bool:

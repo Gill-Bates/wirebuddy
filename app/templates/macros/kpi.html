@@ -28,7 +28,7 @@
                 <span class="material-icons wb-kpi-icon" aria-hidden="true">{{ icon }}</span>
             </div>
             <div class="flex-grow-1 min-w-0">
-                <h3 class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-{{ _safe_id }}">{{ label }}</h3>
+                <span class="text-muted mb-1 fw-semibold wb-kpi-label" id="label-{{ _safe_id }}">{{ label }}</span>
                 {% if caller is defined %}
                 <div class="wb-kpi-value-group" aria-labelledby="label-{{ _safe_id }}"{% if live %} aria-live="polite" role="status"{% endif %}>
                     <div class="wb-kpi-custom-content">

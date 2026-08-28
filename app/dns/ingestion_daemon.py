@@ -87,24 +87,30 @@ async def run_dns_ingestion(
 	)
 	
 	try:
-		# Wait for first task to fail (exception isolation)
+		# FIRST_COMPLETED (not FIRST_EXCEPTION): both workers are designed to run
+		# forever until stop_event is set, so either finishing at all — even a
+		# normal return with no exception — is itself the failure signal.
+		# FIRST_EXCEPTION treats a normal return as equivalent to ALL_COMPLETED
+		# and would keep waiting on the other task forever, leaving half the
+		# pipeline silently dead.
 		done, pending = await asyncio.wait(
 			[tailer_task, writer_task],
-			return_when=asyncio.FIRST_EXCEPTION,
+			return_when=asyncio.FIRST_COMPLETED,
 		)
-		
-		# Re-raise exception from failed task
-		for task in done:
-			if exc := task.exception():
-				_log.error("DNS ingestion task failed: %s", task.get_name())
-				# Cancel pending tasks before re-raising
-				for pending_task in pending:
-					pending_task.cancel()
-				raise exc
-		
-		# Both completed successfully (shouldn't happen, pipeline runs forever)
-		_log.warning("DNS ingestion pipeline exited unexpectedly")
-		
+
+		finished = next(iter(done))
+		for pending_task in pending:
+			pending_task.cancel()
+
+		if finished.cancelled():
+			raise asyncio.CancelledError()
+
+		if exc := finished.exception():
+			_log.error("DNS ingestion task failed: %s", finished.get_name())
+			raise exc
+
+		raise RuntimeError(f"DNS ingestion worker exited unexpectedly: {finished.get_name()}")
+
 	except asyncio.CancelledError:
 		_log.info("DNS ingestion shutdown requested")
 		

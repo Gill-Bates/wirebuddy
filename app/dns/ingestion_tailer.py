@@ -11,11 +11,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import queue
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 _log = logging.getLogger(__name__)
 
@@ -101,20 +103,37 @@ class OffsetTracker:
 			state = TailState(inode=self.state.inode, offset=self.state.offset)
 			save_seq = self._save_seq
 		
+		parent = self.offset_path.parent
+		tmp_path = self.offset_path.with_suffix('.tmp')
 		try:
-			parent = self.offset_path.parent
 			parent.mkdir(parents=True, exist_ok=True)
 			data = {'inode': state.inode, 'offset': state.offset}
 			content = json.dumps(data)
-			tmp_path = self.offset_path.with_suffix('.tmp')
-			tmp_path.write_text(content, encoding='utf-8')
+
+			# fsync the file before the rename, then fsync the directory after,
+			# so the offset survives a crash: without this, a rename can be lost
+			# on an unclean shutdown even though it looked atomic. No non-atomic
+			# direct-write fallback — a crash mid-write there could leave a
+			# truncated/corrupt offset file instead of just a stale one.
+			fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 			try:
-				tmp_path.replace(self.offset_path)
-			except OSError:
-				# Fallback: atomic replace can fail on some filesystems (overlayfs, Docker volumes).
-				# Write directly instead.
-				self.offset_path.write_text(content, encoding='utf-8')
-				tmp_path.unlink(missing_ok=True)
+				with os.fdopen(fd, 'w', encoding='utf-8') as f:
+					fd = -1
+					f.write(content)
+					f.flush()
+					os.fsync(f.fileno())
+			finally:
+				if fd != -1:
+					os.close(fd)
+
+			os.replace(tmp_path, self.offset_path)
+
+			dir_fd = os.open(str(parent), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+			try:
+				os.fsync(dir_fd)
+			finally:
+				os.close(dir_fd)
+
 			with self._lock:
 				if self._save_seq == save_seq:
 					self.dirty = False
@@ -122,6 +141,10 @@ class OffsetTracker:
 			_log.debug("DNS_TAIL saved offset: inode=%d offset=%d", state.inode, state.offset)
 		except Exception as e:
 			_log.warning("DNS_TAIL failed to save offset: %s", e)
+			try:
+				tmp_path.unlink(missing_ok=True)
+			except OSError:
+				pass
 
 
 def _put_with_shutdown(
@@ -154,99 +177,156 @@ class UnboundLogTailer:
 		self.log_path = log_path
 		self.tracker = offset_tracker
 		self._stop = stop_event
-	
+		self._active_file: TextIO | None = None
+		self._active_inode: int = 0
+
 	async def start(self, q: queue.Queue[TailItem]) -> None:
 		"""Run tailer loop until stopped."""
 		_log.info("DNS_TAIL starting: %s", self.log_path)
 		self.tracker.load()
-		
+
 		try:
 			while not self._stop.is_set():
 				try:
 					await asyncio.to_thread(self._tail_once, q)
 				except Exception:
 					_log.exception("DNS_TAIL crash in tail cycle")
-				
+
 				await asyncio.sleep(TAIL_INTERVAL)
 		finally:
+			if self._active_file is not None:
+				try:
+					self._active_file.close()
+				except OSError:
+					pass
+				self._active_file = None
 			_log.info("DNS_TAIL stopped")
-	
-	def _tail_once(self, q: queue.Queue[TailItem]) -> None:
-		"""Tail log file once (blocking I/O, run in thread)."""
-		if not self.log_path.exists():
-			return
-		
-		try:
-			st = self.log_path.stat()
-		except OSError:
-			return
-		
-		current_inode = st.st_ino
-		current_size = st.st_size
-		
-		read_state = self.tracker.current_read_state()
 
-		# Detect logrotate: inode changed
-		if read_state.inode != 0 and read_state.inode != current_inode:
-			_log.info("DNS_TAIL detected logrotate (inode %d -> %d)", read_state.inode, current_inode)
-			self.tracker.advance_read(current_inode, 0)
+	def _open_at(self, offset: int) -> bool:
+		"""Open log_path fresh, seek to offset, and adopt it as the active file."""
+		try:
+			f = self.log_path.open('r', encoding='utf-8', errors='replace')
+			inode = os.fstat(f.fileno()).st_ino
+		except OSError:
+			return False
+		f.seek(offset)
+		self._active_file = f
+		self._active_inode = inode
+		return True
+
+	def _tail_once(self, q: queue.Queue[TailItem]) -> None:
+		"""Tail log file once (blocking I/O, run in thread).
+
+		Keeps the file descriptor open across cycles instead of reopening by
+		path each time: after logrotate renames the path to a new inode, the
+		already-open descriptor still refers to the old file's data, so it can
+		be drained to EOF before switching — nothing written before the
+		rotation is lost.
+		"""
+		if self._active_file is None:
+			if not self.log_path.exists():
+				return
 			read_state = self.tracker.current_read_state()
-		
-		# Detect truncation: size < offset
-		if current_size < read_state.offset:
-			_log.warning("DNS_TAIL detected truncation (offset %d > size %d)", read_state.offset, current_size)
-			self.tracker.advance_read(current_inode, 0)
-			read_state = self.tracker.current_read_state()
-		
-		# Update inode if first run
-		if read_state.inode == 0:
-			self.tracker.advance_read(current_inode, read_state.offset)
-			read_state = self.tracker.current_read_state()
-		
-		# Nothing new to read
-		if current_size <= read_state.offset:
+			try:
+				path_inode = self.log_path.stat().st_ino
+			except OSError:
+				return
+			if read_state.inode != 0 and path_inode == read_state.inode:
+				# Resume exactly where we left off (e.g. after a restart with
+				# no rotation in between).
+				if not self._open_at(read_state.offset):
+					return
+			else:
+				# First run, or the path changed while we weren't tailing
+				# (rotation during downtime can't be recovered from — we
+				# never held a descriptor on the old file to drain).
+				if not self._open_at(0):
+					return
+				self.tracker.advance_read(self._active_inode, 0)
+
+		self._drain_active_file(q)
+
+		# Detect logrotate: has the path moved on to a different inode than
+		# the descriptor we've been reading? That descriptor was just drained
+		# to its EOF above, so switching now loses nothing.
+		try:
+			path_inode = self.log_path.stat().st_ino
+		except OSError:
+			return  # Path missing mid-rotation; keep draining the old fd next cycle.
+
+		if path_inode != self._active_inode:
+			_log.info("DNS_TAIL detected logrotate (inode %d -> %d)", self._active_inode, path_inode)
+			try:
+				self._active_file.close()
+			except OSError:
+				pass
+			self._active_file = None
+			if self._open_at(0):
+				self.tracker.advance_read(self._active_inode, 0)
+				self._drain_active_file(q)
+
+	def _drain_active_file(self, q: queue.Queue[TailItem]) -> None:
+		"""Read all currently-available lines from the active file (blocking I/O)."""
+		f = self._active_file
+		if f is None:
 			return
-		
+
+		try:
+			current_size = os.fstat(f.fileno()).st_size
+		except OSError as e:
+			_log.warning("DNS_TAIL fstat failed: %s", e)
+			return
+
+		current_offset = f.tell()
+
+		# Detect truncation: file shrank since our last read position.
+		if current_size < current_offset:
+			_log.warning("DNS_TAIL detected truncation (offset %d > size %d)", current_offset, current_size)
+			f.seek(0)
+			self.tracker.advance_read(self._active_inode, 0)
+			current_offset = 0
+
+		# Nothing new to read
+		if current_size <= current_offset:
+			return
+
 		# Read new lines (chunk-limited to prevent OOM)
 		lines_read = 0
 		blocked_time = 0.0
-		
+
 		try:
-			with self.log_path.open('r', encoding='utf-8', errors='replace') as f:
-				f.seek(read_state.offset)
-				
-				# Use readline() instead of iterator to allow f.tell()
-				for _ in range(CHUNK_LINE_LIMIT):
-					before = f.tell()
-					line = f.readline()
-					if not line:
-						break  # EOF
-					if not line.endswith('\n') and f.tell() >= current_size:
-						f.seek(before)
-						break
-					end_offset = f.tell()
-					item = TailItem(line=line, inode=current_inode, end_offset=end_offset)
-					
-					# Blocking put: prefer stalling over dropping data
-					# Runs in thread pool, so blocking is safe here
-					start = time.monotonic()
-					if not _put_with_shutdown(q, item, self._stop):
-						break
-					delay = time.monotonic() - start
-					if delay > 0.01:
-						blocked_time += delay
-					lines_read += 1
-					self.tracker.advance_read(current_inode, end_offset)
-				else:
-					# Chunk limit reached (loop completed without break)
-					_log.debug("DNS_TAIL chunk limit reached, will continue next cycle")
+			# Use readline() instead of iterator to allow f.tell()
+			for _ in range(CHUNK_LINE_LIMIT):
+				before = f.tell()
+				line = f.readline()
+				if not line:
+					break  # EOF
+				if not line.endswith('\n') and f.tell() >= current_size:
+					f.seek(before)
+					break
+				end_offset = f.tell()
+				item = TailItem(line=line, inode=self._active_inode, end_offset=end_offset)
+
+				# Blocking put: prefer stalling over dropping data
+				# Runs in thread pool, so blocking is safe here
+				start = time.monotonic()
+				if not _put_with_shutdown(q, item, self._stop):
+					break
+				delay = time.monotonic() - start
+				if delay > 0.01:
+					blocked_time += delay
+				lines_read += 1
+				self.tracker.advance_read(self._active_inode, end_offset)
+			else:
+				# Chunk limit reached (loop completed without break)
+				_log.debug("DNS_TAIL chunk limit reached, will continue next cycle")
 		except Exception as e:
 			_log.warning("DNS_TAIL read error: %s", e)
 			return
-		
+
 		if lines_read > 0:
 			_log.debug("DNS_TAIL read %d lines", lines_read)
-		
+
 		# Log backpressure for observability (queue was full, we blocked)
 		if blocked_time > 0.1:
 			_log.warning("DNS_TAIL backpressure: blocked %.2fs while enqueuing %d lines", blocked_time, lines_read)

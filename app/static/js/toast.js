@@ -15,7 +15,7 @@ function wbToast(message, type = 'info', duration = 4000) {
         ? Math.max(1000, Number(duration))
         : 4000;
     const icons = { info: 'info', success: 'check_circle', warning: 'warning', danger: 'error' };
-    const bgClasses = { info: 'text-bg-primary', success: 'text-bg-success', warning: 'text-bg-warning', danger: 'text-bg-danger' };
+    const bgClasses = { info: 'text-bg-info', success: 'text-bg-success', warning: 'text-bg-warning', danger: 'text-bg-danger' };
     const ariaLive = { info: 'polite', success: 'polite', warning: 'assertive', danger: 'assertive' };
 
     const container = document.getElementById('wbToastContainer');

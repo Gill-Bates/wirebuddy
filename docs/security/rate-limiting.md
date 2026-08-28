@@ -40,8 +40,15 @@ IP is throttled for that account — slowing distributed password guessing acros
 rotating addresses.
 
 The throttle is intentionally **short-capped** (maximum ~5 minutes) to avoid
-creating a DoS-able permanent account lockout. A successful login from any IP
-immediately clears the throttle for that username.
+creating a DoS-able permanent account lockout. A **fully completed** login from
+any IP immediately clears the throttle for that username.
+
+!!! important "MFA accounts"
+    For accounts with MFA enabled, the counter is cleared only after the second
+    factor has been verified — not after the password step. A correct password
+    alone does not reset it. Otherwise an attacker who already knew the password
+    could reset the counter between OTP guesses and defeat the throttle
+    entirely.
 
 ## Response Semantics
 

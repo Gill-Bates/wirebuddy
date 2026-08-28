@@ -9,7 +9,7 @@
 {% block content %}
 <div class="container-fluid wb-page">
 <div class="wb-page-header">
-    <h1 class="page-title"><span class="material-icons me-2">settings</span>Settings</h1>
+    <h1 class="page-title"><span class="material-icons me-2" aria-hidden="true">settings</span>Settings</h1>
 </div>
 
 <div id="wb-page-config"
@@ -29,8 +29,8 @@
     ] %}
     {% for tab_id, label, is_active in tabs %}
     <li class="nav-item" role="presentation">
-        <button class="nav-link{% if is_active %} active{% endif %}" id="{{ tab_id }}-tab" data-bs-toggle="tab"
-            data-bs-target="#{{ tab_id }}-pane" type="button" role="tab" aria-controls="{{ tab_id }}-pane"
+        <button type="button" class="nav-link{% if is_active %} active{% endif %}" id="{{ tab_id }}-tab" data-bs-toggle="tab"
+            data-bs-target="#{{ tab_id }}-pane" role="tab" aria-controls="{{ tab_id }}-pane"
             aria-selected="{{ 'true' if is_active else 'false' }}">{{ label }}</button>
     </li>
     {% endfor %}

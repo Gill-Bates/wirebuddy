@@ -125,10 +125,21 @@ def parse_node_metadata(value: Any, *, node_id: str) -> dict[str, Any]:
     if not isinstance(value, str):
         return value if isinstance(value, dict) else {}
     try:
-        return json.loads(value)
+        parsed = json.loads(value)
     except (TypeError, json.JSONDecodeError):  # JSONDecodeError is a subclass of ValueError
         _log.warning("Node %s has invalid metadata JSON; returning empty dict", node_id)
         return {}
+
+    # Valid JSON is not necessarily an object: "[]", "\"x\"" and "5" all parse
+    # fine but would break callers that immediately call .get() on the result.
+    if not isinstance(parsed, dict):
+        _log.warning(
+            "Node %s metadata JSON is %s, not an object; returning empty dict",
+            node_id,
+            type(parsed).__name__,
+        )
+        return {}
+    return parsed
 
 
 class RedirectTo(Exception):
@@ -166,7 +177,8 @@ def lookup_ip_cached(ip_text: str) -> dict | None:
         None: On lookup failure (not cached, next call retries).
     """
     try:
-        return dict(_geoip_lookup_cached(ip_text))
+        result = _geoip_lookup_cached(ip_text)
+        return dict(result) if result else None
     except Exception:
         _log.debug("GeoIP lookup failed for %s", ip_text, exc_info=True)
         return None

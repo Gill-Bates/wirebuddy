@@ -148,21 +148,34 @@ def _decode_base64url_field(value: object, name: str) -> bytes:
 
 
 def _normalize_expected_origin(expected_origin: str) -> str:
-	"""Canonicalize a WebAuthn origin for verification."""
+	"""Canonicalize a WebAuthn origin for verification.
+
+	Production origins must be HTTPS and contain only scheme, host, and port.
+	HTTP remains available for explicit localhost development origins.
+	"""
 	if not isinstance(expected_origin, str):
 		raise ValueError("expected_origin must be a string")
-	raw = expected_origin.strip().rstrip("/")
+	raw = expected_origin.strip()
 	if not raw:
 		raise ValueError("expected_origin must not be empty")
 	parsed = urlsplit(raw)
-	if not parsed.scheme or not parsed.hostname:
+	scheme = parsed.scheme.lower()
+	if scheme not in {"https", "http"} or not parsed.hostname:
 		raise ValueError("expected_origin must include scheme and hostname")
+	if parsed.username or parsed.password or parsed.query or parsed.fragment:
+		raise ValueError("expected_origin must not contain credentials, query, or fragment")
+	if parsed.path not in ("", "/"):
+		raise ValueError("expected_origin must not contain a path")
 	host = parsed.hostname.rstrip(".").lower()
+	if scheme == "http" and host not in {"localhost", "127.0.0.1", "::1"}:
+		raise ValueError("expected_origin must use https outside localhost development")
 	port = parsed.port
-	if (parsed.scheme.lower() == "https" and port == 443) or (parsed.scheme.lower() == "http" and port == 80):
+	if (scheme == "https" and port == 443) or (scheme == "http" and port == 80):
 		port = None
+	if ":" in host:
+		host = f"[{host}]"
 	netloc = host if port is None else f"{host}:{port}"
-	return urlunsplit((parsed.scheme.lower(), netloc, parsed.path or "", "", ""))
+	return urlunsplit((scheme, netloc, "", "", ""))
 
 
 def _normalize_expected_rp_id(expected_rp_id: str) -> str:

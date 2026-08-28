@@ -1,109 +1,101 @@
-<!DOCTYPE html>
-<html lang="en" data-bs-theme="light" class="login-page">
+{% extends "auth_base.html" %}
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="Cache-Control" content="no-store">
-    <meta http-equiv="Pragma" content="no-cache">
-<meta name="csrf-token" content="{{ csrf_token }}">
-    <title>Set Up Two-Factor Authentication – WireBuddy</title>
-    <link rel="icon" type="image/svg+xml" href="/static/img/wirebuddy_1c.svg">
-    <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
-    <link href="/static/css/style.css" rel="stylesheet">
-    <link href="/static/vendor/material-icons.css" rel="stylesheet">
-    <script src="/static/js/theme.js"></script>
-    <link rel="stylesheet" href="/static/css/core/tokens.css">
-<link rel="stylesheet" href="/static/css/utilities/wb-state.css">
+{% block title %}Set Up Two-Factor Authentication – WireBuddy{% endblock %}
+
+{% block extra_css %}
 <link rel="stylesheet" href="/static/css/pages/otp-setup.css">
-</head>
+{% endblock %}
 
-<body data-username="{{ user['username'] }}">
-    <main>
-        <div class="card login-card otp-setup-card">
-            <div class="card-body p-4 p-sm-5">
-                <div class="text-center mb-4">
-                    <span class="material-icons otp-hero-icon">verified_user</span>
-                    <h4 class="mt-3 mb-1">Set Up Two-Factor Authentication</h4>
-                    <p class="text-muted small mb-0">Your administrator enabled 2FA for your account. Complete the setup to continue.</p>
-                </div>
+{% block body_attrs %} data-username="{{ user['username'] }}"{% endblock %}
 
-                <div class="alert alert-danger is-hidden" id="error-alert" role="alert" aria-live="assertive"></div>
+{% block content %}
+<div class="card login-card otp-setup-card">
+    <div class="card-body p-4 p-sm-5">
+        <div class="text-center mb-4">
+            <span class="material-icons otp-hero-icon" aria-hidden="true">verified_user</span>
+            <h1 class="h4 mt-3 mb-1">Set Up Two-Factor Authentication</h1>
+            <p class="text-muted small mb-0">Your administrator enabled 2FA for your account. Complete the setup to continue.</p>
+        </div>
 
-                <!-- Step 1: QR Code and Secret -->
-                <div id="step-qr">
-                    <div class="mb-3">
-                        <p class="small text-muted mb-2"><strong>Step 1:</strong> Scan this QR code with your authenticator app</p>
-                    </div>
-                    
-                    <div class="text-center mb-3">
-                        <img id="otp-qr-image" src="" alt="OTP QR Code" class="img-fluid rounded mx-auto otp-qr-img">
-                        <div class="spinner-border text-primary mt-2" id="qr-loading" role="status" aria-live="polite">
-                            <span class="visually-hidden">Loading...</span>
-                        </div>
-                    </div>
+        <div class="alert alert-danger is-hidden" id="error-alert" role="alert" aria-live="assertive"></div>
 
-                    <div class="mb-3">
-                        <label class="form-label small" for="otp-secret">Or enter this secret manually:</label>
-                        <div class="input-group input-group-sm">
-                            <input type="text" class="form-control font-monospace" id="otp-secret" readonly aria-label="OTP secret key">
-                            <button class="btn btn-outline-secondary" type="button" id="copy-secret-btn" title="Copy secret" aria-label="Copy secret to clipboard">
-                                <span class="material-icons otp-icon-sm">content_copy</span>
-                            </button>
-                        </div>
-                    </div>
+        <!-- Step 1: QR Code and Secret -->
+        <div id="step-qr">
+            <div class="mb-3">
+                <p class="small text-muted mb-2"><strong>Step 1:</strong> Scan this QR code with your authenticator app</p>
+            </div>
 
-                    <hr class="my-4">
-
-                    <div class="mb-3">
-                        <p class="small text-muted mb-2" id="otp-input-label"><strong>Step 2:</strong> Enter the 6-digit code from your authenticator app</p>
-                    </div>
-
-                    <div class="d-flex justify-content-center gap-2 mb-3" id="otp-digits" role="group" aria-labelledby="otp-input-label">
-                        <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="0" aria-label="Digit 1 of 6">
-                        <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="1" aria-label="Digit 2 of 6">
-                        <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="2" aria-label="Digit 3 of 6">
-                        <span class="align-self-center text-muted" aria-hidden="true">–</span>
-                        <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="3" aria-label="Digit 4 of 6">
-                        <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="4" aria-label="Digit 5 of 6">
-                        <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" data-index="5" aria-label="Digit 6 of 6">
-                    </div>
-
-                    <button type="button" class="btn btn-success btn-lg w-100" id="confirm-btn" disabled>
-                        <span class="material-icons align-middle me-1">check_circle</span>
-                        Verify & Activate
-                    </button>
-                </div>
-
-                <!-- Step 2: Recovery Codes -->
-                <div id="step-recovery" aria-live="polite" class="is-hidden">
-                    <div class="alert alert-warning">
-                        <span class="material-icons align-middle me-2">warning</span>
-                        <strong>Download your recovery codes!</strong><br>
-                        <small>Store the ZIP in a safe place. Each code can only be used once if you lose access to your authenticator.</small>
-                    </div>
-
-                    <div class="bg-dark text-light p-3 rounded font-monospace mb-3 text-center" id="recovery-codes" style="font-size: 0.95rem; line-height: 1.8; white-space: pre-line;" role="region" aria-label="Recovery code download status" aria-live="polite"></div>
-
-                    <button type="button" class="btn btn-outline-secondary w-100 mb-3" id="download-codes-btn">
-                        <span class="material-icons align-middle me-1 otp-icon-sm">download</span>
-                        Download Recovery Codes (ZIP)
-                    </button>
-
-                    <button type="button" class="btn btn-primary btn-lg w-100" id="continue-btn" disabled>
-                        <span class="material-icons align-middle me-1">arrow_forward</span>
-                        Continue to Dashboard
-                    </button>
-                    <small class="text-muted d-block text-center mt-2" id="continue-hint">
-                        Download the recovery codes ZIP to enable this button.
-                    </small>
+            {# No src until otp-setup.js has the data URL: an empty src resolves to
+               the page URL and makes the browser fetch it as an image. #}
+            <div class="text-center mb-3">
+                <img id="otp-qr-image" alt="OTP QR Code" class="img-fluid rounded mx-auto otp-qr-img is-hidden" hidden>
+                <div class="spinner-border text-primary mt-2" id="qr-loading" role="status" aria-live="polite">
+                    <span class="visually-hidden">Loading...</span>
                 </div>
             </div>
+
+            <div class="mb-3">
+                <label class="form-label small" for="otp-secret">Or enter this secret manually:</label>
+                <div class="input-group input-group-sm">
+                    <input type="text" class="form-control font-monospace" id="otp-secret" readonly aria-label="OTP secret key">
+                    <button class="btn btn-outline-secondary" type="button" id="copy-secret-btn" title="Copy secret" aria-label="Copy secret to clipboard">
+                        <span class="material-icons otp-icon-sm" aria-hidden="true">content_copy</span>
+                    </button>
+                </div>
+            </div>
+
+            <hr class="my-4">
+
+            <div class="mb-3">
+                <p class="small text-muted mb-2" id="otp-input-label"><strong>Step 2:</strong> Enter the 6-digit code from your authenticator app</p>
+            </div>
+
+            {# One-time-code autofill only ever targets the first field; the paste/input
+               handlers in otp-setup.js spread a multi-character value across the rest. #}
+            <div class="d-flex justify-content-center gap-2 mb-3" id="otp-digits" role="group" aria-labelledby="otp-input-label">
+                <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="one-time-code" enterkeyhint="done" data-index="0" aria-label="Digit 1 of 6">
+                <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" enterkeyhint="done" data-index="1" aria-label="Digit 2 of 6">
+                <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" enterkeyhint="done" data-index="2" aria-label="Digit 3 of 6">
+                <span class="align-self-center text-muted" aria-hidden="true">–</span>
+                <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" enterkeyhint="done" data-index="3" aria-label="Digit 4 of 6">
+                <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" enterkeyhint="done" data-index="4" aria-label="Digit 5 of 6">
+                <input type="text" class="form-control form-control-lg text-center otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" enterkeyhint="done" data-index="5" aria-label="Digit 6 of 6">
+            </div>
+
+            <button type="button" class="btn btn-success btn-lg w-100" id="confirm-btn" disabled>
+                <span class="material-icons align-middle me-1" aria-hidden="true">check_circle</span>
+                Verify &amp; Activate
+            </button>
         </div>
-    </main>
 
-    <script src="/static/js/ui-state.js"></script>
+        <!-- Step 2: Recovery Codes -->
+        <div id="step-recovery" aria-live="polite" class="is-hidden">
+            <div class="alert alert-warning">
+                <span class="material-icons align-middle me-2" aria-hidden="true">warning</span>
+                <strong>Download your recovery codes!</strong><br>
+                <small>Store the ZIP in a safe place. Each code can only be used once if you lose access to your authenticator.</small>
+            </div>
+
+            <div class="bg-dark text-light p-3 rounded font-monospace mb-3 text-center otp-recovery-codes" id="recovery-codes" role="region" aria-label="Recovery code download status" aria-live="polite"></div>
+
+            <button type="button" class="btn btn-outline-secondary w-100 mb-3" id="download-codes-btn">
+                <span class="material-icons align-middle me-1 otp-icon-sm" aria-hidden="true">download</span>
+                Download Recovery Codes (ZIP)
+            </button>
+
+            <button type="button" class="btn btn-primary btn-lg w-100" id="continue-btn" disabled>
+                <span class="material-icons align-middle me-1" aria-hidden="true">arrow_forward</span>
+                Continue to Dashboard
+            </button>
+            <small class="text-muted d-block text-center mt-2" id="continue-hint">
+                Download the recovery codes ZIP to enable this button.
+            </small>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/ui-state.js"></script>
 <script src="/static/js/otp-setup.js"></script>
-</body>
-
-</html>
+{% endblock %}

@@ -89,3 +89,10 @@
     color: var(--wb-danger) !important;
     animation: otp-shake 0.5s ease-in-out;
 }
+/* Recovery-code panel: was an inline style attribute on #recovery-codes, which
+   a strict style-src-attr CSP would block. */
+.otp-recovery-codes {
+    font-size: 0.95rem;
+    line-height: 1.8;
+    white-space: pre-line;
+}

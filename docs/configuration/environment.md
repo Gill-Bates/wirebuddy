@@ -192,6 +192,12 @@ detection through the proxy is unavailable.
 
 Default: disabled.
 
+!!! note
+    Not needed when **Settings → General → Serve GUI over HTTPS** is enabled.
+    WireBuddy then terminates TLS itself, so the request scheme is already
+    `https` and cookies are marked `Secure` without an override. See
+    [Built-in HTTPS Listener](security.md#built-in-https-listener).
+
 ### `WIREBUDDY_FORCE_HSTS`
 
 Always emits HSTS even when TLS terminates at a proxy and the upstream request

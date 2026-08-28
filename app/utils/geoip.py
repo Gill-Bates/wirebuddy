@@ -35,7 +35,7 @@ from threading import RLock
 from typing import TYPE_CHECKING, Any, Required, TypedDict
 from urllib.error import HTTPError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urljoin
 
 if TYPE_CHECKING:
     import geoip2.database
@@ -152,11 +152,8 @@ def _get_data_dir() -> Path:
 
 
 def _ensure_private_dir(path: Path) -> None:
-    try:
-        st = path.lstat()
-    except FileNotFoundError:
-        path.mkdir(mode=0o700, parents=True)
-        st = path.lstat()
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    st = path.lstat()
 
     if path.is_symlink() or not stat.S_ISDIR(st.st_mode):
         raise RuntimeError(f"GeoIP directory is not safe: {path}")
@@ -187,13 +184,19 @@ def _allowed_geoip_hosts() -> set[str]:
 
 
 def _validate_download_response_target(url: str, *, requested_url: str) -> None:
-    requested_host = (urlparse(requested_url).hostname or "").lower()
-    parsed = urlparse(url)
-    allowed_hosts = _allowed_geoip_hosts()
-    if requested_host and requested_host not in allowed_hosts:
-        raise ValueError(f"Unexpected GeoIP download source host: {requested_url}")
-    if parsed.scheme != "https" or (parsed.hostname or "").lower() not in allowed_hosts:
-        raise ValueError(f"Unexpected GeoIP download redirect target: {url}")
+	requested_host = (urlparse(requested_url).hostname or "").lower()
+	parsed = urlparse(url)
+	allowed_hosts = _allowed_geoip_hosts()
+	if requested_host and requested_host not in allowed_hosts:
+		raise ValueError(f"Unexpected GeoIP download source host: {requested_url}")
+	if (
+		parsed.scheme != "https"
+		or parsed.username is not None
+		or parsed.password is not None
+		or parsed.port not in (None, 443)
+		or (parsed.hostname or "").lower() not in allowed_hosts
+	):
+		raise ValueError(f"Unexpected GeoIP download redirect target: {url}")
 
 
 @contextmanager
@@ -326,6 +329,12 @@ class _ReaderManager:
                     self._reader = None
                     self._not_found_logged = False
 
+    @contextmanager
+    def use(self, data_dir: Path | None = None):
+        """Borrow the reader while preventing close() during the lookup."""
+        with self._lock:
+            yield self.get(data_dir)
+
     def resolve_path(self, data_dir: Path | None = None) -> Path:
         explicit = os.getenv(self._spec.env_var)
         if explicit:
@@ -401,9 +410,19 @@ def _download_db(
             if http_date:
                 headers["If-Modified-Since"] = http_date
 
+        _validate_download_response_target(download_url, requested_url=download_url)
         req = Request(download_url, headers=headers)
         deadline = time.monotonic() + _GEOIP_DOWNLOAD_TOTAL_TIMEOUT_SECONDS
-        with urlopen(req, timeout=60) as resp:
+
+        class _ValidatedRedirectHandler(HTTPRedirectHandler):
+            def redirect_request(self, request, fp, code, msg, headers, new_url):
+                target = urljoin(request.full_url, new_url)
+                _validate_download_response_target(target, requested_url=request.full_url)
+                return super().redirect_request(request, fp, code, msg, headers, target)
+
+        # Validate every redirect target before urllib opens the next connection.
+        opener = build_opener(_ValidatedRedirectHandler)
+        with opener.open(req, timeout=60) as resp:
             _validate_download_response_target(getattr(resp, "url", download_url), requested_url=download_url)
             if "text/html" in resp.headers.get("Content-Type", "").lower():
                 _log.error("GeoIP download for %s returned HTML", spec.name)
@@ -542,40 +561,38 @@ def get_geoip_build_info(data_dir: Path | None = None) -> tuple[str, int] | None
 # ---------------------------------------------------------------------------
 @functools.lru_cache(maxsize=_GEOIP_CACHE_SIZE)
 def _cached_city_lookup(ip: str, generation: int) -> GeoLocation | None:
-    # Lock ONLY for getting the reference to the reader.
-    # MaxMind C extension is thread-safe for parallel reads.
-    _ = generation
-    reader = _city_mgr.get()
-    if not reader:
-        return None
-    try:
-        r = reader.city(ip)
-        lat, lon = r.location.latitude, r.location.longitude
-        if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            return None
-        return GeoLocation(
-            lat=float(lat), lon=float(lon),
-            city=r.city.name, country=r.country.iso_code
-        )
-    except (geoip2.errors.AddressNotFoundError, geoip2.errors.GeoIP2Error):
-        return None
-    except Exception as exc:
-        _log.debug("GeoIP city lookup unexpected error for %s: %s", ip, exc)
-        return None
+	_ = generation
+	with _city_mgr.use() as reader:
+		if not reader:
+			return None
+		try:
+			r = reader.city(ip)
+			lat, lon = r.location.latitude, r.location.longitude
+			if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+				return None
+			return GeoLocation(
+				lat=float(lat), lon=float(lon),
+				city=r.city.name, country=r.country.iso_code
+			)
+		except (geoip2.errors.AddressNotFoundError, geoip2.errors.GeoIP2Error):
+			return None
+		except Exception as exc:
+			_log.debug("GeoIP city lookup unexpected error for %s: %s", ip, exc)
+			return None
 
 @functools.lru_cache(maxsize=_GEOIP_CACHE_SIZE)
 def _cached_asn_lookup(ip: str, generation: int) -> tuple[int | None, str | None]:
-    _ = generation
-    reader = _asn_mgr.get()
-    if not reader:
-        return None, None
-    try:
-        r = reader.asn(ip)
-        return r.autonomous_system_number, r.autonomous_system_organization
-    except (geoip2.errors.AddressNotFoundError, geoip2.errors.GeoIP2Error):
-        return None, None
-    except Exception:
-        return None, None
+	_ = generation
+	with _asn_mgr.use() as reader:
+		if not reader:
+			return None, None
+		try:
+			r = reader.asn(ip)
+			return r.autonomous_system_number, r.autonomous_system_organization
+		except (geoip2.errors.AddressNotFoundError, geoip2.errors.GeoIP2Error):
+			return None, None
+		except Exception:
+			return None, None
 
 def geolocate_ip(ip: str) -> GeoLocation | None:
     if not _public_ip(ip):
@@ -660,7 +677,31 @@ async def resolve_country_from_url_async(url: str) -> str | None:
         sem = asyncio.Semaphore(8)
         setattr(loop, "_wirebuddy_geoip_dns_semaphore", sem)
     try:
-        async with sem:
-            return await asyncio.wait_for(asyncio.to_thread(resolve_country_from_url, url), timeout=3.0)
+        await asyncio.wait_for(sem.acquire(), timeout=0.1)
     except TimeoutError:
         return None
+
+    worker = asyncio.create_task(asyncio.to_thread(resolve_country_from_url, url))
+
+    def _release_when_done(task: asyncio.Task) -> None:
+        # Consume a late exception so a timed-out resolver cannot produce an
+        # unhandled-task warning.  The resolver normally catches its own errors.
+        with suppress(asyncio.CancelledError, Exception):
+            task.exception()
+        sem.release()
+
+    try:
+        return await asyncio.wait_for(asyncio.shield(worker), timeout=3.0)
+    except TimeoutError:
+        # wait_for() must not release the slot while the DNS thread is still
+        # running; otherwise slow DNS can create unbounded concurrent lookups.
+        worker.add_done_callback(_release_when_done)
+        return None
+    except asyncio.CancelledError:
+        worker.add_done_callback(_release_when_done)
+        raise
+    except Exception:
+        sem.release()
+        return None
+    else:
+        sem.release()

@@ -405,14 +405,25 @@ def get_node_last_metric_seq(conn: sqlite3.Connection, node_id: str) -> int | No
 
 
 def set_node_last_metric_seq(conn: sqlite3.Connection, node_id: str, seq: int) -> None:
-	"""Update the last processed metric sequence for a node."""
+	"""Advance the last processed metric sequence for a node (monotonic).
+
+	Guards against a delayed or reordered request rolling the cursor
+	backwards, which would cause already-processed metrics to be re-accepted.
+	"""
 	seq = int(seq)
 	if seq < 0:
 		raise ValueError("seq must be >= 0")
 	with transaction(conn, immediate=True):
 		conn.execute(
-			"UPDATE nodes SET last_metric_seq = ? WHERE id = ?",
-			(seq, node_id),
+			"""
+			UPDATE nodes
+			SET last_metric_seq = CASE
+				WHEN last_metric_seq IS NULL OR last_metric_seq < ? THEN ?
+				ELSE last_metric_seq
+			END
+			WHERE id = ?
+			""",
+			(seq, seq, node_id),
 		)
 
 
@@ -618,14 +629,19 @@ def claim_pending_node_commands(
 
 
 def ack_node_command(conn: sqlite3.Connection, node_id: str, command_id: int) -> bool:
-	"""Acknowledge one delivered command."""
+	"""Acknowledge one delivered command.
+
+	Requires delivered_at to be set: otherwise a node could guess a
+	sequential command_id and ack a command it never received, permanently
+	preventing that command from ever being (re)delivered.
+	"""
 	now = utcnow()
 	with transaction(conn, immediate=True):
 		cur = conn.execute(
 			"""
 			UPDATE node_commands
 			SET acked_at = ?
-			WHERE id = ? AND node_id = ? AND acked_at IS NULL
+			WHERE id = ? AND node_id = ? AND delivered_at IS NOT NULL AND acked_at IS NULL
 			""",
 			(now, int(command_id), node_id),
 		)
@@ -707,55 +723,86 @@ def _clear_node_pending_command_locked(conn: sqlite3.Connection, node_id: str) -
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _compute_node_config_hash(conn: sqlite3.Connection, node_id: str) -> str:
+	"""Compute a deterministic hash of everything delivered to a node.
+
+	Mirrors get_node_config()'s payload (interfaces, peers, master_peer) so
+	config_version changes whenever anything the node actually applies
+	changes — not just peer rows. Uses the encrypted-at-rest key material
+	(the same builders get_node_config() uses before decrypting), so this
+	needs no decryption just to detect a change.
+	"""
+	node = get_node(conn, node_id)
+	if node is None:
+		raise ValueError(f"Node not found: {node_id}")
+	tunnel_peer = _get_tunnel_peer(conn, node["tunnel_peer_id"])
+	payload = {
+		"interfaces": _build_interfaces_config(conn, node_id, tunnel_peer),
+		"peers": _build_peers_config(conn, node_id),
+		"master_peer": _build_master_peer_config(conn, tunnel_peer),
+	}
+	canonical = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+	return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def bump_node_config_version(
 	conn: sqlite3.Connection,
 	node_id: str,
 ) -> str:
-	"""Compute and store a new config_version hash for the node.
+	"""Recompute and store config_version from everything delivered to the node.
 
-	The version is a deterministic SHA-256 hash of the full peer configuration
-	assigned to this node, including roaming peers served on all nodes.
 	Timestamp is NOT included to ensure idempotency.
 	"""
 	with transaction(conn, immediate=True):
-		cursor = conn.execute(
-			"""
-			SELECT
-				public_key,
-				allowed_ips,
-				interface,
-				peer_address,
-				name,
-				COALESCE(preshared_key, '') AS preshared_key
-			FROM peers
-			WHERE (node_id = ? OR allow_all_nodes = 1) AND is_enabled = 1
-			ORDER BY public_key
-			""",
-			(node_id,),
-		)
-		hasher = hashlib.sha256()
-		for row in cursor:
-			hasher.update(b"\x1e")
-			hasher.update(
-				json.dumps(
-					{
-						"allowed_ips": row["allowed_ips"],
-						"interface": row["interface"],
-						"name": row["name"],
-						"peer_address": row["peer_address"],
-						"preshared_key": row["preshared_key"],
-						"public_key": row["public_key"],
-					},
-					separators=(",", ":"),
-					sort_keys=True,
-				).encode("utf-8")
-			)
-		version = hasher.hexdigest()
+		version = _compute_node_config_hash(conn, node_id)
 		conn.execute(
 			"UPDATE nodes SET config_version = ? WHERE id = ?",
 			(version, node_id),
 		)
 	return version
+
+
+def bump_config_version_for_interface(conn: sqlite3.Connection, interface_name: str) -> dict[str, str]:
+	"""Recompute config_version for every node affected by an interface change.
+
+	Covers nodes with a keypair on this interface (node_interfaces) and nodes
+	whose tunnel peer lives on this interface (master_peer reflects it too).
+	Returns {node_id: new_version} for the affected nodes.
+	"""
+	with transaction(conn, immediate=True):
+		node_ids: set[str] = {
+			row["node_id"]
+			for row in conn.execute(
+				"SELECT DISTINCT node_id FROM node_interfaces WHERE interface_name = ?",
+				(interface_name,),
+			)
+		}
+		node_ids.update(
+			row["id"]
+			for row in conn.execute(
+				"""
+				SELECT n.id FROM nodes n
+				JOIN peers p ON p.id = n.tunnel_peer_id
+				WHERE p.interface = ?
+				""",
+				(interface_name,),
+			)
+		)
+		return {node_id: bump_node_config_version(conn, node_id) for node_id in node_ids}
+
+
+def bump_config_version_for_all_nodes(conn: sqlite3.Connection) -> dict[str, str]:
+	"""Recompute config_version for every node with a tunnel peer.
+
+	Used when a setting that feeds master_peer (e.g. wg_fqdn) changes.
+	Returns {node_id: new_version} for the affected nodes.
+	"""
+	with transaction(conn, immediate=True):
+		node_ids = [
+			row["id"]
+			for row in conn.execute("SELECT id FROM nodes WHERE tunnel_peer_id IS NOT NULL")
+		]
+		return {node_id: bump_node_config_version(conn, node_id) for node_id in node_ids}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

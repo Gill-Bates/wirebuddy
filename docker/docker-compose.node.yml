@@ -3,6 +3,7 @@ services:
     image: giiibates/wirebuddy:latest
     container_name: wirebuddy-node
     restart: always
+    stop_grace_period: 20s
     network_mode: host
     cap_drop:
       - ALL
@@ -13,8 +14,8 @@ services:
       WIREBUDDY_ENROLLMENT_TOKEN: "${WIREBUDDY_ENROLLMENT_TOKEN:?Set WIREBUDDY_ENROLLMENT_TOKEN in .env}"
       WIREBUDDY_ENROLLMENT_VERIFY_KEY: "${WIREBUDDY_ENROLLMENT_VERIFY_KEY:?Set WIREBUDDY_ENROLLMENT_VERIFY_KEY in .env}"
       WIREBUDDY_DATA_DIR: /app/data
-      LOG_LEVEL: INFO
-      TZ: ${TZ:-Etc/UTC}
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      TZ: "${TZ:-Etc/UTC}"
     logging:
       driver: json-file
       options:
@@ -26,3 +27,5 @@ services:
       - /dev/net/tun:/dev/net/tun
     volumes:
       - ./data:/app/data
+    healthcheck:
+      disable: true

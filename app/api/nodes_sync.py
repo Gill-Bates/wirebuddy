@@ -57,7 +57,7 @@ from ..db.sqlite_nodes import (
 from ..db.sqlite_peers import allocate_peer_ip, get_peer_by_id, update_peers_last_seen_batch
 from ..db.sqlite_peers_mutations import create_peer
 from ..db.sqlite_runtime import thread_connection, transaction
-from ..db.sqlite_settings import set_node_speedtest_last_result
+from ..db.sqlite_settings import get_gui_https_enabled, set_node_speedtest_last_result
 
 from ..utils.config import get_config
 from ..utils.crypto import hash_token, new_token
@@ -297,10 +297,34 @@ async def _claim_pending_command_events(db_path: Path, node_id: str) -> list[str
 	return formatted
 
 
-def _warn_if_not_https(request: Request, node_id: str, context: str) -> None:
-	"""Log when sensitive enrollment data is delivered over non-HTTPS."""
-	if not _is_https_best_effort(request):
-		_log.error("%s delivered session_secret over non-HTTPS transport for node=%s", context, node_id)
+def _enforce_enrollment_transport(
+	conn: sqlite3.Connection,
+	request: Request,
+	node_id: str,
+	context: str,
+) -> None:
+	"""Guard delivery of the long-lived node session_secret.
+
+	When the GUI is configured for HTTPS the enrollment is rejected rather than
+	handing the secret to a plaintext transport. Otherwise the historical
+	behaviour (log loudly, continue) is preserved so LAN deployments keep
+	working.
+	"""
+	if _is_https_best_effort(request):
+		return
+
+	if get_gui_https_enabled(conn):
+		_log.warning(
+			"%s rejected: HTTPS required for session_secret delivery node=%s",
+			context,
+			node_id,
+		)
+		raise HTTPException(
+			status_code=400,
+			detail="This server requires HTTPS for node enrollment.",
+		)
+
+	_log.error("%s delivered session_secret over non-HTTPS transport for node=%s", context, node_id)
 
 
 def _write_peer_traffic_metric(tsdb_dir: Path, data: dict[str, Any]) -> int:
@@ -338,39 +362,6 @@ def _is_https_best_effort(request: Request) -> bool:
 	except HTTPException as exc:
 		_log.warning("Could not determine HTTPS state for enrollment transport: %s", exc.detail)
 		return False
-
-
-def _recover_node_enrollment_sync(
-	conn: sqlite3.Connection,
-	node_id: str,
-	fingerprint: str,
-	session_secret: str,
-) -> dict[str, Any]:
-	"""Complete recovery enrollment inside a single blocking DB section."""
-	with transaction(conn, immediate=True):
-		fresh_node = get_node(conn, node_id)
-		if fresh_node is None:
-			raise HTTPException(status_code=404, detail="Enrollment token invalid or node deleted")
-
-		if fresh_node["status"] == "pending":
-			raise HTTPException(status_code=409, detail="Node enrollment state changed, retry enrollment")
-
-		stored_fingerprint = fresh_node["cert_fingerprint"]
-		if not (stored_fingerprint and hmac.compare_digest(fingerprint, stored_fingerprint)):
-			_log.warning(
-				"Node enrollment rejected: id=%s already enrolled with different certificate "
-				"(stored=%s..., request=%s...)",
-				node_id,
-				(stored_fingerprint or "none")[:16],
-				fingerprint[:16],
-			)
-			raise HTTPException(status_code=409, detail="Node already enrolled")
-
-		if not rotate_node_session_secret(conn, node_id, hash_token(session_secret)):
-			raise HTTPException(status_code=409, detail="Node is pending and cannot use recovery enrollment")
-		bump_node_config_version(conn, node_id)
-
-	return get_node_config(conn, node_id)
 
 
 def _enroll_pending_node_sync(
@@ -660,7 +651,7 @@ async def enroll_node_endpoint(
 
 	_log.info("Rotated API secret for node=%s (enrollment token invalidated)", node_id)
 
-	_warn_if_not_https(request, node_id, context="Enrollment")
+	_enforce_enrollment_transport(conn, request, node_id, context="Enrollment")
 	config["session_secret"] = session_secret  # One-time delivery over TLS
 	if warning_msg:
 		config["_warning"] = warning_msg
@@ -739,9 +730,15 @@ def _process_heartbeat(
 			)
 
 		if new_metrics:
+			# Compare adjacent values instead of materialising the full range:
+			# seq is attacker-influenced and unbounded, so list(range(a, b))
+			# would allocate arbitrarily much memory for a two-element batch.
 			seqs = [m.seq for m in new_metrics]
-			expected = list(range(seqs[0], seqs[-1] + 1))
-			if seqs != expected:
+			is_contiguous = all(
+				current == previous + 1
+				for previous, current in zip(seqs, seqs[1:])
+			)
+			if not is_contiguous:
 				_log.warning(
 					"Node %s submitted non-contiguous metric sequence: %s",
 					node_id,

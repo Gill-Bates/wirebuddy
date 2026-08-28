@@ -9,7 +9,7 @@
 {% block content %}
 <div class="container-fluid wb-page about-page">
     <div class="wb-page-header flex-shrink-0">
-        <h1 class="page-title"><span class="material-icons me-2">info</span>About</h1>
+        <h1 class="page-title"><span class="material-icons me-2" aria-hidden="true">info</span>About</h1>
     </div>
 
     <div class="about-layout">
@@ -19,8 +19,8 @@
             <div class="col-12 col-lg-4 d-lg-flex">
                 <div class="card flex-grow-1 d-flex flex-column">
                     <div class="card-header d-flex align-items-center">
-                        <span class="material-icons me-2">code</span>
-                        <span class="fw-semibold">Application Details</span>
+                        <span class="material-icons me-2" aria-hidden="true">code</span>
+                        <h2 class="h6 fw-semibold mb-0">Application Details</h2>
                     </div>
                     <div class="card-body">
                         <table class="table table-sm table-borderless mb-0">
@@ -56,7 +56,7 @@
                             <div class="pt-3">
                                 <h3 class="h6 text-muted mb-2">Author</h3>
                                 <div class="d-flex align-items-center">
-                                    <span class="material-icons me-2 about-accent-icon">person</span>
+                                    <span class="material-icons me-2 about-accent-icon" aria-hidden="true">person</span>
                                     <div>
                                         <strong>Gill-Bates</strong>
                                         <br>
@@ -77,11 +77,11 @@
                 <div class="card about-update-card d-flex flex-column">
                     <div class="card-header d-flex align-items-center justify-content-between">
                         <div>
-                            <span class="material-icons me-2">system_update</span>
-                            <span class="fw-semibold">Check for Updates</span>
+                            <span class="material-icons me-2" aria-hidden="true">system_update</span>
+                            <h2 class="h6 fw-semibold mb-0 d-inline">Check for Updates</h2>
                         </div>
-                        <button class="btn btn-sm btn-outline-secondary text-nowrap ms-2" id="btn-check-updates" title="Check now" data-is-admin="{{ user['is_admin'] | tojson }}">
-                            <span class="material-icons align-middle me-1 icon-sm">refresh</span>Check Now
+                        <button type="button" class="btn btn-sm btn-outline-secondary text-nowrap ms-2" id="btn-check-updates" title="Check now" data-is-admin="{{ user['is_admin'] | tojson }}">
+                            <span class="material-icons align-middle me-1 icon-sm" aria-hidden="true">refresh</span>Check Now
                         </button>
                     </div>
                     <div class="card-body">
@@ -130,7 +130,7 @@
                             
                             <div id="update-available-section" class="d-none mt-2">
                                 <a id="update-release-link" href="#" target="_blank" class="btn btn-sm btn-primary w-100">
-                                    <span class="material-icons me-1 icon-xs">open_in_new</span>
+                                    <span class="material-icons me-1 icon-xs" aria-hidden="true">open_in_new</span>
                                     View Release on GitHub
                                 </a>
                             </div>
@@ -144,9 +144,9 @@
                                 <a class="btn btn-outline-secondary w-100 about-doc-link"
                            href="https://gill-bates.github.io/wirebuddy/"
                            target="_blank" rel="noopener noreferrer">
-                            <span class="material-icons align-middle me-1 icon-md">description</span>
+                            <span class="material-icons align-middle me-1 icon-md" aria-hidden="true">description</span>
                             Documentation
-                            <span class="material-icons align-middle ms-1 icon-external">open_in_new</span>
+                            <span class="material-icons align-middle ms-1 icon-external" aria-hidden="true">open_in_new</span>
                         </a>
                     </div>
                 </div>
@@ -156,16 +156,16 @@
             <div class="col-12 col-lg-4 d-lg-flex about-deps-col">
                 <div class="card flex-grow-1 d-flex flex-column">
                     <div class="card-header d-flex align-items-center">
-                        <span class="material-icons me-2">inventory_2</span>
-                        <span class="fw-semibold">Dependencies</span>
+                        <span class="material-icons me-2" aria-hidden="true">inventory_2</span>
+                        <h2 class="h6 fw-semibold mb-0">Dependencies</h2>
                     </div>
                     <div class="card-body p-0 d-flex flex-column">
                         <div class="table-responsive dependencies-scroll flex-grow-1" tabindex="0" aria-label="Dependencies table">
                             <table class="table table-sm table-hover mb-0 dependencies-table">
                                 <thead class="sticky-top">
                                     <tr>
-                                        <th>Package</th>
-                                        <th class="text-end">Version</th>
+                                        <th scope="col">Package</th>
+                                        <th scope="col" class="text-end">Version</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -188,10 +188,13 @@
             <div class="col-12 about-changelog-col">
                 <div class="card d-flex flex-column">
                     <div class="card-header d-flex align-items-center">
-                        <span class="material-icons me-2">history</span>
-                        <span class="fw-semibold">Changelog</span>
+                        <span class="material-icons me-2" aria-hidden="true">history</span>
+                        <h2 class="h6 fw-semibold mb-0">Changelog</h2>
                     </div>
                     <div class="card-body wb-card-body-surface changelog-content flex-grow-1 flex-scroll">
+                        {# Safe: _render_changelog() in app/api/frontend_pages.py runs the rendered
+                           Markdown through nh3.clean() with a tag/attribute allowlist and an
+                           http/https/mailto URL scheme allowlist before it reaches the template. #}
                         {{ changelog_html | safe }}
                     </div>
                 </div>
@@ -200,7 +203,6 @@
     </div>
 </div>
 
-<link rel="stylesheet" href="/static/css/pages/about.css">
 {% endblock %}
 
 {% block extra_js %}

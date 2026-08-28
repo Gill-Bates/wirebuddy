@@ -49,6 +49,7 @@ ACME_DIRECTORY_STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory
 # Domain name validation pattern (RFC 1123 hostname)
 # Used by CertificateRequest model and delete_certificate path parameter
 _DOMAIN_PATTERN = r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$"
+_ACME_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
 
 # Challenge TTL in seconds (10 minutes)
 CHALLENGE_TTL = 600
@@ -201,15 +202,32 @@ def _parse_acme_error(resp: httpx.Response) -> str:
 		return resp.text
 
 
+# Upper bound for a single Retry-After sleep and for a whole certificate order.
+_MAX_RETRY_AFTER_SECONDS = 30.0
+_ACME_ORDER_TIMEOUT_SECONDS = 600.0
+
+
+def _clamp_retry_after(seconds: float) -> float:
+	"""Clamp a server-supplied delay into a sane range."""
+	if seconds != seconds:  # NaN
+		return 0.0
+	return max(0.0, min(seconds, _MAX_RETRY_AFTER_SECONDS))
+
+
 def _parse_retry_after(resp: httpx.Response, fallback_delay: float) -> float:
-	"""Parse Retry-After header as seconds, falling back to the provided delay."""
+	"""Parse Retry-After header as seconds, falling back to the provided delay.
+
+	The result is clamped to _MAX_RETRY_AFTER_SECONDS: the value is server
+	controlled, and honouring it verbatim would hold the request and the
+	domain lock for arbitrarily long.
+	"""
 	raw_value = resp.headers.get("Retry-After")
 	if not raw_value:
 		return fallback_delay
 
 	raw_value = raw_value.strip()
 	try:
-		return max(0.0, float(raw_value))
+		return _clamp_retry_after(float(raw_value))
 	except ValueError:
 		pass
 
@@ -217,7 +235,7 @@ def _parse_retry_after(resp: httpx.Response, fallback_delay: float) -> float:
 		retry_at = parsedate_to_datetime(raw_value)
 		if retry_at.tzinfo is None:
 			retry_at = retry_at.replace(tzinfo=UTC)
-		return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+		return _clamp_retry_after((retry_at - datetime.now(UTC)).total_seconds())
 	except Exception:
 		return fallback_delay
 
@@ -922,74 +940,101 @@ async def request_certificate(
 		
 		_log.info("Requesting certificate for %s (staging=%s)", req.domain, req.staging)
 		
-		async with ACMEClient(directory_url, certs_dir) as client:
-			# Register or fetch account
-			await client.register_or_fetch_account(req.email)
+		# Bound the whole workflow. Every polling loop honours a server-supplied
+		# Retry-After, so without an overall deadline an order could hold this
+		# request and the domain lock indefinitely.
+		async with asyncio.timeout(_ACME_ORDER_TIMEOUT_SECONDS):
+			async with ACMEClient(directory_url, certs_dir) as client:
+				# The per-domain lock does not cover the shared account files
+				# (account_key.pem / account_url.txt / account_thumbprint.txt).
+				# Concurrent orders for *different* domains would otherwise race
+				# to create and overwrite each other's ACME account.
+				account_lock_fd = await asyncio.to_thread(
+					_acquire_domain_lock, certs_dir, "_acme_account"
+				)
+				if account_lock_fd is None:
+					raise HTTPException(
+						status_code=409,
+						detail="ACME account initialization already in progress; retry shortly",
+					)
+				try:
+					await client.register_or_fetch_account(req.email)
+				finally:
+					await asyncio.to_thread(_release_domain_lock, account_lock_fd)
 			
-			# Create order
-			order_url, order = await client.order_certificate(req.domain)
-			_log.info("Created order: %s", order_url)
+				# Create order
+				order_url, order = await client.order_certificate(req.domain)
+				_log.info("Created order: %s", order_url)
 			
-			# Get authorization
-			if not order.get("authorizations"):
-				raise HTTPException(status_code=500, detail="No authorizations in order")
+				# Get authorization
+				if not order.get("authorizations"):
+					raise HTTPException(status_code=500, detail="No authorizations in order")
 			
-			auth_url = order["authorizations"][0]
-			authorization = await client.get_authorization(auth_url)
+				auth_url = order["authorizations"][0]
+				authorization = await client.get_authorization(auth_url)
 			
-			# Get HTTP-01 challenge
-			token, key_auth = client.get_http01_challenge(authorization)
+				# Get HTTP-01 challenge
+				token, key_auth = client.get_http01_challenge(authorization)
 			
-			# Store challenge response (both in-memory and file)
-			_prune_pending_challenges()
-			_pending_challenges[token] = (key_auth, time.time() + CHALLENGE_TTL)
-			await asyncio.to_thread(_save_challenge, certs_dir, token, key_auth)
-			_log.info("Challenge token: %s", token)
+				# Store challenge response (both in-memory and file)
+				_prune_pending_challenges()
+				_pending_challenges[token] = (key_auth, time.time() + CHALLENGE_TTL)
+				await asyncio.to_thread(_save_challenge, certs_dir, token, key_auth)
+				_log.info("Challenge token: %s", token)
 			
-			try:
-				# Find and respond to challenge
-				challenge_url = None
-				for challenge in authorization.get("challenges", []):
-					if challenge["type"] == "http-01":
-						challenge_url = challenge["url"]
-						break
+				try:
+					# Find and respond to challenge
+					challenge_url = None
+					for challenge in authorization.get("challenges", []):
+						if challenge["type"] == "http-01":
+							challenge_url = challenge["url"]
+							break
 				
-				if not challenge_url:
-					raise HTTPException(status_code=500, detail="No HTTP-01 challenge URL")
+					if not challenge_url:
+						raise HTTPException(status_code=500, detail="No HTTP-01 challenge URL")
 				
-				# Tell ACME server we're ready
-				await client.respond_to_challenge(challenge_url)
+					# Tell ACME server we're ready
+					await client.respond_to_challenge(challenge_url)
 
-				# Poll authorization explicitly so we observe invalid/expired states
-				# before advancing to order polling/finalization.
-				await client.poll_authorization(auth_url)
+					# Poll authorization explicitly so we observe invalid/expired states
+					# before advancing to order polling/finalization.
+					await client.poll_authorization(auth_url)
 				
-				# Wait for order to be ready
-				order = await client.poll_order(order_url)
+					# Wait for order to be ready
+					order = await client.poll_order(order_url)
 				
-				# Finalize order
-				cert_pem, key_pem = await client.finalize_order(order["finalize"], order_url, req.domain)
+					# Finalize order
+					cert_pem, key_pem = await client.finalize_order(order["finalize"], order_url, req.domain)
 				
-				# Save certificate (blocking file I/O — offload to thread)
-				cert_dir = await asyncio.to_thread(
-					client.save_certificate, req.domain, cert_pem, key_pem, req.staging
-				)
+					# Save certificate (blocking file I/O — offload to thread)
+					cert_dir = await asyncio.to_thread(
+						client.save_certificate, req.domain, cert_pem, key_pem, req.staging
+					)
 				
-				suffix = "_staging" if req.staging else ""
-				return OkResponse[CertificateIssueData](
-					message="Certificate issued successfully",
-					data=CertificateIssueData(
-						domain=req.domain,
-						staging=req.staging,
-						cert_path=str(cert_dir / f"fullchain{suffix}.pem"),
-						key_path=str(cert_dir / f"privkey{suffix}.pem"),
-					),
-				)
+					suffix = "_staging" if req.staging else ""
+					return OkResponse[CertificateIssueData](
+						message="Certificate issued successfully",
+						data=CertificateIssueData(
+							domain=req.domain,
+							staging=req.staging,
+							cert_path=str(cert_dir / f"fullchain{suffix}.pem"),
+							key_path=str(cert_dir / f"privkey{suffix}.pem"),
+						),
+					)
 			
-			finally:
-				# Delay cleanup so late validation retries do not race immediate deletion.
-				asyncio.create_task(_delayed_challenge_cleanup(certs_dir, token))
+				finally:
+					# Delay cleanup so late validation retries do not race immediate deletion.
+					asyncio.create_task(_delayed_challenge_cleanup(certs_dir, token))
 	
+	except TimeoutError as exc:
+		_log.error(
+			"ACME order timed out after %ss for domain=%s",
+			_ACME_ORDER_TIMEOUT_SECONDS, req.domain,
+		)
+		raise HTTPException(
+			status_code=504,
+			detail="Certificate order timed out; please retry",
+		) from exc
 	finally:
 		await asyncio.to_thread(_release_domain_lock, lock_fd)
 
@@ -1037,7 +1082,7 @@ async def serve_challenge(
 	Configure your reverse proxy to forward this path.
 	"""
 	# Validate token format to prevent log spam
-	if not re.match(r"^[A-Za-z0-9_\-]+$", token):
+	if not _ACME_TOKEN_RE.fullmatch(token):
 		raise HTTPException(status_code=404, detail="Invalid token format")
 	
 	key_auth = await asyncio.to_thread(get_challenge_response, token, certs_dir)

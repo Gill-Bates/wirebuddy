@@ -72,28 +72,27 @@ class TSDBService(RuntimeService):
         _log.info("TSDB_INITIALIZED dir=%s", self._tsdb_dir)
 
     async def _do_stop(self) -> None:
-        """Finalize TSDB with fsync."""
+        """Finalize TSDB with fsync.
+
+        Durability failures (retention, rotation, fsync) are propagated so the
+        base service records an unhealthy shutdown rather than a clean one.
+        """
         from ...db import tsdb
 
         try:
             stats = await asyncio.to_thread(tsdb.finalize_shutdown, self._tsdb_dir)
-
-            series = int(stats.get("series", 0))
-            rotated = int(stats.get("rotated", 0))
-            pruned = int(stats.get("pruned", 0))
-            synced_files = int(stats.get("synced_files", 0))
-            synced_dirs = int(stats.get("synced_dirs", 0))
-
-            _log.info(
-                "TSDB_SHUTDOWN series=%d rotated=%d pruned=%d synced_files=%d synced_dirs=%d",
-                series,
-                rotated,
-                pruned,
-                synced_files,
-                synced_dirs,
-            )
         except Exception:
             _log.exception("TSDB_SHUTDOWN_ERROR")
+            raise
+
+        _log.info(
+            "TSDB_SHUTDOWN series=%d rotated=%d pruned=%d synced_files=%d synced_dirs=%d",
+            int(stats.get("series", 0)),
+            int(stats.get("rotated", 0)),
+            int(stats.get("pruned", 0)),
+            int(stats.get("synced_files", 0)),
+            int(stats.get("synced_dirs", 0)),
+        )
 
     async def check_health(self) -> ServiceHealth:
         """Check TSDB health."""

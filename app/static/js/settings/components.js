@@ -115,6 +115,7 @@
         if (opts.class) classes.push(opts.class);
 
         const attrs = {
+            type: 'button',
             title: opts.title,
             'aria-label': opts.ariaLabel || opts.title,
         };

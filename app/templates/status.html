@@ -7,7 +7,8 @@
     <meta name="description" content="WireBuddy connection status page - view your WireGuard tunnel status, IP addresses, and network diagnostics.">
     <title>WireBuddy Status</title>
     <link rel="icon" href="/static/img/wirebuddy_1c.svg" type="image/svg+xml">
-    <script src="/static/js/theme.js" defer></script>
+    <!-- Theme Script in <head> prevents FOUC - must stay synchronous (see base.html) -->
+    <script src="/static/js/theme.js"></script>
     <link href="/static/vendor/bootstrap.min.css" rel="stylesheet">
     <link href="/static/vendor/material-icons.css" rel="stylesheet">
     <link href="/static/css/style.css" rel="stylesheet">
@@ -30,11 +31,11 @@
             <div class="d-flex align-items-center status-navbar-actions">
                 <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn status-icon-btn"
                     data-action="toggle-theme" aria-label="Toggle theme" title="Toggle theme">
-                    <span class="material-icons" id="theme-icon">dark_mode</span>
+                    <span class="material-icons" id="theme-icon" aria-hidden="true">dark_mode</span>
                 </button>
                 <button type="button" class="btn btn-link text-white p-0 border-0 navbar-theme-btn status-icon-btn"
                     data-action="reload-page" aria-label="Reload status checks" title="Reload status checks">
-                    <span class="material-icons">refresh</span>
+                    <span class="material-icons" aria-hidden="true">refresh</span>
                 </button>
             </div>
         </div>
@@ -45,6 +46,7 @@
     {% set _outbound_ip = None if not outbound_ip or outbound_ip|string|lower == 'n/a' else outbound_ip %}
 
     <main class="container py-4 py-md-5 status-main">
+        <h1 class="visually-hidden">WireBuddy Status</h1>
 
         <!-- Network Flow Diagram -->
         <div class="card mb-3">
@@ -54,7 +56,7 @@
                 <div class="flow-wrapper" data-ui-lint="status-flow">
                     <!-- Client Node -->
                     <div class="flow-node{% if _public_client_ip %} flow-node-active{% else %} flow-node-inactive{% endif %}" data-flow-node="client">
-                        <span class="material-icons flow-icon">devices</span>
+                        <span class="material-icons flow-icon" aria-hidden="true">devices</span>
                         <div class="flow-label">Client</div>
                         <div class="flow-meta">
                             {% if _public_client_ip %}
@@ -70,7 +72,7 @@
 
                     <!-- WireGuard Node -->
                     <div class="flow-node{% if _interface_name %} flow-node-active{% else %} flow-node-inactive{% endif %}" data-flow-node="wireguard">
-                        <span class="material-icons flow-icon">vpn_lock</span>
+                        <span class="material-icons flow-icon" aria-hidden="true">vpn_lock</span>
                         <div class="flow-label">WireGuard</div>
                         <div class="flow-meta">{% if _interface_name %}{{ _interface_name|e }}{% endif %}</div>
                     </div>
@@ -82,7 +84,7 @@
 
                     <!-- Internet Node -->
                     <div class="flow-node{% if _outbound_ip %} flow-node-active{% else %} flow-node-inactive{% endif %}" data-flow-node="internet">
-                        <span class="material-icons flow-icon">public</span>
+                        <span class="material-icons flow-icon" aria-hidden="true">public</span>
                         <div class="flow-label">Internet</div>
                         <div class="flow-meta">
                             {% if _outbound_ip %}

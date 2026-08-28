@@ -64,12 +64,12 @@ For installation, configuration, and security setup, see the **[Documentation](h
 
 ---
 
-## 📝 License
+## License
 
-**GNU Affero General Public License v3.0** — see [LICENSE](LICENSE) for details.
-
----
+See [LICENSE](LICENSE).
 
 <p align="center">
-  Made with ☕ by <a href="https://github.com/Gill-Bates">Gill-Bates</a>
+  <a href="https://www.buymeacoffee.com/tnsteinerx">
+    <img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20beer&emoji=%F0%9F%8D%BA&slug=tnsteinerx&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" alt="Buy Me A Coffee">
+  </a>
 </p>

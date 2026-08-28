@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 
 # ANSI color codes for log levels (if TTY)
 _LOG_COLORS = {
@@ -121,17 +122,20 @@ def setup_logging(log_level: str) -> None:
     level = valid_levels[normalized_level]
     is_tty = sys.stdout.isatty()
 
-    # Choose formatter based on TTY detection
+    # Choose formatter based on TTY detection. Timestamps are emitted in UTC
+    # (ISO-8601 with a trailing "Z") so logs from multiple hosts or containers
+    # in different local timezones stay correlatable.
     if is_tty:
-        formatter = ColoredFormatter(
+        formatter: logging.Formatter = ColoredFormatter(
             fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
+            datefmt="%Y-%m-%dT%H:%M:%SZ",
         )
     else:
         formatter = HumanizedFormatter(
             fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
+            datefmt="%Y-%m-%dT%H:%M:%SZ",
         )
+    formatter.converter = time.gmtime
 
     # force=True removes any pre-existing handlers (e.g. from uvicorn)
     # so every logger inherits the same format.

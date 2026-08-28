@@ -90,7 +90,6 @@ MIN_RETENTION_DAYS = 1  # Prevent immediate pruning of just-written data
 DEFAULT_RETENTION_DAYS = 7
 PRUNE_INTERVAL_SECONDS = 300  # Only prune a series every 5 minutes max
 MAX_SERIES_FILE_BYTES = 8 * 1024 * 1024  # 8 MiB per active JSONL file
-MAX_ROTATED_ARCHIVES = 6  # Keep latest N compressed rotations per series
 FSYNC_BATCH_SIZE = 10  # Fsync every N appends (durability vs performance tradeoff)
 FSYNC_BATCH_INTERVAL = 5.0  # Or fsync after N seconds, whichever comes first
 MAX_VALUE_SIZE = 1024 * 1024  # 1 MiB per data point (DoS prevention)
@@ -641,14 +640,10 @@ def _rotate_series_locked(series_path: Path) -> bool:
 		_log.warning("TSDB rotation failed for %s: %s", series_path, e)
 		return False
 
-	# Keep only the newest archives.
-	archives = _rotated_archives(series_path)
-	if len(archives) > MAX_ROTATED_ARCHIVES:
-		for old in archives[: len(archives) - MAX_ROTATED_ARCHIVES]:
-			try:
-				old.unlink(missing_ok=True)
-			except OSError:
-				pass
+	# Retention is enforced solely by _prune_series_locked() / _prune_archives_locked()
+	# based on the configured retention_days. A high-traffic series can rotate many
+	# times a day (rotation triggers on file size, not time), so a fixed archive-count
+	# cap here would delete data far newer than the configured retention window.
 	return True
 
 
@@ -723,38 +718,6 @@ def _iter_metric_points(
 			if filter_fn and not filter_fn(val):
 				continue
 			yield MetricPoint(ts=ts, value=val)
-
-
-def _iter_file_points(
-	src: Path,
-	*,
-	since: datetime | None = None,
-	until: datetime | None = None,
-	filter_fn: Callable[[Any], bool] | None = None,
-) -> list[MetricPoint]:
-	"""Parse and return MetricPoints from a single series file (plain or gzip)."""
-	pts: list[MetricPoint] = []
-	for line in _iter_json_lines(src):
-		line = line.strip()
-		if not line:
-			continue
-		try:
-			obj = json.loads(line)
-			ts = parse_utc(obj["ts"])
-			if ts is None:
-				continue
-			val = obj.get("value")
-		except Exception as exc:
-			_log.debug("Skipping corrupted JSONL line in %s: %s", src.name, exc)
-			continue
-		if since and ts < since:
-			continue
-		if until and ts > until:
-			continue
-		if filter_fn and not filter_fn(val):
-			continue
-		pts.append(MetricPoint(ts=ts, value=val))
-	return pts
 
 
 def _fsync_path(path: Path, *, directory: bool = False) -> bool:
@@ -1091,17 +1054,18 @@ def query(
 			return []
 
 		if latest:
-			# Reverse file order (newest first) for early-exit when only recent
-			# points are needed.  Collect at least limit*2 points before stopping
-			# to remain correct in the presence of backdated timestamps.
-			files = list(reversed(_iter_series_files(p)))
-			collected: list[MetricPoint] = []
-			for src in files:
-				collected.extend(_iter_file_points(src, since=since_u, until=until_u, filter_fn=filter_fn))
-				if len(collected) >= limit * 2:
-					break
-			collected.sort(key=lambda pt: pt.ts)
-			return collected[-limit:]
+			# Archive order reflects rotation time (file size triggers rotation),
+			# not necessarily content order: append_point(at=...) allows backdated
+			# writes (used by DNS bucket aggregation), so an older archive can hold
+			# newer timestamps than a more-recently-rotated one. An early exit based
+			# on collected count alone could miss those, so every file is scanned
+			# before sorting and taking the tail — matching the non-latest path's
+			# correctness guarantee.
+			points = list(
+				_iter_metric_points(p, since=since_u, until=until_u, filter_fn=filter_fn)
+			)
+			points.sort(key=lambda pt: pt.ts)
+			return points[-limit:]
 		else:
 			points = list(_iter_metric_points(p, since=since_u, until=until_u, filter_fn=filter_fn))
 			points.sort(key=lambda pt: pt.ts)

@@ -19,6 +19,7 @@ from .db.sqlite_interfaces import (
 )
 from .db.sqlite_peers import (
 	get_all_peers,
+	get_dns_logging_disabled_ips,
 )
 from .db.sqlite_runtime import (
 	checkpoint_wal,
@@ -44,6 +45,7 @@ from .db.sqlite_settings import (
 )
 
 import asyncio
+import fcntl
 import ipaddress
 import logging
 import os
@@ -162,11 +164,53 @@ _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS = 300.0
 _APP_SHUTDOWN_TIMEOUT_SECONDS = 30.0
 _PREPARED_RECORD_ATTR = "_wirebuddy_prepared"
 _WG_OPERATION_LOCK: asyncio.Lock | None = None
-_AUTO_CLEANUP_STALE_INTERFACES = os.getenv(
-	"WIREBUDDY_CLEANUP_STALE_INTERFACES",
-	"",
-).strip().lower() in {"1", "true", "yes"}
-_FORCE_HSTS = os.getenv("WIREBUDDY_FORCE_HSTS", "").strip().lower() in {"1", "true", "yes"}
+_APPLICATION_LOCK_NAME = ".application.lock"
+_APPLICATION_LOCK_ACQUIRE_TIMEOUT = 3.0  # grace for a reload/restart handoff
+_DNS_INGESTION_MAX_BACKOFF_EXPONENT = 8  # 2**8 * base already exceeds the max delay
+
+# Privileged network tools are resolved to absolute paths from a fixed allowlist
+# so a tampered or writable ``PATH`` entry cannot substitute another binary that
+# then runs with this process' network capabilities.
+_IP_BIN_CANDIDATES = (
+	Path("/usr/sbin/ip"), Path("/sbin/ip"), Path("/usr/bin/ip"), Path("/bin/ip"),
+)
+_WG_BIN_CANDIDATES = (
+	Path("/usr/bin/wg"), Path("/usr/local/bin/wg"), Path("/bin/wg"),
+)
+_WG_QUICK_BIN_CANDIDATES = (
+	Path("/usr/bin/wg-quick"), Path("/usr/local/bin/wg-quick"),
+	Path("/usr/sbin/wg-quick"), Path("/sbin/wg-quick"), Path("/bin/wg-quick"),
+)
+
+
+def _resolve_trusted_binary(candidates: tuple[Path, ...]) -> str:
+	"""Return the first existing absolute path, or the bare name as a fallback.
+
+	The bare-name fallback keeps unusual layouts working; ``run_command`` still
+	raises ``FileNotFoundError`` if PATH resolution also fails.
+	"""
+	for candidate in candidates:
+		if candidate.is_file() and os.access(candidate, os.X_OK):
+			return str(candidate)
+	_log.warning(
+		"No trusted absolute path found for %s; falling back to PATH lookup",
+		candidates[0].name,
+	)
+	return candidates[0].name
+
+
+_IP_BIN = _resolve_trusted_binary(_IP_BIN_CANDIDATES)
+_WG_BIN = _resolve_trusted_binary(_WG_BIN_CANDIDATES)
+_WG_QUICK_BIN = _resolve_trusted_binary(_WG_QUICK_BIN_CANDIDATES)
+
+
+def _env_flag(name: str) -> bool:
+	"""Read a boolean flag from the environment.
+
+	Must be called after ``load_config()`` so values from ``settings.env`` are
+	visible; reading these at import time would ignore that file.
+	"""
+	return os.getenv(name, "").strip().lower() in {"1", "true", "yes"}
 
 
 def _get_wg_operation_lock() -> asyncio.Lock:
@@ -175,6 +219,70 @@ def _get_wg_operation_lock() -> asyncio.Lock:
 	if _WG_OPERATION_LOCK is None:
 		_WG_OPERATION_LOCK = asyncio.Lock()
 	return _WG_OPERATION_LOCK
+
+
+def _acquire_application_lock(data_dir: Path) -> int | None:
+	"""Hold a per-data-dir lock so only one control plane process runs.
+
+	Bootstrap, migrations, WireGuard/Unbound control, the scheduler and DNS
+	ingestion are not safe to run from more than one process against the same
+	data directory. ``flock`` is released automatically on process exit, so a
+	crash cannot leave a stale lock.
+
+	Returns the held fd, or ``None`` when locking could not be set up
+	(infrastructure failure — startup continues). Raises ``StartupFatalError``
+	when another process already holds the lock.
+	"""
+	if os.getenv("PYTEST_CURRENT_TEST"):
+		return None
+	lock_path = data_dir / _APPLICATION_LOCK_NAME
+	flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+	try:
+		fd = os.open(lock_path, flags, 0o600)
+	except OSError as exc:
+		_log.warning("Could not open application lock %s: %s", lock_path, exc)
+		return None
+
+	# Retry briefly: on ``--reload`` or a container restart the previous process
+	# may still be releasing the lock. A genuine second control plane will not
+	# clear within this window.
+	deadline = time.monotonic() + _APPLICATION_LOCK_ACQUIRE_TIMEOUT
+	while True:
+		try:
+			fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+			break
+		except BlockingIOError:
+			if time.monotonic() >= deadline:
+				os.close(fd)
+				raise StartupFatalError(
+					f"Another WireBuddy control plane is already running against {data_dir}. "
+					"Run exactly one application process (deploy with --workers 1)."
+				) from None
+			time.sleep(0.2)
+		except OSError as exc:
+			os.close(fd)
+			_log.warning("Could not acquire application lock: %s", exc)
+			return None
+	try:
+		os.ftruncate(fd, 0)
+		os.write(fd, f"pid={os.getpid()}\n".encode("utf-8"))
+	except OSError:
+		pass
+	return fd
+
+
+def _release_application_lock(fd: int | None) -> None:
+	"""Release the application lock acquired by :func:`_acquire_application_lock`."""
+	if fd is None:
+		return
+	try:
+		fcntl.flock(fd, fcntl.LOCK_UN)
+	except OSError:
+		pass
+	try:
+		os.close(fd)
+	except OSError:
+		pass
 
 
 def _make_shutdown_handler(
@@ -270,7 +378,7 @@ async def _verify_host_network_mode() -> None:
 		return
 
 	try:
-		res = await run_command("ip", "route", "show", "default", timeout=5.0)
+		res = await run_command(_IP_BIN, "route", "show", "default", timeout=5.0)
 		if res.returncode != 0:
 			raise StartupFatalError(f"Cannot verify Docker network mode: 'ip route' exit code {res.returncode}")
 
@@ -341,7 +449,7 @@ async def _cleanup_stale_interfaces(ctx: LifespanContext) -> list[str]:
 	"""
 	removed: list[str] = []
 	config_path = WG_CONFIG_PATH
-	if not _AUTO_CLEANUP_STALE_INTERFACES:
+	if not getattr(ctx.app.state, "auto_cleanup_stale_interfaces", False):
 		_log.info(
 			"Stale WireGuard interface cleanup disabled; set "
 			"WIREBUDDY_CLEANUP_STALE_INTERFACES=1 to enable destructive cleanup"
@@ -358,7 +466,7 @@ async def _cleanup_stale_interfaces(ctx: LifespanContext) -> list[str]:
 			return removed
 
 		# Get list of active WireGuard interfaces from kernel
-		res = await run_command("wg", "show", "interfaces", timeout=5.0)
+		res = await run_command(_WG_BIN, "show", "interfaces", timeout=5.0)
 		if res.returncode != 0 or not res.stdout:
 			return removed
 
@@ -391,7 +499,7 @@ async def _cleanup_stale_interfaces(ctx: LifespanContext) -> list[str]:
 			try:
 				# Delete the interface
 				async with _get_wg_operation_lock():
-					del_res = await run_command("ip", "link", "delete", iface_name, timeout=5.0)
+					del_res = await run_command(_IP_BIN, "link", "delete", iface_name, timeout=5.0)
 				if del_res.returncode == 0:
 					_log.info("STALE_INTERFACE_REMOVED name=%s", iface_name)
 					removed.append(iface_name)
@@ -757,6 +865,11 @@ def _read_dns_retention_days_sync(db_path: Path) -> int:
 	return _with_conn(db_path, get_dns_log_retention_days)
 
 
+def _read_dns_logging_disabled_ips_sync(db_path: Path) -> set[str]:
+	"""Read peer IPs that opted out of DNS query logging synchronously."""
+	return _with_conn_or(db_path, get_dns_logging_disabled_ips, default=set())
+
+
 def _read_tsdb_retention_days_sync(db_path: Path) -> int:
 	"""Read TSDB retention days synchronously."""
 	return _with_conn(db_path, get_tsdb_retention_days)
@@ -1054,7 +1167,7 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 		async def _stop_one(iface_name: str) -> None:
 			try:
 				async with _get_wg_operation_lock():
-					res = await run_command("wg-quick", "down", iface_name, timeout=_WG_DOWN_TIMEOUT_SECONDS)
+					res = await run_command(_WG_QUICK_BIN, "down", iface_name, timeout=_WG_DOWN_TIMEOUT_SECONDS)
 				if res.returncode == 0:
 					_log.info("WireGuard interface %s stopped", iface_name)
 				else:
@@ -1066,9 +1179,11 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 
 		await asyncio.gather(*[_stop_one(name) for name in ctx.started_interfaces])
 
-	# 6. TSDB fsync
+	# 6. TSDB fsync. Runs rotation/compression + fsync (blocking file I/O), so
+	# keep it off the event loop: a blocked loop cannot honour the surrounding
+	# shutdown timeout.
 	try:
-		tsdb_stats = tsdb.finalize_shutdown(ctx.cfg.tsdb_dir)
+		tsdb_stats = await asyncio.to_thread(tsdb.finalize_shutdown, ctx.cfg.tsdb_dir)
 		_log.info(
 			"TSDB_SHUTDOWN series=%d rotated=%d pruned=%d synced_files=%d synced_dirs=%d",
 			tsdb_stats.get("series", 0),
@@ -1149,8 +1264,8 @@ async def _phase_dns_config(ctx: LifespanContext) -> None:
 			return
 		interfaces = dns_data.get("interfaces", [])
 		listen_addrs_ipv4, listen_addrs_ipv6 = _extract_gateways(interfaces)
-		if not listen_addrs_ipv4:
-			_log.info("DNS init skipped: no WireGuard interfaces configured yet")
+		if not listen_addrs_ipv4 and not listen_addrs_ipv6:
+			_log.info("DNS init skipped: no WireGuard interface addresses configured yet")
 		else:
 			await asyncio.to_thread(
 				unbound.write_config,
@@ -1198,13 +1313,13 @@ async def _phase_wireguard_start(ctx: LifespanContext) -> None:
 		return
 	async def _start_one(iface_name: str) -> str | None:
 		try:
-			check_res = await run_command("wg", "show", iface_name, timeout=_WG_CHECK_TIMEOUT_SECONDS)
+			check_res = await run_command(_WG_BIN, "show", iface_name, timeout=_WG_CHECK_TIMEOUT_SECONDS)
 			if check_res.returncode == 0:
 				_log.info("WireGuard interface %s already running", iface_name)
 				return None
-			
+
 			async with _get_wg_operation_lock():
-				up_res = await run_command("wg-quick", "up", iface_name, timeout=_WG_UP_TIMEOUT_SECONDS)
+				up_res = await run_command(_WG_QUICK_BIN, "up", iface_name, timeout=_WG_UP_TIMEOUT_SECONDS)
 			if up_res.returncode == 0:
 				_log.info("WireGuard interface %s started", iface_name)
 				return iface_name
@@ -1297,6 +1412,7 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 				dns_dir=ctx.cfg.dns_dir,
 				blocked_domains_func=unbound.get_blocked_domains,
 				retention_days_func=_current_dns_retention_days,
+				dns_logging_disabled_ips_func=lambda: _read_dns_logging_disabled_ips_sync(ctx.cfg.db_path),
 				tsdb_dir=ctx.cfg.tsdb_dir,
 			)
 			_log.warning("DNS_INGESTION returned unexpectedly; restarting in 5s")
@@ -1311,10 +1427,13 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 			return
 		except Exception as exc:
 			retry_count += 1
-			# Exponential backoff with jitter to prevent thundering herd
+			# Exponential backoff with jitter to prevent thundering herd. The
+			# exponent is capped before the shift: an unbounded 2**retry_count
+			# eventually overflows float conversion and would kill this loop.
+			exponent = min(retry_count, _DNS_INGESTION_MAX_BACKOFF_EXPONENT)
 			jitter = random.uniform(0.8, 1.2)
 			delay = min(
-				(2 ** retry_count * _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS * jitter),
+				2.0 ** exponent * _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS * jitter,
 				_DNS_INGESTION_RESTART_MAX_DELAY_SECONDS
 			)
 			_log.error("DNS_INGESTION crashed (retry #%d in %.0fs): %s", retry_count, delay, exc)
@@ -1324,13 +1443,16 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 async def _lifespan(app: FastAPI):
 	"""Application lifespan manager."""
 	await _verify_host_network_mode()
+	cfg = app.state.cfg
+	# One control plane per data dir: bootstrap, migrations, WireGuard/Unbound
+	# control, the scheduler and DNS ingestion must not run from two processes.
+	application_lock_fd = _acquire_application_lock(cfg.data_dir)
 	loop = asyncio.get_running_loop()
 	shutdown_signal_event = asyncio.Event()
 	app.state.shutdown_signal_event = shutdown_signal_event
 	app.state.node_event_bus = NodeEventBus()
 	configure_event_bus(app.state.node_event_bus)
 	previous_signal_handlers = _install_shutdown_signal_handlers(loop, shutdown_signal_event)
-	cfg = app.state.cfg
 	ctx = LifespanContext(
 		cfg=cfg,
 		app=app,
@@ -1395,14 +1517,19 @@ async def _lifespan(app: FastAPI):
 		try:
 			async with asyncio.timeout(_APP_SHUTDOWN_TIMEOUT_SECONDS):
 				await _do_shutdown(ctx)
+				# Close the event bus inside the same budget; a stuck aclose
+				# must not extend shutdown past the timeout.
+				node_event_bus = getattr(app.state, "node_event_bus", None)
+				if node_event_bus is not None:
+					await node_event_bus.aclose()
+					app.state.node_event_bus = None
 		except TimeoutError:
 			_log.critical("Forced shutdown timeout exceeded after %.0fs", _APP_SHUTDOWN_TIMEOUT_SECONDS)
+		except Exception:
+			_log.exception("Shutdown error")
 		finally:
-			node_event_bus = getattr(app.state, "node_event_bus", None)
-			if node_event_bus is not None:
-				await node_event_bus.aclose()
-				app.state.node_event_bus = None
 			configure_event_bus(None)
+			_release_application_lock(application_lock_fd)
 
 def create_app() -> FastAPI:
 	"""Application factory for WireBuddy."""
@@ -1440,6 +1567,11 @@ def create_app() -> FastAPI:
 	app.state.bootstrap_gate_release = None
 	app.state.bootstrap_gate_resume_error = None
 	app.state.deferred_startup_task = None
+	# Read env flags now (not at import time) so settings.env, loaded by
+	# load_config() above, is respected.
+	force_hsts = _env_flag("WIREBUDDY_FORCE_HSTS")
+	app.state.force_hsts = force_hsts
+	app.state.auto_cleanup_stale_interfaces = _env_flag("WIREBUDDY_CLEANUP_STALE_INTERFACES")
 	default_csp = (
 		"default-src 'self'; "
 		"script-src 'self'; "
@@ -1513,7 +1645,7 @@ def create_app() -> FastAPI:
 			"camera=(), microphone=(), geolocation=(), payment=(), usb=()",
 		)
 		response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-		if _FORCE_HSTS or request.url.scheme == "https":
+		if force_hsts or request.url.scheme == "https":
 			response.headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
 		return response
 
@@ -1559,13 +1691,25 @@ def create_app() -> FastAPI:
 		cfg: Config = request.app.state.cfg
 		errors = []
 
-		# Check database connectivity (offload to thread to avoid blocking event loop)
+		# Check database connectivity (offload to thread to avoid blocking event
+		# loop). This endpoint is unauthenticated and unrate-limited, so bound
+		# the concurrent DB work: a flood of probes must not exhaust the thread
+		# pool or pile up SQLite connections.
+		sem = getattr(request.app.state, "readiness_semaphore", None)
+		if sem is None:
+			sem = asyncio.Semaphore(2)
+			request.app.state.readiness_semaphore = sem
 		try:
-			await asyncio.to_thread(
-				_with_conn,
-				cfg.db_path,
-				_check_db_readiness
-			)
+			async with asyncio.timeout(1.0):
+				async with sem:
+					await asyncio.to_thread(
+						_with_conn,
+						cfg.db_path,
+						_check_db_readiness
+					)
+		except TimeoutError:
+			errors.append("database check timed out")
+			_log.warning("Readiness check timed out (probe backlog or slow database)")
 		except Exception as exc:
 			errors.append("database unavailable")
 			_log.warning("Readiness check failed: database: %s", exc)
@@ -1601,6 +1745,18 @@ def create_app() -> FastAPI:
 		scheduler = getattr(request.app.state, "scheduler", None)
 		if scheduler is None or not scheduler.running:
 			errors.append("scheduler unavailable")
+		else:
+			try:
+				stopped_jobs = [
+					status["name"]
+					for status in scheduler.get_status()
+					if not status["is_running"]
+				]
+			except Exception:
+				stopped_jobs = []
+			if stopped_jobs:
+				errors.append("scheduler jobs stopped")
+				_log.error("Readiness: stopped scheduler jobs: %s", ", ".join(stopped_jobs))
 
 		dns_task = getattr(request.app.state, "dns_task", None)
 		if dns_ingestion_expected and dns_service_enabled and dns_config_ready and (dns_task is None or dns_task.done()):

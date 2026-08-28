@@ -17,7 +17,11 @@ from typing import Protocol, cast
 from fastapi import HTTPException, Request
 
 from ..utils.config import Config
-from ..utils.backup_lock import is_restore_in_progress
+from ..utils.backup_lock import (
+	BackupLockBusyError,
+	acquire_restore_read_guard,
+	is_restore_in_progress,
+)
 from ..db.sqlite_runtime import (
 	close_connection,
 	connect,
@@ -73,24 +77,35 @@ def get_conn(request: Request) -> Generator[Connection, None, None]:
 	that is about to be replaced.
 	"""
 	state = _get_app_state(request)
-	if _restore_in_progress(state):
+	try:
+		# Keep the shared guard until the yielded connection is closed.  A
+		# restore can therefore not replace the database while this request is
+		# still using it.  The old advisory probe alone had a check/use race.
+		with acquire_restore_read_guard(state.cfg.data_dir):
+			if _restore_in_progress(state):
+				raise HTTPException(
+					status_code=503,
+					detail="Service restarting — backup restore in progress",
+					headers={"Retry-After": "30"},
+				)
+			conn = connect(state.db_path)
+			try:
+				yield conn
+			finally:
+				try:
+					if conn.in_transaction:
+						conn.rollback()
+				finally:
+					try:
+						close_connection(conn)
+					except Exception:
+						_log.exception("Failed to close SQLite connection")
+	except BackupLockBusyError as exc:
 		raise HTTPException(
 			status_code=503,
 			detail="Service restarting — backup restore in progress",
 			headers={"Retry-After": "30"},
-		)
-	conn = connect(state.db_path)
-	try:
-		yield conn
-	finally:
-		try:
-			if conn.in_transaction:
-				conn.rollback()
-		finally:
-			try:
-				close_connection(conn)
-			except Exception:
-				_log.exception("Failed to close SQLite connection")
+		) from exc
 
 
 def get_tsdb_dir(request: Request) -> Path:

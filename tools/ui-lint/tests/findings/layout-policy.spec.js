@@ -57,3 +57,27 @@ test('standard button height contract stays quiet when there is no mismatch', as
     expect(summarized.hardFindings).not.toContain('standardButtonHeightContract=0');
     expect(summarized.structuredFindings.find((finding) => finding.id === 'standard-button-height-contract')).toBeUndefined();
 });
+
+test('form switch helper spacing produces the updated layout warning', async () => {
+    const summarized = summarizeFindings({
+        name: 'settings-general-desktop',
+        metrics: {
+            formSwitchMarginIssues: [{
+                label: 'Enable Status Page',
+                marginBottom: 8,
+                descriptionMarginTop: 0,
+            }],
+        },
+        network: {},
+        diff: { ratio: 0, sizeMismatch: false },
+    });
+
+    expect(summarized.warnings).toContain('formSwitchMarginIssues=1');
+    expect(summarized.structuredFindings).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+            id: 'form-switch-margin',
+            message: 'Form switch description spacing issues detected',
+            severity: 'warning',
+        }),
+    ]));
+});

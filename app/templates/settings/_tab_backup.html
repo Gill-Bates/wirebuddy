@@ -5,9 +5,9 @@
             <div class="col-lg-4">
                 <div class="card h-100">
                     <div class="card-header">
-                        <h3 class="h5 mb-0">
+                        <h2 class="h5 mb-0">
                             Download Backup
-                        </h3>
+                        </h2>
                     </div>
                     <div class="card-body">
                         <p class="text-muted small mb-3">
@@ -27,7 +27,7 @@
                             <div class="form-text">Applies to manual and scheduled backups.</div>
                         </div>
 
-                        <button class="btn btn-primary w-100" id="btn-backup-download"{% if not user['is_admin'] %} disabled{% endif %}
+                        <button type="button" class="btn btn-primary w-100" id="btn-backup-download"{% if not user['is_admin'] %} disabled{% endif %}
                             title="Create and download configuration backup">
                             Create &amp; Download Backup
                         </button>
@@ -39,9 +39,9 @@
             <div class="col-lg-4">
                 <div class="card h-100">
                     <div class="card-header">
-                        <h3 class="h5 mb-0">
+                        <h2 class="h5 mb-0">
                             Scheduled Backups
-                        </h3>
+                        </h2>
                     </div>
                     <div class="card-body">
                         <div class="form-check form-switch mb-3">
@@ -105,9 +105,9 @@
             <div class="col-lg-4">
                 <div class="card border-danger h-100">
                     <div class="card-header">
-                        <h3 class="h5 mb-0 text-danger">
+                        <h2 class="h5 mb-0 text-danger">
                             Restore (Danger Zone)
-                        </h3>
+                        </h2>
                     </div>
                     <div class="card-body">
                         <p class="text-muted small mb-3">

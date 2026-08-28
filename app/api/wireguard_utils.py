@@ -320,6 +320,20 @@ def row_to_public(row: sqlite3.Row, enabled_blocklist_ids: list[str] | None = No
 	)
 
 
+async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
+	"""Kill a subprocess and reap it, logging if it refuses to exit."""
+	if proc.returncode is not None:
+		return
+	try:
+		proc.kill()
+	except ProcessLookupError:
+		return
+	try:
+		await asyncio.wait_for(proc.wait(), timeout=_KILL_WAIT_TIMEOUT)
+	except asyncio.TimeoutError:
+		_log.critical("WG_PROCESS_DID_NOT_EXIT pid=%s", proc.pid)
+
+
 async def _run_subprocess(
 	cmd: tuple[str, ...],
 	*,
@@ -345,12 +359,14 @@ async def _run_subprocess(
 				stderr_bytes.decode("utf-8", errors="replace"),
 			)
 		except asyncio.TimeoutError:
-			proc.kill()
-			try:
-				await asyncio.wait_for(proc.wait(), timeout=_KILL_WAIT_TIMEOUT)
-			except asyncio.TimeoutError:
-				pass
+			await _terminate_process(proc)
 			return 1, "", f"Command timed out after {timeout}s"
+		except asyncio.CancelledError:
+			# An outer wait_for/task cancellation must not orphan a privileged
+			# wg/wg-quick/ip/nft child. Reap it through the same cleanup path
+			# before propagating.
+			await _terminate_process(proc)
+			raise
 	except FileNotFoundError:
 		_log.error("WG_BINARY_NOT_FOUND cmd=%s", cmd[0])
 		return 1, "", f"Command not found: {cmd[0]}"

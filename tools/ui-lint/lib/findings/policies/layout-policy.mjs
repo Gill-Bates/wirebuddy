@@ -332,9 +332,9 @@ export function buildLayoutPolicy() {
                 severity: 'warning',
                 metricPath: 'metrics.formSwitchMarginIssues',
                 legacyKey: (context, count) => `formSwitchMarginIssues=${count}`,
-                message: 'Form switch margin issues detected',
-                explanation: 'Switch components are not aligned to the spacing contract.',
-                remediation: 'Adjust margins to match the component spacing token.',
+                message: 'Form switch description spacing issues detected',
+                explanation: 'A switch row adds extra margin before its immediately following helper text.',
+                remediation: 'Remove margin below the switch and above its helper text; put section spacing on the surrounding field wrapper.',
             }),
             countFindingRule({
                 id: 'form-switch-proportion',

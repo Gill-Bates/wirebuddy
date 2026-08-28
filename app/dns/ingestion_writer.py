@@ -42,7 +42,17 @@ DNS_STATS_PEER_KEY = "__dns_stats__"
 DNS_METRIC_TOTAL = "queries_total"  # Counter: total DNS queries per minute bucket
 DNS_METRIC_BLOCKED = "queries_blocked"  # Counter: blocked DNS queries per minute bucket
 
-__all__ = ["DnsTsdbWriter", "read_recent_queries"]
+__all__ = ["DnsTsdbWriter", "DnsWriterPersistentFailureError", "read_recent_queries"]
+
+MAX_QUERY_RESULTS = 100_000  # Safety cap on read_recent_queries(), above any current caller's limit
+
+
+class DnsWriterPersistentFailureError(RuntimeError):
+	"""Raised when a batch could not be flushed after MAX_FLUSH_RETRIES attempts.
+
+	Left uncaught by run() so the pipeline supervisor (ingestion_daemon.py)
+	sees the writer as failed instead of silently discarding data forever.
+	"""
 
 
 class DnsTsdbWriter:
@@ -113,12 +123,19 @@ class DnsTsdbWriter:
 
 					if not processed:
 						await asyncio.sleep(0.1)
+				except DnsWriterPersistentFailureError:
+					raise
 				except Exception:
 					_log.exception("DNS_WRITER crash in processing")
 		finally:
-			# Final flush on shutdown
-			if self.batch:
-				await asyncio.to_thread(self._flush)
+			# Final flush on shutdown. Skipped if we just hit a persistent
+			# failure (already at the retry ceiling) — that data stays
+			# buffered on disk via the uncommitted offset, not lost.
+			if self.batch and self._consecutive_flush_failures < MAX_FLUSH_RETRIES:
+				try:
+					await asyncio.to_thread(self._flush)
+				except DnsWriterPersistentFailureError:
+					_log.error("DNS_WRITER final shutdown flush failed; data retained for next start")
 			_log.info("DNS_WRITER stopped")
 	
 	def _maybe_refresh_settings(self) -> None:
@@ -249,13 +266,17 @@ class DnsTsdbWriter:
 			# Group by day for efficient writes
 			by_day: dict[str, list[dict]] = {}
 			
-			for point, _item in self.batch:
+			for point, item in self.batch:
 				# Extract date from ISO timestamp: 2026-02-19T10:15:23Z -> 2026-02-19
 				# Use split() instead of slicing for robustness against format changes
 				date_str = point.ts.split("T", 1)[0] if "T" in point.ts else point.ts[:10]
-				
+
 				entry = {
 					'_v': JSONL_SCHEMA_VERSION,
+					# Stable per-line ID (source inode + end offset) so a retry that
+					# re-writes an earlier day already flushed in this same batch
+					# (partial multi-day failure below) can be deduplicated on read.
+					'_event_id': f"{item.inode}:{item.end_offset}",
 					'ts': point.ts,
 					'client': point.client,
 					'domain': point.domain,
@@ -266,13 +287,13 @@ class DnsTsdbWriter:
 				# Only include custom_rule if True (saves space)
 				if point.custom_rule:
 					entry['custom_rule'] = True
-				
+
 				by_day.setdefault(date_str, []).append(entry)
-			
-			# Write each day's queries
-			# NOTE: Partial flush failure can cause duplicates (first day written, second fails).
-			# This is acceptable since downstream queries are idempotent (no aggregations).
-			# Alternative: Use transaction log or single-file batches (adds complexity).
+
+			# Write each day's queries.
+			# NOTE: A partial multi-day failure (first day written, second fails)
+			# retains the whole batch for retry, which re-writes the first day's
+			# entries again; _event_id lets read_recent_queries() deduplicate them.
 			for date_str, points in by_day.items():
 				self._write_day_file(date_str, points)
 			
@@ -292,23 +313,19 @@ class DnsTsdbWriter:
 			self._consecutive_flush_failures = 0
 			# Update flush timer only on success
 			self.last_flush = time.monotonic()
-		except Exception:
+		except Exception as exc:
 			self._consecutive_flush_failures += 1
 			if self._consecutive_flush_failures >= MAX_FLUSH_RETRIES:
-				_log.error("DNS_WRITER flush failed %d times, dropping %d points", MAX_FLUSH_RETRIES, count)
-				self.batch.clear()
-				self._minute_buckets.clear()  # Clear aggregates when batch is dropped
-				self._consecutive_flush_failures = 0
-				# Still save offset to prevent re-reading dropped data on restart
-				try:
-					if self._pending_commit is not None:
-						self.tracker.commit(self._pending_commit.inode, self._pending_commit.end_offset)
-					self.tracker.save_if_needed(force=True)
-					self._pending_commit = None
-				except Exception:
-					_log.warning("DNS_WRITER failed to save offset after dropping batch")
-			else:
-				_log.exception("DNS_WRITER flush failed, retaining %d points for retry (%d/%d)", count, self._consecutive_flush_failures, MAX_FLUSH_RETRIES)
+				# Do NOT drop the batch or advance the offset: that would durably
+				# confirm data that was never actually written. Leave everything
+				# in place and fail loudly so the pipeline supervisor restarts
+				# ingestion (the tailer will re-read from the last committed
+				# offset) instead of silently discarding queries forever.
+				self.last_flush = time.monotonic()
+				raise DnsWriterPersistentFailureError(
+					f"DNS writer failed to flush {count} points after {MAX_FLUSH_RETRIES} consecutive attempts"
+				) from exc
+			_log.exception("DNS_WRITER flush failed, retaining %d points for retry (%d/%d)", count, self._consecutive_flush_failures, MAX_FLUSH_RETRIES)
 			# Update last_flush on failure too, to enable throttled retries
 			self.last_flush = time.monotonic()
 	
@@ -506,6 +523,21 @@ def _parse_query_timestamp(raw: str) -> datetime | None:
 		return None
 
 
+def _collect_query(query: dict, queries: list[dict], seen_event_ids: set[str]) -> bool:
+	"""Append *query* unless its _event_id was already collected.
+
+	Older entries lack _event_id and are always collected. Returns True when
+	appended, so callers only decrement their remaining-count on real progress.
+	"""
+	event_id = query.get("_event_id")
+	if event_id and event_id in seen_event_ids:
+		return False
+	if event_id:
+		seen_event_ids.add(event_id)
+	queries.append(query)
+	return True
+
+
 def read_recent_queries(
 	dns_dir: Path,
 	max_queries: int = 5000,
@@ -526,12 +558,14 @@ def read_recent_queries(
 	"""
 	if max_queries <= 0:
 		return []
+	max_queries = min(int(max_queries), MAX_QUERY_RESULTS)
 
 	queries_dir = dns_dir / 'queries'
 	if not queries_dir.exists():
 		return []
-	
+
 	queries: list[dict] = []
+	seen_event_ids: set[str] = set()
 	remaining = max_queries
 	normalized_filter = _normalize_client_filter(client_filter)
 	since_utc = since.astimezone(timezone.utc) if since is not None else None
@@ -556,10 +590,10 @@ def read_recent_queries(
 						break
 					try:
 						query = json.loads(line)
-						queries.append(query)
-						remaining -= 1
 					except json.JSONDecodeError:
 						continue
+					if _collect_query(query, queries, seen_event_ids):
+						remaining -= 1
 				continue
 
 			if normalized_filter is None and since_utc is not None and day_file.stem > since_day:
@@ -569,10 +603,10 @@ def read_recent_queries(
 						break
 					try:
 						query = json.loads(line)
-						queries.append(query)
-						remaining -= 1
 					except json.JSONDecodeError:
 						continue
+					if _collect_query(query, queries, seen_event_ids):
+						remaining -= 1
 				continue
 
 			stop_reading = False
@@ -593,8 +627,8 @@ def read_recent_queries(
 						break
 				if normalized_filter is not None and not _query_matches_client_filter(query, normalized_filter):
 					continue
-				queries.append(query)
-				remaining -= 1
+				if _collect_query(query, queries, seen_event_ids):
+					remaining -= 1
 			if stop_reading:
 				break
 		except Exception as e:

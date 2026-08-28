@@ -539,6 +539,10 @@ def _parse_and_validate(config: dict[str, Any]) -> tuple[str, list[InterfaceConf
     version = config.get("config_version", "")
     if not isinstance(version, str):
         raise ValueError(f"config_version must be string, got {type(version).__name__}")
+    if not 1 <= len(version) <= 128:
+        raise ValueError(f"config_version must be between 1 and 128 characters, got {len(version)}")
+    if any(ch in version for ch in ("\n", "\r", "\x00")):
+        raise ValueError("config_version contains control characters")
     
     raw_interfaces = config.get("interfaces", [])
     raw_peers = config.get("peers", [])
@@ -652,9 +656,8 @@ def _apply_config_locked(config: dict[str, Any]) -> str:
     _sync_interface_states(interfaces, changed_map, backups)
     
     # Phase 3: Peers (handles normal node peers + master peer)
-    for iface in interfaces:
-        _sync_peers_for_interface(iface.name, peers_by_interface.get(iface.name, []))
-    
+    _sync_peers_for_interfaces(interfaces, peers_by_interface)
+
     # Phase 4: Teardown old
     desired_ifaces = {i.name for i in interfaces}
     _remove_orphaned_interfaces(desired_ifaces)
@@ -663,21 +666,32 @@ def _apply_config_locked(config: dict[str, Any]) -> str:
 
 
 def _ensure_routes_for_allowed_ips(iface_name: str, allowed_ips: str) -> None:
-    """Add routes for allowed-ips to the WireGuard interface."""
-    for ip_str in allowed_ips.split(","):
-        ip_str = ip_str.strip()
-        if not ip_str:
-            continue
-        ip_family_flag = "-6" if ":" in ip_str.split("/")[0] else "-4"
-        code, _, stderr = _run(
-            ["ip", ip_family_flag, "route", "replace", ip_str, "dev", iface_name],
-            timeout=_TIMEOUT_WG_SET
-        )
-        if code != 0:
-            raise RuntimeError(
-                f"Failed to add route {ip_str} dev {iface_name}: {stderr.strip() or 'unknown error'}"
+    """Add routes for allowed-ips to the WireGuard interface.
+
+    Rolls back any routes already added in this call if a later one fails,
+    so a partial failure doesn't leave orphaned routes behind.
+    """
+    added: list[tuple[str, str]] = []
+    try:
+        for ip_str in allowed_ips.split(","):
+            ip_str = ip_str.strip()
+            if not ip_str:
+                continue
+            ip_family_flag = "-6" if ":" in ip_str.split("/")[0] else "-4"
+            code, _, stderr = _run(
+                ["ip", ip_family_flag, "route", "replace", ip_str, "dev", iface_name],
+                timeout=_TIMEOUT_WG_SET
             )
-        _log.debug("Added route %s dev %s", ip_str, iface_name)
+            if code != 0:
+                raise RuntimeError(
+                    f"Failed to add route {ip_str} dev {iface_name}: {stderr.strip() or 'unknown error'}"
+                )
+            _log.debug("Added route %s dev %s", ip_str, iface_name)
+            added.append((ip_family_flag, ip_str))
+    except Exception:
+        for ip_family_flag, ip_str in reversed(added):
+            _run(["ip", ip_family_flag, "route", "delete", ip_str, "dev", iface_name], timeout=_TIMEOUT_WG_SET)
+        raise
 
 
 def _wipe_and_unlink(path: Path) -> None:
@@ -757,8 +771,7 @@ def _restore_peer_state(iface_name: str, previous: dict[str, PeerState]) -> None
         cmd = ["wg", "set", iface_name, "peer", key, "allowed-ips", peer.allowed_ips]
         if peer.endpoint:
             cmd.extend(["endpoint", peer.endpoint])
-        if peer.persistent_keepalive:
-            cmd.extend(["persistent-keepalive", str(peer.persistent_keepalive)])
+        cmd.extend(["persistent-keepalive", str(peer.persistent_keepalive or 0)])
         if peer.preshared_key:
             psk_path = _write_psk_tempfile(peer.preshared_key, iface_name)
             try:
@@ -770,6 +783,32 @@ def _restore_peer_state(iface_name: str, previous: dict[str, PeerState]) -> None
             cmd.extend(["preshared-key", "/dev/null"])
             _run_checked(cmd, timeout=_TIMEOUT_WG_SET)
         _ensure_routes_for_allowed_ips(iface_name, peer.allowed_ips)
+
+
+def _sync_peers_for_interfaces(
+    interfaces: list[InterfaceConfig],
+    peers_by_interface: dict[str, list[PeerConfig]],
+) -> None:
+    """Synchronise peers across all interfaces, rolling back completed ones on failure.
+
+    _sync_peers_for_interface() already restores its own interface if it fails,
+    but earlier interfaces in this loop that already succeeded were previously
+    left on the new config, mixing old and new state when a later interface
+    fails. Snapshot every interface first so any of them can be restored.
+    """
+    peer_backups = {iface.name: _get_current_peer_state(iface.name) for iface in interfaces}
+    completed: list[str] = []
+    try:
+        for iface in interfaces:
+            _sync_peers_for_interface(iface.name, peers_by_interface.get(iface.name, []))
+            completed.append(iface.name)
+    except Exception:
+        for name in reversed(completed):
+            try:
+                _restore_peer_state(name, peer_backups[name])
+            except Exception:
+                _log.exception("Failed to restore peer state for %s during cross-interface rollback", name)
+        raise
 
 
 def _sync_peers_for_interface(iface_name: str, desired_peers: list[PeerConfig]) -> None:
@@ -819,9 +858,10 @@ def _sync_peers_for_interface_unchecked(
             key not in current_keys or
             desired_ips != current_ips or
             p.endpoint != current_endpoint or
+            p.persistent_keepalive != current_peer.persistent_keepalive or
             p.preshared_key is not None
         )
-        
+
         if not needs_update:
             continue
 
@@ -834,8 +874,7 @@ def _sync_peers_for_interface_unchecked(
         cmd = ["wg", "set", iface_name, "peer", key, "allowed-ips", p.peer_address]
         if p.endpoint:
             cmd.extend(["endpoint", p.endpoint])
-        if p.persistent_keepalive:
-            cmd.extend(["persistent-keepalive", str(p.persistent_keepalive)])
+        cmd.extend(["persistent-keepalive", str(p.persistent_keepalive or 0)])
 
         if p.preshared_key:
             psk_path = _write_psk_tempfile(p.preshared_key, iface_name)

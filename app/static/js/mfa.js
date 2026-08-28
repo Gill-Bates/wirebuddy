@@ -130,7 +130,11 @@ function initOtpDigits() {
         input.setAttribute('aria-label', `Digit ${idx + 1} of 6`);
         input.setAttribute('inputmode', 'numeric');
         input.setAttribute('pattern', '[0-9]*');
-        input.setAttribute('autocomplete', 'one-time-code');
+        // Only the first box advertises one-time-code: iOS/Safari fills a single
+        // field with the whole code, and offering it on every box makes the
+        // suggestion bar jump between them.
+        input.setAttribute('autocomplete', idx === 0 ? 'one-time-code' : 'off');
+        input.setAttribute('enterkeyhint', 'done');
 
         input.value = '';
 
@@ -143,11 +147,11 @@ function initOtpDigits() {
             clearPendingOtpReset();
             clearOtpErrorState();
             const val = e.target.value.replace(/\D/g, '');
-            e.target.value = val.slice(0, 1);
 
-            if (val && idx < otpDigits.length - 1) {
-                otpDigits[idx + 1].focus();
-            }
+            // Autofill (and Android SMS suggestions) drop the full code into a
+            // single box without firing a paste event, so spread anything longer
+            // than one character across the following boxes instead of truncating.
+            fillOtpDigitsFrom(idx, val);
             updateSubmitState();
             autoSubmitIfComplete();
         });
@@ -163,11 +167,7 @@ function initOtpDigits() {
             clearPendingOtpReset();
             clearOtpErrorState();
             const paste = e.clipboardData.getData('text').replace(/\D/g, '');
-            for (let i = 0; i < Math.min(paste.length, otpDigits.length); i++) {
-                otpDigits[i].value = paste[i];
-            }
-            const focusIdx = Math.min(paste.length, otpDigits.length - 1);
-            otpDigits[focusIdx].focus();
+            fillOtpDigitsFrom(0, paste);
             updateSubmitState();
             autoSubmitIfComplete();
         });
@@ -179,6 +179,24 @@ function initOtpDigits() {
     });
 
     otpDigits[0].focus();
+
+    /**
+     * Write `digits` into the boxes starting at `startIdx`, one character each,
+     * and move focus to the first still-empty box. Returns the count written.
+     */
+    function fillOtpDigitsFrom(startIdx, digits) {
+        const count = Math.min(digits.length, otpDigits.length - startIdx);
+        for (let i = 0; i < count; i++) {
+            otpDigits[startIdx + i].value = digits[i];
+        }
+        if (count === 0) {
+            otpDigits[startIdx].value = '';
+            return 0;
+        }
+        const focusIdx = Math.min(startIdx + count, otpDigits.length - 1);
+        otpDigits[focusIdx].focus();
+        return count;
+    }
 
     function autoSubmitIfComplete() {
         const code = getOtpCode();

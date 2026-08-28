@@ -160,7 +160,7 @@ WireBuddy implements defense-in-depth security:
 
 ## License
 
-WireBuddy is licensed under the [GNU Affero General Public License v3.0](license.md).
+WireBuddy is licensed under the [GNU Affero General Public License v3.0](https://github.com/Gill-Bates/wirebuddy/blob/main/LICENSE).
 
 ---
 

@@ -189,6 +189,13 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
             inputEl.placeholder = inputPlaceholder || '';
             const normalizedType = String(inputType || 'text').toLowerCase();
             inputEl.type = _wbAllowedInputTypes.has(normalizedType) ? normalizedType : 'text';
+            // The prompt field is generic markup reused by every caller, so name
+            // it after the caller. The full question stays on #wbModalMessage,
+            // which the input references via aria-describedby.
+            const inputLabelEl = modalEl.querySelector('#wbModalInputLabel');
+            if (inputLabelEl) {
+                inputLabelEl.textContent = inputPlaceholder || title || message || 'Value';
+            }
         }
 
         okBtn.className = 'btn ' + (type === 'danger' ? 'btn-danger' : 'btn-primary');
