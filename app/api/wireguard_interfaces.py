@@ -95,21 +95,21 @@ async def list_interfaces(
 ):
 	"""List all WireGuard interfaces from database, config files, and active state."""
 	config_path = WG_CONFIG_PATH
-	
+
 	db_interfaces: set[str] = set()
 	for row in await asyncio.to_thread(db_list_interfaces, conn):
 		db_interfaces.add(row["name"])
-	
+
 	active_interfaces: set[str] = set()
 	code, stdout, _ = await _run_wg_command_with_timeout("wg", "show", "interfaces")
 	if code == 0 and stdout.strip():
 		active_interfaces = set(stdout.strip().split())
-	
+
 	config_files: set[str] = set()
 	if config_path.is_dir():
 		for conf in config_path.glob("*.conf"):
 			config_files.add(conf.stem)
-	
+
 	all_interfaces = sorted(db_interfaces | config_files | active_interfaces)
 	result = []
 	for name in all_interfaces:
@@ -122,7 +122,7 @@ async def list_interfaces(
 			"is_configured": in_db or has_config,
 			"is_active": name in active_interfaces,
 		})
-	
+
 	return OkResponse[InterfaceListPayload](data=InterfaceListPayload(interfaces=result))
 
 
@@ -134,18 +134,18 @@ async def get_interface(
 ):
 	"""Get details of a specific WireGuard interface."""
 	validate_interface_name(name)
-	
+
 	db_iface = await asyncio.to_thread(db_get_interface, conn, name)
 	config_file = WG_CONFIG_PATH / f"{name}.conf"
 	has_config = config_file.is_file()
-	
+
 	code, stdout, _ = await _run_wg_command_with_timeout("wg", "show", name)
 	is_active = code == 0
-	
+
 	# If interface doesn't exist anywhere, return 404
 	if not is_active and not db_iface and not has_config:
 		raise HTTPException(status_code=404, detail=f"Interface not found: {name}")
-	
+
 	# Build result from available sources
 	result = {
 		"name": name,
@@ -158,13 +158,13 @@ async def get_interface(
 		"address6": db_iface["address6"] if db_iface else None,
 		"peers": [],
 	}
-	
+
 	# If not active, populate from stored config
 	if not is_active:
 		if db_iface:
 			result["listen_port"] = db_iface["listen_port"]
 		return OkResponse[InterfaceDetailPayload](data=InterfaceDetailPayload.model_validate(result))
-	
+
 	# Parse wg show output for active interface
 	lines = stdout.strip().split("\n")
 	current_peer = None
@@ -193,10 +193,10 @@ async def get_interface(
 			elif line.startswith("transfer:"):
 				transfer = line.split(":", 1)[1].strip()
 				current_peer["transfer"] = transfer
-	
+
 	if current_peer:
 		result["peers"].append(current_peer)
-	
+
 	return OkResponse[InterfaceDetailPayload](data=InterfaceDetailPayload.model_validate(result))
 
 
@@ -210,16 +210,16 @@ async def interface_up(
 ):
 	"""Bring up a WireGuard interface."""
 	validate_interface_name(name)
-	
+
 	code, _, stderr = await _run_wg_command_with_timeout("wg-quick", "up", name)
 	if code != 0:
 		raise HTTPException(status_code=500, detail=f"Failed to bring up interface: {stderr}")
 
 	# Ensure client-isolation firewall rules are applied immediately.
 	isolation_result = await apply_client_isolation_runtime(name, conn)
-	
+
 	_log.info("INTERFACE_UP name=%s", name)
-	
+
 	if isolation_result.rules_failed > 0 or isolation_result.errors:
 		_log.error(
 			"INTERFACE_UP isolation failure: name=%s failed=%d errors=%s",
@@ -229,7 +229,7 @@ async def interface_up(
 			status_code=500,
 			detail=f"Interface up but client isolation failed: {isolation_result.errors}",
 		)
-	
+
 	return OkResponse[None](message=f"Interface {name} is up")
 
 
@@ -243,17 +243,17 @@ async def interface_down(
 ):
 	"""Bring down a WireGuard interface."""
 	validate_interface_name(name)
-	
+
 	# Check if interface exists at all (active or configured)
 	config_file = WG_CONFIG_PATH / f"{name}.conf"
 	has_config = config_file.is_file()
-	
+
 	code, _, _ = await _run_wg_command_with_timeout("wg", "show", name)
 	is_active = code == 0
-	
+
 	if not is_active:
 		raise HTTPException(status_code=400, detail=f"Interface {name} is not active")
-	
+
 	# Isolation chains are torn down only AFTER the interface is confirmed down.
 	# Removing them first would leave a still-running interface without client
 	# isolation if the shutdown fails, silently granting connected clients
@@ -273,11 +273,11 @@ async def interface_down(
 		code, _, stderr = await _run_wg_command_with_timeout("ip", "link", "delete", name)
 		if code != 0:
 			raise HTTPException(status_code=500, detail=f"Failed to delete interface: {stderr}")
-	
+
 	# Interface is down: now it is safe to drop the isolation chains
 	# (uses database as source of truth, not PostDown scripts)
 	await cleanup_client_isolation(name)
-	
+
 	_log.info("INTERFACE_DOWN name=%s", name)
 	return OkResponse[None](message=f"Interface {name} is down")
 
@@ -292,16 +292,16 @@ async def interface_restart(
 ):
 	"""Restart a WireGuard interface."""
 	validate_interface_name(name)
-	
+
 	# Stop first, then clear isolation: a failed shutdown must never leave a
 	# running interface with its isolation rules already removed.
 	down_code, _, down_stderr = await _run_wg_command_with_timeout("wg-quick", "down", name)
 	if down_code != 0:
 		_log.error("INTERFACE_RESTART down failed: name=%s stderr=%s", name, down_stderr)
 		raise HTTPException(status_code=500, detail=f"Failed to stop interface: {down_stderr}")
-	
+
 	await cleanup_client_isolation(name)
-	
+
 	code, _, stderr = await _run_wg_command_with_timeout("wg-quick", "up", name)
 	if code != 0:
 		# Interface is stopped and isolation is cleared - a consistent, safe
@@ -314,7 +314,7 @@ async def interface_restart(
 
 	isolation_result = await apply_client_isolation_runtime(name, conn)
 	_log.info("INTERFACE_RESTART name=%s", name)
-	
+
 	if isolation_result.rules_failed > 0 or isolation_result.errors:
 		_log.error(
 			"INTERFACE_RESTART isolation failure: name=%s failed=%d errors=%s",
@@ -324,7 +324,7 @@ async def interface_restart(
 			status_code=500,
 			detail=f"Interface restart but client isolation failed: {isolation_result.errors}",
 		)
-	
+
 	return OkResponse[None](message=f"Interface {name} restarted")
 
 

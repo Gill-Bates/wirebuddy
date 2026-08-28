@@ -64,7 +64,7 @@ class Scheduler:
 		# In lifespan:
 		await scheduler.start()   # on startup (async)
 		await scheduler.stop_graceful()  # on shutdown (async)
-	
+
 	Note on restart: After stop() → start(), tasks are recreated but _Job objects
 	retain their state (run_count, fail_count, last_success). This is intentional
 	for continuity across restarts.
@@ -94,7 +94,7 @@ class Scheduler:
 		jitter_pct: float = 0.0,
 	) -> None:
 		"""Register a periodic job.
-		
+
 		Args:
 			name: Unique identifier for the job
 			interval_seconds: Seconds between executions (minimum 1.0)
@@ -103,7 +103,7 @@ class Scheduler:
 			initial_delay: Seconds to wait before first execution
 			timeout: Per-execution timeout in seconds (None = no limit)
 			jitter_pct: Random jitter as percentage of interval (0.0 to 0.5, e.g. 0.1 = ±10%)
-		
+
 		Raises:
 			RuntimeError: If scheduler is already running
 			ValueError: If name is duplicate or interval/timing inputs are invalid
@@ -114,28 +114,28 @@ class Scheduler:
 			raise TypeError(f"func must be callable, got {type(func).__name__}")
 		if not inspect.iscoroutinefunction(func):
 			raise TypeError(f"Job {name!r} must be an async callable")
-		
+
 		if self._started:
 			raise RuntimeError(f"Cannot add job {name!r} while scheduler is running")
-		
+
 		if name in self._jobs:
 			raise ValueError(f"Job {name!r} is already registered")
-		
+
 		# NaN fails every comparison below, so finiteness is checked first.
 		if not math.isfinite(interval_seconds) or interval_seconds < _MIN_INTERVAL:
 			raise ValueError(
 				f"interval_seconds must be finite and ≥ {_MIN_INTERVAL}, got {interval_seconds}"
 			)
-		
+
 		if not math.isfinite(initial_delay) or initial_delay < 0:
 			raise ValueError(f"initial_delay must be finite and ≥ 0, got {initial_delay}")
-		
+
 		if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
 			raise ValueError(f"timeout must be finite and > 0, got {timeout}")
-		
+
 		if not 0.0 <= jitter_pct <= 0.5:
 			raise ValueError(f"jitter_pct must be between 0.0 and 0.5, got {jitter_pct}")
-		
+
 		self._jobs[name] = _Job(
 			name=name,
 			interval_seconds=interval_seconds,
@@ -148,34 +148,34 @@ class Scheduler:
 
 	def remove(self, name: str) -> None:
 		"""Unregister a job. Only allowed when scheduler is stopped.
-		
+
 		Args:
 			name: Name of the job to remove
-		
+
 		Raises:
 			RuntimeError: If scheduler is currently running
 			KeyError: If job does not exist
 		"""
 		if self._started:
 			raise RuntimeError(f"Cannot remove job {name!r} while scheduler is running")
-		
+
 		if name not in self._jobs:
 			raise KeyError(f"Job {name!r} not found")
-		
+
 		del self._jobs[name]
 		_log.info("SCHEDULER job=%s removed", name)
 
 	async def start(self) -> None:
 		"""Start all registered jobs as background tasks.
-		
+
 		Must be called from within an async context (running event loop).
 		"""
 		if self._started:
 			return
-		
+
 		self._started = True
 		self._stop_event = asyncio.Event()
-		
+
 		for job in self._jobs.values():
 			self._tasks[job.name] = asyncio.create_task(self._run_loop(job))
 			_log.debug("SCHEDULER job=%s interval=%.1fs started", job.name, job.interval_seconds)
@@ -186,10 +186,10 @@ class Scheduler:
 
 	def stop(self) -> None:
 		"""Cancel all running jobs immediately (non-graceful).
-		
+
 		WARNING: NOT thread-safe. Must be called from the same thread as the
 		event loop. Leaves unawaited cancelled tasks.
-		
+
 		DEPRECATED: Use stop_graceful() instead for proper async cleanup.
 		This method exists only for emergency sync shutdown scenarios.
 		"""
@@ -200,9 +200,9 @@ class Scheduler:
 		)
 		if not self._started:
 			return
-		
+
 		self._started = False
-		
+
 		if self._stop_event is not None:
 			self._stop_event.set()
 
@@ -223,34 +223,34 @@ class Scheduler:
 				self._cancel_drain_task = loop.create_task(self._await_cancelled_tasks(cancelled_tasks))
 			else:
 				self._cancel_drain_task = None
-		
+
 		self._tasks.clear()
 		self._stop_event = None
 
 	async def stop_graceful(self, timeout: float = 5.0) -> None:
 		"""Gracefully stop all jobs, waiting up to timeout for clean exit.
-		
+
 		Phase 1: Set stop event and wait for tasks to finish gracefully.
 		Phase 2: Cancel any stubborn tasks that didn't stop in time.
-		
+
 		Args:
 			timeout: Maximum seconds to wait for tasks to finish gracefully
 		"""
 		if not self._started:
 			return
-		
+
 		self._started = False
-		
+
 		# Signal all loops to stop (they should exit their while loops)
 		if self._stop_event is not None:
 			self._stop_event.set()
-		
+
 		# Phase 1: Wait for tasks to finish gracefully
 		pending = [t for t in self._tasks.values() if not t.done()]
 		if pending:
 			_log.info("SCHEDULER waiting for %d tasks to finish gracefully", len(pending))
 			done, not_done = await asyncio.wait(pending, timeout=timeout)
-			
+
 			# Phase 2: Force cancel stubborn tasks
 			if not_done:
 				_log.warning("SCHEDULER %d tasks did not stop gracefully, forcing cancel", len(not_done))
@@ -258,7 +258,7 @@ class Scheduler:
 					task.cancel()
 				# Await cancelled tasks to prevent 'Task was destroyed' warnings
 				await asyncio.gather(*not_done, return_exceptions=True)
-		
+
 		self._tasks.clear()
 		self._cancel_drain_task = None
 		self._stop_event = None
@@ -301,7 +301,7 @@ class Scheduler:
 			_log.debug("SCHEDULER job=%s exiting before start completed", job.name)
 			return
 		loop = asyncio.get_running_loop()
-		
+
 		def _jittered_interval() -> float:
 			"""Return interval with random jitter applied."""
 			if job.jitter_pct <= 0:
@@ -336,13 +336,13 @@ class Scheduler:
 					job.name, consecutive_failures, backoff,
 				)
 			return next_run_local
-		
+
 		consecutive_failures = 0
 		max_backoff: float = 300.0  # 5 minutes
 		initial_interval = _jittered_interval()
 		first_interval = job.initial_delay if job.initial_delay > 0 and not job.run_on_start else initial_interval
 		next_run = loop.time() + first_interval
-		
+
 		try:
 			# Initial execution if requested
 			if job.run_on_start:
@@ -379,7 +379,7 @@ class Scheduler:
 			while self._started and not stop_event.is_set():
 				now = loop.time()
 				delay = max(0, next_run - now)
-				
+
 				try:
 					# Wait for interval or stop signal
 					await asyncio.wait_for(
@@ -391,10 +391,10 @@ class Scheduler:
 				except asyncio.TimeoutError:
 					# Interval elapsed, execute job
 					pass
-				
+
 				if not self._started or stop_event.is_set():
 					break
-				
+
 				success = await self._execute(job)
 				now = loop.time()
 				next_run = _schedule_next(now, next_run, success)
@@ -403,7 +403,7 @@ class Scheduler:
 						"SCHEDULER job=%s completed (run #%d), next in %.0fs",
 						job.name, job.run_count, next_run - now,
 					)
-		
+
 		except asyncio.CancelledError:
 			_log.debug("SCHEDULER job=%s cancelled", job.name)
 		except Exception:
@@ -420,7 +420,7 @@ class Scheduler:
 
 	async def _execute(self, job: _Job) -> bool:
 		"""Execute a single job with error handling and optional timeout.
-		
+
 		Returns:
 			True if execution succeeded, False if it failed or timed out
 		"""
@@ -432,7 +432,7 @@ class Scheduler:
 				await asyncio.wait_for(awaitable, timeout=job.timeout)
 			else:
 				await awaitable
-			
+
 			now = datetime.now(timezone.utc)
 			job.last_success = now
 			job.last_attempt = now
@@ -460,7 +460,7 @@ class Scheduler:
 
 	def get_status(self) -> list[JobStatus]:
 		"""Return status of all jobs (for monitoring/API).
-		
+
 		Safe to call from the scheduler's event-loop context.
 		For cross-thread callers, schedule this via loop.call_soon_threadsafe().
 		"""
