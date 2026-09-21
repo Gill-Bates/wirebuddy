@@ -1,3 +1,9 @@
+## [1.6.2] - 2026-xx-xx
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.6.1] - 2026-09-21
 
 - ``New`` A single `WIREBUDDY_PUBLIC_ORIGIN` setting now configures CSRF origins, passkeys, the Host-header allowlist and secure cookies/HSTS. `WIREBUDDY_TRUSTED_PROXIES` replaces `TRUSTED_PROXY_CIDRS`, `WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS`, `FORWARDED_ALLOW_IPS` and `WIREBUDDY_TRUST_PROXY_HEADERS`; update your configuration when upgrading, as the old variables are now silently ignored.
@@ -13,9 +19,6 @@
 - ``Fix`` Speed tests against a slow-resolving host no longer strand background DNS-lookup threads.
 - ``Security`` Startup now fails if required system binaries (`ip`, `wg`, `wg-quick`, `sysctl`, `iptables`, `ip6tables`) are only found via `PATH` instead of a trusted, fixed location, closing a path where a compromised `PATH` could substitute a malicious binary run as root.
 - ``Security`` The public status page and node mTLS fingerprint header only trust forwarded headers from configured proxies, and CSRF origin validation is stricter (`http`/`https` only, no bearer+cookie bypass).
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.6.0] - 2026-08-28
 
