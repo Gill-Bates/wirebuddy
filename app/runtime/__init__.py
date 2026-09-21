@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: AGPL-3.0
+# SPDX-License-Identifier: MIT
 #
 
 """Runtime supervision and service orchestration.
@@ -21,15 +21,15 @@ Architecture layers:
                     Runtime Supervisor (this package)
 """
 
-from .service import RuntimeService, ServiceState
 from .container import ServiceContainer
 from .lifecycle import LifecycleManager
+from .service import RuntimeService, ServiceState
 from .signals import SignalManager
 
 __all__ = [
-    "RuntimeService",
-    "ServiceState",
-    "ServiceContainer",
     "LifecycleManager",
+    "RuntimeService",
+    "ServiceContainer",
+    "ServiceState",
     "SignalManager",
 ]

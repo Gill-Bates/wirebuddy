@@ -14,9 +14,9 @@ import json
 import logging
 import sqlite3
 
+from ..utils import vault
 from ..utils.config import get_config
 from ..utils.time import utcnow
-from ..utils import vault
 from .sqlite_interfaces import get_interface
 from .sqlite_runtime import UNSET, UnsetType, transaction
 
@@ -113,11 +113,120 @@ def _assert_safe_update_assignments(assignments: list[str]) -> None:
 		raise ValueError("Unsafe SQL assignment in update list")
 
 
+def _validate_peer_policy_state(
+	*,
+	allowed_ips: str,
+	allowed_ips_mode: str,
+	node_id: str | None,
+	allow_all_nodes: bool,
+) -> None:
+	"""Validate cross-field policy invariants against a concrete, fully-resolved state.
+
+	Single source of truth for both create_peer() and update_peer(): the
+	Pydantic models (PeerCreate/PeerUpdate) enforce the same invariants, but
+	only over fields present in a single request. A direct DB caller, or a
+	partial PeerUpdate that combines with an already-stored value on the
+	row, can bypass that. This must always be called with already-merged,
+	effective values — never with UNSET/omitted fields.
+	"""
+	if allow_all_nodes and node_id is not None:
+		raise ValueError("allow_all_nodes cannot be combined with node_id")
+
+	if allowed_ips_mode == "full":
+		actual = {ip.strip() for ip in str(allowed_ips or "").split(",")}
+		if not actual.issuperset({"0.0.0.0/0", "::/0"}):
+			raise ValueError("allowed_ips_mode='full' requires both 0.0.0.0/0 and ::/0 in allowed_ips")
+
+
+def _assert_effective_state_consistent(
+	conn: sqlite3.Connection,
+	peer_id: int,
+	*,
+	node_id: str | UnsetType | None,
+	allow_all_nodes: bool | UnsetType | None,
+	allowed_ips_mode: str | UnsetType | None,
+	allowed_ips: str | UnsetType | None,
+) -> None:
+	"""Validate policy invariants against the effective post-update state.
+
+	PeerUpdate's Pydantic validators only see fields present in a single
+	request; a partial update (e.g. only ``node_id``) can silently combine
+	with an unrelated field already stored on the row (e.g. an existing
+	``allow_all_nodes=True``) to violate an invariant the model appears to
+	guarantee. This loads the current row inside the caller's IMMEDIATE
+	transaction (no separate read before the lock, so no TOCTOU window),
+	merges it with the requested changes, and validates the merged
+	(effective) state — the same values the UPDATE below is about to
+	persist — instead of validating the request in isolation.
+	"""
+	if node_id is UNSET and allow_all_nodes is UNSET and allowed_ips_mode is UNSET and allowed_ips is UNSET:
+		return
+
+	row = conn.execute(
+		"SELECT node_id, allow_all_nodes, allowed_ips_mode, allowed_ips FROM peers WHERE id = ?",
+		(peer_id,),
+	).fetchone()
+	if row is None:
+		return  # Peer missing; UPDATE below will affect 0 rows and the caller handles that.
+
+	_validate_peer_policy_state(
+		allowed_ips=row["allowed_ips"] if allowed_ips is UNSET else allowed_ips,
+		allowed_ips_mode=row["allowed_ips_mode"] if allowed_ips_mode is UNSET else allowed_ips_mode,
+		node_id=row["node_id"] if node_id is UNSET else node_id,
+		allow_all_nodes=bool(row["allow_all_nodes"]) if allow_all_nodes is UNSET else bool(allow_all_nodes),
+	)
+
+
 def _require_bool(value: object, field: str) -> bool:
 	"""Require a strict bool value and return it."""
 	if type(value) is not bool:
 		raise ValueError(f"{field} must be a boolean")
 	return value
+
+
+def _extract_ips(cidr_csv: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+	"""Extract the bare IP addresses from a comma-separated CIDR/interface list."""
+	ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+	for raw_part in cidr_csv.split(","):
+		part = raw_part.strip()
+		if not part:
+			continue
+		try:
+			ips.append(ipaddress.ip_interface(part).ip)
+		except ValueError:
+			continue
+	return ips
+
+
+def _assert_peer_address_not_in_use(
+	conn: sqlite3.Connection,
+	*,
+	interface: str,
+	peer_address: str,
+	exclude_peer_id: int | None = None,
+) -> None:
+	"""Reject peer_address values whose individual IPs collide with another peer.
+
+	The unique index on (peer_address, interface) only protects the exact
+	normalized string; two peers can still hold the same single IP inside
+	differently-composed CSV lists (e.g. IPv4-only vs. dual-stack), which
+	would create overlapping WireGuard routes. Compares parsed IPs, not raw
+	strings, and runs inside the caller's IMMEDIATE transaction.
+	"""
+	candidate_ips = set(_extract_ips(peer_address))
+	if not candidate_ips:
+		return
+	rows = conn.execute(
+		"SELECT id, peer_address FROM peers WHERE interface = ? AND peer_address IS NOT NULL",
+		(interface,),
+	).fetchall()
+	for row in rows:
+		if exclude_peer_id is not None and int(row["id"]) == exclude_peer_id:
+			continue
+		if candidate_ips & set(_extract_ips(str(row["peer_address"] or ""))):
+			raise ValueError(
+				f"peer_address overlaps with an IP already assigned to peer {row['id']} on interface {interface!r}"
+			)
 
 
 def _validate_public_key(public_key: str) -> str:
@@ -177,12 +286,20 @@ def create_peer(
 	dns_logging_enabled = _require_bool(dns_logging_enabled, "dns_logging_enabled")
 	client_isolation = _require_bool(client_isolation, "client_isolation")
 	allow_all_nodes = _require_bool(allow_all_nodes, "allow_all_nodes")
+	_validate_peer_policy_state(
+		allowed_ips=allowed_ips,
+		allowed_ips_mode=allowed_ips_mode,
+		node_id=node_id,
+		allow_all_nodes=allow_all_nodes,
+	)
 	peer_id: int
 	with transaction(conn, immediate=True):
 		if conn.execute("SELECT 1 FROM peers WHERE public_key = ?", (public_key,)).fetchone():
 			raise ValueError(f"Peer with public_key {public_key!r} already exists")
 		if get_interface(conn, interface) is None:
 			raise ValueError(f"Unknown interface: {interface!r}")
+		if peer_address is not None:
+			_assert_peer_address_not_in_use(conn, interface=interface, peer_address=peer_address)
 		cur = conn.execute(
 			"""
 			INSERT INTO peers (
@@ -220,19 +337,19 @@ def create_peer(
 def update_peer(
 	conn: sqlite3.Connection,
 	peer_id: int,
-	name: str | None | UnsetType = UNSET,
-	allowed_ips: str | None | UnsetType = UNSET,
-	allowed_ips_mode: str | None | UnsetType = UNSET,
-	endpoint: str | None | UnsetType = UNSET,
-	is_enabled: bool | None | UnsetType = UNSET,
-	use_adblocker: bool | None | UnsetType = UNSET,
-	dns_logging_enabled: bool | None | UnsetType = UNSET,
-	blocklist_ids: list[str] | None | UnsetType = UNSET,
-	client_isolation: bool | None | UnsetType = UNSET,
-	private_key: str | None | UnsetType = UNSET,
-	preshared_key: str | None | UnsetType = UNSET,
-	node_id: str | None | UnsetType = UNSET,
-	allow_all_nodes: bool | None | UnsetType = UNSET,
+	name: str | UnsetType | None = UNSET,
+	allowed_ips: str | UnsetType | None = UNSET,
+	allowed_ips_mode: str | UnsetType | None = UNSET,
+	endpoint: str | UnsetType | None = UNSET,
+	is_enabled: bool | UnsetType | None = UNSET,
+	use_adblocker: bool | UnsetType | None = UNSET,
+	dns_logging_enabled: bool | UnsetType | None = UNSET,
+	blocklist_ids: list[str] | UnsetType | None = UNSET,
+	client_isolation: bool | UnsetType | None = UNSET,
+	private_key: str | UnsetType | None = UNSET,
+	preshared_key: str | UnsetType | None = UNSET,
+	node_id: str | UnsetType | None = UNSET,
+	allow_all_nodes: bool | UnsetType | None = UNSET,
 ) -> bool:
 	"""Update a peer by ID. Returns True if peer was found and updated.
 
@@ -307,11 +424,17 @@ def update_peer(
 	params.append(peer_id)
 	sql = f"UPDATE peers SET {', '.join(updates)} WHERE id = ?"
 
-	updated = False
 	with transaction(conn, immediate=True):
+		_assert_effective_state_consistent(
+			conn,
+			peer_id,
+			node_id=node_id,
+			allow_all_nodes=allow_all_nodes,
+			allowed_ips_mode=allowed_ips_mode,
+			allowed_ips=allowed_ips,
+		)
 		cur = conn.execute(sql, params)
-		updated = cur.rowcount > 0
-	return updated
+		return cur.rowcount > 0
 
 
 def delete_peer(conn: sqlite3.Connection, peer_id: int) -> bool:

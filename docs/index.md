@@ -3,8 +3,6 @@ hide:
   - navigation
 ---
 
-# WireBuddy
-
 <p align="center">
   <img src="https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/wirebuddy_black.svg" width="400" alt="WireBuddy Logo" class="wb-logo-light">
   <img src="https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/wirebuddy_white.svg" width="400" alt="WireBuddy Logo" class="wb-logo-dark">
@@ -17,14 +15,14 @@ hide:
 <p align="center">
   <a href="https://github.com/Gill-Bates/wirebuddy/releases"><img src="https://img.shields.io/github/v/release/Gill-Bates/wirebuddy?logo=github&logoColor=white" alt="GitHub Release"></a>
   <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/pulls/giiibates/wirebuddy?logo=docker&logoColor=white" alt="Docker Pulls"></a>
-  <a href="https://github.com/Gill-Bates/wirebuddy"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License"></a>
+  <a href="https://github.com/Gill-Bates/wirebuddy"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
 </p>
 
 ---
 
 ## What is WireBuddy?
 
-WireBuddy is a powerful, user-friendly web interface for managing WireGuard VPN servers with built-in DNS ad-blocking capabilities. It combines enterprise-grade security features with an intuitive interface, making VPN management accessible to both beginners and advanced users.
+WireBuddy is a web interface for managing WireGuard VPN servers with built-in DNS ad-blocking. It adds multi-user authentication (roles, passkeys, TOTP) and multi-node clustering on top of plain WireGuard management.
 
 ## Key Features
 
@@ -114,14 +112,14 @@ docker compose --env-file .env -f docker/docker-compose.yml up -d
 
 ## Screenshots
 
-=== "Peer Management"
-    ![Peers](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_2.png)
-    
-=== "DNS Ad-Blocker"
-    ![DNS](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_3.png)
+=== "Dashboard"
+    ![Dashboard](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_2.jpeg)
 
-=== "Settings"
-    ![Settings](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_4.png)
+=== "Traffic"
+    ![Traffic](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_3.jpeg)
+
+=== "DNS Ad-Blocker"
+    ![DNS](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_4.jpeg)
 
 ## Why WireBuddy?
 
@@ -160,7 +158,7 @@ WireBuddy implements defense-in-depth security:
 
 ## License
 
-WireBuddy is licensed under the [GNU Affero General Public License v3.0](https://github.com/Gill-Bates/wirebuddy/blob/main/LICENSE).
+WireBuddy is licensed under the [MIT License](https://github.com/Gill-Bates/wirebuddy/blob/main/LICENSE).
 
 ---
 

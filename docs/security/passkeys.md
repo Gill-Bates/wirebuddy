@@ -6,10 +6,10 @@ WireBuddy supports passwordless authentication using Passkeys (WebAuthn/FIDO2).
 
 Passkeys provide:
 
-- 🔐 **Passwordless Login:** No password required
-- 🛡️ **Phishing Resistant:** Cannot be stolen or phished
-- 🚀 **Fast Authentication:** Touch ID, Face ID, or security key
-- 🔑 **Public Key Cryptography:** No shared secrets
+- **Passwordless Login:** No password required
+- **Phishing Resistant:** Cannot be stolen or phished
+- **Fast Authentication:** Touch ID, Face ID, or security key
+- **Public Key Cryptography:** No shared secrets
 
 ## How Passkeys Work
 

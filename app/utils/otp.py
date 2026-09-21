@@ -110,10 +110,7 @@ def use_recovery_code(candidate: str, stored_json: str | None) -> tuple[bool, st
 
 		match = False
 		if not found:
-			if _is_sha256_hex(stored_norm):
-				match = hmac.compare_digest(candidate_hash, stored_norm)
-			else:
-				match = hmac.compare_digest(normalized_candidate, stored_norm)
+			match = hmac.compare_digest(candidate_hash, stored_norm) if _is_sha256_hex(stored_norm) else hmac.compare_digest(normalized_candidate, stored_norm)
 
 		if match and not found:
 			found = True

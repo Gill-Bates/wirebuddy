@@ -4,7 +4,7 @@ title: Backup & Restore
 
 # Backup & Restore
 
-WireBuddy provides comprehensive backup and restore functionality to protect your configuration and data.
+WireBuddy creates HMAC-signed backups of its configuration (optionally with metrics history) and restores them from the UI.
 
 ## Overview
 

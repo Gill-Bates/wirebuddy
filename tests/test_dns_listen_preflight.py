@@ -17,9 +17,9 @@ import socket
 import pytest
 
 from app.dns.unbound_process import (
+    _SS_USERS_RE,
     _parse_listen_sockets,
     _probe_listen_socket,
-    _SS_USERS_RE,
 )
 
 
@@ -48,11 +48,30 @@ def test_ignores_comments_and_strips_inline_suffixes():
     assert _parse_listen_sockets(conf) == (["10.13.13.1", "10.14.14.1"], 53)
 
 
+def test_interface_at_port_suffix_is_discarded_not_read_as_the_port():
+    # The @port suffix on `interface:` is intentionally dropped - only a
+    # separate `port:` line sets the port. Using the same value as the default
+    # (53) here would let a regression that reads @port as the port slip by
+    # unnoticed, so this pins a mismatched pair: @5335 must not surface as 5335
+    # when the real listen port is 53.
+    conf = """
+    interface: 10.13.13.1@5335
+    port: 53
+"""
+    assert _parse_listen_sockets(conf) == (["10.13.13.1"], 53)
+
+
 def test_free_port_reports_no_conflict():
+    # Kept bound with SO_REUSEPORT while probing, rather than closing first and
+    # probing after: closing before the probe leaves a window where another
+    # process could grab the same ephemeral port, making this test flaky.
+    # SO_REUSEPORT (matching what _probe_listen_socket itself sets) lets both
+    # sockets hold the port at once instead of racing to release it.
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         probe.bind(("127.0.0.1", 0))
         free_port = probe.getsockname()[1]
-    assert _probe_listen_socket("127.0.0.1", free_port) is None
+        assert _probe_listen_socket("127.0.0.1", free_port) is None
 
 
 @pytest.mark.parametrize(

@@ -22,26 +22,36 @@
     --wb-sidebar-link-color: #4b5563;
     --wb-bg-soft: #f8f9fa;
     --wb-bg-strong: #e9ecef;
+
     /* Z-index layering */
     --wb-z-banner: 1080;
     --wb-z-toast: 1090;
     --wb-monospace-fg: #495057;
-    --wb-monospace-bg: rgba(0, 0, 0, 0.05);
+    --wb-monospace-bg: rgb(0 0 0 / 5%);
     --wb-danger-strong: #6f1215;
-    --wb-modal-backdrop-bg: rgba(15, 23, 42, 0.6);
+
+    /* Status text colours: kept separate from --wb-danger/--wb-warning
+       (used for buttons/borders) because those fail WCAG contrast for text,
+       especially --wb-warning (#ffc107) which is never legible as text on
+       either a light or dark surface. */
+    --wb-status-danger: #88171a;
+    --wb-status-warning: #856404;
+    --wb-modal-backdrop-bg: rgb(15 23 42 / 60%);
     --wb-modal-backdrop-blur: 8px;
     --wb-modal-backdrop-saturate: 0.8;
+
     /* Button and interaction defaults */
     --wb-border-default: #ced4da;
     --wb-border-hover: #adb5bd;
     --wb-border-subtle-light: #e5e7eb;
-    --wb-hover-overlay-light: rgba(0, 0, 0, 0.04);
-    --wb-active-overlay-light: rgba(0, 0, 0, 0.07);
+    --wb-hover-overlay-light: rgb(0 0 0 / 4%);
+    --wb-active-overlay-light: rgb(0 0 0 / 7%);
 }
 
 [data-bs-theme="dark"] {
     --wb-bg-soft: #1f2937;
     --wb-bg-strong: #111827;
+
     /* Dark mode surfaces and borders */
     --wb-bg-surface: #1f2937;
     --wb-bg-elevated: #4b5563;
@@ -53,16 +63,19 @@
     --wb-text-tertiary: #d1d5db;
     --wb-text-muted: #9ca3af;
     --wb-monospace-fg: #dbe4ee;
-    --wb-monospace-bg: rgba(255, 255, 255, 0.08);
+    --wb-monospace-bg: rgb(255 255 255 / 8%);
     --wb-accent-red-strong: #ff8aa5;
     --wb-info-strong: #6edff6;
     --wb-danger-strong: #a82024;
+    --wb-status-danger: #ff6384;
+    --wb-status-warning: #ffcd39;
+
     /* Dark mode button defaults */
     --wb-border-default: #495057;
     --wb-border-hover: #6c757d;
     --wb-border-subtle-light: #374151;
-    --wb-hover-overlay-light: rgba(255, 255, 255, 0.06);
-    --wb-active-overlay-light: rgba(255, 255, 255, 0.1);
+    --wb-hover-overlay-light: rgb(255 255 255 / 6%);
+    --wb-active-overlay-light: rgb(255 255 255 / 10%);
 }
 
 /* -----------------------------------------------------------------------------
@@ -86,13 +99,11 @@ body {
     display: flex;
     flex-direction: column;
     background-color: var(--bs-body-bg);
-    overflow-x: hidden;
-    overflow-y: auto;
+    overflow: hidden auto;
 }
 
 .modal-backdrop.show {
     background-color: var(--wb-modal-backdrop-bg);
-    -webkit-backdrop-filter: blur(var(--wb-modal-backdrop-blur)) saturate(var(--wb-modal-backdrop-saturate));
     backdrop-filter: blur(var(--wb-modal-backdrop-blur)) saturate(var(--wb-modal-backdrop-saturate));
 }
 
@@ -151,7 +162,7 @@ samp {
     padding: 0.1rem 0.35rem;
 }
 
-:where(.wb-monospace-value, .font-monospace:not(input):not(textarea):not(select):not(button):not(td):not(th):not(table):not(tr):not(tbody):not(thead), .asn-badge, .asn-inline) {
+:where(.wb-monospace-value, .font-monospace:not(input, textarea, select, button, td, th, table, tr, tbody, thead), .asn-badge, .asn-inline) {
     color: var(--wb-monospace-fg);
     background-color: var(--wb-monospace-bg);
     border-radius: var(--wb-radius-sm);
@@ -165,15 +176,15 @@ body {
     margin: 0;
 }
 
-html:not(.login-page)[data-bs-theme="light"] body {
+:where(html:not(.login-page)[data-bs-theme="light"] body) {
     background: linear-gradient(180deg, #f8fbff 0%, #e8eef6 52%, #dde6f0 100%);
 }
 
-html:not(.login-page)[data-bs-theme="dark"] body {
+:where(html:not(.login-page)[data-bs-theme="dark"] body) {
     background: var(--bs-body-bg);
 }
 
-html:not(.login-page)[data-bs-theme="dark"] .main-content {
+:where(html:not(.login-page)[data-bs-theme="dark"] .main-content) {
     background-color: var(--bs-body-bg);
 }
 
@@ -192,10 +203,7 @@ html.login-page body {
     width: 100%;
     height: var(--wb-viewport-h, 100vh);
     min-height: var(--wb-viewport-h, 100vh);
-    padding-top: calc(1rem + env(safe-area-inset-top));
-    padding-right: calc(1rem + env(safe-area-inset-right));
-    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
-    padding-left: calc(1rem + env(safe-area-inset-left));
+    padding: calc(1rem + env(safe-area-inset-top)) calc(1rem + env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom)) calc(1rem + env(safe-area-inset-left));
     overflow-y: auto;
 }
 
@@ -222,6 +230,7 @@ html.login-page main {
     max-width: 400px;
     width: calc(100% - 2rem);
     margin: 0 auto;
+
     /* Ensure card is scrollable within viewport on mobile */
     max-height: calc(var(--wb-viewport-h, 100vh) - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
     overflow-y: auto;
@@ -234,11 +243,11 @@ html.login-page main {
 
 /* Logo theming - invert for visibility based on theme */
 .logo-themed {
-    filter: invert(0) drop-shadow(0 2px 4px rgba(0, 0, 0, 0.18));
+    filter: invert(0) drop-shadow(0 2px 4px rgb(0 0 0 / 18%));
 }
 
 [data-bs-theme="dark"] .logo-themed {
-    filter: invert(1) drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
+    filter: invert(1) drop-shadow(0 2px 4px rgb(0 0 0 / 35%));
 }
 
 .login-tagline {
@@ -252,56 +261,58 @@ html.login-page[data-bs-theme="dark"] .login-tagline {
 /* -----------------------------------------------------------------------------
    Cards
    ----------------------------------------------------------------------------- */
+
 /* Base .card styles (border, shadow, radius, overflow) are in wb-ui-system.css */
 
 html.login-page .login-card {
-    box-shadow: 0 20px 48px -18px rgba(5, 23, 49, 0.45), 0 8px 18px rgba(5, 23, 49, 0.2);
+    box-shadow: 0 20px 48px -18px rgb(5 23 49 / 45%), 0 8px 18px rgb(5 23 49 / 20%);
 }
 
 [data-bs-theme="dark"] .card {
     background-color: var(--wb-bg-surface);
     border-color: var(--wb-border-subtle);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+    box-shadow: 0 2px 8px rgb(0 0 0 / 25%);
 }
 
 html.login-page[data-bs-theme="dark"] .login-card {
-    box-shadow: 0 22px 52px -20px rgba(0, 0, 0, 0.75), 0 10px 20px rgba(0, 0, 0, 0.45);
+    box-shadow: 0 22px 52px -20px rgb(0 0 0 / 75%), 0 10px 20px rgb(0 0 0 / 45%);
 }
 
 /* Dark mode card headers - app pages use body-bg, login uses surface */
-html:not(.login-page)[data-bs-theme="dark"] .card-header {
+:where(html:not(.login-page)[data-bs-theme="dark"] .card-header) {
     background-color: var(--bs-body-bg);
-    border-bottom-color: rgba(255, 255, 255, 0.14);
+    border-bottom-color: rgb(255 255 255 / 14%);
 }
 
-html.login-page[data-bs-theme="dark"] .card-header,
+:where(html.login-page[data-bs-theme="dark"]) .card-header,
 [data-bs-theme="dark"] .login-card .card-header {
     background-color: var(--wb-bg-surface);
     border-bottom-color: var(--wb-border-subtle);
 }
 
 /* Dark mode card bodies - app pages use body-bg, login uses surface */
-html:not(.login-page)[data-bs-theme="dark"] .card-body {
+:where(html:not(.login-page)[data-bs-theme="dark"] .card-body) {
     background-color: var(--bs-body-bg);
 }
 
-html.login-page[data-bs-theme="dark"] .card-body,
+:where(html.login-page[data-bs-theme="dark"]) .card-body,
 [data-bs-theme="dark"] .login-card .card-body {
     background-color: var(--wb-bg-surface);
 }
 
 /* Dark mode tables within cards - shared striped/hover styles */
-[data-bs-theme="dark"] .card .table {
-    --bs-table-striped-bg: rgba(255, 255, 255, 0.02);
-    --bs-table-hover-bg: rgba(255, 255, 255, 0.04);
+:where([data-bs-theme="dark"] .card .table) {
+    --bs-table-striped-bg: rgb(255 255 255 / 2%);
+    --bs-table-hover-bg: rgb(255 255 255 / 4%);
+
     color: var(--bs-body-color);
 }
 
-html:not(.login-page)[data-bs-theme="dark"] .card .table {
+:where(html:not(.login-page)[data-bs-theme="dark"] .card .table) {
     --bs-table-bg: var(--bs-body-bg);
 }
 
-html.login-page[data-bs-theme="dark"] .card .table,
+:where(html.login-page[data-bs-theme="dark"]) .card .table,
 [data-bs-theme="dark"] .login-card .table {
     --bs-table-bg: var(--wb-bg-surface);
 }
@@ -309,12 +320,13 @@ html.login-page[data-bs-theme="dark"] .card .table,
 /* Dark mode table-danger (blocked DNS queries) */
 [data-bs-theme="dark"] .table-danger {
     --bs-table-color: var(--wb-text-primary);
-    --bs-table-bg: rgba(220, 53, 69, 0.15);
-    --bs-table-border-color: rgba(220, 53, 69, 0.3);
-    --bs-table-striped-bg: rgba(220, 53, 69, 0.2);
+    --bs-table-bg: rgb(220 53 69 / 15%);
+    --bs-table-border-color: rgb(220 53 69 / 30%);
+    --bs-table-striped-bg: rgb(220 53 69 / 20%);
     --bs-table-striped-color: var(--wb-text-primary);
-    --bs-table-hover-bg: rgba(220, 53, 69, 0.25);
+    --bs-table-hover-bg: rgb(220 53 69 / 25%);
     --bs-table-hover-color: var(--wb-text-primary);
+
     color: var(--bs-table-color);
 }
 
@@ -332,14 +344,14 @@ html.login-page[data-bs-theme="dark"] .card .table,
    ----------------------------------------------------------------------------- */
 .badge {
     box-shadow:
-        0 1px 2px rgba(15, 23, 42, 0.18),
-        inset 0 1px 0 rgba(255, 255, 255, 0.24);
+        0 1px 2px rgb(15 23 42 / 18%),
+        inset 0 1px 0 rgb(255 255 255 / 24%);
 }
 
 [data-bs-theme="dark"] .badge {
     box-shadow:
-        0 1px 2px rgba(0, 0, 0, 0.42),
-        inset 0 1px 0 rgba(255, 255, 255, 0.16);
+        0 1px 2px rgb(0 0 0 / 42%),
+        inset 0 1px 0 rgb(255 255 255 / 16%);
 }
 
 /* -----------------------------------------------------------------------------
@@ -371,8 +383,8 @@ html.login-page[data-bs-theme="dark"] .card .table,
 }
 
 .form-switch .form-check-input:focus {
-    border-color: rgba(var(--bs-primary-rgb), 0.55);
-    box-shadow: 0 0 0 0.2rem rgba(var(--bs-primary-rgb), 0.22);
+    border-color: rgb(var(--bs-primary-rgb), 0.55);
+    box-shadow: 0 0 0 0.2rem rgb(var(--bs-primary-rgb), 0.22);
 }
 
 /* -----------------------------------------------------------------------------
@@ -382,7 +394,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     background-color: transparent;
     border: 1px solid var(--wb-border-default);
     border-radius: var(--wb-radius-md);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 1px 3px rgb(0 0 0 / 8%);
     color: var(--bs-body-color);
     transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s, color 0.15s;
 }
@@ -390,32 +402,32 @@ html.login-page[data-bs-theme="dark"] .card .table,
 .wb-btn:hover {
     background-color: var(--wb-hover-overlay-light);
     border-color: var(--wb-border-hover);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+    box-shadow: 0 2px 6px rgb(0 0 0 / 12%);
     color: var(--bs-body-color);
 }
 
 .wb-btn:focus-visible {
     outline: 2px solid var(--wb-primary);
     outline-offset: 2px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 1px 3px rgb(0 0 0 / 8%);
 }
 
 .wb-btn:active {
     background-color: var(--wb-active-overlay-light);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+    box-shadow: inset 0 1px 2px rgb(0 0 0 / 12%);
 }
 
 /* Dark mode base for WireBuddy buttons */
 [data-bs-theme="dark"] .wb-btn {
     border-color: var(--wb-border-default);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
     color: var(--wb-text-secondary);
 }
 
 [data-bs-theme="dark"] .wb-btn:hover {
     background-color: var(--wb-hover-overlay-light);
     border-color: var(--wb-border-hover);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 2px 6px rgb(0 0 0 / 30%);
     color: #f8f9fa;
 }
 
@@ -452,11 +464,12 @@ html.login-page[data-bs-theme="dark"] .card .table,
     --bs-btn-disabled-border-color: var(--wb-primary);
     --bs-btn-disabled-color: #fff;
     --bs-btn-focus-shadow-rgb: var(--bs-primary-rgb);
-    box-shadow: 0 1px 3px rgba(var(--bs-primary-rgb), 0.2);
+
+    box-shadow: 0 1px 3px rgb(var(--bs-primary-rgb), 0.2);
 }
 
 .btn.btn-primary:hover {
-    box-shadow: 0 2px 6px rgba(var(--bs-primary-rgb), 0.3);
+    box-shadow: 0 2px 6px rgb(var(--bs-primary-rgb), 0.3);
 }
 
 /* ── Danger buttons (filled) ───────────────────────────────────────────────── */
@@ -472,11 +485,12 @@ html.login-page[data-bs-theme="dark"] .card .table,
     --bs-btn-active-border-color: #b02a37;
     --bs-btn-active-color: #fff;
     --bs-btn-focus-shadow-rgb: 220, 53, 69;
-    box-shadow: 0 1px 3px rgba(220, 53, 69, 0.2);
+
+    box-shadow: 0 1px 3px rgb(220 53 69 / 20%);
 }
 
 .btn.btn-danger:hover {
-    box-shadow: 0 2px 6px rgba(220, 53, 69, 0.3);
+    box-shadow: 0 2px 6px rgb(220 53 69 / 30%);
 }
 
 /* ── Outline danger buttons ────────────────────────────────────────────────── */
@@ -492,11 +506,12 @@ html.login-page[data-bs-theme="dark"] .card .table,
     --bs-btn-active-border-color: #b02a37;
     --bs-btn-active-color: #fff;
     --bs-btn-focus-shadow-rgb: 220, 53, 69;
-    box-shadow: 0 1px 3px rgba(220, 53, 69, 0.1);
+
+    box-shadow: 0 1px 3px rgb(220 53 69 / 10%);
 }
 
 .btn.btn-outline-danger:hover {
-    box-shadow: 0 2px 6px rgba(220, 53, 69, 0.25);
+    box-shadow: 0 2px 6px rgb(220 53 69 / 25%);
 }
 
 /* ── Secondary / cancel modal buttons ──────────────────────────────────────── */
@@ -513,11 +528,12 @@ html.login-page[data-bs-theme="dark"] .card .table,
     --bs-btn-active-border-color: var(--wb-border-hover);
     --bs-btn-active-color: var(--bs-body-color);
     --bs-btn-focus-shadow-rgb: 108, 117, 125;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+
+    box-shadow: 0 1px 3px rgb(0 0 0 / 8%);
 }
 
 .btn.btn-outline-secondary:hover {
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+    box-shadow: 0 2px 6px rgb(0 0 0 / 12%);
 }
 
 .btn.btn-outline-info {
@@ -525,17 +541,18 @@ html.login-page[data-bs-theme="dark"] .card .table,
     --bs-btn-bg: transparent;
     --bs-btn-border-color: var(--wb-info);
     --bs-btn-color: var(--wb-info);
-    --bs-btn-hover-bg: rgba(13, 202, 240, 0.08);
+    --bs-btn-hover-bg: rgb(13 202 240 / 8%);
     --bs-btn-hover-border-color: #0dcaf0;
     --bs-btn-hover-color: #0aa2c0;
-    --bs-btn-active-bg: rgba(13, 202, 240, 0.12);
+    --bs-btn-active-bg: rgb(13 202 240 / 12%);
     --bs-btn-active-border-color: #0aa2c0;
     --bs-btn-active-color: #0aa2c0;
-    box-shadow: 0 1px 3px rgba(13, 202, 240, 0.1);
+
+    box-shadow: 0 1px 3px rgb(13 202 240 / 10%);
 }
 
 .btn.btn-outline-info:hover {
-    box-shadow: 0 2px 6px rgba(13, 202, 240, 0.15);
+    box-shadow: 0 2px 6px rgb(13 202 240 / 15%);
 }
 
 .btn.btn-outline-success {
@@ -543,17 +560,18 @@ html.login-page[data-bs-theme="dark"] .card .table,
     --bs-btn-bg: transparent;
     --bs-btn-border-color: var(--wb-success);
     --bs-btn-color: var(--wb-success);
-    --bs-btn-hover-bg: rgba(25, 135, 84, 0.08);
+    --bs-btn-hover-bg: rgb(25 135 84 / 8%);
     --bs-btn-hover-border-color: #157347;
     --bs-btn-hover-color: #157347;
-    --bs-btn-active-bg: rgba(25, 135, 84, 0.12);
+    --bs-btn-active-bg: rgb(25 135 84 / 12%);
     --bs-btn-active-border-color: #146c43;
     --bs-btn-active-color: #146c43;
-    box-shadow: 0 1px 3px rgba(25, 135, 84, 0.1);
+
+    box-shadow: 0 1px 3px rgb(25 135 84 / 10%);
 }
 
 .btn.btn-outline-success:hover {
-    box-shadow: 0 2px 6px rgba(25, 135, 84, 0.15);
+    box-shadow: 0 2px 6px rgb(25 135 84 / 15%);
 }
 
 .btn.btn-outline-warning {
@@ -561,64 +579,68 @@ html.login-page[data-bs-theme="dark"] .card .table,
     --bs-btn-bg: transparent;
     --bs-btn-border-color: var(--wb-warning);
     --bs-btn-color: #856404;
-    --bs-btn-hover-bg: rgba(255, 193, 7, 0.08);
+    --bs-btn-hover-bg: rgb(255 193 7 / 8%);
     --bs-btn-hover-border-color: #e0a800;
     --bs-btn-hover-color: #664d03;
-    --bs-btn-active-bg: rgba(255, 193, 7, 0.12);
+    --bs-btn-active-bg: rgb(255 193 7 / 12%);
     --bs-btn-active-border-color: #d39e00;
     --bs-btn-active-color: #664d03;
-    box-shadow: 0 1px 3px rgba(255, 193, 7, 0.1);
+
+    box-shadow: 0 1px 3px rgb(255 193 7 / 10%);
 }
 
 .btn.btn-outline-warning:hover {
-    box-shadow: 0 2px 6px rgba(255, 193, 7, 0.15);
+    box-shadow: 0 2px 6px rgb(255 193 7 / 15%);
 }
 
 /* Dark mode adjustments for outline buttons */
 [data-bs-theme="dark"] .btn.btn-outline-primary {
     --bs-btn-color: #ff9496;
-    --bs-btn-hover-bg: rgba(var(--bs-primary-rgb), 0.15);
+    --bs-btn-hover-bg: rgb(var(--bs-primary-rgb), 0.15);
     --bs-btn-hover-color: #ffb4b6;
 }
 
 [data-bs-theme="dark"] .btn.btn-outline-secondary {
     --bs-btn-border-color: #6c7683;
     --bs-btn-color: #f2f5f8;
-    --bs-btn-hover-bg: rgba(255, 255, 255, 0.08);
+    --bs-btn-hover-bg: rgb(255 255 255 / 8%);
     --bs-btn-hover-border-color: #8c96a3;
     --bs-btn-hover-color: #f8f9fa;
-    --bs-btn-active-bg: rgba(255, 255, 255, 0.12);
+    --bs-btn-active-bg: rgb(255 255 255 / 12%);
     --bs-btn-active-border-color: #8c96a3;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+
+    box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
 }
 
 [data-bs-theme="dark"] .text-danger {
-    color: var(--wb-danger-strong) !important;
+    /* --wb-danger-strong (#a82024) is ~2:1 against dark surfaces and fails
+       WCAG for text; --wb-status-danger is the readable dark-mode red. */
+    color: var(--wb-status-danger) !important;
 }
 
 [data-bs-theme="dark"] .btn.btn-outline-info {
     --bs-btn-color: #6edff6;
-    --bs-btn-hover-bg: rgba(13, 202, 240, 0.15);
+    --bs-btn-hover-bg: rgb(13 202 240 / 15%);
     --bs-btn-hover-color: #9be7fb;
 }
 
 [data-bs-theme="dark"] .btn.btn-outline-success {
     --bs-btn-color: #75b798;
-    --bs-btn-hover-bg: rgba(25, 135, 84, 0.15);
+    --bs-btn-hover-bg: rgb(25 135 84 / 15%);
     --bs-btn-hover-color: #9dd3bb;
 }
 
 [data-bs-theme="dark"] .btn.btn-outline-warning {
     --bs-btn-border-color: #ffcd39;
     --bs-btn-color: #ffcd39;
-    --bs-btn-hover-bg: rgba(255, 193, 7, 0.15);
+    --bs-btn-hover-bg: rgb(255 193 7 / 15%);
     --bs-btn-hover-color: #ffe69c;
 }
 
 [data-bs-theme="dark"] .btn.btn-outline-danger {
     --bs-btn-border-color: #ff6384;
     --bs-btn-color: #ff6384;
-    --bs-btn-hover-bg: rgba(220, 53, 69, 0.15);
+    --bs-btn-hover-bg: rgb(220 53 69 / 15%);
     --bs-btn-hover-color: #ff8a8a;
 }
 
@@ -627,7 +649,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
 [data-bs-theme="dark"] .btn.btn-outline-success:hover,
 [data-bs-theme="dark"] .btn.btn-outline-warning:hover,
 [data-bs-theme="dark"] .btn.btn-outline-danger:hover {
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 2px 6px rgb(0 0 0 / 30%);
 }
 
 /* ── Warning buttons ─────────────────────────────────────────────────────────── */
@@ -642,14 +664,15 @@ html.login-page[data-bs-theme="dark"] .card .table,
     --bs-btn-active-border-color: #d39e00;
     --bs-btn-active-color: #212529;
     --bs-btn-focus-shadow-rgb: 255, 193, 7;
-    box-shadow: 0 1px 3px rgba(255, 193, 7, 0.15);
+
+    box-shadow: 0 1px 3px rgb(255 193 7 / 15%);
 }
 
 .btn.btn-warning:focus,
 .btn.btn-warning:focus-visible {
     outline: 2px solid var(--wb-warning);
     outline-offset: 2px;
-    box-shadow: 0 0 0 3px rgba(255, 193, 7, 0.25);
+    box-shadow: 0 0 0 3px rgb(255 193 7 / 25%);
 }
 
 [data-bs-theme="dark"] .btn.btn-warning {
@@ -669,7 +692,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
 .btn.btn-light:focus-visible {
     outline: 2px solid #6c757d;
     outline-offset: 2px;
-    box-shadow: 0 0 0 3px rgba(108, 117, 125, 0.25);
+    box-shadow: 0 0 0 3px rgb(108 117 125 / 25%);
 }
 
 /* ── Fix: btn-light in Dark Mode (used for interface action buttons) ─────── */
@@ -677,27 +700,24 @@ html.login-page[data-bs-theme="dark"] .card .table,
     --bs-btn-bg: #273244;
     --bs-btn-border-color: var(--wb-border-subtle);
     --bs-btn-color: #e5e7eb;
-
     --bs-btn-hover-bg: #334155;
     --bs-btn-hover-border-color: var(--wb-border-strong);
-    --bs-btn-hover-color: #ffffff;
-
+    --bs-btn-hover-color: #fff;
     --bs-btn-active-bg: var(--wb-bg-surface);
     --bs-btn-active-border-color: var(--wb-border-strong);
-    --bs-btn-active-color: #ffffff;
-
+    --bs-btn-active-color: #fff;
     --bs-btn-disabled-bg: var(--wb-bg-surface);
     --bs-btn-disabled-border-color: var(--wb-border-subtle);
     --bs-btn-disabled-color: #6b7280;
 
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
 }
 
 [data-bs-theme="dark"] .btn.btn-light:focus,
 [data-bs-theme="dark"] .btn.btn-light:focus-visible {
     outline: 2px solid var(--wb-border-strong);
     outline-offset: 2px;
-    box-shadow: 0 0 0 3px rgba(75, 85, 99, 0.25);
+    box-shadow: 0 0 0 3px rgb(75 85 99 / 25%);
 }
 
 /* ── Icon buttons focus indicator ───────────────────────────── */
@@ -768,7 +788,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
 .navbar-logo {
     height: 48px;
     width: auto;
-    filter: brightness(0) invert(1) drop-shadow(0 1px 0 rgba(0, 0, 0, 0.5)) drop-shadow(0 2px 2px rgba(0, 0, 0, 0.7));
+    filter: brightness(0) invert(1) drop-shadow(0 1px 0 rgb(0 0 0 / 50%)) drop-shadow(0 2px 2px rgb(0 0 0 / 70%));
     transition: transform 0.1s ease-in-out;
 }
 
@@ -783,7 +803,6 @@ html.login-page[data-bs-theme="dark"] .card .table,
 }
 
 @keyframes shake {
-
     0%,
     100% {
         transform: translateX(0) rotate(0deg);
@@ -856,7 +875,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     line-height: 1;
 }
 
-@media (max-width: 991.98px) {
+@media (width <=991.98px) {
     .navbar .container-fluid {
         padding-left: 1.5rem;
         padding-right: 0;
@@ -864,7 +883,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
 }
 
 /* Align top logo with desktop sidebar menu content start */
-@media (min-width: 992px) {
+@media (width >=992px) {
     .navbar .container-fluid {
         padding-left: 1.5rem;
         padding-right: 1.5rem;
@@ -910,7 +929,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     transition: background-color 0.15s ease-in-out;
 }
 
-.sidebar .nav-link:hover {
+:where(.sidebar .nav-link:hover) {
     background-color: var(--wb-border-subtle-light);
 }
 
@@ -923,7 +942,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     color: white;
 }
 
-.sidebar .nav-link:focus-visible {
+:where(.sidebar .nav-link:focus-visible) {
     outline: 2px solid var(--wb-primary);
     outline-offset: -2px;
 }
@@ -943,14 +962,13 @@ html.login-page[data-bs-theme="dark"] .card .table,
     overflow: hidden;
 }
 
-@media (max-width: 991.98px) {
+@media (width <=991.98px) {
     .wb-shell {
         padding-bottom: 0;
     }
 }
 
-@media (min-width: 992px) {
-
+@media (width >=992px) {
     html:not(.login-page),
     html:not(.login-page) body {
         height: 100vh;
@@ -981,11 +999,15 @@ html.login-page[data-bs-theme="dark"] .card .table,
     flex: 1;
     min-width: 0;
     min-height: 0;
+
     /* Prevent flex overflow bugs */
     padding: var(--wb-space-3);
     padding-bottom: calc(var(--wb-space-3) + var(--wb-footer-height));
-    /* Page-level scrolling only (no double-scroll) */
-    overflow: visible;
+
+    /* Sole scroll owner: html/body and .wb-shell are overflow:hidden on
+       desktop (see below), so content taller than the viewport must scroll
+       here or the bottom of the page becomes unreachable. */
+    overflow: hidden auto;
 }
 
 /* -----------------------------------------------------------------------------
@@ -996,22 +1018,22 @@ html.login-page[data-bs-theme="dark"] .card .table,
 }
 
 .status-down {
-    color: var(--wb-danger);
+    color: var(--wb-status-danger);
 }
 
 .status-warning {
-    color: var(--wb-warning);
+    color: var(--wb-status-warning);
 }
 
 /* -----------------------------------------------------------------------------
    Toasts
    ----------------------------------------------------------------------------- */
 .toast {
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.14);
+    box-shadow: 0 6px 16px rgb(0 0 0 / 22%), 0 2px 6px rgb(0 0 0 / 14%);
 }
 
 [data-bs-theme="dark"] .toast {
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 6px 20px rgb(0 0 0 / 45%), 0 2px 8px rgb(0 0 0 / 30%);
 }
 
 /* -----------------------------------------------------------------------------
@@ -1040,8 +1062,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
     align-items: center;
     justify-content: center;
     flex-wrap: wrap;
-    row-gap: 0.15rem;
-    column-gap: 0;
+    gap: 0.15rem 0;
 }
 
 .wb-footer-link {
@@ -1067,13 +1088,13 @@ html.login-page[data-bs-theme="dark"] .card .table,
 }
 
 /* Footer slide-in animation on mobile */
-@media (max-width: 767.98px) and (prefers-reduced-motion: no-preference) {
+@media (width <=767.98px) and (prefers-reduced-motion: no-preference) {
     .wb-footer {
-        animation: footerSlideIn 0.35s ease-out;
+        animation: footer-slide-in 0.35s ease-out;
     }
 }
 
-@keyframes footerSlideIn {
+@keyframes footer-slide-in {
     from {
         transform: translateY(100%);
         opacity: 0;
@@ -1088,8 +1109,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
 /* -----------------------------------------------------------------------------
    Mobile Touch Improvements
    ----------------------------------------------------------------------------- */
-@media (max-width: 991.98px) {
-
+@media (width <=991.98px) {
     /* Larger touch targets for mobile navigation */
     .navbar-nav .nav-link {
         padding: 0.75rem 1rem;
@@ -1107,7 +1127,6 @@ html.login-page[data-bs-theme="dark"] .card .table,
 
 /* Touch-safe minimum sizes for coarse pointers */
 @media (pointer: coarse) {
-
     .navbar .navbar-theme-btn {
         min-width: 44px;
         min-height: 44px;
@@ -1130,12 +1149,13 @@ html.login-page[data-bs-theme="dark"] .card .table,
     gap: 0.5rem;
     width: 100%;
     padding: 1rem 0.75rem;
+
     /* Isolate layout calculations to prevent reflow propagation */
     contain: layout;
 }
 
 /* ── Smooth mobile navbar open/close animation ────────────────────────────── */
-@media (max-width: 991.98px) {
+@media (width <=991.98px) {
     .navbar-collapse.collapsing {
         overflow: hidden;
         transition: height 0.24s ease;
@@ -1160,8 +1180,7 @@ html.login-page[data-bs-theme="dark"] .card .table,
 }
 
 /* Respect reduced motion preference */
-@media (prefers-reduced-motion: reduce) and (max-width: 991.98px) {
-
+@media (prefers-reduced-motion: reduce) and (width <=991.98px) {
     .navbar-collapse.collapsing,
     .navbar-mobile-grid {
         transition: none;
@@ -1173,12 +1192,12 @@ html.login-page[data-bs-theme="dark"] .card .table,
     }
 }
 
-.navbar-mobile-grid .nav-link {
+:where(.navbar-mobile-grid .nav-link) {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     padding: 0.85rem 1rem;
-    color: rgba(255, 255, 255, 0.92);
+    color: rgb(255 255 255 / 92%);
     text-decoration: none;
     font-size: 0.95rem;
     border-radius: var(--wb-radius-md);
@@ -1193,16 +1212,16 @@ html.login-page[data-bs-theme="dark"] .card .table,
     flex-shrink: 0;
 }
 
-.navbar-mobile-grid .nav-link:hover,
-.navbar-mobile-grid .nav-link:focus {
-    background-color: rgba(255, 255, 255, 0.1);
+:where(.navbar-mobile-grid .nav-link:hover),
+:where(.navbar-mobile-grid .nav-link:focus) {
+    background-color: rgb(255 255 255 / 10%);
     color: #fff;
 }
 
 .navbar-mobile-grid .nav-link.active {
     color: #fff;
     font-weight: 600;
-    background-color: rgba(255, 255, 255, 0.15);
+    background-color: rgb(255 255 255 / 15%);
 }
 
 .navbar-mobile-link {
@@ -1210,27 +1229,27 @@ html.login-page[data-bs-theme="dark"] .card .table,
     align-items: center;
     gap: 0.5rem;
     padding: 0.65rem 1rem;
-    color: rgba(255, 255, 255, 0.92);
+    color: rgb(255 255 255 / 92%);
     text-decoration: none;
     font-size: 0.92rem;
     border-radius: var(--wb-radius-md);
     transition: background-color 0.15s ease;
 }
 
-.navbar-mobile-link .material-icons {
+:where(.navbar-mobile-link .material-icons) {
     font-size: 20px;
 }
 
 .navbar-mobile-link:hover,
 .navbar-mobile-link:focus {
-    background-color: rgba(255, 255, 255, 0.1);
+    background-color: rgb(255 255 255 / 10%);
     color: #fff;
 }
 
 .navbar-mobile-link.active {
     color: #fff;
     font-weight: 600;
-    background-color: rgba(255, 255, 255, 0.12);
+    background-color: rgb(255 255 255 / 12%);
 }
 
 /* -----------------------------------------------------------------------------
@@ -1244,7 +1263,7 @@ html.login-page .alert {
    Leaflet Map Dark Mode Adjustments
    ----------------------------------------------------------------------------- */
 [data-bs-theme="dark"] .leaflet-bar {
-    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.8);
+    box-shadow: 0 1px 5px rgb(0 0 0 / 80%);
 }
 
 [data-bs-theme="dark"] .leaflet-bar>a {
@@ -1268,7 +1287,7 @@ html.login-page .alert {
     background-color: var(--wb-bg-surface);
     color: var(--wb-text-primary);
     border: 1px solid var(--wb-border-subtle);
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+    box-shadow: 0 8px 20px rgb(0 0 0 / 45%);
 }
 
 [data-bs-theme="dark"] .leaflet-popup-tip {
@@ -1281,7 +1300,7 @@ html.login-page .alert {
 }
 
 [data-bs-theme="dark"] .leaflet-popup-content strong {
-    color: #ffffff;
+    color: #fff;
 }
 
 [data-bs-theme="dark"] .leaflet-popup-content .text-muted {
@@ -1305,7 +1324,7 @@ html.login-page .alert {
     padding: 1.5rem 1rem;
 }
 
-.chart-empty-state .material-icons {
+:where(.chart-empty-state .material-icons) {
     font-size: clamp(46px, 5vw, 64px);
     line-height: 1;
     color: var(--wb-empty-state-color, var(--bs-secondary-color));
@@ -1320,6 +1339,7 @@ html.login-page .alert {
 
 .chart-empty-state-text.small {
     margin-top: -0.55rem;
+
     /* compensate gap to remove spacing */
 }
 
@@ -1328,23 +1348,13 @@ html.login-page .alert {
 }
 
 /* Legacy empty cards use Bootstrap's muted icon color. Keep their text identical. */
-.nodes-empty-state > :is(h1, h2, h3, h4, h5, h6, p),
-.peers-empty-state > :is(h1, h2, h3, h4, h5, h6, p) {
+.nodes-empty-state> :is(h1, h2, h3, h4, h5, h6, p),
+.peers-empty-state> :is(h1, h2, h3, h4, h5, h6, p) {
     color: var(--wb-empty-state-color, var(--bs-secondary-color));
 }
 
-/* -----------------------------------------------------------------------------
-   Mobile Condensed Tables (Roboto Flex width axis)
-   Scope to specific class if needed for condensed display
-   ----------------------------------------------------------------------------- */
-/* @media (max-width: 767.98px) {
-    .wb-table-condensed {
-        font-stretch: 87.5%;
-    }
-} */
-
 /* Reconnect / onboarding states */
-body.wb-reconnecting .main-content {
+:where(body.wb-reconnecting .main-content) {
     opacity: 0.35;
     filter: blur(8px) saturate(0.8);
     pointer-events: none;
@@ -1357,23 +1367,17 @@ body.wb-reconnecting .sidebar {
 }
 
 body.wb-reconnecting .modal-backdrop.show {
-    background-color: rgba(15, 23, 42, 0.6);
+    background-color: rgb(15 23 42 / 60%);
 }
 
-body.wb-onboarding .main-content,
-body.wb-onboarding .sidebar {
+:where(body.wb-onboarding .main-content),
+:where(body.wb-onboarding .sidebar) {
     filter: blur(8px);
     transition: filter 0.3s ease;
 }
 
 body.wb-onboarding .modal-backdrop.show {
-    background-color: rgba(15, 23, 42, 0.6);
-}
-
-/* Center non-scrollable modals vertically while preserving scrollable dialog behavior. */
-.modal:not(.modal-dialog-scrollable) .modal-dialog {
-    margin-top: auto;
-    margin-bottom: auto;
+    background-color: rgb(15 23 42 / 60%);
 }
 
 /* Modal and onboarding utility classes used by base template components. */
@@ -1405,7 +1409,7 @@ body.wb-onboarding .modal-backdrop.show {
 }
 
 #wbReconnectModal .modal-content {
-    border: 1px solid rgba(128, 128, 128, 0.25);
+    border: 1px solid rgb(128 128 128 / 25%);
     border-radius: var(--wb-radius-lg);
 }
 
@@ -1414,7 +1418,7 @@ body.wb-onboarding .modal-backdrop.show {
     height: 2.25rem;
 }
 
-@media (max-width: 575.98px) {
+@media (width <=575.98px) {
     #wbReconnectModal .modal-dialog {
         margin: auto;
         max-width: min(460px, calc(100vw - 1.5rem));
@@ -1424,7 +1428,7 @@ body.wb-onboarding .modal-backdrop.show {
 
     #wbReconnectModal .modal-content {
         height: auto;
-        border: 1px solid rgba(128, 128, 128, 0.25);
+        border: 1px solid rgb(128 128 128 / 25%);
         border-radius: var(--wb-radius-lg);
     }
 
@@ -1433,25 +1437,25 @@ body.wb-onboarding .modal-backdrop.show {
     }
 }
 
-@keyframes wbReconnectSoftPulse {
+@keyframes wb-reconnect-soft-pulse {
     0% {
         transform: scale(1);
-        box-shadow: 0 0 0 rgba(var(--bs-primary-rgb), 0);
+        box-shadow: 0 0 0 rgb(var(--bs-primary-rgb), 0);
     }
 
     50% {
         transform: scale(1.012);
-        box-shadow: 0 0 0.85rem rgba(var(--bs-primary-rgb), 0.22);
+        box-shadow: 0 0 0.85rem rgb(var(--bs-primary-rgb), 0.22);
     }
 
     100% {
         transform: scale(1);
-        box-shadow: 0 0 0 rgba(var(--bs-primary-rgb), 0);
+        box-shadow: 0 0 0 rgb(var(--bs-primary-rgb), 0);
     }
 }
 
 body.wb-reconnecting #wbReconnectModal.show .wb-reconnect-pulse {
-    animation: wbReconnectSoftPulse 1.9s ease-in-out infinite;
+    animation: wb-reconnect-soft-pulse 1.9s ease-in-out infinite;
     transform-origin: center;
 }
 

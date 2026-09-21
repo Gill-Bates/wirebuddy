@@ -71,12 +71,12 @@ def print_banner() -> None:
     build_short = BUILD_INFO[:7] if BUILD_INFO else "dev"
 
     ascii_art = r"""
-          _          _               _     _       
-__      _(_)_ __ ___| |__  _   _  __| | __| |_   _ 
+          _          _               _     _
+__      _(_)_ __ ___| |__  _   _  __| | __| |_   _
 \ \ /\ / / | '__/ _ \ '_ \| | | |/ _` |/ _` | | | |
  \ V  V /| | | |  __/ |_) | |_| | (_| | (_| | |_| |
   \_/\_/ |_|_|  \___|_.__/ \__,_|\__,_|\__,_|\__, |
-                                             |___/ 
+                                             |___/
 """.strip("\n")
 
     text_lines = [
@@ -85,7 +85,7 @@ __      _(_)_ __ ___| |__  _   _  __| | __| |_   _
     ]
 
     ascii_lines = ascii_art.splitlines()
-    ascii_width = max((len(l) for l in ascii_lines), default=0)
+    ascii_width = max((len(line) for line in ascii_lines), default=0)
     text_width = max((len(t) for t in text_lines), default=0)
 
     master_width = max(ascii_width, text_width)
@@ -106,7 +106,7 @@ __      _(_)_ __ ___| |__  _   _  __| | __| |_   _
         sys.stdout.write(banner + "\n")
 
     sys.stdout.flush()
-    
+
 
 def print_banner_once() -> None:
 	    """Print startup banner at most once per process tree.

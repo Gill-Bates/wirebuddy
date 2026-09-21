@@ -91,7 +91,7 @@ async def _terminate_process_group(
     try:
         await asyncio.wait_for(proc.wait(), timeout=kill_timeout)
         return
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _log.debug("Process group %s did not terminate, sending SIGKILL", proc.pid)
 
     if not _signal_process_group(proc, signal.SIGKILL):
@@ -101,7 +101,7 @@ async def _terminate_process_group(
     # has disconnected, so it can hang past SIGKILL if a reader stopped early.
     try:
         await asyncio.wait_for(proc.wait(), timeout=kill_timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _log.warning("Process group %s not reaped after SIGKILL", proc.pid)
 
 
@@ -191,7 +191,7 @@ async def run_command(
     tasks = [wait_task, stdout_task, stderr_task]
 
     try:
-        done, pending = await asyncio.wait(
+        _done, pending = await asyncio.wait(
             tasks, timeout=timeout, return_when=asyncio.FIRST_EXCEPTION
         )
     except BaseException:
@@ -208,7 +208,7 @@ async def run_command(
         exc = _first_task_exception(tasks)
         if exc is not None:
             raise exc
-        raise asyncio.TimeoutError(
+        raise TimeoutError(
             f"Command timed out after {timeout}s: {cmd[0]}"
         )
 

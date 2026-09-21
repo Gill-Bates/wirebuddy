@@ -1,0 +1,359 @@
+#
+# .github/workflows/ui-audit.yml
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+#
+# The browser half of the frontend checks: visual drift, layout stability, touch
+# targets, axe, fonts, console/network health. Deliberately separate from ci.yml
+# and deliberately not a gate.
+#
+# ci.yml is the PR gate because everything in it is deterministic. Nothing here
+# is: screenshot pairs, layout-settle frames and CLS depend on how much CPU the
+# runner happens to give us, and an intermittently red check on someone else's
+# PR is the fastest way to get a check ignored or deleted. So the job carries
+# continue-on-error until we have a flake rate to look at, and the evidence
+# (the summary JSON, screenshots, the audit log, the server log) is uploaded
+# either way.
+#
+# Unlike a plain `python run.py`, the audit needs an account it can actually log
+# in with. tools/ci-seed-admin.py creates one *before* the server starts, which
+# also keeps the first-boot bootstrap gate closed - see that script's docstring
+# for why scraping the generated password out of the log is the worse option.
+#
+
+name: UI Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      browsers:
+        description: 'Playwright engines to audit'
+        type: choice
+        default: 'chromium,webkit'
+        options:
+          - 'chromium,webkit'
+          - 'chromium'
+          - 'chromium,webkit,firefox'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Playwright UI audit
+    # Named, not ubuntu-latest, and on 26.04 ahead of the migration
+    # (actions/runner-images#14748), as in the other workflows. The pixel
+    # comparison diffs two screenshots taken in the same run against each other
+    # rather than against committed baselines, and Playwright installs its own
+    # browsers, so the host's font stack cannot turn into a regression this
+    # repository did not cause - it only has to stay constant within one run.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    # Reports, never blocks. Job-level, so a red audit leaves the run green and
+    # the PR mergeable while the finding is still visible and downloadable.
+    continue-on-error: true
+
+    env:
+      # run-ui-lint.mjs defaults to chromium alone. WireBuddy runs every device
+      # profile under every selected engine, so chromium already covers the
+      # mobile and tablet viewports; webkit is added because it is the engine
+      # whose flexbox and scrollbar behaviour differs most from the one the UI
+      # is developed against. firefox is available on dispatch but not default.
+      UI_LINT_BROWSERS: ${{ inputs.browsers || 'chromium,webkit' }}
+      # A shared runner is slower and less predictable than a workstation.
+      # Keeping both at 1 means at most one page renders at a time, which is
+      # what the layout-settle and screenshot-pair checks need to stay
+      # meaningful - they measure how a page settles, and a second page
+      # competing for the same CPU is indistinguishable from a slow page.
+      UI_LINT_BROWSER_CONCURRENCY: '1'
+      UI_LINT_DEVICE_CONCURRENCY: '1'
+      # POST /api/login is rate limited to 5/minute per client IP
+      # (RATE_LIMIT_AUTH in app/utils/rate_limit.py - a module constant, not an
+      # env knob), and app/db/sqlite_auth.py adds a username+IP lockout after 3
+      # failures. Spoofing gives each engine its own X-Forwarded-For from
+      # BROWSER_TEST_CLIENT_IPS (198.18.0.11/.12/.13), so the engines get
+      # separate buckets instead of all sharing 127.0.0.1. run.py starts uvicorn
+      # with proxy_headers=True and forwarded_allow_ips covering localhost, so
+      # the headers are actually honoured here.
+      UI_LINT_SPOOF_CLIENT_IP: '1'
+      # Deliberately off: this phase generates failed logins on purpose, which
+      # is exactly what the lockout above reacts to. It is a local debugging
+      # tool, not something to spend a CI run's login budget on.
+      UI_LINT_LOGIN_FAILURE_TESTS: '0'
+      UI_LINT_USERNAME: admin
+      AUDIT_OUTPUT_DIR: ${{ github.workspace }}/ui-audit-out
+      AUDIT_LOG: ${{ github.workspace }}/ui-audit-out/audit.log
+      SERVER_LOG: ${{ github.workspace }}/ui-audit-out/server.log
+      # run.py reads the listener from the settings table, not from HOST/PORT,
+      # so the seeding step writes this and the audit reads it back.
+      AUDIT_PORT: '8000'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          # Matches requires-python in pyproject.toml and the python:3.13-slim
+          # stages in docker/Dockerfile.
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tools/ui-lint/package-lock.json
+
+      # The audit renders real pages, so the whole runtime stack has to be
+      # installed - the dev extra is not needed, nothing here runs pytest.
+      # Every runtime dependency is pinned in pyproject.toml, so this resolves
+      # to the same versions the image ships.
+      - name: Install Python dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python tools/pyproject-deps.py > requirements-audit.txt
+          cat requirements-audit.txt
+          pip install -r requirements-audit.txt
+
+      - name: Install ui-lint toolchain
+        env:
+          # The engines are installed in the dedicated step below, cached.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: npm ci --prefix tools/ui-lint --no-audit --no-fund
+
+      - name: Cache Playwright engines
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          # The playwright version pins the engine revisions, so the lockfile
+          # hash is the right key. The engine list is part of it because a
+          # chromium-only restore must not satisfy a chromium+webkit run.
+          key: ms-playwright-${{ runner.os }}-${{ hashFiles('tools/ui-lint/package-lock.json') }}-${{ env.UI_LINT_BROWSERS }}
+
+      # Only the selected engines, not the three that package.json's
+      # install:browsers script would fetch. --with-deps installs the shared
+      # libraries they need; those are apt packages, not part of the cache
+      # above, so this step runs either way and only the download is skipped on
+      # a cache hit.
+      - name: Install Playwright engines
+        run: |
+          set -euo pipefail
+          engines="$(printf '%s' "$UI_LINT_BROWSERS" | tr ',' ' ')"
+          echo "installing engines: ${engines}"
+          # shellcheck disable=SC2086
+          npm --prefix tools/ui-lint exec -- playwright install --with-deps $engines
+
+      # A fresh data dir per run, so the database starts empty: no peers, no
+      # interfaces, and - just as importantly - no rows in login_attempts, which
+      # is where the lockout state persists.
+      #
+      # The secret key is generated per run and never leaves these steps. A
+      # committed or repeated key would let one run's session cookie be replayed
+      # against another, and it also peppers the database's key-validation
+      # token, so the seeding step and the server must share exactly this value.
+      #
+      # WIREBUDDY_PUBLIC_ORIGIN is deliberately left unset: an https:// value
+      # sets force_https, which marks the session cookie Secure, which a browser
+      # then refuses to send over the plain-HTTP loopback the audit uses - login
+      # would appear to succeed and every view would bounce back to /login.
+      - name: Generate run secrets
+        run: |
+          set -euo pipefail
+          mkdir -p "$AUDIT_OUTPUT_DIR"
+          {
+            echo "WIREBUDDY_SECRET_KEY=$(python -c 'import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())')"
+            echo "WIREBUDDY_DATA_DIR=${{ github.workspace }}/ui-audit-data"
+            echo "UI_LINT_PASSWORD=$(python -c 'import secrets, string; alphabet = string.ascii_letters + string.digits; print("Ci1!" + "".join(secrets.choice(alphabet) for _ in range(20)))')"
+          } >> "$GITHUB_ENV"
+
+      # Without this the app would create its own admin with a generated
+      # password and must_change_password=1, which arms the bootstrap gate: only
+      # /login and /ui/change-password answer, everything else 302s or returns
+      # 423. The audit's login check treats the password-change page as a
+      # successful login, so the run would not fail cleanly - it would report a
+      # pile of misleading per-view findings. Seeding a user first makes
+      # ensure_default_admin() a no-op and the gate is never armed.
+      - name: Seed the audit's admin account
+        run: |
+          set -euo pipefail
+          mkdir -p "$WIREBUDDY_DATA_DIR"
+          python tools/ci-seed-admin.py \
+            --username "$UI_LINT_USERNAME" \
+            --password-env UI_LINT_PASSWORD \
+            --gui-port "$AUDIT_PORT"
+
+      - name: Start application
+        run: |
+          set -euo pipefail
+          export LOG_LEVEL=INFO
+          export TZ=UTC
+          export NO_COLOR=1
+          nohup python run.py > "$SERVER_LOG" 2>&1 &
+          echo "server pid: $!"
+
+          for _ in $(seq 1 60); do
+            status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
+              "http://127.0.0.1:${AUDIT_PORT}/login" || true)"
+            # 200 = login page. A 303 would mean an already-authenticated
+            # redirect, which cannot happen on a fresh database, so it is not
+            # accepted here - it would hide a misconfigured instance.
+            if [ "$status" = '200' ]; then
+              echo "application is up (HTTP ${status})"
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "${status:-}" != '200' ]; then
+            echo 'ERROR: application did not serve /login within 60s' >&2
+            cat "$SERVER_LOG" >&2
+            exit 1
+          fi
+
+          # The gate reports itself here. If it is armed, the audit below would
+          # produce noise rather than findings, so stop with the reason instead.
+          if curl -s --max-time 5 "http://127.0.0.1:${AUDIT_PORT}/api/system/status" \
+            | grep -q 'bootstrap_waiting'; then
+            echo 'ERROR: the bootstrap gate is active - seeding did not take effect.' >&2
+            grep -i 'bootstrap' "$SERVER_LOG" >&2 || true
+            exit 1
+          fi
+          echo 'bootstrap gate is closed; all views are reachable'
+
+      - name: Run UI audit
+        env:
+          UI_LINT_BASE_URL: http://127.0.0.1:8000
+          UI_LINT_OUTPUT_DIR: ${{ env.AUDIT_OUTPUT_DIR }}
+        run: |
+          set -euo pipefail
+          npm --prefix tools/ui-lint run audit 2>&1 | tee "$AUDIT_LOG"
+
+      # Runs even when the audit failed - that is the case where the numbers
+      # matter. Reads ui-lint-summary.json rather than grepping the log: the
+      # runner writes the same records there in structured form, including the
+      # per-view `error` field that the stdout lines omit, and a regex over a
+      # log that also carries Playwright's own output would be the flakiest part
+      # of an already timing-sensitive job.
+      #
+      # The split between auditError and real findings is the important part. An
+      # auditError means the audit could not measure the view at all (a theme
+      # failing to apply, a navigation racing the probe) - it says nothing about
+      # the UI, and mixed into one list it drowns the findings that do. They are
+      # counted and reported separately so a run that is mostly tooling failure
+      # is visibly that, rather than looking like 150 UI regressions.
+      - name: Summarise findings
+        if: always()
+        env:
+          SUMMARY_JSON: ${{ env.AUDIT_OUTPUT_DIR }}/ui-lint-summary.json
+        run: |
+          set -uo pipefail
+          if [ ! -s "$SUMMARY_JSON" ]; then
+            # shellcheck disable=SC2016  # the backticks are markdown for the job summary, not substitutions
+            {
+              echo '## UI audit'
+              echo ''
+              echo 'No `ui-lint-summary.json` was written: the run did not get as far as'
+              echo 'finishing a browser. Check `audit.log` and `server.log` in the artifact.'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python - "$SUMMARY_JSON" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import collections
+          import json
+          import os
+          import re
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              rows = json.load(handle)
+
+          def name(row):
+              return row.get("name") or "?"
+
+          def score(row):
+              value = (row.get("uiHealth") or {}).get("score")
+              return value if isinstance(value, (int, float)) else None
+
+          errored = [r for r in rows if r.get("error")]
+          measured = [r for r in rows if not r.get("error")]
+          hard = [r for r in measured if r.get("hardFindings")]
+          soft = [r for r in measured if not r.get("hardFindings") and (r.get("findings") or r.get("warnings"))]
+          clean = [r for r in measured if not r.get("findings") and not r.get("hardFindings") and not r.get("warnings")]
+
+          print(f"## UI audit ({os.environ.get('UI_LINT_BROWSERS', '?')})")
+          print()
+          print(f"{len(rows)} view runs: **{len(measured)} measured**, **{len(errored)} could not be measured**.")
+          print()
+          print("Of the measured runs: "
+                f"{len(hard)} with hard findings, {len(soft)} with soft findings only, {len(clean)} clean.")
+          print()
+          print("This job never blocks the PR. `auditError` is a tooling failure, not a")
+          print("UI verdict - the view was never measured, so it is counted separately.")
+          print()
+
+          if errored:
+              print(f"### Not measured ({len(errored)})")
+              print()
+              # Grouped by message: one racing probe usually produces the same
+              # error across every view, and listing it 150 times hides the rest.
+              grouped = collections.Counter(
+                  re.sub(r"^\[[^\]]+\]\s*", "", str(r["error"])).splitlines()[0][:150]
+                  for r in errored
+              )
+              print("| Runs | Error |")
+              print("|---|---|")
+              for message, count in grouped.most_common(10):
+                  print(f"| {count} | `{message}` |")
+              print()
+              examples = ", ".join(sorted(name(r) for r in errored)[:6])
+              print(f"Examples: {examples}")
+              print()
+
+          if hard:
+              print(f"### Hard findings ({len(hard)})")
+              print()
+              print("| View | Browser | Theme | Health | Findings |")
+              print("|---|---|---|---|---|")
+              for row in sorted(hard, key=lambda r: (score(r) is None, score(r) or 0)):
+                  findings = ", ".join(str(f) for f in row.get("hardFindings", []))
+                  value = score(row)
+                  print(f"| {name(row)} | {row.get('browser')} | {row.get('theme') or '-'} | "
+                        f"{'-' if value is None else value} | {findings[:160]} |")
+              print()
+
+          scored = [r for r in measured if score(r) is not None]
+          if scored:
+              worst = sorted(scored, key=score)[:10]
+              print("### Lowest UI health scores")
+              print()
+              print("| View | Browser | Theme | Score | Severity |")
+              print("|---|---|---|---|---|")
+              for row in worst:
+                  severity = (row.get("uiHealth") or {}).get("severity") or "-"
+                  print(f"| {name(row)} | {row.get('browser')} | {row.get('theme') or '-'} | "
+                        f"{score(row)} | {severity} |")
+          PY
+
+      - name: Upload audit results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-audit-${{ github.run_id }}
+          # The summary JSON carries the element-level detail behind every
+          # finding, the screenshots show what the engines actually rendered,
+          # and server.log is the only place a 500 behind a failed view is
+          # visible.
+          path: ${{ env.AUDIT_OUTPUT_DIR }}
+          retention-days: 7
+          if-no-files-found: warn

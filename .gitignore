@@ -28,6 +28,7 @@ data_local/
 .ruff_cache/
 .tmp-playwright
 tools/ui-lint/node_modules/
+tools/stylelint/node_modules/
 tools/ui-lint/ui-lint-output/
 tools/ui-lint/test-results/
 tools/ui-lint/ui-lint-summary.json
@@ -40,7 +41,8 @@ ui-lint-summary.latest.json
 !.vscode/settings.json
 !.vscode/extensions.json
 
-# Runtime tool state (Claude Code / agent framework)
+# Runtime tool state (Claude Code / oh-my-claudecode)
+.omc/
 .omx/
 
 # OS

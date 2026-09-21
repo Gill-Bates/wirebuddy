@@ -1,0 +1,174 @@
+{#- Node, routing, DNS and security fields shared by the Add and Edit peer modals.
+    edit=true yields the Edit modal's ids: kebab ids gain an "edit-" prefix, the three
+    help-collapse ids become editAllowAllNodesHelp/editRoutingModeHelp/editClientIsolationHelp.
+    static/js/peers.js addresses the fields by these exact ids. -#}
+{% macro peer_routing_fields(edit=false) -%}
+{% set p = 'edit-' if edit else '' %}
+{% set help_all_nodes = 'editAllowAllNodesHelp' if edit else 'allowAllNodesHelp' %}
+{% set help_routing = 'editRoutingModeHelp' if edit else 'routingModeHelp' %}
+{% set help_isolation = 'editClientIsolationHelp' if edit else 'clientIsolationHelp' %}
+                    {% if nodes %}
+                    <div class="mb-2">
+                        <label for="{{ p }}peer-node" class="form-label">Node</label>
+                        <select class="form-select peer-node-select" id="{{ p }}peer-node">
+                            <option value="">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</option>
+                            {% for n in nodes %}
+                            <option value="{{ n.id }}">{{ n.name }} ({{ n.fqdn }})</option>
+                            {% endfor %}
+                        </select>
+                        <div class="dropdown peer-node-picker mt-2" data-target-select="{{ p }}peer-node">
+                            <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <span class="peer-node-picker-label">
+                                    {% if local_country_code %}
+                                    <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
+                                         decoding="async"
+                                         src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ local_country_code }}.svg">
+                                    {% endif %}
+                                    <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
+                                </span>
+                            </button>
+                            <div class="dropdown-menu peer-node-picker-menu">
+                                <button type="button" class="dropdown-item peer-node-option active" data-value="">
+                                    <span class="peer-node-option-label">
+                                        {% if local_country_code %}
+                                        <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
+                                             decoding="async"
+                                             src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ local_country_code }}.svg">
+                                        {% endif %}
+                                        <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
+                                    </span>
+                                </button>
+                                {% for n in nodes %}
+                                <button type="button" class="dropdown-item peer-node-option" data-value="{{ n.id }}">
+                                    <span class="peer-node-option-label">
+                                        {% if n.geo_country_code %}
+                                        <img class="peer-country-flag" alt="{{ n.geo_country_code|upper }} flag"
+                                             decoding="async"
+                                             src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ n.geo_country_code }}.svg">
+                                        {% endif %}
+                                        <span class="peer-node-picker-text">{{ n.name }} ({{ n.fqdn }})</span>
+                                    </span>
+                                </button>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        <small class="text-muted">Which server should handle this peer</small>
+                    </div>
+                    <div class="mb-2" id="{{ p }}peer-allow-all-nodes-wrapper">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="{{ p }}peer-allow-all-nodes">
+                            <label class="form-check-label" for="{{ p }}peer-allow-all-nodes">
+                                Allow on all Nodes
+                                <a class="text-muted ms-1" data-bs-toggle="collapse" href="#{{ help_all_nodes }}"
+                                    role="button" aria-expanded="false" aria-controls="{{ help_all_nodes }}">
+                                    <span class="material-icons peer-help-icon" aria-hidden="true">help_outline</span>
+                                </a>
+                            </label>
+                        </div>
+                        <small class="text-muted">Peer can connect to any node with same credentials</small>
+                        <div class="collapse mt-2" id="{{ help_all_nodes }}">
+                            <div class="card card-body small bg-body-secondary">
+                                <strong>Multi-Node Roaming</strong><br>
+                                When enabled, this peer's configuration is synchronized to all available nodes.
+                                The peer can connect to any node using the same WireGuard credentials, enabling
+                                seamless roaming between server locations.<br><br>
+                                <strong>Note:</strong> The node selection above is ignored when this is enabled.
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- ROUTING -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">Traffic Routing</h6>
+
+                    <div class="mb-2">
+                        <label for="{{ p }}peer-allowed-ips-mode" class="form-label">
+                            Routing Mode
+                            <a class="text-muted ms-1" data-bs-toggle="collapse" href="#{{ help_routing }}" role="button"
+                                aria-expanded="false" aria-controls="{{ help_routing }}">
+                                <span class="material-icons peer-help-icon" aria-hidden="true">help_outline</span>
+                            </a>
+                        </label>
+                        <div class="collapse mb-2" id="{{ help_routing }}">
+                            <div class="card card-body small bg-body-secondary">
+                                <strong>Recommended:</strong> All traffic goes through the VPN.<br>
+                                The client uses the VPN IP for all connections.<br>
+                                <strong>Local access:</strong> Keep access to local network devices.<br>
+                                <strong>Advanced:</strong> Define custom CIDR ranges.
+                            </div>
+                        </div>
+                        <select class="form-select" id="{{ p }}peer-allowed-ips-mode">
+                            <option value="full"{% if not edit %} selected{% endif %}>Recommended (all traffic through VPN)</option>
+                            <option value="split">Local network access</option>
+                            <option value="custom">Advanced (custom routes)</option>
+                        </select>
+                        <small class="text-muted" id="{{ p }}allowed-ips-hint">Routes all IPv4 and IPv6 traffic through
+                            VPN</small>
+                    </div>
+                    <div class="mb-2 d-none" id="{{ p }}peer-allowed-ips-custom-wrapper">
+                        <label for="{{ p }}peer-allowed-ips-custom" class="form-label">Custom Allowed IPs</label>
+                        <input type="text" class="form-control" id="{{ p }}peer-allowed-ips-custom"
+                            placeholder="e.g., 10.0.0.0/24, 192.168.1.0/24" inputmode="text" autocapitalize="off" spellcheck="false">
+                        <small class="text-muted">Comma-separated CIDR ranges</small>
+                    </div>
+
+                    <!-- DNS & FILTERING -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">DNS & Filtering</h6>
+
+                    <!-- DNS Settings Group -->
+                    <div class="mb-2 p-3 border rounded peer-surface-panel">
+                        <div class="mb-2">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="{{ p }}peer-use-adblocker" checked>
+                                <label class="form-check-label" for="{{ p }}peer-use-adblocker">
+                                    Use Ad-blocking DNS (WireBuddy)
+                                </label>
+                            </div>
+                            <small class="text-muted d-none" id="{{ p }}peer-fallback-dns-hint">Uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)</small>
+                        </div>
+                        <div class="mb-2" id="{{ p }}peer-blocklist-section">
+                            <label class="form-label">Active Blocklists</label>
+                            <div id="{{ p }}peer-blocklist-options" class="row gy-1 gx-2">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
+                        <div class="mb-0" id="{{ p }}peer-dns-logging-wrapper">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="{{ p }}peer-dns-logging" checked>
+                                <label class="form-check-label" for="{{ p }}peer-dns-logging">
+                                    DNS Logging
+                                </label>
+                            </div>
+                            <small class="text-muted">Log DNS queries for this device</small>
+                        </div>
+                    </div>
+
+                    <!-- SECURITY -->
+                    <h6 class="text-muted text-uppercase small mt-3 mb-2">Security</h6>
+
+                    <div class="{{ 'mb-2' if edit else 'mb-0' }}">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="{{ p }}peer-client-isolation">
+                            <label class="form-check-label" for="{{ p }}peer-client-isolation">
+                                Client Isolation
+                                <a class="text-muted ms-1" data-bs-toggle="collapse" href="#{{ help_isolation }}"
+                                    role="button" aria-expanded="false" aria-controls="{{ help_isolation }}">
+                                    <span class="material-icons peer-help-icon" aria-hidden="true">help_outline</span>
+                                </a>
+                            </label>
+                        </div>
+                        {% if edit %}
+                        <small class="text-muted">Prevents access to other VPN devices</small>
+                        {% endif %}
+                        <div class="collapse mt-2" id="{{ help_isolation }}">
+                            <div class="card card-body small bg-body-secondary">
+                                <strong>What is Client Isolation?</strong><br>
+                                When enabled, this peer cannot communicate with other VPN clients. The peer
+                                can only access the Internet and the VPN server, but not other connected
+                                devices in the VPN network.<br><br>
+                                <strong>When useful?</strong> For guest access or when clients should be
+                                isolated from each other for security reasons.
+                            </div>
+                        </div>
+                    </div>
+{%- endmacro %}

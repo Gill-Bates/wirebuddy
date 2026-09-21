@@ -2,8 +2,10 @@
 .git/
 .github/
 
-# Runtime tool state
+# Runtime tool state & local configuration
+.omc/
 .omx/
+.kiro/
 
 # Python
 .venv/

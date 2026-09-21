@@ -94,7 +94,7 @@ def test_valid_letsencrypt_material_is_preferred(tmp_path):
     _write_cert_pair(
         tmp_path / "vpn.example.com",
         "vpn.example.com",
-        not_after=dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=60),
+        not_after=dt.datetime.now(dt.UTC) + dt.timedelta(days=60),
     )
     assert resolve_gui_certificate(tmp_path, "vpn.example.com").source == "letsencrypt"
 
@@ -114,7 +114,7 @@ def test_expired_letsencrypt_cert_falls_back(tmp_path):
     _write_cert_pair(
         tmp_path / "vpn.example.com",
         "vpn.example.com",
-        not_after=dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1),
+        not_after=dt.datetime.now(dt.UTC) - dt.timedelta(days=1),
     )
     assert resolve_gui_certificate(tmp_path, "vpn.example.com").source == "self-signed"
 
@@ -125,7 +125,7 @@ def test_mismatched_letsencrypt_key_falls_back(tmp_path):
     _write_cert_pair(
         domain_dir,
         "vpn.example.com",
-        not_after=dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=60),
+        not_after=dt.datetime.now(dt.UTC) + dt.timedelta(days=60),
     )
     other = ec.generate_private_key(ec.SECP256R1())
     (domain_dir / "privkey.pem").write_bytes(

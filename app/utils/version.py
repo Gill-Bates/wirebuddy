@@ -13,11 +13,16 @@ import logging
 import re
 import threading
 import time
-from functools import lru_cache
+import tomllib
+from importlib import metadata
 from pathlib import Path
 from typing import TypedDict
 
 _log = logging.getLogger(__name__)
+_TIMEOUT = 10.0  # Hard ceiling for DNS + connect + read
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_DIST_NAME = "wirebuddy"  # pyproject distribution name, for the installed fallback
 
 _VERSION_CACHE: str | None = None
 _BUILD_INFO_CACHE: str | None = None
@@ -59,20 +64,46 @@ def get_build_info() -> str:
 	return _BUILD_INFO_CACHE
 
 
+def _version_from_pyproject() -> str | None:
+	"""Return ``[project] version`` from pyproject.toml, or None.
+
+	pyproject.toml is the single source of truth: the release workflow checks
+	the git tag against it, and the image bundles it.
+	"""
+	for root in (_PROJECT_ROOT, Path("/app")):
+		path = root / "pyproject.toml"
+		try:
+			with path.open("rb") as handle:
+				data = tomllib.load(handle)
+		except OSError as exc:
+			_log.debug("Unable to read %s: %s", path, exc)
+			continue
+		except tomllib.TOMLDecodeError as exc:
+			_log.warning("pyproject.toml is not valid TOML (%s); version falls back", exc)
+			continue
+
+		version = data.get("project", {}).get("version")
+		if isinstance(version, str) and version.strip():
+			return version.strip()
+		_log.warning("pyproject.toml has no [project] version entry")
+	return None
+
+
 def get_version() -> str:
-	"""Get application version from VERSION file. Falls back to 'dev'."""
+	"""Return the application version, resolved from pyproject.toml, then installed distribution metadata, then 'dev'."""
 	global _VERSION_CACHE
 	if _VERSION_CACHE is not None:
 		return _VERSION_CACHE
+
+	version = _version_from_pyproject()
+	if version:
+		_VERSION_CACHE = version
+		return _VERSION_CACHE
+
 	try:
-		version_file = Path(__file__).resolve().parent.parent.parent / "VERSION"
-		if not version_file.exists():
-			version_file = Path("/app/VERSION")
-		if version_file.exists():
-			_VERSION_CACHE = version_file.read_text(encoding="utf-8").strip()
-		else:
-			_VERSION_CACHE = "dev"
-	except Exception:
+		_VERSION_CACHE = metadata.version(_DIST_NAME)
+	except metadata.PackageNotFoundError:
+		_log.debug("%s is not installed as a distribution; version is 'dev'", _DIST_NAME)
 		_VERSION_CACHE = "dev"
 	return _VERSION_CACHE
 
@@ -94,7 +125,7 @@ class UpdateInfo(TypedDict):
 
 def _parse_version(version_str: str) -> tuple[int, ...]:
 	"""Parse version string to tuple of integers for comparison.
-	
+
 	Handles formats like '1.2.3', 'v1.2.3', '1.2.3-beta', etc.
 	"""
 	if not version_str:
@@ -124,15 +155,15 @@ def _is_newer_version(current: str, latest: str) -> bool:
 
 def check_for_updates(force: bool = False) -> UpdateInfo:
 	"""Check GitHub for newer releases.
-	
+
 	Args:
 		force: Bypass cache and fetch fresh data
-		
+
 	Returns:
 		UpdateInfo dict with update availability and details
 	"""
 	global _UPDATE_CHECK_CACHE, _UPDATE_CHECK_TIME
-	
+
 	current_version = get_version()
 	now = time.monotonic()
 
@@ -140,10 +171,9 @@ def check_for_updates(force: bool = False) -> UpdateInfo:
 	# handing out the cached dict lets one caller's edit poison every later
 	# cache hit.
 	with _UPDATE_CHECK_LOCK:
-		if not force and _UPDATE_CHECK_CACHE is not None:
-			if now - _UPDATE_CHECK_TIME < _UPDATE_CHECK_TTL:
-				return _UPDATE_CHECK_CACHE.copy()
-	
+		if not force and _UPDATE_CHECK_CACHE is not None and now - _UPDATE_CHECK_TIME < _UPDATE_CHECK_TTL:
+			return _UPDATE_CHECK_CACHE.copy()
+
 	result: UpdateInfo = {
 		"update_available": False,
 		"current_version": current_version,
@@ -153,7 +183,7 @@ def check_for_updates(force: bool = False) -> UpdateInfo:
 		"published_at": None,
 		"error": None,
 	}
-	
+
 	# Don't check for dev versions
 	if current_version == "dev":
 		result["error"] = "Development version - update check disabled"
@@ -161,9 +191,8 @@ def check_for_updates(force: bool = False) -> UpdateInfo:
 			_UPDATE_CHECK_CACHE = result.copy()
 			_UPDATE_CHECK_TIME = time.monotonic()
 		return result
-	
+
 	import httpx
-	_TIMEOUT = 10.0  # Hard ceiling for DNS + connect + read
 	try:
 		with httpx.Client(timeout=httpx.Timeout(_TIMEOUT)) as client:
 			response = client.get(
@@ -176,20 +205,20 @@ def check_for_updates(force: bool = False) -> UpdateInfo:
 			)
 			response.raise_for_status()
 			data = response.json()
-		
+
 		latest_tag = data.get("tag_name", "").lstrip("v")
 		result["latest_version"] = latest_tag
 		result["release_url"] = data.get("html_url")
 		body = data.get("body")
 		result["release_notes"] = str(body)[:_MAX_RELEASE_NOTES] if body is not None else None
 		result["published_at"] = data.get("published_at")
-		
+
 		if _is_newer_version(current_version, latest_tag):
 			result["update_available"] = True
 			_log.info("Update available: %s -> %s", current_version, latest_tag)
 		else:
 			_log.debug("No update available (current: %s, latest: %s)", current_version, latest_tag)
-			
+
 	except httpx.HTTPStatusError as e:
 		result["error"] = f"GitHub API error: {e.response.status_code}"
 		_log.warning("Update check failed: %s", e)
@@ -205,7 +234,7 @@ def check_for_updates(force: bool = False) -> UpdateInfo:
 	except Exception as e:
 		result["error"] = str(e)
 		_log.debug("Update check failed: %s", e)
-	
+
 	with _UPDATE_CHECK_LOCK:
 		_UPDATE_CHECK_CACHE = result.copy()
 		_UPDATE_CHECK_TIME = time.monotonic()

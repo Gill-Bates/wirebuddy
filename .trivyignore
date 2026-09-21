@@ -1,8 +1,11 @@
-# Base image vulnerabilities (python:3.13-slim / Debian 13)
-# These are upstream issues - remove once the base image ships the fix
-# Last checked: 2026-06-16 — Debian 13.5 shows 0 OS vulnerabilities; entry below
-# may be stale but kept until the next image rebuild confirms it is no longer reported.
-
-# glibc integer overflow in memalign (Debian libc6 2.41-12+deb13u1)
-# Fixed in: 2.41-12+deb13u2
-CVE-2026-0861
+# .trivyignore
+#
+# CVEs accepted for the published fetchly image, consumed by the Trivy scan in
+# .github/workflows/docker-build.yml. The scan already passes --ignore-unfixed,
+# so every entry here is a finding that HAS a fix available and is accepted
+# anyway. Each entry needs a reason and an `exp:` date, after which Trivy
+# reports it again and forces a re-check.
+#
+# Format: `<id> exp:YYYY-MM-DD`, with the reason in a comment above it.
+#
+# No exceptions are currently accepted.

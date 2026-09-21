@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-from pathlib import Path
 import sqlite3
 from enum import Enum
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator
@@ -21,10 +21,10 @@ from starlette.concurrency import run_in_threadpool
 from ..db.sqlite_interfaces import get_interface, list_interfaces
 from ..db.sqlite_runtime import transaction
 from ..db.sqlite_settings import delete_setting, get_setting, set_setting
-from ..dns.unbound_config import write_local_data_overrides
 from ..dns import unbound_process as unbound
-from ..utils.deps import get_conn, get_config
-from ..utils.rate_limit import limiter, RATE_LIMIT_CRITICAL, RATE_LIMIT_UI_HEAVY
+from ..dns.unbound_config import write_local_data_overrides
+from ..utils.deps import get_config, get_conn
+from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_UI_HEAVY, limiter
 from ..utils.vault import decrypt as vault_decrypt
 from ..utils.version import check_for_updates
 from .auth import get_current_user, require_admin
@@ -36,12 +36,12 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 __all__ = [
-	"router",
-	"WgSettingsPayload",
 	"WG_SETTING_KEYS",
-	"get_server_endpoint",
-	"get_dns_for_peer",
 	"InterfaceConfigError",
+	"WgSettingsPayload",
+	"get_dns_for_peer",
+	"get_server_endpoint",
+	"router",
 ]
 
 
@@ -108,8 +108,7 @@ class WgSettingsPayload(BaseModel):
 	wg_port: int | None = Field(None, ge=1, le=65535, description="WireGuard listen port")
 	wg_mtu: int | None = Field(None, ge=1280, le=9000, description="Global MTU value (1280-9000)")
 	wg_persistent_keepalive: int | None = Field(None, ge=0, le=600, description="Persistent keepalive in seconds")
-	# Issue #7: real booleans instead of '0'/'1' strings — get_db_value() handles
-	# the conversion to the '0'/'1' format required by SQLite.
+	# Normalize persisted booleans through the database helper.
 	wg_use_psk: bool | None = Field(None, description="Enable PresharedKey")
 	gui_port: int | None = Field(None, ge=1, le=65535, description="HTTP port for the web UI")
 	gui_external_port: int | None = Field(None, ge=1, le=65535, description="External port for node enrollment (reverse proxy)")
@@ -177,9 +176,7 @@ class GlobalPskPayload(BaseModel):
 		return v.strip() if isinstance(v, str) else v
 
 
-# Issue #8: derive from model_fields so this list never drifts out-of-sync
-# with WgSettingsPayload. Secrets have dedicated endpoints and must remain
-# excluded even if a future payload field is added accidentally.
+# Derive this list from model fields; keep secret fields excluded.
 _NEVER_EXPOSED_SETTINGS: frozenset[str] = frozenset({"wg_global_psk"})
 WG_SETTING_KEYS: list[str] = [
 	key for key in WgSettingsPayload.model_fields if key not in _NEVER_EXPOSED_SETTINGS
@@ -356,7 +353,7 @@ def get_dns_for_peer(
 	(internal WireBuddy DNS). This path is strict by design: it never
 	falls back to public resolvers to avoid DNS leaks in generated client
 	configurations.
-	
+
 	If ``peer_address`` contains an IPv6 address and the interface has IPv6,
 	both IPv4 and IPv6 DNS servers are returned (comma-separated).
 
@@ -392,19 +389,19 @@ def get_dns_for_peer(
 
 	dns_servers = [str(ipv4_iface.ip)]
 
-	# sqlite3.Row has no __contains__; keys() is the membership check.
-	iface_address6: str | None = iface["address6"] if "address6" in iface.keys() else None
-	if peer_address and iface_address6:
-		if _peer_has_ipv6(peer_address):
-			try:
-				ipv6_iface = ipaddress.ip_interface(iface_address6.strip())
-				dns_servers.append(str(ipv6_iface.ip))
-			except ValueError:
-				_log.warning(
-					"Invalid interface IPv6 address for '%s': %r (skipping IPv6 DNS)",
-					interface_name,
-					iface_address6,
-				)
+	# sqlite3.Row has no .get()/__contains__; index directly (column always
+	# exists since get_interface() selects with SELECT *).
+	iface_address6: str | None = iface["address6"]
+	if peer_address and iface_address6 and _peer_has_ipv6(peer_address):
+		try:
+			ipv6_iface = ipaddress.ip_interface(iface_address6.strip())
+			dns_servers.append(str(ipv6_iface.ip))
+		except ValueError:
+			_log.warning(
+				"Invalid interface IPv6 address for '%s': %r (skipping IPv6 DNS)",
+				interface_name,
+				iface_address6,
+			)
 
 	return ", ".join(dns_servers)
 
@@ -449,14 +446,8 @@ async def update_wg_settings(
 			raise HTTPException(status_code=422, detail=f"Setting '{key}' is required and cannot be cleared")
 		updates.append((key, action, payload.get_db_value(key)))
 
-	# Enabling "Use PresharedKey" must guarantee a global PSK exists, since
-	# peer creation silently skips the PSK when wg_use_psk is on but
-	# wg_global_psk is unset. Toggling must never replace an existing key —
-	# only the explicit "Regenerate PSK" endpoint may do that — so only
-	# generate one here if none is configured yet. Generated outside the
-	# transaction (it shells out to `wg genpsk`); the existence check is
-	# repeated inside the immediate transaction below to close the race
-	# against a concurrent request doing the same.
+	# Enabling PSKs requires a global key. Generate one only when absent; the
+	# immediate transaction below closes the race with concurrent updates.
 	new_psk: str | None = None
 	if payload.field_action("wg_use_psk") is _FieldAction.UPDATE and payload.wg_use_psk:
 		current_psk = await run_in_threadpool(get_setting, conn, "wg_global_psk")
@@ -518,7 +509,7 @@ async def get_global_psk(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Get the current global PresharedKey in masked form.
-	
+
 	Uses UI-heavy rate limit because this read endpoint is polled by admin views.
 	"""
 	cfg = get_config(request)
@@ -599,7 +590,7 @@ async def set_global_psk(
 		)
 	try:
 		def _persist() -> None:
-			# set_setting() auto-encrypts "wg_global_psk".
+			# set_setting() encrypts the global PSK.
 			with transaction(conn, immediate=True):
 				set_setting(conn, "wg_global_psk", psk)
 

@@ -4,8 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-"""
-Database schema migrations for WireBuddy.
+"""Database schema migrations for WireBuddy.
 
 Migration Framework
 -------------------
@@ -34,7 +33,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from typing import Callable
+from collections.abc import Callable
 
 from ..db.sqlite_runtime import transaction
 
@@ -86,7 +85,7 @@ def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
 
 def get_schema_version(conn: sqlite3.Connection) -> int:
 	"""Get the current schema version from the database.
-	
+
 	Note: Assumes schema_version table already exists.
 	Call run_pending_migrations() at startup to ensure table creation.
 	"""
@@ -154,14 +153,14 @@ def _validate_migration_registry() -> None:
 		raise RuntimeError("Duplicate migration versions in _MIGRATIONS")
 	if versions != sorted(versions):
 		raise RuntimeError("Migrations must be listed in ascending version order")
-	
+
 	# Validate migration function naming convention
-	for version, func in _MIGRATIONS:
+	for _version, func in _MIGRATIONS:
 		if not func.__name__.startswith("_migrate_"):
 			raise RuntimeError(
 				f"Migration function {func.__name__} must follow _migrate_NNNN_ naming convention"
 			)
-	
+
 	if versions:
 		max_version = max(versions)
 		if max_version != SCHEMA_VERSION:
@@ -274,29 +273,3 @@ def run_pending_migrations(conn: sqlite3.Connection) -> int:
 
 	_log.info("MIGRATION completed: %d migration(s) applied", applied)
 	return applied
-
-
-def check_migration_status(conn: sqlite3.Connection) -> dict:
-	"""Check migration status without applying changes.
-	
-	Returns:
-		Dict with schema version info and pending migrations
-	"""
-	row = conn.execute(
-		"SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
-	).fetchone()
-	current_version = get_schema_version(conn) if row is not None else 0
-	
-	pending = [
-		{"version": ver, "name": func.__name__}
-		for ver, func in _MIGRATIONS
-		if ver > current_version
-	]
-	
-	return {
-		"current_version": current_version,
-		"target_version": SCHEMA_VERSION,
-		"pending_count": len(pending),
-		"pending_migrations": pending,
-		"up_to_date": len(pending) == 0 and current_version == SCHEMA_VERSION,
-	}

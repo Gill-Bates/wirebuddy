@@ -25,8 +25,8 @@ import logging
 import math
 import os
 import shlex
-from functools import cache
 from collections.abc import Awaitable, Callable
+from functools import cache
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 from urllib.parse import urlsplit
@@ -63,7 +63,7 @@ class ProgressEvent(TypedDict):
     detail: NotRequired[dict[str, Any] | None]  # Optional extra data
 
 # Type alias for progress callback
-ProgressCallback = Callable[[ProgressEvent], None | Awaitable[None]]
+ProgressCallback = Callable[[ProgressEvent], Awaitable[None] | None]
 
 
 def _safe_float(value: Any) -> float | None:
@@ -97,8 +97,17 @@ async def _lookup_country_from_url(server_url: str) -> str | None:
         return None
 
     try:
-        async with asyncio.timeout(_GEOIP_LOOKUP_TIMEOUT):
-            country_code = await asyncio.to_thread(_resolve_country_from_url, server_url)
+        # The timeout is enforced *inside* resolve_country_from_url() itself
+        # (via a dedicated, size-limited DNS executor), not just on this
+        # await: otherwise a slow resolver would keep the underlying
+        # getaddrinfo() call running in its worker thread indefinitely,
+        # accumulating stranded threads across repeated speedtests. The
+        # asyncio.timeout() here is a small buffer on top for the thread
+        # handoff itself, not the primary bound.
+        async with asyncio.timeout(_GEOIP_LOOKUP_TIMEOUT + 1.0):
+            country_code = await asyncio.to_thread(
+                _resolve_country_from_url, server_url, timeout=_GEOIP_LOOKUP_TIMEOUT
+            )
     except TimeoutError:
         _log.warning("GeoIP country lookup timed out after %.1fs", _GEOIP_LOOKUP_TIMEOUT)
         return None
@@ -198,22 +207,38 @@ async def _error_result(
 
 
 async def _emit(cb: ProgressCallback | None, phase: str, progress: float, message: str, detail: dict[str, Any] | None = None) -> None:
-    """Emit a progress event if a callback is registered."""
+    """Emit a progress event if a callback is registered.
+
+    ProgressCallback's public type explicitly allows a synchronous callback
+    (``Awaitable[None] | None``). Calling it directly on the event loop would
+    let a blocking synchronous callback stall the loop - and therefore the
+    speedtest itself - for an unbounded time, with no way to apply a timeout
+    after the fact.
+
+    Coroutine functions (``async def`` callbacks) are still invoked directly
+    on the loop: calling them only constructs the coroutine object (no
+    blocking work happens yet), and some callbacks rely on
+    asyncio.get_running_loop() while being constructed, which would fail in
+    a worker thread. Only a genuinely synchronous callable is offloaded to a
+    thread so the existing _PROGRESS_CALLBACK_TIMEOUT bound applies to it too.
+    """
     if cb is None:
         return
     event: ProgressEvent = {"phase": phase, "progress": progress, "message": message}
     if detail is not None:
         event["detail"] = detail
     try:
-        result = cb(event)
-        if inspect.isawaitable(result):
-            try:
-                async with asyncio.timeout(_PROGRESS_CALLBACK_TIMEOUT):
+        async with asyncio.timeout(_PROGRESS_CALLBACK_TIMEOUT):
+            if asyncio.iscoroutinefunction(cb):
+                await cb(event)
+            else:
+                result = await asyncio.to_thread(cb, event)
+                if inspect.isawaitable(result):
                     await result
-            except TimeoutError:
-                _log.warning(
-                    "Progress callback timed out after %.1fs", _PROGRESS_CALLBACK_TIMEOUT
-                )
+    except TimeoutError:
+        _log.warning(
+            "Progress callback timed out after %.1fs", _PROGRESS_CALLBACK_TIMEOUT
+        )
     except Exception:
         _log.warning("Progress callback failed", exc_info=True)
 
@@ -296,7 +321,7 @@ async def run_speedtest(
         # run_command() must terminate child processes on cancellation.
         # It raises asyncio.TimeoutError when the subprocess exceeds the timeout.
         res = await run_command(*cmd, timeout=timeout)
-        
+
         if res.returncode != 0:
             return await _error_result(f"librespeed-cli exited with code {res.returncode}", progress_callback, stderr=res.stderr)
 
@@ -361,7 +386,7 @@ async def run_speedtest(
             **metrics
         }
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return await _error_result(f"librespeed-cli process timeout ({timeout}s)", progress_callback)
     except Exception:
         _log.exception("SPEEDTEST_EXECUTION_FAILED")
@@ -383,18 +408,18 @@ async def _emit_progress_simulation(cb: ProgressCallback, duration: int) -> None
     server_select_time = _SIMULATED_SERVER_SELECT_SECONDS
     download_time = float(duration)
     upload_time = float(duration)
-    
+
     phases = [
         (0.10, 0.30, server_select_time, "server_select", "Selecting fastest server\u2026"),
         (0.30, 0.65, download_time, "download", "Running download test\u2026"),
         (0.65, 0.95, upload_time, "upload", "Running upload test\u2026"),
     ]
-    
+
     for start_pct, end_pct, phase_duration, phase_name, message in phases:
         steps = max(1, int(phase_duration * _PROGRESS_UPDATES_PER_SECOND))
         step_duration = phase_duration / steps
         step_progress = (end_pct - start_pct) / steps
-        
+
         for i in range(1, steps + 1):
             try:
                 await asyncio.sleep(step_duration)

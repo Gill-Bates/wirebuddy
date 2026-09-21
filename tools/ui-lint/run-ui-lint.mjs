@@ -4621,7 +4621,10 @@ async function auditView(page, view, browserName) {
     const detachNetwork = collectConsoleAndNetwork(page);
     let network = null;
     try {
-        await applyTheme(page, { baseUrl: BASE_URL, theme: view.theme, label: view.name });
+        // Seed the theme on the view itself: this runs before the navigation
+        // below, so a fresh context needs somewhere same-origin to put
+        // localStorage, and `/login` would redirect for a logged-in session.
+        await applyTheme(page, { baseUrl: BASE_URL, theme: view.theme, label: view.name, bootstrapUrl: view.url });
         const response = await gotoAppView(page, `${BASE_URL}${view.url}`);
         await disableMotion(page, FULL_MOTION_RESET_CSS, view.name);
         if (view.scope === 'about') {

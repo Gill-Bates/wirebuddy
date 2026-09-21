@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
 from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, Field, IPvAnyAddress, field_validator, model_validator
@@ -81,7 +80,7 @@ def _validate_password_strength(v: str) -> str:
 
 	if any(ord(char) < 32 or ord(char) == 127 for char in v):
 		raise ValueError("Password must not contain control characters")
-	
+
 	if len(v.encode("utf-8")) > _PASSWORD_MAX_BYTES:
 		raise ValueError("Password must be at most 72 bytes")
 
@@ -217,7 +216,7 @@ class TokenResponse(BaseModel):
 	"""Authentication token response."""
 	token: str
 	expires_at: AwareDatetime
-	token_type: Literal["Bearer"] = "Bearer"
+	token_type: Literal["Bearer"] = "Bearer"  # noqa: S105  (the OAuth token type, not a secret)
 
 
 class UserCreate(BaseModel):
@@ -240,7 +239,7 @@ class UserCreate(BaseModel):
 
 class UserUpdate(BaseModel):
 	"""User update payload.
-	
+
 	Note: Password changes must use the /change-password endpoint.
 	"""
 	username: str | None = Field(None, min_length=3, max_length=64)

@@ -80,7 +80,7 @@ def _generate_pronounceable_password() -> str:
 
 def insert_default_settings(conn: sqlite3.Connection) -> None:
 	"""Insert factory default settings if not already present.
-	
+
 	MUST be called AFTER validate_secret_key() to avoid key validation failures.
 	"""
 	now = utcnow()
@@ -469,7 +469,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 		conn,
 		table="users",
 		column="must_change_password",
-		definition="INTEGER NOT NULL DEFAULT 0",
+		definition="INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))",
 		existing_columns=users_columns,
 		log_message="Migrating users table: adding must_change_password column",
 	)

@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import stat
 import threading
 import time
-from contextlib import contextmanager
-from datetime import datetime, timezone
+from contextlib import contextmanager, suppress
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 
@@ -46,7 +47,7 @@ _thread_local = threading.local()  # Thread-local storage for savepoint counter
 def _adapt_datetime(value: datetime) -> str:
 	if value.tzinfo is None:
 		raise sqlite3.InterfaceError("Naive datetime not allowed in SQLite; use a UTC-aware datetime")
-	return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+	return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _convert_datetime(value: bytes) -> datetime:
@@ -58,8 +59,8 @@ def _convert_datetime(value: bytes) -> datetime:
 			s = s[:-1] + "+00:00"
 		dt = datetime.fromisoformat(s)  # Parses .%f (microseconds) automatically
 		if dt.tzinfo is None:
-			dt = dt.replace(tzinfo=timezone.utc)
-		return dt.astimezone(timezone.utc)
+			dt = dt.replace(tzinfo=UTC)
+		return dt.astimezone(UTC)
 	except (UnicodeDecodeError, ValueError) as exc:
 		decoded = value.decode("utf-8", errors="replace")
 		raise sqlite3.InterfaceError(f"Cannot parse timestamp: {decoded!r}") from exc
@@ -127,10 +128,20 @@ def connect(db_path: Path) -> sqlite3.Connection:
 		# permissions (e.g. world-readable under a permissive umask); this
 		# database holds password hashes, encrypted secrets, and session
 		# tokens, so lock it down explicitly rather than trusting the umask.
+		# This is fail-closed: if the filesystem cannot actually enforce 0600
+		# afterwards, startup must abort rather than silently run with an
+		# over-permissive credential store.
 		try:
 			db_path.chmod(0o600)
 		except OSError as e:
 			_log.warning("Failed to enforce restrictive permissions on %s: %s", db_path, e)
+		actual_mode = stat.S_IMODE(db_path.stat().st_mode)
+		if actual_mode & (stat.S_IRWXG | stat.S_IRWXO):
+			raise RuntimeError(
+				f"Refusing to start: {db_path} has permissions {oct(actual_mode)} "
+				"(group/other access); this database holds password hashes, "
+				"encrypted secrets and session tokens and must be 0600"
+			)
 
 		conn.row_factory = sqlite3.Row
 		# Set busy timeout via PRAGMA for consistency with checkpoint_wal (30s = 30000ms)
@@ -206,7 +217,7 @@ def thread_connection(db_path: Path):
 
 def close_all_connections() -> int:
 	"""Close all tracked connections for graceful shutdown.
-	
+
 	Returns:
 		Number of connections that were successfully closed.
 	"""
@@ -251,7 +262,7 @@ def checkpoint_wal(db_path: Path, mode: str = "TRUNCATE") -> dict[str, int | str
 
 	Returns checkpoint counters in SQLite's ``wal_checkpoint`` format:
 	``busy``, ``log_frames``, ``checkpointed_frames``.
-	
+
 	Raises:
 		ValueError: If mode is not one of PASSIVE, FULL, RESTART, or TRUNCATE.
 	"""
@@ -280,10 +291,8 @@ def checkpoint_wal(db_path: Path, mode: str = "TRUNCATE") -> dict[str, int | str
 		return _checkpoint_result(mode_upper)
 	finally:
 		if conn is not None:
-			try:
+			with suppress(Exception):
 				close_connection(conn)
-			except Exception:
-				pass
 
 
 @contextmanager

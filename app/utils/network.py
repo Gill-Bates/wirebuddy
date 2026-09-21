@@ -13,9 +13,9 @@ import logging
 from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
 
 __all__ = [
+    "allowed_ips_with_dns_routes",
     "parse_ip",
     "parse_ip_str",
-    "allowed_ips_with_dns_routes",
 ]
 
 _log = logging.getLogger(__name__)

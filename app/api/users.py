@@ -25,13 +25,19 @@ from ..db.sqlite_users import (
     LastAdminError,
     UpdateResult,
     confirm_user_otp,
-    create_user as db_create_user,
     decrypt_otp_secret,
-    delete_user as db_delete_user,
     disable_user_otp,
     get_all_users,
     get_user_by_id,
     set_user_otp_secret,
+)
+from ..db.sqlite_users import (
+    create_user as db_create_user,
+)
+from ..db.sqlite_users import (
+    delete_user as db_delete_user,
+)
+from ..db.sqlite_users import (
     update_user as db_update_user,
 )
 from ..models.users import (
@@ -102,7 +108,7 @@ def require_self_or_admin(
     current_user: sqlite3.Row = Depends(get_current_user),
 ) -> sqlite3.Row:
     """Allow access only to the user themself or an admin."""
-    if current_user["id"] != user_id and not current_user["is_admin"]:
+    if current_user["id"] != user_id and not coerce_db_bool(current_user["is_admin"]):
         raise HTTPException(status_code=403, detail="Not authorized")
     return current_user
 
@@ -198,14 +204,14 @@ def create_user(
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    
+
     if user_id is None:
         raise HTTPException(status_code=409, detail="Username already exists")
-    
+
     user = get_user_by_id(conn, user_id)
     if not user:
         raise HTTPException(status_code=500, detail="User creation failed")
-    
+
     logger.info("USER_CREATED username=%s by_admin_id=%d", payload.username, current_user["id"])
     return ok_response(data=_row_to_public(user))
 
@@ -217,11 +223,11 @@ def get_user(
     _: sqlite3.Row = Depends(require_self_or_admin),
 ):
     """Get a user by ID.
-    
+
     Users can view their own profile, admins can view anyone.
     """
     user = _get_user_or_404(conn, user_id)
-    
+
     return ok_response(data=_row_to_public(user))
 
 
@@ -235,26 +241,25 @@ def update_user(
     current_user: sqlite3.Row = Depends(require_self_or_admin),
 ):
     """Update a user.
-    
+
     Users can update their own username.
     Admins can update anyone and change admin/active status.
     Note: Password updates must use the /change-password endpoint.
     """
     is_self = current_user["id"] == user_id
-    is_admin = bool(current_user["is_admin"])
-    
-    if not is_admin:
-        if payload.is_admin is not None or payload.is_active is not None:
-            raise HTTPException(status_code=403, detail="Cannot change admin/active status")
-    
+    is_admin = coerce_db_bool(current_user["is_admin"])
+
+    if not is_admin and (payload.is_admin is not None or payload.is_active is not None):
+        raise HTTPException(status_code=403, detail="Cannot change admin/active status")
+
     # Prevent admins from removing their own admin rights (safety)
     if is_self and payload.is_admin is False:
         raise HTTPException(status_code=400, detail="Cannot remove your own admin rights")
-    
+
     # Prevent admins from deactivating themselves (safety)
     if is_self and payload.is_active is False:
         raise HTTPException(status_code=400, detail="Cannot deactivate your own account")
-    
+
     result = db_update_user(
         conn,
         user_id,
@@ -262,14 +267,14 @@ def update_user(
         is_admin=payload.is_admin,
         is_active=payload.is_active,
     )
-    
+
     if result == UpdateResult.NOT_FOUND:
         raise HTTPException(status_code=404, detail="User not found")
     if result == UpdateResult.CONFLICT:
         raise HTTPException(status_code=409, detail="Username already exists")
     if result == UpdateResult.LAST_ADMIN:
         raise HTTPException(status_code=400, detail="Cannot remove the last admin")
-    
+
     updated = _get_user_or_404(conn, user_id)
     logger.info("USER_UPDATED user_id=%d by_user=%d", user_id, current_user["id"])
     return ok_response(data=_row_to_public(updated))
@@ -295,7 +300,7 @@ def delete_user(
             delete_user_tokens(conn, user_id)
     except LastAdminError:
         raise HTTPException(status_code=400, detail="Cannot delete the last admin")
-    
+
     logger.info("USER_DELETED user_id=%d by_admin=%d", user_id, current_user["id"])
     return Response(status_code=204)
 
@@ -424,7 +429,7 @@ def reset_password(
         )
         if result == UpdateResult.NOT_FOUND:
             raise HTTPException(status_code=404, detail="User not found")
-    
+
     logger.info("PASSWORD_RESET user_id=%d by_admin=%d", user_id, current_user["id"])
     return ok_response(message="Password reset successfully")
 

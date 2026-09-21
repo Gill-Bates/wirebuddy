@@ -9,8 +9,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Coroutine
-from datetime import datetime, timedelta, timezone
 import ipaddress
 import json
 import logging
@@ -18,6 +16,8 @@ import re
 import sqlite3
 import unicodedata
 import uuid
+from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -26,20 +26,20 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from ..api.auth import require_admin
-from ..api.response import ok_response
-from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
-from ..api.sse import format_sse_event, format_sse_keepalive
 from ..api.frontend_shared import (
 	extract_geo_fields,
 	format_last_seen_label,
 	lookup_ip_cached,
 	parse_last_seen_epoch,
-	parse_node_metadata as _parse_node_metadata,
 	resolve_node_geo_ip,
 )
-from ..api import nodes_sync
+from ..api.frontend_shared import (
+	parse_node_metadata as _parse_node_metadata,
+)
+from ..api.response import ok_response
+from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
+from ..api.sse import format_sse_event, format_sse_keepalive
 from ..db import tsdb
-from ..node import notifier as node_notifier
 from ..db.sqlite_nodes import (
 	create_node,
 	delete_node,
@@ -53,9 +53,9 @@ from ..db.sqlite_nodes import (
 	update_node_api_secret,
 )
 from ..db.sqlite_peers import get_peer_by_id
-from ..db.sqlite_settings import get_setting
-from ..db.sqlite_settings import get_node_speedtest_last_results
-from ..utils.config import get_config, WG_CONFIG_PATH
+from ..db.sqlite_settings import get_node_speedtest_last_results, get_setting
+from ..node import notifier as node_notifier
+from ..utils.config import WG_CONFIG_PATH, get_config
 from ..utils.crypto import hash_token
 from ..utils.deps import get_conn
 from ..utils.node_token import generate_enrollment_token
@@ -71,14 +71,11 @@ _HOSTNAME_RE = re.compile(
 	r"(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)$"
 )
 _NODE_STATUS_ONLINE = "online"
-_PENDING_COMMAND_RESTART = "restart"
-_PENDING_COMMAND_SPEEDTEST = "speedtest"
 _NODE_NAME_MAX_LEN = 64
 _FQDN_MAX_LEN = 253
 _PORT_MIN = 1
 _PORT_MAX = 65535
 _SPEEDTEST_STREAM_TIMEOUT_S = 150
-_SPEEDTEST_QUEUE_MAXSIZE = 32
 _SPEEDTEST_KEEPALIVE_INTERVAL_S = 15
 
 router = APIRouter(tags=["nodes"])
@@ -239,14 +236,20 @@ def _is_valid_hostname_or_ip(value: str) -> bool:
 async def _send_node_command(
 	*,
 	node_id: str,
-	command: str,
 	notify_func: Callable[[str], Coroutine[Any, Any, int]],
 	conn: sqlite3.Connection,
 	user: sqlite3.Row,
 	action_label: str,
 	success_message: str,
 ) -> dict[str, Any]:
-	"""Send a node command via in-memory SSE or DB pending-command fallback."""
+	"""Send a node command over SSE, after checking the node is online.
+
+	``notify_func`` is what decides which command is sent, so there is no
+	separate command argument: the former ``command=`` parameter named the
+	``nodes.pending_command`` column, which is a legacy compatibility column
+	nothing writes any more (see app/db/sqlite_schema.py) - it was passed in and
+	dropped on the floor.
+	"""
 	node = get_node(conn, node_id)
 	if not node:
 		raise HTTPException(status_code=404, detail="Node not found")
@@ -338,7 +341,7 @@ def _get_latest_speedtests_by_node(
 	requested_ids = {str(nid) for nid in node_ids} if node_ids is not None else None
 	latest_by_node: dict[str, dict[str, Any]] = {}
 
-	since = datetime.now(timezone.utc) - timedelta(days=90)
+	since = datetime.now(UTC) - timedelta(days=90)
 	try:
 		points = tsdb.query(
 			tsdb_dir,
@@ -370,22 +373,21 @@ def _node_to_dict(
 	last_speedtest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
 	"""Convert a node Row to a serialisable dict (strip secret hash)."""
-
 	resolved_geo_ip = resolve_node_geo_ip(row["fqdn"])
 	geo_fields = extract_geo_fields(lookup_ip_cached(resolved_geo_ip) if resolved_geo_ip else None)
-	
+
 	# Extract version from metadata
 	node_version = None
 	metadata = _parse_node_metadata(row["metadata"], node_id=row["id"])
 	if isinstance(metadata, dict):
 		node_version = metadata.get("version")
-	
+
 	# Convert last_seen datetime to formatted label
 	# Bug fix: naive datetimes (no tz suffix) are assumed to be UTC to avoid
 	# local-time misinterpretation on servers not running UTC.
 	last_seen_epoch = parse_last_seen_epoch(row["last_seen"])
 	last_seen_label = format_last_seen_label(last_seen_epoch)
-	
+
 	return {
 		"id": row["id"],
 		"name": row["name"],
@@ -405,7 +407,7 @@ def _node_to_dict(
 		"geo_as_org": geo_fields["as_org"],
 		"node_version": node_version,
 		"last_speedtest": last_speedtest,
-		"show_on_dashboard": bool(row["show_on_dashboard"] if "show_on_dashboard" in row.keys() else 1),
+		"show_on_dashboard": bool(row["show_on_dashboard"]),
 		"sse_connected": (
 			node_notifier.is_node_connected_sync(row["id"])
 			if row["status"] == _NODE_STATUS_ONLINE
@@ -580,15 +582,13 @@ async def delete_node_endpoint(
 		if tunnel_peer:
 			tunnel_peer_info = (tunnel_peer["public_key"], tunnel_peer["interface"])
 
-	# Send removal signal to node before deleting (must happen while SSE auth still works)
-	notified = await node_notifier.notify_node_removed(node_id)
-	if notified > 0:
-		_log.info("Sent removal signal to %d SSE client(s) for node %s", notified, node_id)
-
-	# Revoke live WireGuard access BEFORE removing the database row. Doing this
-	# afterwards leaves a window (and, on failure, a permanent state) where the
-	# node is gone from the UI but its key is still loaded in the kernel and can
-	# keep forwarding traffic.
+	# Revoke live WireGuard access BEFORE removing the database row AND before
+	# signalling the node. notify_node_removed() is irreversible from the
+	# node's perspective (it wipes its local enrollment state on receipt), so
+	# it must be the last thing that can still fail into a "nothing happened
+	# yet" state. Sending it first would let the node tear itself down while
+	# a failed WG revoke afterwards leaves the DB row (and a half-removed
+	# cluster member) behind.
 	if tunnel_peer_info:
 		public_key, interface_name = tunnel_peer_info
 		code, _, stderr = await run_wg_command(
@@ -617,6 +617,12 @@ async def delete_node_endpoint(
 				"Tunnel peer removal skipped, interface %s is not active: node=%s err=%s",
 				interface_name, node_id, stderr.strip(),
 			)
+
+	# Send removal signal to node now that live access has been revoked
+	# (must happen while SSE auth still works, i.e. before the DB delete below).
+	notified = await node_notifier.notify_node_removed(node_id)
+	if notified > 0:
+		_log.info("Sent removal signal to %d SSE client(s) for node %s", notified, node_id)
 
 	unassigned_peer_count = delete_node(conn, node_id)
 	if unassigned_peer_count is None:
@@ -675,13 +681,12 @@ async def restart_node(
 	user: sqlite3.Row = Depends(require_admin),
 ) -> dict[str, Any]:
 	"""Request a remote node to restart gracefully.
-	
+
 	Sends a restart signal via SSE. The node daemon will shut down
 	gracefully and Docker/systemd will restart it.
 	"""
 	return await _send_node_command(
 		node_id=node_id,
-		command=_PENDING_COMMAND_RESTART,
 		notify_func=node_notifier.notify_restart,
 		conn=conn,
 		user=user,
@@ -699,13 +704,12 @@ async def trigger_node_speedtest(
 	user: sqlite3.Row = Depends(require_admin),
 ) -> dict[str, Any]:
 	"""Request a remote node to run an immediate speedtest.
-	
+
 	Sends a speedtest signal via SSE. The node daemon will run a speedtest
 	and submit the results to the master.
 	"""
 	return await _send_node_command(
 		node_id=node_id,
-		command=_PENDING_COMMAND_SPEEDTEST,
 		notify_func=node_notifier.notify_run_speedtest,
 		conn=conn,
 		user=user,
@@ -719,13 +723,13 @@ async def stream_node_speedtest_progress(
 	node_id: str,
 	request: Request,
 	conn: sqlite3.Connection = Depends(get_conn),
-	user: sqlite3.Row = Depends(require_admin),
+	_: sqlite3.Row = Depends(require_admin),
 ) -> StreamingResponse:
 	"""Stream speedtest progress updates from a remote node via SSE.
-	
+
 	This endpoint allows the frontend to receive real-time progress updates
 	while a speedtest is running on the node.
-	
+
 	Events:
 	- event: progress (phase, progress 0-1, message, detail)
 	- event: complete (when test finishes)
@@ -737,25 +741,25 @@ async def stream_node_speedtest_progress(
 			status_code=400,
 			detail=f"Node is '{node['status']}', cannot stream speedtest progress",
 		)
-	
+
 	async def event_generator():
 		"""Generate SSE events for node speedtest progress."""
 		bus = getattr(request.app.state, "node_event_bus", None)
 		if bus is None:
 			raise HTTPException(status_code=503, detail="Node event runtime unavailable")
 		subscription = await bus.subscribe_speedtest(node_id)
-		
+
 		try:
 			# Send initial progress if available
 			if subscription.latest_progress is not None:
 				yield format_sse_event("progress", subscription.latest_progress.model_dump())
-			
+
 			# Stream progress updates with keepalive to survive proxy idle timeouts.
 			remaining_timeout = _SPEEDTEST_STREAM_TIMEOUT_S
 			while True:
 				if await request.is_disconnected():
 					break
-				
+
 				try:
 					wait_for = min(_SPEEDTEST_KEEPALIVE_INTERVAL_S, remaining_timeout)
 					event = await asyncio.wait_for(subscription.receive_stream.receive(), timeout=wait_for)
@@ -772,7 +776,7 @@ async def stream_node_speedtest_progress(
 					if progress.get("progress", 0) >= 1.0:
 						yield format_sse_event("complete", {})
 						break
-				except asyncio.TimeoutError:
+				except TimeoutError:
 					remaining_timeout -= wait_for
 					if remaining_timeout <= 0:
 						# No updates received within timeout
@@ -781,7 +785,7 @@ async def stream_node_speedtest_progress(
 					yield format_sse_keepalive()
 		finally:
 			await subscription.aclose()
-	
+
 	return StreamingResponse(
 		event_generator(),
 		media_type="text/event-stream",

@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -v '^\\\\.\\\\.$')",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(sed -n 9,30p docs/features/backup.md; echo ---; sed -n 9,25p docs/features/dns.md; echo ---; sed -n 9,20p docs/getting-started/installation.md; echo ---; sed -n 29,45p docs/index.md; ls /opt/*/bin/python /opt/wirebuddy/*/bin/python 2>/dev/null; grep -n venv setup.conf | head -5 | sed 's/=.*//')",
+      "Read(//opt/**)",
+      "Bash(python3 -c \"import fastapi\")",
+      "Bash(.venv/bin/python -m pytest -q -p no:cacheprovider)",
+      "Bash(.venv/bin/python -m py_compile app/main.py)",
+      "Bash(.venv/bin/ruff check *)",
+      "Bash(xargs file)",
+      "Bash(chmod 755 docker/entrypoint.sh)"
+    ]
+  }
+}

@@ -14,9 +14,9 @@ import os
 import stat
 import tempfile
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
@@ -193,7 +193,7 @@ def _fsync_dir(path: Path) -> None:
 
 def _write_file(path: Path, data: bytes, mode: int = 0o600) -> None:
 	"""Write data to file atomically with specified permissions.
-	
+
 	Uses fsync for durability and a unique temp filename to avoid collisions.
 	"""
 	fd = -1
@@ -211,7 +211,7 @@ def _write_file(path: Path, data: bytes, mode: int = 0o600) -> None:
 			handle.write(data)
 			handle.flush()
 			os.fsync(handle.fileno())
-		os.replace(tmp_path, path)
+		tmp_path.replace(path)
 		_fsync_dir(path.parent)
 	except Exception:
 		if fd != -1:

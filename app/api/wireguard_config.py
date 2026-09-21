@@ -6,13 +6,17 @@
 
 """WireGuard configuration file generation.
 
-SECURITY WARNING: Generated configs contain decrypted private keys and PSKs.
-Ensure config_path is on tmpfs (memory-backed filesystem) to prevent keys
-from persisting on disk across reboots or in filesystem snapshots.
+SECURITY NOTE: Generated configs contain decrypted private keys and PSKs and
+are written to WG_CONFIG_PATH (/etc/wireguard) with 0600 permissions.
+Persistence on disk is accepted by design: configs are regenerated from the
+encrypted database (private keys/PSKs stored via app.utils.vault) on every
+container start, so the plaintext files are a derived, disposable cache, not
+the source of truth. Do not rely on config_path being tmpfs.
 """
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import logging
 import os
@@ -23,8 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..db.sqlite_interfaces import (
-	get_interface,
-	list_interfaces,
+    get_interface,
+    list_interfaces,
 )
 from ..db.sqlite_nodes import get_all_tunnel_peer_ids
 from ..utils.network import allowed_ips_with_dns_routes
@@ -34,13 +38,13 @@ from .wireguard_isolation import build_client_isolation_post_rules, extract_peer
 _log = logging.getLogger(__name__)
 
 __all__ = [
-    "write_interface_config",
+    "ConfigWriteError",
+    "InterfaceNotFoundError",
+    "RegenResult",
+    "allowed_ips_with_dns_routes",
     "regenerate_all_configs",
     "sync_interface_config",
-    "allowed_ips_with_dns_routes",
-    "RegenResult",
-    "InterfaceNotFoundError",
-    "ConfigWriteError",
+    "write_interface_config",
 ]
 
 # wg-quick executes PostUp/PostDown through a shell, so anything that can
@@ -58,17 +62,30 @@ _COMMAND_PIVOT = re.compile(
     r'(?:^|\s)(?:netns\s+exec|-f|--file|-c|--command|xargs|exec|eval|source)(?:\s|$)'
 )
 
-
 class InterfaceNotFoundError(Exception):
     """Raised when interface does not exist in database."""
 
-    pass
 
 
 class ConfigWriteError(Exception):
     """Raised when config write operation fails."""
 
-    pass
+
+# Interface names are used to build config_path / f"{name}.conf" below. This
+# module writes files with decrypted private keys, so it is its own trust
+# boundary and re-validates the name here rather than relying solely on
+# callers (DB layer, API routers) to have done so already — a persisted name
+# that slipped past those checks (e.g. an older/looser validator, a restored
+# backup) must not be able to escape config_path via ".." or "/".
+_IFACE_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,14}$")
+
+
+def _validate_interface_name_for_fs(name: str) -> str:
+    """Re-validate an interface name immediately before it is used in a file path."""
+    if not _IFACE_NAME_RE.fullmatch(name):
+        raise ConfigWriteError(f"Refusing to write config for unsafe interface name: {name!r}")
+    return name
+
 
 
 @dataclass
@@ -102,8 +119,8 @@ def _validate_hook(value: str, label: str) -> str:
         raise ValueError(f"Unsafe {label} hook contains dangerous shell characters")
 
     # Validate each command in the hook
-    for cmd in value.split(";"):
-        cmd = cmd.strip()
+    for raw_cmd in value.split(";"):
+        cmd = raw_cmd.strip()
         if not cmd:
             continue
         # Allow only known-safe network/firewall commands
@@ -141,7 +158,6 @@ def write_interface_config(
     Config files are regenerated from the encrypted database on each container
     restart, so persistence on disk is acceptable.
     """
-
     if post_up:
         post_up = _validate_hook(post_up, "PostUp")
     if post_down:
@@ -165,7 +181,11 @@ def write_interface_config(
 
     # NOTE: DNS is intentionally omitted from the server-side config.
     # The server doesn't need DNS routing through itself - DNS belongs only
-    # in the CLIENT config (PeerConfig) that peers download.
+    # in the CLIENT config (PeerConfig) that peers download. The parameter stays
+    # in the signature so callers keep passing the interface's configured value
+    # and this stays the one place that decides to drop it; `del` says so out
+    # loud rather than leaving it looking forgotten.
+    del dns
 
     # Query all peers (enabled + disabled) for this interface
     # Fetch tunnel peer IDs so we can use expanded allowed_ips for them
@@ -221,17 +241,13 @@ def write_interface_config(
 
     # Append dynamic client-isolation firewall rules.
     v4_subnet = None
-    try:
+    with contextlib.suppress(ValueError):
         v4_subnet = str(ipaddress.ip_interface(address).network)
-    except ValueError:
-        pass
 
     v6_subnet = None
     if address6:
-        try:
+        with contextlib.suppress(ValueError):
             v6_subnet = str(ipaddress.ip_interface(address6).network)
-        except ValueError:
-            pass
 
     isolation_up, isolation_down = build_client_isolation_post_rules(
         name,
@@ -264,6 +280,7 @@ def write_interface_config(
 
     # NOTE: config_path.mkdir() should ideally be done once at startup, not per-write.
     # Doing it here masks deployment issues but ensures robustness.
+    _validate_interface_name_for_fs(name)
     config_path.mkdir(parents=True, exist_ok=True)
     conf_file = config_path / f"{name}.conf"
 
@@ -276,13 +293,11 @@ def write_interface_config(
         os.close(fd)
 
     try:
-        # os.replace is atomic on same filesystem and cross-platform
-        os.replace(temp_path, str(conf_file))
+        # Path.replace() is os.replace(): atomic within one filesystem.
+        Path(temp_path).replace(conf_file)
     except Exception:
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            Path(temp_path).unlink()
         raise
 
 

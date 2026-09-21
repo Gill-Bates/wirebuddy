@@ -15,11 +15,11 @@ from .guard import (
 from .tester import ProgressCallback, ProgressEvent, run_speedtest
 
 __all__ = [
+	"DEFAULT_SPEEDTEST_COOLDOWN_SECONDS",
 	"ProgressCallback",
 	"ProgressEvent",
-	"run_speedtest",
-	"DEFAULT_SPEEDTEST_COOLDOWN_SECONDS",
 	"SpeedtestBusyError",
 	"SpeedtestCooldownError",
 	"acquire_speedtest_run_lease",
+	"run_speedtest",
 ]

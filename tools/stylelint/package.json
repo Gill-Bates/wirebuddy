@@ -1,0 +1,13 @@
+{
+    "name": "wirebuddy-stylelint",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "lint": "stylelint \"../../app/static/css/**/*.css\" --config stylelint.config.mjs",
+        "lint:fix": "stylelint \"../../app/static/css/**/*.css\" --config stylelint.config.mjs --fix"
+    },
+    "dependencies": {
+        "stylelint": "^17.14.1",
+        "stylelint-config-standard": "^40.0.0"
+    }
+}

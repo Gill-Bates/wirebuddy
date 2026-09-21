@@ -8,7 +8,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 
 def build_latest_by_node(points: Iterable[Any]) -> dict[str | None, dict]:

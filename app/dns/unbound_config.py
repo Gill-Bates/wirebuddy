@@ -13,7 +13,7 @@ import logging
 import os
 import shutil
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -147,7 +147,7 @@ def _normalize_listen_ips(
 	if addresses:
 		return addresses
 
-	if listen_addr in ("0.0.0.0", "127.0.0.1"):
+	if listen_addr in ("0.0.0.0", "127.0.0.1"):  # noqa: S104  (comparing a configured value, not binding)
 		raise ValueError("No valid DNS listen address configured")
 
 	try:
@@ -169,7 +169,7 @@ def _ensure_unbound_readable(path: Path) -> None:
 
 def _auto_num_threads() -> int:
 	"""Choose a sane default thread count.
-	
+
 	Capped at 8 — higher counts add lock contention in typical
 	WireGuard-gateway workloads with <1000 clients.
 	"""
@@ -252,8 +252,8 @@ def _resolve_upstream(upstream_dns: list[str] | None) -> list[str]:
 	upstream = upstream_dns if upstream_dns is not None else _DEFAULT_UPSTREAM_DOT[:]
 	valid: list[str] = []
 	invalid: list[str] = []
-	for addr in upstream:
-		addr = addr.strip()
+	for raw_addr in upstream:
+		addr = raw_addr.strip()
 		if not addr:
 			continue
 		try:
@@ -286,7 +286,7 @@ def generate_config(
 	listen_addrs_ipv4: list[str] | None = None,
 ) -> str:
 	"""Generate unbound.conf content.
-	
+
 	Args:
 		listen_addr: Single IPv4 address (legacy, use listen_addrs_ipv4 instead).
 		listen_addrs_ipv4: List of IPv4 addresses to listen on.
@@ -296,6 +296,11 @@ def generate_config(
 		              for fast failover; override with care.
 		listen_addrs_ipv6: Optional list of IPv6 addresses to listen on
 		                   (e.g., interface gateway addresses for dual-stack peers).
+		listen_port: UDP/TCP port Unbound binds to (1-65535).
+		enable_logging: Emit the reply-tagged query log the ingestion parser reads.
+		upstream_dns: DoT upstreams ("ip@port#hostname"); the built-in defaults are used when None.
+		enable_blocklist: Include the generated blocklist file.
+		enable_dnssec: Request validation; the trust anchor is only written when root.key also exists.
 	"""
 	listen_ips = _normalize_listen_ips(
 		listen_addr=listen_addr,
@@ -314,7 +319,7 @@ def generate_config(
 		raise ValueError(f"cache_min_ttl out of range: {cache_min_ttl_num}")
 
 	upstream = _resolve_upstream(upstream_dns)
-	
+
 	# Check if DNSSEC root key is available
 	dnssec_available = is_dnssec_available() and enable_dnssec
 	num_threads = _auto_num_threads()
@@ -398,7 +403,7 @@ server:
     chroot: ""
     pidfile: /var/run/unbound.pid
 """
-	
+
 	# Add DNSSEC trust anchor only if enabled and root.key exists
 	if dnssec_available:
 		conf += """
@@ -449,12 +454,12 @@ forward-zone:
 
 def get_interface_ipv6_gateways(interfaces: Sequence[Any]) -> list[str]:
 	"""Extract IPv6 gateway addresses from interface rows.
-	
+
 	Accepts dicts, dataclass instances, sqlite3.Row, or SQLAlchemy Row objects.
-	
+
 	Args:
 		interfaces: Sequence of interface objects with 'address6' field.
-	
+
 	Returns:
 		List of valid IPv6 gateway addresses (e.g., ['fd13:13:13::1']).
 	"""
@@ -465,6 +470,9 @@ def get_interface_ipv6_gateways(interfaces: Sequence[Any]) -> list[str]:
 			continue
 		try:
 			v6_iface = ipaddress.ip_interface(str(addr6).strip())
+			if v6_iface.version != 6:
+				_log.debug("Skipping non-IPv6 value in 'address6' field: %r", addr6)
+				continue
 			ipv6_addrs.append(str(v6_iface.ip))
 		except ValueError:
 			_log.debug("Invalid IPv6 interface address: %r", addr6)
@@ -479,14 +487,14 @@ def write_config(**kwargs) -> None:
 	QUERY_LOG.parent.mkdir(parents=True, exist_ok=True)
 	UNBOUND_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
 	QUERY_LOG.touch(exist_ok=True)
-	
+
 	# Fix permissions: unbound runs as 'unbound' user and needs to write logs
 	try:
 		shutil.chown(QUERY_LOG, user="unbound", group="unbound")
 		shutil.chown(QUERY_LOG.parent, user="unbound", group="unbound")
 	except (OSError, LookupError) as exc:
 		_log.debug("Could not chown query log to unbound user: %s", exc)
-	
+
 	# Ensure blocklist file exists (even if empty) so config include doesn't fail
 	blocklist_path = get_blocklist_file()
 	if not blocklist_path.exists():
@@ -498,7 +506,7 @@ def write_config(**kwargs) -> None:
 	if not custom_client_rules_path.exists():
 		atomic_write_text(custom_client_rules_path, "# Client-specific custom DNS overrides - auto-generated\n")
 	_ensure_unbound_readable(custom_client_rules_path)
-	
+
 	# Ensure peer-tags.conf exists (even if empty)
 	peer_tags_path = UNBOUND_CONF_DIR / "peer-tags.conf"
 	if not peer_tags_path.exists():
@@ -516,7 +524,7 @@ def write_config(**kwargs) -> None:
 	_log.info("DNS_CONFIG written to %s", UNBOUND_CONF)
 
 
-def write_custom_client_rules(rules: list["ParsedRule"]) -> None:
+def write_custom_client_rules(rules: list[ParsedRule]) -> None:
 	"""Generate client-specific local-zone overrides from custom rules.
 
 	Rules with ``client_scope`` are emitted into a dedicated include file.
@@ -547,13 +555,12 @@ def write_custom_client_rules(rules: list["ParsedRule"]) -> None:
 
 	lines = [
 		"# Client-specific custom DNS overrides",
-		f"# Auto-generated – {datetime.now(timezone.utc).isoformat()}",
+		f"# Auto-generated – {datetime.now(UTC).isoformat()}",
 		"# Do not edit manually",
 		"",
 	]
 
-	for domain in block_domains:
-		lines.append(f'    local-zone: "{domain}." transparent')
+	lines.extend(f'    local-zone: "{domain}." transparent' for domain in block_domains)
 
 	for (client_cidr, domain), action in sorted(effective.items()):
 		override_action = "always_nxdomain" if action == "block" else "transparent"
@@ -569,7 +576,7 @@ def write_custom_client_rules(rules: list["ParsedRule"]) -> None:
 
 def write_peer_tags(peers: list[dict]) -> None:
 	"""Generate peer-tags.conf for per-peer blocklist filtering.
-	
+
 	Args:
 		peers: List of peer dicts with 'peer_address' and 'blocklist_ids' keys.
 		       peer_address: e.g., "10.13.13.2/32, fd13:13:13::2/128"
@@ -577,24 +584,24 @@ def write_peer_tags(peers: list[dict]) -> None:
 	"""
 	UNBOUND_CONF_DIR.mkdir(parents=True, exist_ok=True)
 	peer_tags_path = UNBOUND_CONF_DIR / "peer-tags.conf"
-	
+
 	all_tags = [_normalize_unbound_tag(tag) for tag in (*BLOCKLIST_REGISTRY.keys(), CUSTOM_RULES_TAG)]
 	lines = [
 		"# Per-peer blocklist tag assignments",
-		f"# Auto-generated – {datetime.now(timezone.utc).isoformat()}",
+		f"# Auto-generated – {datetime.now(UTC).isoformat()}",
 		"# IMPORTANT: This file MUST be included inside the server: block",
 		"",
 	]
 	entry_count = 0
-	
+
 	for peer in peers:
 		peer_address = peer.get("peer_address")
 		use_adblocker = peer.get("use_adblocker", True)
 		blocklist_ids = peer.get("blocklist_ids")
-		
+
 		if not peer_address or not use_adblocker:
 			continue
-		
+
 		# Determine which tags this peer should have
 		if blocklist_ids is None:
 			# None = all blocklists enabled
@@ -611,10 +618,10 @@ def write_peer_tags(peers: list[dict]) -> None:
 					tags.append(normalized)
 			if CUSTOM_RULES_TAG not in tags:
 				tags.append(CUSTOM_RULES_TAG)
-		
+
 		if not tags:
 			continue
-		
+
 		# Parse peer_address (may contain multiple addresses: "10.x.x.x/32, fd13::x/128")
 		for addr_part in peer_address.split(","):
 			addr = addr_part.strip()
@@ -627,7 +634,7 @@ def write_peer_tags(peers: list[dict]) -> None:
 				continue
 			lines.append(f'    access-control-tag: {network} "{" ".join(tags)}"')
 			entry_count += 1
-	
+
 	atomic_write_text(peer_tags_path, "\n".join(lines) + "\n")
 	_ensure_unbound_readable(peer_tags_path)
 	_log.info("DNS_PEER_TAGS written %d entries to %s", entry_count, peer_tags_path)
@@ -653,7 +660,7 @@ def write_local_data_overrides(interfaces: Sequence[Any], fqdn: str | None) -> i
 
 	lines = [
 		"# Split-DNS local-data overrides",
-		f"# Auto-generated – {datetime.now(timezone.utc).isoformat()}",
+		f"# Auto-generated – {datetime.now(UTC).isoformat()}",
 		"# Maps public FQDN to internal WireGuard addresses for VPN clients",
 		"",
 	]
@@ -695,21 +702,30 @@ def write_local_data_overrides(interfaces: Sequence[Any], fqdn: str | None) -> i
 		if not is_enabled:
 			continue
 
-		# Extract IPv4 gateway
+		# Extract IPv4 gateway. Family is checked explicitly: ip_interface()
+		# parses IPv6 literals just as happily as IPv4 ones, and the "address"
+		# field is not itself family-constrained at the DB layer — a stray
+		# IPv6 value here must not end up emitted as an "A" record below.
 		addr4 = _get_field(iface, "address")
 		if addr4:
 			try:
 				v4_iface = ipaddress.ip_interface(str(addr4).strip())
-				ipv4_gateways.append(str(v4_iface.ip))
+				if v4_iface.version == 4:
+					ipv4_gateways.append(str(v4_iface.ip))
+				else:
+					_log.warning("DNS_LOCAL_DATA 'address' field holds an IPv6 value, skipping: %r", addr4)
 			except ValueError:
 				pass
 
-		# Extract IPv6 gateway
+		# Extract IPv6 gateway (same family check, mirrored).
 		addr6 = _get_field(iface, "address6")
 		if addr6:
 			try:
 				v6_iface = ipaddress.ip_interface(str(addr6).strip())
-				ipv6_gateways.append(str(v6_iface.ip))
+				if v6_iface.version == 6:
+					ipv6_gateways.append(str(v6_iface.ip))
+				else:
+					_log.warning("DNS_LOCAL_DATA 'address6' field holds an IPv4 value, skipping: %r", addr6)
 			except ValueError:
 				pass
 
@@ -732,9 +748,9 @@ def write_local_data_overrides(interfaces: Sequence[Any], fqdn: str | None) -> i
 
 
 __all__ = [
-	"is_dnssec_available",
 	"generate_config",
 	"get_interface_ipv6_gateways",
+	"is_dnssec_available",
 	"write_config",
 	"write_custom_client_rules",
 	"write_local_data_overrides",

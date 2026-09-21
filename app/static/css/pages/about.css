@@ -6,6 +6,7 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
+
     --about-accent-text: var(--wb-accent-red-strong);
 }
 
@@ -14,7 +15,7 @@
 }
 
 /* Make all three top cards equal height on desktop */
-@media (min-width: 992px) {
+@media (width >= 992px) {
     .about-top-row {
         align-items: stretch;
     }
@@ -61,7 +62,7 @@
     padding-bottom: 0.5rem;
 }
 
-@media (max-width: 991.98px) {
+@media (width <= 991.98px) {
     .about-doc-card {
         margin-top: var(--wb-space-3);
     }
@@ -194,7 +195,7 @@
     color: var(--about-accent-text);
 }
 
-.changelog-content details[open] summary {
+:where(.changelog-content details[open] summary) {
     margin-bottom: 1rem;
 }
 

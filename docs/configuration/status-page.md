@@ -47,15 +47,16 @@ An authenticated admin can open `/status` even when their current IP does not ma
 If `/status` is behind a reverse proxy, WireBuddy only trusts forwarded client IP headers from:
 
 - Loopback proxy hops (`127.0.0.1`, `::1`)
-- Explicit CIDRs configured in `WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS`
+- Explicit CIDRs configured in `WIREBUDDY_TRUSTED_PROXIES`
 
 Example:
 
 ```bash
-WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS=192.168.1.10/32,10.0.0.0/24
+WIREBUDDY_TRUSTED_PROXIES=192.168.1.10/32,10.0.0.0/24
 ```
 
-Without that variable, private LAN proxies are **not** trusted automatically for `/status`.
+Without that variable, private LAN proxies are **not** trusted automatically for `/status` (unlike
+the loopback-default trust used for auth-cookie/HTTPS detection elsewhere).
 
 ## What The Page Shows
 
@@ -139,14 +140,14 @@ curl -fsSL https://vpn.example.com/status | grep -q "Client Status"
 If a VPN client cannot access `/status`:
 
 1. Verify the client source IP actually belongs to one of the configured WireGuard interface networks.
-2. If a reverse proxy is involved, verify the proxy IP is trusted through `WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS`.
+2. If a reverse proxy is involved, verify the proxy IP is trusted through `WIREBUDDY_TRUSTED_PROXIES`.
 3. Test again without the proxy path if possible.
 
 ### Wrong Client IP Behind Proxy
 
 If the page identifies the wrong client IP:
 
-1. Check whether the socket peer is loopback or inside `WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS`.
+1. Check whether the socket peer is loopback or inside `WIREBUDDY_TRUSTED_PROXIES`.
 2. Confirm the proxy sends `X-Forwarded-For` or `X-Real-IP`.
 3. Ensure the forwarded IP actually belongs to a WireGuard client network.
 

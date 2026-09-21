@@ -57,8 +57,7 @@ If direct access works but the proxy returns `502`, verify the upstream address
 and that **Only listen on Localhost** matches the deployment. For authentication
 or CSRF problems behind a proxy, verify:
 
-- `WIREBUDDY_TRUST_PROXY_HEADERS=1` only when a trusted proxy is in use;
-- `FORWARDED_ALLOW_IPS` identifies only that proxy;
+- `WIREBUDDY_TRUSTED_PROXIES` identifies only the trusted proxy (never `*`);
 - `WIREBUDDY_PUBLIC_ORIGIN` matches the browser-visible origin; and
 - `WIREBUDDY_CSRF_ALLOWED_ORIGINS` contains any additional trusted origins.
 

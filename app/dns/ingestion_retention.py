@@ -10,16 +10,16 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
 __all__ = [
-	"DNS_LOG_RETENTION_OPTIONS",
 	"DEFAULT_DNS_LOG_RETENTION_DAYS",
-	"normalize_dns_log_retention_days",
+	"DNS_LOG_RETENTION_OPTIONS",
 	"enforce_dns_log_retention",
+	"normalize_dns_log_retention_days",
 ]
 
 DNS_LOG_RETENTION_OPTIONS = {0, 7, 30, 90, 180, 365}
@@ -63,7 +63,7 @@ def _extract_day(name: str) -> date | None:
 
 def enforce_dns_log_retention(dns_dir: Path, retention_days: int) -> dict[str, int]:
 	"""Apply DNS query retention by deleting stale day files from DNS logs.
-	
+
 	Note: TSDB retention is handled automatically via tsdb.append_point() during writes.
 	This function only manages JSONL raw log files.
 	"""
@@ -74,7 +74,7 @@ def enforce_dns_log_retention(dns_dir: Path, retention_days: int) -> dict[str, i
 
 	cutoff_day = None
 	if retention_days > 0:
-		cutoff_day = (datetime.now(timezone.utc) - timedelta(days=retention_days)).date()
+		cutoff_day = (datetime.now(UTC) - timedelta(days=retention_days)).date()
 
 	deleted = 0
 	remaining = 0

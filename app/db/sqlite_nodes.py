@@ -15,16 +15,16 @@ import logging
 import re
 import sqlite3
 import unicodedata
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from ..node.events import NodeCommandType
+from ..utils import vault
 from ..utils.config import get_config
 from ..utils.time import parse_db_timestamp, utcnow
-from ..utils import vault
 from .sqlite_interfaces import get_interface, list_interfaces
-from .sqlite_settings import get_setting
 from .sqlite_runtime import transaction
+from .sqlite_settings import get_setting
 
 _log = logging.getLogger(__name__)
 
@@ -663,61 +663,6 @@ def mark_node_command_delivered(conn: sqlite3.Connection, node_id: str, command_
 		return cur.rowcount > 0
 
 
-def set_node_pending_command(conn: sqlite3.Connection, node_id: str, command: str) -> bool:
-	"""Compatibility wrapper for the legacy single-slot pending command field."""
-	command_id = enqueue_node_command(conn, node_id, command)
-	return command_id is not None
-
-
-def get_and_clear_node_pending_command(conn: sqlite3.Connection, node_id: str) -> str | None:
-	"""Compatibility wrapper that returns one unacked durable command."""
-	now = utcnow()
-	with transaction(conn, immediate=True):
-		row = conn.execute(
-			"""
-			SELECT id, command_type
-			FROM node_commands
-			WHERE node_id = ? AND acked_at IS NULL
-			ORDER BY created_at ASC, id ASC
-			LIMIT 1
-			""",
-			(node_id,),
-		).fetchone()
-		if row is None:
-			return None
-		conn.execute(
-			"""
-			UPDATE node_commands
-			SET delivered_at = COALESCE(delivered_at, ?), acked_at = ?
-			WHERE id = ? AND node_id = ? AND acked_at IS NULL
-			""",
-			(now, now, int(row["id"]), node_id),
-		)
-		return str(row["command_type"])
-
-
-def clear_node_pending_command(conn: sqlite3.Connection, node_id: str) -> None:
-	"""Compatibility helper that acks all currently replayable commands."""
-	now = utcnow()
-	with transaction(conn, immediate=True):
-		conn.execute(
-			"""
-			UPDATE node_commands
-			SET delivered_at = COALESCE(delivered_at, ?), acked_at = ?
-			WHERE node_id = ? AND acked_at IS NULL
-			""",
-			(now, now, node_id),
-		)
-
-
-def _clear_node_pending_command_locked(conn: sqlite3.Connection, node_id: str) -> None:
-	"""Clear pending command while the caller already holds a transaction."""
-	conn.execute(
-		"UPDATE nodes SET pending_command = NULL WHERE id = ?",
-		(node_id,),
-	)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Config Version
 # ─────────────────────────────────────────────────────────────────────────────
@@ -861,7 +806,7 @@ def _build_interfaces_config(
 
 def _build_peers_config(conn: sqlite3.Connection, node_id: str) -> list[dict[str, Any]]:
 	"""Assemble peers assigned to a node for config delivery.
-	
+
 	Includes:
 	- Peers explicitly assigned to this node (node_id = ?)
 	- Peers with allow_all_nodes=1 (roaming peers available on all nodes)
@@ -955,7 +900,7 @@ def get_node_config(
 
 	Returns a dict with interfaces (+ keypairs), assigned peers, and master_peer
 	for the Node→Master DNS tunnel.
-	
+
 	Raises ValueError if node not found.
 	"""
 	pepper = _resolve_pepper(pepper)
@@ -969,22 +914,18 @@ def get_node_config(
 		peers_enc = _build_peers_config(conn, node_id)
 		master_peer = _build_master_peer_config(conn, tunnel_peer)
 
-		interfaces = [
-			{
-				**item,
-				"private_key": vault.decrypt_required(str(item.pop("private_key_enc")), pepper),
-			}
-			for item in interfaces_enc
-		]
-		peers = [
-			{
-				**item,
-				"preshared_key": vault.decrypt_required(item.pop("preshared_key_enc"), pepper)
-				if item.get("preshared_key_enc")
-				else None,
-			}
-			for item in peers_enc
-		]
+		interfaces = []
+		for raw_item in interfaces_enc:
+			item = dict(raw_item)
+			private_key_enc = item.pop("private_key_enc")
+			interfaces.append({**item, "private_key": vault.decrypt_required(str(private_key_enc), pepper)})
+
+		peers = []
+		for raw_item in peers_enc:
+			item = dict(raw_item)
+			preshared_key_enc = item.pop("preshared_key_enc")
+			preshared_key = vault.decrypt_required(preshared_key_enc, pepper) if preshared_key_enc else None
+			peers.append({**item, "preshared_key": preshared_key})
 
 	_log.info(
 		"NODE_CONFIG built for node=%s: interfaces=%d peers=%d master_peer=%s",
@@ -1016,6 +957,8 @@ def create_node_interface(
 	pepper = _resolve_pepper(pepper)
 	now = utcnow()
 	with transaction(conn, immediate=True):
+		if get_interface(conn, interface_name) is None:
+			raise ValueError(f"Unknown interface: {interface_name!r}")
 		conn.execute(
 			"""
 			INSERT INTO node_interfaces
@@ -1028,16 +971,6 @@ def create_node_interface(
 			""",
 			(node_id, interface_name, vault.encrypt_if_needed(private_key, pepper), public_key, now),
 		)
-
-
-def get_node_interfaces(
-	conn: sqlite3.Connection,
-	node_id: str,
-) -> list[sqlite3.Row]:
-	"""Return all interface keypairs for a node."""
-	return conn.execute(
-		"SELECT * FROM node_interfaces WHERE node_id = ?", (node_id,)
-	).fetchall()
 
 
 def get_node_interface_public_key(

@@ -9,12 +9,12 @@
 from __future__ import annotations
 
 import ipaddress
-from contextlib import closing
-from datetime import datetime
 import json
 import logging
 import re
 import sqlite3
+from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -36,50 +36,6 @@ _SPEEDTEST_RESULT_BATCH_SIZE = 500
 _RETENTION_OPTIONS = (0, 7, 30, 90, 180, 365)
 
 __all__ = [
-	# Core operations
-	"delete_setting",
-	"get_setting",
-	"recover_missing_global_settings",
-	"set_setting",
-	"validate_secret_key",
-	# Blocklist
-	"clear_blocklist_disabled_until",
-	"get_blocklist_disabled_until",
-	"get_dns_blocklist_enabled",
-	"get_enabled_blocklists",
-	"set_blocklist_disabled_until",
-	"set_dns_blocklist_enabled",
-	"set_enabled_blocklists",
-	# DNS
-	"get_dns_custom_rules",
-	"get_dns_log_retention_days",
-	"get_dns_query_logging_enabled",
-	"get_dns_service_enabled",
-	"get_dns_upstream_servers",
-	"get_dnssec_enabled",
-	"set_dns_custom_rules",
-	"set_dns_log_retention_days",
-	"set_dns_query_logging_enabled",
-	"set_dns_service_enabled",
-	"set_dns_upstream_servers",
-	"set_dnssec_enabled",
-	# Speedtest
-	"get_speedtest_enabled",
-	"get_speedtest_ignore_peers",
-	"get_speedtest_last_result",
-	"get_node_speedtest_last_result",
-	"get_node_speedtest_last_results",
-	"get_speedtest_last_run_at",
-	"get_speedtest_retention_days",
-	"set_speedtest_enabled",
-	"set_speedtest_ignore_peers",
-	"set_speedtest_last_result",
-	"set_node_speedtest_last_result",
-	"set_speedtest_last_run_at",
-	"set_speedtest_retention_days",
-	# TSDB
-	"get_tsdb_retention_days",
-	"set_tsdb_retention_days",
 	# Constants
 	"DEFAULT_DNS_CUSTOM_RULES",
 	"DEFAULT_DNS_LOG_RETENTION_DAYS",
@@ -90,10 +46,51 @@ __all__ = [
 	"MAX_CUSTOM_RULES_LENGTH",
 	"SPEEDTEST_RETENTION_OPTIONS",
 	"TSDB_RETENTION_OPTIONS",
+	# Blocklist
+	"clear_blocklist_disabled_until",
+	# Core operations
+	"delete_setting",
+	"get_blocklist_disabled_until",
+	"get_dns_blocklist_enabled",
+	# DNS
+	"get_dns_custom_rules",
+	"get_dns_log_retention_days",
+	"get_dns_query_logging_enabled",
+	"get_dns_service_enabled",
+	"get_dns_upstream_servers",
+	"get_dnssec_enabled",
+	"get_enabled_blocklists",
+	"get_node_speedtest_last_results",
+	"get_setting",
+	# Speedtest
+	"get_speedtest_enabled",
+	"get_speedtest_last_result",
+	"get_speedtest_last_run_at",
+	"get_speedtest_retention_days",
+	# TSDB
+	"get_tsdb_retention_days",
+	"recover_missing_global_settings",
+	"set_blocklist_disabled_until",
+	"set_dns_blocklist_enabled",
+	"set_dns_custom_rules",
+	"set_dns_log_retention_days",
+	"set_dns_query_logging_enabled",
+	"set_dns_service_enabled",
+	"set_dns_upstream_servers",
+	"set_dnssec_enabled",
+	"set_enabled_blocklists",
+	"set_node_speedtest_last_result",
+	"set_setting",
+	"set_speedtest_enabled",
+	"set_speedtest_last_result",
+	"set_speedtest_last_run_at",
+	"set_speedtest_retention_days",
+	"set_tsdb_retention_days",
+	"validate_secret_key",
 ]
 
 # Constant for key validation
-_KEY_VALIDATION_TOKEN_KEY = "_key_validation_token"
+_KEY_VALIDATION_TOKEN_KEY = "_key_validation_token"  # noqa: S105  (a settings key name, not a secret)
 _KEY_VALIDATION_PLAINTEXT = "WIREBUDDY_KEY_VALID_v1"
 _ALLOWED_RECOVERY_FILENAMES = {"wirebuddy.db"}
 _RECOVERY_ALLOWED_BASES = (Path("/app/data"), Path("/opt/wirebuddy/data"))
@@ -110,7 +107,7 @@ _DNS_UPSTREAM_SERVER_RE = re.compile(
 
 def _validate_port(text: str) -> int | None:
 	"""Parse and validate a port number string.
-	
+
 	Returns the port as int if valid (1-65535), or None if invalid.
 	"""
 	if not text.isdigit():
@@ -121,7 +118,7 @@ def _validate_port(text: str) -> int | None:
 
 def _validate_hostname(text: str) -> str | None:
 	"""Validate and normalize a hostname or IP address.
-	
+
 	Returns the normalized hostname/IP if valid, or None if invalid.
 	Accepts:
 	- IPv4/IPv6 literals (including bracketed IPv6)
@@ -130,14 +127,14 @@ def _validate_hostname(text: str) -> str | None:
 	text = str(text or "").strip()
 	if not text or len(text) > 253:
 		return None
-	
+
 	# Try parsing as IP address first
 	try:
 		ipaddress.ip_address(text.strip("[]"))
 		return text  # Valid IP literal
 	except ValueError:
 		pass  # Not an IP, try hostname validation
-	
+
 	# Validate as hostname (FQDN)
 	if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", text):
 		return None
@@ -156,15 +153,15 @@ def _validate_hostname(text: str) -> str | None:
 
 def validate_secret_key(conn: sqlite3.Connection, pepper: str) -> bool:
 	"""Validate that the secret key matches the one used to encrypt the database.
-	
+
 	On first run (no token exists), creates and stores a validation token.
 	On subsequent runs, attempts to decrypt the stored token.
-	
+
 	Returns:
 		True if key is valid, False if there's a mismatch.
 	"""
 	stored_token = get_setting(conn, _KEY_VALIDATION_TOKEN_KEY)
-	
+
 	if stored_token is None:
 		# Only initialize token on genuinely fresh DBs.
 		row = conn.execute(
@@ -180,19 +177,18 @@ def validate_secret_key(conn: sqlite3.Connection, pepper: str) -> bool:
 			return False
 
 		# First run - create and store validation token
-		# Note: set_setting auto-encrypts since _KEY_VALIDATION_TOKEN_KEY is in _SECRET_SETTING_KEYS
+		# set_setting encrypts this key because it is a secret setting.
 		set_setting(conn, _KEY_VALIDATION_TOKEN_KEY, _KEY_VALIDATION_PLAINTEXT)
 		_log.debug("KEY_VALIDATION: Created new validation token (fresh DB)")
 		return True
-	
+
 	# Token exists - try to decrypt and validate
 	try:
 		decrypted = vault.decrypt(stored_token, pepper)
 		if decrypted == _KEY_VALIDATION_PLAINTEXT:
 			return True
-		else:
-			_log.error("KEY_VALIDATION: Decrypted token does not match expected value")
-			return False
+		_log.error("KEY_VALIDATION: Decrypted token does not match expected value")
+		return False
 	except ValueError as e:
 		_log.error("KEY_VALIDATION: Failed to decrypt validation token: %s", e)
 		return False
@@ -218,7 +214,7 @@ def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) 
 
 def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
 	"""Set a setting value.
-	
+
 	Note: Requires conn.row_factory = sqlite3.Row for get_setting to work correctly.
 	"""
 	now = utcnow()
@@ -445,7 +441,7 @@ def _parse_retention_days(
 	default: int,
 ) -> int:
 	"""Parse and validate retention period.
-	
+
 	Returns the parsed value if it's in the allowed options, otherwise the default.
 	"""
 	try:
@@ -533,7 +529,10 @@ def _set_json_dict(conn: sqlite3.Connection, key: str, value: dict[str, Any] | N
 		delete_setting(conn, key)
 		return
 	payload = {**value, "ts": value.get("ts") or utcnow().isoformat()}
-	raw = json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))
+	try:
+		raw = json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"), allow_nan=False)
+	except ValueError as exc:
+		raise ValueError("JSON payload must contain only finite values") from exc
 	if len(raw.encode("utf-8")) > _MAX_JSON_SETTING_LENGTH:
 		raise ValueError(f"JSON payload exceeds maximum allowed size ({_MAX_JSON_SETTING_LENGTH} bytes)")
 	set_setting(conn, key, raw)
@@ -809,11 +808,6 @@ def get_gui_https_enabled(conn: sqlite3.Connection) -> bool:
 	return _get_bool_setting(conn, "gui_https_enabled", default=False)
 
 
-def set_gui_https_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
-	"""Persist the built-in HTTPS listener setting."""
-	_set_bool_setting(conn, "gui_https_enabled", enabled)
-
-
 def get_speedtest_enabled(conn: sqlite3.Connection) -> bool:
 	"""Return True if scheduled speed tests are enabled."""
 	return _get_bool_setting(conn, "speedtest_enabled", default=False)
@@ -822,16 +816,6 @@ def get_speedtest_enabled(conn: sqlite3.Connection) -> bool:
 def set_speedtest_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
 	"""Persist scheduled speedtest enabled setting."""
 	_set_bool_setting(conn, "speedtest_enabled", enabled)
-
-
-def get_speedtest_ignore_peers(conn: sqlite3.Connection) -> bool:
-	"""Return True if scheduled tests should run even when peers are connected."""
-	return _get_bool_setting(conn, "speedtest_ignore_peers", default=False)
-
-
-def set_speedtest_ignore_peers(conn: sqlite3.Connection, ignore_peers: bool) -> None:
-	"""Persist whether scheduled tests skip the peer-idle check."""
-	_set_bool_setting(conn, "speedtest_ignore_peers", ignore_peers)
 
 
 def get_speedtest_last_result(conn: sqlite3.Connection) -> dict[str, Any] | None:
@@ -847,11 +831,6 @@ def set_speedtest_last_result(conn: sqlite3.Connection, result: dict[str, Any] |
 def _node_speedtest_last_result_key(node_id: str) -> str:
 	"""Build the settings key for a node-specific last speedtest result."""
 	return f"speedtest_last_result:node:{node_id}"
-
-
-def get_node_speedtest_last_result(conn: sqlite3.Connection, node_id: str) -> dict[str, Any] | None:
-	"""Return the last successful speedtest result stored for a node."""
-	return _get_json_dict(conn, _node_speedtest_last_result_key(node_id))
 
 
 def get_node_speedtest_last_results(
@@ -908,6 +887,3 @@ def set_speedtest_last_run_at(conn: sqlite3.Connection, when: datetime | None = 
 	"""Persist the last completed local speedtest run timestamp in UTC."""
 	value = ensure_utc(when) if when is not None else utcnow()
 	set_setting(conn, "speedtest_last_run_at", value.isoformat())
-
-
-

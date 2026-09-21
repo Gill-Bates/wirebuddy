@@ -106,6 +106,9 @@
     .peer-card-addresses code {
         font-size: 0.78rem;
         opacity: 0.9;
+
+        /* Legacy fallback for engines without overflow-wrap: anywhere support. */
+        /* stylelint-disable-next-line declaration-property-value-keyword-no-deprecated -- preserve the legacy wrapping fallback */
         word-break: break-word;
         overflow-wrap: anywhere;
     }
@@ -137,7 +140,7 @@
         min-width: 12rem;
     }
 
-    @media (max-width: 991.98px) {
+    @media (width <= 991.98px) {
         .peers-table-wrapper {
             display: none !important;
         }
@@ -147,7 +150,7 @@
         }
     }
 
-    @media (min-width: 992px) {
+    @media (width >= 992px) {
         .peer-card-list {
             display: none !important;
         }
@@ -213,6 +216,7 @@
     /* Keep action buttons on one line */
     .peers-table td.peer-actions-cell {
         white-space: nowrap;
+
         /* UI-Lint: 5 buttons × 38px + 4 gaps × 4px = 206px minimum */
         min-width: 210px;
     }
@@ -247,11 +251,7 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-    }
-
-    .peers-table td.peer-actions-cell .material-icons {
-        font-size: 18px;
-        pointer-events: none;
+        -webkit-tap-highlight-color: transparent;
     }
 
     .peers-table td.peer-name-cell,
@@ -312,7 +312,7 @@
         width: var(--flag-width);
         height: var(--flag-height);
         border-radius: 2px;
-        box-shadow: 0 0 0 1px rgba(0, 0, 0, .15);
+        box-shadow: 0 0 0 1px rgb(0 0 0 / 15%);
         object-fit: cover;
         flex: 0 0 auto;
     }
@@ -360,27 +360,6 @@
         width: 100%;
     }
 
-    .peer-help-icon {
-        font-size: 16px;
-        vertical-align: text-bottom;
-    }
-
-    .peer-surface-panel {
-        background-color: var(--bs-body-bg);
-    }
-
-    .peer-inert-button {
-        pointer-events: none;
-    }
-
-    .peers-empty-state-icon-lg {
-        font-size: 2.5rem;
-    }
-
-    .peers-empty-state-icon-xl {
-        font-size: 3rem;
-    }
-
     .peer-name-stack {
         display: flex;
         flex-direction: column;
@@ -423,7 +402,6 @@
 
     /* Support for reduced motion preferences */
     @media (prefers-reduced-motion: reduce) {
-
         *,
         *::before,
         *::after {
@@ -433,7 +411,7 @@
     }
 
     /* Large desktop (1200px-1399px): allow routing badges to wrap */
-    @media (min-width: 992px) and (max-width: 1399.98px) {
+    @media (width >= 992px) and (width <= 1399.98px) {
         .peer-routing-badges {
             max-width: 140px;
         }
@@ -466,7 +444,7 @@
         gap: 0.75rem;
     }
 
-    @media (max-width: 575.98px) {
+    @media (width <= 575.98px) {
         #qrModal .modal-dialog {
             max-width: 90vw;
             margin: 1rem auto;
@@ -597,10 +575,6 @@
         font-size: 16px;
     }
 
-    .peers-table td.peer-actions-cell .btn {
-        -webkit-tap-highlight-color: transparent;
-    }
-
     /* Peers container: page-level scrolling only (no inner scroll) */
     .peers-scroll-container {
         max-height: none;
@@ -609,7 +583,7 @@
     }
 
     /* Sticky table header (desktop only, page scroll) */
-    @media (min-width: 768px) {
+    @media (width >= 768px) {
         .peers-table thead th {
             position: sticky;
             top: 0;
@@ -642,4 +616,9 @@
 
     .peers-empty-state .material-icons {
         font-size: 3rem;
+    }
+
+    .peers-table td.peer-actions-cell .material-icons {
+        font-size: 18px;
+        pointer-events: none;
     }

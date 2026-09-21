@@ -8,31 +8,29 @@
 
 from __future__ import annotations
 
-from ..db.sqlite_peers import (
-	get_peer_by_id,
-)
-
 import asyncio
 import logging
 import re
 import sqlite3
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import SecretStr
 
+from ..db.sqlite_peers import (
+	get_peer_by_id,
+)
 from ..models.peers import PeerConfig, PeerStats
 from ..utils.config import WG_DEFAULT_DNS
-from ..utils.deps import get_conn, get_config
+from ..utils.deps import get_config, get_conn
 from ..utils.network import allowed_ips_with_dns_routes
 from ..utils.rate_limit import RATE_LIMIT_CRITICAL, limiter
 from ..utils.vault import decrypt as vault_decrypt
 from .auth import require_admin
 from .response import ok_response
+from .wireguard_settings import InterfaceConfigError, get_dns_for_peer, get_server_endpoint
 from .wireguard_utils import run_wg_command
-from .wireguard_settings import get_server_endpoint, get_dns_for_peer, InterfaceConfigError
 
 _log = logging.getLogger(__name__)
 
@@ -68,7 +66,7 @@ def _validate_port(port: int) -> None:
 
 def _validate_hostname(hostname: str) -> None:
 	"""Validate hostname/FQDN format.
-	
+
 	Rejects:
 	- Empty strings
 	- Whitespace
@@ -92,16 +90,16 @@ async def _build_peer_config(
 	request: Request,
 	peer_id: int,
 	conn: sqlite3.Connection,
-) -> tuple[PeerConfig, sqlite3.Row, SecretStr, Optional[SecretStr]]:
+) -> tuple[PeerConfig, sqlite3.Row, SecretStr, SecretStr | None]:
 	"""Fetch peer, decrypt keys, resolve DNS, build PeerConfig.
-	
+
 	Returns:
 		tuple of (config, peer row, private_key SecretStr, preshared_key SecretStr or None)
 	"""
 	peer = get_peer_by_id(conn, peer_id)
 	if not peer:
 		raise HTTPException(status_code=404, detail="Peer not found")
-	
+
 	# Verify we have the stored private key
 	private_key = peer["private_key"]
 	if not private_key:
@@ -109,7 +107,7 @@ async def _build_peer_config(
 			status_code=400,
 			detail="No private key stored for this peer.",
 		)
-	
+
 	# Verify peer address
 	peer_address = peer["peer_address"]
 	if not peer_address:
@@ -117,9 +115,9 @@ async def _build_peer_config(
 			status_code=400,
 			detail="No address assigned to this peer.",
 		)
-	
+
 	cfg = get_config(request)
-	
+
 	# Decrypt stored keys - wrap in SecretStr for memory safety
 	try:
 		private_key_plain = SecretStr(vault_decrypt(private_key, cfg.secret_key))
@@ -139,16 +137,17 @@ async def _build_peer_config(
 				status_code=503,
 				detail="Cannot decrypt peer configuration. WIREBUDDY_SECRET_KEY does not match the database encryption key.",
 			)
-	
+
 	# Get server public key and endpoint — differs for node-assigned peers
 	node_id = peer["node_id"]
 	if node_id:
 		# Peer runs on a remote node: use node's keypair and endpoint
-		from ..db.sqlite_nodes import get_node as db_get_node, get_node_interface_public_key
+		from ..db.sqlite_nodes import get_node as db_get_node
+		from ..db.sqlite_nodes import get_node_interface_public_key
 		node = db_get_node(conn, node_id)
 		if not node:
 			raise HTTPException(status_code=404, detail="Assigned node not found")
-		
+
 		# Validate node endpoint components for security
 		try:
 			_validate_hostname(node['fqdn'])
@@ -159,7 +158,7 @@ async def _build_peer_config(
 				status_code=503,
 				detail="Node configuration error: invalid endpoint"
 			)
-		
+
 		node_pubkey = get_node_interface_public_key(conn, node_id, peer["interface"])
 		if not node_pubkey:
 			raise HTTPException(
@@ -183,7 +182,7 @@ async def _build_peer_config(
 			)
 		server_public_key = stdout.strip()
 		server_endpoint = get_server_endpoint(conn, peer["interface"])
-	
+
 	# Determine DNS based on adblocker setting.
 	# NULL (never explicitly set by user) defaults to True — ad-blocking is
 	# opt-out, matching the server-wide default when the feature is enabled.
@@ -199,7 +198,7 @@ async def _build_peer_config(
 	except InterfaceConfigError:
 		# Don't leak internal config details to client
 		raise HTTPException(status_code=422, detail="Invalid interface configuration")
-	
+
 	client_allowed_ips = allowed_ips_with_dns_routes(
 		peer["allowed_ips"],
 		dns_servers,
@@ -216,7 +215,7 @@ async def _build_peer_config(
 		allowed_ips=client_allowed_ips,
 		preshared_key=preshared_key_plain.get_secret_value() if preshared_key_plain else None,
 	)
-	
+
 	return config, peer, private_key_plain, preshared_key_plain
 
 
@@ -231,21 +230,21 @@ async def get_peer_stats(
 	peer = await asyncio.to_thread(get_peer_by_id, conn, peer_id)
 	if not peer:
 		raise HTTPException(status_code=404, detail="Peer not found")
-	
+
 	public_key = peer["public_key"]
 	interface_name = peer["interface"]
-	
+
 	# Get stats from wg show dump
 	code, stdout, stderr = await run_wg_command("wg", "show", interface_name, "dump")
 	if code != 0:
 		_log.error("wg show dump failed for %s: %s", interface_name, stderr)
 		raise HTTPException(status_code=500, detail="Failed to retrieve peer stats.")
-	
+
 	# Parse dump output (tab-separated)
 	# Format: interface private-key public-key listen-port fwmark
-	# Then for each peer: public-key preshared-key endpoint allowed-ips latest-handshake transfer-rx transfer-tx persistent-keepalive
+	# Peer rows contain keys, endpoints, allowed IPs, handshakes, transfer, and keepalive.
 	stats = PeerStats(public_key=public_key)
-	
+
 	lines = stdout.strip().split("\n")
 	for line in lines[1:]:  # Skip interface line
 		parts = line.split("\t")
@@ -253,19 +252,19 @@ async def get_peer_stats(
 			continue
 		if parts[DUMP_PEER_PUBKEY] != public_key:
 			continue
-		
+
 		# Parse endpoint
 		stats.endpoint = parts[DUMP_PEER_ENDPOINT] if parts[DUMP_PEER_ENDPOINT] != "(none)" else None
 		stats.allowed_ips = parts[DUMP_PEER_ALLOWED] if parts[DUMP_PEER_ALLOWED] != "(none)" else None
-		
+
 		# Latest handshake (Unix timestamp) - validate before parsing
 		try:
 			handshake_ts = int(parts[DUMP_PEER_HANDSHAKE])
 			if handshake_ts > 0:
-				stats.latest_handshake = datetime.fromtimestamp(handshake_ts, timezone.utc)
+				stats.latest_handshake = datetime.fromtimestamp(handshake_ts, UTC)
 		except (ValueError, OSError) as e:
 			_log.warning("Invalid handshake timestamp for peer %s: %s", public_key[:8], e)
-		
+
 		# Transfer stats - validate before parsing
 		try:
 			stats.transfer_rx = int(parts[DUMP_PEER_RX])
@@ -274,28 +273,26 @@ async def get_peer_stats(
 			_log.warning("Invalid transfer stats for peer %s: %s", public_key[:8], e)
 			stats.transfer_rx = 0
 			stats.transfer_tx = 0
-		
+
 		break
-	
+
 	return ok_response(data=stats)
 
 
-# TODO: Add rate limiting to config/QR endpoints to prevent bulk key exfiltration
-# e.g., @limiter.limit("10/minute") or similar
 @router.get("/peers/{peer_id}/qrcode")
 @limiter.limit(RATE_LIMIT_CRITICAL)
 async def get_peer_qrcode(
 	request: Request,
 	peer_id: int,
 	conn: sqlite3.Connection = Depends(get_conn),
-	current_user: sqlite3.Row = Depends(require_admin),
+	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Generate a QR code for peer configuration (admin only).
-	
+
 	Note: Requires 'qrcode' and 'Pillow' packages.
 	"""
 	config, peer, private_key_plain, preshared_key_plain = await _build_peer_config(request, peer_id, conn)
-	
+
 	try:
 		from ..utils.qrimage import QR_SECRET_RESPONSE_HEADERS, generate_qr_png
 
@@ -305,7 +302,7 @@ async def get_peer_qrcode(
 
 		# Resolve node name for badge (remote peers only)
 		node_name = None
-		node_id = peer["node_id"] if "node_id" in peer.keys() else None
+		node_id = peer["node_id"]
 		if node_id:
 			from ..db.sqlite_nodes import get_node as db_get_node
 			node = db_get_node(conn, node_id)
@@ -342,7 +339,6 @@ async def get_peer_qrcode(
 		raise HTTPException(status_code=500, detail="QR code generation failed")
 
 
-# TODO: Add rate limiting to config/QR endpoints to prevent bulk key exfiltration
 @router.get("/peers/{peer_id}/config")
 @limiter.limit(RATE_LIMIT_CRITICAL)
 async def get_peer_config(
@@ -353,21 +349,21 @@ async def get_peer_config(
 ):
 	"""Get the WireGuard configuration file for a peer (admin only)."""
 	config, peer, private_key_plain, preshared_key_plain = await _build_peer_config(request, peer_id, conn)
-	
+
 	# Sanitize filename — restrict to ASCII-safe characters
 	safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', peer['name'] or 'wg0').lstrip('.')
 	if not safe_name:
 		safe_name = 'wg0'
 	# Enforce maximum length to prevent header abuse
 	safe_name = safe_name[:_MAX_FILENAME_LENGTH]
-	
+
 	_log.info(
 		"CONFIG_DOWNLOADED peer_id=%s peer_name=%s interface=%s user=%s",
 		peer_id, peer['name'], peer['interface'], current_user['username'],
 	)
-	
+
 	config_text = config.to_wg_config()
-	
+
 	result = Response(
 		content=config_text,
 		media_type="text/plain",
@@ -376,8 +372,8 @@ async def get_peer_config(
 			"Content-Disposition": f'attachment; filename="{safe_name}.conf"',
 		},
 	)
-	
+
 	# NOTE: best-effort only; Python cannot guarantee scrubbing of immutable strings
 	del config_text, private_key_plain, preshared_key_plain
-	
+
 	return result

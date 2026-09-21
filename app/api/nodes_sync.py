@@ -6,9 +6,12 @@
 
 """Node synchronisation API — endpoints called by remote nodes.
 
-Authentication:  Bearer token (api_secret) + certificate fingerprint
-verification.  These endpoints are NOT protected by user/admin auth;
-they have their own ``get_current_node`` dependency.
+Authentication: Bearer token (api_secret) is the primary and always-required
+credential. Certificate fingerprint verification is an additional check that
+only applies when an explicitly trusted mTLS proxy injects the fingerprint
+header (see ``_get_verified_client_cert_fingerprint``); without such a proxy,
+Bearer secret alone is the full auth model. These endpoints are NOT protected
+by user/admin auth; they have their own ``get_current_node`` dependency.
 """
 
 from __future__ import annotations
@@ -16,29 +19,33 @@ from __future__ import annotations
 import asyncio
 import hmac
 import ipaddress
-import json
+import itertools
 import logging
 import os
-from pathlib import Path
 import re
 import sqlite3
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from ..api.auth import _is_https
 from ..api.response import ok_response
 from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
 from ..api.sse import format_sse_close, format_sse_event, format_sse_keepalive
+from ..api.wireguard_utils import generate_keypair, run_wg_command
+from ..db import tsdb
 from ..db.sqlite_interfaces import list_interfaces
 from ..db.sqlite_nodes import (
 	ack_node_command as db_ack_node_command,
+)
+from ..db.sqlite_nodes import (
 	bump_node_config_version,
 	claim_pending_node_commands,
 	clear_node_sse_connected,
@@ -46,30 +53,27 @@ from ..db.sqlite_nodes import (
 	enroll_node,
 	get_node,
 	get_node_by_api_secret,
-	get_node_last_metric_seq,
 	get_node_config,
+	get_node_last_metric_seq,
 	rotate_node_session_secret,
 	set_node_last_metric_seq,
 	set_node_tunnel_peer,
-	update_node_sse_connected,
 	update_node_heartbeat,
+	update_node_sse_connected,
 )
 from ..db.sqlite_peers import allocate_peer_ip, get_peer_by_id, update_peers_last_seen_batch
 from ..db.sqlite_peers_mutations import create_peer
 from ..db.sqlite_runtime import thread_connection, transaction
 from ..db.sqlite_settings import get_gui_https_enabled, set_node_speedtest_last_result
-
+from ..node import notifier as node_notifier
+from ..node.events import NodeCommandPayload, NodeCommandType, SpeedtestProgressPayload
 from ..utils.config import get_config
 from ..utils.crypto import hash_token, new_token
 from ..utils.deps import get_conn, get_tsdb_dir
-from ..utils.time import utcnow
 from ..utils.network import parse_ip_str
-from ..db import tsdb
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
-from ..api.wireguard_utils import generate_keypair, run_wg_command
 from ..utils.rate_limit import limiter
-from ..node import notifier as node_notifier
-from ..node.events import NodeCommandPayload, NodeCommandType, SpeedtestProgressPayload
+from ..utils.time import utcnow
 
 _log = logging.getLogger(__name__)
 
@@ -83,12 +87,25 @@ _NODE_COMMAND_REPLAY_AFTER_SECONDS = 30
 _NODE_COMMAND_CLAIM_LIMIT = 20
 _CLIENT_CERT_FP_HEADER = "X-Client-Cert-Fingerprint"
 _CLIENT_CERT_FP_RE = re.compile(r"^[a-f0-9]{64}$")
-_NODE_MTLS_PROXY_CIDRS_ENV = "WIREBUDDY_NODE_MTLS_PROXY_CIDRS"
+_NODE_MTLS_PROXY_CIDRS_ENV = "WIREBUDDY_TRUSTED_PROXIES"
 T = TypeVar("T")
 
 
 def _load_node_mtls_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
-	"""Load explicitly trusted proxy CIDRs for node mTLS certificate headers."""
+	"""Load explicitly trusted proxy CIDRs for node mTLS certificate headers.
+
+	Shares the WIREBUDDY_TRUSTED_PROXIES variable with other proxy-trust
+	checks, but with a security-first empty default: unlike auth cookie
+	handling, mTLS fingerprint headers are never trusted from loopback
+	automatically.
+
+	Resolved lazily (on first call, not at import time) so settings.env
+	values are respected regardless of module import order — settings.env is
+	only loaded once something calls get_config(), which may happen after
+	this module is imported. See auth._is_trusted_proxy_ip() for the same
+	pattern.
+	"""
+	get_config()  # Ensure settings.env is loaded before reading the env var below.
 	raw = str(os.environ.get(_NODE_MTLS_PROXY_CIDRS_ENV, "")).strip()
 	if not raw:
 		return ()
@@ -103,7 +120,15 @@ def _load_node_mtls_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.
 	return tuple(networks)
 
 
-_NODE_MTLS_PROXY_NETWORKS = _load_node_mtls_proxy_networks()
+_node_mtls_proxy_networks_cache: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] | None = None
+
+
+def _get_node_mtls_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+	"""Return the (lazily loaded, then cached) trusted proxy CIDRs for node mTLS headers."""
+	global _node_mtls_proxy_networks_cache
+	if _node_mtls_proxy_networks_cache is None:
+		_node_mtls_proxy_networks_cache = _load_node_mtls_proxy_networks()
+	return _node_mtls_proxy_networks_cache
 
 
 def _get_socket_ip(request: Request) -> str | None:
@@ -116,7 +141,8 @@ def _get_socket_ip(request: Request) -> str | None:
 
 def _socket_ip_is_trusted_mtls_proxy(request: Request) -> bool:
 	"""Return True when the request came through an explicitly trusted mTLS proxy."""
-	if not _NODE_MTLS_PROXY_NETWORKS:
+	trusted_networks = _get_node_mtls_proxy_networks()
+	if not trusted_networks:
 		return False
 	socket_ip = _get_socket_ip(request)
 	if not socket_ip:
@@ -125,7 +151,7 @@ def _socket_ip_is_trusted_mtls_proxy(request: Request) -> bool:
 		ip_obj = ipaddress.ip_address(socket_ip)
 	except ValueError:
 		return False
-	return any(ip_obj.version == network.version and ip_obj in network for network in _NODE_MTLS_PROXY_NETWORKS)
+	return any(ip_obj.version == network.version and ip_obj in network for network in trusted_networks)
 
 
 def _get_verified_client_cert_fingerprint(request: Request) -> str | None:
@@ -151,17 +177,17 @@ def _get_verified_client_cert_fingerprint(request: Request) -> str | None:
 
 def _parse_endpoint_ip(endpoint: str) -> str:
 	"""Extract IP address from WireGuard endpoint string.
-	
+
 	Handles formats:
 	- [ipv6]:port → ipv6
 	- ipv4:port → ipv4
 	- bare IP (no port) → IP
-	
+
 	Returns empty string if parsing fails.
 	"""
 	if not endpoint:
 		return ""
-	
+
 	# IPv6 with brackets: [addr]:port
 	if endpoint.startswith("["):
 		bracket_end = endpoint.rfind("]")
@@ -173,7 +199,7 @@ def _parse_endpoint_ip(endpoint: str) -> str:
 			except ValueError:
 				return ""
 		return ""
-	
+
 	# Try to detect IPv4:port vs bare IP
 	last_colon = endpoint.rfind(":")
 	if last_colon > 0:
@@ -227,7 +253,7 @@ def _resolve_country_from_url(server_url: str) -> str | None:
 	return None
 
 
-async def _run_with_short_lived_conn(
+async def _run_with_short_lived_conn[T](
 	db_path: Path,
 	fn: Callable[..., T],
 	*args: Any,
@@ -601,11 +627,17 @@ async def enroll_node_endpoint(
 	if not hmac.compare_digest(hash_token(api_secret), node["api_secret_hash"]):
 		raise HTTPException(status_code=401, detail="API secret mismatch")
 
+	# Transport check MUST run before the irreversible enroll mutation below.
+	# Otherwise a rejected plaintext request would already have consumed the
+	# enrollment token (status flips to non-pending, secret rotated) with no
+	# way for the node to retry — see _enforce_enrollment_transport().
+	_enforce_enrollment_transport(conn, request, node_id, context="Enrollment")
+
 	# Generate keypairs BEFORE transaction (async + SQLite = race condition risk)
 	interfaces = await run_in_threadpool(list_interfaces, conn)
 	keypairs = list(zip(
 		[iface["name"] for iface in interfaces],
-		await asyncio.gather(*(generate_keypair() for _ in interfaces)),
+		await asyncio.gather(*(generate_keypair() for _ in interfaces)), strict=False,
 	))
 
 	# Enroll atomically — status check, keypairs, tunnel peer, secret rotation,
@@ -651,7 +683,6 @@ async def enroll_node_endpoint(
 
 	_log.info("Rotated API secret for node=%s (enrollment token invalidated)", node_id)
 
-	_enforce_enrollment_transport(conn, request, node_id, context="Enrollment")
 	config["session_secret"] = session_secret  # One-time delivery over TLS
 	if warning_msg:
 		config["_warning"] = warning_msg
@@ -736,7 +767,7 @@ def _process_heartbeat(
 			seqs = [m.seq for m in new_metrics]
 			is_contiguous = all(
 				current == previous + 1
-				for previous, current in zip(seqs, seqs[1:])
+				for previous, current in itertools.pairwise(seqs)
 			)
 			if not is_contiguous:
 				_log.warning(
@@ -887,14 +918,14 @@ async def node_events(
 			close_event = format_sse_close()
 			await mark_sse_connected()
 			last_sse_connected_write = time.monotonic()
-			
+
 			# Check for any command that was queued while we were connecting
 			for pending_event in await _claim_pending_command_events(db_path, node_id):
 				yield pending_event
-			
+
 			# Send initial keepalive
 			yield format_sse_keepalive()
-			
+
 			async for event in node_notifier.subscribe(node_id, shutdown_event=shutdown_event):
 				if shutdown_event is not None and shutdown_event.is_set():
 					_log.debug("SSE shutdown for node %s", node_id)
@@ -903,7 +934,7 @@ async def node_events(
 				if await request.is_disconnected():
 					break
 				# On keepalive events, also check DB for pending commands
-				if event.startswith(":") or event.startswith("event: ping\n"):
+				if event.startswith((":", "event: ping\n")):
 					now_monotonic = time.monotonic()
 					if now_monotonic - last_sse_connected_write >= _SSE_CONNECTED_DB_UPDATE_INTERVAL_S:
 						await mark_sse_connected()
@@ -962,7 +993,7 @@ async def submit_node_speedtest_progress(
 		detail=body.detail,
 	)
 	await bus.publish_speedtest(node_id, payload)
-	
+
 	return ok_response(message="Progress update received")
 
 
@@ -1010,13 +1041,13 @@ def submit_node_speedtest(
 	tsdb_dir: Path = Depends(get_tsdb_dir),
 ):
 	"""Receive speedtest result from a node and persist to TSDB.
-	
+
 	The result is tagged with node_id to distinguish from master speedtests.
 	"""
 	_ = request
 	node_id = node["id"]
 	node_name = node["name"]
-	
+
 	# Only persist successful results (don't pollute TSDB with errors)
 	if body.status != "ok":
 		_log.warning(
@@ -1024,7 +1055,7 @@ def submit_node_speedtest(
 			node_id, node_name, body.reason or "unknown"
 		)
 		return ok_response(message="Speedtest error recorded (not persisted to history)")
-	
+
 	# Build result payload with node_id tag
 	result = {
 		"status": "ok",
@@ -1032,7 +1063,7 @@ def submit_node_speedtest(
 		"node_name": node_name,
 		"ts": utcnow().isoformat(),
 	}
-	
+
 	if body.download_mbit is not None:
 		result["download_mbit"] = round(body.download_mbit, 2)
 	if body.upload_mbit is not None:
@@ -1050,7 +1081,7 @@ def submit_node_speedtest(
 		country_code = _resolve_country_from_url(body.server_url)
 	if country_code:
 		result["country_code"] = country_code
-	
+
 	_log.info(
 		"NODE_SPEEDTEST node=%s name=%s dl=%.2f ul=%.2f rtt=%.2fms",
 		node_id,
@@ -1059,7 +1090,7 @@ def submit_node_speedtest(
 		body.upload_mbit or 0,
 		body.rtt_ms or 0,
 	)
-	
+
 	# Persist to TSDB
 	try:
 		tsdb.append_point(
@@ -1076,5 +1107,5 @@ def submit_node_speedtest(
 		set_node_speedtest_last_result(conn, node_id, result)
 	except Exception as exc:
 		_log.warning("Failed to persist node speedtest result in settings: %s", exc)
-	
+
 	return ok_response(message="Speedtest result received")

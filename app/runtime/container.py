@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: AGPL-3.0
+# SPDX-License-Identifier: MIT
 #
 
 """Service container for dependency injection and lifecycle orchestration.
@@ -86,7 +86,7 @@ class ServiceContainer:
             raise ValueError(f"Service {service.name!r} already registered")
 
         # Inject container reference
-        service._container = self
+        service._container = self  # noqa: SLF001  (the container wiring itself into the service it owns; this is the registration step, not outside access)
         self._services[service.name] = service
         _log.debug("SERVICE_REGISTERED name=%s dependencies=%s", service.name, service.dependencies)
 
@@ -124,7 +124,7 @@ class ServiceContainer:
             ValueError: If circular dependency detected.
         """
         # Kahn's algorithm for topological sort
-        in_degree: dict[str, int] = {name: 0 for name in self._services}
+        in_degree: dict[str, int] = dict.fromkeys(self._services, 0)
         dependents: dict[str, list[str]] = {name: [] for name in self._services}
 
         for name, service in self._services.items():
@@ -254,7 +254,7 @@ class ServiceContainer:
                 break
             try:
                 await asyncio.wait_for(_stop_service(name), timeout=remaining)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 incomplete = stop_order[index:]
                 _log.warning(
                     "CONTAINER_STOP_TIMEOUT timeout=%.1fs service=%s",

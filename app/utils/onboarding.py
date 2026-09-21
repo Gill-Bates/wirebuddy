@@ -4,8 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-"""
-Onboarding workflow configuration.
+"""Onboarding workflow configuration.
 
 ``ONBOARDING_STEPS`` is a sequence of step definitions consumed by the
 ``fragments/onboarding_modal.html`` template via the template context.
@@ -26,7 +25,7 @@ from typing import TypedDict
 
 class OnboardingStep(TypedDict):
     """Schema for a single onboarding step.
-    
+
     Fields:
         title: Step heading (e.g., "Change Admin Password")
         body_pre: Text before the hyperlink (includes trailing space if needed)
@@ -34,10 +33,10 @@ class OnboardingStep(TypedDict):
         link_label: Hyperlink text (e.g., "Users")
         body_post: Text after the hyperlink (includes leading space if needed)
         show_default_badge: Whether to display a "Default" badge below the step
-    
+
     Note: body_pre and body_post include intentional surrounding spaces to form
     a complete sentence around the linked anchor element.
-    
+
     Subpath Note: All hrefs assume the app is served from the domain root (/).
     If deployed under a subpath (e.g., "/wirebuddy/"), these must be updated
     or made configurable via environment or context processor.

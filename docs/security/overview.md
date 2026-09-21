@@ -78,12 +78,9 @@ vault. Protect and back up the whole data volume accordingly.
 
 ## Proxy and host trust
 
-Proxy trust has two layers:
-
-- `FORWARDED_ALLOW_IPS` controls which peers Uvicorn trusts for
-  `X-Forwarded-*` processing.
-- `TRUSTED_PROXY_CIDRS` controls application-level client IP and HTTPS
-  detection.
+Proxy trust is controlled by a single variable, `WIREBUDDY_TRUSTED_PROXIES`,
+which covers both which peers Uvicorn trusts for `X-Forwarded-*` processing
+and application-level client-IP/HTTPS detection.
 
 Defaults trust loopback only. Configure the exact proxy address or CIDR and
 never use a wildcard. Incorrect trust can let clients spoof addresses used by

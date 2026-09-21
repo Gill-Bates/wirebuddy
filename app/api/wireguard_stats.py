@@ -82,7 +82,7 @@ def _bucket_counter_delta(
         Dict mapping ISO timestamp labels to summed byte deltas.
     """
     if __debug__:
-        assert all(
+        assert all(  # noqa: S101  (guarded by `if __debug__` above: a development-time invariant, deliberately absent under -O)
             points[i].ts <= points[i + 1].ts for i in range(len(points) - 1)
         ), "TSDB returned points out of chronological order"
 
@@ -158,8 +158,8 @@ def _downsample_buckets(
     group_size = n / target_points  # float for even distribution
     groups: list[list[str]] = []
     for i in range(target_points):
-        start = int(round(i * group_size))
-        end = int(round((i + 1) * group_size))
+        start = round(i * group_size)
+        end = round((i + 1) * group_size)
         groups.append(labels[start:end])
 
     new_labels: list[str] = []
@@ -265,10 +265,10 @@ def _compute_traffic_stats(
     # Fetch all peers (blocking DB query)
     all_peers = list(get_all_peers(conn))
     tunnel_peer_ids = get_all_tunnel_peer_ids(conn)
-    
+
     # Filter out node tunnel peers (inter-node connections)
     all_peers = [p for p in all_peers if p["id"] not in tunnel_peer_ids]
-    
+
     # Sort by recent activity before truncating (most active peers first)
     # sqlite3.Row doesn't have .get(), so access column directly with fallback
     all_peers.sort(key=lambda p: p["last_handshake_at"] or 0, reverse=True)
@@ -314,11 +314,11 @@ def _compute_traffic_stats(
             lambda k: _query_peer_metrics(k, tsdb_dir, query_since, since, bucket_seconds),
             peer_keys,
         ))
-    
+
     # Process results
     peer_data: list[dict] = []
     all_labels: set[str] = set()
-    
+
     for key, rx_buckets, tx_buckets in results:
         # Only include peers with actual data
         if rx_buckets or tx_buckets:
@@ -400,9 +400,12 @@ async def get_traffic_stats(
     Returns bucketed data suitable for charting, with each peer as a separate dataset.
 
     Args:
+        request: Incoming request; the rate limiter resolves its key from it.
         hours: Number of hours of history (1-8760, validated at API boundary).
         range_key: Preset time range (6h, 24h, 7d, 30d, 90d, 180d, y1). Overrides hours if provided.
         max_points: Target number of data points/buckets (20-200). Lower values for mobile displays.
+        conn: Open SQLite connection (injected).
+        tsdb_dir: Base directory of the time-series store the buckets are read from (injected).
 
     Returns:
         Traffic statistics with display-ready values and unit metadata.
@@ -462,16 +465,16 @@ async def get_connection_stats(
 
         # Use shared parser for consistency with other endpoints
         peers = await run_in_threadpool(parse_wg_show_dump, stdout)
-        
+
         for peer in peers:
             if not peer.interface:
                 continue
-                
+
             connected = (now - peer.handshake_ts) < HANDSHAKE_THRESHOLD if peer.handshake_ts else False
-            
+
             if peer.interface not in interfaces:
                 interfaces[peer.interface] = {"connected": 0, "total": 0, "rx": 0, "tx": 0}
-            
+
             interfaces[peer.interface]["total"] += 1
             interfaces[peer.interface]["rx"] += peer.rx
             interfaces[peer.interface]["tx"] += peer.tx

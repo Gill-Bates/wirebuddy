@@ -4,8 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-"""
-Fernet-based encryption for secrets at rest (private keys, preshared keys).
+"""Fernet-based encryption for secrets at rest (private keys, preshared keys).
 
 Security model:
 - Fernet provides authenticated encryption.
@@ -34,8 +33,6 @@ import functools
 import hashlib
 import logging
 import os
-from collections.abc import Iterator
-from contextlib import contextmanager
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -94,7 +91,7 @@ def _vault_info_v2() -> bytes:
 	deployment_id = os.getenv("WIREBUDDY_DEPLOYMENT_ID", "").strip()
 	if not deployment_id:
 		return _VAULT_INFO_V2
-	return f"{_VAULT_INFO_V2.decode('ascii')}:{deployment_id}".encode("utf-8")
+	return f"{_VAULT_INFO_V2.decode('ascii')}:{deployment_id}".encode()
 
 
 def _validate_pepper(pepper: str) -> None:
@@ -168,13 +165,12 @@ def _derive_key_v1(pepper: str, salt: bytes) -> bytes:
 @functools.lru_cache(maxsize=8)
 def _derive_master_key_v2(pepper: str) -> bytes:
 	"""Derive and cache the vault v2 master key for a pepper."""
-	dk = hashlib.pbkdf2_hmac(
+	return hashlib.pbkdf2_hmac(
 		"sha256",
 		pepper.encode("utf-8"),
 		_MASTER_SALT_V2,
 		iterations=_PBKDF2_ITERATIONS,
 	)
-	return dk
 
 
 def _derive_key_v2(pepper: str, salt: bytes) -> bytes:
@@ -230,15 +226,6 @@ def encrypt_if_needed(value: str | None, pepper: str) -> str | None:
 		_parse_value(value)
 		return value
 	return encrypt(value, pepper)
-
-
-def decrypt_if_needed(value: str | None, pepper: str) -> str | None:
-	"""Migration helper: decrypt vault values, pass plaintext through unchanged."""
-	if value is None:
-		return value
-	if not is_vault_payload(value):
-		return value
-	return decrypt(value, pepper)
 
 
 def decrypt_required(value: str | None, pepper: str) -> str | None:
@@ -308,12 +295,3 @@ def is_encrypted(value: str | None) -> bool:
 def clear_cached_keys() -> None:
 	"""Clear cached derived master keys, e.g. during rotation or shutdown."""
 	_derive_master_key_v2.cache_clear()
-
-
-@contextmanager
-def vault_rotation_context() -> Iterator[None]:
-	"""Ensure cached derived keys are dropped after a rotation batch."""
-	try:
-		yield
-	finally:
-		clear_cached_keys()

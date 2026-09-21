@@ -41,10 +41,10 @@ _log = logging.getLogger(__name__)
 __all__ = [
 	"TlsMaterial",
 	"describe_gui_certificate",
-	"resolve_gui_certificate",
 	"ensure_self_signed_cert",
 	"load_certificate_expiry",
 	"normalize_hostname",
+	"resolve_gui_certificate",
 ]
 
 # Directory holding the generated fallback certificate.
@@ -92,7 +92,7 @@ def load_certificate_expiry(cert_path: Path) -> _dt.datetime | None:
 	try:
 		return cert.not_valid_after_utc
 	except AttributeError:  # cryptography < 42
-		return cert.not_valid_after.replace(tzinfo=_dt.timezone.utc)
+		return cert.not_valid_after.replace(tzinfo=_dt.UTC)
 
 
 def normalize_hostname(fqdn: str | None) -> str:
@@ -156,7 +156,7 @@ def _letsencrypt_material(certs_dir: Path, domain: str) -> TlsMaterial | None:
 		return None
 
 	expires_at = load_certificate_expiry(certfile)
-	now = _dt.datetime.now(_dt.timezone.utc)
+	now = _dt.datetime.now(_dt.UTC)
 	if expires_at is None:
 		# Unparseable: the listener would fail to start on it, so treat it as
 		# absent instead of handing it out as valid material.
@@ -231,7 +231,7 @@ def ensure_self_signed_cert(certs_dir: Path, hostname: str) -> TlsMaterial:
 		)
 
 	target_dir.mkdir(parents=True, exist_ok=True)
-	now = _dt.datetime.now(_dt.timezone.utc)
+	now = _dt.datetime.now(_dt.UTC)
 	key = ec.generate_private_key(ec.SECP256R1())
 	subject = x509.Name([
 		x509.NameAttribute(NameOID.COMMON_NAME, hostname[:64]),
@@ -288,7 +288,7 @@ def _self_signed_is_usable(certfile: Path, keyfile: Path, hostname: str) -> bool
 	expires_at = load_certificate_expiry(certfile)
 	if expires_at is None:
 		return False
-	if expires_at - _dt.datetime.now(_dt.timezone.utc) < _SELFSIGNED_RENEW_BEFORE:
+	if expires_at - _dt.datetime.now(_dt.UTC) < _SELFSIGNED_RENEW_BEFORE:
 		_log.info("TLS_SELFSIGNED_STALE expires_at=%s - regenerating", expires_at.isoformat())
 		return False
 
@@ -326,7 +326,7 @@ def _stage_write(path: Path, data: bytes, mode: int) -> Path:
 			handle.write(data)
 			handle.flush()
 			os.fsync(handle.fileno())
-		os.chmod(tmp, mode)
+		tmp.chmod(mode)
 	except BaseException:
 		tmp.unlink(missing_ok=True)
 		raise

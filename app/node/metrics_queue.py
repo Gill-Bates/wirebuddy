@@ -26,10 +26,16 @@ remote master synchronization.
 
 Delivery Guarantees
 -------------------
-- **At-least-once**: Metrics remain in queue until master acknowledges receipt
+- **At-least-once, bounded**: metrics remain in queue until master
+  acknowledges receipt, *as long as the queue does not overflow*. If the
+  node is offline long enough for the queue to exceed MAX_QUEUE_SIZE, the
+  oldest not-yet-acked metrics are dropped to make room (oldest-drop) and
+  ``dropped_count``/``last_overflow_ts`` in ``metrics_queue_meta`` record
+  that a drop happened — see ``_enforce_queue_limit()``.
 - **Idempotency**: Master tracks `last_metric_seq` per node, skips duplicates
 - **Crash-safe**: SQLite WAL mode ensures durability across restarts
-- **Offline-tolerant**: Queue grows up to MAX_QUEUE_SIZE during disconnection
+- **Offline-tolerant**: Queue grows up to MAX_QUEUE_SIZE during disconnection,
+  then trades durability for bounded memory/disk usage via oldest-drop
 
 Thread Safety
 -------------
@@ -112,7 +118,7 @@ METRIC_PEER_HANDSHAKE = "peer_handshake"
 
 # Lock registry: one lock per queue database file
 _registry_lock = threading.Lock()
-_connection_locks: dict[str, "_LockEntry"] = {}
+_connection_locks: dict[str, _LockEntry] = {}
 
 
 @dataclass
@@ -377,18 +383,15 @@ def enqueue_peer_traffic(
         if not rows:
             return 0
 
-        try:
-            conn.executemany(
-                "INSERT INTO metrics_queue (ts, metric_type, data) VALUES (?, ?, ?)",
-                rows,
-            )
-            conn.execute(
-                "UPDATE metrics_queue_meta SET pending_count = pending_count + ? WHERE id = 1",
-                (len(rows),),
-            )
-            _enforce_queue_limit(conn)
-        except Exception:
-            raise
+        conn.executemany(
+            "INSERT INTO metrics_queue (ts, metric_type, data) VALUES (?, ?, ?)",
+            rows,
+        )
+        conn.execute(
+            "UPDATE metrics_queue_meta SET pending_count = pending_count + ? WHERE id = 1",
+            (len(rows),),
+        )
+        _enforce_queue_limit(conn)
 
         _log.debug("Enqueued %d metrics", len(rows))
         return len(rows)

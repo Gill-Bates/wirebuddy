@@ -8,9 +8,9 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
-import logging
 from typing import Annotated
 
 from anyio import BrokenResourceError, ClosedResourceError, Lock, WouldBlock, create_memory_object_stream

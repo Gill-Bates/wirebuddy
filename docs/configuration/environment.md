@@ -5,6 +5,11 @@ through `python run.py` also load `.env`; the configuration loader retains
 `settings.env` as a lower-precedence compatibility source. Docker Compose uses
 the root `.env` file explicitly in the documented commands.
 
+Most reverse-proxy and origin-dependent behavior (CSRF, passkeys, Host-header
+validation, secure cookies) auto-derives from a single `WIREBUDDY_PUBLIC_ORIGIN`
+setting. Configure that first; only add the more specific variables below if
+you have a concrete reason to override the derived default.
+
 ## Quick Configuration
 
 ```bash
@@ -85,6 +90,11 @@ certificates, and GeoIP databases live below it.
 - Local default: `<project>/data`
 - Supplied Docker Compose value: `/app/data`
 
+### `WIREBUDDY_DEV_RELOAD`
+
+Set to `true`, `1`, or `yes` to enable Uvicorn reload when starting through
+`python run.py`. Development only.
+
 ## Web Server
 
 ### `WIREBUDDY_HOST`
@@ -111,75 +121,68 @@ WIREBUDDY_PORT=8080
 
 `HOST` and `PORT` are not WireBuddy configuration variables.
 
-### `UVICORN_WORKERS`
-
-The web application supports one worker only. The Docker entrypoint forces any
-other value back to `1` because authentication and runtime coordination contain
-process-local state.
-
-Default: `1`.
-
 ### `UVICORN_GRACEFUL_SHUTDOWN_TIMEOUT`
 
 Docker Uvicorn graceful-shutdown timeout in seconds. Accepted range: `1`–`300`.
 
 Default: `8`.
 
-### `WIREBUDDY_DEV_RELOAD`
-
-Set to `true`, `1`, or `yes` to enable Uvicorn reload when starting through
-`python run.py`. Development only.
+!!! note
+    The web server is single-worker only and this is not configurable. The
+    job queue, rate limiter, and session/MFA caches live in process memory,
+    so a second worker would make that state diverge between processes.
 
 ## Reverse Proxy and Origin Handling
 
-Forwarded-header trust is intentionally split between Uvicorn and the
-application. Configure both layers for a proxy that does not connect through
-loopback.
-
-### `WIREBUDDY_TRUST_PROXY_HEADERS`
-
-Docker-entrypoint switch for Uvicorn's forwarded-header processing.
-
-Default in Docker: `1`.
-
-### `FORWARDED_ALLOW_IPS`
-
-Comma-separated proxy IPs or CIDRs that Uvicorn may trust for
-`X-Forwarded-*`. Default in the Docker entrypoint: `127.0.0.1`.
-
-```bash
-FORWARDED_ALLOW_IPS=127.0.0.1,172.18.0.0/16
-```
-
-`*` is rejected by the Docker entrypoint.
-
-### `TRUSTED_PROXY_CIDRS`
-
-Application-level proxy CIDRs used for client-IP extraction and HTTPS-cookie
-detection.
-
-Default: `127.0.0.0/8,::1/128`.
-
 ### `WIREBUDDY_PUBLIC_ORIGIN`
 
-Canonical public origin used by CSRF and passkey origin handling.
+Canonical public URL of this instance, e.g. `https://vpn.example.com`.
+Configuring this alone derives:
+
+- CSRF allowed origins
+- The passkey/WebAuthn relying-party ID and expected origin
+- The Host-header allowlist (`TrustedHostMiddleware`), unless
+  `WIREBUDDY_ALLOWED_HOSTS` is set explicitly
+- Secure cookie flags and HSTS — enabled automatically for `https://` origins
 
 ```bash
 WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
 ```
 
-### `WIREBUDDY_CSRF_ALLOWED_ORIGINS`
+### `WIREBUDDY_TRUSTED_PROXIES`
 
-Comma-separated additional origins accepted by CSRF origin validation.
+Comma-separated reverse-proxy IPs/CIDRs. This single variable is used for:
+
+- Uvicorn's `--forwarded-allow-ips` (which peers may set `X-Forwarded-*`)
+- Application-level client-IP extraction and HTTPS-cookie detection
+- The node mTLS client-certificate fingerprint header (master side)
+
+Default: `127.0.0.0/8,::1/128` for cookie/HTTPS detection and Uvicorn's
+forwarded-header trust (a local reverse proxy on the same host just works).
+The public `/status` page and node mTLS fingerprint trust are more sensitive
+and default to trusting **nothing** beyond loopback until this is set
+explicitly — see [Status Page](status-page.md).
 
 ```bash
-WIREBUDDY_CSRF_ALLOWED_ORIGINS=https://vpn.example.com
+WIREBUDDY_TRUSTED_PROXIES=192.168.1.10/32
+```
+
+`*` is rejected by the Docker entrypoint.
+
+### `WIREBUDDY_CSRF_ALLOWED_ORIGINS`
+
+Comma-separated additional origins accepted by CSRF origin validation, beyond
+`WIREBUDDY_PUBLIC_ORIGIN`. Only needed when serving under multiple hostnames.
+
+```bash
+WIREBUDDY_CSRF_ALLOWED_ORIGINS=https://vpn2.example.com
 ```
 
 ### `WIREBUDDY_ALLOWED_HOSTS`
 
-Optional comma-separated Host-header allowlist. When unset, Trusted Host
-middleware is not installed.
+Optional comma-separated Host-header allowlist. Derived automatically from the
+hostname in `WIREBUDDY_PUBLIC_ORIGIN` when unset. Set this explicitly only to
+accept additional hostnames or when no public origin is configured.
 
 ```bash
 WIREBUDDY_ALLOWED_HOSTS=vpn.example.com,localhost
@@ -187,10 +190,13 @@ WIREBUDDY_ALLOWED_HOSTS=vpn.example.com,localhost
 
 ### `FORCE_HTTPS_COOKIES`
 
-Forces the `Secure` attribute on authentication and CSRF cookies when HTTPS
-detection through the proxy is unavailable.
+Forces the `Secure` attribute on authentication and CSRF cookies even when
+HTTPS is not otherwise detected. Secure cookies and HSTS are already enabled
+automatically when `WIREBUDDY_PUBLIC_ORIGIN` uses `https://`; this override is
+only needed for edge cases such as a TLS-terminating load balancer without a
+configured public origin.
 
-Default: disabled.
+Default: disabled (except when derived from `WIREBUDDY_PUBLIC_ORIGIN`).
 
 !!! note
     Not needed when **Settings → General → Serve GUI over HTTPS** is enabled.
@@ -203,30 +209,17 @@ Default: disabled.
 Always emits HSTS even when TLS terminates at a proxy and the upstream request
 appears as HTTP.
 
-Default: disabled. HSTS is otherwise emitted when the request is detected as
+Default: disabled. HSTS is otherwise emitted automatically when
+`WIREBUDDY_PUBLIC_ORIGIN` uses `https://`, or when the request is detected as
 HTTPS.
-
-### `WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS`
-
-Additional proxy CIDRs whose forwarded client IP is trusted specifically for
-the public `/status` page. Loopback is trusted automatically.
-
-```bash
-WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS=192.168.1.10/32
-```
-
-### `WIREBUDDY_NODE_MTLS_PROXY_CIDRS`
-
-Master-side CIDRs allowed to supply the node client-certificate fingerprint
-header for node synchronization. Configure this only when a trusted TLS proxy
-terminates node mutual TLS.
 
 ## Passkeys
 
 ### `PASSKEY_RP_ID`
 
-Optional WebAuthn relying-party ID. When unset, WireBuddy derives it from the
-request host.
+Optional WebAuthn relying-party ID override. Derived automatically from
+`WIREBUDDY_PUBLIC_ORIGIN` when unset; falls back to the request host for
+localhost development.
 
 ### `PASSKEY_RP_NAME`
 
@@ -293,6 +286,10 @@ Do not enable them in production.
 is carried in the enrollment token and then persisted in node state.
 
 ## GeoIP
+
+GeoIP database paths and download URLs auto-resolve under
+`WIREBUDDY_DATA_DIR` with a built-in download source; overriding them is only
+needed for air-gapped installs or mirrored downloads.
 
 ### `WIREBUDDY_GEOIP_DB_PATH`
 
@@ -379,6 +376,14 @@ Directory for the process banner lock. Default: `/run/wirebuddy`.
 
 ## Development and CI
 
+### `WIREBUDDY_SKIP_APPLICATION_LOCK`
+
+Set to `1`, `true`, or `yes` to skip the exclusive lock on the data directory.
+The lock makes a second control plane on the same data directory fail at
+startup. Use this only on a filesystem without `flock` support (some network
+filesystems) and only if you can guarantee that a single instance runs;
+WireBuddy logs a warning and cannot detect a second instance when it is set.
+
 ### `WIREBUDDY_SKIP_NETWORK_CHECK`
 
 Skips Docker host-network verification. Use only in tests or CI; production
@@ -386,7 +391,8 @@ Compose does not set it.
 
 ### `WIREBUDDY_TEST_MODE` and `WIREBUDDY_MIN_GEOIP_SIZE`
 
-Relax GeoIP fixture size checks for tests. They are not production settings.
+Relax GeoIP fixture size checks for tests. They are not production settings
+and should only be set by the test suite itself, never in `.env`.
 
 ### `TESTING`
 

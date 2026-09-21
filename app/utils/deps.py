@@ -16,16 +16,16 @@ from typing import Protocol, cast
 
 from fastapi import HTTPException, Request
 
-from ..utils.config import Config
+from ..db.sqlite_runtime import (
+	close_connection,
+	connect,
+)
 from ..utils.backup_lock import (
 	BackupLockBusyError,
 	acquire_restore_read_guard,
 	is_restore_in_progress,
 )
-from ..db.sqlite_runtime import (
-	close_connection,
-	connect,
-)
+from ..utils.config import Config
 
 _log = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def _restore_in_progress(state: AppState) -> bool:
 
 
 
-def get_conn(request: Request) -> Generator[Connection, None, None]:
+def get_conn(request: Request) -> Generator[Connection]:
 	"""Yield a per-request SQLite connection.
 
 	This dependency exposes a synchronous sqlite3 connection and is intended for

@@ -87,9 +87,17 @@
                             <div class="mt-2 ps-2 small">
                                 <code class="d-block mb-1">||example.com^        Block domain + subdomains</code>
                                 <code class="d-block mb-1">@@||example.com^      Allow override</code>
-                                <code class="d-block mb-1">||ads*.example.com^   Wildcard</code>
-                                <code class="d-block mb-1">/^ad[0-9]+\./         Regex</code>
+                                <code class="d-block mb-1">||ads*.example.com^   Wildcard (log-only, see note)</code>
+                                <code class="d-block mb-1">/^ad[0-9]+\./         Regex (log-only, see note)</code>
                                 <code class="d-block mb-2">! comment             Comment</code>
+                                <p class="mb-2 text-warning-emphasis">
+                                    <span class="material-icons align-middle icon-sm" aria-hidden="true">info</span>
+                                    Wildcard and regex block rules cannot be enforced by Unbound
+                                    (no wildcard/regex support in DNS zone data). They are
+                                    evaluated only after the query already resolved, so matches
+                                    show up in the log but the client still receives the answer.
+                                    Use exact <code>||domain^</code> rules to actually block a domain.
+                                </p>
                                 <a href="https://gill-bates.github.io/wirebuddy/configuration/dns/#adguard-syntax"
                                    target="_blank"
                                    rel="noopener noreferrer"

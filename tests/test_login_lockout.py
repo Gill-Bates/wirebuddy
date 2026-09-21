@@ -15,30 +15,14 @@ from __future__ import annotations
 
 import sqlite3
 
-import pytest
-
-from app.db import sqlite_runtime as rt
 from app.db.sqlite_auth import (
 	_USERNAME_LOCKOUT_POLICY,
 	clear_login_attempts,
 	is_ip_locked,
 	record_failed_login,
 )
-from app.db.sqlite_schema import init_schema
 
 _FRESH_IP = "203.0.113.99"  # never used to record a failure
-
-
-@pytest.fixture()
-def conn():
-	rt._ensure_sqlite_adapters()
-	connection = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
-	connection.row_factory = sqlite3.Row
-	init_schema(connection)
-	try:
-		yield connection
-	finally:
-		connection.close()
 
 
 def _fail_from_distinct_ips(conn: sqlite3.Connection, username: str, count: int) -> None:
@@ -83,3 +67,25 @@ def test_other_username_is_unaffected(conn):
 	_fail_from_distinct_ips(conn, "admin", _USERNAME_LOCKOUT_POLICY.min_failures + 5)
 	# A different account is not throttled by attacks on "admin".
 	assert is_ip_locked(conn, _FRESH_IP, "bob")[0] is False
+
+
+# ─── policy bounds (independent of the configured values) ────────────────────
+#
+# The tests above derive everything from `_USERNAME_LOCKOUT_POLICY`, so they
+# stay green even if the policy itself regresses to something unsafe (e.g.
+# min_failures=1, which would turn the throttle into a single-guess lockout,
+# or a max_seconds so large it becomes a durable, DoS-able account lockout).
+# These bounds are deliberately independent of the live config.
+
+
+def test_username_policy_threshold_is_not_trivially_low():
+	# A one- or two-attempt threshold would let an attacker lock out the admin
+	# account (or trip the throttle for everyone) with a couple of guesses.
+	assert _USERNAME_LOCKOUT_POLICY.min_failures >= 10
+
+
+def test_username_policy_cap_stays_a_brief_throttle():
+	# The whole point of a separate, short cap (vs. the per-IP policy's 24h) is
+	# that a legitimate admin is never durably locked out. One hour is already
+	# generous; regressing towards the 24h IP cap would defeat that guarantee.
+	assert 0 < _USERNAME_LOCKOUT_POLICY.max_seconds <= 3600

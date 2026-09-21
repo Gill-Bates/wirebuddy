@@ -17,6 +17,7 @@ P3TERX GeoLite.mmdb mirror.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fcntl
 import functools
 import ipaddress
@@ -26,13 +27,15 @@ import re
 import stat
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import formatdate
 from pathlib import Path
 from threading import RLock
-from typing import TYPE_CHECKING, Any, Required, TypedDict
+from typing import TYPE_CHECKING, Required, TypedDict
 from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urljoin
@@ -44,11 +47,18 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 __all__ = [
-    "GeoLocation", "IPInfo",
-    "geolocate_ip", "lookup_asn", "lookup_ip",
-    "ensure_geoip_databases", "ensure_geoip_databases_async", "get_geoip_build_info",
-    "close_readers", "eager_init",
-    "resolve_country_from_url", "resolve_country_from_url_async",
+    "GeoLocation",
+    "IPInfo",
+    "close_readers",
+    "eager_init",
+    "ensure_geoip_databases",
+    "ensure_geoip_databases_async",
+    "geolocate_ip",
+    "get_geoip_build_info",
+    "lookup_asn",
+    "lookup_ip",
+    "resolve_country_from_url",
+    "resolve_country_from_url_async",
 ]
 
 # ---------------------------------------------------------------------------
@@ -92,6 +102,17 @@ _DEFAULT_GEOIP_ALLOWED_HOSTS = {
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
 _GEOIP_DOWNLOAD_TOTAL_TIMEOUT_SECONDS = 120.0
 _GEOIP_DOWNLOAD_LOCK = RLock()
+
+# socket.getaddrinfo() has no timeout parameter, so a slow/unresponsive
+# resolver can block for as long as the OS resolver itself allows. Awaiting
+# resolve_country_from_url() with asyncio.wait_for()/asyncio.timeout() only
+# abandons the *await* - the blocking call keeps running in whatever thread
+# it was submitted to. Running it through this small, dedicated executor
+# instead of the caller's asyncio.to_thread() pool means repeated timeouts
+# can strand at most _DNS_LOOKUP_MAX_WORKERS threads here, never the shared
+# default pool used by the rest of the application.
+_DNS_LOOKUP_MAX_WORKERS = 4
+_DNS_LOOKUP_EXECUTOR = ThreadPoolExecutor(max_workers=_DNS_LOOKUP_MAX_WORKERS, thread_name_prefix="geoip-dns")
 
 
 def _read_geoip_cache_size() -> int:
@@ -251,11 +272,8 @@ def _get_http_date(path: Path) -> str:
     # Try getting build epoch from MMDB first for better accuracy
     http_date = formatdate(stat_result.st_mtime, usegmt=True)
     if _HAS_GEOIP:
-        try:
-            with geoip2.database.Reader(str(path)) as reader:
-                http_date = formatdate(reader.metadata().build_epoch, usegmt=True)
-        except Exception:
-            pass
+        with contextlib.suppress(Exception), geoip2.database.Reader(str(path)) as reader:
+            http_date = formatdate(reader.metadata().build_epoch, usegmt=True)
     _HTTP_DATE_CACHE[path] = (stat_result.st_mtime_ns, http_date)
     return http_date
 
@@ -272,7 +290,7 @@ def _atomic_write_text(path: Path, content: str, *, mode: int = 0o644) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         tmp_path.replace(path)
-        os.chmod(path, mode)
+        path.chmod(mode)
         _fsync_dir(path.parent)
     finally:
         with suppress(OSError):
@@ -284,7 +302,7 @@ def _atomic_write_text(path: Path, content: str, *, mode: int = 0o644) -> None:
 class _ReaderManager:
     """Thread-safe, lazy-initialized GeoIP reader manager."""
 
-    __slots__ = ("_spec", "_reader", "_lock", "_not_found_logged")
+    __slots__ = ("_lock", "_not_found_logged", "_reader", "_spec")
 
     def __init__(self, spec: _DBSpec) -> None:
         self._spec = spec
@@ -301,14 +319,14 @@ class _ReaderManager:
         with self._lock:
             if self._reader is not None:
                 return self._reader
-            
+
             p = self.resolve_path(data_dir)
             if not p.exists():
                 if not self._not_found_logged:
                     self._not_found_logged = True
                     _log.info("%s database not found at %s – disabled.", self._spec.name, p)
                 return None
-            
+
             try:
                 self._reader = geoip2.database.Reader(str(p))
                 _log.info("Initialized %s reader from %s", self._spec.name, p)
@@ -351,12 +369,12 @@ def _verify_mmdb(path: Path, spec: _DBSpec) -> bool:
     """Verify MMDB size and type."""
     if not path.exists():
         return False
-    
+
     size = path.stat().st_size
     min_size = spec.min_size
     if os.getenv("WIREBUDDY_TEST_MODE") == "1":
         min_size = max(_ABSOLUTE_MIN_SIZE, int(os.getenv("WIREBUDDY_MIN_GEOIP_SIZE", str(min_size))))
-    
+
     if size < min_size:
         _log.warning("GeoIP %s too small: %d bytes", path.name, size)
         return False
@@ -368,7 +386,7 @@ def _verify_mmdb(path: Path, spec: _DBSpec) -> bool:
                 if spec.expected_type not in db_type:
                     _log.warning("GeoIP %s type mismatch: expected %s, got %s", path.name, spec.expected_type, db_type)
                     return False
-                _log.info("GeoIP %s verified: %s (build %s)", path.name, db_type, 
+                _log.info("GeoIP %s verified: %s (build %s)", path.name, db_type,
                           datetime.fromtimestamp(reader.metadata().build_epoch, tz=UTC).date())
         except Exception as exc:
             _log.warning("GeoIP %s verification failed: %s", path.name, exc)
@@ -411,7 +429,7 @@ def _download_db(
                 headers["If-Modified-Since"] = http_date
 
         _validate_download_response_target(download_url, requested_url=download_url)
-        req = Request(download_url, headers=headers)
+        req = Request(download_url, headers=headers)  # noqa: S310  (scheme and host are enforced by _validate_download_response_target on the line above, and redirects by _ValidatedRedirectHandler below)
         deadline = time.monotonic() + _GEOIP_DOWNLOAD_TOTAL_TIMEOUT_SECONDS
 
         class _ValidatedRedirectHandler(HTTPRedirectHandler):
@@ -452,12 +470,12 @@ def _download_db(
                         raise ValueError(f"Download exceeded safety limit ({_MAX_DOWNLOAD_SIZE} bytes)")
                 f.flush()
                 os.fsync(f.fileno())
-        
+
         if temp_path is None or not _verify_mmdb(temp_path, spec):
             return False
 
         temp_path.replace(target)
-        os.chmod(target, 0o644)
+        Path(target).chmod(0o644)
         _fsync_dir(target.parent)
         _HTTP_DATE_CACHE.pop(target, None)
         _log.info("GeoIP %s updated successfully (%d bytes)", spec.name, downloaded)
@@ -537,9 +555,8 @@ def ensure_geoip_databases(data_dir: Path | None = None, force: bool = False) ->
 
     geoip_dir = _get_geoip_dir(data_dir)
     lock_path = geoip_dir / ".geoip-update.lock"
-    with _GEOIP_DOWNLOAD_LOCK:
-        with _acquire_geoip_file_lock(lock_path):
-            return _ensure_geoip_databases_locked(data_dir, force)
+    with _GEOIP_DOWNLOAD_LOCK, _acquire_geoip_file_lock(lock_path):
+        return _ensure_geoip_databases_locked(data_dir, force)
 
 
 async def ensure_geoip_databases_async(data_dir: Path | None = None, force: bool = False) -> dict[str, bool]:
@@ -628,17 +645,31 @@ def eager_init() -> None:
     _asn_mgr.get()
 
 
-def resolve_country_from_url(url: str) -> str | None:
+def _resolve_hostname_addrinfo(hostname: str) -> list[tuple]:
+    """Blocking dual-stack DNS resolution; runs inside _DNS_LOOKUP_EXECUTOR."""
+    import socket
+
+    return socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+
+
+def resolve_country_from_url(url: str, *, timeout: float | None = None) -> str | None:
     """Blocking helper that resolves a URL hostname to an ISO country code.
 
-    Uses dual-stack DNS (IPv4 + IPv6) via :func:`socket.getaddrinfo`.
+    Uses dual-stack DNS (IPv4 + IPv6) via :func:`socket.getaddrinfo`, submitted
+    to a small dedicated thread pool (not the caller's own thread) so a
+    ``timeout`` can actually bound the resolver call. ``socket.getaddrinfo()``
+    itself has no timeout parameter, and a caller-side ``asyncio.wait_for()``
+    would only abandon the await while the blocking call kept running to
+    completion in its worker thread; bounding it here instead means a slow
+    resolver strands a thread in this dedicated, size-limited pool rather than
+    in the caller's own (shared) thread pool.
+
     Safe to call from a threadpool worker (blocking I/O, no event-loop needed).
 
     Returns the lowercase ISO 3166-1 alpha-2 country code, or ``None`` if the
-    hostname cannot be resolved or has no GeoIP record.
+    hostname cannot be resolved, the lookup times out, or there is no GeoIP
+    record for any resolved address.
     """
-    import socket
-
     if not url:
         return None
     try:
@@ -650,7 +681,14 @@ def resolve_country_from_url(url: str) -> str | None:
             return None
         if "." not in hostname:
             return None
-        addrinfo = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+
+        future = _DNS_LOOKUP_EXECUTOR.submit(_resolve_hostname_addrinfo, hostname)
+        try:
+            addrinfo = future.result(timeout=timeout)
+        except FutureTimeoutError:
+            _log.warning("GeoIP DNS resolution for %s timed out after %.1fs", hostname, timeout)
+            return None
+
         if not addrinfo:
             return None
         seen_ips: set[str] = set()
@@ -675,7 +713,7 @@ async def resolve_country_from_url_async(url: str) -> str | None:
     sem = getattr(loop, "_wirebuddy_geoip_dns_semaphore", None)
     if sem is None:
         sem = asyncio.Semaphore(8)
-        setattr(loop, "_wirebuddy_geoip_dns_semaphore", sem)
+        loop._wirebuddy_geoip_dns_semaphore = sem  # noqa: SLF001  (a deliberately namespaced attribute on the running loop, which is how per-loop state is attached without a global)
     try:
         await asyncio.wait_for(sem.acquire(), timeout=0.1)
     except TimeoutError:

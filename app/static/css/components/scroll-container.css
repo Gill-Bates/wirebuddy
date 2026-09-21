@@ -16,8 +16,7 @@
  * Use for most scrollable content areas.
  */
 .wb-scroll-area {
-    overflow-y: auto;
-    overflow-x: hidden;
+    overflow: hidden auto;
     min-height: 0;
     scrollbar-gutter: stable;
     overscroll-behavior-y: contain;
@@ -26,8 +25,7 @@
 
 /* Horizontal scroll variant */
 .wb-scroll-area-x {
-    overflow-x: auto;
-    overflow-y: hidden;
+    overflow: auto hidden;
     min-width: 0;
     scrollbar-gutter: stable;
     overscroll-behavior-x: contain;
@@ -49,8 +47,7 @@
 
 /* Compact variant without scrollbar gutter (for small containers) */
 .wb-scroll-area-compact {
-    overflow-y: auto;
-    overflow-x: hidden;
+    overflow: hidden auto;
     min-height: 0;
     overscroll-behavior-y: contain;
     -webkit-overflow-scrolling: touch;
@@ -58,8 +55,7 @@
 
 /* Table scroll area (preserves table layout) */
 .wb-scroll-area-table {
-    overflow-x: auto;
-    overflow-y: auto;
+    overflow: auto;
     min-height: 0;
     -webkit-overflow-scrolling: touch;
 }
@@ -67,8 +63,7 @@
 /* Full-height scroll area (fills parent) */
 .wb-scroll-area-fill {
     flex: 1 1 0%;
-    overflow-y: auto;
-    overflow-x: hidden;
+    overflow: hidden auto;
     min-height: 0;
     scrollbar-gutter: stable;
     overscroll-behavior-y: contain;
@@ -168,7 +163,6 @@
 
 /* Prevent elastic overscroll at page level */
 @supports (-webkit-touch-callout: none) {
-
     .wb-scroll-area,
     .wb-scroll-area-fill {
         /* Prevent scroll bounce from propagating to parent */
@@ -251,7 +245,6 @@
  * ============================================ */
 
 @media print {
-
     .wb-scroll-area,
     .wb-scroll-area-x,
     .wb-scroll-area-both,

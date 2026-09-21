@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: AGPL-3.0
+# SPDX-License-Identifier: MIT
 #
 
 """Runtime service protocol and base implementation.
@@ -153,7 +153,7 @@ class RuntimeService(ABC):
             self._stopped_at = None
             self._health = ServiceHealth(state=self._state, healthy=True)
             _log.info("SERVICE_STARTED name=%s", self.name)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._state = ServiceState.FAILED
             self._health = ServiceHealth(
                 state=self._state,
@@ -211,7 +211,7 @@ class RuntimeService(ABC):
                     asyncio.gather(*self._background_tasks, return_exceptions=True),
                     timeout=self.stop_timeout,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pending = sum(1 for task in self._background_tasks if not task.done())
                 _log.warning(
                     "SERVICE_STOP_TASKS_TIMEOUT name=%s timeout=%.1fs pending=%d",
@@ -234,7 +234,7 @@ class RuntimeService(ABC):
             self._stopped_at = datetime.now(UTC)
             self._health = ServiceHealth(state=self._state, healthy=True)
             _log.info("SERVICE_STOPPED name=%s", self.name)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._state = ServiceState.STOPPED
             self._stopped_at = datetime.now(UTC)
             self._health = ServiceHealth(
@@ -328,7 +328,7 @@ class RuntimeService(ABC):
         try:
             await asyncio.wait_for(self._shutdown_event.wait(), timeout=timeout)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
 
     @abstractmethod

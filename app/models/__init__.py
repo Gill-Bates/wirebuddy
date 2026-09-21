@@ -6,6 +6,13 @@
 
 """Pydantic models for WireBuddy."""
 
+from .peers import (
+	PeerConfig,
+	PeerCreate,
+	PeerPublic,
+	PeerStats,
+	PeerUpdate,
+)
 from .users import (
 	LoginRequest,
 	PasswordChangeRequest,
@@ -14,26 +21,19 @@ from .users import (
 	UserPublic,
 	UserUpdate,
 )
-from .peers import (
-	PeerCreate,
-	PeerPublic,
-	PeerUpdate,
-	PeerConfig,
-	PeerStats,
-)
 
 __all__ = [
 	# Users
 	"LoginRequest",
 	"PasswordChangeRequest",
+	"PeerConfig",
+	# Peers
+	"PeerCreate",
+	"PeerPublic",
+	"PeerStats",
+	"PeerUpdate",
 	"TokenResponse",
 	"UserCreate",
 	"UserPublic",
 	"UserUpdate",
-	# Peers
-	"PeerCreate",
-	"PeerPublic",
-	"PeerUpdate",
-	"PeerConfig",
-	"PeerStats",
 ]

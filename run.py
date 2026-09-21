@@ -22,12 +22,13 @@ if ENV_FILE.exists():
 	load_dotenv(ENV_FILE)
 
 # ---------------------------------------------------------
-
-from app.utils.config import load_config
-from app.db.sqlite_runtime import connect
-from app.db.sqlite_schema import init_schema
-from app.db.sqlite_settings import get_setting
-
+# Deliberately imported after load_dotenv() above so app.utils.config and any
+# module it pulls in observe .env values at import time, not just at
+# load_config() call time.
+from app.db.sqlite_runtime import connect  # noqa: E402
+from app.db.sqlite_schema import init_schema  # noqa: E402
+from app.db.sqlite_settings import get_setting  # noqa: E402
+from app.utils.config import load_config  # noqa: E402
 
 _LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -35,12 +36,10 @@ _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 class UvicornMessageFilter(logging.Filter):
 	"""Filter to downgrade specific uvicorn messages from INFO to DEBUG."""
-	
+
 	def filter(self, record: logging.LogRecord) -> bool:
 		# Drop the noisy shutdown message instead of mutating the shared record.
-		if record.levelno == logging.INFO and "Finished server process" in record.getMessage():
-			return False
-		return True
+		return not (record.levelno == logging.INFO and "Finished server process" in record.getMessage())
 
 
 _UVICORN_LOG_CONFIG: dict = {
@@ -236,7 +235,7 @@ def main() -> None:
 		"true",
 		"yes",
 	)
-	proxy_allow_ips = os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1").strip() or "127.0.0.1"
+	proxy_allow_ips = os.environ.get("WIREBUDDY_TRUSTED_PROXIES", "127.0.0.1,::1").strip() or "127.0.0.1,::1"
 	public_origin = os.environ.get("WIREBUDDY_PUBLIC_ORIGIN", "").strip()
 	if not public_origin and wg_fqdn:
 		# The database FQDN is an explicit administrator setting and is safe to

@@ -12,7 +12,7 @@ import hashlib
 import hmac
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 _PBKDF2_ALGORITHM = "sha256"
 _PBKDF2_ITERATIONS = 600_000
@@ -28,7 +28,7 @@ _MAX_TOKEN_HOURS = 24 * 30
 # Dummy hash for timing attack prevention when username doesn't exist
 # Pre-computed with 600k iterations to match real password verification timing
 DUMMY_PASSWORD_HASH = (
-	"pbkdf2:sha256:600000"
+	"pbkdf2:sha256:600000"  # noqa: S105  (a fixed dummy hash for login timing equalisation, not a credential)
 	"$00000000000000000000000000000000"
 	"$0000000000000000000000000000000000000000000000000000000000000000"
 )
@@ -48,29 +48,29 @@ def _password_bytes(password: str) -> bytes:
 
 def hash_password(password: str) -> str:
 	"""Hash a password using PBKDF2-SHA256 with random salt.
-	
+
 	Returns:
 		Format: 'pbkdf2:sha256:iterations$salt$hash'
 	"""
 	salt = os.urandom(_PASSWORD_SALT_BYTES)
 	iterations = _PBKDF2_ITERATIONS  # OWASP recommended minimum for PBKDF2-SHA256
-	
+
 	dk = hashlib.pbkdf2_hmac(
 		_PBKDF2_ALGORITHM,
 		_password_bytes(password),
 		salt,
 		iterations,
 	)
-	
+
 	salt_hex = salt.hex()
 	hash_hex = dk.hex()
-	
+
 	return f"pbkdf2:sha256:{iterations}${salt_hex}${hash_hex}"
 
 
 def verify_password(password: str, password_hash: str) -> bool:
 	"""Verify a password against a stored hash.
-	
+
 	Uses constant-time comparison to prevent timing attacks.
 	"""
 	try:
@@ -78,11 +78,11 @@ def verify_password(password: str, password_hash: str) -> bool:
 		parts = password_hash.split("$")
 		if len(parts) != 3:
 			return False
-		
+
 		method_parts = parts[0].split(":")
 		if len(method_parts) != 3 or method_parts[0] != "pbkdf2":
 			return False
-		
+
 		algorithm = method_parts[1]
 		if algorithm != _PBKDF2_ALGORITHM:
 			return False
@@ -98,7 +98,7 @@ def verify_password(password: str, password_hash: str) -> bool:
 		stored_hash = bytes.fromhex(parts[2])
 		if len(stored_hash) != _PASSWORD_HASH_BYTES:
 			return False
-		
+
 		# Compute hash of provided password
 		dk = hashlib.pbkdf2_hmac(
 			algorithm,
@@ -106,10 +106,10 @@ def verify_password(password: str, password_hash: str) -> bool:
 			salt,
 			iterations,
 		)
-		
+
 		# Constant-time comparison
 		return hmac.compare_digest(dk, stored_hash)
-		
+
 	except (ValueError, IndexError, TypeError):
 		return False
 
@@ -121,19 +121,11 @@ def new_token() -> str:
 
 def hash_token(token: str) -> str:
 	"""Hash a token for storage using SHA-256.
-	
+
 	We hash tokens before storage so that database leaks don't
 	directly expose valid authentication tokens.
 	"""
 	return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def token_expired(expires_at: datetime) -> bool:
-	"""Check if a token has expired."""
-	now = datetime.now(timezone.utc)
-	if expires_at.tzinfo is None:
-		return True
-	return now >= expires_at.astimezone(timezone.utc)
 
 
 def generate_token_expiry(
@@ -142,12 +134,12 @@ def generate_token_expiry(
 	now: datetime | None = None,
 ) -> tuple[datetime, datetime]:
 	"""Generate token expiry timestamps.
-	
+
 	Args:
 		hours: Initial validity period in hours (default: 1)
 		max_hours: Maximum validity period in hours (default: 24)
 		now: Optional anchor time (UTC). Uses current UTC time when omitted.
-	
+
 	Returns:
 		Tuple of (expires_at, max_expires_at) datetimes
 	"""
@@ -162,7 +154,7 @@ def generate_token_expiry(
 	if now is not None and now.tzinfo is None:
 		raise ValueError("now must be timezone-aware")
 
-	now = now or datetime.now(timezone.utc)
+	now = now or datetime.now(UTC)
 	expires_at = now + timedelta(hours=hours)
 	max_expires_at = now + timedelta(hours=max_hours)
 	return expires_at, max_expires_at

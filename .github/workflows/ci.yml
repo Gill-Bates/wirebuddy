@@ -1,0 +1,179 @@
+#
+# .github/workflows/ci.yml
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+#
+# The PR gate. docker-build.yml only runs on release tags and docs-build.yml is
+# filtered to docs/**, so before this workflow existed nothing stood between a
+# broken commit and main - a failure first surfaced during the release itself,
+# the one run where it is most expensive. Gates on pytest, the correctness half
+# of ruff, the container entrypoint and Dockerfile, and the single-manifest
+# invariant.
+#
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Ruff + pytest
+    # Every job here names its image instead of following ubuntu-latest, which
+    # moves x64 runners to Ubuntu 26.04 in a gradual rollout from 2026-10-19 to
+    # 2026-11-19 (actions/runner-images#14748) - weeks in which two runs of one
+    # commit could disagree about the OS. Taking 26.04 now rather than being
+    # taken there keeps the image a reviewable line instead of a date.
+    #
+    # Nothing here depends on the host's pre-cached toolchains: Python comes
+    # from setup-python, which publishes 26.04 builds.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          # Matches requires-python in pyproject.toml and the python:3.13-slim
+          # stages in docker/Dockerfile.
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # The tests import app/, so the runtime stack has to be present too, not
+      # just the dev extra. Both lists come out of pyproject.toml through
+      # tools/pyproject-deps.py so the pins stay in one place - every runtime
+      # dependency carries an exact == pin, which is what makes this install
+      # reproducible without a lockfile.
+      #
+      # The project itself is deliberately not installed: [tool.pytest]
+      # pythonpath = ["."] already puts the source tree on sys.path, and a
+      # `pip install .` would only add a build step that can fail on its own.
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python tools/pyproject-deps.py dev > requirements-ci.txt
+          python tools/pyproject-deps.py >> requirements-ci.txt
+          cat requirements-ci.txt
+          pip install -r requirements-ci.txt
+
+      # The full rule set configured in pyproject.toml, blocking. The tree was
+      # brought to zero findings before this became a gate; the deliberate
+      # exemptions live in pyproject.toml with the reasoning next to each one
+      # (the slowapi `request` parameter, subprocess invocation of wg/ip/iptables,
+      # dynamic SQL identifiers, EN DASH in prose, local wall-clock scheduling),
+      # and narrower cases carry a per-line `# noqa` naming the reason.
+      #
+      # Prefer fixing over exempting. If a new finding really does not apply,
+      # annotate the line rather than widening the ignore list, so the next
+      # reader can tell a decision from a blanket.
+      #
+      # `ruff format` is configured in pyproject.toml and available locally, but
+      # is still deliberately not a gate: adopting it would reformat the tree in
+      # one commit and bury the next real diff.
+      - name: Ruff
+        run: ruff check --output-format=github .
+
+      # No WIREBUDDY_SECRET_KEY here on purpose. The app refuses to start
+      # without one, but the tests do not start it: they set what they need with
+      # monkeypatch, and tests/test_audit_hardening.py asserts the behaviour
+      # when the variable is *absent* (it calls monkeypatch.delenv on it). An
+      # ambient value would silently change what that test exercises.
+      - name: pytest
+        run: pytest
+
+  container:
+    name: Dockerfile + entrypoint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # The image is only ever built from a release tag, so without these two
+      # steps a broken entrypoint or Dockerfile stays invisible until the
+      # release itself. The full multi-arch build is far too slow for a PR;
+      # these are the cheap half that still catches a typo.
+      #
+      # entrypoint.sh runs as bash (its shebang is /usr/bin/env bash) and uses
+      # bash-only syntax, so it is parsed as bash rather than sh. -n parses
+      # without executing, so none of the wg/unbound handling runs here.
+      - name: Entrypoint shell syntax
+        run: bash -n docker/entrypoint.sh
+
+      # BuildKit's own linter: resolves the stages (builder,
+      # wireguard-tools-builder, runtime-base, runtime), the ARG/ENV references
+      # and the COPY --from targets, and reports on them without running a
+      # single build step. Non-zero on any finding.
+      - name: Dockerfile check
+        run: docker build --check -f docker/Dockerfile .
+
+  manifest:
+    name: pyproject.toml is the only manifest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # VERSION, requirements.txt and docs/requirements-docs.txt were folded
+      # into pyproject.toml (see the comment at the top of it). Reintroducing
+      # any of them would give the release workflow, the running container and
+      # the docs build two versions to disagree about.
+      - name: Reject reintroduced manifests
+        run: |
+          set -euo pipefail
+          failed=0
+          for stale in VERSION requirements.txt docs/requirements-docs.txt; do
+            if [ -e "$stale" ]; then
+              echo "ERROR: $stale is back - pyproject.toml is the single manifest"
+              failed=1
+            fi
+          done
+          [ "$failed" -eq 0 ]
+
+      # docker-build.yml rejects a version this check would not accept, but it
+      # only runs once the tag is already pushed - and a tag is not retractable
+      # in the same way a commit is. Same regex as the release workflow's, kept
+      # strict to X.Y.Z with an optional prerelease suffix.
+      - name: Version is release-shaped
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          echo "pyproject.toml version: ${VERSION}"
+          echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+
+      # Every runtime dependency carries an exact pin, which is what lets CI,
+      # a local install and the published image resolve to one set of versions
+      # without a lockfile. A range would quietly reintroduce the drift the
+      # pins exist to prevent, so it is rejected here rather than discovered
+      # when two environments disagree.
+      - name: Runtime dependencies are pinned
+        run: |
+          set -euo pipefail
+          python3 tools/pyproject-deps.py > runtime-requirements.txt
+          unpinned="$(grep -vE '==' runtime-requirements.txt || true)"
+          if [ -n "$unpinned" ]; then
+            echo 'ERROR: these runtime dependencies are not pinned with ==:'
+            printf '%s\n' "$unpinned"
+            exit 1
+          fi
+          echo "All $(wc -l < runtime-requirements.txt) runtime dependencies are pinned."

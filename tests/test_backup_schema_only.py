@@ -14,6 +14,7 @@ manifest handling, TSDB range filtering and the configuration restore.
 from __future__ import annotations
 
 import gzip
+import io
 import json
 import sqlite3
 import tarfile
@@ -25,23 +26,25 @@ from fastapi import HTTPException
 
 from app.api import backup
 
-
 SECRET_KEY = "test-secret-key-0123456789"
 
 
-def _make_db(path: Path) -> None:
+def _make_db(
+    path: Path,
+    *,
+    username: str = "admin",
+    setting_value: str = "do-not-export-via-schema",
+) -> None:
     conn = sqlite3.connect(str(path))
     try:
-        conn.executescript(
-            """
+        conn.executescript(f"""
             CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL);
             CREATE UNIQUE INDEX idx_users_username ON users(username);
             CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
             CREATE VIEW user_count AS SELECT COUNT(*) AS n FROM users;
-            INSERT INTO users (username) VALUES ('admin');
-            INSERT INTO settings (key, value) VALUES ('secret', 'do-not-export-via-schema');
-            """
-        )
+            INSERT INTO users (username) VALUES ({username!r});
+            INSERT INTO settings (key, value) VALUES ('secret', {setting_value!r});
+            """)
         conn.commit()
     finally:
         conn.close()
@@ -205,7 +208,6 @@ def test_tar_validation_rejects_legacy_members(tmp_path: Path) -> None:
     legacy = tmp_path / "legacy.tar.gz"
     with tarfile.open(legacy, mode="w:gz") as tar:
         for name in ("data/wirebuddy.db", "data/certs/cert.pem", "data/dns/unbound.conf"):
-            import io
             data = b"x"
             info = tarfile.TarInfo(name)
             info.size = len(data)
@@ -367,7 +369,7 @@ def test_restore_preserves_configuration_data(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     live_db = data_dir / "wirebuddy.db"
-    _make_db(live_db)  # existing install with different rows
+    _make_db(live_db, username="stale-admin", setting_value="stale-value")
 
     # Stale WAL/SHM sidecars must be cleared by a successful restore.
     (data_dir / "wirebuddy.db-wal").write_bytes(b"stale-wal")
@@ -394,6 +396,9 @@ def test_restore_preserves_configuration_data(tmp_path: Path) -> None:
         assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
         assert conn.execute("SELECT username FROM users").fetchone()[0] == "admin"
         assert conn.execute("SELECT COUNT(*) FROM settings").fetchone()[0] == 1
+        assert conn.execute("SELECT value FROM settings WHERE key = 'secret'").fetchone()[0] == (
+            "do-not-export-via-schema"
+        )
     finally:
         conn.close()
 
@@ -402,8 +407,8 @@ def test_restore_preserves_configuration_data(tmp_path: Path) -> None:
 
 
 def test_scheduled_backup_uses_persisted_options(tmp_path: Path) -> None:
-    """Integration: the scheduler reads include_tsdb/range from settings and the
-    produced archive's manifest and members reflect them."""
+    """Integration: the scheduler reads include_tsdb/range from settings and the produced archive's manifest and members reflect them."""
+    from app.db import sqlite_runtime as rt
     from app.db.sqlite_schema import init_schema
     from app.db.sqlite_settings import set_setting
 
@@ -411,6 +416,9 @@ def test_scheduled_backup_uses_persisted_options(tmp_path: Path) -> None:
     data_dir.mkdir()
     db_path = data_dir / "wirebuddy.db"
 
+    # The app's own datetime adapter, as sqlite_runtime.connect() installs it;
+    # without it set_setting() hits sqlite3's deprecated default adapter.
+    rt._ensure_sqlite_adapters()
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:

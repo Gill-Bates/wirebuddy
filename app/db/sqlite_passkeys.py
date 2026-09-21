@@ -8,10 +8,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sqlite3
-
-import hashlib
 import time
 
 from ..utils.time import utcnow
@@ -58,22 +57,6 @@ def get_passkey_by_credential_id(
 	return cur.fetchone()
 
 
-def get_passkey_by_id(conn: sqlite3.Connection, passkey_id: int) -> sqlite3.Row | None:
-	"""Get a passkey by its ID."""
-	if conn.row_factory is not sqlite3.Row:
-		raise TypeError("row_factory must be sqlite3.Row")
-	cur = conn.execute(
-		"""
-		SELECT id, user_id, credential_id, public_key, sign_count,
-			   device_name, transports, created_at
-		FROM passkeys
-		WHERE id = ?
-		""",
-		(passkey_id,),
-	)
-	return cur.fetchone()
-
-
 def create_passkey(
 	conn: sqlite3.Connection,
 	user_id: int,
@@ -84,10 +67,10 @@ def create_passkey(
 	transports: str | None = None,
 ) -> int:
 	"""Create a new passkey credential.
-	
+
 	Returns:
 		The new passkey ID.
-		
+
 	Raises:
 		ValueError: If credential_id is already registered, or sign_count is negative
 		RuntimeError: If INSERT did not return a row ID
@@ -108,9 +91,9 @@ def create_passkey(
 		except sqlite3.IntegrityError as e:
 			_log.warning("Passkey creation failed for user_id=%d: %s", user_id, e)
 			raise ValueError("Credential ID already registered") from e
-		
+
 		row_id = cur.lastrowid
-		
+
 		_log.info(
 			"Passkey created: id=%d user_id=%d device=%s",
 			row_id,
@@ -126,15 +109,18 @@ def update_passkey_sign_count(
 	new_sign_count: int,
 ) -> None:
 	"""Update the sign count for replay protection.
-	
+
 	Enforces monotonicity: new_sign_count must be greater than current value.
-	
+
 	Note: Consider adding last_used_at column to passkeys table for better
 	credential hygiene tracking.
-	
+
 	Raises:
-		ValueError: If sign count regression is detected (potential cloned authenticator)
+		ValueError: If new_sign_count is not a non-negative integer, or if a sign
+			count regression is detected (potential cloned authenticator)
 	"""
+	if type(new_sign_count) is not int or new_sign_count < 0:
+		raise ValueError("new_sign_count must be a non-negative integer")
 	with transaction(conn):
 		if new_sign_count == 0:
 			existing = conn.execute("SELECT sign_count FROM passkeys WHERE id = ?", (passkey_id,)).fetchone()
@@ -149,7 +135,7 @@ def update_passkey_sign_count(
 				raise ValueError(f"Sign count regression blocked for passkey {passkey_id}")
 			_log.debug("Sign count is 0 for passkey_id=%d (non-incrementing authenticator)", passkey_id)
 			return
-			
+
 		cur = conn.execute(
 			"UPDATE passkeys SET sign_count = ? WHERE id = ? AND sign_count < ?",
 			(new_sign_count, passkey_id, new_sign_count),
@@ -158,7 +144,7 @@ def update_passkey_sign_count(
 			existing = conn.execute("SELECT sign_count FROM passkeys WHERE id = ?", (passkey_id,)).fetchone()
 			if existing is None:
 				raise ValueError(f"Passkey {passkey_id} not found")
-			
+
 			_log.error(
 				"Sign count regression blocked for passkey_id=%d: current=%d, attempted=%d",
 				passkey_id, existing[0], new_sign_count,
@@ -171,21 +157,22 @@ def update_passkey_sign_count(
 
 def delete_passkey(conn: sqlite3.Connection, passkey_id: int, user_id: int) -> bool:
 	"""Delete a passkey by ID, scoped to the owning user.
-	
+
 	Args:
+		conn: Open SQLite connection
 		passkey_id: The passkey ID to delete
 		user_id: The user ID that owns the passkey (ownership verification)
-	
+
 	Returns:
 		True if deleted, False if not found or not owned by user.
 	"""
 	with transaction(conn):
 		existing = conn.execute("SELECT user_id FROM passkeys WHERE id = ?", (passkey_id,)).fetchone()
-		
+
 		if existing is None:
 			_log.warning("Passkey delete: id=%d not found (user_id=%d)", passkey_id, user_id)
 			return False
-			
+
 		if existing[0] != user_id:
 			_log.error("Passkey delete: ownership mismatch id=%d owner=%d requester=%d", passkey_id, existing[0], user_id)
 			return False
@@ -247,13 +234,14 @@ def store_challenge(
 	username: str | None,
 ) -> None:
 	"""Store a WebAuthn challenge in the database.
-	
+
 	Args:
+		conn: Open SQLite connection
 		challenge: Base64url-encoded challenge string
 		ceremony_type: 'registration' or 'authentication'
 		user_id: User ID (required for registration, optional for auth)
 		username: Username (required for registration)
-		
+
 	Raises:
 		ValueError: If ceremony_type is invalid
 		sqlite3.IntegrityError: If challenge already exists (replay)
@@ -267,12 +255,12 @@ def store_challenge(
 			raise ValueError("registration challenge requires a valid user_id")
 		if not str(username or "").strip():
 			raise ValueError("registration challenge requires a username")
-	
+
 	now = time.time()
 	expires_at = now + _CHALLENGE_TTL_SECONDS
-	
+
 	with transaction(conn):
-		
+
 		# Insert new challenge
 		conn.execute(
 			"""
@@ -281,7 +269,7 @@ def store_challenge(
 			""",
 			(challenge, ceremony_type, user_id, username, expires_at, now),
 		)
-	
+
 	_log.debug(
 		"Stored %s challenge for user_id=%s (expires in %ds)",
 		ceremony_type,
@@ -296,14 +284,15 @@ def consume_challenge(
 	expected_ceremony_type: str,
 ) -> tuple[int | None, str | None]:
 	"""Consume a WebAuthn challenge from the database.
-	
+
 	Args:
+		conn: Open SQLite connection
 		challenge: Base64url-encoded challenge string
 		expected_ceremony_type: 'registration' or 'authentication'
-		
+
 	Returns:
 		(user_id, username) tuple. user_id may be None for usernameless auth.
-		
+
 	Raises:
 		KeyError: If challenge not found (expired, used, or invalid)
 		ValueError: If ceremony_type doesn't match
@@ -312,7 +301,7 @@ def consume_challenge(
 	if expected_ceremony_type not in ("registration", "authentication"):
 		raise ValueError(f"Invalid ceremony_type: {expected_ceremony_type}")
 	now = time.time()
-	
+
 	with transaction(conn, immediate=True):
 		row = conn.execute(
 			"""
@@ -353,20 +342,3 @@ def consume_challenge(
 
 		_log.info("Consumed %s challenge for user_id=%s", ceremony_type, user_id)
 	return (user_id, username)
-
-
-def cleanup_expired_challenges(conn: sqlite3.Connection) -> int:
-	"""Remove expired challenges from the database.
-	
-	Returns:
-		Number of challenges removed.
-	"""
-
-	now = time.time()
-	with transaction(conn):
-		cur = conn.execute("DELETE FROM passkey_challenges WHERE expires_at <= ?", (now,))
-		count = cur.rowcount
-	
-	if count > 0:
-		_log.debug("Cleaned up %d expired challenge(s)", count)
-	return count

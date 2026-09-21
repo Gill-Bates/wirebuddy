@@ -22,9 +22,10 @@ import os
 import socket
 import stat
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO
 
 _log = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ def _acquire_lock_file(
 			lock_file.seek(0)
 			lock_file.truncate()
 			lock_file.write(
-				f"pid={os.getpid()} host={socket.gethostname()} acquired_at={time.time():.6f}\n".encode("utf-8")
+				f"pid={os.getpid()} host={socket.gethostname()} acquired_at={time.time():.6f}\n".encode()
 			)
 			lock_file.flush()
 			os.fsync(lock_file.fileno())

@@ -29,9 +29,9 @@ from typing import Any
 
 __all__ = [
     "apply_config",
-    "shutdown_all_interfaces",
-    "has_running_interfaces",
     "get_wg_dump",
+    "has_running_interfaces",
+    "shutdown_all_interfaces",
 ]
 
 _log = logging.getLogger(__name__)
@@ -58,6 +58,55 @@ _TIMEOUT_WG_SET = 15
 _TIMEOUT_WG_QUICK = 30
 _LOCK_TIMEOUT = 60  # Seconds to wait for file lock acquisition
 _LOCK_RETRY_INTERVAL = 0.2
+
+# The node daemon runs as root. Resolving privileged tools via a bare name
+# (relying on $PATH) means a writable PATH entry could substitute a
+# malicious binary for `ip`, `wg`, `wg-quick`, `sysctl`, `iptables` or
+# `ip6tables` - root code execution. Every privileged tool is therefore
+# resolved once, at import time, to a fixed absolute path. `wg-quick` also
+# runs the `PostUp`/`PostDown` hooks below through a shell as root, so those
+# hooks must reference the same absolute paths rather than bare names.
+#
+# This candidate list is duplicated rather than imported from app/main.py's
+# _resolve_trusted_binary: importing it here would pull the whole FastAPI
+# application into the node daemon, which deliberately does not depend on it.
+_TRUSTED_BIN_CANDIDATES: dict[str, tuple[Path, ...]] = {
+    "ip": (Path("/usr/sbin/ip"), Path("/sbin/ip"), Path("/usr/bin/ip"), Path("/bin/ip")),
+    "wg": (Path("/usr/bin/wg"), Path("/bin/wg"), Path("/usr/sbin/wg"), Path("/sbin/wg")),
+    "wg-quick": (
+        Path("/usr/bin/wg-quick"), Path("/bin/wg-quick"),
+        Path("/usr/sbin/wg-quick"), Path("/sbin/wg-quick"),
+    ),
+    "sysctl": (Path("/usr/sbin/sysctl"), Path("/sbin/sysctl"), Path("/usr/bin/sysctl")),
+    "iptables": (
+        Path("/usr/sbin/iptables"), Path("/sbin/iptables"),
+        Path("/usr/bin/iptables"), Path("/bin/iptables"),
+    ),
+    "ip6tables": (
+        Path("/usr/sbin/ip6tables"), Path("/sbin/ip6tables"),
+        Path("/usr/bin/ip6tables"), Path("/bin/ip6tables"),
+    ),
+}
+
+
+def _resolve_trusted_binary(name: str) -> str:
+    """Resolve a privileged tool to a fixed absolute path.
+
+    Raises immediately at import time if the tool is missing so the node
+    daemon fails fast instead of silently falling back to $PATH lookup.
+    """
+    for candidate in _TRUSTED_BIN_CANDIDATES[name]:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    raise RuntimeError(f"Required binary '{name}' not found in any trusted location")
+
+
+_IP_BIN = _resolve_trusted_binary("ip")
+_WG_BIN = _resolve_trusted_binary("wg")
+_WG_QUICK_BIN = _resolve_trusted_binary("wg-quick")
+_SYSCTL_BIN = _resolve_trusted_binary("sysctl")
+_IPTABLES_BIN = _resolve_trusted_binary("iptables")
+_IP6TABLES_BIN = _resolve_trusted_binary("ip6tables")
 
 
 @dataclass(slots=True, frozen=True)
@@ -100,6 +149,7 @@ def _run(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            check=False,
         )
         return result.returncode, result.stdout, _redact_keys(result.stderr)
     except subprocess.TimeoutExpired:
@@ -267,7 +317,7 @@ def _validate_peer_config(raw: dict[str, Any], valid_ifaces: set[str], is_master
     iface_name = _validate_interface_name(raw.get("interface"))
     if iface_name not in valid_ifaces:
         raise ValueError(f"Peer references unknown interface {iface_name!r}")
-    
+
     endpoint = raw.get("endpoint")
     return PeerConfig(
         interface=iface_name,
@@ -339,7 +389,7 @@ def _write_raw_managed_config(conf_path: Path, content: str, *, suffix: str = ".
             handle.write(content.encode("utf-8"))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_path, conf_path)
+        Path(tmp_path).replace(conf_path)
         _fsync_dir(conf_path.parent)
     finally:
         if fd != -1:
@@ -352,7 +402,7 @@ def _get_default_route_iface() -> str | None:
     """Detect the default-route network interface via `ip route get`."""
     try:
         code, stdout, _ = _run(
-            ["ip", "-4", "route", "get", "1.1.1.1"], timeout=_TIMEOUT_WG_SHOW,
+            [_IP_BIN, "-4", "route", "get", "1.1.1.1"], timeout=_TIMEOUT_WG_SHOW,
         )
         if code == 0 and stdout.strip():
             # "1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.2 uid 0"
@@ -384,9 +434,9 @@ def _build_node_post_up(_iface_name: str, cached_phy: str | None = None) -> str:
     phy = cached_phy or _get_default_route_iface() or "eth0"
     if _INTERFACE_RE.fullmatch(phy) is None:
         raise RuntimeError(f"Unsafe default route interface name: {phy!r}")
-    rules = ["sysctl -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1 || true"]
-    rules.extend(_fw_rules("iptables", "I", phy))
-    rules.extend(_fw_rules("ip6tables", "I", phy))
+    rules = [f"{_SYSCTL_BIN} -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1 || true"]
+    rules.extend(_fw_rules(_IPTABLES_BIN, "I", phy))
+    rules.extend(_fw_rules(_IP6TABLES_BIN, "I", phy))
     return "; ".join(rules)
 
 
@@ -394,8 +444,8 @@ def _build_node_post_down(_iface_name: str, cached_phy: str | None = None) -> st
     phy = cached_phy or _get_default_route_iface() or "eth0"
     if _INTERFACE_RE.fullmatch(phy) is None:
         raise RuntimeError(f"Unsafe default route interface name: {phy!r}")
-    rules = _fw_rules("iptables", "D", phy)
-    rules.extend(_fw_rules("ip6tables", "D", phy))
+    rules = _fw_rules(_IPTABLES_BIN, "D", phy)
+    rules.extend(_fw_rules(_IP6TABLES_BIN, "D", phy))
     return "; ".join(rules)
 
 
@@ -439,7 +489,7 @@ def _write_interface_config(name: str, config: InterfaceConfig, cached_phy: str 
 
 def _runtime_tmp_dir() -> Path:
     """Prefer a root-owned runtime directory for ephemeral key material."""
-    for candidate in (Path("/run"), Path("/dev/shm")):
+    for candidate in (Path("/run"), Path("/dev/shm")):  # noqa: S108  (tmpfs candidates chosen so secrets never touch disk, not a temp-file path)
         if candidate.is_dir():
             return candidate
     raise RuntimeError(
@@ -489,7 +539,7 @@ def _remove_interface_config(name: str) -> None:
 
 def _get_running_interfaces() -> set[str]:
     """Return set of currently running WireGuard interfaces."""
-    code, stdout, stderr = _run(["wg", "show", "interfaces"], timeout=_TIMEOUT_WG_SHOW)
+    code, stdout, stderr = _run([_WG_BIN, "show", "interfaces"], timeout=_TIMEOUT_WG_SHOW)
     if code != 0:
         _log.warning("Failed to query running WireGuard interfaces: %s", stderr.strip() or "unknown error")
         return set()
@@ -535,7 +585,7 @@ def _parse_and_validate(config: dict[str, Any]) -> tuple[str, list[InterfaceConf
     """Phase 0: Parse and validate all config objects safely."""
     if not isinstance(config, dict):
         raise ValueError("Config must be a dictionary")
-    
+
     version = config.get("config_version", "")
     if not isinstance(version, str):
         raise ValueError(f"config_version must be string, got {type(version).__name__}")
@@ -543,26 +593,26 @@ def _parse_and_validate(config: dict[str, Any]) -> tuple[str, list[InterfaceConf
         raise ValueError(f"config_version must be between 1 and 128 characters, got {len(version)}")
     if any(ch in version for ch in ("\n", "\r", "\x00")):
         raise ValueError("config_version contains control characters")
-    
+
     raw_interfaces = config.get("interfaces", [])
     raw_peers = config.get("peers", [])
     raw_master = config.get("master_peer")
-    
+
     if not isinstance(raw_interfaces, list) or not isinstance(raw_peers, list):
         raise ValueError("Invalid config payload: interfaces/peers must be lists")
 
     interfaces = [_validate_interface_config(iface) for iface in raw_interfaces]
     if len(interfaces) > _MAX_INTERFACES:
         raise ValueError(f"Config exceeds maximum of {_MAX_INTERFACES} interfaces")
-    
+
     desired_ifaces = {iface.name for iface in interfaces}
     if len(desired_ifaces) != len(interfaces):
         raise ValueError("Duplicate interface names in config payload")
 
     peers = [_validate_peer_config(peer, desired_ifaces) for peer in raw_peers]
     if len(peers) > _MAX_INTERFACES * _MAX_PEERS_PER_INTERFACE:
-        raise ValueError(f"Config exceeds maximum total peer count")
-    
+        raise ValueError("Config exceeds maximum total peer count")
+
     peers_by_interface: dict[str, list[PeerConfig]] = {name: [] for name in desired_ifaces}
     for peer in peers:
         peers_by_interface[peer.interface].append(peer)
@@ -576,7 +626,7 @@ def _parse_and_validate(config: dict[str, Any]) -> tuple[str, list[InterfaceConf
     all_peer_keys: set[str] = set()
     for iface_peers in peers_by_interface.values():
         if len(iface_peers) > _MAX_PEERS_PER_INTERFACE + 1: # +1 for master
-            raise ValueError(f"Interface exceeds maximum peer limits")
+            raise ValueError("Interface exceeds maximum peer limits")
         for peer in iface_peers:
             if peer.public_key in all_peer_keys:
                 raise ValueError(f"Duplicate peer public key across interfaces: {peer.public_key[:8]}...")
@@ -594,41 +644,80 @@ def _write_interface_configs(interfaces: list[InterfaceConfig]) -> dict[str, boo
     return changed_map
 
 
+def _restore_interface_runtime(name: str, backup_content: str | None) -> None:
+    """Best-effort restore of an interface's previous config and runtime state.
+
+    Used both for a single interface's own reload failure and for rolling
+    back interfaces that already succeeded when a later interface in the
+    same apply_config() call fails.
+    """
+    conf_path = _get_interface_conf_path(name)
+    _run([_WG_QUICK_BIN, "down", name], timeout=_TIMEOUT_WG_QUICK)
+    if backup_content is None:
+        _log.critical("No previous managed config available to restore for %s; interface left down", name)
+        return
+    try:
+        _write_raw_managed_config(conf_path, backup_content, suffix=".restore.tmp")
+        _run_checked([_WG_QUICK_BIN, "up", name], timeout=_TIMEOUT_WG_QUICK)
+        _log.warning("Successfully restored previous config for %s", name)
+    except Exception as restore_exc:
+        _log.critical("Failed to restore %s (interface offline): %s", name, restore_exc)
+
+
+def _sync_one_interface_state(name: str, changed: bool, running: set[str], backup_content: str | None) -> None:
+    """Start or reload a single interface. Restores itself on reload failure.
+
+    Bringing up a not-yet-running interface for the first time has nothing
+    to restore to, so only the reload path (an already-running interface
+    with a changed config) rolls itself back on failure.
+    """
+    if name not in running:
+        _log.info("Bringing up interface %s...", name)
+        _run_checked([_WG_QUICK_BIN, "up", name], timeout=_TIMEOUT_WG_QUICK)
+        _log.info("Interface %s is up", name)
+        return
+    if not changed:
+        return
+    _log.info("Reloading interface %s (config changed)...", name)
+    try:
+        _run_checked([_WG_QUICK_BIN, "down", name], timeout=_TIMEOUT_WG_QUICK)
+        _run_checked([_WG_QUICK_BIN, "up", name], timeout=_TIMEOUT_WG_QUICK)
+        _log.info("Interface %s reloaded", name)
+    except RuntimeError as exc:
+        _log.critical("Interface reload failed for %s: %s", name, exc)
+        _log.warning("Attempting to restore previous config for %s...", name)
+        _restore_interface_runtime(name, backup_content)
+        raise
+
+
 def _sync_interface_states(
     interfaces: list[InterfaceConfig],
     changed_map: dict[str, bool],
     backups: dict[str, str],
 ) -> None:
-    """Phase 2: Start or reload interfaces."""
+    """Phase 2: Start or reload interfaces, rolling back completed ones on failure.
+
+    _sync_one_interface_state() already restores itself when its own reload
+    fails, but earlier interfaces in this loop that already succeeded were
+    previously left on the new config, mixing old and new runtime state
+    when a later interface fails. Track every interface already brought to
+    the new state so all of them (except the one that just failed and
+    already restored itself) can be rolled back together.
+    """
     running = _get_running_interfaces()
-    for iface in interfaces:
-        name = iface.name
-        changed = changed_map.get(name, False)
-        if name not in running:
-            _log.info("Bringing up interface %s...", name)
-            _run_checked(["wg-quick", "up", name], timeout=_TIMEOUT_WG_QUICK)
-            _log.info("Interface %s is up", name)
-        elif changed:
-            _log.info("Reloading interface %s (config changed)...", name)
-            conf_path = _get_interface_conf_path(name)
-            backup_content = backups.get(name)
+    completed: list[str] = []
+    try:
+        for iface in interfaces:
+            name = iface.name
+            _sync_one_interface_state(name, changed_map.get(name, False), running, backups.get(name))
+            completed.append(name)
+    except Exception:
+        for name in reversed(completed):
             try:
-                _run_checked(["wg-quick", "down", name], timeout=_TIMEOUT_WG_QUICK)
-                _run_checked(["wg-quick", "up", name], timeout=_TIMEOUT_WG_QUICK)
-                _log.info("Interface %s reloaded", name)
-            except RuntimeError as exc:
-                _log.critical("Interface reload failed for %s: %s", name, exc)
-                if backup_content is None:
-                    _log.critical("No previous managed config available to restore for %s", name)
-                else:
-                    _log.warning("Attempting to restore previous config for %s...", name)
-                    try:
-                        _write_raw_managed_config(conf_path, backup_content, suffix=".restore.tmp")
-                        _run_checked(["wg-quick", "up", name], timeout=_TIMEOUT_WG_QUICK)
-                        _log.warning("Successfully restored previous config for %s", name)
-                    except Exception as restore_exc:
-                        _log.critical("Failed to restore %s (interface offline): %s", name, restore_exc)
-                raise
+                _restore_interface_runtime(name, backups.get(name))
+            except Exception:
+                _log.exception("Failed to restore interface %s during cross-interface rollback", name)
+        raise
 
 
 def _remove_orphaned_interfaces(desired_ifaces: set[str]) -> None:
@@ -637,7 +726,7 @@ def _remove_orphaned_interfaces(desired_ifaces: set[str]) -> None:
     for name in running - desired_ifaces:
         if _is_managed_interface(name):
             _log.info("Bringing down removed interface %s...", name)
-            _run_checked(["wg-quick", "down", name], timeout=_TIMEOUT_WG_QUICK)
+            _run_checked([_WG_QUICK_BIN, "down", name], timeout=_TIMEOUT_WG_QUICK)
             _remove_interface_config(name)
 
 
@@ -650,18 +739,18 @@ def _apply_config_locked(config: dict[str, Any]) -> str:
         for iface in interfaces
         if (managed_config := _read_managed_config(_get_interface_conf_path(iface.name))) is not None
     }
-    
+
     # Phase 1 & 2: Interfaces
     changed_map = _write_interface_configs(interfaces)
     _sync_interface_states(interfaces, changed_map, backups)
-    
+
     # Phase 3: Peers (handles normal node peers + master peer)
     _sync_peers_for_interfaces(interfaces, peers_by_interface)
 
     # Phase 4: Teardown old
     desired_ifaces = {i.name for i in interfaces}
     _remove_orphaned_interfaces(desired_ifaces)
-    
+
     return version
 
 
@@ -673,13 +762,13 @@ def _ensure_routes_for_allowed_ips(iface_name: str, allowed_ips: str) -> None:
     """
     added: list[tuple[str, str]] = []
     try:
-        for ip_str in allowed_ips.split(","):
-            ip_str = ip_str.strip()
+        for raw_ip_str in allowed_ips.split(","):
+            ip_str = raw_ip_str.strip()
             if not ip_str:
                 continue
             ip_family_flag = "-6" if ":" in ip_str.split("/")[0] else "-4"
             code, _, stderr = _run(
-                ["ip", ip_family_flag, "route", "replace", ip_str, "dev", iface_name],
+                [_IP_BIN, ip_family_flag, "route", "replace", ip_str, "dev", iface_name],
                 timeout=_TIMEOUT_WG_SET
             )
             if code != 0:
@@ -690,7 +779,7 @@ def _ensure_routes_for_allowed_ips(iface_name: str, allowed_ips: str) -> None:
             added.append((ip_family_flag, ip_str))
     except Exception:
         for ip_family_flag, ip_str in reversed(added):
-            _run(["ip", ip_family_flag, "route", "delete", ip_str, "dev", iface_name], timeout=_TIMEOUT_WG_SET)
+            _run([_IP_BIN, ip_family_flag, "route", "delete", ip_str, "dev", iface_name], timeout=_TIMEOUT_WG_SET)
         raise
 
 
@@ -722,7 +811,7 @@ def _wipe_and_unlink(path: Path) -> None:
 def _get_current_peer_state(iface_name: str) -> dict[str, PeerState]:
     """Return dict mapping public_key -> PeerState for current peers."""
     code, stdout, stderr = _run(
-        ["wg", "show", iface_name, "dump"], timeout=_TIMEOUT_WG_SHOW,
+        [_WG_BIN, "show", iface_name, "dump"], timeout=_TIMEOUT_WG_SHOW,
     )
     if code != 0:
         raise RuntimeError(f"Failed to query peers for {iface_name}: {_redact_keys(stderr.strip() or 'unknown error')}")
@@ -744,11 +833,11 @@ def _get_current_peer_state(iface_name: str) -> dict[str, PeerState]:
 
 def _delete_routes_for_allowed_ips(iface_name: str, allowed_ips: str) -> None:
     """Best-effort removal of routes for a peer's allowed IPs."""
-    for ip in allowed_ips.split(","):
-        ip = ip.strip()
+    for raw_ip in allowed_ips.split(","):
+        ip = raw_ip.strip()
         if ip:
             ip_family_flag = "-6" if ":" in ip else "-4"
-            _run(["ip", ip_family_flag, "route", "delete", ip, "dev", iface_name])
+            _run([_IP_BIN, ip_family_flag, "route", "delete", ip, "dev", iface_name])
 
 
 def _restore_peer_state(iface_name: str, previous: dict[str, PeerState]) -> None:
@@ -758,7 +847,7 @@ def _restore_peer_state(iface_name: str, previous: dict[str, PeerState]) -> None
         if key in previous:
             continue
         _delete_routes_for_allowed_ips(iface_name, peer.allowed_ips)
-        _run(["wg", "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
+        _run([_WG_BIN, "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
 
     for key, peer in previous.items():
         current_peer = current.get(key)
@@ -766,9 +855,9 @@ def _restore_peer_state(iface_name: str, previous: dict[str, PeerState]) -> None
             _delete_routes_for_allowed_ips(iface_name, current_peer.allowed_ips)
 
         if current_peer is not None and current_peer.endpoint is not None and peer.endpoint is None:
-            _run_checked(["wg", "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
+            _run_checked([_WG_BIN, "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
 
-        cmd = ["wg", "set", iface_name, "peer", key, "allowed-ips", peer.allowed_ips]
+        cmd = [_WG_BIN, "set", iface_name, "peer", key, "allowed-ips", peer.allowed_ips]
         if peer.endpoint:
             cmd.extend(["endpoint", peer.endpoint])
         cmd.extend(["persistent-keepalive", str(peer.persistent_keepalive or 0)])
@@ -842,7 +931,7 @@ def _sync_peers_for_interface_unchecked(
     for key in current_keys - desired_keys:
         _log.info("Removing peer %s... from %s", key[:8], iface_name)
         ip_str = current_state[key].allowed_ips
-        _run_checked(["wg", "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
+        _run_checked([_WG_BIN, "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
         _delete_routes_for_allowed_ips(iface_name, ip_str)
 
     changed = 0
@@ -853,7 +942,7 @@ def _sync_peers_for_interface_unchecked(
         current_ips = current_peer.allowed_ips.replace(" ", "")
         current_endpoint = current_peer.endpoint
         endpoint_removed = key in current_keys and current_endpoint is not None and p.endpoint is None
-        
+
         needs_update = (
             key not in current_keys or
             desired_ips != current_ips or
@@ -869,9 +958,9 @@ def _sync_peers_for_interface_unchecked(
             _delete_routes_for_allowed_ips(iface_name, current_peer.allowed_ips)
 
         if endpoint_removed:
-            _run_checked(["wg", "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
+            _run_checked([_WG_BIN, "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
 
-        cmd = ["wg", "set", iface_name, "peer", key, "allowed-ips", p.peer_address]
+        cmd = [_WG_BIN, "set", iface_name, "peer", key, "allowed-ips", p.peer_address]
         if p.endpoint:
             cmd.extend(["endpoint", p.endpoint])
         cmd.extend(["persistent-keepalive", str(p.persistent_keepalive or 0)])
@@ -891,7 +980,7 @@ def _sync_peers_for_interface_unchecked(
             _ensure_routes_for_allowed_ips(iface_name, p.peer_address)
         except Exception:
             _log.warning("Rolling back peer %s on %s after failed route/runtime update", key[:8], iface_name)
-            _run(["wg", "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
+            _run([_WG_BIN, "set", iface_name, "peer", key, "remove"], timeout=_TIMEOUT_WG_SET)
             raise
         changed += 1
         _log.debug("Synced peer on %s: %s...", iface_name, key[:8])
@@ -903,17 +992,28 @@ def _sync_peers_for_interface_unchecked(
 
 
 def shutdown_all_interfaces() -> None:
-    """Bring down all WireGuard interfaces."""
+    """Bring down all managed WireGuard interfaces.
+
+    Raises RuntimeError aggregating every interface that failed to go down,
+    so callers can tell a clean shutdown from one that left an interface
+    active in the host network namespace.
+    """
     running = _get_running_interfaces()
+    failures: list[str] = []
     for name in running:
         if _is_managed_interface(name):
             _log.info("Shutting down interface %s...", name)
-            _run(["wg-quick", "down", name])
+            code, _, stderr = _run([_WG_QUICK_BIN, "down", name], timeout=_TIMEOUT_WG_QUICK)
+            if code != 0:
+                _log.error("Failed to bring down interface %s: %s", name, stderr.strip() or "unknown error")
+                failures.append(name)
+    if failures:
+        raise RuntimeError(f"Failed to shut down interface(s): {', '.join(failures)}")
 
 
 def get_wg_dump() -> dict[str, dict[str, Any]]:
     """Collect `wg show all dump` and return structured data."""
-    code, stdout, _ = _run(["wg", "show", "all", "dump"], timeout=_TIMEOUT_WG_SHOW)
+    code, stdout, _ = _run([_WG_BIN, "show", "all", "dump"], timeout=_TIMEOUT_WG_SHOW)
     if code != 0 or not stdout.strip():
         return {}
 

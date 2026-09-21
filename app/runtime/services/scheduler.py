@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: AGPL-3.0
+# SPDX-License-Identifier: MIT
 #
 
 """Background task scheduler service.
@@ -17,7 +17,6 @@ Manages:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -58,8 +57,8 @@ class SchedulerService(RuntimeService):
 
     async def _do_start(self) -> None:
         """Initialize and start the scheduler."""
-        from ...utils.scheduler import Scheduler
         from ...tasks.scheduler_config import register_all_tasks
+        from ...utils.scheduler import Scheduler
 
         if self._container is None:
             raise RuntimeError("SchedulerService requires container injection")

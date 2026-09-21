@@ -13,15 +13,9 @@
     "dependencies": {
         "@axe-core/playwright": "latest",
         "@playwright/test": "latest",
-        "chalk": "latest",
-        "fast-glob": "latest",
-        "lighthouse": "^13.4.1",
-        "mime-types": "latest",
         "pixelmatch": "latest",
         "pngjs": "latest",
         "postcss": "^8.5.15",
-        "sharp": "^0.35.4",
-        "ssim.js": "latest",
-        "zod": "latest"
+        "ssim.js": "latest"
     }
 }

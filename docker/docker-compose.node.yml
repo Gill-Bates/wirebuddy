@@ -9,6 +9,7 @@ services:
       - ALL
     cap_add:
       - NET_ADMIN
+
     environment:
       SERVER_MODE: node
       WIREBUDDY_ENROLLMENT_TOKEN: "${WIREBUDDY_ENROLLMENT_TOKEN:?Set WIREBUDDY_ENROLLMENT_TOKEN in .env}"
@@ -16,16 +17,23 @@ services:
       WIREBUDDY_DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       TZ: "${TZ:-Etc/UTC}"
+
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
     security_opt:
       - no-new-privileges:true
     devices:
       - /dev/net/tun:/dev/net/tun
     volumes:
       - ./data:/app/data
+
     healthcheck:
-      disable: true
+      test: ["CMD", "pgrep", "-f", "app.node.daemon"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

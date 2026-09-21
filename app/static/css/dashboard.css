@@ -44,7 +44,7 @@
         width: auto;
     }
 
-    .dashboard-traffic-metric .dashboard-metric-unit {
+    :where(.dashboard-traffic-metric .dashboard-metric-unit) {
         margin-left: 0;
     }
 
@@ -75,7 +75,7 @@
 
     /* Allow cards to shrink inside grid/flex layouts */
     .card,
-    .card-body {
+    :where(.card-body) {
         min-width: 0;
     }
 
@@ -110,13 +110,13 @@
         flex-wrap: wrap;
     }
 
-    .dashboard-traffic-summary .dashboard-metric-prefix {
+    :where(.dashboard-traffic-summary .dashboard-metric-prefix) {
         font-weight: 600;
     }
 
-    .dashboard-metric-prefix,
+    :where(.dashboard-metric-prefix),
     .dashboard-metric-value,
-    .dashboard-metric-unit {
+    :where(.dashboard-metric-unit) {
         font-variant-numeric: tabular-nums;
     }
 
@@ -169,8 +169,7 @@
         min-width: 0;
     }
 
-    @media (min-width: 1200px) {
-
+    @media (width >= 1200px) {
         /* Dashboard page fills viewport — no scroll on desktop */
         .dashboard-page {
             display: flex;
@@ -213,6 +212,7 @@
         .dashboard-map-col {
             grid-column: 1;
             grid-row: 1 / 4;
+
             /* spannt alle 3 Zeilen */
             min-height: 0;
         }
@@ -240,6 +240,7 @@
         #peer-map {
             height: 100%;
             min-height: 500px;
+
             /* Increase map height for better visibility */
         }
 
@@ -254,6 +255,7 @@
         .dashboard-speedtest-col .card {
             flex: 1 1 auto;
             min-height: 260px;
+
             /* Increase speedtest card height */
         }
 
@@ -274,6 +276,7 @@
         .dashboard-recent-peers-col {
             grid-column: 2;
             grid-row: 2 / 4;
+
             /* spannt Zeile 2 + 3 */
             min-height: 0;
             display: flex;
@@ -322,10 +325,9 @@
         white-space: nowrap;
     }
 
-    .recent-peers-card .card-body {
+    :where(.recent-peers-card .card-body) {
         min-height: 0;
-        overflow-y: auto;
-        overflow-x: hidden;
+        overflow: hidden auto;
         padding: 0;
         display: flex;
     }
@@ -403,11 +405,11 @@
     }
 
     #recent-peers .peer-row-clickable:hover {
-        background-color: var(--bs-tertiary-bg, rgba(0, 0, 0, 0.04));
+        background-color: var(--bs-tertiary-bg, rgb(0 0 0 / 4%));
     }
 
 
-    @media (max-width: 1199.98px) {
+    @media (width <= 1199.98px) {
         .dashboard-map-col .card {
             height: auto;
         }
@@ -418,7 +420,7 @@
         }
     }
 
-    @media (max-width: 991.98px) {
+    @media (width <= 991.98px) {
         #peer-map {
             height: clamp(360px, 45vh, 500px);
         }
@@ -433,7 +435,7 @@
         }
     }
 
-    @media (max-width: 767.98px) {
+    @media (width <= 767.98px) {
         #peer-map {
             height: 300px;
         }
@@ -461,14 +463,13 @@
         }
     }
 
-    @media (max-width: 575.98px) {
+    @media (width <= 575.98px) {
         #peer-map {
             height: 260px;
         }
 
         .dashboard-kpi-grid {
-            row-gap: 0.55rem;
-            column-gap: 0.55rem;
+            gap: 0.55rem;
         }
 
         .dashboard-kpi-tile {
@@ -522,8 +523,7 @@
             display: flex !important;
             flex-wrap: nowrap !important;
             gap: 0 !important;
-            overflow-x: auto !important;
-            overflow-y: hidden !important;
+            overflow: auto hidden !important;
             padding-bottom: 0.35rem !important;
             scroll-snap-type: x mandatory !important;
             scroll-behavior: smooth;
@@ -597,20 +597,19 @@
         height: 24px;
         background: #6c757d;
         border-radius: 50%;
-        box-shadow: 0 0 0 4px rgba(108, 117, 125, 0.3);
+        box-shadow: 0 0 0 4px rgb(108 117 125 / 30%);
         opacity: 0.6;
         animation: pulse-offline 3s ease-in-out infinite;
     }
 
     .pulse-marker.connected {
         background: var(--wb-primary, #88171a);
-        box-shadow: 0 0 0 6px rgba(var(--bs-primary-rgb), 0.35);
+        box-shadow: 0 0 0 6px rgb(var(--bs-primary-rgb), 0.35);
         opacity: 1;
         animation: pulse-online 2s ease-in-out infinite;
     }
 
     @media (prefers-reduced-motion: reduce) {
-
         .pulse-marker,
         .pulse-marker.connected {
             animation: none;
@@ -634,11 +633,11 @@
         border-bottom: 1px solid var(--bs-border-color);
     }
 
-    .map-popup-header strong {
+    :where(.map-popup-header strong) {
         font-size: 0.95rem;
     }
 
-    .map-popup-header .badge {
+    :where(.map-popup-header .badge) {
         font-size: 0.7rem;
         padding: 0.25em 0.5em;
     }
@@ -663,7 +662,7 @@
     }
 
     /* ─── Network Stats Items ───────────────────────────── */
-    .network-gauges-grid {
+    :where(.network-gauges-grid) {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 0.75rem;
@@ -674,7 +673,7 @@
         grid-column: 1 / -1;
     }
 
-    @media (max-width: 575.98px) {
+    @media (width <= 575.98px) {
         .network-sparkline {
             width: 100% !important;
             height: 72px;
@@ -686,7 +685,14 @@
         }
     }
 
-    .network-item {
+    /* Keep KPI tiles readable while the stats row is stacked below xl. */
+    @media (width >= 768px) and (width < 1200px) {
+        .dashboard-kpi-grid {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+    }
+
+    :where(.network-item) {
         padding: 0.75rem;
         border-radius: 0.5rem;
         background: var(--bs-tertiary-bg);
@@ -700,7 +706,7 @@
     }
 
     [data-bs-theme="dark"] .network-item {
-        background: rgba(255, 255, 255, 0.02);
+        background: rgb(255 255 255 / 2%);
     }
 
     /* Idle interfaces are visually subdued */
@@ -814,10 +820,9 @@
         display: inline-block;
         line-height: 0;
         appearance: none;
-        -webkit-appearance: none;
         border: 0;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.35);
+        background: rgb(255 255 255 / 35%);
         opacity: 0.75;
         transition: transform 0.15s ease, opacity 0.15s ease, background-color 0.15s ease;
         cursor: pointer;
@@ -835,13 +840,8 @@
     .dashboard-stats-row {
         --bs-gutter-x: var(--wb-space-3);
         --bs-gutter-y: var(--wb-space-3);
-        margin-bottom: var(--wb-space-3) !important;
-    }
 
-    /* CSS Grid uses gap directly */
-    .dashboard-main-grid {
-        gap: var(--wb-space-3);
-        /* single source of truth for grid spacing */
+        margin-bottom: var(--wb-space-3) !important;
     }
 
     /* ─── Dashboard KPI Tiles: stable 2x2 mobile grid ───────────── */
@@ -868,7 +868,7 @@
         min-width: 0;
     }
 
-    .dashboard-kpi-tile .wb-kpi-card .card-body>.d-flex {
+    :where(.dashboard-kpi-tile .wb-kpi-card .card-body>.d-flex) {
         min-width: 0;
     }
 
@@ -925,7 +925,7 @@
         color: var(--bs-secondary-color);
     }
 
-    @media (max-width: 575.98px) {
+    @media (width <= 575.98px) {
         .dashboard-kpi-grid {
             grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
             gap: 0.55rem;

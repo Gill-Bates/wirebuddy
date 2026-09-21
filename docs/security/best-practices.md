@@ -59,19 +59,16 @@ connect to WireBuddy on loopback; if the proxy is remote or containerized,
 configure exact trust boundaries:
 
 ```bash
-WIREBUDDY_TRUST_PROXY_HEADERS=1
-FORWARDED_ALLOW_IPS=192.168.1.10
-TRUSTED_PROXY_CIDRS=192.168.1.10/32
+WIREBUDDY_TRUSTED_PROXIES=192.168.1.10/32
 WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
-WIREBUDDY_ALLOWED_HOSTS=vpn.example.com
 ```
 
-- `FORWARDED_ALLOW_IPS` controls Uvicorn's forwarded-header trust.
-- `TRUSTED_PROXY_CIDRS` controls application client-IP and HTTPS detection.
-- `WIREBUDDY_PUBLIC_ORIGIN` makes CSRF and WebAuthn origin handling explicit.
-- `WIREBUDDY_ALLOWED_HOSTS` rejects unexpected Host headers.
+- `WIREBUDDY_TRUSTED_PROXIES` controls both Uvicorn's forwarded-header trust
+  and application client-IP/HTTPS detection.
+- `WIREBUDDY_PUBLIC_ORIGIN` makes CSRF and WebAuthn origin handling explicit,
+  and derives the Host-header allowlist automatically.
 
-Never use `FORWARDED_ALLOW_IPS=*`. See
+Never use `WIREBUDDY_TRUSTED_PROXIES=*`. See
 [Environment Variables](../configuration/environment.md#reverse-proxy-and-origin-handling).
 
 ## Restrict Network Exposure

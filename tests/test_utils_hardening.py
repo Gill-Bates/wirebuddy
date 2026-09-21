@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -32,15 +32,15 @@ class _Point:
 
 def test_point_timestamp_wins_over_node_reported_ts():
     """Nodes report their own 'ts' in the value; their clock is not authoritative."""
-    recorded = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+    recorded = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
     points = [_Point(ts=recorded, value={"node_id": "n1", "ts": "1999-01-01T00:00:00+00:00"})]
 
     assert build_latest_by_node(points)["n1"]["ts"] == recorded.isoformat()
 
 
 def test_latest_point_per_node_wins():
-    older = datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
-    newer = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+    older = datetime(2026, 6, 15, 10, 0, tzinfo=UTC)
+    newer = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
     points = [
         _Point(ts=older, value={"node_id": "n1", "download_mbit": 10}),
         _Point(ts=newer, value={"node_id": "n1", "download_mbit": 90}),
@@ -52,7 +52,7 @@ def test_latest_point_per_node_wins():
 
 
 def test_master_points_key_on_none_and_junk_is_skipped():
-    ts = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
     points = [
         _Point(ts=ts, value={"download_mbit": 50}),
         _Point(ts=ts, value="not-a-dict"),
@@ -143,6 +143,20 @@ def test_rejects_invalid_timeout(bad):
         Scheduler().add("job", 60.0, _noop, timeout=bad)
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), -0.01, 0.51, 1.0])
+def test_rejects_invalid_jitter_pct(bad):
+    """An out-of-range jitter_pct must not reach random.uniform(-range, range)."""
+    with pytest.raises(ValueError, match="jitter_pct"):
+        Scheduler().add("job", 60.0, _noop, jitter_pct=bad)
+
+
+@pytest.mark.parametrize("ok", [0.0, 0.1, 0.5])
+def test_accepts_boundary_jitter_pct(ok):
+    scheduler = Scheduler()
+    scheduler.add("job", 60.0, _noop, jitter_pct=ok)
+    assert scheduler.get_status()[0]["name"] == "job"
+
+
 def test_accepts_a_valid_job():
     scheduler = Scheduler()
     scheduler.add("job", 60.0, _noop, initial_delay=5.0, timeout=30.0, jitter_pct=0.1)
@@ -153,3 +167,36 @@ def test_timeout_none_means_no_limit():
     scheduler = Scheduler()
     scheduler.add("job", 60.0, _noop, timeout=None)
     assert scheduler.get_status()[0]["name"] == "job"
+
+
+def test_domain_lock_release_closes_fd_even_when_unlock_fails(tmp_path, monkeypatch):
+    from app.api import acme
+
+    fd = acme._acquire_domain_lock(tmp_path, "vpn.example.com")
+    assert fd is not None
+    fd_obj, _ = acme._domain_lock_fds[fd]
+
+    def failing_flock(fileno, operation):
+        raise OSError("unlock failed")
+
+    monkeypatch.setattr(acme.fcntl, "flock", failing_flock)
+    acme._release_domain_lock(fd)
+
+    assert fd_obj.closed
+    assert fd not in acme._domain_lock_fds
+
+
+@pytest.mark.parametrize(
+    ("key", "valid"),
+    [
+        ("A" * 43 + "=", True),
+        ("A" * 44, False),  # no padding
+        ("A" * 42 + "==", False),  # decodes to 31 bytes
+        ("not a key", False),
+        ("  " + "A" * 43 + "=  ", True),
+    ],
+)
+def test_is_valid_wg_key(key, valid):
+    from app.api.wireguard_utils import is_valid_wg_key
+
+    assert is_valid_wg_key(key) is valid

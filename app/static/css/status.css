@@ -5,14 +5,19 @@
 /* ── Design Tokens ──────────────────────────────────────────────────────── */
 :root {
     --flow-connector-size: 72px;
+
     /* Width of connector between nodes */
     --flow-connector-sm: 38px;
+
     /* Tablet vertical connector height */
     --flow-connector-xs: 16px;
+
     /* Mobile vertical connector height */
     --flow-line-thickness: 4px;
+
     /* Connector line thickness */
     --flow-line-thickness-sm: 2px;
+
     /* Mobile line thickness */
 }
 
@@ -43,7 +48,7 @@
     line-height: 1;
 }
 
-@media (max-width: 575.98px) {
+@media (width <= 575.98px) {
     .status-navbar-actions {
         gap: var(--wb-space-1, 0.25rem);
     }
@@ -68,21 +73,23 @@
     min-width: 0;
     position: relative;
     background:
-        linear-gradient(180deg, rgba(var(--bs-body-color-rgb), 0.03), rgba(var(--bs-body-color-rgb), 0)),
+        linear-gradient(180deg, rgb(var(--bs-body-color-rgb), 0.03), rgb(var(--bs-body-color-rgb), 0)),
         var(--bs-body-bg);
-    border: 1px solid rgba(var(--bs-body-color-rgb), 0.08);
+    border: 1px solid rgb(var(--bs-body-color-rgb), 0.08);
     border-radius: 14px;
     padding: 1rem 0.9rem;
     text-align: center;
+
     /* Shadow adds depth but has paint cost; kept minimal */
-    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+    box-shadow: 0 12px 24px rgb(15 23 42 / 6%);
+
     /* Only transform and box-shadow for performance (border-color causes repaint) */
     transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .flow-node:hover {
     transform: translateY(-2px);
-    box-shadow: 0 16px 32px rgba(15, 23, 42, 0.1);
+    box-shadow: 0 16px 32px rgb(15 23 42 / 10%);
 }
 
 /* Subtle top highlight for depth (light mode only, minimal visual impact) */
@@ -92,34 +99,34 @@
     inset: 0;
     border-radius: inherit;
     pointer-events: none;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 25%);
 }
 
 [data-bs-theme="dark"] .flow-node {
-    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 12px 24px rgb(0 0 0 / 15%);
 }
 
 [data-bs-theme="dark"] .flow-node:hover {
-    box-shadow: 0 16px 32px rgba(0, 0, 0, 0.25);
+    box-shadow: 0 16px 32px rgb(0 0 0 / 25%);
 }
 
 [data-bs-theme="dark"] .flow-node::before {
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-}
-
-[data-bs-theme="dark"] .flow-node-inactive {
-    border-color: rgba(var(--bs-secondary-rgb), 0.18);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%);
 }
 
 .flow-node-active {
-    border-color: rgba(var(--bs-success-rgb), 0.38);
+    border-color: rgb(var(--bs-success-rgb), 0.38);
 }
 
 .flow-node-inactive {
-    border-color: rgba(var(--bs-secondary-rgb), 0.24);
+    border-color: rgb(var(--bs-secondary-rgb), 0.24);
     background:
-        linear-gradient(180deg, rgba(var(--bs-secondary-rgb), 0.05), rgba(var(--bs-secondary-rgb), 0.02)),
+        linear-gradient(180deg, rgb(var(--bs-secondary-rgb), 0.05), rgb(var(--bs-secondary-rgb), 0.02)),
         var(--bs-body-bg);
+}
+
+[data-bs-theme="dark"] .flow-node-inactive {
+    border-color: rgb(var(--bs-secondary-rgb), 0.18);
 }
 
 .flow-icon {
@@ -133,7 +140,7 @@
 }
 
 .flow-node-active .flow-icon {
-    color: rgba(var(--bs-success-rgb), 1);
+    color: rgb(var(--bs-success-rgb), 1);
 }
 
 .flow-node-inactive .flow-icon {
@@ -199,14 +206,15 @@
     max-width: var(--flow-connector-size);
     border-radius: 999px;
     background: linear-gradient(90deg,
-            rgba(var(--bs-success-rgb), 0.08),
-            rgba(var(--bs-success-rgb), 0.92),
-            rgba(var(--bs-success-rgb), 0.08));
+            rgb(var(--bs-success-rgb), 0.08),
+            rgb(var(--bs-success-rgb), 0.92),
+            rgb(var(--bs-success-rgb), 0.08));
     background-size: 200% 100%;
     animation: flow 1.6s linear infinite;
+
     /* will-change hints browser to optimize; removed on inactive/reduced-motion */
     will-change: background-position;
-    box-shadow: 0 0 0 1px rgba(var(--bs-success-rgb), 0.08);
+    box-shadow: 0 0 0 1px rgb(var(--bs-success-rgb), 0.08);
 }
 
 .flow-line::after {
@@ -216,26 +224,26 @@
     top: 50%;
     width: 10px;
     height: 10px;
-    border-top: 2px solid currentColor;
-    border-right: 2px solid currentColor;
-    color: rgba(var(--bs-success-rgb), 0.92);
+    border-top: 2px solid currentcolor;
+    border-right: 2px solid currentcolor;
+    color: rgb(var(--bs-success-rgb), 0.92);
     transform: translateY(-50%) rotate(45deg);
 }
 
 /* Inactive state: no animation, muted colors */
 .flow-line-inactive {
     background: linear-gradient(90deg,
-            rgba(var(--bs-secondary-rgb), 0.08),
-            rgba(var(--bs-secondary-rgb), 0.55),
-            rgba(var(--bs-secondary-rgb), 0.08));
+            rgb(var(--bs-secondary-rgb), 0.08),
+            rgb(var(--bs-secondary-rgb), 0.55),
+            rgb(var(--bs-secondary-rgb), 0.08));
     opacity: 0.75;
     animation: none;
     will-change: auto;
-    box-shadow: 0 0 0 1px rgba(var(--bs-secondary-rgb), 0.12);
+    box-shadow: 0 0 0 1px rgb(var(--bs-secondary-rgb), 0.12);
 }
 
 .flow-line-inactive::after {
-    color: rgba(var(--bs-secondary-rgb), 0.65);
+    color: rgb(var(--bs-secondary-rgb), 0.65);
 }
 
 @keyframes flow {
@@ -259,9 +267,10 @@
 }
 
 /* ── Tablet & Touch Landscape ───────────────────────────────────────────── */
+
 /* Touch devices in landscape often have limited vertical space;
    this converts the horizontal flow to vertical for better UX */
-@media (max-width: 991.98px),
+@media (width <= 991.98px),
 ((hover: none) and (pointer: coarse) and (orientation: landscape)) {
     .flow-wrapper {
         grid-template-columns: 1fr;
@@ -283,9 +292,9 @@
         height: 100%;
         max-width: none;
         background: linear-gradient(180deg,
-                rgba(var(--bs-success-rgb), 0.08),
-                rgba(var(--bs-success-rgb), 0.92),
-                rgba(var(--bs-success-rgb), 0.08));
+                rgb(var(--bs-success-rgb), 0.08),
+                rgb(var(--bs-success-rgb), 0.92),
+                rgb(var(--bs-success-rgb), 0.08));
         background-size: 100% 200%;
         animation: flow-vertical 1.6s linear infinite;
         will-change: background-position;
@@ -301,14 +310,14 @@
     /* Vertical inactive gradient */
     .flow-line-inactive {
         background: linear-gradient(180deg,
-                rgba(var(--bs-secondary-rgb), 0.08),
-                rgba(var(--bs-secondary-rgb), 0.55),
-                rgba(var(--bs-secondary-rgb), 0.08));
+                rgb(var(--bs-secondary-rgb), 0.08),
+                rgb(var(--bs-secondary-rgb), 0.55),
+                rgb(var(--bs-secondary-rgb), 0.08));
     }
 }
 
 /* ── Mobile: Compact Horizontal Layout ──────────────────────────────────── */
-@media (max-width: 575.98px) {
+@media (width <= 575.98px) {
     .status-main .card-body {
         padding: 0.65rem;
     }
@@ -327,7 +336,7 @@
         padding: 0.5rem 0.65rem;
         text-align: left;
         border-radius: 10px;
-        box-shadow: 0 6px 12px rgba(15, 23, 42, 0.06);
+        box-shadow: 0 6px 12px rgb(15 23 42 / 6%);
     }
 
     .flow-icon {

@@ -15,7 +15,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, field_validator
@@ -26,20 +26,22 @@ from ..db.sqlite_nodes import get_all_tunnel_peer_ids
 from ..db.sqlite_peers import (
 	get_all_peers,
 	get_cumulative_transfer,
-	get_peer_metrics_stats as get_peer_metrics_stats_db,
 	reset_peer_logs,
 	update_cumulative_transfer_batch,
 	update_peers_last_seen_batch,
 )
-from ..db.sqlite_settings import (
-	get_tsdb_retention_days,
-	set_tsdb_retention_days,
-	TSDB_RETENTION_OPTIONS,
+from ..db.sqlite_peers import (
+	get_peer_metrics_stats as get_peer_metrics_stats_db,
 )
 from ..db.sqlite_runtime import close_connection, connect
+from ..db.sqlite_settings import (
+	TSDB_RETENTION_OPTIONS,
+	get_tsdb_retention_days,
+	set_tsdb_retention_days,
+)
 from ..utils.deps import get_conn, get_tsdb_dir
-from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, limiter
 from ..utils.geoip import lookup_ip
+from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, limiter
 from .auth import get_current_user, require_admin
 from .frontend_shared import CONNECTED_THRESHOLD_S
 from .response import ok_response
@@ -60,9 +62,9 @@ _T = TypeVar("_T")
 _geo_inflight: dict[str, asyncio.Future] = {}  # Per-IP deduplication for geo lookups
 
 
-class _AsyncTTLCache(Generic[_T]):
+class _AsyncTTLCache[T]:
 	"""Thread-safe async TTL cache with double-checked locking (prevents thundering herd).
-	
+
 	On compute() failure, serves stale data if available; otherwise propagates exception.
 	"""
 
@@ -80,7 +82,7 @@ class _AsyncTTLCache(Generic[_T]):
 
 	async def get_or_compute(self, compute: Callable[[], Awaitable[_T]]) -> _T:
 		"""Return cached value or call *compute*, store the result, and return it.
-		
+
 		On compute() failure:
 		- If stale data exists: log warning, return stale value
 		- If no stale data: propagate exception to caller
@@ -188,7 +190,7 @@ class TsdbRetentionUpdate(BaseModel):
 
 async def _lookup_geo_cached(ip: str) -> tuple[str, dict | None]:
 	"""Resolve GeoIP/ASN with bounded concurrency, per-IP deduplication, and LRU cache.
-	
+
 	Per-IP deduplication ensures concurrent requests for the same IP share a single
 	lookup (futures), preventing duplicate work on high-concurrency scenarios.
 	"""
@@ -236,23 +238,22 @@ async def _lookup_geo_map(unique_ips: set[str]) -> dict[str, dict | None]:
 	"""Resolve GeoIP for multiple IPs with chunking to limit burst."""
 	if not unique_ips:
 		return {}
-	
+
 	result: dict[str, dict | None] = {}
 	ips_list = sorted(unique_ips)
-	
+
 	# Process in chunks to avoid creating too many concurrent tasks
 	for i in range(0, len(ips_list), _GEO_LOOKUP_CHUNK_SIZE):
 		chunk = ips_list[i:i + _GEO_LOOKUP_CHUNK_SIZE]
 		lookups = await asyncio.gather(*[_lookup_geo_cached(ip) for ip in chunk])
-		for ip, info in lookups:
-			result[ip] = info
-	
+		result.update(dict(lookups))
+
 	return result
 
 
 async def _get_wg_dump_cached() -> list:
 	"""Get parsed WG dump with short-lived cache to avoid redundant parsing.
-	
+
 	Errors (wg command failure) are NOT cached; empty [] is only returned on
 	exception and allowed to be served as stale data if cache refresh fails.
 	"""
@@ -354,7 +355,7 @@ async def get_peer_locations(
 				connected = True
 				connected_names.append(peer_name)
 
-		# Multiple peers can share one public IP (e.g. NAT); use first peer metadata as representative.
+	# For shared public IPs (NAT), use the first peer as the representative.
 		first_info = peers_at_ip[0][1]
 		locations.append({
 			"lat": lat,
@@ -383,7 +384,7 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 	"""Build enriched peer payload and persist side-effect counters."""
 	rows, tunnel_peer_ids = await _load_peers_with_tunnel_ids(conn)
 	peers_by_key: dict[str, dict] = {}
-	# Track original DB handshakes separately; peers_by_key["latest_handshake"] may be replaced by live WG data.
+	# Keep database handshakes separate from live WireGuard values.
 	db_handshakes: dict[str, int] = {}
 	for row in rows:
 		pub_key = row["public_key"]

@@ -1,0 +1,319 @@
+#
+# pyproject.toml
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+#
+# Single source of truth for the project version, its dependencies and the
+# lint/test tooling. Replaces the former VERSION, requirements.txt and
+# docs/requirements-docs.txt files.
+#
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wirebuddy"
+# The one place the release version lives. app/utils/version.py reads it back
+# at runtime, the release workflow validates the git tag against it, and
+# docker/Dockerfile copies this file into the image so the About page reports
+# the same number the tag was cut from.
+version = "1.6.1"
+description = "Lightweight WireGuard Management WebUI"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Gill-Bates", email = "tn.steiner@gmail.com" }]
+keywords = ["wireguard", "vpn", "fastapi", "dns", "self-hosted"]
+classifiers = [
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Networking",
+]
+
+# Everything the app imports directly. Every entry carries an exact pin, so
+# the published image and a local install always resolve to the same
+# versions.
+dependencies = [
+    "aiosqlite==0.22.1",
+    "cbor2==6.1.4",
+    "cryptography==50.0.1",
+    "email-validator==2.3.0",
+    "fastapi==0.141.1",
+    "geoip2==5.3.0",
+    "httpx[http2]==0.28.1",
+    "jinja2==3.1.6",
+    "markdown==3.10.3",
+    "nh3==0.3.7",
+    "Pillow==12.3.0",
+    "pydantic==2.13.5",
+    "pydantic-settings==2.15.0",
+    "pyotp==2.10.0",
+    "python-multipart==0.0.32",
+    "qrcode[pil]==8.2",
+    "slowapi==0.1.10",
+    "uvicorn[standard]==0.53.0",
+    "webauthn==3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov==7.1.0",
+    "ruff==0.16.8",
+]
+docs = [
+    "markdown==3.10.3",
+    "mkdocs==1.6.1",
+    "mkdocs-git-revision-date-localized-plugin==1.6.0",
+    "mkdocs-material==9.7.7",
+    "mkdocs-minify-plugin==0.8.0",
+    "mkdocs-redirects==1.2.3",
+    "pymdown-extensions==12.0.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/Gill-Bates/wirebuddy"
+Documentation = "https://gill-bates.github.io/wirebuddy/"
+Source = "https://github.com/Gill-Bates/wirebuddy"
+Changelog = "https://github.com/Gill-Bates/wirebuddy/blob/main/CHANGELOG.md"
+
+# The repo is a flat-layout application, not a library, and it declares no
+# console script: `pip install -e .` is a convenience for local dev that pulls
+# in the dependencies and puts the source tree on sys.path. The Docker image
+# installs the dependencies alone and runs the copied source tree.
+#
+# Discovery rather than an explicit list, because none of these directories
+# carries an __init__.py at every level - they are namespace packages, and an
+# explicit `packages = ["app"]` risks silently dropping a subpackage the
+# discovery would otherwise find. The excludes keep the two asset trees out:
+# they hold no Python, and discovery would otherwise declare them as empty
+# namespace packages.
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["app.static*", "app.templates*"]
+
+# --------------------------------------------------------------------------- #
+# Ruff - lint + format for every Python file in the repo
+# --------------------------------------------------------------------------- #
+[tool.ruff]
+line-length = 160
+target-version = "py313"
+extend-exclude = ["data", "dev-data", "site", ".mkdocs-cache"]
+
+[tool.ruff.lint]
+select = [
+    "A",     # flake8-builtins - shadowing open/id/type hides real bugs
+    "ARG",   # unused arguments
+    "ASYNC", # blocking calls inside async def - this app is ASGI end to end
+    "B",     # bugbear
+    "C4",    # comprehensions
+    "D",     # pydocstyle - Google-style docstrings (see [tool.ruff.lint.pydocstyle])
+    "DTZ",   # naive datetimes; timestamps are UTC-aware on purpose
+    "E",     # pycodestyle errors
+    "EM",    # exception messages assigned to a name first
+    "F",     # pyflakes
+    "G",     # logging-format: %s args, never f-strings (lazy formatting)
+    "I",     # import sorting
+    "ICN",   # import conventions
+    "ISC",   # implicit string concat
+    "LOG",   # logging misuse
+    "N",     # pep8-naming
+    "PERF",  # obvious performance traps
+    "PIE",   # misc lints
+    "PL",    # pylint subset
+    "PTH",   # prefer pathlib
+    "RET",   # return simplifications
+    "RSE",   # raise cleanups
+    "RUF",   # ruff-specific
+    "S",     # bandit - this app parses untrusted input and shells out to wg/unbound
+    "SIM",   # simplifications
+    "SLF",   # private member access across modules
+    "T20",   # stray print()
+    "TRY",   # exception antipatterns
+    "UP",    # pyupgrade
+    "W",     # pycodestyle warnings
+]
+ignore = [
+    # Formatter-owned; keeping this on fights `ruff format`.
+    "ISC001",
+    # The codebase is indented with tabs on purpose (see AGENTS.md); this is a
+    # style choice, not a defect.
+    "W191",
+    # Tab indentation makes E101 (mixed spaces/tabs at line start) fire on
+    # otherwise-consistent code; the formatter is the source of truth here.
+    "E101",
+    # Same tab decision one layer down: D206 wants docstring continuation lines
+    # indented with spaces, which `ruff format` with indent-style = "tab" undoes
+    # on the next run. Ruff itself lists it as formatter-incompatible.
+    "D206",
+    # The *presence* of docstrings is not gated. What this codebase documents is
+    # the non-obvious: the modules carry a header block, and the functions whose
+    # behaviour needs explaining carry a Google-style docstring, while the
+    # single-statement DB accessors and route handlers whose name already says
+    # everything do not. Turning these on would demand ~270 new docstrings whose
+    # only content would be a restatement of the signature, which is how a
+    # docstring becomes something readers learn to skip. The D2xx/D4xx rules stay
+    # enabled, so every docstring that *is* written has to be well-formed.
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D105",
+    "D106",
+    "D107",
+    # Exception messages are inlined rather than assigned to a name first;
+    # matches the existing codebase style throughout app/.
+    "EM101",
+    "EM102",
+    "TRY003",
+    # try/except -> job/task status transitions read better inline than
+    # split across helper functions for this branchy pipeline code.
+    "TRY300",
+    "TRY301",
+    "B904",
+    # Deliberate lazy imports (heavy or optional dependencies) throughout
+    # app/utils and app/node.
+    "PLC0415",
+    # Package-level singletons (db connections, schedulers, caches) are
+    # rebound by lifespan hooks and module-level setup on purpose.
+    "PLW0603",
+    # Thresholds and HTTP status codes read fine inline; naming every 200/404
+    # would add indirection without adding meaning.
+    "PLR2004",
+    # The DNS/WireGuard/multi-node orchestration code is genuinely branchy;
+    # splitting it to satisfy a counter would hide the sequence it documents.
+    "PLR0911",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+    "PLR0917",
+    # `Depends(...)` / `File(...)` in defaults *is* the FastAPI DI contract.
+    "B008",
+    # This application's job is driving `wg`, `ip`, `iptables`, `unbound-control`
+    # and `conntrack`. S603 fires on every one of those calls and cannot be
+    # satisfied while that remains true, so it would only train readers to skip
+    # the output. The properties it stands in for are enforced instead: there is
+    # no `shell=True` anywhere in app/, every call passes an argument *list*, and
+    # the privileged binaries are resolved to absolute paths from fixed
+    # allowlists rather than PATH (`_resolve_trusted_binary` in app/main.py,
+    # `_resolve_ip_binary` in app/node/firewall.py). S607 stays enabled, which is
+    # what catches a binary invoked by bare name.
+    "S603",
+    # Dynamic SQL here only ever interpolates *identifiers* the code itself owns
+    # - column lists built from literals like `"username = ?"`, a generated
+    # `?,?,?` placeholder string, table names from module-level allowlists that
+    # are additionally checked against sqlite_master with a bound parameter. Every
+    # value is bound, never formatted in. SQL parameters cannot express a dynamic
+    # column list, so this pattern is the correct one and the rule has nothing
+    # left to warn about.
+    "S608",
+    # The prose in this repository uses real typography: EN DASH in docstrings,
+    # log messages and UI strings, MULTIPLICATION SIGN in comments. The homoglyph
+    # confusion these rules guard against applies to identifiers and comparison
+    # values; none of the occurrences here are either.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # Every occurrence is an isinstance() check on *deserialised external input* -
+    # enrollment token payloads, WebAuthn clientDataJSON, a node's persisted state
+    # file, a master's HTTP response. A wrong type there is a data-validation
+    # failure, not a caller passing the wrong argument, so ValueError (or
+    # RuntimeError for corrupted state) is the right class and the callers catch
+    # exactly that. app/api/passkeys.py even converts TypeError *into* ValueError
+    # two lines above one of these checks; app/utils/node_token.py raises
+    # ValueError for all three ways one token field can be malformed. TRY004
+    # would split those into two exception classes for no gain.
+    "TRY004",
+    # A `timeout` parameter on an async function is deliberate throughout: these
+    # are wrappers that hand the value to the underlying primitive, and for
+    # app/utils/subprocess.py it also selects the SIGTERM-then-kill escalation
+    # that `asyncio.timeout()` at the call site cannot express (see
+    # tests/test_subprocess_limits.py). Pushing it to callers would be a wide API
+    # change that loses behaviour.
+    "ASYNC109",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# slowapi resolves the rate-limit key by looking up a parameter *named*
+# `request` in the endpoint signature (see app/utils/rate_limit.py). Every
+# `@limiter.limit(...)` handler therefore has to declare it, and the ~50 that
+# never read it are not dead parameters - removing or renaming one silently
+# disables rate limiting on that endpoint. Scoped to the router modules and
+# main.py rather than ignored globally, so a genuinely unused argument anywhere
+# else still gets reported. Unused FastAPI `Depends(...)` parameters that exist
+# for their authorization side effect are written `_: ... = Depends(...)`
+# instead, which the rule accepts.
+"app/api/*.py" = ["ARG001"]
+"app/main.py" = ["ARG001"]
+# The one module that is deliberately *not* UTC: it schedules the speedtest for a
+# wall-clock hour in the operator's own timezone ("run at 2am local"), and
+# time.mktime() on a naive datetime is what applies the system's DST rules. Making
+# these aware would move the window whenever DST shifts, which is the opposite of
+# the intent. DTZ stays enabled everywhere else, where timestamps really are
+# UTC-aware (see app/utils/time.py and tests/test_time.py).
+"app/utils/speedtest_window.py" = ["DTZ001", "DTZ005", "DTZ006"]
+"tests/*" = [
+    # Stub signatures have to match what the real callable is invoked with,
+    # so monkeypatch lambdas routinely take arguments they ignore.
+    "ARG001",
+    "ARG002",
+    "ARG005",
+    "PLR2004",
+    "PTH101",
+    "RUF012",
+    "S101",
+    "S105",
+    "S106",
+    "S107",
+    "S108",
+    "SIM117",
+    "SLF001",
+    "T20",
+]
+"run.py" = ["T20", "S104"]
+"tools/*.py" = ["T20"]
+
+[tool.ruff.lint.pydocstyle]
+# Google style is what the tree already uses: a one-line summary, a blank line,
+# then `Args:` / `Returns:` / `Raises:` sections. Setting the convention also
+# switches off the D rules that contradict it (D203, D213, D215, D400, D401,
+# D404, D406-D409, D413), so only one docstring shape is ever demanded.
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "tab"
+line-ending = "lf"
+
+# --------------------------------------------------------------------------- #
+# pytest
+# --------------------------------------------------------------------------- #
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+python_files = ["test_*.py"]
+addopts = "-q --strict-markers --strict-config"
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+omit = ["*/__pycache__/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

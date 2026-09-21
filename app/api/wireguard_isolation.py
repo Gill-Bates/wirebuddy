@@ -14,29 +14,28 @@ isolate peers from the host, additional INPUT rules would be required.
 
 from __future__ import annotations
 
-from ..db.sqlite_interfaces import (
-	get_interface,
-)
-
 import hashlib
-import ipaddress
 import logging
 import re
 import sqlite3
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address, IPv6Address, ip_address, ip_interface
-from typing import Awaitable, Callable
 
+from ..db.sqlite_interfaces import (
+    get_interface,
+)
 
 _log = logging.getLogger(__name__)
+MAX_CHAIN = 28
 
 __all__ = [
+    "IsolationResult",
+    "apply_client_isolation_runtime",
+    "build_client_isolation_post_rules",
+    "cleanup_client_isolation",
     "client_iso_chain_name",
     "extract_peer_ips",
-    "build_client_isolation_post_rules",
-    "apply_client_isolation_runtime",
-    "cleanup_client_isolation",
-    "IsolationResult",
 ]
 
 # Linux interface name validation (IFNAMSIZ=16, but 15 chars max)
@@ -95,7 +94,7 @@ def _sorted_ips(ip_list: set[str]) -> list[str]:
             return (0 if isinstance(addr, IPv4Address) else 1, addr)
         except ValueError:
             # Fallback for invalid IPs - shouldn't happen but be safe
-            return (2, IPv4Address("0.0.0.0"))
+            return (2, IPv4Address("0.0.0.0"))  # noqa: S104  (a sort key, not a bind address)
 
     return sorted(ip_list, key=_sort_key)
 
@@ -115,7 +114,6 @@ def client_iso_chain_name(interface_name: str, *, ipv6: bool = False) -> str:
     # iptables chain names limited to 28 chars
     # Structure: prefix (7) + base (variable) + "_" (1) + hash (6) = 14 + base
     # max_base = 28 - 7 - 1 - 6 = 14
-    MAX_CHAIN = 28
     max_base = MAX_CHAIN - len(prefix) - 1 - len(hash_suffix)
 
     # Normalize and truncate base FIRST
@@ -406,7 +404,3 @@ async def cleanup_client_isolation(
         await run_wg_command(cmd, "-X", chain)
 
     _log.debug("CLIENT_ISO cleanup completed for %s", interface_name)
-
-
-# Backwards-compatible alias for existing imports
-_apply_client_isolation_runtime = apply_client_isolation_runtime

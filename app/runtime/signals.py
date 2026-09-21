@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: AGPL-3.0
+# SPDX-License-Identifier: MIT
 #
 
 """Signal handling for graceful shutdown coordination.
@@ -45,7 +45,8 @@ class SignalManager:
     SHUTDOWN_SIGNALS = (signal.SIGTERM, signal.SIGINT)
 
     def __init__(self, shutdown_event: asyncio.Event) -> None:
-        """
+        """Bind the manager to the event it will set on SIGTERM/SIGINT.
+
         Args:
             shutdown_event: Event to set when shutdown signal received.
         """
@@ -161,5 +162,5 @@ class SignalManager:
         try:
             await asyncio.wait_for(self._shutdown_event.wait(), timeout=timeout)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False

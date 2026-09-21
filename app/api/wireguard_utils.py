@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -28,27 +29,27 @@ from ..db.sqlite_settings import (
 from ..models.peers import PeerPublic
 
 __all__ = [
-	"validate_interface_name",
-	"select_display_unit",
+	"WgPeerDump",
 	"bytes_to_unit",
-	"safe_int",
-	"get_enabled_blocklist_ids",
-	"filter_peer_blocklist_ids",
+	"derive_public_key",
 	"effective_peer_blocklist_ids",
-	"validate_post_script",
+	"filter_peer_blocklist_ids",
+	"generate_keypair",
+	"generate_preshared_key",
+	"get_enabled_blocklist_ids",
+	"is_valid_wg_key",
+	"parse_blocklist_ids",
+	"parse_wg_show_dump",
 	"row_to_public",
 	"run_wg_command",
 	"run_wg_command_stdin",
-	"wg_set_peer_with_psk",
-	"generate_keypair",
-	"generate_preshared_key",
-	"derive_public_key",
-	"validate_keypair",
-	"parse_blocklist_ids",
+	"safe_int",
 	"safe_row_get",
-	"is_valid_wg_key",
-	"WgPeerDump",
-	"parse_wg_show_dump",
+	"select_display_unit",
+	"validate_interface_name",
+	"validate_keypair",
+	"validate_post_script",
+	"wg_set_peer_with_psk",
 ]
 
 # Interface name validation regex.
@@ -105,7 +106,7 @@ def _resolve_command_args(*args: str) -> tuple[str, ...]:
 
 def validate_interface_name(name: str) -> str:
 	"""Validate interface name follows Linux naming rules and security constraints.
-	
+
 	Raises:
 		HTTPException: If name is invalid.
 	"""
@@ -172,11 +173,11 @@ def _extract_client_ip(endpoint_raw: str | None) -> str | None:
 
 def parse_wg_show_dump(stdout: str) -> list[WgPeerDump]:
 	"""Parse `wg show all dump` output into structured peer records.
-	
+
 	Handles both output formats:
 	- Format A (9 cols): iface, pubkey, psk, endpoint, allowed-ips, handshake, rx, tx, keepalive
 	- Format B (8 cols): pubkey, psk, endpoint, allowed-ips, handshake, rx, tx, keepalive
-	
+
 	Interface header lines (5 cols) are tracked to provide context for format B.
 	"""
 	results: list[WgPeerDump] = []
@@ -300,10 +301,10 @@ def row_to_public(row: sqlite3.Row, enabled_blocklist_ids: list[str] | None = No
 			blocklist_ids = json.loads(raw_blocklist_ids)
 		except (json.JSONDecodeError, TypeError):
 			blocklist_ids = None
-	
+
 	if enabled_blocklist_ids is not None:
 		blocklist_ids = filter_peer_blocklist_ids(blocklist_ids, enabled_blocklist_ids)
-	
+
 	return PeerPublic(
 		id=safe_row_get(row, "id"),
 		name=safe_row_get(row, "name", ""),
@@ -330,7 +331,7 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
 		return
 	try:
 		await asyncio.wait_for(proc.wait(), timeout=_KILL_WAIT_TIMEOUT)
-	except asyncio.TimeoutError:
+	except TimeoutError:
 		_log.critical("WG_PROCESS_DID_NOT_EXIT pid=%s", proc.pid)
 
 
@@ -358,7 +359,7 @@ async def _run_subprocess(
 				stdout_bytes.decode("utf-8", errors="replace"),
 				stderr_bytes.decode("utf-8", errors="replace"),
 			)
-		except asyncio.TimeoutError:
+		except TimeoutError:
 			await _terminate_process(proc)
 			return 1, "", f"Command timed out after {timeout}s"
 		except asyncio.CancelledError:
@@ -429,15 +430,13 @@ async def wg_set_peer_with_psk(
 	def _write_psk_temp(key: str) -> str:
 		fd, path = tempfile.mkstemp(prefix="wg_psk_", suffix=".key")
 		try:
-			os.chmod(path, 0o600)
+			Path(path).chmod(0o600)
 			os.write(fd, key.encode("utf-8"))
 			os.close(fd)
 			return path
 		except Exception:
-			try:
+			with contextlib.suppress(OSError):
 				os.close(fd)
-			except OSError:
-				pass
 			raise
 
 	tmp_path: str | None = None
@@ -448,13 +447,13 @@ async def wg_set_peer_with_psk(
 			"peer", public_key,
 			"allowed-ips", allowed_ips,
 			"preshared-key", tmp_path,
+			timeout=timeout,
 		)
 	finally:
 		if tmp_path is not None:
-			await asyncio.to_thread(
-				lambda p: os.unlink(p) if os.path.exists(p) else None,
-				tmp_path,
-			)
+			# missing_ok replaces the exists()-then-unlink pair, which was also a
+			# race: the file could vanish between the two calls.
+			await asyncio.to_thread(Path(tmp_path).unlink, missing_ok=True)
 
 
 async def generate_keypair() -> tuple[str, str]:
@@ -484,7 +483,7 @@ async def generate_preshared_key() -> str:
 
 async def derive_public_key(private_key: str) -> str:
 	"""Derive public key from a private key using WireGuard's pubkey command.
-	
+
 	Raises:
 		HTTPException: If derivation fails.
 	"""
@@ -509,7 +508,7 @@ def is_valid_wg_key(key: str) -> bool:
 	# Actually decode and verify length
 	try:
 		return len(base64.b64decode(key, validate=True)) == 32
-	except Exception:
+	except ValueError:  # binascii.Error
 		return False
 
 

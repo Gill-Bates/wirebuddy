@@ -15,17 +15,19 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from .auth import get_current_user, require_admin
-from .response import OkResponse
-from .wireguard_isolation import apply_client_isolation_runtime, cleanup_client_isolation
-from .wireguard_utils import run_wg_command, validate_interface_name
 from ..db.sqlite_interfaces import (
 	get_interface as db_get_interface,
+)
+from ..db.sqlite_interfaces import (
 	list_interfaces as db_list_interfaces,
 )
 from ..utils.config import WG_CONFIG_PATH
 from ..utils.deps import get_conn
 from ..utils.rate_limit import RATE_LIMIT_HEAVY, limiter
+from .auth import get_current_user, require_admin
+from .response import OkResponse
+from .wireguard_isolation import apply_client_isolation_runtime, cleanup_client_isolation
+from .wireguard_utils import run_wg_command, validate_interface_name
 
 _log = logging.getLogger(__name__)
 _WG_COMMAND_TIMEOUT_SECONDS = 30.0
@@ -86,6 +88,25 @@ async def _run_wg_command_with_timeout(*args: str) -> tuple[int, str, str]:
 	except TimeoutError as exc:
 		_log.error("WG_COMMAND_TIMEOUT command=%s timeout=%ss", command, _WG_COMMAND_TIMEOUT_SECONDS)
 		raise HTTPException(status_code=504, detail=f"Command timed out: {command}") from exc
+
+
+async def _shutdown_after_failed_isolation(name: str) -> None:
+	"""Best-effort shutdown for an interface that came up without isolation.
+
+	Running with isolation rules missing is a policy bypass (isolated peers
+	could reach each other), which is worse than the interface being down.
+	If the forced shutdown itself fails, this only logs — the caller still
+	raises so the admin sees the failure and the interface's real state.
+	"""
+	down_code, _, down_stderr = await _run_wg_command_with_timeout("wg-quick", "down", name)
+	if down_code != 0:
+		_log.error(
+			"Failed to bring down interface %s after isolation failure, "
+			"interface may still be running WITHOUT isolation: %s",
+			name, down_stderr,
+		)
+		return
+	await cleanup_client_isolation(name)
 
 
 @router.get("/interfaces", response_model=OkResponse[InterfaceListPayload])
@@ -168,8 +189,8 @@ async def get_interface(
 	# Parse wg show output for active interface
 	lines = stdout.strip().split("\n")
 	current_peer = None
-	for line in lines:
-		line = line.strip()
+	for raw_line in lines:
+		line = raw_line.strip()
 		if line.startswith("public key:"):
 			result["public_key"] = line.split(":", 1)[1].strip()
 		elif line.startswith("listening port:"):
@@ -222,12 +243,19 @@ async def interface_up(
 
 	if isolation_result.rules_failed > 0 or isolation_result.errors:
 		_log.error(
-			"INTERFACE_UP isolation failure: name=%s failed=%d errors=%s",
+			"INTERFACE_UP isolation failure: name=%s failed=%d errors=%s -- bringing interface back down",
 			name, isolation_result.rules_failed, isolation_result.errors,
 		)
+		# An interface that is "up" without its configured isolation rules is a
+		# policy bypass (isolated peers could reach each other). Tear it back
+		# down rather than surfacing a 500 while leaving it live.
+		await _shutdown_after_failed_isolation(name)
 		raise HTTPException(
 			status_code=500,
-			detail=f"Interface up but client isolation failed: {isolation_result.errors}",
+			detail=(
+				"Client isolation failed; interface was brought back down to avoid "
+				f"running without isolation: {isolation_result.errors}"
+			),
 		)
 
 	return OkResponse[None](message=f"Interface {name} is up")
@@ -238,7 +266,11 @@ async def interface_up(
 async def interface_down(
 	request: Request,
 	name: str,
-	conn: sqlite3.Connection = Depends(get_conn),
+	# Taken for the dependency's side effect, not for queries: get_conn answers
+	# 503 while a backup restore is in progress, and bringing an interface down
+	# mid-restore is exactly what that guard is there to prevent. Dropping the
+	# parameter because the body never queries would silently remove it.
+	_conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Bring down a WireGuard interface."""
@@ -317,12 +349,16 @@ async def interface_restart(
 
 	if isolation_result.rules_failed > 0 or isolation_result.errors:
 		_log.error(
-			"INTERFACE_RESTART isolation failure: name=%s failed=%d errors=%s",
+			"INTERFACE_RESTART isolation failure: name=%s failed=%d errors=%s -- bringing interface back down",
 			name, isolation_result.rules_failed, isolation_result.errors,
 		)
+		await _shutdown_after_failed_isolation(name)
 		raise HTTPException(
 			status_code=500,
-			detail=f"Interface restart but client isolation failed: {isolation_result.errors}",
+			detail=(
+				"Client isolation failed; interface was brought back down to avoid "
+				f"running without isolation: {isolation_result.errors}"
+			),
 		)
 
 	return OkResponse[None](message=f"Interface {name} restarted")

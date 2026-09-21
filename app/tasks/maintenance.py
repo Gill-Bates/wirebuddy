@@ -20,12 +20,12 @@ from ..utils.config import get_config
 _log = logging.getLogger(__name__)
 
 __all__ = [
-    "sqlite_maintenance",
-    "sqlite_integrity_check",
-    "tsdb_retention_cleanup",
-    "cleanup_stale_sessions",
-    "cleanup_login_attempts",
     "cleanup_acked_node_commands",
+    "cleanup_login_attempts",
+    "cleanup_stale_sessions",
+    "sqlite_integrity_check",
+    "sqlite_maintenance",
+    "tsdb_retention_cleanup",
 ]
 
 # SQLite busy timeout in seconds
@@ -45,7 +45,7 @@ async def sqlite_maintenance() -> None:
     db_path = _ensure_db_exists("maintenance")
     if db_path is None:
         return
-    
+
     try:
         async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
             # WAL checkpoint: RESTART mode is less aggressive than TRUNCATE.
@@ -69,7 +69,7 @@ async def sqlite_maintenance() -> None:
             await db.execute("ANALYZE")
             await db.execute("PRAGMA optimize")
             await db.commit()
-            
+
             _log.info("MAINTENANCE SQLite maintenance completed (RESTART checkpoint)")
     except Exception:
         _log.exception("MAINTENANCE SQLite maintenance failed")
@@ -80,7 +80,7 @@ async def sqlite_integrity_check() -> None:
     db_path = _ensure_db_exists("integrity_check")
     if db_path is None:
         return
-    
+
     try:
         async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
             cursor = await db.execute("PRAGMA integrity_check")
@@ -88,7 +88,7 @@ async def sqlite_integrity_check() -> None:
                 result = await cursor.fetchone()
             finally:
                 await cursor.close()
-            
+
             if result and result[0] == "ok":
                 _log.info("MAINTENANCE SQLite integrity check passed")
             else:
@@ -101,20 +101,20 @@ async def sqlite_integrity_check() -> None:
 
 async def tsdb_retention_cleanup() -> None:
     """Purge expired time-series data using unified TSDB maintenance logic.
-    
+
     Consolidates cleanup by delegating to tsdb.run_maintenance, which handles
     both file rotation and retention pruning correctly with locks.
     """
     from ..db import tsdb
-    from ..db.sqlite_settings import get_tsdb_retention_days, DEFAULT_TSDB_RETENTION_DAYS
-    from ..db.sqlite_runtime import connect, close_connection
-    
+    from ..db.sqlite_runtime import close_connection, connect
+    from ..db.sqlite_settings import DEFAULT_TSDB_RETENTION_DAYS, get_tsdb_retention_days
+
     cfg = get_config()
     tsdb_dir = Path(cfg.tsdb_dir)
-    
+
     if not await asyncio.to_thread(tsdb_dir.exists):
         return
-    
+
     try:
         def _read_retention() -> int:
             conn = connect(cfg.db_path)
@@ -126,10 +126,10 @@ async def tsdb_retention_cleanup() -> None:
                 close_connection(conn)
 
         retention_days = await asyncio.to_thread(_read_retention)
-        
+
         # Delegate to unified maintenance logic
         stats = await asyncio.to_thread(tsdb.run_maintenance, tsdb_dir, retention_days)
-        
+
         if stats.get("pruned", 0) > 0:
             _log.info(
                 "MAINTENANCE TSDB retention cleanup: pruned %d series (total series: %d)",
@@ -146,7 +146,7 @@ async def cleanup_stale_sessions() -> None:
     db_path = _ensure_db_exists("session_cleanup")
     if db_path is None:
         return
-    
+
     try:
         async with aiosqlite.connect(db_path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS) as db:
             now_iso = datetime.now(UTC).isoformat()

@@ -18,9 +18,10 @@ import asyncio
 import errno
 import logging
 import os
+import stat
+import tempfile
 import threading
 import time
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
@@ -84,18 +85,50 @@ def _open_lock_file(path: Path) -> IO[bytes]:
         raise
 
 
+_MAX_COOLDOWN_FILE_SIZE = 256  # A timestamp needs only a handful of bytes.
+
+
 def _read_last_run(path: Path) -> float | None:
-    """Read last run timestamp from cooldown file with validation."""
+    """Read last run timestamp from cooldown file with validation.
+
+    Opened descriptor-first with O_NOFOLLOW and verified via fstat(), the
+    same pattern used for the lock file: a separate is_symlink() check
+    followed by Path.read_text() leaves a TOCTOU window where the path can
+    be swapped for a symlink between the check and the read.
+
+    Fail-open by design: a missing file, unreadable file, non-regular file,
+    oversized file, or unparseable/implausible timestamp all return None,
+    which callers treat as "no cooldown recorded" and therefore allow the
+    speedtest to proceed. This cooldown is a UX/load throttle, not a hard
+    resource limit, so availability is intentionally prioritized over
+    strict enforcement when the on-disk state cannot be trusted.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        if path.is_symlink():
-            _log.warning("Ignoring symlinked cooldown file: %s", path)
-            return None
-        value = path.read_text(encoding="utf-8").strip()
+        fd = os.open(path, flags)
     except FileNotFoundError:
         return None
     except OSError as exc:
+        _log.warning("Unexpected error opening cooldown file %s: %s", path, exc)
+        return None
+
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            _log.warning("Ignoring non-regular cooldown file: %s", path)
+            return None
+        if st.st_size > _MAX_COOLDOWN_FILE_SIZE:
+            _log.warning("Ignoring oversized cooldown file (%d bytes): %s", st.st_size, path)
+            return None
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            value = handle.read().strip()
+    except OSError as exc:
         _log.warning("Unexpected error reading cooldown file %s: %s", path, exc)
         return None
+    finally:
+        if fd != -1:
+            os.close(fd)
 
     if not value:
         return None
@@ -133,7 +166,7 @@ def _write_last_run(path: Path, timestamp: float) -> None:
         os.fsync(f.fileno())
 
     try:
-        os.replace(tmp_path, path)
+        tmp_path.replace(path)
         dir_fd = os.open(
             str(path.parent),
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
@@ -230,7 +263,13 @@ class SpeedtestRunLease:
     def __exit__(self, *exc_info: object) -> None:
         self.release()
         if self._async_acquired:
-            raise RuntimeError("Async speedtest lock released from sync context")
+            # Caller misuse (an async-acquired lease used from a sync `with`
+            # block), but the class must not leave a permanent process-wide
+            # lock held just because it detected that misuse.
+            if _local_async_lock.locked():
+                _local_async_lock.release()
+            self._async_acquired = False
+            raise RuntimeError("Async speedtest lease used from sync context")
 
 
 def acquire_speedtest_run_lease(
@@ -353,9 +392,9 @@ async def acquire_speedtest_run_lease_async(
             asyncio.shield(acquire_task),
             timeout=5.0,
         )
-        lease._async_acquired = True
+        lease._async_acquired = True  # noqa: SLF001  (the guard owns the lease object it just handed out and records how it was acquired)
         return lease
-    except asyncio.TimeoutError:
+    except TimeoutError:
         cancel_event.set()
         if acquire_task is not None:
             _discard_pending_lease(acquire_task)

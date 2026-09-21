@@ -43,8 +43,8 @@
     --wb-scroll-padding: var(--wb-spacing-sm);
     --wb-scroll-track-width: 8px;
     --wb-scroll-track-color: transparent;
-    --wb-scroll-thumb-color: rgba(0, 0, 0, 0.2);
-    --wb-scroll-thumb-hover: rgba(0, 0, 0, 0.35);
+    --wb-scroll-thumb-color: rgb(0 0 0 / 20%);
+    --wb-scroll-thumb-hover: rgb(0 0 0 / 35%);
 
     /* ============================================
    * Empty State Semantic Tokens
@@ -103,8 +103,8 @@
 
 /* Dark mode semantic overrides */
 [data-bs-theme="dark"] {
-    --wb-scroll-thumb-color: rgba(255, 255, 255, 0.2);
-    --wb-scroll-thumb-hover: rgba(255, 255, 255, 0.35);
-    --wb-table-header-bg: rgba(255, 255, 255, 0.05);
+    --wb-scroll-thumb-color: rgb(255 255 255 / 20%);
+    --wb-scroll-thumb-hover: rgb(255 255 255 / 35%);
+    --wb-table-header-bg: rgb(255 255 255 / 5%);
     --wb-table-border-color: var(--bs-border-color, #495057);
 }

@@ -148,7 +148,6 @@ Ready to contribute code?
    ```bash
    pytest
    ruff check .
-   mypy app/
    ```
 
 5. **Commit:**
@@ -184,7 +183,6 @@ Ready to contribute code?
 - [ ] Documentation added/updated (if applicable)
 - [ ] All tests pass (`pytest`)
 - [ ] No linting errors (`ruff check .`)
-- [ ] Type checking passes (`mypy app/`)
 - [ ] Commits follow conventional commit format
 - [ ] PR description is clear and complete
 
@@ -192,54 +190,48 @@ Ready to contribute code?
 
 ### Python
 
-**Style guide:** PEP 8 (enforced by Black and Ruff)
-
-**Tools:**
-
-- **Formatter:** Black
-- **Linter:** Ruff
-- **Type checker:** mypy
+**Style guide:** enforced entirely by Ruff (formatter and linter; no Black,
+isort, or mypy in this project). The codebase is tab-indented — see
+`[tool.ruff.format]` in `pyproject.toml`.
 
 **Run before committing:**
 
 ```bash
-black app/
-isort app/
-ruff check app/
-mypy app/
+ruff format .
+ruff check .
 ```
 
-**Type hints:**
+**Type hints:** Python 3.13+ style throughout — `|` unions instead of
+`typing.Optional`/`typing.Union`, builtin generics (`list[str]`, `dict[str, int]`)
+instead of `typing.List`/`typing.Dict`.
 
 ```python
 def create_peer(name: str, ip: str, interface: str) -> Peer:
     pass
 
-# Use Optional for nullable
-from typing import Optional
-def get_user(user_id: int) -> Optional[User]:
+# Nullable return
+def get_user(user_id: int) -> User | None:
     pass
 
-# Use List, Dict for collections
-from typing import List, Dict
-def list_peers() -> List[Peer]:
+# Collections
+def list_peers() -> list[Peer]:
     pass
 ```
 
-**Docstrings:**
+**Docstrings:** Google style (configured via `[tool.ruff.lint.pydocstyle]`,
+`convention = "google"`).
 
 ```python
 def create_peer(name: str, ip: str) -> Peer:
-    """
-    Create a new WireGuard peer.
-    
+    """Create a new WireGuard peer.
+
     Args:
         name: Descriptive peer name
         ip: IP address in CIDR notation
-    
+
     Returns:
-        Peer: Created peer object
-    
+        The created peer.
+
     Raises:
         ValueError: If IP is invalid
         PeerExistsError: If peer already exists
@@ -461,12 +453,15 @@ PR automatically updates.
 
 (For maintainers)
 
-1. Update `VERSION` file
+1. Update the `version` field in `pyproject.toml` — this is the single source
+   of truth; `app/utils/version.py` reads it back at runtime
 2. Update `CHANGELOG.md`
-3. Create git tag: `git tag v1.3.3`
-4. Push tag: `git push --tags`
-5. GitHub Actions builds and publishes Docker image
-6. Create GitHub release with notes
+3. Merge the release commit into `main`
+4. Tag that commit `v<version>` (must match `pyproject.toml` exactly) and push
+   the tag: `git push origin v<version>`
+5. `docker-build.yml` validates tag/version/branch ancestry, then builds and
+   publishes the multi-arch Docker image
+6. Create a GitHub release with notes
 
 ## Security Vulnerabilities
 

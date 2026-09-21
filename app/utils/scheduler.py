@@ -14,13 +14,14 @@ import logging
 import math
 import random
 import warnings
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Awaitable, Callable, TypedDict
+from datetime import UTC, datetime
+from typing import TypedDict
 
 _log = logging.getLogger(__name__)
 
-__all__ = ["Scheduler", "JobStatus"]
+__all__ = ["JobStatus", "Scheduler"]
 
 # Minimum allowed interval to prevent CPU-pinning tight loops
 _MIN_INTERVAL = 1.0
@@ -249,7 +250,7 @@ class Scheduler:
 		pending = [t for t in self._tasks.values() if not t.done()]
 		if pending:
 			_log.info("SCHEDULER waiting for %d tasks to finish gracefully", len(pending))
-			done, not_done = await asyncio.wait(pending, timeout=timeout)
+			_done, not_done = await asyncio.wait(pending, timeout=timeout)
 
 			# Phase 2: Force cancel stubborn tasks
 			if not_done:
@@ -307,14 +308,14 @@ class Scheduler:
 			if job.jitter_pct <= 0:
 				return job.interval_seconds
 			jitter_range = job.interval_seconds * job.jitter_pct
-			return max(_MIN_INTERVAL, job.interval_seconds + random.uniform(-jitter_range, jitter_range))
+			return max(_MIN_INTERVAL, job.interval_seconds + random.uniform(-jitter_range, jitter_range))  # noqa: S311  (timing jitter, not security-relevant)
 
 		def _failure_jitter() -> float:
 			"""Return additive jitter used only for failure rescheduling."""
 			if job.jitter_pct <= 0:
 				return 0.0
 			jitter_range = job.interval_seconds * job.jitter_pct
-			return random.uniform(-jitter_range, jitter_range)
+			return random.uniform(-jitter_range, jitter_range)  # noqa: S311  (timing jitter, not security-relevant)
 
 		def _schedule_next(now: float, next_candidate: float, success: bool) -> float:
 			"""Compute and log the next run slot using job-local scheduling context."""
@@ -355,7 +356,7 @@ class Scheduler:
 						)
 						# Stop signaled during initial delay
 						return
-					except asyncio.TimeoutError:
+					except TimeoutError:
 						pass  # Initial delay elapsed, proceed
 
 				if not self._started or stop_event.is_set():
@@ -388,7 +389,7 @@ class Scheduler:
 					)
 					# Stop signaled
 					break
-				except asyncio.TimeoutError:
+				except TimeoutError:
 					# Interval elapsed, execute job
 					pass
 
@@ -433,16 +434,16 @@ class Scheduler:
 			else:
 				await awaitable
 
-			now = datetime.now(timezone.utc)
+			now = datetime.now(UTC)
 			job.last_success = now
 			job.last_attempt = now
 			job.run_count += 1
 			return True
 		except asyncio.CancelledError:
-			job.last_attempt = datetime.now(timezone.utc)
+			job.last_attempt = datetime.now(UTC)
 			raise
-		except asyncio.TimeoutError:
-			job.last_attempt = datetime.now(timezone.utc)
+		except TimeoutError:
+			job.last_attempt = datetime.now(UTC)
 			job.fail_count += 1
 			limit = job.timeout if job.timeout is not None else 0.0
 			_log.error(
@@ -453,7 +454,7 @@ class Scheduler:
 			)
 			return False
 		except Exception:
-			job.last_attempt = datetime.now(timezone.utc)
+			job.last_attempt = datetime.now(UTC)
 			job.fail_count += 1
 			_log.exception("SCHEDULER job=%s failed (fail #%d)", job.name, job.fail_count)
 			return False

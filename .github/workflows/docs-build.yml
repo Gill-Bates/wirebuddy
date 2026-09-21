@@ -8,6 +8,11 @@ on:
       - 'docs/**'
       - 'CHANGELOG.md'
       - 'LICENSE'
+      # The docs toolchain is installed from pyproject.toml's docs extra with
+      # tools/pyproject-deps.py, so both decide what this workflow builds and
+      # scans - a bump to either has to re-run it.
+      - 'pyproject.toml'
+      - 'tools/pyproject-deps.py'
       - '.github/workflows/docs-build.yml'
   pull_request:
     branches:
@@ -16,8 +21,21 @@ on:
       - 'docs/**'
       - 'CHANGELOG.md'
       - 'LICENSE'
+      - 'pyproject.toml'
+      - 'tools/pyproject-deps.py'
       - '.github/workflows/docs-build.yml'
   workflow_dispatch:
+  # A release (docker-build.yml) can ship a version and changelog bump that
+  # never touches docs/** on its own. CHANGELOG.md's push trigger above already
+  # covers a plain commit, but a re-run of that workflow from an existing tag
+  # would not re-fire this one otherwise. Rebuilding docs after every successful
+  # release keeps the deployed site in step with what was actually published,
+  # independent of which paths changed.
+  workflow_run:
+    workflows:
+      - 'Docker Multi-Arch Build'
+    types:
+      - completed
   schedule:
     # Weekly re-scan: new CVEs in the docs dependencies would otherwise only
     # surface when something in the repo happens to change.
@@ -33,25 +51,49 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # workflow_run fires on every conclusion of "Docker Multi-Arch Build"
+    # (success, failure, cancelled...). Only a successful release should trigger
+    # a docs rebuild; every other trigger (push, pull_request,
+    # workflow_dispatch, schedule) has no such conclusion to check.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    # Named, as in ci.yml and docker-build.yml, and on 26.04 ahead of the
+    # ubuntu-latest migration (actions/runner-images#14748). The docs toolchain
+    # is installed from pyproject.toml onto a setup-python interpreter, so the
+    # host only has to provide git for the revision-date plugin.
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0  # Full history for git-based plugins
+          # On workflow_run, GITHUB_SHA is the default branch's head, not the
+          # commit the release published - so the default checkout would deploy
+          # documentation for changes that are not in the release whenever main
+          # moved on in the meantime. Empty for every other trigger, which
+          # leaves checkout's own default in place.
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: '3.13'
           cache: pip
-          cache-dependency-path: docs/requirements-docs.txt
+          cache-dependency-path: pyproject.toml
 
+      # pyproject.toml is the single dependency manifest; the docs toolchain
+      # lives in its [project.optional-dependencies] docs extra. Installing
+      # `.[docs]` would also install the project itself and its runtime
+      # dependencies, so only the extra is materialised here.
       - name: Install dependencies
         run: |
+          set -euo pipefail
+          python3 tools/pyproject-deps.py docs > requirements-docs.txt
+          cat requirements-docs.txt
           pip install --upgrade pip
-          pip install -r docs/requirements-docs.txt
+          pip install -r requirements-docs.txt
 
       - name: Copy root files to docs
         run: |
@@ -65,6 +107,10 @@ jobs:
       # Runs against the same build that gets deployed. It used to live in a
       # separate job that rebuilt the docs from a shallow checkout, so the
       # git-revision-date plugin saw different history than the real build.
+      # img.shields.io is excluded because the badges on the landing page and in
+      # the README are generated on demand by a third party that throttles: a
+      # badge answering 503 after lychee's retries says nothing about the
+      # documentation, and blocking the Pages deploy on it only produces reruns.
       - name: Check links
         uses: lycheeverse/lychee-action@v1
         with:
@@ -72,8 +118,8 @@ jobs:
             --verbose
             --no-progress
             --exclude 'fonts\.gstatic\.com'
+            --exclude 'img\.shields\.io'
             --exclude 'gill-bates\.github\.io/wirebuddy'
-            --exclude 'www\.gnu\.org/licenses/?'
             --exclude 'apps\.apple\.com'
             './site/**/*.html'
           fail: true
@@ -81,7 +127,11 @@ jobs:
       - name: Upload artifact
         if: |
           github.ref == 'refs/heads/main' &&
-          (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+          (
+            github.event_name == 'push' ||
+            github.event_name == 'workflow_dispatch' ||
+            github.event_name == 'workflow_run'
+          )
         uses: actions/upload-pages-artifact@v5
         with:
           path: ./site
@@ -91,12 +141,13 @@ jobs:
       github.ref == 'refs/heads/main' &&
       (
         github.event_name == 'push' ||
-        github.event_name == 'workflow_dispatch'
+        github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'workflow_run'
       )
     needs:
       - build
       - security-scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       pages: write
@@ -110,19 +161,60 @@ jobs:
         uses: actions/deploy-pages@v5
 
   security-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          # The same commit the build job resolves, or the scan would report
+          # against a different dependency set than the one being deployed.
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # Same interpreter the build job uses, so the resolution below is the one
+      # that actually builds the docs.
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      # Trivy reports on what a manifest names, and the docs extra names its
+      # seven direct dependencies only: mkdocs-material alone pulls in jinja2,
+      # markupsafe, babel, requests, urllib3 and pygments, none of which appear
+      # in pyproject.toml. Scanning the extra by itself therefore left the
+      # majority of the installed code unscanned. Installing it and freezing the
+      # result gives the scanner the environment mkdocs is built in, transitive
+      # set included.
+      #
+      # The frozen file is a scan inventory, not an installation pin: the build
+      # job resolves the extra itself, and every direct dependency is pinned in
+      # pyproject.toml, so the two environments agree on everything a pinned
+      # dependency determines.
+      - name: Materialise the docs environment for scanning
+        run: |
+          set -euo pipefail
+          python3 tools/pyproject-deps.py docs > requirements-docs.txt
+          python3 -m venv .docs-scan
+          .docs-scan/bin/python -m pip install --quiet --upgrade pip
+          .docs-scan/bin/python -m pip install --quiet -r requirements-docs.txt
+          # The name has to contain "requirement" or Trivy's pip analyzer does
+          # not pick the file up at all.
+          .docs-scan/bin/python -m pip freeze --all > docs-requirements-frozen.txt
+          echo "Scanning $(grep -c '==' docs-requirements-frozen.txt) resolved packages:"
+          cat docs-requirements-frozen.txt
 
       - name: Trivy scan docs dependencies
         # Pinned to an immutable commit SHA — see GHSA-69fq-xp46-6x23.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          # As in docker-build.yml: the action's default scanner version trails
+          # its own releases, and the database it reads is downloaded fresh on
+          # every run regardless.
+          version: 'latest'
           cache: 'false'
           scan-type: 'fs'
-          scan-ref: 'docs/requirements-docs.txt'
+          # The frozen environment, not the manifest: see the step above.
+          scan-ref: 'docs-requirements-frozen.txt'
           format: 'table'
           exit-code: '1'
           ignore-unfixed: true

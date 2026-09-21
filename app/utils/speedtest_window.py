@@ -8,7 +8,8 @@
 
 import random
 import time
-from datetime import datetime as dt, timedelta
+from datetime import datetime as dt
+from datetime import timedelta
 
 
 def local_wall_clock_timestamp(day, hour: int) -> float:
@@ -24,14 +25,14 @@ def seconds_until_night_window(
     now_ts: float | None = None,
 ) -> float:
     """Calculate seconds until a jittered start time in the local night window.
-    
+
     If currently inside the window with enough remaining time, returns 0.0
     to allow immediate start.
     """
     now_time = time.time() if now_ts is None else now_ts
     now_local = dt.fromtimestamp(now_time)
     today = now_local.date()
-    
+
     start_today = local_wall_clock_timestamp(today, start_hour)
     end_today = local_wall_clock_timestamp(today, end_hour)
 
@@ -41,14 +42,14 @@ def seconds_until_night_window(
             return 0.0
         # Too late in current window, defer to next day
         today += timedelta(days=1)
-    
+
     start_next = local_wall_clock_timestamp(today, start_hour)
     if now_time >= start_next:
         today += timedelta(days=1)
         start_next = local_wall_clock_timestamp(today, start_hour)
-    
+
     # Calculate delay with jitter (0-10 min)
-    jitter = random.uniform(0.0, 600.0)
+    jitter = random.uniform(0.0, 600.0)  # noqa: S311  (timing jitter, not security-relevant)
     return max(0.0, (start_next - now_time) + jitter)
 
 
@@ -67,5 +68,5 @@ def seconds_until_next_day_window(
     now_local = dt.fromtimestamp(now_time)
     tomorrow = now_local.date() + timedelta(days=1)
     start_next = local_wall_clock_timestamp(tomorrow, start_hour)
-    jitter = random.uniform(0.0, 600.0)
+    jitter = random.uniform(0.0, 600.0)  # noqa: S311  (timing jitter, not security-relevant)
     return max(0.0, (start_next - now_time) + jitter)

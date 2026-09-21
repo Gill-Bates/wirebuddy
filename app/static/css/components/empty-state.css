@@ -81,6 +81,7 @@
 .wb-empty-state-overlay {
     position: absolute;
     inset: 0;
+
     /* Must be below footer (z-index: 1000) but above card content */
     z-index: 10;
 }

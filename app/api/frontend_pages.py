@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
 import re
@@ -16,12 +17,12 @@ import sqlite3
 import subprocess
 import sys
 import time
+import tomllib
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
-import ipaddress
-import markdown as _markdown
 
+import markdown as _markdown
 import nh3
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
@@ -39,23 +40,23 @@ from ..dns import unbound
 from ..utils.config import get_config
 from ..utils.onboarding import ONBOARDING_STEPS
 from ..utils.rate_limit import RATE_LIMIT_DEFAULT, RATE_LIMIT_UI_HEAVY, limiter
+from ..utils.tls import describe_gui_certificate
 from ..utils.tsdb_helpers import build_latest_by_node
 from ..utils.version import BUILD_INFO, VERSION
-from ..utils.tls import describe_gui_certificate
 from .acme import get_certs_dir, get_challenge_response
 from .auth import coerce_db_bool, get_current_user_optional
 from .frontend_shared import (
-    extract_geo_fields,
-    format_last_seen_label,
-    get_csrf_token,
-    lookup_ip_cached,
-    parse_last_seen_epoch,
-    parse_node_metadata,
-    resolve_node_geo_ip,
-    require_admin_or_redirect,
-    require_user_or_redirect,
-    router,
-    templates,
+	extract_geo_fields,
+	format_last_seen_label,
+	get_csrf_token,
+	lookup_ip_cached,
+	parse_last_seen_epoch,
+	parse_node_metadata,
+	require_admin_or_redirect,
+	require_user_or_redirect,
+	resolve_node_geo_ip,
+	router,
+	templates,
 )
 from .wireguard_isolation import extract_peer_ips
 
@@ -205,24 +206,24 @@ _FQDN_RE = re.compile(
 
 def _is_valid_hostname_or_ip(value: str) -> bool:
 	"""Validate hostname or IP address with proper parsing.
-	
+
 	More robust than regex-only validation, especially for IPv6.
 	``localhost`` is explicitly accepted so generated URLs can remain local-only.
 	"""
 	clean = str(value or "").strip()
 	if not clean:
 		return False
-	
+
 	if clean.lower() == "localhost":
 		return True
-	
+
 	# Try parsing as IP address (IPv4 or IPv6)
 	try:
 		ipaddress.ip_address(clean)
 		return True
 	except ValueError:
 		pass
-	
+
 	# Validate as FQDN using regex
 	return _FQDN_RE.match(clean) is not None
 
@@ -254,32 +255,33 @@ def _normalize_pkg_name(name: str) -> str:
 
 
 def _parse_requirements() -> dict[str, str]:
-	"""Parse requirements.txt and return package->version mapping."""
-	req_path = _find_existing_file("requirements.txt")
-	if req_path is None:
+	"""Parse pyproject.toml's [project] dependencies into a package->version mapping."""
+	pyproject_path = _find_existing_file("pyproject.toml")
+	if pyproject_path is None:
 		return {}
 	try:
-		versions: dict[str, str] = {}
-		for raw_line in req_path.read_text(encoding="utf-8").splitlines():
-			line = raw_line.strip()
-			if not line or line.startswith("#") or line.startswith("-"):
-				continue
-			for sep in ("==", ">=", "<=", "~=", "!=", ">", "<"):
-				if sep in line:
-					pkg, ver = line.split(sep, 1)
-					pkg = _normalize_pkg_name(pkg.split("[")[0])
-					ver = ver.split(",", 1)[0].split("#")[0].split(";")[0].strip()
-					versions[pkg] = ver
-					break
-		return versions
-	except (OSError, ValueError, UnicodeDecodeError) as exc:
-		_log.warning("Failed to parse requirements.txt: %s", exc)
-	return {}
+		with pyproject_path.open("rb") as handle:
+			data = tomllib.load(handle)
+	except (OSError, tomllib.TOMLDecodeError) as exc:
+		_log.warning("Failed to parse pyproject.toml: %s", exc)
+		return {}
+
+	versions: dict[str, str] = {}
+	for line in data.get("project", {}).get("dependencies", []):
+		for sep in ("==", ">=", "<=", "~=", "!=", ">", "<"):
+			if sep in line:
+				pkg, ver = line.split(sep, 1)
+				pkg = _normalize_pkg_name(pkg.split("[")[0])
+				ver = ver.split(",", 1)[0].split("#")[0].split(";")[0].strip()
+				versions[pkg] = ver
+				break
+	return versions
 
 
 def _resolve_dependencies(requirements_versions: dict[str, str]) -> list[tuple[str, str]]:
 	"""Resolve dependency versions from requirements or importlib.metadata."""
-	from importlib.metadata import PackageNotFoundError, version as get_pkg_version
+	from importlib.metadata import PackageNotFoundError
+	from importlib.metadata import version as get_pkg_version
 
 	dependencies = []
 	for pkg_name in _KEY_PACKAGES:
@@ -299,12 +301,12 @@ def _resolve_dependencies(requirements_versions: dict[str, str]) -> list[tuple[s
 
 def _get_system_tool_version(cmd_path: str, version_pattern: str, version_flag: str = "--version") -> str:
 	"""Get version string from a system tool.
-	
+
 	Args:
 		cmd_path: Absolute path to the command
 		version_pattern: Regex pattern to extract version (first group is used)
 		version_flag: Flag to request version output
-	
+
 	Returns:
 		Version string, "not installed", or "not available"
 	"""
@@ -457,7 +459,7 @@ def _is_loopback_request(request: Request) -> bool:
 	"""Check if request originates from loopback address.
 
 	NOTE: ``request.client`` is rewritten by Uvicorn's proxy-headers middleware
-	from X-Forwarded-For when the peer is covered by FORWARDED_ALLOW_IPS. A
+	from X-Forwarded-For when the peer is covered by WIREBUDDY_TRUSTED_PROXIES. A
 	forwarded request therefore must not be accepted as loopback just because
 	the rewritten value looks local, so a request carrying forwarding headers is
 	rejected outright.
@@ -486,7 +488,7 @@ async def get_system_status(request: Request) -> SystemStatusResponse:
 	if not _is_loopback_request(request):
 		# Security: Only allow localhost access to prevent info disclosure
 		raise HTTPException(status_code=403, detail="Access denied: localhost only")
-	
+
 	key_mismatch = getattr(request.app.state, "key_mismatch", False)
 	return SystemStatusResponse(key_mismatch=key_mismatch)
 
@@ -570,7 +572,7 @@ def passkey_setup_page(
 	user: sqlite3.Row = Depends(require_user_or_redirect),
 ) -> Response:
 	"""Passkey onboarding page for first-time setup after admin enabled passkeys.
-	
+
 	Redirects to dashboard if:
 	- User has no passkey_pending flag (setup not initiated by admin), OR
 	- User has already registered a passkey (passkey_enabled=True)
@@ -645,7 +647,7 @@ async def peers_page(
 		peer["last_client_country_code"] = None
 		peer["last_client_city"] = None
 		peer["last_client_as_org"] = None
-		
+
 		# Extract IPv4 and IPv6 from peer_address for separate display
 		ipv4, ipv6 = extract_peer_ips(peer.get("peer_address"))
 		peer["peer_ipv4"] = ipv4
@@ -661,7 +663,7 @@ async def peers_page(
 
 		# Mark node tunnel peers (system peers not editable by users)
 		peer["is_node_tunnel"] = peer["id"] in tunnel_peer_ids
-		
+
 		# Add node name for display (None = Master)
 		peer["node_name"] = node_id_to_name.get(peer.get("node_id")) if peer.get("node_id") else None
 		peers.append(peer)
@@ -675,7 +677,6 @@ async def peers_page(
 
 	# Load nodes for the node selector in the Add Peer modal (admin only).
 	nodes_data: list = []
-	local_fqdn = None
 	local_country_code = None
 	if coerce_db_bool(user["is_admin"]):
 		empty_geo = extract_geo_fields(None)
@@ -914,11 +915,11 @@ async def about_page(
 	user: sqlite3.Row = Depends(require_user_or_redirect),
 ) -> Response:
 	"""About page with version, dependencies, changelog, and license.
-	
+
 	Note: Data is cached via @lru_cache for performance. Cache persists until
-	server restart — runtime changes to requirements.txt, LICENSE, or CHANGELOG.md
+	server restart — runtime changes to pyproject.toml, LICENSE, or CHANGELOG.md
 	won't be reflected without restart.
-	
+
 	First call (cache miss) runs blocking operations in thread pool to avoid
 	blocking the event loop.
 	"""
@@ -958,20 +959,28 @@ async def settings_page(
 			else:
 				url_host = f"[{raw_host}]" if isinstance(addr, ipaddress.IPv6Address) else raw_host
 
+			gui_https_enabled = _get_bool_setting(conn, "gui_https_enabled")
+			scheme = "https" if gui_https_enabled else "http"
+			default_port = 443 if gui_https_enabled else 80
+			gui_port_raw = str(get_setting(conn, "gui_port", "8000") or "8000").strip()
+			gui_port = int(gui_port_raw) if gui_port_raw.isdigit() and 1 <= int(gui_port_raw) <= 65535 else 8000
+			port_suffix = "" if gui_port == default_port else f":{gui_port}"
+			url_authority = f"{url_host}{port_suffix}"
+
 			return {
 				"enable_status_page": _get_bool_setting(conn, "enable_status_page"),
 				"enable_swagger": _get_bool_setting(conn, "enable_swagger"),
 				"gui_localhost_only": _get_bool_setting(conn, "gui_localhost_only"),
 				"wg_use_psk": _get_bool_setting(conn, "wg_use_psk", "1"),  # Default: enabled
 				"traffic_analysis_enabled": _get_bool_setting(conn, "traffic_analysis_enabled"),
-				"gui_https_enabled": _get_bool_setting(conn, "gui_https_enabled"),
+				"gui_https_enabled": gui_https_enabled,
 				"tls_certificate": describe_gui_certificate(
 					get_certs_dir(get_config()),
 					wg_fqdn,
 				),
 				"speedtest_enabled": get_speedtest_enabled(conn),
-				"status_page_url": f"https://{url_host}/status",
-				"swagger_url": f"https://{url_host}/swagger",
+				"status_page_url": f"{scheme}://{url_authority}/status",
+				"swagger_url": f"{scheme}://{url_authority}/swagger",
 			}
 
 	settings = await asyncio.to_thread(_load_settings_page_data)
@@ -989,10 +998,10 @@ def onboarding_modal_fragment(
 	user: sqlite3.Row = Depends(require_user_or_redirect),
 ) -> Response:
 	"""Serve the onboarding modal fragment on-demand.
-	
+
 	Returns only the modal HTML (no page wrapper), used for lazy-loading
 	by onboarding.js to reduce initial page load size.
-	
+
 	The onboarding steps are defined in app.utils.onboarding.ONBOARDING_STEPS
 	to enable testing, internationalization, and dynamic modifications
 	without template changes.
@@ -1011,7 +1020,7 @@ def onboarding_modal_fragment(
 @limiter.limit(RATE_LIMIT_DEFAULT)
 def acme_challenge(request: Request, token: str) -> PlainTextResponse:
 	"""Serve ACME HTTP-01 challenge response for Let's Encrypt.
-	
+
 	Intentionally synchronous so FastAPI dispatches it through the thread pool.
 	``get_challenge_response`` performs file I/O and should not block the event loop.
 	"""

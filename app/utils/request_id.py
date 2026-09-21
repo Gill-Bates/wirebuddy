@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -30,9 +30,9 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 
 		request.state.request_id = request_id
 		request.state.external_request_id = external_request_id
-		
+
 		response = await call_next(request)
-		
+
 		response.headers["X-Request-ID"] = request_id
-		
+
 		return response

@@ -14,16 +14,13 @@ import json
 import logging
 import os
 import sqlite3
-from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from ..db.sqlite_auth import (
 	clear_login_attempts,
-	create_auth_token,
 	is_ip_locked,
 	record_failed_login,
 )
@@ -37,19 +34,17 @@ from ..db.sqlite_passkeys import (
 	get_passkeys_for_user,
 	update_passkey_sign_count,
 )
+from ..db.sqlite_runtime import transaction
 from ..db.sqlite_users import (
 	clear_passkey_onboarding,
 	disable_user_passkeys,
-	get_user_by_id,
 	get_user_by_username,
 	set_passkey_pending,
-	update_last_login,
 	update_user_auth_method,
 )
-from ..db.sqlite_runtime import transaction
-from ..utils.crypto import generate_token_expiry, new_token
 from ..utils.deps import get_conn
 from ..utils.passkeys import (
+	InvalidChallengeError,
 	consume_authentication_challenge,
 	consume_registration_challenge,
 	get_authentication_options,
@@ -57,19 +52,15 @@ from ..utils.passkeys import (
 	serialize_transports,
 	verify_authentication,
 	verify_registration,
-	InvalidChallengeError,
 )
 from ..utils.rate_limit import RATE_LIMIT_AUTH, limiter
-from .auth import _get_client_ip, _is_https, get_current_user, require_admin
+from .auth import _get_client_ip, _is_https, _issue_session, get_current_user, require_admin
 from .response import ok_response
+from .users import _get_user_or_404
 
 _log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["passkeys"])
-
-_AUTH_COOKIE = "auth_token"
-_RP_ID_OVERRIDE = os.environ.get("PASSKEY_RP_ID")
-_PUBLIC_ORIGIN = os.environ.get("WIREBUDDY_PUBLIC_ORIGIN", "").strip()
 
 
 def _is_local_dev_host(hostname: str) -> bool:
@@ -78,20 +69,14 @@ def _is_local_dev_host(hostname: str) -> bool:
 	return host in {"localhost", "127.0.0.1", "::1"}
 
 
-def _public_origin_hostname() -> str | None:
-	"""Extract hostname from configured WIREBUDDY_PUBLIC_ORIGIN."""
-	if not _PUBLIC_ORIGIN:
-		return None
-	parsed = urlparse(_PUBLIC_ORIGIN)
-	hostname = (parsed.hostname or "").strip()
-	return hostname or None
-
-
 def _get_rp_id(request: Request) -> str:
 	"""Get RP ID from explicit config or trusted local-development fallback."""
-	if _RP_ID_OVERRIDE:
-		return _RP_ID_OVERRIDE
-	if (origin_host := _public_origin_hostname()) is not None:
+	from ..utils.config import get_config
+
+	cfg = get_config()
+	if (rp_id_override := os.environ.get("PASSKEY_RP_ID")):
+		return rp_id_override
+	if (origin_host := cfg.public_origin_hostname) is not None:
 		return origin_host
 	hostname = (request.url.hostname or "localhost").strip()
 	if _is_local_dev_host(hostname):
@@ -104,8 +89,11 @@ def _get_rp_id(request: Request) -> str:
 
 def _get_origin(request: Request) -> str:
 	"""Get expected origin from explicit config or local-development fallback."""
-	if _PUBLIC_ORIGIN:
-		return _PUBLIC_ORIGIN.rstrip("/")
+	from ..utils.config import get_config
+
+	public_origin = get_config().public_origin
+	if public_origin:
+		return public_origin.rstrip("/")
 	hostname = (request.url.hostname or "localhost").strip()
 	if not _is_local_dev_host(hostname):
 		raise HTTPException(
@@ -148,14 +136,6 @@ def _auth_fail(
 	_log.warning("%s", log_msg)
 	record_failed_login(conn, client_ip)
 	raise HTTPException(status_code=status_code, detail=detail)
-
-
-def _require_target_user(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row:
-	"""Fetch a user by ID or raise HTTP 404."""
-	user = get_user_by_id(conn, user_id)
-	if not user:
-		raise HTTPException(status_code=404, detail="User not found")
-	return user
 
 
 def _parse_client_data(credential: dict[str, Any]) -> dict[str, Any]:
@@ -223,14 +203,6 @@ class PasskeyLoginFinishRequest(BaseModel):
 	credential: dict[str, Any] = Field(..., description="WebAuthn credential response")
 
 
-class PasskeyPublic(BaseModel):
-	"""Public representation of a passkey."""
-	id: int
-	device_name: str | None
-	created_at: datetime
-	transports: list[str] | None
-
-
 # ---------------------------------------------------------------------------
 # Registration Endpoints
 # ---------------------------------------------------------------------------
@@ -244,7 +216,7 @@ def passkey_register_start(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Start passkey registration for the current user.
-	
+
 	Returns PublicKeyCredentialCreationOptions for navigator.credentials.create()
 	"""
 	rp_id = _get_rp_id(request)
@@ -280,7 +252,7 @@ def passkey_register_finish(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Complete passkey registration.
-	
+
 	Verifies the WebAuthn response and stores the credential.
 	"""
 	rp_id = _get_rp_id(request)
@@ -296,7 +268,7 @@ def passkey_register_finish(
 
 	# Verify challenge and get bound user info
 	try:
-		bound_user_id, bound_username = consume_registration_challenge(conn, challenge)
+		bound_user_id, _bound_username = consume_registration_challenge(conn, challenge)
 	except InvalidChallengeError as e:
 		_log.warning(
 			"PASSKEY_REGISTER_FINISH invalid/expired challenge user_id=%s: %s",
@@ -376,11 +348,11 @@ def passkey_login_start(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Start passkey authentication.
-	
+
 	Can be called with or without a username:
 	- With username: Returns options with allowCredentials for that user's passkeys
 	- Without username: Returns options for discoverable credential (usernameless) flow
-	
+
 	Returns PublicKeyCredentialRequestOptions for navigator.credentials.get()
 	"""
 	client_ip = _get_client_ip(request)
@@ -390,25 +362,28 @@ def passkey_login_start(
 
 	rp_id = _get_rp_id(request)
 	user_id = None
-	credential_ids = None
 
 	if payload and payload.username:
-		# Username provided - fetch user's credentials
+		# Username provided - look up the user only to bind the challenge
+		# server-side (used later to cross-check the credential at /finish).
+		# Deliberately NOT passed as credential_ids below: doing so would set
+		# allowCredentials in the returned WebAuthn options, which lets a
+		# caller distinguish "active account with passkeys" from everything
+		# else by response shape alone. Always return discoverable-credential
+		# options so the response is identical either way.
 		user = get_user_by_username(conn, payload.username)
 		if user and user["is_active"]:
 			ids = get_credential_ids_for_user(conn, user["id"])
 			if ids:
 				user_id = user["id"]
-				credential_ids = ids
 		else:
-			# Don't reveal user existence - still generate options
 			_log.debug("PASSKEY_LOGIN_START unknown/inactive user=%s", payload.username)
 
 	options = get_authentication_options(
 		conn=conn,
 		rp_id=rp_id,
 		user_id=user_id,
-		credential_ids=credential_ids,
+		credential_ids=None,
 	)
 
 	_log.debug("PASSKEY_LOGIN_START rp_id=%s user_id=%s", rp_id, user_id)
@@ -425,7 +400,7 @@ def passkey_login_finish(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Complete passkey authentication.
-	
+
 	Verifies the WebAuthn response, creates a session, and sets auth cookie.
 	"""
 	client_ip = _get_client_ip(request)
@@ -499,27 +474,14 @@ def passkey_login_finish(
 
 	# Commit sign-count update, session token creation, and last-login in a
 	# single transaction so a mid-flight crash cannot leave them partially applied.
-	now = datetime.now(UTC)
-	token = new_token()
-	expires_at, max_expires_at = generate_token_expiry(now=now)
-
-	with conn:
+	# _issue_session is shared with the password login, so both paths enforce the
+	# same HTTPS policy and set the same cookie; if it rejects plaintext transport
+	# the whole unit rolls back. transaction(), not ``with conn``: the latter opens
+	# no transaction, so each helper's own transaction() would commit on its own.
+	with transaction(conn):
 		update_passkey_sign_count(conn, passkey_row["id"], result.new_sign_count)
 		clear_login_attempts(conn, client_ip)
-		create_auth_token(conn, user_id, token, expires_at, max_expires_at)
-		update_last_login(conn, user_id, client_ip)
-
-	# Set auth cookie
-	max_age = max(0, int((max_expires_at - now).total_seconds()))
-	response.set_cookie(
-		key=_AUTH_COOKIE,
-		value=token,
-		httponly=True,
-		secure=_is_https(request),
-		samesite="strict",
-		max_age=max_age,
-		path="/",
-	)
+		_, expires_at = _issue_session(conn, request, response, user_id, client_ip)
 
 	_log.info("PASSKEY_LOGIN_SUCCESS ip=%s username=%s", client_ip, username)
 
@@ -585,7 +547,7 @@ def reset_user_passkeys(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Admin endpoint: Reset all passkeys for a user."""
-	target_user = _require_target_user(conn, user_id)
+	target_user = _get_user_or_404(conn, user_id)
 
 	deleted_count = disable_user_passkeys(conn, user_id)
 
@@ -605,11 +567,11 @@ def reset_user_passkeys(
 @router.get("/user/{user_id}")
 def list_user_passkeys_admin(
 	user_id: int,
-	admin: sqlite3.Row = Depends(require_admin),
+	_: sqlite3.Row = Depends(require_admin),
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Admin endpoint: List passkeys for any user."""
-	target_user = _require_target_user(conn, user_id)
+	_get_user_or_404(conn, user_id)
 
 	rows = get_passkeys_for_user(conn, user_id)
 	return ok_response(data=[_serialize_passkey_row(row) for row in rows])
@@ -643,10 +605,10 @@ def enable_user_passkey(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Admin endpoint: Enable passkey authentication for a user.
-	
+
 	Sets passkey_pending=1, user will be prompted to register passkey on next login.
 	"""
-	target_user = _require_target_user(conn, user_id)
+	target_user = _get_user_or_404(conn, user_id)
 
 	# Check if already enabled
 	if target_user["passkey_enabled"]:
@@ -676,10 +638,10 @@ def disable_user_passkey(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Admin endpoint: Disable passkey authentication for a user.
-	
+
 	Deletes all passkeys and resets passkey_enabled and passkey_pending.
 	"""
-	target_user = _require_target_user(conn, user_id)
+	target_user = _get_user_or_404(conn, user_id)
 
 	deleted_count = disable_user_passkeys(conn, user_id)
 

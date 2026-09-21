@@ -17,12 +17,16 @@
 
     /* Typography */
     --wb-font-base: 0.875rem;
+
     /* 14px */
     --wb-font-sm: 0.75rem;
+
     /* 12px */
     --wb-font-lg: 1rem;
+
     /* 16px */
     --wb-font-xl: 1.25rem;
+
     /* 20px */
 
     --wb-heading-page: 1.4rem;
@@ -34,12 +38,12 @@
     --wb-radius-lg: 12px;
 
     /* Shadows */
-    --wb-shadow-1: 0 2px 8px rgba(0, 0, 0, 0.04);
-    --wb-shadow-2: 0 4px 16px rgba(0, 0, 0, 0.06);
+    --wb-shadow-1: 0 2px 8px rgb(0 0 0 / 4%);
+    --wb-shadow-2: 0 4px 16px rgb(0 0 0 / 6%);
 
     /* Muted backgrounds */
-    --wb-muted-bg: rgba(0, 0, 0, 0.035);
-    --wb-hover-bg: rgba(0, 0, 0, 0.025);
+    --wb-muted-bg: rgb(0 0 0 / 3.5%);
+    --wb-hover-bg: rgb(0 0 0 / 2.5%);
 
     /* Transitions (specific for better performance) */
     --wb-transition-shadow: box-shadow 0.2s ease;
@@ -47,23 +51,23 @@
     --wb-transition-transform: transform 0.2s ease;
 
     /* Network-item border tokens (Dashboard) */
-    --wb-ni-border: rgba(0, 0, 0, 0.06);
-    --wb-ni-border-hover: rgba(0, 0, 0, 0.18);
-    --wb-ni-border-active: rgba(0, 0, 0, 0.12);
-    --wb-ni-bar-bg: rgba(0, 0, 0, 0.08);
+    --wb-ni-border: rgb(0 0 0 / 6%);
+    --wb-ni-border-hover: rgb(0 0 0 / 18%);
+    --wb-ni-border-active: rgb(0 0 0 / 12%);
+    --wb-ni-bar-bg: rgb(0 0 0 / 8%);
 }
 
 [data-bs-theme="dark"] {
-    --wb-shadow-1: 0 2px 8px rgba(0, 0, 0, 0.55);
-    --wb-shadow-2: 0 4px 18px rgba(0, 0, 0, 0.65);
-    --wb-muted-bg: rgba(255, 255, 255, 0.06);
-    --wb-hover-bg: rgba(255, 255, 255, 0.04);
+    --wb-shadow-1: 0 2px 8px rgb(0 0 0 / 55%);
+    --wb-shadow-2: 0 4px 18px rgb(0 0 0 / 65%);
+    --wb-muted-bg: rgb(255 255 255 / 6%);
+    --wb-hover-bg: rgb(255 255 255 / 4%);
 
     /* Network-item border tokens (dark overrides) */
-    --wb-ni-border: rgba(255, 255, 255, 0.06);
-    --wb-ni-border-hover: rgba(255, 255, 255, 0.18);
-    --wb-ni-border-active: rgba(255, 255, 255, 0.12);
-    --wb-ni-bar-bg: rgba(255, 255, 255, 0.08);
+    --wb-ni-border: rgb(255 255 255 / 6%);
+    --wb-ni-border-hover: rgb(255 255 255 / 18%);
+    --wb-ni-border-active: rgb(255 255 255 / 12%);
+    --wb-ni-bar-bg: rgb(255 255 255 / 8%);
 }
 
 
@@ -94,12 +98,14 @@ small {
 /* ---------- 3. Cards ---------- */
 
 .card {
-    border: 1px solid rgba(0, 0, 0, 0.06);
+    border: 1px solid rgb(0 0 0 / 6%);
     border-radius: var(--wb-radius-lg);
     box-shadow: var(--wb-shadow-1);
     transition: var(--wb-transition-shadow);
+
     /* Fallback for browsers without clip support */
     overflow: hidden;
+
     /* Preferred: clip doesn't create a scroll container, avoiding layout side effects */
     overflow: clip;
 }
@@ -109,7 +115,7 @@ small {
 }
 
 [data-bs-theme="dark"] .card {
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid rgb(255 255 255 / 8%);
 }
 
 .card-header {
@@ -163,7 +169,7 @@ small {
 }
 
 /* Mobile: slightly smaller icon */
-@media (max-width: 575.98px) {
+@media (width <=575.98px) {
     .wb-kpi-icon {
         font-size: 2rem;
     }
@@ -178,33 +184,38 @@ small {
     padding: 0.4rem 0.8rem;
     border-radius: var(--wb-radius-md);
     transition: var(--wb-transition-bg), var(--wb-transition-shadow);
+
     /* Vertical centering for buttons with min-height */
     display: inline-flex;
     align-items: center;
     justify-content: center;
+
+    /* Icon/text spacing inside buttons uses gap, not margin. Section 13 below
+       sets margin-left/margin-right on any icon+text sibling pair
+       project-wide (e.g. badges, labels); .btn also being inline-flex meant a
+       button with an icon span followed by a text span
+       (<span class="material-icons">x</span><span>Save</span>, used
+       throughout base.html, nodes.html, peers.html, users.html) received both
+       that margin AND this section's own margin, doubling the gap to 0.7rem.
+       gap only ever produces one gap between two flex children, so it cannot
+       double regardless of icon/text order (icon-before-text or
+       text-before-icon), and margin is zeroed on the icon so section 13's
+       rule has nothing left to add. */
+    gap: 0.35rem;
 }
 
 .btn-sm {
     padding: 0.3rem 0.65rem;
 }
 
-.btn .material-icons {
+.btn :where(.material-icons) {
     font-size: 1rem;
     vertical-align: middle;
     line-height: 1;
-    pointer-events: none;
-    /* Ensure touch events pass through to button */
-}
-
-/* Buttons with text + icon: add right margin to icon */
-.btn .material-icons:not(:only-child) {
-    margin-right: 0.35rem;
-}
-
-/* Icon-only buttons: center the icon */
-.btn .material-icons:only-child {
-    display: inline-flex;
     margin: 0;
+    pointer-events: none;
+
+    /* Ensure touch events pass through to button */
 }
 
 /* Icon-only buttons */
@@ -242,14 +253,11 @@ small {
     border-bottom-right-radius: var(--wb-radius-md);
 }
 
-.input-group .btn-icon .material-icons {
+:where(.input-group .btn-icon) .material-icons {
     font-size: 1.125rem;
+
     /* 18px */
     line-height: 1;
-}
-
-.btn-icon .material-icons {
-    margin-right: 0;
 }
 
 /* Disabled danger buttons should appear gray, not light red */
@@ -304,12 +312,6 @@ small {
     gap: 0.125rem 0.375rem;
 }
 
-#peer-blocklist-options .badge,
-#edit-peer-blocklist-options .badge {
-    margin-left: 0 !important;
-}
-
-
 /* ---------- 6. Tables ---------- */
 
 .table {
@@ -341,6 +343,11 @@ small {
     font-size: 0.7rem;
     padding: 0.35em 0.6em;
     border-radius: var(--wb-radius-sm);
+}
+
+#peer-blocklist-options .badge,
+#edit-peer-blocklist-options .badge {
+    margin-left: 0 !important;
 }
 
 
@@ -381,7 +388,7 @@ summary {
     padding-bottom: var(--wb-space-3);
 }
 
-@media (min-width: 992px) {
+@media (width >=992px) {
     .wb-main-grid>[class*="col-"] {
         margin-top: 0;
     }
@@ -436,7 +443,7 @@ summary {
 .material-icons {
     line-height: 1;
     vertical-align: middle;
-    color: currentColor;
+    color: currentcolor;
     flex-shrink: 0;
 }
 
@@ -460,9 +467,12 @@ summary {
     font-size: 3rem;
 }
 
-/* Standard icon spacing in text */
-.material-icons+span,
-span+.material-icons {
+/* Standard icon spacing in text. Excludes .btn's own icon/text children,
+   which use gap (Section 5) instead - without this exclusion the margin here
+   would add to that gap rather than being superseded by it, since it lands on
+   the text span rather than the icon that Section 5 zeroes out. */
+.material-icons+span:not(.btn>span),
+span+.material-icons:not(.btn>.material-icons) {
     margin-left: 0.35rem;
 }
 
@@ -500,6 +510,25 @@ span+.material-icons {
 
 
 /* ---------- 17. Modal Consistency ---------- */
+
+/* Every overlay modal is centred in the viewport, so the centring lives here
+   globally instead of depending on a per-dialog .modal-dialog-centered.
+   Mirrors Bootstrap's centred variant, including the scrollable case. */
+.modal-dialog {
+    display: flex;
+    align-items: center;
+    min-height: calc(100% - var(--bs-modal-margin) * 2);
+}
+
+.modal-dialog.modal-dialog-scrollable {
+    flex-direction: column;
+    justify-content: center;
+    height: 100%;
+}
+
+:where(.modal-dialog.modal-dialog-scrollable) .modal-content {
+    overflow: hidden;
+}
 
 .modal-content {
     border-radius: var(--wb-radius-lg);
@@ -625,16 +654,7 @@ span+.material-icons {
 
 /* ---------- 23. Bootstrap Margin Utility Overrides ---------- */
 
-/* CAUTION: Global Bootstrap utility overrides - affects all Bootstrap components!
-   Map Bootstrap margin classes to WireBuddy spacing tokens for consistent spacing.
-   mb-3 = 24px matches g-3 = 24px for row-to-row gaps.
-   
-   RISK: Third-party components expecting Bootstrap defaults may break.
-   ALTERNATIVE: Consider using wb-mb-3 prefixed utilities instead of global overrides.
-   
-   body prefix for maximum specificity to override Bootstrap !important */
-
-/* TODO: Evaluate migrating to scoped .wb-mb-* utilities to reduce global override risk */
+/* Map Bootstrap margin utilities to WireBuddy spacing tokens. */
 
 body .mb-1,
 html body .mb-1 {
@@ -704,14 +724,10 @@ html body .my-4 {
 /* ---------- 24. Mobile Optimizations ---------- */
 
 /* Reduced page spacing for better viewport usage on mobile devices */
-@media (max-width: 767.98px) {
-
+@media (width <=767.98px) {
     /* Main content area - reduced padding (consistent bottom for footer spacing) */
     .main-content {
-        padding-top: 0.75rem;
-        padding-left: 0.75rem;
-        padding-right: 0.75rem;
-        padding-bottom: calc(1rem + var(--wb-footer-height));
+        padding: 0.75rem 0.75rem calc(1rem + var(--wb-footer-height));
     }
 
     /* Grid rows - only horizontal gutters are reduced; vertical gutters remain
@@ -771,15 +787,14 @@ html body .my-4 {
 }
 
 /* Keep footer spacing consistent with dashboard on small phones */
-@media (max-width: 575.98px) {
+@media (width <=575.98px) {
     .wb-page {
         padding-bottom: 2rem;
     }
 }
 
 /* Tablet optimizations for medium-sized screens */
-@media (min-width: 768px) and (max-width: 991.98px) {
-
+@media (width >=768px) and (width <=991.98px) {
     /* Grid rows - only horizontal gutters are adjusted; vertical gutters remain
        at the layout standard (24px) for consistent card spacing. */
     .row.g-3,
@@ -789,10 +804,7 @@ html body .my-4 {
 
     /* Main content - slightly reduced padding (consistent bottom for footer spacing) */
     .main-content {
-        padding-top: 1rem;
-        padding-left: 1rem;
-        padding-right: 1rem;
-        padding-bottom: calc(1.25rem + var(--wb-footer-height));
+        padding: 1rem 1rem calc(1.25rem + var(--wb-footer-height));
     }
 
     /* Container - moderate padding */
@@ -836,7 +848,7 @@ html body .my-4 {
    2. Set `tabindex="-1"` + `aria-disabled="true"` on each input
    3. ALWAYS enforce authorization server-side — CSS is UI-only */
 
-.wb-readonly .btn:not(.nav-link):not([data-bs-toggle="tab"]) {
+.wb-readonly .btn:not(.nav-link, [data-bs-toggle="tab"]) {
     pointer-events: none;
     opacity: 0.45;
     filter: grayscale(40%);
@@ -871,8 +883,8 @@ html body .my-4 {
 [data-bs-theme="dark"] .wb-readonly .form-control,
 [data-bs-theme="dark"] .wb-readonly .form-select,
 [data-bs-theme="dark"] .wb-readonly textarea.form-control {
-    background-color: rgba(255, 255, 255, 0.05);
-    border-color: rgba(255, 255, 255, 0.08);
+    background-color: rgb(255 255 255 / 5%);
+    border-color: rgb(255 255 255 / 8%);
 }
 
 
@@ -905,7 +917,6 @@ html body .my-4 {
    Preserves functional transitions (focus rings, collapse indicators) while
    disabling potentially disorienting decorative animations. */
 @media (prefers-reduced-motion: reduce) {
-
     /* Decorative animation classes */
     .flow-line,
     .pulse-marker,
@@ -933,7 +944,7 @@ html body .my-4 {
     padding: 0;
     margin: -1px;
     overflow: hidden;
-    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
     white-space: nowrap;
     border-width: 0;
 }
@@ -956,7 +967,7 @@ html body .my-4 {
     border: 1px solid var(--bs-border-color);
     border-radius: var(--wb-radius-lg);
     background: var(--bs-body-bg);
-    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
 }
 
 /* Enhanced border for enabled blocklists */
@@ -1042,23 +1053,22 @@ html body .my-4 {
 }
 
 /* Responsive grid: 1 column (mobile) → 2 columns (tablet) → 4 columns (desktop) */
-@media (min-width: 768px) {
+@media (width >=768px) {
     .blocklist-list {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
 
-@media (min-width: 1400px) {
+@media (width >=1400px) {
     .blocklist-list {
         grid-template-columns: repeat(4, minmax(0, 1fr));
     }
 }
 
 /* Mobile: Toggle left, title right (same line) */
-@media (max-width: 767px) {
+@media (width <=767px) {
     .blocklist-row {
-        flex-direction: row;
-        flex-wrap: nowrap;
+        flex-flow: row nowrap;
         gap: 1rem;
     }
 

@@ -17,19 +17,19 @@ from __future__ import annotations
 
 import base64
 import hmac
-import ipaddress
 import io
 import logging
 import os
-import qrcode
-import sqlite3
 import re
+import sqlite3
 import threading
 import time
 import unicodedata
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
+import pyotp
+import qrcode
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -42,6 +42,7 @@ from ..db.sqlite_auth import (
 	record_failed_login,
 	refresh_auth_token,
 )
+from ..db.sqlite_settings import get_gui_https_enabled
 from ..db.sqlite_users import (
 	confirm_user_otp,
 	decrypt_otp_secret,
@@ -55,7 +56,6 @@ from ..models.users import (
 	OTPConfirmRequest,
 	RecoveryDownloadRequest,
 )
-from ..db.sqlite_settings import get_gui_https_enabled
 from ..utils.coerce import coerce_db_bool
 from ..utils.crypto import DUMMY_PASSWORD_HASH, generate_token_expiry, new_token, verify_password
 from ..utils.deps import get_conn
@@ -67,7 +67,6 @@ from ..utils.otp import (
 	use_recovery_code,
 	verify_otp,
 )
-import pyotp
 from ..utils.rate_limit import RATE_LIMIT_AUTH, limiter
 from .response import ok_response
 
@@ -86,7 +85,6 @@ _MAX_MFA_CHALLENGES_PER_USER = 3
 _RECOVERY_DOWNLOAD_TTL_SECONDS = 300
 _AUTH_COOKIE = "auth_token"
 _CSRF_COOKIE = "csrf_token"
-_DEFAULT_TRUSTED_PROXY_CIDRS = "127.0.0.0/8,::1/128"
 _mfa_challenge_cache: dict[str, tuple[int, str, str, float]] = {}
 _mfa_challenge_cache_lock = threading.Lock()
 _recovery_download_cache: dict[str, tuple[int, str, list[str], float]] = {}
@@ -98,42 +96,21 @@ _COOKIE_AUTH_PREFIXES = ("/ui", "/api", "/status", "/swagger")
 _COOKIE_AUTH_PREFIXES_NORMALIZED = tuple(prefix.rstrip("/") for prefix in _COOKIE_AUTH_PREFIXES)
 
 
-def _load_trusted_proxy_networks() -> tuple[ipaddress._BaseNetwork, ...]:
-	"""Load trusted proxy CIDRs from env with safe defaults."""
-	raw = os.environ.get("TRUSTED_PROXY_CIDRS", _DEFAULT_TRUSTED_PROXY_CIDRS)
-	networks: list[ipaddress._BaseNetwork] = []
-	for cidr in (item.strip() for item in raw.split(",")):
-		if not cidr:
-			continue
-		try:
-			networks.append(ipaddress.ip_network(cidr, strict=False))
-		except ValueError:
-			_log.warning("Ignoring invalid TRUSTED_PROXY_CIDRS entry: %s", cidr)
-	if not networks:
-		networks = [ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128")]
-	return tuple(networks)
-
-
-_TRUSTED_PROXY_NETWORKS = _load_trusted_proxy_networks()
-
-
 def _is_trusted_proxy_ip(ip_text: str) -> bool:
-	"""Return True when the socket IP belongs to trusted proxy CIDRs."""
-	try:
-		ip_obj = ipaddress.ip_address(ip_text)
-	except ValueError:
-		return False
-	return any(ip_obj in network for network in _TRUSTED_PROXY_NETWORKS)
+	"""Return True when the socket IP belongs to a configured trusted-proxy CIDR.
 
-
-def _parse_ip(value: str | None) -> str | None:
-	"""Return normalized IP string or None when invalid."""
-	return parse_ip_str(value)
+	Resolved lazily from ``get_config()`` (populated from
+	``WIREBUDDY_TRUSTED_PROXIES``, default loopback) rather than read at
+	import time, so ``settings.env`` values are respected regardless of
+	module import order.
+	"""
+	from ..utils.config import get_config
+	return get_config().is_trusted_proxy_ip(ip_text)
 
 
 def _store_mfa_challenge(user_id: int, username: str, client_ip: str) -> str:
 	"""Store one-time MFA challenge and return challenge token.
-	
+
 	Raises HTTPException(503) if cache is full or user has too many pending challenges.
 	"""
 	token = new_token()
@@ -144,16 +121,16 @@ def _store_mfa_challenge(user_id: int, username: str, client_ip: str) -> str:
 		expired = [key for key, value in _mfa_challenge_cache.items() if value[3] <= now]
 		for key in expired:
 			_mfa_challenge_cache.pop(key, None)
-		
+
 		# Check global cache size limit (DoS protection)
 		if len(_mfa_challenge_cache) >= _MAX_MFA_CHALLENGES:
 			raise HTTPException(status_code=503, detail="Service busy, try again later")
-		
+
 		# Check per-user limit (prevent single user from exhausting cache)
 		user_challenges = sum(1 for entry in _mfa_challenge_cache.values() if entry[0] == user_id)
 		if user_challenges >= _MAX_MFA_CHALLENGES_PER_USER:
 			raise HTTPException(status_code=429, detail="Too many pending MFA challenges, complete or wait for expiration")
-		
+
 		_mfa_challenge_cache[token] = (user_id, username, client_ip, expires_at)
 	return token
 
@@ -177,7 +154,7 @@ def _consume_mfa_challenge(token: str, username: str, client_ip: str) -> int | N
 
 def store_recovery_download(user_id: int, username: str, codes: list[str]) -> str:
 	"""Store one-time recovery download payload and return a token.
-	
+
 	Raises HTTPException(503) if cache is full.
 	"""
 	token = new_token()
@@ -188,11 +165,11 @@ def store_recovery_download(user_id: int, username: str, codes: list[str]) -> st
 		expired = [key for key, value in _recovery_download_cache.items() if value[3] <= now]
 		for key in expired:
 			_recovery_download_cache.pop(key, None)
-		
+
 		# Check global cache size limit (DoS protection)
 		if len(_recovery_download_cache) >= _MAX_RECOVERY_DOWNLOADS:
 			raise HTTPException(status_code=503, detail="Service busy, try again later")
-		
+
 		_recovery_download_cache[token] = (user_id, username, list(codes), expires_at)
 	return token
 
@@ -223,12 +200,12 @@ def _allow_cookie_auth_for_path(path: str) -> bool:
 
 def _get_client_ip(request: Request) -> str:
 	"""Extract client IP from request with proxy validation.
-	
+
 	SECURITY: Reads the ORIGINAL socket IP from request.scope["client"] before
 	Uvicorn's proxy middleware processes --forwarded-allow-ips. This prevents
 	IP spoofing attacks where an attacker sends X-Forwarded-For: 127.0.0.1
 	to bypass rate limiting.
-	
+
 	Only trusts X-Forwarded-For/X-Real-IP if the ACTUAL socket connection
 	comes from a trusted proxy IP.
 	"""
@@ -237,23 +214,23 @@ def _get_client_ip(request: Request) -> str:
 	scope_client = request.scope.get("client")
 	if not scope_client or not scope_client[0]:
 		raise HTTPException(status_code=400, detail="Unable to determine client IP")
-	socket_ip = _parse_ip(scope_client[0])
+	socket_ip = parse_ip_str(scope_client[0])
 	if not socket_ip:
 		raise HTTPException(status_code=400, detail="Unable to determine client IP")
-	
+
 	# Trust proxy headers only when the socket peer is a configured trusted proxy.
 	if _is_trusted_proxy_ip(socket_ip):
 		# Trust proxy headers only when socket IP is a local proxy
 		forwarded_for = request.headers.get("X-Forwarded-For")
 		if forwarded_for:
 			# Take first IP in chain (client IP before proxies)
-			candidate = _parse_ip(forwarded_for.split(",")[0])
+			candidate = parse_ip_str(forwarded_for.split(",")[0])
 			if candidate:
 				return candidate
 
 		x_real_ip = request.headers.get("X-Real-IP")
 		if x_real_ip:
-			candidate = _parse_ip(x_real_ip)
+			candidate = parse_ip_str(x_real_ip)
 			if candidate:
 				return candidate
 
@@ -263,29 +240,33 @@ def _get_client_ip(request: Request) -> str:
 
 def _is_https(request: Request) -> bool:
 	"""Determine HTTPS while honoring trusted reverse proxy headers.
-	
+
 	Raises HTTPException if client IP cannot be determined (prevents silent
 	cookie security degradation).
-	
-	Can be overridden with FORCE_HTTPS_COOKIES=true env var for production
-	deployments behind misconfigured reverse proxies.
+
+	Secure cookies/HSTS are forced on automatically when
+	WIREBUDDY_PUBLIC_ORIGIN uses https://. Can still be overridden explicitly
+	with FORCE_HTTPS_COOKIES=true for edge cases (e.g. TLS-terminating LB
+	without a configured public origin).
 	"""
+	from ..utils.config import get_config
+
 	# Override for production deployments (use with caution)
-	force_https = os.environ.get("FORCE_HTTPS_COOKIES", "").lower() in ("true", "1", "yes")
-	if force_https:
+	force_https = os.environ.get("FORCE_HTTPS_COOKIES", "").strip().lower() in ("true", "1", "yes")
+	if force_https or get_config().force_https:
 		return True
-	
+
 	if request.url.scheme == "https":
 		return True
 
 	scope_client = request.scope.get("client")
 	if not scope_client or not scope_client[0]:
 		raise HTTPException(status_code=400, detail="Unable to determine client IP for secure cookie")
-	
-	socket_ip = _parse_ip(scope_client[0])
+
+	socket_ip = parse_ip_str(scope_client[0])
 	if not socket_ip:
 		raise HTTPException(status_code=400, detail="Unable to determine client IP for secure cookie")
-	
+
 	if _is_trusted_proxy_ip(socket_ip):
 		return request.headers.get("X-Forwarded-Proto", "").lower() == "https"
 
@@ -333,7 +314,7 @@ def _lookup_user_by_token(
 	refresh: bool = False,
 ) -> sqlite3.Row | None:
 	"""Helper to get user by token with optional is_active check.
-	
+
 	Args:
 		token: The auth token to look up
 		conn: Database connection
@@ -355,7 +336,7 @@ def get_current_user_optional(
 	conn: sqlite3.Connection = Depends(get_conn),
 ) -> sqlite3.Row | None:
 	"""Get the authenticated user, or None if not authenticated.
-	
+
 	Note: Still checks is_active to prevent disabled users from accessing resources.
 	Cookie-based auth extends the sliding-window session expiry on each request.
 	"""
@@ -367,11 +348,11 @@ def get_current_user_optional(
 	path = request.url.path
 	if not _allow_cookie_auth_for_path(path):
 		return None
-	
+
 	token = request.cookies.get(_AUTH_COOKIE)
 	if token:
 		return _lookup_user_by_token(token, conn, require_active=True, refresh=True)
-	
+
 	return None
 
 
@@ -381,7 +362,7 @@ def get_current_user(
 	conn: sqlite3.Connection = Depends(get_conn),
 ) -> sqlite3.Row:
 	"""FastAPI dependency that enforces authentication.
-	
+
 	Cookie-based auth extends the sliding-window session expiry on each request.
 	"""
 	# Prefer explicit bearer tokens (no refresh - API clients manage their own tokens)
@@ -457,8 +438,7 @@ def _record_failed_and_raise(
 			detail=f"Too many login attempts. Please wait {max(1, lockout_secs)} seconds.",
 			headers={"Retry-After": str(lockout_secs)},
 		)
-	else:
-		_log.info("LOGIN_FAILED ip=%s username=%s", client_ip, log_username)
+	_log.info("LOGIN_FAILED ip=%s username=%s", client_ip, log_username)
 	raise HTTPException(status_code=status_code, detail=detail)
 
 
@@ -474,12 +454,12 @@ def _is_passkey_setup_pending(user: sqlite3.Row) -> bool:
 
 def _require_otp_setup_pending(user: sqlite3.Row) -> str:
 	"""Validate OTP setup state and return decrypted plaintext secret.
-	
+
 	Raises HTTPException for invalid states:
 	- 400 if setup not initiated
 	- 400 if OTP is already enabled
 	- 500 if secret cannot be decrypted
-	
+
 	Returns the decrypted OTP secret.
 	"""
 	if not user["otp_secret"]:
@@ -502,7 +482,7 @@ def _build_login_response_data(
 	include_otp_pending: bool = False,
 ) -> dict:
 	"""Build the standard post-login response payload with optional pending flags.
-	
+
 	Logs LOGIN_PASSKEY_SETUP_PENDING if passkey setup is pending.
 	Logs LOGIN_OTP_SETUP_PENDING if OTP setup is pending (when include_otp_pending=True).
 	"""
@@ -535,7 +515,7 @@ def _issue_session(
 	Returns (token, expires_at).
 	"""
 	is_https = _enforce_https_transport(conn, request, context="session issuance")
-	now = datetime.now(timezone.utc)
+	now = datetime.now(UTC)
 	token = new_token()
 	expires_at, max_expires_at = generate_token_expiry(now=now)
 	create_auth_token(conn, user_id, token, expires_at, max_expires_at)
@@ -723,12 +703,9 @@ def logout(
 ):
 	"""Logout and invalidate the current token."""
 	token = None
-	
-	if credentials and credentials.credentials:
-		token = credentials.credentials
-	else:
-		token = request.cookies.get(_AUTH_COOKIE)
-	
+
+	token = credentials.credentials if credentials and credentials.credentials else request.cookies.get(_AUTH_COOKIE)
+
 	if token:
 		delete_auth_token(conn, token)
 

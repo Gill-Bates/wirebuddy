@@ -80,7 +80,9 @@ def build_acme_http_app(
 	_ = https_port
 	redirect_origin = _canonical_https_origin(public_origin)
 
-	async def app(scope, receive, send) -> None:
+	# Raw ASGI callable: the three-argument shape is the protocol, so `receive`
+	# stays in the signature even though this app never reads a request body.
+	async def app(scope, _receive, send) -> None:
 		if scope["type"] != "http":
 			return
 

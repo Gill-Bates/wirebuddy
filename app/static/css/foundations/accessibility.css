@@ -40,7 +40,7 @@
 
 /* Button focus ring */
 .btn:focus-visible,
-.wb-btn:focus-visible,
+:where(.wb-btn:focus-visible),
 [role="button"]:focus-visible {
     outline: var(--wb-focus-ring-width) solid var(--wb-focus-ring-color);
     outline-offset: var(--wb-focus-ring-offset);
@@ -68,9 +68,9 @@
 /* Ensure standard buttons meet minimum height matching form controls.
    Uses --wb-input-height (38px) for design consistency while remaining accessible.
    Compact variants (.btn-sm) are excluded to keep their intended smaller size. */
-.btn:not(.btn-sm):not(.btn-link),
+.btn:not(.btn-sm, .btn-link),
 .wb-btn,
-button:not(.btn):not(.btn-close):not(.accordion-button):not(.network-page-dot) {
+button:not(.btn, .btn-close, .accordion-button, .network-page-dot) {
     min-height: var(--wb-input-height);
 }
 
@@ -86,7 +86,6 @@ button:not(.btn):not(.btn-close):not(.accordion-button):not(.network-page-dot) {
  * ============================================ */
 
 @media (prefers-reduced-motion: reduce) {
-
     *,
     *::before,
     *::after {
@@ -117,7 +116,7 @@ button:not(.btn):not(.btn-close):not(.accordion-button):not(.network-page-dot) {
     padding: 0 !important;
     margin: -1px !important;
     overflow: hidden !important;
-    clip: rect(0, 0, 0, 0) !important;
+    clip-path: inset(50%) !important;
     white-space: nowrap !important;
     border: 0 !important;
 }
@@ -131,7 +130,7 @@ button:not(.btn):not(.btn-close):not(.accordion-button):not(.network-page-dot) {
     padding: var(--wb-spacing-sm) var(--wb-spacing-md) !important;
     margin: 0 !important;
     overflow: visible !important;
-    clip: auto !important;
+    clip-path: none !important;
     white-space: normal !important;
 }
 
@@ -163,25 +162,24 @@ button:not(.btn):not(.btn-close):not(.accordion-button):not(.network-page-dot) {
  * ============================================ */
 
 @media (forced-colors: active) {
-
     /* Ensure borders are visible */
     .btn,
     .card,
     .form-control,
     .form-select {
-        border: 2px solid currentColor;
+        border: 2px solid currentcolor;
     }
 
     /* Focus indicators in high contrast */
     :focus-visible {
-        outline: 3px solid currentColor;
+        outline: 3px solid currentcolor;
         outline-offset: 2px;
     }
 
     /* Status indicators must be distinguishable */
     .badge,
     .alert {
-        border: 2px solid currentColor;
+        border: 2px solid currentcolor;
     }
 }
 
@@ -248,10 +246,10 @@ button:not(.btn):not(.btn-close):not(.accordion-button):not(.network-page-dot) {
     content: "";
     position: absolute;
     inset: 0;
-    background: rgba(255, 255, 255, 0.7);
+    background: rgb(255 255 255 / 70%);
     z-index: 1;
 }
 
 [data-bs-theme="dark"] .wb-loading::after {
-    background: rgba(0, 0, 0, 0.5);
+    background: rgb(0 0 0 / 50%);
 }

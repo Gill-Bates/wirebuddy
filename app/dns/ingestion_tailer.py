@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -26,7 +27,7 @@ TAIL_INTERVAL = 0.2  # Seconds between tail checks
 OFFSET_SAVE_INTERVAL = 5.0  # Seconds between offset persistence
 CHUNK_LINE_LIMIT = 10_000  # Max lines to read per tail cycle (prevent OOM on huge logs)
 
-__all__ = ["TailItem", "TailState", "OffsetTracker", "UnboundLogTailer"]
+__all__ = ["OffsetTracker", "TailItem", "TailState", "UnboundLogTailer"]
 
 
 @dataclass(slots=True)
@@ -46,7 +47,7 @@ class TailState:
 
 class OffsetTracker:
 	"""Manages persistent offset for crash recovery."""
-	
+
 	def __init__(self, offset_path: Path):
 		self.offset_path = offset_path
 		self.state = TailState(inode=0, offset=0)
@@ -55,24 +56,58 @@ class OffsetTracker:
 		self.last_save = 0.0
 		self._lock = threading.Lock()
 		self._save_seq = 0
-	
+
 	def load(self) -> None:
-		"""Load offset from disk."""
+		"""Load offset from disk.
+
+		The persisted inode/offset are validated strictly: they come from a
+		file that could be corrupted (partial write, disk error, manual
+		edit) and are later passed straight to f.seek(). An invalid value
+		(negative, non-integer, or simply malformed JSON) must not wedge the
+		tailer into repeatedly reloading the same broken state every cycle —
+		fall back to a safe 0/0 (re-read the log from the start) instead.
+		"""
 		if not self.offset_path.exists():
 			return
-		
+
 		try:
-			data = json.loads(self.offset_path.read_text(encoding='utf-8'))
-			state = TailState(inode=data.get('inode', 0), offset=data.get('offset', 0))
-			with self._lock:
-				self.state = state
-				self.read_state = TailState(inode=state.inode, offset=state.offset)
-				self.dirty = False
-				self._save_seq = 0
-			_log.info("DNS_TAIL loaded offset: inode=%d offset=%d", self.state.inode, self.state.offset)
+			raw = json.loads(self.offset_path.read_text(encoding='utf-8'))
 		except Exception as e:
 			_log.warning("DNS_TAIL failed to load offset: %s", e)
-	
+			return
+
+		state = self._validate_loaded_state(raw)
+		with self._lock:
+			self.state = state
+			self.read_state = TailState(inode=state.inode, offset=state.offset)
+			self.dirty = False
+			self._save_seq = 0
+		_log.info("DNS_TAIL loaded offset: inode=%d offset=%d", self.state.inode, self.state.offset)
+
+	@staticmethod
+	def _validate_loaded_state(raw: object) -> TailState:
+		"""Return a safe TailState from parsed JSON, resetting to 0/0 if invalid."""
+		if not isinstance(raw, dict):
+			_log.warning("DNS_TAIL offset file is not a JSON object, resetting to 0/0")
+			return TailState(inode=0, offset=0)
+
+		inode_raw = raw.get('inode', 0)
+		offset_raw = raw.get('offset', 0)
+
+		# bool is a subclass of int in Python; explicitly reject it here too.
+		inode_valid = isinstance(inode_raw, int) and not isinstance(inode_raw, bool) and inode_raw >= 0
+		offset_valid = isinstance(offset_raw, int) and not isinstance(offset_raw, bool) and offset_raw >= 0
+
+		if not inode_valid or not offset_valid:
+			_log.warning(
+				"DNS_TAIL invalid offset file content (inode=%r offset=%r), resetting to 0/0",
+				inode_raw,
+				offset_raw,
+			)
+			return TailState(inode=0, offset=0)
+
+		return TailState(inode=inode_raw, offset=offset_raw)
+
 	def current_read_state(self) -> TailState:
 		"""Return the current in-memory read cursor."""
 		with self._lock:
@@ -91,7 +126,7 @@ class OffsetTracker:
 			self.state = TailState(inode=inode, offset=offset)
 			self.dirty = True
 			self._save_seq += 1
-	
+
 	def save_if_needed(self, force: bool = False) -> None:
 		"""Persist offset to disk if dirty and interval elapsed."""
 		now = time.monotonic()
@@ -102,7 +137,7 @@ class OffsetTracker:
 				return
 			state = TailState(inode=self.state.inode, offset=self.state.offset)
 			save_seq = self._save_seq
-		
+
 		parent = self.offset_path.parent
 		tmp_path = self.offset_path.with_suffix('.tmp')
 		try:
@@ -126,7 +161,7 @@ class OffsetTracker:
 				if fd != -1:
 					os.close(fd)
 
-			os.replace(tmp_path, self.offset_path)
+			Path(tmp_path).replace(self.offset_path)
 
 			dir_fd = os.open(str(parent), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
 			try:
@@ -141,10 +176,8 @@ class OffsetTracker:
 			_log.debug("DNS_TAIL saved offset: inode=%d offset=%d", state.inode, state.offset)
 		except Exception as e:
 			_log.warning("DNS_TAIL failed to save offset: %s", e)
-			try:
+			with contextlib.suppress(OSError):
 				tmp_path.unlink(missing_ok=True)
-			except OSError:
-				pass
 
 
 def _put_with_shutdown(
@@ -164,7 +197,7 @@ def _put_with_shutdown(
 
 class UnboundLogTailer:
 	"""Non-blocking async tailer for Unbound queries.log.
-	
+
 	Features:
 	- Detects logrotate via inode change
 	- Persistent offset for crash recovery
@@ -172,7 +205,7 @@ class UnboundLogTailer:
 	- Thread-safe queue access (runs in thread pool)
 	- Chunk-limited reads to prevent OOM
 	"""
-	
+
 	def __init__(self, log_path: Path, offset_tracker: OffsetTracker, stop_event: asyncio.Event):
 		self.log_path = log_path
 		self.tracker = offset_tracker
@@ -195,10 +228,8 @@ class UnboundLogTailer:
 				await asyncio.sleep(TAIL_INTERVAL)
 		finally:
 			if self._active_file is not None:
-				try:
+				with contextlib.suppress(OSError):
 					self._active_file.close()
-				except OSError:
-					pass
 				self._active_file = None
 			_log.info("DNS_TAIL stopped")
 
@@ -256,10 +287,8 @@ class UnboundLogTailer:
 
 		if path_inode != self._active_inode:
 			_log.info("DNS_TAIL detected logrotate (inode %d -> %d)", self._active_inode, path_inode)
-			try:
+			with contextlib.suppress(OSError):
 				self._active_file.close()
-			except OSError:
-				pass
 			self._active_file = None
 			if self._open_at(0):
 				self.tracker.advance_read(self._active_inode, 0)

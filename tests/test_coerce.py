@@ -19,17 +19,17 @@ from app.utils.coerce import BOOL_FALSE_VALUES, BOOL_TRUE_VALUES, coerce_db_bool
 
 
 def test_value_sets_are_disjoint_and_expected():
-    assert BOOL_TRUE_VALUES == {"1", "true", "yes", "on"}
-    assert BOOL_FALSE_VALUES == {"0", "false", "no", "off"}
+    assert {"1", "true", "yes", "on"} == BOOL_TRUE_VALUES
+    assert {"0", "false", "no", "off"} == BOOL_FALSE_VALUES
     assert BOOL_TRUE_VALUES.isdisjoint(BOOL_FALSE_VALUES)
 
 
-@pytest.mark.parametrize("value", sorted(BOOL_TRUE_VALUES) + ["TRUE", " On ", "Yes"])
+@pytest.mark.parametrize("value", [*sorted(BOOL_TRUE_VALUES), "TRUE", " On ", "Yes"])
 def test_truthy_strings(value):
     assert coerce_db_bool(value) is True
 
 
-@pytest.mark.parametrize("value", sorted(BOOL_FALSE_VALUES) + ["FALSE", " Off "])
+@pytest.mark.parametrize("value", [*sorted(BOOL_FALSE_VALUES), "FALSE", " Off "])
 def test_falsy_strings(value):
     assert coerce_db_bool(value) is False
 

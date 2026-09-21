@@ -12,16 +12,16 @@ import logging
 
 from fastapi import APIRouter
 
-
-from . import wireguard_settings
-from . import wireguard_interfaces
-from . import wireguard_interfaces_crud
-from . import wireguard_peers
-from . import wireguard_peers_config
-from . import wireguard_stats
-from . import wireguard_stats_country
-from . import wireguard_stats_geo
-
+from . import (
+    wireguard_interfaces,
+    wireguard_interfaces_crud,
+    wireguard_peers,
+    wireguard_peers_config,
+    wireguard_settings,
+    wireguard_stats,
+    wireguard_stats_country,
+    wireguard_stats_geo,
+)
 
 _log = logging.getLogger(__name__)
 

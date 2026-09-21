@@ -130,8 +130,8 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
 # Include routers
-app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
-app.include_router(wireguard_router, prefix="/api/wireguard", tags=["wireguard"])
+app.include_router(auth_api.router, prefix="/api")
+app.include_router(wireguard_api.router, prefix="/api/wireguard")
 # ...
 ```
 
@@ -159,20 +159,28 @@ async def create_peer(
 
 ## Database Schema
 
+The baseline schema lives in `app/db/sqlite_schema.py` (`init_schema()`); this
+section shows the core tables in abbreviated form. See that module for the
+authoritative column list, constraints, and indexes.
+
 ### Users Table
 
 ```sql
 CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    email TEXT UNIQUE,
+    username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
-    salt TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'user',
-    totp_secret TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    disabled INTEGER DEFAULT 0
+    is_admin INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    otp_secret TEXT,
+    otp_enabled INTEGER NOT NULL DEFAULT 0,
+    otp_recovery_codes TEXT,
+    auth_method TEXT NOT NULL DEFAULT 'password',
+    passkey_enabled INTEGER NOT NULL DEFAULT 0,
+    last_login_at timestamp,
+    last_login_ip TEXT,
+    created_at timestamp NOT NULL
 );
 ```
 
@@ -181,13 +189,14 @@ CREATE TABLE users (
 ```sql
 CREATE TABLE interfaces (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE NOT NULL,
-    address TEXT NOT NULL,
-    listen_port INTEGER NOT NULL,
+    name TEXT NOT NULL UNIQUE,
     private_key TEXT NOT NULL,
     public_key TEXT NOT NULL,
-    status TEXT DEFAULT 'inactive',
-    created_at INTEGER NOT NULL
+    address TEXT NOT NULL,
+    address6 TEXT,
+    listen_port INTEGER NOT NULL DEFAULT 51820,
+    client_endpoint_port INTEGER
+    -- additional columns: see app/db/sqlite_schema.py
 );
 ```
 
@@ -195,33 +204,39 @@ CREATE TABLE interfaces (
 
 ```sql
 CREATE TABLE peers (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    interface TEXT NOT NULL,
-    ip TEXT NOT NULL,
-    public_key TEXT NOT NULL,
-    private_key TEXT NOT NULL,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    public_key TEXT NOT NULL UNIQUE,
+    private_key TEXT,
     preshared_key TEXT,
+    name TEXT,
     allowed_ips TEXT NOT NULL,
-    persistent_keepalive INTEGER DEFAULT 0,
-    enabled INTEGER DEFAULT 1,
-    created_at INTEGER NOT NULL,
-    FOREIGN KEY (interface) REFERENCES interfaces(name)
+    allowed_ips_mode TEXT NOT NULL DEFAULT 'full',
+    peer_address TEXT,
+    endpoint TEXT,
+    interface TEXT NOT NULL DEFAULT 'wg0',
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    use_adblocker INTEGER NOT NULL DEFAULT 1,
+    cumulative_rx INTEGER NOT NULL DEFAULT 0,
+    cumulative_tx INTEGER NOT NULL DEFAULT 0,
+    node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
+    created_at timestamp NOT NULL,
+    updated_at timestamp NOT NULL
 );
 ```
 
-### Sessions Table
+### Auth Tokens Table
+
+Session tokens are stored hashed, never in plaintext:
 
 ```sql
-CREATE TABLE sessions (
-    id TEXT PRIMARY KEY,
+CREATE TABLE auth_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
-    token_hash TEXT UNIQUE NOT NULL,
-    ip_address TEXT,
-    user_agent TEXT,
-    created_at INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id)
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at timestamp NOT NULL,      -- idle expiry (1 hour, refreshed on use)
+    max_expires_at timestamp NOT NULL,  -- absolute expiry (24 hours)
+    created_at timestamp NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 ```
 
@@ -235,7 +250,7 @@ sequenceDiagram
     participant DB as Database
     
     U->>B: Enter credentials
-    B->>API: POST /api/auth/login
+    B->>API: POST /api/login
     API->>DB: Query user by username
     DB-->>API: User data + password hash
     API->>API: Verify password (PBKDF2)
@@ -438,33 +453,24 @@ def hash_password(password: str) -> tuple[bytes, bytes]:
 
 ### Secret Encryption
 
+Implemented in `app/utils/vault.py`. Current writes use the "vault:2" scheme:
+PBKDF2-HMAC-SHA256 derives a deployment master key from `WIREBUDDY_SECRET_KEY`
+(default 480,000 iterations, tunable via `WIREBUDDY_PBKDF2_ITERATIONS`), then
+HKDF-SHA256 plus a random per-row salt derives the row key that Fernet uses:
+
 ```python
-class SecretVault:
-    def __init__(self, master_key: str):
-        self.master_key = master_key
-    
-    def encrypt(self, plaintext: str, salt: bytes) -> str:
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=salt,
-            iterations=100_000
-        )
-        key = base64.urlsafe_b64encode(kdf.derive(self.master_key.encode()))
-        f = Fernet(key)
-        return f.encrypt(plaintext.encode()).decode()
-    
-    def decrypt(self, ciphertext: str, salt: bytes) -> str:
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=salt,
-            iterations=100_000
-        )
-        key = base64.urlsafe_b64encode(kdf.derive(self.master_key.encode()))
-        f = Fernet(key)
-        return f.decrypt(ciphertext.encode()).decode()
+def _derive_master_key_v2(pepper: str) -> bytes:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        pepper.encode("utf-8"),
+        _MASTER_SALT_V2,
+        iterations=_PBKDF2_ITERATIONS,  # default 480_000
+    )
 ```
+
+See [Security Overview](../security/overview.md#secrets-at-rest) for the full
+model, including the legacy "vault:1" per-row PBKDF2 format still readable for
+backward compatibility.
 
 ## Frontend Architecture
 
@@ -531,8 +537,8 @@ RUN apt-get update && apt-get install -y \
 
 # Copy application
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml .
+RUN pip install --no-cache-dir .
 COPY . .
 
 # Non-root user

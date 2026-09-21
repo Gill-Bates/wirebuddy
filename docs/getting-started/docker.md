@@ -70,7 +70,7 @@ The supplied Compose service uses:
   `DAC_OVERRIDE` for the bundled Unbound resolver
 - `no-new-privileges:true`
 - `/dev/net/tun`
-- a 20-second stop grace period
+- a 40-second stop grace period
 - bounded JSON-file log rotation
 - a liveness health check against `/health`
 
@@ -114,20 +114,14 @@ selected port must be free on the host.
 ## Reverse Proxy
 
 The Docker entrypoint trusts forwarded headers from loopback by default. For a
-same-host Caddy or nginx proxy, keep:
+same-host Caddy or nginx proxy, this needs no configuration. If the proxy
+connects from another address, set `WIREBUDDY_TRUSTED_PROXIES` to the exact
+proxy IP or CIDR — this single variable covers both Uvicorn's forwarded-header
+trust and the application-level client-IP/HTTPS-cookie detection. A wildcard
+(`*`) is rejected.
 
 ```bash
-WIREBUDDY_TRUST_PROXY_HEADERS=1
-FORWARDED_ALLOW_IPS=127.0.0.1
-```
-
-If the proxy connects from another address, replace or extend
-`FORWARDED_ALLOW_IPS` with the exact proxy IP or CIDR. A wildcard (`*`) is
-rejected. Also configure the application-level trusted proxy range used for
-client-IP and HTTPS-cookie detection:
-
-```bash
-TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1/128
+WIREBUDDY_TRUSTED_PROXIES=192.168.1.10/32
 WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
 ```
 
@@ -151,7 +145,7 @@ docker run -d \
   --cap-add CHOWN \
   --cap-add DAC_OVERRIDE \
   --security-opt no-new-privileges:true \
-  --stop-timeout 20 \
+  --stop-timeout 40 \
   --device /dev/net/tun:/dev/net/tun \
   -e TZ=Etc/UTC \
   -e WIREBUDDY_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \

@@ -224,6 +224,36 @@ if (!peersApp) {
         state.peerCards = Array.from(document.querySelectorAll('#peer-card-list .peer-card[data-peer-id]'));
         state.peerRows.forEach(updateRowSearchText);
         state.peerCards.forEach(updateRowSearchText);
+        initPeerActionDropdowns();
+    }
+
+    // Configure the "more actions" dropdown to escape the .card's
+    // `overflow: clip` (wb-ui-system.css) the same way nodes.js/users.js do for
+    // their own overflow-clipped ancestors: without the fixed strategy, Popper
+    // positions the menu relative to the nearest positioned ancestor inside the
+    // clipped card, and a menu that would extend past the card edge is cut off
+    // instead of shown.
+    function initPeerActionDropdowns(root = document) {
+        if (typeof bootstrap === 'undefined' || !bootstrap.Dropdown) {
+            return;
+        }
+
+        const scope = root && typeof root.querySelectorAll === 'function' ? root : document;
+        for (const toggle of scope.querySelectorAll('.peer-card-more-actions [data-bs-toggle="dropdown"]')) {
+            if (toggle.dataset.dropdownInitialized === 'true') {
+                continue;
+            }
+
+            toggle.dataset.dropdownInitialized = 'true';
+            bootstrap.Dropdown.getOrCreateInstance(toggle, {
+                popperConfig: {
+                    strategy: 'fixed',
+                    modifiers: [
+                        { name: 'preventOverflow', options: { boundary: 'viewport' } },
+                    ],
+                },
+            });
+        }
     }
 
     function createPeerActionButton(peerId, action, label, icon, btnClass, options = {}) {

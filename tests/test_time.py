@@ -13,25 +13,24 @@ helpers (sqlite_auth / sqlite_nodes) onto ``parse_db_timestamp``.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 
 import pytest
 
 from app.utils.time import ensure_utc, parse_db_timestamp, parse_utc
-
 
 # ─── parse_utc ───────────────────────────────────────────────────────────────
 
 
 def test_parse_utc_accepts_z_suffix():
     dt = parse_utc("2026-06-15T12:00:00.000000Z")
-    assert dt == datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+    assert dt == datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
 
 
 def test_parse_utc_accepts_offset_and_normalizes_to_utc():
     dt = parse_utc("2026-06-15T12:00:00+02:00")
-    assert dt == datetime(2026, 6, 15, 10, 0, 0, tzinfo=timezone.utc)
-    assert dt.tzinfo == timezone.utc
+    assert dt == datetime(2026, 6, 15, 10, 0, 0, tzinfo=UTC)
+    assert dt.tzinfo == UTC
 
 
 def test_parse_utc_preserves_microseconds():
@@ -57,7 +56,7 @@ def test_parse_db_timestamp_none():
 
 def test_parse_db_timestamp_aware_string():
     dt = parse_db_timestamp("2026-06-15T12:00:00.000000Z")
-    assert dt == datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+    assert dt == datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
 
 
 def test_parse_db_timestamp_naive_string_is_rejected():
@@ -68,13 +67,13 @@ def test_parse_db_timestamp_naive_string_is_rejected():
 
 
 def test_parse_db_timestamp_aware_datetime_passthrough():
-    aware = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+    aware = datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
     assert parse_db_timestamp(aware) == aware
 
 
 def test_parse_db_timestamp_naive_datetime_tolerated_as_utc():
-    naive = datetime(2026, 6, 15, 12, 0, 0)
-    assert parse_db_timestamp(naive) == datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+    naive = datetime(2026, 6, 15, 12, 0, 0)  # noqa: DTZ001 - naive input is the case under test
+    assert parse_db_timestamp(naive) == datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
 
 
 def test_parse_db_timestamp_normalizes_aware_to_utc():
@@ -83,8 +82,8 @@ def test_parse_db_timestamp_normalizes_aware_to_utc():
     plus_two = timezone(timedelta(hours=2))
     value = datetime(2026, 6, 15, 12, 0, 0, tzinfo=plus_two)
     parsed = parse_db_timestamp(value)
-    assert parsed == datetime(2026, 6, 15, 10, 0, 0, tzinfo=timezone.utc)
-    assert parsed.tzinfo == timezone.utc
+    assert parsed == datetime(2026, 6, 15, 10, 0, 0, tzinfo=UTC)
+    assert parsed.tzinfo == UTC
 
 
 class _NullOffsetTz(tzinfo):
@@ -104,7 +103,7 @@ def test_parse_db_timestamp_semi_aware_tzinfo_is_treated_as_naive():
     # tzinfo present but utcoffset() is None -> _is_aware is False, so it is
     # tolerated as UTC rather than blowing up later in astimezone().
     value = datetime(2026, 6, 15, 12, 0, 0, tzinfo=_NullOffsetTz())
-    assert parse_db_timestamp(value) == datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+    assert parse_db_timestamp(value) == datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
 
 
 def test_ensure_utc_rejects_semi_aware_tzinfo():
@@ -120,4 +119,19 @@ def test_parse_db_timestamp_unsupported_types(value):
 
 def test_ensure_utc_rejects_naive():
     with pytest.raises(ValueError):
-        ensure_utc(datetime(2026, 6, 15, 12, 0, 0))
+        ensure_utc(datetime(2026, 6, 15, 12, 0, 0))  # noqa: DTZ001 - naive input is the case under test
+
+def test_parse_db_timestamp_naive_policy_depends_on_representation_by_design():
+    """The naive-handling split is deliberate, not an accidental inconsistency.
+
+    A naive ``str`` is rejected because ``_adapt_datetime`` never writes one -
+    seeing one means corruption or a foreign write, so failing closed is the
+    safe choice. A naive ``datetime`` only ever originates from this process'
+    own sqlite3 converter reading back a value *this code* wrote as UTC, so
+    tolerating it as UTC does not weaken the guarantee. Same wall-clock value,
+    different representation, different trust boundary - this test pins that
+    gap so it is not "fixed" into a uniform naive-rejection policy later.
+    """
+    same_instant = datetime(2026, 6, 15, 12, 0, 0)  # noqa: DTZ001 - naive input is the case under test
+    assert parse_db_timestamp(same_instant.isoformat()) is None
+    assert parse_db_timestamp(same_instant) == same_instant.replace(tzinfo=UTC)

@@ -34,16 +34,18 @@ import math
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from ..db import tsdb
+from ..utils.conntrack import ASN_TRAFFIC_KEY, ASN_TRAFFIC_METRIC, GEO_TRAFFIC_KEY, GEO_TRAFFIC_METRIC
 from ..utils.deps import get_tsdb_dir
 from ..utils.rate_limit import RATE_LIMIT_HEAVY, limiter
 from ..utils.time import utcnow
@@ -59,9 +61,6 @@ router = APIRouter(tags=["wireguard"])
 __all__ = ["router"]
 
 # Synthetic TSDB key for country traffic snapshots (written by scheduler)
-GEO_TRAFFIC_KEY = "__geo_traffic__"
-_TRAFFIC_SNAPSHOT_METRIC = "snapshot"
-GEO_TRAFFIC_METRIC = _TRAFFIC_SNAPSHOT_METRIC
 
 # Max data points to query.
 # At 30 s sampling, 100k points cover ~34.7 days, so larger windows are truncated.
@@ -115,13 +114,6 @@ def _cache_set(cache: dict, key: tuple, value: Any) -> None:
 			oldest_key = min(cache.keys(), key=lambda k: cache[k].ts)
 			cache.pop(oldest_key, None)
 		cache[key] = _CacheEntry(data=value, ts=time.monotonic())
-
-
-def _cache_invalidate_all() -> None:
-	"""Clear all caches (called on settings change, etc.)."""
-	with _cache_lock:
-		_country_cache.clear()
-		_asn_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -531,10 +523,18 @@ def _resolve_hours(range_key: str | None, hours: int) -> int:
 
 
 def _get_user_identifier(user: sqlite3.Row) -> str:
-	"""Return username or fallback identifier for structured logs."""
-	if hasattr(user, "keys") and "username" in user.keys():
+	"""Return username or fallback identifier for structured logs.
+
+	The membership tests go through ``keys()`` deliberately. ``user`` is a
+	``sqlite3.Row``, and ``in`` on a Row iterates its *values*, not its column
+	names - so ``"username" in user`` was False for every realistic row and this
+	function returned "unknown" almost always, dropping the user identity from
+	the structured logs it exists to provide.
+	"""
+	keys = user.keys() if hasattr(user, "keys") else ()
+	if "username" in keys:
 		return str(user["username"])
-	if hasattr(user, "keys") and "id" in user.keys():
+	if "id" in keys:
 		return str(user["id"])
 	return "unknown"
 
@@ -620,8 +620,6 @@ async def get_traffic_by_country(
 # ASN Traffic
 # ---------------------------------------------------------------------------
 
-ASN_TRAFFIC_KEY = "__asn_traffic__"
-ASN_TRAFFIC_METRIC = _TRAFFIC_SNAPSHOT_METRIC
 
 
 class ASNEntry(BaseModel):

@@ -16,11 +16,11 @@ from typing import Literal
 from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
 
 __all__ = [
-    "PeerCreate",
-    "PeerUpdate",
-    "PeerPublic",
-    "PeerConfig",
-    "PeerStats",
+	"PeerConfig",
+	"PeerCreate",
+	"PeerPublic",
+	"PeerStats",
+	"PeerUpdate",
 ]
 
 _INTERFACE_RE = re.compile(r"\A[a-zA-Z][a-zA-Z0-9_-]{0,14}\Z")
@@ -55,11 +55,11 @@ def _validate_wg_key(value: str | None) -> str | None:
 
 def _parse_comma_separated_list(value: str, *, field_name: str) -> list[str]:
 	"""Parse and normalize a comma-separated string (e.g., WireGuard allowed_ips, DNS).
-	
+
 	Args:
 		value: Comma-separated string
 		field_name: Field name for error messages
-		
+
 	Returns:
 		List of stripped, deduplicated items (order preserved)
 	"""
@@ -207,7 +207,7 @@ class PeerCreate(BaseModel):
 		max_length=32,
 		description="Enabled blocklist IDs (null=all, []=none, ['ads','porn']=specific)",
 	)
-	
+
 	# Optional: provide keys, or let server generate them
 	public_key: str | None = None
 	private_key: str | None = None
@@ -446,7 +446,7 @@ class PeerConfig(BaseModel):
 		server_public_key = self._sanitize_config_value(self.server_public_key)
 		server_endpoint = self._sanitize_config_value(self.server_endpoint)
 		allowed_ips = self._sanitize_config_value(self.allowed_ips)
-		
+
 		parts = [
 			f"# WireBuddy peer config for interface {self.interface_name}",
 			"[Interface]",
@@ -454,11 +454,11 @@ class PeerConfig(BaseModel):
 			f"Address = {address}",
 			f"MTU = {self.mtu}",
 		]
-		
+
 		if self.dns:
 			dns = self._sanitize_config_value(self.dns)
 			parts.append(f"DNS = {dns}")
-		
+
 		parts.extend([
 			"",
 			"[Peer]",
@@ -467,11 +467,11 @@ class PeerConfig(BaseModel):
 			f"Endpoint = {server_endpoint}",
 			f"PersistentKeepalive = {self.persistent_keepalive}",
 		])
-		
+
 		if self.preshared_key:
 			psk = self._sanitize_config_value(self.preshared_key)
 			parts.append(f"PresharedKey = {psk}")
-		
+
 		return "\n".join(parts) + "\n"
 
 

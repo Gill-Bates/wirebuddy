@@ -16,15 +16,15 @@ import queue
 import time
 from collections import deque
 from collections.abc import Callable, Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+from ..db import tsdb
+from ..utils.network import parse_ip_str
 from .ingestion_parser import DnsQueryPoint, parse_unbound_line
 from .ingestion_retention import DEFAULT_DNS_LOG_RETENTION_DAYS, normalize_dns_log_retention_days
 from .ingestion_tailer import OffsetTracker, TailItem
 from .unbound_blocklist import get_custom_rules_cache
-from ..db import tsdb
-from ..utils.network import parse_ip_str
 
 _log = logging.getLogger(__name__)
 
@@ -57,20 +57,22 @@ class DnsWriterPersistentFailureError(RuntimeError):
 
 class DnsTsdbWriter:
 	"""Batch writer that flushes parsed DNS queries to TSDB.
-	
+
 	Features:
 	- Batches writes for efficiency
 	- Flushes on batch size or time interval
 	- fsync for durability before offset commit
 	- Graceful shutdown support
 	- Per-peer DNS logging control
-	
+
 	Notes:
 	- NOT thread-safe: assumes single writer execution (sequential to_thread calls)
-	- Lossy under pressure: oldest entries dropped when batch exceeds MAX_BATCH_SIZE
+	- Backpressure, not loss, under pressure: draining pauses once the batch
+	  reaches MAX_BATCH_SIZE so the queue (bounded, blocking put()) absorbs
+	  the pressure instead of the batch silently dropping unflushed entries
 	- Lossy on persistent failure: batch dropped after MAX_FLUSH_RETRIES consecutive failures
 	"""
-	
+
 	def __init__(
 		self,
 		dns_dir: Path,
@@ -87,8 +89,14 @@ class DnsTsdbWriter:
 		self.tracker = offset_tracker
 		self._stop = stop_event
 		self._tsdb_dir = tsdb_dir
-		# Use deque for O(1) append and efficient maxlen dropping (vs O(n) list delete)
-		self.batch: deque[tuple[DnsQueryPoint, TailItem]] = deque(maxlen=MAX_BATCH_SIZE)
+		# Use deque for O(1) append. NOT bounded with maxlen: a maxlen deque
+		# silently drops the oldest entry on overflow, which would then get
+		# committed as "processed" by the *newest* pending offset in
+		# _process_item() below — durably losing queries that were never
+		# actually written. Capacity is instead enforced by refusing to drain
+		# more items once MAX_BATCH_SIZE is reached (see _drain_and_process()),
+		# which applies backpressure to the upstream queue instead.
+		self.batch: deque[tuple[DnsQueryPoint, TailItem]] = deque()
 		self.last_flush: float = time.monotonic()
 		self._blocked_domains: set[str] = set()
 		self._custom_allow_rules: list = []
@@ -101,16 +109,17 @@ class DnsTsdbWriter:
 		self._pending_commit: TailItem | None = None
 		# Minute-bucket aggregates for TSDB (key: ISO minute string, value: {total, blocked})
 		self._minute_buckets: dict[str, dict[str, int]] = {}
-	
+
 	async def run(self, q: queue.Queue[TailItem]) -> None:
 		"""Run writer loop until stopped."""
 		_log.info("DNS_WRITER starting")
-		
+		cancelled = False
+
 		try:
 			while True:
 				try:
 					processed = await asyncio.to_thread(self._drain_and_process, q)
-					
+
 					# Flush if needed
 					if self._should_flush():
 						await asyncio.to_thread(self._flush)
@@ -127,17 +136,27 @@ class DnsTsdbWriter:
 					raise
 				except Exception:
 					_log.exception("DNS_WRITER crash in processing")
+		except asyncio.CancelledError:
+			# The daemon's SHUTDOWN_TIMEOUT already elapsed by the time this task
+			# is cancelled — running another to_thread() flush here would run
+			# unbounded (to_thread() cannot be pre-empted mid-call) and directly
+			# contradict the timeout the caller is relying on. Leave the batch
+			# and offset untouched: the tailer will re-deliver from the last
+			# committed offset on the next start, same as a persistent-failure exit.
+			cancelled = True
+			raise
 		finally:
-			# Final flush on shutdown. Skipped if we just hit a persistent
+			# Final flush on ORDERED shutdown only (queue drained, stop_event
+			# set, no cancellation). Skipped if we just hit a persistent
 			# failure (already at the retry ceiling) — that data stays
 			# buffered on disk via the uncommitted offset, not lost.
-			if self.batch and self._consecutive_flush_failures < MAX_FLUSH_RETRIES:
+			if not cancelled and self.batch and self._consecutive_flush_failures < MAX_FLUSH_RETRIES:
 				try:
 					await asyncio.to_thread(self._flush)
 				except DnsWriterPersistentFailureError:
 					_log.error("DNS_WRITER final shutdown flush failed; data retained for next start")
 			_log.info("DNS_WRITER stopped")
-	
+
 	def _maybe_refresh_settings(self) -> None:
 		"""Refresh blocklist/retention settings at a fixed interval."""
 		now = time.monotonic()
@@ -165,18 +184,28 @@ class DnsTsdbWriter:
 
 	def _drain_and_process(self, q: queue.Queue[TailItem]) -> bool:
 		"""Drain up to BATCH_SIZE lines from queue and process in one thread call.
-		
+
 		Time-bounded to avoid event loop starvation from expensive parsing.
+		Also stops draining once the in-memory batch hits MAX_BATCH_SIZE:
+		items are left on the queue (backpressure) rather than read and
+		discarded, so the durable offset never advances past data that was
+		never actually flushed to disk.
 		"""
 		self._maybe_refresh_settings()
 		processed = False
 		start_time = time.monotonic()
-		
+
 		for _ in range(BATCH_SIZE):
+			if len(self.batch) >= MAX_BATCH_SIZE:
+				_log.warning(
+					"DNS_WRITER batch at capacity (%d), pausing drain until next flush",
+					MAX_BATCH_SIZE,
+				)
+				break
 			# Time-bound: prevent expensive parsing from blocking event loop
 			if time.monotonic() - start_time > MAX_DRAIN_TIME:
 				break
-			
+
 			try:
 				item = q.get_nowait()
 			except queue.Empty:
@@ -196,37 +225,40 @@ class DnsTsdbWriter:
 		if self._log_retention_days == 0:
 			self._pending_commit = item
 			return
-		
+
 		point = parse_unbound_line(
 			line,
 			self._blocked_domains,
 			allow_rules=self._custom_allow_rules or None,
 			block_rules=self._custom_block_rules or None,
 		)
-		
+
 		if not point:
 			self._pending_commit = item
 			return
-		
+
 		# Only persist reply lines (skip queries)
 		# Replies have rcode and represent actual DNS resolutions
 		# Note: rcode=0 means NOERROR, which is valid - check for None explicitly
 		if point.rcode is None:
 			self._pending_commit = item
 			return
-		
+
 		# Skip logging for peers with DNS logging disabled
 		if point.client in self._dns_logging_disabled_ips:
 			self._pending_commit = item
 			return
-		
-		# deque with maxlen automatically drops oldest when full (O(1) operation)
+
+		# Defensive check: _drain_and_process() already stops draining once
+		# the batch reaches MAX_BATCH_SIZE, so this should be unreachable.
+		# The batch is an unbounded deque (no maxlen) — no data is dropped
+		# here or anywhere else in this class.
 		if len(self.batch) >= MAX_BATCH_SIZE:
-			_log.warning("DNS_WRITER batch at capacity, oldest entry will be dropped")
-		
+			_log.warning("DNS_WRITER batch unexpectedly at capacity (%d) inside _process_item", MAX_BATCH_SIZE)
+
 		self.batch.append((point, item))
 		self._pending_commit = item
-		
+
 		# Update minute bucket aggregates for TSDB (independent of JSONL batching)
 		# Extract minute bucket from ISO timestamp: "2026-04-01T12:05:23Z" -> "2026-04-01T12:05"
 		minute_bucket = point.ts[:16] if len(point.ts) >= 16 else point.ts[:10] + "T00:00"
@@ -235,37 +267,33 @@ class DnsTsdbWriter:
 		self._minute_buckets[minute_bucket]["total"] += 1
 		if point.blocked:
 			self._minute_buckets[minute_bucket]["blocked"] += 1
-	
+
 	def _should_flush(self) -> bool:
 		"""Check if batch should be flushed."""
 		if not self.batch:
 			return False
-		
+
 		# Throttle retries on consecutive failures to prevent busy loop
-		if self._consecutive_flush_failures > 0:
-			if time.monotonic() - self.last_flush < FLUSH_INTERVAL:
-				return False
-		
+		if self._consecutive_flush_failures > 0 and time.monotonic() - self.last_flush < FLUSH_INTERVAL:
+			return False
+
 		if len(self.batch) >= BATCH_SIZE:
 			return True
-		
-		if time.monotonic() - self.last_flush >= FLUSH_INTERVAL:
-			return True
-		
-		return False
-	
+
+		return time.monotonic() - self.last_flush >= FLUSH_INTERVAL
+
 	def _flush(self) -> None:
 		"""Write batch to TSDB with fsync for durability (blocking, run in thread)."""
 		if not self.batch:
 			return
-		
+
 		count = len(self.batch)
 		start = time.monotonic()
-		
+
 		try:
 			# Group by day for efficient writes
 			by_day: dict[str, list[dict]] = {}
-			
+
 			for point, item in self.batch:
 				# Extract date from ISO timestamp: 2026-02-19T10:15:23Z -> 2026-02-19
 				# Use split() instead of slicing for robustness against format changes
@@ -296,15 +324,15 @@ class DnsTsdbWriter:
 			# entries again; _event_id lets read_recent_queries() deduplicate them.
 			for date_str, points in by_day.items():
 				self._write_day_file(date_str, points)
-			
+
 			# Persist offset AFTER fsync (crash-safe ordering)
 			if self._pending_commit is not None:
 				self.tracker.commit(self._pending_commit.inode, self._pending_commit.end_offset)
 			self.tracker.save_if_needed(force=True)
-			
+
 			# Flush aggregated minute buckets to TSDB for fast trend queries
 			self._flush_tsdb_aggregates()
-			
+
 			elapsed = time.monotonic() - start
 			_log.debug("DNS_WRITER flushed %d queries in %.3fs (%d days)", count, elapsed, len(by_day))
 			# Clear deque
@@ -328,26 +356,26 @@ class DnsTsdbWriter:
 			_log.exception("DNS_WRITER flush failed, retaining %d points for retry (%d/%d)", count, self._consecutive_flush_failures, MAX_FLUSH_RETRIES)
 			# Update last_flush on failure too, to enable throttled retries
 			self.last_flush = time.monotonic()
-	
+
 	def _flush_tsdb_aggregates(self) -> None:
 		"""Write minute bucket aggregates to TSDB for fast trend queries.
-		
+
 		Writes two separate counter metrics per bucket:
 		- queries_total: total DNS queries
 		- queries_blocked: blocked DNS queries
-		
+
 		Separate counters are more flexible than a single dict value:
 		- Standard TSDB pattern (one integer per point)
 		- No precision issues
 		- UI computes blockrate from raw counters
-		
+
 		Best-effort: failures are logged but don't fail the main flush.
 		TSDB provides read optimization; JSONL remains the primary durability layer.
 		"""
 		if not self._minute_buckets or not self._tsdb_dir:
 			self._minute_buckets.clear()
 			return
-		
+
 		bucket_count = len(self._minute_buckets)
 		try:
 			for minute_bucket, counts in self._minute_buckets.items():
@@ -357,7 +385,7 @@ class DnsTsdbWriter:
 					bucket_dt = datetime.fromisoformat(minute_bucket + ":00+00:00")
 				except ValueError:
 					continue
-				
+
 				# Write total counter
 				tsdb.append_point(
 					self._tsdb_dir,
@@ -384,22 +412,22 @@ class DnsTsdbWriter:
 			_log.warning("DNS_WRITER failed to flush TSDB aggregates: %s", e)
 		finally:
 			self._minute_buckets.clear()
-	
+
 	def _write_day_file(self, date_str: str, points: list[dict]) -> None:
 		"""Append points to day-specific JSONL file with fsync.
-		
+
 		Note: O(n) in number of points per batch, but append-only (no rewrite).
 		Assumes single-writer process (no file locking).
-		
+
 		Performance consideration: Multiple day writes per flush = multiple fsyncs.
 		This is expensive on SSD/cloud storage but necessary for durability.
 		Optimization: Could batch writes to temp file then split, but adds complexity.
 		"""
 		day_dir = self.dns_dir / 'queries'
 		day_dir.mkdir(parents=True, exist_ok=True)
-		
+
 		day_file = day_dir / f'{date_str}.jsonl'
-		
+
 		with day_file.open('a', encoding='utf-8') as f:
 			for point in points:
 				# Compact JSON format saves ~10% disk space
@@ -448,9 +476,10 @@ def _read_tail_lines(path: Path, max_lines: int) -> list[str]:
 			lines.pop()
 
 	# Take last max_lines entries from deque
-	decoded: list[str] = []
-	for raw in list(lines)[-max_lines:]:
-		decoded.append(raw.decode("utf-8", errors="replace"))
+	decoded: list[str] = [
+		raw.decode("utf-8", errors="replace")
+		for raw in list(lines)[-max_lines:]
+	]
 	return decoded
 
 
@@ -517,8 +546,8 @@ def _parse_query_timestamp(raw: str) -> datetime | None:
 			value = value[:-1] + "+00:00"
 		dt = datetime.fromisoformat(value)
 		if dt.tzinfo is None:
-			return dt.replace(tzinfo=timezone.utc)
-		return dt.astimezone(timezone.utc)
+			return dt.replace(tzinfo=UTC)
+		return dt.astimezone(UTC)
 	except ValueError:
 		return None
 
@@ -545,13 +574,13 @@ def read_recent_queries(
 	since: datetime | None = None,
 ) -> list[dict]:
 	"""Read recent DNS queries from DNS logs, newest first.
-	
+
 	Args:
 		dns_dir: DNS base directory
 		max_queries: Maximum number of queries to return
 		client_filter: Optional set of client IPs to filter by
 		since: Optional UTC cutoff; older entries are skipped and scanning stops early
-	
+
 	Returns:
 		List of query dicts with keys: ts, client, domain, qtype, rcode, blocked.
 		Order is timestamp-descending (newest first).
@@ -568,19 +597,19 @@ def read_recent_queries(
 	seen_event_ids: set[str] = set()
 	remaining = max_queries
 	normalized_filter = _normalize_client_filter(client_filter)
-	since_utc = since.astimezone(timezone.utc) if since is not None else None
+	since_utc = since.astimezone(UTC) if since is not None else None
 	since_day = since_utc.date().isoformat() if since_utc is not None else None
-	
+
 	# Get all day files sorted by date (newest first)
 	# Explicit key ensures correct ordering regardless of path structure (YYYY-MM-DD format)
 	day_files = sorted(queries_dir.glob('*.jsonl'), key=lambda p: p.stem, reverse=True)
-	
+
 	for day_file in day_files:
 		if remaining <= 0:
 			break
 		if since_day is not None and day_file.stem < since_day:
 			break
-		
+
 		try:
 			if normalized_filter is None and since_utc is None:
 				tail_lines = _read_tail_lines(day_file, remaining)
@@ -634,5 +663,5 @@ def read_recent_queries(
 		except Exception as e:
 			_log.warning("DNS_READ failed to read %s: %s", day_file, e)
 			continue
-	
+
 	return queries

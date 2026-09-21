@@ -87,19 +87,17 @@ another trusted reverse proxy. Do not enable both — WireBuddy would then expec
 a TLS connection on a port the proxy speaks plain HTTP to.
 
 For a same-host proxy, the Docker defaults trust loopback. For other proxy
-addresses, configure both:
+addresses, configure:
 
 ```bash
-WIREBUDDY_TRUST_PROXY_HEADERS=1
-FORWARDED_ALLOW_IPS=192.168.1.10
-TRUSTED_PROXY_CIDRS=192.168.1.10/32
+WIREBUDDY_TRUSTED_PROXIES=192.168.1.10/32
 WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
 ```
 
-`FORWARDED_ALLOW_IPS` controls which peers Uvicorn trusts for
-`X-Forwarded-*`; `TRUSTED_PROXY_CIDRS` controls application-level client-IP and
-HTTPS detection. Do not use broad CIDRs unless the complete range is controlled
-by your proxy infrastructure.
+`WIREBUDDY_TRUSTED_PROXIES` controls both which peers Uvicorn trusts for
+`X-Forwarded-*` and application-level client-IP/HTTPS detection. Do not use
+broad CIDRs unless the complete range is controlled by your proxy
+infrastructure.
 
 HSTS is emitted for requests detected as HTTPS. Set
 `WIREBUDDY_FORCE_HSTS=1` only when TLS terminates upstream and scheme detection
@@ -200,7 +198,7 @@ The status page is disabled by default and can be enabled under
 clients; authenticated administrators have an override.
 
 When a reverse proxy fronts `/status`, list non-loopback proxy CIDRs in
-`WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS`. See
+`WIREBUDDY_TRUSTED_PROXIES`. See
 [Status Page](status-page.md).
 
 ## Secrets at Rest

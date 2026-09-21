@@ -112,18 +112,33 @@ fi
 
 # Read settings from database if it exists
 if [ -f "$DB_PATH" ]; then
-    # Extract gui_localhost_only setting (default: false)
-    LOCALHOST_ONLY="$(read_setting gui_localhost_only || true)"
+    # Extract gui_localhost_only setting (default: false). This is a
+    # security-relevant bind decision, so a read failure (lock, corrupt DB,
+    # missing table, ...) must fail closed instead of silently defaulting to
+    # 0.0.0.0.
+    if ! LOCALHOST_ONLY="$(read_setting gui_localhost_only)"; then
+        echo "Could not read gui_localhost_only; refusing to start with an unknown bind exposure" >&2
+        exit 1
+    fi
     LOCALHOST_ONLY="$(normalize_bool "$LOCALHOST_ONLY")"
     case "$LOCALHOST_ONLY" in
         1|true|yes|on)
             HOST="127.0.0.1"
             echo "GUI binding to localhost only (127.0.0.1)"
             ;;
+        ''|0|false|no|off)
+            ;;
+        *)
+            echo "Unrecognised gui_localhost_only value '$LOCALHOST_ONLY'; refusing to start with an unknown bind exposure" >&2
+            exit 1
+            ;;
     esac
-    
+
     # Extract gui_port setting (default: 8000)
-    DB_PORT="$(read_setting gui_port || true)"
+    if ! DB_PORT="$(read_setting gui_port)"; then
+        echo "Could not read gui_port from database" >&2
+        exit 1
+    fi
     if [ -n "$DB_PORT" ] && is_valid_port "$DB_PORT"; then
         PORT="$DB_PORT"
     elif [ -n "$DB_PORT" ]; then
@@ -148,26 +163,10 @@ if [ -n "${WIREBUDDY_PORT:-}" ]; then
         exit 1
     fi
 fi
-WORKERS_RAW="${UVICORN_WORKERS:-1}"
+# WireBuddy's job queue and session/rate-limit state live in-process; the web
+# server is single-worker only, not configurable.
+WORKERS="1"
 GRACEFUL_SHUTDOWN_TIMEOUT="${UVICORN_GRACEFUL_SHUTDOWN_TIMEOUT:-8}"
-
-case "$WORKERS_RAW" in
-    ''|*[!0-9]*)
-        echo "Invalid UVICORN_WORKERS='$WORKERS_RAW' - forcing 1" >&2
-        WORKERS="1"
-        ;;
-    0)
-        echo "UVICORN_WORKERS must be >= 1 - forcing 1" >&2
-        WORKERS="1"
-        ;;
-    1)
-        WORKERS="1"
-        ;;
-    *)
-        echo "UVICORN_WORKERS=$WORKERS_RAW requested, but WireBuddy web mode is single-worker only - forcing 1" >&2
-        WORKERS="1"
-        ;;
-esac
 
 if ! is_valid_timeout "$GRACEFUL_SHUTDOWN_TIMEOUT"; then
     echo "Invalid UVICORN_GRACEFUL_SHUTDOWN_TIMEOUT='$GRACEFUL_SHUTDOWN_TIMEOUT' - forcing 8" >&2
@@ -188,23 +187,20 @@ UVICORN_ARGS=(
 # Trust loopback proxy headers by default so HTTPS origin checks work behind
 # a local reverse proxy like Caddy or nginx on the same host. Direct clients
 # are unaffected because uvicorn still only trusts the configured proxy IPs.
-TRUST_PROXY_HEADERS="$(normalize_bool "${WIREBUDDY_TRUST_PROXY_HEADERS:-1}")"
+# Shares WIREBUDDY_TRUSTED_PROXIES with the application-level proxy-trust
+# checks (app/utils/config.py) so there is one variable for "who is my
+# reverse proxy" instead of separate uvicorn/app settings.
+FORWARDED_ALLOW_IPS_VALUE="${WIREBUDDY_TRUSTED_PROXIES:-127.0.0.1,::1}"
+if [ "$FORWARDED_ALLOW_IPS_VALUE" = "*" ]; then
+    echo "WIREBUDDY_TRUSTED_PROXIES='*' is unsafe; configure explicit proxy IPs" >&2
+    exit 1
+fi
 
-case "$TRUST_PROXY_HEADERS" in
-    1|true|yes|on)
-        FORWARDED_ALLOW_IPS_VALUE="${FORWARDED_ALLOW_IPS:-127.0.0.1}"
-        if [ "$FORWARDED_ALLOW_IPS_VALUE" = "*" ]; then
-            echo "FORWARDED_ALLOW_IPS='*' is unsafe; configure explicit proxy IPs" >&2
-            exit 1
-        fi
+echo "Trusting proxy headers from: ${FORWARDED_ALLOW_IPS_VALUE}"
 
-        echo "Trusting proxy headers from: ${FORWARDED_ALLOW_IPS_VALUE}"
-
-        UVICORN_ARGS+=(
-            --proxy-headers
-            --forwarded-allow-ips="$FORWARDED_ALLOW_IPS_VALUE"
-        )
-        ;;
-esac
+UVICORN_ARGS+=(
+    --proxy-headers
+    --forwarded-allow-ips="$FORWARDED_ALLOW_IPS_VALUE"
+)
 
 exec uvicorn "${UVICORN_ARGS[@]}"

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..dns import unbound
+from ..utils.conntrack import init_conntrack_accounting
 from . import scheduled as scheduled_tasks
 from .maintenance import (
     cleanup_acked_node_commands,
@@ -27,11 +28,10 @@ from .maintenance import (
     sqlite_maintenance,
     tsdb_retention_cleanup,
 )
-from ..utils.conntrack import init_conntrack_accounting
 
 if TYPE_CHECKING:
-    from ..utils.scheduler import Scheduler
     from ..main import LifespanContext
+    from ..utils.scheduler import Scheduler
 
 _log = logging.getLogger(__name__)
 
@@ -147,24 +147,23 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
     This performs startup-side configuration reads and lightweight environment
     inspection before mutating ``scheduler`` with the full job set.
     """
-    
     # Needs to import this specific function directly to avoid circular / heavy imports
     from ..main import _read_blocklist_enabled_sync
-    
+
     unbound_installed = unbound.is_unbound_installed()
-    
+
     # 1. Blocklist Update
     blocklist_enabled_startup = unbound_installed and await asyncio.to_thread(_read_blocklist_enabled_sync, ctx.cfg.db_path)
     blocklist_jitter_pct = 0.1
     blocklist_run_on_start = False
-    
+
     if blocklist_enabled_startup:
         try:
             blocklist_run_on_start = unbound.get_blocklist_count() <= 0
         except Exception as exc:
             _log.warning("BLOCKLIST_STARTUP could not inspect local blocklist (%s); scheduling startup update", exc)
             blocklist_run_on_start = True
-            
+
         if blocklist_run_on_start:
             _log.info("BLOCKLIST_STARTUP no cached blocklist found - scheduling immediate update")
         else:
@@ -176,11 +175,10 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
                 max_delay_h,
                 blocklist_jitter_pct * 100,
             )
+    elif unbound_installed:
+        _log.info("BLOCKLIST_STARTUP skipped: ad-blocker is disabled")
     else:
-        if unbound_installed:
-            _log.info("BLOCKLIST_STARTUP skipped: ad-blocker is disabled")
-        else:
-            _log.info("BLOCKLIST_STARTUP skipped: Unbound not installed")
+        _log.info("BLOCKLIST_STARTUP skipped: Unbound not installed")
 
     if unbound_installed:
         blocklist_initial_delay = _BLOCKLIST_STARTUP_DELAY_SECONDS if blocklist_run_on_start else 0.0
@@ -201,7 +199,7 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
         run_on_start=True,
         initial_delay=30.0
     )
-    
+
     scheduler.add(
         "tsdb-sample",
         interval_seconds=INTERVAL_THIRTY_SECONDS,
@@ -305,7 +303,7 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
             initial_delay=60.0,
             timeout=30.0
         )
-        
+
         scheduler.add(
             "adblocker-timer-check",
             interval_seconds=INTERVAL_FIFTEEN_SECONDS,
@@ -325,7 +323,7 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
         _log.info("SPEEDTEST_SCHEDULER no previous run recorded")
 
     if initial_speedtest_delay > 0:
-        scheduled_time = datetime.now() + timedelta(seconds=initial_speedtest_delay)
+        scheduled_time = datetime.now() + timedelta(seconds=initial_speedtest_delay)  # noqa: DTZ005  (local time on purpose: this only formats an ~HH:MM hint for the operator's log)
         _log.info("SPEEDTEST_SCHEDULER first run in %.1f hours (at ~%s)", initial_speedtest_delay / 3600, scheduled_time.strftime("%H:%M"))
 
     scheduler.add(
@@ -342,7 +340,7 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
     backup_timezone = await asyncio.to_thread(_get_configured_backup_timezone)
     initial_backup_delay = await asyncio.to_thread(_seconds_until_backup_time, backup_timezone)
     _log.info("SCHEDULED_BACKUP first run in %.1f hours (at ~%02d:00)", initial_backup_delay / 3600, BACKUP_NIGHT_HOUR)
-    
+
     scheduler.add(
         "scheduled-backup",
         interval_seconds=INTERVAL_DAILY,

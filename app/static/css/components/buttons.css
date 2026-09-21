@@ -75,7 +75,7 @@
 
 .wb-btn:active {
     background-color: var(--wb-active-overlay-light);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+    box-shadow: inset 0 1px 2px rgb(0 0 0 / 12%);
 }
 
 .wb-btn:disabled,
@@ -87,7 +87,7 @@
 /* Dark mode */
 [data-bs-theme="dark"] .wb-btn {
     border-color: var(--wb-border-default);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
     color: var(--wb-text-secondary);
 }
 
@@ -255,30 +255,34 @@
  * Button Groups
  * ============================================ */
 
+/* Group shape rules intentionally follow button state rules; they only set
+   border geometry/margins and do not compete with hover colors. */
+/* stylelint-disable no-descending-specificity */
+
 .wb-btn-group {
     display: inline-flex;
     gap: 0;
 }
 
-.wb-btn-group>.wb-btn,
-.wb-btn-group>.wb-btn-icon {
+:where(.wb-btn-group)>.wb-btn,
+:where(.wb-btn-group)>.wb-btn-icon {
     border-radius: 0;
 }
 
-.wb-btn-group>.wb-btn:first-child,
-.wb-btn-group>.wb-btn-icon:first-child {
+:where(.wb-btn-group)>.wb-btn:first-child,
+:where(.wb-btn-group)>.wb-btn-icon:first-child {
     border-top-left-radius: var(--wb-btn-radius);
     border-bottom-left-radius: var(--wb-btn-radius);
 }
 
-.wb-btn-group>.wb-btn:last-child,
-.wb-btn-group>.wb-btn-icon:last-child {
+:where(.wb-btn-group)>.wb-btn:last-child,
+:where(.wb-btn-group)>.wb-btn-icon:last-child {
     border-top-right-radius: var(--wb-btn-radius);
     border-bottom-right-radius: var(--wb-btn-radius);
 }
 
-.wb-btn-group>.wb-btn+.wb-btn,
-.wb-btn-group>.wb-btn-icon+.wb-btn-icon {
+:where(.wb-btn-group)>.wb-btn+.wb-btn,
+:where(.wb-btn-group)>.wb-btn-icon+.wb-btn-icon {
     margin-left: -1px;
 }
 
@@ -288,10 +292,12 @@
     gap: var(--wb-action-btn-gap);
 }
 
-.wb-btn-group-spaced>.wb-btn,
-.wb-btn-group-spaced>.wb-btn-icon {
+:where(.wb-btn-group-spaced)>.wb-btn,
+:where(.wb-btn-group-spaced)>.wb-btn-icon {
     border-radius: var(--wb-btn-radius);
 }
+
+/* stylelint-enable no-descending-specificity */
 
 /* ============================================
  * Loading State
@@ -312,7 +318,7 @@
     left: 50%;
     margin-top: -0.5rem;
     margin-left: -0.5rem;
-    border: 2px solid currentColor;
+    border: 2px solid currentcolor;
     border-right-color: transparent;
     border-radius: 50%;
     animation: wb-btn-spin 0.75s linear infinite;

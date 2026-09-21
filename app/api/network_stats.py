@@ -16,23 +16,23 @@ import logging
 import sqlite3
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from starlette.concurrency import run_in_threadpool
 
+from ..db.sqlite_interfaces import list_interfaces
+from ..utils.deps import get_config, get_conn
 from .auth import get_current_user
 from .response import ok_response
-from ..db.sqlite_interfaces import list_interfaces
-from ..utils.deps import get_conn, get_config
 
 _log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["network"])
 
-__all__ = ["router", "NETWORK_STATS_KEY", "sample_network_stats"]
+__all__ = ["NETWORK_STATS_KEY", "router", "sample_network_stats"]
 
 # TSDB synthetic key for network stats
 NETWORK_STATS_KEY = "__network_stats__"
@@ -83,7 +83,7 @@ def _get_primary_interface() -> str | None:
 
     primary = None
     try:
-        with open("/proc/net/route") as fh:
+        with Path("/proc/net/route").open() as fh:
             next(fh)  # skip header line
             for line in fh:
                 parts = line.split()
@@ -101,10 +101,7 @@ def _get_primary_interface() -> str | None:
 
 def _is_physical_or_wg(name: str) -> bool:
     """Check if interface is physical or WireGuard (not loopback/docker/veth)."""
-    for prefix in _SKIP_PREFIXES:
-        if name.startswith(prefix):
-            return False
-    return True
+    return all(not name.startswith(prefix) for prefix in _SKIP_PREFIXES)
 
 
 def _read_interface_stats(name: str) -> tuple[int, int] | None:
@@ -120,7 +117,7 @@ def _read_interface_stats(name: str) -> tuple[int, int] | None:
 
 def _is_wg_interface(name: str) -> bool:
     """Check if interface is a WireGuard interface.
-    
+
     Primary check: Look for DEVTYPE=wireguard in uevent (kernel >= 5.6).
     Fallback: Check naming convention (wg*) and absence of physical device.
     """
@@ -131,13 +128,13 @@ def _is_wg_interface(name: str) -> bool:
             return True
     except (FileNotFoundError, PermissionError):
         pass
-    
+
     # Fallback for older kernels: wg* naming + no physical device
     # (WireGuard virtual interfaces lack /sys/class/net/<name>/device)
     if name.startswith("wg"):
         device_path = Path(f"/sys/class/net/{name}/device")
         return not device_path.exists()
-    
+
     return False
 
 
@@ -149,10 +146,10 @@ def _get_all_interface_stats(wg_visibility: dict[str, bool] | None = None) -> di
 
 def _collect_interface_stats(wg_visibility: dict[str, bool] | None = None) -> dict[str, Any]:
     """Collect interface statistics. Caller must hold _cache_lock.
-    
+
     Thread-safe: Uses lock to protect shared _prev_stats dict.
     Caches results for _CACHE_TTL seconds to prevent hammering sysfs.
-    
+
     Args:
         wg_visibility: Optional dict mapping WG interface names to their
             show_on_dashboard setting. If None, all WG interfaces are shown.
@@ -160,75 +157,80 @@ def _collect_interface_stats(wg_visibility: dict[str, bool] | None = None) -> di
     global _cache_ts
 
     now = time.monotonic()
-    
+
     # Note: We can't cache when wg_visibility filtering is applied
     # since visibility settings may change. Only cache raw stats.
     cache_valid = (now - _cache_ts < _CACHE_TTL) and wg_visibility is None
     if cache_valid:
         return _cache.copy()
-    
+
     net_path = Path("/sys/class/net")
     if not net_path.is_dir():
         return {"interfaces": [], "error": "Network stats unavailable"}
-    
+
     # Get primary interface for marking
     primary_iface = _get_primary_interface()
-    
+
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
-    
+
     for iface_path in net_path.iterdir():
         name = iface_path.name
-        
+
         # Skip virtual interfaces
         if not _is_physical_or_wg(name):
             continue
-        
+
         # Read current stats
         stats = _read_interface_stats(name)
         if stats is None:
             continue
-        
+
         seen.add(name)
         rx_bytes, tx_bytes = stats
         is_wg = _is_wg_interface(name)
-        
+
         # Filter WG interfaces based on visibility setting
-        if is_wg and wg_visibility is not None:
-            if not wg_visibility.get(name, True):
-                continue
-        
+        if is_wg and wg_visibility is not None and not wg_visibility.get(name, True):
+            continue
+
         # For non-WG interfaces, only include the primary interface
         if not is_wg and primary_iface and name != primary_iface:
             continue
-        
+
         # Calculate rates with thread-safe access to previous data
         rx_rate = 0.0
         tx_rate = 0.0
-        
+
         with _prev_stats_lock:
             if name in _prev_stats:
                 prev_ts, prev_rx, prev_tx = _prev_stats[name]
                 elapsed = now - prev_ts
-                
+
                 if elapsed > 0.1:  # At least 100ms between samples
                     # Calculate deltas
                     rx_delta = rx_bytes - prev_rx
                     tx_delta = tx_bytes - prev_tx
-                    
-                    # Handle 32-bit counter wraps (rare on modern kernels but possible)
-                    # 64-bit counters effectively never wrap (584 years at 1 Gbps)
+
+                    # A negative delta is far more likely to be a counter reset
+                    # (interface restart/recreate) than a 32-bit wrap: modern
+                    # kernels report 64-bit counters, which would take 584
+                    # years to wrap at 1 Gbps. Only apply the wrap correction
+                    # when the deficit is actually explainable as a 32-bit
+                    # wrap (i.e. small enough to fit in a 32-bit range);
+                    # otherwise treat it as a reset and report zero instead of
+                    # a fabricated multi-GB/s spike.
                     if rx_delta < 0:
-                        rx_delta += 2**32
+                        rx_delta = rx_delta + 2**32 if -rx_delta <= 2**32 and prev_rx >= 2**32 else 0
                     if tx_delta < 0:
-                        tx_delta += 2**32
-                    
+                        tx_delta = tx_delta + 2**32 if -tx_delta <= 2**32 and prev_tx >= 2**32 else 0
+
                     rx_rate = rx_delta / elapsed  # bytes/sec
                     tx_rate = tx_delta / elapsed  # bytes/sec
-            
+
             # Store current reading for next calculation
             _prev_stats[name] = (now, rx_bytes, tx_bytes)
-        
+
         iface_data = {
             "name": name,
             "is_wg": is_wg,
@@ -237,23 +239,23 @@ def _collect_interface_stats(wg_visibility: dict[str, bool] | None = None) -> di
             "rx_rate": round(rx_rate, 1),  # bytes/sec
             "tx_rate": round(tx_rate, 1),  # bytes/sec
         }
-        
+
         # Mark primary host interface
         if not is_wg and name == primary_iface:
             iface_data["is_primary"] = True
-        
+
         results.append(iface_data)
-    
+
     # Prune stale entries (interfaces that disappeared)
     with _prev_stats_lock:
         stale = set(_prev_stats.keys()) - seen
         for key in stale:
             del _prev_stats[key]
             _log.debug("Pruned stale interface from stats cache: %s", key)
-    
+
     # Sort: WireGuard interfaces first, then by name
     results.sort(key=lambda x: (not x["is_wg"], x["name"]))
-    
+
     # Only cache UNFILTERED results. Storing a visibility-filtered snapshot
     # here would let a dashboard request poison the cache that the scheduler
     # reads as "all interfaces", silently dropping hidden interfaces from the
@@ -263,34 +265,40 @@ def _collect_interface_stats(wg_visibility: dict[str, bool] | None = None) -> di
         _cache.clear()
         _cache.update(result)
         _cache_ts = now
-    
+
     return result
 
 
 @router.get("/network/stats")
 async def get_network_stats(
-    user: Any = Depends(get_current_user),
+    _: Any = Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_conn),
 ):
     """Get real-time network interface statistics.
-    
+
     Returns RX/TX byte counters and calculated rates (bytes/sec) for:
     - Primary host interface (the default route interface)
     - WireGuard interfaces (filtered by show_on_dashboard setting)
-    
+
     Call this endpoint repeatedly (~1-2s intervals) to get accurate rate data.
     The first call returns rates of 0 as no previous sample exists.
-    
+
     Results are cached for 500ms to prevent excessive sysfs reads under load.
     """
     # Fetch WG interface visibility settings from database
     def get_wg_visibility() -> dict[str, bool]:
+        # list_interfaces() returns sqlite3.Row objects, which support key
+        # lookup but have no .get() method — use keys() to check presence.
         interfaces = list_interfaces(conn)
         return {
-            iface["name"]: bool(iface["show_on_dashboard"] if "show_on_dashboard" in iface.keys() else 1)
+            # `.keys()` is required, not redundant: these are sqlite3.Row objects,
+            # where `in` iterates *values*, so `"show_on_dashboard" in iface` is
+            # always False and would silently force every interface visible.
+            # sqlite3.Row also has no .get(), so the ternary cannot collapse either.
+            iface["name"]: bool(iface["show_on_dashboard"] if "show_on_dashboard" in iface.keys() else 1)  # noqa: SIM118
             for iface in interfaces
         }
-    
+
     wg_visibility = await run_in_threadpool(get_wg_visibility)
     data = await run_in_threadpool(_get_all_interface_stats, wg_visibility)
     return ok_response(data=data)
@@ -298,26 +306,26 @@ async def get_network_stats(
 
 def sample_network_stats(tsdb_dir: Path) -> int:
     """Sample current network stats and persist to TSDB.
-    
+
     Called by scheduled task every 30 seconds. Stores combined rate
     (rx_rate + tx_rate) per interface as metric: `iface_{name}`.
-    
+
     Returns:
         Number of points written.
     """
     from ..db import tsdb
-    
+
     # Get raw stats without visibility filter for persistence
     data = _get_all_interface_stats(wg_visibility=None)
     interfaces = data.get("interfaces", [])
-    
+
     points = 0
     for iface in interfaces:
         name = iface["name"]
         rx_rate = iface.get("rx_rate", 0)
         tx_rate = iface.get("tx_rate", 0)
         total_rate = rx_rate + tx_rate
-        
+
         # Only store if there's actual traffic (avoid storing mostly zeros)
         # Store both individual rates and total for flexibility
         metric_name = f"iface_{name}"
@@ -333,7 +341,7 @@ def sample_network_stats(tsdb_dir: Path) -> int:
             retention_days=NETWORK_STATS_RETENTION_DAYS,
         )
         points += 1
-    
+
     return points
 
 
@@ -341,14 +349,14 @@ def sample_network_stats(tsdb_dir: Path) -> int:
 async def get_network_stats_history(
     request: Request,
     interface: str = Query(..., min_length=1, max_length=15, description="Interface name (e.g., wg0, eth0)"),
-    range: Literal["1h", "6h", "24h", "7d"] = Query("1h", description="Time range: 1h, 6h, 24h, 7d"),
-    user: Any = Depends(get_current_user),
+    range: Literal["1h", "6h", "24h", "7d"] = Query("1h", description="Time range: 1h, 6h, 24h, 7d"),  # noqa: A002  (the name is part of the HTTP API (?range=1h); renaming it would break clients)
+    _: Any = Depends(get_current_user),
 ):
     """Get historical network stats for sparkline display.
-    
+
     Returns time-series data points for the specified interface within
     the given time range. Data is sampled every 30 seconds.
-    
+
     Response format:
     ```json
     {
@@ -364,20 +372,20 @@ async def get_network_stats_history(
     ```
     """
     from ..db import tsdb
-    
+
     cfg = get_config(request)
-    
+
     # `range` is constrained by the Literal above, so an unknown value is
     # rejected with 422 instead of silently degrading to 1h.
     hours = NETWORK_RANGE_TO_HOURS[range]
-    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    since = datetime.now(UTC) - timedelta(hours=hours)
     # Derive the point cap from the requested window (30s sampling = 120/h)
     # plus headroom. A fixed 7200 silently truncated 7d to ~2.5 days.
     point_limit = min(hours * 120 + 120, 21_000)
-    
+
     # Query TSDB
     metric_name = f"iface_{interface}"
-    
+
     def query_history():
         try:
             points = tsdb.query(
@@ -399,9 +407,9 @@ async def get_network_stats_history(
         except Exception as e:
             _log.warning("Failed to query network stats history: %s", e)
             return []
-    
+
     points = await run_in_threadpool(query_history)
-    
+
     return ok_response(data={
         "interface": interface,
         "range": range,

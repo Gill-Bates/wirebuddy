@@ -99,7 +99,7 @@ class PasskeyAuthenticationResult:
 
 def _get_user_handle_secret() -> bytes:
 	"""Get the secret key for deriving WebAuthn user handles.
-	
+
 	Uses WIREBUDDY_SECRET_KEY to ensure user handles are opaque, non-enumerable,
 	and consistent across restarts.
 	"""
@@ -111,10 +111,10 @@ def _get_user_handle_secret() -> bytes:
 
 def _user_handle_for_id(user_id: int) -> bytes:
 	"""Generate an opaque WebAuthn user.id from internal user_id.
-	
+
 	Per WebAuthn spec §5.4.3, user.id MUST be an opaque byte sequence that
 	does not contain PII. Sequential integers leak account enumeration.
-	
+
 	Uses HMAC-SHA256(secret, user_id) to generate 32 bytes.
 	"""
 	secret = _get_user_handle_secret()
@@ -123,7 +123,7 @@ def _user_handle_for_id(user_id: int) -> bytes:
 
 def _validate_base64url(value: str, name: str) -> None:
 	"""Validate a base64url string.
-	
+
 	Raises:
 		ValueError: If the string is not valid base64url
 	"""
@@ -131,7 +131,7 @@ def _validate_base64url(value: str, name: str) -> None:
 		raise ValueError(f"{name} cannot be empty")
 	if len(value) > _MAX_B64URL_SIZE:
 		raise ValueError(f"{name} too large")
-	
+
 	try:
 		# Attempt decode - this validates format and character set
 		base64url_to_bytes(value)
@@ -190,16 +190,16 @@ def _normalize_expected_rp_id(expected_rp_id: str) -> str:
 
 def _parse_registration_credential(credential_json: dict[str, Any]) -> RegistrationCredential:
 	"""Parse a browser credential JSON into a RegistrationCredential.
-	
+
 	The browser sends camelCase keys, but py-webauthn uses snake_case dataclasses.
 	This function handles the conversion.
-	
+
 	Args:
 		credential_json: The credential response from navigator.credentials.create()
-		
+
 	Returns:
 		RegistrationCredential instance
-		
+
 	Raises:
 		ValueError: If required fields are missing or invalid
 	"""
@@ -208,22 +208,22 @@ def _parse_registration_credential(credential_json: dict[str, Any]) -> Registrat
 		cred_id = credential_json.get("id")
 		raw_id = credential_json.get("rawId") or credential_json.get("raw_id")
 		response = credential_json.get("response", {})
-		
+
 		if not cred_id:
 			raise ValueError("Missing credential id")
 		if not raw_id:
 			raise ValueError("Missing rawId")
 		_validate_base64url(str(cred_id), "credential id")
-		
+
 		# Parse response
 		client_data_json = response.get("clientDataJSON") or response.get("client_data_json")
 		attestation_object = response.get("attestationObject") or response.get("attestation_object")
-		
+
 		if not client_data_json:
 			raise ValueError("Missing clientDataJSON")
 		if not attestation_object:
 			raise ValueError("Missing attestationObject")
-		
+
 		# Parse transports if present
 		transports = response.get("transports")
 		parsed_transports = None
@@ -241,14 +241,14 @@ def _parse_registration_credential(credential_json: dict[str, Any]) -> Registrat
 					parsed_transports.append(AuthenticatorTransport(t))
 				except ValueError:
 					_log.warning("Unknown transport: %s", t)
-		
+
 		# Build the response object
 		attestation_response = AuthenticatorAttestationResponse(
 			client_data_json=_decode_base64url_field(client_data_json, "clientDataJSON"),
 			attestation_object=_decode_base64url_field(attestation_object, "attestationObject"),
 			transports=parsed_transports,
 		)
-		
+
 		return RegistrationCredential(
 			id=cred_id,
 			raw_id=_decode_base64url_field(raw_id, "rawId"),
@@ -262,16 +262,16 @@ def _parse_registration_credential(credential_json: dict[str, Any]) -> Registrat
 
 def _parse_authentication_credential(credential_json: dict[str, Any]) -> AuthenticationCredential:
 	"""Parse a browser credential JSON into an AuthenticationCredential.
-	
+
 	The browser sends camelCase keys, but py-webauthn uses snake_case dataclasses.
 	This function handles the conversion.
-	
+
 	Args:
 		credential_json: The credential response from navigator.credentials.get()
-		
+
 	Returns:
 		AuthenticationCredential instance
-		
+
 	Raises:
 		ValueError: If required fields are missing or invalid
 	"""
@@ -280,26 +280,26 @@ def _parse_authentication_credential(credential_json: dict[str, Any]) -> Authent
 		cred_id = credential_json.get("id")
 		raw_id = credential_json.get("rawId") or credential_json.get("raw_id")
 		response = credential_json.get("response", {})
-		
+
 		if not cred_id:
 			raise ValueError("Missing credential id")
 		if not raw_id:
 			raise ValueError("Missing rawId")
 		_validate_base64url(str(cred_id), "credential id")
-		
+
 		# Parse response
 		client_data_json = response.get("clientDataJSON") or response.get("client_data_json")
 		authenticator_data = response.get("authenticatorData") or response.get("authenticator_data")
 		signature = response.get("signature")
 		user_handle = response.get("userHandle") or response.get("user_handle")
-		
+
 		if not client_data_json:
 			raise ValueError("Missing clientDataJSON")
 		if not authenticator_data:
 			raise ValueError("Missing authenticatorData")
 		if not signature:
 			raise ValueError("Missing signature")
-		
+
 		# Build the response object
 		assertion_response = AuthenticatorAssertionResponse(
 			client_data_json=_decode_base64url_field(client_data_json, "clientDataJSON"),
@@ -307,7 +307,7 @@ def _parse_authentication_credential(credential_json: dict[str, Any]) -> Authent
 			signature=_decode_base64url_field(signature, "signature"),
 			user_handle=_decode_base64url_field(user_handle, "userHandle") if user_handle else None,
 		)
-		
+
 		return AuthenticationCredential(
 			id=cred_id,
 			raw_id=_decode_base64url_field(raw_id, "rawId"),
@@ -326,9 +326,9 @@ def store_registration_challenge(
 	username: str,
 ) -> None:
 	"""Store a registration challenge in SQLite for later verification.
-	
+
 	This is multi-worker safe as challenges are stored in the shared database.
-	
+
 	Raises:
 		sqlite3.IntegrityError: If challenge already exists (replay attack)
 	"""
@@ -343,12 +343,12 @@ def consume_registration_challenge(
 	challenge: str,
 ) -> tuple[int, str]:
 	"""Consume and return (user_id, username) if challenge is valid.
-	
+
 	This is multi-worker safe as challenges are stored in the shared database.
-	
+
 	Returns:
 		tuple[int, str]: (user_id, username)
-		
+
 	Raises:
 		InvalidChallengeError: If challenge is invalid, expired, or already consumed
 	"""
@@ -362,11 +362,11 @@ def consume_registration_challenge(
 	except ValueError as e:
 		_log.error("Challenge ceremony type mismatch: %s", e)
 		raise InvalidChallengeError(str(e)) from None
-	
+
 	if user_id is None or username is None:
 		_log.error("Registration challenge missing user_id or username")
 		raise InvalidChallengeError("Invalid challenge data")
-	
+
 	_log.info("Registration challenge consumed")
 	return (user_id, username)
 
@@ -377,9 +377,9 @@ def store_authentication_challenge(
 	user_id: int | None = None,
 ) -> None:
 	"""Store an authentication challenge in SQLite for later verification.
-	
+
 	This is multi-worker safe as challenges are stored in the shared database.
-	
+
 	Args:
 		conn: Database connection
 		challenge: The base64url-encoded challenge
@@ -396,12 +396,12 @@ def consume_authentication_challenge(
 	challenge: str,
 ) -> AuthenticationChallengeResult:
 	"""Consume and return challenge result if valid.
-	
+
 	This is multi-worker safe as challenges are stored in the shared database.
-	
+
 	Returns:
 		AuthenticationChallengeResult with user_id (None for usernameless flows)
-		
+
 	Raises:
 		InvalidChallengeError: If challenge is invalid, expired, or already consumed
 	"""
@@ -415,7 +415,7 @@ def consume_authentication_challenge(
 	except ValueError as e:
 		_log.error("Challenge ceremony type mismatch: %s", e)
 		raise InvalidChallengeError(str(e)) from None
-	
+
 	_log.info("Authentication challenge consumed")
 	return AuthenticationChallengeResult(user_id=user_id)
 
@@ -429,17 +429,18 @@ def get_registration_options(
 	existing_credential_ids: list[str] | None = None,
 ) -> dict[str, Any]:
 	"""Generate WebAuthn registration options (PublicKeyCredentialCreationOptions).
-	
+
 	Args:
+		conn: Open SQLite connection the generated challenge is stored in
 		rp_id: Relying Party ID (domain name)
 		rp_name: Human-readable RP name
 		user_id: Internal user ID
 		username: Username for display
 		existing_credential_ids: List of already-registered credential IDs (base64url)
-		
+
 	Returns:
 		Dictionary suitable for JSON serialization to frontend
-		
+
 	Raises:
 		ValueError: If existing_credential_ids contains invalid base64url strings
 		ValueError: If user has too many passkeys registered
@@ -450,7 +451,7 @@ def get_registration_options(
 			f"Maximum of {_MAX_PASSKEYS_PER_USER} passkeys per user. "
 			"Delete unused passkeys before registering new ones."
 		)
-	
+
 	# Convert existing credentials to exclude list
 	exclude_credentials = []
 	if existing_credential_ids:
@@ -491,16 +492,16 @@ def verify_registration(
 	expected_rp_id: str,
 ) -> PasskeyRegistrationResult:
 	"""Verify a WebAuthn registration response.
-	
+
 	Args:
 		credential_json: The credential response from the browser
 		expected_challenge: The challenge we stored (base64url)
 		expected_origin: Expected origin (e.g., "https://vpn.example.com")
 		expected_rp_id: Expected RP ID (domain)
-		
+
 	Returns:
 		PasskeyRegistrationResult with credential info
-		
+
 	Raises:
 		webauthn.errors.InvalidRegistrationResponse: On verification failure
 	"""
@@ -538,16 +539,16 @@ def get_authentication_options(
 	credential_ids: list[str] | None = None,
 ) -> dict[str, Any]:
 	"""Generate WebAuthn authentication options (PublicKeyCredentialRequestOptions).
-	
+
 	Args:
 		conn: Database connection
 		rp_id: Relying Party ID
 		user_id: User ID (None for usernameless/discoverable credential flow)
 		credential_ids: List of allowed credential IDs (base64url) for this user
-		
+
 	Returns:
 		Dictionary suitable for JSON serialization to frontend
-		
+
 	Raises:
 		ValueError: If credential_ids contains invalid base64url strings
 	"""
@@ -582,7 +583,7 @@ def verify_authentication(
 	credential_current_sign_count: int,
 ) -> PasskeyAuthenticationResult:
 	"""Verify a WebAuthn authentication response.
-	
+
 	Args:
 		credential_json: The credential response from the browser
 		expected_challenge: The challenge we stored (base64url)
@@ -590,10 +591,10 @@ def verify_authentication(
 		expected_rp_id: Expected RP ID
 		credential_public_key: The stored public key for this credential
 		credential_current_sign_count: The current sign count in DB
-		
+
 	Returns:
 		PasskeyAuthenticationResult with new sign count
-		
+
 	Raises:
 		webauthn.errors.InvalidAuthenticationResponse: On verification failure
 	"""
@@ -619,7 +620,7 @@ def verify_authentication(
 
 def _options_to_dict(options: Any) -> dict[str, Any]:
 	"""Convert webauthn options object to JSON-serializable dict.
-	
+
 	Handles bytes -> base64url conversion for challenge and IDs.
 	"""
 	# The webauthn library options have a json() method or can be dict-ified
@@ -650,12 +651,12 @@ def _convert_bytes_recursive(
 	_node_count: list[int] | None = None,
 ) -> Any:
 	"""Recursively convert bytes objects to base64url strings and dataclasses to dicts.
-	
+
 	Args:
 		obj: Object to convert
 		_depth: Current recursion depth (internal use)
 		_seen: Set of visited object IDs to prevent cycles (internal use)
-		
+
 	Raises:
 		RecursionError: If maximum depth exceeded or circular reference detected
 	"""
@@ -668,37 +669,37 @@ def _convert_bytes_recursive(
 	# Protect against infinite recursion
 	if _depth > 100:
 		raise RecursionError("Maximum recursion depth exceeded in _convert_bytes_recursive")
-	
+
 	# Protect against circular references
 	if _seen is None:
 		_seen = set()
-	
+
 	# For mutable objects, check if we've seen them before
 	obj_id = id(obj)
 	if isinstance(obj, (dict, list)) and obj_id in _seen:
 		raise RecursionError("Circular reference detected in _convert_bytes_recursive")
-	
+
 	if isinstance(obj, bytes):
 		return bytes_to_base64url(obj)
-	
+
 	if isinstance(obj, dict):
 		_seen.add(obj_id)
 		try:
 			return {k: _convert_bytes_recursive(v, _depth + 1, _seen, _node_count) for k, v in obj.items()}
 		finally:
 			_seen.discard(obj_id)
-	
+
 	if isinstance(obj, list):
 		_seen.add(obj_id)
 		try:
 			return [_convert_bytes_recursive(item, _depth + 1, _seen, _node_count) for item in obj]
 		finally:
 			_seen.discard(obj_id)
-	
+
 	# Handle enums (use isinstance to avoid false positives)
 	if isinstance(obj, enum.Enum):
 		return obj.value
-	
+
 	# Handle known WebAuthn/Pydantic models (whitelist approach)
 	# Only serialize objects that have both __dict__ and a known serialization pattern
 	if hasattr(obj, "__dict__") and not isinstance(obj, type):
@@ -711,28 +712,8 @@ def _convert_bytes_recursive(
 			return {k: _convert_bytes_recursive(v, _depth + 1, _seen, _node_count) for k, v in obj.__dict__.items()}
 		# Unknown object type - log warning and skip
 		_log.debug("Skipping unsupported serialization object")
-	
+
 	return obj
-
-
-def parse_transports(transports_json: str | None) -> list[str]:
-	"""Parse transports JSON string from DB to list."""
-	if not transports_json:
-		return []
-	try:
-		value = json.loads(transports_json)
-	except (json.JSONDecodeError, TypeError):
-		return []
-	if not isinstance(value, list):
-		return []
-	if len(value) > _MAX_TRANSPORTS:
-		return []
-	parsed: list[str] = []
-	for item in value:
-		if not isinstance(item, str) or not item or len(item) > _MAX_TRANSPORT_ENTRY_LEN:
-			return []
-		parsed.append(item)
-	return parsed
 
 
 def serialize_transports(transports: list[str] | None) -> str | None:
@@ -745,28 +726,3 @@ def serialize_transports(transports: list[str] | None) -> str | None:
 		if not isinstance(item, str) or not item or len(item) > _MAX_TRANSPORT_ENTRY_LEN:
 			raise ValueError("Invalid transport value")
 	return json.dumps(transports)
-
-
-def _clear_challenge_cache(conn: sqlite3.Connection) -> None:
-	"""Clear all challenges from database. FOR TESTING ONLY.
-	
-	Args:
-		conn: Database connection
-		
-	Raises:
-		RuntimeError: If not in test mode
-	"""
-	if not (
-		os.environ.get("TESTING")
-		and (
-			os.environ.get("WIREBUDDY_ENV", "").strip().lower() == "test"
-			or os.environ.get("PYTEST_CURRENT_TEST")
-		)
-	):
-		raise RuntimeError("Refusing to clear challenge cache outside test mode")
-	
-	from ..db.sqlite_runtime import transaction
-	with transaction(conn):
-		conn.execute("DELETE FROM passkey_challenges")
-	
-	_log.warning("Challenge cache cleared (test mode)")

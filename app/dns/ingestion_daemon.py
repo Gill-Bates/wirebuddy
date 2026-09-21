@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import queue
 import time
@@ -37,22 +38,31 @@ async def run_dns_ingestion(
 	tsdb_dir: Path | None = None,
 ) -> None:
 	"""Start DNS ingestion pipeline (runs until cancelled).
-	
+
 	Architecture:
 	- Uses queue.Queue (not asyncio.Queue) because both tailer and writer
 	  run blocking I/O in thread pool via asyncio.to_thread()
 	- This is a Thread→Thread bridge pattern, not async→async
-	
+
 	Shutdown semantics:
 	- On cancellation, tailer is stopped first (no new data)
 	- Writer drains remaining queue (checks stop_event + q.empty())
-	- Timeout ensures clean exit if writer hangs
-	
+	- SHUTDOWN_TIMEOUT bounds how long this coroutine *waits* for the writer.
+	  It does NOT forcibly stop the writer's in-flight blocking work: the
+	  writer awaits its DB/file I/O via asyncio.to_thread(), and a thread
+	  call cannot be pre-empted once started. On timeout, the writer task is
+	  cancelled and awaited again with the same bound; if the underlying
+	  thread call is genuinely stuck (e.g. fsync on a hung mount) it may
+	  still be running, and touching files/offsets, after this function
+	  returns. The writer itself skips its own final flush when cancelled
+	  (see DnsTsdbWriter.run()) so a timed-out shutdown does not attempt an
+	  additional unbounded write on top of this.
+
 	Backpressure:
 	- Queue is bounded (DNS_QUEUE_SIZE)
 	- Tailer blocks on q.put() when queue is full (runs in thread, safe to block)
 	- This preserves data integrity over throughput
-	
+
 	Args:
 		log_path: Unbound queries.log path
 		offset_path: Persistent offset file
@@ -65,7 +75,7 @@ async def run_dns_ingestion(
 	q: queue.Queue[TailItem] = queue.Queue(maxsize=DNS_QUEUE_SIZE)
 	offset_tracker = OffsetTracker(offset_path)
 	stop_event = asyncio.Event()
-	
+
 	tailer = UnboundLogTailer(log_path, offset_tracker, stop_event)
 	writer = DnsTsdbWriter(
 		dns_dir,
@@ -79,13 +89,13 @@ async def run_dns_ingestion(
 
 	tailer_task = asyncio.create_task(tailer.start(q), name="dns-ingest-tailer")
 	writer_task = asyncio.create_task(writer.run(q), name="dns-ingest-writer")
-	
+
 	# Monitor queue pressure periodically
 	monitor_task = asyncio.create_task(
 		_monitor_queue_pressure(q, stop_event),
 		name="dns-ingest-monitor"
 	)
-	
+
 	try:
 		# FIRST_COMPLETED (not FIRST_EXCEPTION): both workers are designed to run
 		# forever until stop_event is set, so either finishing at all — even a
@@ -103,7 +113,7 @@ async def run_dns_ingestion(
 			pending_task.cancel()
 
 		if finished.cancelled():
-			raise asyncio.CancelledError()
+			raise asyncio.CancelledError
 
 		if exc := finished.exception():
 			_log.error("DNS ingestion task failed: %s", finished.get_name())
@@ -113,40 +123,41 @@ async def run_dns_ingestion(
 
 	except asyncio.CancelledError:
 		_log.info("DNS ingestion shutdown requested")
-		
+
 		# Signal graceful stop
 		stop_event.set()
-		
+
 		# Stop tailer first (no new data)
 		if not tailer_task.done():
 			tailer_task.cancel()
-			try:
+			with contextlib.suppress(asyncio.CancelledError):
 				await tailer_task
-			except asyncio.CancelledError:
-				pass
-		
+
 		# Let writer drain remaining queue with timeout
 		if not writer_task.done():
 			try:
 				await asyncio.wait_for(writer_task, timeout=SHUTDOWN_TIMEOUT)
 				_log.info("DNS writer drained successfully")
-			except asyncio.TimeoutError:
+			except TimeoutError:
 				_log.warning("DNS writer drain timeout, forcing cancellation (may lose last batch)")
 				writer_task.cancel()
-				try:
-					await writer_task
-				except asyncio.CancelledError:
-					pass
-		
+				# NOTE: writer.run() awaits blocking work via asyncio.to_thread(),
+				# which cannot be pre-empted mid-call — cancellation only takes
+				# effect once the in-flight thread call returns on its own.
+				# This second bounded wait keeps a genuinely stuck thread (e.g.
+				# fsync on a hung mount) from blocking shutdown indefinitely,
+				# but it does not forcibly terminate that thread; it may still
+				# be running (and touching files/offsets) after this returns.
+				with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+					await asyncio.wait_for(writer_task, timeout=SHUTDOWN_TIMEOUT)
+
 		# Clean up monitor
 		monitor_task.cancel()
-		try:
+		with contextlib.suppress(asyncio.CancelledError):
 			await monitor_task
-		except asyncio.CancelledError:
-			pass
-		
+
 		raise
-	
+
 	finally:
 		# Ensure all tasks are cleaned up
 		for task in (tailer_task, writer_task, monitor_task):
@@ -160,7 +171,7 @@ async def _monitor_queue_pressure(q: queue.Queue[TailItem], stop_event: asyncio.
 	threshold = int(DNS_QUEUE_SIZE * QUEUE_PRESSURE_THRESHOLD)
 	last_warning = 0.0
 	warning_interval = 30.0  # seconds between warnings
-	
+
 	while not stop_event.is_set():
 		try:
 			size = q.qsize()

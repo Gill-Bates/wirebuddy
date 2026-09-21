@@ -1,3 +1,22 @@
+## [1.6.1] - 2026-09-21
+
+- ``New`` A single `WIREBUDDY_PUBLIC_ORIGIN` setting now configures CSRF origins, passkeys, the Host-header allowlist and secure cookies/HSTS. `WIREBUDDY_TRUSTED_PROXIES` replaces `TRUSTED_PROXY_CIDRS`, `WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS`, `FORWARDED_ALLOW_IPS` and `WIREBUDDY_TRUST_PROXY_HEADERS`; update your configuration when upgrading, as the old variables are now silently ignored.
+- ``New`` `WIREBUDDY_SKIP_APPLICATION_LOCK` allows running on filesystems without `flock` support.
+- ``New`` WireBuddy is now released under the MIT License (previously AGPL-3.0).
+- ``Fix`` Improved reliability of multi-node WireGuard operation: config changes across interfaces roll back together on failure, nodes always re-sync fully after a restart, and enrollment credentials survive a failed shutdown.
+- ``Fix`` Improved DNS robustness: query logging no longer drops entries under load, client-specific block rules are now counted correctly, and the resolver's own DNS setup is applied and restored more reliably.
+- ``Fix`` Per-interface "show on dashboard" visibility is honored again; it previously crashed the network statistics API.
+- ``Fix`` Shutdown no longer lets a slow WireGuard stop phase stall the DNS service stop and metrics save that follow it.
+- ``Fix`` Let's Encrypt HTTP-01 challenge files are reliably cleaned up, and deleting a certificate can no longer collide with a running issuance or renewal.
+- ``Fix`` A malformed `Origin`/`Referer` header now results in a 403 instead of a server error, and opening the login page in several tabs no longer invalidates the others' CSRF token.
+- ``Fix`` Peers can no longer end up assigned to both a single node and to all nodes at once, including when created.
+- ``Fix`` Speed tests against a slow-resolving host no longer strand background DNS-lookup threads.
+- ``Security`` Startup now fails if required system binaries (`ip`, `wg`, `wg-quick`, `sysctl`, `iptables`, `ip6tables`) are only found via `PATH` instead of a trusted, fixed location, closing a path where a compromised `PATH` could substitute a malicious binary run as root.
+- ``Security`` The public status page and node mTLS fingerprint header only trust forwarded headers from configured proxies, and CSRF origin validation is stricter (`http`/`https` only, no bearer+cookie bypass).
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.6.0] - 2026-08-28
 
 - ``New`` Built-in HTTPS for the GUI with automatic self-signed certificates and Let's Encrypt support, including HTTP-01 validation and HTTP-to-HTTPS redirects.
@@ -9,9 +28,6 @@
 - ``Security`` WireGuard hook validation blocks shell injection and other privileged command pivots.
 - ``Security`` Node deletion revokes live WireGuard access before removing the node; interface isolation is retained until shutdown succeeds.
 - ``Security`` Strengthened MFA brute-force protection, passkey registration rate limiting, WebAuthn origin validation, and resource/input limits.
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.5.4] - 2026-08-26
 

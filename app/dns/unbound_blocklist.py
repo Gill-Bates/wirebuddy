@@ -19,7 +19,7 @@ import time
 import urllib.parse
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 try:
@@ -34,6 +34,7 @@ except ImportError:
 	idna = None  # type: ignore
 	_IDNAError = UnicodeError  # type: ignore[misc,assignment]
 
+from . import unbound_config
 from .custom_rules import (
 	ParsedRule,
 	apply_custom_rules,
@@ -43,7 +44,6 @@ from .custom_rules import (
 	is_domain_blocked_by_custom_rules,
 	parse_rules,
 )
-from . import unbound_config
 from .unbound_constants import (
 	BLOCKLIST_MAX_BYTES,
 	BLOCKLIST_MAX_DOMAINS,
@@ -81,7 +81,7 @@ _log = logging.getLogger(__name__)
 # Exceptions
 # ---------------------------------------------------------------------------
 
-class _CapacityExceeded(Exception):
+class _CapacityExceededError(Exception):
 	"""Domain/size/line cap hit — not worth retrying."""
 
 
@@ -133,7 +133,7 @@ def set_custom_rules_cache(rules: list[ParsedRule]) -> None:
 
 def get_custom_rules_cache() -> tuple[tuple[ParsedRule, ...], tuple[ParsedRule, ...]]:
 	"""Return (allow_rules, block_rules) for runtime query-time matching.
-	
+
 	Returns immutable tuples to prevent accidental mutation of global state.
 	"""
 	return _CUSTOM_RULES_CACHE
@@ -159,21 +159,22 @@ def _normalize_domain(raw: str) -> str | None:
 	domain = raw.strip().strip(".").lower()
 	if not domain or domain in _LOCALHOST_DOMAINS or len(domain) > 253:
 		return None
-	
+
 	# Reject bare IP addresses (they're not domain names)
 	try:
 		ipaddress.ip_address(domain)
 		return None  # It's an IP, not a domain
 	except ValueError:
 		pass  # Not an IP, continue with domain validation
-	
+
 	try:
-		if idna:
-			# Use IDNA 2008 for better modern TLD support
-			ascii_domain = idna.encode(domain, uts46=True).decode("ascii").rstrip(".")
-		else:
-			# Fallback to IDNA 2003 (built-in)
-			ascii_domain = domain.encode("idna").decode("ascii")
+		# IDNA 2008 via the idna package when available (better modern TLD
+		# support), otherwise the stdlib's IDNA 2003 codec.
+		ascii_domain = (
+			idna.encode(domain, uts46=True).decode("ascii").rstrip(".")
+			if idna
+			else domain.encode("idna").decode("ascii")
+		)
 	except (UnicodeError, _IDNAError):
 		return None
 	except Exception:
@@ -194,26 +195,26 @@ def _normalize_domain(raw: str) -> str | None:
 
 def _extract_domains_from_hosts_line(line: str) -> list[str]:
 	"""Extract all normalized domains from a hosts-format or AdGuard-format line.
-	
+
 	Supported formats:
 	  - Hosts: 0.0.0.0 example.com www.example.com tracking.example.com
 	  - Simple domain list: example.com
 	  - AdGuard block rules: ||example.com^
-	
+
 	AdGuard whitelist rules (@@||domain^) are ignored since we only collect
 	blocked domains. Wildcard rules (||*.domain^) are simplified to the base domain.
-	
+
 	Returns:
 		List of normalized domain strings (may be empty).
 	"""
 	line = line.strip()
 	# AdGuard comment lines start with !
-	if not line or line.startswith("#") or line.startswith("!"):
+	if not line or line.startswith(("#", "!")):
 		return []
 	# Skip AdGuard whitelist/exception rules
 	if line.startswith("@@"):
 		return []
-	
+
 	# Handle AdGuard block rule format: ||domain.com^ or ||domain.com^$options
 	if line.startswith("||"):
 		# Extract domain from AdGuard rule: ||domain.com^ or ||domain.com^$...
@@ -230,7 +231,7 @@ def _extract_domains_from_hosts_line(line: str) -> list[str]:
 			return []
 		norm = _normalize_domain(rule)
 		return [norm] if norm else []
-	
+
 	# Strip inline # comments (common in hosts files)
 	if "#" in line:
 		line = line.split("#", 1)[0].strip()
@@ -263,7 +264,7 @@ def _extract_domains_from_hosts_line(line: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 async def _download_hosts_domains(
-	client: "httpx.AsyncClient",
+	client: httpx.AsyncClient,
 	url: str,
 	existing_domains: AbstractSet[str],
 ) -> _DownloadResult:
@@ -325,7 +326,7 @@ async def _download_hosts_domains(
 							capacity_reason=f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})",
 						)
 					parsed_domains.add(domain)
-		except _CapacityExceeded as exc:
+		except _CapacityExceededError as exc:
 			return _DownloadResult(
 				line_count=line_count,
 				domains=parsed_domains,
@@ -338,7 +339,7 @@ async def _download_hosts_domains(
 	return _DownloadResult(line_count=line_count, domains=parsed_domains)
 
 
-async def _iter_response_lines(resp: "httpx.Response"):
+async def _iter_response_lines(resp: httpx.Response):
 	"""Yield decoded lines with a per-line cap and an overall streaming deadline."""
 	deadline = time.monotonic() + _BLOCKLIST_DOWNLOAD_DEADLINE
 	buffer = bytearray()
@@ -352,7 +353,7 @@ async def _iter_response_lines(resp: "httpx.Response"):
 			newline_index = buffer.find(b"\n")
 			if newline_index < 0:
 				if len(buffer) > _BLOCKLIST_MAX_LINE_BYTES:
-					raise _CapacityExceeded(
+					raise _CapacityExceededError(
 						f"Blocklist line too long ({len(buffer)} bytes > {_BLOCKLIST_MAX_LINE_BYTES})"
 					)
 				break
@@ -361,7 +362,7 @@ async def _iter_response_lines(resp: "httpx.Response"):
 			if raw_line.endswith(b"\r"):
 				raw_line = raw_line[:-1]
 			if len(raw_line) > _BLOCKLIST_MAX_LINE_BYTES:
-				raise _CapacityExceeded(
+				raise _CapacityExceededError(
 					f"Blocklist line too long ({len(raw_line)} bytes > {_BLOCKLIST_MAX_LINE_BYTES})"
 				)
 			yield raw_line.decode("utf-8", errors="replace")
@@ -370,7 +371,7 @@ async def _iter_response_lines(resp: "httpx.Response"):
 		raise TimeoutError(f"Blocklist download exceeded {_BLOCKLIST_DOWNLOAD_DEADLINE:.0f}s deadline")
 	if buffer:
 		if len(buffer) > _BLOCKLIST_MAX_LINE_BYTES:
-			raise _CapacityExceeded(
+			raise _CapacityExceededError(
 				f"Blocklist line too long ({len(buffer)} bytes > {_BLOCKLIST_MAX_LINE_BYTES})"
 			)
 		if buffer.endswith(b"\r"):
@@ -380,7 +381,7 @@ async def _iter_response_lines(resp: "httpx.Response"):
 
 def _is_ip_unsafe(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 	"""Check if an IP address is unsafe (private, loopback, etc.).
-	
+
 	Handles IPv4-mapped IPv6 addresses (e.g., ::ffff:127.0.0.1) which
 	Python < 3.11 does not correctly identify as loopback/private.
 	"""
@@ -400,7 +401,7 @@ def _is_ip_unsafe(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
 def _is_safe_url(url: str) -> bool:
 	"""Validate URL and reject SSRF targets (private IPs, localhost, etc.).
-	
+
 	Note: This check is subject to DNS rebinding (TOCTOU) since httpx resolves
 	the hostname again. Mitigated by only allowing URLs from BLOCKLIST_REGISTRY.
 	"""
@@ -410,11 +411,11 @@ def _is_safe_url(url: str) -> bool:
 	# Require HTTPS to prevent MITM attacks on blocklist content
 	if parsed.scheme != "https" or not parsed.netloc:
 		return False
-	
+
 	hostname = parsed.hostname
 	if not hostname:
 		return False
-	
+
 	# Check if hostname is an IP address
 	try:
 		addr = ipaddress.ip_address(hostname)
@@ -429,7 +430,7 @@ def _is_safe_url(url: str) -> bool:
 					return False
 		except socket.gaierror:
 			return False
-	
+
 	return True
 
 
@@ -443,14 +444,9 @@ async def _is_safe_url_async(url: str) -> bool:
 	"""Async wrapper for _is_safe_url to avoid blocking the event loop."""
 	try:
 		return await asyncio.wait_for(asyncio.to_thread(_is_safe_url, url), timeout=5.0)
-	except asyncio.TimeoutError:
+	except TimeoutError:
 		_log.warning("DNS_BLOCKLIST URL safety check timed out: %s", url)
 		return False
-
-
-def _url_to_blocklist_id(url: str) -> str | None:
-	"""Map a blocklist URL to its registry ID."""
-	return _BLOCKLIST_URL_TO_ID.get(url)
 
 
 def _parse_custom_rules(custom_rules_text: str) -> list[ParsedRule]:
@@ -465,11 +461,11 @@ def _parse_custom_rules(custom_rules_text: str) -> list[ParsedRule]:
 
 
 async def _open_safe_stream(
-	client: "httpx.AsyncClient",
+	client: httpx.AsyncClient,
 	url: str,
 	*,
 	max_redirects: int = _MAX_REDIRECTS,
-) -> "httpx.Response":
+) -> httpx.Response:
 	"""Open a streaming GET and validate every redirect hop against SSRF rules."""
 	current_url = url
 
@@ -508,7 +504,7 @@ def _write_blocklist_file(
 
 	with atomic_write(blocklist_path) as f:
 		f.write(f"# Auto-generated blocklist – {len(domain_tags)} domains\n")
-		f.write(f"# Updated: {datetime.now(timezone.utc).isoformat()}\n")
+		f.write(f"# Updated: {datetime.now(UTC).isoformat()}\n")
 		f.write(f"# Active tags: {' '.join(sorted(active_tags))}\n")
 		if added or removed:
 			f.write(f"# Custom rules: +{len(added)} blocked, -{len(removed)} allowed\n")
@@ -555,7 +551,7 @@ async def update_blocklists(
 		urls = DEFAULT_BLOCKLISTS
 
 	parsed_custom_rules = _parse_custom_rules(custom_rules_text)
-	
+
 	# Handle empty URLs: custom-only mode without remote sources.
 	if not urls:
 		blocklist_path = get_blocklist_file()
@@ -585,8 +581,18 @@ async def update_blocklists(
 			unbound_config.write_custom_client_rules(parsed_custom_rules)
 		except Exception:
 			_log.exception("DNS_CUSTOM_CLIENT_RULES failed to write override file")
-		else:
-			set_custom_rules_cache(parsed_custom_rules)
+			_invalidate_blocked_domains_cache()
+			# Client-scoped overrides did not apply even though the global
+			# blocklist file did; report the update as incomplete rather than
+			# silently succeeding with stale client-specific rules.
+			return (
+				len(domain_tags),
+				(
+					f"Blocklist updated ({len(domain_tags)} custom domains) but client-specific "
+					"rule overrides failed to apply; see server logs"
+				),
+			)
+		set_custom_rules_cache(parsed_custom_rules)
 
 		_invalidate_blocked_domains_cache()
 
@@ -596,14 +602,14 @@ async def update_blocklists(
 
 		_log.info("DNS_BLOCKLIST custom-only mode wrote %d domains", len(domain_tags))
 		return len(domain_tags), f"Blocklist updated: {len(domain_tags)} custom domains"
-	
+
 	# Track domains and their source tags: domain -> set of blocklist IDs
 	domain_tags: dict[str, set[str]] = {}
-	
+
 	# Only registry-backed sources are supported; reject unknown URLs before any DNS lookup.
 	known_sources: list[tuple[str, str]] = []
 	for url in urls:
-		blocklist_id = _url_to_blocklist_id(url)
+		blocklist_id = _BLOCKLIST_URL_TO_ID.get(url)
 		if not blocklist_id:
 			_log.warning("DNS_BLOCKLIST unknown URL (not in registry): %s", url)
 			continue
@@ -614,7 +620,7 @@ async def update_blocklists(
 	# Validate scheme/host safety only for supported registry URLs.
 	safe_results = await asyncio.gather(*(_is_safe_url_async(url) for url, _ in known_sources))
 	safe_sources: list[tuple[str, str]] = []
-	for (url, blocklist_id), is_safe in zip(known_sources, safe_results):
+	for (url, blocklist_id), is_safe in zip(known_sources, safe_results, strict=False):
 		if not is_safe:
 			_log.warning("DNS_BLOCKLIST rejected unsafe URL (SSRF risk): %s", url)
 			continue
@@ -633,7 +639,7 @@ async def update_blocklists(
 		for idx, (url, blocklist_id) in enumerate(safe_sources):
 			# Add jitter between downloads to avoid hammering servers
 			if idx > 0:
-				jitter = random.uniform(0.5, 2.0)
+				jitter = random.uniform(0.5, 2.0)  # noqa: S311  (timing jitter, not security-relevant)
 				_log.debug("DNS_BLOCKLIST jitter delay %.1fs before %s", jitter, blocklist_id)
 				await asyncio.sleep(jitter)
 			# Retry up to 3 times with exponential backoff
@@ -647,7 +653,7 @@ async def update_blocklists(
 					for domain in parsed:
 						if domain not in domain_tags:
 							if len(domain_tags) >= BLOCKLIST_MAX_DOMAINS:
-								raise _CapacityExceeded(f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})")
+								raise _CapacityExceededError(f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})")
 							domain_tags[domain] = set()
 							added += 1
 						domain_tags[domain].add(blocklist_id)
@@ -660,7 +666,7 @@ async def update_blocklists(
 						)
 					_log.info("DNS_BLOCKLIST loaded %s [%s] (%d lines, +%d domains)", url, blocklist_id, line_count, added)
 					break  # Success, move to next URL
-				except _CapacityExceeded as e:
+				except _CapacityExceededError as e:
 					_log.warning("DNS_BLOCKLIST capacity limit reached processing %s: %s", url, e)
 					loaded_any = True  # partial data was still collected
 					break  # no point retrying
@@ -699,8 +705,7 @@ async def update_blocklists(
 		# Apply rules: exact blocks are added, allows remove domains
 		all_domains = set(domain_tags)
 		custom_added, custom_removed = apply_custom_rules(all_domains, parsed_custom_rules)
-		# NOTE: apply_custom_rules mutates all_domains in-place (adds block domains, removes allow domains).
-		# Filter out domains that were added by a block rule but then removed by an allow rule in the same operation.
+	# apply_custom_rules mutates all_domains; remove domains retracted by allow rules.
 		custom_added = {domain for domain in custom_added if domain in all_domains}
 
 		# Add new block domains to the tag map (tagged as "custom")
@@ -708,10 +713,10 @@ async def update_blocklists(
 			for domain in custom_added:
 				if domain not in domain_tags:
 					if len(domain_tags) >= BLOCKLIST_MAX_DOMAINS:
-						raise _CapacityExceeded(f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})")
+						raise _CapacityExceededError(f"Domain cap exceeded ({BLOCKLIST_MAX_DOMAINS})")
 					domain_tags[domain] = set()
 				domain_tags[domain].add(CUSTOM_RULES_TAG)
-		except _CapacityExceeded as exc:
+		except _CapacityExceededError as exc:
 			_log.warning("DNS_CUSTOM_RULES capacity limit: %s", exc)
 
 		# Remove allowed domains from the tag map
@@ -737,8 +742,19 @@ async def update_blocklists(
 		unbound_config.write_custom_client_rules(parsed_custom_rules)
 	except Exception:
 		_log.exception("DNS_CUSTOM_CLIENT_RULES failed to write override file")
-	else:
-		set_custom_rules_cache(parsed_custom_rules)
+		_invalidate_blocked_domains_cache()
+		_log.info("DNS_BLOCKLIST wrote %d tagged domains to %s (client overrides failed)", len(domain_tags), blocklist_path)
+		# Global blocklist file did apply; client-scoped overrides did not.
+		# Report as incomplete instead of silently succeeding with stale
+		# client-specific rules.
+		return (
+			len(domain_tags),
+			(
+				f"Blocklist updated ({len(domain_tags)} domains) but client-specific "
+				"rule overrides failed to apply; see server logs"
+			),
+		)
+	set_custom_rules_cache(parsed_custom_rules)
 
 	_invalidate_blocked_domains_cache()
 	_log.info("DNS_BLOCKLIST wrote %d tagged domains to %s", len(domain_tags), blocklist_path)
@@ -778,7 +794,7 @@ def get_blocklist_source_counts() -> dict[str, int]:
 	Each tag corresponds to a blocklist source ID from ``BLOCKLIST_REGISTRY``.
 	"""
 	blocklist_path = get_blocklist_file()
-	counts: dict[str, int] = {bid: 0 for bid in BLOCKLIST_REGISTRY}
+	counts: dict[str, int] = dict.fromkeys(BLOCKLIST_REGISTRY, 0)
 	if not blocklist_path.exists():
 		return counts
 
@@ -800,9 +816,10 @@ def get_blocklist_source_counts() -> dict[str, int]:
 	return counts
 
 
-def _load_blocked_domains() -> frozenset[str]:
-	"""Load the set of blocked domains for fast lookup.
+def get_blocked_domains() -> frozenset[str]:
+	"""Return the set of currently blocked domains (normalized, no trailing dots).
 
+	Cached, so safe to call frequently; the cache follows blocklist.conf's mtime.
 	A transient read/stat failure must not fail open: it keeps serving the
 	last-known-good cached set (if one exists) instead of an empty set, which
 	would silently let every domain through. Only a genuinely empty/never-
@@ -857,18 +874,6 @@ def _load_blocked_domains() -> frozenset[str]:
 	return cached
 
 
-def get_blocked_domains() -> frozenset[str]:
-	"""Public API: Get the set of currently blocked domains.
-	
-	Internally cached - safe to call frequently. Cache invalidates
-	when blocklist.conf file changes (based on mtime).
-	
-	Returns:
-		Set of blocked domain names (normalized, without trailing dots)
-	"""
-	return _load_blocked_domains()
-
-
 def _is_normalized_domain_blocked(norm: str, blocked_domains: AbstractSet[str]) -> bool:
 	"""Check exact and parent-domain matches for an already-normalized domain."""
 	if norm in blocked_domains:
@@ -884,19 +889,19 @@ def _is_normalized_domain_blocked(norm: str, blocked_domains: AbstractSet[str]) 
 
 def is_domain_blocked(domain: str, *, client_ip: str | None = None) -> bool:
 	"""Check whether *domain* (or any parent) is on the active blocklist.
-	
+
 	This function also respects runtime custom rules:
 	  - If domain matches a custom ALLOW rule → returns False (whitelist wins)
 	  - If domain matches a custom wildcard/regex BLOCK rule → returns True
 	  - Otherwise checks the static blocklist file
-	
+
 	Args:
 		domain: Domain name to check (e.g., "example.com" or "sub.example.com")
 		client_ip: Optional client IP used for client-scoped custom rules.
-		
+
 	Returns:
 		True if the domain or any parent domain is blocked, False otherwise.
-		
+
 	Examples:
 		>>> is_domain_blocked("ads.example.com")  # if "example.com" is blocked
 		True
@@ -906,10 +911,10 @@ def is_domain_blocked(domain: str, *, client_ip: str | None = None) -> bool:
 	norm = _normalize_domain(domain)
 	if not norm:
 		return False
-	
+
 	# Check runtime custom rules first (allow rules take priority)
 	allow_rules, block_rules = get_custom_rules_cache()
-	
+
 	# Whitelist wins: if any allow rule matches, domain is NOT blocked
 	if is_domain_allowed_by_custom_rules(norm, allow_rules, client_ip=client_ip):
 		return False
@@ -917,31 +922,31 @@ def is_domain_blocked(domain: str, *, client_ip: str | None = None) -> bool:
 	# Check custom wildcard/regex block rules
 	if is_domain_blocked_by_custom_rules(norm, block_rules, client_ip=client_ip):
 		return True
-	
+
 	# Fall back to static blocklist file
-	return _is_normalized_domain_blocked(norm, _load_blocked_domains())
+	return _is_normalized_domain_blocked(norm, get_blocked_domains())
 
 
 def check_and_reset_stale_blocklist() -> bool:
 	"""Check if blocklist.conf contains unknown tags and reset if needed.
-	
+
 	This handles the case where the blocklist registry changes between versions
 	(e.g., 'easylist' was removed and replaced with 'hagezi'). Unbound will
 	fail to start if blocklist.conf references tags not defined in unbound.conf.
-	
+
 	Returns:
 		True if blocklist was reset and needs re-download, False if OK.
 	"""
 	blocklist_path = get_blocklist_file()
 	if not blocklist_path.exists():
 		return False
-	
+
 	known_tags = set(BLOCKLIST_REGISTRY.keys())
 	known_tags.add(CUSTOM_RULES_TAG)  # Custom rules also add this tag
-	
+
 	unknown_tags: set[str] = set()
 	tag_re = re.compile(r'^local-zone-tag:\s+"[^"]+"\s+"([^"]+)"')
-	
+
 	try:
 		with blocklist_path.open("r", encoding="utf-8", errors="replace") as f:
 			for line in f:
@@ -960,16 +965,16 @@ def check_and_reset_stale_blocklist() -> bool:
 	except Exception:
 		_log.debug("Could not check blocklist tags", exc_info=True)
 		return False
-	
+
 	if not unknown_tags:
 		return False
-	
+
 	_log.warning(
 		"BLOCKLIST_MIGRATION found unknown tags %s in %s - resetting for re-download",
 		unknown_tags,
 		blocklist_path,
 	)
-	
+
 	# Reset the blocklist file to empty
 	try:
 		with atomic_write(blocklist_path) as f:
@@ -983,12 +988,12 @@ def check_and_reset_stale_blocklist() -> bool:
 
 
 __all__ = [
-	"update_blocklists",
+	"check_and_reset_stale_blocklist",
+	"get_blocked_domains",
 	"get_blocklist_count",
 	"get_blocklist_source_counts",
-	"get_blocked_domains",
+	"get_custom_rules_cache",
 	"is_domain_blocked",
 	"set_custom_rules_cache",
-	"get_custom_rules_cache",
-	"check_and_reset_stale_blocklist",
+	"update_blocklists",
 ]

@@ -12,11 +12,13 @@ import ipaddress
 import json
 import logging
 import re
-import sqlite3
 import socket
+import sqlite3
+import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Never, TypedDict
@@ -47,17 +49,17 @@ _jinja_templates.env.globals["VERSION"] = VERSION
 _jinja_templates.env.globals["BUILD_INFO"] = BUILD_INFO
 # now() is evaluated at render time (not import time), so each template
 # render reflects the current timestamp.
-_jinja_templates.env.globals["now"] = lambda: datetime.now(timezone.utc)
+_jinja_templates.env.globals["now"] = lambda: datetime.now(UTC)
 
 
 class _ContextAwareTemplates:
 	"""Wrapper around Jinja2Templates that automatically adds request.app.state to context."""
-	
+
 	def __init__(self, jinja: Jinja2Templates):
 		self._jinja = jinja
 		self.env = jinja.env  # Expose env for filters/globals
-	
-	def TemplateResponse(
+
+	def TemplateResponse(  # noqa: N802  (mirrors Starlette Jinja2Templates.TemplateResponse; callers use that name)
 		self,
 		request: Request,
 		name: str,
@@ -96,21 +98,21 @@ _jinja_templates.env.filters["truncate_ip"] = _truncate_ip
 _jinja_templates.env.filters["format_bandwidth_mbit"] = format_bandwidth_mbit
 
 __all__ = [
-    "router",
-    "templates",
-    "RedirectTo",
-    "LastSeenLabel",
-    "redirect_to_handler",
-    "require_user_or_redirect",
-    "require_admin_or_redirect",
-    "get_csrf_token",
-    "lookup_ip_cached",
-    "CONNECTED_THRESHOLD_S",
-    "format_last_seen_label",
-    "extract_geo_fields",
-    "resolve_node_geo_ip",
-    "parse_last_seen_epoch",
-    "parse_node_metadata",
+	"CONNECTED_THRESHOLD_S",
+	"LastSeenLabel",
+	"RedirectTo",
+	"extract_geo_fields",
+	"format_last_seen_label",
+	"get_csrf_token",
+	"lookup_ip_cached",
+	"parse_last_seen_epoch",
+	"parse_node_metadata",
+	"redirect_to_handler",
+	"require_admin_or_redirect",
+	"require_user_or_redirect",
+	"resolve_node_geo_ip",
+	"router",
+	"templates",
 ]
 
 
@@ -142,7 +144,7 @@ def parse_node_metadata(value: Any, *, node_id: str) -> dict[str, Any]:
     return parsed
 
 
-class RedirectTo(Exception):
+class RedirectTo(Exception):  # noqa: N818  (a control-flow signal handled by redirect_to_handler, not an error; an -Error suffix would misdescribe it)
     """Internal redirect signal used by auth dependencies."""
 
     def __init__(self, url: str):
@@ -171,7 +173,7 @@ def _geoip_lookup_cached(ip_text: str) -> dict:
 
 def lookup_ip_cached(ip_text: str) -> dict | None:
     """Public API: cached GeoIP lookup.
-    
+
     Returns:
         dict: GeoIP data (may be empty {} for IPs without geo data).
         None: On lookup failure (not cached, next call retries).
@@ -202,7 +204,7 @@ _ALLOWED_REDIRECT_PREFIXES = ("/login", "/ui/")
 
 def _raise_redirect(url: str) -> Never:
     """Raise an HTTP redirect exception for dependency-based auth guards.
-    
+
     Only allows redirects to known internal paths to prevent open redirect attacks.
     NOTE: Must only be called with hardcoded relative paths, never user-controlled input.
     The prefix check is a defence-in-depth safeguard, not the primary access guard.
@@ -263,7 +265,7 @@ class GeoFields(TypedDict):
 
 def extract_geo_fields(info: dict | None) -> GeoFields:
     """Normalize GeoIP lookup results for template display fields.
-    
+
     Country codes are strictly validated to prevent path traversal attacks
     when used in flag image paths.
     """
@@ -304,27 +306,21 @@ def _is_globally_routable(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address)
     """Return True if IP is publicly routable (not private/loopback/link-local/ULA)."""
     if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_reserved:
         return False
-    if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj in _ULA_NETWORK:
-        return False
-    return True
+    return not (isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj in _ULA_NETWORK)
 
 
-@lru_cache(maxsize=256)
-def resolve_node_geo_ip(host_or_ip: str) -> str:
-    """Resolve a node FQDN/IP to a concrete public IP for GeoIP lookups.
+# Node FQDNs can move behind Dynamic DNS, so a permanent (process-lifetime)
+# cache would keep resolving to a stale IP after the node's address changes.
+# A bounded TTL cache re-resolves periodically instead, including for the
+# empty-string ("not resolvable") outcome, which previously stuck forever.
+_NODE_GEO_IP_CACHE_TTL_S = 300.0
+_NODE_GEO_IP_CACHE_MAX_SIZE = 256
+_node_geo_ip_cache: OrderedDict[str, tuple[float, str]] = OrderedDict()
+_node_geo_ip_cache_lock = threading.Lock()
 
-    Returns the resolved IP string, or empty string if not resolvable/private
-    (empty string is cached to avoid repeated DNS timeouts on bad hosts).
 
-    WARNING: Makes a blocking DNS call on cache miss. Call via
-    ``asyncio.to_thread()`` when used from an async context.
-    """
-    clean = str(host_or_ip or "").strip()
-    if clean.startswith("[") and clean.endswith("]"):
-        clean = clean[1:-1]
-    if not clean:
-        return ""
-
+def _resolve_node_geo_ip_uncached(clean: str) -> str:
+    """Perform the actual DNS/IP resolution for resolve_node_geo_ip(), uncached."""
     try:
         ip_obj = ipaddress.ip_address(_strip_ipv6_zone(clean))
         return str(ip_obj) if _is_globally_routable(ip_obj) else ""
@@ -334,7 +330,7 @@ def resolve_node_geo_ip(host_or_ip: str) -> str:
     try:
         addrinfo = socket.getaddrinfo(clean, None, type=socket.SOCK_STREAM)
     except OSError:
-        return ""  # Cached as empty string — prevents repeated DNS timeout retries
+        return ""  # DNS failure — cached briefly, not forever (see TTL above)
 
     for _family, _socktype, _proto, _canonname, sockaddr in addrinfo:
         ip_text = _strip_ipv6_zone(str(sockaddr[0]))
@@ -348,6 +344,41 @@ def resolve_node_geo_ip(host_or_ip: str) -> str:
     return ""  # All addresses were private/unresolvable
 
 
+def resolve_node_geo_ip(host_or_ip: str) -> str:
+    """Resolve a node FQDN/IP to a concrete public IP for GeoIP lookups.
+
+    Returns the resolved IP string, or empty string if not resolvable/private.
+    Results (including empty string) are cached for
+    ``_NODE_GEO_IP_CACHE_TTL_S`` seconds, not for the process lifetime, so a
+    node's Dynamic DNS update or a transient DNS failure is not stuck forever.
+
+    WARNING: Makes a blocking DNS call on cache miss. Call via
+    ``asyncio.to_thread()`` when used from an async context.
+    """
+    clean = str(host_or_ip or "").strip()
+    if clean.startswith("[") and clean.endswith("]"):
+        clean = clean[1:-1]
+    if not clean:
+        return ""
+
+    now = time.monotonic()
+    with _node_geo_ip_cache_lock:
+        cached = _node_geo_ip_cache.get(clean)
+        if cached is not None and (now - cached[0]) < _NODE_GEO_IP_CACHE_TTL_S:
+            _node_geo_ip_cache.move_to_end(clean)
+            return cached[1]
+
+    result = _resolve_node_geo_ip_uncached(clean)
+
+    with _node_geo_ip_cache_lock:
+        _node_geo_ip_cache[clean] = (now, result)
+        _node_geo_ip_cache.move_to_end(clean)
+        while len(_node_geo_ip_cache) > _NODE_GEO_IP_CACHE_MAX_SIZE:
+            _node_geo_ip_cache.popitem(last=False)
+
+    return result
+
+
 def parse_last_seen_epoch(value: object) -> int:
     """Parse a datetime-like value into epoch seconds (UTC fallback for naive values)."""
     if value is None:
@@ -355,7 +386,7 @@ def parse_last_seen_epoch(value: object) -> int:
     if isinstance(value, (int, float)):
         return int(value)
     if isinstance(value, datetime):
-        dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
         return int(dt.timestamp())
     if isinstance(value, str):
         try:

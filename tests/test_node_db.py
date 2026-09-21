@@ -21,12 +21,12 @@ import pytest
 from app.db import sqlite_runtime as rt
 from app.db.sqlite_auth import refresh_auth_token
 from app.db.sqlite_nodes import (
+	_MAX_COMMAND_CLAIM_LIMIT,
 	STATUS_ERROR,
 	STATUS_OFFLINE,
 	STATUS_ONLINE,
 	STATUS_PENDING,
 	VALID_NODE_COMMANDS,
-	_MAX_COMMAND_CLAIM_LIMIT,
 	_serialize_command_payload,
 	claim_pending_node_commands,
 	create_node,
@@ -38,18 +38,6 @@ from app.db.sqlite_nodes import (
 from app.db.sqlite_schema import init_schema
 
 _A_COMMAND = next(iter(VALID_NODE_COMMANDS))
-
-
-@pytest.fixture()
-def conn():
-	rt._ensure_sqlite_adapters()
-	connection = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
-	connection.row_factory = sqlite3.Row
-	init_schema(connection)
-	try:
-		yield connection
-	finally:
-		connection.close()
 
 
 def _status(conn: sqlite3.Connection, node_id: str) -> str:
@@ -124,10 +112,49 @@ def test_claim_clamps_limit_and_returns_fresh_delivered_at(conn):
 	assert all(cmd["delivered_at"] is not None for cmd in claimed)
 
 
-def test_claim_non_positive_limit_returns_empty(conn):
+@pytest.mark.parametrize("bad_limit", [0, -1, -100])
+def test_claim_non_positive_limit_returns_empty(conn, bad_limit):
 	create_node(conn, "n1", "N1", "example.com", 51820, "hash")
 	enqueue_node_command(conn, "n1", _A_COMMAND)
-	assert claim_pending_node_commands(conn, "n1", limit=0) == []
+	assert claim_pending_node_commands(conn, "n1", limit=bad_limit) == []
+
+
+def test_claim_is_exclusive_across_concurrent_connections(tmp_path):
+	"""Two workers racing to claim must never be handed the same command.
+
+	`:memory:` databases are private per connection, so this needs a real file
+	on disk to exercise the BEGIN IMMEDIATE exclusion `claim_pending_node_commands`
+	relies on for its claim guarantee.
+	"""
+	db_path = tmp_path / "nodes.db"
+
+	def _open() -> sqlite3.Connection:
+		rt._ensure_sqlite_adapters()
+		connection = sqlite3.connect(str(db_path), detect_types=sqlite3.PARSE_DECLTYPES)
+		connection.row_factory = sqlite3.Row
+		connection.execute("PRAGMA journal_mode=WAL")
+		return connection
+
+	conn_a = _open()
+	init_schema(conn_a)
+	create_node(conn_a, "n1", "N1", "example.com", 51820, "hash")
+	for _ in range(10):
+		enqueue_node_command(conn_a, "n1", _A_COMMAND)
+
+	conn_b = _open()
+	try:
+		claimed_a = claim_pending_node_commands(conn_a, "n1", limit=10)
+		# conn_a's BEGIN IMMEDIATE transaction has already committed by the time
+		# claim_pending_node_commands() returns, so this must not block forever.
+		claimed_b = claim_pending_node_commands(conn_b, "n1", limit=10)
+
+		ids_a = {cmd["id"] for cmd in claimed_a}
+		ids_b = {cmd["id"] for cmd in claimed_b}
+		assert ids_a, "first claim should have found the freshly enqueued commands"
+		assert ids_a.isdisjoint(ids_b), "the same command must not be claimed twice"
+	finally:
+		conn_a.close()
+		conn_b.close()
 
 
 # ─── input validation (Findings 6 & 9) ───────────────────────────────────────

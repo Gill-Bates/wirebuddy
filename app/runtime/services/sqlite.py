@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: AGPL-3.0
+# SPDX-License-Identifier: MIT
 #
 
 """SQLite database lifecycle service.
@@ -121,7 +121,7 @@ class SQLiteService(RuntimeService):
 
     def _bootstrap_sync(self) -> dict[str, object]:
         """Synchronous database bootstrap (runs in thread)."""
-        from ...db.sqlite_runtime import connect, close_connection
+        from ...db.sqlite_runtime import close_connection, connect
         from ...db.sqlite_schema import init_schema, insert_default_settings
         from ...db.sqlite_settings import validate_secret_key
 

@@ -13,13 +13,14 @@ import enum
 import ipaddress
 import logging
 import os
-import sqlite3
 import socket
+import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
+
 import httpx
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -27,6 +28,7 @@ from fastapi.responses import HTMLResponse
 from ..db import tsdb
 from ..db.sqlite_interfaces import list_interfaces
 from ..db.sqlite_settings import get_setting
+from ..dns import ingestion as dns_ingestion
 from ..dns import unbound
 from ..utils.coerce import BOOL_TRUE_VALUES
 from ..utils.config import get_config
@@ -41,7 +43,6 @@ _log = logging.getLogger(__name__)
 
 _STATUS_ENABLE_KEY = "enable_status_page"
 _STATUS_PROBE_DOMAIN = "cloudflare.com"
-_STATUS_TRUTHY = BOOL_TRUE_VALUES
 _STATUS_OUTBOUND_IP_URLS = (
 	"https://api64.ipify.org?format=text",
 	"https://ifconfig.me/ip",
@@ -52,7 +53,7 @@ _STATUS_DNS_LEAK_CACHE_TTL = 60.0
 _STATUS_DNS_LEAK_VERIFY_WINDOW_SECONDS = 900
 _STATUS_DNS_LEAK_VERIFY_MAX_QUERIES = 5000
 _STATUS_DNS_LEAK_CACHE_MAX_SIZE = 2000
-_STATUS_TRUSTED_PROXY_CIDRS_ENV = "WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS"
+_STATUS_TRUSTED_PROXY_CIDRS_ENV = "WIREBUDDY_TRUSTED_PROXIES"
 
 _outbound_ip_cache: tuple[str | None, str, float] | None = None
 _dns_probe_cache: tuple[bool, str, float, tuple[str, ...]] | None = None
@@ -62,7 +63,7 @@ _dns_probe_cache_lock = asyncio.Lock()
 _dns_leak_cache_lock = asyncio.Lock()
 
 
-class CheckState(str, enum.Enum):
+class CheckState(enum.StrEnum):
 	OK = "ok"
 	WARN = "warn"
 	ERROR = "error"
@@ -82,7 +83,7 @@ class StatusClientContext:
 def _is_status_page_enabled(conn: sqlite3.Connection) -> bool:
 	"""Return whether the public internal status page is enabled."""
 	value = get_setting(conn, _STATUS_ENABLE_KEY, "0")
-	return str(value or "").strip().lower() in _STATUS_TRUTHY
+	return str(value or "").strip().lower() in BOOL_TRUE_VALUES
 
 
 def _parse_interface_network(raw: str | None) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
@@ -97,7 +98,14 @@ def _parse_interface_network(raw: str | None) -> ipaddress.IPv4Network | ipaddre
 
 
 def _load_status_trusted_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
-	"""Load explicitly trusted proxy CIDRs for /status header trust."""
+	"""Load explicitly trusted proxy CIDRs for /status header trust.
+
+	Resolved lazily (on first call, not at import time) so settings.env values
+	are respected regardless of module import order — settings.env is only
+	loaded once something calls get_config(), which may happen after this
+	module is imported. See auth._is_trusted_proxy_ip() for the same pattern.
+	"""
+	get_config()  # Ensure settings.env is loaded before reading the env var below.
 	value = str(os.environ.get(_STATUS_TRUSTED_PROXY_CIDRS_ENV, "")).strip()
 	if not value:
 		return ()
@@ -113,7 +121,15 @@ def _load_status_trusted_proxy_networks() -> tuple[ipaddress.IPv4Network | ipadd
 	return tuple(networks)
 
 
-_STATUS_TRUSTED_PROXY_NETWORKS = _load_status_trusted_proxy_networks()
+_status_trusted_proxy_networks_cache: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] | None = None
+
+
+def _get_status_trusted_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+	"""Return the (lazily loaded, then cached) trusted proxy CIDRs for /status."""
+	global _status_trusted_proxy_networks_cache
+	if _status_trusted_proxy_networks_cache is None:
+		_status_trusted_proxy_networks_cache = _load_status_trusted_proxy_networks()
+	return _status_trusted_proxy_networks_cache
 
 
 def _iter_peer_vpn_ips(peer_address: str | None) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
@@ -140,23 +156,6 @@ def _ip_in_networks(
 			continue
 		if ip_obj in network:
 			return True
-	return False
-
-
-def _is_wireguard_client_subnet_ip(
-	conn: sqlite3.Connection,
-	ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address,
-) -> bool:
-	"""Return True when ip belongs to any WireGuard interface subnet."""
-	for iface in list_interfaces(conn):
-		for key in ("address", "address6"):
-			network = _parse_interface_network(iface[key])
-			if network is None:
-				continue
-			if ip_obj.version != network.version:
-				continue
-			if ip_obj in network:
-				return True
 	return False
 
 
@@ -387,7 +386,7 @@ def _dns_probe_query(server_ip: str) -> tuple[bool, str]:
 			if ancount <= 0:
 				return False, f"Resolver {server_ip}:53 returned no answers"
 			return True, f"Resolved {_STATUS_PROBE_DOMAIN} via internal resolver {server_ip}:53"
-	except socket.timeout:
+	except TimeoutError:
 		return False, f"Resolver {server_ip}:53 timed out"
 	except OSError as exc:
 		return False, f"Resolver {server_ip}:53 unreachable ({exc})"
@@ -515,8 +514,8 @@ def _parse_iso_ts(value: str) -> datetime | None:
 	except ValueError:
 		return None
 	if ts.tzinfo is None:
-		return ts.replace(tzinfo=timezone.utc)
-	return ts.astimezone(timezone.utc)
+		return ts.replace(tzinfo=UTC)
+	return ts.astimezone(UTC)
 
 
 async def _dns_leak_indicator(
@@ -549,7 +548,7 @@ async def _dns_leak_indicator(
 			Path(cfg.dns_dir),
 			_STATUS_DNS_LEAK_VERIFY_MAX_QUERIES,
 		)
-	except (OSError, IOError) as exc:
+	except OSError as exc:
 		_log.warning("DNS leak runtime verification failed: %s", exc)
 		if config_ok:
 			result = (CheckState.WARN, (
@@ -569,43 +568,25 @@ async def _dns_leak_indicator(
 
 	# Perform the expensive work outside the lock so parallel requests don't block.
 
-		client_ip_text = str(client_ip)
-		now = datetime.now(timezone.utc)
-		window = _STATUS_DNS_LEAK_VERIFY_WINDOW_SECONDS
+	client_ip_text = str(client_ip)
+	now = datetime.now(UTC)
+	window = _STATUS_DNS_LEAK_VERIFY_WINDOW_SECONDS
 
-		# Scan ALL rows to find the most recent match (don't assume sort order)
-		best_age: int | None = None
-		for row in queries:
-			if str(row.get("client", "")).strip() != client_ip_text:
-				continue
-			ts = _parse_iso_ts(str(row.get("ts", "")))
-			if ts is None:
-				continue
-			age_s = max(0, int((now - ts).total_seconds()))
-			if age_s <= window and (best_age is None or age_s < best_age):
-				best_age = age_s
+	# Scan ALL rows to find the most recent match (don't assume sort order)
+	best_age: int | None = None
+	for row in queries:
+		if str(row.get("client", "")).strip() != client_ip_text:
+			continue
+		ts = _parse_iso_ts(str(row.get("ts", "")))
+		if ts is None:
+			continue
+		age_s = max(0, int((now - ts).total_seconds()))
+		if age_s <= window and (best_age is None or age_s < best_age):
+			best_age = age_s
 
-		if best_age is not None:
-			if best_age < 60:
-				age_label = "just now"
-			else:
-				age_label = f"{best_age // 60}m ago"
-			result = (CheckState.OK, f"Verified via WireBuddy DNS logs ({age_label})")
-			async with _dns_leak_cache_lock:
-				_dns_leak_cache[cache_key] = (result[0], result[1], now_mono)
-				if len(_dns_leak_cache) > _STATUS_DNS_LEAK_CACHE_MAX_SIZE:
-					cutoff = now_mono - _STATUS_DNS_LEAK_CACHE_TTL
-					stale_keys = [k for k, v in _dns_leak_cache.items() if v[2] < cutoff]
-					for k in stale_keys:
-						del _dns_leak_cache[k]
-			return result
-
-		# No recent DNS queries found from this client
-		window_min = max(1, window // 60)
-		result = (CheckState.WARN, (
-			f"No DNS query from this client seen in WireBuddy logs "
-			f"within last {window_min} minutes"
-		))
+	if best_age is not None:
+		age_label = "just now" if best_age < 60 else f"{best_age // 60}m ago"
+		result = (CheckState.OK, f"Verified via WireBuddy DNS logs ({age_label})")
 		async with _dns_leak_cache_lock:
 			_dns_leak_cache[cache_key] = (result[0], result[1], now_mono)
 			if len(_dns_leak_cache) > _STATUS_DNS_LEAK_CACHE_MAX_SIZE:
@@ -615,11 +596,26 @@ async def _dns_leak_indicator(
 					del _dns_leak_cache[k]
 		return result
 
+	# No recent DNS queries found from this client
+	window_min = max(1, window // 60)
+	result = (CheckState.WARN, (
+		f"No DNS query from this client seen in WireBuddy logs "
+		f"within last {window_min} minutes"
+	))
+	async with _dns_leak_cache_lock:
+		_dns_leak_cache[cache_key] = (result[0], result[1], now_mono)
+		if len(_dns_leak_cache) > _STATUS_DNS_LEAK_CACHE_MAX_SIZE:
+			cutoff = now_mono - _STATUS_DNS_LEAK_CACHE_TTL
+			stale_keys = [k for k, v in _dns_leak_cache.items() if v[2] < cutoff]
+			for k in stale_keys:
+				del _dns_leak_cache[k]
+	return result
+
 
 def _format_relative_time(ts: datetime, *, now: datetime | None = None) -> str:
 	"""Format a datetime as a compact relative label."""
-	now_utc = datetime.now(timezone.utc) if now is None else now.astimezone(timezone.utc)
-	ts_utc = ts.astimezone(timezone.utc)
+	now_utc = datetime.now(UTC) if now is None else now.astimezone(UTC)
+	ts_utc = ts.astimezone(UTC)
 	diff = max(0, int((now_utc - ts_utc).total_seconds()))
 	if diff < 60:
 		return "just now"
@@ -695,7 +691,7 @@ def _latest_speedtest_check() -> dict[str, object]:
 			"title": "Last Speedtest",
 			"state": CheckState.OK,
 			"label": "OK",
-			"detail": " \u2022 ".join(detail_parts + [age_label]),
+			"detail": " \u2022 ".join([*detail_parts, age_label]),
 			"detail_parts": detail_parts,
 			"age_label": age_label,
 		}
@@ -720,17 +716,20 @@ def _is_trusted_status_proxy_hop(
 
 	Trust model (in order):
 	1. Loopback addresses (127.0.0.1, ::1) are always trusted
-	2. Explicitly configured CIDRs via WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS
+	2. Explicitly configured CIDRs via WIREBUDDY_TRUSTED_PROXIES
 	3. All other addresses are NOT trusted (security-first default)
 
-	To trust LAN proxies, configure WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS explicitly.
+	To trust LAN proxies, configure WIREBUDDY_TRUSTED_PROXIES explicitly. Unlike
+	the auth-layer default (which also trusts loopback out of the box), this
+	check's non-loopback trust starts empty until configured.
 	"""
 	if socket_ip_obj is None:
 		return False
 	if socket_ip_obj.is_loopback:
 		return True
-	if _STATUS_TRUSTED_PROXY_NETWORKS:
-		return _ip_in_networks(socket_ip_obj, _STATUS_TRUSTED_PROXY_NETWORKS)
+	trusted_networks = _get_status_trusted_proxy_networks()
+	if trusted_networks:
+		return _ip_in_networks(socket_ip_obj, trusted_networks)
 	# Security: Don't auto-trust private IPs - require explicit configuration
 	return False
 
@@ -738,7 +737,7 @@ def _is_trusted_status_proxy_hop(
 async def _resolve_status_client_context(
 	request: Request,
 	conn: sqlite3.Connection,
-	user: Optional[sqlite3.Row],
+	user: sqlite3.Row | None,
 ) -> StatusClientContext:
 	"""Resolve and authorize status page client context."""
 	client_ip_obj = parse_ip(_get_client_ip(request))
@@ -898,7 +897,7 @@ async def _run_status_health_checks(
 async def status_page(
 	request: Request,
 	conn: sqlite3.Connection = Depends(get_conn),
-	user: Optional[sqlite3.Row] = Depends(get_current_user_optional),
+	user: sqlite3.Row | None = Depends(get_current_user_optional),
 ):
 	"""Public internal status page (WireGuard clients only)."""
 	if not await asyncio.to_thread(_is_status_page_enabled, conn):

@@ -143,8 +143,9 @@ curl https://vpn.example.com/api/wireguard/speedtest/history?range_key=7d \
 
 Configure via the storage/retention API endpoint.
 
-| Retention options | 0 (unlimited), 7, 30, 90, 180, 365 days |
+| Setting | Value |
 |---|---|
+| **Retention options** | 0 (unlimited), 7, 30, 90, 180, 365 days |
 | **Default** | 365 days |
 
 ### Storage Management

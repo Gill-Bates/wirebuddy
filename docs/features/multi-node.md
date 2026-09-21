@@ -188,7 +188,7 @@ sudo sysctl --system
 
 #### Docker Compose
 
-Create a `docker-compose.yml` on the node machine:
+Use the repository's node Compose file, `docker/docker-compose.node.yml`:
 
 ```yaml
 services:
@@ -204,8 +204,8 @@ services:
       - NET_ADMIN   # node mode runs no resolver, so NET_ADMIN alone is enough
     environment:
       SERVER_MODE: node
-      WIREBUDDY_ENROLLMENT_TOKEN: "${WIREBUDDY_ENROLLMENT_TOKEN}"
-      WIREBUDDY_ENROLLMENT_VERIFY_KEY: "${WIREBUDDY_ENROLLMENT_VERIFY_KEY}"
+      WIREBUDDY_ENROLLMENT_TOKEN: "${WIREBUDDY_ENROLLMENT_TOKEN:?Set WIREBUDDY_ENROLLMENT_TOKEN in .env}"
+      WIREBUDDY_ENROLLMENT_VERIFY_KEY: "${WIREBUDDY_ENROLLMENT_VERIFY_KEY:?Set WIREBUDDY_ENROLLMENT_VERIFY_KEY in .env}"
       WIREBUDDY_DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       TZ: "${TZ:-Etc/UTC}"
@@ -220,11 +220,14 @@ services:
       - /dev/net/tun:/dev/net/tun
     volumes:
       - ./data:/app/data
-    # Node mode runs the enrollment daemon, not uvicorn. There is no HTTP server
-    # for the image's built-in HEALTHCHECK to reach, so it would report unhealthy
-    # forever unless it is disabled here.
+    # Node mode runs the enrollment daemon, not uvicorn, so the healthcheck
+    # probes for the daemon process instead of an HTTP endpoint.
     healthcheck:
-      disable: true
+      test: ["CMD", "pgrep", "-f", "app.node.daemon"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 ```
 
 **Environment Variables:**
@@ -244,7 +247,7 @@ services:
 Start the node:
 
 ```bash
-docker-compose -f docker-compose.node.yml up -d
+docker compose --env-file .env -f docker/docker-compose.node.yml up -d
 ```
 
 ### 4. Verify Enrollment
@@ -593,8 +596,12 @@ POST   /api/nodes/{node_id}/token
 
 ```http
 POST /api/nodes/enroll
-POST /api/nodes/{node_id}/heartbeat
-GET  /api/nodes/{node_id}/config
+POST /api/nodes/heartbeat
+GET  /api/nodes/config
+GET  /api/nodes/events
+POST /api/nodes/commands/{command_id}/ack
+POST /api/nodes/speedtest
+POST /api/nodes/speedtest/progress
 ```
 
 See [API Reference](../api/endpoints.md) for full documentation.
@@ -649,4 +656,4 @@ Features planned for future releases:
     Edit the peer in the UI and change the **Node** dropdown. The peer's config regenerates with the new endpoint.
 
 ??? question "Can I run a node without Docker?"
-    Yes. Set `SERVER_MODE=node` and the enrollment variables in `.env`, then run `python run.py`. Requires Python 3.11+ and WireGuard installed.
+    Yes. Set `SERVER_MODE=node` and the enrollment variables in `.env`, then run `python run.py`. Requires Python 3.13+ and WireGuard installed.

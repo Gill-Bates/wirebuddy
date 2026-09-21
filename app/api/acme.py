@@ -10,18 +10,20 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
 import tempfile
 import threading
 import time
-from email.utils import parsedate_to_datetime
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path as PathLib
 
 import httpx
@@ -34,13 +36,22 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, EmailStr, Field
 
 from ..api.auth import get_current_user, require_admin
-from ..utils.rate_limit import RATE_LIMIT_HEAVY, limiter
+from ..utils.async_utils import spawn_tracked_task
 from ..utils.config import Config, get_config
+from ..utils.rate_limit import RATE_LIMIT_HEAVY, limiter
 from .response import OkResponse
 
 _log = logging.getLogger(__name__)
 
+# asyncio keeps only a weak reference to a running task, so a fire-and-forget
+# task with no strong reference anywhere can be garbage collected before it
+# finishes. For the delayed challenge cleanup below that meant the cleanup could
+# silently never run, leaving the HTTP-01 token file on disk. This set holds the
+# strong reference; see spawn_tracked_task.
+_background_tasks: set[asyncio.Task[None]] = set()
+
 router = APIRouter(tags=["acme"])
+
 
 # Let's Encrypt ACME endpoints
 ACME_DIRECTORY_PROD = "https://acme-v02.api.letsencrypt.org/directory"
@@ -63,7 +74,7 @@ _domain_lock_fds_lock = threading.Lock()
 # Domain lock file helpers (worker-safe)
 def _acquire_domain_lock(certs_dir: PathLib, domain: str) -> int | None:
 	"""Acquire exclusive lock for domain order. Returns file descriptor or None.
-	
+
 	CRITICAL: Must keep file object alive to prevent GC from closing it and
 	releasing the lock. File object is stored in _domain_lock_fds dict.
 	"""
@@ -71,19 +82,23 @@ def _acquire_domain_lock(certs_dir: PathLib, domain: str) -> int | None:
 	lock_dir.mkdir(parents=True, exist_ok=True)
 	lock_file = lock_dir / f"{domain}.lock"
 	fd_obj = None
-	
+
 	try:
-		fd_obj = open(lock_file, "w")
+		# Deliberately not a `with` block - see the docstring. The flock lives
+		# exactly as long as this handle does, so closing it at the end of this
+		# function would release the lock it was taken to hold. The handle is
+		# closed via _domain_lock_fds when the lock is released.
+		fd_obj = lock_file.open("w")
 		fcntl.flock(fd_obj.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 		fd_obj.write(str(time.time()))
 		fd_obj.flush()
-		
+
 		# Store file object to prevent GC from closing it
 		fd_num = fd_obj.fileno()
 		with _domain_lock_fds_lock:
 			_domain_lock_fds[fd_num] = (fd_obj, lock_file)
 		return fd_num
-	except (IOError, OSError):
+	except OSError:
 		if fd_obj is not None:
 			fd_obj.close()
 		return None
@@ -95,17 +110,19 @@ def _release_domain_lock(fd: int) -> None:
 		lock_entry = _domain_lock_fds.pop(fd, None)
 	if lock_entry is None:
 		return
-	fd_obj, lock_file = lock_entry
-	
-	try:
+	fd_obj, _lock_file = lock_entry
+
+	# Separate blocks: a failed unlock must not skip the close and leak the fd.
+	with contextlib.suppress(Exception):
 		fcntl.flock(fd_obj.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+	with contextlib.suppress(Exception):
 		fd_obj.close()  # type: ignore
-	except Exception:
-		pass
-	try:
-		lock_file.unlink(missing_ok=True)
-	except OSError:
-		pass
+	# Intentionally NOT unlinking lock_file: flock locking is per-inode. If the
+	# path is removed here, another worker could still hold (or be about to
+	# acquire) a lock on this now-unlinked inode while a third worker creates
+	# a fresh file at the same path and locks that one instead — two
+	# "exclusive" domain locks held concurrently. Lockfiles must outlive the
+	# processes using them; they are cheap and bounded by the ACME domain set.
 
 
 # ---------------------------------------------------------------------------
@@ -130,13 +147,6 @@ class CertificateInfo(BaseModel):
 	is_staging: bool = False
 	days_until_expiry: int | None = None
 	needs_renewal: bool = False
-
-
-class ChallengeStatus(BaseModel):
-	"""ACME challenge status for HTTP-01."""
-	token: str
-	key_authorization: str
-	status: str
 
 
 class CertificateIssueData(BaseModel):
@@ -209,7 +219,7 @@ _ACME_ORDER_TIMEOUT_SECONDS = 600.0
 
 def _clamp_retry_after(seconds: float) -> float:
 	"""Clamp a server-supplied delay into a sane range."""
-	if seconds != seconds:  # NaN
+	if math.isnan(seconds):
 		return 0.0
 	return max(0.0, min(seconds, _MAX_RETRY_AFTER_SECONDS))
 
@@ -245,14 +255,14 @@ def _jwk_thumbprint(jwk: dict) -> str:
 	# Canonical JSON: keys in sorted order, no whitespace
 	if "kty" not in jwk:
 		raise ValueError("Missing kty in JWK")
-	
+
 	if jwk["kty"] == "EC":
 		canonical = {"crv": jwk["crv"], "kty": "EC", "x": jwk["x"], "y": jwk["y"]}
 	elif jwk["kty"] == "RSA":
 		canonical = {"e": jwk["e"], "kty": "RSA", "n": jwk["n"]}
 	else:
 		raise ValueError(f"Unsupported key type: {jwk['kty']}")
-	
+
 	canonical_json = json.dumps(canonical, separators=(",", ":"), sort_keys=True)
 	return _b64url(_sha256(canonical_json.encode("utf-8")))
 
@@ -270,13 +280,13 @@ def _atomic_write_bytes(path: PathLib, data: bytes, mode: int) -> None:
 			tmp.write(data)
 			tmp.flush()
 			os.fsync(tmp.fileno())
-		os.chmod(tmp_name, mode)
-		os.replace(tmp_name, path)
+		Path(tmp_name).chmod(mode)
+		Path(tmp_name).replace(path)
 		path.chmod(mode)
 	finally:
 		try:
-			if os.path.exists(tmp_name):
-				os.unlink(tmp_name)
+			if Path(tmp_name).exists():
+				Path(tmp_name).unlink()
 		except OSError:
 			pass
 
@@ -289,7 +299,7 @@ def _atomic_write_text(path: PathLib, data: str, mode: int) -> None:
 
 class ACMEClient:
 	"""Lightweight ACME v2 client."""
-	
+
 	def __init__(self, directory_url: str, certs_dir: PathLib):
 		self.directory_url = directory_url
 		self.certs_dir = certs_dir
@@ -299,53 +309,51 @@ class ACMEClient:
 		self.account_url: str | None = None
 		self.http_client: httpx.AsyncClient | None = None
 		self._cached_thumbprint: str | None = None
-		
+
 		# Paths
 		self.account_key_path = certs_dir / "account_key.pem"
 		self.account_url_path = certs_dir / "account_url.txt"
 		self.account_thumbprint_path = certs_dir / "account_thumbprint.txt"
-	
+
 	async def __aenter__(self):
 		limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
 		self.http_client = httpx.AsyncClient(timeout=30.0, limits=limits)
 		return self
-	
+
 	async def __aexit__(self, *args):
 		if self.http_client:
 			await self.http_client.aclose()
-	
+
 	async def _fetch_directory(self) -> None:
 		"""Fetch ACME directory."""
 		if not self.http_client:
 			raise RuntimeError("HTTP client not initialized")
-		
+
 		resp = await self.http_client.get(self.directory_url)
 		resp.raise_for_status()
 		self.directory = resp.json()
-	
+
 	async def _get_nonce(self) -> str:
 		"""Get a fresh nonce with fallback."""
 		if not self.http_client:
 			raise RuntimeError("HTTP client not initialized")
-		
+
 		if self.nonce:
 			nonce = self.nonce
 			self.nonce = None
 			return nonce
-		
-		try:
+
+		with contextlib.suppress(Exception):
 			resp = await self.http_client.head(self.directory["newNonce"])
 			if "Replay-Nonce" in resp.headers:
 				return resp.headers["Replay-Nonce"]
-		except Exception:
-			pass
-		
+
 		# Fallback: GET request to newNonce
 		resp = await self.http_client.get(self.directory["newNonce"])
 		if "Replay-Nonce" not in resp.headers:
 			raise HTTPException(status_code=500, detail="Failed to obtain ACME nonce")
 		return resp.headers["Replay-Nonce"]
-	
+
 	def _load_or_create_account_key(self) -> ec.EllipticCurvePrivateKey:
 		"""Load existing account key or create a new one."""
 		if self.account_key_path.exists():
@@ -354,7 +362,7 @@ class ACMEClient:
 			if isinstance(key, ec.EllipticCurvePrivateKey):
 				return key
 			raise ValueError("Account key is not an EC key")
-		
+
 		# Generate new P-256 key
 		key = ec.generate_private_key(ec.SECP256R1())
 		key_pem = key.private_bytes(
@@ -389,26 +397,26 @@ class ACMEClient:
 		"""Persist account URL and thumbprint."""
 		_atomic_write_text(self.account_url_path, account_url, 0o600)
 		_atomic_write_text(self.account_thumbprint_path, current_thumbprint, 0o600)
-	
+
 	def _get_jwk(self) -> dict:
 		"""Get JWK representation of account key."""
 		if not self.account_key:
 			raise RuntimeError("Account key not loaded")
-		
+
 		pub = self.account_key.public_key()
 		numbers = pub.public_numbers()
-		
+
 		# P-256 coordinates are 32 bytes each
 		x_bytes = numbers.x.to_bytes(32, "big")
 		y_bytes = numbers.y.to_bytes(32, "big")
-		
+
 		return {
 			"kty": "EC",
 			"crv": "P-256",
 			"x": _b64url(x_bytes),
 			"y": _b64url(y_bytes),
 		}
-	
+
 	def _get_jwk_thumbprint(self) -> str:
 		"""Return JWK thumbprint, computing and caching it on first call."""
 		if self._cached_thumbprint is None:
@@ -419,125 +427,122 @@ class ACMEClient:
 		"""Sign payload with account key (ES256)."""
 		if not self.account_key:
 			raise RuntimeError("Account key not loaded")
-		
+
 		from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
-		
+
 		sig_der = self.account_key.sign(payload, ec.ECDSA(hashes.SHA256()))
 		r, s = decode_dss_signature(sig_der)
-		
+
 		# ES256 signature is r || s, each 32 bytes
 		return r.to_bytes(32, "big") + s.to_bytes(32, "big")
-	
+
 	async def _signed_request(self, url: str, payload: dict | None) -> httpx.Response:
 		"""Make a signed JWS request to ACME server."""
 		if not self.http_client:
 			raise RuntimeError("HTTP client not initialized")
-		
+
 		nonce = await self._get_nonce()
-		
+
 		# Build protected header
 		protected = {
 			"alg": "ES256",
 			"nonce": nonce,
 			"url": url,
 		}
-		
+
 		if self.account_url:
 			protected["kid"] = self.account_url
 		else:
 			protected["jwk"] = self._get_jwk()
-		
+
 		protected_b64 = _b64url(json.dumps(protected).encode("utf-8"))
-		
-		if payload is None:
-			payload_b64 = ""
-		else:
-			payload_b64 = _b64url(json.dumps(payload).encode("utf-8"))
-		
+
+		payload_b64 = "" if payload is None else _b64url(json.dumps(payload).encode("utf-8"))
+
 		# Sign
 		signing_input = f"{protected_b64}.{payload_b64}".encode("ascii")
 		signature = self._sign_payload(signing_input)
 		signature_b64 = _b64url(signature)
-		
+
 		# JWS compact serialization for POST
 		body = {
 			"protected": protected_b64,
 			"payload": payload_b64,
 			"signature": signature_b64,
 		}
-		
+
 		resp = await self.http_client.post(
 			url,
 			json=body,
 			headers={"Content-Type": "application/jose+json"},
 		)
-		
+
 		# Store replay nonce for next request
 		if "Replay-Nonce" in resp.headers:
 			self.nonce = resp.headers["Replay-Nonce"]
-		
+
 		return resp
-	
+
 	async def register_or_fetch_account(self, email: str) -> str:
 		"""Register new account or fetch existing one."""
 		await self._fetch_directory()
 		self.account_key = await asyncio.to_thread(self._load_or_create_account_key)
-		
+
 		# Calculate current key thumbprint
 		current_thumbprint = self._get_jwk_thumbprint()
-		
+
 		# Check for existing account URL
 		self.account_url = await asyncio.to_thread(self._load_existing_account_url, current_thumbprint)
 		if self.account_url:
 			_log.info("Using existing ACME account: %s", self.account_url)
 			return self.account_url
-		
+
 		# Register new account
 		payload = {
 			"termsOfServiceAgreed": True,
 			"contact": [f"mailto:{email}"],
 		}
-		
+
 		resp = await self._signed_request(self.directory["newAccount"], payload)
-		
+
 		if resp.status_code not in (200, 201):
 			raise HTTPException(status_code=500, detail=f"Failed to register account: {_parse_acme_error(resp)}")
-		
+
 		self.account_url = resp.headers.get("Location")
 		if not self.account_url:
 			raise HTTPException(status_code=500, detail="No account URL in response")
-		
+
 		# Save account URL and thumbprint
 		await asyncio.to_thread(self._save_account_metadata, self.account_url, current_thumbprint)
 		_log.info("Registered new ACME account: %s", self.account_url)
-		
+
 		return self.account_url
-	
+
 	async def order_certificate(self, domain: str) -> tuple[str, dict]:
 		"""Create a new certificate order."""
 		payload = {
 			"identifiers": [{"type": "dns", "value": domain}],
 		}
-		
+
 		resp = await self._signed_request(self.directory["newOrder"], payload)
-		
+
 		if resp.status_code not in (200, 201):
 			raise HTTPException(status_code=500, detail=f"Failed to create order: {_parse_acme_error(resp)}")
-		
+
 		order_url = resp.headers.get("Location")
 		order = resp.json()
-		
+
 		return order_url, order
-	
+
 	async def get_authorization(self, auth_url: str) -> dict:
 		"""Get authorization details including challenges."""
 		resp = await self._signed_request(auth_url, None)
-		
+
 		if resp.status_code != 200:
 			raise HTTPException(status_code=500, detail=f"Failed to get authorization: {_parse_acme_error(resp)}")
-		
+
 		return resp.json()
-	
+
 	def get_http01_challenge(self, authorization: dict) -> tuple[str, str]:
 		"""Extract HTTP-01 challenge token and key authorization."""
 		for challenge in authorization.get("challenges", []):
@@ -545,16 +550,16 @@ class ACMEClient:
 				token = challenge["token"]
 				key_auth = f"{token}.{self._get_jwk_thumbprint()}"
 				return token, key_auth
-		
+
 		raise HTTPException(status_code=400, detail="No HTTP-01 challenge found")
-	
+
 	async def respond_to_challenge(self, challenge_url: str) -> dict:
 		"""Respond to a challenge (tell ACME server we're ready)."""
 		resp = await self._signed_request(challenge_url, {})
-		
+
 		if resp.status_code not in (200, 202):
 			raise HTTPException(status_code=500, detail=f"Failed to respond to challenge: {_parse_acme_error(resp)}")
-		
+
 		return resp.json()
 
 	async def poll_authorization(self, auth_url: str, max_attempts: int = 15, delay: float = 4.0) -> dict:
@@ -576,29 +581,27 @@ class ACMEClient:
 			await asyncio.sleep(_parse_retry_after(resp, delay))
 
 		raise HTTPException(status_code=408, detail="Timeout waiting for authorization to become valid")
-	
+
 	async def poll_order(self, order_url: str, max_attempts: int = 15, delay: float = 4.0) -> dict:
 		"""Poll order status until ready or failed."""
 		for _ in range(max_attempts):
 			resp = await self._signed_request(order_url, None)
-			
+
 			if resp.status_code != 200:
 				raise HTTPException(status_code=500, detail=f"Failed to poll order: {_parse_acme_error(resp)}")
-			
+
 			order = resp.json()
 			status = order.get("status")
-			
-			if status == "ready":
+
+			if status in {"ready", "valid"}:
 				return order
-			elif status == "valid":
-				return order
-			elif status in ("invalid", "expired", "revoked"):
+			if status in ("invalid", "expired", "revoked"):
 				raise HTTPException(status_code=400, detail=f"Order failed: {status}")
-			
+
 			await asyncio.sleep(_parse_retry_after(resp, delay))
-		
+
 		raise HTTPException(status_code=408, detail="Timeout waiting for order to be ready")
-	
+
 	def _generate_domain_key_and_csr(self, domain: str) -> tuple[bytes, bytes]:
 		"""Generate RSA domain key and CSR (CPU-intensive, run in threadpool)."""
 		domain_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -623,41 +626,41 @@ class ACMEClient:
 		"""Finalize order with CSR and get certificate."""
 		# Generate domain key + CSR in a threadpool (RSA keygen is CPU-intensive)
 		csr_der, key_pem = await asyncio.to_thread(self._generate_domain_key_and_csr, domain)
-		
+
 		payload = {"csr": _b64url(csr_der)}
 		resp = await self._signed_request(finalize_url, payload)
-		
+
 		if resp.status_code not in (200, 201):
 			raise HTTPException(status_code=500, detail=_parse_acme_error(resp))
-		
+
 		order = resp.json()
-		
+
 		# Wait for certificate
 		if order.get("status") != "valid":
 			order = await self.poll_order(order_url)
-		
+
 		# Download certificate
 		cert_url = order.get("certificate")
 		if not cert_url:
 			raise HTTPException(status_code=500, detail="No certificate URL in order")
-		
+
 		cert_resp = await self._signed_request(cert_url, None)
-		
+
 		if cert_resp.status_code != 200:
 			raise HTTPException(status_code=500, detail=f"Failed to download certificate: {_parse_acme_error(cert_resp)}")
-		
+
 		cert_pem = cert_resp.text.encode("utf-8")
-		
+
 		return cert_pem, key_pem
-	
+
 	def save_certificate(self, domain: str, cert_pem: bytes, key_pem: bytes, is_staging: bool = False) -> PathLib:
 		"""Save certificate, chain, and key to disk."""
 		# Create domain directory
 		domain_dir = self.certs_dir / domain
 		domain_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-		
+
 		suffix = "_staging" if is_staging else ""
-		
+
 		# Parse certificates from PEM bundle
 		certs = []
 		pem_data = cert_pem
@@ -667,26 +670,26 @@ class ACMEClient:
 			cert_block = pem_data[start:end]
 			certs.append(cert_block)
 			pem_data = pem_data[end:]
-		
+
 		# Save files
 		fullchain_path = domain_dir / f"fullchain{suffix}.pem"
 		key_path = domain_dir / f"privkey{suffix}.pem"
-		
+
 		# Always save fullchain (all certs)
 		_atomic_write_bytes(fullchain_path, cert_pem, 0o644)
 		_atomic_write_bytes(key_path, key_pem, 0o600)
-		
+
 		# Split cert.pem (leaf) and chain.pem (intermediates)
 		if len(certs) >= 1:
 			cert_path = domain_dir / f"cert{suffix}.pem"
 			_atomic_write_bytes(cert_path, certs[0] + b"\n", 0o644)
-		
+
 		if len(certs) >= 2:
 			chain_path = domain_dir / f"chain{suffix}.pem"
 			_atomic_write_bytes(chain_path, b"\n".join(certs[1:]) + b"\n", 0o644)
-		
+
 		_log.info("Saved certificate for %s to %s", domain, domain_dir)
-		
+
 		return domain_dir
 
 
@@ -714,10 +717,11 @@ def _read_valid_challenges(challenge_file: PathLib) -> dict[str, dict]:
 	except (OSError, json.JSONDecodeError):
 		return {}
 	now = time.time()
-	valid: dict[str, dict] = {}
-	for token, entry in data.items():
-		if isinstance(entry, dict) and entry.get("expires", 0) > now:
-			valid[token] = entry
+	valid: dict[str, dict] = {
+		token: entry
+		for token, entry in data.items()
+		if isinstance(entry, dict) and entry.get("expires", 0) > now
+	}
 	return valid
 
 
@@ -725,13 +729,13 @@ def _load_challenges(certs_dir: PathLib) -> dict[str, dict]:
 	"""Load challenges from file, cleaning expired entries."""
 	challenge_file = _get_challenge_file(certs_dir)
 	lock_file = _get_challenge_lock_file(certs_dir)
-	
+
 	if not challenge_file.exists():
 		return {}
-	
+
 	try:
 		lock_file.touch(exist_ok=True)
-		with open(lock_file, "r") as lock_handle:
+		with lock_file.open() as lock_handle:
 			fcntl.flock(lock_handle.fileno(), fcntl.LOCK_SH)
 			return _read_valid_challenges(challenge_file)
 	except Exception as exc:
@@ -744,7 +748,7 @@ def _save_challenge(certs_dir: PathLib, token: str, key_auth: str) -> None:
 	challenge_file = _get_challenge_file(certs_dir)
 	lock_file = _get_challenge_lock_file(certs_dir)
 	lock_file.touch(exist_ok=True)
-	with open(lock_file, "r+") as lock_handle:
+	with lock_file.open("r+") as lock_handle:
 		fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
 		valid = _read_valid_challenges(challenge_file)
 		valid[token] = {
@@ -758,12 +762,12 @@ def _remove_challenge(certs_dir: PathLib, token: str) -> None:
 	"""Remove challenge from file (thread-safe with file lock)."""
 	challenge_file = _get_challenge_file(certs_dir)
 	lock_file = _get_challenge_lock_file(certs_dir)
-	
+
 	if not challenge_file.exists() and not lock_file.exists():
 		return
-	
+
 	lock_file.touch(exist_ok=True)
-	with open(lock_file, "r+") as lock_handle:
+	with lock_file.open("r+") as lock_handle:
 		fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
 		challenges = _read_valid_challenges(challenge_file)
 		challenges.pop(token, None)
@@ -781,7 +785,7 @@ async def _delayed_challenge_cleanup(certs_dir: PathLib, token: str, delay_secon
 
 def get_challenge_response(token: str, certs_dir: PathLib | None = None) -> str | None:
 	"""Get challenge response for ACME HTTP-01 validation.
-	
+
 	MULTI-WORKER SAFETY: With multiple Uvicorn workers, the in-memory cache
 	is per-process and can miss cross-worker challenges. File-based fallback
 	ensures Let's Encrypt can validate challenges regardless of which worker
@@ -795,19 +799,19 @@ def get_challenge_response(token: str, certs_dir: PathLib | None = None) -> str 
 		if expires_at > time.time():
 			return key_auth
 		_pending_challenges.pop(token, None)
-	
+
 	# Try file-based (for multi-worker/restart scenarios)
 	if certs_dir:
 		challenges = _load_challenges(certs_dir)
 		entry = challenges.get(token)
 		if entry:
 			return entry.get("key_auth")
-	
+
 	return None
 
 
 # In-memory cache for current process (fast path only)
-# WARNING: This dict is per-process. With UVICORN_WORKERS > 1, challenges
+# WARNING: This dict is per-process. With more than one worker, challenges
 # stored in one worker won't be visible in another. File-based storage
 # (_save_challenge) ensures cross-worker compatibility.
 _pending_challenges: dict[str, tuple[str, float]] = {}
@@ -841,10 +845,8 @@ def _delete_certificate_files(domain_dir: PathLib, suffix: str) -> bool:
 		if file_path.exists():
 			file_path.unlink()
 			deleted = True
-	try:
+	with contextlib.suppress(OSError):
 		domain_dir.rmdir()
-	except OSError:
-		pass
 	return deleted
 
 
@@ -861,38 +863,41 @@ async def list_certificates(
 def _list_certificates_internal(certs_dir: PathLib) -> list[CertificateInfo]:
 	"""Internal certificate listing logic used by multiple routes."""
 	certificates = []
-	
+
 	if not certs_dir.exists():
 		return certificates
-	
+
 	now = datetime.now(UTC)
 	renewal_threshold = timedelta(days=30)
-	
+
 	for domain_dir in certs_dir.iterdir():
 		if not domain_dir.is_dir() or domain_dir.name.startswith("."):
 			continue
-		
+
 		# Check for certificate files
 		for suffix, is_staging in [("", False), ("_staging", True)]:
 			cert_path = domain_dir / f"fullchain{suffix}.pem"
-			
+
 			if not cert_path.exists():
 				continue
-			
+
 			try:
 				cert_pem = cert_path.read_bytes()
 				cert = x509.load_pem_x509_certificate(cert_pem)
-				
+
 				expires_at = cert.not_valid_after_utc
 				days_until_expiry = (expires_at - now).days
 				# Use timedelta comparison to avoid rounding issues
 				needs_renewal = (expires_at - now) <= renewal_threshold
-				
+
+				# Looked up once rather than twice inside a conditional expression.
+				issuer_attrs = cert.issuer.get_attributes_for_oid(NameOID.COMMON_NAME)
+				issuer_cn = issuer_attrs[0].value if issuer_attrs else "Unknown"
 				info = CertificateInfo(
 					domain=domain_dir.name,
 					issued_at=cert.not_valid_before_utc.isoformat(),
 					expires_at=expires_at.isoformat(),
-					issuer=cert.issuer.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value if cert.issuer.get_attributes_for_oid(NameOID.COMMON_NAME) else "Unknown",
+					issuer=issuer_cn,
 					serial=format(cert.serial_number, "x"),
 					exists=True,
 					is_staging=is_staging,
@@ -907,7 +912,7 @@ def _list_certificates_internal(certs_dir: PathLib) -> list[CertificateInfo]:
 					exists=True,
 					is_staging=is_staging,
 				))
-	
+
 	return certificates
 
 
@@ -919,9 +924,8 @@ async def request_certificate(
 	certs_dir: PathLib = Depends(_get_certs_dir_dep),
 	_: sqlite3.Row = Depends(require_admin),
 ):
-	"""
-	Request a new certificate from Let's Encrypt.
-	
+	"""Request a new certificate from Let's Encrypt.
+
 	IMPORTANT: Before calling this, ensure:
 	1. The domain points to this server
 	2. Port 80 is accessible for HTTP-01 challenge
@@ -934,12 +938,12 @@ async def request_certificate(
 			status_code=409,
 			detail=f"Certificate request for '{req.domain}' already in progress"
 		)
-	
+
 	try:
 		directory_url = ACME_DIRECTORY_STAGING if req.staging else ACME_DIRECTORY_PROD
-		
+
 		_log.info("Requesting certificate for %s (staging=%s)", req.domain, req.staging)
-		
+
 		# Bound the whole workflow. Every polling loop honours a server-supplied
 		# Retry-After, so without an overall deadline an order could hold this
 		# request and the domain lock indefinitely.
@@ -961,27 +965,27 @@ async def request_certificate(
 					await client.register_or_fetch_account(req.email)
 				finally:
 					await asyncio.to_thread(_release_domain_lock, account_lock_fd)
-			
+
 				# Create order
 				order_url, order = await client.order_certificate(req.domain)
 				_log.info("Created order: %s", order_url)
-			
+
 				# Get authorization
 				if not order.get("authorizations"):
 					raise HTTPException(status_code=500, detail="No authorizations in order")
-			
+
 				auth_url = order["authorizations"][0]
 				authorization = await client.get_authorization(auth_url)
-			
+
 				# Get HTTP-01 challenge
 				token, key_auth = client.get_http01_challenge(authorization)
-			
+
 				# Store challenge response (both in-memory and file)
 				_prune_pending_challenges()
 				_pending_challenges[token] = (key_auth, time.time() + CHALLENGE_TTL)
 				await asyncio.to_thread(_save_challenge, certs_dir, token, key_auth)
 				_log.info("Challenge token: %s", token)
-			
+
 				try:
 					# Find and respond to challenge
 					challenge_url = None
@@ -989,28 +993,28 @@ async def request_certificate(
 						if challenge["type"] == "http-01":
 							challenge_url = challenge["url"]
 							break
-				
+
 					if not challenge_url:
 						raise HTTPException(status_code=500, detail="No HTTP-01 challenge URL")
-				
+
 					# Tell ACME server we're ready
 					await client.respond_to_challenge(challenge_url)
 
 					# Poll authorization explicitly so we observe invalid/expired states
 					# before advancing to order polling/finalization.
 					await client.poll_authorization(auth_url)
-				
+
 					# Wait for order to be ready
 					order = await client.poll_order(order_url)
-				
+
 					# Finalize order
 					cert_pem, key_pem = await client.finalize_order(order["finalize"], order_url, req.domain)
-				
+
 					# Save certificate (blocking file I/O — offload to thread)
 					cert_dir = await asyncio.to_thread(
 						client.save_certificate, req.domain, cert_pem, key_pem, req.staging
 					)
-				
+
 					suffix = "_staging" if req.staging else ""
 					return OkResponse[CertificateIssueData](
 						message="Certificate issued successfully",
@@ -1021,11 +1025,16 @@ async def request_certificate(
 							key_path=str(cert_dir / f"privkey{suffix}.pem"),
 						),
 					)
-			
+
 				finally:
 					# Delay cleanup so late validation retries do not race immediate deletion.
-					asyncio.create_task(_delayed_challenge_cleanup(certs_dir, token))
-	
+					spawn_tracked_task(
+						_delayed_challenge_cleanup(certs_dir, token),
+						name=f"acme-challenge-cleanup-{token[:8]}",
+						registry=_background_tasks,
+						log=_log,
+					)
+
 	except TimeoutError as exc:
 		_log.error(
 			"ACME order timed out after %ss for domain=%s",
@@ -1050,18 +1059,31 @@ async def delete_certificate(
 ):
 	"""Delete a certificate."""
 	domain_dir = certs_dir / domain
-	
+
 	if not await asyncio.to_thread(domain_dir.exists):
 		raise HTTPException(status_code=404, detail="Certificate not found")
-	
-	suffix = "_staging" if staging else ""
-	deleted = await asyncio.to_thread(_delete_certificate_files, domain_dir, suffix)
-	
+
+	# Use the same domain lock as issuance/renewal so a delete cannot race an
+	# in-progress order for the same domain (mixed file set, or a deleted
+	# certificate reappearing once the concurrent order finishes).
+	lock_fd = await asyncio.to_thread(_acquire_domain_lock, certs_dir, domain)
+	if lock_fd is None:
+		raise HTTPException(
+			status_code=409,
+			detail=f"Certificate operation for '{domain}' already in progress",
+		)
+
+	try:
+		suffix = "_staging" if staging else ""
+		deleted = await asyncio.to_thread(_delete_certificate_files, domain_dir, suffix)
+	finally:
+		await asyncio.to_thread(_release_domain_lock, lock_fd)
+
 	if not deleted:
 		raise HTTPException(status_code=404, detail="Certificate files not found")
-	
+
 	_log.info("Deleted certificate for %s (staging=%s)", domain, staging)
-	
+
 	return OkResponse[CertificateDeleteData](
 		message="Certificate deleted",
 		data=CertificateDeleteData(success=True, domain=domain, staging=staging),
@@ -1073,23 +1095,22 @@ async def serve_challenge(
 	token: str,
 	certs_dir: PathLib = Depends(_get_certs_dir_dep),
 ) -> PlainTextResponse:
-	"""
-	Serve ACME HTTP-01 challenge response.
-	
+	"""Serve ACME HTTP-01 challenge response.
+
 	This endpoint should be accessible at:
 	http://<domain>/.well-known/acme-challenge/<token>
-	
+
 	Configure your reverse proxy to forward this path.
 	"""
 	# Validate token format to prevent log spam
 	if not _ACME_TOKEN_RE.fullmatch(token):
 		raise HTTPException(status_code=404, detail="Invalid token format")
-	
+
 	key_auth = await asyncio.to_thread(get_challenge_response, token, certs_dir)
-	
+
 	if not key_auth:
 		raise HTTPException(status_code=404, detail="Challenge not found")
-	
+
 	return PlainTextResponse(content=key_auth, media_type="text/plain")
 
 
@@ -1098,20 +1119,19 @@ async def check_renewals(
 	certs_dir: PathLib = Depends(_get_certs_dir_dep),
 	_: sqlite3.Row = Depends(require_admin),
 ):
-	"""
-	Check which certificates need renewal (expires in <= 30 days).
-	
+	"""Check which certificates need renewal (expires in <= 30 days).
+
 	Use this endpoint to determine which certificates to renew.
 	For automatic renewal, call this periodically (e.g., via cron)
 	and issue new certificates for domains where needs_renewal is True.
 	"""
 	certificates = await asyncio.to_thread(_list_certificates_internal, certs_dir)
-	
+
 	needs_renewal = [
 		cert for cert in certificates
 		if cert.needs_renewal and not cert.is_staging
 	]
-	
+
 	data = RenewalCheckData(
 		total_certificates=len([c for c in certificates if not c.is_staging]),
 		needs_renewal_count=len(needs_renewal),

@@ -22,20 +22,20 @@ from __future__ import annotations
 from .ingestion_daemon import run_dns_ingestion
 from .ingestion_parser import DnsQueryPoint, parse_unbound_line
 from .ingestion_retention import (
-	DNS_LOG_RETENTION_OPTIONS,
 	DEFAULT_DNS_LOG_RETENTION_DAYS,
+	DNS_LOG_RETENTION_OPTIONS,
 	enforce_dns_log_retention,
 	normalize_dns_log_retention_days,
 )
 from .ingestion_writer import read_recent_queries
 
 __all__ = [
+	"DEFAULT_DNS_LOG_RETENTION_DAYS",
+	"DNS_LOG_RETENTION_OPTIONS",
 	"DnsQueryPoint",
-	"run_dns_ingestion",
-	"read_recent_queries",
 	"enforce_dns_log_retention",
 	"normalize_dns_log_retention_days",
 	"parse_unbound_line",
-	"DNS_LOG_RETENTION_OPTIONS",
-	"DEFAULT_DNS_LOG_RETENTION_DAYS",
+	"read_recent_queries",
+	"run_dns_ingestion",
 ]

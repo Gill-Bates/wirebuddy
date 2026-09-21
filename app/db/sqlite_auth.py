@@ -8,11 +8,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
 import math
 import os
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from ..utils.crypto import hash_token
@@ -109,17 +109,6 @@ def delete_auth_token(conn: sqlite3.Connection, token: str) -> None:
 		conn.execute("DELETE FROM auth_tokens WHERE token_hash = ?", (token_hash,))
 
 
-def delete_expired_tokens(conn: sqlite3.Connection) -> int:
-	"""Delete all expired tokens. Returns count of deleted tokens."""
-	now = utcnow()
-	with transaction(conn):
-		cur = conn.execute("DELETE FROM auth_tokens WHERE expires_at <= ?", (now,))
-		deleted = cur.rowcount
-	if deleted:
-		_log.info("Deleted %d expired auth tokens", deleted)
-	return deleted
-
-
 def delete_user_tokens(conn: sqlite3.Connection, user_id: int) -> None:
 	"""Delete all tokens for a user (logout all sessions)."""
 	with transaction(conn):
@@ -179,10 +168,17 @@ _USERNAME_LOCKOUT_POLICY = _LockoutPolicy(
 
 
 def _normalize_login_subject(username: str | None) -> str | None:
-	"""Return a normalized username token for composite lockout keys."""
+	"""Return a normalized username token for composite lockout keys.
+
+	Must match the normalization sqlite_users.py uses for account identity
+	(``.strip().lower()``). Using a different normalization (e.g. casefold())
+	here would let two distinct database users collapse onto the same
+	lockout key for some Unicode inputs (e.g. "straße" vs "strasse"),
+	letting failed attempts against one account throttle another.
+	"""
 	if username is None:
 		return None
-	normalized = username.strip().casefold()
+	normalized = username.strip().lower()
 	return normalized[:128] or None
 
 

@@ -16,6 +16,14 @@ from pathlib import Path
 import pytest
 from fastapi import Request, Response
 
+from app.main import (
+    _DNS_INGESTION_MAX_BACKOFF_EXPONENT,
+    _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS,
+    StartupFatalError,
+    _acquire_application_lock,
+    _release_application_lock,
+    _resolve_trusted_binary,
+)
 from app.utils.acme_http import build_acme_http_app
 from app.utils.backup_lock import BackupLockBusyError, _acquire_lock_file, _ensure_private_lock_dir
 from app.utils.config import load_config
@@ -27,16 +35,7 @@ from app.utils.conntrack import (
 from app.utils.crypto import hash_password, verify_password
 from app.utils.node_token import _require_secret_key
 from app.utils.passkeys import _normalize_expected_origin
-from app.utils.rate_limit import _select_storage_uri
 from app.utils.request_id import RequestIDMiddleware
-from app.main import (
-    StartupFatalError,
-    _DNS_INGESTION_MAX_BACKOFF_EXPONENT,
-    _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS,
-    _acquire_application_lock,
-    _release_application_lock,
-    _resolve_trusted_binary,
-)
 
 
 def test_request_id_is_server_generated_and_external_value_is_separate():
@@ -153,13 +152,6 @@ def test_conntrack_sampler_leadership_is_exclusive(tmp_path: Path):
         assert acquire_sampler_leadership(tmp_path) is True
     finally:
         release_sampler_leadership()
-
-
-def test_rate_limit_requires_shared_backend_for_multiple_workers():
-    assert _select_storage_uri("", 1) == "memory://"
-    assert _select_storage_uri("redis://localhost:6379/0", 4) == "redis://localhost:6379/0"
-    with pytest.raises(RuntimeError):
-        _select_storage_uri("", 4)
 
 
 def test_application_lock_is_exclusive_per_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

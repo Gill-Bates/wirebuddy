@@ -36,7 +36,7 @@
 }
 
 /* Mobile: compact layout for KPI cards */
-@media (max-width: 575.98px) {
+@media (width <= 575.98px) {
   .wb-kpi-card .card-body>.d-flex {
     gap: 0.5rem !important;
   }

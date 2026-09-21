@@ -12,11 +12,10 @@ import ipaddress
 import re
 import sqlite3
 
+from ..utils import vault
 from ..utils.config import get_config
 from ..utils.time import utcnow
-from ..utils import vault
 from .sqlite_runtime import transaction
-
 
 _INTERFACE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,14}$")
 
@@ -29,25 +28,34 @@ def _validate_interface_name(name: str) -> str:
 	return normalized
 
 
-def _validate_interface_address(value: str, field: str) -> str:
-	"""Validate and normalize an interface address with prefix."""
+def _validate_interface_address(value: str, field: str, *, expected_version: int) -> str:
+	"""Validate and normalize an interface address with prefix.
+
+	Enforces the expected IP version so ``address`` cannot silently hold an
+	IPv6 value or ``address6`` an IPv4 value; downstream code (e.g. peer IP
+	allocation) treats ``address`` as the IPv4 pool and ``address6`` as the
+	IPv6 pool unconditionally.
+	"""
 	text = str(value or "").strip()
 	if not text:
 		raise ValueError(f"{field} must not be empty")
 	try:
-		return ipaddress.ip_interface(text).with_prefixlen
+		parsed = ipaddress.ip_interface(text)
 	except ValueError as exc:
 		raise ValueError(f"Invalid {field}") from exc
+	if parsed.version != expected_version:
+		raise ValueError(f"{field} must be an IPv{expected_version} address")
+	return parsed.with_prefixlen
 
 
-def _normalize_optional_interface_address(value: str | None, field: str) -> str | None:
+def _normalize_optional_interface_address(value: str | None, field: str, *, expected_version: int) -> str | None:
 	"""Normalize an optional interface address; blank values become None."""
 	if value is None:
 		return None
 	text = str(value).strip()
 	if not text:
 		return None
-	return _validate_interface_address(text, field)
+	return _validate_interface_address(text, field, expected_version=expected_version)
 
 
 def _validate_listen_port(listen_port: int) -> int:
@@ -79,8 +87,8 @@ def create_interface(
 	"""Create a new WireGuard interface in the database."""
 	now = utcnow()
 	name = _validate_interface_name(name)
-	address = _validate_interface_address(address, "address")
-	address6 = _normalize_optional_interface_address(address6, "address6")
+	address = _validate_interface_address(address, "address", expected_version=4)
+	address6 = _normalize_optional_interface_address(address6, "address6", expected_version=6)
 	listen_port = _validate_listen_port(listen_port)
 	private_key_stored = vault.encrypt_if_needed(private_key, get_config().secret_key)
 	with transaction(conn, immediate=True):
@@ -131,8 +139,8 @@ def update_interface(
 	"""Update mutable settings of an existing WireGuard interface."""
 	now = utcnow()
 	name = _validate_interface_name(name)
-	address = _validate_interface_address(address, "address")
-	address6 = _normalize_optional_interface_address(address6, "address6")
+	address = _validate_interface_address(address, "address", expected_version=4)
+	address6 = _normalize_optional_interface_address(address6, "address6", expected_version=6)
 	listen_port = _validate_listen_port(listen_port)
 	with transaction(conn, immediate=True):
 		columns = "address = ?, address6 = ?, listen_port = ?, dns = ?, post_up = ?, post_down = ?"

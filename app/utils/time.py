@@ -8,12 +8,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def utcnow() -> datetime:
 	"""Return the current UTC time as a timezone-aware datetime."""
-	return datetime.now(timezone.utc)
+	return datetime.now(UTC)
 
 
 def _is_aware(dt: datetime) -> bool:
@@ -42,7 +42,7 @@ def ensure_utc(dt: datetime | None) -> datetime | None:
 		return None
 	if not _is_aware(dt):
 		raise ValueError("Naive datetime not allowed - must be timezone-aware")
-	return dt.astimezone(timezone.utc)
+	return dt.astimezone(UTC)
 
 
 def parse_utc(s: str) -> datetime | None:
@@ -60,7 +60,7 @@ def parse_utc(s: str) -> datetime | None:
 		dt = datetime.fromisoformat(s)
 		if not _is_aware(dt):
 			return None
-		return dt.astimezone(timezone.utc)
+		return dt.astimezone(UTC)
 	except (ValueError, TypeError):
 		return None
 
@@ -82,8 +82,8 @@ def parse_db_timestamp(value: object) -> datetime | None:
 		return None
 	if isinstance(value, datetime):
 		if not _is_aware(value):
-			return value.replace(tzinfo=timezone.utc)
-		return value.astimezone(timezone.utc)
+			return value.replace(tzinfo=UTC)
+		return value.astimezone(UTC)
 	if isinstance(value, str):
 		return parse_utc(value)
 	return None

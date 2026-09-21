@@ -8,11 +8,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import logging
 import sqlite3
 from pathlib import Path
-from typing import TypeAlias
 
 from .sqlite_interfaces import get_interface
 from .sqlite_runtime import transaction
@@ -20,8 +20,7 @@ from .sqlite_runtime import transaction
 _log = logging.getLogger(__name__)
 
 
-LastSeenUpdate: TypeAlias = tuple[str, int, str]
-_MAX_PAGE_SIZE = 500
+type LastSeenUpdate = tuple[str, int, str]
 _MAX_ALLOCATABLE_HOSTS = 65_536
 
 
@@ -41,40 +40,6 @@ def get_all_peers(conn: sqlite3.Connection, interface: str | None = None) -> lis
 	return cur.fetchall()
 
 
-def count_peers(conn: sqlite3.Connection, interface: str | None = None) -> int:
-	"""Count peers, optionally filtered by interface."""
-	if interface:
-		cur = conn.execute("SELECT COUNT(*) FROM peers WHERE interface = ?", (interface,))
-	else:
-		cur = conn.execute("SELECT COUNT(*) FROM peers")
-	row = cur.fetchone()
-	return int(row[0]) if row else 0
-
-
-def get_peers_paginated(
-	conn: sqlite3.Connection,
-	*,
-	page: int = 1,
-	page_size: int = 50,
-	interface: str | None = None,
-) -> list[sqlite3.Row]:
-	"""Get peers paginated, optionally filtered by interface."""
-	page = max(1, page)
-	page_size = min(max(1, page_size), _MAX_PAGE_SIZE)
-	offset = (page - 1) * page_size
-	if interface:
-		cur = conn.execute(
-			"SELECT * FROM peers WHERE interface = ? ORDER BY name LIMIT ? OFFSET ?",
-			(interface, page_size, offset),
-		)
-	else:
-		cur = conn.execute(
-			"SELECT * FROM peers ORDER BY interface, name LIMIT ? OFFSET ?",
-			(page_size, offset),
-		)
-	return cur.fetchall()
-
-
 def get_peer_by_public_key(conn: sqlite3.Connection, public_key: str) -> sqlite3.Row | None:
 	"""Get a peer by public key."""
 	cur = conn.execute("SELECT * FROM peers WHERE public_key = ?", (public_key,))
@@ -85,16 +50,6 @@ def get_peer_by_id(conn: sqlite3.Connection, peer_id: int) -> sqlite3.Row | None
 	"""Get a peer by ID."""
 	cur = conn.execute("SELECT * FROM peers WHERE id = ?", (peer_id,))
 	return cur.fetchone()
-
-
-def update_peer_last_seen(
-	conn: sqlite3.Connection,
-	public_key: str,
-	client_ip: str,
-	handshake_at: int,
-) -> None:
-	"""Persist the client's last observed public IP and handshake timestamp."""
-	update_peers_last_seen_batch(conn, [(client_ip, handshake_at, public_key)])
 
 
 def update_peers_last_seen_batch(
@@ -206,10 +161,8 @@ def get_peer_metrics_stats(conn: sqlite3.Connection) -> dict[str, int | str]:
 	# Get database file size
 	size_bytes = 0
 	if db_path:
-		try:
+		with contextlib.suppress(OSError, ValueError):
 			size_bytes = Path(db_path).stat().st_size
-		except (OSError, ValueError):
-			pass
 
 	return {
 		"total_peers": int(row[0] or 0),
@@ -289,8 +242,8 @@ def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> str | Non
 
 	for row in cur.fetchall():
 		peer_address = str(row["peer_address"] or "")
-		for part in peer_address.split(","):
-			part = part.strip()
+		for raw_part in peer_address.split(","):
+			part = raw_part.strip()
 			if not part:
 				continue
 			try:
@@ -344,10 +297,10 @@ def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
 
 def get_dns_logging_disabled_ips(conn: sqlite3.Connection) -> set[str]:
 	"""Return set of peer VPN IP addresses that have DNS logging disabled.
-	
+
 	Extracts pure IP addresses (without CIDR prefix) from peer_address field
 	for all peers where dns_logging_enabled = 0.
-	
+
 	Returns:
 		Set of IP address strings (e.g., {"10.13.13.2", "fd13:13:13::2"})
 	"""
@@ -358,15 +311,15 @@ def get_dns_logging_disabled_ips(conn: sqlite3.Connection) -> set[str]:
 	cur = conn.execute(
 		"SELECT peer_address FROM peers WHERE dns_logging_enabled = 0 AND peer_address IS NOT NULL"
 	)
-	
+
 	disabled_ips: set[str] = set()
 	for row in cur.fetchall():
 		peer_address = row["peer_address"]
 		if not peer_address:
 			continue
 		# peer_address can be "10.0.0.2/32" or "10.0.0.2/32, fd13:13::2/128"
-		for part in str(peer_address).split(","):
-			part = part.strip()
+		for raw_part in str(peer_address).split(","):
+			part = raw_part.strip()
 			if not part:
 				continue
 			try:
@@ -375,5 +328,5 @@ def get_dns_logging_disabled_ips(conn: sqlite3.Connection) -> set[str]:
 				disabled_ips.add(str(iface.ip))
 			except ValueError:
 				continue
-	
+
 	return disabled_ips

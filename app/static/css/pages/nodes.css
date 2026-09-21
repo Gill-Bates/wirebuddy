@@ -36,7 +36,11 @@
 
 .node-fqdn-main code {
     color: var(--bs-secondary-color);
+
     /* Prevent horizontal overflow for long domains (UI-Lint compliance) */
+
+    /* Legacy fallback for engines without overflow-wrap: anywhere support. */
+    /* stylelint-disable-next-line declaration-property-value-keyword-no-deprecated -- preserve the legacy wrapping fallback */
     word-break: break-word;
     overflow-wrap: anywhere;
     max-width: 100%;
@@ -76,7 +80,7 @@
     width: var(--flag-width);
     height: var(--flag-height);
     border-radius: 2px;
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, .15);
+    box-shadow: 0 0 0 1px rgb(0 0 0 / 15%);
     object-fit: cover;
     flex: 0 0 auto;
 }
@@ -91,21 +95,18 @@
 
 .node-mobile-summary {
     display: none;
-}
-
-.node-mobile-summary-version,
-.node-mobile-summary-port {
-    font-family: var(--bs-font-monospace);
-    white-space: nowrap;
-}
-
-.node-mobile-summary {
     align-items: center;
     flex-wrap: wrap;
     gap: 0.25rem 0.5rem;
     margin-top: 0.35rem;
     font-size: 0.75rem;
     color: var(--bs-secondary-color);
+}
+
+.node-mobile-summary-version,
+.node-mobile-summary-port {
+    font-family: var(--bs-font-monospace);
+    white-space: nowrap;
 }
 
 .node-mobile-summary span+span::before {
@@ -128,6 +129,7 @@
 .enrollment-token-box {
     font-family: var(--bs-font-monospace);
     font-size: 0.75rem;
+
     /* Auto-fit content - no artificial max-height constraint */
     background: var(--bs-body-bg);
     border: 1px solid var(--bs-border-color);
@@ -158,6 +160,7 @@
 
 .node-actions-cell {
     white-space: nowrap;
+
     /* Ensure enough space for 5 buttons (5 × 38px + 4 × 4px gap = 206px) */
     min-width: 210px;
 }
@@ -183,7 +186,7 @@
     display: none !important;
 }
 
-@media (min-width: 768px) and (max-width: 1799.98px) {
+@media (width >=768px) and (width <=1799.98px) {
     .node-actions-cell {
         white-space: normal;
         min-width: 122px;
@@ -199,8 +202,7 @@
     pointer-events: none;
 }
 
-@media (max-width: 991.98px) {
-
+@media (width <=991.98px) {
     /* Hide Port column on tablet */
     .nodes-table th[data-label="Port"],
     .nodes-table td[data-label="Port"] {
@@ -209,12 +211,10 @@
 }
 
 /* Mobile-optimized nodes rows — card layout matching peers.html */
-@media (max-width: 767.98px) {
-
+@media (width <=767.98px) {
     /* UI-Lint: overflow-x auto (not hidden) to detect real layout issues */
     .table-responsive {
-        overflow-x: auto;
-        overflow-y: visible;
+        overflow: auto visible;
     }
 
     .nodes-table {
@@ -256,6 +256,9 @@
         padding: 0;
         min-width: 0;
         overflow-wrap: anywhere;
+
+        /* Legacy fallback for engines without overflow-wrap: anywhere support. */
+        /* stylelint-disable-next-line declaration-property-value-keyword-no-deprecated -- preserve the legacy wrapping fallback */
         word-break: break-word;
     }
 
@@ -277,8 +280,7 @@
 
     .nodes-table td[data-label="Status"] {
         grid-area: status;
-        justify-self: end;
-        align-self: center;
+        place-self: center end;
     }
 
     .nodes-table td[data-label="FQDN"] {

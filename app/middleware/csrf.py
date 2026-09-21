@@ -4,21 +4,23 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-"""CSRF protection middleware for UI routes."""
+"""CSRF protection for UI routes and cookie-authenticated API requests."""
 
 from __future__ import annotations
 
+import logging
 import os
 import posixpath
 import secrets
-from typing import Callable
-from urllib.parse import parse_qs
-from urllib.parse import urlparse
+from collections.abc import Callable
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
+
+_log = logging.getLogger(__name__)
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
@@ -46,22 +48,18 @@ def _default_port_for_scheme(scheme: str) -> int | None:
 def _origin_tuple(parsed) -> tuple[str, str, int | None] | None:
 	scheme = (parsed.scheme or "").lower()
 	host = (parsed.hostname or "").lower()
-	if not scheme or not host:
+	if scheme not in {"http", "https"} or not host:
 		return None
-	return scheme, host, parsed.port if parsed.port is not None else _default_port_for_scheme(scheme)
+	try:
+		port = parsed.port
+	except ValueError:
+		return None
+	return scheme, host, port if port is not None else _default_port_for_scheme(scheme)
 
 
 def _has_auth_cookie(request: Request) -> bool:
 	"""Return True when any configured auth cookie is present."""
 	return any(request.cookies.get(cookie_name) for cookie_name in _AUTH_COOKIE_NAMES)
-
-
-def _is_header_only_bearer_request(request: Request) -> bool:
-	"""Return True for API Bearer requests that do not carry auth cookies."""
-	if not request.url.path.startswith("/api/"):
-		return False
-	auth = request.headers.get("Authorization", "").strip()
-	return auth.startswith("Bearer ") and not _has_auth_cookie(request)
 
 
 def _is_secure_cookie_request(request: Request) -> bool:
@@ -71,22 +69,30 @@ def _is_secure_cookie_request(request: Request) -> bool:
 	try:
 		return _is_https(request)
 	except Exception:
+		_log.exception("Failed to determine HTTPS state for CSRF cookie")
 		return True
 
 
 class CSRFMiddleware(BaseHTTPMiddleware):
 	"""Double-Submit-Cookie CSRF Protection.
-	
+
 	1. Generates a random token and sets it as a cookie (HttpOnly=False).
-	2. On state-changing methods (POST, etc.), validates that the
-	   header 'X-CSRF-Token' matches the cookie.
-	3. Optional: Origin header check for additional hardening.
+	2. On state-changing methods, requires an Origin (or Referer) matching the
+	   configured public origins, or the request's own origin when none are set.
+	3. Then requires the 'X-CSRF-Token' header (or a ``csrf_token`` form field)
+	   to match the cookie.
+
+	API requests are only checked when they carry a session cookie: a request
+	authenticated solely by an Authorization header cannot be forged by a
+	browser, so header-only bearer clients pass untouched.
 	"""
 
 	def __init__(self, app: ASGIApp):
 		super().__init__(app)
+		from ..utils.config import get_config
+
 		origins_raw = os.environ.get("WIREBUDDY_CSRF_ALLOWED_ORIGINS", "").strip()
-		public_origin = os.environ.get("WIREBUDDY_PUBLIC_ORIGIN", "").strip()
+		public_origin = get_config().public_origin
 		configured = [item.strip() for item in origins_raw.split(",") if item.strip()]
 		if public_origin:
 			configured.append(public_origin)
@@ -99,7 +105,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 	def _requires_csrf(self, path: str) -> bool:
 		"""Check if path requires CSRF protection."""
 		normalized = posixpath.normpath(path).lower()
-		
+
 		for prefix in CSRF_PREFIXES:
 			norm_prefix = posixpath.normpath(prefix).lower()
 			if normalized.startswith(norm_prefix + "/") or normalized == norm_prefix:
@@ -112,10 +118,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 			return True
 		if request.url.path in _CSRF_EXEMPT_API_PATHS:
 			return False
-		for cookie_name in _AUTH_COOKIE_NAMES:
-			if request.cookies.get(cookie_name):
-				return True
-		return False
+		return _has_auth_cookie(request)
 
 	def _is_allowed_origin(self, origin_value: str, request: Request) -> bool:
 		"""Validate origin against configured public origins or the current request origin."""
@@ -142,10 +145,6 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 		# 1. Get token from cookie, or generate new one
 		csrf_token = request.cookies.get("csrf_token")
 		new_token = False
-		# Rotate token when serving login page to avoid reusing stale tokens.
-		if request.url.path == "/login" and request.method in SAFE_METHODS:
-			csrf_token = secrets.token_urlsafe(32)
-			new_token = True
 		if not csrf_token:
 			csrf_token = secrets.token_urlsafe(32)
 			new_token = True
@@ -157,7 +156,6 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 		if (
 			request.method not in SAFE_METHODS
 			and self._requires_csrf(request.url.path)
-			and not _is_header_only_bearer_request(request)
 			and self._is_cookie_authenticated_api_request(request)
 		):
 			# Origin check
@@ -166,7 +164,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 					content={"detail": "Cross-origin request blocked"},
 					status_code=403
 				)
-			
+
 			# CSRF token validation (constant-time comparison)
 			submitted_token = request.headers.get("X-CSRF-Token")
 			if not submitted_token:
@@ -200,7 +198,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 						content={"detail": "CSRF token header required for multipart requests"},
 						status_code=403,
 					)
-			
+
 			if not submitted_token or not secrets.compare_digest(csrf_token, submitted_token):
 				return JSONResponse(
 					content={"detail": "CSRF token missing or invalid"},

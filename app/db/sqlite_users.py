@@ -12,13 +12,12 @@ import enum
 import logging
 import sqlite3
 
+from ..utils import vault
 from ..utils.config import get_config
 from ..utils.crypto import hash_password
 from ..utils.time import utcnow
-from ..utils import vault
 from .sqlite_auth import delete_user_tokens
 from .sqlite_runtime import transaction
-
 
 _log = logging.getLogger(__name__)
 
@@ -160,6 +159,11 @@ def update_user(
 			if not user:
 				return UpdateResult.NOT_FOUND
 
+			if is_admin is not None and type(is_admin) is not bool:
+				raise ValueError("is_admin must be a boolean")
+			if is_active is not None and type(is_active) is not bool:
+				raise ValueError("is_active must be a boolean")
+
 			# Last-admin protection: prevent demoting or deactivating the last admin
 			is_currently_admin = bool(user["is_admin"]) and bool(user["is_active"])
 			will_lose_admin = (is_admin is False) or (is_active is False)
@@ -220,9 +224,8 @@ def delete_user(conn: sqlite3.Connection, user_id: int) -> bool:
 	with transaction(conn, immediate=True):
 		# Last-admin protection
 		user = get_user_by_id(conn, user_id)
-		if user and bool(user["is_admin"]) and bool(user["is_active"]):
-			if count_admins(conn) <= 1:
-				raise LastAdminError("Cannot delete the last admin user")
+		if user and bool(user["is_admin"]) and bool(user["is_active"]) and count_admins(conn) <= 1:
+			raise LastAdminError("Cannot delete the last admin user")
 		cur = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
 		return cur.rowcount > 0
 
@@ -266,16 +269,6 @@ def confirm_user_otp(conn: sqlite3.Connection, user_id: int, otp_recovery_codes:
 			SET otp_enabled = 1, otp_recovery_codes = ?
 			WHERE id = ? AND otp_secret IS NOT NULL
 			""",
-			(otp_recovery_codes, user_id),
-		)
-		return cur.rowcount > 0
-
-
-def update_user_recovery_codes(conn: sqlite3.Connection, user_id: int, otp_recovery_codes: str) -> bool:
-	"""Update persisted recovery code list after one-time code consumption."""
-	with transaction(conn):
-		cur = conn.execute(
-			"UPDATE users SET otp_recovery_codes = ? WHERE id = ?",
 			(otp_recovery_codes, user_id),
 		)
 		return cur.rowcount > 0
@@ -330,18 +323,19 @@ def update_user_auth_method(
 	passkey_enabled: bool,
 ) -> bool:
 	"""Update user's authentication method.
-	
+
 	Args:
+		conn: Open SQLite connection
 		user_id: User ID
 		auth_method: 'password', 'password_mfa', or 'passkey'
 		passkey_enabled: Whether passkey login is enabled
-		
+
 	Raises:
 		ValueError: If auth_method is not valid
 	"""
 	if auth_method not in _VALID_AUTH_METHODS:
 		raise ValueError(f"Invalid auth_method: {auth_method!r}")
-	
+
 	with transaction(conn):
 		cur = conn.execute(
 			"""
@@ -360,32 +354,14 @@ def update_user_auth_method(
 		return cur.rowcount > 0
 
 
-def get_user_auth_method(conn: sqlite3.Connection, user_id: int) -> tuple[str, bool] | None:
-	"""Get user's auth method and passkey_enabled status.
-	
-	Returns:
-		(auth_method, passkey_enabled) or None if user not found.
-	"""
-	if conn.row_factory is not sqlite3.Row:
-		raise TypeError("row_factory must be sqlite3.Row")
-	cur = conn.execute(
-		"SELECT auth_method, passkey_enabled FROM users WHERE id = ?",
-		(user_id,),
-	)
-	row = cur.fetchone()
-	if not row:
-		return None
-	return (row["auth_method"] or "password", bool(row["passkey_enabled"]))
-
-
 def set_passkey_pending(conn: sqlite3.Connection, user_id: int, pending: bool) -> bool:
 	"""Set passkey_pending flag for a user (admin enables passkey onboarding).
-	
+
 	Args:
 		conn: Database connection
 		user_id: User ID
 		pending: True to mark user for passkey setup, False to clear
-		
+
 	Returns:
 		True if user was updated, False if user not found
 	"""
@@ -402,13 +378,13 @@ def set_passkey_pending(conn: sqlite3.Connection, user_id: int, pending: bool) -
 
 def clear_passkey_onboarding(conn: sqlite3.Connection, user_id: int) -> None:
 	"""Clear passkey_pending and set passkey_enabled after successful registration.
-	
+
 	Called after user completes passkey registration during onboarding.
 	"""
 	with transaction(conn):
 		conn.execute(
 			"""
-			UPDATE users 
+			UPDATE users
 			SET passkey_pending = 0, passkey_enabled = 1, auth_method = 'passkey'
 			WHERE id = ?
 			""",
@@ -419,7 +395,7 @@ def clear_passkey_onboarding(conn: sqlite3.Connection, user_id: int) -> None:
 
 def disable_user_passkeys(conn: sqlite3.Connection, user_id: int) -> int:
 	"""Disable passkey authentication for a user and delete all passkeys.
-	
+
 	Returns:
 		Number of passkeys deleted
 	"""
@@ -427,11 +403,11 @@ def disable_user_passkeys(conn: sqlite3.Connection, user_id: int) -> int:
 		# Delete all passkeys
 		cur = conn.execute("DELETE FROM passkeys WHERE user_id = ?", (user_id,))
 		deleted = cur.rowcount
-		
+
 		# Reset user state
 		conn.execute(
 			"""
-			UPDATE users 
+			UPDATE users
 			SET passkey_enabled = 0, passkey_pending = 0,
 			    auth_method = CASE WHEN otp_enabled = 1 THEN 'password_mfa' ELSE 'password' END
 			WHERE id = ?

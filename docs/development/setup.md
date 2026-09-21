@@ -6,7 +6,7 @@ Guide for setting up a local WireBuddy development environment.
 
 ### Required
 
-- **Python 3.11+** (3.13 recommended)
+- **Python 3.13+**
 - **Git**
 - **pip and venv**
 
@@ -53,12 +53,12 @@ source .venv/bin/activate
 
 ### Install Dependencies
 
-```bash
-# Core dependencies
-pip install -r requirements.txt
+`pyproject.toml` is the single manifest: it holds the release version, the runtime
+dependencies, and the `dev` and `docs` extras.
 
-# Development dependencies
-pip install -r requirements-dev.txt
+```bash
+# Editable install with development dependencies (pytest, ruff)
+pip install -e ".[dev]"
 ```
 
 ## Configuration
@@ -134,28 +134,21 @@ pytest --cov=app --cov-report=html
 ### Run Linter
 
 ```bash
-# Ruff (fast)
-ruff check app/
-
-# Pylint
-pylint app/
-
-# Type checking
-mypy app/
+ruff check .
 ```
+
+The full configured rule set gates every PR at zero findings; see
+`pyproject.toml` for the `[tool.ruff.lint]` configuration and documented
+exemptions.
 
 ### Format Code
 
 ```bash
-# Black
-black app/
-
-# isort (import sorting)
-isort app/
-
-# Or use Ruff
-ruff format app/
+ruff format .
 ```
+
+Ruff is the only formatter and linter used in this project — there is no
+Black, isort, mypy, or pylint dependency.
 
 ## IDE Setup
 
@@ -168,7 +161,6 @@ Install recommended extensions:
   "recommendations": [
     "ms-python.python",
     "ms-python.vscode-pylance",
-    "ms-python.black-formatter",
     "charliermarsh.ruff",
     "tamasfe.even-better-toml"
   ]
@@ -179,10 +171,8 @@ Install recommended extensions:
 
 ```json
 {
-  "python.linting.enabled": true,
-  "python.linting.ruffEnabled": true,
-  "python.formatting.provider": "black",
   "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true,
     "editor.codeActionsOnSave": {
       "source.organizeImports": true
@@ -195,10 +185,7 @@ Install recommended extensions:
 
 1. Open project
 2. Configure Python interpreter (point to `.venv/bin/python`)
-3. Enable:
-   - Black formatter
-   - Ruff linting
-   - Type checking
+3. Enable the Ruff plugin for linting and formatting
 
 ## Project Structure
 
@@ -226,11 +213,9 @@ wirebuddy/
 ├── docs/                  # MkDocs documentation
 ├── data/                  # Runtime data (gitignored)
 ├── dev-data/              # Development data (gitignored)
-├── requirements.txt       # Production dependencies
-├── requirements-dev.txt   # Development dependencies
+├── pyproject.toml         # Project metadata, version, dependencies, dev/docs extras
 ├── run.py                 # Development entry point
 ├── setup.conf            # Configuration
-├── VERSION               # Version file
 ├── README.md
 ├── LICENSE
 └── .gitignore
@@ -249,9 +234,8 @@ git checkout -b feature/my-feature
 1. Write code
 2. Add tests
 3. Run tests: `pytest`
-4. Format code: `black .` + `isort .`
+4. Format code: `ruff format .`
 5. Lint code: `ruff check .`
-6. Type check: `mypy app/`
 
 ### Commit Changes
 
@@ -403,7 +387,7 @@ def admin_user(client):
     pass
 
 def test_login(client, admin_user):
-    response = client.post("/api/auth/login", json={
+    response = client.post("/api/login", json={
         "username": "admin",
         "password": "admin"
     })
@@ -450,8 +434,8 @@ Templates auto-reload on save (development mode).
 ### Build Docs Locally
 
 ```bash
-# Install docs dependencies
-pip install -r docs/requirements-docs.txt
+# Install docs dependencies (the "docs" extra in pyproject.toml)
+pip install -e ".[docs]"
 
 # The CI workflow publishes these two root files as documentation pages.
 cp CHANGELOG.md docs/changelog.md
@@ -507,7 +491,7 @@ docker run -d \
 source .venv/bin/activate
 
 # Reinstall dependencies
-pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
 
 ### Database Locked

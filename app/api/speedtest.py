@@ -25,9 +25,9 @@ from ..db.sqlite_nodes import get_all_nodes
 from ..db.sqlite_runtime import close_connection, connect, transaction
 from ..db.sqlite_settings import (
 	SPEEDTEST_RETENTION_OPTIONS,
+	get_node_speedtest_last_results,
 	get_speedtest_enabled,
 	get_speedtest_last_result,
-	get_node_speedtest_last_results,
 	get_speedtest_retention_days,
 	set_speedtest_enabled,
 	set_speedtest_last_result,
@@ -40,12 +40,12 @@ from ..speedtest import (
 	SpeedtestCooldownError,
 	acquire_speedtest_run_lease,
 )
+from ..speedtest.tester import ProgressCallback, ProgressEvent, run_speedtest
 from ..utils.config import Config
-from ..utils.deps import get_conn, get_config
+from ..utils.deps import get_config, get_conn
 from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, RATE_LIMIT_UI_HEAVY, limiter
 from ..utils.time import utcnow
 from ..utils.tsdb_helpers import build_latest_by_node
-from ..speedtest.tester import ProgressCallback, ProgressEvent, run_speedtest
 from .auth import get_current_user, require_admin
 from .response import ok_response
 from .sse import broadcast_event_to_queues, format_sse_event, format_sse_keepalive
@@ -185,7 +185,7 @@ async def _stream_speedtest_session(
 				break
 			try:
 				event_type, payload = await asyncio.wait_for(queue.get(), timeout=30.0)
-			except asyncio.TimeoutError:
+			except TimeoutError:
 				if session.error_payload is not None:
 					yield format_sse_event("error", session.error_payload)
 					break
@@ -256,15 +256,12 @@ async def _persist_speedtest_state(
 	result: dict[str, Any] | None = None,
 ):
 	"""Persist the latest run timestamp and optional successful result in SQLite."""
+	# This is a write: unlike _run_in_threadpool_with_timeout's read-only
+	# contract, an abandoned deadline here would report failure while the
+	# worker thread keeps running and commits moments later — a false
+	# negative, not a safe abort. Await the threadpool call directly instead.
 	try:
-		await _run_in_threadpool_with_timeout(
-			SPEEDTEST_SQLITE_TIMEOUT_SECONDS,
-			_persist_speedtest_state_sync,
-			db_path,
-			result,
-		)
-	except TimeoutError:
-		_log.warning("SPEEDTEST_STATE_PERSIST_TIMEOUT")
+		await run_in_threadpool(_persist_speedtest_state_sync, db_path, result)
 	except Exception as exc:
 		_log.warning("SPEEDTEST_STATE_DB_WRITE_FAILED: %s", exc)
 
@@ -389,9 +386,11 @@ async def _acquire_speedtest_lease(
 
 async def _store_speedtest_result(tsdb_dir: Path, result: dict[str, Any]) -> bool:
 	"""Persist a successful speedtest result to TSDB."""
+	# Write, not read: see the note in _persist_speedtest_state. A bounded
+	# deadline here could report "not stored" while the append still lands
+	# afterwards, which is worse than just awaiting the write.
 	try:
-		await _run_in_threadpool_with_timeout(
-			SPEEDTEST_TSDB_TIMEOUT_SECONDS,
+		await run_in_threadpool(
 			tsdb.append_point,
 			tsdb_dir,
 			peer_key=SPEEDTEST_TSDB_KEY,
@@ -399,9 +398,6 @@ async def _store_speedtest_result(tsdb_dir: Path, result: dict[str, Any]) -> boo
 			value=result,
 		)
 		return True
-	except TimeoutError:
-		_log.warning("SPEEDTEST_TSDB_WRITE_TIMEOUT")
-		return False
 	except Exception as exc:
 		_log.warning("SPEEDTEST_TSDB_WRITE_FAILED: %s", exc)
 		return False
@@ -423,13 +419,10 @@ async def _run_speedtest_core(
 			timeout=SPEEDTEST_RUN_TIMEOUT_SECONDS,
 		)
 		run_completed = True
-		if isinstance(raw_result, dict):
-			result = raw_result
-		else:
-			result = {"status": "error", "reason": "Invalid result type"}
+		result = raw_result if isinstance(raw_result, dict) else {"status": "error", "reason": "Invalid result type"}
 		if result.get("status") != "error":
 			persisted_result = result
-	except asyncio.TimeoutError:
+	except TimeoutError:
 		_log.error("SPEEDTEST_TIMEOUT: test exceeded %ss", SPEEDTEST_RUN_TIMEOUT_SECONDS)
 		raise HTTPException(status_code=504, detail="Speed test timed out") from None
 	except asyncio.CancelledError:
@@ -482,12 +475,12 @@ async def trigger_speedtest_stream(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Stream progress for an already-started speed test via Server-Sent Events.
-	
+
 	Returns a stream of SSE events with progress updates:
 	- event: progress (phase updates)
 	- event: result (final result)
 	- event: error (on failure)
-	
+
 	Each progress event contains: phase, progress (0-1), message, detail (optional)
 	"""
 	sessions = _get_speedtest_stream_sessions(request)
@@ -524,12 +517,14 @@ async def get_speedtest_history(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Get speedtest history data for charting.
-	
+
 	Args:
+		request: Incoming request; the rate limiter resolves its key from it
 		range_key: Time range preset (6h, 24h, 7d, 30d, 90d, 180d, y1)
 		limit: Maximum number of points to return
 		node_id: Filter results — null or empty = master only, 'all' = all remote nodes (master excluded), otherwise specific node
-	
+		conn: Open SQLite connection (injected)
+
 	Returns:
 		List of speedtest results with timestamps
 	"""
@@ -589,12 +584,12 @@ async def get_speedtest_nodes(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Get list of nodes with their most recent speedtest result.
-	
+
 	Returns:
 		- List of nodes with their last speedtest metrics for the filter dropdown and badges
 	"""
 	cfg = get_config(request)
-	
+
 	# Get all nodes from DB
 	try:
 		nodes = await _run_in_threadpool_with_timeout(
@@ -636,10 +631,10 @@ async def get_speedtest_nodes(
 			_log.warning("SPEEDTEST_NODES_TSDB_TIMEOUT")
 			raise HTTPException(status_code=504, detail="Timed out reading speedtest nodes") from None
 		latest_by_node = build_latest_by_node(points)
-	
+
 	# Build result list, starting with master
 	result = []
-	
+
 	# Master entry
 	if master_last is None:
 		master_last = latest_by_node.get(None)
@@ -649,7 +644,7 @@ async def get_speedtest_nodes(
 		"status": "online",
 		"last_speedtest": master_last,
 	})
-	
+
 	# Node entries
 	for n in nodes:
 		node_id = str(n["id"])
@@ -662,7 +657,7 @@ async def get_speedtest_nodes(
 			"status": n["status"],
 			"last_speedtest": node_last,
 		})
-	
+
 	return ok_response(data={"nodes": result})
 
 

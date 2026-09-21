@@ -8,23 +8,15 @@
 
 Storage backend
 ~~~~~~~~~~~~~~~~
-By default the limiter counts requests in process memory. WireBuddy web mode
-runs single-worker (``docker/entrypoint.sh`` forces ``--workers 1``), so the
-in-memory counter is authoritative.
-
-If the deployment is ever scaled to multiple worker processes, per-process
-counters diverge and every worker grants the full quota (e.g. ``5/minute``
-with 4 workers becomes up to ``20/minute``). Set
-``WIREBUDDY_RATE_LIMIT_STORAGE_URI`` to a shared backend such as
-``redis://host:6379/0`` or ``memcached://host:11211`` so all workers share one
-counter. A multi-worker configuration without that variable is refused at
-import time rather than silently under-enforcing.
+WireBuddy web mode is single-worker only (``docker/entrypoint.sh`` hardcodes
+``--workers 1``; the in-process job/session state would not survive a second
+worker anyway). The in-memory limiter counter is therefore always
+authoritative and no shared backend is needed.
 """
 
 from __future__ import annotations
 
 import os
-import sys
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -56,49 +48,17 @@ def rate_limit_key(request: Request) -> str:
 	return get_remote_address(request)
 
 
-def _configured_worker_count() -> int:
-	"""Best-effort read of an explicit multi-worker configuration."""
-	raw = os.getenv("UVICORN_WORKERS") or os.getenv("WEB_CONCURRENCY") or "1"
-	try:
-		return int(raw)
-	except ValueError:
-		return 1
-
-
-def _select_storage_uri(configured: str, worker_count: int) -> str:
-	"""Resolve the limiter storage URI; a shared backend is mandatory for >1 worker."""
-	if configured:
-		return configured
-	if worker_count > 1:
-		raise RuntimeError(
-			"Multiple workers are configured but WIREBUDDY_RATE_LIMIT_STORAGE_URI "
-			"is not set. In-memory rate limits are per-process and would let each "
-			"worker grant the full quota. Configure a shared redis:// or "
-			"memcached:// backend."
-		)
-	return "memory://"
-
-
-def _resolve_storage_uri() -> str:
-	"""Return the limiter storage URI for the current environment."""
-	running_tests = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
-	worker_count = 1 if running_tests else _configured_worker_count()
-	return _select_storage_uri(
-		os.getenv("WIREBUDDY_RATE_LIMIT_STORAGE_URI", "").strip(),
-		worker_count,
-	)
-
-
-# Global limiter instance
-limiter = Limiter(key_func=rate_limit_key, storage_uri=_resolve_storage_uri())
+# Global limiter instance. Single-worker deployment (see module docstring) —
+# the in-memory backend is always correct here.
+limiter = Limiter(key_func=rate_limit_key, storage_uri="memory://")
 
 __all__ = [
+	"RATE_LIMIT_API",
 	"RATE_LIMIT_AUTH",
 	"RATE_LIMIT_CRITICAL",
 	"RATE_LIMIT_DEFAULT",
 	"RATE_LIMIT_HEAVY",
 	"RATE_LIMIT_UI_HEAVY",
-	"RATE_LIMIT_API",
 	"limiter",
 	"rate_limit_key",
 ]

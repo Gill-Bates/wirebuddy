@@ -50,10 +50,9 @@ Limitations
 
 from __future__ import annotations
 
-import ipaddress
-from collections import defaultdict
-from collections.abc import Iterator
+import contextlib
 import fcntl
+import ipaddress
 import json
 import logging
 import os
@@ -62,6 +61,8 @@ import stat
 import subprocess
 import threading
 import time
+from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -70,15 +71,15 @@ from .geoip import geolocate_ip, lookup_asn
 _log = logging.getLogger(__name__)
 
 __all__ = [
-	"init_conntrack_accounting",
-	"sample_country_traffic",
-	"acquire_sampler_leadership",
-	"release_sampler_leadership",
-	"reset_state",
-	"GEO_TRAFFIC_KEY",
-	"GEO_TRAFFIC_METRIC",
 	"ASN_TRAFFIC_KEY",
 	"ASN_TRAFFIC_METRIC",
+	"GEO_TRAFFIC_KEY",
+	"GEO_TRAFFIC_METRIC",
+	"acquire_sampler_leadership",
+	"init_conntrack_accounting",
+	"release_sampler_leadership",
+	"reset_state",
+	"sample_country_traffic",
 ]
 
 # ---------------------------------------------------------------------------
@@ -103,7 +104,8 @@ _EXTRA_NON_PUBLIC_V4 = (
 # IPv6 has no known exclusions for this use case
 _EXTRA_NON_PUBLIC_V6: tuple = ()
 
-# Synthetic TSDB identifiers (re-exported for use by the scheduler task)
+# Synthetic TSDB identifiers. The single definition: the scheduler writes
+# under these and app/api/wireguard_stats_country.py reads them back.
 GEO_TRAFFIC_KEY = "__geo_traffic__"
 GEO_TRAFFIC_METRIC = "snapshot"
 ASN_TRAFFIC_KEY = "__asn_traffic__"
@@ -113,7 +115,7 @@ ASN_TRAFFIC_METRIC = "snapshot"
 def _resolve_tool_path(*candidates: str) -> str | None:
 	"""Return the first trusted executable path from a fixed allowlist."""
 	for candidate in candidates:
-		if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+		if Path(candidate).is_file() and os.access(candidate, os.X_OK):
 			return candidate
 	return None
 
@@ -179,7 +181,7 @@ def _parse_interface_address(
 				addr_str,
 				net,
 			)
-		return net, ipaddress.ip_address(addr_str.split("/")[0])
+		return net, ipaddress.ip_address(addr_str.split("/", maxsplit=1)[0])
 	except ValueError:
 		return None
 
@@ -291,6 +293,7 @@ def _get_wireguard_subnets() -> tuple[
 			result = subprocess.run(
 				[_BIN_IP, "-j", "addr", "show", "type", "wireguard"],
 				capture_output=True, text=True, timeout=5,
+				check=False,
 			)
 			if result.returncode == 0:
 				if len(result.stdout) > _MAX_IP_JSON_OUTPUT:
@@ -329,6 +332,7 @@ def _get_wireguard_subnets() -> tuple[
 				iface_result = subprocess.run(
 					[_BIN_WG, "show", "interfaces"],
 					capture_output=True, text=True, timeout=5,
+					check=False,
 				)
 				if iface_result.returncode == 0:
 					for iface in iface_result.stdout.strip().split():
@@ -338,6 +342,7 @@ def _get_wireguard_subnets() -> tuple[
 						addr_result = subprocess.run(
 							[_BIN_IP, "addr", "show", "dev", iface],
 							capture_output=True, text=True, timeout=5,
+							check=False,
 						)
 						if addr_result.returncode == 0:
 							for m in re.finditer(r"inet6?\s+(\S+)", addr_result.stdout):
@@ -394,6 +399,7 @@ def _get_subnets_from_db() -> tuple[
 		``address6`` columns of the ``interfaces`` table.
 	"""
 	import sqlite3
+
 	from .config import get_config
 
 	cfg = get_config()
@@ -562,10 +568,7 @@ def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 		return True
 
 	# IPv4: check exclusions (explicit loop avoids generator overhead)
-	for net in _EXTRA_NON_PUBLIC_V4:
-		if ip in net:
-			return False
-	return True
+	return all(ip not in net for net in _EXTRA_NON_PUBLIC_V4)
 
 
 # ---------------------------------------------------------------------------
@@ -618,7 +621,7 @@ def acquire_sampler_leadership(lock_dir: Path) -> bool:
 
 		try:
 			os.ftruncate(fd, 0)
-			os.write(fd, f"pid={os.getpid()}\n".encode("utf-8"))
+			os.write(fd, f"pid={os.getpid()}\n".encode())
 		except OSError:
 			pass
 
@@ -634,14 +637,10 @@ def release_sampler_leadership() -> None:
 	with _sampler_lock:
 		if _sampler_lock_fd is None:
 			return
-		try:
+		with contextlib.suppress(OSError):
 			fcntl.flock(_sampler_lock_fd, fcntl.LOCK_UN)
-		except OSError:
-			pass
-		try:
+		with contextlib.suppress(OSError):
 			os.close(_sampler_lock_fd)
-		except OSError:
-			pass
 		_sampler_lock_fd = None
 
 
@@ -681,10 +680,8 @@ def sample_country_traffic(
 
 	# Warn if byte accounting appears to be off — log once, re-arm when it recovers
 	acct_active: bool | None = None
-	try:
+	with contextlib.suppress(OSError):
 		acct_active = _CONNTRACK_ACCT.read_text().strip() == "1"
-	except OSError:
-		pass
 
 	if acct_active is not None:
 		with _ct_lock:
@@ -807,16 +804,17 @@ def reset_state() -> None:
 	Acquires both locks in consistent order to prevent race conditions.
 	Intended for testing or startup paths where sampling is not running concurrently.
 	"""
-	global _ct_initialized, _ct_prev, _wg_subnets_cache, _wg_gateway_ips_cache, _wg_subnets_ts, _acct_warned
+	# _ct_prev is mutated in place with .clear() in this function, never
+	# rebound, so it is not part of the global declaration.
+	global _ct_initialized, _wg_subnets_cache, _wg_gateway_ips_cache, _wg_subnets_ts, _acct_warned
 
 	release_sampler_leadership()
 
 	# Acquire both locks in consistent order (wg_lock → ct_lock)
-	with _wg_lock:
-		with _ct_lock:
-			_ct_prev.clear()
-			_ct_initialized = False
-			_acct_warned = False
-			_wg_subnets_cache = []
-			_wg_gateway_ips_cache = set()
-			_wg_subnets_ts = 0.0
+	with _wg_lock, _ct_lock:
+		_ct_prev.clear()
+		_ct_initialized = False
+		_acct_warned = False
+		_wg_subnets_cache = []
+		_wg_gateway_ips_cache = set()
+		_wg_subnets_ts = 0.0

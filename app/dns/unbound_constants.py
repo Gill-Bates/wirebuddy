@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import os
@@ -19,6 +18,7 @@ from pathlib import Path
 from typing import IO, TypedDict
 
 from ..utils.config import get_config
+from ..utils.subprocess import run_command
 
 _log = logging.getLogger(__name__)
 
@@ -143,14 +143,6 @@ def get_local_data_file() -> Path:
 	return get_config().dns_dir / "local-data.conf"
 
 
-def clear_path_caches() -> None:
-	"""Compatibility no-op for legacy callers.
-
-	Path getters are no longer cached in this module.
-	"""
-	return None
-
-
 def normalize_content_type(value: str | None) -> str:
 	"""Normalize an HTTP Content-Type to media type only."""
 	return (value or "").split(";", 1)[0].strip().lower()
@@ -168,47 +160,20 @@ def is_allowed_blocklist_content_type(value: str | None) -> bool:
 async def run_exec(*cmd: str, timeout: float = EXEC_TIMEOUT) -> tuple[int, str, str]:
 	"""Run a command and return (code, stdout, stderr). Uses exec, not shell.
 
-	A timeout (default 5 s) prevents hung subprocesses from blocking the
-	FastAPI event loop – which was the root cause of UI freezes.
+	Never raises: a timeout or launch failure comes back as ``(-1, "", reason)``,
+	which is the contract the Unbound supervisor relies on. The process handling
+	itself (process-group kill, output limit, cancellation cleanup) is
+	``app.utils.subprocess.run_command``.
 	"""
-	proc: asyncio.subprocess.Process | None = None
 	try:
-		proc = await asyncio.create_subprocess_exec(
-			*cmd,
-			stdout=asyncio.subprocess.PIPE,
-			stderr=asyncio.subprocess.PIPE,
-		)
-
-		try:
-			stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-		except asyncio.TimeoutError:
-			_log.warning("DNS_EXEC_TIMEOUT command timed out after %.1fs: %s", timeout, cmd)
-			with contextlib.suppress(Exception):
-				proc.kill()
-			with contextlib.suppress(Exception):
-				await asyncio.wait_for(proc.communicate(), timeout=2.0)
-			return -1, "", f"Command timed out after {timeout}s"
-
-		stdout_text = stdout.decode("utf-8", errors="replace")
-		stderr_text = stderr.decode("utf-8", errors="replace")
-
-		code = proc.returncode
-		if code is None:
-			return -1, stdout_text, "Process return code missing"
-
-		return code, stdout_text, stderr_text
+		result = await run_command(*cmd, timeout=timeout)
+	except TimeoutError:
+		_log.warning("DNS_EXEC_TIMEOUT command timed out after %.1fs: %s", timeout, cmd)
+		return -1, "", f"Command timed out after {timeout}s"
 	except Exception as exc:
 		_log.warning("DNS_EXEC_ERROR command failed: %s – %s", cmd, exc)
 		return -1, "", str(exc)
-	finally:
-		# Cleanup: kill leftover process regardless of exception type
-		if proc is not None and proc.returncode is None:
-			with contextlib.suppress(Exception):
-				proc.kill()
-			with contextlib.suppress(Exception):
-				await asyncio.wait_for(proc.communicate(), timeout=2.0)
-			with contextlib.suppress(Exception):
-				await proc.wait()
+	return result.returncode, result.stdout, result.stderr
 
 
 @contextlib.contextmanager
@@ -217,12 +182,12 @@ def atomic_write(
 	encoding: str = "utf-8",
 	*,
 	mode: int = 0o644,
-) -> Generator[IO[str], None, None]:
-	"""Context manager for atomic file writes with fsync.
-	
+) -> Generator[IO[str]]:
+	r"""Context manager for atomic file writes with fsync.
+
 	Yields a file handle for writing. On successful exit, the file is
 	fsync'd and atomically moved to the target path.
-	
+
 	Example:
 		with atomic_write(path) as f:
 			f.write("line 1\n")
@@ -241,8 +206,8 @@ def atomic_write(
 			yield f
 			f.flush()
 			os.fsync(f.fileno())
-		os.chmod(tmp_path, mode)
-		os.replace(tmp_path, path)
+		Path(tmp_path).chmod(mode)
+		Path(tmp_path).replace(path)
 		# Sync parent directory to ensure the rename is durable
 		try:
 			dir_fd = os.open(str(path.parent), os.O_RDONLY)
@@ -259,8 +224,8 @@ def atomic_write(
 		raise
 	finally:
 		with contextlib.suppress(OSError):
-			if os.path.exists(tmp_path):
-				os.unlink(tmp_path)
+			if Path(tmp_path).exists():
+				Path(tmp_path).unlink()
 
 
 def atomic_write_text(path: Path, content: str, *, mode: int = 0o644) -> None:
@@ -270,31 +235,30 @@ def atomic_write_text(path: Path, content: str, *, mode: int = 0o644) -> None:
 
 
 __all__ = [
-	"BlocklistMeta",
-	"UNBOUND_CONF_DIR",
-	"UNBOUND_CONF",
-	"QUERY_LOG",
-	"UNBOUND_PID_FILE",
-	"DNSSEC_ROOT_KEY",
-	"BLOCKLIST_REGISTRY",
-	"DEFAULT_BLOCKLIST_IDS",
-	"DEFAULT_BLOCKLISTS",
-	"BLOCKLIST_MAX_BYTES",
-	"BLOCKLIST_MAX_LINES",
-	"BLOCKLIST_MAX_DOMAINS",
-	"CUSTOM_RULES_TAG",
 	"ALLOWED_BLOCKLIST_CONTENT_TYPES",
-	"normalize_content_type",
-	"is_allowed_blocklist_content_type",
+	"BLOCKLIST_MAX_BYTES",
+	"BLOCKLIST_MAX_DOMAINS",
+	"BLOCKLIST_MAX_LINES",
+	"BLOCKLIST_REGISTRY",
+	"CUSTOM_RULES_TAG",
+	"DEFAULT_BLOCKLISTS",
+	"DEFAULT_BLOCKLIST_IDS",
+	"DNSSEC_ROOT_KEY",
 	"DOMAIN_LABEL_RE",
-	"HOST_LABEL_RE",
-	"UPSTREAM_ADDR_RE",
 	"EXEC_TIMEOUT",
+	"HOST_LABEL_RE",
+	"QUERY_LOG",
+	"UNBOUND_CONF",
+	"UNBOUND_CONF_DIR",
+	"UNBOUND_PID_FILE",
+	"UPSTREAM_ADDR_RE",
+	"BlocklistMeta",
+	"atomic_write",
+	"atomic_write_text",
 	"get_blocklist_file",
 	"get_custom_client_rules_file",
 	"get_local_data_file",
-	"clear_path_caches",
+	"is_allowed_blocklist_content_type",
+	"normalize_content_type",
 	"run_exec",
-	"atomic_write",
-	"atomic_write_text",
 ]

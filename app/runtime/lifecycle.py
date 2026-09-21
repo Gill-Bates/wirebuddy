@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: AGPL-3.0
+# SPDX-License-Identifier: MIT
 #
 
 """Application lifecycle management.
@@ -145,6 +145,9 @@ class LifecycleManager:
 
         Override in subclass for custom startup logic.
         """
+        # Part of the override contract even though the base implementation has
+        # no use for it; `del` marks that deliberately, as _shutdown does below.
+        del ctx
         await self._container.start_all()
 
     async def _shutdown(self, ctx: LifecycleContext) -> None:
@@ -158,7 +161,7 @@ class LifecycleManager:
         completed = False
         try:
             completed = await self._container.stop_all(timeout=self.SHUTDOWN_TIMEOUT)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _log.warning("SHUTDOWN_TIMEOUT timeout=%.1fs", self.SHUTDOWN_TIMEOUT)
         finally:
             self._started = False

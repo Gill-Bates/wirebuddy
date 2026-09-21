@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: AGPL-3.0
+# SPDX-License-Identifier: MIT
 #
 
 """WireGuard interface lifecycle service.
@@ -166,7 +166,7 @@ class WireGuardService(RuntimeService):
                         res.stderr,
                     )
                     remaining_interfaces.append(iface_name)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 _log.warning("WIREGUARD_STOP_TIMEOUT name=%s", iface_name)
                 remaining_interfaces.append(iface_name)
             except FileNotFoundError:
@@ -218,7 +218,7 @@ class WireGuardService(RuntimeService):
             else:
                 health.healthy = False
                 health.error = "wg show failed"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             health.healthy = False
             health.error = "wg health check timed out"
         except FileNotFoundError:
@@ -265,15 +265,14 @@ class WireGuardService(RuntimeService):
             if up_res.returncode == 0:
                 _log.info("WIREGUARD_INTERFACE_STARTED name=%s", iface_name)
                 return iface_name
-            else:
-                _log.warning(
-                    "WIREGUARD_START_FAILED name=%s stderr=%s",
-                    iface_name,
-                    up_res.stderr,
-                )
-                return None
+            _log.warning(
+                "WIREGUARD_START_FAILED name=%s stderr=%s",
+                iface_name,
+                up_res.stderr,
+            )
+            return None
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _log.warning("WIREGUARD_START_TIMEOUT name=%s", iface_name)
             return None
         except FileNotFoundError:
@@ -342,7 +341,7 @@ class WireGuardService(RuntimeService):
                             iface_name,
                             del_res.stderr,
                         )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     _log.warning("WIREGUARD_STALE_DELETE_TIMEOUT name=%s", iface_name)
                 except FileNotFoundError:
                     _log.exception("WIREGUARD_TOOLS_MISSING name=%s", iface_name)
@@ -354,7 +353,7 @@ class WireGuardService(RuntimeService):
 
         except FileNotFoundError:
             _log.debug("wg command not found, skipping stale cleanup")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _log.warning("Timeout checking for stale interfaces")
         except Exception:
             _log.exception("Could not check stale interfaces")
@@ -397,13 +396,12 @@ class WireGuardService(RuntimeService):
             if up_res.returncode == 0:
                 _log.info("WIREGUARD_INTERFACE_RESTARTED name=%s", iface_name)
                 return True
-            else:
-                _log.warning(
-                    "WIREGUARD_RESTART_UP_FAILED name=%s stderr=%s",
-                    iface_name,
-                    up_res.stderr,
-                )
-                return False
+            _log.warning(
+                "WIREGUARD_RESTART_UP_FAILED name=%s stderr=%s",
+                iface_name,
+                up_res.stderr,
+            )
+            return False
 
         except FileNotFoundError:
             _log.exception("WIREGUARD_TOOLS_MISSING name=%s", iface_name)

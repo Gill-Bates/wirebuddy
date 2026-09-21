@@ -4,7 +4,7 @@ title: DNS Ad-Blocking
 
 # DNS Ad-Blocking
 
-WireBuddy includes an integrated Unbound DNS resolver with powerful ad-blocking and privacy features.
+WireBuddy includes an integrated Unbound DNS resolver with blocklist-based ad blocking, DNS-over-TLS and DNSSEC validation.
 
 ## Overview
 
@@ -98,7 +98,7 @@ This allows different filtering levels for different devices (e.g., strict filte
 
 ## Custom Rules
 
-Custom rules use **AdGuard syntax** for powerful domain filtering.
+Custom rules use **AdGuard syntax** to block or allow individual domains.
 
 **Navigate to:** Settings → DNS → Custom Rules
 
@@ -215,20 +215,8 @@ Example:
 
 Click **Validate** to test connectivity to your upstream DNS servers before saving.
 
-??? example "Popular DoT Providers"
-    ```
-    # Cloudflare
-    1.1.1.1@853#cloudflare-dns.com
-    1.0.0.1@853#cloudflare-dns.com
-    
-    # Quad9
-    9.9.9.9@853#dns.quad9.net
-    149.112.112.112@853#dns.quad9.net
-    
-    # AdGuard DNS
-    94.140.14.14@853#dns.adguard.com
-    94.140.15.15@853#dns.adguard.com
-    ```
+Ready-to-paste addresses for common providers are listed under
+[Popular Upstream Providers](../configuration/dns.md#popular-upstream-providers).
 
 ## DNSSEC
 

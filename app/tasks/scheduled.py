@@ -13,13 +13,13 @@ main lifespan closure to improve testability and maintainability.
 from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict
-from collections.abc import Callable
 import logging
 import os
-from pathlib import Path
 import re
 import time
+from collections import OrderedDict
+from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..db import tsdb
@@ -94,22 +94,22 @@ def _resolve_wg_binary() -> str | None:
 async def update_blocklists(ctx: main.LifespanContext) -> None:
     """Scheduled task: download and apply blocklists."""
     from ..dns import unbound as _unbound
-    from ..main import _read_blocklist_enabled_sync, _load_blocklist_update_inputs_sync
-    
+    from ..main import _load_blocklist_update_inputs_sync, _read_blocklist_enabled_sync
+
     if not _unbound.is_unbound_installed():
         return
-    
+
     try:
         def _read_inputs():
             enabled = _read_blocklist_enabled_sync(ctx.cfg.db_path)
             if not enabled:
                 return None
             return _load_blocklist_update_inputs_sync(ctx.cfg.db_path)
-            
+
         inputs = await asyncio.to_thread(_read_inputs)
         if not inputs:
             return
-        
+
         urls, custom_rules_text = inputs
         ok, msg = await _unbound.update_blocklists(urls, custom_rules_text=custom_rules_text)
         if not ok:
@@ -125,11 +125,11 @@ async def maintain_tsdb(ctx: main.LifespanContext) -> None:
     """Scheduled task: prune/rotate/compress TSDB series."""
     from ..dns import ingestion as dns_ingestion
     from ..main import (
-        _read_tsdb_retention_days_sync,
-        _read_speedtest_retention_days_sync,
         _read_dns_retention_days_sync,
+        _read_speedtest_retention_days_sync,
+        _read_tsdb_retention_days_sync,
     )
-    
+
     try:
         def _read_all_retention():
             return (
@@ -137,19 +137,19 @@ async def maintain_tsdb(ctx: main.LifespanContext) -> None:
                 _read_speedtest_retention_days_sync(ctx.cfg.db_path),
                 _read_dns_retention_days_sync(ctx.cfg.db_path),
             )
-        
+
         tsdb_ret, speed_ret, dns_ret = await asyncio.to_thread(_read_all_retention)
-        
+
         synthetic_retention = {
             "speedtest": speed_ret,
             "geo_traffic": tsdb_ret,
             "asn_traffic": tsdb_ret,
             "network": _NETWORK_STATS_RETENTION_DAYS,
         }
-        
+
         stats = await asyncio.to_thread(tsdb.run_maintenance, ctx.cfg.tsdb_dir, tsdb_ret, synthetic_retention)
         dns_retention = await asyncio.to_thread(dns_ingestion.enforce_dns_log_retention, ctx.cfg.dns_dir, dns_ret)
-        
+
         _log.info(
             "TSDB_MAINTENANCE series=%d rotated=%d pruned=%d dns_deleted=%d",
             stats.get("series", 0), stats.get("rotated", 0), stats.get("pruned", 0),
@@ -162,7 +162,7 @@ async def maintain_tsdb(ctx: main.LifespanContext) -> None:
 async def sample_tsdb_metrics(ctx: main.LifespanContext) -> None:
     """Scheduled task: sample WireGuard transfer counters into TSDB."""
     from ..main import _load_peer_identity_map_sync
-    
+
     try:
         peer_counters = await _get_wg_peer_counters()
         if peer_counters is None:
@@ -238,14 +238,17 @@ async def sample_country_traffic(ctx: main.LifespanContext) -> None:
     process holding sampler leadership reads conntrack and writes TSDB points.
     Every other worker returns early.
     """
+    from ..main import _read_country_traffic_inputs_sync
     from ..utils.conntrack import (
-        sample_country_traffic as do_sample,
-        acquire_sampler_leadership,
         ASN_TRAFFIC_KEY,
         ASN_TRAFFIC_METRIC,
+        GEO_TRAFFIC_KEY,
+        GEO_TRAFFIC_METRIC,
+        acquire_sampler_leadership,
     )
-    from ..api.wireguard_stats_country import GEO_TRAFFIC_KEY, GEO_TRAFFIC_METRIC
-    from ..main import _read_country_traffic_inputs_sync
+    from ..utils.conntrack import (
+        sample_country_traffic as do_sample,
+    )
 
     try:
         def _run():
@@ -268,7 +271,7 @@ async def sample_country_traffic(ctx: main.LifespanContext) -> None:
 async def update_geoip(ctx: main.LifespanContext) -> None:
     """Scheduled task: check for GeoIP database updates."""
     try:
-        from ..utils.geoip import ensure_geoip_databases, eager_init
+        from ..utils.geoip import eager_init, ensure_geoip_databases
         result = await asyncio.to_thread(ensure_geoip_databases, ctx.cfg.data_dir)
         _log.info("GEOIP_UPDATE city=%s asn=%s", result["city"], result["asn"])
         await asyncio.to_thread(eager_init)
@@ -280,10 +283,10 @@ async def dns_watchdog(ctx: main.LifespanContext) -> None:
     """Scheduled task: restart Unbound if it crashed."""
     from ..dns import unbound as _unbound
     from ..main import _should_unbound_run_sync
-    
+
     if not _unbound.is_unbound_installed():
         return
-    
+
     try:
         async def _should_run():
             return await asyncio.to_thread(_should_unbound_run_sync, ctx.cfg.db_path)
@@ -295,7 +298,7 @@ async def dns_watchdog(ctx: main.LifespanContext) -> None:
 async def check_adblocker_timer(ctx: main.LifespanContext) -> None:
     """Scheduled task: re-enable ad-blocker when timed disable expires."""
     from ..main import _check_adblocker_timer_sync, _reload_unbound_for_adblocker_async
-    
+
     try:
         re_enabled = await asyncio.to_thread(_check_adblocker_timer_sync, ctx.cfg.db_path)
         if re_enabled:
@@ -325,13 +328,13 @@ async def get_speedtest_initial_delay(db_path: str) -> tuple[float, float | None
 
     last_run_ts = await asyncio.to_thread(_read_last_run_from_db)
     now = time.time()
-    
+
     if last_run_ts is None:
         return delay, None, True
-    
+
     hours_since_last = (now - last_run_ts) / 3600
     is_overdue = hours_since_last > 36
-    
+
     return delay, hours_since_last, is_overdue
 
 
@@ -380,6 +383,7 @@ async def _execute_scheduled_speedtest_run(ctx: main.LifespanContext) -> None:
     even for failures so the scheduler does not immediately retry on the next
     tick.
     """
+    from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
     from ..speedtest.guard import (
         DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
         SpeedtestBusyError,
@@ -387,8 +391,7 @@ async def _execute_scheduled_speedtest_run(ctx: main.LifespanContext) -> None:
         acquire_speedtest_run_lease_async,
     )
     from ..speedtest.tester import run_speedtest
-    from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
-    
+
     try:
         lease = await acquire_speedtest_run_lease_async(
             ctx.cfg.tsdb_dir,
@@ -399,7 +402,7 @@ async def _execute_scheduled_speedtest_run(ctx: main.LifespanContext) -> None:
             try:
                 async with asyncio.timeout(_SPEEDTEST_EXECUTION_TIMEOUT_SECONDS):
                     result = await run_speedtest()
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 result = {"status": "error", "reason": "Timeout"}
             except Exception as exc:
                 result = {"status": "error", "reason": str(exc)}
@@ -416,7 +419,7 @@ async def _execute_scheduled_speedtest_run(ctx: main.LifespanContext) -> None:
             await asyncio.to_thread(_persist_last_run_to_db, ctx.cfg.db_path)
             if result.get("status") == "ok":
                 lease.mark_success()
-            
+
             if result.get("status") == "ok":
                 _log.info(
                     "SPEEDTEST_SCHEDULED result: ↓%.2f ↑%.2f",
@@ -452,7 +455,8 @@ async def sample_network_stats(ctx: main.LifespanContext) -> None:
 
 async def run_scheduled_backup(ctx: main.LifespanContext) -> None:
     """Scheduled task: create a backup when scheduled backups are enabled."""
-    from ..api.backup import is_scheduled_backup_enabled, run_scheduled_backup as do_backup
+    from ..api.backup import is_scheduled_backup_enabled
+    from ..api.backup import run_scheduled_backup as do_backup
     try:
         enabled = await asyncio.to_thread(is_scheduled_backup_enabled, ctx.cfg.db_path)
         if not enabled:

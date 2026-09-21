@@ -4,7 +4,7 @@ title: Installation
 
 # Installation Guide
 
-Comprehensive installation instructions for WireBuddy on various platforms.
+Installation instructions for WireBuddy with Docker Compose, Docker Run or a local development setup.
 
 ## Installation Methods
 
@@ -126,7 +126,7 @@ services:
     image: giiibates/wirebuddy:latest
     container_name: wirebuddy
     restart: always
-    stop_grace_period: 20s
+    stop_grace_period: 40s
     network_mode: host  # Required for WireGuard
     cap_drop:
       - ALL
@@ -213,7 +213,7 @@ For development or non-Docker deployments.
 
 ### Prerequisites
 
-- Python 3.13+ (recommended) or 3.11+
+- Python 3.13+
 - pip and venv
 - System dependencies:
   - WireGuard tools (`wg`, `wg-quick`)
@@ -267,7 +267,7 @@ source .venv/bin/activate
 ### 4. Install Python Dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install .
 ```
 
 ### 5. Configure Environment

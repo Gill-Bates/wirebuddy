@@ -14,8 +14,6 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.users import _require_self
-from app.db import sqlite_runtime as rt
-from app.db.sqlite_schema import init_schema
 from app.db.sqlite_users import (
 	LastAdminError,
 	delete_user,
@@ -23,18 +21,6 @@ from app.db.sqlite_users import (
 	update_user_recovery_codes_if_current,
 )
 from app.utils.time import utcnow
-
-
-@pytest.fixture()
-def conn():
-	rt._ensure_sqlite_adapters()
-	connection = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
-	connection.row_factory = sqlite3.Row
-	init_schema(connection)
-	try:
-		yield connection
-	finally:
-		connection.close()
 
 
 def _insert_user(

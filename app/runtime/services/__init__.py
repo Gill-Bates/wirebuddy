@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: AGPL-3.0
+# SPDX-License-Identifier: MIT
 #
 
 """Concrete runtime service implementations.
@@ -17,16 +17,16 @@ Each service encapsulates a domain's lifecycle management:
 - Scheduler: Background task scheduling and supervision
 """
 
-from .sqlite import SQLiteService
-from .wireguard import WireGuardService
 from .dns import DNSService
-from .tsdb import TSDBService
 from .scheduler import SchedulerService
+from .sqlite import SQLiteService
+from .tsdb import TSDBService
+from .wireguard import WireGuardService
 
 __all__ = [
-    "SQLiteService",
-    "WireGuardService",
     "DNSService",
-    "TSDBService",
+    "SQLiteService",
     "SchedulerService",
+    "TSDBService",
+    "WireGuardService",
 ]

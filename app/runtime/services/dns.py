@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: AGPL-3.0
+# SPDX-License-Identifier: MIT
 #
 
 """DNS service lifecycle management.
@@ -24,7 +24,7 @@ import logging
 import os
 import random
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from ..service import RuntimeService, ServiceHealth
 
@@ -47,7 +47,7 @@ class DNSService(RuntimeService):
     """
 
     name = "dns"
-    dependencies = ["sqlite", "wireguard"]  # Needs DB and interfaces to bind to
+    dependencies: ClassVar[list[str]] = ["sqlite", "wireguard"]  # Needs DB and interfaces to bind to
     start_timeout = 60.0
     stop_timeout = 15.0
 
@@ -185,12 +185,12 @@ class DNSService(RuntimeService):
 
     async def _write_config(self) -> None:
         """Write Unbound configuration files."""
-        from ...dns import unbound
-        from ...dns import ingestion as dns_ingestion
-        from ...dns.unbound_constants import UNBOUND_CONF
-        from ...dns.unbound_blocklist import check_and_reset_stale_blocklist
         from ...api.wireguard_utils import safe_int
         from ...db.sqlite_settings import DEFAULT_DNS_LOG_RETENTION_DAYS
+        from ...dns import ingestion as dns_ingestion
+        from ...dns import unbound
+        from ...dns.unbound_blocklist import check_and_reset_stale_blocklist
+        from ...dns.unbound_constants import UNBOUND_CONF
 
         self._config_ready = False
 
@@ -279,29 +279,26 @@ class DNSService(RuntimeService):
                         raise asyncio.CancelledError
                 else:
                     raise RuntimeError(f"Failed to start Unbound: {msg}")
-        else:
-            if unbound_running:
-                ok, msg = await unbound.stop()
-                if ok:
-                    _log.info("DNS_UNBOUND_STOPPED (disabled by user)")
-                else:
-                    _log.warning("DNS_UNBOUND_STOP_FAILED: %s", msg)
+        elif unbound_running:
+            ok, msg = await unbound.stop()
+            if ok:
+                _log.info("DNS_UNBOUND_STOPPED (disabled by user)")
             else:
-                _log.info("DNS_AUTOSTART_DISABLED: Resolver remains stopped")
+                _log.warning("DNS_UNBOUND_STOP_FAILED: %s", msg)
+        else:
+            _log.info("DNS_AUTOSTART_DISABLED: Resolver remains stopped")
 
     async def _run_ingestion_loop(self) -> None:
         """Run DNS query log ingestion with restart on failure."""
-        from ...dns import unbound
         from ...dns import ingestion as dns_ingestion
-        from ...db.sqlite_settings import DEFAULT_DNS_LOG_RETENTION_DAYS
+        from ...dns import unbound
         from ...tasks import scheduled as scheduled_tasks
 
         retry_count = 0
-        dns_retention_days_cache = DEFAULT_DNS_LOG_RETENTION_DAYS
 
         while True:
             # Check if DNS should be running
-            should_run, dns_retention_days_cache = await asyncio.to_thread(
+            should_run, _dns_retention_days_cache = await asyncio.to_thread(
                 self._read_runtime_settings_sync
             )
             if not should_run:
@@ -360,7 +357,7 @@ class DNSService(RuntimeService):
 
             except Exception:
                 retry_count = min(retry_count + 1, 32)
-                jitter = random.uniform(0.8, 1.2)
+                jitter = random.uniform(0.8, 1.2)  # noqa: S311  (timing jitter, not security-relevant)
                 delay = min(
                     (2 ** retry_count * _INGESTION_RESTART_BASE_DELAY * jitter),
                     _INGESTION_RESTART_MAX_DELAY,
@@ -381,8 +378,8 @@ class DNSService(RuntimeService):
 
     def _load_dns_config_sync(self) -> dict[str, object]:
         """Load DNS configuration from DB (sync, runs in thread)."""
-        from ...db.sqlite_runtime import connect, close_connection
         from ...db.sqlite_interfaces import list_interfaces
+        from ...db.sqlite_runtime import close_connection, connect
         from ...db.sqlite_settings import (
             get_dns_blocklist_enabled,
             get_dns_log_retention_days,
@@ -410,8 +407,8 @@ class DNSService(RuntimeService):
 
     def _load_blocklist_config_sync(self) -> tuple[list[str], str]:
         """Load blocklist URLs and custom rules (sync, runs in thread)."""
-        from ...db.sqlite_runtime import connect, close_connection
-        from ...db.sqlite_settings import get_enabled_blocklists, get_dns_custom_rules
+        from ...db.sqlite_runtime import close_connection, connect
+        from ...db.sqlite_settings import get_dns_custom_rules, get_enabled_blocklists
 
         conn = connect(self._config.db_path)
         try:
@@ -421,9 +418,9 @@ class DNSService(RuntimeService):
 
     def _regenerate_peer_tags_sync(self) -> int:
         """Regenerate peer tags for ad-blocking (sync, runs in thread)."""
-        from ...db.sqlite_runtime import connect, close_connection
-        from ...db.sqlite_peers import get_all_peers
         from ...api.wireguard_peers import regenerate_all_peer_tags
+        from ...db.sqlite_peers import get_all_peers
+        from ...db.sqlite_runtime import close_connection, connect
 
         conn = connect(self._config.db_path)
         try:
@@ -434,8 +431,8 @@ class DNSService(RuntimeService):
 
     def _load_dns_logging_disabled_ips_sync(self) -> set[str]:
         """Load peer IPs that opted out of DNS query logging (sync, runs in thread)."""
-        from ...db.sqlite_runtime import connect, close_connection
         from ...db.sqlite_peers import get_dns_logging_disabled_ips
+        from ...db.sqlite_runtime import close_connection, connect
 
         conn = connect(self._config.db_path)
         try:
@@ -445,10 +442,9 @@ class DNSService(RuntimeService):
 
     def _read_runtime_settings_sync(self) -> tuple[bool, int]:
         """Read DNS runtime settings (sync, runs in thread)."""
-        from ...db.sqlite_runtime import connect, close_connection
         from ...db.sqlite_interfaces import list_interfaces
-        from ...db.sqlite_settings import get_dns_log_retention_days
-        from ...db.sqlite_settings import get_dns_service_enabled
+        from ...db.sqlite_runtime import close_connection, connect
+        from ...db.sqlite_settings import get_dns_log_retention_days, get_dns_service_enabled
 
         conn = connect(self._config.db_path)
         try:
@@ -477,11 +473,11 @@ class DNSService(RuntimeService):
 
                 data = legacy_path.read_text(encoding="utf-8")
                 tmp_path = offset_path.with_name(f".{offset_path.name}.tmp")
-                with open(tmp_path, "w", encoding="utf-8") as handle:
+                with tmp_path.open("w", encoding="utf-8") as handle:
                     handle.write(data)
                     handle.flush()
                     os.fsync(handle.fileno())
-                os.replace(tmp_path, offset_path)
+                tmp_path.replace(offset_path)
                 legacy_path.unlink(missing_ok=True)
                 legacy_dir = legacy_path.parent
                 if legacy_dir.exists() and not any(legacy_dir.iterdir()):

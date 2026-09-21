@@ -21,7 +21,7 @@ import hmac
 import json
 import re
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit, urlunsplit
 
 from cryptography import x509
@@ -198,7 +198,7 @@ def generate_enrollment_token(
 		"node_id": node_id,
 		"node_name": node_name,
 		"api_secret": api_secret,
-		"created_at": datetime.now(timezone.utc).isoformat(),
+		"created_at": datetime.now(UTC).isoformat(),
 	}
 	payload_json = _serialize_payload(payload)
 	signature = _sign_payload(payload_json, secret_key)
@@ -244,7 +244,7 @@ def verify_enrollment_token(
 		raise ValueError("Token field 'api_secret' has invalid format")
 
 	created_at = _parse_created_at(payload["created_at"])
-	now = datetime.now(timezone.utc)
+	now = datetime.now(UTC)
 	if created_at > now + _CLOCK_SKEW:
 		raise ValueError("Token created_at is in the future")
 
@@ -278,7 +278,7 @@ def generate_node_cert(node_id: str) -> tuple[bytes, bytes]:
 		x509.NameAttribute(NameOID.ORGANIZATION_NAME, "WireBuddy"),
 	])
 
-	now = datetime.now(timezone.utc)
+	now = datetime.now(UTC)
 	cert = (
 		x509.CertificateBuilder()
 		.subject_name(subject)

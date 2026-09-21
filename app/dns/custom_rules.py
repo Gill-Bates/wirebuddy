@@ -22,6 +22,16 @@ Matching semantics:
 
 Priority:
   - Allow rules ALWAYS override block rules (whitelist wins)
+
+Enforcement caveat (wildcard/regex BLOCK rules only):
+  Exact domain block rules are translated into Unbound `local-zone` entries
+  (see unbound_blocklist.apply_custom_rules()) and are genuinely enforced by
+  the resolver before it answers. Wildcard and regex BLOCK rules have no
+  equivalent Unbound primitive; they are only evaluated in the ingestion
+  parser AFTER Unbound already replied (see ingestion_parser.py), purely for
+  query-log visibility. They do not prevent resolution. Wildcard/regex ALLOW
+  rules are unaffected by this — they only ever suppress the exact-domain
+  block set, which is checked before the resolver replies.
 """
 
 from __future__ import annotations
@@ -30,8 +40,9 @@ import fnmatch
 import ipaddress
 import logging
 import re
+import time
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import NamedTuple
 
 _log = logging.getLogger(__name__)
@@ -40,20 +51,19 @@ _log = logging.getLogger(__name__)
 MAX_REGEX_PATTERN_LENGTH = 500  # Prevent ReDoS with overly complex patterns
 
 __all__ = [
-	"RuleAction",
-	"ParsedRule",
 	"ParseError",
-	"normalize_client_scope",
-	"rule_applies_to_client",
-	"canonical_rule_text",
-	"canonical_rule_key",
-	"parse_rules",
+	"ParsedRule",
+	"RuleAction",
 	"apply_custom_rules",
-	"get_custom_block_rules",
+	"canonical_rule_key",
+	"canonical_rule_text",
 	"get_custom_allow_rules",
-	"evaluate_domain",
+	"get_custom_block_rules",
 	"is_domain_allowed_by_custom_rules",
 	"is_domain_blocked_by_custom_rules",
+	"normalize_client_scope",
+	"parse_rules",
+	"rule_applies_to_client",
 ]
 
 
@@ -61,7 +71,7 @@ __all__ = [
 # Types
 # ---------------------------------------------------------------------------
 
-class RuleAction(str, Enum):
+class RuleAction(StrEnum):
 	"""Rule action type."""
 	BLOCK = "block"
 	ALLOW = "allow"
@@ -96,7 +106,7 @@ class ParsedRule:
 
 	def matches(self, domain: str) -> bool:
 		"""Check if this rule matches the given domain.
-		
+
 		Matching rules:
 		  - Exact domain: matches domain itself AND all subdomains
 		  - Wildcard: fnmatch against full domain AND each parent segment
@@ -107,9 +117,7 @@ class ParsedRule:
 			# Exact match or subdomain match
 			if d == self.domain:
 				return True
-			if d.endswith("." + self.domain):
-				return True
-			return False
+			return bool(d.endswith("." + self.domain))
 		if self.wildcard is not None:
 			# Match against full domain and all parent segments
 			# e.g., ||ads*.com^ should match "ads1.com" and "sub.ads1.com"
@@ -208,19 +216,51 @@ _ADGUARD_DOMAIN_RE = re.compile(
 _VALID_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$|^[a-z0-9]$")
 
 # Heuristic guard against catastrophic backtracking patterns like /(a+)+b/
-_NESTED_REGEX_QUANTIFIER_RE = re.compile(r"\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)[+*]")
+# Trailing quantifier covers both unbounded (+, *) and bounded ({n}, {m,n})
+# repetition — /(a+){25}b/ is just as exponential as /(a+)+b/.
+_TRAILING_QUANTIFIER = r"(?:[+*]|\{\d+(?:,\d*)?\})"
+_NESTED_REGEX_QUANTIFIER_RE = re.compile(
+	r"\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)" + _TRAILING_QUANTIFIER
+)
 
-# Complementary heuristic: quantified alternation groups like /(a|a)+b/ are
-# also classic catastrophic-backtracking patterns, but have no quantifier
-# *inside* the parens, so _NESTED_REGEX_QUANTIFIER_RE alone cannot catch them.
-_QUANTIFIED_ALTERNATION_RE = re.compile(r"\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)*\)[+*]")
+# Complementary heuristic: quantified alternation groups like /(a|a)+b/ or
+# /(a|aa){25}b/ are also classic catastrophic-backtracking patterns, but have
+# no quantifier *inside* the parens, so _NESTED_REGEX_QUANTIFIER_RE alone
+# cannot catch them.
+_QUANTIFIED_ALTERNATION_RE = re.compile(
+	r"\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)*\)" + _TRAILING_QUANTIFIER
+)
+
+# Runtime complexity probe: structural heuristics above are necessarily
+# incomplete (regex catastrophic-backtracking detection is not decidable by
+# simple pattern matching). As a defense-in-depth backstop, every newly
+# parsed regex rule is executed once against an adversarial-ish probe string
+# with a wall-clock budget; patterns that blow the budget are rejected even
+# if no structural heuristic flagged them.
+_REGEX_PROBE_BUDGET_SECONDS = 0.05
+_REGEX_PROBE_STRING = "a" * 40 + "!"  # no match found; forces full backtracking
+
+
+def _regex_probe_is_slow(compiled: re.Pattern[str]) -> bool:
+	"""Return True if matching against a fixed probe string is too slow.
+
+	Runs in the same thread/process as parsing (config save, not per-query
+	hot path), so a plain wall-clock check is sufficient here — no signal or
+	thread-based timeout is needed.
+	"""
+	start = time.monotonic()
+	try:
+		compiled.search(_REGEX_PROBE_STRING)
+	except Exception:
+		return False
+	return (time.monotonic() - start) > _REGEX_PROBE_BUDGET_SECONDS
 
 
 def _parse_rule_options(options_raw: str, *, lineno: int, text: str) -> tuple[str | None, ParseError | None]:
 	"""Parse optional rule suffix options (currently only client=...)."""
 	client_scope: str | None = None
-	for option in options_raw.split(","):
-		option = option.strip()
+	for raw_option in options_raw.split(","):
+		option = raw_option.strip()
 		if not option:
 			continue
 		if not option.startswith("client="):
@@ -275,34 +315,33 @@ def _validate_domain_pattern(pattern: str, is_wildcard: bool) -> str | None:
 	"""Validate a domain pattern. Returns error message or None if valid."""
 	if not pattern:
 		return "Empty domain pattern"
-	
+
 	# Check for consecutive dots
 	if ".." in pattern:
 		return "Invalid domain: consecutive dots"
-	
+
 	# Must have at least one dot (TLD required)
 	if "." not in pattern:
 		return "Domain must have at least two labels (e.g. example.com)"
-	
+
 	labels = pattern.split(".")
-	
+
 	# Check each label
 	for label in labels:
 		if not label:
 			return "Invalid domain: empty label"
 		if len(label) > 63:
 			return f"Label too long: {label!r}"
-		
+
 		# For wildcard patterns, allow * in labels
 		if is_wildcard and "*" in label:
 			# Remove wildcards for basic validation
 			test_label = label.replace("*", "a")
 			if not _VALID_LABEL_RE.fullmatch(test_label):
 				return f"Invalid wildcard label: {label!r}"
-		else:
-			if not _VALID_LABEL_RE.fullmatch(label):
-				return f"Invalid domain label: {label!r}"
-	
+		elif not _VALID_LABEL_RE.fullmatch(label):
+			return f"Invalid domain label: {label!r}"
+
 	return None
 
 
@@ -335,7 +374,7 @@ def _parse_single_rule(text: str, lineno: int) -> ParsedRule | ParseError:
 				error="Client-scoped regex rules are not supported",
 			)
 		pattern = regex_literal[1:-1]
-		
+
 		# Safety: limit pattern length to prevent ReDoS
 		if len(pattern) > MAX_REGEX_PATTERN_LENGTH:
 			return ParseError(
@@ -355,12 +394,19 @@ def _parse_single_rule(text: str, lineno: int) -> ParsedRule | ParseError:
 				text=text,
 				error="Potentially unsafe regex (quantified alternation)",
 			)
-		
+
 		try:
 			compiled = re.compile(pattern, re.IGNORECASE)
 		except re.error as exc:
 			return ParseError(line=lineno, text=text, error=f"Invalid regex: {exc}")
-		
+
+		if _regex_probe_is_slow(compiled):
+			return ParseError(
+				line=lineno,
+				text=text,
+				error="Potentially unsafe regex (exceeded matching time budget)",
+			)
+
 		return ParsedRule(
 			action=action,
 			raw=text,
@@ -429,7 +475,7 @@ def parse_rules(text: str) -> tuple[list[ParsedRule], list[ParseError]]:
 		line = raw_line.strip()
 
 		# Skip empty lines and comments
-		if not line or line.startswith("!") or line.startswith("#"):
+		if not line or line.startswith(("!", "#")):
 			continue
 
 		result = _parse_single_rule(line, lineno)
@@ -447,8 +493,7 @@ def parse_rules(text: str) -> tuple[list[ParsedRule], list[ParseError]]:
 					result.raw,
 				)
 				continue
-			else:
-				seen_keys[key] = lineno
+			seen_keys[key] = lineno
 
 			target_scope = (_canonical_target(result), result.client_scope)
 			prev = seen_target_scope.get(target_scope)
@@ -510,11 +555,10 @@ def apply_custom_rules(
 			if rule.domain is not None:
 				block_exact.add(rule.domain)
 			# Wildcard/regex blocks: handled at query-time (can't add to Unbound)
-		else:  # ALLOW
-			if rule.domain is not None:
-				allow_exact.add(rule.domain)
-			else:
-				allow_pattern.append(rule)
+		elif rule.domain is not None:
+			allow_exact.add(rule.domain)
+		else:
+			allow_pattern.append(rule)
 
 	# Phase 1: Add custom block domains
 	for domain in block_exact:
@@ -551,11 +595,21 @@ def apply_custom_rules(
 
 
 def get_custom_block_rules(rules: list[ParsedRule]) -> list[ParsedRule]:
-	"""Return only block rules that need runtime matching (wildcard/regex).
+	"""Return block rules the ingestion parser has to match at query time.
 
-	Exact domain blocks are handled by Unbound local-zone entries.
-	This returns only wildcard and regex blocks that need to be checked
-	at query time in the ingestion parser.
+	Global exact-domain blocks are absent: they are already in blocklist.conf
+	as local-zone entries, so the parser sees them via ``blocked_domains``.
+	What remains are two kinds with *opposite* enforcement status — see
+	``ingestion_parser._is_unbound_enforced_rule()``, which decides whether a
+	match may set ``blocked``:
+
+	  - global wildcard/regex blocks — no Unbound primitive, never enforced,
+	    matched here purely for query-log visibility;
+	  - client-scoped exact-domain blocks — genuinely enforced, as
+	    ``local-zone-override … always_nxdomain`` in custom-client-rules.conf
+	    (``unbound_config.write_custom_client_rules()``). They cannot be
+	    expressed in the client-agnostic ``blocked_domains`` set, which is why
+	    they are matched at query time instead.
 	"""
 	return [
 		r for r in rules
@@ -572,61 +626,6 @@ def get_custom_block_rules(rules: list[ParsedRule]) -> list[ParsedRule]:
 def get_custom_allow_rules(rules: list[ParsedRule]) -> list[ParsedRule]:
 	"""Return only allow (whitelist) rules for runtime checking."""
 	return [r for r in rules if r.action == RuleAction.ALLOW]
-
-
-def evaluate_domain(
-	domain: str,
-	blocked_domains: set[str],
-	allow_rules: list[ParsedRule],
-	block_rules: list[ParsedRule],
-	*,
-	client_ip: str | None = None,
-) -> bool:
-	"""Evaluate if a domain should be blocked, applying all rule types.
-
-	Priority (highest to lowest):
-	  1. Allow rules (whitelist) — if matched, domain is NOT blocked
-	  2. Blocked domains set (exact + parent match)
-	  3. Block rules (wildcard/regex runtime matching)
-
-	Args:
-		domain: Domain to evaluate (e.g., "ads.example.com")
-		blocked_domains: Set of blocked domain names from blocklist
-		allow_rules: Custom allow rules for whitelist override
-		block_rules: Custom wildcard/regex block rules
-		client_ip: Optional query client IP for client-scoped rules
-
-	Returns:
-		True if domain should be blocked, False if allowed.
-	"""
-	d = domain.lower().rstrip(".")
-
-	# Priority 1: Allow rules override everything
-	for rule in allow_rules:
-		if not rule_applies_to_client(rule, client_ip or ""):
-			continue
-		if rule.matches(d):
-			return False
-
-	# Priority 2: Check blocked domains set (exact + parent)
-	if d in blocked_domains:
-		return True
-	labels = d.split(".")
-	# Start at 1 (skip self), stop before bare TLD (len-1),
-	# so e.g. "malware.io" does not attempt matching only "io".
-	for i in range(1, len(labels) - 1):
-		parent = ".".join(labels[i:])
-		if parent in blocked_domains:
-			return True
-
-	# Priority 3: Check wildcard/regex block rules
-	for rule in block_rules:
-		if not rule_applies_to_client(rule, client_ip or ""):
-			continue
-		if rule.matches(d):
-			return True
-
-	return False
 
 
 def is_domain_allowed_by_custom_rules(

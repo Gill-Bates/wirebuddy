@@ -75,6 +75,20 @@ def _is_valid_ip(addr: str) -> bool:
 	except ValueError:
 		return False
 
+
+def _resolv_conf_has_nameserver(content: str, dns_ip: str) -> bool:
+	"""Return True if *content* already has a `nameserver <dns_ip>` line.
+
+	Parses line-by-line and compares the address as a full whitespace-
+	delimited token, so "nameserver 10.0.0.1" does not falsely match an
+	existing "nameserver 10.0.0.10" line (plain substring containment would).
+	"""
+	for raw_line in content.splitlines():
+		parts = raw_line.split()
+		if len(parts) == 2 and parts[0] == "nameserver" and parts[1] == dns_ip:
+			return True
+	return False
+
 def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 	"""Configure /etc/resolv.conf to use local Unbound resolver.
 
@@ -92,8 +106,8 @@ def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 		# Try to read from unbound.conf to find the first interface IP
 		try:
 			if UNBOUND_CONF.exists():
-				for config_line in UNBOUND_CONF.read_text(encoding="utf-8").splitlines():
-					config_line = config_line.strip()
+				for raw_config_line in UNBOUND_CONF.read_text(encoding="utf-8").splitlines():
+					config_line = raw_config_line.strip()
 					# Skip comments and non-interface lines
 					if config_line.startswith("#") or not config_line.startswith("interface:"):
 						continue
@@ -121,25 +135,36 @@ def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 		if _RESOLV_CONF.exists():
 			current = _RESOLV_CONF.read_text(encoding="utf-8", errors="replace")
 
-		# Only update if not already pointing to our DNS IP
-		if f"nameserver {dns_ip}" in current:
+		# Only update if not already pointing to our DNS IP. Parsed line-by-line
+		# with the address compared as a full token — a plain substring check
+		# (e.g. "nameserver 10.0.0.1" in "nameserver 10.0.0.10") would produce
+		# a false positive and skip configuring the intended resolver.
+		if _resolv_conf_has_nameserver(current, dns_ip):
 			_log.debug("DNS_RESOLV /etc/resolv.conf already configured for %s", dns_ip)
 			return
 
-		# Backup current resolv.conf for restoration on stop
+		# Backup current resolv.conf for restoration on stop. A failed backup
+		# must block the destructive overwrite below: without a backup,
+		# _restore_resolv_conf() has nothing to restore from on stop(), so
+		# writing anyway would permanently lose the original resolver state.
 		backup_path = _RESOLV_CONF.with_suffix(".conf.backup")
 		if not backup_path.exists() and current.strip():
 			try:
 				atomic_write_text(backup_path, current)
 			except Exception as exc:
-				_log.debug("DNS_RESOLV failed to backup resolv.conf: %s", exc)
+				_log.warning(
+					"DNS_RESOLV failed to backup resolv.conf, skipping resolver override: %s", exc
+				)
+				return
 
 		# Write new resolv.conf with WireGuard DNS
 		# Preserve search domains if present
 		lines = [_RESOLV_MANAGED_MARKER, f"nameserver {dns_ip}"]
-		for line in current.splitlines():
-			if line.strip().startswith("search ") or line.strip().startswith("domain "):
-				lines.append(line.strip())
+		lines.extend(
+			stripped
+			for stripped in (raw.strip() for raw in current.splitlines())
+			if stripped.startswith(("search ", "domain "))
+		)
 
 		atomic_write_text(_RESOLV_CONF, "\n".join(lines) + "\n")
 		_log.info("DNS_RESOLV configured /etc/resolv.conf to use %s", dns_ip)
@@ -293,10 +318,8 @@ async def _reap_managed_proc() -> None:
 	if _supervisor_task is not None:
 		if not _supervisor_task.done():
 			_supervisor_task.cancel()
-			try:
+			with contextlib.suppress(asyncio.CancelledError, Exception):
 				await _supervisor_task
-			except (asyncio.CancelledError, Exception):
-				pass
 		_supervisor_task = None
 
 
@@ -445,8 +468,8 @@ def _parse_listen_sockets(conf_text: str) -> tuple[list[str], int]:
 	"""Extract the (interface IPs, port) unbound is configured to bind."""
 	ips: list[str] = []
 	port = 53
-	for line in conf_text.splitlines():
-		line = line.strip()
+	for raw_line in conf_text.splitlines():
+		line = raw_line.strip()
 		if line.startswith("#"):
 			continue
 		if line.startswith("interface:"):
@@ -673,23 +696,21 @@ async def _stop_impl() -> tuple[bool, str]:
 	invalidate_running_cache()
 
 	# 1. Try managed process handle first
-	if _unbound_proc is not None and _unbound_proc.returncode is None:
-		if await _kill_pid(_unbound_proc.pid):
-			await _reap_managed_proc()
-			_remove_stale_pid_file()
-			_restore_resolv_conf()
-			_log.info("DNS_STOP unbound stopped (managed proc)")
-			return True, "Unbound stopped"
+	if _unbound_proc is not None and _unbound_proc.returncode is None and await _kill_pid(_unbound_proc.pid):
+		await _reap_managed_proc()
+		_remove_stale_pid_file()
+		_restore_resolv_conf()
+		_log.info("DNS_STOP unbound stopped (managed proc)")
+		return True, "Unbound stopped"
 
 	# 2. Try PID file
 	pid = _read_unbound_pid()
-	if pid and _pid_is_running(pid):
-		if await _kill_pid(pid):
-			_remove_stale_pid_file()
-			await _reap_managed_proc()
-			_restore_resolv_conf()
-			_log.info("DNS_STOP unbound stopped (pid file)")
-			return True, "Unbound stopped"
+	if pid and _pid_is_running(pid) and await _kill_pid(pid):
+		_remove_stale_pid_file()
+		await _reap_managed_proc()
+		_restore_resolv_conf()
+		_log.info("DNS_STOP unbound stopped (pid file)")
+		return True, "Unbound stopped"
 
 	# 3. Fallback: pgrep to find PID, then targeted kill
 	pids = await _find_wirebuddy_unbound_pids()
@@ -743,10 +764,9 @@ async def _reload_impl() -> tuple[bool, str]:
 			if _pid_is_running(pid):
 				_log.info("DNS_RELOAD config reloaded (pid=%d)", pid)
 				return True, "Configuration reloaded"
-			else:
-				invalidate_running_cache()
-				_log.error("DNS_RELOAD unbound crashed during reload (pid=%d)", pid)
-				return False, "Unbound crashed during reload - will be auto-restarted by watchdog"
+			invalidate_running_cache()
+			_log.error("DNS_RELOAD unbound crashed during reload (pid=%d)", pid)
+			return False, "Unbound crashed during reload - will be auto-restarted by watchdog"
 		except ProcessLookupError:
 			invalidate_running_cache()
 			return False, "Reload failed: unbound is not running"
@@ -942,10 +962,10 @@ __all__ = [
 	"invalidate_running_cache",
 	"is_running",
 	"is_unbound_installed",
+	"reload_config",
+	"reset_watchdog_failures",
+	"restart",
 	"start",
 	"stop",
-	"restart",
-	"reload_config",
 	"watchdog",
-	"reset_watchdog_failures",
 ]
