@@ -40,7 +40,7 @@ Cross-cutting helpers shared by the API, DB, node, runtime and tasks layers: con
 - Modules here should stay low-level: avoid importing from `app/api` (only `acme_http.py` does so today, lazily).
 - Security-critical files (`vault.py`, `crypto.py`, `node_token.py`, `passkeys.py`, `tls.py`, `backup_lock.py`): never log secrets, keep constant-time comparisons and restrictive file permissions.
 - Use `utils/time` (timezone-aware UTC) instead of naive `datetime`, and `utils/subprocess` instead of raw subprocess calls.
-- `version.py` is currently being reworked for the `pyproject.toml` migration (VERSION file removed); check git status before editing.
+- `version.py` resolves the version from `pyproject.toml` (the single source of truth), then installed distribution metadata, then `'dev'`; there is no VERSION file.
 
 ### Testing Requirements
 - Tests live in `/opt/wirebuddy/tests` (pytest, run `pytest` from the repo root). Existing: `test_utils_hardening.py`, `test_coerce.py`, `test_time.py`, `test_subprocess_limits.py`, `test_tls_material.py`, `test_user_security.py`, `test_login_lockout.py`.

@@ -21,7 +21,7 @@ Split-out pieces of the Settings page. `components.js` and `speedtest.js` are lo
 
 ## For AI Agents
 ### Working In This Directory
-- Check which bootstrap `templates/settings.html` loads before editing: currently `settings.js`. Per-tab inline scripts also live in `templates/settings/_js_*.html`, so a behaviour may sit in three places.
+- Check which bootstrap `templates/settings.html` loads before editing: currently `settings.js` (the monolith) alongside `components.js` and `speedtest.js`. The modular `core.js`/`modules/` bootstrap is not wired in yet, so a behaviour may live in either the monolith or a module.
 
 ### Testing Requirements
 `node tools/ui-lint/run-ui-lint.mjs`; manually test each Settings tab.
