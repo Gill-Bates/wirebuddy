@@ -64,6 +64,19 @@ def _validate_port(port: int) -> None:
 		raise ValueError(f"Port out of valid range: {port}")
 
 
+def _sanitize_peer_filename(name: str | None, default: str) -> str:
+	r"""Sanitize a peer name for use as a download filename.
+
+	Restricts to ASCII-safe characters (regex ``\w`` is unicode-aware in
+	Python 3 and would let non-ASCII through), strips leading dots, and caps
+	the length to prevent header abuse.
+	"""
+	safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', name or default).lstrip('.')
+	if not safe_name:
+		safe_name = default
+	return safe_name[:_MAX_FILENAME_LENGTH]
+
+
 def _validate_hostname(hostname: str) -> None:
 	"""Validate hostname/FQDN format.
 
@@ -311,13 +324,7 @@ async def get_peer_qrcode(
 
 		png_bytes = generate_qr_png(config_text, peer_name, node_name=node_name)
 
-		# Sanitize filename — restrict to ASCII-safe characters (\w is
-		# unicode-aware in Python 3 and would let through non-ASCII)
-		safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', peer['name'] or 'peer').lstrip('.')
-		if not safe_name:
-			safe_name = 'peer'
-		# Enforce maximum length to prevent header abuse
-		safe_name = safe_name[:_MAX_FILENAME_LENGTH]
+		safe_name = _sanitize_peer_filename(peer['name'], 'peer')
 
 		result = Response(
 			content=png_bytes,
@@ -350,12 +357,7 @@ async def get_peer_config(
 	"""Get the WireGuard configuration file for a peer (admin only)."""
 	config, peer, private_key_plain, preshared_key_plain = await _build_peer_config(request, peer_id, conn)
 
-	# Sanitize filename — restrict to ASCII-safe characters
-	safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', peer['name'] or 'wg0').lstrip('.')
-	if not safe_name:
-		safe_name = 'wg0'
-	# Enforce maximum length to prevent header abuse
-	safe_name = safe_name[:_MAX_FILENAME_LENGTH]
+	safe_name = _sanitize_peer_filename(peer['name'], 'wg0')
 
 	_log.info(
 		"CONFIG_DOWNLOADED peer_id=%s peer_name=%s interface=%s user=%s",

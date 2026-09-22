@@ -751,13 +751,8 @@ class BlocklistSourcesUpdate(BaseModel):
 	@field_validator("urls")
 	@classmethod
 	def validate_urls(cls, v: list[str]) -> list[str]:
-		"""Validate blocklist URLs are HTTPS."""
-		validated = _validate_https_urls(v)
-		allowed = _registered_blocklist_urls()
-		unknown = [url for url in validated if url not in allowed]
-		if unknown:
-			raise ValueError("Unknown blocklist source")
-		return validated
+		"""Validate blocklist URLs against the built-in registry."""
+		return _validate_registered_blocklist_urls(v)
 
 
 class CustomRulesUpdate(BaseModel):

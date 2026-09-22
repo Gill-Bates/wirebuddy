@@ -130,6 +130,98 @@ def _script_fingerprint(script: str | None) -> str:
 	digest = hashlib.sha256(script.encode("utf-8", errors="replace")).hexdigest()[:12]
 	return f"sha256:{digest} len:{len(script)}"
 
+
+def _validate_interface_addresses(
+	address: str,
+	address6: str | None,
+) -> tuple[ipaddress.IPv4Interface, str | None]:
+	"""Validate the already-resolved IPv4/IPv6 address strings for an interface.
+
+	Shared by create and update: callers resolve their own effective address
+	(create uses the payload directly; update falls back to the existing row
+	for PATCH-omitted fields) before calling this.
+
+	Raises:
+		HTTPException(422): On invalid format, wrong IP version, or a
+			host-only prefix (interfaces need a subnet, not a /32 or /128).
+	"""
+	try:
+		v4 = ipaddress.ip_interface(address)
+	except ValueError:
+		raise HTTPException(status_code=422, detail=f"Invalid address: {address}")
+	if v4.version != 4:
+		raise HTTPException(status_code=422, detail="address must be an IPv4 CIDR (e.g. 10.0.0.1/24)")
+	if v4.network.prefixlen == 32:
+		raise HTTPException(
+			status_code=422,
+			detail="address must include a subnet prefix (e.g. /24), not a /32 host address",
+		)
+
+	if address6:
+		try:
+			v6_obj = ipaddress.ip_interface(address6)
+		except ValueError:
+			raise HTTPException(status_code=422, detail=f"Invalid IPv6 address: {address6}")
+		if v6_obj.version != 6:
+			raise HTTPException(status_code=422, detail="address6 must be an IPv6 CIDR (e.g. fd00::1/64)")
+		if v6_obj.network.prefixlen == 128:
+			raise HTTPException(
+				status_code=422,
+				detail="address6 must include a subnet prefix (e.g. /64), not a /128 host address",
+			)
+
+	return v4, (address6 or None)
+
+
+def _check_subnet_and_port_conflicts(
+	new_v4_net: ipaddress.IPv4Network,
+	new_v6_net: ipaddress.IPv6Network | None,
+	new_listen_port: int,
+	existing_interfaces: list[sqlite3.Row],
+	*,
+	exclude_name: str | None = None,
+) -> None:
+	"""Reject subnet overlaps or a duplicate listen port against other interfaces.
+
+	``exclude_name`` skips the row being updated (create has no such row yet,
+	so it is always None there; update must pass its own name or every save
+	would conflict with itself).
+
+	Raises:
+		HTTPException(409): On overlap or listen-port conflict.
+	"""
+	for iface in existing_interfaces:
+		if exclude_name is not None and iface["name"] == exclude_name:
+			continue
+		if iface["address"]:
+			try:
+				existing_v4 = ipaddress.ip_interface(iface["address"]).network
+				if new_v4_net.overlaps(existing_v4):
+					raise HTTPException(
+						status_code=409,
+						detail=f"IPv4 subnet {new_v4_net} overlaps with interface '{iface['name']}' ({existing_v4})",
+					)
+			except ValueError as exc:
+				# Ignore malformed legacy entries but keep the diagnostic log.
+				_log.debug("Skipping invalid IPv4 address in DB for interface %s: %s", iface["name"], exc)
+		if new_v6_net and iface["address6"]:
+			try:
+				existing_v6 = ipaddress.ip_interface(iface["address6"]).network
+				if new_v6_net.overlaps(existing_v6):
+					raise HTTPException(
+						status_code=409,
+						detail=f"IPv6 subnet {new_v6_net} overlaps with interface '{iface['name']}' ({existing_v6})",
+					)
+			except ValueError as exc:
+				# Ignore malformed legacy entries but keep the diagnostic log.
+				_log.debug("Skipping invalid IPv6 address in DB for interface %s: %s", iface["name"], exc)
+		if iface["listen_port"] == new_listen_port:
+			raise HTTPException(
+				status_code=409,
+				detail=f"Listen port {new_listen_port} is already used by interface '{iface['name']}'",
+			)
+
+
 class InterfaceCreate(BaseModel):
 	"""Schema for creating a new WireGuard interface."""
 	name: str = Field(..., min_length=1, max_length=15, pattern=r"^[a-zA-Z][a-zA-Z0-9_-]*$")
@@ -280,70 +372,15 @@ async def create_interface(
 	if get_interface(conn, payload.name):
 		raise HTTPException(status_code=409, detail=f"Interface '{payload.name}' already exists in database")
 
-	# Require an IPv4 interface address.
-	try:
-		v4 = ipaddress.ip_interface(payload.address)
-	except ValueError:
-		raise HTTPException(status_code=422, detail=f"Invalid address: {payload.address}")
-	if v4.version != 4:
-		raise HTTPException(status_code=422, detail="address must be an IPv4 CIDR (e.g. 10.0.0.1/24)")
-	# Reject a host-only prefix; interfaces need a subnet.
-	if v4.network.prefixlen == 32:
-		raise HTTPException(
-			status_code=422,
-			detail="address must include a subnet prefix (e.g. /24), not a /32 host address",
-		)
-
 	v6_str = payload.address6 or None
-	if v6_str:
-		try:
-			v6_obj = ipaddress.ip_interface(v6_str)
-		except ValueError:
-			raise HTTPException(status_code=422, detail=f"Invalid IPv6 address: {v6_str}")
-		if v6_obj.version != 6:
-			raise HTTPException(status_code=422, detail="address6 must be an IPv6 CIDR (e.g. fd00::1/64)")
-		# Reject a host-only prefix; interfaces need a subnet.
-		if v6_obj.network.prefixlen == 128:
-			raise HTTPException(
-				status_code=422,
-				detail="address6 must include a subnet prefix (e.g. /64), not a /128 host address",
-			)
+	v4, v6_str = _validate_interface_addresses(payload.address, v6_str)
 
 	# Check for subnet overlap with existing interfaces
 	existing_interfaces = list_interfaces(conn)
 	new_v4_net = v4.network
 	new_v6_net = ipaddress.ip_interface(v6_str).network if v6_str else None
 
-	for iface in existing_interfaces:
-		# Check IPv4 overlap
-		if iface["address"]:
-			try:
-				existing_v4 = ipaddress.ip_interface(iface["address"]).network
-				if new_v4_net.overlaps(existing_v4):
-					raise HTTPException(
-						status_code=409,
-						detail=f"IPv4 subnet {new_v4_net} overlaps with interface '{iface['name']}' ({existing_v4})"
-					)
-			except ValueError as exc:
-				# Ignore malformed legacy entries but keep the diagnostic log.
-				_log.debug("Skipping invalid IPv4 address in DB for interface %s: %s", iface["name"], exc)
-		if new_v6_net and iface["address6"]:
-			try:
-				existing_v6 = ipaddress.ip_interface(iface["address6"]).network
-				if new_v6_net.overlaps(existing_v6):
-					raise HTTPException(
-						status_code=409,
-						detail=f"IPv6 subnet {new_v6_net} overlaps with interface '{iface['name']}' ({existing_v6})"
-					)
-			except ValueError as exc:
-				# Ignore malformed legacy entries but keep the diagnostic log.
-				_log.debug("Skipping invalid IPv6 address in DB for interface %s: %s", iface["name"], exc)
-	for iface in existing_interfaces:
-		if iface["listen_port"] == payload.listen_port:
-			raise HTTPException(
-				status_code=409,
-				detail=f"Listen port {payload.listen_port} is already used by interface '{iface['name']}'"
-			)
+	_check_subnet_and_port_conflicts(new_v4_net, new_v6_net, payload.listen_port, existing_interfaces)
 
 	# Validate hook scripts before touching the database or disk.
 	try:
@@ -542,32 +579,8 @@ async def update_interface(
 	if new_listen_port is None:
 		raise HTTPException(status_code=422, detail="listen_port cannot be null")
 
-	# Require an IPv4 interface address.
-	try:
-		v4 = ipaddress.ip_interface(new_address)
-	except ValueError:
-		raise HTTPException(status_code=422, detail=f"Invalid address: {new_address}")
-	if v4.network.prefixlen == 32:
-		raise HTTPException(
-			status_code=422,
-			detail="address must include a subnet prefix (e.g. /24), not a /32 host address",
-		)
-	if v4.version != 4:
-		raise HTTPException(status_code=422, detail="address must be an IPv4 CIDR")
-
 	v6_str = payload.address6 if "address6" in fields_set else iface["address6"]
-	if v6_str:
-		try:
-			v6_obj = ipaddress.ip_interface(v6_str)
-		except ValueError:
-			raise HTTPException(status_code=422, detail=f"Invalid IPv6 address: {v6_str}")
-		if v6_obj.version != 6:
-			raise HTTPException(status_code=422, detail="address6 must be an IPv6 CIDR")
-		if v6_obj.network.prefixlen == 128:
-			raise HTTPException(
-				status_code=422,
-				detail="address6 must include a subnet prefix (e.g. /64), not a /128 host address",
-			)
+	v4, v6_str = _validate_interface_addresses(new_address, v6_str)
 
 	new_dns = payload.dns if "dns" in fields_set else iface["dns"]
 	new_post_up = payload.post_up if "post_up" in fields_set else iface["post_up"]
@@ -576,36 +589,9 @@ async def update_interface(
 	# Check for subnet overlap / port conflict with other interfaces
 	new_v4_net = v4.network
 	new_v6_net = ipaddress.ip_interface(v6_str).network if v6_str else None
-	for other in list_interfaces(conn):
-		if other["name"] == name:
-			continue
-		if other["address"]:
-			try:
-				other_v4 = ipaddress.ip_interface(other["address"]).network
-				if new_v4_net.overlaps(other_v4):
-					raise HTTPException(
-						status_code=409,
-						detail=f"IPv4 subnet {new_v4_net} overlaps with interface '{other['name']}' ({other_v4})",
-					)
-			except ValueError as exc:
-				# Ignore malformed legacy entries but keep the diagnostic log.
-				_log.debug("Skipping invalid IPv4 address in DB for interface %s: %s", other["name"], exc)
-		if new_v6_net and other["address6"]:
-			try:
-				other_v6 = ipaddress.ip_interface(other["address6"]).network
-				if new_v6_net.overlaps(other_v6):
-					raise HTTPException(
-						status_code=409,
-						detail=f"IPv6 subnet {new_v6_net} overlaps with interface '{other['name']}' ({other_v6})",
-					)
-			except ValueError as exc:
-				# Ignore malformed legacy entries but keep the diagnostic log.
-				_log.debug("Skipping invalid IPv6 address in DB for interface %s: %s", other["name"], exc)
-		if other["listen_port"] == new_listen_port:
-			raise HTTPException(
-				status_code=409,
-				detail=f"Listen port {new_listen_port} is already used by interface '{other['name']}'",
-			)
+	_check_subnet_and_port_conflicts(
+		new_v4_net, new_v6_net, new_listen_port, list_interfaces(conn), exclude_name=name,
+	)
 
 	# Validate hook scripts before writing.
 	try:

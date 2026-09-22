@@ -26,7 +26,6 @@ from fastapi import HTTPException
 from ..db.sqlite_settings import (
 	get_enabled_blocklists,
 )
-from ..models.peers import PeerPublic
 
 __all__ = [
 	"WgPeerDump",
@@ -40,7 +39,6 @@ __all__ = [
 	"is_valid_wg_key",
 	"parse_blocklist_ids",
 	"parse_wg_show_dump",
-	"row_to_public",
 	"run_wg_command",
 	"safe_int",
 	"safe_row_get",
@@ -289,35 +287,6 @@ def validate_post_script(value: str | None, field: str) -> str | None:
 	if not all(32 <= ord(c) <= 126 or c in "\n\t" for c in value):
 		raise HTTPException(status_code=400, detail=f"{field} script must be printable ASCII")
 	return value.strip()
-
-
-def row_to_public(row: sqlite3.Row, enabled_blocklist_ids: list[str] | None = None) -> PeerPublic:
-	"""Convert DB row to PeerPublic model."""
-	blocklist_ids = None
-	raw_blocklist_ids = safe_row_get(row, "blocklist_ids")
-	if raw_blocklist_ids:
-		try:
-			blocklist_ids = json.loads(raw_blocklist_ids)
-		except (json.JSONDecodeError, TypeError):
-			blocklist_ids = None
-
-	if enabled_blocklist_ids is not None:
-		blocklist_ids = filter_peer_blocklist_ids(blocklist_ids, enabled_blocklist_ids)
-
-	return PeerPublic(
-		id=safe_row_get(row, "id"),
-		name=safe_row_get(row, "name", ""),
-		interface_name=safe_row_get(row, "interface_name", ""),
-		public_key=safe_row_get(row, "public_key", ""),
-		peer_address=safe_row_get(row, "peer_address"),
-		allowed_ips=safe_row_get(row, "allowed_ips", ""),
-		persistent_keepalive=safe_row_get(row, "persistent_keepalive") or None,
-		use_adblocker=bool(safe_row_get(row, "use_adblocker", 0)),
-		blocklist_ids=blocklist_ids,
-		client_isolation=bool(safe_row_get(row, "client_isolation", 0)),
-		created_at=safe_row_get(row, "created_at"),
-		updated_at=safe_row_get(row, "updated_at"),
-	)
 
 
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
