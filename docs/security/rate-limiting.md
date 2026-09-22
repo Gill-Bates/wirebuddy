@@ -10,16 +10,22 @@ WireBuddy applies route-level rate limits to reduce brute-force and abuse risk.
 
 ## Effective Limits
 
-Limits vary by endpoint class and auth context. Representative classes:
+Each route is decorated with one of these classes, defined in
+`app/utils/rate_limit.py`:
 
-| Route Class | Authenticated | Unauthenticated |
-|---|---|---|
-| Login/MFA flows | stricter | stricter |
-| Read-heavy API | higher | lower |
-| Write operations | moderate | low |
-| Public status-style routes | dedicated caps | dedicated caps |
+| Class | Limit | Applied to |
+|---|---:|---|
+| Authentication | `5/minute` | Login and MFA verification |
+| Critical | `3/minute` | Secret-bearing and high-impact operations: peer config/QR download, backup restore, node create/delete/token, WireGuard settings changes |
+| Heavy | `10/minute` | Expensive operations: peer creation, DNS start/stop/restart, DNS config and blocklist changes |
+| General API | `120/minute` | Ordinary authenticated API reads and writes |
+| Default | `60/minute` | Everything else, including the public `/status` page |
 
-For exact behavior, validate against runtime configuration and route decorators.
+`WIREBUDDY_RATE_LIMIT_UI_HEAVY` (default `60/minute`) overrides the limit for
+expensive UI routes. The other classes are application constants.
+
+Limits are keyed on the client IP, so correct trusted-proxy configuration is a
+prerequisite — see [Operational Guidance](#operational-guidance).
 
 ## Lockout Behavior
 

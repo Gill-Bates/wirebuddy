@@ -272,53 +272,27 @@ const fetchPeers = async () => {
 
 ## Testing
 
-### Writing Tests
+The suite is flat (`tests/test_<area>.py`) and hermetic — no running server, no
+network, no real WireGuard or Unbound. Use the shared `conn` fixture from
+`tests/conftest.py` for a fresh in-memory database with the full schema, and
+`tmp_path`/`monkeypatch` for everything else. Files carry the project header block
+and are tab-indented like the application code.
 
 ```python
 import pytest
-from fastapi.testclient import TestClient
-from app.main import app
 
-@pytest.fixture
-def client():
-    return TestClient(app)
+from app.db.sqlite_users import LastAdminError, create_user, delete_user
 
-@pytest.fixture
-def admin_token(client):
-    """Get admin API token."""
-    response = client.post("/api/auth/login", json={
-        "username": "admin",
-        "password": "admin"
-    })
-    return response.json()["token"]
 
-def test_create_peer(client, admin_token):
-    """Test peer creation."""
-    response = client.post(
-        "/api/wireguard/peers",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "name": "Test Peer",
-            "interface": "wg0",
-            "allowed_ips": "0.0.0.0/0, ::/0",
-            "allowed_ips_mode": "full"
-        }
-    )
-    
-    assert response.status_code == 201
-    data = response.json()
-    assert data["data"]["name"] == "Test Peer"
-    assert data["data"]["interface"] == "wg0"
-
-def test_create_peer_duplicate(client, admin_token):
-    """Test duplicate peer creation fails."""
-    # Create first peer
-    client.post("/api/wireguard/peers", headers={"Authorization": f"Bearer {admin_token}"}, json={...})
-    
-    # Attempt duplicate
-    response = client.post("/api/wireguard/peers", headers={"Authorization": f"Bearer {admin_token}"}, json={...})
-    assert response.status_code == 409
+def test_last_admin_cannot_be_deleted(conn):
+	"""The DB layer refuses to remove the final administrator."""
+	user_id = create_user(conn, "admin", "Correct-Horse-1", is_admin=True)
+	with pytest.raises(LastAdminError):
+		delete_user(conn, user_id)
 ```
+
+Add a regression test alongside any security or persistence fix and name it after
+the behaviour. `tests/AGENTS.md` maps each existing file to the area it covers.
 
 ### Running Tests
 
@@ -433,7 +407,9 @@ git rebase main
 
 All PRs are reviewed by maintainers:
 
-1. **Automated checks:** Tests, linting, type checking
+1. **Automated checks:** `ruff check .`, `pytest`, `bash -n docker/entrypoint.sh`,
+   and `docker build --check -f docker/Dockerfile .` — all gated by
+   `.github/workflows/ci.yml`
 2. **Code review:** Maintainer reviews code
 3. **Feedback:** Maintainer may request changes
 4. **Approval:** Once approved, PR is merged
@@ -480,7 +456,6 @@ Include:
 
 - **GitHub Issues:** Questions, bugs, features
 - **GitHub Discussions:** General discussion, ideas
-- **Discord:** (if/when created) Real-time chat
 
 ## Recognition
 

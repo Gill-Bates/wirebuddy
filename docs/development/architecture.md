@@ -115,47 +115,45 @@ graph TB
 
 ### FastAPI Application
 
-```python
-# app/main.py
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+`app/main.py` exposes an application **factory**, `create_app()`, not a
+module-level `app` object. It loads configuration, mounts `app/static`, wires the
+Jinja2 environment for `app/templates`, includes the routers from `app/api/`, and
+delegates startup/shutdown to the lifespan defined in the same module. Entry
+points therefore reference it as a factory:
 
-app = FastAPI(title="WireBuddy")
-
-# Mount static files
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
-
-# Template engine
-templates = Jinja2Templates(directory="app/templates")
-
-# Include routers
-app.include_router(auth_api.router, prefix="/api")
-app.include_router(wireguard_api.router, prefix="/api/wireguard")
-# ...
+```bash
+uvicorn app:create_app --factory --host 0.0.0.0 --port 8000
 ```
+
+Service startup and shutdown are being moved into `app/runtime/` — see
+[Runtime Architecture Migration](runtime-migration.md).
 
 ### Router Pattern
 
+Routers live in `app/api/` and are split by resource rather than by one module
+per prefix (`wireguard_peers.py`, `wireguard_interfaces_crud.py`,
+`wireguard_stats_country.py`, and so on). Handlers take their database
+connection and authorization through `Depends`, declare a rate-limit class, and
+return the generic `OkResponse[...]` envelope:
+
 ```python
-# app/api/wireguard.py
-from fastapi import APIRouter, Depends
-from app.models import PeerCreate, PeerResponse
-from app.db import get_db
-
-router = APIRouter()
-
-@router.post("/peers", response_model=PeerResponse)
+# app/api/wireguard_peers.py
+@router.post("/peers", status_code=201, response_model=OkResponse[PeerPublic])
+@limiter.limit(RATE_LIMIT_HEAVY)
 async def create_peer(
-    peer: PeerCreate,
-    db = Depends(get_db),
-    user = Depends(get_current_user)
+	request: Request,
+	payload: PeerCreate,
+	conn: sqlite3.Connection = Depends(get_conn),
+	tsdb_dir: Path = Depends(get_tsdb_dir),
+	_: sqlite3.Row = Depends(require_admin),
 ):
-    # Validate
-    # Create peer
-    # Return response
-    pass
+	...
 ```
+
+`Depends(require_admin)` is what makes a route admin-only; read-only routes use
+`Depends(get_current_user)` instead. Blocking SQLite and subprocess work is
+handed to a worker thread with `run_in_threadpool` so the event loop stays
+responsive.
 
 ## Database Schema
 
@@ -269,112 +267,38 @@ sequenceDiagram
 
 ## WireGuard Management
 
-### Configuration Generation
+Peer and interface configuration rendering lives in `app/api/wireguard_config.py`;
+interface lifecycle (create, start, stop, restart, delete, plus the generated
+NAT/forward/DNS hooks) lives in `app/api/wireguard_interfaces_crud.py`, and
+client-isolation rules in `app/api/wireguard_isolation.py`. Interfaces are driven
+through `wg-quick` against a generated `/etc/wireguard/<name>.conf`, so the
+generated file — not in-process state — is the source of truth for the kernel.
 
-```python
-def generate_interface_config(interface: Interface) -> str:
-    config = f"""[Interface]
-PrivateKey = {interface.private_key}
-Address = {interface.address}
-ListenPort = {interface.listen_port}
-"""
-    
-    # Add peers
-    for peer in interface.peers:
-        config += f"""
-[Peer]
-PublicKey = {peer.public_key}
-AllowedIPs = {peer.allowed_ips}
-"""
-        if peer.preshared_key:
-            config += f"PresharedKey = {peer.preshared_key}\n"
-        if peer.persistent_keepalive:
-            config += f"PersistentKeepalive = {peer.persistent_keepalive}\n"
-    
-    return config
-```
-
-### Interface Management
-
-```python
-class WireGuardManager:
-    def start_interface(self, name: str):
-        # Generate config
-        config = self.generate_config(name)
-        
-        # Write to file
-        config_path = f"/etc/wireguard/{name}.conf"
-        with open(config_path, 'w') as f:
-            f.write(config)
-        
-        # Start with wg-quick
-        subprocess.run(["wg-quick", "up", name], check=True)
-    
-    def stop_interface(self, name: str):
-        subprocess.run(["wg-quick", "down", name], check=True)
-```
+Custom `PostUp`/`PostDown` hooks are validated before they are written, because
+`wg-quick` runs them through a shell as root. See
+[Custom hook validation](../configuration/wireguard.md#custom-hook-validation)
+for the accepted grammar.
 
 ## DNS Integration
 
 ### Unbound Configuration
 
-```python
-def generate_unbound_config(settings: DNSSettings) -> str:
-    config = """
-server:
-    verbosity: 1
-    interface: 10.8.0.1
-    port: 53
-    do-ip4: yes
-    do-ip6: yes
-    do-udp: yes
-    do-tcp: yes
-    
-    # Performance
-    num-threads: 4
-    msg-cache-size: 50m
-    rrset-cache-size: 100m
-    
-    # Security
-    hide-identity: yes
-    hide-version: yes
-    qname-minimisation: yes
-"""
-    
-    # Add blocklists
-    for domain in settings.blocked_domains:
-        config += f'    local-zone: "{domain}" always_refuse\n'
-    
-    # DoT upstream
-    if settings.dot_enabled:
-        config += """
-forward-zone:
-    name: "."
-    forward-tls-upstream: yes
-    forward-addr: 1.1.1.1@853#cloudflare-dns.com
-"""
-    
-    return config
-```
+`app/dns/unbound_config.py` renders the resolver configuration and
+`app/dns/unbound_blocklist.py` builds the blocklist zone data; shared literals
+live in `app/dns/unbound_constants.py` and AdGuard-syntax parsing in
+`app/dns/custom_rules.py`. The process itself is supervised by
+`app/dns/unbound_process.py`.
+
+The resolver binds only the WireGuard gateway addresses, never `127.0.0.1`, so it
+cannot collide with a host resolver under `network_mode: host`. Upstreams are
+configured as DNS-over-TLS `forward-zone` entries.
 
 ### Query Logging
 
-```python
-class DNSQueryLogger:
-    def __init__(self, log_path: str):
-        self.log_path = log_path
-        self.tailer = FileTailer(log_path)
-    
-    async def stream_queries(self):
-        async for line in self.tailer:
-            query = self.parse_query(line)
-            yield query
-    
-    def parse_query(self, line: str) -> DNSQuery:
-        # Parse Unbound log format
-        # Return structured query object
-        pass
-```
+Ingestion of the Unbound query log is split across `app/dns/ingestion*.py`:
+`ingestion_tailer.py` follows the log file, `ingestion_parser.py` turns lines into
+structured events, `ingestion_writer.py` persists them, `ingestion_retention.py`
+enforces retention, and `ingestion_daemon.py` runs the loop.
 
 WireBuddy uses dual storage for DNS telemetry:
 
@@ -391,65 +315,40 @@ This split keeps the ingestion path robust while making long-range trend queries
 
 ### Conntrack Monitoring
 
-```python
-class ConntrackMonitor:
-    def __init__(self):
-        self.conntrack_path = "/proc/net/nf_conntrack"
-    
-    def collect_peer_traffic(self, peer_ip: str) -> dict:
-        traffic = {"tx": 0, "rx": 0}
-        
-        with open(self.conntrack_path) as f:
-            for line in f:
-                # Parse conntrack entry
-                if peer_ip in line:
-                    entry = self.parse_entry(line)
-                    traffic["tx"] += entry.bytes_orig
-                    traffic["rx"] += entry.bytes_reply
-        
-        return traffic
-```
+`app/utils/conntrack.py` reads the host's conntrack table and
+`app/api/wireguard_stats_country.py` attributes the resulting byte deltas to peers
+and then to destination country/ASN via the GeoLite2 databases. Byte accounting
+requires `net.netfilter.nf_conntrack_acct=1` on the host; without it flows are
+visible but carry no byte counters. Sampling runs every 30 seconds.
 
 ### Time-Series Database
 
-```python
-class TSDB:
-    def __init__(self, path: str):
-        self.db = sqlite3.connect(path)
-        self.init_schema()
-    
-    def record_metric(self, metric: str, value: float, tags: dict):
-        timestamp = int(time.time())
-        self.db.execute(
-            "INSERT INTO metrics (timestamp, metric, value, tags) VALUES (?, ?, ?, ?)",
-            (timestamp, metric, value, json.dumps(tags))
-        )
-        self.db.commit()
-    
-    def query(self, metric: str, start: int, end: int) -> list:
-        cursor = self.db.execute(
-            "SELECT timestamp, value FROM metrics WHERE metric = ? AND timestamp BETWEEN ? AND ?",
-            (metric, start, end)
-        )
-        return cursor.fetchall()
-```
+`app/db/tsdb.py` implements the metrics store. It is **not** SQLite — it is a
+file-based, append-oriented series store under `<WIREBUDDY_DATA_DIR>/tsdb/`, with
+compaction into archives during periodic maintenance (every six hours). That
+layout keeps the hot ingestion path to appends and keeps long-range queries off
+the application database.
+
+Retention per series is configured in the UI under **Settings → Logs**; see
+[Monitoring Configuration](../configuration/monitoring.md#retention).
 
 ## Security Architecture
 
 ### Password Hashing
 
+`app/utils/crypto.py` hashes with PBKDF2-HMAC-SHA256 at 600,000 iterations and a
+random per-password salt, and stores the parameters alongside the digest so the
+work factor can be raised later without invalidating existing hashes:
+
 ```python
-def hash_password(password: str) -> tuple[bytes, bytes]:
-    salt = os.urandom(32)
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=600_000
-    )
-    key = kdf.derive(password.encode())
-    return salt, key
+_PBKDF2_ITERATIONS = 600_000
+
+# Stored format: 'pbkdf2:sha256:iterations$salt$hash'
+dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
 ```
+
+Verification is constant-time, and a fixed dummy hash is verified for unknown
+usernames so login timing does not reveal whether an account exists.
 
 ### Secret Encryption
 
@@ -476,78 +375,47 @@ backward compatibility.
 
 ### JavaScript Structure
 
-```javascript
-// app/static/js/main.js
-const WireBuddy = {
-    init() {
-        this.setupEventListeners();
-        this.loadDashboard();
-    },
-    
-    async loadPeers() {
-        const response = await fetch('/api/wireguard/stats/peers-enriched');
-        const data = await response.json();
-        this.updatePeers(data.data);
-    },
-    
-    updatePeers(peers) {
-        document.getElementById('peer-count').textContent = peers.length;
-        // ...
-    }
-};
+Vanilla JavaScript, no build step and no framework. `app/static/js/` holds one
+script per page (`dashboard.js`, `peers.js`, `traffic.js`, `dns-page.js`,
+`users.js`, `nodes.js`, …) plus shared modules:
 
-document.addEventListener('DOMContentLoaded', () => WireBuddy.init());
-```
+| Module | Responsibility |
+|---|---|
+| `api.js` | The single `api(method, url, data)` wrapper: same-origin enforcement, CSRF header, `401` redirect to `/login` |
+| `core/` | `dom.js`, `logger.js`, `design-tokens.js` — primitives shared by every page |
+| `components/` | Reusable widgets such as `retention-slider.js` |
+| `base-ui.js`, `modal.js`, `toast.js`, `theme.js`, `ui-state.js` | Chrome shared across templates |
+| `reconnect.js` | Backs off and retries while the backend is unreachable |
+
+Page scripts go through `api()` rather than calling `fetch` directly, so CSRF and
+session-expiry handling exist in exactly one place.
 
 ### Chart Integration
 
-```javascript
-const TrafficChart = {
-    chart: null,
-    
-    init(canvasId) {
-        const ctx = document.getElementById(canvasId).getContext('2d');
-        this.chart = new Chart(ctx, {
-            type: 'line',
-            data: { /* ... */ },
-            options: { /* ... */ }
-        });
-    },
-    
-    update(data) {
-        this.chart.data.datasets[0].data = data;
-        this.chart.update();
-    }
-};
-```
+Chart.js renders the traffic, DNS trend, network, and speed-test charts.
+`traffic.js` owns the traffic charts and pairs a `render*`/`refresh*`/`destroy*`
+function per chart so re-rendering on filter changes does not leak canvases;
+`dashboard_traffic_shared.js` holds the logic the dashboard and traffic page share.
 
 ## Deployment Architecture
 
 ### Docker Container
 
-```dockerfile
-FROM python:3.13-slim
+`docker/Dockerfile` is a multi-stage build: a wheel builder that reads the
+dependency list straight out of `pyproject.toml`, a stage that compiles
+`wireguard-tools` from upstream source (Debian's WireGuard packages are pinned
+out on purpose), and a runtime stage with Unbound, iptables, conntrack, and
+`librespeed-cli`.
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    wireguard-tools \
-    unbound \
-    conntrack \
-    && rm -rf /var/lib/apt/lists/*
+The image starts through `ENTRYPOINT ["/entrypoint.sh"]`, which branches on
+`SERVER_MODE`: `master` reads the GUI host/port out of the SQLite `settings`
+table and starts Uvicorn, while `node` execs the enrollment daemon instead.
 
-# Copy application
-WORKDIR /app
-COPY pyproject.toml .
-RUN pip install --no-cache-dir .
-COPY . .
-
-# Non-root user
-RUN useradd -m wirebuddy
-USER wirebuddy
-
-# Start application
-CMD ["uvicorn", "app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
-```
+The container runs as **root**. WireGuard interface management, iptables, and
+Unbound's privilege drop all need capabilities that an unprivileged UID cannot
+hold, so the isolation comes from `cap_drop: ALL` plus six explicit capabilities
+rather than from a non-root user — see
+[Container Hardening](../configuration/security.md#container-hardening).
 
 ### Docker Compose
 
@@ -575,8 +443,8 @@ services:
 ### Caching
 
 - DNS query cache (Unbound)
-- Session cache (in-memory)
-- Metrics cache (Redis in future)
+- Session and MFA caches (in-process)
+- GeoIP lookup cache (in-process, sized by `WIREBUDDY_GEOIP_CACHE_SIZE`)
 
 ### Async Operations
 
@@ -586,32 +454,29 @@ services:
 
 ## Scalability
 
-### Current Limitations
+The control plane is deliberately a **single process on a single host**. The job
+queue, rate limiter, and session/MFA caches live in process memory, so a second
+Uvicorn worker would make that state diverge; `WIREBUDDY_SKIP_APPLICATION_LOCK`
+guards the data directory against a second control plane instead of coordinating
+one. SQLite is local and not replicated.
 
-- Single-server deployment
-- SQLite (not distributed)
-- No horizontal scaling
-
-### Future Enhancements
-
-- PostgreSQL support
-- Redis for caching
-- Distributed mode (multiple workers)
-- Metrics persistence (InfluxDB, Prometheus)
+VPN capacity scales out horizontally through [nodes](../features/multi-node.md):
+data-plane traffic is distributed across node servers while configuration stays
+on the single master. That is the supported scaling axis; running multiple masters
+is not.
 
 ## Monitoring & Observability
 
-### Logging
+Logging is plain-text and human-oriented, not JSON: `app/runtime/logging.py`
+installs a `ColoredFormatter` on a TTY and a `HumanizedFormatter` otherwise, both
+of which normalize noisy third-party messages. Standard levels apply
+(`LOG_LEVEL`), and security-relevant events — logins, MFA and passkey changes,
+password changes, administrative mutations — are written to the same stream.
 
-- Structured logging (JSON)
-- Log levels (DEBUG, INFO, WARNING, ERROR)
-- Audit logs (security events)
-
-### Metrics (Future)
-
-- Prometheus exporter
-- Grafana dashboards
-- Custom alerts
+There is no Prometheus exporter, metrics endpoint family, or built-in alerting.
+Integrations consume the authenticated REST endpoints and the `/health` and
+`/ready` probes, or ingest container logs. See
+[Monitoring Configuration](../configuration/monitoring.md#external-monitoring).
 
 ## Design Decisions
 

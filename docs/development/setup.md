@@ -79,8 +79,9 @@ WIREBUDDY_SECRET_KEY=dev-secret-key-change-me
 LOG_LEVEL=DEBUG
 WIREBUDDY_DEV_RELOAD=true
 
-# Database (dev)
-WIREBUDDY_DATA_DIR=./dev-data
+# Database (dev). Both data/ and data_local/ are gitignored — keep the dev
+# database inside one of them so encrypted keys never reach a commit.
+WIREBUDDY_DATA_DIR=./data_local
 
 # Optional bind overrides are available in Docker as WIREBUDDY_HOST and
 # WIREBUDDY_PORT. Local run.py reads host and port from the application DB.
@@ -105,7 +106,7 @@ WireBuddy automatically creates database on first run:
 python run.py
 ```
 
-This creates `dev-data/wirebuddy.db` with schema and default admin user.
+This creates `data_local/wirebuddy.db` with schema and default admin user.
 
 ## Running WireBuddy
 
@@ -123,12 +124,6 @@ Access: `http://localhost:8000`
 
 ```bash
 pytest
-```
-
-With coverage:
-
-```bash
-pytest --cov=app --cov-report=html
 ```
 
 ### Run Linter
@@ -193,29 +188,26 @@ Install recommended extensions:
 wirebuddy/
 ├── app/                    # Application code
 │   ├── __init__.py
-│   ├── main.py            # FastAPI app entry point
-│   ├── api/               # API endpoints
-│   │   ├── auth.py
-│   │   ├── wireguard.py
-│   │   └── ...
-│   ├── db/                # Database modules
-│   │   ├── sqlite_*.py
-│   │   └── ...
-│   ├── dns/               # DNS resolver
+│   ├── main.py            # create_app() factory and lifespan
+│   ├── api/               # FastAPI routers, split by resource
+│   ├── db/                # sqlite_*.py data access, tsdb.py metrics store
+│   ├── dns/               # Unbound config, blocklists, query-log ingestion
+│   ├── node/              # Node-mode daemon, enrollment, metrics queue
+│   ├── runtime/           # Service lifecycle, logging, signals
+│   ├── tasks/             # Scheduled background jobs
+│   ├── middleware/        # CSRF and request middleware
+│   ├── speedtest/         # librespeed-cli integration
 │   ├── models/            # Pydantic models
-│   ├── utils/             # Utilities
-│   ├── static/            # CSS, JS, images
+│   ├── utils/             # Utilities (crypto, vault, geoip, conntrack, ...)
+│   ├── static/            # CSS design system, vanilla JS
 │   └── templates/         # Jinja2 templates
-├── tests/                 # Test suite
-│   ├── test_api.py
-│   ├── test_auth.py
-│   └── ...
+├── tests/                 # Flat pytest suite (test_*.py)
+├── tools/                 # UI linter and CI helpers
+├── docker/                # Dockerfile, entrypoint, compose files
 ├── docs/                  # MkDocs documentation
 ├── data/                  # Runtime data (gitignored)
-├── dev-data/              # Development data (gitignored)
 ├── pyproject.toml         # Project metadata, version, dependencies, dev/docs extras
-├── run.py                 # Development entry point
-├── setup.conf            # Configuration
+├── run.py                 # Entry point
 ├── README.md
 ├── LICENSE
 └── .gitignore
@@ -244,15 +236,8 @@ git add .
 git commit -m "feat: add new feature"
 ```
 
-Use conventional commits:
-
-- `feat:` New feature
-- `fix:` Bug fix
-- `docs:` Documentation
-- `style:` Formatting
-- `refactor:` Code restructuring
-- `test:` Tests
-- `chore:` Maintenance
+Use conventional commits — see
+[Commit Messages](contributing.md#commit-messages) for the type list and examples.
 
 ### Push and Create PR
 
@@ -319,7 +304,7 @@ logger.error("Error message")
 ### SQLite CLI
 
 ```bash
-sqlite3 dev-data/wirebuddy.db
+sqlite3 data_local/wirebuddy.db
 
 # Common commands
 .schema               # Show schema
@@ -328,39 +313,22 @@ SELECT * FROM users;  # Query
 .quit                 # Exit
 ```
 
-### Database Migrations
+### Schema Changes
 
-(If implementing Alembic in future)
-
-```bash
-# Create migration
-alembic revision --autogenerate -m "Add new field"
-
-# Apply migration
-alembic upgrade head
-
-# Rollback
-alembic downgrade -1
-```
+There is no Alembic or external migration tool. The baseline schema is created by
+`init_schema()` in `app/db/sqlite_schema.py`, and version-to-version upgrades are
+applied in `app/utils/migration.py` against the `schema_version` table.
 
 ## Testing
 
-### Unit Tests
+The suite is flat — `tests/test_*.py`, no `unit`/`integration`/`e2e` split. Select
+by file or by name:
 
 ```bash
-pytest tests/unit/
-```
-
-### Integration Tests
-
-```bash
-pytest tests/integration/
-```
-
-### End-to-End Tests
-
-```bash
-pytest tests/e2e/
+pytest                                  # everything
+pytest tests/test_login_lockout.py      # one file
+pytest -k lockout                       # by name
+pytest -x                               # stop on first failure
 ```
 
 ### Test Coverage
@@ -372,27 +340,19 @@ open htmlcov/index.html
 
 ### Fixtures
 
+The suite is hermetic: no running server, no real WireGuard or Unbound, no
+network. `tests/conftest.py` provides the one shared fixture, `conn`, a fresh
+in-memory SQLite database with the full application schema:
+
 ```python
-import pytest
-from app.main import app
-from fastapi.testclient import TestClient
-
-@pytest.fixture
-def client():
-    return TestClient(app)
-
-@pytest.fixture
-def admin_user(client):
-    # Create and return admin user
-    pass
-
-def test_login(client, admin_user):
-    response = client.post("/api/login", json={
-        "username": "admin",
-        "password": "admin"
-    })
-    assert response.status_code == 200
+def test_last_admin_cannot_be_deleted(conn):
+	user_id = create_user(conn, "admin", "Correct-Horse-1", is_admin=True)
+	with pytest.raises(LastAdminError):
+		delete_user(conn, user_id)
 ```
+
+Use `tmp_path` for anything that needs files and `monkeypatch` for environment
+and collaborators. See `tests/AGENTS.md` for the per-file map of what is covered.
 
 ## Frontend Development
 
@@ -400,15 +360,16 @@ def test_login(client, admin_user):
 
 Located in `app/static/css/`:
 
-- `wb-ui-system.css` - Design system tokens
-- `custom.css` - Custom styles
+- `wb-ui-system.css` — design system entry point, with `foundations/`,
+  `components/`, `utilities/`, and `pages/` beneath it
+- `style.css` plus per-page sheets (`dashboard.css`, `peers.css`, `traffic.css`,
+  `dns.css`, `users.css`, `login.css`, `status.css`)
 
 ### JavaScript
 
-Located in `app/static/js/`:
-
-- `main.js` - Main application logic
-- `charts.js` - Chart.js integration
+Located in `app/static/js/` — vanilla JS, no build step. One script per page
+(`dashboard.js`, `peers.js`, `traffic.js`, …) plus shared modules: `api.js` for
+all backend calls, `core/` for primitives, and `components/` for reusable widgets.
 
 ### Templates
 
@@ -458,8 +419,17 @@ mkdocs serve -f docs/mkdocs.yml
 
 ### Local Build
 
+The Dockerfile lives in `docker/` but its build context is the repository root:
+
 ```bash
-docker build -t wirebuddy:dev .
+docker build -t wirebuddy:dev -f docker/Dockerfile .
+```
+
+To reproduce the CI lint gate without a full build:
+
+```bash
+docker build --check -f docker/Dockerfile .
+bash -n docker/entrypoint.sh
 ```
 
 ### Multi-Platform Build
@@ -467,7 +437,7 @@ docker build -t wirebuddy:dev .
 ```bash
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  -t wirebuddy:dev .
+  -t wirebuddy:dev -f docker/Dockerfile .
 ```
 
 ### Run Local Image
@@ -501,7 +471,7 @@ pip install -e ".[dev]"
 pkill -f wirebuddy
 
 # Or delete database (dev only)
-rm dev-data/wirebuddy.db
+rm data_local/wirebuddy.db
 ```
 
 ### Port Already in Use

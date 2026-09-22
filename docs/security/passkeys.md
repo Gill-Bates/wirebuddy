@@ -161,35 +161,21 @@ scheme, host, and port.
 - Respond to prompt within 60 seconds
 - Retry biometric or enter correct PIN
 
-### Touch ID Not Working (macOS)
+### Authenticator Prompt Does Not Appear
 
-**Problem:** Touch ID prompt doesn't appear
+Platform authenticators (Touch ID, Windows Hello) and security keys are driven by
+the browser and operating system, not by WireBuddy. If no prompt appears at all,
+confirm the authenticator works on another WebAuthn site such as
+[webauthn.io](https://webauthn.io/) before investigating WireBuddy.
 
-**Solutions:**
+If it works there but not here, the cause is on the WireBuddy side and is almost
+always one of:
 
-1. Check Touch ID is enabled:
-   ```
-   System Settings → Touch ID & Password
-   ```
-
-2. Restart browser
-
-3. Reset Touch ID (as last resort):
-   ```
-   System Settings → Touch ID & Password → Remove all fingerprints → Re-add
-   ```
-
-### Security Key Not Detected
-
-**Problem:** Browser doesn't detect security key
-
-**Solutions:**
-
-1. **Insert key properly:** USB-A vs USB-C adapter
-2. **Touch key button:** Some keys require touch during detection
-3. **Try different USB port**
-4. **Check key compatibility:** FIDO2/WebAuthn certified key required
-5. **Update key firmware** (if available)
+- the page was reached over plain HTTP from a non-localhost host;
+- `PASSKEY_RP_ID` or `WIREBUDDY_PUBLIC_ORIGIN` does not match the browser-visible
+  origin exactly, including port;
+- a reverse proxy rewrites the Host header so the derived RP ID differs from what
+  the browser sees.
 
 ## Best Practices
 
@@ -207,14 +193,15 @@ scheme, host, and port.
 
 ## Comparison: Passkeys vs Other Methods
 
-| Feature | Passkeys | Password + MFA | Password Only |
-|---------|----------|----------------|---------------|
-| **Security** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ |
-| **Convenience** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
-| **Phishing Resistant** | ✅ Yes | ⚠️ MFA can be phished | ❌ No |
-| **Password Reset** | N/A | Needed | Needed |
-| **Offline** | ✅ Works | ✅ Works (TOTP) | ✅ Works |
-| **Device Required** | ✅ Yes | ⚠️ Phone (TOTP) | ❌ No |
+The practical difference is phishing resistance. A passkey signature is bound to
+the origin, so a lookalike site cannot obtain anything replayable; a TOTP code can
+be relayed by an attacker-controlled proxy, and a password alone offers neither
+protection. Passkeys also remove the password-reset path as an attack surface, at
+the cost of requiring a registered device — which is why the
+[best practice](#for-users) is to register a second authenticator.
+
+See [Authentication](authentication.md#authentication-methods) for how the three
+methods map onto WireBuddy's login flow.
 
 ## Resources
 
