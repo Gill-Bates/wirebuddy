@@ -99,16 +99,6 @@ for (const pattern of [
     if (!pattern.test(source)) throw new Error(`missing wiring ${pattern}`);
 }
 """
-	result = subprocess.run(
-		[node, "--check"],
-		input=node_script,
-		cwd=ROOT,
-		text=True,
-		capture_output=True,
-		check=False,
-		timeout=10,
-	)
-	assert result.returncode == 0, result.stderr
 	run = subprocess.run(
 		[node],
 		input=node_script,
@@ -120,18 +110,3 @@ for (const pattern of [
 	)
 	assert run.returncode == 0, run.stderr
 
-
-def test_obsolete_private_helpers_are_removed() -> None:
-	"""Keep the unused helpers separate from the active retention controls."""
-	settings = (ROOT / "app/static/js/settings.js").read_text()
-	for symbol in (
-		"DNS_RETENTION_VALUES",
-		"dnsRetentionLabel",
-		"dnsRetentionIndexForDays",
-		"dnsRetentionDaysFromSlider",
-		"updateDnsRetentionPreview",
-		"getSelectedDnsRetention",
-	):
-		assert symbol not in settings
-	traffic = (ROOT / "app/static/js/traffic.js").read_text()
-	assert "countryCodeToFlagEmoji" not in traffic

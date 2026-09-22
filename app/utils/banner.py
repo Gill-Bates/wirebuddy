@@ -109,34 +109,34 @@ __      _(_)_ __ ___| |__  _   _  __| | __| |_   _
 
 
 def print_banner_once() -> None:
-	    """Print startup banner at most once per process tree.
+	"""Print startup banner at most once per process tree.
 
-	    Uses a file lock so that only one worker prints the banner,
-	    even when running with multiple uvicorn workers.
-	    """
-	    startup_key = _banner_startup_key()
+	Uses a file lock so that only one worker prints the banner,
+	even when running with multiple uvicorn workers.
+	"""
+	startup_key = _banner_startup_key()
 
-	    try:
-	        fd = _open_banner_lock()
-	        try:
-	            try:
-	                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-	            except BlockingIOError:
-	                return
+	try:
+		fd = _open_banner_lock()
+		try:
+			try:
+				fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+			except BlockingIOError:
+				return
 
-	            content = os.read(fd, 128).decode("utf-8", errors="ignore").strip()
-	            if content == startup_key:
-	                return
+			content = os.read(fd, 128).decode("utf-8", errors="ignore").strip()
+			if content == startup_key:
+				return
 
-	            print_banner()
+			print_banner()
 
-	            os.lseek(fd, 0, os.SEEK_SET)
-	            os.ftruncate(fd, 0)
-	            os.write(fd, startup_key.encode("utf-8"))
-	            os.fsync(fd)
-	        finally:
-	            fcntl.flock(fd, fcntl.LOCK_UN)
-	            os.close(fd)
-	    except OSError:
-	        logger.warning("Could not coordinate startup banner printing.", exc_info=True)
-	        print_banner()
+			os.lseek(fd, 0, os.SEEK_SET)
+			os.ftruncate(fd, 0)
+			os.write(fd, startup_key.encode("utf-8"))
+			os.fsync(fd)
+		finally:
+			fcntl.flock(fd, fcntl.LOCK_UN)
+			os.close(fd)
+	except OSError:
+		logger.warning("Could not coordinate startup banner printing.", exc_info=True)
+		print_banner()
