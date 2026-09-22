@@ -1,24 +1,10 @@
 {% extends "base.html" %}
 {% from "macros/geo.html" import geo_ip_stack %}
+{% from "macros/password.html" import password_requirements %}
 
 {% block title %}Users – WireBuddy{% endblock %}
 
 {% block body_class %}users-page{% endblock %}
-
-{% macro password_requirements(requirements_id) -%}
-<div class="password-requirements" id="{{ requirements_id }}" aria-live="polite" aria-relevant="text">
-    {% for req, label in [
-        ('length', 'Minimum 8 characters'),
-        ('upper', 'Uppercase letter'),
-        ('lower', 'Lowercase letter'),
-        ('digit', 'Number'),
-        ('special', 'Special character'),
-        ('strength', 'At least 3 of the above categories'),
-    ] %}
-    <div class="req" data-req="{{ req }}"><span class="material-icons" aria-hidden="true">radio_button_unchecked</span> {{ label }}</div>
-    {% endfor %}
-</div>
-{%- endmacro %}
 
 {% block extra_css %}
 <link href="/static/css/pages/users.css" rel="stylesheet">

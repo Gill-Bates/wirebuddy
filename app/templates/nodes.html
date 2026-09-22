@@ -103,15 +103,13 @@
                             <div class="d-flex flex-column">
                                 <div class="d-flex gap-1 flex-wrap">
                                 {% if node.last_speedtest.download_mbit %}
-                                {% set dl = node.last_speedtest.download_mbit %}
                                 <span class="badge bg-secondary" title="Download" data-bs-toggle="tooltip">
-                                    ↓ {{ dl|format_bandwidth_mbit(1, 1) }}
+                                    ↓ {{ node.last_speedtest.download_mbit|format_bandwidth_mbit(1, 1) }}
                                 </span>
                                 {% endif %}
                                 {% if node.last_speedtest.upload_mbit %}
-                                {% set ul = node.last_speedtest.upload_mbit %}
                                 <span class="badge bg-secondary" title="Upload" data-bs-toggle="tooltip">
-                                    ↑ {{ ul|format_bandwidth_mbit(1, 1) }}
+                                    ↑ {{ node.last_speedtest.upload_mbit|format_bandwidth_mbit(1, 1) }}
                                 </span>
                                 {% endif %}
                                 </div>

@@ -1,6 +1,5 @@
 {% from 'macros/nav.html' import nav_item with context %}
-{# Define navigation items once for DRY principle #}
-{# Format: (path, icon, label, external) - external defaults to false #}
+{# Format: (path, icon, label, external) - rendered in both the mobile and the desktop nav #}
 {% set admin_items = [
     ('/ui/users', 'people', 'Users', false),
     ('/ui/nodes', 'hub', 'Nodes', false),
@@ -95,8 +94,6 @@
                     {{ nav_item(href, icon, label, external) }}
                     {% endfor %}
                 </nav>
-                <!-- Reserved for future desktop nav items -->
-                <!-- <ul class="navbar-nav ms-auto align-items-center d-none d-lg-flex"></ul> -->
             </div>
         </div>
     </nav>

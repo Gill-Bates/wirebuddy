@@ -10,8 +10,9 @@
 {% endblock %}
 
 {% block content %}
-{% macro dns_unavailable_state(extra_class='', id='') -%}
-<div{% if id %} id="{{ id }}"{% endif %} class="chart-empty-state d-flex flex-column align-items-center justify-content-center{{ ' ' ~ extra_class if extra_class else '' }}" role="status" aria-live="polite">
+{#- Hidden unless Unbound is missing, so every call site gets d-none from dns_unavailable. -#}
+{% macro dns_unavailable_state(extra_class, id) -%}
+<div id="{{ id }}" class="chart-empty-state d-flex flex-column align-items-center justify-content-center {{ extra_class }}{{ '' if dns_unavailable else ' d-none' }}" role="status" aria-live="polite">
     <span class="material-icons" aria-hidden="true">block</span>
     <span class="chart-empty-state-text">DNS Unavailable</span>
     <span class="chart-empty-state-text small">Unbound is not installed.</span>
@@ -115,7 +116,7 @@
                             <span class="material-icons" aria-hidden="true">show_chart</span>
                             <span class="chart-empty-state-text">No Data Available</span>
                         </div>
-                        {{ dns_unavailable_state('flex-grow-1' ~ (' d-none' if not dns_unavailable else ''), 'top-queried-unavailable') }}
+                        {{ dns_unavailable_state('flex-grow-1', 'top-queried-unavailable') }}
                     </div>
                 </div>
             </div>
@@ -145,7 +146,7 @@
                             <span class="chart-empty-state-text">Ad-Blocker Disabled</span>
                             <span class="chart-empty-state-text small">Enable the Ad-Blocker to see blocked domains.</span>
                         </div>
-                        {{ dns_unavailable_state('flex-grow-1' ~ (' d-none' if not dns_unavailable else ''), 'top-blocked-unavailable') }}
+                        {{ dns_unavailable_state('flex-grow-1', 'top-blocked-unavailable') }}
                     </div>
                 </div>
             </div>
@@ -171,7 +172,7 @@
                             <span class="chart-empty-state-text">Ad-Blocker Disabled</span>
                             <span class="chart-empty-state-text small">Enable the Ad-Blocker to see blockrate trends.</span>
                         </div>
-                        {{ dns_unavailable_state('trend-chart-height' ~ (' d-none' if not dns_unavailable else ''), 'trend-unavailable') }}
+                        {{ dns_unavailable_state('trend-chart-height', 'trend-unavailable') }}
                     </div>
                 </div>
             </div>
@@ -223,7 +224,7 @@
                 <div id="log-sr-announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
                 <div id="log-row-action-help" class="visually-hidden">Press Enter or Space for rule actions.</div>
                 <!-- DNS unavailable overlay (z-index higher than sticky header) -->
-                {{ dns_unavailable_state('wb-empty-state-overlay bg-body' ~ (' d-none' if not dns_unavailable else ''), 'log-unavailable') }}
+                {{ dns_unavailable_state('wb-empty-state-overlay bg-body', 'log-unavailable') }}
             </div>
         </div>
     </div>

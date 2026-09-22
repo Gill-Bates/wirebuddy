@@ -1,5 +1,7 @@
 ## [1.6.2] - 2026-xx-xx
 
+- ``Security`` Re-running OTP setup on an account that already has MFA enabled is now rejected; previously it could silently reset the secret and discard the existing recovery codes without re-authentication.
+
 
 <details markdown="1">
 <summary>Previous versions...</summary>

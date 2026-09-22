@@ -12,6 +12,7 @@ Jinja macros shared by several pages, keeping repeated markup consistent.
 | `nav.html` | `nav_item(path, icon, label, external)` sidebar link; must not emit element IDs (duplicate-ID guard) |
 | `kpi.html` | `kpi_card(icon, label, value_id, value, subtext, status_class, live)` KPI tile styled by `components/kpi-card.css` |
 | `geo.html` | `geo_badge` and `geo_ip_stack`: country flag, city and AS-org display for IPs |
+| `password.html` | `password_requirements(requirements_id, extra_class)` live password checklist shared by `../users.html` and `../change_password.html`; the `data-req` keys are the contract with the password checks in `static/js/` |
 
 ## For AI Agents
 ### Working In This Directory

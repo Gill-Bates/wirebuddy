@@ -451,6 +451,15 @@ def enable_user_otp(
     user = _get_user_or_404(conn, user_id)
     is_self = _is_self(user_id, current_user)
 
+    # Re-running setup rewrites otp_secret, clears otp_enabled and drops the
+    # recovery codes. On an already-enabled account that would silently turn
+    # MFA off without the re-authentication that /otp/disable requires.
+    if coerce_db_bool(user["otp_enabled"]):
+        raise HTTPException(
+            status_code=409,
+            detail="OTP is already enabled; disable it first to run setup again",
+        )
+
     secret = generate_otp_secret()
     provisioning_uri = build_provisioning_uri(secret=secret, username=user["username"])
     if not set_user_otp_secret(conn, user_id, secret):

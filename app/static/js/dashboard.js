@@ -142,7 +142,7 @@ function setTrafficMetric(el, bytes, direction) {
 function formatDashboardCount(online, total) {
     return online === 0 && total === 0
         ? EMPTY_DASHBOARD_METRIC
-        : `${online}/${total}`;
+        : `${online} / ${total}`;
 }
 
 function setBandwidthMetric(downloadMbit, uploadMbit) {

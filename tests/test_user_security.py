@@ -13,7 +13,7 @@ import sqlite3
 import pytest
 from fastapi import HTTPException
 
-from app.api.users import _require_self
+from app.api.users import _require_self, enable_user_otp
 from app.db.sqlite_users import (
 	LastAdminError,
 	delete_user,
@@ -114,3 +114,32 @@ def test_otp_setup_confirm_requires_self():
 		_require_self(2, {"id": 1})
 
 	assert exc.value.status_code == 403
+
+
+def test_otp_enable_rejects_already_enabled_account(conn):
+	"""Re-running OTP setup must not silently clear an active OTP enrolment."""
+	_insert_user(
+		conn,
+		user_id=1,
+		username="admin",
+		is_admin=True,
+		otp_secret="encrypted-secret",
+		otp_recovery_codes='["hashed-code"]',
+	)
+	conn.execute("UPDATE users SET otp_enabled = 1 WHERE id = 1")
+	conn.commit()
+	current_user = conn.execute("SELECT * FROM users WHERE id = 1").fetchone()
+
+	with pytest.raises(HTTPException) as excinfo:
+		enable_user_otp.__wrapped__(
+			request=None,
+			user_id=1,
+			conn=conn,
+			current_user=current_user,
+		)
+
+	assert excinfo.value.status_code == 409
+	row = conn.execute("SELECT otp_enabled, otp_secret, otp_recovery_codes FROM users WHERE id = 1").fetchone()
+	assert row["otp_enabled"] == 1
+	assert row["otp_secret"] == "encrypted-secret"
+	assert row["otp_recovery_codes"] == '["hashed-code"]'

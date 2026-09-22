@@ -344,6 +344,13 @@
     font-weight: 650;
 }
 
+/* Count-style values ("online / total") sit in the primary KPI slot; the
+   display value's negative tracking pulls the digits and slash together, so
+   give this slot normal spacing for a legible fraction. */
+.dashboard-kpi-primary .dashboard-metric-value {
+    letter-spacing: normal;
+}
+
 .dashboard-kpi-card .dashboard-metric-unit {
     color: var(--wb-text-muted, var(--bs-secondary-color));
     font-size: 0.48em;

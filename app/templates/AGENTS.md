@@ -10,7 +10,7 @@ Jinja2 templates rendered server-side (routes in `../api/frontend_pages.py`). Au
 |------|-------------|
 | `base.html` | App shell: loads theme.js, Bootstrap, the design-system CSS cascade and shared JS runtime; blocks `title`, `body_class`, `extra_css`, `content`, `extra_js`; key-mismatch banner |
 | `auth_base.html` | Shared shell for login, change_password, otp_setup, passkey_setup (blocks `title`, `body_attrs`, `extra_css`, `content`, `extra_js`) |
-| `dashboard.html`, `traffic.html`, `dns.html`, `peers.html`, `users.html`, `nodes.html`, `about.html` | Main pages; each links its `css/pages/*.css` and page JS. `nodes.html` and `users.html` define local macros |
+| `dashboard.html`, `traffic.html`, `dns.html`, `peers.html`, `users.html`, `nodes.html`, `about.html` | Main pages; each links its `css/pages/*.css` and page JS. `nodes.html` and `dns.html` define local macros |
 | `settings.html` | Tabbed settings page; includes `settings/_tab_*.html` and loads settings JS |
 | `login.html`, `change_password.html`, `otp_setup.html`, `passkey_setup.html` | Auth and forced-setup pages (extend `auth_base.html`) |
 | `status.html`, `status_disabled.html` | Public status page and its disabled placeholder; standalone (own `<head>`, load `style.css`, `wb-ui-system.css`, `status.css`) |
