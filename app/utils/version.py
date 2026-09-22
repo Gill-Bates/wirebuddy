@@ -45,7 +45,7 @@ def get_build_info() -> str:
 	if _BUILD_INFO_CACHE is not None:
 		return _BUILD_INFO_CACHE
 	try:
-		build_file = Path(__file__).resolve().parent.parent.parent / "BUILD_INFO"
+		build_file = _PROJECT_ROOT / "BUILD_INFO"
 		if not build_file.exists():
 			build_file = Path("/app/BUILD_INFO")
 		if build_file.exists():

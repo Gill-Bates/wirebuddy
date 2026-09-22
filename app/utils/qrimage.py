@@ -46,7 +46,6 @@ _MAX_CANVAS_SIZE = 4096
 _MAX_PNG_SIZE = 2_000_000
 _BADGE_BACKGROUND = "#000000"
 _BADGE_TEXT = "#ffffff"
-_PNG_OPTIMIZE = False
 _SUPPORTS_DEFAULT_FONT_SIZE = "size" in inspect.signature(ImageFont.load_default).parameters
 _BIDI_CONTROL_CHARS = {
 	"\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
@@ -119,8 +118,7 @@ def _draw_node_badge(
 
 	Returns the total height consumed (badge + padding).
 	"""
-	badge_text = node_name
-	text_bbox = font.getbbox(badge_text)
+	text_bbox = font.getbbox(node_name)
 	text_w = text_bbox[2] - text_bbox[0]
 	text_h = text_bbox[3] - text_bbox[1]
 
@@ -150,7 +148,7 @@ def _draw_node_badge(
 	cy = (y0 + y1) // 2
 	draw.text(
 		(cx, cy),
-		badge_text,
+		node_name,
 		fill=_BADGE_TEXT,
 		font=font,
 		anchor="mm",
@@ -239,8 +237,7 @@ def generate_qr_png(
 	# Pre-measure badge height
 	badge_section_h = 0
 	if node_name:
-		badge_text = node_name
-		b_bbox = badge_font.getbbox(badge_text)
+		b_bbox = badge_font.getbbox(node_name)
 		b_text_h = b_bbox[3] - b_bbox[1]
 		badge_section_h = b_text_h + (_BADGE_PAD_Y * 2) + _BADGE_SECTION_SPACING
 
@@ -281,7 +278,7 @@ def generate_qr_png(
 	canvas = canvas.convert("RGB")
 
 	buffer = io.BytesIO()
-	canvas.save(buffer, format="PNG", optimize=_PNG_OPTIMIZE)
+	canvas.save(buffer, format="PNG", optimize=False)
 	png = buffer.getvalue()
 	if len(png) > _MAX_PNG_SIZE:
 		raise ValueError("QR image output too large")

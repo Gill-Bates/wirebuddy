@@ -36,7 +36,6 @@ import re
 import shutil
 import threading
 import time
-import warnings
 from collections import OrderedDict
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
@@ -71,7 +70,6 @@ __all__ = [
     "finalize_shutdown",
     "flush_to_disk",
     "get_all_peer_hashes",
-    "get_all_peer_keys",  # Deprecated, but kept for backwards compat
     "get_db_stats",
     "get_peer_stats",
     "get_synthetic_storage_stats",
@@ -1100,22 +1098,6 @@ def get_all_peer_hashes(tsdb_dir: Path) -> list[str]:
 			key_hash = d.name[5:]  # Remove "peer_" prefix
 			hashes.append(key_hash)
 	return hashes
-
-
-def get_all_peer_keys(tsdb_dir: Path) -> list[str]:
-	"""Deprecated: Use get_all_peer_hashes() instead.
-
-	This function returns hashes, not actual peer keys.
-
-	MINOR FIX #13: Use warnings.warn instead of log.warning for deprecation.
-	"""
-	warnings.warn(
-		"get_all_peer_keys is deprecated and returns hashes, not keys. "
-		"Use get_all_peer_hashes() instead.",
-		FutureWarning,
-		stacklevel=2
-	)
-	return get_all_peer_hashes(tsdb_dir)
 
 
 def get_db_stats(tsdb_dir: Path) -> dict[str, Any]:

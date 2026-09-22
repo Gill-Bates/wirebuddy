@@ -183,7 +183,7 @@ def _downsample_buckets(
     return new_labels, new_peer_data
 
 
-def _empty_traffic_response(hours: int, range_key: str | None, bucket_seconds: int = 3600) -> dict:
+def _empty_traffic_response(hours: int, range_key: str | None) -> dict:
     """Build a zero-data traffic response (logging disabled or no peers)."""
     return {
         "retention_days": 0,
@@ -194,7 +194,7 @@ def _empty_traffic_response(hours: int, range_key: str | None, bucket_seconds: i
         "peers": [],
         "all_peers": [],
         "display_unit": "B",
-        "bucket_seconds": bucket_seconds,
+        "bucket_seconds": 3600,
     }
 
 

@@ -42,7 +42,6 @@ __all__ = [
 	"parse_wg_show_dump",
 	"row_to_public",
 	"run_wg_command",
-	"run_wg_command_stdin",
 	"safe_int",
 	"safe_row_get",
 	"select_display_unit",
@@ -391,11 +390,6 @@ async def run_wg_command(
 		stdin_data=stdin_data.encode("utf-8") if stdin_data is not None else None,
 		timeout=timeout,
 	)
-
-
-async def run_wg_command_stdin(stdin_data: str, *args: str, timeout: int = WG_COMMAND_TIMEOUT) -> tuple[int, str, str]:
-	"""Backward-compatible wrapper — prefer ``run_wg_command(..., stdin_data=...)``."""
-	return await run_wg_command(*args, stdin_data=stdin_data, timeout=timeout)
 
 
 async def _run_wg_or_raise(

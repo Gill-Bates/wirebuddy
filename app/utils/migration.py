@@ -113,8 +113,7 @@ def _migrate_0001_add_show_on_dashboard(conn: sqlite3.Connection) -> None:
 	dashboard's network throughput gauges. Defaults to 1 (shown).
 	"""
 	# Check if column already exists (idempotent)
-	columns = sorted(_current_columns(conn, "interfaces"))
-	if "show_on_dashboard" not in columns:
+	if "show_on_dashboard" not in _current_columns(conn, "interfaces"):
 		conn.execute(
 			"ALTER TABLE interfaces ADD COLUMN show_on_dashboard INTEGER NOT NULL DEFAULT 1"
 		)
@@ -128,8 +127,7 @@ def _migrate_0002_drop_peers_description(conn: sqlite3.Connection) -> None:
 	check the runtime version and use ALTER TABLE DROP COLUMN
 	when available, otherwise recreate the table.
 	"""
-	columns = sorted(_current_columns(conn, "peers"))
-	if "description" not in columns:
+	if "description" not in _current_columns(conn, "peers"):
 		return  # already removed
 
 	sqlite_version = tuple(int(x) for x in sqlite3.sqlite_version.split("."))

@@ -26,9 +26,9 @@ __all__ = [
 ]
 
 
-def format_sse_event(event_type: str, payload: Any, *, ensure_ascii: bool = False) -> str:
+def format_sse_event(event_type: str, payload: Any) -> str:
 	"""Format a server-sent event payload."""
-	return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=ensure_ascii, default=str)}\n\n"
+	return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
 
 
 def format_sse_keepalive() -> str:
