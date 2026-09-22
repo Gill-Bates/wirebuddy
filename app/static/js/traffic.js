@@ -142,20 +142,6 @@
         return RANGE_LABELS[rangeKey] ?? rangeKey;
     }
 
-    function countryCodeToFlagEmoji(countryCode) {
-        if (!/^[a-z]{2}$/i.test(countryCode)) return '';
-
-        try {
-            return countryCode
-                .toUpperCase()
-                .split('')
-                .map((char) => String.fromCodePoint(127397 + char.charCodeAt(0)))
-                .join('');
-        } catch {
-            return '';
-        }
-    }
-
     function isValidPeerFilterValue(value) {
         if (!value) return false;
         const trimmed = String(value).trim();

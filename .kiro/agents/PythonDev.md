@@ -1,7 +1,8 @@
 ---
 name: PythonDev
 description: Senior Python 3.13 engineer for modern FastAPI applications with production-grade architecture, security, and maintainability.
-model: claude-sonnet-4-5-20250929
+# Pinned deliberately: Sonnet 5 is the implementation model for decided fixes.
+model: claude-sonnet-5
 tools: ["read", "write", "shell", "todo_list"]
 allowedTools: ["read", "todo_list"]
 permissions:

@@ -1,9 +1,10 @@
 ---
 name: CodeReview
 description: Senior reviewer for modern web applications (Python 3.13 / FastAPI stack) focused on security, maintainability, architectural consistency, and production readiness.
-# Model is intentionally pinned for reproducible security findings.
+# Model is intentionally pinned: Opus 5 is used for the judgment-intensive
+# task of finding security, correctness, and maintainability risks.
 # Review/bump this pin deliberately — it will not track new releases automatically.
-model: claude-sonnet-4-5-20250929
+model: claude-opus-5
 tools: ["read", "search", "shell", "todo_list"]
 allowedTools: ["read", "search", "shell", "todo_list"]
 permissions:

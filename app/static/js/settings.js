@@ -1671,8 +1671,6 @@ void (async function () {
     let dnsConfigSavePending = false;
     let dnsConfigListenersBound = false;
 
-    const DNS_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
-
     // Cache frequently accessed DOM elements for better performance
     const domCache = {
         dnsUpstream: null,
@@ -1941,44 +1939,6 @@ void (async function () {
         } catch (e) {
             wbToast('Update failed: ' + e.message, 'danger');
         }
-    }
-
-    function dnsRetentionLabel(days) {
-        const n = Number(days);
-        if (n === 0) return 'No Logs';
-        if (n === 365) return '1 Year';
-        return `${n} Days`;
-    }
-
-    function dnsRetentionIndexForDays(days) {
-        const idx = DNS_RETENTION_VALUES.indexOf(Number(days));
-        return idx >= 0 ? idx : 2; // default: 30 days
-    }
-
-    function dnsRetentionDaysFromSlider(rawValue) {
-        const parsed = Number.parseInt(String(rawValue), 10);
-        const idx = Number.isFinite(parsed)
-            ? Math.max(0, Math.min(DNS_RETENTION_VALUES.length - 1, parsed))
-            : 2;
-        return DNS_RETENTION_VALUES[idx];
-    }
-
-    function updateDnsRetentionPreview(rawValue) {
-        const days = dnsRetentionDaysFromSlider(rawValue);
-        const labelEl = document.getElementById('dns-retention-value');
-        if (labelEl) {
-            labelEl.textContent = dnsRetentionLabel(days);
-            // Visual warning when logging is disabled
-            labelEl.className = days === 0
-                ? 'badge text-bg-danger'
-                : 'badge text-bg-secondary';
-        }
-        return days;
-    }
-
-    function getSelectedDnsRetention() {
-        const slider = document.getElementById('dns-retention-slider');
-        return dnsRetentionDaysFromSlider(slider?.value ?? 2);
     }
 
     function parseDnsUpstreamInput(raw) {
@@ -2332,7 +2292,7 @@ void (async function () {
         return days;
     }
 
-    // DNS metrics retention slider (mirrors DNS_RETENTION_VALUES)
+    // DNS metrics retention slider values
     const DNS_METRICS_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
 
     function dnsMetricsRetentionLabel(days) {

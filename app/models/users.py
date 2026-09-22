@@ -133,7 +133,7 @@ class MFAVerifyRequest(BaseModel):
 		if not normalized:
 			raise ValueError("Code cannot be empty")
 		# Validate format: either pure digits (TOTP) or alphanumeric (recovery)
-		if not (normalized.isdigit() or normalized.isalnum()):
+		if not normalized.isalnum():
 			raise ValueError("Code must contain only letters and numbers")
 		return normalized
 
