@@ -23,7 +23,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Gill-Bates", email = "tn.steiner@gmail.com" }]
+authors = [{ name = "Gill-Bates", email = "contact@wirebuddy.example.com" }]
 keywords = ["wireguard", "vpn", "fastapi", "dns", "self-hosted"]
 classifiers = [
     "Environment :: Web Environment",
