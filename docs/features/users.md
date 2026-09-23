@@ -77,6 +77,10 @@ Enrollment flow:
 WireBuddy generates eight single-use recovery codes. Recovery codes are not
 returned by later API calls and cannot be regenerated from stored hashes.
 
+Enrollment cannot be started again for an account that already has OTP enabled;
+the request is rejected with `409`. Disable OTP first, which enforces the
+reauthentication described below, then enroll again.
+
 Disabling OTP requires reauthentication:
 
 - Account owner: current password or a valid OTP code
