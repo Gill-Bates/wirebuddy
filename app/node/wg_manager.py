@@ -415,18 +415,22 @@ def _get_default_route_iface() -> str | None:
 
 
 def _fw_rules(family: str, action: str, phy: str) -> list[str]:
-    forward_rules = [
-        f"{family} -{action} FORWARD 1 -i %i -j ACCEPT",
-        f"{family} -{action} FORWARD 1 -o %i -j ACCEPT",
-    ]
     if action == "D":
         forward_rules = [
             f"{family} -D FORWARD -i %i -j ACCEPT",
             f"{family} -D FORWARD -o %i -j ACCEPT",
         ]
+        nat_action = "D"
+    else:
+        forward_rules = [
+            f"{family} -{action} FORWARD 1 -i %i -j ACCEPT",
+            f"{family} -{action} FORWARD 1 -o %i -j ACCEPT",
+        ]
+        # Insert-at-front for the FORWARD chain, append for NAT POSTROUTING.
+        nat_action = "A"
     return [
         *forward_rules,
-        f"{family} -t nat -{action.replace('I', 'A').replace('D', 'D')} POSTROUTING -o {phy} -j MASQUERADE",
+        f"{family} -t nat -{nat_action} POSTROUTING -o {phy} -j MASQUERADE",
     ]
 
 

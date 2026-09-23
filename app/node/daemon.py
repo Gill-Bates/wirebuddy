@@ -603,11 +603,8 @@ async def _speedtest_scheduler(
 		except Exception:
 			_log.exception("NODE_SPEEDTEST scheduler error")
 			# Wait a bit before retrying
-			try:
-				if await _interruptible_sleep(300, shutdown_event):
-					return
-			except TimeoutError:
-				pass
+			if await _interruptible_sleep(300, shutdown_event):
+				return
 
 
 async def _ack_pending_command_ids(
@@ -908,7 +905,7 @@ async def main() -> None:
 						break
 
 				if not enrolled:
-	# Enrollment failure without cached state is fatal.
+					# Enrollment failure without cached state is fatal.
 					_log.critical("Enrollment failed and no cached state available — exiting")
 					sys.exit(1)
 				# Replace the enrollment api_secret with the session secret
@@ -931,7 +928,6 @@ async def main() -> None:
 					new_secret_hash = hashlib.sha256(api_secret.encode("utf-8")).hexdigest()
 					_log.info("Switched to session secret (hash=%s...)", new_secret_hash[:8])
 
-				current_config_version = current_config_version or None
 				node_state["config_version"] = current_config_version
 				await asyncio.to_thread(_save_state, node_state)
 
@@ -1023,7 +1019,6 @@ async def main() -> None:
 					master_url,
 					api_secret,
 					cert_fingerprint,
-					tls_verify,
 					master_ca_file,
 					config_changed_event,
 					config_command_ids,
@@ -1416,7 +1411,6 @@ async def _sse_listener(
 	master_url: str,
 	api_secret: str,
 	cert_fingerprint: str,
-	tls_verify: ssl.SSLContext | bool,
 	master_ca_file: str | None,
 	config_changed_event: asyncio.Event,
 	config_command_ids: deque[int],
@@ -1444,7 +1438,6 @@ async def _sse_listener(
 		master_url: Base URL of the master to subscribe to.
 		api_secret: Node API secret authenticating the SSE subscription.
 		cert_fingerprint: Pinned certificate fingerprint of the master.
-		tls_verify: TLS verification mode (passed for type compatibility, but fresh context is created)
 		master_ca_file: CA file path (if custom CA configured) for creating fresh SSL context
 		config_changed_event: Set when the master announces a new config version.
 		config_command_ids: Queue the announced config command ids are appended to.
@@ -1457,7 +1450,6 @@ async def _sse_listener(
 	Uses a persistent client to avoid TLS handshake overhead on reconnect.
 	"""
 	_log.debug("SSE listener task started")
-	_ = tls_verify  # Kept for API compatibility; listener uses a fresh context.
 	reconnect_delay = 1
 	consecutive_401_count = 0  # Track auth failures
 

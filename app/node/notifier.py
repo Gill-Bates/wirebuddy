@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
+import sqlite3
+from collections.abc import AsyncGenerator, Callable
 
 from anyio import EndOfStream
 from pydantic import TypeAdapter, ValidationError
@@ -189,7 +190,7 @@ async def subscribe(
         raise
     finally:
         try:
-                await subscription.aclose()
+            await subscription.aclose()
         except asyncio.CancelledError:
             _log.debug("Cleanup cancelled for node %s", node_id)
         _log.debug("Node %s unsubscribed from config events", node_id)
@@ -205,6 +206,22 @@ def _command_event_name(db_command: str) -> str:
     }.get(db_command, db_command)
 
 
+def _with_node_db[T](operation: Callable[[sqlite3.Connection], T]) -> T:
+    """Run *operation* against a short-lived node database connection.
+
+    Blocking; call it via asyncio.to_thread() from async code. Imports are
+    local so the node daemon never pulls in the master's DB layer.
+    """
+    from ..db.sqlite_runtime import close_connection, connect
+    from ..utils.config import get_config
+
+    conn = connect(get_config().db_path)
+    try:
+        return operation(conn)
+    finally:
+        close_connection(conn)
+
+
 async def _queue_db_command(
     node_id: str,
     command: str,
@@ -213,18 +230,12 @@ async def _queue_db_command(
 ) -> int | None:
     """Queue a durable command in SQLite for replay-safe delivery."""
     from ..db.sqlite_nodes import enqueue_node_command
-    from ..db.sqlite_runtime import close_connection, connect
-    from ..utils.config import get_config
 
-    cfg = get_config()
     try:
-        def _queue():
-            conn = connect(cfg.db_path)
-            try:
-                return enqueue_node_command(conn, node_id, command, payload=payload)
-            finally:
-                close_connection(conn)
-        return await asyncio.to_thread(_queue)
+        return await asyncio.to_thread(
+            _with_node_db,
+            lambda conn: enqueue_node_command(conn, node_id, command, payload=payload),
+        )
     except Exception as exc:
         _log.warning("Failed to queue %s command for node %s: %s", command, node_id, exc)
         return None
@@ -233,18 +244,12 @@ async def _queue_db_command(
 async def _mark_db_command_delivered(node_id: str, command_id: int) -> bool:
     """Mark a queued command as delivered to a live SSE subscriber."""
     from ..db.sqlite_nodes import mark_node_command_delivered
-    from ..db.sqlite_runtime import close_connection, connect
-    from ..utils.config import get_config
 
-    cfg = get_config()
     try:
-        def _mark():
-            conn = connect(cfg.db_path)
-            try:
-                return mark_node_command_delivered(conn, node_id, command_id)
-            finally:
-                close_connection(conn)
-        return await asyncio.to_thread(_mark)
+        return await asyncio.to_thread(
+            _with_node_db,
+            lambda conn: mark_node_command_delivered(conn, node_id, command_id),
+        )
     except Exception as exc:
         _log.warning("Failed to mark command %s delivered for node %s: %s", command_id, node_id, exc)
         return False
@@ -258,20 +263,12 @@ async def is_node_connected(node_id: str) -> bool:
     blocking the async event loop.
     """
     from ..db.sqlite_nodes import is_node_sse_connected
-    from ..db.sqlite_runtime import close_connection, connect
-    from ..utils.config import get_config
 
-    cfg = get_config()
     try:
-        # Run blocking DB call in threadpool
-        def _check_db():
-            conn = connect(cfg.db_path)
-            try:
-                return is_node_sse_connected(conn, node_id)
-            finally:
-                close_connection(conn)
-
-        return await asyncio.to_thread(_check_db)
+        return await asyncio.to_thread(
+            _with_node_db,
+            lambda conn: is_node_sse_connected(conn, node_id),
+        )
     except Exception as exc:
         _log.debug("Failed to check SSE status for node %s: %s", node_id, exc)
         bus = _event_bus
@@ -286,16 +283,9 @@ def is_node_connected_sync(node_id: str) -> bool:
     WARNING: Blocks the calling thread. Prefer is_node_connected() in async code.
     """
     from ..db.sqlite_nodes import is_node_sse_connected
-    from ..db.sqlite_runtime import close_connection, connect
-    from ..utils.config import get_config
 
-    cfg = get_config()
     try:
-        conn = connect(cfg.db_path)
-        try:
-            return is_node_sse_connected(conn, node_id)
-        finally:
-            close_connection(conn)
+        return _with_node_db(lambda conn: is_node_sse_connected(conn, node_id))
     except Exception as exc:
         _log.debug("Failed to check SSE status for node %s: %s", node_id, exc)
         return False
@@ -343,7 +333,7 @@ async def _notify_or_queue(
         if notified > 0:
             await _mark_db_command_delivered(node_id, int(command_id))
             _log.info("Sent %s signal to %d SSE client(s) for node %s (command_id=%s)", action_name, notified, node_id, command_id)
-            return max(notified, 1)
+            return notified
 
     # No SSE clients in current worker - durable command remains queued for replay.
     if await is_node_connected(node_id):

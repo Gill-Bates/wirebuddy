@@ -211,13 +211,19 @@ def _get_connection_key(conn: sqlite3.Connection) -> str:
     return str(Path(database_path).resolve())
 
 
+def _lock_entry_unlocked(connection_key: str) -> _LockEntry:
+    """Return (creating if needed) the lock entry while holding _registry_lock."""
+    entry = _connection_locks.get(connection_key)
+    if entry is None:
+        entry = _LockEntry(lock=threading.Lock(), refcount=0)
+        _connection_locks[connection_key] = entry
+    return entry
+
+
 def _register_connection_lock(connection_key: str) -> threading.Lock:
     """Register and return the lock for a queue database file."""
     with _registry_lock:
-        entry = _connection_locks.get(connection_key)
-        if entry is None:
-            entry = _LockEntry(lock=threading.Lock(), refcount=0)
-            _connection_locks[connection_key] = entry
+        entry = _lock_entry_unlocked(connection_key)
         entry.refcount += 1
         return entry.lock
 
@@ -226,11 +232,7 @@ def _get_connection_lock(conn: sqlite3.Connection) -> threading.Lock:
     """Return the lock for a queue database file."""
     connection_key = _get_connection_key(conn)
     with _registry_lock:
-        entry = _connection_locks.get(connection_key)
-        if entry is None:
-            entry = _LockEntry(lock=threading.Lock(), refcount=0)
-            _connection_locks[connection_key] = entry
-        return entry.lock
+        return _lock_entry_unlocked(connection_key).lock
 
 
 def _unregister_connection_lock(connection_key: str) -> None:
@@ -465,7 +467,7 @@ def ack_up_to_seq(conn: sqlite3.Connection, acked_seq: int) -> int:
             return 0
 
         row = conn.execute(
-            "SELECT MIN(seq) as min_seq, MAX(seq) as max_seq FROM metrics_queue"
+            "SELECT MAX(seq) as max_seq FROM metrics_queue"
         ).fetchone()
         max_seq = row["max_seq"] if row is not None else None
         if max_seq is None:
@@ -485,7 +487,6 @@ def ack_up_to_seq(conn: sqlite3.Connection, acked_seq: int) -> int:
                 "UPDATE metrics_queue_meta SET pending_count = MAX(pending_count - ?, 0) WHERE id = 1",
                 (deleted,),
             )
-        if deleted > 0:
             _log.debug("ACK received: deleted %d metrics (up to seq %d)", deleted, acked_seq)
         return deleted
 
