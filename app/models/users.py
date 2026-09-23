@@ -16,6 +16,8 @@ from pydantic import AwareDatetime, BaseModel, Field, IPvAnyAddress, field_valid
 # Username: 3-64 chars, starts/ends with alphanumeric, allows _ or - in middle
 _USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$")
 _CONSECUTIVE_SPECIAL_RE = re.compile(r"[-_]{2}")
+# Opaque token characters (JWT/base64url alphabet)
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _UPPER_RE = re.compile(r"[A-Z]")
 _LOWER_RE = re.compile(r"[a-z]")
 _DIGIT_RE = re.compile(r"[0-9]")
@@ -70,6 +72,24 @@ def _validate_username(v: str) -> str:
 	if _CONSECUTIVE_SPECIAL_RE.search(v_lower):
 		raise ValueError("Username cannot contain consecutive special characters")
 	return v_lower
+
+
+def _validate_totp_code(v: str) -> str:
+	"""Normalize and validate a 6-8 digit TOTP code."""
+	normalized = v.strip().replace(" ", "").replace("-", "")
+	if not normalized.isdigit():
+		raise ValueError("TOTP code must be numeric")
+	if len(normalized) < 6 or len(normalized) > 8:
+		raise ValueError("TOTP code must be 6-8 digits")
+	return normalized
+
+
+def _validate_opaque_token(v: str) -> str:
+	"""Normalize and validate an opaque token (basic JWT/base64 character check)."""
+	normalized = v.strip()
+	if not _TOKEN_RE.match(normalized):
+		raise ValueError("Invalid token format")
+	return normalized
 
 
 def _validate_password_strength(v: str) -> str:
@@ -141,11 +161,7 @@ class MFAVerifyRequest(BaseModel):
 	@classmethod
 	def normalize_mfa_token(cls, v: str) -> str:
 		"""Normalize and validate MFA token format."""
-		normalized = v.strip()
-		# Basic JWT/base64 format check (alphanumeric + allowed chars)
-		if not re.match(r"^[A-Za-z0-9._-]+$", normalized):
-			raise ValueError("Invalid token format")
-		return normalized
+		return _validate_opaque_token(v)
 
 
 class OTPConfirmRequest(BaseModel):
@@ -156,12 +172,7 @@ class OTPConfirmRequest(BaseModel):
 	@classmethod
 	def normalize_code(cls, v: str) -> str:
 		"""Normalize and validate TOTP code."""
-		normalized = v.strip().replace(" ", "").replace("-", "")
-		if not normalized.isdigit():
-			raise ValueError("TOTP code must be numeric")
-		if len(normalized) < 6 or len(normalized) > 8:
-			raise ValueError("TOTP code must be 6-8 digits")
-		return normalized
+		return _validate_totp_code(v)
 
 
 class OTPDisableRequest(BaseModel):
@@ -183,12 +194,7 @@ class OTPDisableRequest(BaseModel):
 	def normalize_code(cls, v: str | None) -> str | None:
 		if v is None:
 			return v
-		normalized = v.strip().replace(" ", "").replace("-", "")
-		if not normalized.isdigit():
-			raise ValueError("TOTP code must be numeric")
-		if len(normalized) < 6 or len(normalized) > 8:
-			raise ValueError("TOTP code must be 6-8 digits")
-		return normalized
+		return _validate_totp_code(v)
 
 	@model_validator(mode="after")
 	def validate_reauth_present(self) -> OTPDisableRequest:
@@ -205,11 +211,7 @@ class RecoveryDownloadRequest(BaseModel):
 	@classmethod
 	def normalize_token(cls, v: str) -> str:
 		"""Normalize and validate token format."""
-		normalized = v.strip()
-		# Basic JWT/base64 format check
-		if not re.match(r"^[A-Za-z0-9._-]+$", normalized):
-			raise ValueError("Invalid token format")
-		return normalized
+		return _validate_opaque_token(v)
 
 
 class TokenResponse(BaseModel):

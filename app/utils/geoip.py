@@ -729,7 +729,7 @@ async def resolve_country_from_url_async(url: str) -> str | None:
         sem.release()
 
     try:
-        return await asyncio.wait_for(asyncio.shield(worker), timeout=3.0)
+        result = await asyncio.wait_for(asyncio.shield(worker), timeout=3.0)
     except TimeoutError:
         # wait_for() must not release the slot while the DNS thread is still
         # running; otherwise slow DNS can create unbounded concurrent lookups.
@@ -743,3 +743,4 @@ async def resolve_country_from_url_async(url: str) -> str | None:
         return None
     else:
         sem.release()
+        return result

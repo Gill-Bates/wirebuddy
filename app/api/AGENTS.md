@@ -59,7 +59,7 @@ FastAPI routers for every HTTP surface of WireBuddy: authentication (password, T
 ## Dependencies
 
 ### Internal
-- `app/db`, `app/models`, `app/dns`, `app/node`, `app/utils`, `app/tasks`, `app/runtime`, `app/speedtest`, `app/templates`, `app/middleware`.
+- `app/db`, `app/models`, `app/dns`, `app/node`, `app/utils`, `app/tasks`, `app/speedtest`, `app/templates`, `app/middleware`.
 
 ### External
 - FastAPI, Pydantic, Jinja2, WireGuard tools (`wg`), iptables, WebAuthn library, pyotp, qrcode, cryptography, httpx, GeoLite2 data.

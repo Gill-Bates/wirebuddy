@@ -42,7 +42,7 @@ WireBuddy is a self-hosted WireGuard management platform ("Use WireGuard with ea
 - Frontend/UI: the Playwright audit needs a running instance, its own `npm install` and credentials from the environment — `cd tools/ui-lint && npm install && npm run install:browsers`, then `UI_LINT_USERNAME=... UI_LINT_PASSWORD=... npm run audit`. `run-ui-lint.mjs` aborts if either variable is unset; never hard-code them. On a fresh database seed the account first with `tools/ci-seed-admin.py`, or the first-boot bootstrap gate leaves every view unreachable — `tools/AGENTS.md` has the full recipe. See `tools/ui-lint/AGENTS.md` for the `UI_LINT_*` list. `.github/workflows/ui-audit.yml` runs this in CI but deliberately never blocks a PR.
 
 ### Common Patterns
-- FastAPI routers in `app/api/`, data access in `app/db/sqlite_*.py`, cross-cutting helpers in `app/utils/`, background jobs in `app/tasks/` and `app/runtime/`.
+- FastAPI routers in `app/api/`, data access in `app/db/sqlite_*.py`, cross-cutting helpers in `app/utils/`, background jobs in `app/tasks/`.
 - Jinja2 templates in `app/templates/`, static assets (CSS design system, vanilla JS) in `app/static/`.
 
 ## Dependencies

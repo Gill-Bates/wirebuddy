@@ -22,7 +22,7 @@ Sources of the WireBuddy documentation site, built with MkDocs Material and depl
 | `configuration/` | Settings and environment variable references, see `configuration/AGENTS.md` |
 | `security/` | Security model, authentication, passkeys, rate limiting, hardening, see `security/AGENTS.md` |
 | `api/` | REST API overview, authentication, endpoints, see `api/AGENTS.md` |
-| `development/` | Architecture, setup, contributing, runtime migration, see `development/AGENTS.md` |
+| `development/` | Architecture, setup, contributing, see `development/AGENTS.md` |
 
 ## For AI Agents
 

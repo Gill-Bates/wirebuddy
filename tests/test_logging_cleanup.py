@@ -6,17 +6,15 @@
 # SPDX-License-Identifier: MIT
 #
 
-"""Characterize logging normalization before sharing its implementation."""
+"""Characterize logging normalization in app.main."""
 
 import logging
 
 import pytest
 
 from app import main
-from app.runtime import logging as runtime_logging
 
 
-@pytest.mark.parametrize("module", [main, runtime_logging])
 @pytest.mark.parametrize(("message", "expected"), [
 	("executing built-in method commit of sqlite3.Connection", "committing SQLite transaction"),
 	("operation built-in method fetchall of sqlite3.Cursor completed", "SQLite rows fetched"),
@@ -26,8 +24,8 @@ from app.runtime import logging as runtime_logging
 	("unrecognized message", "unrecognized message"),
 	("", ""),
 ])
-def test_humanization_preserves_known_unknown_and_error_messages(module, message, expected):
-	assert module._humanize_aiosqlite_message(message) == expected
+def test_humanization_preserves_known_unknown_and_error_messages(message, expected):
+	assert main._humanize_aiosqlite_message(message) == expected
 
 
 @pytest.mark.parametrize("clone", [False, True])

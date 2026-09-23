@@ -79,7 +79,6 @@ from .dns import unbound
 from .dns.unbound_constants import atomic_write_text
 from .node.events import NodeEventBus
 from .node.notifier import configure_event_bus
-from .runtime.logging import _humanize_aiosqlite_message
 from .tasks import scheduled as scheduled_tasks
 from .utils import migration
 from .utils.banner import print_banner_once
@@ -138,9 +137,6 @@ _WG_CHECK_TIMEOUT_SECONDS = 5.0
 _WG_UP_TIMEOUT_SECONDS = 15.0
 _WG_DOWN_TIMEOUT_SECONDS = 15.0
 _WG_STARTUP_CONCURRENCY = 4  # Start up to 4 interfaces in parallel
-_TSDB_SAMPLE_INTERVAL_SECONDS = 30.0
-_BLOCKLIST_UPDATE_INTERVAL_SECONDS = 86400.0
-_TSDB_MAINTENANCE_INTERVAL_SECONDS = 21600
 _BOOTSTRAP_GATE_ALLOWED_EXACT_PATHS = frozenset({
 	"/",
 	"/health",
@@ -153,13 +149,6 @@ _BOOTSTRAP_GATE_ALLOWED_EXACT_PATHS = frozenset({
 	"/api/users/me/complete-required-change",
 })
 _BOOTSTRAP_GATE_ALLOWED_PREFIXES = ("/static/",)
-_GEOIP_UPDATE_INTERVAL_SECONDS = 604800
-_SQLITE_MAINTENANCE_INTERVAL_SECONDS = 21600
-_SQLITE_INTEGRITY_INTERVAL_SECONDS = 604800
-_TSDB_RETENTION_INTERVAL_SECONDS = 86400
-_SESSION_CLEANUP_INTERVAL_SECONDS = 3600
-_DNS_WATCHDOG_INTERVAL_SECONDS = 30
-_ADBLOCKER_TIMER_CHECK_INTERVAL_SECONDS = 15
 _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS = 2.0
 _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS = 300.0
 _APP_SHUTDOWN_TIMEOUT_SECONDS = 30.0
@@ -613,6 +602,40 @@ async def _cleanup_stale_interfaces(ctx: LifespanContext) -> list[str]:
 
 # NOTE: _peer_connection_state OrderedDict is only accessed from the single
 # event loop thread (in _sample_tsdb_metrics). Not thread-safe for concurrent access.
+
+
+def _humanize_aiosqlite_message(message: str) -> str:
+	"""Rewrite low-signal aiosqlite debug messages into readable text."""
+
+	def _describe_operation(operation: str) -> tuple[str, str]:
+		known_operations = (
+			("built-in method close of sqlite3.Connection", "closing SQLite connection", "SQLite connection closed"),
+			("built-in method close of sqlite3.Cursor", "closing SQLite cursor", "SQLite cursor closed"),
+			("built-in method commit of sqlite3.Connection", "committing SQLite transaction", "SQLite transaction committed"),
+			("built-in method rollback of sqlite3.Connection", "rolling back SQLite transaction", "SQLite transaction rolled back"),
+			("built-in method execute of sqlite3.Connection", "executing SQLite statement", "SQLite statement executed"),
+			("built-in method execute of sqlite3.Cursor", "executing SQLite cursor statement", "SQLite cursor statement executed"),
+			("built-in method fetchone of sqlite3.Cursor", "fetching one SQLite row", "SQLite row fetched"),
+			("built-in method fetchall of sqlite3.Cursor", "fetching SQLite rows", "SQLite rows fetched"),
+			("built-in method close of sqlite3.Blob", "closing SQLite blob handle", "SQLite blob handle closed"),
+			("Connection.stop.<locals>.close_and_stop", "stopping SQLite worker thread", "SQLite worker thread stopped"),
+			("connect.<locals>.connector", "opening SQLite connection", "SQLite connection opened"),
+			("built-in method cursor of sqlite3.Connection", "creating SQLite cursor", "SQLite cursor created"),
+		)
+		for needle, active_text, done_text in known_operations:
+			if needle in operation:
+				return active_text, done_text
+		return "running SQLite background operation", "SQLite background operation completed"
+
+	if message.startswith("executing "):
+		active_text, _ = _describe_operation(message[len("executing "):])
+		return active_text
+	if message.startswith("operation ") and message.endswith(" completed"):
+		_, done_text = _describe_operation(message[len("operation "):-len(" completed")])
+		return done_text
+	if message.startswith("returning exception "):
+		return f"SQLite background operation failed: {message[len('returning exception '):]}"
+	return message
 
 
 def _prepare_log_record(record: logging.LogRecord, *, clone: bool = False) -> logging.LogRecord:

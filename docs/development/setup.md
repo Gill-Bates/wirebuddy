@@ -193,7 +193,6 @@ wirebuddy/
 │   ├── db/                # sqlite_*.py data access, tsdb.py metrics store
 │   ├── dns/               # Unbound config, blocklists, query-log ingestion
 │   ├── node/              # Node-mode daemon, enrollment, metrics queue
-│   ├── runtime/           # Service lifecycle, logging, signals
 │   ├── tasks/             # Scheduled background jobs
 │   ├── middleware/        # CSRF and request middleware
 │   ├── speedtest/         # librespeed-cli integration

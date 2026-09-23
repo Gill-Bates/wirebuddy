@@ -32,7 +32,7 @@ Background jobs run by the app scheduler (`app/utils/scheduler.py`). Task bodies
 ## Dependencies
 
 ### Internal
-- `app/main` (`LifespanContext`), `app/dns/`, `app/db/`, `app/speedtest/`, `app/utils/` (`scheduler`, `conntrack`, `geoip`, `subprocess`, `config`, `speedtest_window`). Registered by `app/runtime/services/scheduler.py`.
+- `app/main` (`LifespanContext`), `app/dns/`, `app/db/`, `app/speedtest/`, `app/utils/` (`scheduler`, `conntrack`, `geoip`, `subprocess`, `config`, `speedtest_window`). Registered by `app/tasks/scheduler_config.py`.
 
 ### External
 - `aiosqlite`, stdlib `zoneinfo`, `asyncio`.

@@ -21,7 +21,6 @@ The `wirebuddy` Python package: a FastAPI application factory (`create_app` in `
 | `middleware/` | Starlette middleware (CSRF) (see `middleware/AGENTS.md`) |
 | `models/` | Pydantic request/response models for users and peers (see `models/AGENTS.md`) |
 | `node/` | Master/node clustering: event bus, notifier, node-side agent (see `node/AGENTS.md`) |
-| `runtime/` | Long-running runtime services and state (see `runtime/AGENTS.md`) |
 | `speedtest/` | Speedtest engine used by the API and scheduled tasks (see `speedtest/AGENTS.md`) |
 | `static/` | CSS design system, vanilla JS, images (see `static/AGENTS.md`) |
 | `tasks/` | Scheduled/background jobs registered with the scheduler (see `tasks/AGENTS.md`) |
@@ -34,7 +33,7 @@ The `wirebuddy` Python package: a FastAPI application factory (`create_app` in `
 - Python files use **tabs** and start with the standard header block (`#!/usr/bin/env python3`, file path, `Copyright (C) 2026 Gill-Bates`, SPDX MIT); keep that style.
 - Routers are mounted only in `main.py`; a new router module must be added to the `include_router` block there with the right prefix (note `speedtest_api` shares `/api/wireguard`).
 - `main.py` assumes a single uvicorn worker (in-process MFA/recovery caches, application lock); do not introduce multi-worker assumptions.
-- Sub-directory documentation: see `api/AGENTS.md`, `db/AGENTS.md`, `dns/AGENTS.md`, `middleware/AGENTS.md`, `models/AGENTS.md`, `node/AGENTS.md`, `runtime/AGENTS.md`, `speedtest/AGENTS.md`, `static/AGENTS.md`, `tasks/AGENTS.md`, `templates/AGENTS.md`, `utils/AGENTS.md`.
+- Sub-directory documentation: see `api/AGENTS.md`, `db/AGENTS.md`, `dns/AGENTS.md`, `middleware/AGENTS.md`, `models/AGENTS.md`, `node/AGENTS.md`, `speedtest/AGENTS.md`, `static/AGENTS.md`, `tasks/AGENTS.md`, `templates/AGENTS.md`, `utils/AGENTS.md`.
 
 ### Testing Requirements
 - Run `pytest` from the repo root (tests in `/opt/wirebuddy/tests`); `python -c 'import app.main'` is a quick import sanity check.
@@ -47,7 +46,7 @@ The `wirebuddy` Python package: a FastAPI application factory (`create_app` in `
 ## Dependencies
 
 ### Internal
-- `app/api`, `app/db`, `app/dns`, `app/middleware`, `app/models`, `app/node`, `app/tasks`, `app/utils`, `app/runtime`, `app/speedtest`.
+- `app/api`, `app/db`, `app/dns`, `app/middleware`, `app/models`, `app/node`, `app/tasks`, `app/utils`, `app/speedtest`.
 
 ### External
 - FastAPI, Starlette, uvicorn, Jinja2, slowapi (via `utils.rate_limit`).

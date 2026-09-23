@@ -1,5 +1,6 @@
 ## [1.6.2] - 2026-xx-xx
 
+- ``Fix`` Country resolution for blocklist sources no longer stops working after the first few lookups; an unreleased concurrency slot exhausted the internal DNS limiter.
 - ``Security`` Re-running OTP setup on an account that already has MFA enabled is now rejected; previously it could silently reset the secret and discard the existing recovery codes without re-authentication.
 
 

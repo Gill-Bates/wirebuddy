@@ -248,6 +248,12 @@ def _load_global_psk(
 		raise HTTPException(status_code=500, detail="Failed to decrypt global PSK") from None
 
 
+def _persist_global_psk(conn: sqlite3.Connection, psk: str) -> None:
+	"""Store the global PSK; set_setting() auto-encrypts "wg_global_psk"."""
+	with transaction(conn, immediate=True):
+		set_setting(conn, "wg_global_psk", psk)
+
+
 def _build_endpoint(fqdn_clean: str, port: str) -> str:
 	"""Build an ``fqdn:port`` string, wrapping IPv6 addresses in brackets."""
 	if not fqdn_clean:
@@ -558,14 +564,8 @@ async def generate_global_psk(
 ):
 	"""Generate a new global PresharedKey."""
 	psk = await generate_preshared_key()
-
-	def _persist() -> None:
-		# set_setting() auto-encrypts "wg_global_psk".
-		with transaction(conn, immediate=True):
-			set_setting(conn, "wg_global_psk", psk)
-
 	try:
-		await run_in_threadpool(_persist)
+		await run_in_threadpool(_persist_global_psk, conn, psk)
 	except Exception:
 		_log.exception("PSK_PERSIST_FAILED")
 		raise HTTPException(status_code=500, detail="Failed to persist global PSK")
@@ -589,12 +589,7 @@ async def set_global_psk(
 			detail="Invalid WireGuard PSK format (must be 44-char base64 for 32 bytes)",
 		)
 	try:
-		def _persist() -> None:
-			# set_setting() encrypts the global PSK.
-			with transaction(conn, immediate=True):
-				set_setting(conn, "wg_global_psk", psk)
-
-		await run_in_threadpool(_persist)
+		await run_in_threadpool(_persist_global_psk, conn, psk)
 	except Exception:
 		_log.exception("PSK_PERSIST_FAILED")
 		raise HTTPException(status_code=500, detail="Failed to persist global PSK")

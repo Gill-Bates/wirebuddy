@@ -125,9 +125,6 @@ points therefore reference it as a factory:
 uvicorn app:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
-Service startup and shutdown are being moved into `app/runtime/` — see
-[Runtime Architecture Migration](runtime-migration.md).
-
 ### Router Pattern
 
 Routers live in `app/api/` and are split by resource rather than by one module
@@ -467,8 +464,8 @@ is not.
 
 ## Monitoring & Observability
 
-Logging is plain-text and human-oriented, not JSON: `app/runtime/logging.py`
-installs a `ColoredFormatter` on a TTY and a `HumanizedFormatter` otherwise, both
+Logging is plain-text and human-oriented, not JSON: `app/main.py`
+installs a colored formatter on a TTY and a humanizing formatter otherwise, both
 of which normalize noisy third-party messages. Standard levels apply
 (`LOG_LEVEL`), and security-relevant events — logins, MFA and passkey changes,
 password changes, administrative mutations — are written to the same stream.
