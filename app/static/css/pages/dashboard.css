@@ -138,7 +138,7 @@
 }
 
 .dashboard-kpi-value {
-    font-size: clamp(2.15rem, 9.5vw, 3.25rem);
+    font-size: clamp(1.85rem, 6.8vw, 2.45rem);
 }
 
 :where(.dashboard-kpi-caption) {
@@ -169,7 +169,7 @@
 }
 
 .dashboard-kpi-metric-value {
-    font-size: clamp(1.45rem, 5.9vw, 2.1rem);
+    font-size: clamp(1.25rem, 4.6vw, 1.65rem);
 }
 
 .dashboard-kpi-metric-label {
@@ -209,7 +209,7 @@
     white-space: normal;
 }
 
-@media (width <= 575.98px) {
+@media (width <=575.98px) {
     .dashboard-kpi-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
         gap: 0.65rem;
@@ -241,7 +241,7 @@
     }
 }
 
-@media (width >= 992px) {
+@media (width >=992px) {
     .dashboard-kpi-grid {
         gap: 0.75rem;
     }
@@ -253,10 +253,32 @@
    - colors are used as accents, not as heavy full-value blocks
 */
 
+/* Value-to-label spacing must be identical in both KPI variants: the
+   single-value cards (Nodes, Connections) get it from the card-body grid,
+   the stacked cards (Traffic, Bandwidth) from .dashboard-kpi-metric. Drive
+   both from one pair of values instead of letting the grid gap apply to the
+   caption as well. */
 .dashboard-kpi-card>.card-body {
+    --dashboard-kpi-block-gap: 0.55rem;
+    --dashboard-kpi-label-gap: 0.1rem;
+
     min-height: 8.75rem;
     padding: 0.9rem 0.95rem;
-    gap: 0.55rem;
+    gap: var(--dashboard-kpi-block-gap);
+    row-gap: 0;
+}
+
+.dashboard-kpi-primary,
+.dashboard-kpi-stack {
+    margin-top: var(--dashboard-kpi-block-gap);
+}
+
+.dashboard-kpi-caption {
+    margin-top: var(--dashboard-kpi-label-gap);
+}
+
+.dashboard-kpi-metric {
+    gap: var(--dashboard-kpi-label-gap);
 }
 
 .dashboard-kpi-header {
@@ -280,7 +302,7 @@
 }
 
 .dashboard-kpi-primary {
-    place-items: center start;
+    place-items: end start;
     text-align: left;
 }
 
@@ -290,14 +312,10 @@
     font-weight: 520;
 }
 
-:where(.dashboard-kpi-value),
-:where(.dashboard-kpi-metric-value) {
+.dashboard-kpi-value,
+.dashboard-kpi-metric-value {
     font-weight: 650;
     letter-spacing: -0.018em;
-}
-
-:where(.dashboard-kpi-value) {
-    font-size: clamp(1.85rem, 6.8vw, 2.45rem);
 }
 
 :where(.dashboard-kpi-stack) {
@@ -306,10 +324,6 @@
 
 :where(.dashboard-kpi-metric) {
     gap: 0.1rem;
-}
-
-:where(.dashboard-kpi-metric-value) {
-    font-size: clamp(1.25rem, 4.6vw, 1.65rem);
 }
 
 :where(.dashboard-kpi-metric-label) {
@@ -346,9 +360,12 @@
 
 /* Count-style values ("online / total") sit in the primary KPI slot; the
    display value's negative tracking pulls the digits and slash together, so
-   give this slot normal spacing for a legible fraction. */
+   give this slot normal spacing for a legible fraction. The literal spaces
+   around the slash come from formatDashboardCount() and are very wide at
+   this font size, so tighten the word spacing rather than the glyphs. */
 .dashboard-kpi-primary .dashboard-metric-value {
     letter-spacing: normal;
+    word-spacing: -0.1em;
 }
 
 .dashboard-kpi-card .dashboard-metric-unit {
@@ -371,11 +388,13 @@
     color: color-mix(in srgb, var(--wb-status-online, var(--bs-success)) 78%, var(--wb-text-muted, #9ca3af));
 }
 
-@media (width <= 575.98px) {
+@media (width <=575.98px) {
     .dashboard-kpi-card>.card-body {
+        --dashboard-kpi-block-gap: 0.45rem;
+
         min-height: 8.35rem;
         padding: 0.8rem;
-        gap: 0.45rem;
+        row-gap: 0;
     }
 
     .dashboard-kpi-header {

@@ -1,5 +1,6 @@
 ## [1.6.2] - 2026-xx-xx
 
+- ``Fix`` The DNS query log is visible again on phones and tablets; its table header filled the entire scroll area and pushed every log entry out of view.
 - ``Security`` Re-running OTP setup on an account that already has MFA enabled is now rejected; previously it could silently reset the secret and discard the existing recovery codes without re-authentication.
 
 

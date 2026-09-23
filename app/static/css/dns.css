@@ -495,14 +495,17 @@
 
     .log-table th,
     .log-table td {
+        vertical-align: top;
+    }
+
+    /* Only the placeholder row is stretched to fill the scroll area, so the
+       loading/empty state is centred. Applying this to every cell made the
+       sticky header 60dvh tall and pushed all log rows out of view. */
+    .log-table tr.log-empty-row td {
         --dns-log-height: 60dvh;
 
         /* dvh = dynamic viewport height for mobile address bars */
         height: var(--dns-log-height);
-        vertical-align: top;
-    }
-
-    .log-table tr.log-empty-row td {
         width: auto;
         padding-left: 0.75rem;
         padding-right: 0.75rem;
@@ -557,6 +560,7 @@
 
 
 @media (width <=575.98px) {
+
     /* Mirror Traffic page layout: header column, controls row */
     .dns-header {
         flex-direction: column;
