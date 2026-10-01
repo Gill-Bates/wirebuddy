@@ -101,9 +101,9 @@ async def _shutdown_after_failed_isolation(name: str) -> None:
 	down_code, _, down_stderr = await _run_wg_command_with_timeout("wg-quick", "down", name)
 	if down_code != 0:
 		_log.error(
-			"Failed to bring down interface %s after isolation failure, "
-			"interface may still be running WITHOUT isolation: %s",
-			name, down_stderr,
+			"Failed to bring down interface %s after isolation failure, interface may still be running WITHOUT isolation: %s",
+			name,
+			down_stderr,
 		)
 		return
 	await cleanup_client_isolation(name)
@@ -136,13 +136,15 @@ async def list_interfaces(
 	for name in all_interfaces:
 		in_db = name in db_interfaces
 		has_config = name in config_files
-		result.append({
-			"name": name,
-			"in_database": in_db,
-			"has_config_file": has_config,
-			"is_configured": in_db or has_config,
-			"is_active": name in active_interfaces,
-		})
+		result.append(
+			{
+				"name": name,
+				"in_database": in_db,
+				"has_config_file": has_config,
+				"is_configured": in_db or has_config,
+				"is_active": name in active_interfaces,
+			}
+		)
 
 	return OkResponse[InterfaceListPayload](data=InterfaceListPayload(interfaces=result))
 
@@ -244,7 +246,9 @@ async def interface_up(
 	if isolation_result.rules_failed > 0 or isolation_result.errors:
 		_log.error(
 			"INTERFACE_UP isolation failure: name=%s failed=%d errors=%s -- bringing interface back down",
-			name, isolation_result.rules_failed, isolation_result.errors,
+			name,
+			isolation_result.rules_failed,
+			isolation_result.errors,
 		)
 		# An interface that is "up" without its configured isolation rules is a
 		# policy bypass (isolated peers could reach each other). Tear it back
@@ -252,10 +256,7 @@ async def interface_up(
 		await _shutdown_after_failed_isolation(name)
 		raise HTTPException(
 			status_code=500,
-			detail=(
-				"Client isolation failed; interface was brought back down to avoid "
-				f"running without isolation: {isolation_result.errors}"
-			),
+			detail=(f"Client isolation failed; interface was brought back down to avoid running without isolation: {isolation_result.errors}"),
 		)
 
 	return OkResponse[None](message=f"Interface {name} is up")
@@ -350,15 +351,14 @@ async def interface_restart(
 	if isolation_result.rules_failed > 0 or isolation_result.errors:
 		_log.error(
 			"INTERFACE_RESTART isolation failure: name=%s failed=%d errors=%s -- bringing interface back down",
-			name, isolation_result.rules_failed, isolation_result.errors,
+			name,
+			isolation_result.rules_failed,
+			isolation_result.errors,
 		)
 		await _shutdown_after_failed_isolation(name)
 		raise HTTPException(
 			status_code=500,
-			detail=(
-				"Client isolation failed; interface was brought back down to avoid "
-				f"running without isolation: {isolation_result.errors}"
-			),
+			detail=(f"Client isolation failed; interface was brought back down to avoid running without isolation: {isolation_result.errors}"),
 		)
 
 	return OkResponse[None](message=f"Interface {name} restarted")

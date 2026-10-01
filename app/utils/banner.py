@@ -67,10 +67,10 @@ def _banner_startup_key() -> str:
 
 
 def print_banner() -> None:
-    """Print the WireBuddy startup banner."""
-    build_short = BUILD_INFO[:7] if BUILD_INFO else "dev"
+	"""Print the WireBuddy startup banner."""
+	build_short = BUILD_INFO[:7] if BUILD_INFO else "dev"
 
-    ascii_art = r"""
+	ascii_art = r"""
           _          _               _     _
 __      _(_)_ __ ___| |__  _   _  __| | __| |_   _
 \ \ /\ / / | '__/ _ \ '_ \| | | |/ _` |/ _` | | | |
@@ -79,64 +79,64 @@ __      _(_)_ __ ___| |__  _   _  __| | __| |_   _
                                              |___/
 """.strip("\n")
 
-    text_lines = [
-        f"Use WireGuard with ease! v{VERSION} ({build_short})",
-        "(C) 2026 by Gill-Bates (https://github.com/Gill-Bates/wirebuddy)",
-    ]
+	text_lines = [
+		f"Use WireGuard with ease! v{VERSION} ({build_short})",
+		"(C) 2026 by Gill-Bates (https://github.com/Gill-Bates/wirebuddy)",
+	]
 
-    ascii_lines = ascii_art.splitlines()
-    ascii_width = max((len(line) for line in ascii_lines), default=0)
-    text_width = max((len(t) for t in text_lines), default=0)
+	ascii_lines = ascii_art.splitlines()
+	ascii_width = max((len(line) for line in ascii_lines), default=0)
+	text_width = max((len(t) for t in text_lines), default=0)
 
-    master_width = max(ascii_width, text_width)
+	master_width = max(ascii_width, text_width)
 
-    left_pad = max((master_width - ascii_width) // 2, 0)
-    pad = " " * left_pad
-    ascii_centered = "\n".join(pad + line for line in ascii_lines)
+	left_pad = max((master_width - ascii_width) // 2, 0)
+	pad = " " * left_pad
+	ascii_centered = "\n".join(pad + line for line in ascii_lines)
 
-    text_centered = [t.center(master_width) for t in text_lines]
+	text_centered = [t.center(master_width) for t in text_lines]
 
-    banner = "\n" + "\n".join([ascii_centered, *text_centered]) + "\n"
+	banner = "\n" + "\n".join([ascii_centered, *text_centered]) + "\n"
 
-    if sys.stdout.isatty():
-        cyan = "\033[96m"
-        reset = "\033[0m"
-        sys.stdout.write(cyan + banner + reset + "\n")
-    else:
-        sys.stdout.write(banner + "\n")
+	if sys.stdout.isatty():
+		cyan = "\033[96m"
+		reset = "\033[0m"
+		sys.stdout.write(cyan + banner + reset + "\n")
+	else:
+		sys.stdout.write(banner + "\n")
 
-    sys.stdout.flush()
+	sys.stdout.flush()
 
 
 def print_banner_once() -> None:
-	    """Print startup banner at most once per process tree.
+	"""Print startup banner at most once per process tree.
 
-	    Uses a file lock so that only one worker prints the banner,
-	    even when running with multiple uvicorn workers.
-	    """
-	    startup_key = _banner_startup_key()
+	Uses a file lock so that only one worker prints the banner,
+	even when running with multiple uvicorn workers.
+	"""
+	startup_key = _banner_startup_key()
 
-	    try:
-	        fd = _open_banner_lock()
-	        try:
-	            try:
-	                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-	            except BlockingIOError:
-	                return
+	try:
+		fd = _open_banner_lock()
+		try:
+			try:
+				fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+			except BlockingIOError:
+				return
 
-	            content = os.read(fd, 128).decode("utf-8", errors="ignore").strip()
-	            if content == startup_key:
-	                return
+			content = os.read(fd, 128).decode("utf-8", errors="ignore").strip()
+			if content == startup_key:
+				return
 
-	            print_banner()
+			print_banner()
 
-	            os.lseek(fd, 0, os.SEEK_SET)
-	            os.ftruncate(fd, 0)
-	            os.write(fd, startup_key.encode("utf-8"))
-	            os.fsync(fd)
-	        finally:
-	            fcntl.flock(fd, fcntl.LOCK_UN)
-	            os.close(fd)
-	    except OSError:
-	        logger.warning("Could not coordinate startup banner printing.", exc_info=True)
-	        print_banner()
+			os.lseek(fd, 0, os.SEEK_SET)
+			os.ftruncate(fd, 0)
+			os.write(fd, startup_key.encode("utf-8"))
+			os.fsync(fd)
+		finally:
+			fcntl.flock(fd, fcntl.LOCK_UN)
+			os.close(fd)
+	except OSError:
+		logger.warning("Could not coordinate startup banner printing.", exc_info=True)
+		print_banner()

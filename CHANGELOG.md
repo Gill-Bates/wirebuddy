@@ -1,3 +1,27 @@
+## [1.6.2] - 2026-10-01
+
+- ``Fix`` Deleting a WireGuard interface works again when nodes were provisioned for it, and a failed database delete no longer removes its config file.
+- ``Fix`` Interface changes and peer config/QR-code downloads no longer block other requests.
+- ``Fix`` Settings stored as `true`/`yes`/`on` are now recognised everywhere, so features can no longer appear enabled without running.
+- ``Fix`` Passphrases longer than 72 bytes are accepted again.
+- ``Fix`` Expired passkey sign-in challenges are now cleaned up hourly.
+- ``Fix`` Switching tabs no longer cancels a running speed test, and after a restore the page keeps waiting for the restart even if the server briefly answers with an error.
+- ``Fix`` OTP setup no longer hangs on "Verifying…" when the network stalls and now explains why a code was rejected; the password-change notice is styled correctly again under the strict CSP.
+- ``Fix`` UI: the DNS query log is visible on mobile again, the traffic page shows "no data" instead of hanging, error messages on sign-in and setup pages are visible again, the two-factor step offers "Back to sign in", and signed-in users opening `/` or the login page land on the dashboard.
+- ``Fix`` Accessibility and polish: charts have text alternatives for screen readers, auth pages honour "reduce motion", info cards no longer lift on hover, dashboard cards no longer show a hard-edged shadow in light mode, and non-admins are no longer pointed to admin-only buttons.
+- ``Fix`` **Serve GUI over HTTPS** now works in Docker: the container starts the built-in TLS listener after a restart instead of staying on plain HTTP and rejecting every login. If no certificate can be prepared, WireBuddy refuses to start rather than falling back to HTTP. An invalid ACME listener port, or one equal to the GUI port, now only disables that listener.
+- ``Fix`` Let's Encrypt certificates can be requested again: since 1.6.1 every certificate, account-key and challenge file write failed.
+- ``Fix`` The container health check probes `/ready` on the transport the container actually started with (HTTP or HTTPS, any port), so a broken database, scheduler or DNS ingestion marks it unhealthy.
+- ``Security`` The Compose file no longer ships a built-in `WIREBUDDY_SECRET_KEY` and refuses to start until one is set in `.env`. If you used the old Compose file unchanged, put its previous key value into `.env` (otherwise existing encrypted data cannot be read), or start fresh with a new key.
+- ``Security`` Sessions now end when MFA is switched on (except the current browser), when passkeys are reset or disabled, and when an account is deactivated.
+- ``Security`` TOTP codes are single-use, and OTP setup can no longer be re-run or confirmed twice on an account that already has MFA.
+- ``Security`` A pending mandatory password change is now enforced server-side (`428` for the API, redirect for UI pages).
+- ``Security`` Interface deletion reports and later removes a leftover private key; PostUp/PostDown hooks are limited to 2048 bytes of printable ASCII.
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.6.1] - 2026-09-21
 
 - ``New`` A single `WIREBUDDY_PUBLIC_ORIGIN` setting now configures CSRF origins, passkeys, the Host-header allowlist and secure cookies/HSTS. `WIREBUDDY_TRUSTED_PROXIES` replaces `TRUSTED_PROXY_CIDRS`, `WIREBUDDY_STATUS_TRUSTED_PROXY_CIDRS`, `FORWARDED_ALLOW_IPS` and `WIREBUDDY_TRUST_PROXY_HEADERS`; update your configuration when upgrading, as the old variables are now silently ignored.
@@ -13,9 +37,6 @@
 - ``Fix`` Speed tests against a slow-resolving host no longer strand background DNS-lookup threads.
 - ``Security`` Startup now fails if required system binaries (`ip`, `wg`, `wg-quick`, `sysctl`, `iptables`, `ip6tables`) are only found via `PATH` instead of a trusted, fixed location, closing a path where a compromised `PATH` could substitute a malicious binary run as root.
 - ``Security`` The public status page and node mTLS fingerprint header only trust forwarded headers from configured proxies, and CSRF origin validation is stricter (`http`/`https` only, no bearer+cookie bypass).
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.6.0] - 2026-08-28
 

@@ -17,96 +17,93 @@ import socket
 import pytest
 
 from app.dns.unbound_process import (
-    _SS_USERS_RE,
-    _parse_listen_sockets,
-    _probe_listen_socket,
+	_SS_USERS_RE,
+	_parse_listen_sockets,
+	_probe_listen_socket,
 )
 
 
 def test_parses_ipv4_ipv6_and_port():
-    conf = """
+	conf = """
 server:
     interface: 10.13.13.1
     interface: fd13:13:13::1
     port: 5335
     username: "unbound"
 """
-    assert _parse_listen_sockets(conf) == (["10.13.13.1", "fd13:13:13::1"], 5335)
+	assert _parse_listen_sockets(conf) == (["10.13.13.1", "fd13:13:13::1"], 5335)
 
 
 def test_port_defaults_to_53_when_absent():
-    assert _parse_listen_sockets("server:\n    interface: 10.0.0.1\n") == (["10.0.0.1"], 53)
+	assert _parse_listen_sockets("server:\n    interface: 10.0.0.1\n") == (["10.0.0.1"], 53)
 
 
 def test_ignores_comments_and_strips_inline_suffixes():
-    conf = """
+	conf = """
     # interface: 192.168.1.1
     interface: 10.13.13.1@53
     interface: 10.14.14.1 # secondary
     port: 53 # default
 """
-    assert _parse_listen_sockets(conf) == (["10.13.13.1", "10.14.14.1"], 53)
+	assert _parse_listen_sockets(conf) == (["10.13.13.1", "10.14.14.1"], 53)
 
 
 def test_interface_at_port_suffix_is_discarded_not_read_as_the_port():
-    # The @port suffix on `interface:` is intentionally dropped - only a
-    # separate `port:` line sets the port. Using the same value as the default
-    # (53) here would let a regression that reads @port as the port slip by
-    # unnoticed, so this pins a mismatched pair: @5335 must not surface as 5335
-    # when the real listen port is 53.
-    conf = """
+	# The @port suffix on `interface:` is intentionally dropped - only a
+	# separate `port:` line sets the port. Using the same value as the default
+	# (53) here would let a regression that reads @port as the port slip by
+	# unnoticed, so this pins a mismatched pair: @5335 must not surface as 5335
+	# when the real listen port is 53.
+	conf = """
     interface: 10.13.13.1@5335
     port: 53
 """
-    assert _parse_listen_sockets(conf) == (["10.13.13.1"], 53)
+	assert _parse_listen_sockets(conf) == (["10.13.13.1"], 53)
 
 
 def test_free_port_reports_no_conflict():
-    # Kept bound with SO_REUSEPORT while probing, rather than closing first and
-    # probing after: closing before the probe leaves a window where another
-    # process could grab the same ephemeral port, making this test flaky.
-    # SO_REUSEPORT (matching what _probe_listen_socket itself sets) lets both
-    # sockets hold the port at once instead of racing to release it.
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        probe.bind(("127.0.0.1", 0))
-        free_port = probe.getsockname()[1]
-        assert _probe_listen_socket("127.0.0.1", free_port) is None
+	# Kept bound with SO_REUSEPORT while probing, rather than closing first and
+	# probing after: closing before the probe leaves a window where another
+	# process could grab the same ephemeral port, making this test flaky.
+	# SO_REUSEPORT (matching what _probe_listen_socket itself sets) lets both
+	# sockets hold the port at once instead of racing to release it.
+	with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+		probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+		probe.bind(("127.0.0.1", 0))
+		free_port = probe.getsockname()[1]
+		assert _probe_listen_socket("127.0.0.1", free_port) is None
 
 
 @pytest.mark.parametrize(
-    ("sock_type", "proto"),
-    [(socket.SOCK_DGRAM, "UDP"), (socket.SOCK_STREAM, "TCP")],
+	("sock_type", "proto"),
+	[(socket.SOCK_DGRAM, "UDP"), (socket.SOCK_STREAM, "TCP")],
 )
 def test_busy_port_is_detected(sock_type, proto):
-    holder = socket.socket(socket.AF_INET, sock_type)
-    try:
-        holder.bind(("127.0.0.1", 0))
-        port = holder.getsockname()[1]
-        if sock_type == socket.SOCK_STREAM:
-            holder.listen(1)
-        result = _probe_listen_socket("127.0.0.1", port)
-    finally:
-        holder.close()
-    assert result is not None
-    assert f"127.0.0.1:{port}" in result
-    assert proto in result
-    assert "already in use" in result
+	holder = socket.socket(socket.AF_INET, sock_type)
+	try:
+		holder.bind(("127.0.0.1", 0))
+		port = holder.getsockname()[1]
+		if sock_type == socket.SOCK_STREAM:
+			holder.listen(1)
+		result = _probe_listen_socket("127.0.0.1", port)
+	finally:
+		holder.close()
+	assert result is not None
+	assert f"127.0.0.1:{port}" in result
+	assert proto in result
+	assert "already in use" in result
 
 
 def test_unassigned_address_is_not_a_conflict():
-    # TEST-NET-1: never assigned to a local interface, so bind() yields
-    # EADDRNOTAVAIL. That means "interface not up yet", not "port taken".
-    assert _probe_listen_socket("192.0.2.123", 53) is None
+	# TEST-NET-1: never assigned to a local interface, so bind() yields
+	# EADDRNOTAVAIL. That means "interface not up yet", not "port taken".
+	assert _probe_listen_socket("192.0.2.123", 53) is None
 
 
 def test_invalid_address_is_ignored():
-    assert _probe_listen_socket("not-an-ip", 53) is None
+	assert _probe_listen_socket("not-an-ip", 53) is None
 
 
 def test_ss_users_regex_extracts_process_and_pid():
-    line = (
-        'udp UNCONN 0 0 127.0.0.53%lo:53 0.0.0.0:* '
-        'users:(("systemd-resolve",pid=3352536,fd=15))'
-    )
-    assert _SS_USERS_RE.findall(line) == [("systemd-resolve", "3352536")]
+	line = 'udp UNCONN 0 0 127.0.0.53%lo:53 0.0.0.0:* users:(("systemd-resolve",pid=3352536,fd=15))'
+	assert _SS_USERS_RE.findall(line) == [("systemd-resolve", "3352536")]

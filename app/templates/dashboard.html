@@ -157,8 +157,10 @@
                 </div>
             </div>
             <div class="card-body">
+                <span class="visually-hidden" id="speedtest-chart-summary" aria-live="polite">Loading bandwidth history…</span>
                 <div class="speedtest-chart-wrap">
-                    <canvas id="speedtest-chart"></canvas>
+                    <canvas id="speedtest-chart" role="img" aria-label="Bandwidth history"
+                        aria-describedby="speedtest-chart-summary"></canvas>
                     <div id="speedtest-chart-empty" class="chart-empty-state wb-empty-state-overlay d-none">
                         <span class="material-icons" aria-hidden="true">show_chart</span>
                         <span class="chart-empty-state-text">No Data Available</span>

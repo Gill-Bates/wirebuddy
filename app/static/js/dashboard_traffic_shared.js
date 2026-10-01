@@ -371,6 +371,38 @@
         return rangeMap[value] ?? defaultHours;
     }
 
+    /**
+     * Write the text alternative for a <canvas> chart.
+     *
+     * A canvas exposes no structure to assistive technology, so each chart
+     * points at a visually-hidden live region via aria-describedby and that
+     * region carries the figures the chart draws.
+     * @param {string} elementId
+     * @param {string} summary
+     */
+    function setChartSummary(elementId, summary) {
+        const el = document.getElementById(elementId);
+        if (el) el.textContent = String(summary || '');
+    }
+
+    /**
+     * Build a "latest / min / max" sentence from a numeric series.
+     * @param {string} label  what the series measures, e.g. "Download"
+     * @param {number[]} values
+     * @param {string} unit
+     * @param {number} [digits]
+     * @returns {string} empty string when the series holds no usable number
+     */
+    function describeSeries(label, values, unit, digits = 1) {
+        const nums = (values || []).filter((v) => typeof v === 'number' && Number.isFinite(v));
+        if (!nums.length) return '';
+        const fmt = (v) => v.toFixed(digits);
+        const min = Math.min(...nums);
+        const max = Math.max(...nums);
+        const latest = nums[nums.length - 1];
+        return `${label}: latest ${fmt(latest)} ${unit}, minimum ${fmt(min)} ${unit}, maximum ${fmt(max)} ${unit}.`;
+    }
+
     window.WBShared = Object.freeze({
         createDebugLogger,
         clearElement,
@@ -382,5 +414,7 @@
         parseTimeRangeToHours,
         RefreshScheduler,
         chartEmptyState,
+        setChartSummary,
+        describeSeries,
     });
 })(window);

@@ -77,10 +77,8 @@ A **node** runs only what's essential for VPN connectivity:
 - ❌ No database
 - ❌ No web UI
 - ❌ No DNS resolver
-- ❌ No metrics collection
-
-!!! success "Zero Footprint"
-    Nodes have minimal resource requirements — perfect for small VPS instances.
+- ❌ No local metrics storage — peer counters are queued and forwarded to the
+  master, see [Metrics & Reliable Delivery](#metrics-reliable-delivery)
 
 ## Security Model
 
@@ -129,25 +127,14 @@ After enrollment, all sync traffic uses **mutual certificate authentication**:
 
 ### 1. Deploy Master Server
 
-Standard WireBuddy installation with `SERVER_MODE=master` (default):
+A master is just a standard WireBuddy installation — `SERVER_MODE` defaults to
+`master`, so nothing extra is required. Deploy it with the supplied
+`docker/docker-compose.yml` as described in the
+[Installation Guide](../getting-started/installation.md#docker-compose-recommended).
 
-```yaml
-# docker-compose.yml
-services:
-  wirebuddy:
-    image: giiibates/wirebuddy:latest
-    container_name: wirebuddy-master
-    network_mode: host
-    cap_add:
-      - NET_ADMIN
-    environment:
-      - WIREBUDDY_SECRET_KEY=${YOUR_SECRET_KEY}
-      - SERVER_MODE=master  # or omit (master is default)
-      - LOG_LEVEL=INFO
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
-```
+Do not hand-write a reduced Compose service for the master: it needs the full
+capability set, `/dev/net/tun`, and `no-new-privileges` that the shipped file
+already declares. The node service below is the one that differs.
 
 ### 2. Create Node in UI
 
@@ -255,7 +242,7 @@ docker compose --env-file .env -f docker/docker-compose.node.yml up -d
 Check node logs:
 
 ```bash
-docker logs wirebuddy-node-frankfurt
+docker logs wirebuddy-node
 ```
 
 Expected output:
@@ -481,14 +468,16 @@ num   pkts bytes target     prot opt in     out     source               destina
 **Check node logs:**
 
 ```bash
-docker logs wirebuddy-node-frankfurt --tail 50
+docker logs wirebuddy-node --tail 50
 ```
 
 **Common issues:**
 
 - **Network connectivity**: Master URL not reachable from node
 - **Firewall**: Master API port blocked
-- **Certificate mismatch**: Delete `node-data/cert.pem` and `node-data/key.pem`, restart node
+- **Certificate mismatch**: delete `node.crt` and `node.key` from the node's data
+  directory (`./data/` on the host with the supplied Compose file), then restart
+  the node — it regenerates the pair and must be re-enrolled with a fresh token
 
 ### Node Fails Enrollment
 
@@ -542,7 +531,7 @@ docker restart wirebuddy-node
 
 **Force sync:**
 
-- Restart node: `docker restart wirebuddy-node-frankfurt`
+- Restart node: `docker restart wirebuddy-node`
 - Node will fetch latest config on startup
 
 ### Node Metrics Not Appearing in Dashboard
@@ -624,19 +613,12 @@ See [API Reference](../api/endpoints.md) for full documentation.
 ### Scaling Limits
 
 - **Tested**: 1 master + 10 nodes, 1000 total peers
-- **Theoretical**: 1 master + 100+ nodes (limited by SQLite write contention)
-- **Recommended**: Use read replicas or TSDB for large deployments (>10 nodes)
-
-## Future Enhancements
-
-Features planned for future releases:
-
-- [ ] Node-to-master VPN tunnel with automatic setup
-- [x] ~~Remote peer metrics collection (agent on nodes)~~ *Implemented via reliable queue*
-- [ ] Health checks with automatic failover
-- [ ] DNS resolver on nodes (optional)
-- [ ] Multi-master with Raft consensus
-- [ ] Web-based node monitoring dashboard
+- The binding constraint is the master: its SQLite database and single-process
+  control plane serialize configuration writes and metric ingestion. Adding nodes
+  scales VPN capacity, not control-plane capacity.
+- There is no multi-master mode. The master is a single point of failure for
+  configuration changes; nodes keep forwarding traffic on their last known config
+  while it is down.
 
 ## FAQ
 

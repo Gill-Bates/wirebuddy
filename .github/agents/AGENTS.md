@@ -3,7 +3,7 @@
 # agents
 
 ## Purpose
-Agent prompt files (YAML front matter with name, description, argument-hint, tools, followed by the prompt). Four form a coordinated review suite run in a fixed order; `PythonDev` is a standalone implementation agent. `README.md` is the authoritative description of the suite.
+Agent prompt files (YAML front matter with name, description, argument-hint, tools, followed by the prompt). Four form a coordinated review suite run in a fixed order; `PythonDev` and `05_ai-slope-cleaner` are standalone agents outside the suite. `README.md` is the authoritative description of the suite.
 
 ## Key Files
 | File | Description |
@@ -13,12 +13,13 @@ Agent prompt files (YAML front matter with name, description, argument-hint, too
 | `02_DRY.agent.md` | `DRY`: read-only analysis of duplicated knowledge (not just code); three-gate workflow, priority scale, good/bad DRY candidates, refactor safety rules, required tests before refactor, finding format |
 | `03_CheckComments.md` | `CheckComments`: the only writing agent (tools include edit/execute); auto-fixes comments, docstrings (English only, correctness, tightening), canonical file header, shebang and executable bit without changing logic; has baseline/after verification steps and protected comments |
 | `04_CheckIgnoreFiles.md` | `CheckIgnoreFiles`: read-only audit of `.gitignore`, `.dockerignore`, `.trivyignore` and tool ignores for broken semantics, stale rules and build-context leaks; discovery, tool semantics, checks, evidence rules, severity |
+| `05_ai-slope-cleaner.md` | `ai-slop-cleaner`: OMC-style skill prompt (front matter has `name`, `description`, `level`, no `tools` list) for regression-safe, deletion-first cleanup of AI-generated slop with an optional reviewer-only mode; not part of the review suite and not covered by `README.md` |
 | `PythonDev.agent.md` | `PythonDev`: senior Python 3.13 implementation agent (read/edit/search/execute/todo) for FastAPI features and fixes; core principles, stack, security, runtime validation, testing, output and completion rules; not part of the review suite |
 
 ## For AI Agents
 
 ### Working In This Directory
-- Keep front matter fields valid and the `tools` lists consistent with each agent's stated mode (only `03_CheckComments` and `PythonDev` may edit).
+- Keep front matter fields valid and the `tools` lists consistent with each agent's stated mode (only `03_CheckComments` and `PythonDev` list `edit`; `05_ai-slope-cleaner` has no `tools` field).
 - Cross-references between agents and the ownership matrix live in `README.md`; update it whenever ownership, order or shared policy changes.
 - Numeric prefixes encode execution order; do not renumber casually.
 - Files are prompts, not code: edit wording carefully, avoid contradictory rules, never add secrets.

@@ -20,9 +20,9 @@ _MIN_PBKDF2_ITERATIONS = 100_000
 _MAX_PBKDF2_ITERATIONS = 1_000_000
 _PASSWORD_SALT_BYTES = 16
 _PASSWORD_HASH_BYTES = hashlib.new(_PBKDF2_ALGORITHM).digest_size
-# Bound direct helper calls as well as API-model validation.
+# Bound direct helper calls; app/models/users.py imports the byte limit for API validation.
 _MAX_PASSWORD_CHARS = 1024
-_MAX_PASSWORD_BYTES = 4096
+MAX_PASSWORD_BYTES = 4096
 _MAX_TOKEN_HOURS = 24 * 30
 
 # Dummy hash for timing attack prevention when username doesn't exist
@@ -41,7 +41,7 @@ def _password_bytes(password: str) -> bytes:
 	if len(password) > _MAX_PASSWORD_CHARS:
 		raise ValueError("password is too long")
 	encoded = password.encode("utf-8")
-	if len(encoded) > _MAX_PASSWORD_BYTES:
+	if len(encoded) > MAX_PASSWORD_BYTES:
 		raise ValueError("password is too large")
 	return encoded
 

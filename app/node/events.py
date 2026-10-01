@@ -229,15 +229,13 @@ class NodeEventBus:
 		async with self._lock:
 			self._ensure_open()
 			streams_exist = bool(self._speedtest_subscribers.get(node_id))
-			if streams_exist:
-				self._latest_speedtest[node_id] = payload_copy
-			elif len(self._latest_speedtest) >= _MAX_LATEST_SPEEDTEST_ENTRIES:
+			if not streams_exist and len(self._latest_speedtest) >= _MAX_LATEST_SPEEDTEST_ENTRIES:
+				# Evict the oldest cached entry to keep the map bounded for
+				# nodes that report progress without a local subscriber.
 				oldest_node_id = next(iter(self._latest_speedtest), None)
 				if oldest_node_id is not None:
 					self._latest_speedtest.pop(oldest_node_id, None)
-				self._latest_speedtest[node_id] = payload_copy
-			else:
-				self._latest_speedtest[node_id] = payload_copy
+			self._latest_speedtest[node_id] = payload_copy
 		if not streams_exist:
 			return
 		event = NodeEvent(node_id=node_id, type=NodeEventType.SPEEDTEST_PROGRESS, payload=payload_copy)
@@ -254,11 +252,6 @@ class NodeEventBus:
 		"""Return the number of active local command subscribers for one node."""
 		async with self._lock:
 			return len(self._command_subscribers.get(node_id, ()))
-
-	async def active_command_nodes(self) -> list[str]:
-		"""Return node IDs that currently have local command subscribers."""
-		async with self._lock:
-			return list(self._command_subscribers.keys())
 
 	async def aclose(self) -> None:
 		"""Close the bus and all subscriber streams."""

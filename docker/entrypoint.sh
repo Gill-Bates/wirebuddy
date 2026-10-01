@@ -163,9 +163,7 @@ if [ -n "${WIREBUDDY_PORT:-}" ]; then
         exit 1
     fi
 fi
-# WireBuddy's job queue and session/rate-limit state live in-process; the web
-# server is single-worker only, not configurable.
-WORKERS="1"
+
 GRACEFUL_SHUTDOWN_TIMEOUT="${UVICORN_GRACEFUL_SHUTDOWN_TIMEOUT:-8}"
 
 if ! is_valid_timeout "$GRACEFUL_SHUTDOWN_TIMEOUT"; then
@@ -173,34 +171,29 @@ if ! is_valid_timeout "$GRACEFUL_SHUTDOWN_TIMEOUT"; then
     GRACEFUL_SHUTDOWN_TIMEOUT="8"
 fi
 
-echo "Starting WireBuddy on ${HOST}:${PORT} with ${WORKERS} worker(s)"
-
-UVICORN_ARGS=(
-    app:create_app
-    --host "$HOST"
-    --port "$PORT"
-    --factory
-    --workers "$WORKERS"
-    --timeout-graceful-shutdown "$GRACEFUL_SHUTDOWN_TIMEOUT"
-)
-
-# Trust loopback proxy headers by default so HTTPS origin checks work behind
-# a local reverse proxy like Caddy or nginx on the same host. Direct clients
-# are unaffected because uvicorn still only trusts the configured proxy IPs.
-# Shares WIREBUDDY_TRUSTED_PROXIES with the application-level proxy-trust
-# checks (app/utils/config.py) so there is one variable for "who is my
-# reverse proxy" instead of separate uvicorn/app settings.
-FORWARDED_ALLOW_IPS_VALUE="${WIREBUDDY_TRUSTED_PROXIES:-127.0.0.1,::1}"
-if [ "$FORWARDED_ALLOW_IPS_VALUE" = "*" ]; then
+# app.server reads WIREBUDDY_TRUSTED_PROXIES for uvicorn's proxy-header trust
+# and the application-level checks (app/utils/config.py) share it, so there is
+# one variable for "who is my reverse proxy". Loopback is trusted by default so
+# HTTPS origin checks work behind a local Caddy or nginx.
+if [ "${WIREBUDDY_TRUSTED_PROXIES:-}" = "*" ]; then
     echo "WIREBUDDY_TRUSTED_PROXIES='*' is unsafe; configure explicit proxy IPs" >&2
     exit 1
 fi
+echo "Trusting proxy headers from: ${WIREBUDDY_TRUSTED_PROXIES:-127.0.0.1,::1}"
 
-echo "Trusting proxy headers from: ${FORWARDED_ALLOW_IPS_VALUE}"
+# Runtime state, not data: recreated on every start, so a stale file from the
+# previous run can never describe this one. app.server writes it once the
+# listener (and, with HTTPS, the certificate) is resolved; the HEALTHCHECK
+# reads only this file.
+export WIREBUDDY_LISTENER_STATE="/run/wirebuddy/listener.env"
+rm -f "$WIREBUDDY_LISTENER_STATE"
 
-UVICORN_ARGS+=(
-    --proxy-headers
-    --forwarded-allow-ips="$FORWARDED_ALLOW_IPS_VALUE"
-)
-
-exec uvicorn "${UVICORN_ARGS[@]}"
+# Single start path shared with run.py: app.server decides HTTP vs built-in
+# HTTPS from gui_https_enabled, resolves the certificate (Let's Encrypt or
+# self-signed) and runs one uvicorn worker - the job queue and session/rate-
+# limit state live in-process.
+echo "Starting WireBuddy on ${HOST}:${PORT}"
+exec python -m app.server \
+    --host "$HOST" \
+    --port "$PORT" \
+    --timeout-graceful-shutdown "$GRACEFUL_SHUTDOWN_TIMEOUT"

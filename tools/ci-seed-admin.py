@@ -110,8 +110,7 @@ def main() -> int:
 		# KEY_MISMATCH_DETECTED.
 		if not validate_secret_key(conn, cfg.secret_key):
 			print(
-				"ERROR: WIREBUDDY_SECRET_KEY does not match this database. "
-				"Seeding expects an empty data dir.",
+				"ERROR: WIREBUDDY_SECRET_KEY does not match this database. Seeding expects an empty data dir.",
 				file=sys.stderr,
 			)
 			return 1

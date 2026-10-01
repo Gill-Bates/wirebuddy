@@ -9,11 +9,6 @@ export const THEME_REGISTRY = Object.freeze({
     highContrast: Object.freeze({ name: 'highContrast', label: 'High Contrast', inherits: 'light' }),
 });
 
-export function registerThemeOverlay(registry, name, overlay) {
-    registry[name] = { name, ...overlay };
-    return registry[name];
-}
-
 export function buildThemeOverlay(baseTokens, themeTokens = {}) {
     return deepMerge(structuredClone(baseTokens), themeTokens);
 }

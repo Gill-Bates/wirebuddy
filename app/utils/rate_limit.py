@@ -24,10 +24,10 @@ from starlette.requests import Request
 
 # Rate limit presets
 RATE_LIMIT_DEFAULT = "60/minute"
-RATE_LIMIT_AUTH = "5/minute"       # Strict limit for login attempts
-RATE_LIMIT_HEAVY = "10/minute"     # For expensive operations
-RATE_LIMIT_API = "120/minute"      # General API operations
-RATE_LIMIT_CRITICAL = "3/minute"   # For sensitive operations like PSK reveal
+RATE_LIMIT_AUTH = "5/minute"  # Strict limit for login attempts
+RATE_LIMIT_HEAVY = "10/minute"  # For expensive operations
+RATE_LIMIT_API = "120/minute"  # General API operations
+RATE_LIMIT_CRITICAL = "3/minute"  # For sensitive operations like PSK reveal
 RATE_LIMIT_UI_HEAVY = os.getenv("WIREBUDDY_RATE_LIMIT_UI_HEAVY", "60/minute")
 
 

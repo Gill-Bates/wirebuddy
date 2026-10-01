@@ -300,21 +300,21 @@ class DnsTsdbWriter:
 				date_str = point.ts.split("T", 1)[0] if "T" in point.ts else point.ts[:10]
 
 				entry = {
-					'_v': JSONL_SCHEMA_VERSION,
+					"_v": JSONL_SCHEMA_VERSION,
 					# Stable per-line ID (source inode + end offset) so a retry that
 					# re-writes an earlier day already flushed in this same batch
 					# (partial multi-day failure below) can be deduplicated on read.
-					'_event_id': f"{item.inode}:{item.end_offset}",
-					'ts': point.ts,
-					'client': point.client,
-					'domain': point.domain,
-					'qtype': point.qtype,
-					'rcode': point.rcode,
-					'blocked': point.blocked,
+					"_event_id": f"{item.inode}:{item.end_offset}",
+					"ts": point.ts,
+					"client": point.client,
+					"domain": point.domain,
+					"qtype": point.qtype,
+					"rcode": point.rcode,
+					"blocked": point.blocked,
 				}
 				# Only include custom_rule if True (saves space)
 				if point.custom_rule:
-					entry['custom_rule'] = True
+					entry["custom_rule"] = True
 
 				by_day.setdefault(date_str, []).append(entry)
 
@@ -350,9 +350,7 @@ class DnsTsdbWriter:
 				# ingestion (the tailer will re-read from the last committed
 				# offset) instead of silently discarding queries forever.
 				self.last_flush = time.monotonic()
-				raise DnsWriterPersistentFailureError(
-					f"DNS writer failed to flush {count} points after {MAX_FLUSH_RETRIES} consecutive attempts"
-				) from exc
+				raise DnsWriterPersistentFailureError(f"DNS writer failed to flush {count} points after {MAX_FLUSH_RETRIES} consecutive attempts") from exc
 			_log.exception("DNS_WRITER flush failed, retaining %d points for retry (%d/%d)", count, self._consecutive_flush_failures, MAX_FLUSH_RETRIES)
 			# Update last_flush on failure too, to enable throttled retries
 			self.last_flush = time.monotonic()
@@ -423,15 +421,15 @@ class DnsTsdbWriter:
 		This is expensive on SSD/cloud storage but necessary for durability.
 		Optimization: Could batch writes to temp file then split, but adds complexity.
 		"""
-		day_dir = self.dns_dir / 'queries'
+		day_dir = self.dns_dir / "queries"
 		day_dir.mkdir(parents=True, exist_ok=True)
 
-		day_file = day_dir / f'{date_str}.jsonl'
+		day_file = day_dir / f"{date_str}.jsonl"
 
-		with day_file.open('a', encoding='utf-8') as f:
+		with day_file.open("a", encoding="utf-8") as f:
 			for point in points:
 				# Compact JSON format saves ~10% disk space
-				f.write(json.dumps(point, separators=(',', ':')) + '\n')
+				f.write(json.dumps(point, separators=(",", ":")) + "\n")
 			f.flush()
 			os.fsync(f.fileno())  # Ensure data on disk before offset update
 
@@ -473,13 +471,10 @@ def _read_tail_lines(path: Path, max_lines: int) -> list[str]:
 
 	# Drop synthetic trailing empty segment when file ends with '\n'.
 	if lines and lines[-1] == b"":
-			lines.pop()
+		lines.pop()
 
 	# Take last max_lines entries from deque
-	decoded: list[str] = [
-		raw.decode("utf-8", errors="replace")
-		for raw in list(lines)[-max_lines:]
-	]
+	decoded: list[str] = [raw.decode("utf-8", errors="replace") for raw in list(lines)[-max_lines:]]
 	return decoded
 
 
@@ -589,7 +584,7 @@ def read_recent_queries(
 		return []
 	max_queries = min(int(max_queries), MAX_QUERY_RESULTS)
 
-	queries_dir = dns_dir / 'queries'
+	queries_dir = dns_dir / "queries"
 	if not queries_dir.exists():
 		return []
 
@@ -602,7 +597,7 @@ def read_recent_queries(
 
 	# Get all day files sorted by date (newest first)
 	# Explicit key ensures correct ordering regardless of path structure (YYYY-MM-DD format)
-	day_files = sorted(queries_dir.glob('*.jsonl'), key=lambda p: p.stem, reverse=True)
+	day_files = sorted(queries_dir.glob("*.jsonl"), key=lambda p: p.stem, reverse=True)
 
 	for day_file in day_files:
 		if remaining <= 0:

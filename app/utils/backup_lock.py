@@ -99,9 +99,7 @@ def _acquire_lock_file(
 		if update_metadata:
 			lock_file.seek(0)
 			lock_file.truncate()
-			lock_file.write(
-				f"pid={os.getpid()} host={socket.gethostname()} acquired_at={time.time():.6f}\n".encode()
-			)
+			lock_file.write(f"pid={os.getpid()} host={socket.gethostname()} acquired_at={time.time():.6f}\n".encode())
 			lock_file.flush()
 			os.fsync(lock_file.fileno())
 		yield lock_file

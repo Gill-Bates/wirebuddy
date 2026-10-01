@@ -21,22 +21,24 @@ from .sqlite_interfaces import get_interface
 from .sqlite_runtime import UNSET, UnsetType, transaction
 
 _VALID_ALLOWED_IPS_MODES = frozenset({"full", "split", "custom"})
-_ALLOWED_UPDATE_ASSIGNMENTS = frozenset({
-	"name = ?",
-	"private_key = ?",
-	"preshared_key = ?",
-	"allowed_ips = ?",
-	"allowed_ips_mode = ?",
-	"endpoint = ?",
-	"is_enabled = ?",
-	"use_adblocker = ?",
-	"dns_logging_enabled = ?",
-	"blocklist_ids = ?",
-	"client_isolation = ?",
-	"node_id = ?",
-	"allow_all_nodes = ?",
-	"updated_at = ?",
-})
+_ALLOWED_UPDATE_ASSIGNMENTS = frozenset(
+	{
+		"name = ?",
+		"private_key = ?",
+		"preshared_key = ?",
+		"allowed_ips = ?",
+		"allowed_ips_mode = ?",
+		"endpoint = ?",
+		"is_enabled = ?",
+		"use_adblocker = ?",
+		"dns_logging_enabled = ?",
+		"blocklist_ids = ?",
+		"client_isolation = ?",
+		"node_id = ?",
+		"allow_all_nodes = ?",
+		"updated_at = ?",
+	}
+)
 
 _log = logging.getLogger(__name__)
 _MAX_BLOCKLIST_IDS = 128
@@ -224,9 +226,7 @@ def _assert_peer_address_not_in_use(
 		if exclude_peer_id is not None and int(row["id"]) == exclude_peer_id:
 			continue
 		if candidate_ips & set(_extract_ips(str(row["peer_address"] or ""))):
-			raise ValueError(
-				f"peer_address overlaps with an IP already assigned to peer {row['id']} on interface {interface!r}"
-			)
+			raise ValueError(f"peer_address overlaps with an IP already assigned to peer {row['id']} on interface {interface!r}")
 
 
 def _validate_public_key(public_key: str) -> str:

@@ -8,7 +8,7 @@ Runtime infrastructure shared by every page controller; loaded from `base.html` 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `dom.js` | Large (~1900 lines) deterministic UI runtime: declarative `el()` DOM construction, scheduling (rAF), safe rendering helpers |
+| `dom.js` | Small DOM helper set (~130 lines): `el()` element builder (text via `textContent`, delegated `on` handlers), `clearChildren()`, `fragment()`; exposed as `window.el` and `window.WB.dom` / `window.WBDom` |
 | `design-tokens.js` | `window.DesignTokens`: reads CSS custom properties at runtime so JS (e.g. Chart.js colours) follows the CSS tokens |
 | `logger.js` | `window.WBLogger`: levelled, structured frontend logging with optional context |
 

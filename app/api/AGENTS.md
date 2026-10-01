@@ -12,7 +12,7 @@ FastAPI routers for every HTTP surface of WireBuddy: authentication (password, T
 | `auth.py` | Login, MFA verify, logout, `/me`, OTP setup; `get_current_user`, `require_admin`, trusted-proxy client-IP and HTTPS enforcement, IP lockout; in-memory MFA/recovery caches |
 | `passkeys.py` | WebAuthn registration/login, passkey listing/deletion/reset, per-user enable/disable |
 | `users.py` | User CRUD, password change/reset, admin OTP enable/confirm/disable; `require_self_or_admin` |
-| `wireguard.py` | Aggregator router including all `wireguard_*` routers (order matters: CRUD before interfaces) |
+| `wireguard.py` | Aggregator router including the `wireguard_*` routers that define endpoints (order matters: CRUD before interfaces) |
 | `wireguard_interfaces.py` | List/get/up/down/restart/config for interfaces |
 | `wireguard_interfaces_crud.py` | Create/update/delete interfaces, next-subnet suggestion, default firewall rules |
 | `wireguard_peers.py` | Peer CRUD, IP allocation, runtime `wg set`, node notification and tag regeneration |
@@ -31,8 +31,8 @@ FastAPI routers for every HTTP surface of WireBuddy: authentication (password, T
 | `nodes.py` | Admin CRUD for remote nodes, token regeneration, restart, remote speedtest |
 | `nodes_sync.py` | Node-facing endpoints (enroll, heartbeat, config, SSE events, metrics, command ack), not user auth. Auth is the bearer session secret alone; the client-cert fingerprint is only additionally enforced when an explicitly trusted mTLS proxy injects it (`WIREBUDDY_TRUSTED_PROXIES`), otherwise self-asserted fingerprint headers are ignored |
 | `network_stats.py` | Host/WG interface throughput from `/sys/class/net` with history |
-| `frontend_pages.py` | UI page routes (`/ui/...`), `/api/system/status`, about/changelog data |
-| `frontend_shared.py` | Shared frontend router primitives: context-aware Jinja templates, redirect helpers, GeoIP lookup, CSRF token, `require_user_or_redirect` |
+| `frontend_pages.py` | UI page routes (`/ui/...`; registered on the router owned by `frontend_shared.py`), `/api/system/status`, about/changelog data |
+| `frontend_shared.py` | Shared frontend router primitives: context-aware Jinja templates, redirect helpers, GeoIP lookup, CSRF token, `require_user_or_redirect`/`require_admin_or_redirect`; owns the `router` that `main.py` mounts |
 | `frontend_status.py` | Public status page (`/status`): DNS probe/leak indicators, client IP and geo resolution |
 | `sse.py` | Server-Sent Events formatting and queue fan-out helpers |
 | `response.py` | `OkResponse`, `ok_response` common envelope |
@@ -59,7 +59,7 @@ FastAPI routers for every HTTP surface of WireBuddy: authentication (password, T
 ## Dependencies
 
 ### Internal
-- `app/db`, `app/models`, `app/dns`, `app/node`, `app/utils`, `app/tasks`, `app/runtime`, `app/speedtest`, `app/templates`, `app/middleware`.
+- `app/db`, `app/models`, `app/dns`, `app/node`, `app/utils`, `app/tasks`, `app/speedtest`, `app/templates`, `app/middleware`.
 
 ### External
 - FastAPI, Pydantic, Jinja2, WireGuard tools (`wg`), iptables, WebAuthn library, pyotp, qrcode, cryptography, httpx, GeoLite2 data.

@@ -38,13 +38,52 @@ export function getFocusIndicatorGeometry(style = {}) {
     const outlineWidth = Number.parseFloat(style.outlineWidth || '0') || 0;
     const offset = Number.parseFloat(style.outlineOffset || '0') || 0;
     const boxShadow = String(style.boxShadow || '').trim();
+    const hasBoxShadow = boxShadow !== '' && boxShadow !== 'none';
+    // A box-shadow ring (Bootstrap's `0 0 0 .25rem`) carries its thickness in the
+    // spread, so deriving the area from outlineWidth alone returned 0 and the
+    // caller's `focusArea < minArea` gate rejected every shadow-only ring.
+    const shadowSpread = hasBoxShadow ? parseShadowRingWidth(boxShadow) : 0;
+    const ringWidth = Math.max(outlineWidth, shadowSpread);
     return {
         outlineWidth,
         outlineOffset: offset,
-        hasBoxShadow: boxShadow !== '' && boxShadow !== 'none',
+        hasBoxShadow,
         boxShadow,
-        area: Math.max(0, outlineWidth * 2 + Math.abs(offset) * 2),
+        shadowSpread,
+        ringWidth,
+        area: Math.max(0, ringWidth * 2 + Math.abs(offset) * 2),
     };
+}
+
+function splitTopLevel(list) {
+    const parts = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < list.length; i += 1) {
+        const ch = list[i];
+        if (ch === '(') depth += 1;
+        else if (ch === ')') depth = Math.max(0, depth - 1);
+        else if (ch === ',' && depth === 0) {
+            parts.push(list.slice(start, i));
+            start = i + 1;
+        }
+    }
+    parts.push(list.slice(start));
+    return parts;
+}
+
+function parseShadowRingWidth(boxShadow) {
+    // Only offset-free outer shadows form a ring; a drop shadow or inset shadow
+    // would otherwise be scored as focus thickness. Take the widest spread.
+    let widest = 0;
+    for (const shadow of splitTopLevel(String(boxShadow))) {
+        const tokens = shadow.replace(/\([^)]*\)/g, ' ').trim().split(/\s+/).filter(Boolean);
+        if (tokens.includes('inset')) continue;
+        const lengths = tokens.filter((token) => /^-?[\d.]+(px)?$/.test(token)).map(Number.parseFloat);
+        if (lengths.length < 2 || lengths[0] !== 0 || lengths[1] !== 0) continue;
+        widest = Math.max(widest, lengths[3] ?? 0);
+    }
+    return widest;
 }
 
 export function isFocusVisibleEnough({ before, after, tokens, elementRect, focusRect, minContrast: minContrastOverride }) {
@@ -65,8 +104,17 @@ export function isFocusVisibleEnough({ before, after, tokens, elementRect, focus
     const width = focusRect?.width || elementRect?.width || 0;
     const height = focusRect?.height || elementRect?.height || 0;
     const perimeter = Math.max(0, 2 * (width + height));
-    const focusRingArea = perimeter * Math.max(geometry.outlineWidth, 0) + Math.abs(geometry.outlineOffset) * perimeter;
-    const focusColor = after.outlineColor || after.borderColor || after.boxShadowColor || after.color || '';
+    const focusRingArea = perimeter * Math.max(geometry.ringWidth, 0) + Math.abs(geometry.outlineOffset) * perimeter;
+    // Score the colour of the ring that is actually painted. outlineColor stays
+    // populated even when outlineStyle is 'none', so preferring it unconditionally
+    // measured a box-shadow ring against the wrong colour.
+    const focusColor = (outlineVisible ? after.outlineColor : '')
+        || (boxShadowVisible ? after.boxShadowColor : '')
+        || after.outlineColor
+        || after.borderColor
+        || after.boxShadowColor
+        || after.color
+        || '';
     const surroundingColor = after.backgroundColor || before.backgroundColor || '';
     const contrastRatio = computeContrastRatio(focusColor, surroundingColor);
 

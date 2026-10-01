@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from ..db.sqlite_auth import (
 	clear_login_attempts,
+	delete_user_tokens,
 	is_ip_locked,
 	record_failed_login,
 )
@@ -74,7 +75,7 @@ def _get_rp_id(request: Request) -> str:
 	from ..utils.config import get_config
 
 	cfg = get_config()
-	if (rp_id_override := os.environ.get("PASSKEY_RP_ID")):
+	if rp_id_override := os.environ.get("PASSKEY_RP_ID"):
 		return rp_id_override
 	if (origin_host := cfg.public_origin_hostname) is not None:
 		return origin_host
@@ -189,17 +190,20 @@ def _serialize_passkey_row(row: sqlite3.Row) -> dict[str, Any]:
 
 class PasskeyRegisterFinishRequest(BaseModel):
 	"""Request body for completing passkey registration."""
+
 	credential: dict[str, Any] = Field(..., description="WebAuthn credential response")
 	device_name: str | None = Field(None, max_length=100, description="User-friendly device name")
 
 
 class PasskeyLoginStartRequest(BaseModel):
 	"""Optional request body for starting passkey login."""
+
 	username: str | None = Field(None, max_length=64, description="Username (optional for discoverable credentials)")
 
 
 class PasskeyLoginFinishRequest(BaseModel):
 	"""Request body for completing passkey login."""
+
 	credential: dict[str, Any] = Field(..., description="WebAuthn credential response")
 
 
@@ -357,7 +361,6 @@ def passkey_login_start(
 	"""
 	client_ip = _get_client_ip(request)
 
-	# Check for lockout
 	_check_ip_lockout(conn, client_ip)
 
 	rp_id = _get_rp_id(request)
@@ -407,7 +410,6 @@ def passkey_login_finish(
 	rp_id = _get_rp_id(request)
 	origin = _get_origin(request)
 
-	# Check for lockout
 	_check_ip_lockout(conn, client_ip)
 
 	# Extract credential ID and challenge from response
@@ -416,22 +418,19 @@ def passkey_login_finish(
 		client_data = _parse_client_data(payload.credential)
 		challenge = client_data.get("challenge", "")
 	except Exception as e:
-		_auth_fail(conn, client_ip, 400, "Invalid credential response",
-				   f"PASSKEY_LOGIN_FINISH invalid clientDataJSON: {e}")
+		_auth_fail(conn, client_ip, 400, "Invalid credential response", f"PASSKEY_LOGIN_FINISH invalid clientDataJSON: {e}")
 
 	# Consume challenge (validates it existed and hasn't expired)
 	try:
 		challenge_result = consume_authentication_challenge(conn, challenge)
 		challenge_user_id = challenge_result.user_id  # None is valid for discoverable credentials
 	except InvalidChallengeError as e:
-		_auth_fail(conn, client_ip, 400, "Invalid or expired authentication challenge",
-				   f"PASSKEY_LOGIN_FINISH invalid challenge: {e} ip={client_ip}")
+		_auth_fail(conn, client_ip, 400, "Invalid or expired authentication challenge", f"PASSKEY_LOGIN_FINISH invalid challenge: {e} ip={client_ip}")
 
 	# Look up the credential by ID to find the user
 	passkey_row = get_passkey_by_credential_id(conn, credential_id)
 	if not passkey_row:
-		_auth_fail(conn, client_ip, 401, "Invalid passkey",
-				   f"PASSKEY_LOGIN_FINISH unknown credential_id ip={client_ip}")
+		_auth_fail(conn, client_ip, 401, "Invalid passkey", f"PASSKEY_LOGIN_FINISH unknown credential_id ip={client_ip}")
 
 	user_id = passkey_row["user_id"]
 	username = passkey_row["username"]
@@ -439,20 +438,24 @@ def passkey_login_finish(
 	# If challenge was bound to a user, verify it matches
 	if challenge_user_id is not None and challenge_user_id != user_id:
 		_auth_fail(
-			conn, client_ip, 401, "Invalid passkey",
-			f"PASSKEY_LOGIN_FINISH user mismatch challenge_user={challenge_user_id} "
-			f"credential_user={user_id} ip={client_ip}",
+			conn,
+			client_ip,
+			401,
+			"Invalid passkey",
+			f"PASSKEY_LOGIN_FINISH user mismatch challenge_user={challenge_user_id} credential_user={user_id} ip={client_ip}",
 		)
 
 	# Check user is active
 	if not passkey_row["is_active"]:
-		_auth_fail(conn, client_ip, 403, "Account disabled",
-				   f"PASSKEY_LOGIN_FINISH inactive user={username} ip={client_ip}")
+		_auth_fail(conn, client_ip, 403, "Account disabled", f"PASSKEY_LOGIN_FINISH inactive user={username} ip={client_ip}")
 
 	# Check passkey authentication is enabled for user
 	if not passkey_row["passkey_enabled"]:
 		_auth_fail(
-			conn, client_ip, 401, "Passkey authentication not enabled for this account",
+			conn,
+			client_ip,
+			401,
+			"Passkey authentication not enabled for this account",
 			f"PASSKEY_LOGIN_FINISH passkey disabled for user={username} ip={client_ip}",
 		)
 
@@ -468,7 +471,10 @@ def passkey_login_finish(
 		)
 	except Exception as e:
 		_auth_fail(
-			conn, client_ip, 401, "Passkey verification failed",
+			conn,
+			client_ip,
+			401,
+			"Passkey verification failed",
 			f"PASSKEY_LOGIN_FINISH verification failed user={username} ip={client_ip} error={e}",
 		)
 
@@ -527,6 +533,9 @@ def delete_passkey_endpoint(
 			# Disable passkey auth method
 			auth_method = "password_mfa" if user["otp_enabled"] else "password"
 			update_user_auth_method(conn, user["id"], auth_method, passkey_enabled=False)
+			# Losing the last passkey changes which factors can reach this
+			# account, so sessions established with it must not outlive it.
+			delete_user_tokens(conn, user["id"])
 
 	_log.info(
 		"PASSKEY_DELETE user_id=%s passkey_id=%s remaining=%s",
@@ -549,10 +558,14 @@ def reset_user_passkeys(
 	"""Admin endpoint: Reset all passkeys for a user."""
 	target_user = _get_user_or_404(conn, user_id)
 
-	deleted_count = disable_user_passkeys(conn, user_id)
+	# A reset is the response to a suspected compromise, so the credentials and
+	# every session they authenticated go away together.
+	with transaction(conn, immediate=True):
+		deleted_count = disable_user_passkeys(conn, user_id)
+		delete_user_tokens(conn, user_id)
 
 	_log.warning(
-		"PASSKEY_RESET_BY_ADMIN admin=%s target_user=%s deleted_count=%s",
+		"PASSKEY_RESET_BY_ADMIN admin=%s target_user=%s deleted_count=%s sessions_revoked=1",
 		admin["username"],
 		target_user["username"],
 		deleted_count,
@@ -643,10 +656,12 @@ def disable_user_passkey(
 	"""
 	target_user = _get_user_or_404(conn, user_id)
 
-	deleted_count = disable_user_passkeys(conn, user_id)
+	with transaction(conn, immediate=True):
+		deleted_count = disable_user_passkeys(conn, user_id)
+		delete_user_tokens(conn, user_id)
 
 	_log.warning(
-		"PASSKEY_DISABLED_BY_ADMIN admin=%s target_user=%s deleted_count=%d",
+		"PASSKEY_DISABLED_BY_ADMIN admin=%s target_user=%s deleted_count=%d sessions_revoked=1",
 		admin["username"],
 		target_user["username"],
 		deleted_count,
@@ -656,4 +671,3 @@ def disable_user_passkey(
 		message="Passkey disabled for user",
 		data={"deleted_count": deleted_count},
 	)
-

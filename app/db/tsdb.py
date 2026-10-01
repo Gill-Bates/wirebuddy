@@ -36,7 +36,6 @@ import re
 import shutil
 import threading
 import time
-import warnings
 from collections import OrderedDict
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
@@ -47,12 +46,9 @@ from weakref import WeakValueDictionary
 
 # Platform check for fcntl (Unix-only)
 try:
-    import fcntl
+	import fcntl
 except ImportError:
-    raise ImportError(
-        "fcntl module is required but not available. "
-        "This TSDB implementation only supports Unix-like systems."
-    ) from None
+	raise ImportError("fcntl module is required but not available. This TSDB implementation only supports Unix-like systems.") from None
 
 import contextlib
 
@@ -65,23 +61,21 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 __all__ = [
-    "MetricPoint",
-    "append_point",
-    "delete_peer_data",
-    "finalize_shutdown",
-    "flush_to_disk",
-    "get_all_peer_hashes",
-    "get_all_peer_keys",  # Deprecated, but kept for backwards compat
-    "get_db_stats",
-    "get_peer_stats",
-    "get_synthetic_storage_stats",
-    "init_tsdb",
-    "purge_synthetic_data",
-    "purge_tsdb",
-    "query",
-    "query_latest",
-    "reset_all",
-    "run_maintenance",
+	"MetricPoint",
+	"append_point",
+	"delete_peer_data",
+	"finalize_shutdown",
+	"flush_to_disk",
+	"get_all_peer_hashes",
+	"get_db_stats",
+	"get_peer_stats",
+	"get_synthetic_storage_stats",
+	"init_tsdb",
+	"purge_synthetic_data",
+	"query",
+	"query_latest",
+	"reset_all",
+	"run_maintenance",
 ]
 
 # ---------------------------------------------------------------------------
@@ -119,9 +113,7 @@ _SYNTHETIC_DIR_MAP = {
 
 def _peer_dir_name(peer_key: str) -> str:
 	"""Return the stable directory name for a WireGuard peer."""
-	key_hash = base64.urlsafe_b64encode(
-		hashlib.sha256(peer_key.encode()).digest()
-	).decode().rstrip("=")
+	key_hash = base64.urlsafe_b64encode(hashlib.sha256(peer_key.encode()).digest()).decode().rstrip("=")
 	return f"peer_{key_hash}"
 
 
@@ -159,6 +151,7 @@ def _migrate_legacy_layout(tsdb_dir: Path) -> None:
 		if legacy_traffic_dir.is_dir():
 			_move_tree_contents(legacy_traffic_dir, traffic_dir / legacy_traffic_dir_name)
 
+
 # ---------------------------------------------------------------------------
 # Data Structures
 # ---------------------------------------------------------------------------
@@ -167,6 +160,7 @@ def _migrate_legacy_layout(tsdb_dir: Path) -> None:
 @dataclass(frozen=True)
 class MetricPoint:
 	"""A single time-series data point."""
+
 	ts: datetime
 	value: Any
 
@@ -204,6 +198,7 @@ def _recover_uncompressed_rotations(series_path: Path) -> None:
 		except OSError as e:
 			_log.warning("Recovery compression failed for %s: %s", p.name, e)
 
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -218,26 +213,18 @@ def _series_path(tsdb_dir: Path, peer_key: str, metric: str) -> Path:
 		raise ValueError("Metric name cannot be empty")
 	# Enforce length limit
 	if len(metric) > MAX_METRIC_NAME_LENGTH:
-		raise ValueError(
-			f"Metric name exceeds maximum length of {MAX_METRIC_NAME_LENGTH}: {metric}"
-		)
+		raise ValueError(f"Metric name exceeds maximum length of {MAX_METRIC_NAME_LENGTH}: {metric}")
 	# Enforce strict metric name format to prevent silent collisions
 	if not re.fullmatch(r"[A-Za-z0-9_-]+", metric):
-		raise ValueError(
-			f"Invalid metric name '{metric}': only alphanumeric, underscore, and hyphen allowed"
-		)
-	# Check reserved names
+		raise ValueError(f"Invalid metric name '{metric}': only alphanumeric, underscore, and hyphen allowed")
+
 	if metric.lower() in _RESERVED_METRIC_NAMES:
-		raise ValueError(
-			f"Metric name '{metric}' is reserved for internal use"
-		)
+		raise ValueError(f"Metric name '{metric}' is reserved for internal use")
 
 	if peer_key in SYNTHETIC_KEYS:
 		dir_name = _SYNTHETIC_DIR_MAP.get(peer_key)
 		if dir_name is None:
-			raise ValueError(
-				f"Unhandled synthetic key: {peer_key} — add explicit path mapping in _series_path"
-			)
+			raise ValueError(f"Unhandled synthetic key: {peer_key} — add explicit path mapping in _series_path")
 		return tsdb_dir / Path(dir_name) / f"{metric}.jsonl"
 
 	return tsdb_dir / _PEERS_DIRNAME / _peer_dir_name(peer_key) / f"{metric}.jsonl"
@@ -347,9 +334,7 @@ class _ReadWriteLock:
 			current_thread_id = threading.current_thread().ident
 			if self._writers > 0 and self._writer_thread_id == current_thread_id:
 				raise RuntimeError(
-					"_ReadWriteLock is not reentrant. "
-					"Same thread cannot acquire write lock twice. "
-					"This usually indicates a bug in lock management."
+					"_ReadWriteLock is not reentrant. Same thread cannot acquire write lock twice. This usually indicates a bug in lock management."
 				)
 			self._writers_waiting += 1
 			try:
@@ -518,7 +503,7 @@ def _parse_archive_timestamp(name: str) -> datetime | None:
 	idx = name.find(marker)
 	if idx < 0:
 		return None
-	after = name[idx + len(marker):]
+	after = name[idx + len(marker) :]
 	ts = after.removesuffix(".gz")
 	if len(ts) == 16:  # "YYYYMMDDTHHMMSSz" — old format, no microseconds
 		ts = ts[:-1] + "000000Z"
@@ -548,10 +533,9 @@ def _rotated_archives(series_path: Path) -> list[Path]:
 
 	# Also find uncompressed rotations left by interrupted compression
 	uncompressed = [
-		p for p in series_path.parent.glob(f"{series_path.name}.*")
-		if p.suffix not in (".gz", ".tmp", ".lock", ".prune")
-		and p != series_path
-		and not p.name.endswith(".gz")
+		p
+		for p in series_path.parent.glob(f"{series_path.name}.*")
+		if p.suffix not in (".gz", ".tmp", ".lock", ".prune") and p != series_path and not p.name.endswith(".gz")
 	]
 
 	# Combine and sort by normalized timestamp to handle format transitions
@@ -739,45 +723,6 @@ def init_tsdb(tsdb_dir: Path) -> None:
 	_migrate_legacy_layout(tsdb_dir)
 
 
-def purge_tsdb(tsdb_dir: Path, *, force: bool = False) -> None:
-	"""Completely remove all TSDB data.
-
-	WARNING: This does NOT acquire locks. Concurrent writes will crash or corrupt data.
-	ONLY call this during:
-	  - Application shutdown (after all TSDB operations stopped)
-	  - Single-threaded maintenance windows
-	  - Test cleanup
-
-	For safe peer deletion during normal operation, use delete_peer_data() and ensure
-	no active writes for that peer.
-
-	Args:
-		tsdb_dir: Path to TSDB directory.
-		force: Must be True to confirm intention. Prevents accidental calls.
-
-	Raises:
-		RuntimeError: If force is not True.
-	"""
-	_require_force(force, "purge_tsdb", "Ensure all TSDB operations are stopped before calling.")
-
-	if not tsdb_dir.exists():
-		return
-
-	_log.warning("TSDB purge: deleting all data in %s (NO LOCKS - ensure no concurrent ops)", tsdb_dir)
-
-	try:
-		shutil.rmtree(tsdb_dir)
-	except OSError:
-		for root, dirs, files in os.walk(tsdb_dir, topdown=False):
-			for f in files:
-				with contextlib.suppress(OSError):
-					Path(root, f).unlink(missing_ok=True)
-			for d in dirs:
-				with contextlib.suppress(OSError):
-					Path(root, d).rmdir()
-	init_tsdb(tsdb_dir)
-
-
 def delete_peer_data(tsdb_dir: Path, peer_key: str, *, force: bool = False) -> None:
 	"""Delete all time-series data for a specific peer.
 
@@ -896,9 +841,7 @@ def append_point(
 		raise ValueError(f"Value is not JSON-serializable: {e}") from e
 	line_bytes = len(line.encode("utf-8"))
 	if line_bytes > MAX_VALUE_SIZE:
-		raise ValueError(
-			f"Serialized value size ({line_bytes} bytes) exceeds maximum {MAX_VALUE_SIZE} bytes"
-		)
+		raise ValueError(f"Serialized value size ({line_bytes} bytes) exceeds maximum {MAX_VALUE_SIZE} bytes")
 
 	p = _series_path(tsdb_dir, peer_key, metric)
 
@@ -912,7 +855,7 @@ def append_point(
 		_prune_key = str(p)
 		_prune_now = time.time()
 		with _prune_ttl_lock:
-			_do_prune = (_prune_now - _prune_ttl_cache.get(_prune_key, 0.0) >= PRUNE_INTERVAL_SECONDS)
+			_do_prune = _prune_now - _prune_ttl_cache.get(_prune_key, 0.0) >= PRUNE_INTERVAL_SECONDS
 			if _do_prune:
 				_prune_ttl_cache[_prune_key] = _prune_now
 		if _do_prune and _should_prune(p):
@@ -1041,9 +984,7 @@ def query(
 			# on collected count alone could miss those, so every file is scanned
 			# before sorting and taking the tail — matching the non-latest path's
 			# correctness guarantee.
-			points = list(
-				_iter_metric_points(p, since=since_u, until=until_u, filter_fn=filter_fn)
-			)
+			points = list(_iter_metric_points(p, since=since_u, until=until_u, filter_fn=filter_fn))
 			points.sort(key=lambda pt: pt.ts)
 			return points[-limit:]
 		points = list(_iter_metric_points(p, since=since_u, until=until_u, filter_fn=filter_fn))
@@ -1100,22 +1041,6 @@ def get_all_peer_hashes(tsdb_dir: Path) -> list[str]:
 			key_hash = d.name[5:]  # Remove "peer_" prefix
 			hashes.append(key_hash)
 	return hashes
-
-
-def get_all_peer_keys(tsdb_dir: Path) -> list[str]:
-	"""Deprecated: Use get_all_peer_hashes() instead.
-
-	This function returns hashes, not actual peer keys.
-
-	MINOR FIX #13: Use warnings.warn instead of log.warning for deprecation.
-	"""
-	warnings.warn(
-		"get_all_peer_keys is deprecated and returns hashes, not keys. "
-		"Use get_all_peer_hashes() instead.",
-		FutureWarning,
-		stacklevel=2
-	)
-	return get_all_peer_hashes(tsdb_dir)
 
 
 def get_db_stats(tsdb_dir: Path) -> dict[str, Any]:

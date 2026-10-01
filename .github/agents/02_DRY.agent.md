@@ -164,7 +164,7 @@ Good:
 
 ```python
 def normalize_host(value: str) -> str:
-    return value.strip().lower().rstrip(".")
+	return value.strip().lower().rstrip(".")
 ```
 
 ```python
@@ -180,8 +180,7 @@ validate_private_admin_host(host)
 Bad:
 
 ```python
-def normalize_and_validate_host(value, *, allow_private, allow_public, allow_wildcard, mode):
-    ...
+def normalize_and_validate_host(value, *, allow_private, allow_public, allow_wildcard, mode): ...
 ```
 
 ---
@@ -454,16 +453,16 @@ from enum import StrEnum
 
 
 class ReportSchedule(StrEnum):
-    WEEKLY = "weekly"
+	WEEKLY = "weekly"
 
 
 def normalize_report_schedule(value: str | None) -> ReportSchedule | None:
-    normalized = (value or "").strip().lower()
-    if normalized in {"", "off", "false", "0", "no"}:
-        return None
-    if normalized in {"on", "weekly", "true", "1", "yes"}:
-        return ReportSchedule.WEEKLY
-    raise ValueError("Invalid report schedule value.")
+	normalized = (value or "").strip().lower()
+	if normalized in {"", "off", "false", "0", "no"}:
+		return None
+	if normalized in {"on", "weekly", "true", "1", "yes"}:
+		return ReportSchedule.WEEKLY
+	raise ValueError("Invalid report schedule value.")
 ```
 
 Required decision:
@@ -478,11 +477,11 @@ Use only when the documented storage contract says naive datetimes are UTC.
 
 ```python
 def as_utc(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
+	if value is None:
+		return None
+	if value.tzinfo is None:
+		return value.replace(tzinfo=UTC)
+	return value.astimezone(UTC)
 ```
 
 Assumption: Python 3.13+ and naive datetimes represent UTC.
@@ -494,7 +493,7 @@ Use when protected UI routes must enforce the same documented readiness invarian
 ```python
 readiness_redirect = await require_feature_ready(session)
 if readiness_redirect is not None:
-    return readiness_redirect
+	return readiness_redirect
 ```
 
 Do not centralize routes intentionally available before readiness, such as login, setup, health checks, or recovery routes.

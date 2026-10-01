@@ -18,9 +18,6 @@
 {% set _valid_cc = _cc | length == 2 and _cc[0] in _letters and _cc[1] in _letters %}
 {% set _parts = [city, as_org] | select | list %}
 {% set _extra_class = (extra_class | default('mt-1', true) | trim) %}
-{% if '"' in _extra_class or "'" in _extra_class or '<' in _extra_class or '>' in _extra_class %}
-{% set _extra_class = 'mt-1' %}
-{% endif %}
 
 {% if _valid_cc or _parts %}
 <div class="small text-muted d-flex align-items-center gap-2 {{ _extra_class }}">

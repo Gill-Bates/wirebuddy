@@ -147,11 +147,11 @@ def update_passkey_sign_count(
 
 			_log.error(
 				"Sign count regression blocked for passkey_id=%d: current=%d, attempted=%d",
-				passkey_id, existing[0], new_sign_count,
+				passkey_id,
+				existing[0],
+				new_sign_count,
 			)
-			raise ValueError(
-				f"Sign count regression blocked for passkey {passkey_id}"
-			)
+			raise ValueError(f"Sign count regression blocked for passkey {passkey_id}")
 		_log.debug("Sign count updated for passkey_id=%d: %d", passkey_id, new_sign_count)
 
 
@@ -183,6 +183,8 @@ def delete_passkey(conn: sqlite3.Connection, passkey_id: int, user_id: int) -> b
 			return False
 		_log.info("Passkey deleted: id=%d user_id=%d", passkey_id, user_id)
 		return True
+
+
 def count_user_passkeys(conn: sqlite3.Connection, user_id: int) -> int:
 	"""Count passkeys for a user."""
 	cur = conn.execute(
@@ -260,7 +262,6 @@ def store_challenge(
 	expires_at = now + _CHALLENGE_TTL_SECONDS
 
 	with transaction(conn):
-
 		# Insert new challenge
 		conn.execute(
 			"""

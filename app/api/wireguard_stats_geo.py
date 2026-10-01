@@ -178,6 +178,7 @@ def _extract_geo_info(geo_info: dict | None) -> dict[str, object]:
 
 class TsdbRetentionUpdate(BaseModel):
 	"""Request body for TSDB retention updates."""
+
 	retention_days: int
 
 	@field_validator("retention_days")
@@ -244,7 +245,7 @@ async def _lookup_geo_map(unique_ips: set[str]) -> dict[str, dict | None]:
 
 	# Process in chunks to avoid creating too many concurrent tasks
 	for i in range(0, len(ips_list), _GEO_LOOKUP_CHUNK_SIZE):
-		chunk = ips_list[i:i + _GEO_LOOKUP_CHUNK_SIZE]
+		chunk = ips_list[i : i + _GEO_LOOKUP_CHUNK_SIZE]
 		lookups = await asyncio.gather(*[_lookup_geo_cached(ip) for ip in chunk])
 		result.update(dict(lookups))
 
@@ -257,6 +258,7 @@ async def _get_wg_dump_cached() -> list:
 	Errors (wg command failure) are NOT cached; empty [] is only returned on
 	exception and allowed to be served as stale data if cache refresh fails.
 	"""
+
 	async def _fetch() -> list:
 		code, stdout, stderr = await run_wg_command(WG_BIN, "show", "all", "dump")
 		if code != 0:
@@ -355,21 +357,23 @@ async def get_peer_locations(
 				connected = True
 				connected_names.append(peer_name)
 
-	# For shared public IPs (NAT), use the first peer as the representative.
+		# For shared public IPs (NAT), use the first peer as the representative.
 		first_info = peers_at_ip[0][1]
-		locations.append({
-			"lat": lat,
-			"lon": lon,
-			**_extract_geo_info(geo_info),
-			"ip": ip_str,
-			"name": connected_names[0] if connected_names else names[0],
-			"names": names,
-			"connected_names": connected_names,
-			"interface": first_info.get("interface"),
-			"connected": connected,
-			"count": len(names),
-			"connected_count": len(connected_names),
-		})
+		locations.append(
+			{
+				"lat": lat,
+				"lon": lon,
+				**_extract_geo_info(geo_info),
+				"ip": ip_str,
+				"name": connected_names[0] if connected_names else names[0],
+				"names": names,
+				"connected_names": connected_names,
+				"interface": first_info.get("interface"),
+				"connected": connected,
+				"count": len(names),
+				"connected_count": len(connected_names),
+			}
+		)
 
 	_log.debug(
 		"PEER_LOC returning %d location(s), skipped tunnel=%d no_ip=%d",
@@ -485,12 +489,7 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 			peer["transfer_rx"] = cum_rx + wg_rx
 			peer["transfer_tx"] = cum_tx + wg_tx
 
-			if (
-				wg_rx != last_rx
-				or wg_tx != last_tx
-				or cum_rx != int(stored["cumulative_rx"])
-				or cum_tx != int(stored["cumulative_tx"])
-			):
+			if wg_rx != last_rx or wg_tx != last_tx or cum_rx != int(stored["cumulative_rx"]) or cum_tx != int(stored["cumulative_tx"]):
 				transfer_updates.append((cum_rx, cum_tx, wg_rx, wg_tx, pub_key))
 
 		if transfer_updates:
@@ -499,12 +498,7 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 	except Exception:
 		_log.warning("Failed to update cumulative transfer", exc_info=True)
 
-	unique_ips = {
-		ip
-		for peer in peers_by_key.values()
-		for ip in [_valid_nonempty_str(peer.get("endpoint_ip"))]
-		if ip is not None
-	}
+	unique_ips = {ip for peer in peers_by_key.values() for ip in [_valid_nonempty_str(peer.get("endpoint_ip"))] if ip is not None}
 	geo_map = await _lookup_geo_map(unique_ips)
 	missing_geo_lookups = 0
 	for peer in peers_by_key.values():
@@ -551,6 +545,7 @@ async def get_peers_enriched(
 # ---------------------------------------------------------------------------
 # TSDB Stats & Management
 # ---------------------------------------------------------------------------
+
 
 @router.get("/stats/tsdb")
 async def get_tsdb_stats(
@@ -616,6 +611,7 @@ async def run_tsdb_maintenance(
 # ---------------------------------------------------------------------------
 # Peer Metrics Stats & Management
 # ---------------------------------------------------------------------------
+
 
 @router.get("/stats/peer-metrics")
 async def get_peer_metrics_stats(

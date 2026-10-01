@@ -89,20 +89,17 @@ def build_acme_http_app(
 		path: str = scope.get("path", "/")
 
 		if path.startswith(_ACME_PREFIX):
-			token = path[len(_ACME_PREFIX):]
+			token = path[len(_ACME_PREFIX) :]
 			if not _TOKEN_RE.fullmatch(token):
-				await _send(send, 404, b"Challenge not found",
-				            [(b"content-type", b"text/plain; charset=utf-8")])
+				await _send(send, 404, b"Challenge not found", [(b"content-type", b"text/plain; charset=utf-8")])
 				return
 			key_auth = get_challenge_response(token, certs_dir)
 			if not key_auth:
 				_log.info("ACME_HTTP challenge token not found (len=%d)", len(token))
-				await _send(send, 404, b"Challenge not found",
-				            [(b"content-type", b"text/plain; charset=utf-8")])
+				await _send(send, 404, b"Challenge not found", [(b"content-type", b"text/plain; charset=utf-8")])
 				return
 			_log.info("ACME_HTTP served challenge over plaintext listener")
-			await _send(send, 200, key_auth.encode("utf-8"),
-			            [(b"content-type", b"text/plain; charset=utf-8")])
+			await _send(send, 200, key_auth.encode("utf-8"), [(b"content-type", b"text/plain; charset=utf-8")])
 			return
 
 		# Everything else: point the client at the configured HTTPS origin.
@@ -110,13 +107,17 @@ def build_acme_http_app(
 		target = f"{redirect_origin}{quote(path)}"
 		if query:
 			if "\r" in query or "\n" in query:
-				await _send(send, 400, b"Invalid query string",
-				            [(b"content-type", b"text/plain; charset=utf-8")])
+				await _send(send, 400, b"Invalid query string", [(b"content-type", b"text/plain; charset=utf-8")])
 				return
 			target = f"{target}?{query}"
-		await _send(send, 308, b"", [
-			(b"location", target.encode("latin-1")),
-			(b"content-length", b"0"),
-		])
+		await _send(
+			send,
+			308,
+			b"",
+			[
+				(b"location", target.encode("latin-1")),
+				(b"content-length", b"0"),
+			],
+		)
 
 	return app

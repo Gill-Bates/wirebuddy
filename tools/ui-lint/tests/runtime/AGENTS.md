@@ -11,7 +11,7 @@ Specs for runtime modules: browser runtime, DOM runtime/snapshots, runtime confi
 | File | Description |
 |---|---|
 | `browser-runtime.spec.js` | CLS helpers, console telemetry, stable screenshot diffs, `disableMotion` |
-| `dom-runtime.spec.js` | Loads the app's `core/dom.js` and `settings/components.js` from `/opt/wirebuddy/app/static/js` (XSS-safe element helper, render batching, delegated events) |
+| `dom-runtime.spec.js` | Loads the app's `core/dom.js` and `settings/components.js` from `/opt/wirebuddy/app/static/js` (`el`, `clearChildren`, `fragment`, delegated click handlers, settings component helpers) |
 | `dom-snapshot.spec.js` | Deterministic snapshot incl. shadow DOM |
 | `runtime-config-orchestration.spec.js` | Profiles, runtime context, legacy helpers |
 | `views-orchestration.spec.js` | Legacy matrices, plugin views, adaptive coverage |

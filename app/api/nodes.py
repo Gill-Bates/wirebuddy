@@ -135,6 +135,7 @@ class _NodePayloadBase(BaseModel):
 
 class NodeCreate(_NodePayloadBase):
 	"""Payload for creating a new remote node."""
+
 	name: str = Field(..., min_length=1, max_length=_NODE_NAME_MAX_LEN, description="Display name (e.g. 'Frankfurt')")
 	fqdn: str = Field(..., min_length=1, max_length=_FQDN_MAX_LEN, description="Public FQDN or IP address")
 	wg_port: int = Field(default=51820, ge=_PORT_MIN, le=_PORT_MAX, description="WireGuard listen port")
@@ -142,6 +143,7 @@ class NodeCreate(_NodePayloadBase):
 
 class NodeUpdate(_NodePayloadBase):
 	"""Payload for updating a node."""
+
 	name: str | None = Field(None, min_length=1, max_length=_NODE_NAME_MAX_LEN)
 	fqdn: str | None = Field(None, min_length=1, max_length=_FQDN_MAX_LEN)
 	wg_port: int | None = Field(None, ge=_PORT_MIN, le=_PORT_MAX)
@@ -355,11 +357,7 @@ def _get_latest_speedtests_by_node(
 		_log.warning("Failed to load speedtest data from TSDB", exc_info=True)
 	else:
 		all_latest = build_latest_by_node(points)
-		latest_by_node.update({
-			str(k): v
-			for k, v in all_latest.items()
-			if k is not None and (requested_ids is None or str(k) in requested_ids)
-		})
+		latest_by_node.update({str(k): v for k, v in all_latest.items() if k is not None and (requested_ids is None or str(k) in requested_ids)})
 
 	if requested_ids:
 		latest_by_node.update(get_node_speedtest_last_results(conn, requested_ids))
@@ -408,11 +406,7 @@ def _node_to_dict(
 		"node_version": node_version,
 		"last_speedtest": last_speedtest,
 		"show_on_dashboard": bool(row["show_on_dashboard"]),
-		"sse_connected": (
-			node_notifier.is_node_connected_sync(row["id"])
-			if row["status"] == _NODE_STATUS_ONLINE
-			else False
-		),
+		"sse_connected": (node_notifier.is_node_connected_sync(row["id"]) if row["status"] == _NODE_STATUS_ONLINE else False),
 	}
 
 
@@ -592,8 +586,11 @@ async def delete_node_endpoint(
 	if tunnel_peer_info:
 		public_key, interface_name = tunnel_peer_info
 		code, _, stderr = await run_wg_command(
-			"wg", "set", interface_name,
-			"peer", public_key,
+			"wg",
+			"set",
+			interface_name,
+			"peer",
+			public_key,
 			"remove",
 		)
 		if code == 0:
@@ -607,7 +604,9 @@ async def delete_node_endpoint(
 			if iface_code == 0:
 				_log.error(
 					"Refusing node delete: tunnel peer still active on WG: node=%s iface=%s err=%s",
-					node_id, interface_name, stderr.strip(),
+					node_id,
+					interface_name,
+					stderr.strip(),
 				)
 				raise HTTPException(
 					status_code=503,
@@ -615,7 +614,9 @@ async def delete_node_endpoint(
 				)
 			_log.warning(
 				"Tunnel peer removal skipped, interface %s is not active: node=%s err=%s",
-				interface_name, node_id, stderr.strip(),
+				interface_name,
+				node_id,
+				stderr.strip(),
 			)
 
 	# Send removal signal to node now that live access has been revoked

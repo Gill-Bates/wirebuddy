@@ -76,12 +76,32 @@ const clickTargetRule = RuleBuilder.accessibility(
         // Check interactive elements
         const targets = [];
         for (const el of snapshot.collections.interactive) {
+            // The snapshot nests these under semantic/accessibility (see
+            // lib/dom-runtime/snapshot/snapshot-engine.mjs). Reading them flat
+            // yielded undefined for every one, so no data-* discriminator ever
+            // reached the selector: every id-less control collapsed to its bare
+            // tag and inspectInteractionTargets re-measured the same first match.
+            const semantic = el.semantic || {};
+            const accessibility = el.accessibility || {};
+            const ariaLabel = el.attributes?.['aria-label'] ?? null;
+
             // Skip exceptions
             if (isInlineLink(el)) continue;
             if (isCompactException(el)) continue;
-            if (el.disabled) continue;
+            if (accessibility.disabled) continue;
 
-            const selector = buildInteractionSelector(el);
+            const selector = buildInteractionSelector({
+                tag: el.tag,
+                id: el.id,
+                role: el.role,
+                ariaLabel,
+                dataUiComponent: semantic.dataUiComponent,
+                dataAction: semantic.dataAction,
+                dataPeerId: semantic.dataPeerId,
+                dataNodeId: semantic.dataNodeId,
+                dataUiRole: semantic.dataUiRole,
+                dataUiImportance: semantic.dataUiImportance,
+            });
             if (!selector) continue;
 
             targets.push({
@@ -90,14 +110,14 @@ const clickTargetRule = RuleBuilder.accessibility(
                 id: el.id,
                 classList: el.classList,
                 role: el.role,
-                ariaLabel: el.ariaLabel,
-                dataAction: el.dataAction,
-                dataUiComponent: el.dataUiComponent,
-                dataUiDensity: el.dataUiDensity,
-                dataUiImportance: el.dataUiImportance,
-                dataUiRole: el.dataUiRole,
-                dataPeerId: el.dataPeerId,
-                dataNodeId: el.dataNodeId,
+                ariaLabel,
+                dataAction: semantic.dataAction,
+                dataUiComponent: semantic.dataUiComponent,
+                dataUiDensity: semantic.dataUiDensity,
+                dataUiImportance: semantic.dataUiImportance,
+                dataUiRole: semantic.dataUiRole,
+                dataPeerId: semantic.dataPeerId,
+                dataNodeId: semantic.dataNodeId,
                 rect: el.rect,
             });
         }

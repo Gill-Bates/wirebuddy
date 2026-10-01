@@ -26,7 +26,6 @@ _DIST_NAME = "wirebuddy"  # pyproject distribution name, for the installed fallb
 
 _VERSION_CACHE: str | None = None
 _BUILD_INFO_CACHE: str | None = None
-APP_NAME = "WireBuddy"
 GITHUB_REPO = "Gill-Bates/wirebuddy"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -45,7 +44,7 @@ def get_build_info() -> str:
 	if _BUILD_INFO_CACHE is not None:
 		return _BUILD_INFO_CACHE
 	try:
-		build_file = Path(__file__).resolve().parent.parent.parent / "BUILD_INFO"
+		build_file = _PROJECT_ROOT / "BUILD_INFO"
 		if not build_file.exists():
 			build_file = Path("/app/BUILD_INFO")
 		if build_file.exists():
@@ -114,6 +113,7 @@ BUILD_INFO = get_build_info()
 
 class UpdateInfo(TypedDict):
 	"""Update check result."""
+
 	update_available: bool
 	current_version: str
 	latest_version: str | None
@@ -131,12 +131,12 @@ def _parse_version(version_str: str) -> tuple[int, ...]:
 	if not version_str:
 		return (0,)
 	# Remove 'v' prefix if present
-	clean = version_str.lstrip('v').strip()
+	clean = version_str.lstrip("v").strip()
 	# Extract numeric parts
-	match = re.match(r'^(\d+(?:\.\d+)*)', clean)
+	match = re.match(r"^(\d+(?:\.\d+)*)", clean)
 	if not match:
 		return (0,)
-	parts = match.group(1).split('.')
+	parts = match.group(1).split(".")
 	# Pad to a fixed width so '1.2' and '1.2.0' compare equal instead of the
 	# shorter tuple sorting first.
 	numbers = [int(p) for p in parts][:3]
@@ -193,6 +193,7 @@ def check_for_updates(force: bool = False) -> UpdateInfo:
 		return result
 
 	import httpx
+
 	try:
 		with httpx.Client(timeout=httpx.Timeout(_TIMEOUT)) as client:
 			response = client.get(

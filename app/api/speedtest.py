@@ -105,9 +105,7 @@ def _prune_speedtest_stream_sessions(sessions: dict[str, _SpeedtestStreamSession
 	"""Drop finished sessions after a short grace window."""
 	now = utcnow()
 	expired_ids = [
-		stream_id
-		for stream_id, session in sessions.items()
-		if session.finished_at is not None and now - session.finished_at > SPEEDTEST_STREAM_SESSION_TTL
+		stream_id for stream_id, session in sessions.items() if session.finished_at is not None and now - session.finished_at > SPEEDTEST_STREAM_SESSION_TTL
 	]
 	for stream_id in expired_ids:
 		sessions.pop(stream_id, None)
@@ -201,8 +199,10 @@ async def _stream_speedtest_session(
 	finally:
 		session.subscribers.discard(queue)
 
+
 class SpeedtestSettingsPayload(BaseModel):
 	"""Payload for updating speedtest settings."""
+
 	enabled: bool | None = None
 
 
@@ -331,10 +331,12 @@ async def get_speedtest_settings(
 	except TimeoutError:
 		_log.warning("SPEEDTEST_SETTINGS_READ_TIMEOUT")
 		raise HTTPException(status_code=504, detail="Timed out reading speedtest settings") from None
-	return ok_response(data={
-		"enabled": get_speedtest_enabled(conn),
-		"last_result": last_result,
-	})
+	return ok_response(
+		data={
+			"enabled": get_speedtest_enabled(conn),
+			"last_result": last_result,
+		}
+	)
 
 
 @router.patch("/speedtest/settings")
@@ -570,11 +572,13 @@ async def get_speedtest_history(
 		entry["ts"] = pt.ts.isoformat()
 		history.append(entry)
 
-	return ok_response(data={
-		"history": history,
-		"limit": limit,
-		"truncated": truncated,
-	})
+	return ok_response(
+		data={
+			"history": history,
+			"limit": limit,
+			"truncated": truncated,
+		}
+	)
 
 
 @router.get("/speedtest/nodes")
@@ -638,12 +642,14 @@ async def get_speedtest_nodes(
 	# Master entry
 	if master_last is None:
 		master_last = latest_by_node.get(None)
-	result.append({
-		"node_id": None,
-		"name": "Master",
-		"status": "online",
-		"last_speedtest": master_last,
-	})
+	result.append(
+		{
+			"node_id": None,
+			"name": "Master",
+			"status": "online",
+			"last_speedtest": master_last,
+		}
+	)
 
 	# Node entries
 	for n in nodes:
@@ -651,18 +657,21 @@ async def get_speedtest_nodes(
 		node_last = last_results_by_node.get(node_id)
 		if node_last is None:
 			node_last = latest_by_node.get(node_id)
-		result.append({
-			"node_id": n["id"],
-			"name": n["name"],
-			"status": n["status"],
-			"last_speedtest": node_last,
-		})
+		result.append(
+			{
+				"node_id": n["id"],
+				"name": n["name"],
+				"status": n["status"],
+				"last_speedtest": node_last,
+			}
+		)
 
 	return ok_response(data={"nodes": result})
 
 
 class SpeedtestRetentionPayload(BaseModel):
 	"""Payload for updating speedtest retention settings."""
+
 	retention_days: int
 
 	@field_validator("retention_days")
@@ -694,11 +703,13 @@ async def get_speedtest_storage_stats(
 		_log.warning("SPEEDTEST_STORAGE_STATS_TIMEOUT")
 		raise HTTPException(status_code=504, detail="Timed out reading speedtest storage stats") from None
 
-	return ok_response(data={
-		**stats,
-		"retention_days": get_speedtest_retention_days(conn),
-		"retention_options": list(SPEEDTEST_RETENTION_OPTIONS),
-	})
+	return ok_response(
+		data={
+			**stats,
+			"retention_days": get_speedtest_retention_days(conn),
+			"retention_options": list(SPEEDTEST_RETENTION_OPTIONS),
+		}
+	)
 
 
 @router.patch("/speedtest/storage/retention")
@@ -722,9 +733,11 @@ async def update_speedtest_retention(
 	except sqlite3.OperationalError:
 		_log.exception("SPEEDTEST_RETENTION_UPDATE_FAILED")
 		raise HTTPException(status_code=500, detail="Failed to persist speedtest retention") from None
-	return ok_response(data={
-		"retention_days": result_days,
-	})
+	return ok_response(
+		data={
+			"retention_days": result_days,
+		}
+	)
 
 
 @router.delete("/speedtest/storage")

@@ -58,20 +58,19 @@ from .db.sqlite_runtime import (
 	close_all_connections,
 	close_connection,
 	connect,
+	db_call,
+	db_call_or,
 )
 from .db.sqlite_schema import ensure_default_admin, init_schema, insert_default_settings
 from .db.sqlite_settings import (
 	DEFAULT_DNS_LOG_RETENTION_DAYS,
 	get_dns_blocklist_enabled,
-	get_dns_custom_rules,
 	get_dns_log_retention_days,
 	get_dns_query_logging_enabled,
 	get_dns_service_enabled,
 	get_dns_upstream_servers,
 	get_dnssec_enabled,
-	get_enabled_blocklists,
 	get_setting,
-	get_tsdb_retention_days,
 	recover_missing_global_settings,
 	validate_secret_key,
 )
@@ -80,8 +79,14 @@ from .dns.unbound_constants import atomic_write_text
 from .node.events import NodeEventBus
 from .node.notifier import configure_event_bus
 from .tasks import scheduled as scheduled_tasks
+from .tasks.db_inputs import (
+	load_blocklist_update_inputs_sync,
+	read_dns_retention_days_sync,
+	should_unbound_run_sync,
+)
 from .utils import migration
 from .utils.banner import print_banner_once
+from .utils.binaries import first_executable
 from .utils.config import WG_CONFIG_PATH, Config, load_config
 from .utils.rate_limit import limiter
 from .utils.request_id import RequestIDMiddleware
@@ -105,6 +110,7 @@ class LifespanContext:
 	This dataclass centralizes all state that needs to be shared between
 	bootstrap, startup, and shutdown phases of the application lifecycle.
 	"""
+
 	cfg: Config
 	app: FastAPI
 	interfaces_to_start: list[str] = field(default_factory=list)
@@ -125,11 +131,11 @@ _IFACE_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,14}$")
 
 # ANSI color codes for log levels (if TTY)
 _LOG_COLORS = {
-	"DEBUG": "\033[36m",    # Cyan
-	"INFO": "\033[32m",     # Green
+	"DEBUG": "\033[36m",  # Cyan
+	"INFO": "\033[32m",  # Green
 	"WARNING": "\033[33m",  # Yellow
-	"ERROR": "\033[31m",    # Red
-	"CRITICAL": "\033[35m", # Magenta
+	"ERROR": "\033[31m",  # Red
+	"CRITICAL": "\033[35m",  # Magenta
 }
 _RESET = "\033[0m"
 _DOCKER_ENV_FILE = Path("/.dockerenv")
@@ -137,28 +143,20 @@ _WG_CHECK_TIMEOUT_SECONDS = 5.0
 _WG_UP_TIMEOUT_SECONDS = 15.0
 _WG_DOWN_TIMEOUT_SECONDS = 15.0
 _WG_STARTUP_CONCURRENCY = 4  # Start up to 4 interfaces in parallel
-_TSDB_SAMPLE_INTERVAL_SECONDS = 30.0
-_BLOCKLIST_UPDATE_INTERVAL_SECONDS = 86400.0
-_TSDB_MAINTENANCE_INTERVAL_SECONDS = 21600
-_BOOTSTRAP_GATE_ALLOWED_EXACT_PATHS = frozenset({
-	"/",
-	"/health",
-	"/ready",
-	"/login",
-	"/api/login",
-	"/api/logout",
-	"/api/system/status",
-	"/api/passkeys/available",
-	"/api/users/me/complete-required-change",
-})
+_BOOTSTRAP_GATE_ALLOWED_EXACT_PATHS = frozenset(
+	{
+		"/",
+		"/health",
+		"/ready",
+		"/login",
+		"/api/login",
+		"/api/logout",
+		"/api/system/status",
+		"/api/passkeys/available",
+		"/api/users/me/complete-required-change",
+	}
+)
 _BOOTSTRAP_GATE_ALLOWED_PREFIXES = ("/static/",)
-_GEOIP_UPDATE_INTERVAL_SECONDS = 604800
-_SQLITE_MAINTENANCE_INTERVAL_SECONDS = 21600
-_SQLITE_INTEGRITY_INTERVAL_SECONDS = 604800
-_TSDB_RETENTION_INTERVAL_SECONDS = 86400
-_SESSION_CLEANUP_INTERVAL_SECONDS = 3600
-_DNS_WATCHDOG_INTERVAL_SECONDS = 30
-_ADBLOCKER_TIMER_CHECK_INTERVAL_SECONDS = 15
 _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS = 2.0
 _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS = 300.0
 _APP_SHUTDOWN_TIMEOUT_SECONDS = 30.0
@@ -176,14 +174,22 @@ _DNS_INGESTION_MAX_BACKOFF_EXPONENT = 8  # 2**8 * base already exceeds the max d
 # so a tampered or writable ``PATH`` entry cannot substitute another binary that
 # then runs with this process' network capabilities.
 _IP_BIN_CANDIDATES = (
-	Path("/usr/sbin/ip"), Path("/sbin/ip"), Path("/usr/bin/ip"), Path("/bin/ip"),
+	Path("/usr/sbin/ip"),
+	Path("/sbin/ip"),
+	Path("/usr/bin/ip"),
+	Path("/bin/ip"),
 )
 _WG_BIN_CANDIDATES = (
-	Path("/usr/bin/wg"), Path("/usr/local/bin/wg"), Path("/bin/wg"),
+	Path("/usr/bin/wg"),
+	Path("/usr/local/bin/wg"),
+	Path("/bin/wg"),
 )
 _WG_QUICK_BIN_CANDIDATES = (
-	Path("/usr/bin/wg-quick"), Path("/usr/local/bin/wg-quick"),
-	Path("/usr/sbin/wg-quick"), Path("/sbin/wg-quick"), Path("/bin/wg-quick"),
+	Path("/usr/bin/wg-quick"),
+	Path("/usr/local/bin/wg-quick"),
+	Path("/usr/sbin/wg-quick"),
+	Path("/sbin/wg-quick"),
+	Path("/bin/wg-quick"),
 )
 
 
@@ -198,9 +204,9 @@ def _resolve_trusted_binary(candidates: tuple[Path, ...]) -> str:
 	enforced at actual startup instead, by :func:`_require_trusted_binaries`,
 	which the lifespan calls before anything privileged runs.
 	"""
-	for candidate in candidates:
-		if candidate.is_file() and os.access(candidate, os.X_OK):
-			return str(candidate)
+	resolved = first_executable(candidates)
+	if resolved is not None:
+		return resolved
 	_log.warning(
 		"No trusted absolute path found for %s; falling back to PATH lookup",
 		candidates[0].name,
@@ -224,10 +230,7 @@ def _require_trusted_binaries() -> None:
 	"""
 	if os.getenv("WIREBUDDY_SKIP_NETWORK_CHECK", "").lower() in ("1", "true", "yes"):
 		return
-	unresolved = [
-		name for name, resolved in (("ip", _IP_BIN), ("wg", _WG_BIN), ("wg-quick", _WG_QUICK_BIN))
-		if not resolved.startswith("/")
-	]
+	unresolved = [name for name, resolved in (("ip", _IP_BIN), ("wg", _WG_BIN), ("wg-quick", _WG_QUICK_BIN)) if not resolved.startswith("/")]
 	if unresolved:
 		raise StartupFatalError(
 			f"No trusted absolute path found for: {', '.join(unresolved)}. "
@@ -246,9 +249,7 @@ def _env_flag(name: str) -> bool:
 	return os.getenv(name, "").strip().lower() in {"1", "true", "yes"}
 
 
-def _resolve_allowed_hosts(
-	raw_allowed_hosts: str, public_origin_hostname: str | None
-) -> tuple[list[str], bool]:
+def _resolve_allowed_hosts(raw_allowed_hosts: str, public_origin_hostname: str | None) -> tuple[list[str], bool]:
 	"""Resolve the Host-header allowlist.
 
 	Returns ``(hosts, derived)`` where ``derived`` is True when the list came
@@ -295,8 +296,7 @@ def _acquire_application_lock(data_dir: Path) -> int | None:
 		return None
 	if os.getenv("WIREBUDDY_SKIP_APPLICATION_LOCK", "").strip().lower() in ("1", "true", "yes"):
 		_log.warning(
-			"Application lock skipped (WIREBUDDY_SKIP_APPLICATION_LOCK is set) - "
-			"running more than one control plane against %s will not be detected",
+			"Application lock skipped (WIREBUDDY_SKIP_APPLICATION_LOCK is set) - running more than one control plane against %s will not be detected",
 			data_dir,
 		)
 		return None
@@ -324,8 +324,7 @@ def _acquire_application_lock(data_dir: Path) -> int | None:
 			if time.monotonic() >= deadline:
 				os.close(fd)
 				raise StartupFatalError(
-					f"Another WireBuddy control plane is already running against {data_dir}. "
-					"Run exactly one application process (deploy with --workers 1)."
+					f"Another WireBuddy control plane is already running against {data_dir}. Run exactly one application process (deploy with --workers 1)."
 				) from None
 			time.sleep(0.2)
 		except OSError as exc:
@@ -360,6 +359,7 @@ def _make_shutdown_handler(
 	previous_handler: object,
 ) -> Callable[[int, object], None]:
 	"""Build a signal handler that preserves the previous handler chain."""
+
 	def _handler(signum: int, frame: object) -> None:
 		loop.call_soon_threadsafe(shutdown_event.set)
 		if previous_handler in (None, signal.SIG_DFL, signal.SIG_IGN, signal.default_int_handler):
@@ -427,8 +427,6 @@ _DOCKER_BRIDGE_NETWORKS = (
 )
 
 
-
-
 async def _verify_host_network_mode() -> None:
 	"""Exit if running in Docker without network_mode: host.
 
@@ -485,10 +483,7 @@ async def _verify_host_network_mode() -> None:
 			except ValueError:
 				continue
 			if any(gateway_ip in network for network in _DOCKER_BRIDGE_NETWORKS):
-				_log.critical(
-					"WireBuddy requires Docker host networking mode. "
-					"Set 'network_mode: host' in your Docker configuration and try again."
-				)
+				_log.critical("WireBuddy requires Docker host networking mode. Set 'network_mode: host' in your Docker configuration and try again.")
 				raise StartupFatalError("WireBuddy requires Docker host networking mode")
 
 		if not saw_default_route:
@@ -496,8 +491,7 @@ async def _verify_host_network_mode() -> None:
 			# condition this check guards against, detected above); do not
 			# fail closed on it.
 			_log.warning(
-				"Could not verify Docker network mode: no default route found. "
-				"Ensure 'network_mode: host' is set if this container should reach the LAN."
+				"Could not verify Docker network mode: no default route found. Ensure 'network_mode: host' is set if this container should reach the LAN."
 			)
 
 	except StartupFatalError:
@@ -515,13 +509,11 @@ async def _verify_host_network_mode() -> None:
 
 def _load_managed_interface_names_sync(db_path: Path) -> set[str]:
 	"""Return the set of WireGuard interface names known to the WireBuddy DB."""
+
 	def _load(conn) -> set[str]:
-		return {
-			str(iface["name"])
-			for iface in list_interfaces(conn)
-			if _IFACE_NAME_RE.match(str(iface["name"]))
-		}
-	return _with_conn(db_path, _load)
+		return {str(iface["name"]) for iface in list_interfaces(conn) if _IFACE_NAME_RE.match(str(iface["name"]))}
+
+	return db_call(db_path, _load)
 
 
 async def _cleanup_stale_interfaces(ctx: LifespanContext) -> list[str]:
@@ -536,10 +528,7 @@ async def _cleanup_stale_interfaces(ctx: LifespanContext) -> list[str]:
 	removed: list[str] = []
 	config_path = WG_CONFIG_PATH
 	if not getattr(ctx.app.state, "auto_cleanup_stale_interfaces", False):
-		_log.info(
-			"Stale WireGuard interface cleanup disabled; set "
-			"WIREBUDDY_CLEANUP_STALE_INTERFACES=1 to enable destructive cleanup"
-		)
+		_log.info("Stale WireGuard interface cleanup disabled; set WIREBUDDY_CLEANUP_STALE_INTERFACES=1 to enable destructive cleanup")
 		return removed
 
 	try:
@@ -616,6 +605,7 @@ async def _cleanup_stale_interfaces(ctx: LifespanContext) -> list[str]:
 
 def _humanize_aiosqlite_message(message: str) -> str:
 	"""Rewrite low-signal aiosqlite debug messages into readable text."""
+
 	def _describe_operation(operation: str) -> tuple[str, str]:
 		known_operations = (
 			("built-in method close of sqlite3.Connection", "closing SQLite connection", "SQLite connection closed"),
@@ -637,13 +627,13 @@ def _humanize_aiosqlite_message(message: str) -> str:
 		return "running SQLite background operation", "SQLite background operation completed"
 
 	if message.startswith("executing "):
-		active_text, _ = _describe_operation(message[len("executing "):])
+		active_text, _ = _describe_operation(message[len("executing ") :])
 		return active_text
 	if message.startswith("operation ") and message.endswith(" completed"):
-		_, done_text = _describe_operation(message[len("operation "):-len(" completed")])
+		_, done_text = _describe_operation(message[len("operation ") : -len(" completed")])
 		return done_text
 	if message.startswith("returning exception "):
-		return f"SQLite background operation failed: {message[len('returning exception '):]}"
+		return f"SQLite background operation failed: {message[len('returning exception ') :]}"
 	return message
 
 
@@ -685,86 +675,23 @@ class _ColoredFormatter(_HumanizedFormatter):
 		return logging.Formatter.format(self, record)
 
 
-def _extract_gateways(interfaces: list) -> tuple[list[str], list[str]]:
-	"""Extract unique IPv4 and IPv6 gateways from a list of interfaces."""
-	listen_addrs_ipv4: list[str] = []
-	for iface in interfaces:
-		addr4 = _get_addr_field(iface, "address")
-		if not addr4:
-			continue
-		raw_ip = str(addr4).split("/", 1)[0].strip()
+def _purge_staged_interface_configs(config_path: Path) -> None:
+	"""Remove leftover ``.<name>.conf.deleting`` files from an interface delete.
+
+	Interface deletion stages the config file under this name and only unlinks it
+	after the database commits. A crash or a failing unlink can leave the file
+	behind, and it holds the decrypted WireGuard private key, so a successful
+	delete must not leave it readable on disk indefinitely.
+	"""
+	if not config_path.is_dir():
+		return
+	for staged in config_path.glob(".*.conf.deleting"):
 		try:
-			ip = ipaddress.ip_address(raw_ip)
-		except ValueError:
-			_log.warning("Ignoring invalid interface IPv4 address: %r", addr4)
-			continue
-		if ip.version != 4:
-			continue
-		ip4 = str(ip)
-		if ip4 not in listen_addrs_ipv4:
-			listen_addrs_ipv4.append(ip4)
-	return listen_addrs_ipv4, unbound.get_interface_ipv6_gateways(interfaces)
-
-
-
-
-def _parse_wg_dump_counters(stdout: str) -> dict[str, tuple[int, int, int]]:
-	"""Parse `wg show all dump` and return counters per public key.
-
-	Returns:
-		Dict[public_key] -> (rx_bytes, tx_bytes, latest_handshake_ts)
-	"""
-	peers: dict[str, tuple[int, int, int]] = {}
-	last_iface: str | None = None
-
-	for line in stdout.strip().splitlines():
-		if not line:
-			continue
-		parts = line.split("\t")
-
-		# Interface header from `wg show all dump` has exactly 5 columns:
-		# iface, private-key, public-key, listen-port, fwmark
-		if len(parts) == 5:
-			last_iface = parts[0] or last_iface
-			continue
-
-		public_key: str | None = None
-		latest_handshake = 0
-		rx = 0
-		tx = 0
-
-		# `wg show all dump` always emits 9-column peer lines:
-		# iface, pubkey, psk, endpoint, allowed-ips, hs, rx, tx, keepalive
-		# (issue #5: the old 8-column branch read wrong columns for rx/tx).
-		if len(parts) >= 9:
-			iface = parts[0] if parts[0] else last_iface
-			if iface:
-				last_iface = iface
-			public_key = parts[1]
-			latest_handshake = _safe_int(parts[5])
-			rx = _safe_int(parts[6])
-			tx = _safe_int(parts[7])
-
-		if not public_key:
-			_log.debug("Malformed wg dump row ignored: %r", line)
-			continue
-		peers[public_key] = (rx, tx, latest_handshake)
-
-	return peers
-
-
-def _get_addr_field(iface: object, key: str) -> str | None:
-	"""Get address from sqlite3.Row or dict.
-
-	Needed because list_interfaces() returns sqlite3.Row objects which
-	support both index and attribute access, but not all downstream code
-	handles both consistently. Remove when data layer returns typed dicts.
-	"""
-	try:
-		return iface[key]  # type: ignore[index]
-	except (KeyError, TypeError, IndexError):
-		pass
-	return getattr(iface, key, None)
+			staged.unlink()
+		except OSError:
+			_log.warning("Failed to remove staged interface config %s", staged.name)
+		else:
+			_log.warning("STAGED_CONFIG_PURGED file=%s (leftover from an interrupted delete)", staged.name)
 
 
 def _bootstrap_sync(cfg: Config) -> tuple[list[str], bool, bool]:
@@ -813,6 +740,9 @@ def _bootstrap_sync(cfg: Config) -> tuple[list[str], bool, bool]:
 
 		# Regenerate WireGuard configs from database (persistence across restarts)
 		from .api.wireguard_config import regenerate_all_configs
+
+		_purge_staged_interface_configs(WG_CONFIG_PATH)
+
 		regen_result = regenerate_all_configs(WG_CONFIG_PATH, conn, pepper=cfg.secret_key)
 		if regen_result.succeeded:
 			_log.info("WireGuard configs regenerated: %d interfaces", len(regen_result.succeeded))
@@ -856,15 +786,6 @@ def _load_dns_startup_data_sync(db_path: Path) -> dict[str, object]:
 			"interfaces": list_interfaces(conn),
 			"wg_fqdn": get_setting(conn, "wg_fqdn"),
 		}
-	finally:
-		close_connection(conn)
-
-
-def _load_blocklist_update_inputs_sync(db_path: Path) -> tuple[list[str], str]:
-	"""Load blocklist URLs and custom DNS rules synchronously."""
-	conn = connect(db_path)
-	try:
-		return get_enabled_blocklists(conn), get_dns_custom_rules(conn)
 	finally:
 		close_connection(conn)
 
@@ -914,182 +835,9 @@ def _regenerate_peer_tags_sync(db_path: Path) -> int:
 		close_connection(conn)
 
 
-def _with_conn(db_path: Path, fn: Callable, *args, **kwargs):
-	"""Run fn(conn, *args, **kwargs) with connect/close lifecycle.
-
-	Eliminates boilerplate connect/try/finally/close_connection pattern.
-	"""
-	conn = connect(db_path)
-	try:
-		return fn(conn, *args, **kwargs)
-	finally:
-		close_connection(conn)
-
-
-def _with_conn_or(db_path: Path, fn: Callable, *args, default=None, **kwargs):
-	"""Like _with_conn but returns default for transient OS/runtime failures.
-
-	``sqlite3.DatabaseError`` and ``ValueError`` are re-raised so database
-	corruption, persistent locking problems and programming errors do not get
-	silently masked in watchdog-style checks.
-	"""
-	try:
-		return _with_conn(db_path, fn, *args, **kwargs)
-	except sqlite3.DatabaseError:
-		raise
-	except ValueError:
-		raise
-	except (OSError, RuntimeError) as exc:
-		_log.warning("%s failed, returning default: %s", fn.__name__, exc)
-		return default
-
-
-def _read_dns_retention_days_sync(db_path: Path) -> int:
-	"""Read DNS retention days synchronously."""
-	return _with_conn(db_path, get_dns_log_retention_days)
-
-
 def _read_dns_logging_disabled_ips_sync(db_path: Path) -> set[str]:
 	"""Read peer IPs that opted out of DNS query logging synchronously."""
-	return _with_conn_or(db_path, get_dns_logging_disabled_ips, default=set())
-
-
-def _read_tsdb_retention_days_sync(db_path: Path) -> int:
-	"""Read TSDB retention days synchronously."""
-	return _with_conn(db_path, get_tsdb_retention_days)
-
-
-def _read_speedtest_retention_days_sync(db_path: Path) -> int:
-	"""Read speedtest retention days synchronously."""
-	from .db.sqlite_settings import get_speedtest_retention_days
-	return _with_conn(db_path, get_speedtest_retention_days)
-
-
-def _should_unbound_run_sync(db_path: Path) -> bool:
-	"""Check if Unbound should be running (DNS enabled AND interfaces exist)."""
-	def _check(conn) -> bool:
-		if not get_dns_service_enabled(conn):
-			return False
-		# Check if any WireGuard interfaces exist (Unbound needs IPs to bind to)
-		interfaces = list_interfaces(conn)
-		return len(interfaces) > 0
-	return _with_conn_or(db_path, _check, default=False)
-
-
-def _read_blocklist_enabled_sync(db_path: Path) -> bool:
-	"""Read whether DNS blocklist is enabled synchronously."""
-	return _with_conn_or(db_path, get_dns_blocklist_enabled, default=False)
-
-
-def _read_country_traffic_inputs_sync(db_path: Path) -> tuple[bool, dict[str, str]]:
-	"""Load traffic-analysis enabled flag and peer IP map synchronously."""
-	from .db.sqlite_peers import get_all_peers
-
-	def _load(conn) -> tuple[bool, dict[str, str]]:
-		enabled_str = get_setting(conn, "traffic_analysis_enabled")
-		# Only enabled if explicitly set to "1" (default factory setting is "0")
-		if enabled_str != "1":
-			return False, {}
-
-		all_peers = get_all_peers(conn)
-		# peer_address can be dual-stack: "10.13.13.2/32, fd13:13:13::2/128"
-		peer_ip_map: dict[str, str] = {}
-		for peer in all_peers:
-			addr = peer["peer_address"]
-			name = peer["name"]
-			if addr and name:
-				for raw_part in str(addr).split(","):
-					part = raw_part.strip()
-					if not part:
-						continue
-					# Strip CIDR suffix (e.g., 10.13.13.2/32 → 10.13.13.2)
-					peer_ip_map[part.split("/")[0]] = name
-		return True, peer_ip_map
-
-	return _with_conn(db_path, _load)
-
-
-def _load_peer_identity_map_sync(db_path: Path, public_keys: list[str]) -> dict[str, tuple[str, str]]:
-	"""Resolve peer name/interface by public key synchronously."""
-	wanted = set(public_keys)
-
-	def _resolve(conn) -> dict[str, tuple[str, str]]:
-		result: dict[str, tuple[str, str]] = {}
-		for peer_row in get_all_peers(conn):
-			public_key = peer_row["public_key"]
-			if public_key in wanted:
-				result[public_key] = (peer_row["name"], peer_row["interface"])
-		return result
-
-	return _with_conn(db_path, _resolve)
-
-
-def _check_adblocker_timer_sync(db_path: Path) -> bool:
-	"""Check and re-enable adblocker if timer expired. Returns True if re-enabled."""
-	from .api.wireguard_peers import regenerate_all_peer_tags
-	from .db.sqlite_runtime import transaction
-	from .db.sqlite_settings import (
-		clear_blocklist_disabled_until,
-		get_blocklist_disabled_until,
-		get_dns_blocklist_enabled,
-		set_dns_blocklist_enabled,
-	)
-
-	def _check(conn) -> bool:
-		# Read-only check first - avoid write lock if not needed
-		disabled_until = get_blocklist_disabled_until(conn)
-		enabled = get_dns_blocklist_enabled(conn)
-		now = int(time.time())
-
-		if disabled_until > 0 and disabled_until <= now and not enabled:
-			# Timer expired and blocklist is still disabled - need to re-enable
-			with transaction(conn, immediate=True):
-				set_dns_blocklist_enabled(conn, True)
-				clear_blocklist_disabled_until(conn)
-				regenerate_all_peer_tags(conn)
-			return True
-		return False
-
-	return _with_conn(db_path, _check)
-
-
-async def _reload_unbound_for_adblocker_async(db_path: Path) -> None:
-	"""Reload Unbound config after adblocker state change.
-
-	All DB access is done synchronously via to_thread to avoid
-	sharing a connection across await boundaries.
-	"""
-	try:
-		# Read all config values in one sync call
-		def _read_unbound_config_sync() -> tuple:
-			conn = connect(db_path)
-			try:
-				enable_logging = get_dns_query_logging_enabled(conn)
-				enable_blocklist = get_dns_blocklist_enabled(conn)
-				upstream_dns = get_dns_upstream_servers(conn)
-				dnssec_enabled = get_dnssec_enabled(conn)
-				interfaces = list_interfaces(conn)
-				return (enable_logging, enable_blocklist, upstream_dns, dnssec_enabled, interfaces)
-			finally:
-				close_connection(conn)
-
-		enable_logging, enable_blocklist, upstream_dns, dnssec_enabled, interfaces = await asyncio.to_thread(_read_unbound_config_sync)
-
-		ipv4_gateways, ipv6_gateways = _extract_gateways(interfaces)
-
-		# Offload sync file I/O to thread
-		await asyncio.to_thread(
-			unbound.write_config,
-			enable_logging=enable_logging,
-			enable_blocklist=enable_blocklist,
-			upstream_dns=upstream_dns,
-			enable_dnssec=dnssec_enabled,
-			listen_addrs_ipv4=ipv4_gateways,
-			listen_addrs_ipv6=ipv6_gateways if ipv6_gateways else None,
-		)
-		await unbound.reload_config()
-	except Exception:
-		_log.warning("ADBLOCKER_TIMER failed to reload Unbound", exc_info=True)
+	return db_call_or(db_path, get_dns_logging_disabled_ips, default=set())
 
 
 def _sqlite_shutdown_sync(db_path: Path) -> tuple[dict[str, int | str | None], int]:
@@ -1251,6 +999,7 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 	# the total budget; any interface that doesn't get a turn within it is
 	# left running and logged, not awaited past the deadline.
 	if ctx.started_interfaces:
+
 		async def _stop_one(iface_name: str) -> None:
 			try:
 				async with _get_wg_operation_lock():
@@ -1297,7 +1046,6 @@ async def _do_shutdown(ctx: LifespanContext) -> None:
 	_log.info("WireBuddy shutdown complete")
 
 
-
 async def _phase_bootstrap(ctx: LifespanContext) -> None:
 	cfg, app = ctx.cfg, ctx.app
 	interfaces_to_start, key_mismatch, bootstrap_admin_created = await asyncio.to_thread(_bootstrap_sync, cfg)
@@ -1310,6 +1058,7 @@ async def _phase_bootstrap(ctx: LifespanContext) -> None:
 		# Clean exit via StartupFatalError to allow cleanup/logging
 		raise StartupFatalError("WIREBUDDY_SECRET_KEY mismatch")
 	from .db import tsdb
+
 	await asyncio.to_thread(tsdb.init_tsdb, cfg.tsdb_dir)
 	_log.info("GeoIP init scheduled in background (startup is non-blocking)")
 
@@ -1334,6 +1083,7 @@ async def _continue_operational_startup(ctx: LifespanContext) -> None:
 	ctx.app.state.bootstrap_gate_completed = True
 	_log.info("WireBuddy operational startup complete (pid=%d)", os.getpid())
 
+
 async def _phase_dns_config(ctx: LifespanContext) -> None:
 	ctx.dns_config_ready = False
 	ctx.dns_config_error = None
@@ -1349,7 +1099,8 @@ async def _phase_dns_config(ctx: LifespanContext) -> None:
 				ctx.app.state.dns_config_error = ctx.dns_config_error
 			return
 		interfaces = dns_data.get("interfaces", [])
-		listen_addrs_ipv4, listen_addrs_ipv6 = _extract_gateways(interfaces)
+		listen_addrs_ipv4 = unbound.get_interface_ipv4_gateways(interfaces)
+		listen_addrs_ipv6 = unbound.get_interface_ipv6_gateways(interfaces)
 		if not listen_addrs_ipv4 and not listen_addrs_ipv6:
 			_log.info("DNS init skipped: no WireGuard interface addresses configured yet")
 		else:
@@ -1367,6 +1118,7 @@ async def _phase_dns_config(ctx: LifespanContext) -> None:
 			_log.debug("DNS peer tags regenerated for %d peers", peer_count)
 			dns_retention_days = _safe_int(dns_data.get("dns_retention_days"), DEFAULT_DNS_LOG_RETENTION_DAYS)
 			from .dns import ingestion as dns_ingestion
+
 			await asyncio.to_thread(dns_ingestion.enforce_dns_log_retention, ctx.cfg.dns_dir, dns_retention_days)
 			_log.info(
 				"DNS config written (IPv4: %s, IPv6: %s)",
@@ -1374,10 +1126,11 @@ async def _phase_dns_config(ctx: LifespanContext) -> None:
 				", ".join(listen_addrs_ipv6) if listen_addrs_ipv6 else "none",
 			)
 			from .dns.unbound_blocklist import check_and_reset_stale_blocklist
+
 			if await asyncio.to_thread(check_and_reset_stale_blocklist):
 				_log.info("Blocklist reset due to tag migration - triggering immediate update")
 				try:
-					bl_urls, bl_custom_rules = await asyncio.to_thread(_load_blocklist_update_inputs_sync, ctx.cfg.db_path)
+					bl_urls, bl_custom_rules = await asyncio.to_thread(load_blocklist_update_inputs_sync, ctx.cfg.db_path)
 					_, msg = await unbound.update_blocklists(bl_urls, custom_rules_text=bl_custom_rules)
 					_log.info("BLOCKLIST_MIGRATION %s", msg)
 				except Exception as exc:
@@ -1395,12 +1148,14 @@ async def _phase_dns_config(ctx: LifespanContext) -> None:
 		ctx.app.state.dns_config_error = ctx.dns_config_error
 		_log.exception("DNS config failed")
 
+
 async def _phase_wireguard_start(ctx: LifespanContext) -> None:
 	removed_stale = await _cleanup_stale_interfaces(ctx)
 	if removed_stale:
 		_log.info("Cleaned up %d stale interface(s): %s", len(removed_stale), removed_stale)
 	if not ctx.interfaces_to_start:
 		return
+
 	async def _start_one(iface_name: str) -> str | None:
 		try:
 			check_res = await run_command(_WG_BIN, "show", iface_name, timeout=_WG_CHECK_TIMEOUT_SECONDS)
@@ -1421,12 +1176,16 @@ async def _phase_wireguard_start(ctx: LifespanContext) -> None:
 		except Exception as e:
 			_log.warning("Failed to start interface %s: %s", iface_name, e)
 			return None
+
 	sem = asyncio.Semaphore(_WG_STARTUP_CONCURRENCY)
+
 	async def _start_guarded(iface_name: str) -> str | None:
 		async with sem:
 			return await _start_one(iface_name)
+
 	results = await asyncio.gather(*[_start_guarded(name) for name in ctx.interfaces_to_start])
 	ctx.started_interfaces = [r for r in results if r]
+
 
 async def _phase_dns_start(ctx: LifespanContext) -> None:
 	if unbound.is_unbound_installed() and ctx.dns_config_ready:
@@ -1453,12 +1212,14 @@ async def _phase_dns_start(ctx: LifespanContext) -> None:
 		except Exception:
 			_log.exception("DNS start failed")
 
+
 async def _phase_scheduler(ctx: LifespanContext) -> None:
 	scheduler = Scheduler()
 	ctx.scheduler = scheduler
 	ctx.app.state.scheduler = scheduler
 
 	from .tasks.scheduler_config import register_all_tasks
+
 	await register_all_tasks(scheduler, ctx)
 
 	await scheduler.start()
@@ -1471,6 +1232,7 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 	store, and restarts with bounded exponential backoff after failures.
 	"""
 	from .dns import ingestion as dns_ingestion
+
 	if not unbound.is_unbound_installed():
 		_log.info("DNS_INGESTION skipped: Unbound not installed")
 		return
@@ -1488,20 +1250,20 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 		return dns_retention_days_cache
 
 	while True:
-		should_run = await asyncio.to_thread(_should_unbound_run_sync, ctx.cfg.db_path)
+		should_run = await asyncio.to_thread(should_unbound_run_sync, ctx.cfg.db_path)
 		if not should_run:
 			await scheduled_tasks.sleep_with_cancellation_check(30.0)
 			continue
 		for attempt in range(15):
 			if await unbound.is_running():
 				break
-			delay = min(2.0 ** attempt, 30.0)
+			delay = min(2.0**attempt, 30.0)
 			_log.debug("DNS_INGESTION waiting for Unbound (attempt %d, retry in %.0fs)", attempt + 1, delay)
 			await asyncio.sleep(delay)
 		else:
 			_log.warning("DNS_INGESTION Unbound not ready after probes; starting ingestion anyway")
 		try:
-			dns_retention_days_cache = await asyncio.to_thread(_read_dns_retention_days_sync, ctx.cfg.db_path)
+			dns_retention_days_cache = await asyncio.to_thread(read_dns_retention_days_sync, ctx.cfg.db_path)
 			offset_path = await asyncio.to_thread(_ensure_dns_offset_path_sync, ctx.cfg.data_dir)
 			await dns_ingestion.run_dns_ingestion(
 				log_path=unbound.QUERY_LOG,
@@ -1529,12 +1291,10 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 			# eventually overflows float conversion and would kill this loop.
 			exponent = min(retry_count, _DNS_INGESTION_MAX_BACKOFF_EXPONENT)
 			jitter = random.uniform(0.8, 1.2)  # noqa: S311  (timing jitter, not security-relevant)
-			delay = min(
-				2.0 ** exponent * _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS * jitter,
-				_DNS_INGESTION_RESTART_MAX_DELAY_SECONDS
-			)
+			delay = min(2.0**exponent * _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS * jitter, _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS)
 			_log.error("DNS_INGESTION crashed (retry #%d in %.0fs): %s", retry_count, delay, exc)
 			await scheduled_tasks.sleep_with_cancellation_check(delay)
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -1579,11 +1339,13 @@ async def _lifespan(app: FastAPI):
 				return
 			if ctx.deferred_startup_task and not ctx.deferred_startup_task.done():
 				return
+
 			def _schedule() -> None:
 				if ctx.deferred_startup_task and not ctx.deferred_startup_task.done():
 					return
 				ctx.deferred_startup_task = asyncio.create_task(_release_bootstrap_gate())
 				app.state.deferred_startup_task = ctx.deferred_startup_task
+
 				def _record_resume_result(task: asyncio.Task[None]) -> None:
 					try:
 						task.result()
@@ -1591,7 +1353,9 @@ async def _lifespan(app: FastAPI):
 						return
 					except Exception as exc:
 						app.state.bootstrap_gate_resume_error = str(exc)
+
 				ctx.deferred_startup_task.add_done_callback(_record_resume_result)
+
 			loop.call_soon_threadsafe(_schedule)
 
 		app.state.bootstrap_gate_release = _release_bootstrap_gate_threadsafe
@@ -1629,6 +1393,7 @@ async def _lifespan(app: FastAPI):
 		finally:
 			configure_event_bus(None)
 			_release_application_lock(application_lock_fd)
+
 
 def create_app() -> FastAPI:
 	"""Application factory for WireBuddy."""
@@ -1686,9 +1451,7 @@ def create_app() -> FastAPI:
 	)
 
 	# ─── MIDDLEWARE ──────────────────────────────────────────
-	allowed_hosts, allowed_hosts_derived = _resolve_allowed_hosts(
-		os.getenv("WIREBUDDY_ALLOWED_HOSTS", ""), cfg.public_origin_hostname
-	)
+	allowed_hosts, allowed_hosts_derived = _resolve_allowed_hosts(os.getenv("WIREBUDDY_ALLOWED_HOSTS", ""), cfg.public_origin_hostname)
 	if allowed_hosts and allowed_hosts_derived:
 		_log.info(
 			"WIREBUDDY_ALLOWED_HOSTS derived from WIREBUDDY_PUBLIC_ORIGIN: %s",
@@ -1706,6 +1469,7 @@ def create_app() -> FastAPI:
 	app.add_middleware(RequestIDMiddleware)
 
 	from .middleware.csrf import CSRFMiddleware
+
 	app.add_middleware(CSRFMiddleware)
 
 	@app.middleware("http")
@@ -1812,9 +1576,7 @@ def create_app() -> FastAPI:
 		try:
 			async with asyncio.timeout(1.0):
 				await sem.acquire()
-				task = asyncio.ensure_future(
-					asyncio.to_thread(_with_conn, cfg.db_path, _check_db_readiness)
-				)
+				task = asyncio.ensure_future(asyncio.to_thread(db_call, cfg.db_path, _check_db_readiness))
 				task.add_done_callback(lambda _t, _sem=sem: _sem.release())
 				await asyncio.shield(task)
 		except TimeoutError:
@@ -1857,11 +1619,7 @@ def create_app() -> FastAPI:
 			errors.append("scheduler unavailable")
 		else:
 			try:
-				stopped_jobs = [
-					status["name"]
-					for status in scheduler.get_status()
-					if not status["is_running"]
-				]
+				stopped_jobs = [status["name"] for status in scheduler.get_status() if not status["is_running"]]
 			except Exception:
 				stopped_jobs = []
 			if stopped_jobs:
@@ -1873,15 +1631,13 @@ def create_app() -> FastAPI:
 			errors.append("dns ingestion stopped")
 
 		if errors:
-			return JSONResponse(
-				status_code=503,
-				content={"status": "unavailable", "errors": errors, "version": VERSION}
-			)
+			return JSONResponse(status_code=503, content={"status": "unavailable", "errors": errors, "version": VERSION})
 
 		return JSONResponse(content={"status": "ready", "version": VERSION})
 
 	# ─── STATIC FILES ────────────────────────────────────────
 	from fastapi.staticfiles import StaticFiles
+
 	static_path = Path(__file__).parent / "static"
 	if static_path.exists():
 		app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
@@ -1914,7 +1670,6 @@ def _register_swagger_routes(app: FastAPI) -> None:
 	"""Register admin-protected Swagger UI at /swagger."""
 	from .api.auth import require_admin
 
-
 	def _is_swagger_enabled(conn: sqlite3.Connection) -> bool:
 		"""Return whether Swagger UI is enabled."""
 		value = get_setting(conn, _SWAGGER_ENABLE_KEY, "0")
@@ -1922,7 +1677,7 @@ def _register_swagger_routes(app: FastAPI) -> None:
 
 	def _is_swagger_enabled_sync(db_path: Path) -> bool:
 		"""Read the Swagger-enabled setting off the event loop."""
-		return _with_conn(db_path, _is_swagger_enabled)
+		return db_call(db_path, _is_swagger_enabled)
 
 	@app.get("/swagger/openapi.json", include_in_schema=False)
 	@limiter.limit("60/minute")
@@ -1941,6 +1696,7 @@ def _register_swagger_routes(app: FastAPI) -> None:
 
 		# Generate nonce for inline script/style (CSP security)
 		import secrets
+
 		nonce = secrets.token_urlsafe(16)
 		html = _SWAGGER_HTML.replace("%%NONCE%%", nonce)
 		response = HTMLResponse(html)

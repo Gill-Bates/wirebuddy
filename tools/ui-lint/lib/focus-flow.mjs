@@ -3,18 +3,6 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-export function getFocusableSelector() {
-    return [
-        'a[href]',
-        'button:not([disabled])',
-        'input:not([type="hidden"]):not([disabled])',
-        'select:not([disabled])',
-        'textarea:not([disabled])',
-        'summary',
-        '[tabindex]:not([tabindex="-1"]):not([disabled])',
-    ].join(', ');
-}
-
 export async function snapshotFocusState(page) {
     return page.evaluate(() => {
         const active = document.activeElement;
@@ -22,12 +10,17 @@ export async function snapshotFocusState(page) {
 
         const captureStyle = (el) => {
             const style = window.getComputedStyle(el);
+            // getComputedStyle has no boxShadowColor; isFocusVisibleEnough needs the
+            // shadow's own colour to score a box-shadow focus ring.
+            const shadow = String(style.boxShadow || '');
+            const colorMatch = shadow.match(/(rgba?\([^)]*\)|hsla?\([^)]*\)|#[0-9a-f]{3,8})/i);
             return {
                 outlineStyle: style.outlineStyle,
                 outlineWidth: style.outlineWidth,
                 outlineColor: style.outlineColor,
                 outlineOffset: style.outlineOffset,
                 boxShadow: style.boxShadow,
+                boxShadowColor: colorMatch ? colorMatch[1] : '',
                 borderColor: style.borderTopColor,
                 backgroundColor: style.backgroundColor,
                 color: style.color,

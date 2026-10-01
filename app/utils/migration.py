@@ -53,10 +53,7 @@ def _current_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
 
 def _looks_like_current_schema(conn: sqlite3.Connection) -> bool:
 	"""Best-effort check for a DB already matching the current baseline schema."""
-	return (
-		"show_on_dashboard" in _current_columns(conn, "interfaces")
-		and "description" not in _current_columns(conn, "peers")
-	)
+	return "show_on_dashboard" in _current_columns(conn, "interfaces") and "description" not in _current_columns(conn, "peers")
 
 
 def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
@@ -113,11 +110,8 @@ def _migrate_0001_add_show_on_dashboard(conn: sqlite3.Connection) -> None:
 	dashboard's network throughput gauges. Defaults to 1 (shown).
 	"""
 	# Check if column already exists (idempotent)
-	columns = sorted(_current_columns(conn, "interfaces"))
-	if "show_on_dashboard" not in columns:
-		conn.execute(
-			"ALTER TABLE interfaces ADD COLUMN show_on_dashboard INTEGER NOT NULL DEFAULT 1"
-		)
+	if "show_on_dashboard" not in _current_columns(conn, "interfaces"):
+		conn.execute("ALTER TABLE interfaces ADD COLUMN show_on_dashboard INTEGER NOT NULL DEFAULT 1")
 		_log.info("Added show_on_dashboard column to interfaces table")
 
 
@@ -128,8 +122,7 @@ def _migrate_0002_drop_peers_description(conn: sqlite3.Connection) -> None:
 	check the runtime version and use ALTER TABLE DROP COLUMN
 	when available, otherwise recreate the table.
 	"""
-	columns = sorted(_current_columns(conn, "peers"))
-	if "description" not in columns:
+	if "description" not in _current_columns(conn, "peers"):
 		return  # already removed
 
 	sqlite_version = tuple(int(x) for x in sqlite3.sqlite_version.split("."))
@@ -157,21 +150,15 @@ def _validate_migration_registry() -> None:
 	# Validate migration function naming convention
 	for _version, func in _MIGRATIONS:
 		if not func.__name__.startswith("_migrate_"):
-			raise RuntimeError(
-				f"Migration function {func.__name__} must follow _migrate_NNNN_ naming convention"
-			)
+			raise RuntimeError(f"Migration function {func.__name__} must follow _migrate_NNNN_ naming convention")
 
 	if versions:
 		max_version = max(versions)
 		if max_version != SCHEMA_VERSION:
-			raise RuntimeError(
-				f"SCHEMA_VERSION ({SCHEMA_VERSION}) must match highest migration version ({max_version})"
-			)
+			raise RuntimeError(f"SCHEMA_VERSION ({SCHEMA_VERSION}) must match highest migration version ({max_version})")
 	elif SCHEMA_VERSION != 0:
 		# Empty migration registry but SCHEMA_VERSION > 0 is inconsistent
-		raise RuntimeError(
-			f"SCHEMA_VERSION is {SCHEMA_VERSION} but no migrations are registered"
-		)
+		raise RuntimeError(f"SCHEMA_VERSION is {SCHEMA_VERSION} but no migrations are registered")
 
 
 _validate_migration_registry()
@@ -220,8 +207,7 @@ def run_pending_migrations(conn: sqlite3.Connection) -> int:
 		# Refuse downgrade: silently rewriting the marker can make a rollback
 		# apply incompatible migrations to a newer database.
 		_log.error(
-			"MIGRATION database is at v%d but application only knows v%d — "
-			"refusing to downgrade. Was the application rolled back?",
+			"MIGRATION database is at v%d but application only knows v%d — refusing to downgrade. Was the application rolled back?",
 			current_version,
 			SCHEMA_VERSION,
 		)
@@ -231,10 +217,7 @@ def run_pending_migrations(conn: sqlite3.Connection) -> int:
 		)
 
 	# Filter and sort migrations that need to run
-	pending = [
-		(ver, func) for ver, func in _MIGRATIONS
-		if ver > current_version
-	]
+	pending = [(ver, func) for ver, func in _MIGRATIONS if ver > current_version]
 	pending.sort(key=lambda x: x[0])
 
 	if not pending:

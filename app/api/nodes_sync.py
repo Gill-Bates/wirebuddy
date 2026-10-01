@@ -32,7 +32,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue
 from starlette.concurrency import run_in_threadpool
 
 from ..api.auth import _is_https
@@ -260,6 +260,7 @@ async def _run_with_short_lived_conn[T](
 	**kwargs: Any,
 ) -> T:
 	"""Run a DB operation in a thread using a short-lived connection."""
+
 	def _exec():
 		with thread_connection(db_path) as thread_conn:
 			return fn(thread_conn, *args, **kwargs)
@@ -353,25 +354,38 @@ def _enforce_enrollment_transport(
 	_log.error("%s delivered session_secret over non-HTTPS transport for node=%s", context, node_id)
 
 
+class PeerTrafficMetricData(BaseModel):
+	"""Payload of a ``peer_traffic`` metric queued by a node."""
+
+	public_key: str = Field(..., max_length=64)
+	rx_bytes: int = 0
+	tx_bytes: int = 0
+
+
+class PeerHandshakeMetricData(BaseModel):
+	"""Payload of a ``peer_handshake`` metric queued by a node."""
+
+	public_key: str = Field(..., max_length=64)
+	latest_handshake: int
+	endpoint: str | None = Field(None, max_length=256)
+
+
 def _write_peer_traffic_metric(tsdb_dir: Path, data: dict[str, Any]) -> int:
 	"""Write peer traffic metrics. Returns number of written points."""
-	public_key = data.get("public_key")
-	rx_bytes = data.get("rx_bytes", 0)
-	tx_bytes = data.get("tx_bytes", 0)
-	if not public_key or (rx_bytes <= 0 and tx_bytes <= 0):
+	parsed = PeerTrafficMetricData.model_validate(data)
+	if parsed.rx_bytes <= 0 and parsed.tx_bytes <= 0:
 		return 0
-	tsdb.append_point(tsdb_dir, peer_key=public_key, metric="rx_bytes", value=rx_bytes)
-	tsdb.append_point(tsdb_dir, peer_key=public_key, metric="tx_bytes", value=tx_bytes)
+	tsdb.append_point(tsdb_dir, peer_key=parsed.public_key, metric="rx_bytes", value=parsed.rx_bytes)
+	tsdb.append_point(tsdb_dir, peer_key=parsed.public_key, metric="tx_bytes", value=parsed.tx_bytes)
 	return 2
 
 
 def _write_peer_handshake_metric(tsdb_dir: Path, data: dict[str, Any]) -> int:
 	"""Write peer handshake metric. Returns number of written points."""
-	public_key = data.get("public_key")
-	latest_handshake = data.get("latest_handshake")
-	if not public_key or not latest_handshake:
+	parsed = PeerHandshakeMetricData.model_validate(data)
+	if not parsed.latest_handshake:
 		return 0
-	tsdb.append_point(tsdb_dir, peer_key=public_key, metric="latest_handshake", value=latest_handshake)
+	tsdb.append_point(tsdb_dir, peer_key=parsed.public_key, metric="latest_handshake", value=parsed.latest_handshake)
 	return 1
 
 
@@ -533,12 +547,14 @@ def get_current_node(
 
 class EnrollRequest(BaseModel):
 	"""Node enrollment payload."""
+
 	enrollment_token: str = Field(..., max_length=2048, description="The base64url enrollment token from master")
 	cert_pem: str = Field(..., max_length=16384, description="PEM-encoded self-signed node certificate")
 
 
 class PeerStatEntry(BaseModel):
 	"""Single peer stat from a node's wg dump."""
+
 	public_key: str = Field(..., max_length=64)
 	endpoint: str | None = Field(None, max_length=256)
 	latest_handshake: int | None = None
@@ -548,14 +564,16 @@ class PeerStatEntry(BaseModel):
 
 class MetricEntry(BaseModel):
 	"""Single metric from node's queue."""
+
 	seq: int = Field(..., ge=1, description="Sequence number")
 	ts: str = Field(..., max_length=64, description="ISO 8601 timestamp")
 	type: str = Field(..., max_length=32, description="Metric type: peer_traffic | peer_handshake")
-	data: dict = Field(..., description="Metric payload")
+	data: dict[str, Any] = Field(..., description="Metric payload")
 
 
 class MetricsBatch(BaseModel):
 	"""Batch of metrics from node's queue."""
+
 	seq_from: int | None = Field(None, description="First sequence in batch")
 	seq_to: int | None = Field(None, description="Last sequence in batch")
 	metrics: list[MetricEntry] = Field(default_factory=list, max_length=500)
@@ -565,7 +583,7 @@ class HeartbeatRequest(BaseModel):
 	"""Node heartbeat payload."""
 
 	uptime: float | None = Field(None, description="System uptime in seconds")
-	interfaces_status: dict | None = Field(None, description="WG interface up/down status")
+	interfaces_status: dict[str, bool] | None = Field(None, description="WG interface up/down status, keyed by interface name")
 	version: str | None = Field(None, max_length=32, description="WireBuddy version running on node")
 	peer_stats: list[PeerStatEntry] | None = Field(None, description="WireGuard peer stats from wg dump", max_length=1000)
 	metrics_batch: MetricsBatch | None = Field(None, description="Queued metrics batch for reliable delivery")
@@ -635,10 +653,13 @@ async def enroll_node_endpoint(
 
 	# Generate keypairs BEFORE transaction (async + SQLite = race condition risk)
 	interfaces = await run_in_threadpool(list_interfaces, conn)
-	keypairs = list(zip(
-		[iface["name"] for iface in interfaces],
-		await asyncio.gather(*(generate_keypair() for _ in interfaces)), strict=False,
-	))
+	keypairs = list(
+		zip(
+			[iface["name"] for iface in interfaces],
+			await asyncio.gather(*(generate_keypair() for _ in interfaces)),
+			strict=False,
+		)
+	)
 
 	# Enroll atomically — status check, keypairs, tunnel peer, secret rotation,
 	# and config-version bump all commit together or not at all.
@@ -660,8 +681,11 @@ async def enroll_node_endpoint(
 		iface_name, pubkey, allowed_ips, old_pubkey = tunnel_info
 		if old_pubkey:
 			code_rm, _, stderr_rm = await run_wg_command(
-				"wg", "set", iface_name,
-				"peer", old_pubkey,
+				"wg",
+				"set",
+				iface_name,
+				"peer",
+				old_pubkey,
 				"remove",
 			)
 			if code_rm != 0:
@@ -671,9 +695,13 @@ async def enroll_node_endpoint(
 					stderr_rm.strip(),
 				)
 		code, _, stderr = await run_wg_command(
-			"wg", "set", iface_name,
-			"peer", pubkey,
-			"allowed-ips", allowed_ips,
+			"wg",
+			"set",
+			iface_name,
+			"peer",
+			pubkey,
+			"allowed-ips",
+			allowed_ips,
 		)
 		if code != 0:
 			_log.error("Failed to add tunnel peer to WireGuard: %s", stderr.strip())
@@ -748,16 +776,15 @@ def _process_heartbeat(
 		batch = body.metrics_batch
 		last_seq = get_node_last_metric_seq(conn, node_id)
 
-		new_metrics = [
-			m for m in batch.metrics
-			if last_seq is None or m.seq > last_seq
-		]
+		new_metrics = [m for m in batch.metrics if last_seq is None or m.seq > last_seq]
 
 		skipped = len(batch.metrics) - len(new_metrics)
 		if skipped > 0:
 			_log.debug(
 				"Node %s: skipped %d already-processed metrics (last_seq=%s)",
-				node_id, skipped, last_seq,
+				node_id,
+				skipped,
+				last_seq,
 			)
 
 		if new_metrics:
@@ -765,10 +792,7 @@ def _process_heartbeat(
 			# seq is attacker-influenced and unbounded, so list(range(a, b))
 			# would allocate arbitrarily much memory for a two-element batch.
 			seqs = [m.seq for m in new_metrics]
-			is_contiguous = all(
-				current == previous + 1
-				for previous, current in itertools.pairwise(seqs)
-			)
+			is_contiguous = all(current == previous + 1 for previous, current in itertools.pairwise(seqs))
 			if not is_contiguous:
 				_log.warning(
 					"Node %s submitted non-contiguous metric sequence: %s",
@@ -797,8 +821,11 @@ def _process_heartbeat(
 
 				_log.debug(
 					"Node %s: wrote %d TSDB points from %d metrics (seq %s-%s)",
-					node_id, points_written, len(new_metrics),
-					new_metrics[0].seq, new_metrics[-1].seq,
+					node_id,
+					points_written,
+					len(new_metrics),
+					new_metrics[0].seq,
+					new_metrics[-1].seq,
 				)
 			except Exception:
 				_log.warning("Failed to write TSDB metrics from node %s", node_id, exc_info=True)
@@ -880,7 +907,9 @@ def get_config_endpoint(
 	config_ver_str = str(node["config_version"]) if node["config_version"] is not None else "none"
 	_log.info(
 		"NODE_CONFIG_DELIVERED node=%s peers=%d version=%s",
-		node_id, peer_count, config_ver_str[:16],
+		node_id,
+		peer_count,
+		config_ver_str[:16],
 	)
 	return ok_response(data=config)
 
@@ -970,10 +999,11 @@ async def node_events(
 
 class SpeedtestProgressEvent(BaseModel):
 	"""Speedtest progress event submitted by a node."""
+
 	phase: str = Field(..., max_length=64, description="Current test phase")
 	progress: float = Field(..., ge=0, le=1, description="Progress fraction (0-1)")
 	message: str = Field("", max_length=256, description="Progress message")
-	detail: dict[str, Any] | str | None = Field(None, description="Optional detail payload")
+	detail: JsonValue | None = Field(None, description="Optional detail payload")
 
 
 @router.post("/speedtest/progress")
@@ -1020,6 +1050,7 @@ async def ack_node_command_endpoint(
 
 class SpeedtestSubmission(BaseModel):
 	"""Speedtest result submitted by a node."""
+
 	status: str = Field(..., max_length=16, description="Result status: ok | error")
 	server: str | None = Field(None, max_length=256, description="Speedtest server name")
 	server_url: str | None = Field(None, max_length=512, description="Speedtest server URL (used for GeoIP fallback)")
@@ -1050,10 +1081,7 @@ def submit_node_speedtest(
 
 	# Only persist successful results (don't pollute TSDB with errors)
 	if body.status != "ok":
-		_log.warning(
-			"NODE_SPEEDTEST node=%s name=%s status=error reason=%s",
-			node_id, node_name, body.reason or "unknown"
-		)
+		_log.warning("NODE_SPEEDTEST node=%s name=%s status=error reason=%s", node_id, node_name, body.reason or "unknown")
 		return ok_response(message="Speedtest error recorded (not persisted to history)")
 
 	# Build result payload with node_id tag

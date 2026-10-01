@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Container for developer tooling that is not part of the WireBuddy application runtime: two small Python helpers used by CI, and `ui-lint`, a Node/Playwright-based UI linter that audits the running web frontend (layout, accessibility, overflow, tokens, console/network health).
+Container for developer tooling that is not part of the WireBuddy application runtime: two small Python helpers used by CI, `stylelint/`, a standalone Stylelint setup for the app CSS, and `ui-lint`, a Node/Playwright-based UI linter that audits the running web frontend (layout, accessibility, overflow, tokens, console/network health).
 
 ## Key Files
 
@@ -17,6 +17,7 @@ Container for developer tooling that is not part of the WireBuddy application ru
 
 | Directory | Purpose |
 |---|---|
+| `stylelint/` | Standalone Node project (`package.json`, `stylelint.config.mjs`, extends `stylelint-config-standard`): `npm install && npm run lint` (or `lint:fix`) inside it lints `app/static/css/**/*.css`. Not run by any CI workflow |
 | `ui-lint/` | Playwright-based UI lint tool: `run-ui-lint.mjs` entry point, `lib/` runtime modules, `rules/` lint rules, `tests/` Playwright specs (see `ui-lint/AGENTS.md`) |
 
 ## For AI Agents

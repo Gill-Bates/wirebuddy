@@ -14,8 +14,9 @@ test.beforeEach(async ({ page }) => {
     await page.addScriptTag({ path: domScriptPath });
 });
 
-test('legacy element helper stays XSS-safe and still returns live nodes', async ({ page }) => {
+test('el stays XSS-safe, returns live nodes, and fragment/clearChildren manage children', async ({ page }) => {
     const result = await page.evaluate(() => {
+        const { clearChildren, fragment } = window.WBDom;
         const badge = window.el('span', {
             class: 'badge bg-success',
             text: '<unsafe>',
@@ -23,13 +24,21 @@ test('legacy element helper stays XSS-safe and still returns live nodes', async 
         });
 
         const container = document.createElement('div');
-        window.WBDom.replaceContent(container, [badge]);
+        container.appendChild(fragment([badge, null, 'not-a-node']));
+        const html = container.innerHTML;
+        const childrenBefore = container.childNodes.length;
+
+        clearChildren(container);
 
         return {
-            html: container.innerHTML,
+            html,
             text: badge.textContent,
             className: badge.className,
             dataState: badge.dataset.state,
+            childrenBefore,
+            childrenAfter: container.childNodes.length,
+            exportedKeys: Object.keys(window.WBDom).sort(),
+            sameFacade: window.WB.dom === window.WBDom && window.el === window.WBDom.el,
         };
     });
 
@@ -37,84 +46,10 @@ test('legacy element helper stays XSS-safe and still returns live nodes', async 
     expect(result.className).toBe('badge bg-success');
     expect(result.dataState).toBe('ok');
     expect(result.html).toContain('&lt;unsafe&gt;');
-});
-
-test('render queues DOM commits and batches reactive updates deterministically', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-        const { createSignal, effect, h, render, yieldToMainThread } = window.WBDom;
-        const container = document.createElement('section');
-        document.body.appendChild(container);
-
-        const [count, setCount] = createSignal(0);
-        const observed = [];
-
-        effect(() => {
-            observed.push(count());
-            void render(h('div', {
-                id: 'counter-root',
-                children: [h('span', { text: `Count: ${count()}` })],
-            }), container);
-        });
-
-        setCount(1);
-        setCount(2);
-        await yieldToMainThread();
-
-        return {
-            text: container.querySelector('#counter-root')?.textContent,
-            observed,
-            snapshot: window.WBDom.getRuntimeSnapshot(),
-        };
-    });
-
-    expect(result.text).toBe('Count: 2');
-    expect(result.observed).toEqual([0, 2]);
-    expect(result.snapshot.metrics.commitCount).toBeGreaterThan(0);
-    expect(result.snapshot.metrics.renderDuration).toBeGreaterThanOrEqual(0);
-});
-
-test('context providers and renderToString work through the runtime layer', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-        const { createContext, createPortal, h, render, renderToString, useContext } = window.WBDom;
-        const container = document.createElement('div');
-        const portalTarget = document.createElement('div');
-        document.body.appendChild(container);
-        document.body.appendChild(portalTarget);
-
-        const Theme = createContext('light');
-
-        function Label() {
-            return h('span', { text: useContext(Theme) });
-        }
-
-        await render(h(Theme.Provider, {
-            value: 'dark',
-            children: [
-                h('div', {
-                    id: 'theme-root',
-                    children: [h(Label)],
-                }),
-                createPortal([h('strong', { text: 'portal' })], portalTarget),
-            ],
-        }), container);
-
-        const html = renderToString(h('div', {
-            class: 'runtime-card',
-            attrs: { role: 'presentation' },
-            children: [h('span', { text: 'safe' })],
-        }));
-
-        return {
-            themeText: container.querySelector('#theme-root')?.textContent,
-            portalText: portalTarget.textContent,
-            html,
-        };
-    });
-
-    expect(result.themeText).toBe('dark');
-    expect(result.portalText).toBe('portal');
-    expect(result.html).toContain('runtime-card');
-    expect(result.html).toContain('safe');
+    expect(result.childrenBefore).toBe(1);
+    expect(result.childrenAfter).toBe(0);
+    expect(result.exportedKeys).toEqual(['clearChildren', 'el', 'fragment']);
+    expect(result.sameFacade).toBe(true);
 });
 
 test('settings action buttons bind through delegated runtime events', async ({ page }) => {

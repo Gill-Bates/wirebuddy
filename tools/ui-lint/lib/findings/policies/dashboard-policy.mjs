@@ -26,6 +26,11 @@ export function buildDashboardPolicy() {
                         severity: 'warning',
                         count: 1,
                         value: alignment.variance,
+                        // Sole owner of this check. visual-policy carried a second
+                        // rule on the same id with a 1 px threshold, which both
+                        // double-reported variances above 4 px and contradicted the
+                        // collector's own contract (aligned = variance <= 4).
+                        threshold: 4,
                         message: 'Dashboard top row alignment issue',
                         explanation: 'The dashboard top row does not align to the contract.',
                         remediation: 'Match the card heights and container alignment.',

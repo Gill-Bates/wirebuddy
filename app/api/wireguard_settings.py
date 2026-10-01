@@ -20,7 +20,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ..db.sqlite_interfaces import get_interface, list_interfaces
 from ..db.sqlite_runtime import transaction
-from ..db.sqlite_settings import delete_setting, get_setting, set_setting
+from ..db.sqlite_settings import delete_setting, get_bool_setting, get_setting, set_setting
 from ..dns import unbound_process as unbound
 from ..dns.unbound_config import write_local_data_overrides
 from ..utils.deps import get_config, get_conn
@@ -51,6 +51,7 @@ class InterfaceConfigError(Exception):
 
 class _FieldAction(Enum):
 	"""Internal signal for how a settings field should be handled."""
+
 	SKIP = "skip"
 	CLEAR = "clear"
 	UPDATE = "update"
@@ -99,6 +100,7 @@ def _conntrack_accounting_requirements_met() -> bool:
 
 class WgSettingsPayload(BaseModel):
 	"""Payload for WireGuard global settings."""
+
 	wg_fqdn: str | None = Field(
 		None,
 		max_length=256,
@@ -155,18 +157,14 @@ class WgSettingsPayload(BaseModel):
 		if not v or ".." in v or v.startswith(".") or v.endswith("."):
 			raise ValueError("Invalid FQDN format")
 		for label in v.split("."):
-			if (
-				not label
-				or len(label) > 63
-				or label.startswith("-")
-				or label.endswith("-")
-			):
+			if not label or len(label) > 63 or label.startswith("-") or label.endswith("-"):
 				raise ValueError("Invalid FQDN label")
 		return v
 
 
 class GlobalPskPayload(BaseModel):
 	"""Payload to set global WireGuard PresharedKey."""
+
 	psk: str = Field(..., min_length=44, max_length=44, description="WireGuard PSK (44-char base64)")
 
 	@field_validator("psk", mode="before")
@@ -178,13 +176,12 @@ class GlobalPskPayload(BaseModel):
 
 # Derive this list from model fields; keep secret fields excluded.
 _NEVER_EXPOSED_SETTINGS: frozenset[str] = frozenset({"wg_global_psk"})
-WG_SETTING_KEYS: list[str] = [
-	key for key in WgSettingsPayload.model_fields if key not in _NEVER_EXPOSED_SETTINGS
-]
+WG_SETTING_KEYS: list[str] = [key for key in WgSettingsPayload.model_fields if key not in _NEVER_EXPOSED_SETTINGS]
 
 
 class PskResponseData(BaseModel):
 	"""Masked global PSK payload returned by non-reveal endpoints."""
+
 	masked: str | None
 	invalid: bool | None = None
 	message: str | None = None
@@ -192,11 +189,13 @@ class PskResponseData(BaseModel):
 
 class PskRevealResponseData(PskResponseData):
 	"""Global PSK payload for the explicit reveal endpoint."""
+
 	key: str | None = None
 
 
 class WgSettingsUpdateResult(BaseModel):
 	"""Result of a global WireGuard settings update."""
+
 	updated: list[str]
 	settings: dict[str, str | None]
 	warnings: list[str] = Field(default_factory=list)
@@ -204,6 +203,7 @@ class WgSettingsUpdateResult(BaseModel):
 
 class UpdateInfoResponse(BaseModel):
 	"""Public update-check result."""
+
 	update_available: bool
 	current_version: str
 	latest_version: str | None
@@ -215,6 +215,7 @@ class UpdateInfoResponse(BaseModel):
 
 class TrafficStatusResponse(BaseModel):
 	"""Traffic analysis state and host capability."""
+
 	enabled: bool
 	requirements_met: bool
 
@@ -246,6 +247,12 @@ def _load_global_psk(
 	except Exception:
 		_log.exception("PSK_DECRYPT_UNEXPECTED_FAILURE")
 		raise HTTPException(status_code=500, detail="Failed to decrypt global PSK") from None
+
+
+def _persist_global_psk(conn: sqlite3.Connection, psk: str) -> None:
+	"""Store the global PSK; set_setting() auto-encrypts "wg_global_psk"."""
+	with transaction(conn, immediate=True):
+		set_setting(conn, "wg_global_psk", psk)
 
 
 def _build_endpoint(fqdn_clean: str, port: str) -> str:
@@ -283,6 +290,7 @@ async def _regenerate_split_dns(conn: sqlite3.Connection, fqdn: str | None = Non
 	and file-system failures are logged and returned as a warning; database
 	errors are allowed to propagate.
 	"""
+
 	def _prepare() -> tuple[int, str | None]:
 		interfaces = list_interfaces(conn)
 		resolved_fqdn = fqdn if fqdn is not None else get_setting(conn, "wg_fqdn")
@@ -412,9 +420,7 @@ async def get_wg_settings(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Get WireGuard global settings (read: any user, write: admin only)."""
-	result = await run_in_threadpool(
-		lambda: {key: get_setting(conn, key) for key in WG_SETTING_KEYS}
-	)
+	result = await run_in_threadpool(lambda: {key: get_setting(conn, key) for key in WG_SETTING_KEYS})
 	return ok_response(data=result)
 
 
@@ -558,14 +564,8 @@ async def generate_global_psk(
 ):
 	"""Generate a new global PresharedKey."""
 	psk = await generate_preshared_key()
-
-	def _persist() -> None:
-		# set_setting() auto-encrypts "wg_global_psk".
-		with transaction(conn, immediate=True):
-			set_setting(conn, "wg_global_psk", psk)
-
 	try:
-		await run_in_threadpool(_persist)
+		await run_in_threadpool(_persist_global_psk, conn, psk)
 	except Exception:
 		_log.exception("PSK_PERSIST_FAILED")
 		raise HTTPException(status_code=500, detail="Failed to persist global PSK")
@@ -589,12 +589,7 @@ async def set_global_psk(
 			detail="Invalid WireGuard PSK format (must be 44-char base64 for 32 bytes)",
 		)
 	try:
-		def _persist() -> None:
-			# set_setting() encrypts the global PSK.
-			with transaction(conn, immediate=True):
-				set_setting(conn, "wg_global_psk", psk)
-
-		await run_in_threadpool(_persist)
+		await run_in_threadpool(_persist_global_psk, conn, psk)
 	except Exception:
 		_log.exception("PSK_PERSIST_FAILED")
 		raise HTTPException(status_code=500, detail="Failed to persist global PSK")
@@ -625,9 +620,10 @@ async def get_traffic_status(
 	"""Get traffic analysis status and host requirements."""
 	requirements_met = await run_in_threadpool(_conntrack_accounting_requirements_met)
 	# Get enabled setting (factory default: disabled)
-	enabled_str = await run_in_threadpool(get_setting, conn, "traffic_analysis_enabled")
-	enabled = enabled_str == "1"
-	return ok_response(data={
-		"enabled": enabled,
-		"requirements_met": requirements_met,
-	})
+	enabled = await run_in_threadpool(get_bool_setting, conn, "traffic_analysis_enabled")
+	return ok_response(
+		data={
+			"enabled": enabled,
+			"requirements_met": requirements_met,
+		}
+	)

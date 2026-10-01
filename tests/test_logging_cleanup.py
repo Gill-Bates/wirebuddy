@@ -6,28 +6,29 @@
 # SPDX-License-Identifier: MIT
 #
 
-"""Characterize logging normalization before sharing its implementation."""
+"""Characterize logging normalization in app.main."""
 
 import logging
 
 import pytest
 
 from app import main
-from app.runtime import logging as runtime_logging
 
 
-@pytest.mark.parametrize("module", [main, runtime_logging])
-@pytest.mark.parametrize(("message", "expected"), [
-	("executing built-in method commit of sqlite3.Connection", "committing SQLite transaction"),
-	("operation built-in method fetchall of sqlite3.Cursor completed", "SQLite rows fetched"),
-	("executing future_operation", "running SQLite background operation"),
-	("operation future_operation completed", "SQLite background operation completed"),
-	("returning exception database locked", "SQLite background operation failed: database locked"),
-	("unrecognized message", "unrecognized message"),
-	("", ""),
-])
-def test_humanization_preserves_known_unknown_and_error_messages(module, message, expected):
-	assert module._humanize_aiosqlite_message(message) == expected
+@pytest.mark.parametrize(
+	("message", "expected"),
+	[
+		("executing built-in method commit of sqlite3.Connection", "committing SQLite transaction"),
+		("operation built-in method fetchall of sqlite3.Cursor completed", "SQLite rows fetched"),
+		("executing future_operation", "running SQLite background operation"),
+		("operation future_operation completed", "SQLite background operation completed"),
+		("returning exception database locked", "SQLite background operation failed: database locked"),
+		("unrecognized message", "unrecognized message"),
+		("", ""),
+	],
+)
+def test_humanization_preserves_known_unknown_and_error_messages(message, expected):
+	assert main._humanize_aiosqlite_message(message) == expected
 
 
 @pytest.mark.parametrize("clone", [False, True])
@@ -39,9 +40,7 @@ def test_main_record_preparation_preserves_clone_and_idempotence(name, clone):
 	assert main._prepare_log_record(prepared, clone=clone) is prepared
 	assert record.msg == "executing %s"
 	assert record.args == ("future_operation",)
-	assert prepared.getMessage() == (
-		"running SQLite background operation" if name == "aiosqlite" else "executing future_operation"
-	)
+	assert prepared.getMessage() == ("running SQLite background operation" if name == "aiosqlite" else "executing future_operation")
 
 
 @pytest.mark.parametrize("formatter_class", [main._HumanizedFormatter, main._ColoredFormatter])

@@ -519,7 +519,12 @@
                 _trendChart.update();
             }
 
-            document.getElementById('trend-meta').textContent = '';
+            document.getElementById('trend-meta').textContent = labels.length
+                ? `Blockrate trend, ${labels.length} interval(s). ` +
+                    `Latest ${Number(rate[rate.length - 1] || 0).toFixed(1)} percent blocked, ` +
+                    `minimum ${Math.min(...rate.map(Number)).toFixed(1)} percent, ` +
+                    `maximum ${Math.max(...rate.map(Number)).toFixed(1)} percent.`
+                : 'No blockrate data available.';
         } catch (e) {
             document.getElementById('trend-meta').textContent = 'Trend unavailable';
         }

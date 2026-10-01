@@ -26,12 +26,15 @@ _log = logging.getLogger(__name__)
 # Types
 # ---------------------------------------------------------------------------
 
+
 class BlocklistMeta(TypedDict):
 	"""Metadata for a blocklist source."""
+
 	name: str
 	description: str
 	url: str
 	level: str  # UI badge label
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -112,11 +115,13 @@ BLOCKLIST_MAX_DOMAINS = 1_000_000
 CUSTOM_RULES_TAG = "custom"
 
 # Allowed content types for blocklist downloads
-ALLOWED_BLOCKLIST_CONTENT_TYPES: frozenset[str] = frozenset({
-	"text/plain",
-	"text/x-hosts",  # Vendor-prefixed hosts file MIME type
-	"application/octet-stream",
-})
+ALLOWED_BLOCKLIST_CONTENT_TYPES: frozenset[str] = frozenset(
+	{
+		"text/plain",
+		"text/x-hosts",  # Vendor-prefixed hosts file MIME type
+		"application/octet-stream",
+	}
+)
 
 # Regex patterns
 # Input is normalized to lowercase before matching.
@@ -156,6 +161,7 @@ def is_allowed_blocklist_content_type(value: str | None) -> bool:
 # ---------------------------------------------------------------------------
 # Shared Utility Functions
 # ---------------------------------------------------------------------------
+
 
 async def run_exec(*cmd: str, timeout: float = EXEC_TIMEOUT) -> tuple[int, str, str]:
 	"""Run a command and return (code, stdout, stderr). Uses exec, not shell.

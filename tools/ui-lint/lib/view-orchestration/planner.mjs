@@ -286,10 +286,22 @@ export function adaptiveCoverageExpansion(viewDefs, runtimeContext = {}) {
     return expandCoverage(viewDefs, runtimeContext);
 }
 
+function resolveDependencyNodeId(dependency, view, nodeIds) {
+    // Nodes are expanded per device and theme ("dashboard-main::mobile::light"),
+    // while dependsOn names the base view id. Without this the edge's `from`
+    // pointed at an id no node carried, leaving the DAG with dangling edges.
+    if (view.device && view.theme) {
+        const variant = `${dependency}::${view.device}::${view.theme}`;
+        if (nodeIds.has(variant)) return variant;
+    }
+    return dependency;
+}
+
 export function createViewExecutionGraph(views, runtimeContext = {}) {
     const nodes = [];
     const edges = [];
     const nodeById = new Map();
+    const nodeIds = new Set();
 
     for (const view of views) {
         const node = {
@@ -303,13 +315,14 @@ export function createViewExecutionGraph(views, runtimeContext = {}) {
         };
 
         nodeById.set(node.viewId, node);
+        nodeIds.add(node.id);
         nodes.push(node);
     }
 
     for (const view of views) {
         for (const dependency of view.dependsOn || []) {
             edges.push({
-                from: dependency,
+                from: resolveDependencyNodeId(dependency, view, nodeIds),
                 to: view.executionId || view.id,
                 type: nodeById.has(dependency) ? 'view' : 'precondition',
             });

@@ -23,6 +23,7 @@ __all__ = ["DnsQueryPoint", "parse_unbound_line"]
 @dataclass
 class DnsQueryPoint:
 	"""Normalized DNS query for TSDB storage."""
+
 	ts: str  # ISO8601 UTC timestamp
 	client: str  # Client IP address
 	domain: str  # Queried domain (without trailing dot, lowercase)
@@ -65,12 +66,12 @@ def parse_unbound_line(
 			return None
 
 		# Extract timestamp (seconds since epoch)
-		bracket_start = line.find('[')
-		bracket_end = line.find(']', bracket_start)
+		bracket_start = line.find("[")
+		bracket_end = line.find("]", bracket_start)
 		if bracket_start == -1 or bracket_end == -1:
 			return None
 
-		epoch_str = line[bracket_start + 1:bracket_end]
+		epoch_str = line[bracket_start + 1 : bracket_end]
 		try:
 			epoch = int(epoch_str)
 			ts = datetime.fromtimestamp(epoch, tz=UTC).isoformat()
@@ -85,7 +86,7 @@ def parse_unbound_line(
 
 		client = parts[0]
 		# Normalize domain once: strip trailing dot + lowercase
-		domain = parts[1].rstrip('.').lower()
+		domain = parts[1].rstrip(".").lower()
 		qtype = parts[2]
 
 		# Validate client is an IP (skip service messages)
@@ -206,8 +207,8 @@ def _is_domain_blocked(domain: str, blocked_domains: set[str]) -> bool:
 
 	# Check parent domains using partition (faster than split+join)
 	check = domain
-	while '.' in check:
-		_, _, check = check.partition('.')
+	while "." in check:
+		_, _, check = check.partition(".")
 		if check in blocked_domains:
 			return True
 

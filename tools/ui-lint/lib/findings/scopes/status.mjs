@@ -3,10 +3,6 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-export function isStatusScope(context) {
-    return context.scope === 'status';
-}
-
 export function isExpectedStatusUnavailable(view, response) {
     if (view.scope !== 'status' || !response) return false;
     try {

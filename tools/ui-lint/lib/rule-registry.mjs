@@ -8,14 +8,12 @@ import {
     createRuleRegistryState,
     registerRuleWithState,
     unregisterRuleWithState,
-    getRuleWithState,
     getAllRulesWithState,
     getRuleCatalogWithState,
     getRuleMetadataWithState,
     getRulesByCategoryWithState,
     getCategoriesWithState,
     getRulesByCapabilityWithState,
-    getRulesByOwnerWithState,
     createExecutionGraphWithState,
     createContextWithState,
     runRuleWithState,
@@ -23,7 +21,6 @@ import {
     runCategoryWithState,
     runAllRulesWithState,
     exportRegistryWithState,
-    registerPluginWithState,
     getRuleTelemetryWithState,
     getRuleHealthWithState,
     whyDidRuleFail,
@@ -39,14 +36,6 @@ export function registerRule(rule) {
 
 export function unregisterRule(ruleId) {
     return unregisterRuleWithState(registryState, ruleId);
-}
-
-export function registerPlugin(plugin) {
-    return registerPluginWithState(registryState, plugin);
-}
-
-export function getRule(id) {
-    return getRuleWithState(registryState, id);
 }
 
 export function getAllRules() {
@@ -71,10 +60,6 @@ export function getCategories() {
 
 export function getRulesByCapability(capability) {
     return getRulesByCapabilityWithState(registryState, capability);
-}
-
-export function getRulesByOwner(owner) {
-    return getRulesByOwnerWithState(registryState, owner);
 }
 
 export function getExecutionGraph(ruleIds, context) {
@@ -111,26 +96,6 @@ export function getRuleHealth(ruleId) {
 
 export function exportRegistry() {
     return exportRegistryWithState(registryState);
-}
-
-export function explainRuleFailure(ruleId, context, findings = []) {
-    const rule = getRuleWithState(registryState, ruleId);
-    if (!rule) {
-        return {
-            ruleId,
-            found: false,
-            explanation: `Rule not found: ${ruleId}`,
-        };
-    }
-
-    const telemetry = getRuleTelemetryWithState(registryState, ruleId) || {
-        lastDurationMs: 0,
-        pageEvaluations: 0,
-        domReads: 0,
-        health: 'stable',
-        failureRate: 0,
-    };
-    return whyDidRuleFail(rule, findings, telemetry, context);
 }
 
 export { whyDidRuleFail };

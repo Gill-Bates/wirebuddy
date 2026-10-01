@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Specs for the configuration, token runtime and device runtime platforms.
+Specs for the configuration and token runtime platforms.
 
 ## Key Files
 
@@ -12,7 +12,6 @@ Specs for the configuration, token runtime and device runtime platforms.
 |---|---|
 | `config-platform.spec.js` | Token resolver metadata, WCAG evaluation, payload builders, motion/theme registries |
 | `design-token-runtime.spec.js` | Token runtime var chains/units, serialisable payloads, drift, provider registration |
-| `device-runtime.spec.js` | Device runtime, deterministic matrix hash, Playwright adapter |
 
 ## For AI Agents
 
@@ -32,7 +31,7 @@ Specs for the configuration, token runtime and device runtime platforms.
 
 ### Internal
 
-- `../../lib/config/`, `../../lib/design-tokens/`, `../../lib/device-runtime/`
+- `../../lib/config/`, `../../lib/design-tokens/`
 
 ### External
 

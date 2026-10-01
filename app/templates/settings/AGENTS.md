@@ -13,7 +13,7 @@ Markup partials `include`d by `../settings.html`: one per settings tab plus the 
 
 ## For AI Agents
 ### Working In This Directory
-- Adding a tab means: `_tab_*.html`, an entry in the `tabs` list and an include in `settings.html`, and the tab id in the valid-tab lists of `static/js/settings.js` and `static/js/settings/core.js` (both exist today).
+- Adding a tab means: `_tab_*.html`, an entry in the `tabs` list and an include in `settings.html`, and the tab id in the valid-tab list of `static/js/settings.js`.
 - Do not add `<script>` or `<style>` partials here; page logic and styles belong in `static/`.
 
 ### Testing Requirements

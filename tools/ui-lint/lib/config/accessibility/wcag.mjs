@@ -30,11 +30,18 @@ export function evaluateContrast({ fontSize, fontWeight, contrastRatio, browser 
     const largeText = isLargeText(Number(fontSize) || 0, Number(fontWeight) || 0);
     const threshold = largeText ? WCAG_CONTRAST.LARGE_AA : WCAG_CONTRAST.NORMAL_AA;
     const browserTolerance = browser === 'webkit' ? 0.05 : 0;
+    const ratio = Number(contrastRatio);
+
+    // The AA threshold is exact: W3C states 4.499 must not be rounded up to 4.5,
+    // so the tolerance must not decide `passes`. It stays reported so a
+    // borderline WebKit rounding difference is still diagnosable.
+    const passes = ratio >= threshold;
 
     return {
         largeText,
         threshold,
         browserTolerance,
-        passes: Number(contrastRatio) + browserTolerance >= threshold,
+        passes,
+        withinBrowserTolerance: !passes && browserTolerance > 0 && ratio + browserTolerance >= threshold,
     };
 }

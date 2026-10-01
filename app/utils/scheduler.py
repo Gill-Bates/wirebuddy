@@ -29,6 +29,7 @@ _MIN_INTERVAL = 1.0
 
 class JobStatus(TypedDict):
 	"""Status information for a scheduled job."""
+
 	name: str
 	interval_seconds: float
 	last_success: str | None  # ISO timestamp of last successful run
@@ -41,6 +42,7 @@ class JobStatus(TypedDict):
 @dataclass
 class _Job:
 	"""A scheduled repeating job (internal implementation detail)."""
+
 	name: str
 	interval_seconds: float
 	func: Callable[[], object]
@@ -124,9 +126,7 @@ class Scheduler:
 
 		# NaN fails every comparison below, so finiteness is checked first.
 		if not math.isfinite(interval_seconds) or interval_seconds < _MIN_INTERVAL:
-			raise ValueError(
-				f"interval_seconds must be finite and ≥ {_MIN_INTERVAL}, got {interval_seconds}"
-			)
+			raise ValueError(f"interval_seconds must be finite and ≥ {_MIN_INTERVAL}, got {interval_seconds}")
 
 		if not math.isfinite(initial_delay) or initial_delay < 0:
 			raise ValueError(f"initial_delay must be finite and ≥ 0, got {initial_delay}")
@@ -287,7 +287,7 @@ class Scheduler:
 			return now + jittered_interval, 0, 0.0
 
 		updated_failures = consecutive_failures + 1
-		backoff = min(2 ** updated_failures, max_backoff)
+		backoff = min(2**updated_failures, max_backoff)
 		backoff_until = now + backoff
 		if next_candidate < backoff_until:
 			skips = max(1, int((backoff_until - next_candidate) / interval_seconds) + 1)
@@ -334,7 +334,9 @@ class Scheduler:
 			if backoff > 0:
 				_log.error(
 					"SCHEDULER job=%s failed (%d consecutive), backing off %.0fs",
-					job.name, consecutive_failures, backoff,
+					job.name,
+					consecutive_failures,
+					backoff,
 				)
 			return next_run_local
 
@@ -368,13 +370,17 @@ class Scheduler:
 				if success:
 					_log.debug(
 						"SCHEDULER job=%s completed initial run (run #%d), next in %.0fs",
-						job.name, job.run_count, next_run - now,
+						job.name,
+						job.run_count,
+						next_run - now,
 					)
 			else:
 				# No run_on_start: log when first execution is scheduled
 				_log.info(
 					"SCHEDULER job=%s first run scheduled in %.0fs (%.1fh)",
-					job.name, first_interval, first_interval / 3600,
+					job.name,
+					first_interval,
+					first_interval / 3600,
 				)
 
 			while self._started and not stop_event.is_set():
@@ -402,7 +408,9 @@ class Scheduler:
 				if success:
 					_log.debug(
 						"SCHEDULER job=%s completed (run #%d), next in %.0fs",
-						job.name, job.run_count, next_run - now,
+						job.name,
+						job.run_count,
+						next_run - now,
 					)
 
 		except asyncio.CancelledError:
@@ -414,9 +422,7 @@ class Scheduler:
 		"""Invoke a job and validate that it returned an awaitable."""
 		result = job.func()
 		if not inspect.isawaitable(result):
-			raise TypeError(
-				f"Job {job.name!r} must return an awaitable, got {type(result).__name__}"
-			)
+			raise TypeError(f"Job {job.name!r} must return an awaitable, got {type(result).__name__}")
 		return result
 
 	async def _execute(self, job: _Job) -> bool:

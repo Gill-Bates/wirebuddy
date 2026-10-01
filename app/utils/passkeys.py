@@ -78,12 +78,14 @@ class InvalidChallengeError(Exception):
 @dataclass
 class AuthenticationChallengeResult:
 	"""Result of consuming an authentication challenge."""
+
 	user_id: int | None  # None = usernameless/discoverable flow
 
 
 @dataclass
 class PasskeyRegistrationResult:
 	"""Result of a successful passkey registration verification."""
+
 	credential_id: str  # base64url encoded
 	public_key: bytes
 	sign_count: int
@@ -93,6 +95,7 @@ class PasskeyRegistrationResult:
 @dataclass
 class PasskeyAuthenticationResult:
 	"""Result of a successful passkey authentication verification."""
+
 	credential_id: str  # base64url encoded
 	new_sign_count: int
 
@@ -233,6 +236,7 @@ def _parse_registration_credential(credential_json: dict[str, Any]) -> Registrat
 			if len(transports) > _MAX_TRANSPORTS:
 				raise ValueError("Too many transports")
 			from webauthn.helpers.structs import AuthenticatorTransport
+
 			parsed_transports = []
 			for t in transports:
 				if not isinstance(t, str) or len(t) > _MAX_TRANSPORT_ENTRY_LEN:
@@ -334,6 +338,7 @@ def store_registration_challenge(
 	"""
 	# Deferred import to avoid circular dependency: sqlite_passkeys → passkeys
 	from ..db.sqlite_passkeys import store_challenge
+
 	store_challenge(conn, challenge, "registration", user_id, username)
 	_log.debug("Stored registration challenge for user_id=%d", user_id)
 
@@ -354,6 +359,7 @@ def consume_registration_challenge(
 	"""
 	# Deferred import to avoid circular dependency
 	from ..db.sqlite_passkeys import consume_challenge
+
 	try:
 		user_id, username = consume_challenge(conn, challenge, "registration")
 	except KeyError:
@@ -387,6 +393,7 @@ def store_authentication_challenge(
 	"""
 	# Deferred import to avoid circular dependency
 	from ..db.sqlite_passkeys import store_challenge
+
 	store_challenge(conn, challenge, "authentication", user_id, None)
 	_log.debug("Stored authentication challenge for user_id=%s", user_id)
 
@@ -407,6 +414,7 @@ def consume_authentication_challenge(
 	"""
 	# Deferred import to avoid circular dependency
 	from ..db.sqlite_passkeys import consume_challenge
+
 	try:
 		user_id, _ = consume_challenge(conn, challenge, "authentication")
 	except KeyError:
@@ -447,19 +455,14 @@ def get_registration_options(
 	"""
 	# Enforce maximum passkeys per user
 	if existing_credential_ids and len(existing_credential_ids) >= _MAX_PASSKEYS_PER_USER:
-		raise ValueError(
-			f"Maximum of {_MAX_PASSKEYS_PER_USER} passkeys per user. "
-			"Delete unused passkeys before registering new ones."
-		)
+		raise ValueError(f"Maximum of {_MAX_PASSKEYS_PER_USER} passkeys per user. Delete unused passkeys before registering new ones.")
 
 	# Convert existing credentials to exclude list
 	exclude_credentials = []
 	if existing_credential_ids:
 		for cred_id in existing_credential_ids:
 			_validate_base64url(cred_id, "credential_id")
-			exclude_credentials.append(
-				PublicKeyCredentialDescriptor(id=base64url_to_bytes(cred_id))
-			)
+			exclude_credentials.append(PublicKeyCredentialDescriptor(id=base64url_to_bytes(cred_id)))
 
 	# Use opaque user handle instead of sequential integer
 	user_handle = _user_handle_for_id(user_id)
@@ -557,9 +560,7 @@ def get_authentication_options(
 		allow_credentials = []
 		for cred_id in credential_ids:
 			_validate_base64url(cred_id, "credential_id")
-			allow_credentials.append(
-				PublicKeyCredentialDescriptor(id=base64url_to_bytes(cred_id))
-			)
+			allow_credentials.append(PublicKeyCredentialDescriptor(id=base64url_to_bytes(cred_id)))
 
 	options = generate_authentication_options(
 		rp_id=rp_id,
@@ -705,9 +706,7 @@ def _convert_bytes_recursive(
 	if hasattr(obj, "__dict__") and not isinstance(obj, type):
 		# Whitelist: only serialize if it looks like a WebAuthn struct or dataclass
 		if hasattr(obj, "__class__") and (
-			obj.__class__.__module__.startswith("webauthn")
-			or hasattr(obj, "__dataclass_fields__")
-			or hasattr(obj, "model_fields")  # Pydantic
+			obj.__class__.__module__.startswith("webauthn") or hasattr(obj, "__dataclass_fields__") or hasattr(obj, "model_fields")  # Pydantic
 		):
 			return {k: _convert_bytes_recursive(v, _depth + 1, _seen, _node_count) for k, v in obj.__dict__.items()}
 		# Unknown object type - log warning and skip

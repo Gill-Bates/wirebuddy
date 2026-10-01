@@ -30,25 +30,25 @@
         return /^data:image\/(png|svg\+xml);base64,/i.test(String(value || ''));
     }
 
-    async function api(method, url, body = null) {
-        const opts = {
-            method,
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRF-Token': csrfToken,
-            },
-            credentials: 'same-origin',
-        };
-        if (body) opts.body = JSON.stringify(body);
-        const resp = await fetch(url, opts);
-        let json;
+    const FETCH_TIMEOUT_MS = 15000;
+
+    // Shared api() from api.js adds CSRF, same-origin check and a 15 s timeout.
+    function api(method, url, body = null) {
+        return window.apiCall(method, url, body);
+    }
+
+    // Blob responses cannot go through api(), so bound them with an abort timer.
+    async function fetchWithTimeout(url, options, timeoutMs = FETCH_TIMEOUT_MS) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
-            json = await resp.json();
-        } catch {
-            throw new Error(`Server error (HTTP ${resp.status})`);
+            return await fetch(url, { ...options, signal: controller.signal });
+        } catch (error) {
+            if (error?.name === 'AbortError') throw new Error('Request timed out');
+            throw error;
+        } finally {
+            clearTimeout(timer);
         }
-        if (!resp.ok) throw new Error(json.detail || 'Request failed');
-        return json.data;
     }
 
     function showError(msg) {
@@ -191,12 +191,17 @@
         } catch (error) {
             confirmBtn.disabled = false;
             confirmBtn.innerHTML = '<span class="material-icons align-middle me-1">check_circle</span>Verify & Activate';
+            showError(error?.message || 'Verification failed');
             // Shake + red flash, then clear for re-entry
             const allDigits = document.querySelectorAll('.otp-digit');
-            allDigits.forEach(d => d.classList.add('otp-error'));
+            allDigits.forEach(d => {
+                d.classList.add('otp-error');
+                d.setAttribute('aria-invalid', 'true');
+            });
             setTimeout(() => {
                 allDigits.forEach(d => {
                     d.classList.remove('otp-error');
+                    d.removeAttribute('aria-invalid');
                     d.value = '';
                 });
                 document.querySelector('.otp-digit[data-index="0"]')?.focus();
@@ -211,7 +216,7 @@
         const btn = document.getElementById('copy-secret-btn');
         const original = btn.innerHTML;
         navigator.clipboard.writeText(secret).then(() => {
-            btn.innerHTML = '<span class="material-icons" style="font-size: 18px;">check</span>';
+            btn.innerHTML = '<span class="material-icons otp-icon-sm" aria-hidden="true">check</span>';
             setTimeout(() => {
                 btn.innerHTML = original;
             }, 1500);
@@ -230,7 +235,7 @@
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Preparing ZIP...';
 
         try {
-            const response = await fetch('/api/me/otp/recovery-codes/zip', {
+            const response = await fetchWithTimeout('/api/me/otp/recovery-codes/zip', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

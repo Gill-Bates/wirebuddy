@@ -11,7 +11,7 @@ Lint rules executed against each audited view. A manifest lists the rule modules
 | File | Description |
 |---|---|
 | `manifest.mjs` | `RULE_MANIFEST`: id and path for each rule (single source of loaded rules) |
-| `index.mjs` | `loadRules()` imports every manifest entry once and returns the catalog; re-exports registry runners (`runRule`, `runAllRules`, `runCategory`, ...); top-level await `loadedRules` |
+| `index.mjs` | `loadRules()` imports every manifest entry once and returns the catalog; re-exports registry runners (`runRule`, `runAllRules`, `runCategory`, ...); a top-level `await loadRules()` registers all rules on import |
 
 ## Subdirectories
 

@@ -3,31 +3,23 @@
 # settings
 
 ## Purpose
-Split-out pieces of the Settings page. `components.js` and `speedtest.js` are loaded by `settings.html` alongside the monolithic `../settings.js`. `core.js` plus `modules/` are a modular bootstrap (`SettingsApp.registerModule`) that must NOT be loaded together with `settings.js`: `core.js` throws if the other bootstrap is present.
+Split-out pieces of the Settings page. `components.js` and `speedtest.js` are loaded by `settings.html` alongside the monolithic `../settings.js`.
 
 ## Key Files
 | File | Description |
 |------|-------------|
 | `components.js` | Reusable settings UI components built with `el()`, under `window.WB` |
 | `speedtest.js` | Extracted speedtest runtime for the Settings page |
-| `core.js` | Modular bootstrap: shared state, utilities and module registry (`registerModule`); sets `__WB_SETTINGS_BOOTSTRAP__ = 'modular'` |
-| `modules/backup.js` | Backup settings module (registered with `SettingsApp`) |
-| `modules/logs.js` | Logs/metrics settings module |
-
-## Subdirectories
-| Directory | Purpose |
-|-----------|---------|
-| `modules/` | Modules for the modular bootstrap (`backup.js`, `logs.js`); described here, no separate AGENTS.md |
 
 ## For AI Agents
 ### Working In This Directory
-- Check which bootstrap `templates/settings.html` loads before editing: currently `settings.js`. Per-tab inline scripts also live in `templates/settings/_js_*.html`, so a behaviour may sit in three places.
+- `templates/settings.html` loads `settings.js` (the monolith) alongside `components.js` and `speedtest.js`; page behaviour lives in the monolith unless it was split out here.
 
 ### Testing Requirements
 `node tools/ui-lint/run-ui-lint.mjs`; manually test each Settings tab.
 
 ### Common Patterns
-- Modules: `SettingsApp.registerModule('name', (function () { ... return api; })())`.
+- IIFE attaching to `window.WB` (e.g. `window.WB.settingsComponents`, `window.WB.settingsSpeedtest`).
 
 ## Dependencies
 ### Internal

@@ -12,7 +12,7 @@ Token category list and schema, plus validators reporting missing, unknown and u
 |---|---|
 | `categories.mjs` | `TOKEN_CATEGORIES`, `TOKEN_CATEGORY_LOOKUP` |
 | `token-schema.mjs` | `TOKEN_SCHEMA_VERSION`, `TOKEN_SCHEMA` |
-| `validation.mjs` | `validateTokens`, `findMissingTokens`, `findUnknownTokens`, `findUnusedTokens`, `validateCategory` |
+| `validation.mjs` | `validateTokens`, `findMissingTokens`, `findUnknownTokens`, `findUnusedTokens` |
 
 ## For AI Agents
 

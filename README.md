@@ -11,14 +11,13 @@
   <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/image-size/giiibates/wirebuddy?logo=docker&logoColor=white" alt="Docker Image Size"></a>
   <br>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="https://gill-bates.github.io/wirebuddy/"><img src="https://img.shields.io/badge/Docs-Online-green?logo=readthedocs&logoColor=white" alt="Documentation"></a>
   <img src="https://img.shields.io/badge/Platform-linux%2Famd64%20|%20linux%2Farm64-lightgrey?logo=linux&logoColor=white" alt="Platform">
 </p>
 
 <p align="center">
-  <a href="https://gill-bates.github.io/wirebuddy/">📚 Documentation</a> •
-  <a href="https://gill-bates.github.io/wirebuddy/getting-started/quick-start/">🚀 Quick Start</a> •
-  <a href="https://gill-bates.github.io/wirebuddy/changelog/">📋 Changelog</a>
+  <a href="https://gill-bates.github.io/wirebuddy/"><img src="https://img.shields.io/badge/Documentation-2ea44f?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation"></a>
+  <a href="https://gill-bates.github.io/wirebuddy/getting-started/quick-start/"><img src="https://img.shields.io/badge/Quick%20Start-0a7bbb?style=for-the-badge&logo=docker&logoColor=white" alt="Quick Start"></a>
+  <a href="https://gill-bates.github.io/wirebuddy/changelog/"><img src="https://img.shields.io/badge/Changelog-6f42c1?style=for-the-badge&logo=keepachangelog&logoColor=white" alt="Changelog"></a>
 </p>
 
 ---

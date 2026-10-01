@@ -27,10 +27,11 @@ from pathlib import Path
 from typing import IO
 
 try:
-    import fcntl
-    _HAS_FCNTL = True
+	import fcntl
+
+	_HAS_FCNTL = True
 except ImportError:
-    _HAS_FCNTL = False
+	_HAS_FCNTL = False
 
 _log = logging.getLogger(__name__)
 
@@ -43,371 +44,372 @@ _local_async_lock = asyncio.Lock()
 
 
 class SpeedtestBusyError(RuntimeError):
-    """Raised when a speedtest is already running."""
+	"""Raised when a speedtest is already running."""
 
 
 class SpeedtestCooldownError(RuntimeError):
-    """Raised when a speedtest was triggered too recently."""
-    __slots__ = ("remaining_seconds",)
+	"""Raised when a speedtest was triggered too recently."""
 
-    def __init__(self, remaining_seconds: float):
-        super().__init__(f"Please wait {remaining_seconds:.1f}s before running another test")
-        self.remaining_seconds = remaining_seconds
+	__slots__ = ("remaining_seconds",)
+
+	def __init__(self, remaining_seconds: float):
+		super().__init__(f"Please wait {remaining_seconds:.1f}s before running another test")
+		self.remaining_seconds = remaining_seconds
 
 
 def _lock_path(tsdb_dir: Path) -> Path:
-    return tsdb_dir / ".speedtest.run.lock"
+	return tsdb_dir / ".speedtest.run.lock"
 
 
 def _cooldown_path(tsdb_dir: Path) -> Path:
-    return tsdb_dir / ".speedtest.last_run"
+	return tsdb_dir / ".speedtest.last_run"
 
 
 def _ensure_guard_parent(path: Path) -> None:
-    """Ensure the guard file parent exists and is a real directory."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.parent.is_symlink() or not path.parent.is_dir():
-        raise RuntimeError(f"Guard parent must be a real directory: {path.parent}")
+	"""Ensure the guard file parent exists and is a real directory."""
+	path.parent.mkdir(parents=True, exist_ok=True)
+	if path.parent.is_symlink() or not path.parent.is_dir():
+		raise RuntimeError(f"Guard parent must be a real directory: {path.parent}")
 
 
 def _open_lock_file(path: Path) -> IO[bytes]:
-    """Open the lock file without following symlinks when supported."""
-    _ensure_guard_parent(path)
-    if path.exists() and path.is_symlink():
-        raise RuntimeError(f"Refusing to open symlinked speedtest lock file: {path}")
+	"""Open the lock file without following symlinks when supported."""
+	_ensure_guard_parent(path)
+	if path.exists() and path.is_symlink():
+		raise RuntimeError(f"Refusing to open symlinked speedtest lock file: {path}")
 
-    flags = os.O_CREAT | os.O_RDWR | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(path, flags, 0o600)
-    try:
-        return os.fdopen(fd, "ab+", buffering=0)
-    except BaseException:
-        os.close(fd)
-        raise
+	flags = os.O_CREAT | os.O_RDWR | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+	fd = os.open(path, flags, 0o600)
+	try:
+		return os.fdopen(fd, "ab+", buffering=0)
+	except BaseException:
+		os.close(fd)
+		raise
 
 
 _MAX_COOLDOWN_FILE_SIZE = 256  # A timestamp needs only a handful of bytes.
 
 
 def _read_last_run(path: Path) -> float | None:
-    """Read last run timestamp from cooldown file with validation.
+	"""Read last run timestamp from cooldown file with validation.
 
-    Opened descriptor-first with O_NOFOLLOW and verified via fstat(), the
-    same pattern used for the lock file: a separate is_symlink() check
-    followed by Path.read_text() leaves a TOCTOU window where the path can
-    be swapped for a symlink between the check and the read.
+	Opened descriptor-first with O_NOFOLLOW and verified via fstat(), the
+	same pattern used for the lock file: a separate is_symlink() check
+	followed by Path.read_text() leaves a TOCTOU window where the path can
+	be swapped for a symlink between the check and the read.
 
-    Fail-open by design: a missing file, unreadable file, non-regular file,
-    oversized file, or unparseable/implausible timestamp all return None,
-    which callers treat as "no cooldown recorded" and therefore allow the
-    speedtest to proceed. This cooldown is a UX/load throttle, not a hard
-    resource limit, so availability is intentionally prioritized over
-    strict enforcement when the on-disk state cannot be trusted.
-    """
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(path, flags)
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        _log.warning("Unexpected error opening cooldown file %s: %s", path, exc)
-        return None
+	Fail-open by design: a missing file, unreadable file, non-regular file,
+	oversized file, or unparseable/implausible timestamp all return None,
+	which callers treat as "no cooldown recorded" and therefore allow the
+	speedtest to proceed. This cooldown is a UX/load throttle, not a hard
+	resource limit, so availability is intentionally prioritized over
+	strict enforcement when the on-disk state cannot be trusted.
+	"""
+	flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+	try:
+		fd = os.open(path, flags)
+	except FileNotFoundError:
+		return None
+	except OSError as exc:
+		_log.warning("Unexpected error opening cooldown file %s: %s", path, exc)
+		return None
 
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            _log.warning("Ignoring non-regular cooldown file: %s", path)
-            return None
-        if st.st_size > _MAX_COOLDOWN_FILE_SIZE:
-            _log.warning("Ignoring oversized cooldown file (%d bytes): %s", st.st_size, path)
-            return None
-        with os.fdopen(fd, "r", encoding="utf-8") as handle:
-            fd = -1
-            value = handle.read().strip()
-    except OSError as exc:
-        _log.warning("Unexpected error reading cooldown file %s: %s", path, exc)
-        return None
-    finally:
-        if fd != -1:
-            os.close(fd)
+	try:
+		st = os.fstat(fd)
+		if not stat.S_ISREG(st.st_mode):
+			_log.warning("Ignoring non-regular cooldown file: %s", path)
+			return None
+		if st.st_size > _MAX_COOLDOWN_FILE_SIZE:
+			_log.warning("Ignoring oversized cooldown file (%d bytes): %s", st.st_size, path)
+			return None
+		with os.fdopen(fd, "r", encoding="utf-8") as handle:
+			fd = -1
+			value = handle.read().strip()
+	except OSError as exc:
+		_log.warning("Unexpected error reading cooldown file %s: %s", path, exc)
+		return None
+	finally:
+		if fd != -1:
+			os.close(fd)
 
-    if not value:
-        return None
+	if not value:
+		return None
 
-    try:
-        ts = float(value)
-    except ValueError:
-        return None
+	try:
+		ts = float(value)
+	except ValueError:
+		return None
 
-    now = time.time()
-    # Reject invalid timestamps
-    if not (0 < ts <= now + _CLOCK_SKEW_TOLERANCE_S):
-        return None
-    return ts
+	now = time.time()
+	# Reject invalid timestamps
+	if not (0 < ts <= now + _CLOCK_SKEW_TOLERANCE_S):
+		return None
+	return ts
 
 
 def _write_last_run(path: Path, timestamp: float) -> None:
-    """Write cooldown timestamp with fsync for durability."""
-    _ensure_guard_parent(path)
-    if path.exists() and path.is_symlink():
-        raise RuntimeError(f"Refusing to replace symlinked cooldown file: {path}")
+	"""Write cooldown timestamp with fsync for durability."""
+	_ensure_guard_parent(path)
+	if path.exists() and path.is_symlink():
+		raise RuntimeError(f"Refusing to replace symlinked cooldown file: {path}")
 
-    tmp_path: Path | None = None
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=path.parent,
-        delete=False,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    ) as f:
-        tmp_path = Path(f.name)
-        f.write(f"{timestamp:.6f}\n")
-        f.flush()
-        os.fsync(f.fileno())
+	tmp_path: Path | None = None
+	with tempfile.NamedTemporaryFile(
+		mode="w",
+		encoding="utf-8",
+		dir=path.parent,
+		delete=False,
+		prefix=f".{path.name}.",
+		suffix=".tmp",
+	) as f:
+		tmp_path = Path(f.name)
+		f.write(f"{timestamp:.6f}\n")
+		f.flush()
+		os.fsync(f.fileno())
 
-    try:
-        tmp_path.replace(path)
-        dir_fd = os.open(
-            str(path.parent),
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-        )
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    finally:
-        if tmp_path is not None and tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
+	try:
+		tmp_path.replace(path)
+		dir_fd = os.open(
+			str(path.parent),
+			os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+		)
+		try:
+			os.fsync(dir_fd)
+		finally:
+			os.close(dir_fd)
+	finally:
+		if tmp_path is not None and tmp_path.exists():
+			tmp_path.unlink(missing_ok=True)
 
 
 @dataclass(eq=False, repr=False, slots=True)
 class SpeedtestRunLease:
-    """Active speedtest run lease backed by cross-layer locks."""
+	"""Active speedtest run lease backed by cross-layer locks."""
 
-    fd_obj: IO[bytes]
-    cooldown_path: Path | None = None
-    released: bool = False
-    success: bool = False
-    _async_acquired: bool = False
-    _owns_thread_lock: bool = False
+	fd_obj: IO[bytes]
+	cooldown_path: Path | None = None
+	released: bool = False
+	success: bool = False
+	_async_acquired: bool = False
+	_owns_thread_lock: bool = False
 
-    def mark_success(self) -> None:
-        """Mark the run as successful so cooldown persistence is enabled."""
-        self.success = True
+	def mark_success(self) -> None:
+		"""Mark the run as successful so cooldown persistence is enabled."""
+		self.success = True
 
-    def _persist_cooldown(self) -> None:
-        if not self.cooldown_path:
-            return
-        try:
-            _write_last_run(self.cooldown_path, time.time())
-        except OSError as exc:
-            _log.warning("Failed to write cooldown timestamp: %s", exc)
+	def _persist_cooldown(self) -> None:
+		if not self.cooldown_path:
+			return
+		try:
+			_write_last_run(self.cooldown_path, time.time())
+		except OSError as exc:
+			_log.warning("Failed to write cooldown timestamp: %s", exc)
 
-    def _close_fd(self) -> None:
-        try:
-            self.fd_obj.close()
-        except OSError as exc:
-            _log.warning("Failed to close speedtest lock fd: %s", exc)
+	def _close_fd(self) -> None:
+		try:
+			self.fd_obj.close()
+		except OSError as exc:
+			_log.warning("Failed to close speedtest lock fd: %s", exc)
 
-    def _release_thread_lock(self) -> None:
-        if not self._owns_thread_lock:
-            return
-        try:
-            _local_thread_lock.release()
-        except RuntimeError as exc:
-            _log.warning("Failed to release speedtest thread lock: %s", exc)
+	def _release_thread_lock(self) -> None:
+		if not self._owns_thread_lock:
+			return
+		try:
+			_local_thread_lock.release()
+		except RuntimeError as exc:
+			_log.warning("Failed to release speedtest thread lock: %s", exc)
 
-    def release(self) -> None:
-        """Release the lease (sync version).
+	def release(self) -> None:
+		"""Release the lease (sync version).
 
-        The fcntl lock and thread lock are always released even if writing the
-        cooldown timestamp fails (e.g. a RuntimeError from the symlink guard),
-        otherwise every later speedtest would be permanently rejected as busy.
-        """
-        if self.released:
-            return
+		The fcntl lock and thread lock are always released even if writing the
+		cooldown timestamp fails (e.g. a RuntimeError from the symlink guard),
+		otherwise every later speedtest would be permanently rejected as busy.
+		"""
+		if self.released:
+			return
 
-        try:
-            # 1. Record cooldown only after successful runs.
-            if self.success:
-                try:
-                    self._persist_cooldown()
-                except Exception:
-                    _log.warning("Failed to persist speedtest cooldown", exc_info=True)
-        finally:
-            # 2. Release fcntl lock, then 3. the thread lock - unconditionally.
-            try:
-                self._close_fd()
-            finally:
-                self._release_thread_lock()
-                self.released = True
+		try:
+			# 1. Record cooldown only after successful runs.
+			if self.success:
+				try:
+					self._persist_cooldown()
+				except Exception:
+					_log.warning("Failed to persist speedtest cooldown", exc_info=True)
+		finally:
+			# 2. Release fcntl lock, then 3. the thread lock - unconditionally.
+			try:
+				self._close_fd()
+			finally:
+				self._release_thread_lock()
+				self.released = True
 
-        # Note: asyncio.Lock must be released via 'async with' or manual release()
-        # if acquired. This class handles it in __aexit__.
+		# Note: asyncio.Lock must be released via 'async with' or manual release()
+		# if acquired. This class handles it in __aexit__.
 
-    async def __aenter__(self) -> SpeedtestRunLease:
-        return self
+	async def __aenter__(self) -> SpeedtestRunLease:
+		return self
 
-    async def __aexit__(self, *exc_info: object) -> None:
-        try:
-            if not self.released:
-                await asyncio.to_thread(self.release)
-        finally:
-            if self._async_acquired and _local_async_lock.locked():
-                _local_async_lock.release()
-                self._async_acquired = False
+	async def __aexit__(self, *exc_info: object) -> None:
+		try:
+			if not self.released:
+				await asyncio.to_thread(self.release)
+		finally:
+			if self._async_acquired and _local_async_lock.locked():
+				_local_async_lock.release()
+				self._async_acquired = False
 
-    def __enter__(self) -> SpeedtestRunLease:
-        return self
+	def __enter__(self) -> SpeedtestRunLease:
+		return self
 
-    def __exit__(self, *exc_info: object) -> None:
-        self.release()
-        if self._async_acquired:
-            # Caller misuse (an async-acquired lease used from a sync `with`
-            # block), but the class must not leave a permanent process-wide
-            # lock held just because it detected that misuse.
-            if _local_async_lock.locked():
-                _local_async_lock.release()
-            self._async_acquired = False
-            raise RuntimeError("Async speedtest lease used from sync context")
+	def __exit__(self, *exc_info: object) -> None:
+		self.release()
+		if self._async_acquired:
+			# Caller misuse (an async-acquired lease used from a sync `with`
+			# block), but the class must not leave a permanent process-wide
+			# lock held just because it detected that misuse.
+			if _local_async_lock.locked():
+				_local_async_lock.release()
+			self._async_acquired = False
+			raise RuntimeError("Async speedtest lease used from sync context")
 
 
 def acquire_speedtest_run_lease(
-    tsdb_dir: Path,
-    *,
-    cooldown_seconds: float = DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
-    update_cooldown: bool = True,
-    cancel_event: threading.Event | None = None,
+	tsdb_dir: Path,
+	*,
+	cooldown_seconds: float = DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
+	update_cooldown: bool = True,
+	cancel_event: threading.Event | None = None,
 ) -> SpeedtestRunLease:
-    """Synchronously acquire a speedtest lease (use in background threads)."""
-    thread_lock_acquired = False
+	"""Synchronously acquire a speedtest lease (use in background threads)."""
+	thread_lock_acquired = False
 
-    if cancel_event is not None and cancel_event.is_set():
-        raise TimeoutError("Speedtest acquisition cancelled")
+	if cancel_event is not None and cancel_event.is_set():
+		raise TimeoutError("Speedtest acquisition cancelled")
 
-    if not _local_thread_lock.acquire(blocking=False):
-        raise SpeedtestBusyError("Speed test already in progress (thread lock)")
-    thread_lock_acquired = True
+	if not _local_thread_lock.acquire(blocking=False):
+		raise SpeedtestBusyError("Speed test already in progress (thread lock)")
+	thread_lock_acquired = True
 
-    fd_obj: IO[bytes] | None = None
-    try:
-        if not _HAS_FCNTL:
-            raise RuntimeError("fcntl locking required but not available")
+	fd_obj: IO[bytes] | None = None
+	try:
+		if not _HAS_FCNTL:
+			raise RuntimeError("fcntl locking required but not available")
 
-        if cancel_event is not None and cancel_event.is_set():
-            raise TimeoutError("Speedtest acquisition cancelled")
+		if cancel_event is not None and cancel_event.is_set():
+			raise TimeoutError("Speedtest acquisition cancelled")
 
-        lock_path = _lock_path(tsdb_dir)
-        fd_obj = _open_lock_file(lock_path)
+		lock_path = _lock_path(tsdb_dir)
+		fd_obj = _open_lock_file(lock_path)
 
-        if cancel_event is not None and cancel_event.is_set():
-            raise TimeoutError("Speedtest acquisition cancelled")
+		if cancel_event is not None and cancel_event.is_set():
+			raise TimeoutError("Speedtest acquisition cancelled")
 
-        try:
-            fcntl.flock(fd_obj.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            fd_obj.close()
-            if exc.errno in (errno.EACCES, errno.EAGAIN):
-                raise SpeedtestBusyError("Speed test already in progress (process lock)") from None
-            raise
+		try:
+			fcntl.flock(fd_obj.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+		except OSError as exc:
+			fd_obj.close()
+			if exc.errno in (errno.EACCES, errno.EAGAIN):
+				raise SpeedtestBusyError("Speed test already in progress (process lock)") from None
+			raise
 
-        if cancel_event is not None and cancel_event.is_set():
-            raise TimeoutError("Speedtest acquisition cancelled")
+		if cancel_event is not None and cancel_event.is_set():
+			raise TimeoutError("Speedtest acquisition cancelled")
 
-        # Cooldown
-        last_run = _read_last_run(_cooldown_path(tsdb_dir))
-        if last_run is not None:
-            remaining = cooldown_seconds - (time.time() - last_run)
-            if remaining > 0:
-                raise SpeedtestCooldownError(remaining)
+		# Cooldown
+		last_run = _read_last_run(_cooldown_path(tsdb_dir))
+		if last_run is not None:
+			remaining = cooldown_seconds - (time.time() - last_run)
+			if remaining > 0:
+				raise SpeedtestCooldownError(remaining)
 
-        return SpeedtestRunLease(
-            fd_obj=fd_obj,
-            cooldown_path=_cooldown_path(tsdb_dir) if update_cooldown else None,
-            _owns_thread_lock=True,
-        )
-    except Exception:
-        if fd_obj and not fd_obj.closed:
-            fd_obj.close()
-        if thread_lock_acquired:
-            _local_thread_lock.release()
-        raise
+		return SpeedtestRunLease(
+			fd_obj=fd_obj,
+			cooldown_path=_cooldown_path(tsdb_dir) if update_cooldown else None,
+			_owns_thread_lock=True,
+		)
+	except Exception:
+		if fd_obj and not fd_obj.closed:
+			fd_obj.close()
+		if thread_lock_acquired:
+			_local_thread_lock.release()
+		raise
 
 
 def _release_orphaned_lease(task: asyncio.Task[SpeedtestRunLease]) -> None:
-    """Release a lease produced by a background acquisition nobody awaited."""
-    if task.cancelled():
-        return
-    try:
-        exc = task.exception()
-    except asyncio.CancelledError:
-        return
-    if exc is not None:
-        return
-    try:
-        task.result().release()
-    except Exception:
-        _log.warning("Failed to release orphaned speedtest lease", exc_info=True)
+	"""Release a lease produced by a background acquisition nobody awaited."""
+	if task.cancelled():
+		return
+	try:
+		exc = task.exception()
+	except asyncio.CancelledError:
+		return
+	if exc is not None:
+		return
+	try:
+		task.result().release()
+	except Exception:
+		_log.warning("Failed to release orphaned speedtest lease", exc_info=True)
 
 
 def _discard_pending_lease(task: asyncio.Task[SpeedtestRunLease]) -> None:
-    """Ensure a shielded acquisition can never leak its thread/process lock."""
-    if task.done():
-        _release_orphaned_lease(task)
-    else:
-        task.add_done_callback(_release_orphaned_lease)
+	"""Ensure a shielded acquisition can never leak its thread/process lock."""
+	if task.done():
+		_release_orphaned_lease(task)
+	else:
+		task.add_done_callback(_release_orphaned_lease)
 
 
 async def acquire_speedtest_run_lease_async(
-    tsdb_dir: Path,
-    *,
-    cooldown_seconds: float = DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
-    update_cooldown: bool = True,
+	tsdb_dir: Path,
+	*,
+	cooldown_seconds: float = DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
+	update_cooldown: bool = True,
 ) -> SpeedtestRunLease:
-    """Asynchronously acquire a speedtest lease (event-loop safe)."""
-    cancel_event = threading.Event()
-    async_lock_acquired = False
-    acquire_task: asyncio.Task[SpeedtestRunLease] | None = None
+	"""Asynchronously acquire a speedtest lease (event-loop safe)."""
+	cancel_event = threading.Event()
+	async_lock_acquired = False
+	acquire_task: asyncio.Task[SpeedtestRunLease] | None = None
 
-    # 1. Async task-level lock
-    if _local_async_lock.locked():
-        raise SpeedtestBusyError("Speed test already in progress (async lock)") from None
+	# 1. Async task-level lock
+	if _local_async_lock.locked():
+		raise SpeedtestBusyError("Speed test already in progress (async lock)") from None
 
-    await _local_async_lock.acquire()
-    async_lock_acquired = True
+	await _local_async_lock.acquire()
+	async_lock_acquired = True
 
-    try:
-        # 2. Delegate to the sync version for the thread/process locks. Run it in
-        #    a thread so the event loop is not blocked on flock/file I/O.
-        acquire_task = asyncio.create_task(
-            asyncio.to_thread(
-                acquire_speedtest_run_lease,
-                tsdb_dir,
-                cooldown_seconds=cooldown_seconds,
-                update_cooldown=update_cooldown,
-                cancel_event=cancel_event,
-            )
-        )
-        lease = await asyncio.wait_for(
-            asyncio.shield(acquire_task),
-            timeout=5.0,
-        )
-        lease._async_acquired = True  # noqa: SLF001  (the guard owns the lease object it just handed out and records how it was acquired)
-        return lease
-    except TimeoutError:
-        cancel_event.set()
-        if acquire_task is not None:
-            _discard_pending_lease(acquire_task)
-        if async_lock_acquired:
-            _local_async_lock.release()
-        raise SpeedtestBusyError("Speed test already in progress (acquisition timed out)") from None
-    except BaseException:
-        # Includes CancelledError: the shielded task may still be running or may
-        # already hold the thread/process lock, so make sure it can never leak a
-        # lease, and always drop the async lock.
-        cancel_event.set()
-        if acquire_task is not None:
-            _discard_pending_lease(acquire_task)
-        if async_lock_acquired:
-            _local_async_lock.release()
-        raise
+	try:
+		# 2. Delegate to the sync version for the thread/process locks. Run it in
+		#    a thread so the event loop is not blocked on flock/file I/O.
+		acquire_task = asyncio.create_task(
+			asyncio.to_thread(
+				acquire_speedtest_run_lease,
+				tsdb_dir,
+				cooldown_seconds=cooldown_seconds,
+				update_cooldown=update_cooldown,
+				cancel_event=cancel_event,
+			)
+		)
+		lease = await asyncio.wait_for(
+			asyncio.shield(acquire_task),
+			timeout=5.0,
+		)
+		lease._async_acquired = True  # noqa: SLF001  (the guard owns the lease object it just handed out and records how it was acquired)
+		return lease
+	except TimeoutError:
+		cancel_event.set()
+		if acquire_task is not None:
+			_discard_pending_lease(acquire_task)
+		if async_lock_acquired:
+			_local_async_lock.release()
+		raise SpeedtestBusyError("Speed test already in progress (acquisition timed out)") from None
+	except BaseException:
+		# Includes CancelledError: the shielded task may still be running or may
+		# already hold the thread/process lock, so make sure it can never leak a
+		# lease, and always drop the async lock.
+		cancel_event.set()
+		if acquire_task is not None:
+			_discard_pending_lease(acquire_task)
+		if async_lock_acquired:
+			_local_async_lock.release()
+		raise

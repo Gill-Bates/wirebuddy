@@ -37,14 +37,17 @@ from ..db.sqlite_auth import (
 	clear_login_attempts,
 	create_auth_token,
 	delete_auth_token,
+	delete_user_tokens,
 	get_user_by_token,
 	is_ip_locked,
 	record_failed_login,
 	refresh_auth_token,
 )
+from ..db.sqlite_runtime import transaction
 from ..db.sqlite_settings import get_gui_https_enabled
 from ..db.sqlite_users import (
 	confirm_user_otp,
+	consume_otp_step,
 	decrypt_otp_secret,
 	get_user_by_username,
 	update_last_login,
@@ -66,6 +69,7 @@ from ..utils.otp import (
 	serialize_recovery_codes,
 	use_recovery_code,
 	verify_otp,
+	verify_otp_step,
 )
 from ..utils.rate_limit import RATE_LIMIT_AUTH, limiter
 from .response import ok_response
@@ -94,6 +98,18 @@ _recovery_download_cache_lock = threading.Lock()
 # CSRF validation for UI mutations is enforced by CSRFMiddleware.
 _COOKIE_AUTH_PREFIXES = ("/ui", "/api", "/status", "/swagger")
 _COOKIE_AUTH_PREFIXES_NORMALIZED = tuple(prefix.rstrip("/") for prefix in _COOKIE_AUTH_PREFIXES)
+# The session cookie has Path=/, so the root and login pages also need to see it
+# (exact match only, not as prefixes) to detect an already signed-in user.
+_COOKIE_AUTH_EXACT_PATHS = frozenset({"/", "/login"})
+
+# Paths a user with a pending mandatory password change may still reach.
+_PASSWORD_CHANGE_ALLOWED_PATHS = frozenset(
+	{
+		"/ui/change-password",
+		"/api/users/me/complete-required-change",
+		"/api/logout",
+	}
+)
 
 
 def _is_trusted_proxy_ip(ip_text: str) -> bool:
@@ -105,6 +121,7 @@ def _is_trusted_proxy_ip(ip_text: str) -> bool:
 	module import order.
 	"""
 	from ..utils.config import get_config
+
 	return get_config().is_trusted_proxy_ip(ip_text)
 
 
@@ -192,10 +209,9 @@ def _consume_recovery_download(token: str, user_id: int) -> tuple[str, list[str]
 def _allow_cookie_auth_for_path(path: str) -> bool:
 	"""Return True if cookie-based auth is allowed for this request path."""
 	normalized = path.rstrip("/") or "/"
-	return any(
-		normalized == prefix or normalized.startswith(prefix + "/")
-		for prefix in _COOKIE_AUTH_PREFIXES_NORMALIZED
-	)
+	if normalized in _COOKIE_AUTH_EXACT_PATHS:
+		return True
+	return any(normalized == prefix or normalized.startswith(prefix + "/") for prefix in _COOKIE_AUTH_PREFIXES_NORMALIZED)
 
 
 def _get_client_ip(request: Request) -> str:
@@ -307,6 +323,7 @@ def _enforce_https_transport(conn: sqlite3.Connection, request: Request, context
 # Authentication Dependencies
 # ---------------------------------------------------------------------------
 
+
 def _lookup_user_by_token(
 	token: str,
 	conn: sqlite3.Connection,
@@ -328,6 +345,22 @@ def _lookup_user_by_token(
 		# Extend sliding-window expiry by 1 hour (capped at max_expires_at by DB function)
 		refresh_auth_token(conn, token, hours=1)
 	return user
+
+
+def is_password_change_pending(user: sqlite3.Row) -> bool:
+	"""Return True if the user must change the password before using the app."""
+	return coerce_db_bool(user["must_change_password"])
+
+
+def is_password_change_exempt_path(path: str) -> bool:
+	"""Return True if the path stays reachable while a password change is pending."""
+	return (path.rstrip("/") or "/") in _PASSWORD_CHANGE_ALLOWED_PATHS
+
+
+def _enforce_password_change(request: Request, user: sqlite3.Row) -> None:
+	"""Reject API use while an admin-reset or bootstrap password change is pending."""
+	if is_password_change_pending(user) and not is_password_change_exempt_path(request.url.path):
+		raise HTTPException(status_code=428, detail="Password change required")
 
 
 def get_current_user_optional(
@@ -371,6 +404,7 @@ def get_current_user(
 		if user:
 			if not user["is_active"]:
 				raise HTTPException(status_code=403, detail="Account disabled")
+			_enforce_password_change(request, user)
 			return user
 		raise HTTPException(status_code=401, detail="Invalid or expired token")
 
@@ -383,6 +417,7 @@ def get_current_user(
 			if user:
 				if not user["is_active"]:
 					raise HTTPException(status_code=403, detail="Account disabled")
+				_enforce_password_change(request, user)
 				return user
 
 	raise HTTPException(status_code=401, detail="Not authenticated")
@@ -398,6 +433,7 @@ def require_admin(user_row: sqlite3.Row = Depends(get_current_user)) -> sqlite3.
 # ---------------------------------------------------------------------------
 # Private Auth Helpers
 # ---------------------------------------------------------------------------
+
 
 def _sanitize_log_username(raw: str) -> str:
 	"""Strip control characters and truncate for safe log output."""
@@ -431,7 +467,9 @@ def _record_failed_and_raise(
 	if is_now_locked:
 		_log.warning(
 			"LOGIN_FAILED ip=%s username=%s locked_for=%ds",
-			client_ip, log_username, lockout_secs,
+			client_ip,
+			log_username,
+			lockout_secs,
 		)
 		raise HTTPException(
 			status_code=429,
@@ -539,6 +577,7 @@ def _issue_session(
 # ---------------------------------------------------------------------------
 # Auth Endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.post("/login")
 @limiter.limit(RATE_LIMIT_AUTH)
@@ -648,7 +687,9 @@ def verify_mfa(
 	# Decrypt OTP secret for verification (stored encrypted at rest)
 	raw_secret = decrypt_otp_secret(user["otp_secret"])
 	if raw_secret:
-		otp_valid = verify_otp(raw_secret, payload.code)
+		otp_step = verify_otp_step(raw_secret, payload.code)
+		# A code is single-use: only a step newer than the last accepted one passes.
+		otp_valid = otp_step is not None and consume_otp_step(conn, user["id"], otp_step)
 	else:
 		# Constant-time work to prevent timing oracle; always reject.
 		# Decryption failure indicates key rotation, corruption, or migration error.
@@ -775,6 +816,7 @@ def get_otp_setup_info(request: Request, user: sqlite3.Row = Depends(get_current
 @limiter.limit(RATE_LIMIT_AUTH)
 def confirm_my_otp_setup(
 	request: Request,
+	response: Response,
 	payload: OTPConfirmRequest,
 	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(get_current_user),
@@ -782,15 +824,25 @@ def confirm_my_otp_setup(
 	"""Confirm OTP setup for the current user."""
 	plaintext_secret = _require_otp_setup_pending(user)
 
-	if not verify_otp(plaintext_secret, payload.code):
+	otp_step = verify_otp_step(plaintext_secret, payload.code)
+	if otp_step is None or not consume_otp_step(conn, user["id"], otp_step):
 		raise HTTPException(status_code=401, detail="Invalid OTP code")
 
 	recovery_codes = generate_recovery_codes()
 	serialized_codes = serialize_recovery_codes(recovery_codes)
-	if not confirm_user_otp(conn, user["id"], serialized_codes):
-		raise HTTPException(status_code=500, detail="Unable to enable OTP")
+	client_ip = _get_client_ip(request)
+	# Gaining a second factor must invalidate every session that predates it, or
+	# a token stolen before MFA was enabled would keep bypassing it. The caller
+	# still needs an authenticated session for the recovery-code download that
+	# follows, so revoke-and-reissue happens in one transaction.
+	with transaction(conn, immediate=True):
+		if not confirm_user_otp(conn, user["id"], serialized_codes):
+			# Lost the race against a parallel confirm: keep sessions and recovery codes
+			raise HTTPException(status_code=409, detail="OTP is already enabled")
+		delete_user_tokens(conn, user["id"])
+		_issue_session(conn, request, response, int(user["id"]), client_ip)
 
-	_log.info("USER_OTP_SELF_CONFIRMED user_id=%d username=%s", user["id"], user["username"])
+	_log.info("USER_OTP_SELF_CONFIRMED user_id=%d username=%s sessions_revoked=1", user["id"], user["username"])
 	recovery_download_token = store_recovery_download(user["id"], user["username"], recovery_codes)
 	# SECURITY: Do not return plaintext recovery codes in JSON - they should only
 	# be accessed via the secure ZIP download endpoint to prevent logging/caching
@@ -822,12 +874,7 @@ def download_my_recovery_codes_zip(
 	safe_username = re.sub(r"[^A-Za-z0-9_-]", "_", username) or "user"
 	text_name = f"wirebuddy-recovery-codes-{safe_username}.txt"
 	zip_name = f"wirebuddy-recovery-codes-{safe_username}.zip"
-	content = (
-		f"WireBuddy Recovery Codes for {safe_username}\n"
-		"\n"
-		+ "\n".join(codes)
-		+ "\n"
-	)
+	content = f"WireBuddy Recovery Codes for {safe_username}\n\n" + "\n".join(codes) + "\n"
 
 	buf = io.BytesIO()
 	with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:

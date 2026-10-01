@@ -54,6 +54,8 @@ if (!WBShared?.RefreshScheduler || !WBShared.clearElement || !WBShared.isAbortEr
 }
 const dbg = WBShared.createDebugLogger('Dashboard', DEBUG);
 const clearElement = WBShared.clearElement;
+const setChartSummary = WBShared.setChartSummary;
+const describeSeries = WBShared.describeSeries;
 const isAbortError = WBShared.isAbortError;
 const formatBytes = WBShared.formatBytes;
 const formatTrafficMetric = WBShared.formatTrafficMetric;
@@ -142,7 +144,7 @@ function setTrafficMetric(el, bytes, direction) {
 function formatDashboardCount(online, total) {
     return online === 0 && total === 0
         ? EMPTY_DASHBOARD_METRIC
-        : `${online}/${total}`;
+        : `${online} / ${total}`;
 }
 
 function setBandwidthMetric(downloadMbit, uploadMbit) {
@@ -1355,6 +1357,7 @@ async function refreshSpeedtestChart(signal) {
         if (!history.length) {
             if (canvas) canvas.hidden = true;
             if (emptyEl) emptyEl.classList.remove('d-none');
+            setChartSummary('speedtest-chart-summary', 'No bandwidth history available.');
             resetBandwidthMetric();
             return true;
         }
@@ -1445,6 +1448,14 @@ async function refreshSpeedtestChart(signal) {
             speedtestChart.options.scales.y1.display = !showAllNodes;
         }
         speedtestChart.update();
+
+        // Text alternative for the canvas (see WBShared.setChartSummary).
+        const dlSeries = describeSeries('Download', okHistory.map((h) => h.download_mbit), 'Mbit/s');
+        const ulSeries = describeSeries('Upload', okHistory.map((h) => h.upload_mbit), 'Mbit/s');
+        setChartSummary(
+            'speedtest-chart-summary',
+            `Bandwidth history, ${okHistory.length} measurement(s). ${dlSeries} ${ulSeries}`.trim(),
+        );
 
         // Update KPI card
         const latest = okHistory[okHistory.length - 1];

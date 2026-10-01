@@ -36,4 +36,3 @@ def ok_response(
 	is known at the call site.
 	"""
 	return OkResponse[Any](message=message, data=data).model_dump()
-

@@ -3,28 +3,6 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-export const BrowserAdapters = {
-    chromium: {
-        name: 'chromium',
-        async launch(playwright, options = {}) {
-            return playwright.chromium.launch({ headless: true, ...options });
-        },
-    },
-    webkit: {
-        name: 'webkit',
-        async launch(playwright, options = {}) {
-            return playwright.webkit.launch({ headless: true, ...options });
-        },
-    },
-    firefox: {
-        name: 'firefox',
-        async launch(playwright, options = {}) {
-            return playwright.firefox.launch({ headless: true, ...options });
-        },
-    },
-};
-
-export function getBrowserLauncher(browserName) {
-    const adapter = BrowserAdapters[String(browserName || '').toLowerCase()] || BrowserAdapters.chromium;
-    return async (playwright, options = {}) => adapter.launch(playwright, options);
-}
+// Re-export so the runtime and the audit-runner facade cannot drift apart;
+// the adapters themselves live in lib/browsers/launcher.mjs.
+export { BrowserAdapters, getBrowserLauncher } from '../../browsers/launcher.mjs';

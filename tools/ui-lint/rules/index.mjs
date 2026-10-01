@@ -21,7 +21,8 @@ export async function loadRules({ manifest = RULE_MANIFEST } = {}) {
     return ruleLoadPromise;
 }
 
-export const loadedRules = await loadRules();
+// Top-level await: importing this module must leave all rules registered.
+await loadRules();
 
 // Export registry functions for convenience
 export {

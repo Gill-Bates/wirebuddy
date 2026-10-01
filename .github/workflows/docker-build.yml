@@ -1200,7 +1200,16 @@ jobs:
               if (startIndex === -1) {
                 return null;
               }
-              return markdown.slice(startIndex, endIndex).trim();
+              // The changelog wraps everything after the newest entry in a
+              // <details><summary>Previous versions...</summary> block so it
+              // collapses on GitHub. That markup has no business in release
+              // notes, so strip it if the newest version's section happens to
+              // include the opening tag (it always does, since the block is
+              // opened right after the latest entry's bullets).
+              return markdown.slice(startIndex, endIndex)
+                .replace(/<details[^>]*>\s*<summary>.*?<\/summary>/gs, '')
+                .replace(/<\/details>/g, '')
+                .trim();
             }
 
             let changelogSection = null;

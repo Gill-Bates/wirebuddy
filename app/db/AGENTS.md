@@ -9,7 +9,7 @@ Persistence layer. SQLite access is split into `sqlite_*.py` modules by domain (
 ## Key Files
 | File | Description |
 |------|-------------|
-| `sqlite_runtime.py` | Connection factory, per-thread connections, datetime adapters, WAL checkpoint, `transaction()` context manager with savepoints |
+| `sqlite_runtime.py` | Connection factory, per-thread connections, `db_call()`/`db_call_or()` one-shot call wrappers, datetime adapters, WAL checkpoint, `transaction()` context manager with savepoints |
 | `sqlite_schema.py` | `init_schema` (tables: users, passkeys, passkey_challenges, auth_tokens, settings, schema_version, login_attempts, peers, interfaces, nodes, node_commands, node_interfaces), migrations, default settings, `ensure_default_admin` |
 | `sqlite_settings.py` | Key/value settings, typed helpers (bool/JSON/retention), validation, missing-setting recovery, blocklist and DNS upstream settings |
 | `sqlite_users.py` | User CRUD, OTP secret encryption, recovery codes, auth method, passkey onboarding, last-admin protection |
@@ -18,7 +18,7 @@ Persistence layer. SQLite access is split into `sqlite_*.py` modules by domain (
 | `sqlite_interfaces.py` | WireGuard interface CRUD with validation |
 | `sqlite_peers.py` | Peer reads, pagination, last-seen/cumulative transfer updates, IP allocation |
 | `sqlite_peers_mutations.py` | Peer create/update/delete with validation and secret encryption |
-| `sqlite_nodes.py` | Node CRUD, enrollment, secret rotation, heartbeat, tunnel peer, metric sequence tracking |
+| `sqlite_nodes.py` | Node CRUD, enrollment, secret rotation, heartbeat, tunnel peer, per-interface node keypairs (`create_node_interface`/`delete_node_interfaces`), metric sequence tracking |
 | `tsdb.py` | JSONL TSDB: `MetricPoint`, append/query, read-write and file locks, rotation/gzip archives, retention pruning, legacy layout migration |
 
 ## For AI Agents

@@ -208,18 +208,6 @@ export function buildVisualPolicy() {
                 },
             }),
             thresholdFindingRule({
-                id: 'dashboard-top-row-variance',
-                type: 'dashboard-top-row-variance',
-                category: 'layout',
-                severity: 'warning',
-                metricPath: 'metrics.spacing.dashboardTopRowAlignment.variance',
-                threshold: () => 1,
-                legacyKey: (context, value) => `dashboardTopRowVariance=${value}`,
-                message: 'Dashboard top row variance detected',
-                explanation: 'The top-row card heights do not match the expected alignment.',
-                remediation: 'Equalize the row heights or align the row content contract.',
-            }),
-            thresholdFindingRule({
                 id: 'kpi-height-variance',
                 type: 'kpi-height-variance',
                 category: 'layout',

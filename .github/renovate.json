@@ -13,7 +13,7 @@
     "rebaseWhen": "behind-base-branch",
     "commitMessagePrefix": "chore(deps):",
     "prConcurrentLimit": 3,
-    "prCreationLimit": 2,
+    "prHourlyLimit": 2,
     "docker": {
         "enabled": true
     },
@@ -49,7 +49,7 @@
         {
             "description": "Python dependencies: group and review",
             "matchManagers": [
-                "pip_requirements"
+                "pep621"
             ],
             "groupName": "python-dependencies",
             "automerge": false,

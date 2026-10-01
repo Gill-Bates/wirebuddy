@@ -1052,8 +1052,7 @@ if (!peersApp) {
 
             if (levelBadgeLabel) {
                 const badge = document.createElement('span');
-                badge.className = 'badge text-bg-secondary ms-1';
-                badge.style.cssText = 'font-size: 0.65rem; line-height: 1.2; vertical-align: middle;';
+                badge.className = 'badge text-bg-secondary ms-1 wb-badge-compact';
                 badge.textContent = levelBadgeLabel;
                 label.appendChild(badge);
             }

@@ -20,7 +20,6 @@ class _UnboundNamespace:
 	"""Unified namespace for backwards compatibility with app.dns.unbound."""
 
 	# Process management
-	invalidate_running_cache = staticmethod(process.invalidate_running_cache)
 	is_running = staticmethod(process.is_running)
 	is_unbound_installed = staticmethod(process.is_unbound_installed)
 	start = staticmethod(process.start)
@@ -28,14 +27,12 @@ class _UnboundNamespace:
 	restart = staticmethod(process.restart)
 	reload_config = staticmethod(process.reload_config)
 	watchdog = staticmethod(process.watchdog)
-	reset_watchdog_failures = staticmethod(process.reset_watchdog_failures)
 
 	# Config generation
 	is_dnssec_available = staticmethod(config.is_dnssec_available)
-	generate_config = staticmethod(config.generate_config)
+	get_interface_ipv4_gateways = staticmethod(config.get_interface_ipv4_gateways)
 	get_interface_ipv6_gateways = staticmethod(config.get_interface_ipv6_gateways)
 	write_config = staticmethod(config.write_config)
-	write_custom_client_rules = staticmethod(config.write_custom_client_rules)
 	write_local_data_overrides = staticmethod(config.write_local_data_overrides)
 	write_peer_tags = staticmethod(config.write_peer_tags)
 
@@ -44,10 +41,8 @@ class _UnboundNamespace:
 	get_blocklist_count = staticmethod(blocklist.get_blocklist_count)
 	get_blocklist_source_counts = staticmethod(blocklist.get_blocklist_source_counts)
 	get_blocked_domains = staticmethod(blocklist.get_blocked_domains)
-	is_domain_blocked = staticmethod(blocklist.is_domain_blocked)
 
 	# Constants (for easy access)
-	BLOCKLIST_REGISTRY = constants.BLOCKLIST_REGISTRY
 	QUERY_LOG = constants.QUERY_LOG
 	get_blocklist_file = staticmethod(constants.get_blocklist_file)
 

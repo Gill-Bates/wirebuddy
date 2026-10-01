@@ -11,7 +11,7 @@ One stylesheet per page, linked from that template's `extra_css` block after the
 | `dashboard.css` | Dashboard KPI fragments; imports `components/kpi-card.css` and `../dashboard.css` |
 | `dns.css`, `peers.css`, `traffic.css`, `users.css`, `login.css` | Wrappers: only `@import` lines (kpi-card / responsive-table / wb-state plus `../<page>.css`) |
 | `nodes.css` | Nodes page: flag sizing vars, dropdowns escaping table clipping, FQDN layout |
-| `settings.css` | Settings tabs (large); more settings CSS is inline in `templates/settings/_css.html` |
+| `settings.css` | Settings tabs (large); all settings styles live here (the `templates/settings/` partials carry no `<style>`) |
 | `about.css` | About page cards and changelog markdown styling |
 | `change-password.css`, `otp-setup.css`, `passkey-setup.css` | Forced-setup/auth pages built on `auth_base.html`; card width/min-height and inline-style replacements |
 

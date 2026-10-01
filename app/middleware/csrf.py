@@ -28,12 +28,14 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 # API enforcement is only applied for cookie-authenticated browser requests.
 CSRF_PREFIXES = ("/ui/", "/login", "/api/")
 _AUTH_COOKIE_NAMES = ("auth_token",)
-_CSRF_EXEMPT_API_PATHS = frozenset({
-	"/api/login",
-	"/api/mfa/verify",
-	"/api/passkeys/login/start",
-	"/api/passkeys/login/finish",
-})
+_CSRF_EXEMPT_API_PATHS = frozenset(
+	{
+		"/api/login",
+		"/api/mfa/verify",
+		"/api/passkeys/login/start",
+		"/api/passkeys/login/finish",
+	}
+)
 _CSRF_FORM_MAX_BYTES = 16_384
 
 
@@ -96,11 +98,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 		configured = [item.strip() for item in origins_raw.split(",") if item.strip()]
 		if public_origin:
 			configured.append(public_origin)
-		self._allowed_origins = {
-			origin_tuple
-			for item in configured
-			if (origin_tuple := _origin_tuple(urlparse(item))) is not None
-		}
+		self._allowed_origins = {origin_tuple for item in configured if (origin_tuple := _origin_tuple(urlparse(item))) is not None}
 
 	def _requires_csrf(self, path: str) -> bool:
 		"""Check if path requires CSRF protection."""
@@ -153,17 +151,10 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 		request.state.csrf_token = csrf_token
 
 		# 3. Validation for unsafe methods on protected paths
-		if (
-			request.method not in SAFE_METHODS
-			and self._requires_csrf(request.url.path)
-			and self._is_cookie_authenticated_api_request(request)
-		):
+		if request.method not in SAFE_METHODS and self._requires_csrf(request.url.path) and self._is_cookie_authenticated_api_request(request):
 			# Origin check
 			if not self._check_origin_or_referer(request):
-				return JSONResponse(
-					content={"detail": "Cross-origin request blocked"},
-					status_code=403
-				)
+				return JSONResponse(content={"detail": "Cross-origin request blocked"}, status_code=403)
 
 			# CSRF token validation (constant-time comparison)
 			submitted_token = request.headers.get("X-CSRF-Token")
@@ -200,10 +191,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 					)
 
 			if not submitted_token or not secrets.compare_digest(csrf_token, submitted_token):
-				return JSONResponse(
-					content={"detail": "CSRF token missing or invalid"},
-					status_code=403
-				)
+				return JSONResponse(content={"detail": "CSRF token missing or invalid"}, status_code=403)
 
 		# 4. Process request
 		response = await call_next(request)

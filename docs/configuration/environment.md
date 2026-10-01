@@ -113,7 +113,8 @@ WIREBUDDY_HOST=127.0.0.1
 Docker-entrypoint override for the GUI port. Valid range: `1`–`65535`.
 
 Without this override, the entrypoint uses the database setting **HTTP Port
-(GUI)**. Fresh-installation default: `8000`.
+(GUI)**. Fresh-installation default: `8000`. The supplied Compose file always
+sets `WIREBUDDY_PORT`, so there the database setting has no effect.
 
 ```bash
 WIREBUDDY_PORT=8080

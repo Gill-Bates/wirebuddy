@@ -55,6 +55,11 @@ docker compose --env-file .env -f docker/docker-compose.yml logs -f wirebuddy
 Open `http://<server-ip>:8000` and sign in as `admin` with the generated
 temporary password from the log. The first login requires a password change.
 
+!!! warning "First sign-in is plain HTTP"
+    Until HTTPS is enabled, the bootstrap password and session travel in clear
+    text. Sign in from the host itself, over an SSH tunnel
+    (`ssh -L 8000:127.0.0.1:8000 <server>`) or from a trusted network.
+
 !!! note "Why the full Compose command?"
     The Compose file lives in `docker/`, while `.env` lives in the repository
     root. Passing both paths explicitly makes configuration resolution
@@ -72,7 +77,7 @@ The supplied Compose service uses:
 - `/dev/net/tun`
 - a 40-second stop grace period
 - bounded JSON-file log rotation
-- a liveness health check against `/health`
+- a readiness health check against `/ready`
 
 Do not switch the service to bridge or macvlan networking. WireBuddy verifies
 host networking at startup because interface management and conntrack
@@ -101,7 +106,9 @@ backup and restore controls under **Settings → Backup**.
 The GUI port and localhost-only setting are normally managed under
 **Settings → General → Server Settings** and take effect after restart.
 
-Docker deployments can override them in `.env`:
+Docker deployments can override them in `.env`. `WIREBUDDY_PORT` always takes
+precedence, and the supplied Compose file always sets it (default `8000`), so
+under Compose change the port here rather than in the Settings:
 
 ```bash
 WIREBUDDY_HOST=0.0.0.0
@@ -166,8 +173,10 @@ Two unauthenticated probes are available:
 - `/ready`: readiness including database, scheduler, and expected DNS
   ingestion state
 
-The supplied Compose file uses `/health`. External orchestration should prefer
-`/ready` when it must wait until application services are operational.
+The supplied Compose file and the image health check use `/ready`, so the
+container is reported unhealthy when the database, the scheduler or the DNS log
+ingestion stops working. Use `/health` where you only need to know that the
+process answers.
 
 ## Updating
 

@@ -63,7 +63,8 @@ def _state(conn: sqlite3.Connection) -> tuple[int, int]:
 	return tokens, sign_count
 
 
-def test_plaintext_passkey_login_is_rejected_when_https_is_required(conn, passkey_user, monkeypatch):
+@pytest.mark.usefixtures("passkey_user")
+def test_plaintext_passkey_login_is_rejected_when_https_is_required(conn, monkeypatch):
 	monkeypatch.setattr(auth, "_is_https", lambda request: False)
 	monkeypatch.setattr(auth, "get_gui_https_enabled", lambda conn: True)
 
@@ -75,7 +76,8 @@ def test_plaintext_passkey_login_is_rejected_when_https_is_required(conn, passke
 	assert _state(conn) == (0, 0)
 
 
-def test_https_passkey_login_sets_the_same_cookie_as_password_login(conn, passkey_user, monkeypatch):
+@pytest.mark.usefixtures("passkey_user")
+def test_https_passkey_login_sets_the_same_cookie_as_password_login(conn, monkeypatch):
 	monkeypatch.setattr(auth, "_is_https", lambda request: True)
 
 	cookie = _login(conn).headers["set-cookie"]

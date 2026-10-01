@@ -137,23 +137,11 @@
     const isAbortError = WBShared.isAbortError;
     const formatTrafficMetric = WBShared.formatTrafficMetric;
     const chartEmptyState = WBShared.chartEmptyState;
+    const setChartSummary = WBShared.setChartSummary;
+    const describeSeries = WBShared.describeSeries;
 
     function getRangeLabel(rangeKey) {
         return RANGE_LABELS[rangeKey] ?? rangeKey;
-    }
-
-    function countryCodeToFlagEmoji(countryCode) {
-        if (!/^[a-z]{2}$/i.test(countryCode)) return '';
-
-        try {
-            return countryCode
-                .toUpperCase()
-                .split('')
-                .map((char) => String.fromCodePoint(127397 + char.charCodeAt(0)))
-                .join('');
-        } catch {
-            return '';
-        }
     }
 
     function isValidPeerFilterValue(value) {
@@ -670,7 +658,7 @@
      * @param {Function} config.createFirstCell - Function to create the first cell (flag or ASN badge)
      * @param {Function} config.createNameCell - Function to create the name cell
      * @param {Function} config.buildRenderKey - Function to build the deduplication key
-     * @param {Object} config.renderKey - Object with get/set for last render key
+     * @param {Object} config.renderKey - Mutable holder `{ current: string }` for the last render key
      * @param {string} config.itemNoun - Singular noun for summary (e.g., 'country', 'provider')
      * @param {string} config.itemNounPlural - Plural noun for summary
     * @param {boolean} config.hasPeerData - Whether any item has peer_names data;
@@ -691,7 +679,7 @@
 
         if (items.length === 0) {
             const emptyKey = `empty:${peerFilter}`;
-            renderKey.set(emptyKey);
+            renderKey.current = emptyKey;
             if (content) content.classList.add('d-none');
             if (empty) {
                 empty.classList.remove('d-none');
@@ -1083,6 +1071,12 @@
         if (trafficCombinedChart) {
             trafficCombinedChart.data.labels = labels;
             trafficCombinedChart.data.datasets = datasets;
+            // Text alternative for the canvas: one sentence per plotted series.
+            setChartSummary(
+                'traffic-combined-chart-summary',
+                `Traffic over time in ${unit}, ${labels.length} sample(s). ` +
+                    datasets.map((d) => describeSeries(d.label, d.data, unit)).filter(Boolean).join(' '),
+            );
             if (trafficCombinedChart.options?.scales?.y?.title) {
                 trafficCombinedChart.options.scales.y.title.text = unit;
             }

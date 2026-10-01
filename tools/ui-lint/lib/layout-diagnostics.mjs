@@ -3,192 +3,6 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-function selectorForElement(element) {
-    if (!(element instanceof Element)) return null;
-    if (element.id) return `#${element.id}`;
-
-    const component = element.getAttribute('data-ui-component');
-    if (component) return `[data-ui-component="${component}"]`;
-
-    const action = element.getAttribute('data-action');
-    if (action) return `[data-action="${action}"]`;
-
-    const classes = Array.from(element.classList || []).slice(0, 2);
-    if (classes.length > 0) {
-        return `.${classes.join('.')}`;
-    }
-
-    return element.tagName.toLowerCase();
-}
-
-function isInteractiveElement(element) {
-    const tag = element.tagName.toLowerCase();
-    return tag === 'button'
-        || tag === 'select'
-        || tag === 'textarea'
-        || (tag === 'a' && element.hasAttribute('href'))
-        || element.getAttribute('role') === 'button'
-        || element.hasAttribute('data-action')
-        || element.hasAttribute('aria-label');
-}
-
-function looksLikePrimaryAction(element) {
-    const importance = element.getAttribute('data-ui-importance');
-    if (importance === 'primary') return true;
-
-    const label = `${element.getAttribute('aria-label') || ''} ${element.textContent || ''}`.toLowerCase();
-    return /\b(primary|save|submit|confirm|apply|delete|remove|more actions)\b/.test(label);
-}
-
-function describeScrollableAncestor(element, tolerance) {
-    let current = element.parentElement;
-    while (current) {
-        const style = window.getComputedStyle(current);
-        const overflowX = style.overflowX;
-        const overflowY = style.overflowY;
-        const scrollable = ['auto', 'scroll', 'overlay'].includes(overflowX) || ['auto', 'scroll', 'overlay'].includes(overflowY);
-        if (scrollable && current.scrollWidth > current.clientWidth + tolerance) {
-            return {
-                selector: selectorForElement(current),
-                overflowX,
-                overflowY,
-                scrollWidth: Math.round(current.scrollWidth),
-                clientWidth: Math.round(current.clientWidth),
-            };
-        }
-        current = current.parentElement;
-    }
-
-    return null;
-}
-
-function rootCauseCandidate(element, contentRoot, tolerance) {
-    let current = element.parentElement;
-    while (current && current !== contentRoot.parentElement) {
-        const style = window.getComputedStyle(current);
-        const display = style.display;
-        const flexWrap = style.flexWrap;
-        const whiteSpace = style.whiteSpace;
-        const minWidth = style.minWidth;
-        const position = style.position;
-        const overflowX = style.overflowX;
-        const gridTemplateColumns = style.gridTemplateColumns;
-
-        if (display === 'flex' && flexWrap === 'nowrap') {
-            return {
-                selector: selectorForElement(current),
-                reason: 'flex-nowrap',
-                display,
-                flexWrap,
-                whiteSpace,
-                minWidth,
-                position,
-                overflowX,
-                gridTemplateColumns,
-            };
-        }
-
-        if (display === 'grid' && /\b(auto|minmax|repeat)\b/i.test(gridTemplateColumns) && current.scrollWidth > current.clientWidth + tolerance) {
-            return {
-                selector: selectorForElement(current),
-                reason: 'grid-intrinsic',
-                display,
-                flexWrap,
-                whiteSpace,
-                minWidth,
-                position,
-                overflowX,
-                gridTemplateColumns,
-            };
-        }
-
-        if (whiteSpace === 'nowrap' && current.scrollWidth > current.clientWidth + tolerance) {
-            return {
-                selector: selectorForElement(current),
-                reason: 'nowrap',
-                display,
-                flexWrap,
-                whiteSpace,
-                minWidth,
-                position,
-                overflowX,
-                gridTemplateColumns,
-            };
-        }
-
-        if ((display === 'flex' || display === 'grid') && minWidth === 'auto') {
-            return {
-                selector: selectorForElement(current),
-                reason: 'missing-min-width-0',
-                display,
-                flexWrap,
-                whiteSpace,
-                minWidth,
-                position,
-                overflowX,
-                gridTemplateColumns,
-            };
-        }
-
-        if (['hidden', 'clip'].includes(overflowX) && current.scrollWidth > current.clientWidth + tolerance) {
-            return {
-                selector: selectorForElement(current),
-                reason: 'clipped-overflow',
-                display,
-                flexWrap,
-                whiteSpace,
-                minWidth,
-                position,
-                overflowX,
-                gridTemplateColumns,
-            };
-        }
-
-        if (['fixed', 'sticky', 'absolute'].includes(position)) {
-            return {
-                selector: selectorForElement(current),
-                reason: `${position}-position`,
-                display,
-                flexWrap,
-                whiteSpace,
-                minWidth,
-                position,
-                overflowX,
-                gridTemplateColumns,
-            };
-        }
-
-        current = current.parentElement;
-    }
-
-    return null;
-}
-
-export function findOverflowRootCause(element, { tolerance = 2 } = {}) {
-    if (!(element instanceof Element)) return null;
-
-    const contentRoot = document.querySelector('main.main-content') || document.body;
-    return rootCauseCandidate(element, contentRoot, tolerance);
-}
-
-export function captureOverflowRegion(element) {
-    if (!(element instanceof Element)) return null;
-
-    const rect = element.getBoundingClientRect();
-    return {
-        selector: selectorForElement(element),
-        component: element.getAttribute('data-ui-component') || null,
-        clip: {
-            left: Math.round(rect.left),
-            top: Math.round(rect.top),
-            right: Math.round(rect.right),
-            bottom: Math.round(rect.bottom),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height),
-        },
-    };
-}
-
 export function collectOverflowDiagnostics({ allowedSelectors = [], tolerance = 2, browser = null, scope = null } = {}) {
     const contentRoot = document.querySelector('main.main-content') || document.body;
     const viewportWidth = window.innerWidth;
@@ -450,12 +264,15 @@ export function classifyOverflowIssue(issue, context = {}) {
     let kind = 'horizontal-overflow';
     if (primaryAction || (interactive && hasPageOverflow)) {
         kind = 'clipped-action';
+    } else if (browser === 'webkit' && (rootReason === 'grid-intrinsic' || rootReason === 'missing-min-width-0')) {
+        // Must precede the generic flex/grid branches below: both of them match
+        // these two reasons, so testing WebKit afterwards could never win and
+        // this kind was unreachable.
+        kind = 'browser-regression';
     } else if (rootReason === 'flex-nowrap' || rootReason === 'missing-min-width-0' || rootReason === 'nowrap') {
         kind = 'flex-overflow';
     } else if (rootReason === 'grid-intrinsic') {
         kind = 'grid-conflict';
-    } else if (browser === 'webkit' && (rootReason === 'grid-intrinsic' || rootReason === 'missing-min-width-0')) {
-        kind = 'browser-regression';
     } else if (rootReason === 'clipped-overflow') {
         kind = 'clipped-action';
     } else if (rootReason === 'fixed-position' || rootReason === 'absolute-position' || rootReason === 'sticky-position') {

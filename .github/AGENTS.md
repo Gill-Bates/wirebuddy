@@ -3,17 +3,18 @@
 # .github
 
 ## Purpose
-GitHub repository automation and assets: CI/CD workflows (PR gate, multi-arch Docker release, documentation deployment, Playwright UI audit), Renovate dependency policy, README screenshots and logos, and the Copilot-style agent prompt files used for code review and Python development.
+GitHub repository automation and assets: CI/CD workflows (PR gate, multi-arch Docker release, documentation deployment, Playwright UI audit), Renovate dependency policy, README screenshots and logos, and the Copilot-style agent prompt files used for code review, Python development and slop cleanup.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `renovate.json` | Renovate config: `config:best-practices`, weekly schedule (before 6am Monday, Europe/Berlin), max 3 open PRs; auto-merges minor/patch GitHub Actions with digest pinning and 3-day release age, pins Docker digests, groups Python deps for manual review, keeps trivy-action always current, majors labelled `breaking-change`, vulnerability alerts labelled `security` |
+| `actionlint.yaml` | actionlint config declaring the `ubuntu-26.04` and `ubuntu-26.04-arm` runner labels that older actionlint releases do not know |
+| `renovate.json` | Renovate config: `config:best-practices`, weekly schedule (before 6am Monday, Europe/Berlin), max 3 open PRs; auto-merges minor/patch GitHub Actions with digest pinning and 3-day release age, pins Docker digests, groups Python deps from `pyproject.toml` via the `pep621` manager (not auto-merged, labelled `python`), keeps trivy-action always current, majors labelled `breaking-change`, vulnerability alerts labelled `security` |
 
 ## Subdirectories
 | Directory | Purpose |
 |-----------|---------|
-| `agents/` | Agent prompt files (review suite and PythonDev), see `agents/AGENTS.md` |
+| `agents/` | Agent prompt files (review suite, PythonDev, ai-slop-cleaner), see `agents/AGENTS.md` |
 | `workflows/` | GitHub Actions pipelines: `ci.yml` (PR gate), `docker-build.yml` (tagged release), `docs-build.yml` (Pages), `ui-audit.yml` (non-blocking Playwright audit). See `workflows/AGENTS.md` |
 | `img/` | README screenshots (`screen_1.jpeg`–`screen_6.jpeg`) and logos (`wirebuddy_black.svg`, `wirebuddy_white.svg`); binary/asset only, no AGENTS.md |
 

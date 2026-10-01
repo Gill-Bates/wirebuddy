@@ -59,8 +59,6 @@ __all__ = [
 	"canonical_rule_text",
 	"get_custom_allow_rules",
 	"get_custom_block_rules",
-	"is_domain_allowed_by_custom_rules",
-	"is_domain_blocked_by_custom_rules",
 	"normalize_client_scope",
 	"parse_rules",
 	"rule_applies_to_client",
@@ -71,14 +69,17 @@ __all__ = [
 # Types
 # ---------------------------------------------------------------------------
 
+
 class RuleAction(StrEnum):
 	"""Rule action type."""
+
 	BLOCK = "block"
 	ALLOW = "allow"
 
 
 class ParseError(NamedTuple):
 	"""A single parse error with line number."""
+
 	line: int
 	text: str
 	error: str
@@ -87,6 +88,7 @@ class ParseError(NamedTuple):
 @dataclass
 class ParsedRule:
 	"""A single parsed custom DNS rule."""
+
 	action: RuleAction
 	raw: str  # Original rule text
 	# Optional client scope in canonical CIDR format (e.g. 10.0.0.2/32)
@@ -205,9 +207,9 @@ def canonical_rule_text(action: RuleAction, domain: str, client_scope: str | Non
 
 # Looser pattern for initial capture; validation happens after
 _ADGUARD_DOMAIN_RE = re.compile(
-	r"^\|\|"           # Leading ||
-	r"([a-z0-9.*_-]+)" # Domain pattern (may include wildcard *)
-	r"\^$",            # Trailing ^
+	r"^\|\|"  # Leading ||
+	r"([a-z0-9.*_-]+)"  # Domain pattern (may include wildcard *)
+	r"\^$",  # Trailing ^
 	re.IGNORECASE,
 )
 
@@ -219,17 +221,13 @@ _VALID_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$|^[a-z0-9]
 # Trailing quantifier covers both unbounded (+, *) and bounded ({n}, {m,n})
 # repetition — /(a+){25}b/ is just as exponential as /(a+)+b/.
 _TRAILING_QUANTIFIER = r"(?:[+*]|\{\d+(?:,\d*)?\})"
-_NESTED_REGEX_QUANTIFIER_RE = re.compile(
-	r"\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)" + _TRAILING_QUANTIFIER
-)
+_NESTED_REGEX_QUANTIFIER_RE = re.compile(r"\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)" + _TRAILING_QUANTIFIER)
 
 # Complementary heuristic: quantified alternation groups like /(a|a)+b/ or
 # /(a|aa){25}b/ are also classic catastrophic-backtracking patterns, but have
 # no quantifier *inside* the parens, so _NESTED_REGEX_QUANTIFIER_RE alone
 # cannot catch them.
-_QUANTIFIED_ALTERNATION_RE = re.compile(
-	r"\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)*\)" + _TRAILING_QUANTIFIER
-)
+_QUANTIFIED_ALTERNATION_RE = re.compile(r"\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)*\)" + _TRAILING_QUANTIFIER)
 
 # Runtime complexity probe: structural heuristics above are necessarily
 # incomplete (regex catastrophic-backtracking detection is not decidable by
@@ -302,8 +300,8 @@ def _split_regex_body_and_options(body: str) -> tuple[str, str | None] | None:
 	if closing_index <= 0:
 		return None
 
-	regex_literal = body[:closing_index + 1]
-	suffix = body[closing_index + 1:]
+	regex_literal = body[: closing_index + 1]
+	suffix = body[closing_index + 1 :]
 	if not suffix:
 		return regex_literal, None
 	if not suffix.startswith("$"):
@@ -519,6 +517,7 @@ def parse_rules(text: str) -> tuple[list[ParsedRule], list[ParseError]]:
 # Application helpers
 # ---------------------------------------------------------------------------
 
+
 def apply_custom_rules(
 	blocked_domains: set[str],
 	rules: list[ParsedRule],
@@ -612,7 +611,8 @@ def get_custom_block_rules(rules: list[ParsedRule]) -> list[ParsedRule]:
 	    they are matched at query time instead.
 	"""
 	return [
-		r for r in rules
+		r
+		for r in rules
 		if r.action == RuleAction.BLOCK
 		and (
 			# Runtime-only global patterns
@@ -626,37 +626,3 @@ def get_custom_block_rules(rules: list[ParsedRule]) -> list[ParsedRule]:
 def get_custom_allow_rules(rules: list[ParsedRule]) -> list[ParsedRule]:
 	"""Return only allow (whitelist) rules for runtime checking."""
 	return [r for r in rules if r.action == RuleAction.ALLOW]
-
-
-def is_domain_allowed_by_custom_rules(
-	domain: str,
-	allow_rules: list[ParsedRule],
-	*,
-	client_ip: str | None = None,
-) -> bool:
-	"""Check if a domain is explicitly allowed by custom rules for a client."""
-	for rule in allow_rules:
-		if not rule_applies_to_client(rule, client_ip or ""):
-			continue
-		if rule.matches(domain):
-			return True
-	return False
-
-
-def is_domain_blocked_by_custom_rules(
-	domain: str,
-	block_rules: list[ParsedRule],
-	*,
-	client_ip: str | None = None,
-) -> bool:
-	"""Check if a domain matches a wildcard/regex custom block rule.
-
-	This is for runtime matching of rules that can't be expressed
-	as Unbound local-zone entries (wildcards, regex).
-	"""
-	for rule in block_rules:
-		if not rule_applies_to_client(rule, client_ip or ""):
-			continue
-		if rule.matches(domain):
-			return True
-	return False

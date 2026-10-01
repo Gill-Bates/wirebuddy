@@ -3,7 +3,6 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-import { TOKEN_CATEGORIES } from './categories.mjs';
 import { TOKEN_SCHEMA } from './token-schema.mjs';
 
 function flattenSchema(schema, prefix = [], output = []) {
@@ -61,13 +60,6 @@ export function findUnusedTokens(declarations, tokens = {}) {
     const knownTokenNames = new Set(declarations.map((entry) => entry.name.replace(/^--wb-/, '').replace(/-/g, '.')));
     const usedTokenNames = new Set(flattenObject(tokens));
     return [...knownTokenNames].filter((tokenPath) => !usedTokenNames.has(tokenPath));
-}
-
-export function validateCategory(category) {
-    if (!TOKEN_CATEGORIES.includes(category)) {
-        throw new Error(`Unknown token category: ${category}`);
-    }
-    return category;
 }
 
 function flattenObject(value, prefix = [], output = []) {

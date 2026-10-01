@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Shared implementation modules for the UI linter: token-driven configuration, design-token parsing, device/browser matrices, runtime (auth, screenshots, telemetry, visual diff), DOM snapshotting, findings policy engine, rule registry orchestration, view planning, and several diagnostics helpers. Many top-level `*.mjs` files are thin compatibility facades over the modular subdirectories.
+Shared implementation modules for the UI linter: token-driven configuration, design-token parsing, browser matrices, runtime (auth, screenshots, telemetry, visual diff), DOM snapshotting, findings policy engine, rule registry orchestration, view planning, and several diagnostics helpers. Many top-level `*.mjs` files are thin compatibility facades over the modular subdirectories.
 
 ## Key Files
 
@@ -17,14 +17,13 @@ Shared implementation modules for the UI linter: token-driven configuration, des
 | `findings.mjs` | Facade exporting `summarizeFindings`, `isExpectedStatusUnavailable` |
 | `runtime-config.mjs` | Facade over `runtime-orchestration/` (profiles, run paths, context options) |
 | `views.mjs` | Facade over `view-orchestration/` (`VIEWS`, `LOGIN_FAILURE_VIEWS`) |
-| `design-tokens.mjs` | Loads/caches design tokens from the app CSS; exports `tokens`, `loadDesignTokens`, `loadDesignTokensAsync`, snapshot helpers |
-| `device-matrix.mjs` | Device matrix runtime: `getDevice(s)`, `resolveDeviceMatrix`, `getBreakpointViewports`, built on Playwright device descriptors |
+| `design-tokens.mjs` | Loads/caches design tokens from the app CSS; exports `tokens`, `loadDesignTokens`, snapshot helpers |
 | `rule-registry.mjs` | Public rule registry API (`registerRule`, `runRule`, `runAllRules`, `RuleBuilder`, ...) backed by `rule-orchestration/` |
 | `dom-health.mjs` | Correlates console entries with route/component/browser context (`buildDomHealthState`, `correlateConsoleEntries`) |
 | `ui-health-score.mjs` | `buildUIHealthReport`: aggregate UI health score/report |
 | `ux-severity.mjs` | `classifyUxIssue`, `scoreUxIssues` |
 | `interaction-utils.mjs` | Touch-target thresholds, density/importance heuristics, `inspectInteractionTargets`, `groupInteractionViolations` |
-| `layout-diagnostics.mjs` | Horizontal-overflow diagnostics: root-cause search, region capture, classification |
+| `layout-diagnostics.mjs` | Horizontal-overflow diagnostics: collection and classification |
 | `scroll-diagnostics.mjs` | Scroll-trap diagnostics and classification |
 | `focus-flow.mjs` | Tab-order simulation (`simulateTabNavigation`, `snapshotFocusState`) |
 | `focus-visibility.mjs` | Focus-indicator contrast/geometry (`computeContrastRatio`, `isFocusVisibleEnough`) |
@@ -44,7 +43,6 @@ Shared implementation modules for the UI linter: token-driven configuration, des
 | `design-tokens/runtime/` | Token runtime, cache, snapshots (see `design-tokens/runtime/AGENTS.md`) |
 | `design-tokens/schema/` | Token categories and schema validation (see `design-tokens/schema/AGENTS.md`) |
 | `design-tokens/themes/` | Theme overlays and drift diffing (see `design-tokens/themes/AGENTS.md`) |
-| `device-runtime/` | Device/browser/network/scenario runtime (see `device-runtime/AGENTS.md`) |
 | `dom/` | DOM mutation-stability observer (see `dom/AGENTS.md`) |
 | `dom-runtime/` | DOM snapshot engine (see `dom-runtime/AGENTS.md`) |
 | `findings/engine/, policies/, scopes/, severity/, explainability/, exports/` | Findings evaluation pipeline (each has its own `AGENTS.md`) |

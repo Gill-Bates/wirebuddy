@@ -18,7 +18,7 @@ services:
     environment:
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       TZ: "${TZ:-Etc/UTC}"
-      WIREBUDDY_SECRET_KEY: "KNxn1EPkYxC+CReYrsxynmJunywNTV8mBBxnyKfdvtc="
+      WIREBUDDY_SECRET_KEY: "${WIREBUDDY_SECRET_KEY:?Set WIREBUDDY_SECRET_KEY in .env (head -c 32 /dev/urandom | base64)}"
       WIREBUDDY_TRUSTED_PROXIES: "${WIREBUDDY_TRUSTED_PROXIES:-127.0.0.1,::1}"
       WIREBUDDY_PORT: "${WIREBUDDY_PORT:-8000}"
 
@@ -35,18 +35,5 @@ services:
     volumes:
       - ./data:/app/data
 
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "curl",
-          "--fail",
-          "--silent",
-          "--max-time",
-          "5",
-          "http://127.0.0.1:${WIREBUDDY_PORT:-8000}/health"
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
+    # No healthcheck override: the image's HEALTHCHECK probes the scheme and
+    # port this start actually serves (plain HTTP or built-in HTTPS).

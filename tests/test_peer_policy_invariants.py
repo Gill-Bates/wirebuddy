@@ -33,7 +33,6 @@ from app.db.sqlite_peers import get_peer_by_id
 from app.db.sqlite_peers_mutations import create_peer, update_peer
 
 _PUBKEY_A = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAI="
-_PUBKEY_B = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBI="
 _FULL_TUNNEL = "0.0.0.0/0, ::/0"
 _SPLIT_TUNNEL = "10.0.0.0/8"
 
@@ -137,9 +136,7 @@ def test_update_rejects_allow_all_nodes_when_existing_node_id(conn: sqlite3.Conn
 	assert bool(row["allow_all_nodes"]) is False
 
 
-def test_update_allows_clearing_node_id_when_existing_allow_all_nodes(
-	conn: sqlite3.Connection, iface: str, node_id: str
-):
+def test_update_allows_clearing_node_id_when_existing_allow_all_nodes(conn: sqlite3.Connection, iface: str, node_id: str):
 	peer_id = _make_peer(conn, iface, allow_all_nodes=True)
 
 	assert update_peer(conn, peer_id, node_id=None) is True
@@ -149,9 +146,7 @@ def test_update_allows_clearing_node_id_when_existing_allow_all_nodes(
 	assert bool(row["allow_all_nodes"]) is True
 
 
-def test_update_allows_disabling_allow_all_nodes_when_existing_node_id(
-	conn: sqlite3.Connection, iface: str, node_id: str
-):
+def test_update_allows_disabling_allow_all_nodes_when_existing_node_id(conn: sqlite3.Connection, iface: str, node_id: str):
 	peer_id = _make_peer(conn, iface, node_id=node_id)
 
 	assert update_peer(conn, peer_id, allow_all_nodes=False) is True

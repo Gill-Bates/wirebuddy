@@ -128,15 +128,16 @@ def regenerate_all_peer_tags(conn: sqlite3.Connection) -> None:
 			filtered = filter_peer_blocklist_ids(blocklist_ids, enabled_blocklist_ids)
 			effective_ids = filtered or []
 
-		peer_list.append({
-			"peer_address": row["peer_address"],
-			"use_adblocker": bool(row["use_adblocker"]),
-			"blocklist_ids": effective_ids,
-		})
+		peer_list.append(
+			{
+				"peer_address": row["peer_address"],
+				"use_adblocker": bool(row["use_adblocker"]),
+				"blocklist_ids": effective_ids,
+			}
+		)
 
 	_unbound.write_peer_tags(peer_list)
 	_log.debug("DNS peer tags regenerated for %d peers", len(peer_list))
-
 
 
 def _row_to_public(row: sqlite3.Row, enabled_blocklist_ids: list[str]) -> PeerPublic:
@@ -203,9 +204,7 @@ async def _wg_add_peer_runtime(
 			)
 		code, _, stderr = await wg_set_peer_with_psk(interface, public_key, peer_address, psk_plain)
 	else:
-		code, _, stderr = await run_wg_command(
-			WG_BIN, "set", interface, "peer", public_key, "allowed-ips", peer_address
-		)
+		code, _, stderr = await run_wg_command(WG_BIN, "set", interface, "peer", public_key, "allowed-ips", peer_address)
 	if code != 0:
 		_log.warning("WG_PEER_ADD_FAILED peer=%s iface=%s: %s", public_key[:8], interface, stderr.strip())
 
@@ -234,20 +233,18 @@ async def _sync_tunnel_peer_allowed_ips(conn: sqlite3.Connection, node_id: str) 
 		return
 
 	code, _, stderr = await run_wg_command(
-		WG_BIN, "set", tunnel_peer["interface"],
-		"peer", tunnel_peer["public_key"],
-		"allowed-ips", new_allowed_ips,
+		WG_BIN,
+		"set",
+		tunnel_peer["interface"],
+		"peer",
+		tunnel_peer["public_key"],
+		"allowed-ips",
+		new_allowed_ips,
 	)
 	if code != 0:
-		_log.warning(
-			"Failed to update tunnel peer allowed-ips for node=%s: %s",
-			node_id, stderr.strip()
-		)
+		_log.warning("Failed to update tunnel peer allowed-ips for node=%s: %s", node_id, stderr.strip())
 	else:
-		_log.info(
-			"Updated tunnel peer WireGuard allowed-ips for node=%s: %s",
-			node_id, new_allowed_ips
-		)
+		_log.info("Updated tunnel peer WireGuard allowed-ips for node=%s: %s", node_id, new_allowed_ips)
 
 
 async def _sync_master_path_then_notify_node(conn: sqlite3.Connection, node_id: str) -> None:
@@ -340,11 +337,7 @@ async def _cleanup_peer_custom_dns_rules(conn: sqlite3.Connection, peer_address:
 		return 0
 
 	parsed_rules, _ = parse_custom_rules(rules_text)
-	removable_raw = {
-		rule.raw.strip().lower()
-		for rule in parsed_rules
-		if rule.client_scope is not None and rule.client_scope in client_scopes
-	}
+	removable_raw = {rule.raw.strip().lower() for rule in parsed_rules if rule.client_scope is not None and rule.client_scope in client_scopes}
 	if not removable_raw:
 		return 0
 
@@ -365,6 +358,7 @@ async def _cleanup_peer_custom_dns_rules(conn: sqlite3.Connection, peer_address:
 
 	try:
 		from ..dns import unbound as _unbound
+
 		urls = await run_in_threadpool(get_enabled_blocklists, conn)
 		count, _ = await _unbound.update_blocklists(urls, custom_rules_text=updated_rules)
 		reloaded, _ = await _unbound.restart()
@@ -504,9 +498,13 @@ async def create_peer(
 				)
 			else:
 				code, _, stderr = await run_wg_command(
-					WG_BIN, "set", payload.interface,
-					"peer", public_key,
-					"allowed-ips", peer_address,
+					WG_BIN,
+					"set",
+					payload.interface,
+					"peer",
+					public_key,
+					"allowed-ips",
+					peer_address,
 				)
 			if code != 0:
 				err = stderr.strip()
@@ -697,13 +695,21 @@ async def update_peer(
 		# Peer migrated FROM remote TO local — add to local WireGuard
 		if peer_enabled and peer_address:
 			await _wg_add_peer_runtime(
-				interface_name, public_key, peer_address,
-				safe_row_get(updated, "preshared_key"), cfg.secret_key,
+				interface_name,
+				public_key,
+				peer_address,
+				safe_row_get(updated, "preshared_key"),
+				cfg.secret_key,
 			)
 	elif not old_is_remote and new_is_remote:
 		# Peer migrated FROM local TO remote — remove from local WireGuard
 		code, _, stderr = await run_wg_command(
-			WG_BIN, "set", interface_name, "peer", public_key, "remove",
+			WG_BIN,
+			"set",
+			interface_name,
+			"peer",
+			public_key,
+			"remove",
 		)
 		if code != 0:
 			_log.warning("WG_PEER_REMOVE_FAILED (migration to remote) peer=%s: %s", public_key[:8], stderr.strip())
@@ -712,14 +718,22 @@ async def update_peer(
 		if "is_enabled" in fields_set:
 			if not payload.is_enabled:
 				code, _, stderr = await run_wg_command(
-					WG_BIN, "set", interface_name, "peer", public_key, "remove",
+					WG_BIN,
+					"set",
+					interface_name,
+					"peer",
+					public_key,
+					"remove",
 				)
 				if code != 0:
 					_log.warning("WG_PEER_REMOVE_FAILED (disabled) peer=%s: %s", public_key[:8], stderr.strip())
 			elif peer_address:
 				await _wg_add_peer_runtime(
-					interface_name, public_key, peer_address,
-					safe_row_get(updated, "preshared_key"), cfg.secret_key,
+					interface_name,
+					public_key,
+					peer_address,
+					safe_row_get(updated, "preshared_key"),
+					cfg.secret_key,
 				)
 		elif "allowed_ips" in fields_set and payload.allowed_ips is not None:
 			# Keep server-side cryptokey routing strict: always peer_address on server.
@@ -728,19 +742,19 @@ async def update_peer(
 				_log.warning("Peer %s has no peer_address; skipped runtime allowed-ips repair", public_key[:8])
 			else:
 				code, _, stderr = await run_wg_command(
-					WG_BIN, "set", interface_name,
-					"peer", public_key,
-					"allowed-ips", peer_address,
+					WG_BIN,
+					"set",
+					interface_name,
+					"peer",
+					public_key,
+					"allowed-ips",
+					peer_address,
 				)
 				if code != 0:
 					_log.warning("Failed to update peer allowed-ips in WireGuard: %s", stderr)
 
-	local_sync_needed = (
-		(old_is_remote != new_is_remote)
-		or (
-			not new_is_remote
-			and any(k in fields_set for k in ("allowed_ips", "allowed_ips_mode", "is_enabled", "client_isolation"))
-		)
+	local_sync_needed = (old_is_remote != new_is_remote) or (
+		not new_is_remote and any(k in fields_set for k in ("allowed_ips", "allowed_ips_mode", "is_enabled", "client_isolation"))
 	)
 	if local_sync_needed:
 		await run_in_threadpool(
@@ -754,8 +768,7 @@ async def update_peer(
 
 	if "node_id" in fields_set or ("is_enabled" in fields_set and (old_is_remote or new_is_remote)):
 		nodes_to_notify = {old_node_id, new_node_id} - {None}
-		_log.info("PEER_NODE_CHANGE peer_id=%d old_node=%s new_node=%s notifying=%s",
-			peer_id, old_node_id, new_node_id, list(nodes_to_notify))
+		_log.info("PEER_NODE_CHANGE peer_id=%d old_node=%s new_node=%s notifying=%s", peer_id, old_node_id, new_node_id, list(nodes_to_notify))
 		for nid in nodes_to_notify:
 			try:
 				await _sync_master_path_then_notify_node(conn, nid)
@@ -767,7 +780,9 @@ async def update_peer(
 	if "allow_all_nodes" in fields_set and old_allow_all_nodes != new_allow_all_nodes:
 		_log.info(
 			"PEER_ROAMING_CHANGE peer_id=%d allow_all_nodes=%s->%s notifying all nodes",
-			peer_id, old_allow_all_nodes, new_allow_all_nodes,
+			peer_id,
+			old_allow_all_nodes,
+			new_allow_all_nodes,
 		)
 		await _notify_all_nodes(conn)
 	elif new_allow_all_nodes and "is_enabled" in fields_set:
@@ -832,8 +847,11 @@ async def delete_peer(
 
 	# Local peer: remove from WireGuard (fail hard - don't create ghost peers)
 	code, _, stderr = await run_wg_command(
-		WG_BIN, "set", interface_name,
-		"peer", public_key,
+		WG_BIN,
+		"set",
+		interface_name,
+		"peer",
+		public_key,
 		"remove",
 	)
 	if code != 0:
@@ -896,7 +914,6 @@ async def delete_peer(
 	# Delete TSDB data (peer already removed, safe to force deletion)
 	await run_in_threadpool(tsdb.delete_peer_data, tsdb_dir, public_key, force=True)
 
-	# Regenerate Unbound peer tags
 	await _safe_regenerate_peer_tags(conn)
 
 	_log.info("PEER_DELETED id=%d public_key=%s...", peer_id, public_key[:8])

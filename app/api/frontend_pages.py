@@ -34,7 +34,13 @@ from ..db.sqlite_interfaces import get_first_listen_port
 from ..db.sqlite_nodes import get_all_nodes, get_all_tunnel_peer_ids, get_peers_count_by_node, is_node_sse_connected
 from ..db.sqlite_peers import get_all_peers
 from ..db.sqlite_runtime import thread_connection
-from ..db.sqlite_settings import get_dns_blocklist_enabled, get_node_speedtest_last_results, get_setting, get_speedtest_enabled
+from ..db.sqlite_settings import (
+	get_bool_setting,
+	get_dns_blocklist_enabled,
+	get_node_speedtest_last_results,
+	get_setting,
+	get_speedtest_enabled,
+)
 from ..db.sqlite_users import get_all_users
 from ..dns import unbound
 from ..utils.config import get_config
@@ -184,13 +190,9 @@ def _find_existing_file(filename: str) -> Path | None:
 	return None
 
 
-def _get_bool_setting(conn: sqlite3.Connection, key: str, default: str = "0") -> bool:
-	"""Read a boolean setting stored as ``"1"``/``"0"`` from SQLite."""
-	return get_setting(conn, key, default) == "1"
-
-
 class SystemStatusResponse(BaseModel):
 	"""System status response model."""
+
 	key_mismatch: bool
 
 
@@ -199,9 +201,7 @@ _UNBOUND_PATH = "/usr/sbin/unbound"
 _WG_PATH = "/usr/bin/wg"
 
 # FQDN validation pattern (RFC 1123 hostname)
-_FQDN_RE = re.compile(
-	r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z]{2,63}$"
-)
+_FQDN_RE = re.compile(r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z]{2,63}$")
 
 
 def _is_valid_hostname_or_ip(value: str) -> bool:
@@ -230,17 +230,56 @@ def _is_valid_hostname_or_ip(value: str) -> bool:
 
 # Key packages to display in about page
 _KEY_PACKAGES = [
-	"fastapi", "httpx", "jinja2", "markdown", "Pillow", "pydantic", "pydantic-settings",
-	"python-multipart", "qrcode", "slowapi", "uvicorn", "nh3",
+	"fastapi",
+	"httpx",
+	"jinja2",
+	"markdown",
+	"Pillow",
+	"pydantic",
+	"pydantic-settings",
+	"python-multipart",
+	"qrcode",
+	"slowapi",
+	"uvicorn",
+	"nh3",
 ]
 
 # Allowed HTML tags/attrs for changelog rendering
 _CHANGELOG_ALLOWED_TAGS = {
-	"h1", "h2", "h3", "h4", "h5", "h6", "p", "br", "hr",
-	"ul", "ol", "li", "a", "strong", "em", "b", "i",
-	"code", "pre", "blockquote", "table", "thead", "tbody",
-	"tr", "th", "td", "dl", "dt", "dd", "abbr", "sup", "sub",
-	"details", "summary",
+	"h1",
+	"h2",
+	"h3",
+	"h4",
+	"h5",
+	"h6",
+	"p",
+	"br",
+	"hr",
+	"ul",
+	"ol",
+	"li",
+	"a",
+	"strong",
+	"em",
+	"b",
+	"i",
+	"code",
+	"pre",
+	"blockquote",
+	"table",
+	"thead",
+	"tbody",
+	"tr",
+	"th",
+	"td",
+	"dl",
+	"dt",
+	"dd",
+	"abbr",
+	"sup",
+	"sub",
+	"details",
+	"summary",
 }
 _CHANGELOG_ALLOWED_ATTRS = {
 	"a": {"href", "title"},
@@ -625,15 +664,12 @@ async def peers_page(
 			node_map = {n["id"]: n["name"] for n in nodes}
 			local_fqdn = (get_setting(conn, "wg_fqdn") or "").strip() or None
 			return peers, tunnel_ids, node_map, nodes, local_fqdn
+
 	peer_rows, tunnel_peer_ids, node_id_to_name, node_rows, local_fqdn = await asyncio.to_thread(_load_peers_data)
 	total_peers = len(peer_rows)
 	peers: list[dict] = []
 	now_epoch = int(time.time())
-	unique_client_ips = list({
-		ip
-		for row in peer_rows
-		if (ip := str(row["last_client_ip"] or "").strip())
-	})
+	unique_client_ips = list({ip for row in peer_rows if (ip := str(row["last_client_ip"] or "").strip())})
 	geoip_cache = await _batch_geoip_lookup(unique_client_ips)
 
 	for row in peer_rows:
@@ -669,20 +705,20 @@ async def peers_page(
 		peers.append(peer)
 
 	# Sort peers: regular peers first (alphabetically), then node tunnel peers
-	peers.sort(key=lambda p: (
-		p["is_node_tunnel"],  # False (regular) before True (tunnel)
-		p.get("interface", ""),
-		p.get("name", "").lower(),
-	))
+	peers.sort(
+		key=lambda p: (
+			p["is_node_tunnel"],  # False (regular) before True (tunnel)
+			p.get("interface", ""),
+			p.get("name", "").lower(),
+		)
+	)
 
 	# Load nodes for the node selector in the Add Peer modal (admin only).
 	nodes_data: list = []
 	local_country_code = None
 	if coerce_db_bool(user["is_admin"]):
 		empty_geo = extract_geo_fields(None)
-		geo_by_fqdn = await _resolve_geo_fields_for_fqdns(
-			[node["fqdn"] for node in node_rows] + ([local_fqdn] if local_fqdn else [])
-		)
+		geo_by_fqdn = await _resolve_geo_fields_for_fqdns([node["fqdn"] for node in node_rows] + ([local_fqdn] if local_fqdn else []))
 		nodes_data = [
 			{
 				"id": node["id"],
@@ -692,17 +728,14 @@ async def peers_page(
 			}
 			for node in node_rows
 		]
-		local_country_code = (
-			geo_by_fqdn.get(str(local_fqdn), empty_geo)["country_code"]
-			if local_fqdn
-			else None
-		)
+		local_country_code = geo_by_fqdn.get(str(local_fqdn), empty_geo)["country_code"] if local_fqdn else None
 
 	return templates.TemplateResponse(
 		request,
 		name="peers.html",
 		context=_base_context(
-			request, user,
+			request,
+			user,
 			peers=peers,
 			total_peers=total_peers,
 			nodes=nodes_data,
@@ -732,11 +765,7 @@ async def users_page(
 	user_rows = await asyncio.to_thread(_load_users)
 	users = [dict(row) for row in user_rows]
 
-	unique_login_ips = list({
-		ip
-		for row in users
-		if (ip := str(row.get("last_login_ip") or "").strip())
-	})
+	unique_login_ips = list({ip for row in users if (ip := str(row.get("last_login_ip") or "").strip())})
 	geoip_cache = await _batch_geoip_lookup(unique_login_ips)
 
 	for row in users:
@@ -788,20 +817,13 @@ async def nodes_page(
 					limit=2000,
 					latest=True,
 				)
-				speedtest_by_node = {
-					str(node_id): point
-					for node_id, point in build_latest_by_node(points).items()
-					if node_id is not None
-				}
+				speedtest_by_node = {str(node_id): point for node_id, point in build_latest_by_node(points).items() if node_id is not None}
 			except Exception:
 				_log.warning("Failed to load speedtest data for nodes", exc_info=True)
 
 			# Persisted last results must win over TSDB history.
 			speedtest_by_node.update(get_node_speedtest_last_results(conn, {str(n["id"]) for n in nodes}))
-			sse_connected_by_node = {
-				str(node["id"]): is_node_sse_connected(conn, node["id"]) if node["status"] == "online" else False
-				for node in nodes
-			}
+			sse_connected_by_node = {str(node["id"]): is_node_sse_connected(conn, node["id"]) if node["status"] == "online" else False for node in nodes}
 
 			# Get default WireGuard port from first interface for pre-filling the Add Node modal
 			default_wg_port = get_first_listen_port(conn, default=51820)
@@ -819,32 +841,35 @@ async def nodes_page(
 		last_seen_label = format_last_seen_label(last_seen_epoch)
 		last_speedtest = speedtest_by_node.get(str(node["id"]))
 
-		nodes_data.append({
-			"id": node["id"],
-			"name": node["name"],
-			"fqdn": node["fqdn"],
-			"wg_port": node["wg_port"],
-			"status": node["status"],
-			"last_seen": node["last_seen"],
-			"last_seen_text": last_seen_label.text,
-			"last_seen_class": last_seen_label.css_class,
-			"enrolled_at": node["enrolled_at"],
-			"created_at": node["created_at"],
-			"peer_count": peer_counts.get(node["id"], 0),
-			"geo_country_code": geo_fields["country_code"],
-			"geo_city": geo_fields["city"],
-			"geo_as_org": geo_fields["as_org"],
-			"node_version": node_version,
-			"last_speedtest": last_speedtest,
-			"sse_connected": sse_connected_by_node.get(str(node["id"]), False),
-			"show_on_dashboard": bool(node["show_on_dashboard"]),
-		})
+		nodes_data.append(
+			{
+				"id": node["id"],
+				"name": node["name"],
+				"fqdn": node["fqdn"],
+				"wg_port": node["wg_port"],
+				"status": node["status"],
+				"last_seen": node["last_seen"],
+				"last_seen_text": last_seen_label.text,
+				"last_seen_class": last_seen_label.css_class,
+				"enrolled_at": node["enrolled_at"],
+				"created_at": node["created_at"],
+				"peer_count": peer_counts.get(node["id"], 0),
+				"geo_country_code": geo_fields["country_code"],
+				"geo_city": geo_fields["city"],
+				"geo_as_org": geo_fields["as_org"],
+				"node_version": node_version,
+				"last_speedtest": last_speedtest,
+				"sse_connected": sse_connected_by_node.get(str(node["id"]), False),
+				"show_on_dashboard": bool(node["show_on_dashboard"]),
+			}
+		)
 
 	return templates.TemplateResponse(
 		request,
 		name="nodes.html",
 		context=_base_context(
-			request, user,
+			request,
+			user,
 			nodes=nodes_data,
 			default_wg_port=default_wg_port,
 		),
@@ -874,7 +899,8 @@ async def dns_page(
 		request,
 		name="dns.html",
 		context=_base_context(
-			request, user,
+			request,
+			user,
 			enable_blocklist=enable_blocklist,
 			dns_unavailable=dns_unavailable,
 		),
@@ -895,14 +921,15 @@ async def traffic_page(
 
 	def _load_traffic_page_data() -> bool:
 		with thread_connection(db_path) as conn:
-			return _get_bool_setting(conn, "traffic_analysis_enabled")
+			return get_bool_setting(conn, "traffic_analysis_enabled")
 
 	traffic_analysis_enabled = await asyncio.to_thread(_load_traffic_page_data)
 	return templates.TemplateResponse(
 		request,
 		name="traffic.html",
 		context=_base_context(
-			request, user,
+			request,
+			user,
 			traffic_analysis_enabled=traffic_analysis_enabled,
 		),
 	)
@@ -959,7 +986,7 @@ async def settings_page(
 			else:
 				url_host = f"[{raw_host}]" if isinstance(addr, ipaddress.IPv6Address) else raw_host
 
-			gui_https_enabled = _get_bool_setting(conn, "gui_https_enabled")
+			gui_https_enabled = get_bool_setting(conn, "gui_https_enabled")
 			scheme = "https" if gui_https_enabled else "http"
 			default_port = 443 if gui_https_enabled else 80
 			gui_port_raw = str(get_setting(conn, "gui_port", "8000") or "8000").strip()
@@ -968,11 +995,11 @@ async def settings_page(
 			url_authority = f"{url_host}{port_suffix}"
 
 			return {
-				"enable_status_page": _get_bool_setting(conn, "enable_status_page"),
-				"enable_swagger": _get_bool_setting(conn, "enable_swagger"),
-				"gui_localhost_only": _get_bool_setting(conn, "gui_localhost_only"),
-				"wg_use_psk": _get_bool_setting(conn, "wg_use_psk", "1"),  # Default: enabled
-				"traffic_analysis_enabled": _get_bool_setting(conn, "traffic_analysis_enabled"),
+				"enable_status_page": get_bool_setting(conn, "enable_status_page"),
+				"enable_swagger": get_bool_setting(conn, "enable_swagger"),
+				"gui_localhost_only": get_bool_setting(conn, "gui_localhost_only"),
+				"wg_use_psk": get_bool_setting(conn, "wg_use_psk", default=True),  # Default: enabled
+				"traffic_analysis_enabled": get_bool_setting(conn, "traffic_analysis_enabled"),
 				"gui_https_enabled": gui_https_enabled,
 				"tls_certificate": describe_gui_certificate(
 					get_certs_dir(get_config()),

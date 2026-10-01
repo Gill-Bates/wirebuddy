@@ -110,7 +110,10 @@ small {
     overflow: clip;
 }
 
-.card:hover {
+/* Hover elevation is an interactivity cue, so it is opt-in: a plain information
+   card must not look clickable. Add .card-interactive to a card that really
+   navigates or opens something. */
+.card-interactive:hover {
     box-shadow: var(--wb-shadow-2);
 }
 
@@ -1083,4 +1086,29 @@ html body .my-4 {
         flex: 1;
         min-width: 0;
     }
+}
+
+/* ---------- 30. Redirect Overlay & Compact Badge ---------- */
+
+/* Full-screen notice shown while the session is torn down; semantic.css is not loaded on auth pages, hence the fallback. */
+.wb-redirect-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--wb-z-toast, 1090);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 75%);
+  color: #fff;
+  font-size: var(--wb-font-size-lg, 1.125rem);
+}
+
+.wb-redirect-overlay-body {
+  text-align: center;
+}
+
+.wb-badge-compact {
+  font-size: 0.65rem;
+  line-height: 1.2;
+  vertical-align: middle;
 }

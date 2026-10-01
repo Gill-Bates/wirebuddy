@@ -251,8 +251,8 @@
             if (isSelf) {
                 // Session invalidated - show overlay and redirect immediately
                 const overlay = document.createElement('div');
-                overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:9999;display:flex;align-items:center;justify-content:center;color:white;font-size:1.2rem;';
-                overlay.innerHTML = '<div style="text-align:center;"><div class="spinner-border mb-3"></div><div>Password changed. Redirecting to login...</div></div>';
+                overlay.className = 'wb-redirect-overlay';
+                overlay.innerHTML = '<div class="wb-redirect-overlay-body"><div class="spinner-border mb-3"></div><div>Password changed. Redirecting to login...</div></div>';
                 document.body.appendChild(overlay);
                 setTimeout(() => {
                     window.location.href = '/login';

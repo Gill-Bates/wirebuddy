@@ -40,10 +40,10 @@ NETWORK_STATS_RETENTION_DAYS = 7  # 7 days default retention
 
 # Time range mapping for history queries
 NETWORK_RANGE_TO_HOURS = {
-    "1h": 1,
-    "6h": 6,
-    "24h": 24,
-    "7d": 7 * 24,
+	"1h": 1,
+	"6h": 6,
+	"24h": 24,
+	"7d": 7 * 24,
 }
 
 # Cache for previous readings (interface -> (timestamp, rx_bytes, tx_bytes))
@@ -67,351 +67,353 @@ _SKIP_PREFIXES = frozenset(("lo", "docker", "br-", "br", "veth", "virbr"))
 
 
 def _get_primary_interface() -> str | None:
-    """Detect the system's primary outbound network interface (default route).
+	"""Detect the system's primary outbound network interface (default route).
 
-    Reads /proc/net/route for the entry with Destination=0.0.0.0 and
-    Mask=0.0.0.0 (all values in hex). Caches results for performance.
+	Reads /proc/net/route for the entry with Destination=0.0.0.0 and
+	Mask=0.0.0.0 (all values in hex). Caches results for performance.
 
-    Returns:
-        Interface name (e.g., 'eth0', 'enp0s3') or None if detection fails.
-    """
-    global _primary_iface_cache, _primary_iface_cache_ts
-    now = time.monotonic()
+	Returns:
+	    Interface name (e.g., 'eth0', 'enp0s3') or None if detection fails.
+	"""
+	global _primary_iface_cache, _primary_iface_cache_ts
+	now = time.monotonic()
 
-    if _primary_iface_cache is not None and (now - _primary_iface_cache_ts) < _PRIMARY_IFACE_CACHE_TTL:
-        return _primary_iface_cache
+	if _primary_iface_cache is not None and (now - _primary_iface_cache_ts) < _PRIMARY_IFACE_CACHE_TTL:
+		return _primary_iface_cache
 
-    primary = None
-    try:
-        with Path("/proc/net/route").open() as fh:
-            next(fh)  # skip header line
-            for line in fh:
-                parts = line.split()
-                # Columns: Iface Dest Gateway Flags RefCnt Use Metric Mask ...
-                if len(parts) >= 8 and parts[1] == "00000000" and parts[7] == "00000000":
-                    primary = parts[0]
-                    break
-    except (OSError, StopIteration, IndexError):
-        _log.debug("Could not detect default route interface")
+	primary = None
+	try:
+		with Path("/proc/net/route").open() as fh:
+			next(fh)  # skip header line
+			for line in fh:
+				parts = line.split()
+				# Columns: Iface Dest Gateway Flags RefCnt Use Metric Mask ...
+				if len(parts) >= 8 and parts[1] == "00000000" and parts[7] == "00000000":
+					primary = parts[0]
+					break
+	except (OSError, StopIteration, IndexError):
+		_log.debug("Could not detect default route interface")
 
-    _primary_iface_cache = primary
-    _primary_iface_cache_ts = now
-    return primary
+	_primary_iface_cache = primary
+	_primary_iface_cache_ts = now
+	return primary
 
 
 def _is_physical_or_wg(name: str) -> bool:
-    """Check if interface is physical or WireGuard (not loopback/docker/veth)."""
-    return all(not name.startswith(prefix) for prefix in _SKIP_PREFIXES)
+	"""Check if interface is physical or WireGuard (not loopback/docker/veth)."""
+	return all(not name.startswith(prefix) for prefix in _SKIP_PREFIXES)
 
 
 def _read_interface_stats(name: str) -> tuple[int, int] | None:
-    """Read RX/TX bytes from /sys/class/net/<name>/statistics/."""
-    stats_dir = Path(f"/sys/class/net/{name}/statistics")
-    try:
-        rx_bytes = int((stats_dir / "rx_bytes").read_text().strip())
-        tx_bytes = int((stats_dir / "tx_bytes").read_text().strip())
-        return rx_bytes, tx_bytes
-    except (FileNotFoundError, ValueError, PermissionError):
-        return None
+	"""Read RX/TX bytes from /sys/class/net/<name>/statistics/."""
+	stats_dir = Path(f"/sys/class/net/{name}/statistics")
+	try:
+		rx_bytes = int((stats_dir / "rx_bytes").read_text().strip())
+		tx_bytes = int((stats_dir / "tx_bytes").read_text().strip())
+		return rx_bytes, tx_bytes
+	except (FileNotFoundError, ValueError, PermissionError):
+		return None
 
 
 def _is_wg_interface(name: str) -> bool:
-    """Check if interface is a WireGuard interface.
+	"""Check if interface is a WireGuard interface.
 
-    Primary check: Look for DEVTYPE=wireguard in uevent (kernel >= 5.6).
-    Fallback: Check naming convention (wg*) and absence of physical device.
-    """
-    uevent_path = Path(f"/sys/class/net/{name}/uevent")
-    try:
-        content = uevent_path.read_text()
-        if "DEVTYPE=wireguard" in content:
-            return True
-    except (FileNotFoundError, PermissionError):
-        pass
+	Primary check: Look for DEVTYPE=wireguard in uevent (kernel >= 5.6).
+	Fallback: Check naming convention (wg*) and absence of physical device.
+	"""
+	uevent_path = Path(f"/sys/class/net/{name}/uevent")
+	try:
+		content = uevent_path.read_text()
+		if "DEVTYPE=wireguard" in content:
+			return True
+	except (FileNotFoundError, PermissionError):
+		pass
 
-    # Fallback for older kernels: wg* naming + no physical device
-    # (WireGuard virtual interfaces lack /sys/class/net/<name>/device)
-    if name.startswith("wg"):
-        device_path = Path(f"/sys/class/net/{name}/device")
-        return not device_path.exists()
+	# Fallback for older kernels: wg* naming + no physical device
+	# (WireGuard virtual interfaces lack /sys/class/net/<name>/device)
+	if name.startswith("wg"):
+		device_path = Path(f"/sys/class/net/{name}/device")
+		return not device_path.exists()
 
-    return False
+	return False
 
 
 def _get_all_interface_stats(wg_visibility: dict[str, bool] | None = None) -> dict[str, Any]:
-    """Get statistics for all relevant interfaces (thread-safe wrapper)."""
-    with _cache_lock:
-        return _collect_interface_stats(wg_visibility)
+	"""Get statistics for all relevant interfaces (thread-safe wrapper)."""
+	with _cache_lock:
+		return _collect_interface_stats(wg_visibility)
 
 
 def _collect_interface_stats(wg_visibility: dict[str, bool] | None = None) -> dict[str, Any]:
-    """Collect interface statistics. Caller must hold _cache_lock.
+	"""Collect interface statistics. Caller must hold _cache_lock.
 
-    Thread-safe: Uses lock to protect shared _prev_stats dict.
-    Caches results for _CACHE_TTL seconds to prevent hammering sysfs.
+	Thread-safe: Uses lock to protect shared _prev_stats dict.
+	Caches results for _CACHE_TTL seconds to prevent hammering sysfs.
 
-    Args:
-        wg_visibility: Optional dict mapping WG interface names to their
-            show_on_dashboard setting. If None, all WG interfaces are shown.
-    """
-    global _cache_ts
+	Args:
+	    wg_visibility: Optional dict mapping WG interface names to their
+	        show_on_dashboard setting. If None, all WG interfaces are shown.
+	"""
+	global _cache_ts
 
-    now = time.monotonic()
+	now = time.monotonic()
 
-    # Note: We can't cache when wg_visibility filtering is applied
-    # since visibility settings may change. Only cache raw stats.
-    cache_valid = (now - _cache_ts < _CACHE_TTL) and wg_visibility is None
-    if cache_valid:
-        return _cache.copy()
+	# Note: We can't cache when wg_visibility filtering is applied
+	# since visibility settings may change. Only cache raw stats.
+	cache_valid = (now - _cache_ts < _CACHE_TTL) and wg_visibility is None
+	if cache_valid:
+		return _cache.copy()
 
-    net_path = Path("/sys/class/net")
-    if not net_path.is_dir():
-        return {"interfaces": [], "error": "Network stats unavailable"}
+	net_path = Path("/sys/class/net")
+	if not net_path.is_dir():
+		return {"interfaces": [], "error": "Network stats unavailable"}
 
-    # Get primary interface for marking
-    primary_iface = _get_primary_interface()
+	# Get primary interface for marking
+	primary_iface = _get_primary_interface()
 
-    results: list[dict[str, Any]] = []
-    seen: set[str] = set()
+	results: list[dict[str, Any]] = []
+	seen: set[str] = set()
 
-    for iface_path in net_path.iterdir():
-        name = iface_path.name
+	for iface_path in net_path.iterdir():
+		name = iface_path.name
 
-        # Skip virtual interfaces
-        if not _is_physical_or_wg(name):
-            continue
+		# Skip virtual interfaces
+		if not _is_physical_or_wg(name):
+			continue
 
-        # Read current stats
-        stats = _read_interface_stats(name)
-        if stats is None:
-            continue
+		stats = _read_interface_stats(name)
+		if stats is None:
+			continue
 
-        seen.add(name)
-        rx_bytes, tx_bytes = stats
-        is_wg = _is_wg_interface(name)
+		seen.add(name)
+		rx_bytes, tx_bytes = stats
+		is_wg = _is_wg_interface(name)
 
-        # Filter WG interfaces based on visibility setting
-        if is_wg and wg_visibility is not None and not wg_visibility.get(name, True):
-            continue
+		# Filter WG interfaces based on visibility setting
+		if is_wg and wg_visibility is not None and not wg_visibility.get(name, True):
+			continue
 
-        # For non-WG interfaces, only include the primary interface
-        if not is_wg and primary_iface and name != primary_iface:
-            continue
+		# For non-WG interfaces, only include the primary interface
+		if not is_wg and primary_iface and name != primary_iface:
+			continue
 
-        # Calculate rates with thread-safe access to previous data
-        rx_rate = 0.0
-        tx_rate = 0.0
+		# Calculate rates with thread-safe access to previous data
+		rx_rate = 0.0
+		tx_rate = 0.0
 
-        with _prev_stats_lock:
-            if name in _prev_stats:
-                prev_ts, prev_rx, prev_tx = _prev_stats[name]
-                elapsed = now - prev_ts
+		with _prev_stats_lock:
+			if name in _prev_stats:
+				prev_ts, prev_rx, prev_tx = _prev_stats[name]
+				elapsed = now - prev_ts
 
-                if elapsed > 0.1:  # At least 100ms between samples
-                    # Calculate deltas
-                    rx_delta = rx_bytes - prev_rx
-                    tx_delta = tx_bytes - prev_tx
+				if elapsed > 0.1:  # At least 100ms between samples
+					# Calculate deltas
+					rx_delta = rx_bytes - prev_rx
+					tx_delta = tx_bytes - prev_tx
 
-                    # A negative delta is far more likely to be a counter reset
-                    # (interface restart/recreate) than a 32-bit wrap: modern
-                    # kernels report 64-bit counters, which would take 584
-                    # years to wrap at 1 Gbps. Only apply the wrap correction
-                    # when the deficit is actually explainable as a 32-bit
-                    # wrap (i.e. small enough to fit in a 32-bit range);
-                    # otherwise treat it as a reset and report zero instead of
-                    # a fabricated multi-GB/s spike.
-                    if rx_delta < 0:
-                        rx_delta = rx_delta + 2**32 if -rx_delta <= 2**32 and prev_rx >= 2**32 else 0
-                    if tx_delta < 0:
-                        tx_delta = tx_delta + 2**32 if -tx_delta <= 2**32 and prev_tx >= 2**32 else 0
+					# A negative delta is far more likely to be a counter reset
+					# (interface restart/recreate) than a 32-bit wrap: modern
+					# kernels report 64-bit counters, which would take 584
+					# years to wrap at 1 Gbps. Only apply the wrap correction
+					# when the deficit is actually explainable as a 32-bit
+					# wrap (i.e. small enough to fit in a 32-bit range);
+					# otherwise treat it as a reset and report zero instead of
+					# a fabricated multi-GB/s spike.
+					if rx_delta < 0:
+						rx_delta = rx_delta + 2**32 if -rx_delta <= 2**32 and prev_rx >= 2**32 else 0
+					if tx_delta < 0:
+						tx_delta = tx_delta + 2**32 if -tx_delta <= 2**32 and prev_tx >= 2**32 else 0
 
-                    rx_rate = rx_delta / elapsed  # bytes/sec
-                    tx_rate = tx_delta / elapsed  # bytes/sec
+					rx_rate = rx_delta / elapsed  # bytes/sec
+					tx_rate = tx_delta / elapsed  # bytes/sec
 
-            # Store current reading for next calculation
-            _prev_stats[name] = (now, rx_bytes, tx_bytes)
+			# Store current reading for next calculation
+			_prev_stats[name] = (now, rx_bytes, tx_bytes)
 
-        iface_data = {
-            "name": name,
-            "is_wg": is_wg,
-            "rx_bytes": rx_bytes,
-            "tx_bytes": tx_bytes,
-            "rx_rate": round(rx_rate, 1),  # bytes/sec
-            "tx_rate": round(tx_rate, 1),  # bytes/sec
-        }
+		iface_data = {
+			"name": name,
+			"is_wg": is_wg,
+			"rx_bytes": rx_bytes,
+			"tx_bytes": tx_bytes,
+			"rx_rate": round(rx_rate, 1),  # bytes/sec
+			"tx_rate": round(tx_rate, 1),  # bytes/sec
+		}
 
-        # Mark primary host interface
-        if not is_wg and name == primary_iface:
-            iface_data["is_primary"] = True
+		# Mark primary host interface
+		if not is_wg and name == primary_iface:
+			iface_data["is_primary"] = True
 
-        results.append(iface_data)
+		results.append(iface_data)
 
-    # Prune stale entries (interfaces that disappeared)
-    with _prev_stats_lock:
-        stale = set(_prev_stats.keys()) - seen
-        for key in stale:
-            del _prev_stats[key]
-            _log.debug("Pruned stale interface from stats cache: %s", key)
+	# Prune stale entries (interfaces that disappeared)
+	with _prev_stats_lock:
+		stale = set(_prev_stats.keys()) - seen
+		for key in stale:
+			del _prev_stats[key]
+			_log.debug("Pruned stale interface from stats cache: %s", key)
 
-    # Sort: WireGuard interfaces first, then by name
-    results.sort(key=lambda x: (not x["is_wg"], x["name"]))
+	# Sort: WireGuard interfaces first, then by name
+	results.sort(key=lambda x: (not x["is_wg"], x["name"]))
 
-    # Only cache UNFILTERED results. Storing a visibility-filtered snapshot
-    # here would let a dashboard request poison the cache that the scheduler
-    # reads as "all interfaces", silently dropping hidden interfaces from the
-    # recorded time series depending on request timing.
-    result = {"interfaces": results}
-    if wg_visibility is None:
-        _cache.clear()
-        _cache.update(result)
-        _cache_ts = now
+	# Only cache UNFILTERED results. Storing a visibility-filtered snapshot
+	# here would let a dashboard request poison the cache that the scheduler
+	# reads as "all interfaces", silently dropping hidden interfaces from the
+	# recorded time series depending on request timing.
+	result = {"interfaces": results}
+	if wg_visibility is None:
+		_cache.clear()
+		_cache.update(result)
+		_cache_ts = now
 
-    return result
+	return result
 
 
 @router.get("/network/stats")
 async def get_network_stats(
-    _: Any = Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_conn),
+	_: Any = Depends(get_current_user),
+	conn: sqlite3.Connection = Depends(get_conn),
 ):
-    """Get real-time network interface statistics.
+	"""Get real-time network interface statistics.
 
-    Returns RX/TX byte counters and calculated rates (bytes/sec) for:
-    - Primary host interface (the default route interface)
-    - WireGuard interfaces (filtered by show_on_dashboard setting)
+	Returns RX/TX byte counters and calculated rates (bytes/sec) for:
+	- Primary host interface (the default route interface)
+	- WireGuard interfaces (filtered by show_on_dashboard setting)
 
-    Call this endpoint repeatedly (~1-2s intervals) to get accurate rate data.
-    The first call returns rates of 0 as no previous sample exists.
+	Call this endpoint repeatedly (~1-2s intervals) to get accurate rate data.
+	The first call returns rates of 0 as no previous sample exists.
 
-    Results are cached for 500ms to prevent excessive sysfs reads under load.
-    """
-    # Fetch WG interface visibility settings from database
-    def get_wg_visibility() -> dict[str, bool]:
-        # list_interfaces() returns sqlite3.Row objects, which support key
-        # lookup but have no .get() method — use keys() to check presence.
-        interfaces = list_interfaces(conn)
-        return {
-            # `.keys()` is required, not redundant: these are sqlite3.Row objects,
-            # where `in` iterates *values*, so `"show_on_dashboard" in iface` is
-            # always False and would silently force every interface visible.
-            # sqlite3.Row also has no .get(), so the ternary cannot collapse either.
-            iface["name"]: bool(iface["show_on_dashboard"] if "show_on_dashboard" in iface.keys() else 1)  # noqa: SIM118
-            for iface in interfaces
-        }
+	Results are cached for 500ms to prevent excessive sysfs reads under load.
+	"""
 
-    wg_visibility = await run_in_threadpool(get_wg_visibility)
-    data = await run_in_threadpool(_get_all_interface_stats, wg_visibility)
-    return ok_response(data=data)
+	# Fetch WG interface visibility settings from database
+	def get_wg_visibility() -> dict[str, bool]:
+		# list_interfaces() returns sqlite3.Row objects, which support key
+		# lookup but have no .get() method — use keys() to check presence.
+		interfaces = list_interfaces(conn)
+		return {
+			# `.keys()` is required, not redundant: these are sqlite3.Row objects,
+			# where `in` iterates *values*, so `"show_on_dashboard" in iface` is
+			# always False and would silently force every interface visible.
+			# sqlite3.Row also has no .get(), so the ternary cannot collapse either.
+			iface["name"]: bool(iface["show_on_dashboard"] if "show_on_dashboard" in iface.keys() else 1)  # noqa: SIM118
+			for iface in interfaces
+		}
+
+	wg_visibility = await run_in_threadpool(get_wg_visibility)
+	data = await run_in_threadpool(_get_all_interface_stats, wg_visibility)
+	return ok_response(data=data)
 
 
 def sample_network_stats(tsdb_dir: Path) -> int:
-    """Sample current network stats and persist to TSDB.
+	"""Sample current network stats and persist to TSDB.
 
-    Called by scheduled task every 30 seconds. Stores combined rate
-    (rx_rate + tx_rate) per interface as metric: `iface_{name}`.
+	Called by scheduled task every 30 seconds. Stores combined rate
+	(rx_rate + tx_rate) per interface as metric: `iface_{name}`.
 
-    Returns:
-        Number of points written.
-    """
-    from ..db import tsdb
+	Returns:
+	    Number of points written.
+	"""
+	from ..db import tsdb
 
-    # Get raw stats without visibility filter for persistence
-    data = _get_all_interface_stats(wg_visibility=None)
-    interfaces = data.get("interfaces", [])
+	# Get raw stats without visibility filter for persistence
+	data = _get_all_interface_stats(wg_visibility=None)
+	interfaces = data.get("interfaces", [])
 
-    points = 0
-    for iface in interfaces:
-        name = iface["name"]
-        rx_rate = iface.get("rx_rate", 0)
-        tx_rate = iface.get("tx_rate", 0)
-        total_rate = rx_rate + tx_rate
+	points = 0
+	for iface in interfaces:
+		name = iface["name"]
+		rx_rate = iface.get("rx_rate", 0)
+		tx_rate = iface.get("tx_rate", 0)
+		total_rate = rx_rate + tx_rate
 
-        # Only store if there's actual traffic (avoid storing mostly zeros)
-        # Store both individual rates and total for flexibility
-        metric_name = f"iface_{name}"
-        tsdb.append_point(
-            tsdb_dir,
-            peer_key=NETWORK_STATS_KEY,
-            metric=metric_name,
-            value={
-                "rx": round(rx_rate, 1),
-                "tx": round(tx_rate, 1),
-                "total": round(total_rate, 1),
-            },
-            retention_days=NETWORK_STATS_RETENTION_DAYS,
-        )
-        points += 1
+		# Only store if there's actual traffic (avoid storing mostly zeros)
+		# Store both individual rates and total for flexibility
+		metric_name = f"iface_{name}"
+		tsdb.append_point(
+			tsdb_dir,
+			peer_key=NETWORK_STATS_KEY,
+			metric=metric_name,
+			value={
+				"rx": round(rx_rate, 1),
+				"tx": round(tx_rate, 1),
+				"total": round(total_rate, 1),
+			},
+			retention_days=NETWORK_STATS_RETENTION_DAYS,
+		)
+		points += 1
 
-    return points
+	return points
 
 
 @router.get("/network/stats/history")
 async def get_network_stats_history(
-    request: Request,
-    interface: str = Query(..., min_length=1, max_length=15, description="Interface name (e.g., wg0, eth0)"),
-    range: Literal["1h", "6h", "24h", "7d"] = Query("1h", description="Time range: 1h, 6h, 24h, 7d"),  # noqa: A002  (the name is part of the HTTP API (?range=1h); renaming it would break clients)
-    _: Any = Depends(get_current_user),
+	request: Request,
+	interface: str = Query(..., min_length=1, max_length=15, description="Interface name (e.g., wg0, eth0)"),
+	range: Literal["1h", "6h", "24h", "7d"] = Query("1h", description="Time range: 1h, 6h, 24h, 7d"),  # noqa: A002  (the name is part of the HTTP API (?range=1h); renaming it would break clients)
+	_: Any = Depends(get_current_user),
 ):
-    """Get historical network stats for sparkline display.
+	"""Get historical network stats for sparkline display.
 
-    Returns time-series data points for the specified interface within
-    the given time range. Data is sampled every 30 seconds.
+	Returns time-series data points for the specified interface within
+	the given time range. Data is sampled every 30 seconds.
 
-    Response format:
-    ```json
-    {
-        "data": {
-            "interface": "wg0",
-            "range": "1h",
-            "points": [
-                {"ts": "2026-03-18T10:00:00Z", "rx": 1234.5, "tx": 567.8, "total": 1802.3},
-                ...
-            ]
-        }
-    }
-    ```
-    """
-    from ..db import tsdb
+	Response format:
+	```json
+	{
+	    "data": {
+	        "interface": "wg0",
+	        "range": "1h",
+	        "points": [
+	            {"ts": "2026-03-18T10:00:00Z", "rx": 1234.5, "tx": 567.8, "total": 1802.3},
+	            ...
+	        ]
+	    }
+	}
+	```
+	"""
+	from ..db import tsdb
 
-    cfg = get_config(request)
+	cfg = get_config(request)
 
-    # `range` is constrained by the Literal above, so an unknown value is
-    # rejected with 422 instead of silently degrading to 1h.
-    hours = NETWORK_RANGE_TO_HOURS[range]
-    since = datetime.now(UTC) - timedelta(hours=hours)
-    # Derive the point cap from the requested window (30s sampling = 120/h)
-    # plus headroom. A fixed 7200 silently truncated 7d to ~2.5 days.
-    point_limit = min(hours * 120 + 120, 21_000)
+	# `range` is constrained by the Literal above, so an unknown value is
+	# rejected with 422 instead of silently degrading to 1h.
+	hours = NETWORK_RANGE_TO_HOURS[range]
+	since = datetime.now(UTC) - timedelta(hours=hours)
+	# Derive the point cap from the requested window (30s sampling = 120/h)
+	# plus headroom. A fixed 7200 silently truncated 7d to ~2.5 days.
+	point_limit = min(hours * 120 + 120, 21_000)
 
-    # Query TSDB
-    metric_name = f"iface_{interface}"
+	# Query TSDB
+	metric_name = f"iface_{interface}"
 
-    def query_history():
-        try:
-            points = tsdb.query(
-                cfg.tsdb_dir,
-                peer_key=NETWORK_STATS_KEY,
-                metric=metric_name,
-                since=since,
-                limit=point_limit,  # 30s sampling: 120 points/hour + headroom
-            )
-            return [
-                {
-                    "ts": pt.ts.isoformat(),
-                    "rx": pt.value.get("rx", 0) if isinstance(pt.value, dict) else 0,
-                    "tx": pt.value.get("tx", 0) if isinstance(pt.value, dict) else 0,
-                    "total": pt.value.get("total", 0) if isinstance(pt.value, dict) else pt.value,
-                }
-                for pt in points
-            ]
-        except Exception as e:
-            _log.warning("Failed to query network stats history: %s", e)
-            return []
+	def query_history():
+		try:
+			points = tsdb.query(
+				cfg.tsdb_dir,
+				peer_key=NETWORK_STATS_KEY,
+				metric=metric_name,
+				since=since,
+				limit=point_limit,  # 30s sampling: 120 points/hour + headroom
+			)
+			return [
+				{
+					"ts": pt.ts.isoformat(),
+					"rx": pt.value.get("rx", 0) if isinstance(pt.value, dict) else 0,
+					"tx": pt.value.get("tx", 0) if isinstance(pt.value, dict) else 0,
+					"total": pt.value.get("total", 0) if isinstance(pt.value, dict) else pt.value,
+				}
+				for pt in points
+			]
+		except Exception as e:
+			_log.warning("Failed to query network stats history: %s", e)
+			return []
 
-    points = await run_in_threadpool(query_history)
+	points = await run_in_threadpool(query_history)
 
-    return ok_response(data={
-        "interface": interface,
-        "range": range,
-        "points": points,
-    })
+	return ok_response(
+		data={
+			"interface": interface,
+			"range": range,
+			"points": points,
+		}
+	)

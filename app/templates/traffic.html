@@ -78,7 +78,9 @@
                         </div>
                     </div>
                     <div id="traffic-combined-chart-wrap" class="traffic-chart-canvas-wrap d-none">
-                        <canvas id="trafficCombinedChart"></canvas>
+                        <span class="visually-hidden" id="traffic-combined-chart-summary" aria-live="polite">Loading traffic data…</span>
+                        <canvas id="trafficCombinedChart" role="img" aria-label="Traffic over time"
+                            aria-describedby="traffic-combined-chart-summary"></canvas>
                     </div>
                     <div id="traffic-empty-state" class="d-none"></div>
                 </div>

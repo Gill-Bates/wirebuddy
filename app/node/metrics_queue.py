@@ -108,7 +108,7 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 MAX_QUEUE_SIZE = 10000  # Max pending metrics before oldest are dropped
-MAX_BATCH_SIZE = 500    # Max metrics per heartbeat
+MAX_BATCH_SIZE = 500  # Max metrics per heartbeat
 QUEUE_DB_NAME = "metrics_queue.db"
 QUEUE_SCHEMA_VERSION = 1
 
@@ -123,27 +123,28 @@ _connection_locks: dict[str, _LockEntry] = {}
 
 @dataclass
 class _LockEntry:
-    lock: threading.Lock
-    refcount: int
+	lock: threading.Lock
+	refcount: int
 
 
 @dataclass(frozen=True)
 class QueuedMetric:
-    """A metric waiting to be sent to master."""
-    seq: int
-    ts: str
-    metric_type: str
-    data: dict[str, Any]
+	"""A metric waiting to be sent to master."""
+
+	seq: int
+	ts: str
+	metric_type: str
+	data: dict[str, Any]
 
 
 def _get_queue_path(data_dir: Path) -> Path:
-    """Return the path to the metrics queue database."""
-    return data_dir / QUEUE_DB_NAME
+	"""Return the path to the metrics queue database."""
+	return data_dir / QUEUE_DB_NAME
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:
-    """Initialize the queue schema if not exists."""
-    conn.executescript("""
+	"""Initialize the queue schema if not exists."""
+	conn.executescript("""
         CREATE TABLE IF NOT EXISTS metrics_queue (
             seq          INTEGER PRIMARY KEY AUTOINCREMENT,
             ts           TEXT NOT NULL,
@@ -164,393 +165,390 @@ def _init_schema(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_schema_version(conn: sqlite3.Connection) -> None:
-    """Ensure the queue schema version is initialized."""
-    current_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-    if current_version == 0:
-        conn.execute(f"PRAGMA user_version = {QUEUE_SCHEMA_VERSION}")
-        return
-    if current_version > QUEUE_SCHEMA_VERSION:
-        raise RuntimeError(
-            f"Queue schema version {current_version} is newer than supported version {QUEUE_SCHEMA_VERSION}"
-        )
+	"""Ensure the queue schema version is initialized."""
+	current_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+	if current_version == 0:
+		conn.execute(f"PRAGMA user_version = {QUEUE_SCHEMA_VERSION}")
+		return
+	if current_version > QUEUE_SCHEMA_VERSION:
+		raise RuntimeError(f"Queue schema version {current_version} is newer than supported version {QUEUE_SCHEMA_VERSION}")
 
 
 def _reconcile_meta(conn: sqlite3.Connection) -> None:
-    """Reconcile the cached queue size after opening the database."""
-    pending_count = _get_queue_size_exact(conn)
-    conn.execute(
-        "UPDATE metrics_queue_meta SET pending_count = ? WHERE id = 1",
-        (pending_count,),
-    )
+	"""Reconcile the cached queue size after opening the database."""
+	pending_count = _get_queue_size_exact(conn)
+	conn.execute(
+		"UPDATE metrics_queue_meta SET pending_count = ? WHERE id = 1",
+		(pending_count,),
+	)
 
 
 def _get_queue_size_exact(conn: sqlite3.Connection) -> int:
-    """Return the exact queue size from the table."""
-    row = conn.execute("SELECT COUNT(*) as pending FROM metrics_queue").fetchone()
-    return int(row["pending"] or 0)
+	"""Return the exact queue size from the table."""
+	row = conn.execute("SELECT COUNT(*) as pending FROM metrics_queue").fetchone()
+	return int(row["pending"] or 0)
 
 
 def _get_queue_size(conn: sqlite3.Connection) -> int:
-    """Return the cached queue size, falling back to an exact count if needed."""
-    row = conn.execute("SELECT pending_count FROM metrics_queue_meta WHERE id = 1").fetchone()
-    if row is not None and row["pending_count"] is not None:
-        return int(row["pending_count"])
-    return _get_queue_size_exact(conn)
+	"""Return the cached queue size, falling back to an exact count if needed."""
+	row = conn.execute("SELECT pending_count FROM metrics_queue_meta WHERE id = 1").fetchone()
+	if row is not None and row["pending_count"] is not None:
+		return int(row["pending_count"])
+	return _get_queue_size_exact(conn)
 
 
 def _get_connection_key(conn: sqlite3.Connection) -> str:
-    """Return a stable key for the underlying queue database file."""
-    row = conn.execute("PRAGMA database_list").fetchone()
-    if row is None:
-        return f"<unknown:{id(conn)}>"
+	"""Return a stable key for the underlying queue database file."""
+	row = conn.execute("PRAGMA database_list").fetchone()
+	if row is None:
+		return f"<unknown:{id(conn)}>"
 
-    database_path = row[2]
-    if not database_path:
-        return f"<memory:{id(conn)}>"
+	database_path = row[2]
+	if not database_path:
+		return f"<memory:{id(conn)}>"
 
-    return str(Path(database_path).resolve())
+	return str(Path(database_path).resolve())
+
+
+def _lock_entry_unlocked(connection_key: str) -> _LockEntry:
+	"""Return (creating if needed) the lock entry while holding _registry_lock."""
+	entry = _connection_locks.get(connection_key)
+	if entry is None:
+		entry = _LockEntry(lock=threading.Lock(), refcount=0)
+		_connection_locks[connection_key] = entry
+	return entry
 
 
 def _register_connection_lock(connection_key: str) -> threading.Lock:
-    """Register and return the lock for a queue database file."""
-    with _registry_lock:
-        entry = _connection_locks.get(connection_key)
-        if entry is None:
-            entry = _LockEntry(lock=threading.Lock(), refcount=0)
-            _connection_locks[connection_key] = entry
-        entry.refcount += 1
-        return entry.lock
+	"""Register and return the lock for a queue database file."""
+	with _registry_lock:
+		entry = _lock_entry_unlocked(connection_key)
+		entry.refcount += 1
+		return entry.lock
 
 
 def _get_connection_lock(conn: sqlite3.Connection) -> threading.Lock:
-    """Return the lock for a queue database file."""
-    connection_key = _get_connection_key(conn)
-    with _registry_lock:
-        entry = _connection_locks.get(connection_key)
-        if entry is None:
-            entry = _LockEntry(lock=threading.Lock(), refcount=0)
-            _connection_locks[connection_key] = entry
-        return entry.lock
+	"""Return the lock for a queue database file."""
+	connection_key = _get_connection_key(conn)
+	with _registry_lock:
+		return _lock_entry_unlocked(connection_key).lock
 
 
 def _unregister_connection_lock(connection_key: str) -> None:
-    """Remove the lock for a queue database file."""
-    with _registry_lock:
-        entry = _connection_locks.get(connection_key)
-        if entry is None:
-            return
-        entry.refcount -= 1
-        if entry.refcount <= 0:
-            _connection_locks.pop(connection_key, None)
+	"""Remove the lock for a queue database file."""
+	with _registry_lock:
+		entry = _connection_locks.get(connection_key)
+		if entry is None:
+			return
+		entry.refcount -= 1
+		if entry.refcount <= 0:
+			_connection_locks.pop(connection_key, None)
 
 
 def init_queue(data_dir: Path) -> sqlite3.Connection:
-    """Initialize and return a connection to the metrics queue.
+	"""Initialize and return a connection to the metrics queue.
 
-    Creates the database and schema if they don't exist.
-    Uses WAL mode for better concurrency.
+	Creates the database and schema if they don't exist.
+	Uses WAL mode for better concurrency.
 
-    Args:
-        data_dir: Directory to store the queue database
+	Args:
+	    data_dir: Directory to store the queue database
 
-    Returns:
-        SQLite connection (thread-safe via a per-connection lock)
-    """
-    db_path = _get_queue_path(data_dir)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+	Returns:
+	    SQLite connection (thread-safe via a per-connection lock)
+	"""
+	db_path = _get_queue_path(data_dir)
+	db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")  # Faster, still durable with WAL
+	conn = sqlite3.connect(str(db_path), check_same_thread=False)
+	conn.row_factory = sqlite3.Row
+	conn.execute("PRAGMA journal_mode=WAL")
+	conn.execute("PRAGMA synchronous=NORMAL")  # Faster, still durable with WAL
 
-    _init_schema(conn)
-    _ensure_schema_version(conn)
-    _reconcile_meta(conn)
-    conn.commit()
-    _register_connection_lock(str(db_path.resolve()))
-    _log.debug("Metrics queue initialized: %s", db_path)
-    return conn
+	_init_schema(conn)
+	_ensure_schema_version(conn)
+	_reconcile_meta(conn)
+	conn.commit()
+	_register_connection_lock(str(db_path.resolve()))
+	_log.debug("Metrics queue initialized: %s", db_path)
+	return conn
 
 
 def close_queue(conn: sqlite3.Connection) -> None:
-    """Close the queue connection cleanly.
+	"""Close the queue connection cleanly.
 
-    Performs a WAL checkpoint before closing to ensure all data is flushed.
-    """
-    connection_key = _get_connection_key(conn)
-    with _get_connection_lock(conn):
-        try:
-            try:
-                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            except Exception as exc:
-                _log.warning("Metrics queue checkpoint failed: %s", exc)
-            conn.close()
-        except Exception as exc:
-            _log.warning("Error closing metrics queue: %s", exc)
-        finally:
-            _unregister_connection_lock(connection_key)
+	Performs a WAL checkpoint before closing to ensure all data is flushed.
+	"""
+	connection_key = _get_connection_key(conn)
+	with _get_connection_lock(conn):
+		try:
+			try:
+				conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+			except Exception as exc:
+				_log.warning("Metrics queue checkpoint failed: %s", exc)
+			conn.close()
+		except Exception as exc:
+			_log.warning("Error closing metrics queue: %s", exc)
+		finally:
+			_unregister_connection_lock(connection_key)
 
 
 def _enforce_queue_limit(conn: sqlite3.Connection) -> None:
-    """Drop oldest metrics if queue exceeds size limit.
+	"""Drop oldest metrics if queue exceeds size limit.
 
-    Uses exact size measurement and an indexed cutoff query.
-    """
-    size = _get_queue_size(conn)
-    if size <= MAX_QUEUE_SIZE:
-        return
+	Uses exact size measurement and an indexed cutoff query.
+	"""
+	size = _get_queue_size(conn)
+	if size <= MAX_QUEUE_SIZE:
+		return
 
-    # Calculate cutoff sequence
-    drop_count = size - MAX_QUEUE_SIZE + MAX_BATCH_SIZE  # Make room for a batch
-    row = conn.execute(
-        "SELECT seq FROM metrics_queue ORDER BY seq ASC LIMIT 1 OFFSET ?",
-        (drop_count,)
-    ).fetchone()
+	# Calculate cutoff sequence
+	drop_count = size - MAX_QUEUE_SIZE + MAX_BATCH_SIZE  # Make room for a batch
+	row = conn.execute("SELECT seq FROM metrics_queue ORDER BY seq ASC LIMIT 1 OFFSET ?", (drop_count,)).fetchone()
 
-    if row:
-        cutoff_seq = row["seq"]
-        deleted = conn.execute("DELETE FROM metrics_queue WHERE seq < ?", (cutoff_seq,)).rowcount
-        if deleted > 0:
-            conn.execute(
-                "UPDATE metrics_queue_meta SET pending_count = MAX(pending_count - ?, 0), dropped_count = dropped_count + ?, last_overflow_ts = ? WHERE id = 1",
-                (deleted, deleted, datetime.now(UTC).isoformat()),
-            )
-            _log.warning("Queue overflow: dropped metrics with seq < %d (~%d items)", cutoff_seq, deleted)
+	if row:
+		cutoff_seq = row["seq"]
+		deleted = conn.execute("DELETE FROM metrics_queue WHERE seq < ?", (cutoff_seq,)).rowcount
+		if deleted > 0:
+			conn.execute(
+				"UPDATE metrics_queue_meta SET pending_count = MAX(pending_count - ?, 0), dropped_count = dropped_count + ?, last_overflow_ts = ? WHERE id = 1",
+				(deleted, deleted, datetime.now(UTC).isoformat()),
+			)
+			_log.warning("Queue overflow: dropped metrics with seq < %d (~%d items)", cutoff_seq, deleted)
 
 
 def enqueue_peer_traffic(
-    conn: sqlite3.Connection,
-    peer_stats: list[dict[str, Any]],
+	conn: sqlite3.Connection,
+	peer_stats: list[dict[str, Any]],
 ) -> int:
-    """Enqueue peer traffic metrics for later sync.
+	"""Enqueue peer traffic metrics for later sync.
 
-    Thread-safe. Metrics are persisted locally and only deleted after
-    master ACK, ensuring at-least-once delivery.
+	Thread-safe. Metrics are persisted locally and only deleted after
+	master ACK, ensuring at-least-once delivery.
 
-    Args:
-        conn: Queue database connection
-        peer_stats: List of peer stat dicts with keys:
-            - public_key (str, required)
-            - transfer_rx (int, bytes received)
-            - transfer_tx (int, bytes transmitted)
-            - latest_handshake (int, unix timestamp, optional)
-            - endpoint (str, IP:port, optional)
+	Args:
+	    conn: Queue database connection
+	    peer_stats: List of peer stat dicts with keys:
+	        - public_key (str, required)
+	        - transfer_rx (int, bytes received)
+	        - transfer_tx (int, bytes transmitted)
+	        - latest_handshake (int, unix timestamp, optional)
+	        - endpoint (str, IP:port, optional)
 
-    Returns:
-        Number of metrics enqueued
-    """
-    if not peer_stats:
-        return 0
+	Returns:
+	    Number of metrics enqueued
+	"""
+	if not peer_stats:
+		return 0
 
-    with _get_connection_lock(conn), conn:
-        ts = datetime.now(UTC).isoformat()
-        rows: list[tuple[str, str, str]] = []
+	with _get_connection_lock(conn), conn:
+		ts = datetime.now(UTC).isoformat()
+		rows: list[tuple[str, str, str]] = []
 
-        # Enforce queue size limit (before adding new metrics)
-        _enforce_queue_limit(conn)
+		# Enforce queue size limit (before adding new metrics)
+		_enforce_queue_limit(conn)
 
-        for ps in peer_stats:
-            public_key = ps.get("public_key")
-            if not public_key:
-                continue
+		for ps in peer_stats:
+			public_key = ps.get("public_key")
+			if not public_key:
+				continue
 
-            rx = ps.get("transfer_rx", 0)
-            tx = ps.get("transfer_tx", 0)
-            if rx > 0 or tx > 0:
-                rows.append((
-                    ts,
-                    METRIC_PEER_TRAFFIC,
-                    json.dumps({
-                        "public_key": public_key,
-                        "rx_bytes": rx,
-                        "tx_bytes": tx,
-                    }, allow_nan=False, separators=(",", ":")),
-                ))
+			rx = ps.get("transfer_rx", 0)
+			tx = ps.get("transfer_tx", 0)
+			if rx > 0 or tx > 0:
+				rows.append(
+					(
+						ts,
+						METRIC_PEER_TRAFFIC,
+						json.dumps(
+							{
+								"public_key": public_key,
+								"rx_bytes": rx,
+								"tx_bytes": tx,
+							},
+							allow_nan=False,
+							separators=(",", ":"),
+						),
+					)
+				)
 
-            latest_handshake = ps.get("latest_handshake")
-            if latest_handshake and latest_handshake > 0:
-                rows.append((
-                    ts,
-                    METRIC_PEER_HANDSHAKE,
-                    json.dumps({
-                        "public_key": public_key,
-                        "latest_handshake": latest_handshake,
-                        "endpoint": ps.get("endpoint"),
-                    }, allow_nan=False, separators=(",", ":")),
-                ))
+			latest_handshake = ps.get("latest_handshake")
+			if latest_handshake and latest_handshake > 0:
+				rows.append(
+					(
+						ts,
+						METRIC_PEER_HANDSHAKE,
+						json.dumps(
+							{
+								"public_key": public_key,
+								"latest_handshake": latest_handshake,
+								"endpoint": ps.get("endpoint"),
+							},
+							allow_nan=False,
+							separators=(",", ":"),
+						),
+					)
+				)
 
-        if not rows:
-            return 0
+		if not rows:
+			return 0
 
-        conn.executemany(
-            "INSERT INTO metrics_queue (ts, metric_type, data) VALUES (?, ?, ?)",
-            rows,
-        )
-        conn.execute(
-            "UPDATE metrics_queue_meta SET pending_count = pending_count + ? WHERE id = 1",
-            (len(rows),),
-        )
-        _enforce_queue_limit(conn)
+		conn.executemany(
+			"INSERT INTO metrics_queue (ts, metric_type, data) VALUES (?, ?, ?)",
+			rows,
+		)
+		conn.execute(
+			"UPDATE metrics_queue_meta SET pending_count = pending_count + ? WHERE id = 1",
+			(len(rows),),
+		)
+		_enforce_queue_limit(conn)
 
-        _log.debug("Enqueued %d metrics", len(rows))
-        return len(rows)
+		_log.debug("Enqueued %d metrics", len(rows))
+		return len(rows)
 
 
 def get_pending_batch(conn: sqlite3.Connection) -> list[QueuedMetric]:
-    """Get a batch of pending metrics to send to master.
+	"""Get a batch of pending metrics to send to master.
 
-    Thread-safe. Returns metrics ordered by sequence number for reliable
-    delivery ordering.
+	Thread-safe. Returns metrics ordered by sequence number for reliable
+	delivery ordering.
 
-    Args:
-        conn: Queue database connection
+	Args:
+	    conn: Queue database connection
 
-    Returns:
-        List of QueuedMetric up to MAX_BATCH_SIZE, ordered by seq ASC
-    """
-    with _get_connection_lock(conn), conn:
-        cursor = conn.execute(
-            "SELECT seq, ts, metric_type, data FROM metrics_queue "
-            "ORDER BY seq ASC LIMIT ?",
-            (MAX_BATCH_SIZE,)
-        )
-        metrics: list[QueuedMetric] = []
-        corrupt_seqs: list[int] = []
-        for row in cursor:
-            try:
-                data = json.loads(row["data"])
-                if not isinstance(data, dict):
-                    raise ValueError("Metric data must be a JSON object")
-                metrics.append(
-                    QueuedMetric(
-                        seq=row["seq"],
-                        ts=row["ts"],
-                        metric_type=row["metric_type"],
-                        data=data,
-                    )
-                )
-            except (TypeError, ValueError, json.JSONDecodeError):
-                corrupt_seqs.append(int(row["seq"]))
-                _log.warning("Corrupt metrics queue row skipped: seq=%s", row["seq"])
+	Returns:
+	    List of QueuedMetric up to MAX_BATCH_SIZE, ordered by seq ASC
+	"""
+	with _get_connection_lock(conn), conn:
+		cursor = conn.execute("SELECT seq, ts, metric_type, data FROM metrics_queue ORDER BY seq ASC LIMIT ?", (MAX_BATCH_SIZE,))
+		metrics: list[QueuedMetric] = []
+		corrupt_seqs: list[int] = []
+		for row in cursor:
+			try:
+				data = json.loads(row["data"])
+				if not isinstance(data, dict):
+					raise ValueError("Metric data must be a JSON object")
+				metrics.append(
+					QueuedMetric(
+						seq=row["seq"],
+						ts=row["ts"],
+						metric_type=row["metric_type"],
+						data=data,
+					)
+				)
+			except (TypeError, ValueError, json.JSONDecodeError):
+				corrupt_seqs.append(int(row["seq"]))
+				_log.warning("Corrupt metrics queue row skipped: seq=%s", row["seq"])
 
-        if corrupt_seqs:
-            conn.executemany(
-                "DELETE FROM metrics_queue WHERE seq = ?",
-                [(seq,) for seq in corrupt_seqs],
-            )
-            conn.execute(
-                "UPDATE metrics_queue_meta SET pending_count = MAX(pending_count - ?, 0), dropped_count = dropped_count + ? WHERE id = 1",
-                (len(corrupt_seqs), len(corrupt_seqs)),
-            )
+		if corrupt_seqs:
+			conn.executemany(
+				"DELETE FROM metrics_queue WHERE seq = ?",
+				[(seq,) for seq in corrupt_seqs],
+			)
+			conn.execute(
+				"UPDATE metrics_queue_meta SET pending_count = MAX(pending_count - ?, 0), dropped_count = dropped_count + ? WHERE id = 1",
+				(len(corrupt_seqs), len(corrupt_seqs)),
+			)
 
-        return metrics
+		return metrics
 
 
 def ack_up_to_seq(conn: sqlite3.Connection, acked_seq: int) -> int:
-    """Delete all metrics up to and including acked_seq.
+	"""Delete all metrics up to and including acked_seq.
 
-    Thread-safe. Called after master confirms receipt. Includes safety
-    check to prevent accidental deletion with invalid sequence numbers.
+	Thread-safe. Called after master confirms receipt. Includes safety
+	check to prevent accidental deletion with invalid sequence numbers.
 
-    Args:
-        conn: Queue database connection
-        acked_seq: Highest sequence number acknowledged by master
+	Args:
+	    conn: Queue database connection
+	    acked_seq: Highest sequence number acknowledged by master
 
-    Returns:
-        Number of metrics deleted (0 if acked_seq is invalid)
-    """
-    with _get_connection_lock(conn), conn:
-        if isinstance(acked_seq, bool) or not isinstance(acked_seq, int) or acked_seq < 1:
-            return 0
+	Returns:
+	    Number of metrics deleted (0 if acked_seq is invalid)
+	"""
+	with _get_connection_lock(conn), conn:
+		if isinstance(acked_seq, bool) or not isinstance(acked_seq, int) or acked_seq < 1:
+			return 0
 
-        row = conn.execute(
-            "SELECT MIN(seq) as min_seq, MAX(seq) as max_seq FROM metrics_queue"
-        ).fetchone()
-        max_seq = row["max_seq"] if row is not None else None
-        if max_seq is None:
-            return 0
+		row = conn.execute("SELECT MAX(seq) as max_seq FROM metrics_queue").fetchone()
+		max_seq = row["max_seq"] if row is not None else None
+		if max_seq is None:
+			return 0
 
-        if acked_seq > max_seq:
-            _log.warning("Rejecting ACK seq %d because it exceeds queue max seq %d", acked_seq, max_seq)
-            return 0
+		if acked_seq > max_seq:
+			_log.warning("Rejecting ACK seq %d because it exceeds queue max seq %d", acked_seq, max_seq)
+			return 0
 
-        cursor = conn.execute(
-            "DELETE FROM metrics_queue WHERE seq <= ?",
-            (acked_seq,)
-        )
-        deleted = cursor.rowcount
-        if deleted > 0:
-            conn.execute(
-                "UPDATE metrics_queue_meta SET pending_count = MAX(pending_count - ?, 0) WHERE id = 1",
-                (deleted,),
-            )
-        if deleted > 0:
-            _log.debug("ACK received: deleted %d metrics (up to seq %d)", deleted, acked_seq)
-        return deleted
+		cursor = conn.execute("DELETE FROM metrics_queue WHERE seq <= ?", (acked_seq,))
+		deleted = cursor.rowcount
+		if deleted > 0:
+			conn.execute(
+				"UPDATE metrics_queue_meta SET pending_count = MAX(pending_count - ?, 0) WHERE id = 1",
+				(deleted,),
+			)
+			_log.debug("ACK received: deleted %d metrics (up to seq %d)", deleted, acked_seq)
+		return deleted
 
 
 def get_queue_stats(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Get queue statistics for debugging and monitoring.
+	"""Get queue statistics for debugging and monitoring.
 
-    Thread-safe. Returns current queue state including pending count,
-    sequence range, and age of oldest metric.
+	Thread-safe. Returns current queue state including pending count,
+	sequence range, and age of oldest metric.
 
-    Args:
-        conn: Queue database connection
+	Args:
+	    conn: Queue database connection
 
-    Returns:
-        Dict with keys: pending, min_seq, max_seq, oldest_ts
-    """
-    with _get_connection_lock(conn):
-        row = conn.execute("""
+	Returns:
+	    Dict with keys: pending, min_seq, max_seq, oldest_ts
+	"""
+	with _get_connection_lock(conn):
+		row = conn.execute("""
             SELECT
                 MIN(seq) as min_seq,
                 MAX(seq) as max_seq,
                 MIN(ts) as oldest_ts
             FROM metrics_queue
         """).fetchone()
-        meta = conn.execute(
-            "SELECT pending_count, dropped_count, last_overflow_ts FROM metrics_queue_meta WHERE id = 1"
-        ).fetchone()
+		meta = conn.execute("SELECT pending_count, dropped_count, last_overflow_ts FROM metrics_queue_meta WHERE id = 1").fetchone()
 
-        return {
-            "pending": int(meta["pending_count"] or 0) if meta is not None else 0,
-            "min_seq": row["min_seq"],
-            "max_seq": row["max_seq"],
-            "oldest_ts": row["oldest_ts"],
-            "dropped": int(meta["dropped_count"] or 0) if meta is not None else 0,
-            "last_overflow_ts": meta["last_overflow_ts"] if meta is not None else None,
-        }
+		return {
+			"pending": int(meta["pending_count"] or 0) if meta is not None else 0,
+			"min_seq": row["min_seq"],
+			"max_seq": row["max_seq"],
+			"oldest_ts": row["oldest_ts"],
+			"dropped": int(meta["dropped_count"] or 0) if meta is not None else 0,
+			"last_overflow_ts": meta["last_overflow_ts"] if meta is not None else None,
+		}
 
 
 def serialize_batch_for_api(metrics: list[QueuedMetric]) -> dict[str, Any]:
-    """Serialize a batch of metrics for the heartbeat API.
+	"""Serialize a batch of metrics for the heartbeat API.
 
-    Pure function, no database access required.
+	Pure function, no database access required.
 
-    Args:
-        metrics: List of QueuedMetric from get_pending_batch()
+	Args:
+	    metrics: List of QueuedMetric from get_pending_batch()
 
-    Returns:
-        Dict with keys:
-            - seq_from: First sequence in batch (None if empty)
-            - seq_to: Last sequence in batch (None if empty)
-            - metrics: List of metric dicts with seq, ts, type, data
-    """
-    if not metrics:
-        return {"seq_from": None, "seq_to": None, "metrics": []}
+	Returns:
+	    Dict with keys:
+	        - seq_from: First sequence in batch (None if empty)
+	        - seq_to: Last sequence in batch (None if empty)
+	        - metrics: List of metric dicts with seq, ts, type, data
+	"""
+	if not metrics:
+		return {"seq_from": None, "seq_to": None, "metrics": []}
 
-    return {
-        "seq_from": metrics[0].seq,
-        "seq_to": metrics[-1].seq,
-        "metrics": [
-            {
-                "seq": m.seq,
-                "ts": m.ts,
-                "type": m.metric_type,
-                "data": m.data,
-            }
-            for m in metrics
-        ]
-    }
+	return {
+		"seq_from": metrics[0].seq,
+		"seq_to": metrics[-1].seq,
+		"metrics": [
+			{
+				"seq": m.seq,
+				"ts": m.ts,
+				"type": m.metric_type,
+				"data": m.data,
+			}
+			for m in metrics
+		],
+	}

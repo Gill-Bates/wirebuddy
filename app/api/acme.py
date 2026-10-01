@@ -33,7 +33,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from ..api.auth import get_current_user, require_admin
 from ..utils.async_utils import spawn_tracked_task
@@ -71,6 +71,7 @@ CHALLENGE_TTL = 600
 _domain_lock_fds: dict[int, tuple[object, PathLib]] = {}  # fd_num -> (file object, lock path)
 _domain_lock_fds_lock = threading.Lock()
 
+
 # Domain lock file helpers (worker-safe)
 def _acquire_domain_lock(certs_dir: PathLib, domain: str) -> int | None:
 	"""Acquire exclusive lock for domain order. Returns file descriptor or None.
@@ -103,6 +104,7 @@ def _acquire_domain_lock(certs_dir: PathLib, domain: str) -> int | None:
 			fd_obj.close()
 		return None
 
+
 def _release_domain_lock(fd: int) -> None:
 	"""Release domain lock by file descriptor."""
 	# Retrieve and remove file object from storage
@@ -129,8 +131,10 @@ def _release_domain_lock(fd: int) -> None:
 # Pydantic Models
 # ---------------------------------------------------------------------------
 
+
 class CertificateRequest(BaseModel):
 	"""Request to issue a new certificate."""
+
 	domain: str = Field(..., min_length=1, max_length=253, pattern=_DOMAIN_PATTERN)
 	email: EmailStr
 	staging: bool = Field(default=False, description="Use staging environment for testing")
@@ -138,6 +142,7 @@ class CertificateRequest(BaseModel):
 
 class CertificateInfo(BaseModel):
 	"""Certificate information."""
+
 	domain: str
 	issued_at: str | None = None
 	expires_at: str | None = None
@@ -151,6 +156,7 @@ class CertificateInfo(BaseModel):
 
 class CertificateIssueData(BaseModel):
 	"""Successful certificate issuance payload."""
+
 	domain: str
 	staging: bool
 	cert_path: str
@@ -159,6 +165,7 @@ class CertificateIssueData(BaseModel):
 
 class CertificateDeleteData(BaseModel):
 	"""Certificate deletion payload."""
+
 	success: bool
 	domain: str
 	staging: bool
@@ -166,6 +173,7 @@ class CertificateDeleteData(BaseModel):
 
 class RenewalCandidate(BaseModel):
 	"""Single certificate renewal candidate."""
+
 	domain: str
 	expires_at: str | None = None
 	days_until_expiry: int | None = None
@@ -173,6 +181,7 @@ class RenewalCandidate(BaseModel):
 
 class RenewalCheckData(BaseModel):
 	"""Certificate renewal summary payload."""
+
 	total_certificates: int
 	needs_renewal_count: int
 	needs_renewal: list[RenewalCandidate]
@@ -181,6 +190,7 @@ class RenewalCheckData(BaseModel):
 # ---------------------------------------------------------------------------
 # Helper Functions
 # ---------------------------------------------------------------------------
+
 
 def get_certs_dir(config: Config) -> PathLib:
 	"""Public wrapper for certificate directory resolution."""
@@ -280,21 +290,31 @@ def _atomic_write_bytes(path: PathLib, data: bytes, mode: int) -> None:
 			tmp.write(data)
 			tmp.flush()
 			os.fsync(tmp.fileno())
-		Path(tmp_name).chmod(mode)
-		Path(tmp_name).replace(path)
+		# PathLib, not Path: ``Path`` in this module is FastAPI's parameter marker.
+		PathLib(tmp_name).chmod(mode)
+		PathLib(tmp_name).replace(path)
 		path.chmod(mode)
 	finally:
 		try:
-			if Path(tmp_name).exists():
-				Path(tmp_name).unlink()
+			if PathLib(tmp_name).exists():
+				PathLib(tmp_name).unlink()
 		except OSError:
 			pass
-
 
 
 def _atomic_write_text(path: PathLib, data: str, mode: int) -> None:
 	"""Write text atomically and apply mode."""
 	_atomic_write_bytes(path, data.encode("utf-8"), mode)
+
+
+class ACMEDirectory(BaseModel):
+	"""ACME directory resource (RFC 8555 §7.1.1); only the fields this client uses."""
+
+	model_config = ConfigDict(extra="allow")
+
+	newNonce: str  # noqa: N815 (ACME wire format uses camelCase field names)
+	newAccount: str  # noqa: N815
+	newOrder: str  # noqa: N815
 
 
 class ACMEClient:
@@ -303,7 +323,7 @@ class ACMEClient:
 	def __init__(self, directory_url: str, certs_dir: PathLib):
 		self.directory_url = directory_url
 		self.certs_dir = certs_dir
-		self.directory: dict = {}
+		self.directory: ACMEDirectory | None = None
 		self.nonce: str | None = None
 		self.account_key: ec.EllipticCurvePrivateKey | None = None
 		self.account_url: str | None = None
@@ -331,12 +351,14 @@ class ACMEClient:
 
 		resp = await self.http_client.get(self.directory_url)
 		resp.raise_for_status()
-		self.directory = resp.json()
+		self.directory = ACMEDirectory.model_validate(resp.json())
 
 	async def _get_nonce(self) -> str:
 		"""Get a fresh nonce with fallback."""
 		if not self.http_client:
 			raise RuntimeError("HTTP client not initialized")
+		if self.directory is None:
+			raise RuntimeError("ACME directory not fetched")
 
 		if self.nonce:
 			nonce = self.nonce
@@ -344,12 +366,12 @@ class ACMEClient:
 			return nonce
 
 		with contextlib.suppress(Exception):
-			resp = await self.http_client.head(self.directory["newNonce"])
+			resp = await self.http_client.head(self.directory.newNonce)
 			if "Replay-Nonce" in resp.headers:
 				return resp.headers["Replay-Nonce"]
 
 		# Fallback: GET request to newNonce
-		resp = await self.http_client.get(self.directory["newNonce"])
+		resp = await self.http_client.get(self.directory.newNonce)
 		if "Replay-Nonce" not in resp.headers:
 			raise HTTPException(status_code=500, detail="Failed to obtain ACME nonce")
 		return resp.headers["Replay-Nonce"]
@@ -381,10 +403,7 @@ class ACMEClient:
 		if self.account_thumbprint_path.exists():
 			stored_thumbprint = self.account_thumbprint_path.read_text().strip()
 			if stored_thumbprint != current_thumbprint:
-				_log.warning(
-					"Account key changed (thumbprint mismatch). "
-					"Removing stale account URL to re-register."
-				)
+				_log.warning("Account key changed (thumbprint mismatch). Removing stale account URL to re-register.")
 				self.account_url_path.unlink(missing_ok=True)
 				self.account_thumbprint_path.unlink(missing_ok=True)
 				return None
@@ -503,7 +522,7 @@ class ACMEClient:
 			"contact": [f"mailto:{email}"],
 		}
 
-		resp = await self._signed_request(self.directory["newAccount"], payload)
+		resp = await self._signed_request(self.directory.newAccount, payload)
 
 		if resp.status_code not in (200, 201):
 			raise HTTPException(status_code=500, detail=f"Failed to register account: {_parse_acme_error(resp)}")
@@ -524,7 +543,7 @@ class ACMEClient:
 			"identifiers": [{"type": "dns", "value": domain}],
 		}
 
-		resp = await self._signed_request(self.directory["newOrder"], payload)
+		resp = await self._signed_request(self.directory.newOrder, payload)
 
 		if resp.status_code not in (200, 201):
 			raise HTTPException(status_code=500, detail=f"Failed to create order: {_parse_acme_error(resp)}")
@@ -697,6 +716,7 @@ class ACMEClient:
 # Challenge response storage (file-based with TTL)
 # ---------------------------------------------------------------------------
 
+
 def _get_challenge_file(certs_dir: PathLib) -> PathLib:
 	"""Get path to challenge storage file."""
 	return certs_dir / ".challenges.json"
@@ -717,11 +737,7 @@ def _read_valid_challenges(challenge_file: PathLib) -> dict[str, dict]:
 	except (OSError, json.JSONDecodeError):
 		return {}
 	now = time.time()
-	valid: dict[str, dict] = {
-		token: entry
-		for token, entry in data.items()
-		if isinstance(entry, dict) and entry.get("expires", 0) > now
-	}
+	valid: dict[str, dict] = {token: entry for token, entry in data.items() if isinstance(entry, dict) and entry.get("expires", 0) > now}
 	return valid
 
 
@@ -907,11 +923,13 @@ def _list_certificates_internal(certs_dir: PathLib) -> list[CertificateInfo]:
 				certificates.append(info)
 			except Exception as e:
 				_log.warning("Failed to parse certificate %s: %s", cert_path, e)
-				certificates.append(CertificateInfo(
-					domain=domain_dir.name,
-					exists=True,
-					is_staging=is_staging,
-				))
+				certificates.append(
+					CertificateInfo(
+						domain=domain_dir.name,
+						exists=True,
+						is_staging=is_staging,
+					)
+				)
 
 	return certificates
 
@@ -934,10 +952,7 @@ async def request_certificate(
 	# Prevent parallel orders for the same domain (worker-safe file lock)
 	lock_fd = await asyncio.to_thread(_acquire_domain_lock, certs_dir, req.domain)
 	if lock_fd is None:
-		raise HTTPException(
-			status_code=409,
-			detail=f"Certificate request for '{req.domain}' already in progress"
-		)
+		raise HTTPException(status_code=409, detail=f"Certificate request for '{req.domain}' already in progress")
 
 	try:
 		directory_url = ACME_DIRECTORY_STAGING if req.staging else ACME_DIRECTORY_PROD
@@ -953,9 +968,7 @@ async def request_certificate(
 				# (account_key.pem / account_url.txt / account_thumbprint.txt).
 				# Concurrent orders for *different* domains would otherwise race
 				# to create and overwrite each other's ACME account.
-				account_lock_fd = await asyncio.to_thread(
-					_acquire_domain_lock, certs_dir, "_acme_account"
-				)
+				account_lock_fd = await asyncio.to_thread(_acquire_domain_lock, certs_dir, "_acme_account")
 				if account_lock_fd is None:
 					raise HTTPException(
 						status_code=409,
@@ -1011,9 +1024,7 @@ async def request_certificate(
 					cert_pem, key_pem = await client.finalize_order(order["finalize"], order_url, req.domain)
 
 					# Save certificate (blocking file I/O — offload to thread)
-					cert_dir = await asyncio.to_thread(
-						client.save_certificate, req.domain, cert_pem, key_pem, req.staging
-					)
+					cert_dir = await asyncio.to_thread(client.save_certificate, req.domain, cert_pem, key_pem, req.staging)
 
 					suffix = "_staging" if req.staging else ""
 					return OkResponse[CertificateIssueData](
@@ -1038,7 +1049,8 @@ async def request_certificate(
 	except TimeoutError as exc:
 		_log.error(
 			"ACME order timed out after %ss for domain=%s",
-			_ACME_ORDER_TIMEOUT_SECONDS, req.domain,
+			_ACME_ORDER_TIMEOUT_SECONDS,
+			req.domain,
 		)
 		raise HTTPException(
 			status_code=504,
@@ -1127,10 +1139,7 @@ async def check_renewals(
 	"""
 	certificates = await asyncio.to_thread(_list_certificates_internal, certs_dir)
 
-	needs_renewal = [
-		cert for cert in certificates
-		if cert.needs_renewal and not cert.is_staging
-	]
+	needs_renewal = [cert for cert in certificates if cert.needs_renewal and not cert.is_staging]
 
 	data = RenewalCheckData(
 		total_certificates=len([c for c in certificates if not c.is_staging]),

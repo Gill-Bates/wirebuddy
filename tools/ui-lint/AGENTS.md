@@ -18,7 +18,7 @@ Playwright-based UI lint tool for the WireBuddy web frontend. `run-ui-lint.mjs` 
 
 | Directory | Purpose |
 |---|---|
-| `lib/` | Runtime, config, token, findings, DOM-snapshot, device and orchestration modules (see `lib/AGENTS.md`) |
+| `lib/` | Runtime, config, token, findings, DOM-snapshot and orchestration modules (see `lib/AGENTS.md`) |
 | `rules/` | Registered lint rules grouped by category plus manifest/loader (see `rules/AGENTS.md`) |
 | `tests/` | Playwright specs for rules and lib modules (see `tests/AGENTS.md`) |
 

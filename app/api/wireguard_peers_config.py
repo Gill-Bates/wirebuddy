@@ -38,15 +38,14 @@ router = APIRouter(tags=["wireguard"])
 
 __all__ = ["router"]
 
-# WireGuard dump format column indices
+# WireGuard dump peer columns: 0 pubkey, 1 psk, 2 endpoint, 3 allowed-ips, 4 handshake,
+# 5 rx, 6 tx, 7 keepalive (optional, unread); only the indices below are used.
 DUMP_PEER_PUBKEY = 0
-DUMP_PEER_PSK = 1
 DUMP_PEER_ENDPOINT = 2
 DUMP_PEER_ALLOWED = 3
 DUMP_PEER_HANDSHAKE = 4
 DUMP_PEER_RX = 5
 DUMP_PEER_TX = 6
-DUMP_PEER_KEEPALIVE = 7   # defined for documentation; not currently read
 DUMP_PEER_MIN_FIELDS = 7  # columns 0..6 are required; keepalive (7) is optional
 
 # Security limits
@@ -62,6 +61,19 @@ def _validate_port(port: int) -> None:
 	"""Validate port is in valid range."""
 	if not (1 <= port <= 65535):
 		raise ValueError(f"Port out of valid range: {port}")
+
+
+def _sanitize_peer_filename(name: str | None, default: str) -> str:
+	r"""Sanitize a peer name for use as a download filename.
+
+	Restricts to ASCII-safe characters (regex ``\w`` is unicode-aware in
+	Python 3 and would let non-ASCII through), strips leading dots, and caps
+	the length to prevent header abuse.
+	"""
+	safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", name or default).lstrip(".")
+	if not safe_name:
+		safe_name = default
+	return safe_name[:_MAX_FILENAME_LENGTH]
 
 
 def _validate_hostname(hostname: str) -> None:
@@ -82,7 +94,7 @@ def _validate_hostname(hostname: str) -> None:
 	if len(hostname) > 253:
 		raise ValueError("Hostname exceeds maximum length (253)")
 	# Basic format check: should be alphanumeric with dots, hyphens
-	if not re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$', hostname):
+	if not re.match(r"^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$", hostname):
 		raise ValueError(f"Invalid hostname format: {hostname}")
 
 
@@ -90,13 +102,14 @@ async def _build_peer_config(
 	request: Request,
 	peer_id: int,
 	conn: sqlite3.Connection,
-) -> tuple[PeerConfig, sqlite3.Row, SecretStr, SecretStr | None]:
+) -> tuple[PeerConfig, sqlite3.Row, SecretStr, SecretStr | None, str | None]:
 	"""Fetch peer, decrypt keys, resolve DNS, build PeerConfig.
 
 	Returns:
-		tuple of (config, peer row, private_key SecretStr, preshared_key SecretStr or None)
+		tuple of (config, peer row, private_key SecretStr, preshared_key SecretStr or None,
+		node name for remote peers or None)
 	"""
-	peer = get_peer_by_id(conn, peer_id)
+	peer = await asyncio.to_thread(get_peer_by_id, conn, peer_id)
 	if not peer:
 		raise HTTPException(status_code=404, detail="Peer not found")
 
@@ -140,31 +153,31 @@ async def _build_peer_config(
 
 	# Get server public key and endpoint — differs for node-assigned peers
 	node_id = peer["node_id"]
+	node_name: str | None = None
 	if node_id:
 		# Peer runs on a remote node: use node's keypair and endpoint
 		from ..db.sqlite_nodes import get_node as db_get_node
 		from ..db.sqlite_nodes import get_node_interface_public_key
-		node = db_get_node(conn, node_id)
+
+		node = await asyncio.to_thread(db_get_node, conn, node_id)
 		if not node:
 			raise HTTPException(status_code=404, detail="Assigned node not found")
 
 		# Validate node endpoint components for security
 		try:
-			_validate_hostname(node['fqdn'])
-			_validate_port(int(node['wg_port']))
+			_validate_hostname(node["fqdn"])
+			_validate_port(int(node["wg_port"]))
 		except ValueError as e:
 			_log.error("Invalid node endpoint for node_id=%s: %s", node_id, e)
-			raise HTTPException(
-				status_code=503,
-				detail="Node configuration error: invalid endpoint"
-			)
+			raise HTTPException(status_code=503, detail="Node configuration error: invalid endpoint")
 
-		node_pubkey = get_node_interface_public_key(conn, node_id, peer["interface"])
+		node_pubkey = await asyncio.to_thread(get_node_interface_public_key, conn, node_id, peer["interface"])
 		if not node_pubkey:
 			raise HTTPException(
 				status_code=503,
 				detail=f"Node '{node['name']}' has no keypair for interface '{peer['interface']}'",
 			)
+		node_name = node["name"]
 		server_public_key = node_pubkey
 		server_endpoint = f"{node['fqdn']}:{node['wg_port']}"
 	else:
@@ -181,19 +194,20 @@ async def _build_peer_config(
 				detail=f"WireGuard interface '{peer['interface']}' is not running. Bring it up first.",
 			)
 		server_public_key = stdout.strip()
-		server_endpoint = get_server_endpoint(conn, peer["interface"])
+		server_endpoint = await asyncio.to_thread(get_server_endpoint, conn, peer["interface"])
 
 	# Determine DNS based on adblocker setting.
 	# NULL (never explicitly set by user) defaults to True — ad-blocking is
 	# opt-out, matching the server-wide default when the feature is enabled.
 	use_adblocker = True if peer["use_adblocker"] is None else bool(peer["use_adblocker"])
 	try:
-		dns_servers = get_dns_for_peer(
+		dns_servers = await asyncio.to_thread(
+			get_dns_for_peer,
 			conn,
 			peer["interface"],
 			use_adblocker,
 			WG_DEFAULT_DNS,
-			peer_address=peer_address,
+			peer_address,
 		)
 	except InterfaceConfigError:
 		# Don't leak internal config details to client
@@ -216,7 +230,7 @@ async def _build_peer_config(
 		preshared_key=preshared_key_plain.get_secret_value() if preshared_key_plain else None,
 	)
 
-	return config, peer, private_key_plain, preshared_key_plain
+	return config, peer, private_key_plain, preshared_key_plain, node_name
 
 
 @router.get("/peers/{peer_id}/stats")
@@ -234,7 +248,6 @@ async def get_peer_stats(
 	public_key = peer["public_key"]
 	interface_name = peer["interface"]
 
-	# Get stats from wg show dump
 	code, stdout, stderr = await run_wg_command("wg", "show", interface_name, "dump")
 	if code != 0:
 		_log.error("wg show dump failed for %s: %s", interface_name, stderr)
@@ -291,7 +304,7 @@ async def get_peer_qrcode(
 
 	Note: Requires 'qrcode' and 'Pillow' packages.
 	"""
-	config, peer, private_key_plain, preshared_key_plain = await _build_peer_config(request, peer_id, conn)
+	config, peer, private_key_plain, preshared_key_plain, node_name = await _build_peer_config(request, peer_id, conn)
 
 	try:
 		from ..utils.qrimage import QR_SECRET_RESPONSE_HEADERS, generate_qr_png
@@ -300,24 +313,10 @@ async def get_peer_qrcode(
 		config_text = config.to_wg_config()
 		peer_name = peer["name"] or "Peer"
 
-		# Resolve node name for badge (remote peers only)
-		node_name = None
-		node_id = peer["node_id"]
-		if node_id:
-			from ..db.sqlite_nodes import get_node as db_get_node
-			node = db_get_node(conn, node_id)
-			if node:
-				node_name = node["name"]
+		# QR rendering is CPU-bound; keep it off the event loop
+		png_bytes = await asyncio.to_thread(generate_qr_png, config_text, peer_name, node_name=node_name)
 
-		png_bytes = generate_qr_png(config_text, peer_name, node_name=node_name)
-
-		# Sanitize filename — restrict to ASCII-safe characters (\w is
-		# unicode-aware in Python 3 and would let through non-ASCII)
-		safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', peer['name'] or 'peer').lstrip('.')
-		if not safe_name:
-			safe_name = 'peer'
-		# Enforce maximum length to prevent header abuse
-		safe_name = safe_name[:_MAX_FILENAME_LENGTH]
+		safe_name = _sanitize_peer_filename(peer["name"], "peer")
 
 		result = Response(
 			content=png_bytes,
@@ -348,18 +347,16 @@ async def get_peer_config(
 	current_user: sqlite3.Row = Depends(require_admin),
 ):
 	"""Get the WireGuard configuration file for a peer (admin only)."""
-	config, peer, private_key_plain, preshared_key_plain = await _build_peer_config(request, peer_id, conn)
+	config, peer, private_key_plain, preshared_key_plain, _node_name = await _build_peer_config(request, peer_id, conn)
 
-	# Sanitize filename — restrict to ASCII-safe characters
-	safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', peer['name'] or 'wg0').lstrip('.')
-	if not safe_name:
-		safe_name = 'wg0'
-	# Enforce maximum length to prevent header abuse
-	safe_name = safe_name[:_MAX_FILENAME_LENGTH]
+	safe_name = _sanitize_peer_filename(peer["name"], "wg0")
 
 	_log.info(
 		"CONFIG_DOWNLOADED peer_id=%s peer_name=%s interface=%s user=%s",
-		peer_id, peer['name'], peer['interface'], current_user['username'],
+		peer_id,
+		peer["name"],
+		peer["interface"],
+		current_user["username"],
 	)
 
 	config_text = config.to_wg_config()

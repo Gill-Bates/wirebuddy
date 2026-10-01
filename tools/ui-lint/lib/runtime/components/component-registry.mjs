@@ -12,11 +12,3 @@ export function registerCaptureComponent(component) {
 
     captureComponents.set(component.type, { ...component });
 }
-
-export function getCaptureComponent(type) {
-    return captureComponents.get(type) || null;
-}
-
-export function getCaptureComponents() {
-    return Array.from(captureComponents.values());
-}

@@ -91,6 +91,8 @@ def _dns_cache_key(dns_dir: Path) -> str:
 	was doing filesystem syscalls on the event loop to rebuild a constant.
 	"""
 	return str(dns_dir.resolve())
+
+
 _background_tasks: set[asyncio.Task[None]] = set()
 _DNS_STATUS_CACHE_TTL_SECONDS = 5.0
 _DNS_TREND_CACHE_TTL_SECONDS = 60.0
@@ -331,7 +333,6 @@ def _compute_trend_data_tsdb_sync(
 	return _build_trend_response(buckets, since, now, hours, bucket_minutes)
 
 
-
 def _normalize_ip_literal(value: str) -> str:
 	"""Normalize IPv4/IPv6 literals, accepting optional brackets for IPv6."""
 	text = str(value or "").strip()
@@ -361,12 +362,14 @@ def _query_limit_for_hours(hours: int | None) -> int:
 
 def _make_bucket_start(bucket_minutes: int):
 	"""Factory returning a bucket-floor function for the given granularity."""
+
 	def _bucket_start(ts: datetime) -> datetime:
 		# Floor to bucket boundary in absolute UTC minutes (works for 5..1440+).
 		ts = ts.astimezone(UTC).replace(second=0, microsecond=0)
 		epoch_minutes = int(ts.timestamp() // 60)
 		bucket_epoch_minutes = (epoch_minutes // bucket_minutes) * bucket_minutes
 		return datetime.fromtimestamp(bucket_epoch_minutes * 60, tz=UTC)
+
 	return _bucket_start
 
 
@@ -391,10 +394,7 @@ def _build_trend_response(
 		total.append(counts["total"])
 		blocked.append(counts["blocked"])
 		cursor += step
-	block_rate = [
-		round((b / t) * 100, 1) if t else 0.0
-		for b, t in zip(blocked, total, strict=False)
-	]
+	block_rate = [round((b / t) * 100, 1) if t else 0.0 for b, t in zip(blocked, total, strict=False)]
 	return {
 		"hours": hours,
 		"bucket_minutes": bucket_minutes,
@@ -432,6 +432,7 @@ def _regenerate_peer_tags_safe(db_path: str | Path) -> None:
 	since SQLite connections are not thread-safe by default.
 	"""
 	from ..db.sqlite_runtime import thread_connection
+
 	with thread_connection(Path(db_path) if isinstance(db_path, str) else db_path) as conn:
 		regenerate_all_peer_tags(conn)
 
@@ -462,6 +463,7 @@ async def _background_reload_for_blocklist() -> None:
 			# Import here to avoid circular dependency
 			from ..db.sqlite_runtime import close_connection, connect
 			from ..utils.config import get_config
+
 			db_path = get_config().db_path
 
 			def _sync_work() -> bool:
@@ -552,10 +554,7 @@ def _parse_and_format_rules(rules_text: str) -> tuple[list, list, dict]:
 		"rules": rules_text,
 		"rule_count": len(parsed),
 		"error_count": len(errors),
-		"errors": [
-			{"line": e.line, "text": e.text, "error": e.error}
-			for e in errors
-		],
+		"errors": [{"line": e.line, "text": e.text, "error": e.error} for e in errors],
 	}
 	return parsed, errors, base
 
@@ -666,11 +665,13 @@ def _parse_client_ip_filter(client_ips: str | None) -> tuple[set[str] | None, st
 # Request / Response Models
 # ---------------------------------------------------------------------------
 
+
 class DnsConfigUpdate(BaseModel):
 	"""Request body for updating DNS configuration.
 
 	All fields are optional – only explicitly set fields will be applied.
 	"""
+
 	enable_logging: bool | None = None
 	enable_blocklist: bool | None = None
 	upstream_dns: list[str] | None = None
@@ -709,9 +710,7 @@ class DnsConfigUpdate(BaseModel):
 
 			# DNS-over-TLS requires SNI hostname for certificate verification.
 			if not hostname_part:
-				raise ValueError(
-					f"DNS-over-TLS upstream must include hostname as IP@port#hostname: {addr}"
-				)
+				raise ValueError(f"DNS-over-TLS upstream must include hostname as IP@port#hostname: {addr}")
 			hostname = _normalize_hostname(hostname_part)
 			port = int(port_part) if port_part else 853
 			validated.append(f"{ip_part}@{port}#{hostname}")
@@ -732,6 +731,7 @@ class DnsConfigUpdate(BaseModel):
 
 class BlocklistUpdate(BaseModel):
 	"""Request body for updating blocklists."""
+
 	urls: list[str] | None = None
 
 	@field_validator("urls")
@@ -746,22 +746,19 @@ class BlocklistUpdate(BaseModel):
 
 class BlocklistSourcesUpdate(BaseModel):
 	"""Request body for setting enabled blocklist sources."""
+
 	urls: list[str]
 
 	@field_validator("urls")
 	@classmethod
 	def validate_urls(cls, v: list[str]) -> list[str]:
-		"""Validate blocklist URLs are HTTPS."""
-		validated = _validate_https_urls(v)
-		allowed = _registered_blocklist_urls()
-		unknown = [url for url in validated if url not in allowed]
-		if unknown:
-			raise ValueError("Unknown blocklist source")
-		return validated
+		"""Validate blocklist URLs against the built-in registry."""
+		return _validate_registered_blocklist_urls(v)
 
 
 class CustomRulesUpdate(BaseModel):
 	"""Request body for updating custom DNS rules."""
+
 	rules: str
 
 	@field_validator("rules")
@@ -775,6 +772,7 @@ class CustomRulesUpdate(BaseModel):
 
 class CustomRuleActionRequest(BaseModel):
 	"""Request body for adding a custom DNS rule from query-log actions."""
+
 	action: Literal["block", "unblock"]
 	scope: Literal["global", "client"]
 	domain: str
@@ -840,6 +838,7 @@ class CustomRuleActionRequest(BaseModel):
 # Status & Stats
 # ---------------------------------------------------------------------------
 
+
 @router.get("/status", response_model=OkResponse[dict[str, object]])
 async def dns_status(
 	hours: int | None = Query(None, ge=1, le=8760, description="Optional time window in hours for DNS statistics"),
@@ -860,8 +859,11 @@ async def dns_status(
 	query_limit = _query_limit_for_hours(hours)
 	since = datetime.now(UTC) - timedelta(hours=hours) if hours is not None else None
 	queries = await asyncio.to_thread(
-		dns_ingestion.read_recent_queries, dns_dir, query_limit,
-		client_filter, since,
+		dns_ingestion.read_recent_queries,
+		dns_dir,
+		query_limit,
+		client_filter,
+		since,
 	)
 	all_domains: set[str] = set()
 	all_clients: set[str] = set()
@@ -908,9 +910,7 @@ async def dns_status(
 		"is_running": running,
 		"total_queries": total_queries,
 		"blocked_queries": blocked_count,
-		"block_percentage": round(
-			(blocked_count / total_queries * 100) if total_queries else 0, 1
-		),
+		"block_percentage": round((blocked_count / total_queries * 100) if total_queries else 0, 1),
 		"unique_domains": len(all_domains),
 		"unique_clients": len(all_clients),
 		"blocklist_size": blocklist_size,
@@ -931,6 +931,7 @@ async def dns_selftest(
 	_: sqlite3.Row = Depends(get_current_user),
 ):
 	"""Run a lightweight DNS self-test against the configured local Unbound listener."""
+
 	def _query_local_unbound(server_ip: str, qname: str = "cloudflare.com", timeout: float = 2.0) -> tuple[bool, str]:
 		try:
 			ip_obj = ipaddress.ip_address(server_ip)
@@ -1046,10 +1047,10 @@ async def dns_trend(
 		return ok_response(data=data)
 
 
-
 # ---------------------------------------------------------------------------
 # Service Control
 # ---------------------------------------------------------------------------
+
 
 @router.post("/start", response_model=OkResponse[dict[str, object] | None])
 @limiter.limit(RATE_LIMIT_HEAVY)
@@ -1062,10 +1063,7 @@ async def dns_start(
 	# Check if any WireGuard interfaces exist (Unbound needs interface IPs to bind)
 	interfaces = await _db_call(list_interfaces, conn)
 	if not interfaces:
-		raise HTTPException(
-			status_code=400,
-			detail="Cannot start DNS: no WireGuard interfaces configured. Create an interface first."
-		)
+		raise HTTPException(status_code=400, detail="Cannot start DNS: no WireGuard interfaces configured. Create an interface first.")
 	return await _control_dns_service(conn, unbound.start, set_enabled=True)
 
 
@@ -1094,6 +1092,7 @@ async def dns_restart(
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
 
 @router.get("/config", response_model=OkResponse[dict[str, object]])
 async def get_dns_config(
@@ -1124,25 +1123,21 @@ async def update_dns_config(
 	responsiveness for the common ad-blocker toggle use case.
 	"""
 	# Guard: Require Unbound for any setting that touches its config
-	if any((
-		payload.enable_blocklist is not None,
-		payload.upstream_dns is not None,
-		payload.dnssec_enabled is not None,
-	)):
+	if any(
+		(
+			payload.enable_blocklist is not None,
+			payload.upstream_dns is not None,
+			payload.dnssec_enabled is not None,
+		)
+	):
 		await _require_unbound_installed()
 
 	# Validate conflicting fields early
 	if payload.enable_logging is not None and payload.log_retention_days is not None:
 		if payload.enable_logging and payload.log_retention_days == 0:
-			raise HTTPException(
-				status_code=422,
-				detail="Cannot enable logging with 0 retention days"
-			)
+			raise HTTPException(status_code=422, detail="Cannot enable logging with 0 retention days")
 		if not payload.enable_logging and payload.log_retention_days > 0:
-			raise HTTPException(
-				status_code=422,
-				detail="Cannot disable logging while setting retention days > 0"
-			)
+			raise HTTPException(status_code=422, detail="Cannot disable logging while setting retention days > 0")
 
 	try:
 		# Load current persisted settings first.
@@ -1179,6 +1174,7 @@ async def update_dns_config(
 			# Background reload is handled below (fast path: background task,
 			# standard path: synchronous reload — do NOT spawn background task here).
 			from ..utils.config import get_config
+
 			await asyncio.to_thread(_regenerate_peer_tags_safe, str(get_config().db_path))
 		if payload.upstream_dns is not None:
 			upstream_dns = payload.upstream_dns
@@ -1276,15 +1272,13 @@ async def update_dns_config(
 		raise
 	except (OSError, sqlite3.Error, RuntimeError, ValueError) as e:
 		_log.exception("DNS config update failed")
-		raise HTTPException(
-			status_code=500,
-			detail=f"DNS configuration update failed: {type(e).__name__}"
-		)
+		raise HTTPException(status_code=500, detail=f"DNS configuration update failed: {type(e).__name__}")
 
 
 # ---------------------------------------------------------------------------
 # Blocklist
 # ---------------------------------------------------------------------------
+
 
 @router.get("/blocklist/sources", response_model=OkResponse[dict[str, object]])
 async def get_blocklist_sources(
@@ -1310,16 +1304,18 @@ async def get_blocklist_sources(
 	for bid, meta in dns_constants.BLOCKLIST_REGISTRY.items():
 		is_enabled = str(meta["url"]).strip() in enabled_normalized
 
-		sources.append({
-			"id": bid,
-			"url": meta["url"],
-			"name": meta["name"],
-			"description": meta["description"],
-			"level": meta.get("level", ""),
-			"domains": source_counts.get(bid, 0),
-			"last_updated": blocklist_updated if is_enabled else "—",
-			"enabled": is_enabled,
-		})
+		sources.append(
+			{
+				"id": bid,
+				"url": meta["url"],
+				"name": meta["name"],
+				"description": meta["description"],
+				"level": meta.get("level", ""),
+				"domains": source_counts.get(bid, 0),
+				"last_updated": blocklist_updated if is_enabled else "—",
+				"enabled": is_enabled,
+			}
+		)
 
 	data = {
 		"sources": sources,
@@ -1402,7 +1398,6 @@ async def update_blocklists(
 	custom_rules_text = await _db_call(get_dns_custom_rules, conn)
 	urls_copy = list(urls) if urls else []
 
-	# Queue rebuild
 	await _queue_rebuild(urls_copy, custom_rules_text)
 
 	return ok_response(
@@ -1421,6 +1416,7 @@ async def blocklist_count(_: sqlite3.Row = Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 # Custom DNS Rules
 # ---------------------------------------------------------------------------
+
 
 def _append_action_rule(
 	rules_text: str,
@@ -1610,11 +1606,13 @@ async def update_custom_rules(
 
 	data = base_data.copy()
 	if errors:
-		data.update({
-			"domains_blocked": None,
-			"reloaded": False,
-			"error": "Custom rules contain validation errors",
-		})
+		data.update(
+			{
+				"domains_blocked": None,
+				"reloaded": False,
+				"error": "Custom rules contain validation errors",
+			}
+		)
 		return ok_response(
 			message="Custom rules saved but not applied because they contain errors.",
 			data=data,
@@ -1626,20 +1624,24 @@ async def update_custom_rules(
 		await _queue_rebuild_from_db(conn, rules_text)
 
 		# Return immediately - rebuild happens in background
-		data.update({
-			"domains_blocked": None,  # Unknown until rebuild completes
-			"reloaded": None,  # Pending
-		})
+		data.update(
+			{
+				"domains_blocked": None,  # Unknown until rebuild completes
+				"reloaded": None,  # Pending
+			}
+		)
 		return ok_response(
 			message="Custom rules saved. Blocklist update in progress.",
 			data=data,
 		)
 
-	data.update({
-		"domains_blocked": None,
-		"reloaded": False,
-		"error": "Unbound not installed",
-	})
+	data.update(
+		{
+			"domains_blocked": None,
+			"reloaded": False,
+			"error": "Unbound not installed",
+		}
+	)
 	return ok_response(
 		message="Custom rules saved but not applied: Unbound not installed.",
 		data=data,
@@ -1701,6 +1703,7 @@ async def add_custom_rule_action(
 # Query Log
 # ---------------------------------------------------------------------------
 
+
 @router.get("/logs", response_model=OkResponse[dict[str, object]])
 async def dns_logs(
 	lines: int = 200,
@@ -1750,7 +1753,7 @@ async def dns_logs(
 				"custom_rule": bool(q.get("custom_rule", False)),
 			}
 			for q in queries  # read_recent_queries() already returns newest first
-			],
+		],
 		"total": len(queries),
 	}
 	return ok_response(data=data)
@@ -1828,8 +1831,10 @@ async def top_domains(
 # DNS Server Validation
 # ---------------------------------------------------------------------------
 
+
 class DnsTestRequest(BaseModel):
 	"""Request body for testing upstream DNS servers."""
+
 	servers: list[str] = Field(min_length=1, max_length=20)
 
 	@field_validator("servers")
@@ -1874,14 +1879,7 @@ def _test_dot_server(addr: str, timeout: float = 5.0) -> dict:
 	if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped:
 		check_ip = ip_obj.ipv4_mapped
 
-	if (
-		check_ip.is_private
-		or check_ip.is_loopback
-		or check_ip.is_link_local
-		or check_ip.is_reserved
-		or check_ip.is_multicast
-		or check_ip.is_unspecified
-	):
+	if check_ip.is_private or check_ip.is_loopback or check_ip.is_link_local or check_ip.is_reserved or check_ip.is_multicast or check_ip.is_unspecified:
 		result["error"] = "Private/reserved addresses not allowed"
 		return result
 
@@ -1900,23 +1898,20 @@ def _test_dot_server(addr: str, timeout: float = 5.0) -> dict:
 	# Transaction ID (2 bytes) + Flags (2 bytes) + Questions (2 bytes) +
 	# Answer/Auth/Additional RRs (6 bytes) + Query
 	transaction_id = os.urandom(2)
-	flags = b'\x01\x00'  # Standard query, recursion desired
-	questions = b'\x00\x01'
-	answer_rrs = b'\x00\x00'
-	authority_rrs = b'\x00\x00'
-	additional_rrs = b'\x00\x00'
+	flags = b"\x01\x00"  # Standard query, recursion desired
+	questions = b"\x00\x01"
+	answer_rrs = b"\x00\x00"
+	authority_rrs = b"\x00\x00"
+	additional_rrs = b"\x00\x00"
 	# example.com query
-	query_name = b'\x07example\x03com\x00'
-	query_type = b'\x00\x01'  # A record
-	query_class = b'\x00\x01'  # IN class
+	query_name = b"\x07example\x03com\x00"
+	query_type = b"\x00\x01"  # A record
+	query_class = b"\x00\x01"  # IN class
 
-	dns_query = (
-		transaction_id + flags + questions + answer_rrs +
-		authority_rrs + additional_rrs + query_name + query_type + query_class
-	)
+	dns_query = transaction_id + flags + questions + answer_rrs + authority_rrs + additional_rrs + query_name + query_type + query_class
 
 	# Prepend 2-byte length for TCP/TLS
-	dns_message = struct.pack('>H', len(dns_query)) + dns_query
+	dns_message = struct.pack(">H", len(dns_query)) + dns_query
 
 	try:
 		start_time = time.monotonic()
@@ -1935,10 +1930,10 @@ def _test_dot_server(addr: str, timeout: float = 5.0) -> dict:
 				result["error"] = "No response from server"
 				return result
 
-			response_length = struct.unpack('>H', length_data)[0]
+			response_length = struct.unpack(">H", length_data)[0]
 
 			# Read DNS response
-			response = b''
+			response = b""
 			while len(response) < response_length:
 				chunk = ssock.recv(response_length - len(response))
 				if not chunk:
@@ -2008,6 +2003,7 @@ async def delete_dns_logs(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Delete all DNS query log data (admin only)."""
+
 	def _purge() -> int:
 		base_dir = dns_dir.resolve()
 		raw_queries_dir = dns_dir / "queries"
@@ -2055,6 +2051,7 @@ async def get_dns_storage_stats(
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Get DNS query log storage statistics."""
+
 	def _stats() -> dict:
 		queries_dir = dns_dir / "queries"
 		if not queries_dir.exists():
@@ -2091,6 +2088,7 @@ _ADBLOCKER_MODES = {"enable", "disable", "disable_1h", "disable_today"}
 
 class AdblockerModePayload(BaseModel):
 	"""Request body for changing the ad-blocker mode."""
+
 	mode: str
 
 	@field_validator("mode")
@@ -2160,9 +2158,7 @@ async def set_adblocker_mode(
 	else:  # disable_today
 		# Compute start of next day in server local time (avoids microsecond truncation)
 		local_now = datetime.now().astimezone()
-		tomorrow = (local_now + timedelta(days=1)).replace(
-			hour=0, minute=0, second=0, microsecond=0
-		)
+		tomorrow = (local_now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 		until = int(tomorrow.timestamp())
 		# Ensure at least 60 seconds
 		if until - now < 60:

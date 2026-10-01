@@ -51,6 +51,7 @@ _DEFAULT_UPSTREAM_DOT: list[str] = [
 # Configuration Helpers
 # ---------------------------------------------------------------------------
 
+
 def _read_total_memory_mb() -> int | None:
 	"""Best-effort detection of total system memory in MB."""
 	try:
@@ -246,6 +247,7 @@ def _validate_upstream_dot(addr: str) -> str:
 # ---------------------------------------------------------------------------
 # Configuration Generation
 # ---------------------------------------------------------------------------
+
 
 def _resolve_upstream(upstream_dns: list[str] | None) -> list[str]:
 	"""Validate and return upstream DoT addresses."""
@@ -450,6 +452,31 @@ forward-zone:
 		conf += f"    forward-addr: {dns}\n"
 
 	return conf + "\n"
+
+
+def get_interface_ipv4_gateways(interfaces: Sequence[Any]) -> list[str]:
+	"""Extract unique IPv4 gateway addresses from interface rows.
+
+	Accepts dicts, dataclass instances or sqlite3.Row objects with an
+	'address' field. Invalid values are logged and skipped; order is preserved.
+	"""
+	ipv4_addrs: list[str] = []
+	for iface in interfaces:
+		addr4 = _get_field(iface, "address")
+		if not addr4:
+			continue
+		raw_ip = str(addr4).split("/", 1)[0].strip()
+		try:
+			ip = ipaddress.ip_address(raw_ip)
+		except ValueError:
+			_log.warning("Ignoring invalid interface IPv4 address: %r", addr4)
+			continue
+		if ip.version != 4:
+			continue
+		ip4 = str(ip)
+		if ip4 not in ipv4_addrs:
+			ipv4_addrs.append(ip4)
+	return ipv4_addrs
 
 
 def get_interface_ipv6_gateways(interfaces: Sequence[Any]) -> list[str]:
@@ -749,6 +776,7 @@ def write_local_data_overrides(interfaces: Sequence[Any], fqdn: str | None) -> i
 
 __all__ = [
 	"generate_config",
+	"get_interface_ipv4_gateways",
 	"get_interface_ipv6_gateways",
 	"is_dnssec_available",
 	"write_config",

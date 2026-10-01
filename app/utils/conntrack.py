@@ -66,6 +66,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from .binaries import first_executable
 from .geoip import geolocate_ip, lookup_asn
 
 _log = logging.getLogger(__name__)
@@ -99,10 +100,8 @@ _IFACE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,14}$")
 # ``ip.is_global`` across Python versions.
 _EXTRA_NON_PUBLIC_V4 = (
 	ipaddress.ip_network("100.64.0.0/10"),  # Shared / CGNAT
-	ipaddress.ip_network("192.0.0.0/24"),   # IETF protocol assignments
+	ipaddress.ip_network("192.0.0.0/24"),  # IETF protocol assignments
 )
-# IPv6 has no known exclusions for this use case
-_EXTRA_NON_PUBLIC_V6: tuple = ()
 
 # Synthetic TSDB identifiers. The single definition: the scheduler writes
 # under these and app/api/wireguard_stats_country.py reads them back.
@@ -111,17 +110,9 @@ GEO_TRAFFIC_METRIC = "snapshot"
 ASN_TRAFFIC_KEY = "__asn_traffic__"
 ASN_TRAFFIC_METRIC = "snapshot"
 
-
-def _resolve_tool_path(*candidates: str) -> str | None:
-	"""Return the first trusted executable path from a fixed allowlist."""
-	for candidate in candidates:
-		if Path(candidate).is_file() and os.access(candidate, os.X_OK):
-			return candidate
-	return None
-
-
-_BIN_IP = _resolve_tool_path("/usr/sbin/ip", "/usr/bin/ip")
-_BIN_WG = _resolve_tool_path("/usr/bin/wg", "/usr/local/bin/wg")
+# Trusted absolute paths only; never a bare name resolved through $PATH.
+_BIN_IP = first_executable(("/usr/sbin/ip", "/usr/bin/ip"))
+_BIN_WG = first_executable(("/usr/bin/wg", "/usr/local/bin/wg"))
 
 # ---------------------------------------------------------------------------
 # Pre-compiled regexes
@@ -138,10 +129,10 @@ _KNOWN_PROTOS = frozenset({"tcp", "udp", "sctp", "dccp", "icmp", "icmpv6"})
 # Module state
 # ---------------------------------------------------------------------------
 
-_ct_prev: dict[tuple, tuple[int, int]] = {}   # conn_key → (bytes_orig, bytes_reply)
-_ct_lock = threading.Lock()                    # serialises both conntrack state AND sampling
+_ct_prev: dict[tuple, tuple[int, int]] = {}  # conn_key → (bytes_orig, bytes_reply)
+_ct_lock = threading.Lock()  # serialises both conntrack state AND sampling
 _ct_initialized = False
-_acct_warned = False   # log "accounting disabled" only once per process
+_acct_warned = False  # log "accounting disabled" only once per process
 _ct_overflow_warned = False
 
 # Locking note:
@@ -168,10 +159,13 @@ def _normalize_peer_name(peer_name: str | None) -> str | None:
 
 def _parse_interface_address(
 	addr_str: str,
-) -> tuple[
-	ipaddress.IPv4Network | ipaddress.IPv6Network,
-	ipaddress.IPv4Address | ipaddress.IPv6Address,
-] | None:
+) -> (
+	tuple[
+		ipaddress.IPv4Network | ipaddress.IPv6Network,
+		ipaddress.IPv4Address | ipaddress.IPv6Address,
+	]
+	| None
+):
 	"""Parse an interface address into (network, gateway_ip)."""
 	try:
 		net = ipaddress.ip_network(addr_str, strict=False)
@@ -224,6 +218,7 @@ def _serialize_agg(agg: dict[str, dict]) -> dict[str, dict]:
 # Initialisation
 # ---------------------------------------------------------------------------
 
+
 def init_conntrack_accounting() -> bool:
 	"""Enable conntrack byte accounting if not already active.
 
@@ -240,10 +235,7 @@ def init_conntrack_accounting() -> bool:
 		_log.info("Enabled conntrack byte accounting (nf_conntrack_acct=1)")
 		return True
 	except FileNotFoundError:
-		_log.warning(
-			"CONNTRACK nf_conntrack module not loaded (nf_conntrack_acct missing) "
-			"— country traffic analysis unavailable"
-		)
+		_log.warning("CONNTRACK nf_conntrack module not loaded (nf_conntrack_acct missing) — country traffic analysis unavailable")
 		return False
 	except PermissionError:
 		_log.warning("CONNTRACK cannot enable byte accounting (no NET_ADMIN?)")
@@ -256,6 +248,7 @@ def init_conntrack_accounting() -> bool:
 # ---------------------------------------------------------------------------
 # WireGuard subnet detection
 # ---------------------------------------------------------------------------
+
 
 def _get_wireguard_subnets() -> tuple[
 	list[ipaddress.IPv4Network | ipaddress.IPv6Network],
@@ -292,7 +285,9 @@ def _get_wireguard_subnets() -> tuple[
 				raise FileNotFoundError("trusted ip binary not found")
 			result = subprocess.run(
 				[_BIN_IP, "-j", "addr", "show", "type", "wireguard"],
-				capture_output=True, text=True, timeout=5,
+				capture_output=True,
+				text=True,
+				timeout=5,
 				check=False,
 			)
 			if result.returncode == 0:
@@ -331,7 +326,9 @@ def _get_wireguard_subnets() -> tuple[
 					raise FileNotFoundError("trusted wg/ip binary not found")
 				iface_result = subprocess.run(
 					[_BIN_WG, "show", "interfaces"],
-					capture_output=True, text=True, timeout=5,
+					capture_output=True,
+					text=True,
+					timeout=5,
 					check=False,
 				)
 				if iface_result.returncode == 0:
@@ -341,7 +338,9 @@ def _get_wireguard_subnets() -> tuple[
 							continue
 						addr_result = subprocess.run(
 							[_BIN_IP, "addr", "show", "dev", iface],
-							capture_output=True, text=True, timeout=5,
+							capture_output=True,
+							text=True,
+							timeout=5,
 							check=False,
 						)
 						if addr_result.returncode == 0:
@@ -411,9 +410,7 @@ def _get_subnets_from_db() -> tuple[
 	try:
 		with sqlite3.connect(str(cfg.db_path), timeout=3) as conn:
 			conn.row_factory = sqlite3.Row
-			rows = conn.execute(
-				"SELECT address, address6 FROM interfaces WHERE is_enabled = 1"
-			).fetchall()
+			rows = conn.execute("SELECT address, address6 FROM interfaces WHERE is_enabled = 1").fetchall()
 			for row in rows:
 				for addr_field in ("address", "address6"):
 					addr = row[addr_field]
@@ -433,6 +430,7 @@ def _get_subnets_from_db() -> tuple[
 # ---------------------------------------------------------------------------
 # Conntrack parsing
 # ---------------------------------------------------------------------------
+
 
 def _read_conntrack_lines() -> Iterator[str]:
 	"""Read conntrack entries from /proc.
@@ -484,11 +482,11 @@ def _parse_line(line: str) -> dict[str, Any] | None:
 	try:
 		return {
 			"proto": proto,
-			"src": fields["src"][0],              # original: WG client → internet
-			"dst": fields["dst"][0],              # original: internet destination
+			"src": fields["src"][0],  # original: WG client → internet
+			"dst": fields["dst"][0],  # original: internet destination
 			"sport": int(fields["sport"][0]) if fields["sport"] else 0,
 			"dport": int(fields["dport"][0]) if fields["dport"] else 0,
-			"bytes_orig": int(fields["bytes"][0]),   # client → internet (upload / tx)
+			"bytes_orig": int(fields["bytes"][0]),  # client → internet (upload / tx)
 			"bytes_reply": int(fields["bytes"][1]),  # internet → client (download / rx)
 		}
 	except (ValueError, IndexError):
@@ -648,6 +646,7 @@ def release_sampler_leadership() -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def sample_country_traffic(
 	peer_ip_map: dict[str, str] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
@@ -764,15 +763,17 @@ def sample_country_traffic(
 		for key, (orig_now, reply_now) in current.items():
 			orig_prev, reply_prev = _ct_prev.get(key, (0, 0))
 
-			delta_tx = orig_now - orig_prev    # upload delta
+			delta_tx = orig_now - orig_prev  # upload delta
 			delta_rx = reply_now - reply_prev  # download delta
 
 			# Negative delta: counter wrap or 5-tuple reuse; clamp and log (#10)
 			if delta_tx < 0 or delta_rx < 0:
 				_log.debug(
-					"COUNTRY_TRAFFIC negative delta (counter wrap?) "
-					"%s→%s tx=%d rx=%d",
-					key[1], key[3], delta_tx, delta_rx,
+					"COUNTRY_TRAFFIC negative delta (counter wrap?) %s→%s tx=%d rx=%d",
+					key[1],
+					key[3],
+					delta_tx,
+					delta_rx,
 				)
 				delta_tx = max(delta_tx, 0)
 				delta_rx = max(delta_rx, 0)

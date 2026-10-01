@@ -78,17 +78,12 @@ import {
     resolveVarChain,
 } from './design-tokens/resolver/resolve-var-chain.mjs';
 
-export const TOKEN_RUNTIME_VERSION = 1;
-export const TOKEN_SOURCE_PATH = String(DEFAULT_TOKENS_CSS_PATH);
-
 const tokenRuntime = createTokenRuntime({
     providers: [createCssTokenProvider({ filePath: DEFAULT_TOKENS_CSS_PATH })],
 });
 
 const initialSnapshot = tokenRuntime.loadSync();
 
-export const TOKEN_SOURCE_HASH = initialSnapshot.sourceHash;
-export const tokenRuntimeFacade = tokenRuntime;
 export const tokens = initialSnapshot.values;
 
 export function loadDesignTokens() {
@@ -97,11 +92,6 @@ export function loadDesignTokens() {
 
 export function loadDesignTokenSnapshot() {
     return tokenRuntime.snapshot();
-}
-
-export async function loadDesignTokensAsync() {
-    const snapshot = await tokenRuntime.load();
-    return snapshot.values;
 }
 
 export function createTokenRuntimeEngine(options = {}) {

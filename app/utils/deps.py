@@ -32,6 +32,7 @@ _log = logging.getLogger(__name__)
 
 class AppState(Protocol):
 	"""Typed subset of app.state used by request dependencies."""
+
 	cfg: Config
 	db_path: Path
 	tsdb_dir: Path
@@ -42,15 +43,9 @@ class AppState(Protocol):
 def _get_app_state(request: Request) -> AppState:
 	"""Return validated application state with clear startup diagnostics."""
 	state = request.app.state
-	missing = [
-		name
-		for name in ("cfg", "db_path", "tsdb_dir", "dns_dir")
-		if not hasattr(state, name)
-	]
+	missing = [name for name in ("cfg", "db_path", "tsdb_dir", "dns_dir") if not hasattr(state, name)]
 	if missing:
-		raise RuntimeError(
-			"Application state not initialized: missing " + ", ".join(sorted(missing))
-		)
+		raise RuntimeError("Application state not initialized: missing " + ", ".join(sorted(missing)))
 	return cast(AppState, state)
 
 
@@ -62,7 +57,6 @@ def _restore_in_progress(state: AppState) -> bool:
 		return True
 	data_dir = getattr(state, "data_dir", state.cfg.data_dir)
 	return is_restore_in_progress(data_dir)
-
 
 
 def get_conn(request: Request) -> Generator[Connection]:

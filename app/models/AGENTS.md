@@ -9,7 +9,7 @@ Pydantic request/response models with field validation for users/authentication 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `__init__.py` | Package docstring |
+| `__init__.py` | Package docstring; re-exports the main user and peer models |
 | `users.py` | `LoginRequest`, `MFAVerifyRequest`, `OTPConfirmRequest`, `OTPDisableRequest`, `RecoveryDownloadRequest`, `TokenResponse`, `UserCreate/Update/Public`, password change/reset requests; username and password-strength validators |
 | `peers.py` | `PeerCreate`, `PeerUpdate`, `PeerPublic`, `PeerConfig`, `PeerStats` and validators for keys, CIDR/IP lists, hostnames, endpoints, interface lists, blocklist and node IDs |
 

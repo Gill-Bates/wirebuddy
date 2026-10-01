@@ -3,108 +3,6 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-function selectorForElement(element) {
-    if (!(element instanceof Element)) return null;
-    if (element.id) return `#${element.id}`;
-
-    const component = element.getAttribute('data-ui-component');
-    if (component) return `[data-ui-component="${component}"]`;
-
-    const action = element.getAttribute('data-action');
-    if (action) return `[data-action="${action}"]`;
-
-    const classes = Array.from(element.classList || []).slice(0, 2);
-    if (classes.length > 0) return `.${classes.join('.')}`;
-
-    return element.tagName.toLowerCase();
-}
-
-function isFocusableElement(element) {
-    if (!(element instanceof HTMLElement)) return false;
-    if (element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true') return false;
-    return element.matches('a[href], button, input:not([type="hidden"]), select, textarea, summary, [tabindex]') && element.tabIndex !== -1;
-}
-
-function isIntentionalScrollContainer(element, allowedSelectors) {
-    if (element.getAttribute('data-ui-scroll-container') === 'intentional') return true;
-
-    for (const selector of allowedSelectors) {
-        try {
-            if (element.matches(selector)) return true;
-        } catch {
-            continue;
-        }
-    }
-
-    return false;
-}
-
-function isCandidateScrollable(style, element, tolerance) {
-    const overflowX = style.overflowX;
-    const overflowY = style.overflowY;
-    const overflow = style.overflow;
-    const vertical = ['auto', 'scroll', 'overlay'].includes(overflowY) && element.scrollHeight > element.clientHeight + tolerance;
-    const horizontal = ['auto', 'scroll', 'overlay'].includes(overflowX) && element.scrollWidth > element.clientWidth + tolerance;
-    const clipped = ['hidden', 'clip'].includes(overflowX) || ['hidden', 'clip'].includes(overflowY) || ['hidden', 'clip'].includes(overflow)
-        ? (element.scrollHeight > element.clientHeight + tolerance || element.scrollWidth > element.clientWidth + tolerance)
-        : false;
-
-    return {
-        vertical,
-        horizontal,
-        clipped,
-        candidate: vertical || horizontal || clipped,
-    };
-}
-
-function elementScrollState(element, tolerance, allowedSelectors) {
-    const style = window.getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    const visible = style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width > 0 && rect.height > 0;
-    const scrollability = isCandidateScrollable(style, element, tolerance);
-    const intentional = isIntentionalScrollContainer(element, allowedSelectors);
-
-    return {
-        selector: selectorForElement(element),
-        tag: element.tagName.toLowerCase(),
-        component: element.getAttribute('data-ui-component') || element.closest('[data-ui-component]')?.getAttribute('data-ui-component') || null,
-        importance: element.getAttribute('data-ui-importance') || element.closest('[data-ui-importance]')?.getAttribute('data-ui-importance') || null,
-        dataUiScrollContainer: element.getAttribute('data-ui-scroll-container') || null,
-        visible,
-        intentional,
-        vertical: scrollability.vertical,
-        horizontal: scrollability.horizontal,
-        clipped: scrollability.clipped,
-        candidate: visible && scrollability.candidate,
-        overflowX: style.overflowX,
-        overflowY: style.overflowY,
-        overflow: style.overflow,
-        position: style.position,
-        overflowAnchor: style.overflowAnchor,
-        touchAction: style.touchAction,
-        overscrollBehavior: style.overscrollBehavior,
-        overscrollBehaviorX: style.overscrollBehaviorX,
-        overscrollBehaviorY: style.overscrollBehaviorY,
-        webkitOverflowScrolling: style.webkitOverflowScrolling,
-        scrollHeight: Math.round(element.scrollHeight),
-        scrollWidth: Math.round(element.scrollWidth),
-        clientHeight: Math.round(element.clientHeight),
-        clientWidth: Math.round(element.clientWidth),
-        rect: {
-            left: Math.round(rect.left),
-            top: Math.round(rect.top),
-            right: Math.round(rect.right),
-            bottom: Math.round(rect.bottom),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height),
-        },
-        interactive: element.matches('button, a[href], input:not([type="hidden"]), select, textarea, summary, [role="button"]'),
-        primaryAction: Boolean(element.getAttribute('data-ui-importance') === 'primary' || /\b(save|submit|confirm|apply|delete|primary)\b/i.test(`${element.getAttribute('aria-label') || ''} ${element.textContent || ''}`)),
-        role: element.getAttribute('role') || null,
-        fixedSticky: ['fixed', 'sticky'].includes(style.position),
-    };
-}
-
 export async function collectScrollTrapDiagnostics(page, { allowedSelectors = [], tolerance = 2, browser = null, scope = null } = {}) {
     return page.evaluate(({ allowedSelectors, tolerance, browser, scope }) => {
         const selectorFor = (element) => {
@@ -359,7 +257,7 @@ export function classifyScrollTrapIssue(issue, context = {}) {
     const primaryAction = Boolean(issue.primaryAction || issue.importance === 'primary');
     const scrollDirection = hasVerticalTrap && hasHorizontalTrap ? 'both' : hasVerticalTrap ? 'vertical' : 'horizontal';
 
-    if (!hasVerticalTrap && !keyboardCompromised) {
+    if (!hasVerticalTrap && !keyboardCompromised && !(hasHorizontalTrap && primaryAction)) {
         return null;
     }
 
@@ -453,15 +351,5 @@ export function classifyScrollTrapIssue(issue, context = {}) {
             text: issue.text || null,
             importance: issue.importance || null,
         },
-    };
-}
-
-export function captureScrollTrapRegion(issue) {
-    if (!issue?.rect) return null;
-
-    return {
-        selector: issue.selector || null,
-        component: issue.component || null,
-        clip: issue.rect,
     };
 }

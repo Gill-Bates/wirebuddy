@@ -18,20 +18,22 @@ from .sqlite_runtime import transaction
 
 _log = logging.getLogger(__name__)
 
-_KNOWN_SCHEMA_TABLES = frozenset({
-	"auth_tokens",
-	"interfaces",
-	"login_attempts",
-	"node_commands",
-	"node_interfaces",
-	"nodes",
-	"passkey_challenges",
-	"passkeys",
-	"peers",
-	"schema_version",
-	"settings",
-	"users",
-})
+_KNOWN_SCHEMA_TABLES = frozenset(
+	{
+		"auth_tokens",
+		"interfaces",
+		"login_attempts",
+		"node_commands",
+		"node_interfaces",
+		"nodes",
+		"passkey_challenges",
+		"passkeys",
+		"peers",
+		"schema_version",
+		"settings",
+		"users",
+	}
+)
 
 _PRAGMA_TABLE_INFO = {
 	"auth_tokens": "PRAGMA table_info(auth_tokens)",
@@ -63,10 +65,7 @@ def _generate_pronounceable_password() -> str:
 	against online brute-force while staying easy to type once. Uses
 	``secrets.choice`` for cryptographic randomness.
 	"""
-	syllables = [
-		secrets.choice(_PRONOUNCEABLE_CONSONANTS) + secrets.choice(_PRONOUNCEABLE_VOWELS)
-		for _ in range(5)
-	]
+	syllables = [secrets.choice(_PRONOUNCEABLE_CONSONANTS) + secrets.choice(_PRONOUNCEABLE_VOWELS) for _ in range(5)]
 	word = "".join(syllables)
 	word = word[0].upper() + word[1:]
 	number = str(secrets.randbelow(9000) + 1000)
@@ -125,6 +124,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 				otp_secret TEXT,
 				otp_enabled INTEGER NOT NULL DEFAULT 0 CHECK (otp_enabled IN (0, 1)),
 				otp_recovery_codes TEXT,
+				otp_last_used_step INTEGER,
 				auth_method TEXT NOT NULL DEFAULT 'password' CHECK (auth_method IN ('password', 'password_mfa', 'passkey')),
 				passkey_enabled INTEGER NOT NULL DEFAULT 0 CHECK (passkey_enabled IN (0, 1)),
 				passkey_pending INTEGER NOT NULL DEFAULT 0 CHECK (passkey_pending IN (0, 1)),
@@ -445,10 +445,7 @@ def _create_unique_index_if_no_duplicates(
 		return
 	duplicate = _find_duplicate_value(conn, table=table, column=column)
 	if duplicate is not None:
-		raise RuntimeError(
-			f"Cannot create unique index {label}: duplicate {table}.{column}={duplicate['value']!r} "
-			f"count={duplicate['cnt']}"
-		)
+		raise RuntimeError(f"Cannot create unique index {label}: duplicate {table}.{column}={duplicate['value']!r} count={duplicate['cnt']}")
 	conn.execute(ddl)
 
 
@@ -472,6 +469,15 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 		definition="INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))",
 		existing_columns=users_columns,
 		log_message="Migrating users table: adding must_change_password column",
+	)
+
+	_add_column_if_missing(
+		conn,
+		table="users",
+		column="otp_last_used_step",
+		definition="INTEGER",
+		existing_columns=users_columns,
+		log_message="Migrating users table: adding otp_last_used_step column",
 	)
 
 	existing_columns = _get_columns(conn, "peers")
@@ -601,10 +607,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 		conn,
 		table="nodes",
 		column="tunnel_peer_id",
-		ddl=(
-			"CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_tunnel_peer_unique "
-			"ON nodes(tunnel_peer_id) WHERE tunnel_peer_id IS NOT NULL"
-		),
+		ddl=("CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_tunnel_peer_unique ON nodes(tunnel_peer_id) WHERE tunnel_peer_id IS NOT NULL"),
 		label="idx_nodes_tunnel_peer_unique",
 	)
 	conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_status_last_seen ON nodes(status, last_seen)")

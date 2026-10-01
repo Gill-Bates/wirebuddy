@@ -67,6 +67,7 @@ def _should_manage_resolv_conf() -> bool:
 	value = os.getenv("WIREBUDDY_MANAGE_RESOLV_CONF", "0").strip().lower()
 	return value in {"1", "true", "yes", "on"}
 
+
 def _is_valid_ip(addr: str) -> bool:
 	"""Validate that addr is a well-formed IPv4 or IPv6 address."""
 	try:
@@ -88,6 +89,7 @@ def _resolv_conf_has_nameserver(content: str, dns_ip: str) -> bool:
 		if len(parts) == 2 and parts[0] == "nameserver" and parts[1] == dns_ip:
 			return True
 	return False
+
 
 def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 	"""Configure /etc/resolv.conf to use local Unbound resolver.
@@ -152,19 +154,13 @@ def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 			try:
 				atomic_write_text(backup_path, current)
 			except Exception as exc:
-				_log.warning(
-					"DNS_RESOLV failed to backup resolv.conf, skipping resolver override: %s", exc
-				)
+				_log.warning("DNS_RESOLV failed to backup resolv.conf, skipping resolver override: %s", exc)
 				return
 
 		# Write new resolv.conf with WireGuard DNS
 		# Preserve search domains if present
 		lines = [_RESOLV_MANAGED_MARKER, f"nameserver {dns_ip}"]
-		lines.extend(
-			stripped
-			for stripped in (raw.strip() for raw in current.splitlines())
-			if stripped.startswith(("search ", "domain "))
-		)
+		lines.extend(stripped for stripped in (raw.strip() for raw in current.splitlines()) if stripped.startswith(("search ", "domain ")))
 
 		atomic_write_text(_RESOLV_CONF, "\n".join(lines) + "\n")
 		_log.info("DNS_RESOLV configured /etc/resolv.conf to use %s", dns_ip)
@@ -179,13 +175,16 @@ def _configure_resolv_conf(wg_dns_ip: str | None = None) -> None:
 	except Exception as exc:
 		_log.warning("DNS_RESOLV failed to configure /etc/resolv.conf: %s", exc)
 
+
 # ---------------------------------------------------------------------------
 # Process State
 # ---------------------------------------------------------------------------
 
+
 @dataclass(slots=True)
 class _RunningState:
 	"""State tracking for is_running() cache."""
+
 	last_check: float = 0.0
 	last_result: bool = False
 
@@ -202,6 +201,7 @@ class _RunningState:
 		self.last_result = result
 		self.last_check = time.monotonic()
 
+
 # Process handle for unbound daemon (to prevent zombie processes)
 _unbound_proc: asyncio.subprocess.Process | None = None
 _supervisor_task: asyncio.Task | None = None
@@ -217,6 +217,7 @@ _is_running_lock = asyncio.Lock()
 # ---------------------------------------------------------------------------
 # PID Management
 # ---------------------------------------------------------------------------
+
 
 def _read_unbound_pid() -> int | None:
 	"""Read and parse unbound PID file."""
@@ -370,6 +371,7 @@ async def _kill_pid(pid: int, *, timeout: float = 3.0) -> bool:
 # Running State
 # ---------------------------------------------------------------------------
 
+
 def invalidate_running_cache() -> None:
 	"""Force the next is_running() call to re-check (after start/stop).
 
@@ -414,6 +416,7 @@ async def is_running() -> bool:
 # Supervisor Task
 # ---------------------------------------------------------------------------
 
+
 async def _supervise_unbound() -> None:
 	"""Background task: reap managed unbound process on unexpected exit."""
 	global _unbound_proc, _supervisor_task, _intentional_stop
@@ -455,6 +458,7 @@ def _ensure_supervisor_task() -> None:
 		_supervise_unbound(),
 		name="unbound-supervisor",
 	)
+
 
 # ---------------------------------------------------------------------------
 # Listen Socket Preflight
@@ -549,9 +553,7 @@ async def _preflight_listen_sockets() -> str | None:
 	if not ips:
 		return None
 
-	conflicts = await asyncio.to_thread(
-		lambda: [msg for msg in (_probe_listen_socket(ip, port) for ip in ips) if msg]
-	)
+	conflicts = await asyncio.to_thread(lambda: [msg for msg in (_probe_listen_socket(ip, port) for ip in ips) if msg])
 	if not conflicts:
 		_log.debug("DNS_PREFLIGHT %d listen socket(s) on port %d are free", len(ips), port)
 		return None
@@ -565,11 +567,11 @@ async def _preflight_listen_sockets() -> str | None:
 # Process Control (Internal Implementations)
 # ---------------------------------------------------------------------------
 
+
 async def _start_impl() -> tuple[bool, str]:
 	"""Start unbound (internal implementation without lock)."""
 	from .unbound_config import write_config  # Avoid circular import
 
-	# Check if unbound is installed
 	if not is_unbound_installed():
 		return False, "Unbound is not installed"
 
@@ -608,7 +610,10 @@ async def _start_impl() -> tuple[bool, str]:
 	# and fills the pipe buffer if not drained; it already logs to its own file)
 	try:
 		_unbound_proc = await asyncio.create_subprocess_exec(
-			"unbound", "-d", "-c", str(UNBOUND_CONF),
+			"unbound",
+			"-d",
+			"-c",
+			str(UNBOUND_CONF),
 			stdout=asyncio.subprocess.DEVNULL,
 			stderr=asyncio.subprocess.DEVNULL,
 			start_new_session=True,
@@ -799,9 +804,11 @@ async def _reload_impl() -> tuple[bool, str]:
 		return False, "Reload failed: unbound stopped after SIGHUP"
 	return False, "Reload failed: unbound not running"
 
+
 # ---------------------------------------------------------------------------
 # Public API (with concurrency protection)
 # ---------------------------------------------------------------------------
+
 
 async def start() -> tuple[bool, str]:
 	"""Start unbound."""
@@ -902,7 +909,7 @@ async def watchdog(should_be_running_func: Callable[[], bool | Awaitable[bool]])
 
 	# Exponential backoff WITHOUT holding the lock
 	if current_failures > 0:
-		backoff = min(2 ** current_failures, 60)
+		backoff = min(2**current_failures, 60)
 		_log.info("DNS_WATCHDOG backing off %ds before retry", backoff)
 		await asyncio.sleep(backoff)
 
@@ -933,10 +940,7 @@ async def watchdog(should_be_running_func: Callable[[], bool | Awaitable[bool]])
 				msg,
 			)
 			if _watchdog_failures >= _MAX_WATCHDOG_FAILURES:
-				_log.critical(
-					"DNS_WATCHDOG max restart attempts reached, giving up. "
-					"Manual intervention required."
-				)
+				_log.critical("DNS_WATCHDOG max restart attempts reached, giving up. Manual intervention required.")
 
 
 def _reset_watchdog_failures() -> None:
@@ -948,22 +952,11 @@ def _reset_watchdog_failures() -> None:
 	_watchdog_failures = 0
 
 
-async def reset_watchdog_failures() -> None:
-	"""Reset the watchdog failure counter (public API).
-
-	Safe to call from anywhere. For internal use within _proc_lock context,
-	prefer _reset_watchdog_failures() to avoid lock re-entry.
-	"""
-	async with _proc_lock:
-		_reset_watchdog_failures()
-
-
 __all__ = [
 	"invalidate_running_cache",
 	"is_running",
 	"is_unbound_installed",
 	"reload_config",
-	"reset_watchdog_failures",
 	"restart",
 	"start",
 	"stop",

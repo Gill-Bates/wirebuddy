@@ -13,9 +13,13 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, Field, IPvAnyAddress, field_validator, model_validator
 
+from ..utils.crypto import MAX_PASSWORD_BYTES
+
 # Username: 3-64 chars, starts/ends with alphanumeric, allows _ or - in middle
 _USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$")
 _CONSECUTIVE_SPECIAL_RE = re.compile(r"[-_]{2}")
+# Opaque token characters (JWT/base64url alphabet)
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _UPPER_RE = re.compile(r"[A-Z]")
 _LOWER_RE = re.compile(r"[a-z]")
 _DIGIT_RE = re.compile(r"[0-9]")
@@ -42,8 +46,6 @@ _COMMON_PASSWORDS = {
 	"trustno1",
 	"iloveyou",
 }
-# bcrypt truncates at 72 bytes, so enforce this limit
-_PASSWORD_MAX_BYTES = 72
 # Minimum password length for adequate entropy
 _PASSWORD_MIN_LENGTH = 8
 
@@ -63,13 +65,28 @@ def _validate_username(v: str) -> str:
 	"""Validate and normalize username."""
 	v_lower = _normalize_username(v)
 	if not _USERNAME_RE.match(v_lower):
-		raise ValueError(
-			"Username must be 3-64 chars, start/end with alphanumeric, "
-			"and contain only letters, digits, hyphens, or underscores"
-		)
+		raise ValueError("Username must be 3-64 chars, start/end with alphanumeric, and contain only letters, digits, hyphens, or underscores")
 	if _CONSECUTIVE_SPECIAL_RE.search(v_lower):
 		raise ValueError("Username cannot contain consecutive special characters")
 	return v_lower
+
+
+def _validate_totp_code(v: str) -> str:
+	"""Normalize and validate a 6-8 digit TOTP code."""
+	normalized = v.strip().replace(" ", "").replace("-", "")
+	if not normalized.isdigit():
+		raise ValueError("TOTP code must be numeric")
+	if len(normalized) < 6 or len(normalized) > 8:
+		raise ValueError("TOTP code must be 6-8 digits")
+	return normalized
+
+
+def _validate_opaque_token(v: str) -> str:
+	"""Normalize and validate an opaque token (basic JWT/base64 character check)."""
+	normalized = v.strip()
+	if not _TOKEN_RE.match(normalized):
+		raise ValueError("Invalid token format")
+	return normalized
 
 
 def _validate_password_strength(v: str) -> str:
@@ -81,22 +98,21 @@ def _validate_password_strength(v: str) -> str:
 	if any(ord(char) < 32 or ord(char) == 127 for char in v):
 		raise ValueError("Password must not contain control characters")
 
-	if len(v.encode("utf-8")) > _PASSWORD_MAX_BYTES:
-		raise ValueError("Password must be at most 72 bytes")
+	if len(v.encode("utf-8")) > MAX_PASSWORD_BYTES:
+		raise ValueError(f"Password must be at most {MAX_PASSWORD_BYTES} bytes")
 
 	if v.lower() in _COMMON_PASSWORDS:
 		raise ValueError("Password is too common")
 
 	checks = (_UPPER_RE, _LOWER_RE, _DIGIT_RE, _SPECIAL_RE)
 	if sum(bool(regex.search(v)) for regex in checks) < 3:
-		raise ValueError(
-			"Password must contain at least 3 of: uppercase, lowercase, digit, special character"
-		)
+		raise ValueError("Password must contain at least 3 of: uppercase, lowercase, digit, special character")
 	return v
 
 
 class LoginRequest(BaseModel):
 	"""Login request payload."""
+
 	username: str = Field(..., min_length=1, max_length=64)
 	password: str = Field(..., min_length=1, max_length=256)
 
@@ -110,6 +126,7 @@ class LoginRequest(BaseModel):
 
 class MFAVerifyRequest(BaseModel):
 	"""MFA verification payload (TOTP code or recovery code)."""
+
 	username: str = Field(..., min_length=1, max_length=64)
 	mfa_token: str = Field(..., min_length=20, max_length=512)
 	code: str = Field(
@@ -133,7 +150,7 @@ class MFAVerifyRequest(BaseModel):
 		if not normalized:
 			raise ValueError("Code cannot be empty")
 		# Validate format: either pure digits (TOTP) or alphanumeric (recovery)
-		if not (normalized.isdigit() or normalized.isalnum()):
+		if not normalized.isalnum():
 			raise ValueError("Code must contain only letters and numbers")
 		return normalized
 
@@ -141,31 +158,24 @@ class MFAVerifyRequest(BaseModel):
 	@classmethod
 	def normalize_mfa_token(cls, v: str) -> str:
 		"""Normalize and validate MFA token format."""
-		normalized = v.strip()
-		# Basic JWT/base64 format check (alphanumeric + allowed chars)
-		if not re.match(r"^[A-Za-z0-9._-]+$", normalized):
-			raise ValueError("Invalid token format")
-		return normalized
+		return _validate_opaque_token(v)
 
 
 class OTPConfirmRequest(BaseModel):
 	"""OTP setup confirmation payload."""
+
 	code: str = Field(..., min_length=1, max_length=64)
 
 	@field_validator("code")
 	@classmethod
 	def normalize_code(cls, v: str) -> str:
 		"""Normalize and validate TOTP code."""
-		normalized = v.strip().replace(" ", "").replace("-", "")
-		if not normalized.isdigit():
-			raise ValueError("TOTP code must be numeric")
-		if len(normalized) < 6 or len(normalized) > 8:
-			raise ValueError("TOTP code must be 6-8 digits")
-		return normalized
+		return _validate_totp_code(v)
 
 
 class OTPDisableRequest(BaseModel):
 	"""OTP disable payload requiring re-authentication proof."""
+
 	current_password: str | None = Field(None, min_length=1, max_length=256)
 	code: str | None = Field(None, min_length=1, max_length=64)
 
@@ -183,12 +193,7 @@ class OTPDisableRequest(BaseModel):
 	def normalize_code(cls, v: str | None) -> str | None:
 		if v is None:
 			return v
-		normalized = v.strip().replace(" ", "").replace("-", "")
-		if not normalized.isdigit():
-			raise ValueError("TOTP code must be numeric")
-		if len(normalized) < 6 or len(normalized) > 8:
-			raise ValueError("TOTP code must be 6-8 digits")
-		return normalized
+		return _validate_totp_code(v)
 
 	@model_validator(mode="after")
 	def validate_reauth_present(self) -> OTPDisableRequest:
@@ -199,21 +204,19 @@ class OTPDisableRequest(BaseModel):
 
 class RecoveryDownloadRequest(BaseModel):
 	"""Recovery-code ZIP download request payload."""
+
 	token: str = Field(..., min_length=1, max_length=512)
 
 	@field_validator("token")
 	@classmethod
 	def normalize_token(cls, v: str) -> str:
 		"""Normalize and validate token format."""
-		normalized = v.strip()
-		# Basic JWT/base64 format check
-		if not re.match(r"^[A-Za-z0-9._-]+$", normalized):
-			raise ValueError("Invalid token format")
-		return normalized
+		return _validate_opaque_token(v)
 
 
 class TokenResponse(BaseModel):
 	"""Authentication token response."""
+
 	token: str
 	expires_at: AwareDatetime
 	token_type: Literal["Bearer"] = "Bearer"  # noqa: S105  (the OAuth token type, not a secret)
@@ -221,8 +224,8 @@ class TokenResponse(BaseModel):
 
 class UserCreate(BaseModel):
 	"""User creation payload."""
+
 	username: str = Field(..., min_length=3, max_length=64)
-	# Note: Field max_length=256 for input convenience, but bcrypt truncates at 72 bytes
 	password: str = Field(..., min_length=8, max_length=256)
 	is_admin: bool = False
 
@@ -242,6 +245,7 @@ class UserUpdate(BaseModel):
 
 	Note: Password changes must use the /change-password endpoint.
 	"""
+
 	username: str | None = Field(None, min_length=3, max_length=64)
 	is_admin: bool | None = None
 	is_active: bool | None = None
@@ -256,6 +260,7 @@ class UserUpdate(BaseModel):
 
 class UserPublic(BaseModel):
 	"""Public user representation (without password)."""
+
 	id: int
 	username: str
 	is_admin: bool
@@ -268,6 +273,7 @@ class UserPublic(BaseModel):
 
 class PasswordChangeRequest(BaseModel):
 	"""Self-service password change request payload."""
+
 	current_password: str = Field(..., min_length=1, max_length=256)
 	new_password: str = Field(..., min_length=8, max_length=256)
 
@@ -286,6 +292,7 @@ class PasswordChangeRequest(BaseModel):
 
 class AdminPasswordResetRequest(BaseModel):
 	"""Admin-initiated password reset payload."""
+
 	new_password: str = Field(..., min_length=8, max_length=256)
 
 	@field_validator("new_password")
@@ -301,6 +308,7 @@ class RequiredPasswordChangeRequest(BaseModel):
 	login. The active session authenticates the user, so the temporary password
 	is not re-entered; only the new password is required.
 	"""
+
 	new_password: str = Field(..., min_length=8, max_length=256)
 
 	@field_validator("new_password")

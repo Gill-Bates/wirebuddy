@@ -12,7 +12,3 @@ export function sanitize(name) {
 export function ensureDir(dirPath) {
     fs.mkdirSync(dirPath, { recursive: true });
 }
-
-export function buildScreenshotPath(screenshotDir, name, suffix) {
-    return `${screenshotDir}/${sanitize(name)}-${suffix}.png`;
-}

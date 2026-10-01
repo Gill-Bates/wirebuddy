@@ -273,10 +273,12 @@ def generate_node_cert(node_id: str) -> tuple[bytes, bytes]:
 	key = ec.generate_private_key(ec.SECP256R1())
 	node_label = f"wirebuddy-node-{node_id[:8]}"
 
-	subject = issuer = x509.Name([
-		x509.NameAttribute(NameOID.COMMON_NAME, node_label),
-		x509.NameAttribute(NameOID.ORGANIZATION_NAME, "WireBuddy"),
-	])
+	subject = issuer = x509.Name(
+		[
+			x509.NameAttribute(NameOID.COMMON_NAME, node_label),
+			x509.NameAttribute(NameOID.ORGANIZATION_NAME, "WireBuddy"),
+		]
+	)
 
 	now = datetime.now(UTC)
 	cert = (

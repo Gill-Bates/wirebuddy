@@ -15,7 +15,10 @@ export function buildAccessibilityPolicy() {
                 type: 'duplicate-ids',
                 category: 'accessibility',
                 severity: 'error',
-                wcag: ['4.1.1'],
+                // WCAG 2.2 obsoleted 4.1.1 Parsing, so this no longer maps to it.
+                // Duplicate ids break for/aria-labelledby resolution, which surfaces
+                // as a wrong accessible name under 4.1.2.
+                wcag: ['4.1.2'],
                 metricPath: 'metrics.duplicateIds',
                 legacyKey: (context, count) => `duplicateIds=${count}`,
                 message: 'Duplicate IDs detected',
@@ -142,11 +145,15 @@ export function buildAccessibilityPolicy() {
                             type: 'click-target-too-small',
                             category: 'accessibility',
                             severity: 'error',
-                            wcag: ['2.5.5'],
+                            // Not a WCAG AA failure: the AA criterion is 2.5.8 at 24x24 px,
+                            // while this gate enforces WireBuddy's stricter 44 px standard.
+                            // 2.5.5 (44x44) is AAA, so claiming it here overstated the level.
+                            wcag: [],
+                            standard: 'product-touch-target',
                             count,
-                            message: 'Click targets are too small',
-                            explanation: 'Interactive targets are below the minimum size for reliable input.',
-                            remediation: 'Increase padding or hit area so the control meets the touch target minimum.',
+                            message: 'Click targets are below the WireBuddy 44 px standard',
+                            explanation: 'Interactive targets are smaller than the 44 px product minimum. WCAG 2.2 requires only 24x24 px at AA (2.5.8); 44x44 px is the AAA target size (2.5.5).',
+                            remediation: 'Increase padding or hit area so the control meets the 44 px product minimum.',
                             legacyKey: `clickTargetsTooSmall=${count}`,
                             confidence: 0.93,
                         });
@@ -159,7 +166,9 @@ export function buildAccessibilityPolicy() {
                             type: 'icon-buttons-touch-blocked',
                             category: 'accessibility',
                             severity: 'error',
-                            wcag: ['2.5.5'],
+                            // See the note above: 44 px is a product standard, not WCAG AA.
+                            wcag: [],
+                            standard: 'product-touch-target',
                             count: iconButtonsTouchBlocked,
                             message: 'Icon buttons are touch blocked',
                             explanation: 'Icon-only controls lack reliable touch affordance or are obstructed by layout.',

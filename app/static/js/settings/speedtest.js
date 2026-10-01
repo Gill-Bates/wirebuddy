@@ -19,6 +19,8 @@
 
     const state = {
         running: false,
+        runId: 0,
+        cancelRun: null,
         retentionSaving: false,
         retentionPendingDays: null,
         activeEventSource: null,
@@ -391,6 +393,7 @@
     async function runSpeedtest() {
         if (state.running || !isCurrentUserAdmin()) return;
         state.running = true;
+        const runId = ++state.runId;
 
         refreshElements();
         const { runBtn, running, result, status, progress } = elements;
@@ -404,13 +407,16 @@
         try {
             await runSpeedtestWithSSE(status, progress);
         } catch (error) {
-            if (!error?.speedtestReported) {
+            if (!error?.speedtestReported && !error?.speedtestCancelled) {
                 reportSpeedtestError(error.message);
             }
         } finally {
-            state.running = false;
-            if (runBtn) runBtn.disabled = false;
-            if (running) running.classList.add('d-none');
+            // A newer run owns the shared UI state; a stale finally must not touch it.
+            if (runId === state.runId) {
+                state.running = false;
+                if (runBtn) runBtn.disabled = false;
+                if (running) running.classList.add('d-none');
+            }
         }
     }
 
@@ -423,6 +429,7 @@
             function finish(callback) {
                 if (completed) return;
                 completed = true;
+                if (state.cancelRun === cancel) state.cancelRun = null;
                 if (safetyTimer !== null) {
                     clearTimeout(safetyTimer);
                     safetyTimer = null;
@@ -434,18 +441,29 @@
                 callback();
             }
 
+            function cancel() {
+                finish(() => {
+                    const cancelled = new Error('Speedtest cancelled');
+                    cancelled.speedtestCancelled = true;
+                    reject(cancelled);
+                });
+            }
+            state.cancelRun = cancel;
+
             try {
                 const startData = await api('POST', '/api/wireguard/speedtest/run');
                 const streamId = String(startData?.stream_id || '').trim();
                 if (!streamId) {
                     throw new Error('Speedtest stream could not be started');
                 }
+                if (completed) return;
                 es = new EventSource(`/api/wireguard/speedtest/run/stream/${encodeURIComponent(streamId)}`);
                 state.activeEventSource = es;
             } catch (error) {
-                reject(error);
+                finish(() => reject(error));
                 return;
             }
+            if (!es) return;
 
             es.addEventListener('progress', (e) => {
                 try {
@@ -595,6 +613,7 @@
         state.retentionSaving = false;
         state.retentionPendingDays = null;
         abortRequests();
+        state.cancelRun?.();
 
         if (state.activeEventSource) {
             state.activeEventSource.close();
@@ -603,11 +622,6 @@
     }
 
     window.addEventListener('pagehide', cleanup);
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'hidden') {
-            cleanup();
-        }
-    });
 
     window.WB = window.WB || {};
     window.WB.settingsSpeedtest = {

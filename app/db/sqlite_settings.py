@@ -51,8 +51,9 @@ __all__ = [
 	# Core operations
 	"delete_setting",
 	"get_blocklist_disabled_until",
-	"get_dns_blocklist_enabled",
 	# DNS
+	"get_bool_setting",
+	"get_dns_blocklist_enabled",
 	"get_dns_custom_rules",
 	"get_dns_log_retention_days",
 	"get_dns_query_logging_enabled",
@@ -96,14 +97,13 @@ _ALLOWED_RECOVERY_FILENAMES = {"wirebuddy.db"}
 _RECOVERY_ALLOWED_BASES = (Path("/app/data"), Path("/opt/wirebuddy/data"))
 _MAX_RECOVERY_VALUE_LEN = 1024
 _SECRET_SETTING_KEYS = frozenset({"wg_global_psk", _KEY_VALIDATION_TOKEN_KEY})
-_DNS_UPSTREAM_SERVER_RE = re.compile(
-	r"^(?P<ip>\[[0-9A-Fa-f:.]+\]|[0-9A-Fa-f:.]+)@(?P<port>\d{1,5})#(?P<host>[A-Za-z0-9.-]{1,253})$"
-)
+_DNS_UPSTREAM_SERVER_RE = re.compile(r"^(?P<ip>\[[0-9A-Fa-f:.]+\]|[0-9A-Fa-f:.]+)@(?P<port>\d{1,5})#(?P<host>[A-Za-z0-9.-]{1,253})$")
 
 
 # ---------------------------------------------------------------------------
 # Validation helpers (reused across recovery and setters)
 # ---------------------------------------------------------------------------
+
 
 def _validate_port(text: str) -> int | None:
 	"""Parse and validate a port number string.
@@ -139,10 +139,7 @@ def _validate_hostname(text: str) -> str | None:
 	if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", text):
 		return None
 	labels = text.strip(".").split(".")
-	if any(
-		(not label) or len(label) > 63 or label.startswith("-") or label.endswith("-")
-		for label in labels
-	):
+	if any((not label) or len(label) > 63 or label.startswith("-") or label.endswith("-") for label in labels):
 		return None
 	return text
 
@@ -150,6 +147,7 @@ def _validate_hostname(text: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Key Validation
 # ---------------------------------------------------------------------------
+
 
 def validate_secret_key(conn: sqlite3.Connection, pepper: str) -> bool:
 	"""Validate that the secret key matches the one used to encrypt the database.
@@ -200,6 +198,7 @@ def validate_secret_key(conn: sqlite3.Connection, pepper: str) -> bool:
 # ---------------------------------------------------------------------------
 # Settings operations
 # ---------------------------------------------------------------------------
+
 
 def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
 	"""Get a setting value by key."""
@@ -302,9 +301,7 @@ def _verify_recovery_db_schema(db_path: Path) -> bool:
 	"""Verify that a recovery candidate has the expected schema."""
 	try:
 		with closing(sqlite3.connect(str(db_path))) as test_conn:
-			row = test_conn.execute(
-				"SELECT name FROM sqlite_master WHERE type='table' AND name='settings'"
-			).fetchone()
+			row = test_conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'").fetchone()
 			return row is not None
 	except Exception:
 		_log.debug("Schema verification failed for %s", db_path, exc_info=True)
@@ -357,11 +354,7 @@ def recover_missing_global_settings(
 		current_db_file = None
 	current_db_dir = current_db_file.parent if current_db_file is not None else None
 
-	missing_keys = {
-		key
-		for key in _GLOBAL_SETTINGS_RECOVERY_KEYS
-		if not str(get_setting(conn, key, "") or "").strip()
-	}
+	missing_keys = {key for key in _GLOBAL_SETTINGS_RECOVERY_KEYS if not str(get_setting(conn, key, "") or "").strip()}
 	if not missing_keys:
 		return 0
 
@@ -458,7 +451,7 @@ def _setting_is_truthy(value: Any, default: bool = False) -> bool:
 	return str(value).strip().lower() in BOOL_TRUE_VALUES
 
 
-def _get_bool_setting(conn: sqlite3.Connection, key: str, *, default: bool = False) -> bool:
+def get_bool_setting(conn: sqlite3.Connection, key: str, *, default: bool = False) -> bool:
 	"""Get a boolean setting from the database."""
 	return _setting_is_truthy(get_setting(conn, key, "1" if default else "0"), default=default)
 
@@ -687,7 +680,7 @@ def set_speedtest_retention_days(conn: sqlite3.Connection, days: int) -> None:
 
 def get_dnssec_enabled(conn: sqlite3.Connection) -> bool:
 	"""Get whether DNSSEC validation should be enabled."""
-	return _get_bool_setting(conn, "dnssec_enabled", default=True)
+	return get_bool_setting(conn, "dnssec_enabled", default=True)
 
 
 def set_dnssec_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
@@ -697,7 +690,7 @@ def set_dnssec_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
 
 def get_dns_query_logging_enabled(conn: sqlite3.Connection) -> bool:
 	"""Get whether Unbound query logging is enabled."""
-	return _get_bool_setting(conn, "dns_enable_logging", default=True)
+	return get_bool_setting(conn, "dns_enable_logging", default=True)
 
 
 def set_dns_query_logging_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
@@ -707,7 +700,7 @@ def set_dns_query_logging_enabled(conn: sqlite3.Connection, enabled: bool) -> No
 
 def get_dns_blocklist_enabled(conn: sqlite3.Connection) -> bool:
 	"""Get whether DNS blocklist include is enabled in Unbound config."""
-	return _get_bool_setting(conn, "dns_enable_blocklist", default=False)
+	return get_bool_setting(conn, "dns_enable_blocklist", default=False)
 
 
 def set_dns_blocklist_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
@@ -739,7 +732,7 @@ def clear_blocklist_disabled_until(conn: sqlite3.Connection) -> None:
 
 def get_dns_service_enabled(conn: sqlite3.Connection) -> bool:
 	"""Get whether Unbound service should be auto-started on application startup."""
-	return _get_bool_setting(conn, "dns_service_enabled", default=True)
+	return get_bool_setting(conn, "dns_service_enabled", default=True)
 
 
 def set_dns_service_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
@@ -797,6 +790,7 @@ def set_dns_custom_rules(conn: sqlite3.Connection, rules_text: str) -> None:
 # Speedtest / Bandwidth Measurement
 # ---------------------------------------------------------------------------
 
+
 def get_gui_https_enabled(conn: sqlite3.Connection) -> bool:
 	"""Return True if WireBuddy serves the GUI over HTTPS.
 
@@ -805,12 +799,12 @@ def get_gui_https_enabled(conn: sqlite3.Connection) -> bool:
 	node enrollment reject plaintext transports. Read at startup by run.py, so
 	changing it requires a restart.
 	"""
-	return _get_bool_setting(conn, "gui_https_enabled", default=False)
+	return get_bool_setting(conn, "gui_https_enabled", default=False)
 
 
 def get_speedtest_enabled(conn: sqlite3.Connection) -> bool:
 	"""Return True if scheduled speed tests are enabled."""
-	return _get_bool_setting(conn, "speedtest_enabled", default=False)
+	return get_bool_setting(conn, "speedtest_enabled", default=False)
 
 
 def set_speedtest_enabled(conn: sqlite3.Connection, enabled: bool) -> None:

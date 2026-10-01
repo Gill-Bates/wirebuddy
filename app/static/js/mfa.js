@@ -64,6 +64,16 @@ function initMfa() {
         });
     }
 
+    // Returning to the credential step is the only way out of MFA besides a
+    // reload, which matters when the wrong account was used.
+    const backToLoginBtn = document.getElementById('back-to-login-btn');
+    if (backToLoginBtn) {
+        backToLoginBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            returnToLoginStep();
+        });
+    }
+
     const recoverySubmitBtn = document.getElementById('recovery-submit-btn');
     if (recoverySubmitBtn) {
         recoverySubmitBtn.addEventListener('click', (e) => {
@@ -115,6 +125,39 @@ function showMfaForm(username, token) {
     }
     initOtpDigits();
     clearOtpDigits();
+}
+
+/**
+ * Inverse of showMfaForm(): drop the pending challenge and show the credential
+ * form again, so a user who started with the wrong account does not have to
+ * reload the page.
+ *
+ * Clears the error alert through hideElement() rather than login.js's
+ * hideError(), which lives inside that file's IIFE and is not reachable here.
+ */
+function returnToLoginStep() {
+    mfaSubmitting = false;
+    clearPendingOtpReset();
+    clearOtpDigits();
+
+    const errorAlert = document.getElementById('error-alert');
+    if (errorAlert) {
+        errorAlert.textContent = '';
+        hideElement(errorAlert);
+    }
+
+    mfaUsername = '';
+    mfaToken = '';
+
+    hideElement(document.getElementById('mfa-form'));
+    hideElement(recoveryForm);
+    showElement(document.getElementById('login-form'));
+
+    if (recoveryCodeInput) {
+        recoveryCodeInput.value = '';
+        recoveryCodeInput.removeAttribute('aria-invalid');
+    }
+    document.getElementById('username')?.focus();
 }
 
 // OTP digit boxes with auto-advance and auto-submit
@@ -259,7 +302,6 @@ async function submitMfa(code) {
             });
         }
 
-        // Show error message
         showError(error.message || 'Invalid code. Please try again.');
 
         errorClearTimeoutId = setTimeout(() => {

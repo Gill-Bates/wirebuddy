@@ -132,10 +132,7 @@ def _public_key_matches(certfile: Path, keyfile: Path) -> bool:
 		key = serialization.load_pem_private_key(keyfile.read_bytes(), password=None)
 		encoding = serialization.Encoding.DER
 		fmt = serialization.PublicFormat.SubjectPublicKeyInfo
-		return (
-			cert.public_key().public_bytes(encoding, fmt)
-			== key.public_key().public_bytes(encoding, fmt)
-		)
+		return cert.public_key().public_bytes(encoding, fmt) == key.public_key().public_bytes(encoding, fmt)
 	except Exception:
 		# Unreadable or unsupported material is unusable either way: the
 		# listener could not load it, so report it as not matching.
@@ -161,18 +158,21 @@ def _letsencrypt_material(certs_dir: Path, domain: str) -> TlsMaterial | None:
 		# Unparseable: the listener would fail to start on it, so treat it as
 		# absent instead of handing it out as valid material.
 		_log.warning(
-			"TLS_LE_CERT_UNREADABLE domain=%s - falling back to self-signed", domain,
+			"TLS_LE_CERT_UNREADABLE domain=%s - falling back to self-signed",
+			domain,
 		)
 		return None
 	if expires_at <= now:
 		_log.warning(
 			"TLS_LE_CERT_EXPIRED domain=%s expired_at=%s - falling back to self-signed",
-			domain, expires_at.isoformat(),
+			domain,
+			expires_at.isoformat(),
 		)
 		return None
 	if not _public_key_matches(certfile, keyfile):
 		_log.warning(
-			"TLS_LE_KEY_MISMATCH domain=%s - falling back to self-signed", domain,
+			"TLS_LE_KEY_MISMATCH domain=%s - falling back to self-signed",
+			domain,
 		)
 		return None
 
@@ -233,10 +233,12 @@ def ensure_self_signed_cert(certs_dir: Path, hostname: str) -> TlsMaterial:
 	target_dir.mkdir(parents=True, exist_ok=True)
 	now = _dt.datetime.now(_dt.UTC)
 	key = ec.generate_private_key(ec.SECP256R1())
-	subject = x509.Name([
-		x509.NameAttribute(NameOID.COMMON_NAME, hostname[:64]),
-		x509.NameAttribute(NameOID.ORGANIZATION_NAME, "WireBuddy"),
-	])
+	subject = x509.Name(
+		[
+			x509.NameAttribute(NameOID.COMMON_NAME, hostname[:64]),
+			x509.NameAttribute(NameOID.ORGANIZATION_NAME, "WireBuddy"),
+		]
+	)
 	cert = (
 		x509.CertificateBuilder()
 		.subject_name(subject)

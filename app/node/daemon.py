@@ -66,6 +66,7 @@ from .wg_manager import apply_config, get_wg_dump, shutdown_all_interfaces
 
 _log = logging.getLogger(__name__)
 
+
 def _env_int(name: str, default: int, minimum: int) -> int:
 	raw = os.environ.get(name)
 	if raw is None:
@@ -74,6 +75,7 @@ def _env_int(name: str, default: int, minimum: int) -> int:
 		return max(minimum, int(raw))
 	except ValueError:
 		raise ValueError(f"Environment variable {name} must be an integer, got: {raw!r}") from None
+
 
 try:
 	SYNC_INTERVAL = _env_int("WIREBUDDY_NODE_SYNC_INTERVAL", 30, 5)
@@ -127,8 +129,6 @@ def _validate_master_url(raw_url: str) -> str:
 	if parsed.query or parsed.fragment:
 		raise RuntimeError("master_url must not contain query parameters or fragments")
 	return master_url
-
-
 
 
 def _build_request_headers(api_secret: str, cert_fingerprint: str) -> dict[str, str]:
@@ -319,11 +319,7 @@ def _create_ssl_context(ca_file: str | None = None) -> tuple[ssl.SSLContext, str
 		_log.warning("Could not apply hardened TLS cipher policy: %s", exc)
 	if hasattr(ssl_ctx, "set_ciphersuites"):
 		try:
-			ssl_ctx.set_ciphersuites(
-				"TLS_AES_256_GCM_SHA384:"
-				"TLS_CHACHA20_POLY1305_SHA256:"
-				"TLS_AES_128_GCM_SHA256"
-			)
+			ssl_ctx.set_ciphersuites("TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256")
 		except ssl.SSLError as exc:
 			_log.warning("Could not apply TLS 1.3 cipher suite policy: %s", exc)
 
@@ -489,6 +485,7 @@ async def _run_node_speedtest(
 					cert_fingerprint,
 					event_to_send,
 				)
+
 		try:
 			progress_task = asyncio.create_task(_drain_progress_updates())
 
@@ -508,10 +505,7 @@ async def _run_node_speedtest(
 
 	try:
 		async with lease:
-			result = await asyncio.wait_for(
-				run_speedtest(progress_callback=progress_callback),
-				timeout=_SPEEDTEST_RUN_TIMEOUT_SECONDS
-			)
+			result = await asyncio.wait_for(run_speedtest(progress_callback=progress_callback), timeout=_SPEEDTEST_RUN_TIMEOUT_SECONDS)
 			if result.get("status") == "ok":
 				lease.mark_success()
 	except TimeoutError:
@@ -593,7 +587,6 @@ async def _speedtest_scheduler(
 			if shutdown_event.is_set():
 				return
 
-			# Run the speedtest
 			success = await _run_node_speedtest(client, master_url, api_secret, cert_fingerprint)
 			if success:
 				await asyncio.to_thread(_write_last_speedtest_run, time.time())
@@ -603,11 +596,8 @@ async def _speedtest_scheduler(
 		except Exception:
 			_log.exception("NODE_SPEEDTEST scheduler error")
 			# Wait a bit before retrying
-			try:
-				if await _interruptible_sleep(300, shutdown_event):
-					return
-			except TimeoutError:
-				pass
+			if await _interruptible_sleep(300, shutdown_event):
+				return
 
 
 async def _ack_pending_command_ids(
@@ -718,7 +708,6 @@ async def main() -> None:
 		logging.getLogger(name).setLevel(logging.WARNING)
 	_log.info("WireBuddy Node Daemon starting...")
 
-	# Check firewall configuration
 	await asyncio.to_thread(_check_firewall_dns_rules)
 
 	def _prepare_data_dir() -> None:
@@ -726,6 +715,7 @@ async def main() -> None:
 		# mkdir's mode is subject to umask, so re-assert 0o700 on a directory
 		# that may already exist with looser permissions.
 		DATA_DIR.chmod(0o700)
+
 	# mkdir and chmod are blocking syscalls; the firewall check above already
 	# offloads its filesystem work the same way.
 	await asyncio.to_thread(_prepare_data_dir)
@@ -758,9 +748,7 @@ async def main() -> None:
 
 			# Compare via enrollment_secret_hash (not api_secret, which was
 			# replaced by a session secret after the first enrollment).
-			token_secret_hash = hashlib.sha256(
-				payload["api_secret"].encode("utf-8")
-			).hexdigest()
+			token_secret_hash = hashlib.sha256(payload["api_secret"].encode("utf-8")).hexdigest()
 			stored_hash = state.get("enrollment_secret_hash")
 
 			if payload["node_id"] != state["node_id"]:
@@ -908,7 +896,7 @@ async def main() -> None:
 						break
 
 				if not enrolled:
-	# Enrollment failure without cached state is fatal.
+					# Enrollment failure without cached state is fatal.
 					_log.critical("Enrollment failed and no cached state available — exiting")
 					sys.exit(1)
 				# Replace the enrollment api_secret with the session secret
@@ -922,16 +910,13 @@ async def main() -> None:
 				else:
 					# Store a hash of the original token secret so we can detect
 					# genuinely new tokens on future restarts.
-					node_state["enrollment_secret_hash"] = hashlib.sha256(
-						api_secret.encode("utf-8")
-					).hexdigest()
+					node_state["enrollment_secret_hash"] = hashlib.sha256(api_secret.encode("utf-8")).hexdigest()
 					api_secret = session_secret
 					node_state["api_secret"] = api_secret
 					# Log first 8 chars of the new secret hash for debugging
 					new_secret_hash = hashlib.sha256(api_secret.encode("utf-8")).hexdigest()
 					_log.info("Switched to session secret (hash=%s...)", new_secret_hash[:8])
 
-				current_config_version = current_config_version or None
 				node_state["config_version"] = current_config_version
 				await asyncio.to_thread(_save_state, node_state)
 
@@ -1023,7 +1008,6 @@ async def main() -> None:
 					master_url,
 					api_secret,
 					cert_fingerprint,
-					tls_verify,
 					master_ca_file,
 					config_changed_event,
 					config_command_ids,
@@ -1132,8 +1116,7 @@ async def main() -> None:
 								# (stop syncing) but keep local state/cert intact —
 								# only an explicit node_removed event should wipe them.
 								_log.critical(
-									"Multiple consecutive 401 errors (%d) — authentication "
-									"repeatedly rejected; stopping with local state intact",
+									"Multiple consecutive 401 errors (%d) — authentication repeatedly rejected; stopping with local state intact",
 									consecutive_401_failures,
 								)
 								shutdown_event.set()
@@ -1248,10 +1231,7 @@ async def main() -> None:
 				# still be active in the host namespace: without state/cert, the
 				# daemon could no longer manage (or even identify) that runtime
 				# interface on the next start.
-				_log.critical(
-					"Skipping enrollment state removal: WireGuard interface teardown "
-					"failed, leaving state intact for a retry on next start"
-				)
+				_log.critical("Skipping enrollment state removal: WireGuard interface teardown failed, leaving state intact for a retry on next start")
 		_log.info("Node daemon stopped")
 
 
@@ -1282,8 +1262,7 @@ async def _enroll(
 			# 409 = Node enrolled with different certificate — cannot recover automatically.
 			# User needs to delete the node on master and re-create with fresh token.
 			_log.error(
-				"Enrollment rejected: Node is enrolled with a different certificate. "
-				"Delete the node in the master UI and generate a new enrollment token."
+				"Enrollment rejected: Node is enrolled with a different certificate. Delete the node in the master UI and generate a new enrollment token."
 			)
 			return EnrollResult(success=False, config=None, config_version=None, session_secret=None, fatal=True)
 		resp.raise_for_status()
@@ -1345,7 +1324,6 @@ async def _push_heartbeat(
 	"""
 	uptime = await asyncio.to_thread(_get_uptime)
 
-	# Get pending metrics batch from queue
 	pending_batch = await asyncio.to_thread(get_pending_batch, metrics_queue_conn)
 	metrics_batch = serialize_batch_for_api(pending_batch)
 
@@ -1416,7 +1394,6 @@ async def _sse_listener(
 	master_url: str,
 	api_secret: str,
 	cert_fingerprint: str,
-	tls_verify: ssl.SSLContext | bool,
 	master_ca_file: str | None,
 	config_changed_event: asyncio.Event,
 	config_command_ids: deque[int],
@@ -1444,7 +1421,6 @@ async def _sse_listener(
 		master_url: Base URL of the master to subscribe to.
 		api_secret: Node API secret authenticating the SSE subscription.
 		cert_fingerprint: Pinned certificate fingerprint of the master.
-		tls_verify: TLS verification mode (passed for type compatibility, but fresh context is created)
 		master_ca_file: CA file path (if custom CA configured) for creating fresh SSL context
 		config_changed_event: Set when the master announces a new config version.
 		config_command_ids: Queue the announced config command ids are appended to.
@@ -1457,7 +1433,6 @@ async def _sse_listener(
 	Uses a persistent client to avoid TLS handshake overhead on reconnect.
 	"""
 	_log.debug("SSE listener task started")
-	_ = tls_verify  # Kept for API compatibility; listener uses a fresh context.
 	reconnect_delay = 1
 	consecutive_401_count = 0  # Track auth failures
 

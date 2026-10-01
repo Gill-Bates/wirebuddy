@@ -13,10 +13,12 @@ import sqlite3
 import stat
 import threading
 import time
+from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 _log = logging.getLogger(__name__)
 
@@ -30,9 +32,7 @@ class UnsetType(Enum):
 		return "UNSET"
 
 	def __bool__(self) -> bool:
-		raise TypeError(
-			"UNSET cannot be used in boolean context; use 'is UNSET' for identity checks"
-		)
+		raise TypeError("UNSET cannot be used in boolean context; use 'is UNSET' for identity checks")
 
 
 # Sentinel value to distinguish "not provided" from "set to None" in update functions.
@@ -155,14 +155,12 @@ def connect(db_path: Path) -> sqlite3.Connection:
 				result = conn.execute("PRAGMA journal_mode=WAL").fetchone()
 				new_mode = str(result[0]).upper() if result and result[0] is not None else ""
 				if new_mode != "WAL":
-					raise sqlite3.OperationalError(
-						f"Failed to enable WAL mode (got {result[0]!r})"
-					)
+					raise sqlite3.OperationalError(f"Failed to enable WAL mode (got {result[0]!r})")
 				break
 			except sqlite3.OperationalError as e:
 				if "locked" in str(e).lower() and attempt < max_retries - 1:
 					# Another worker is initializing - wait and retry
-					wait = 0.1 * (2 ** attempt)  # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s
+					wait = 0.1 * (2**attempt)  # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s
 					_log.debug(
 						"Database locked during WAL activation (attempt %d/%d), retrying in %.1fs",
 						attempt + 1,
@@ -213,6 +211,32 @@ def thread_connection(db_path: Path):
 		yield conn
 	finally:
 		close_connection(conn)
+
+
+def db_call(db_path: Path, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+	"""Run ``fn(conn, *args, **kwargs)`` on a connection opened for this call.
+
+	Callers must not retain ``conn`` beyond ``fn``; the connection is closed on
+	return. Designed for use inside ``asyncio.to_thread``::
+
+		result = await asyncio.to_thread(db_call, db_path, get_setting, "key")
+	"""
+	with thread_connection(db_path) as conn:
+		return fn(conn, *args, **kwargs)
+
+
+def db_call_or(db_path: Path, fn: Callable[..., Any], /, *args: Any, default: Any = None, **kwargs: Any) -> Any:
+	"""Like :func:`db_call` but return ``default`` on transient OS/runtime failures.
+
+	``sqlite3.DatabaseError`` and ``ValueError`` propagate, so database
+	corruption, persistent locking and programming errors are not silently
+	masked in watchdog-style checks.
+	"""
+	try:
+		return db_call(db_path, fn, *args, **kwargs)
+	except (OSError, RuntimeError) as exc:
+		_log.warning("%s failed, returning default: %s", fn.__name__, exc)
+		return default
 
 
 def close_all_connections() -> int:
@@ -268,10 +292,7 @@ def checkpoint_wal(db_path: Path, mode: str = "TRUNCATE") -> dict[str, int | str
 	"""
 	mode_upper = mode.strip().upper()
 	if mode_upper not in _VALID_CHECKPOINT_MODES:
-		raise ValueError(
-			f"Invalid WAL checkpoint mode {mode!r}; "
-			f"must be one of {sorted(_VALID_CHECKPOINT_MODES)}"
-		)
+		raise ValueError(f"Invalid WAL checkpoint mode {mode!r}; must be one of {sorted(_VALID_CHECKPOINT_MODES)}")
 
 	conn: sqlite3.Connection | None = None
 	try:
@@ -311,10 +332,7 @@ def transaction(conn: sqlite3.Connection, *, immediate: bool = False):
 	if conn.in_transaction:
 		# Nested transaction: use SAVEPOINT
 		if immediate:
-			_log.warning(
-				"transaction(immediate=True) called while already in transaction; "
-				"lock escalation not possible, using SAVEPOINT instead"
-			)
+			_log.warning("transaction(immediate=True) called while already in transaction; lock escalation not possible, using SAVEPOINT instead")
 		savepoint = _next_savepoint_name()
 		# Safe interpolation: savepoint names are generated internally from a
 		# thread id plus monotonic counter and never include external input.

@@ -12,7 +12,7 @@ Captures and diffs KPI card state.
 |---|---|
 | `kpi-capture.mjs` | `captureKpiCards` |
 | `card-diffing.mjs` | `diffKpiSets` |
-| `component-registry.mjs` | `registerCaptureComponent`, `getCaptureComponent(s)` |
+| `component-registry.mjs` | `registerCaptureComponent` |
 
 ## For AI Agents
 

@@ -10,7 +10,7 @@ Theme overlays (light, dark inherits light) and detection of token drift between
 
 | File | Description |
 |---|---|
-| `overlays.mjs` | `THEME_REGISTRY`, `registerThemeOverlay`, `buildThemeOverlay` |
+| `overlays.mjs` | `THEME_REGISTRY`, `buildThemeOverlay` |
 | `theme-diffing.mjs` | `detectTokenDrift` |
 | `theme-runtime.mjs` | `createThemeRuntime` |
 

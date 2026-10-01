@@ -13,6 +13,7 @@ import hmac
 import json
 import re
 import secrets
+import time
 
 import pyotp
 
@@ -49,8 +50,26 @@ def build_provisioning_uri(secret: str, username: str, issuer: str = "WireBuddy"
 	return totp.provisioning_uri(name=username, issuer_name=issuer)
 
 
+def verify_otp_step(secret: str, code: str) -> int | None:
+	"""Return the matched TOTP time step for the current step, or None.
+
+	Callers must persist the step and accept only a strictly greater one
+	(``consume_otp_step``), otherwise the code can be replayed within its window.
+	"""
+	if not _OTP_RE.fullmatch(str(code or "").strip()):
+		return None
+	try:
+		totp = pyotp.TOTP(secret)
+		now = int(time.time())
+		if totp.verify(str(code).strip(), for_time=now, valid_window=0):
+			return now // totp.interval
+	except Exception:
+		return None
+	return None
+
+
 def verify_otp(secret: str, code: str) -> bool:
-	"""Verify a TOTP code for the current time step only."""
+	"""Verify a TOTP code for the current time step only (stateless, no replay guard)."""
 	if not _OTP_RE.fullmatch(str(code or "").strip()):
 		return False
 	try:
@@ -108,13 +127,12 @@ def use_recovery_code(candidate: str, stored_json: str | None) -> tuple[bool, st
 		if not stored_norm:
 			continue
 
-		match = False
+		# Only the first match is consumed; later codes are always retained.
 		if not found:
 			match = hmac.compare_digest(candidate_hash, stored_norm) if _is_sha256_hex(stored_norm) else hmac.compare_digest(normalized_candidate, stored_norm)
-
-		if match and not found:
-			found = True
-			continue
+			if match:
+				found = True
+				continue
 
 		remaining_hashed.append(stored_norm if _is_sha256_hex(stored_norm) else _hash_recovery_code(stored_norm))
 

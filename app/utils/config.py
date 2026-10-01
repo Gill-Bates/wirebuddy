@@ -51,6 +51,7 @@ def _parse_proxy_cidrs(raw: str) -> tuple[IPNetwork, ...]:
 @dataclass(frozen=True)
 class Config:
 	"""Resolved runtime configuration derived from env and defaults."""
+
 	base_dir: Path
 	db_path: Path
 	tsdb_dir: Path
@@ -111,9 +112,7 @@ def _validate_secret_key(secret_key: str) -> str:
 	"""Validate the master secret key for minimum strength."""
 	secret = secret_key.strip()
 	if len(secret.encode("utf-8")) < _MIN_SECRET_KEY_BYTES:
-		raise ValueError(
-			f"WIREBUDDY_SECRET_KEY must be at least {_MIN_SECRET_KEY_BYTES} bytes"
-		)
+		raise ValueError(f"WIREBUDDY_SECRET_KEY must be at least {_MIN_SECRET_KEY_BYTES} bytes")
 	return secret
 
 
@@ -190,6 +189,7 @@ def load_config() -> Config:
 	server_mode = os.getenv("SERVER_MODE", "master").lower()
 	if not secret_key:
 		import sys
+
 		if server_mode == "node":
 			# Nodes don't need secret_key - they use enrollment token
 			secret_key = None
@@ -214,9 +214,7 @@ def load_config() -> Config:
 
 	public_origin = os.getenv("WIREBUDDY_PUBLIC_ORIGIN", "").strip()
 	trusted_proxies_raw = os.getenv("WIREBUDDY_TRUSTED_PROXIES", "").strip()
-	trusted_proxies = _parse_proxy_cidrs(trusted_proxies_raw) if trusted_proxies_raw else _parse_proxy_cidrs(
-		_DEFAULT_TRUSTED_PROXY_CIDRS
-	)
+	trusted_proxies = _parse_proxy_cidrs(trusted_proxies_raw) if trusted_proxies_raw else _parse_proxy_cidrs(_DEFAULT_TRUSTED_PROXY_CIDRS)
 
 	return Config(
 		base_dir=base_dir,
@@ -244,10 +242,3 @@ def get_config() -> Config:
 			if _config is None:  # Double-checked locking
 				_config = load_config()
 	return _config
-
-
-def reset_config() -> None:
-	"""Reset the cached config. Intended for tests only."""
-	global _config
-	with _config_lock:
-		_config = None

@@ -91,10 +91,7 @@ async def run_dns_ingestion(
 	writer_task = asyncio.create_task(writer.run(q), name="dns-ingest-writer")
 
 	# Monitor queue pressure periodically
-	monitor_task = asyncio.create_task(
-		_monitor_queue_pressure(q, stop_event),
-		name="dns-ingest-monitor"
-	)
+	monitor_task = asyncio.create_task(_monitor_queue_pressure(q, stop_event), name="dns-ingest-monitor")
 
 	try:
 		# FIRST_COMPLETED (not FIRST_EXCEPTION): both workers are designed to run
@@ -178,10 +175,7 @@ async def _monitor_queue_pressure(q: queue.Queue[TailItem], stop_event: asyncio.
 			if size >= threshold:
 				now = time.monotonic()
 				if now - last_warning > warning_interval:
-					_log.warning(
-						"DNS ingestion queue pressure high: %d/%d (%.1f%%)",
-						size, DNS_QUEUE_SIZE, 100 * size / DNS_QUEUE_SIZE
-					)
+					_log.warning("DNS ingestion queue pressure high: %d/%d (%.1f%%)", size, DNS_QUEUE_SIZE, 100 * size / DNS_QUEUE_SIZE)
 					last_warning = now
 			await asyncio.sleep(1.0)
 		except Exception:

@@ -73,6 +73,7 @@ class CheckState(enum.StrEnum):
 @dataclass(frozen=True)
 class StatusClientContext:
 	"""Resolved status-page client context."""
+
 	client_ip: ipaddress.IPv4Address | ipaddress.IPv6Address
 	matched_iface: sqlite3.Row | None
 	auth_ip_source: str
@@ -399,11 +400,7 @@ async def _resolve_dns_probe_cached(iface: sqlite3.Row | None) -> tuple[bool, st
 
 	async with _dns_probe_cache_lock:
 		now = time.monotonic()
-		if (
-			_dns_probe_cache
-			and _dns_probe_cache[3] == target_key
-			and (now - _dns_probe_cache[2]) < _STATUS_DNS_PROBE_CACHE_TTL
-		):
+		if _dns_probe_cache and _dns_probe_cache[3] == target_key and (now - _dns_probe_cache[2]) < _STATUS_DNS_PROBE_CACHE_TTL:
 			return _dns_probe_cache[0], _dns_probe_cache[1]
 
 		def _probe_all() -> tuple[bool, str]:
@@ -551,10 +548,7 @@ async def _dns_leak_indicator(
 	except OSError as exc:
 		_log.warning("DNS leak runtime verification failed: %s", exc)
 		if config_ok:
-			result = (CheckState.WARN, (
-				f"{config_detail}; runtime verification unavailable "
-				"(could not read recent DNS logs)"
-			))
+			result = (CheckState.WARN, (f"{config_detail}; runtime verification unavailable (could not read recent DNS logs)"))
 		else:
 			result = (CheckState.WARN, config_detail)
 		async with _dns_leak_cache_lock:
@@ -598,10 +592,7 @@ async def _dns_leak_indicator(
 
 	# No recent DNS queries found from this client
 	window_min = max(1, window // 60)
-	result = (CheckState.WARN, (
-		f"No DNS query from this client seen in WireBuddy logs "
-		f"within last {window_min} minutes"
-	))
+	result = (CheckState.WARN, (f"No DNS query from this client seen in WireBuddy logs within last {window_min} minutes"))
 	async with _dns_leak_cache_lock:
 		_dns_leak_cache[cache_key] = (result[0], result[1], now_mono)
 		if len(_dns_leak_cache) > _STATUS_DNS_LEAK_CACHE_MAX_SIZE:
@@ -638,6 +629,7 @@ def _format_speedtest_server(value: object) -> str:
 	except ValueError:
 		pass
 	return text
+
 
 def _latest_speedtest_check() -> dict[str, object]:
 	"""Build a health-card payload from the latest stored speedtest result."""
@@ -801,8 +793,7 @@ async def _resolve_status_client_context(
 			else:
 				# Proxy headers present but socket IP not in trusted list
 				_log.warning(
-					"/status: ignoring proxy headers from untrusted source %s "
-					"(set %s to trust this proxy)",
+					"/status: ignoring proxy headers from untrusted source %s (set %s to trust this proxy)",
 					socket_ip_obj,
 					_STATUS_TRUSTED_PROXY_CIDRS_ENV,
 				)
@@ -843,7 +834,10 @@ async def _run_status_health_checks(
 	node_outbound_ip: str | None = None
 	if matched_iface is not None and conn is not None:
 		node_outbound_ip = await asyncio.to_thread(
-			_find_node_outbound_ip, conn, matched_iface["name"], client_ip_obj,
+			_find_node_outbound_ip,
+			conn,
+			matched_iface["name"],
+			client_ip_obj,
 		)
 
 	last_speedtest, dns_running, dns_probe_result, leak_result, outbound_result = await asyncio.gather(

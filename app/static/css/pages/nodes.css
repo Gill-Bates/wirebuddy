@@ -167,7 +167,9 @@
 
 /* Compact square action buttons: 38px touch target, icon-only */
 .node-action-btn {
-    /* Accessibility: 38px touch target (UI-Lint CLICK_TARGET_MIN_SIZE_PX) */
+    /* 38px, and unlike the peers table this rule is not viewport-scoped, so it also
+       applies on mobile where the touch-target threshold is 44px. Below
+       CLICK_TARGET_MIN_SIZE_PX; the row width above is sized for 5 x 38px. */
     min-width: 38px;
     min-height: 38px;
     padding: 0.2rem 0.35rem;

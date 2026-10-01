@@ -28,6 +28,7 @@ _MAX_ALLOCATABLE_HOSTS = 65_536
 # Peer operations (read/query)
 # ---------------------------------------------------------------------------
 
+
 def get_all_peers(conn: sqlite3.Connection, interface: str | None = None) -> list[sqlite3.Row]:
 	"""Get all peers, optionally filtered by interface."""
 	if interface:
@@ -78,10 +79,7 @@ def update_peers_last_seen_batch(
 				last_handshake_at = MAX(COALESCE(last_handshake_at, 0), ?)
 			WHERE public_key = ?
 			""",
-			[
-				(handshake_at, client_ip, handshake_at, public_key)
-				for client_ip, handshake_at, public_key in updates
-			],
+			[(handshake_at, client_ip, handshake_at, public_key) for client_ip, handshake_at, public_key in updates],
 		)
 
 
@@ -93,9 +91,7 @@ def get_cumulative_transfer(
 	Returns a dict of ``{public_key: {cumulative_rx, cumulative_tx, last_wg_rx, last_wg_tx}}``.
 	"""
 	result: dict[str, dict[str, int]] = {}
-	for row in conn.execute(
-		"SELECT public_key, cumulative_rx, cumulative_tx, last_wg_rx, last_wg_tx FROM peers"
-	):
+	for row in conn.execute("SELECT public_key, cumulative_rx, cumulative_tx, last_wg_rx, last_wg_tx FROM peers"):
 		result[str(row["public_key"])] = {
 			"cumulative_rx": int(row["cumulative_rx"] or 0),
 			"cumulative_tx": int(row["cumulative_tx"] or 0),
@@ -130,13 +126,7 @@ def reset_peer_logs(conn: sqlite3.Connection) -> int:
 	"""
 	with transaction(conn):
 		cur = conn.execute(
-			"UPDATE peers SET "
-			"last_client_ip = NULL, "
-			"last_handshake_at = 0, "
-			"cumulative_rx = 0, "
-			"cumulative_tx = 0, "
-			"last_wg_rx = 0, "
-			"last_wg_tx = 0"
+			"UPDATE peers SET last_client_ip = NULL, last_handshake_at = 0, cumulative_rx = 0, cumulative_tx = 0, last_wg_rx = 0, last_wg_tx = 0"
 		)
 	count = cur.rowcount
 	_log.info("PEER_LOGS_RESET affected %d peer(s)", count)
@@ -151,9 +141,7 @@ def get_peer_metrics_stats(conn: sqlite3.Connection) -> dict[str, int | str]:
 		"SUM(cumulative_rx + cumulative_tx) AS total_transfer "
 		"FROM peers"
 	).fetchone()
-	db_row = conn.execute(
-		"SELECT * FROM pragma_database_list WHERE name = 'main'"
-	).fetchone()
+	db_row = conn.execute("SELECT * FROM pragma_database_list WHERE name = 'main'").fetchone()
 	db_path = ""
 	if db_row and len(db_row) >= 3 and db_row[2]:
 		db_path = str(db_row[2])
@@ -193,10 +181,7 @@ def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> str | Non
 		IntegrityError to retry allocation + insert when needed.
 	"""
 	if not conn.in_transaction:
-		_log.warning(
-			"allocate_peer_ip called without an active transaction; "
-			"use transaction(conn, immediate=True) to reduce allocation races"
-		)
+		_log.warning("allocate_peer_ip called without an active transaction; use transaction(conn, immediate=True) to reduce allocation races")
 
 	iface = get_interface(conn, interface_name)
 	if not iface:
@@ -292,6 +277,7 @@ def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
 	duplicating PRAGMA table_info introspection logic.
 	"""
 	from .sqlite_schema import _get_columns
+
 	return column in _get_columns(conn, table)
 
 
@@ -308,9 +294,7 @@ def get_dns_logging_disabled_ips(conn: sqlite3.Connection) -> set[str]:
 	if not _has_column(conn, "peers", "dns_logging_enabled"):
 		return set()
 
-	cur = conn.execute(
-		"SELECT peer_address FROM peers WHERE dns_logging_enabled = 0 AND peer_address IS NOT NULL"
-	)
+	cur = conn.execute("SELECT peer_address FROM peers WHERE dns_logging_enabled = 0 AND peer_address IS NOT NULL")
 
 	disabled_ips: set[str] = set()
 	for row in cur.fetchall():

@@ -56,12 +56,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..db.sqlite_runtime import close_all_connections, close_connection, connect, thread_connection
-from ..db.sqlite_settings import get_setting, set_setting
+from ..db.sqlite_settings import get_bool_setting, get_setting, set_setting
 from ..db.sqlite_users import get_user_by_id
 from ..utils.backup_lock import (
-    BackupLockBusyError,
-    acquire_backup_operation_lock,
-    acquire_restore_guard,
+	BackupLockBusyError,
+	acquire_backup_operation_lock,
+	acquire_restore_guard,
 )
 from ..utils.crypto import verify_password
 from ..utils.rate_limit import RATE_LIMIT_CRITICAL, limiter
@@ -159,19 +159,21 @@ _DB_INTEGRITY_CHECK_TIMEOUT_SECONDS = 30.0
 _BACKUP_HMAC_CONTEXT = b"wirebuddy-backup-hmac\0"
 MAX_BACKUP_EXTRACTED_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
 # Allowed top-level archive members for format v2. TSDB is matched by prefix.
-_ALLOWED_BACKUP_FILES_V2 = frozenset({
-	_BACKUP_MANIFEST_MEMBER,
-	_BACKUP_SCHEMA_MEMBER,
-	_BACKUP_DATA_MEMBER,
-	"data",
-	f"data/{_BACKUP_TSDB_DIRNAME}",
-})
+_ALLOWED_BACKUP_FILES_V2 = frozenset(
+	{
+		_BACKUP_MANIFEST_MEMBER,
+		_BACKUP_SCHEMA_MEMBER,
+		_BACKUP_DATA_MEMBER,
+		"data",
+		f"data/{_BACKUP_TSDB_DIRNAME}",
+	}
+)
 
 
 def _with_db[T](db_path: Path, fn: Callable[[sqlite3.Connection], _T]) -> _T:
-    """Open a short-lived SQLite connection, call fn(conn), close it."""
-    with thread_connection(db_path) as conn:
-        return fn(conn)
+	"""Open a short-lived SQLite connection, call fn(conn), close it."""
+	with thread_connection(db_path) as conn:
+		return fn(conn)
 
 
 async def _run_blocking[T](
@@ -189,6 +191,7 @@ async def _run_blocking[T](
 	try:
 		return await asyncio.wait_for(asyncio.shield(worker), timeout=timeout)
 	except TimeoutError as exc:
+
 		def _log_late_completion(task: asyncio.Task[_T]) -> None:
 			with suppress(asyncio.CancelledError):
 				err = task.exception()
@@ -225,23 +228,23 @@ async def _close_db_connection(conn: sqlite3.Connection | None) -> None:
 
 
 def _get_retention_days(conn: sqlite3.Connection) -> int:
-    """Read and validate backup retention days from DB, with safe fallback."""
-    raw = get_setting(conn, SETTING_BACKUP_RETENTION, str(BACKUP_RETENTION_DAYS))
-    try:
-        val = int(raw)
-        return val if val in BACKUP_RETENTION_OPTIONS else BACKUP_RETENTION_DAYS
-    except (ValueError, TypeError):
-        _log.warning("Invalid retention_days in DB: %r, using default", raw)
-        return BACKUP_RETENTION_DAYS
+	"""Read and validate backup retention days from DB, with safe fallback."""
+	raw = get_setting(conn, SETTING_BACKUP_RETENTION, str(BACKUP_RETENTION_DAYS))
+	try:
+		val = int(raw)
+		return val if val in BACKUP_RETENTION_OPTIONS else BACKUP_RETENTION_DAYS
+	except (ValueError, TypeError):
+		_log.warning("Invalid retention_days in DB: %r, using default", raw)
+		return BACKUP_RETENTION_DAYS
 
 
 def _get_backup_tsdb_range(conn: sqlite3.Connection) -> BackupMetricsRange:
-    """Read and validate the configured TSDB export range, with safe fallback."""
-    raw = get_setting(conn, SETTING_BACKUP_TSDB_RANGE, BACKUP_TSDB_RANGE_DEFAULT)
-    if raw not in BACKUP_TSDB_RANGE_OPTIONS:
-        _log.warning("Invalid backup TSDB range in DB: %r, using default", raw)
-        return cast(BackupMetricsRange, BACKUP_TSDB_RANGE_DEFAULT)
-    return cast(BackupMetricsRange, raw)
+	"""Read and validate the configured TSDB export range, with safe fallback."""
+	raw = get_setting(conn, SETTING_BACKUP_TSDB_RANGE, BACKUP_TSDB_RANGE_DEFAULT)
+	if raw not in BACKUP_TSDB_RANGE_OPTIONS:
+		_log.warning("Invalid backup TSDB range in DB: %r, using default", raw)
+		return cast(BackupMetricsRange, BACKUP_TSDB_RANGE_DEFAULT)
+	return cast(BackupMetricsRange, raw)
 
 
 def _get_backup_create_options(
@@ -262,7 +265,7 @@ def _get_backup_create_options(
 			tsdb_range=cast(BackupMetricsRange, requested_range),
 		)
 
-	include_tsdb = get_setting(conn, SETTING_BACKUP_INCLUDE_TSDB, "0") == "1"
+	include_tsdb = get_bool_setting(conn, SETTING_BACKUP_INCLUDE_TSDB)
 	return BackupCreateOptions(
 		include_tsdb_metrics=include_tsdb,
 		tsdb_range=_get_backup_tsdb_range(conn),
@@ -270,8 +273,8 @@ def _get_backup_create_options(
 
 
 def _iter_backup_files(backup_dir: Path) -> Iterator[Path]:
-    """Yield all backup archive paths in the backup directory."""
-    yield from backup_dir.glob("wirebuddy_backup_*.tar.gz")
+	"""Yield all backup archive paths in the backup directory."""
+	yield from backup_dir.glob("wirebuddy_backup_*.tar.gz")
 
 
 def _get_legacy_backup_hmac_secret(conn: sqlite3.Connection) -> str | None:
@@ -819,9 +822,7 @@ def _export_sqlite_data(db_path: Path) -> str:
 	try:
 		lines: list[str] = []
 		for table in _BACKUP_DATA_TABLES:
-			exists = conn.execute(
-				"SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
-			).fetchone()
+			exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
 			if exists is None:
 				continue
 			cursor = conn.execute(f'SELECT * FROM "{table}" LIMIT 0')
@@ -1008,12 +1009,14 @@ BackupMetricsRange = Literal["7d", "30d", "90d", "180d", "1y"]
 @dataclass(frozen=True, slots=True)
 class BackupCreateOptions:
 	"""Options controlling what a backup archive contains."""
+
 	include_tsdb_metrics: bool
 	tsdb_range: BackupMetricsRange
 
 
 class BackupManifest(BaseModel):
 	"""Backup archive manifest (member ``backup.json``)."""
+
 	format_version: Literal[2]
 	created_at: str
 	database: Literal["schema_and_data"]
@@ -1023,6 +1026,7 @@ class BackupManifest(BaseModel):
 
 class BackupSettingsResponse(BaseModel):
 	"""Backup settings response."""
+
 	scheduled_enabled: bool
 	last_backup_at: str | None
 	backup_count: int
@@ -1036,6 +1040,7 @@ class BackupSettingsResponse(BaseModel):
 
 class BackupSettingsUpdate(BaseModel):
 	"""Backup settings update payload."""
+
 	scheduled_enabled: bool | None = None
 	retention_days: Literal[1, 7, 14, 21, 30] | None = None
 	include_tsdb_metrics: bool | None = None
@@ -1066,8 +1071,9 @@ def get_backup_settings(
 	NOTE: sync – FastAPI threadpools this handler. Performs glob() + stat() ×
 	backup-file-count + shutil.disk_usage() – all blocking file-system calls.
 	"""
+
 	def _read(conn: sqlite3.Connection) -> BackupSettingsResponse:
-		enabled = get_setting(conn, SETTING_BACKUP_ENABLED, "0") == "1"
+		enabled = get_bool_setting(conn, SETTING_BACKUP_ENABLED)
 		last_backup = get_setting(conn, SETTING_BACKUP_LAST_AT)
 		retention = _get_retention_days(conn)
 
@@ -1113,6 +1119,7 @@ def update_backup_settings(
 	admin: sqlite3.Row = Depends(require_admin),
 ):
 	"""Update backup settings (enable/disable scheduled backups)."""
+
 	def _update(conn: sqlite3.Connection):
 		if payload.scheduled_enabled is not None:
 			set_setting(conn, SETTING_BACKUP_ENABLED, "1" if payload.scheduled_enabled else "0")
@@ -1216,7 +1223,9 @@ async def create_backup(
 
 					_log.info(
 						"Backup created: %s (%d bytes) by %s",
-						filename, file_size, admin["username"],
+						filename,
+						file_size,
+						admin["username"],
 					)
 				finally:
 					await _close_db_connection(conn)
@@ -1347,6 +1356,7 @@ async def restore_backup(  # async: uses await for file I/O
 					def _extract_tar() -> None:
 						with tarfile.open(tmp_upload_path, mode="r:gz") as tar:
 							_safe_tar_extract(tar, tmp_path)
+
 					try:
 						await _run_blocking(
 							_extract_tar,
@@ -1493,11 +1503,13 @@ def list_backups(
 	backups = []
 	for backup_file in sorted(_iter_backup_files(backup_dir), reverse=True):
 		file_stat = backup_file.stat()
-		backups.append(BackupListItem(
-			filename=backup_file.name,
-			size_bytes=file_stat.st_size,
-			created_at=datetime.fromtimestamp(file_stat.st_mtime, tz=UTC).isoformat(),
-		))
+		backups.append(
+			BackupListItem(
+				filename=backup_file.name,
+				size_bytes=file_stat.st_size,
+				created_at=datetime.fromtimestamp(file_stat.st_mtime, tz=UTC).isoformat(),
+			)
+		)
 
 	return OkResponse[list[BackupListItem]](data=backups)
 
@@ -1534,7 +1546,7 @@ def delete_scheduled_backup(
 
 def is_scheduled_backup_enabled(db_path: Path) -> bool:
 	"""Check if scheduled backups are enabled."""
-	return _with_db(db_path, lambda conn: get_setting(conn, SETTING_BACKUP_ENABLED, "0") == "1")
+	return _with_db(db_path, lambda conn: get_bool_setting(conn, SETTING_BACKUP_ENABLED))
 
 
 def run_scheduled_backup(data_dir: Path, db_path: Path, secret_key: str) -> dict:
@@ -1563,7 +1575,7 @@ def run_scheduled_backup(data_dir: Path, db_path: Path, secret_key: str) -> dict
 
 			if disk_free < min_required:
 				_log.error("Insufficient disk space for backup: %d bytes free, need %d", disk_free, min_required)
-				raise OSError(f"Insufficient disk space: {disk_free // (1024*1024)}MB free, need at least 100MB")
+				raise OSError(f"Insufficient disk space: {disk_free // (1024 * 1024)}MB free, need at least 100MB")
 
 			# Create backup archive
 			tmp_path, filename, file_size = _create_backup_archive(data_dir, db_path, secret_key, options)

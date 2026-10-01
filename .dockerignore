@@ -3,18 +3,18 @@
 .github/
 
 # Runtime tool state & local configuration
-.omc/
-.omx/
+**/.omc/
+**/.omx/
 .kiro/
 
 # Python
 .venv/
 venv/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.egg-info/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -23,9 +23,9 @@ tests/
 # IDE
 .idea/
 .vscode/
-*.codex
-*.swo
-*.swp
+**/*.codex
+**/*.swo
+**/*.swp
 
 # Project meta (linting & ignore rules)
 .gitignore
@@ -40,11 +40,11 @@ settings.env
 
 # Local data
 data/
-*.db
-*.sqlite
+**/*.db
+**/*.sqlite
 
 # Documentation
-*.md
+**/*.md
 !CHANGELOG.md
 docs/
 site/
@@ -54,6 +54,8 @@ tools/
 dist/
 build/
 *.whl
+.*tmp*.*
+*.zip
 
 # Docker (keep main Dockerfile only)
 docker-compose*.yml
@@ -62,11 +64,11 @@ Dockerfile.dev
 .dockerignore
 
 # Misc
-*.log
-*.bak
-*.tmp
-.DS_Store
-Thumbs.db
+**/*.log
+**/*.bak
+**/*.tmp
+**/.DS_Store
+**/Thumbs.db
 
 # Config
 setup.conf

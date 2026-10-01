@@ -9,9 +9,9 @@ Integrated Unbound DNS ad-blocker. Generates Unbound configuration, supervises t
 ## Key Files
 | File | Description |
 |------|-------------|
-| `__init__.py` | Aliases `blocklist`, `config`, `constants`, `process` and the `unbound` compatibility namespace |
+| `__init__.py` | Aliases `blocklist`, `config`, `constants`, `process` and the `unbound` compatibility namespace (`app.dns.unbound`, a `_UnboundNamespace` instance of `staticmethod` re-exports; new public functions must be added there to be reachable) |
 | `unbound_constants.py` | Blocklist registry (`BLOCKLIST_REGISTRY`), file path getters, `QUERY_LOG`, `run_exec`, atomic writes |
-| `unbound_config.py` | `generate_config` (threads/cache sizing, DoT upstreams, DNSSEC, listen IPs), write of config, per-client rules, peer tags, local-data overrides |
+| `unbound_config.py` | `generate_config` (threads/cache sizing, DoT upstreams, DNSSEC, listen IPs), `get_interface_ipv4_gateways`/`get_interface_ipv6_gateways` (listen addresses from interface rows), `write_config`, per-client rules, peer tags, local-data overrides |
 | `unbound_process.py` | Start/stop/restart/reload, PID handling, supervisor task, watchdog, listen-socket preflight, resolv.conf handling |
 | `unbound_blocklist.py` | SSRF-safe blocklist download, domain extraction, size caps, tag files, counts, blocked-domain cache |
 | `custom_rules.py` | AdGuard-compatible rule parser (`||domain^`, `@@` allow, wildcards, regex, client scopes) and evaluation |

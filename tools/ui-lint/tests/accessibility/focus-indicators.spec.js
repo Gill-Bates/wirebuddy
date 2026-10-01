@@ -126,3 +126,60 @@ test('focus indicator rule flags low-contrast rings and modal focus escape', asy
     const modalFinding = findings.find((finding) => finding.kind === 'modal-focus-escape');
     expect(modalFinding?.details.component).toBe('auth-modal');
 });
+
+
+test('a box-shadow-only focus ring clears the area gate the rule applies', async () => {
+    // Regression: the geometry derived its area from outlineWidth/outlineOffset only,
+    // so a Bootstrap-style `box-shadow: 0 0 0 .25rem` ring scored area 0 and always
+    // failed focus-indicators' `focusArea < minArea` check. Asserted against that
+    // exact formula rather than against "no findings", which would also pass when
+    // the rule never evaluates the control at all.
+    const { isFocusVisibleEnough } = await import('../../lib/focus-visibility.mjs');
+
+    const before = {
+        outlineStyle: 'none', outlineWidth: '0px', outlineColor: 'rgb(33, 37, 41)', outlineOffset: '0px',
+        boxShadow: 'none', boxShadowColor: '', borderColor: 'rgb(206, 212, 218)',
+        backgroundColor: 'rgb(255, 255, 255)', color: 'rgb(33, 37, 41)',
+    };
+    const after = { ...before, boxShadow: 'rgb(10, 88, 202) 0px 0px 0px 4px', boxShadowColor: 'rgb(10, 88, 202)' };
+    const elementRect = { width: 120, height: 38 };
+
+    const result = isFocusVisibleEnough({ before, after, elementRect, focusRect: { width: 128, height: 46 } });
+    const minArea = Math.max(16, Math.round(elementRect.width + elementRect.height));
+
+    expect(result.visible).toBe(true);
+    expect(result.focusRingArea).toBeGreaterThanOrEqual(minArea);
+    // Contrast must come from the shadow colour, not from the reported outlineColor.
+    expect(result.contrastRatio).toBeLessThan(10);
+    expect(result.sufficientContrast).toBe(true);
+});
+
+test('focus geometry derives the ring width from the box-shadow spread', async () => {
+    const { getFocusIndicatorGeometry } = await import('../../lib/focus-visibility.mjs');
+
+    const shadowOnly = getFocusIndicatorGeometry({
+        outlineWidth: '0px',
+        outlineOffset: '0px',
+        boxShadow: 'rgb(10, 88, 202) 0px 0px 0px 4px',
+    });
+    expect(shadowOnly.shadowSpread).toBe(4);
+    expect(shadowOnly.ringWidth).toBe(4);
+    expect(shadowOnly.area).toBeGreaterThan(0);
+
+    // Blur alone is a glow, not a ring.
+    expect(getFocusIndicatorGeometry({ boxShadow: 'rgb(10, 88, 202) 0px 0px 3px' }).ringWidth).toBe(0);
+
+    // An outline still wins when it is the thicker ring.
+    expect(getFocusIndicatorGeometry({ outlineWidth: '6px', boxShadow: 'rgb(0, 0, 0) 0px 0px 0px 2px' }).ringWidth).toBe(6);
+});
+
+test('focus geometry ignores drop and inset shadows and takes the widest ring in a list', async () => {
+    const { getFocusIndicatorGeometry } = await import('../../lib/focus-visibility.mjs');
+
+    // A soft drop shadow with an offset is not a focus ring.
+    expect(getFocusIndicatorGeometry({ boxShadow: 'rgba(0, 0, 0, 0.2) 0px 2px 8px 0px' }).ringWidth).toBe(0);
+
+    // A leading inset shadow must not hide or replace the real ring.
+    const mixed = 'rgb(0, 0, 0) 0px 0px 0px 9px inset, rgb(10, 88, 202) 0px 0px 0px 3px, rgba(0, 0, 0, 0.2) 0px 4px 12px 0px';
+    expect(getFocusIndicatorGeometry({ boxShadow: mixed }).ringWidth).toBe(3);
+});

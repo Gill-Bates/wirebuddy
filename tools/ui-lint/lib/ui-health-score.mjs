@@ -3,6 +3,7 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
+import { LAYOUT_SHIFT_THRESHOLD } from './config/layout/policies.mjs';
 import { buildDomHealthState } from './dom-health.mjs';
 import { scoreUxIssues } from './ux-severity.mjs';
 
@@ -50,7 +51,11 @@ function deriveUxIssues(result, domHealth) {
         issues.push({ kind: 'entity-overlap', severity: 'serious', text: 'entity layout overlap' });
     }
 
-    if ((metrics.layoutShift?.value || 0) > 0 || metrics.componentLayoutShift?.length) {
+    // Use the same budget the findings policy applies, so the score cannot call a
+    // shift "serious" that the findings engine deliberately ignores. The per-result
+    // threshold wins when the collector supplied one, matching layout-policy.
+    const layoutShiftBudget = metrics.layoutShift?.threshold ?? LAYOUT_SHIFT_THRESHOLD;
+    if ((metrics.layoutShift?.value || 0) > layoutShiftBudget || metrics.componentLayoutShift?.length) {
         issues.push({ kind: 'layout-shift', severity: 'serious', text: 'layout instability after render' });
     }
 

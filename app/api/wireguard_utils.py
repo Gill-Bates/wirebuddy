@@ -26,13 +26,11 @@ from fastapi import HTTPException
 from ..db.sqlite_settings import (
 	get_enabled_blocklists,
 )
-from ..models.peers import PeerPublic
 
 __all__ = [
 	"WgPeerDump",
 	"bytes_to_unit",
 	"derive_public_key",
-	"effective_peer_blocklist_ids",
 	"filter_peer_blocklist_ids",
 	"generate_keypair",
 	"generate_preshared_key",
@@ -40,15 +38,12 @@ __all__ = [
 	"is_valid_wg_key",
 	"parse_blocklist_ids",
 	"parse_wg_show_dump",
-	"row_to_public",
 	"run_wg_command",
-	"run_wg_command_stdin",
 	"safe_int",
 	"safe_row_get",
 	"select_display_unit",
 	"validate_interface_name",
 	"validate_keypair",
-	"validate_post_script",
 	"wg_set_peer_with_psk",
 ]
 
@@ -62,8 +57,8 @@ _IFACE_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,14}$")
 _WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
 
 _KB = 1024
-_MB = _KB ** 2
-_GB = _KB ** 3
+_MB = _KB**2
+_GB = _KB**3
 
 _log = logging.getLogger(__name__)
 
@@ -111,10 +106,7 @@ def validate_interface_name(name: str) -> str:
 		HTTPException: If name is invalid.
 	"""
 	if not _IFACE_NAME_RE.fullmatch(name):
-		raise HTTPException(
-			status_code=400,
-			detail="Invalid interface name. Must start with letter, max 15 chars, alphanumeric with - or _"
-		)
+		raise HTTPException(status_code=400, detail="Invalid interface name. Must start with letter, max 15 chars, alphanumeric with - or _")
 	return name
 
 
@@ -151,6 +143,7 @@ def safe_int(value: str, default: int = 0) -> int:
 @dataclass
 class WgPeerDump:
 	"""Structured representation of a peer line from `wg show all dump`."""
+
 	interface: str | None
 	public_key: str
 	endpoint_raw: str | None
@@ -217,15 +210,17 @@ def parse_wg_show_dump(stdout: str) -> list[WgPeerDump]:
 		if endpoint_raw == "(none)":
 			endpoint_raw = None
 
-		results.append(WgPeerDump(
-			interface=iface,
-			public_key=pubkey,
-			endpoint_raw=endpoint_raw,
-			client_ip=_extract_client_ip(endpoint_raw),
-			handshake_ts=safe_int(parts[offset + 4]),
-			rx=safe_int(parts[offset + 5]),
-			tx=safe_int(parts[offset + 6]),
-		))
+		results.append(
+			WgPeerDump(
+				interface=iface,
+				public_key=pubkey,
+				endpoint_raw=endpoint_raw,
+				client_ip=_extract_client_ip(endpoint_raw),
+				handshake_ts=safe_int(parts[offset + 4]),
+				rx=safe_int(parts[offset + 5]),
+				tx=safe_int(parts[offset + 6]),
+			)
+		)
 
 	return results
 
@@ -234,12 +229,9 @@ def get_enabled_blocklist_ids(conn: sqlite3.Connection) -> list[str]:
 	"""Return globally enabled blocklist IDs in registry order."""
 	# Lazy import avoids module-level import cycle with DNS constants in some startup paths.
 	from ..dns import constants as _dns_constants
+
 	enabled_urls = {u for u in get_enabled_blocklists(conn) if u}
-	return [
-		bid
-		for bid, meta in _dns_constants.BLOCKLIST_REGISTRY.items()
-		if meta.get("url") in enabled_urls
-	]
+	return [bid for bid, meta in _dns_constants.BLOCKLIST_REGISTRY.items() if meta.get("url") in enabled_urls]
 
 
 def filter_peer_blocklist_ids(
@@ -257,68 +249,6 @@ def filter_peer_blocklist_ids(
 			filtered.append(bid)
 			seen.add(bid)
 	return filtered
-
-
-def effective_peer_blocklist_ids(
-	peer_blocklist_ids: list[str] | None,
-	enabled_global_ids: list[str],
-) -> list[str]:
-	"""Compute effective blocklist IDs for a peer.
-
-	Semantics:
-	- peer_blocklist_ids=None → inherit all globally enabled blocklists
-	- peer_blocklist_ids=[]   → explicitly disable all blocklists for this peer
-	- peer_blocklist_ids=[...] → use specified subset (filtered to globally enabled)
-	"""
-	if peer_blocklist_ids is None:
-		return enabled_global_ids
-	return filter_peer_blocklist_ids(peer_blocklist_ids, enabled_global_ids) or []
-
-
-def validate_post_script(value: str | None, field: str) -> str | None:
-	"""Validate post-up/post-down script (max 2KB, printable ASCII only).
-
-	SECURITY: Only printable ASCII + newline/tab is allowed. This is intentionally
-	restricted to prevent encoding-based injection attacks. These scripts are passed
-	to wg-quick which executes them via shell. UTF-8 could enable homoglyph attacks
-	or exploit locale-dependent shell behavior.
-	"""
-	if not value:
-		return None
-	if len(value.encode("ascii", errors="ignore")) > 2048:
-		raise HTTPException(status_code=400, detail=f"{field} script too long (max 2048 bytes)")
-	if not all(32 <= ord(c) <= 126 or c in "\n\t" for c in value):
-		raise HTTPException(status_code=400, detail=f"{field} script must be printable ASCII")
-	return value.strip()
-
-
-def row_to_public(row: sqlite3.Row, enabled_blocklist_ids: list[str] | None = None) -> PeerPublic:
-	"""Convert DB row to PeerPublic model."""
-	blocklist_ids = None
-	raw_blocklist_ids = safe_row_get(row, "blocklist_ids")
-	if raw_blocklist_ids:
-		try:
-			blocklist_ids = json.loads(raw_blocklist_ids)
-		except (json.JSONDecodeError, TypeError):
-			blocklist_ids = None
-
-	if enabled_blocklist_ids is not None:
-		blocklist_ids = filter_peer_blocklist_ids(blocklist_ids, enabled_blocklist_ids)
-
-	return PeerPublic(
-		id=safe_row_get(row, "id"),
-		name=safe_row_get(row, "name", ""),
-		interface_name=safe_row_get(row, "interface_name", ""),
-		public_key=safe_row_get(row, "public_key", ""),
-		peer_address=safe_row_get(row, "peer_address"),
-		allowed_ips=safe_row_get(row, "allowed_ips", ""),
-		persistent_keepalive=safe_row_get(row, "persistent_keepalive") or None,
-		use_adblocker=bool(safe_row_get(row, "use_adblocker", 0)),
-		blocklist_ids=blocklist_ids,
-		client_isolation=bool(safe_row_get(row, "client_isolation", 0)),
-		created_at=safe_row_get(row, "created_at"),
-		updated_at=safe_row_get(row, "updated_at"),
-	)
 
 
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
@@ -393,11 +323,6 @@ async def run_wg_command(
 	)
 
 
-async def run_wg_command_stdin(stdin_data: str, *args: str, timeout: int = WG_COMMAND_TIMEOUT) -> tuple[int, str, str]:
-	"""Backward-compatible wrapper — prefer ``run_wg_command(..., stdin_data=...)``."""
-	return await run_wg_command(*args, stdin_data=stdin_data, timeout=timeout)
-
-
 async def _run_wg_or_raise(
 	*args: str,
 	stdin_data: str | None = None,
@@ -427,6 +352,7 @@ async def wg_set_peer_with_psk(
 	than reading from the actual stdin pipe. This function uses a secure
 	temporary file with restrictive permissions instead.
 	"""
+
 	def _write_psk_temp(key: str) -> str:
 		fd, path = tempfile.mkstemp(prefix="wg_psk_", suffix=".key")
 		try:
@@ -443,10 +369,15 @@ async def wg_set_peer_with_psk(
 	try:
 		tmp_path = await asyncio.to_thread(_write_psk_temp, preshared_key)
 		return await run_wg_command(
-			"wg", "set", interface,
-			"peer", public_key,
-			"allowed-ips", allowed_ips,
-			"preshared-key", tmp_path,
+			"wg",
+			"set",
+			interface,
+			"peer",
+			public_key,
+			"allowed-ips",
+			allowed_ips,
+			"preshared-key",
+			tmp_path,
 			timeout=timeout,
 		)
 	finally:

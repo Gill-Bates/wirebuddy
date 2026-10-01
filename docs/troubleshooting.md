@@ -39,10 +39,10 @@ capability set of `NET_ADMIN`, `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN`,
 and `DAC_OVERRIDE`. Dropping any of the last five leaves the web UI running but
 breaks DNS — see [DNS does not resolve or block](#dns-does-not-resolve-or-block).
 
-Its health endpoint is `http://127.0.0.1:8000/health` unless `WIREBUDDY_PORT`
-changes the listener. Pass that variable into the container, not just into the
-Compose healthcheck, or the probe and the application can target different
-ports and the container stays permanently unhealthy.
+Its health check probes `/ready` on the scheme and port the container actually
+started with; the container records it in `/run/wirebuddy/listener.env`.
+An unhealthy container therefore points to the application, not to a port or
+HTTPS mismatch: check `docker compose logs` and `/ready`'s `errors` list.
 
 ## Web UI or reverse proxy
 

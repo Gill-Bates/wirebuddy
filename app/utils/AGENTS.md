@@ -3,14 +3,14 @@
 # utils
 
 ## Purpose
-Cross-cutting helpers shared by the API, DB, node, runtime and tasks layers: configuration, crypto and secrets, auth helpers (TOTP, passkeys), TLS material, GeoIP and conntrack traffic analysis, subprocess and scheduling primitives, cross-process locks, migrations and small formatting/time helpers.
+Cross-cutting helpers shared by the API, DB, DNS, node and task layers: configuration, crypto and secrets, auth helpers (TOTP, passkeys), TLS material, GeoIP and conntrack traffic analysis, subprocess and scheduling primitives, cross-process locks, migrations and small formatting/time helpers.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `config.py` | `Config`, `load_dotenv`, `load_config`, `get_config`, `reset_config`: environment-driven settings and defaults |
+| `config.py` | `Config`, `load_dotenv`, `load_config`, `get_config`: environment-driven settings and defaults |
 | `deps.py` | FastAPI dependency helpers (`AppState`, `get_conn`, `get_tsdb_dir`, `get_dns_dir`, `get_config`) |
-| `vault.py` | Fernet encryption of secrets at rest (private/preshared keys), pepper handling, key rotation |
+| `vault.py` | Fernet encryption of secrets at rest (private/preshared keys), pepper handling |
 | `crypto.py` | Password hashing/verification, session token generation, hashing and expiry |
 | `otp.py` | TOTP secrets, provisioning URIs, verification, recovery codes |
 | `passkeys.py` | WebAuthn registration/authentication with SQLite-backed challenges |
@@ -22,6 +22,7 @@ Cross-cutting helpers shared by the API, DB, node, runtime and tasks layers: con
 | `migration.py` | Versioned schema migrations (`schema_version` table) |
 | `backup_lock.py` | Cross-process POSIX advisory locks for backup/restore |
 | `scheduler.py` | Lightweight async periodic-job scheduler (`Scheduler`, `JobStatus`) |
+| `binaries.py` | `first_executable(candidates)`: first executable regular file from a fixed candidate list, used to resolve `wg`/`ip`/`iptables` without PATH lookup |
 | `subprocess.py` | `run_command` with timeout, output limits and graceful shutdown; `ProcResult` |
 | `speedtest_window.py` | Night-window timing shared by master and nodes |
 | `rate_limit.py` | slowapi limiter configuration and key function |
@@ -39,8 +40,8 @@ Cross-cutting helpers shared by the API, DB, node, runtime and tasks layers: con
 - Use tabs for indentation and keep the standard file header block (path, copyright, SPDX MIT).
 - Modules here should stay low-level: avoid importing from `app/api` (only `acme_http.py` does so today, lazily).
 - Security-critical files (`vault.py`, `crypto.py`, `node_token.py`, `passkeys.py`, `tls.py`, `backup_lock.py`): never log secrets, keep constant-time comparisons and restrictive file permissions.
-- Use `utils/time` (timezone-aware UTC) instead of naive `datetime`, and `utils/subprocess` instead of raw subprocess calls.
-- `version.py` is currently being reworked for the `pyproject.toml` migration (VERSION file removed); check git status before editing.
+- Use `utils/time` (timezone-aware UTC) instead of naive `datetime`, `utils/subprocess` instead of raw subprocess calls, and `utils/binaries.first_executable` instead of PATH lookup for trusted binaries.
+- `version.py` resolves the version from `pyproject.toml` (the single source of truth), then installed distribution metadata, then `'dev'`; there is no VERSION file.
 
 ### Testing Requirements
 - Tests live in `/opt/wirebuddy/tests` (pytest, run `pytest` from the repo root). Existing: `test_utils_hardening.py`, `test_coerce.py`, `test_time.py`, `test_subprocess_limits.py`, `test_tls_material.py`, `test_user_security.py`, `test_login_lockout.py`.

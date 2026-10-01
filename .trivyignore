@@ -1,6 +1,6 @@
 # .trivyignore
 #
-# CVEs accepted for the published fetchly image, consumed by the Trivy scan in
+# CVEs accepted for the published WireBuddy image, consumed by the Trivy scan in
 # .github/workflows/docker-build.yml. The scan already passes --ignore-unfixed,
 # so every entry here is a finding that HAS a fix available and is accepted
 # anyway. Each entry needs a reason and an `exp:` date, after which Trivy

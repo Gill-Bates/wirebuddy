@@ -40,6 +40,7 @@ _USER_LIST_COLUMNS = """
 
 class UpdateResult(enum.Enum):
 	"""Result of user update operations."""
+
 	SUCCESS = "success"
 	NOT_FOUND = "not_found"
 	CONFLICT = "conflict"
@@ -53,6 +54,7 @@ class LastAdminError(Exception):
 # ---------------------------------------------------------------------------
 # OTP Secret Encryption Helpers
 # ---------------------------------------------------------------------------
+
 
 def _encrypt_otp_secret(secret: str, pepper: str | None = None) -> str:
 	"""Encrypt OTP secret for storage at rest."""
@@ -69,6 +71,7 @@ def decrypt_otp_secret(encrypted: str | None, pepper: str | None = None) -> str 
 # ---------------------------------------------------------------------------
 # User operations
 # ---------------------------------------------------------------------------
+
 
 def get_user_by_username(conn: sqlite3.Connection, username: str) -> sqlite3.Row | None:
 	"""Get a user by username (case-insensitive).
@@ -210,6 +213,12 @@ def update_user(
 				# instead of here — this is a defensive backstop for any
 				# future caller that updates the password through this path.
 				delete_user_tokens(conn, user_id)
+			if is_active is not None and not is_active:
+				# get_user_by_token() filters on is_active, so a token only looks
+				# dead while the account is disabled. Without this it regains
+				# validity the moment the account is re-enabled, which would make
+				# "deactivate" a pause rather than a logout.
+				delete_user_tokens(conn, user_id)
 			return UpdateResult.SUCCESS
 	except sqlite3.IntegrityError:
 		return UpdateResult.CONFLICT
@@ -252,7 +261,8 @@ def set_user_otp_secret(conn: sqlite3.Connection, user_id: int, otp_secret: str)
 		cur = conn.execute(
 			"""
 			UPDATE users
-			SET otp_secret = ?, otp_enabled = 0, otp_recovery_codes = NULL
+			SET otp_secret = ?, otp_enabled = 0, otp_recovery_codes = NULL,
+				otp_last_used_step = NULL
 			WHERE id = ?
 			""",
 			(encrypted_secret, user_id),
@@ -260,14 +270,35 @@ def set_user_otp_secret(conn: sqlite3.Connection, user_id: int, otp_secret: str)
 		return cur.rowcount > 0
 
 
+def consume_otp_step(conn: sqlite3.Connection, user_id: int, step: int) -> bool:
+	"""Atomically record a TOTP step; False if it is not newer than the last one.
+
+	A single conditional UPDATE keeps concurrent replays of the same code from
+	both succeeding.
+	"""
+	with transaction(conn):
+		cur = conn.execute(
+			"""
+			UPDATE users
+			SET otp_last_used_step = ?
+			WHERE id = ? AND (otp_last_used_step IS NULL OR otp_last_used_step < ?)
+			""",
+			(step, user_id, step),
+		)
+		return cur.rowcount > 0
+
+
 def confirm_user_otp(conn: sqlite3.Connection, user_id: int, otp_recovery_codes: str) -> bool:
-	"""Enable OTP and persist fresh recovery codes."""
+	"""Enable OTP and persist fresh recovery codes; False if already enabled or no secret.
+
+	The otp_enabled = 0 guard keeps two concurrent confirmations from both winning.
+	"""
 	with transaction(conn):
 		cur = conn.execute(
 			"""
 			UPDATE users
 			SET otp_enabled = 1, otp_recovery_codes = ?
-			WHERE id = ? AND otp_secret IS NOT NULL
+			WHERE id = ? AND otp_secret IS NOT NULL AND otp_enabled = 0
 			""",
 			(otp_recovery_codes, user_id),
 		)
@@ -300,7 +331,8 @@ def disable_user_otp(conn: sqlite3.Connection, user_id: int) -> bool:
 		cur = conn.execute(
 			"""
 			UPDATE users
-			SET otp_enabled = 0, otp_secret = NULL, otp_recovery_codes = NULL
+			SET otp_enabled = 0, otp_secret = NULL, otp_recovery_codes = NULL,
+				otp_last_used_step = NULL
 			WHERE id = ?
 			""",
 			(user_id,),

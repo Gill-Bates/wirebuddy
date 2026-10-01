@@ -37,6 +37,7 @@ function inferScope(name) {
     if (name.includes('settings')) return 'settings';
     if (name.includes('about')) return 'about';
     if (name.includes('peers')) return 'peers';
+    if (name.includes('traffic')) return 'traffic';
     if (name.includes('login')) return 'auth';
     return 'general';
 }

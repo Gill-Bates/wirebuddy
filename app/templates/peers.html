@@ -317,7 +317,11 @@
             <div class="peers-empty-state text-center py-5" id="peers-empty-state">
                 <span class="material-icons text-muted mb-3 peers-empty-state-icon-xl" aria-hidden="true">hub</span>
                 <h3 class="h5 mb-2">No peers configured yet</h3>
+                {% if user['is_admin'] %}
                 <p class="text-muted mb-0">Click <strong>Add Peer</strong> to create your first peer.</p>
+                {% else %}
+                <p class="text-muted mb-0">Contact an administrator to add one.</p>
+                {% endif %}
             </div>
             {% endif %}
 

@@ -33,6 +33,7 @@ __all__ = ["OffsetTracker", "TailItem", "TailState", "UnboundLogTailer"]
 @dataclass(slots=True)
 class TailItem:
 	"""One tailed log line with the durable offset after that line."""
+
 	line: str
 	inode: int
 	end_offset: int
@@ -41,6 +42,7 @@ class TailItem:
 @dataclass(slots=True)
 class TailState:
 	"""Persistent state for log tailer."""
+
 	inode: int
 	offset: int
 
@@ -71,7 +73,7 @@ class OffsetTracker:
 			return
 
 		try:
-			raw = json.loads(self.offset_path.read_text(encoding='utf-8'))
+			raw = json.loads(self.offset_path.read_text(encoding="utf-8"))
 		except Exception as e:
 			_log.warning("DNS_TAIL failed to load offset: %s", e)
 			return
@@ -91,8 +93,8 @@ class OffsetTracker:
 			_log.warning("DNS_TAIL offset file is not a JSON object, resetting to 0/0")
 			return TailState(inode=0, offset=0)
 
-		inode_raw = raw.get('inode', 0)
-		offset_raw = raw.get('offset', 0)
+		inode_raw = raw.get("inode", 0)
+		offset_raw = raw.get("offset", 0)
 
 		# bool is a subclass of int in Python; explicitly reject it here too.
 		inode_valid = isinstance(inode_raw, int) and not isinstance(inode_raw, bool) and inode_raw >= 0
@@ -139,10 +141,10 @@ class OffsetTracker:
 			save_seq = self._save_seq
 
 		parent = self.offset_path.parent
-		tmp_path = self.offset_path.with_suffix('.tmp')
+		tmp_path = self.offset_path.with_suffix(".tmp")
 		try:
 			parent.mkdir(parents=True, exist_ok=True)
-			data = {'inode': state.inode, 'offset': state.offset}
+			data = {"inode": state.inode, "offset": state.offset}
 			content = json.dumps(data)
 
 			# fsync the file before the rename, then fsync the directory after,
@@ -152,7 +154,7 @@ class OffsetTracker:
 			# truncated/corrupt offset file instead of just a stale one.
 			fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 			try:
-				with os.fdopen(fd, 'w', encoding='utf-8') as f:
+				with os.fdopen(fd, "w", encoding="utf-8") as f:
 					fd = -1
 					f.write(content)
 					f.flush()
@@ -236,7 +238,7 @@ class UnboundLogTailer:
 	def _open_at(self, offset: int) -> bool:
 		"""Open log_path fresh, seek to offset, and adopt it as the active file."""
 		try:
-			f = self.log_path.open('r', encoding='utf-8', errors='replace')
+			f = self.log_path.open("r", encoding="utf-8", errors="replace")
 			inode = os.fstat(f.fileno()).st_ino
 		except OSError:
 			return False
@@ -330,7 +332,7 @@ class UnboundLogTailer:
 				line = f.readline()
 				if not line:
 					break  # EOF
-				if not line.endswith('\n') and f.tell() >= current_size:
+				if not line.endswith("\n") and f.tell() >= current_size:
 					f.seek(before)
 					break
 				end_offset = f.tell()

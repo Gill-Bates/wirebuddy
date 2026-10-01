@@ -240,12 +240,25 @@ If you see the "Low disk space" warning:
 
 ### Restore Fails with HMAC Mismatch
 
-The backup was created by a different WireBuddy instance. Each installation has a unique signing key generated on first run.
+The backup signature does not match the `WIREBUDDY_SECRET_KEY` configured on this
+instance. Backups are signed with a key derived from that value, so a mismatch
+means the key differs from the one in use when the backup was created.
 
 **Solutions:**
 
-1. Use a backup from the same installation
-2. For migration: manually export/import peers and interfaces through the UI
+1. Configure the target instance with the same `WIREBUDDY_SECRET_KEY` that
+   produced the backup. This is also what makes migration to a replacement
+   installation work.
+2. Check that the archive was not modified after download — the HMAC covers the
+   whole file, and the signature is embedded in the filename.
+3. For a legacy backup from an older release, restore it on the instance that
+   created it, or on an instance whose secret key matches the embedded database
+   snapshot.
+
+!!! warning "Do not work around it"
+    A restore that fails verification must not be forced. Restoring an unverified
+    archive would apply unauthenticated configuration, including keys and user
+    records.
 
 ### Application Doesn't Restart After Restore
 

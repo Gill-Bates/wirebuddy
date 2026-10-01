@@ -30,7 +30,7 @@ WireBuddy's stylesheet tree. A token-driven design system is loaded globally by 
 - Both light and dark themes (Bootstrap `data-bs-theme`) must work.
 
 ### Testing Requirements
-`node tools/ui-lint/run-ui-lint.mjs` (rules under `tools/ui-lint/rules/`: accessibility, component, layout, mobile).
+`node tools/ui-lint/run-ui-lint.mjs` (rules under `tools/ui-lint/rules/`: accessibility, component, layout, mobile). Source-level CSS lint (not a CI gate yet): `npm run lint` in `tools/stylelint/`.
 
 ### Common Patterns
 - `wb-` prefix for design-system classes; `is-*` for state classes.

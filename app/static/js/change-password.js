@@ -135,8 +135,8 @@
             submitBtn.innerHTML = '<span class="material-icons align-middle me-1">check_circle</span> Password changed – redirecting...';
 
             const overlay = document.createElement('div');
-            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;color:white;font-size:1.1rem;';
-            overlay.innerHTML = '<div style="text-align:center;"><div class="spinner-border mb-3"></div><div>Password changed. Redirecting to login...</div></div>';
+            overlay.className = 'wb-redirect-overlay';
+            overlay.innerHTML = '<div class="wb-redirect-overlay-body"><div class="spinner-border mb-3"></div><div>Password changed. Redirecting to login...</div></div>';
             document.body.appendChild(overlay);
 
             window.setTimeout(() => { window.location.replace('/login'); }, 1500);

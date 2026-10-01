@@ -18,7 +18,7 @@ Per-engine browser launcher adapters and the browser capability matrix (which of
 
 ### Working In This Directory
 
-- `runtime/browser/launcher.mjs` duplicates `BrowserAdapters`; keep both in sync.
+- `runtime/browser/launcher.mjs` re-exports `BrowserAdapters` / `getBrowserLauncher` from here; this file is the single definition.
 
 ### Testing Requirements
 

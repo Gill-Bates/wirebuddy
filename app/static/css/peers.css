@@ -244,7 +244,9 @@
 
     /* Compact action buttons for table rows (v1.3.3 style) */
     .peers-table td.peer-actions-cell .btn {
-        /* Accessibility: 38px touch target (UI-Lint CLICK_TARGET_MIN_SIZE_PX) */
+        /* 38px: compact desktop-only action size. Above the viewport-aware desktop
+           threshold (32px) the UI lint applies here, but below the flat 44px
+           CLICK_TARGET_MIN_SIZE_PX. Do not cite that constant as satisfied. */
         min-width: 38px;
         min-height: 38px;
         padding: 0.2rem 0.35rem;

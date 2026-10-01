@@ -11,7 +11,7 @@ Stable screenshot capture.
 | File | Description |
 |---|---|
 | `capture-stable.mjs` | `captureScreenshot`, `prepareStableViewport`, `captureStablePair` |
-| `screenshot-normalizer.mjs` | `sanitize`, `ensureDir`, `buildScreenshotPath` |
+| `screenshot-normalizer.mjs` | `sanitize`, `ensureDir` |
 
 ## For AI Agents
 

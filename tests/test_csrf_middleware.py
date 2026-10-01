@@ -138,7 +138,10 @@ def test_exempt_login_endpoints_skip_the_check_even_with_a_session(app):
 
 def test_form_encoded_token_is_accepted(app):
 	response = _send(
-		app, "POST", "/ui/x", cookies=SESSION,
+		app,
+		"POST",
+		"/ui/x",
+		cookies=SESSION,
 		headers={"Origin": BASE, "Content-Type": "application/x-www-form-urlencoded"},
 		content=f"a=1&csrf_token={TOKEN}",
 	)

@@ -157,30 +157,30 @@ Configure WireGuard interfaces with both IPv4 and IPv6:
 
 **Settings → WireGuard → Interfaces → [Interface Name]**
 
+```text
+IPv4 Address: 10.13.13.1/24
+IPv6 Address: fd13:13:13::1/64
 ```
-Address: 10.8.0.1/24
-IPv6 Address: fd42::1/64
-DNS Servers: <IPv4> and <IPv6> addresses
-```
+
+The resolver then listens on both gateway addresses of that interface.
 
 ### Client Dual-Stack
 
-Peers can use both IPv4 and IPv6:
+Peers on a dual-stack interface receive both addresses in the generated client
+configuration — the tunnel addresses under `[Interface]`, the routes under
+`[Peer]`:
 
 ```ini
+[Interface]
+Address = 10.13.13.2/32, fd13:13:13::2/128
+DNS = 10.13.13.1, fd13:13:13::1
+
 [Peer]
 AllowedIPs = 0.0.0.0/0, ::/0
-Address = 10.8.0.2/32, fd42::2/128
 ```
 
-### Dual-Stack Resolution
-
-The DNS resolver handles:
-
-- IPv4 (A) record queries over IPv6 upstreams
-- IPv6 (AAAA) record queries over IPv4 upstreams
-- Happy eyeballs (RFC 8305) for client connections
-- Fallback to IPv4 if IPv6 is unavailable
+Leave the interface's IPv6 field empty if the host does not route IPv6; peers are
+then IPv4-only.
 
 ## DNSSEC Configuration
 
@@ -220,14 +220,14 @@ Look for `ad` (Authenticated Data) flag in the response.
 
 **Settings → Logs → DNS Log Retention**
 
-| Option | Storage Impact |
-|--------|----------------|
-| No Logs | Minimal - queries not stored |
-| 7 Days | ~50-100 MB per active client |
-| 30 Days | ~200-400 MB per active client |
-| 90 Days | ~600 MB-1.2 GB per active client |
-| 180 Days | ~1.2-2.4 GB per active client |
-| 1 Year | ~2.4-5 GB per active client |
+Options are **No Logs**, 7, 30, 90, 180, or 365 days. The default is 7 days.
+
+Raw query logs dominate the footprint and scale with query volume, not with time
+alone, so the same retention window costs very differently across deployments.
+**Settings → Logs** reports the actual size on disk for this instance — use that
+figure rather than an estimate when sizing a volume. Per-peer query logging can be
+switched off for high-volume devices, and the TSDB trend aggregates are small
+regardless of raw-log retention.
 
 ### Purge Logs
 

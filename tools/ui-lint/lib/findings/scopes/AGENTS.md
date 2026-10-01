@@ -11,7 +11,7 @@ Predicates deciding whether an audit entry belongs to a page scope (route/device
 | File | Description |
 |---|---|
 | `dashboard.mjs` | `isDashboardScope`, `isMobileDashboardScope` |
-| `status.mjs` | `isStatusScope`, `isExpectedStatusUnavailable` |
+| `status.mjs` | `isExpectedStatusUnavailable` |
 | `users.mjs` | `isUsersScope`, `isMobileUsersScope` |
 
 ## For AI Agents

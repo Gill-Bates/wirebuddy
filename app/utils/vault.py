@@ -258,29 +258,6 @@ def decrypt(stored: str, pepper: str) -> str:
 		raise ValueError("Cannot decrypt secret — wrong WIREBUDDY_SECRET_KEY?") from exc
 
 
-def rotate(
-	stored: str | None,
-	old_pepper: str,
-	new_pepper: str,
-	*,
-	allow_plaintext: bool = False,
-) -> str | None:
-	"""Re-encrypt a stored value with a new pepper.
-
-	Already-encrypted values are decrypted with ``old_pepper`` first.
-	Plaintext input is only accepted when ``allow_plaintext`` is enabled.
-	"""
-	if stored is None or stored == "":
-		return stored
-	if is_vault_payload(stored):
-		plaintext = decrypt(stored, old_pepper)
-	elif allow_plaintext:
-		plaintext = stored
-	else:
-		raise ValueError("Expected encrypted vault value during rotation")
-	return encrypt(plaintext, new_pepper)
-
-
 def is_encrypted(value: str | None) -> bool:
 	"""Check whether a value is a syntactically valid vault payload."""
 	if not is_vault_payload(value):
@@ -290,8 +267,3 @@ def is_encrypted(value: str | None) -> bool:
 	except ValueError:
 		return False
 	return True
-
-
-def clear_cached_keys() -> None:
-	"""Clear cached derived master keys, e.g. during rotation or shutdown."""
-	_derive_master_key_v2.cache_clear()

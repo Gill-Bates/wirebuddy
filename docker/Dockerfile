@@ -45,6 +45,7 @@ ADD --keep-git-dir=true https://git.zx2c4.com/wireguard-tools.git#${WIREGUARD_TO
 # binary ships with no version string despite --keep-git-dir=true above.
 RUN set -eux; \
     apt-get update; \
+    apt-get upgrade -y; \
     apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
@@ -98,7 +99,7 @@ COPY docker/apt-no-distro-wireguard.pref /etc/apt/preferences.d/no-distro-wiregu
 
 # Install runtime dependencies and assert that the APT pin is effective.
 RUN set -eux; \
-    apt-get update; \
+    apt-get update && apt-get upgrade -y; \
     for package in wireguard wireguard-tools wireguard-dkms; do \
         candidate="$(apt-cache policy "$package" | awk '/Candidate:/ { print $2 }')"; \
         test "$candidate" = "(none)"; \
@@ -108,7 +109,6 @@ RUN set -eux; \
     # that moves the OS packages forward - and APT_CACHE_DATE above is what stops
     # a cached layer from skipping it.
     echo "apt cache date: ${APT_CACHE_DATE:-unset}"; \
-    apt-get upgrade -y; \
     apt-get install -y --no-install-recommends \
         bash \
         iptables \
@@ -188,14 +188,12 @@ EXPOSE 51820/udp
 EXPOSE 53/udp
 EXPOSE 53/tcp
 
-# Health check using curl (faster than Python). Uses WIREBUDDY_PORT so a
-# port override (env var or a compose file that doesn't override
-# HEALTHCHECK) still probes the port uvicorn actually bound. Does not know
-# about a gui_port persisted in the database without WIREBUDDY_PORT set;
-# compose files pin WIREBUDDY_PORT precisely to avoid that gap.
+# Health check using curl (faster than Python). healthcheck.sh probes /ready
+# on the scheme, address and port this start actually serves, as recorded by
+# app.server, so it follows gui_port, WIREBUDDY_PORT and built-in HTTPS alike.
+COPY --chmod=0755 docker/healthcheck.sh /usr/local/bin/wirebuddy-healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
-    CMD curl --fail --silent --show-error --max-time 5 \
-        "http://127.0.0.1:${WIREBUDDY_PORT:-8000}/api/system/status" || exit 1
+    CMD ["/usr/local/bin/wirebuddy-healthcheck"]
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

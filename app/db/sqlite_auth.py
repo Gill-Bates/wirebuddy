@@ -26,6 +26,7 @@ _log = logging.getLogger(__name__)
 # Token operations
 # ---------------------------------------------------------------------------
 
+
 def create_auth_token(
 	conn: sqlite3.Connection,
 	user_id: int,
@@ -118,6 +119,7 @@ def delete_user_tokens(conn: sqlite3.Connection, user_id: int) -> None:
 # ---------------------------------------------------------------------------
 # Login attempt tracking (exponential backoff)
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class _LockoutPolicy:

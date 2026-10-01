@@ -171,9 +171,7 @@ def get_all_nodes(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 def get_node_by_api_secret(conn: sqlite3.Connection, secret_hash: str) -> sqlite3.Row | None:
 	"""Look up a node by its hashed API secret (for authentication)."""
-	return conn.execute(
-		"SELECT * FROM nodes WHERE api_secret_hash = ?", (secret_hash,)
-	).fetchone()
+	return conn.execute("SELECT * FROM nodes WHERE api_secret_hash = ?", (secret_hash,)).fetchone()
 
 
 def update_node(
@@ -257,6 +255,8 @@ def delete_node(conn: sqlite3.Connection, node_id: str) -> int | None:
 		conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
 		_log.info("Deleted node=%s (assigned_peers=%d)", node_id, assigned_peer_count)
 		return assigned_peer_count
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Enrollment
 # ─────────────────────────────────────────────────────────────────────────────
@@ -743,10 +743,7 @@ def bump_config_version_for_all_nodes(conn: sqlite3.Connection) -> dict[str, str
 	Returns {node_id: new_version} for the affected nodes.
 	"""
 	with transaction(conn, immediate=True):
-		node_ids = [
-			row["id"]
-			for row in conn.execute("SELECT id FROM nodes WHERE tunnel_peer_id IS NOT NULL")
-		]
+		node_ids = [row["id"] for row in conn.execute("SELECT id FROM nodes WHERE tunnel_peer_id IS NOT NULL")]
 		return {node_id: bump_node_config_version(conn, node_id) for node_id in node_ids}
 
 
@@ -771,9 +768,7 @@ def _build_interfaces_config(
 	interfaces_map = {row["name"]: row for row in list_interfaces(conn)}
 	tunnel_interface = tunnel_peer["interface"] if tunnel_peer else None
 
-	ni_rows = conn.execute(
-		"SELECT * FROM node_interfaces WHERE node_id = ?", (node_id,)
-	).fetchall()
+	ni_rows = conn.execute("SELECT * FROM node_interfaces WHERE node_id = ?", (node_id,)).fetchall()
 	interfaces: list[dict[str, Any]] = []
 	for ni in ni_rows:
 		iface = interfaces_map.get(ni["interface_name"])
@@ -789,17 +784,19 @@ def _build_interfaces_config(
 				interface_address = address_parts[0]
 			interface_address6 = address_parts[1] if len(address_parts) >= 2 else None
 
-		interfaces.append({
-			"name": ni["interface_name"],
-			"private_key_enc": ni["private_key"],
-			"public_key": ni["public_key"],
-			"address": interface_address,
-			"address6": interface_address6,
-			"listen_port": iface["listen_port"],
-			"dns": iface["dns"],
-			"post_up": iface["post_up"],
-			"post_down": iface["post_down"],
-		})
+		interfaces.append(
+			{
+				"name": ni["interface_name"],
+				"private_key_enc": ni["private_key"],
+				"public_key": ni["public_key"],
+				"address": interface_address,
+				"address6": interface_address6,
+				"listen_port": iface["listen_port"],
+				"dns": iface["dns"],
+				"post_up": iface["post_up"],
+				"post_down": iface["post_down"],
+			}
+		)
 
 	return interfaces
 
@@ -929,7 +926,10 @@ def get_node_config(
 
 	_log.info(
 		"NODE_CONFIG built for node=%s: interfaces=%d peers=%d master_peer=%s",
-		node_id, len(interfaces), len(peers), master_peer is not None,
+		node_id,
+		len(interfaces),
+		len(peers),
+		master_peer is not None,
 	)
 
 	return {
@@ -973,6 +973,27 @@ def create_node_interface(
 		)
 
 
+def delete_node_interfaces(conn: sqlite3.Connection, interface_name: str) -> list[str]:
+	"""Remove every node keypair stored for an interface.
+
+	Counterpart to :func:`create_node_interface`, which provisions a keypair per
+	enrolled node when an interface is created. ``delete_interface`` refuses to
+	drop an interface while these rows exist, so an interface delete has to clear
+	them in the same transaction.
+
+	Returns:
+		The ids of the nodes that had a keypair on this interface.
+	"""
+	with transaction(conn, immediate=True):
+		rows = conn.execute(
+			"SELECT DISTINCT node_id FROM node_interfaces WHERE interface_name = ?",
+			(interface_name,),
+		).fetchall()
+		node_ids = [str(row["node_id"]) for row in rows]
+		conn.execute("DELETE FROM node_interfaces WHERE interface_name = ?", (interface_name,))
+	return node_ids
+
+
 def get_node_interface_public_key(
 	conn: sqlite3.Connection,
 	node_id: str,
@@ -992,9 +1013,7 @@ def get_all_tunnel_peer_ids(conn: sqlite3.Connection) -> set[int]:
 	These peers are auto-created during node enrollment and should not
 	be editable or deletable by users.
 	"""
-	rows = conn.execute(
-		"SELECT tunnel_peer_id FROM nodes WHERE tunnel_peer_id IS NOT NULL"
-	).fetchall()
+	rows = conn.execute("SELECT tunnel_peer_id FROM nodes WHERE tunnel_peer_id IS NOT NULL").fetchall()
 	return {r["tunnel_peer_id"] for r in rows}
 
 
@@ -1005,9 +1024,7 @@ def get_peers_count_by_node(conn: sqlite3.Connection) -> dict[str | None, int]:
 	Use this for list/bulk views. For a single node, prefer
 	``get_peer_count_for_node``.
 	"""
-	rows = conn.execute(
-		"SELECT node_id, COUNT(*) AS cnt FROM peers GROUP BY node_id"
-	).fetchall()
+	rows = conn.execute("SELECT node_id, COUNT(*) AS cnt FROM peers GROUP BY node_id").fetchall()
 	return {r["node_id"]: r["cnt"] for r in rows}
 
 
@@ -1110,6 +1127,7 @@ def update_tunnel_peer_allowed_ips(conn: sqlite3.Connection, node_id: str) -> bo
 
 	_log.info(
 		"Updated tunnel peer allowed_ips for node=%s: %s",
-		node_id, new_allowed_ips,
+		node_id,
+		new_allowed_ips,
 	)
 	return True

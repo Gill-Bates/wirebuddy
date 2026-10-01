@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
 
 __all__ = [
+	"WG_KEY_RE",
 	"PeerConfig",
 	"PeerCreate",
 	"PeerPublic",
@@ -24,7 +25,7 @@ __all__ = [
 ]
 
 _INTERFACE_RE = re.compile(r"\A[a-zA-Z][a-zA-Z0-9_-]{0,14}\Z")
-_WG_KEY_RE = re.compile(r"\A[A-Za-z0-9+/]{43}=\Z")
+WG_KEY_RE = re.compile(r"\A[A-Za-z0-9+/]{43}=\Z")
 _BLOCKLIST_ID_RE = re.compile(r"\A[a-z0-9_-]{1,64}\Z")
 _HOST_LABEL_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 _NODE_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
@@ -42,7 +43,7 @@ def _validate_wg_key(value: str | None) -> str | None:
 	if value is None:
 		return value
 	value = value.strip()
-	if not _WG_KEY_RE.fullmatch(value):
+	if not WG_KEY_RE.fullmatch(value):
 		raise ValueError("Invalid WireGuard key format")
 	try:
 		decoded = base64.b64decode(value, validate=True)
@@ -179,6 +180,7 @@ def _validate_node_id(value: str | None) -> str | None:
 
 class PeerCreate(BaseModel):
 	"""Peer creation payload."""
+
 	name: str = Field(..., min_length=1, max_length=128, description="Display name for this peer (required)")
 	allowed_ips: str = Field(..., min_length=1, max_length=256)
 	allowed_ips_mode: Literal["full", "split", "custom"] = "full"
@@ -281,6 +283,7 @@ class PeerCreate(BaseModel):
 
 class PeerUpdate(BaseModel):
 	"""Peer update payload."""
+
 	name: str | None = Field(None, max_length=128)
 	allowed_ips: str | None = Field(None, max_length=256)
 	allowed_ips_mode: Literal["full", "split", "custom"] | None = None
@@ -363,6 +366,7 @@ class PeerUpdate(BaseModel):
 
 class PeerPublic(BaseModel):
 	"""Public peer representation."""
+
 	id: int
 	public_key: str
 	name: str | None = None
@@ -384,6 +388,7 @@ class PeerPublic(BaseModel):
 
 class PeerConfig(BaseModel):
 	"""Full peer configuration (for QR code / config file)."""
+
 	interface_name: str
 	private_key: str = Field(..., repr=False)
 	address: str = Field(..., min_length=1, max_length=512)
@@ -459,14 +464,16 @@ class PeerConfig(BaseModel):
 			dns = self._sanitize_config_value(self.dns)
 			parts.append(f"DNS = {dns}")
 
-		parts.extend([
-			"",
-			"[Peer]",
-			f"PublicKey = {server_public_key}",
-			f"AllowedIPs = {allowed_ips}",
-			f"Endpoint = {server_endpoint}",
-			f"PersistentKeepalive = {self.persistent_keepalive}",
-		])
+		parts.extend(
+			[
+				"",
+				"[Peer]",
+				f"PublicKey = {server_public_key}",
+				f"AllowedIPs = {allowed_ips}",
+				f"Endpoint = {server_endpoint}",
+				f"PersistentKeepalive = {self.persistent_keepalive}",
+			]
+		)
 
 		if self.preshared_key:
 			psk = self._sanitize_config_value(self.preshared_key)
@@ -477,6 +484,7 @@ class PeerConfig(BaseModel):
 
 class PeerStats(BaseModel):
 	"""Peer statistics from WireGuard."""
+
 	public_key: str
 	endpoint: str | None = None
 	latest_handshake: AwareDatetime | None = None

@@ -9,7 +9,7 @@ Starlette middleware specific to WireBuddy. Currently only CSRF protection for U
 ## Key Files
 | File | Description |
 |------|-------------|
-| `__init__.py` | Package docstring / exports |
+| `__init__.py` | Package docstring; exports `CSRFMiddleware` |
 | `csrf.py` | `CSRFMiddleware`: checks Origin/Referer and a CSRF token for unsafe methods on `/ui/`, `/login`, `/api/` prefixes; header-only bearer requests and listed exempt API paths (e.g. `/api/login`) are skipped; sets the CSRF cookie |
 
 ## For AI Agents
