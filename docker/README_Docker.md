@@ -1,24 +1,9 @@
-<p align="center">
-  <img src="https://github.com/Gill-Bates/wirebuddy/raw/main/app/static/img/wirebuddy_1c.svg" width="400">
-<br>
-Use WireGuard with ease!
-</p>
+<!-- Docker Hub ignores align/style on images and renders tables full width, so the header
+     stays plain and left-aligned. The logo is a mid-red variant that is readable on both
+     the light and the dark Docker Hub theme (the black source logo vanishes in dark mode). -->
+<img src="https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/wirebuddy_dockerhub.svg" width="400" alt="WireBuddy">
 
-<p align="center">
-  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/v/giiibates/wirebuddy?label=Docker%20Hub&logo=docker&logoColor=white" alt="Docker Hub"></a>
-  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/pulls/giiibates/wirebuddy?logo=docker&logoColor=white" alt="Docker Pulls"></a>
-  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/image-size/giiibates/wirebuddy/latest?logo=docker&logoColor=white" alt="Docker Image Size"></a>
-  <br>
-  <a href="https://github.com/Gill-Bates/wirebuddy/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="#quick-start"><img src="https://img.shields.io/badge/Platform-linux%2Famd64%20|%20linux%2Farm64-lightgrey?logo=linux&logoColor=white" alt="Platform"></a>
-</p>
-
-<p align="center">
-  <a href="https://gill-bates.github.io/wirebuddy/"><img src="https://img.shields.io/badge/Documentation-2ea44f?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation"></a>
-  <a href="https://gill-bates.github.io/wirebuddy/getting-started/quick-start/"><img src="https://img.shields.io/badge/Quick%20Start-0a7bbb?style=for-the-badge&logo=docker&logoColor=white" alt="Quick Start"></a>
-  <a href="https://gill-bates.github.io/wirebuddy/changelog/"><img src="https://img.shields.io/badge/Changelog-6f42c1?style=for-the-badge&logo=keepachangelog&logoColor=white" alt="Changelog"></a>
-  <a href="https://github.com/Gill-Bates/wirebuddy"><img src="https://img.shields.io/badge/GitHub-24292f?style=for-the-badge&logo=github&logoColor=white" alt="GitHub"></a>
-</p>
+**Use WireGuard with ease!**
 
 ---
 

@@ -16,7 +16,7 @@ GitHub repository automation and assets: CI/CD workflows (PR gate, multi-arch Do
 |-----------|---------|
 | `agents/` | Agent prompt files (review suite, PythonDev, ai-slop-cleaner), see `agents/AGENTS.md` |
 | `workflows/` | GitHub Actions pipelines: `ci.yml` (PR gate), `docker-build.yml` (tagged release), `docs-build.yml` (Pages), `ui-audit.yml` (non-blocking Playwright audit). See `workflows/AGENTS.md` |
-| `img/` | README screenshots (`screen_1.jpeg`–`screen_6.jpeg`) and logos (`wirebuddy_black.svg`, `wirebuddy_white.svg`); binary/asset only, no AGENTS.md |
+| `img/` | README screenshots (`screen_1.jpeg`–`screen_6.jpeg`) and logos (`wirebuddy_black.svg`, `wirebuddy_white.svg`, `wirebuddy_dockerhub.svg` for the Docker Hub README); binary/asset only, no AGENTS.md |
 
 ## For AI Agents
 

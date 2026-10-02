@@ -1,3 +1,9 @@
+## [1.6.3] - 2026-xx-xx
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.6.2] - 2026-10-01
 
 - ``Fix`` Deleting a WireGuard interface works again when nodes were provisioned for it, and a failed database delete no longer removes its config file.
@@ -17,10 +23,6 @@
 - ``Security`` TOTP codes are single-use, and OTP setup can no longer be re-run or confirmed twice on an account that already has MFA.
 - ``Security`` A pending mandatory password change is now enforced server-side (`428` for the API, redirect for UI pages).
 - ``Security`` Interface deletion reports and later removes a leftover private key; PostUp/PostDown hooks are limited to 2048 bytes of printable ASCII.
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.6.1] - 2026-09-21
 
