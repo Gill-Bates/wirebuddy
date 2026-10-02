@@ -1,9 +1,24 @@
-<!-- Docker Hub ignores align/style on images and renders tables full width, so the header
-     stays plain and left-aligned. The logo is a mid-red variant that is readable on both
-     the light and the dark Docker Hub theme (the black source logo vanishes in dark mode). -->
-<img src="https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/wirebuddy_dockerhub.svg" width="400" alt="WireBuddy">
+<p align="center">
+  <img src="https://github.com/Gill-Bates/wirebuddy/raw/main/app/static/img/wirebuddy_1c.svg" width="400">
+<br>
+Use WireGuard with ease!
+</p>
 
-**Use WireGuard with ease!**
+<p align="center">
+  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/v/giiibates/wirebuddy?label=Docker%20Hub&logo=docker&logoColor=white" alt="Docker Hub"></a>
+  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/pulls/giiibates/wirebuddy?logo=docker&logoColor=white" alt="Docker Pulls"></a>
+  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/image-size/giiibates/wirebuddy/latest?logo=docker&logoColor=white" alt="Docker Image Size"></a>
+  <br>
+  <a href="https://github.com/Gill-Bates/wirebuddy/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/Platform-linux%2Famd64%20|%20linux%2Farm64-lightgrey?logo=linux&logoColor=white" alt="Platform"></a>
+  <a href="https://gill-bates.github.io/wirebuddy/"><img src="https://img.shields.io/badge/Docs-Online-green?logo=readthedocs&logoColor=white" alt="Documentation"></a>
+</p>
+
+<p align="center">
+  <a href="https://gill-bates.github.io/wirebuddy/">Documentation</a> •
+  <a href="https://gill-bates.github.io/wirebuddy/getting-started/quick-start/">Quick Start</a> •
+  <a href="https://github.com/Gill-Bates/wirebuddy">GitHub</a>
+</p>
 
 ---
 
@@ -80,16 +95,8 @@ Then open `http://<your-server-ip>:8000` in your browser.
 
 This quick start serves the GUI over HTTP. To use WireBuddy's built-in HTTPS,
 enable **Settings → General → Serve GUI over HTTPS**, then restart the
-container: the listener only changes on restart. WireBuddy uses a self-signed
-certificate until you obtain a Let's Encrypt certificate in **Settings → Let's
-Encrypt**. If no certificate can be prepared, the container refuses to start
-instead of falling back to plain HTTP. Behind a reverse proxy that terminates
-HTTPS, leave the setting off.
-
-> **Warning:** Until HTTPS is enabled, the first sign-in (including the
-> bootstrap password) travels in clear text. Do it from the host itself, over an
-> SSH tunnel (`ssh -L 8000:127.0.0.1:8000 <server>`) or from a trusted network,
-> not across an untrusted LAN or the internet.
+container. WireBuddy uses a self-signed certificate until you obtain a Let's
+Encrypt certificate in **Settings → Let's Encrypt**.
 
 WireBuddy trusts forwarded headers (`X-Forwarded-*`) from loopback
 (`127.0.0.1`, `::1`) by default, so a reverse proxy on the same host (Caddy,
@@ -125,9 +132,8 @@ services:
     environment:
       LOG_LEVEL: INFO
       TZ: Etc/UTC
-      # Generate once with `head -c 32 /dev/urandom | base64`, store it in .env and keep it
-      WIREBUDDY_SECRET_KEY: "${WIREBUDDY_SECRET_KEY:?Set WIREBUDDY_SECRET_KEY in .env}"
-      WIREBUDDY_PORT: "8000"
+      WIREBUDDY_SECRET_KEY: ""  # Generate with: head -c 32 /dev/urandom | base64
+      WIREBUDDY_PORT: "8000"   # must match the healthcheck URL below
       # Trusted reverse-proxy IPs/CIDRs. Defaults to loopback; extend if your
       # proxy is not on 127.0.0.1 (e.g. a separate container network).
       WIREBUDDY_TRUSTED_PROXIES: "127.0.0.1,::1"
@@ -141,6 +147,12 @@ services:
         max-file: "5"
     security_opt:
       - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--max-time", "5", "http://127.0.0.1:${WIREBUDDY_PORT:-8000}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
 ```
 
 ---
@@ -178,17 +190,12 @@ services:
 
 ### GUI port and health check
 
-`WIREBUDDY_PORT` always wins over the GUI port stored in **Settings → General**
-(`gui_port`). The supplied Compose file always sets it (default `8000`), so under
-Compose a port changed only in the Settings has no effect: change
-`WIREBUDDY_PORT` instead. Without `WIREBUDDY_PORT` (plain `docker run`), the
-entrypoint binds to the stored `gui_port`.
-
-The image health check calls `/ready` on the scheme and port the container
-actually started with, so it follows the port and **Serve GUI over HTTPS**
-without extra configuration. `/ready` also fails when the database, the
-scheduler or the DNS log ingestion is not working, not just when the process is
-gone.
+The container health check probes `WIREBUDDY_PORT` (default `8000`). If you
+change the GUI port only in **Settings → General** (persisted as `gui_port` in
+the database) without also setting `WIREBUDDY_PORT`, the entrypoint binds to
+the new port but the health check keeps probing the old one and the container
+is reported unhealthy. Set `WIREBUDDY_PORT` to match whenever you change the
+GUI port.
 
 ### WireGuard source policy
 
