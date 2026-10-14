@@ -39,6 +39,7 @@ ui-lint-summary.latest.json
 
 
 # IDE
+.agents/*
 .idea/
 .vscode/*
 !.vscode/settings.json
