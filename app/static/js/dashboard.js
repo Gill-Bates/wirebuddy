@@ -1025,6 +1025,10 @@ function stopAutoRefresh() {
     }).catch(() => {
         // Start auto-refresh even on failure (backoff will handle retries)
         startAutoRefresh();
+    }).finally(() => {
+        // Signal the layout layer (dashboard_grid.js) that first data has settled so its reveal
+        // race can wait for real tile heights (bounded by REVEAL_TIMEOUT_MS). Fired once.
+        document.dispatchEvent(new CustomEvent('wb:dashboard-data-ready'));
     });
 })();
 
@@ -2182,3 +2186,13 @@ if (networkGaugesContainer) {
 
     // Theme changes are handled via CSS custom properties, no JS update needed
 }
+
+// ─── GRID LAYOUT SEAM ────────────────────────────────────────
+// Minimal, read-only resize seam consumed by dashboard_grid.js on GridStack resizestop (and once at
+// reveal). The closures read the module-scoped peerMap/speedtestChart lazily at call time, so this
+// statement's position in the file is immaterial; each callback is a safe no-op until its instance
+// exists. No data logic lives here — dashboard.js keeps owning the chart/map lifecycle.
+window.WBDashboard = Object.freeze({
+    resizeSpeedtestChart: () => syncSpeedtestChartSize(),
+    invalidatePeerMap: () => { if (peerMap && peerMap.getContainer()) peerMap.invalidateSize(true); },
+});

@@ -425,3 +425,180 @@
         font-size: clamp(1.12rem, 4.45vw, 1.42rem);
     }
 }
+
+/* ---------- GridStack dashboard layer (positioning only) ----------
+   Ported from the reference dashboard grid, renamed to the wb-dashboard-* prefix. Appearance stays
+   Bootstrap's; nothing here sets a hardcoded light background, so dark mode (data-bs-theme) is
+   unaffected. Colour/radius come from Bootstrap --bs-* tokens. */
+
+.wb-dashboard-grid {
+    min-height: 4rem;
+    /* GridStack insets every tile by its item margin on all sides. Pulling the grid out by that
+       margin puts the outer tile edges flush with the page heading; the gutters between tiles stay. */
+    margin-inline: calc(-1 * var(--gs-item-margin-left, 10px)) calc(-1 * var(--gs-item-margin-right, 10px));
+}
+
+/* Hidden until dashboard_grid.js has applied the stored layout. The delayed keyframe is the failsafe
+   (no JS, failed script, stalled request): the grid shows itself after 4s regardless. */
+.wb-dashboard-grid--loading {
+    visibility: hidden;
+    animation: wb-dashboard-grid-failsafe 0s 4s forwards;
+}
+
+@keyframes wb-dashboard-grid-failsafe {
+    to {
+        visibility: visible;
+    }
+}
+
+.wb-dashboard-grid .grid-stack-item-content {
+    display: flex;
+    /* inset/margins come from GridStack's margin option; overriding them removes the tile gutters. */
+    border-radius: var(--bs-border-radius-lg, .5rem);
+}
+
+.wb-dashboard-grid .card {
+    width: 100%;
+}
+
+/* View mode: no drag handles, no resize affordance, no hint that this is a grid at all. */
+.dashboard-drag-handle {
+    cursor: grab;
+    color: var(--bs-secondary-color);
+}
+
+.dashboard-widget-header {
+    /* Overlay strip: out of flow so toggling edit mode never shifts the tile content. */
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 2;
+    height: 1.1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: grab;
+    touch-action: none;
+}
+
+.dashboard-widget-header .dashboard-drag-handle {
+    font-size: 1rem;
+    line-height: 1;
+    opacity: .6;
+}
+
+.dashboard-widget-header:active {
+    cursor: grabbing;
+}
+
+.wb-dashboard-grid:not(.wb-dashboard-editing) .ui-resizable-handle {
+    display: none !important;
+}
+
+/* Edit mode: a subtle outline marks a movable/resizable widget without looking like a separate app. */
+.wb-dashboard-editing .grid-stack-item-content {
+    outline: 1px dashed var(--bs-border-color);
+    outline-offset: 2px;
+    border-radius: var(--bs-border-radius-lg, .5rem);
+}
+
+/* Dragging/resizing must not select text or icons inside tiles. */
+.wb-dashboard-editing .grid-stack-item,
+.wb-dashboard-editing .grid-stack-item * {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.wb-dashboard-editing .ui-resizable-handle {
+    opacity: .45;
+}
+
+/* Inset the corner grip from the tile's rounded edge and keep a 24px touch target. */
+.wb-dashboard-editing.wb-dashboard-grid .grid-stack-item > .ui-resizable-se {
+    width: 24px;
+    height: 24px;
+    right: calc(var(--gs-item-margin-right, 10px) + 6px);
+    bottom: calc(var(--gs-item-margin-bottom, 10px) + 6px);
+    background-size: 16px 16px;
+}
+
+.wb-dashboard-editing .ui-resizable-handle:hover {
+    opacity: 1;
+}
+
+.wb-dashboard-editing .dashboard-widget-header {
+    display: flex !important;
+}
+
+.wb-dashboard-editing .grid-stack-item.ui-draggable-dragging .grid-stack-item-content {
+    outline-color: var(--bs-primary);
+}
+
+/* Recent Peer Activity grows with its content (see dashboard_grid.js AUTO_HEIGHT_ID): never scrolls.
+   The inner scroll container is the .card-body, so the height/overflow unset must reach it, not just
+   the wrapper. Scoped to the active grid, so the mobile stacked fallback keeps the body's own scroll
+   (its data-ui-lint-allow="nested-scroll" stays accurate there). */
+.wb-dashboard-grid [data-widget-id="recent-peers"] .grid-stack-item-content {
+    overflow: visible;
+}
+
+.wb-dashboard-grid [data-widget-id="recent-peers"] .card-body {
+    max-height: none;
+    overflow: visible;
+}
+
+.wb-dashboard-edit-hint {
+    display: none;
+}
+
+/* Stacked phone fallback. Keep the 767.98px literal in sync with MOBILE_QUERY in dashboard_grid.js.
+   Layout editing needs the 12-column grid; here the grid abandons absolute positioning, stacks tiles
+   in document order, and hides every editing control. The saved layout is untouched. */
+@media (max-width: 767.98px) {
+    .wb-dashboard-toolbar {
+        flex-wrap: wrap;
+    }
+
+    #wb-dashboard-edit-toggle,
+    #wb-dashboard-add-widget,
+    #wb-dashboard-reset-layout,
+    #wb-dashboard-edit-done {
+        display: none !important;
+    }
+
+    .wb-dashboard-edit-hint {
+        display: block;
+    }
+
+    .wb-dashboard-grid {
+        height: auto !important;
+        /* The stacked tiles carry no GridStack inset, so the grid keeps the page edges. */
+        margin-inline: 0;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: .5rem;
+    }
+
+    .wb-dashboard-grid > .grid-stack-item {
+        position: static !important;
+        width: auto !important;
+        height: auto !important;
+        grid-column: span 1;
+        transform: none !important;
+    }
+
+    .wb-dashboard-grid > .grid-stack-item[data-widget-id="network-gauges"],
+    .wb-dashboard-grid > .grid-stack-item[data-widget-id="speedtest-chart"],
+    .wb-dashboard-grid > .grid-stack-item[data-widget-id="peer-map"],
+    .wb-dashboard-grid > .grid-stack-item[data-widget-id="recent-peers"] {
+        grid-column: 1 / -1;
+    }
+
+    .wb-dashboard-grid > .grid-stack-item > .grid-stack-item-content {
+        position: relative !important;
+        inset: auto;
+        margin: 0 !important;
+        overflow: visible !important;
+    }
+}
