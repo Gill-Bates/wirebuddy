@@ -273,14 +273,14 @@
     }
 
 
-    @media (width <=1199.98px) {
+    @media (width <= 1199.98px) {
         .recent-peers-card .card-body {
             max-height: none;
             overflow: visible;
         }
     }
 
-    @media (width <=991.98px) {
+    @media (width <= 991.98px) {
         #peer-map {
             height: clamp(360px, 45vh, 500px);
         }
@@ -295,7 +295,7 @@
         }
     }
 
-    @media (width <=767.98px) {
+    @media (width <= 767.98px) {
         #peer-map {
             height: 300px;
         }
@@ -323,7 +323,7 @@
         }
     }
 
-    @media (width <=575.98px) {
+    @media (width <= 575.98px) {
         #peer-map {
             height: 260px;
         }
@@ -470,7 +470,6 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-
         .pulse-marker,
         .pulse-marker.connected {
             animation: none;
@@ -534,7 +533,7 @@
         grid-column: 1 / -1;
     }
 
-    @media (width <=575.98px) {
+    @media (width <= 575.98px) {
         .network-sparkline {
             width: 100% !important;
             height: 72px;
@@ -547,7 +546,7 @@
     }
 
     /* Keep KPI tiles readable while the stats row is stacked below xl. */
-    @media (width >=768px) and (width < 1200px) {
+    @media (width >= 768px) and (width < 1200px) {
         .dashboard-kpi-grid {
             grid-template-columns: repeat(4, minmax(0, 1fr));
         }
@@ -786,7 +785,7 @@
         color: var(--bs-secondary-color);
     }
 
-    @media (width <=575.98px) {
+    @media (width <= 575.98px) {
         .dashboard-kpi-grid {
             grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
             gap: 0.55rem;

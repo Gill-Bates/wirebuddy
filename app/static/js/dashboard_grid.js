@@ -168,7 +168,12 @@
 		if (id !== AUTO_HEIGHT_ID) return; // only the auto-fit tile grows to content
 		const frame = el.offsetHeight - content.offsetHeight; // GridStack's margin/inset around the content box
 		const needed = Math.ceil((naturalHeight(inner) + frame) / CELL_HEIGHT);
-		const rows = Math.max(1, needed);
+		// The stored height is a FLOOR, not a target: auto-fit only ever grows the tile past its
+		// stored size, it never shrinks it below. Otherwise a short list (one peer) would collapse the
+		// tile and leave the right column shorter than the map it sits beside. widgetState holds the
+		// stored h (syncStateFromGrid never writes a fit-driven height back into it).
+		const stored = widgetState.get(id)?.h || 1;
+		const rows = Math.max(stored, needed, 1);
 		fitRows.set(id, rows);
 		if (node.h !== rows) grid.update(el, { h: rows });
 	}
@@ -236,6 +241,14 @@
 			}
 		} catch (error) {
 			toast(messageFrom(error), 'danger');
+			// The PUT was rejected, so the edited arrangement on screen is unsaved and a reload would
+			// discard it silently. Roll the grid back to the last persisted layout so what is shown
+			// always matches what is stored.
+			if (savedLayout) {
+				applyLayout(savedLayout.map((entry) => ({ ...entry })));
+				renderAddWidgetList();
+				scheduleFit();
+			}
 		}
 	}
 
@@ -371,6 +384,10 @@
 			else if (id === 'peer-map') window.WBDashboard?.invalidatePeerMap?.();
 		});
 
+		// Edit stays disabled until initLayout() has fetched/applied the layout and set savedLayout +
+		// widgetState. Otherwise Escape (cancelEditing -> savedLayout.map) or Done (saveLayout reading
+		// widgetState) during a slow GET would dereference null/empty state.
+		$('wb-dashboard-edit-toggle').disabled = true;
 		$('wb-dashboard-edit-toggle').addEventListener('click', () => setEditing(true));
 		$('wb-dashboard-edit-done').addEventListener('click', async () => {
 			setEditing(false);
@@ -404,6 +421,7 @@
 		}
 		savedLayout = mergeWithDefault(stored);
 		applyLayout(savedLayout);
+		$('wb-dashboard-edit-toggle').disabled = false; // layout applied: editing is now safe (see buildLayout)
 		renderAddWidgetList();
 		fitLayout();
 		observeContent();

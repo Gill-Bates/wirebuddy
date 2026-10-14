@@ -17,6 +17,7 @@ auth-required acceptance criterion is still exercised end-to-end.
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -254,5 +255,58 @@ def test_mutation_requires_auth(monkeypatch):
 	app = main.create_app()
 	client = TestClient(app, raise_server_exceptions=False)
 	response = client.put("/api/dashboard/layout", json={"version": 1, "widgets": []})
-	# No session/bearer -> rejected (401 from get_current_user; CSRF/redirect are also acceptable).
-	assert response.status_code in (401, 403, 400)
+	# No session and no bearer token: the mutation is rejected before any body validation. A cookie-less
+	# request carries no CSRF session, so CSRF lets it through to get_current_user, which raises 401.
+	assert response.status_code == 401
+
+
+def _seed_bearer_session(app) -> str:
+	"""Create a user in the app's own DB and mint a bearer token for it.
+
+	Bearer tokens are exempt from the CSRF double-submit check, so a request carrying one reaches the
+	route through the real middleware stack and FastAPI's request-body validation runs. The token is
+	written to ``app.state.db_path`` — the same database ``get_conn`` opens per request.
+	"""
+	import secrets
+
+	from app.db.sqlite_auth import create_auth_token
+	from app.db.sqlite_runtime import close_connection, connect
+	from app.db.sqlite_schema import init_schema
+	from app.db.sqlite_users import create_user
+	from app.utils.time import utcnow
+
+	token = secrets.token_urlsafe(32)
+	conn = connect(app.state.db_path)
+	try:
+		init_schema(conn)  # create_app does not build the schema; the lifespan would, but we seed directly
+		user_id = create_user(conn, "layout-tester", "pw-not-used-for-bearer-auth")
+		assert user_id is not None
+		now = utcnow()
+		create_auth_token(conn, user_id, token, now + timedelta(hours=1), now + timedelta(hours=1))
+	finally:
+		close_connection(conn)
+	return token
+
+
+def test_authenticated_put_out_of_range_body_is_422(monkeypatch, tmp_path):
+	"""An authenticated PUT with an out-of-range field is rejected by FastAPI as 422 over real HTTP.
+
+	This exercises the request-body validation path (Pydantic bounds enforced by FastAPI), which the
+	direct-handler tests above cannot reach because they construct the model themselves.
+	"""
+	from fastapi.testclient import TestClient
+
+	from app import main
+
+	monkeypatch.setenv("WIREBUDDY_SECRET_KEY", "x" * 48)
+	monkeypatch.setenv("WIREBUDDY_DATA_DIR", str(tmp_path))  # isolated DB so the seeded user never collides
+	app = main.create_app()
+	client = TestClient(app, raise_server_exceptions=False)
+	token = _seed_bearer_session(app)
+	# x = 99 is outside the 0..11 field bound: FastAPI returns 422 before the handler runs.
+	response = client.put(
+		"/api/dashboard/layout",
+		json={"version": 1, "widgets": [{"id": "kpi-nodes", "x": 99, "y": 0, "w": 1, "h": 1}]},
+		headers={"Authorization": f"Bearer {token}"},
+	)
+	assert response.status_code == 422

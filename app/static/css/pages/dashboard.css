@@ -433,6 +433,7 @@
 
 .wb-dashboard-grid {
     min-height: 4rem;
+
     /* GridStack insets every tile by its item margin on all sides. Pulling the grid out by that
        margin puts the outer tile edges flush with the page heading; the gutters between tiles stay. */
     margin-inline: calc(-1 * var(--gs-item-margin-left, 10px)) calc(-1 * var(--gs-item-margin-right, 10px));
@@ -453,6 +454,7 @@
 
 .wb-dashboard-grid .grid-stack-item-content {
     display: flex;
+
     /* inset/margins come from GridStack's margin option; overriding them removes the tile gutters. */
     border-radius: var(--bs-border-radius-lg, .5rem);
 }
@@ -467,8 +469,7 @@
    767.98px stacked breakpoint; below it the tiles stack with their natural heights again. The grid
    also sets gs-min-h on both tiles (dashboard.html) so a tile can never shrink below its header plus
    a usable body, which would otherwise clip the map/chart. */
-@media (min-width: 768px) {
-
+@media (width >=768px) {
     .wb-dashboard-grid #peer-map,
     .wb-dashboard-grid .speedtest-chart-wrap {
         height: 100%;
@@ -522,9 +523,9 @@
 .wb-dashboard-editing .grid-stack-item,
 .wb-dashboard-editing .grid-stack-item * {
     user-select: none;
-    -webkit-user-select: none;
 }
 
+/* stylelint-disable-next-line no-descending-specificity -- mutually exclusive edit-state selector; the :not(.wb-dashboard-editing) rule above targets view mode, this one edit mode, so no real cascade conflict */
 .wb-dashboard-editing .ui-resizable-handle {
     opacity: .45;
 }
@@ -554,6 +555,7 @@
    The inner scroll container is the .card-body, so the height/overflow unset must reach it, not just
    the wrapper. Scoped to the active grid, so the mobile stacked fallback keeps the body's own scroll
    (its data-ui-lint-allow="nested-scroll" stays accurate there). */
+/* stylelint-disable-next-line no-descending-specificity -- targets a different element (the recent-peers content box, not the dragging outline above); reordering would not change the cascade */
 .wb-dashboard-grid [data-widget-id="recent-peers"] .grid-stack-item-content {
     overflow: visible;
 }
@@ -570,7 +572,7 @@
 /* Stacked phone fallback. Keep the 767.98px literal in sync with MOBILE_QUERY in dashboard_grid.js.
    Layout editing needs the 12-column grid; here the grid abandons absolute positioning, stacks tiles
    in document order, and hides every editing control. The saved layout is untouched. */
-@media (max-width: 767.98px) {
+@media (width <=767.98px) {
     .wb-dashboard-toolbar {
         flex-wrap: wrap;
     }
@@ -588,10 +590,15 @@
 
     .wb-dashboard-grid {
         height: auto !important;
+
         /* The stacked tiles carry no GridStack inset, so the grid keeps the page edges. */
         margin-inline: 0;
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
+
+        /* GridStack sorts the DOM by stored position, so a full-width spanner can land between two
+           half-width KPIs and leave a hole beside each. Dense packing backfills those cells. */
+        grid-auto-flow: row dense;
         gap: .5rem;
     }
 
