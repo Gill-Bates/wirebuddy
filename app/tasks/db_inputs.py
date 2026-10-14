@@ -2,6 +2,8 @@
 #
 # app/tasks/db_inputs.py
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+#
+
 # SPDX-License-Identifier: MIT
 #
 

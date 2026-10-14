@@ -3,6 +3,7 @@
 # tests/test_logging_cleanup.py
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
+
 # SPDX-License-Identifier: MIT
 #
 

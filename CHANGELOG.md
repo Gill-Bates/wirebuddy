@@ -1,4 +1,4 @@
-## [1.6.3] - 2026-xx-xx
+## [1.7.0] - 2026-xx-xx
 
 
 <details markdown="1">

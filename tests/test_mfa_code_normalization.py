@@ -3,6 +3,7 @@
 # tests/test_mfa_code_normalization.py
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
+
 # SPDX-License-Identifier: MIT
 #
 

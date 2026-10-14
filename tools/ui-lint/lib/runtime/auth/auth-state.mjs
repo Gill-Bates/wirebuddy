@@ -2,6 +2,7 @@
 // tools/ui-lint/lib/runtime/auth/auth-state.mjs
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Seeding the theme needs a settled, same-origin document, because the theme
 // lives in localStorage. Getting that wrong used to lose most of an audit run:
 // the origin was bootstrapped by navigating to `/login`, and for an

@@ -2,6 +2,7 @@
 // tools/stylelint/stylelint.config.mjs
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
+
 // Lints app/static/css/**/*.css. Complements tools/ui-lint, which audits the
 // *rendered* result (design-token drift, layout, accessibility) in a browser;
 // this catches source-level CSS defects before anything is ever rendered -
