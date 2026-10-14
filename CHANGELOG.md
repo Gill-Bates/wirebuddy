@@ -1,5 +1,6 @@
 ## [1.7.0] - 2026-xx-xx
 
+- ``New`` The dashboard is now customizable: drag and resize tiles, add or remove widgets, and reset to the default layout. Each account's arrangement is saved per user.
 
 <details markdown="1">
 <summary>Previous versions...</summary>

@@ -17,6 +17,15 @@ The dashboard summarizes the current deployment with:
 Values are refreshed by the UI from the authenticated API. A missing metric is
 shown as unavailable rather than inferred from unrelated data.
 
+The dashboard is a draggable, resizable grid (GridStack). Select **Edit
+dashboard** to enter edit mode, then move or resize tiles by dragging a tile's
+header strip. **Edit widgets** adds or removes individual tiles, **Reset
+layout** restores the factory default, and **Done** saves the arrangement. An
+unsaved edit can be discarded with the Escape key. The layout is saved per user
+(persisted via `PUT /api/dashboard/layout`), so each account keeps its own
+arrangement. On small screens (phones) the tiles stack in a fixed order and
+layout editing is disabled.
+
 ## Traffic Page
 
 The **Traffic** page provides:
