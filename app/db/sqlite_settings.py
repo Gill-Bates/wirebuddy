@@ -49,10 +49,12 @@ __all__ = [
 	# Blocklist
 	"clear_blocklist_disabled_until",
 	# Core operations
+	"delete_dashboard_layout",
 	"delete_setting",
 	"get_blocklist_disabled_until",
 	# DNS
 	"get_bool_setting",
+	"get_dashboard_layout",
 	"get_dns_blocklist_enabled",
 	"get_dns_custom_rules",
 	"get_dns_log_retention_days",
@@ -72,6 +74,7 @@ __all__ = [
 	"get_tsdb_retention_days",
 	"recover_missing_global_settings",
 	"set_blocklist_disabled_until",
+	"set_dashboard_layout",
 	"set_dns_blocklist_enabled",
 	"set_dns_custom_rules",
 	"set_dns_log_retention_days",
@@ -881,3 +884,48 @@ def set_speedtest_last_run_at(conn: sqlite3.Connection, when: datetime | None = 
 	"""Persist the last completed local speedtest run timestamp in UTC."""
 	value = ensure_utc(when) if when is not None else utcnow()
 	set_setting(conn, "speedtest_last_run_at", value.isoformat())
+
+
+# ---------------------------------------------------------------------------
+# Dashboard layout (per-user GridStack layout)
+# ---------------------------------------------------------------------------
+
+# The dashboard layout is per-user UI config stored under its own key, never through a generic
+# settings PUT. The id (not the username) keys the row because the id is immutable; this mirrors the
+# existing speedtest_last_result:node:<node_id> keying convention.
+_DASHBOARD_LAYOUT_KEY_PREFIX = "dashboard_layout:user:"
+
+
+def _dashboard_layout_key(user_id: int) -> str:
+	"""Build the per-user settings key for a stored dashboard layout."""
+	return f"{_DASHBOARD_LAYOUT_KEY_PREFIX}{user_id}"
+
+
+def get_dashboard_layout(conn: sqlite3.Connection, user_id: int) -> dict[str, Any] | None:
+	"""Return the stored dashboard layout for a user, or None.
+
+	Returns None for an absent, corrupt (non-JSON) or non-dict row; the single read path reuses
+	the in-module _get_json_dict helper so there is no second json.loads path.
+	"""
+	return _get_json_dict(conn, _dashboard_layout_key(user_id))
+
+
+def set_dashboard_layout(conn: sqlite3.Connection, user_id: int, layout: dict[str, Any]) -> None:
+	"""Persist the dashboard layout for a user.
+
+	The payload is the already-validated model_dump() of the DashboardLayout model. It is serialized
+	with the same options _set_json_dict uses, minus the "ts" stamp (the extra="forbid" model would
+	reject a stored "ts" on a GET->PUT->GET round-trip), and the same in-module size cap is enforced.
+	"""
+	try:
+		raw = json.dumps(layout, ensure_ascii=False, default=str, separators=(",", ":"), allow_nan=False)
+	except ValueError as exc:
+		raise ValueError("JSON payload must contain only finite values") from exc
+	if len(raw.encode("utf-8")) > _MAX_JSON_SETTING_LENGTH:
+		raise ValueError(f"JSON payload exceeds maximum allowed size ({_MAX_JSON_SETTING_LENGTH} bytes)")
+	set_setting(conn, _dashboard_layout_key(user_id), raw)
+
+
+def delete_dashboard_layout(conn: sqlite3.Connection, user_id: int) -> bool:
+	"""Delete the stored dashboard layout for a user. Returns True if a row was removed."""
+	return delete_setting(conn, _dashboard_layout_key(user_id))

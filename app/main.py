@@ -35,6 +35,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .api import acme as acme_api
 from .api import auth as auth_api
 from .api import backup as backup_api
+from .api import dashboard_layout as dashboard_layout_api
 from .api import dns as dns_api
 from .api import frontend_shared as frontend_ui
 from .api import network_stats as network_stats_api
@@ -1650,6 +1651,7 @@ def create_app() -> FastAPI:
 	app.include_router(users_api.router, prefix="/api/users")
 	app.include_router(wireguard_api.router, prefix="/api/wireguard")
 	app.include_router(dns_api.router, prefix="/api/dns")
+	app.include_router(dashboard_layout_api.router, prefix="/api/dashboard")
 	app.include_router(acme_api.router, prefix="/api/acme")
 	app.include_router(speedtest_api.router, prefix="/api/wireguard")
 	app.include_router(network_stats_api.router, prefix="/api")
