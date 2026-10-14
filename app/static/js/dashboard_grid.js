@@ -41,6 +41,13 @@
 	}));
 	const defaultEntry = (def) => ({ id: def.id, x: def.x, y: def.y, w: def.w, h: def.h, visible: def.visible });
 
+	// Latch the first wb:dashboard-data-ready at script load, before the awaited layout GET, so the
+	// reveal never misses it: dashboard.js dispatches that event once from the .finally() of its first
+	// refreshAll(), which runs in parallel with initLayout(). If the data layer wins the race the
+	// listener in revealGrid() would attach too late and the grid would wait out REVEAL_TIMEOUT_MS.
+	// Resolving a promise registered here instead makes the ordering irrelevant.
+	const dataReady = new Promise((resolve) => document.addEventListener('wb:dashboard-data-ready', resolve, { once: true }));
+
 	let grid = null;
 	const widgetState = new Map(); // id -> { id, x, y, w, h, visible }
 	let savedLayout = null;
@@ -322,7 +329,8 @@
 	async function revealGrid() {
 		try {
 			// Icon-font metrics and the first live data change tile heights, so wait for both (bounded).
-			const dataReady = new Promise((resolve) => document.addEventListener('wb:dashboard-data-ready', resolve, { once: true }));
+			// dataReady is latched at script load (see module top) so a data layer that finishes before
+			// this point is not missed.
 			await Promise.race([
 				Promise.all([document.fonts?.ready, dataReady]),
 				new Promise((resolve) => setTimeout(resolve, REVEAL_TIMEOUT_MS)),

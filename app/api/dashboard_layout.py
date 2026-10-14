@@ -57,7 +57,9 @@ class DashboardWidgetLayout(BaseModel):
 
 	id: str = Field(min_length=1, max_length=64)
 	x: int = Field(ge=0, le=11)
-	y: int = Field(ge=0, le=1000)
+	# le mirrors _DASHBOARD_MAX_Y (and MAX_Y in dashboard_grid.js); referencing the constant keeps the
+	# per-field cap and the cross-field y + h <= _DASHBOARD_MAX_Y check from drifting apart.
+	y: int = Field(ge=0, le=_DASHBOARD_MAX_Y)
 	w: int = Field(ge=1, le=12)
 	h: int = Field(ge=1, le=100)
 	visible: bool = True

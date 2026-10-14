@@ -70,8 +70,8 @@
         linear-gradient(180deg, rgb(255 255 255 / 3.5%), rgb(255 255 255 / 0%)),
         var(--wb-bg-surface, var(--bs-card-bg, var(--bs-body-bg)));
 
-    /* Kept tight: .dashboard-page clips overflow at >=1200px only ~12px
-       beside the cards, so a wide blur ends in a visible hard edge. */
+    /* Kept tight: GridStack insets each tile only ~10px beside the card, so a
+       wide blur would end in a visible hard edge against the gutter. */
     box-shadow: var(--wb-shadow-2);
 }
 
@@ -461,6 +461,21 @@
     width: 100%;
 }
 
+/* Inside the grid the card fills its tile (h-100), so the map and the speedtest chart must track the
+   card body instead of the fixed/clamped heights css/dashboard.css gives them for the old flow
+   layout. Specificity (.wb-dashboard-grid #id) beats the plain #id rules there. Scoped above the
+   767.98px stacked breakpoint; below it the tiles stack with their natural heights again. The grid
+   also sets gs-min-h on both tiles (dashboard.html) so a tile can never shrink below its header plus
+   a usable body, which would otherwise clip the map/chart. */
+@media (min-width: 768px) {
+
+    .wb-dashboard-grid #peer-map,
+    .wb-dashboard-grid .speedtest-chart-wrap {
+        height: 100%;
+        min-height: 0;
+    }
+}
+
 /* View mode: no drag handles, no resize affordance, no hint that this is a grid at all. */
 .dashboard-drag-handle {
     cursor: grab;
@@ -515,7 +530,7 @@
 }
 
 /* Inset the corner grip from the tile's rounded edge and keep a 24px touch target. */
-.wb-dashboard-editing.wb-dashboard-grid .grid-stack-item > .ui-resizable-se {
+.wb-dashboard-editing.wb-dashboard-grid .grid-stack-item>.ui-resizable-se {
     width: 24px;
     height: 24px;
     right: calc(var(--gs-item-margin-right, 10px) + 6px);
@@ -580,7 +595,7 @@
         gap: .5rem;
     }
 
-    .wb-dashboard-grid > .grid-stack-item {
+    .wb-dashboard-grid>.grid-stack-item {
         position: static !important;
         width: auto !important;
         height: auto !important;
@@ -588,14 +603,14 @@
         transform: none !important;
     }
 
-    .wb-dashboard-grid > .grid-stack-item[data-widget-id="network-gauges"],
-    .wb-dashboard-grid > .grid-stack-item[data-widget-id="speedtest-chart"],
-    .wb-dashboard-grid > .grid-stack-item[data-widget-id="peer-map"],
-    .wb-dashboard-grid > .grid-stack-item[data-widget-id="recent-peers"] {
+    .wb-dashboard-grid>.grid-stack-item[data-widget-id="network-gauges"],
+    .wb-dashboard-grid>.grid-stack-item[data-widget-id="speedtest-chart"],
+    .wb-dashboard-grid>.grid-stack-item[data-widget-id="peer-map"],
+    .wb-dashboard-grid>.grid-stack-item[data-widget-id="recent-peers"] {
         grid-column: 1 / -1;
     }
 
-    .wb-dashboard-grid > .grid-stack-item > .grid-stack-item-content {
+    .wb-dashboard-grid>.grid-stack-item>.grid-stack-item-content {
         position: relative !important;
         inset: auto;
         margin: 0 !important;

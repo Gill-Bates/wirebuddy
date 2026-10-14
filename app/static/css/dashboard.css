@@ -156,149 +156,13 @@
         font-size: 14px;
     }
 
-    /* Mobile-first Grid Layout */
-    .dashboard-main-grid {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: var(--wb-space-3);
-        margin-bottom: var(--wb-space-3);
-    }
-
-    /* Prevent grid children from overflowing horizontally */
-    .dashboard-main-grid>* {
-        min-width: 0;
-    }
-
-    @media (width >= 1200px) {
-        /* Dashboard page fills viewport — no scroll on desktop */
-        .dashboard-page {
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-            overflow: hidden;
-        }
-
-        /* Header stays at natural height, unaffected by scale */
-        .dashboard-page>.wb-page-header {
-            flex-shrink: 0;
-        }
-
-        /* Scaled body fills remaining space */
-        .dashboard-page-body {
-            flex: 1 1 0;
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-        }
-
-        /* KPI row stays at natural height */
-        .dashboard-page-body>.row:first-of-type {
-            flex-shrink: 0;
-        }
-
-        /* Main grid fills all remaining viewport space */
-        .dashboard-main-grid {
-            flex: 1 1 0;
-            min-height: 0;
-            margin-bottom: 0;
-            gap: var(--wb-space-3);
-            grid-template-columns: minmax(600px, 2fr) minmax(340px, 1fr);
-
-            /* 3 Zeilen: Speedtest (260px), Map + Recent bekommen je +1 Einheit */
-            grid-template-rows: 260px 1fr 1fr;
-        }
-
-        /* Map column spans full grid height */
-        .dashboard-map-col {
-            grid-column: 1;
-            grid-row: 1 / 4;
-
-            /* spannt alle 3 Zeilen */
-            min-height: 0;
-        }
-
-        .dashboard-map-col,
-        .dashboard-map-col .card,
-        .dashboard-speedtest-col,
-        .dashboard-speedtest-col .card,
-        .dashboard-recent-peers-col,
-        .dashboard-recent-peers-col .card {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .dashboard-map-col .card {
-            flex: 1 1 0;
-            min-height: 0;
-        }
-
-        .dashboard-map-col .card-body {
-            flex: 1 1 0;
-            min-height: 0;
-        }
-
-        #peer-map {
-            height: 100%;
-            min-height: 500px;
-
-            /* Increase map height for better visibility */
-        }
-
-        /* Speedtest: compact, fixed height */
-        .dashboard-speedtest-col {
-            grid-column: 2;
-            grid-row: 1;
-            min-height: 0;
-            display: flex;
-        }
-
-        .dashboard-speedtest-col .card {
-            flex: 1 1 auto;
-            min-height: 260px;
-
-            /* Increase speedtest card height */
-        }
-
-        .dashboard-speedtest-col .speedtest-chart-wrap {
-            height: 100%;
-            min-height: 140px;
-        }
-
-        .dashboard-speedtest-col .card-body {
-            padding-bottom: 0.5rem;
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-            overflow: hidden;
-        }
-
-        /* Recent Peer Activity: fills remaining height, scrolls */
-        .dashboard-recent-peers-col {
-            grid-column: 2;
-            grid-row: 2 / 4;
-
-            /* spannt Zeile 2 + 3 */
-            min-height: 0;
-            display: flex;
-        }
-
-        .dashboard-recent-peers-col .card {
-            flex: 1 1 auto;
-            min-height: 0;
-        }
-
-        .dashboard-recent-peers-col .card-body {
-            flex: 1 1 0;
-            min-height: 0;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .dashboard-stats-row {
-            margin-bottom: var(--wb-space-3) !important;
-        }
-    }
+    /* The GridStack layer (css/pages/dashboard.css) now owns the dashboard body layout: the eight
+       tiles are absolutely positioned inside .wb-dashboard-grid and the page grows to their height.
+       The former desktop block pinned .dashboard-page to the viewport (display:flex; height:100%;
+       overflow:hidden) and flex-fitted a .dashboard-page-body / .dashboard-*-col scaffold that the
+       grid template no longer emits; with only the clipping half left it hid the lower tiles at
+       >=1200px. The scaffold and its clip have been removed; .dashboard-page keeps the default
+       block flow so the page scrolls when the grid is taller than the viewport. */
 
     .recent-peer-subline {
         display: flex;
@@ -409,18 +273,14 @@
     }
 
 
-    @media (width <= 1199.98px) {
-        .dashboard-map-col .card {
-            height: auto;
-        }
-
+    @media (width <=1199.98px) {
         .recent-peers-card .card-body {
             max-height: none;
             overflow: visible;
         }
     }
 
-    @media (width <= 991.98px) {
+    @media (width <=991.98px) {
         #peer-map {
             height: clamp(360px, 45vh, 500px);
         }
@@ -435,7 +295,7 @@
         }
     }
 
-    @media (width <= 767.98px) {
+    @media (width <=767.98px) {
         #peer-map {
             height: 300px;
         }
@@ -463,7 +323,7 @@
         }
     }
 
-    @media (width <= 575.98px) {
+    @media (width <=575.98px) {
         #peer-map {
             height: 260px;
         }
@@ -610,6 +470,7 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
+
         .pulse-marker,
         .pulse-marker.connected {
             animation: none;
@@ -673,7 +534,7 @@
         grid-column: 1 / -1;
     }
 
-    @media (width <= 575.98px) {
+    @media (width <=575.98px) {
         .network-sparkline {
             width: 100% !important;
             height: 72px;
@@ -686,7 +547,7 @@
     }
 
     /* Keep KPI tiles readable while the stats row is stacked below xl. */
-    @media (width >= 768px) and (width < 1200px) {
+    @media (width >=768px) and (width < 1200px) {
         .dashboard-kpi-grid {
             grid-template-columns: repeat(4, minmax(0, 1fr));
         }
@@ -925,7 +786,7 @@
         color: var(--bs-secondary-color);
     }
 
-    @media (width <= 575.98px) {
+    @media (width <=575.98px) {
         .dashboard-kpi-grid {
             grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
             gap: 0.55rem;
