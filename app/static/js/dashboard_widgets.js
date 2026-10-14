@@ -31,28 +31,28 @@
  */
 
 (function () {
-	'use strict';
+    'use strict';
 
-	// The registry array order is the single JS ordering contract: it equals DEFAULT_LAYOUT id order,
-	// the template's document (and mobile stack) order and the "Add widget" list order.
-	const registry = Object.freeze([
-		Object.freeze({ id: 'kpi-nodes', label: 'Nodes', kind: 'kpi', defaultSize: Object.freeze({ w: 2, h: 3 }), defaultVisible: true, defaultX: 0, defaultY: 0 }),
-		Object.freeze({ id: 'kpi-connections', label: 'Connections', kind: 'kpi', defaultSize: Object.freeze({ w: 2, h: 3 }), defaultVisible: true, defaultX: 2, defaultY: 0 }),
-		Object.freeze({ id: 'kpi-traffic', label: 'Traffic', kind: 'kpi', defaultSize: Object.freeze({ w: 2, h: 3 }), defaultVisible: true, defaultX: 0, defaultY: 3 }),
-		Object.freeze({ id: 'kpi-bandwidth', label: 'Bandwidth', kind: 'kpi', defaultSize: Object.freeze({ w: 2, h: 3 }), defaultVisible: true, defaultX: 2, defaultY: 3 }),
-		Object.freeze({ id: 'network-gauges', label: 'Network', kind: 'gauge', defaultSize: Object.freeze({ w: 8, h: 6 }), defaultVisible: true, defaultX: 4, defaultY: 0 }),
-		Object.freeze({ id: 'speedtest-chart', label: 'Speedtest', kind: 'chart', defaultSize: Object.freeze({ w: 4, h: 4 }), defaultVisible: true, defaultX: 8, defaultY: 6 }),
-		Object.freeze({ id: 'peer-map', label: 'Peer Locations', kind: 'map', defaultSize: Object.freeze({ w: 8, h: 10 }), defaultVisible: true, defaultX: 0, defaultY: 6 }),
-		Object.freeze({ id: 'recent-peers', label: 'Recent Peer Activity', kind: 'list', defaultSize: Object.freeze({ w: 4, h: 6 }), defaultVisible: true, defaultX: 8, defaultY: 10 }),
-	]);
+    // The registry array order is the single JS ordering contract: it equals DEFAULT_LAYOUT id order,
+    // the template's document (and mobile stack) order and the "Add widget" list order.
+    const registry = Object.freeze([
+        Object.freeze({ id: 'kpi-nodes', label: 'Nodes', kind: 'kpi', defaultSize: Object.freeze({ w: 2, h: 2 }), defaultVisible: true, defaultX: 0, defaultY: 0 }),
+        Object.freeze({ id: 'kpi-connections', label: 'Connections', kind: 'kpi', defaultSize: Object.freeze({ w: 2, h: 2 }), defaultVisible: true, defaultX: 2, defaultY: 0 }),
+        Object.freeze({ id: 'kpi-traffic', label: 'Traffic', kind: 'kpi', defaultSize: Object.freeze({ w: 2, h: 2 }), defaultVisible: true, defaultX: 0, defaultY: 2 }),
+        Object.freeze({ id: 'kpi-bandwidth', label: 'Bandwidth', kind: 'kpi', defaultSize: Object.freeze({ w: 2, h: 2 }), defaultVisible: true, defaultX: 2, defaultY: 2 }),
+        Object.freeze({ id: 'network-gauges', label: 'Network', kind: 'gauge', defaultSize: Object.freeze({ w: 8, h: 4 }), defaultVisible: true, defaultX: 4, defaultY: 0 }),
+        Object.freeze({ id: 'speedtest-chart', label: 'Speedtest', kind: 'chart', defaultSize: Object.freeze({ w: 4, h: 5 }), defaultVisible: true, defaultX: 8, defaultY: 4 }),
+        Object.freeze({ id: 'peer-map', label: 'Peer Locations', kind: 'map', defaultSize: Object.freeze({ w: 8, h: 10 }), defaultVisible: true, defaultX: 0, defaultY: 4 }),
+        Object.freeze({ id: 'recent-peers', label: 'Recent Peer Activity', kind: 'list', defaultSize: Object.freeze({ w: 4, h: 5 }), defaultVisible: true, defaultX: 8, defaultY: 9 }),
+    ]);
 
-	// Browser path: expose the frozen registry as a global, consumed by dashboard_grid.js (loaded
-	// after this script). Node path (tests): also export via module.exports so the anti-drift pytest
-	// (and a plain `node -e require(...)`) can read the registry with no DOM and no bundler.
-	if (typeof window !== 'undefined') {
-		window.WBDashboardRegistry = Object.freeze({ registry });
-	}
-	if (typeof module !== 'undefined' && module.exports) {
-		module.exports = { registry };
-	}
+    // Browser path: expose the frozen registry as a global, consumed by dashboard_grid.js (loaded
+    // after this script). Node path (tests): also export via module.exports so the anti-drift pytest
+    // (and a plain `node -e require(...)`) can read the registry with no DOM and no bundler.
+    if (typeof window !== 'undefined') {
+        window.WBDashboardRegistry = Object.freeze({ registry });
+    }
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = { registry };
+    }
 })();

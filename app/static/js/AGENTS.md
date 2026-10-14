@@ -17,6 +17,8 @@ First-party browser JavaScript, written as classic scripts (IIFEs attaching to `
 | `base-ui.js` | Global shell behaviour (sidebar, reconnect failsafe) |
 | `dashboard_traffic_shared.js` | `WBShared` helpers shared by dashboard, traffic, DNS and settings |
 | `dashboard.js`, `traffic.js`, `peers.js`, `users.js`, `nodes.js`, `about.js` | Page controllers (dashboard, peers, nodes and traffic are 1400-2200 lines) |
+| `dashboard_widgets.js` | Frozen dashboard widget registry (ids, labels, factory layout, order); browser global `WBDashboardRegistry` + Node `module.exports`. Mirrored by the Python allowlist in `app/api/dashboard_layout.py` (kept in sync by `tests/test_dashboard_widget_registry.py`) |
+| `dashboard_grid.js` | GridStack layout layer for the dashboard: position/size/visibility and per-user layout persistence via `/api/dashboard/layout`. Owns no data (that stays in `dashboard.js`); loaded last on the dashboard |
 | `dns-page.js` | DNS page controller, loaded by `dns.html` |
 | `settings.js` | Monolithic Settings controller (`window.WBSettings`), loaded by `settings.html` together with `settings/components.js` and `settings/speedtest.js` |
 | `login.js`, `mfa.js`, `passkeys.js`, `otp-setup.js`, `passkey-setup.js`, `change-password.js` | Auth flows: login, TOTP/MFA, WebAuthn passkeys, forced setup pages |

@@ -15,6 +15,7 @@ Vendored third-party libraries served locally (no CDN, works offline and under s
 | `leaflet.js`, `leaflet.css` | Leaflet 1.9.4 maps |
 | `leaflet-heat.js` | Leaflet heat-map layer |
 | `leaflet-gesture-handling.min.js`, `leaflet-gesture-handling.min.css` | Two-finger/ctrl-scroll gesture handling for Leaflet |
+| `gridstack-all.js`, `gridstack.min.css` | GridStack 14.0.0 (MIT); drives the draggable per-user dashboard grid. Loaded only by `dashboard.html` |
 
 ## For AI Agents
 ### Working In This Directory

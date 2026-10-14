@@ -475,6 +475,55 @@
         height: 100%;
         min-height: 0;
     }
+
+    /* The four KPI tiles are a compact 2-row block (gs-h=2) in the factory layout. The flow-layout
+       min-height (8.75rem) is taller than a 2-row tile, so it would overflow the h-100 card and the
+       overflow:hidden card would clip Traffic/Bandwidth's lower metric row. Inside the grid the TILE
+       owns the height, so drop the floor and tighten the internal spacing: the content then fits a
+       2-row tile and Nodes/Connections no longer show a large empty gap. Scoped to the desktop grid;
+       the mobile stacked fallback below keeps the natural min-height. */
+    .wb-dashboard-grid .dashboard-kpi-card>.card-body {
+        --dashboard-kpi-block-gap: 0.35rem;
+
+        min-height: 0;
+        padding: 0.7rem 0.85rem;
+    }
+
+    /* A default KPI tile is only 2 of 12 columns wide, so on narrow desktops and tablets
+       (roughly 768-1300px) the tile falls below the width the "Connections"/"Bandwidth" title needs
+       and the nowrap+ellipsis title would be cut. Make each KPI card a size container and react to
+       the TILE's own width (not the viewport), so the fix tracks the real tile size GridStack hands
+       out and leaves both the wide-desktop and the <=767.98px stacked layout untouched. Below the
+       threshold the title is allowed to wrap to a second line instead of truncating, the icon and
+       padding tighten, and the long count/metric values keep wrapping (overflow-wrap) rather than
+       clipping. */
+    .wb-dashboard-grid .dashboard-kpi-card {
+        container: dashboard-kpi / inline-size;
+    }
+
+    @container dashboard-kpi (max-width: 170px) {
+        .dashboard-kpi-title {
+            overflow: visible;
+            line-height: 1.1;
+            text-overflow: clip;
+            white-space: normal;
+        }
+
+        .dashboard-kpi-header {
+            grid-template-columns: 1.55rem minmax(0, 1fr);
+            gap: 0.45rem;
+        }
+
+        .dashboard-kpi-icon {
+            width: 1.55rem;
+            height: 1.55rem;
+            font-size: 0.9rem;
+        }
+
+        .dashboard-kpi-card>.card-body {
+            padding: 0.65rem 0.6rem;
+        }
+    }
 }
 
 /* View mode: no drag handles, no resize affordance, no hint that this is a grid at all. */

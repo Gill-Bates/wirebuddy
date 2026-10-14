@@ -310,3 +310,88 @@ def test_authenticated_put_out_of_range_body_is_422(monkeypatch, tmp_path):
 		headers={"Authorization": f"Bearer {token}"},
 	)
 	assert response.status_code == 422
+
+
+def _seed_bearer_user(app, username: str) -> str:
+	"""Create one more user in the app's own DB and mint a bearer token for it.
+
+	Unlike ``_seed_bearer_session`` this does not re-init the schema (the first caller already did),
+	so several users can be seeded into the same database for an isolation check.
+	"""
+	import secrets
+
+	from app.db.sqlite_auth import create_auth_token
+	from app.db.sqlite_runtime import close_connection, connect
+	from app.db.sqlite_users import create_user
+	from app.utils.time import utcnow
+
+	token = secrets.token_urlsafe(32)
+	conn = connect(app.state.db_path)
+	try:
+		user_id = create_user(conn, username, "pw-not-used-for-bearer-auth")
+		assert user_id is not None
+		now = utcnow()
+		create_auth_token(conn, user_id, token, now + timedelta(hours=1), now + timedelta(hours=1))
+	finally:
+		close_connection(conn)
+	return token
+
+
+def test_two_session_layout_isolation_over_http(monkeypatch, tmp_path):
+	"""User A's PUT layout is invisible to user B over the real HTTP route (acceptance criterion 8).
+
+	The handler-level isolation test above drives the coroutines directly; this one proves the route
+	itself resolves the settings key from the *session's* user and never leaks A's row to B.
+	"""
+	from fastapi.testclient import TestClient
+
+	from app import main
+
+	monkeypatch.setenv("WIREBUDDY_SECRET_KEY", "x" * 48)
+	monkeypatch.setenv("WIREBUDDY_DATA_DIR", str(tmp_path))
+	app = main.create_app()
+	client = TestClient(app, raise_server_exceptions=False)
+	token_a = _seed_bearer_session(app)  # inits the schema + seeds user A
+	token_b = _seed_bearer_user(app, "layout-tester-b")
+
+	layout = {"version": 1, "widgets": [{"id": "kpi-nodes", "x": 0, "y": 0, "w": 2, "h": 2, "visible": True}]}
+	put_a = client.put("/api/dashboard/layout", json=layout, headers={"Authorization": f"Bearer {token_a}"})
+	assert put_a.status_code == 200
+
+	get_a = client.get("/api/dashboard/layout", headers={"Authorization": f"Bearer {token_a}"})
+	assert get_a.status_code == 200
+	assert get_a.json()["data"]["layout"] == layout
+
+	# User B never wrote a layout: their GET over the same route is still null.
+	get_b = client.get("/api/dashboard/layout", headers={"Authorization": f"Bearer {token_b}"})
+	assert get_b.status_code == 200
+	assert get_b.json()["data"]["layout"] is None
+
+
+def test_cookie_authenticated_put_without_csrf_token_is_403(monkeypatch, tmp_path):
+	"""A cookie-authenticated mutation without an X-CSRF-Token is rejected by the CSRF middleware (403).
+
+	Acceptance criterion 7: a browser-style request (session cookie + same-origin) that omits the CSRF
+	token must never reach the handler. The bearer tests above cover the token-exempt path; this one
+	exercises the cookie-authenticated path through the real middleware stack.
+	"""
+	from fastapi.testclient import TestClient
+
+	from app import main
+
+	monkeypatch.setenv("WIREBUDDY_SECRET_KEY", "x" * 48)
+	monkeypatch.setenv("WIREBUDDY_DATA_DIR", str(tmp_path))
+	app = main.create_app()
+	client = TestClient(app, raise_server_exceptions=False)
+	token = _seed_bearer_session(app)
+
+	# Present the token as the session cookie (not a bearer header) so the request is cookie-authenticated.
+	# With a matching same-origin header but no X-CSRF-Token / csrf_token cookie, the double-submit check
+	# fails before the handler runs. base_url is http://testserver, so Origin must match it.
+	client.cookies.set("auth_token", token)
+	response = client.put(
+		"/api/dashboard/layout",
+		json={"version": 1, "widgets": []},
+		headers={"Origin": "http://testserver"},
+	)
+	assert response.status_code == 403
