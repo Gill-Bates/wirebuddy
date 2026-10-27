@@ -451,7 +451,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # shellcheck disable=SC2317  # invoked by the trap below, not inline
+          # shellcheck disable=SC2317,SC2329  # invoked by the trap below, not inline (shellcheck >= 0.11 reports SC2329)
           cleanup() {
             docker rm -f "${{ matrix.container_name }}" 2>/dev/null || true
           }
